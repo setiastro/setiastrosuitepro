@@ -451,7 +451,18 @@ class LayersDock(QDockWidget):
         self._apply_timer = QTimer(self)
         self._apply_timer.setSingleShot(True)
         self._apply_timer.timeout.connect(self._apply_list_to_view)
-        self._apply_debounce_ms = 100  # tweak 60–150ms as you like
+        # Full-resolution apply only fires after the user actually stops moving a
+        # control; long enough that brief mid-drag pauses don't trigger a costly
+        # full render (the live preview keeps things responsive during the drag).
+        self._apply_debounce_ms = 350
+
+        # Live-preview throttle: cap how often we recomposite/redraw while the
+        # user is actively dragging a slider (which fires valueChanged per tick).
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(self._on_preview_throttle)
+        self._preview_interval_ms = 70
+        self._preview_pending = False
 
         # UI
         w = QWidget()
@@ -854,8 +865,8 @@ class LayersDock(QDockWidget):
             except Exception:
                 pass
 
-            # Live preview refresh
-            vw.apply_layer_stack(vw._layers)
+            # Live preview refresh — downscaled for snappy transform editing
+            vw.apply_layer_stack(vw._layers, preview=True)
 
         # Helper: cancel revert
         def _cancel_revert(orig_t: LayerTransform):
@@ -866,24 +877,58 @@ class LayersDock(QDockWidget):
                 roww.setTransformDirty(dirty)
             except Exception:
                 pass
-            vw.apply_layer_stack(vw._layers)
+            vw.apply_layer_stack(vw._layers, preview=True)
 
         dlg = _TransformDialog(
             self,
             t=lyr.transform,
             apply_cb=_apply_t,
             cancel_cb=_cancel_revert,
-            debounce_ms=200,   # tweak 150–300
+            debounce_ms=120,
         )
         dlg.exec()
+        # Final full-resolution composite once editing is done (OK or Cancel)
+        try:
+            vw.apply_layer_stack(vw._layers)
+        except Exception:
+            pass
 
 
     def _apply_list_to_view_debounced(self):
-        # restart the timer on every slider tick
+        # Sync the (cheap) control values every tick, but THROTTLE the actual
+        # recomposite/redraw so a fast slider drag doesn't trigger one per pixel.
+        vw = self.current_view()
+        if vw:
+            self._sync_layers_from_rows(vw)
+            self._request_preview(vw)
+        # …and (re)start the debounce timer for the trailing full-resolution apply.
         self._apply_timer.start(self._apply_debounce_ms)
         # Also refresh row heights so mode-dependent controls (like Sigmoid)
         # can expand/collapse the row visually.
         self._refresh_row_heights()
+
+    def _request_preview(self, vw):
+        """Throttle live previews: render immediately on the leading edge, then at
+        most once per interval while changes keep arriving (coalesced trailing)."""
+        if self._preview_timer.isActive():
+            self._preview_pending = True
+            return
+        self._do_preview(vw)
+        self._preview_timer.start(self._preview_interval_ms)
+
+    def _on_preview_throttle(self):
+        if self._preview_pending:
+            self._preview_pending = False
+            vw = self.current_view()
+            if vw:
+                self._do_preview(vw)
+            self._preview_timer.start(self._preview_interval_ms)
+
+    def _do_preview(self, vw):
+        try:
+            vw.apply_layer_stack(vw._layers, preview=True)
+        except Exception as ex:
+            print("[LayersDock] preview apply error:", ex)
 
     def _refresh_row_heights(self):
         """Update QListWidgetItem size hints to match current row widgets."""
@@ -932,44 +977,60 @@ class LayersDock(QDockWidget):
         self._rebuild_list()
         self._apply_list_to_view()
 
+    def _sync_layers_from_rows(self, vw) -> None:
+        """Copy UI control values into the layer objects.
+
+        Hardened against: None rows, the informational base row, and any drift
+        between the widget list and the layer list (delete/reorder/off-by-one).
+        """
+        layers = getattr(vw, "_layers", None) or []
+        n = min(len(layers), self.list.count())
+        for i in range(n):
+            it = self.list.item(i)
+            roww = self.list.itemWidget(it) if it is not None else None
+            if roww is None or getattr(roww, "_is_base", False):
+                continue
+            try:
+                p = roww.params()
+            except Exception:
+                continue
+            lyr = layers[i]
+            try:
+                lyr.visible = bool(p["visible"])
+                lyr.mode = p["mode"]
+                lyr.opacity = float(p["opacity"])
+                lyr.levels_enabled = bool(p.get("levels_enabled", False))
+                lyr.black_point = float(p.get("black_point", 0.0))
+                lyr.midtones = float(p.get("midtones", 0.5))
+                lyr.white_point = float(p.get("white_point", 1.0))
+
+                if "sigmoid_center" in p:
+                    lyr.sigmoid_center = float(p["sigmoid_center"])
+                if "sigmoid_strength" in p:
+                    lyr.sigmoid_strength = float(p["sigmoid_strength"])
+
+                mi = p.get("mask_index")
+                if mi is not None and mi > 0:
+                    lyr.mask_doc = roww.mask_combo.itemData(mi)
+                else:
+                    lyr.mask_doc = None
+
+                # Force luminance masks only
+                lyr.mask_use_luma = True
+                lyr.mask_invert = bool(p["mask_invert"])
+            except Exception as ex:
+                print("[LayersDock] sync row error:", ex)
+
     def _apply_list_to_view(self):
         vw = self.current_view()
         if not vw:
             return
-        n = self._layer_count()
-        rows = []
-        for i in range(n):
-            it = self.list.item(i)
-            rows.append(self.list.itemWidget(it))
-
-
-        for lyr, roww in zip(vw._layers, rows):
-            p = roww.params()
-            lyr.visible = p["visible"]
-            lyr.mode = p["mode"]
-            lyr.opacity = float(p["opacity"])
-            lyr.levels_enabled = bool(p.get("levels_enabled", False))
-            lyr.black_point = float(p.get("black_point", 0.0))
-            lyr.midtones = float(p.get("midtones", 0.5))
-            lyr.white_point = float(p.get("white_point", 1.0))
-
-            # Sigmoid parameters (if present)
-            if "sigmoid_center" in p:
-                lyr.sigmoid_center = float(p["sigmoid_center"])
-            if "sigmoid_strength" in p:
-                lyr.sigmoid_strength = float(p["sigmoid_strength"])
-            mi = p["mask_index"]
-            if mi is not None and mi > 0:
-                doc = roww.mask_combo.itemData(mi)
-                lyr.mask_doc = doc
-            else:
-                lyr.mask_doc = None
-
-            # Force luminance masks only
-            lyr.mask_use_luma = True
-            lyr.mask_invert = bool(p["mask_invert"])
-        vw._reinstall_layer_watchers()
-        vw.apply_layer_stack(vw._layers)
+        self._sync_layers_from_rows(vw)
+        try:
+            vw._reinstall_layer_watchers()
+            vw.apply_layer_stack(vw._layers)
+        except Exception as ex:
+            print("[LayersDock] apply_list_to_view error:", ex)
 
     def _clear_layers(self):
         vw = self.current_view()

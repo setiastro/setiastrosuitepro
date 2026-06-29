@@ -293,7 +293,6 @@ class _BXTPanel(QWidget):
 # ---------------------------------------------------------------------------
 # SXT parameter panel
 # ---------------------------------------------------------------------------
-
 class _SXTPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -310,9 +309,18 @@ class _SXTPanel(QWidget):
         self.chk_unscreen.setChecked(False)
         self.chk_unscreen.setEnabled(False)
         self.chk_stars.toggled.connect(self.chk_unscreen.setEnabled)
-        # sync initial enabled state — toggled doesn't fire during construction
         self.chk_unscreen.setEnabled(self.chk_stars.isChecked())
         form.addRow("", self.chk_unscreen)
+
+        self.sld_overlap = _form_slider(
+            form, "Tile Overlap (0 – 0.5):",
+            0.0, 0.5, 0.2, decimals=2, scale=100
+        )
+        self.sld_overlap.setToolTip(
+            "Tile overlap fraction passed to --overlap.\n"
+            "Default 0.20 (20%). Higher values reduce seam artifacts\n"
+            "but increase processing time."
+        )
 
         note = QLabel(
             "SASpro will load the starless result into the current document\n"
@@ -327,16 +335,20 @@ class _SXTPanel(QWidget):
             args.append("--stars")
             if self.chk_unscreen.isChecked():
                 args.append("--unscreen")
+        overlap = self.sld_overlap.value() / 100.0
+        if abs(overlap - 0.2) > 0.005:
+            args += ["--overlap", f"{overlap:.2f}"]
         return args
 
     def save_settings(self, s: QSettings):
         s.setValue("rcastro/sxt_stars",    self.chk_stars.isChecked())
         s.setValue("rcastro/sxt_unscreen", self.chk_unscreen.isChecked())
+        s.setValue("rcastro/sxt_overlap",  self.sld_overlap.value())
 
     def load_settings(self, s: QSettings):
         self.chk_stars.setChecked(   bool(s.value("rcastro/sxt_stars",    True,  type=bool)))
         self.chk_unscreen.setChecked(bool(s.value("rcastro/sxt_unscreen", False, type=bool)))
-
+        self.sld_overlap.setValue(    int(s.value("rcastro/sxt_overlap",  20)))
 
 # ---------------------------------------------------------------------------
 # NXT parameter panel
@@ -1068,6 +1080,20 @@ def _on_finished(main_dlg, doc, return_code, dlg,
 
     # SXT stars-only — open via docman.open_path, subwindow spawns automatically
     if product == "sxt" and os.path.exists(stars_path):
+        # If the source was mono, collapse the RGB stars output back to mono so it
+        # matches the original (otherwise it can't be combined/subtracted with it).
+        # Mirrors the mono-collapse applied to the main starless result above.
+        if is_mono:
+            try:
+                from setiastro.saspro.legacy.image_manager import save_image
+                s_img, _, _, _ = load_image(stars_path)
+                if s_img is not None and s_img.ndim == 3:
+                    s_img = s_img.mean(axis=2).astype(np.float32)
+                    save_image(np.clip(s_img, 0.0, 1.0), stars_path,
+                               "tif", "32-bit floating point", None, False,
+                               image_meta=None, file_meta=None)
+            except Exception as e:
+                dlg.append(f"[warn] could not collapse stars to mono: {e}\n")        
         dlg.append(f"Loading stars-only: {os.path.basename(stars_path)}\n")
         _push_new_doc(main_window, stars_path, source_doc=doc)
         dlg.append("Stars-only image pushed as new document.\n")
