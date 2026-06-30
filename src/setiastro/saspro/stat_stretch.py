@@ -404,8 +404,43 @@ class StatisticalStretchDialog(QDialog):
         left.addLayout(btn_row)
 
         left.addWidget(self.lbl_clipstats)
+        # ── Parameter slots: Store / Recall ────────────────────────────────
+        self._param_slots: dict[int, dict] = {}
+
+        slots_box = QVBoxLayout()
+        slots_box.setSpacing(4)
+
+        store_row = QHBoxLayout()
+        store_row.addWidget(QLabel(self.tr("Store Parameters:")))
+        self.btn_store_1 = QPushButton("1")
+        self.btn_store_2 = QPushButton("2")
+        self.btn_store_3 = QPushButton("3")
+        for b in (self.btn_store_1, self.btn_store_2, self.btn_store_3):
+            b.setFixedWidth(32)
+            store_row.addWidget(b)
+        store_row.addStretch(1)
+        slots_box.addLayout(store_row)
+
+        recall_row = QHBoxLayout()
+        recall_row.addWidget(QLabel(self.tr("Recall Parameters:")))
+        self.btn_recall_1 = QPushButton("1")
+        self.btn_recall_2 = QPushButton("2")
+        self.btn_recall_3 = QPushButton("3")
+        for b in (self.btn_recall_1, self.btn_recall_2, self.btn_recall_3):
+            b.setFixedWidth(32)
+            b.setEnabled(False)  # disabled until something is stored in that slot
+            recall_row.addWidget(b)
+        recall_row.addStretch(1)
+        slots_box.addLayout(recall_row)
+        clear_row = QHBoxLayout()
+        self.btn_clear_slots = QPushButton(self.tr("Clear All Stored Parameters"))
+        clear_row.addWidget(self.btn_clear_slots)
+        clear_row.addStretch(1)
+        slots_box.addLayout(clear_row)
+        left.addLayout(slots_box)        
         left.addWidget(self.lbl_fast_indicator)
         left.addWidget(self.busy_row)
+
         left.addStretch(1)
 
         right = QVBoxLayout()
@@ -563,6 +598,15 @@ class StatisticalStretchDialog(QDialog):
         self.chk_curves.toggled.connect(self._save_settings)
         self.sld_curves.valueChanged.connect(self._save_settings)
 
+        self.btn_store_1.clicked.connect(lambda: self._store_param_slot(1))
+        self.btn_store_2.clicked.connect(lambda: self._store_param_slot(2))
+        self.btn_store_3.clicked.connect(lambda: self._store_param_slot(3))
+        self.btn_recall_1.clicked.connect(lambda: self._recall_param_slot(1))
+        self.btn_recall_2.clicked.connect(lambda: self._recall_param_slot(2))
+        self.btn_recall_3.clicked.connect(lambda: self._recall_param_slot(3))
+        self.btn_clear_slots.clicked.connect(self._clear_all_param_slots)
+        self._load_param_slots()
+
         self._suggest_hdr_knee_from_target()
         self._populate_initial_preview()
         # If auto-refresh was saved as enabled, kick off an immediate preview
@@ -578,6 +622,173 @@ class StatisticalStretchDialog(QDialog):
         if on:
             self._fast_timer.start()
             self._full_timer.start()
+
+    # ── Parameter slots ───────────────────────────────────────────────────────
+
+    _GOLD_STYLE = "QPushButton { color: #d4af37; font-weight: bold; }"
+
+    def _store_param_slot(self, slot: int):
+        """Snapshot every adjustable control into the given slot (1-3)."""
+        p = self._stretch_params()
+        self._param_slots[slot] = p
+        try:
+            btn = getattr(self, f"btn_recall_{slot}")
+            btn.setEnabled(True)
+            btn.setStyleSheet(self._GOLD_STYLE)
+            btn.setToolTip(self.tr(f"Recall: target={p['target_median']:.3f}"))
+        except Exception:
+            pass
+        try:
+            store_btn = getattr(self, f"btn_store_{slot}")
+            store_btn.setStyleSheet(self._GOLD_STYLE)
+        except Exception:
+            pass
+        try:
+            self._save_param_slots()
+        except Exception:
+            pass
+
+    def _clear_all_param_slots(self):
+        """Clear all stored parameter slots and reset button styling."""
+        self._param_slots.clear()
+        for slot in (1, 2, 3):
+            try:
+                recall_btn = getattr(self, f"btn_recall_{slot}")
+                recall_btn.setEnabled(False)
+                recall_btn.setStyleSheet("")
+                recall_btn.setToolTip("")
+            except Exception:
+                pass
+            try:
+                store_btn = getattr(self, f"btn_store_{slot}")
+                store_btn.setStyleSheet("")
+            except Exception:
+                pass
+        try:
+            self._save_param_slots()
+        except Exception:
+            pass
+
+    def _recall_param_slot(self, slot: int):
+        """Restore all controls from the given slot and trigger a preview."""
+        p = self._param_slots.get(slot)
+        if not p:
+            return
+
+        widgets = [
+            self.sld_target, self.spin_target,
+            self.chk_linked, self.chk_normalize,
+            self.sld_bp, self.chk_no_black_clip,
+            self.chk_hdr, self.sld_hdr_amt, self.sld_hdr_knee,
+            self.chk_luma_only, self.cmb_luma, self.sld_luma_blend,
+            self.chk_curves, self.sld_curves,
+        ]
+        for w in widgets:
+            try:
+                w.blockSignals(True)
+            except Exception:
+                pass
+
+        try:
+            self._hdr_knee_user_locked = True  # recalled knee should stick exactly
+
+            target = float(p.get("target_median", 0.25))
+            self.spin_target.setValue(target)
+            self.sld_target.setValue(int(round(target * 1000)))
+
+            self.chk_linked.setChecked(bool(p.get("linked", False)))
+            self.chk_normalize.setChecked(bool(p.get("normalize", False)))
+
+            bp_sigma = float(p.get("blackpoint_sigma", 5.0))
+            self.sld_bp.setValue(int(round(bp_sigma * 100)))
+            self.lbl_bp.setText(f"{bp_sigma:.2f}")
+            self.chk_no_black_clip.setChecked(bool(p.get("no_black_clip", False)))
+
+            self.chk_hdr.setChecked(bool(p.get("hdr_compress", False)))
+            hdr_amt = float(p.get("hdr_amount", 0.15))
+            self.sld_hdr_amt.setValue(int(round(hdr_amt * 100)))
+            self.lbl_hdr_amt.setText(f"{hdr_amt:.2f}")
+            hdr_knee = float(p.get("hdr_knee", 0.75))
+            self.sld_hdr_knee.setValue(int(round(hdr_knee * 100)))
+            self.lbl_hdr_knee.setText(f"{hdr_knee:.2f}")
+
+            self.chk_luma_only.setChecked(bool(p.get("luma_only", False)))
+            luma_mode = str(p.get("luma_mode", "rec709"))
+            if self.cmb_luma.findText(luma_mode) >= 0:
+                self.cmb_luma.setCurrentText(luma_mode)
+            luma_blend = float(p.get("luma_blend", 0.6))
+            self.sld_luma_blend.setValue(int(round(luma_blend * 100)))
+            self.lbl_luma_blend.setText(f"{luma_blend:.2f}")
+
+            self.chk_curves.setChecked(bool(p.get("apply_curves", False)))
+            curves_boost = float(p.get("curves_boost", 0.2))
+            self.sld_curves.setValue(int(round(curves_boost * 100)))
+            self.lbl_curves_val.setText(f"{curves_boost:.2f}")
+        finally:
+            for w in widgets:
+                try:
+                    w.blockSignals(False)
+                except Exception:
+                    pass
+
+        # Re-apply dependent enable/disable states
+        try:
+            self.row_bp.setEnabled(not self.chk_no_black_clip.isChecked())
+        except Exception:
+            pass
+        try:
+            self.hdr_row.setEnabled(self.chk_hdr.isChecked())
+        except Exception:
+            pass
+        try:
+            self.curves_row.setEnabled(self.chk_curves.isChecked())
+        except Exception:
+            pass
+        try:
+            luma_on = self.chk_luma_only.isChecked()
+            self.cmb_luma.setEnabled(luma_on)
+            self.luma_blend_row.setEnabled(luma_on)
+            self.chk_linked.setEnabled(not luma_on)
+        except Exception:
+            pass
+
+        self._schedule_clip_stats()
+
+        # Always preview the recalled parameters immediately, regardless of
+        # auto-refresh state, so the user can A/B compare slots right away.
+        self._fast_timer.start()
+        self._full_timer.start()
+
+    def _save_param_slots(self):
+        try:
+            s = QSettings()
+            import json
+            s.setValue("stat_stretch/param_slots", json.dumps(self._param_slots))
+        except Exception:
+            pass
+
+    def _load_param_slots(self):
+        try:
+            s = QSettings()
+            import json
+            raw = s.value("stat_stretch/param_slots", "", type=str)
+            if not raw:
+                return
+            data = json.loads(raw)
+            for k, v in data.items():
+                slot = int(k)
+                if slot in (1, 2, 3) and isinstance(v, dict):
+                    self._param_slots[slot] = v
+                    btn = getattr(self, f"btn_recall_{slot}", None)
+                    if btn is not None:
+                        btn.setEnabled(True)
+                        btn.setStyleSheet(self._GOLD_STYLE)
+                        btn.setToolTip(self.tr(f"Recall: target={v.get('target_median', 0):.3f}"))
+                    store_btn = getattr(self, f"btn_store_{slot}", None)
+                    if store_btn is not None:
+                        store_btn.setStyleSheet(self._GOLD_STYLE)
+        except Exception:
+            pass
 
     def _on_any_control_changed(self):
         """Called by every control that affects the stretched output."""
