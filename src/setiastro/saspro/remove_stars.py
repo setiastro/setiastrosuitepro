@@ -1027,6 +1027,17 @@ class SyQonStarlessDialog(QDialog):
             self.chk_amp.setChecked(False)
         self.chk_live_preview.setEnabled(not standalone)
         self.chk_amp.setEnabled(not standalone)
+
+        # Standalone CLI has no MTF/AMP/channel-mode/pad flags -- grey
+        # these out so the user isn't shown options that silently do
+        # nothing when this engine is selected.
+        self.chk_mtf.setEnabled(not standalone)
+        self.spin_mtf_median.setEnabled((not standalone) and self.chk_mtf.isChecked())
+        self.lbl_mtf_median.setEnabled(not standalone)
+        self.chk_rgb_perchan.setEnabled((not standalone) and self._model_kind() != "axiomv3")
+        self.chk_pad.setEnabled(not standalone)
+        self.spin_pad.setEnabled((not standalone) and self.chk_pad.isChecked())
+
         try:
             self.adjustSize()
         except Exception:
@@ -1511,37 +1522,42 @@ class SyQonStarlessDialog(QDialog):
         self._set_busy(True)
         self.lbl.setText("Processing…")
 
-        # --- Standalone CLI ---
+        # --- Standalone CLI (SyQonStarless.exe / .app -- real C++ build) ---
         if engine_mode == "standalone_cli":
             exe_path = self.edt_cli_path.text().strip()
             if not exe_path or not os.path.isfile(exe_path):
                 self._set_busy(False)
                 QMessageBox.warning(self, "SyQon", "Please select a valid Starless Standalone executable.")
                 return
-
-            use_temp_stretch = bool(self.chk_mtf.isChecked())
-            self._do_mtf    = False
-            self._mtf_params = None
-
+ 
+            # The real C++ CLI has no MTF/AMP/channel-mode/pad flags --
+            # those only existed in the old Python starless_cli. Whatever
+            # stretch/processing choices apply now happen either inside
+            # the model itself or via the GUI window the user interacts
+            # with (we always launch with --gui per Siril-parity), so
+            # SASpro's own MTF pre/post-processing is bypassed for this
+            # engine path.
+            self._do_mtf      = False
+            self._mtf_params  = None
+ 
+            # Device string: map SASpro's "use CPU" checkbox (if present)
+            # to the C++ exe's -d flag; default to Auto like Siril's
+            # sequence-mode call does.
+            device = "Auto"
+ 
             self.proc_thr = _SyQonStandaloneCLIThread(
                 input_rgb01=xrgb,
                 exe_path=exe_path,
                 tile=tile,
                 overlap=overlap,
-                pad=pad_pixels if pad_edges else 0,
-                use_mtf=bool(self.chk_mtf.isChecked()),
-                mtf_target=float(self.spin_mtf_median.value()),
-                use_amp=bool(self.chk_amp.isChecked()),
-                amp_dtype="fp16",
-                channel_mode="rgb+perchan" if self.chk_rgb_perchan.isChecked() else "rgb",
-                use_cpu=False,
-                no_dml=False,
+                device=device,
                 parent=self,
             )
             self.proc_thr.progress.connect(self._on_worker_progress)
             self.proc_thr.finished.connect(self._on_worker_finished)
             self.proc_thr.start()
             return
+
 
         # --- Integrated model ---
         if not self._have_model():
@@ -1637,6 +1653,7 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 
+
 class _SyQonStandaloneCLIThread(QThread):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(object, object, dict, str)
@@ -1647,35 +1664,20 @@ class _SyQonStandaloneCLIThread(QThread):
         exe_path: str,
         tile: int,
         overlap: int,
-        pad: int,
-        use_mtf: bool,
-        mtf_target: float,
-        use_amp: bool,
-        amp_dtype: str,
-        channel_mode: str,
-        use_cpu: bool,
-        no_dml: bool,
+        device: str = "Auto",
         parent=None,
     ):
         super().__init__(parent)
-        self.input_rgb01  = np.asarray(input_rgb01, dtype=np.float32)
-        self.exe_path     = str(exe_path)
-        self.tile         = int(tile)
-        self.overlap      = int(overlap)
-        self.pad          = int(pad)
-        self.use_mtf      = bool(use_mtf)
-        self.mtf_target   = float(mtf_target)
-        self.use_amp      = bool(use_amp)
-        self.amp_dtype    = (amp_dtype or "fp16").lower().strip()
-        self.channel_mode = (channel_mode or "rgb").strip().lower()
-        self.use_cpu      = bool(use_cpu)
-        self.no_dml       = bool(no_dml)
-        self._cancel      = False
-        self._tmp_in      = None
-        self._tmp_out     = None
-        self._tmp_stars   = None
-        self._tmp_json    = None
-        self._p           = None
+        self.input_rgb01 = np.asarray(input_rgb01, dtype=np.float32)
+        self.exe_path    = str(exe_path)
+        self.tile        = int(tile)
+        self.overlap     = int(overlap)
+        self.device      = str(device or "Auto")
+        self._cancel     = False
+        self._tmp_in     = None
+        self._tmp_out    = None
+        self._tmp_mask   = None
+        self._p          = None
 
     def cancel(self):
         self._cancel = True
@@ -1696,45 +1698,45 @@ class _SyQonStandaloneCLIThread(QThread):
             "exe_path": self.exe_path,
             "tile":     self.tile,
             "overlap":  self.overlap,
-            "pad":      self.pad,
+            "device":   self.device,
         }
 
         stdout_lines = []
         stderr_lines = []
 
-        re_pct_tiles = re.compile(r"\[(\d+)%\]\s*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
-        re_tile      = re.compile(r"tile\s+(\d+)\s*/\s*(\d+)",         re.IGNORECASE)
-
-        def _update_progress(line: str):
-            s = line.strip()
-            m = re_pct_tiles.search(s)
-            if m:
-                pct, done, total = int(m.group(1)), int(m.group(2)), int(m.group(3))
-                if total > 0 and done >= max(1, total - 2):
-                    self._emit(min(pct, 99), "Stitching and writing output…")
-                else:
-                    self._emit(pct, f"Standalone CLI: {done}/{total} tiles")
-                return
-            m = re_tile.search(s)
-            if m:
-                done, total = int(m.group(1)), int(m.group(2))
-                pct = int(round(100.0 * done / max(total, 1)))
-                if total > 0 and done >= max(1, total - 2):
-                    self._emit(min(pct, 99), "Stitching and writing output…")
-                else:
-                    self._emit(pct, f"Standalone CLI: {done}/{total} tiles")
+        # Parse the same progress lines the C++ CLI emits to stdout.
+        # In --gui mode the CLI also emits these since the underlying
+        # InferenceEngine still writes to stdout even when the Qt window
+        # is open -- so we get real-time updates for free.
+        re_pct   = re.compile(r'\[CLI\]\s+Progress:\s+(\d+)%', re.IGNORECASE)
+        re_stage = re.compile(r'\[(?:CLI|InferenceEngine|ONNX)\]\s+(?:Status:\s*)?(.+)', re.IGNORECASE)
 
         def _reader(pipe, label, sink):
             try:
-                for line in pipe:
-                    line = line.rstrip("\r\n")
+                for raw_line in pipe:
+                    line = raw_line.rstrip("\r\n")
                     sink.append(line)
                     print(f"[Starless {label}] {line}", flush=True)
-                    if label == "stdout":
-                        try:
-                            _update_progress(line)
-                        except Exception:
-                            pass
+                    if label != "stdout":
+                        continue
+                    # Parse percentage
+                    m = re_pct.search(line)
+                    if m:
+                        pct = int(m.group(1))
+                        # Don't emit 100 yet -- wait until file exists
+                        self._emit(min(pct, 99), "SyQon Starless processing…")
+                        continue
+                    # Parse stage label for status text
+                    m = re_stage.search(line)
+                    if m:
+                        stage = m.group(1).strip()
+                        # Filter out noisy low-level lines
+                        if not any(x in stage for x in (
+                            "Channel", "Stretch loop", "Auto-configured",
+                            "Model loaded", "Loaded embedded", "DirectML",
+                            "Reading TIFF", "bits:", "samples:"
+                        )):
+                            self._emit(0, stage)
             except Exception as e:
                 print(f"[Starless {label} reader] {type(e).__name__}: {e}", flush=True)
 
@@ -1750,68 +1752,43 @@ class _SyQonStandaloneCLIThread(QThread):
             tmpdir = Path(tempfile.gettempdir()) / "SASpro_SyQon_StarlessCLI"
             tmpdir.mkdir(parents=True, exist_ok=True)
 
-            self._tmp_in    = str(tmpdir / f"{tag}_in.fits")
-            self._tmp_out   = str(tmpdir / f"{tag}_starless.fits")
-            self._tmp_stars = str(tmpdir / f"{tag}_stars.fits")
-            self._tmp_json  = str(tmpdir / f"{tag}_starless.json")
+            in_base        = f"{tag}_in"
+            self._tmp_in   = str(tmpdir / f"{in_base}.tif")
+            self._tmp_out  = str(tmpdir / f"starless_{in_base}.tif")
+            self._tmp_mask = str(tmpdir / f"starmask_{in_base}.tif")
 
-            self._emit(2, "Standalone CLI: writing temp FITS…")
+            self._emit(2, "Writing temp image for Starless…")
             save_image(
                 self.input_rgb01,
                 self._tmp_in,
-                original_format="fits",
+                original_format="tif",
                 bit_depth="32-bit floating point",
                 original_header=None,
                 is_mono=False,
                 image_meta=None,
                 file_meta=None,
-                wcs_header=None,
             )
 
             if self._cancel:
                 raise RuntimeError("Cancelled")
 
-            # Build args to match PI script exactly
-            args = [
-                "--input",   self._tmp_in,
-                "--output",  self._tmp_out,
-                "--stars",   self._tmp_stars,
-                "--tile",    str(self.tile),
-                "--overlap", str(self.overlap),
-                "--pad",     str(self.pad),
+            cmd = [
+                str(exe),
+                "-i", self._tmp_in,
+                "-o", self._tmp_out,
+                "-d", self.device,
+                "-t", "512",    # model is static [1,3,512,512]
+                "-v", str(self.overlap),
+                "-c", "all-in-one",
+                "--gui",        # open the SyQonStarless window so the
+                                # user can adjust stretch/device settings
             ]
-
-            if self.use_mtf:
-                args += ["--use-mtf", "--mtf-target", f"{self.mtf_target:.3f}"]
-
-            if self.use_amp:
-                args.append("--use-amp")
-            args += ["--amp-dtype", self.amp_dtype]
-
-            if self.channel_mode and self.channel_mode != "rgb":
-                args += ["--channel-mode", self.channel_mode]
-
-            if self.use_cpu:
-                args.append("--cpu")
-            if self.no_dml:
-                args.append("--no-dml")
-
-            args += ["--json-info", self._tmp_json]
-
-            cmd = [str(exe)] + args
             info["command"] = cmd
 
             print("\n[Starless CLI launch]", flush=True)
             print("CMD:", " ".join(cmd), flush=True)
 
-            self._emit(5, "Standalone CLI: starting…")
-
-            startupinfo    = None
-            creationflags  = 0
-            if os.name == "nt":
-                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                startupinfo   = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            self._emit(5, "Opening SyQon Starless…")
 
             self._p = subprocess.Popen(
                 cmd,
@@ -1822,53 +1799,44 @@ class _SyQonStandaloneCLIThread(QThread):
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
             )
 
-            t_out = threading.Thread(target=_reader, args=(self._p.stdout, "stdout", stdout_lines), daemon=True)
-            t_err = threading.Thread(target=_reader, args=(self._p.stderr, "stderr", stderr_lines), daemon=True)
-            t_out.start(); t_err.start()
+            # Reader threads drain stdout/stderr in real-time so the pipe
+            # buffer never fills up and deadlocks (the communicate() 
+            # approach blocked until exit, causing the earlier hang).
+            t_out = threading.Thread(
+                target=_reader,
+                args=(self._p.stdout, "stdout", stdout_lines),
+                daemon=True
+            )
+            t_err = threading.Thread(
+                target=_reader,
+                args=(self._p.stderr, "stderr", stderr_lines),
+                daemon=True
+            )
+            t_out.start()
+            t_err.start()
 
-            t0 = time.time()
-            timeout_s = 20 * 60
+            # Block until the user closes the SyQonStarless window.
+            self._p.wait()
+            t_out.join(timeout=2.0)
+            t_err.join(timeout=2.0)
 
-            while True:
-                if self._cancel:
-                    raise RuntimeError("Cancelled")
-                if self._tmp_out and os.path.exists(self._tmp_out):
-                    self._emit(95, "Standalone CLI: output detected, loading…")
-                    time.sleep(0.5)
-                    break
-                if self._p.poll() is not None:
-                    print(f"[Starless watcher] Process exited rc={self._p.returncode}", flush=True)
-                if (time.time() - t0) > timeout_s:
-                    raise RuntimeError("Standalone CLI timed out (no output file produced).")
-                time.sleep(0.25)
-
-            try:
-                self._p.wait(timeout=2.0)
-            except Exception:
-                pass
-            t_out.join(timeout=1.0)
-            t_err.join(timeout=1.0)
+            if self._cancel:
+                raise RuntimeError("Cancelled")
 
             info["stdout_tail"] = "\n".join(stdout_lines[-200:])
             info["stderr_tail"] = "\n".join(stderr_lines[-200:])
             info["returncode"]  = self._p.returncode
 
-            # Load JSON info if present
-            try:
-                if os.path.exists(self._tmp_json):
-                    import json
-                    with open(self._tmp_json, "r") as f:
-                        info["cli_json"] = json.load(f)
-            except Exception:
-                pass
+            if self._p.returncode != 0 or not os.path.exists(self._tmp_out):
+                raise RuntimeError(
+                    "SyQon Starless closed without producing output "
+                    "(cancelled, or processing was not completed)."
+                )
 
-            self._emit(97, "Standalone CLI: loading output…")
+            self._emit(95, "Loading Starless output…")
             starless_rgb01, _, _, _ = load_image(self._tmp_out)
-
             if starless_rgb01 is None:
                 raise RuntimeError("Standalone CLI output could not be loaded.")
 
@@ -1881,18 +1849,20 @@ class _SyQonStandaloneCLIThread(QThread):
                 starless_rgb01 = starless_rgb01[..., :3]
             starless_rgb01 = np.clip(starless_rgb01, 0.0, 1.0).astype(np.float32, copy=False)
 
-            # Load stars output if present
+            # Starmask written automatically by the app next to the output.
             stars_rgb01 = None
             try:
-                if os.path.exists(self._tmp_stars):
-                    s_img, _, _, _ = load_image(self._tmp_stars)
+                if os.path.exists(self._tmp_mask):
+                    s_img, _, _, _ = load_image(self._tmp_mask)
                     if s_img is not None:
                         s_img = np.asarray(s_img, dtype=np.float32)
                         if s_img.ndim == 2:
                             s_img = np.stack([s_img] * 3, axis=-1)
                         elif s_img.ndim == 3 and s_img.shape[2] == 1:
                             s_img = np.repeat(s_img, 3, axis=2)
-                        stars_rgb01 = np.clip(s_img[..., :3], 0.0, 1.0).astype(np.float32, copy=False)
+                        stars_rgb01 = np.clip(
+                            s_img[..., :3], 0.0, 1.0
+                        ).astype(np.float32, copy=False)
             except Exception:
                 pass
 
@@ -1901,9 +1871,7 @@ class _SyQonStandaloneCLIThread(QThread):
 
         except Exception as e:
             import traceback
-            info["stdout_tail"] = "\n".join(stdout_lines[-200:])
-            info["stderr_tail"] = "\n".join(stderr_lines[-200:])
-            info["traceback"]   = traceback.format_exc()
+            info["traceback"] = traceback.format_exc()
             self.finished.emit(None, None, info, str(e))
 
         finally:
@@ -1912,7 +1880,7 @@ class _SyQonStandaloneCLIThread(QThread):
                     self._p.terminate()
             except Exception:
                 pass
-            for p in (self._tmp_in, self._tmp_out, self._tmp_stars, self._tmp_json):
+            for p in (self._tmp_in, self._tmp_out, self._tmp_mask):
                 try:
                     if p and os.path.exists(p):
                         os.remove(p)
