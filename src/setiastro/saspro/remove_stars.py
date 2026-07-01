@@ -1779,7 +1779,7 @@ class _SyQonStandaloneCLIThread(QThread):
                 "-d", self.device,
                 "-t", "512",    # model is static [1,3,512,512]
                 "-v", str(self.overlap),
-                "-c", "all-in-one",
+                "-c", "seti",
                 "--gui",        # open the SyQonStarless window so the
                                 # user can adjust stretch/device settings
             ]
