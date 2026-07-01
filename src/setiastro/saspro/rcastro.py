@@ -227,6 +227,18 @@ class _BXTPanel(QWidget):
         )
         form.addRow("", self.chk_correct_only)
 
+        self.cmb_model = QComboBox()
+        self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
+        self.cmb_model.setToolTip(
+            "BXT ML model version.\n"
+            "Latest — current default model (recommended).\n"
+            "AI2 (legacy) — older model, passes --ml-version 2.\n"
+            "Requires RC-Astro CLI 0.9.8 or later.")
+        form.addRow("Model:", self.cmb_model)
+        self._model_form   = form
+        self._ml_supported = False
+        self.set_ml_version_supported(False)
+
         self.sld_ss  = _form_slider(form, "Sharpen Stars (0 – 0.7):",
                                     0.0, 0.7, 0.0, decimals=2, scale=100)
         self.sld_ash = _form_slider(form, "Adjust Star Halos (−0.5 – 0.5):",
@@ -254,6 +266,15 @@ class _BXTPanel(QWidget):
 
         # Wire Correct Only → disable/enable Sharpen Stars slider
         self.chk_correct_only.toggled.connect(self._on_correct_only_toggled)
+
+    def set_ml_version_supported(self, supported: bool):
+        self._ml_supported = supported
+        self.cmb_model.setVisible(supported)
+        lbl = self._model_form.labelForField(self.cmb_model)
+        if lbl:
+            lbl.setVisible(supported)
+        if not supported:
+            self.cmb_model.setCurrentIndex(0)
 
     def _on_correct_only_toggled(self, checked: bool):
         self.sld_ss.setEnabled(not checked)
@@ -288,6 +309,9 @@ class _BXTPanel(QWidget):
             if sn > 0:
                 args += ["--sharpen-nonstellar", f"{sn:.2f}"]
 
+        if self._ml_supported and self.cmb_model.currentIndex() == 1:
+            args += ["--ml-version", "2"]
+
         return args
 
     def save_settings(self, s: QSettings):
@@ -297,6 +321,7 @@ class _BXTPanel(QWidget):
         s.setValue("rcastro/bxt_auto", self.chk_auto_nsr.isChecked())
         s.setValue("rcastro/bxt_nsr",  self.sld_nsr.value())
         s.setValue("rcastro/bxt_sn",   self.sld_sn.value())
+        s.setValue("rcastro/bxt_ml_version", self.cmb_model.currentIndex())
 
     def load_settings(self, s: QSettings):
         self.chk_correct_only.setChecked(
@@ -306,6 +331,7 @@ class _BXTPanel(QWidget):
         self.chk_auto_nsr.setChecked( bool( s.value("rcastro/bxt_auto", True, type=bool)))
         self.sld_nsr.setValue(         int( s.value("rcastro/bxt_nsr",  0)))
         self.sld_sn.setValue(          int( s.value("rcastro/bxt_sn",   0)))
+        self.cmb_model.setCurrentIndex(int(s.value("rcastro/bxt_ml_version", 0)))
         # Sync enabled state after load
         self._on_correct_only_toggled(self.chk_correct_only.isChecked())
 
@@ -389,7 +415,26 @@ class _NXTPanel(QWidget):
             mode_h.addWidget(rb)
         mode_h.addStretch(1)
         outer.addWidget(mode_box)
-
+        # ── Model version ─────────────────────────────────────────────────────
+        model_row = QWidget()
+        model_h   = QHBoxLayout(model_row)
+        model_h.setContentsMargins(0, 0, 0, 0)
+        self.lbl_model = QLabel("Model:")
+        self.cmb_model = QComboBox()
+        self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
+        self.cmb_model.setToolTip(
+            "NXT ML model version.\n"
+            "Latest — current default model (recommended).\n"
+            "AI2 (legacy) — older model, passes --ml-version 2.\n"
+            "Requires RC-Astro CLI 0.9.8 or later.")
+        model_h.addWidget(self.lbl_model)
+        model_h.addWidget(self.cmb_model)
+        model_h.addStretch(1)
+        outer.addWidget(model_row)
+        self._model_row     = model_row
+        self._ml_supported   = False
+        self.cmb_model.currentIndexChanged.connect(self._on_model_changed)
+        self.set_ml_version_supported(False)
         # ── Simple ────────────────────────────────────────────────────────────
         self._simple_box = QGroupBox("Simple")
         simple_form = QFormLayout(self._simple_box)
@@ -451,6 +496,19 @@ class _NXTPanel(QWidget):
         self.rb_freq.toggled.connect(self._update_mode)
         self._update_mode()
 
+    def _on_model_changed(self, idx: int):
+        is_legacy = (idx == 1)
+        self.rb_ic.setEnabled(not is_legacy)
+        self.rb_freq.setEnabled(not is_legacy)
+        if is_legacy:
+            self.rb_simple.setChecked(True)
+
+    def set_ml_version_supported(self, supported: bool):
+        self._ml_supported = supported
+        self._model_row.setVisible(supported)
+        if not supported:
+            self.cmb_model.setCurrentIndex(0)
+
     def _update_mode(self):
         simple = self.rb_simple.isChecked()
         ic     = self.rb_ic.isChecked()
@@ -498,6 +556,9 @@ class _NXTPanel(QWidget):
         if abs(it - 2.0) > 0.05:
             args += ["--iterations", f"{it:.1f}"]
 
+        if self._ml_supported and self.cmb_model.currentIndex() == 1:
+            args += ["--ml-version", "2"]
+
         return args
 
     def save_settings(self, s: QSettings):
@@ -512,6 +573,7 @@ class _NXTPanel(QWidget):
         ]:
             s.setValue(key, getattr(self, attr).value())
         s.setValue("rcastro/nxt_iter", self.sp_iter.value())
+        s.setValue("rcastro/nxt_ml_version", self.cmb_model.currentIndex())
 
     def load_settings(self, s: QSettings):
         mode = str(s.value("rcastro/nxt_mode", "simple"))
@@ -531,6 +593,7 @@ class _NXTPanel(QWidget):
         ]:
             getattr(self, attr).setValue(int(s.value(key, default)))
         self.sp_iter.setValue(float(s.value("rcastro/nxt_iter", 2.0)))
+        self.cmb_model.setCurrentIndex(int(s.value("rcastro/nxt_ml_version", 0)))
         self._update_mode()
 
 # ---------------------------------------------------------------------------
@@ -628,7 +691,14 @@ class _LicensePanel(QWidget):
     def _check_status(self):
         self._run_cli(["--license"], "Checking license status…")
 
-
+def _parse_cli_version(text: str):
+    """Extract a (major, minor, patch) tuple from rc-astro --help output."""
+    m = re.search(r'version\s+(\d+)\.(\d+)\.(\d+)', text, re.IGNORECASE)
+    if not m:
+        m = re.search(r'\b(\d+)\.(\d+)\.(\d+)\b', text)
+    if not m:
+        return None
+    return tuple(int(g) for g in m.groups())
 # ---------------------------------------------------------------------------
 # Main RC-Astro dialog
 # ---------------------------------------------------------------------------
@@ -884,6 +954,13 @@ class RCAstroDialog(QDialog):
             # Update device-flag detection while we have the help output
             s = QSettings()
             s.setValue("rcastro/uses_device_flag", bool("--device" in out))
+
+            ver = _parse_cli_version(out)
+            supports_ml2 = bool(ver and ver >= (0, 9, 8))
+            s.setValue("rcastro/supports_ml_version", supports_ml2)
+            self.bxt_panel.set_ml_version_supported(supports_ml2)
+            self.nxt_panel.set_ml_version_supported(supports_ml2)
+
             for line in out.splitlines():
                 line = line.strip()
                 if line.lower().startswith("version"):
@@ -923,6 +1000,9 @@ class RCAstroDialog(QDialog):
         self.edit_exe.setText(exe)
         if exe and os.path.exists(exe):
             self._probe_version(exe)
+        else:
+            self.bxt_panel.set_ml_version_supported(False)
+            self.nxt_panel.set_ml_version_supported(False)
         # Migrate old engine values from pre-0.9.7 (--engine → --device)
         raw_engine = str(s.value("rcastro/engine", "auto"))
         # Migrate old provider names from pre-0.9.7
@@ -1240,7 +1320,8 @@ class RCAstroPresetDialog(QDialog):
         self._bxt = _BXTPanel(); self._bxt.load_settings(QSettings())
         self._sxt = _SXTPanel(); self._sxt.load_settings(QSettings())
         self._nxt = _NXTPanel(); self._nxt.load_settings(QSettings())
-
+        self._bxt.set_ml_version_supported(True)
+        self._nxt.set_ml_version_supported(True)
         # Apply initial preset values to the panels
         if p.get("product") == "bxt":
             _apply_bxt_preset(self._bxt, p)
@@ -1293,6 +1374,7 @@ class RCAstroPresetDialog(QDialog):
             out["auto_nsr"]            = self._bxt.chk_auto_nsr.isChecked()
             out["nonstellar_radius"]   = self._bxt.sld_nsr.value() / 10.0
             out["sharpen_nonstellar"]  = self._bxt.sld_sn.value()  / 100.0
+            out["ml_version"] = 2 if self._bxt.cmb_model.currentIndex() == 1 else None
         elif product == "sxt":
             out["stars"]    = self._sxt.chk_stars.isChecked()
             out["unscreen"] = self._sxt.chk_unscreen.isChecked()
@@ -1302,6 +1384,7 @@ class RCAstroPresetDialog(QDialog):
             out["denoise_color"] = self._nxt.sld_dc.value()  / 100.0
             out["freq_scale"]    = self._nxt.sld_fs.value()  / 10.0
             out["iterations"]    = float(self._nxt.sp_iter.value())
+            out["ml_version"] = 2 if self._nxt.cmb_model.currentIndex() == 1 else None
         return out
 
 
@@ -1318,7 +1401,8 @@ def _apply_bxt_preset(panel: _BXTPanel, p: dict):
         panel.sld_nsr.setValue(int(float(p["nonstellar_radius"]) * 10))
     if "sharpen_nonstellar" in p:
         panel.sld_sn.setValue(int(float(p["sharpen_nonstellar"]) * 100))
-
+    if "ml_version" in p:
+        panel.cmb_model.setCurrentIndex(1 if p["ml_version"] == 2 else 0)
 
 def _apply_sxt_preset(panel: _SXTPanel, p: dict):
     if "stars" in p:
@@ -1338,6 +1422,8 @@ def _apply_nxt_preset(panel: _NXTPanel, p: dict):
         panel.sld_fs.setValue(int(float(p["freq_scale"]) * 10))
     if "iterations" in p:
         panel.sp_iter.setValue(float(p["iterations"]))
+    if "ml_version" in p:
+        panel.cmb_model.setCurrentIndex(1 if p["ml_version"] == 2 else 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1396,12 +1482,14 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
         tmp_s = QSettings()
         if product == "bxt":
             panel = _BXTPanel(); _apply_bxt_preset(panel, p)
+            panel.set_ml_version_supported(True)
             args = panel.build_args()
         elif product == "sxt":
             panel = _SXTPanel(); _apply_sxt_preset(panel, p)
             args = panel.build_args()
         elif product == "nxt":
             panel = _NXTPanel(); _apply_nxt_preset(panel, p)
+            panel.set_ml_version_supported(True)
             args = panel.build_args()
 
     # Prepare image

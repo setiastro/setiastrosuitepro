@@ -30,10 +30,9 @@ from setiastro.saspro.luminancerecombine import LUMA_PROFILES
 class _StretchWorker(QObject):
     finished = pyqtSignal(object, str)  # (out_array_or_None, error_message_or_empty)
 
-    def __init__(self, dialog_ref, fast: bool = False):
+    def __init__(self, dialog_ref):
         super().__init__()
         self._dlg = dialog_ref
-        self._fast = bool(fast)
 
     @pyqtSlot()
     def run(self):
@@ -41,10 +40,7 @@ class _StretchWorker(QObject):
             if self._dlg is None or sip.isdeleted(self._dlg):
                 self.finished.emit(None, "Dialog was closed.")
                 return
-            if self._fast:
-                out = self._dlg._run_stretch_fast()
-            else:
-                out = self._dlg._run_stretch()
+            out = self._dlg._run_stretch()
             self.finished.emit(out, "")
         except Exception as e:
             self.finished.emit(None, str(e))
@@ -117,10 +113,7 @@ class StatisticalStretchDialog(QDialog):
         self._job_running = False
         self._job_mode = ""
 
-        # Fast-preview state (separate thread slot)
-        self._fast_thread = None
-        self._fast_worker = None
-        self._fast_running = False
+        # (fast preview removed — single debounced full-res pipeline only)
 
         if hasattr(self._main, "currentDocumentChanged"):
             try:
@@ -369,10 +362,7 @@ class StatisticalStretchDialog(QDialog):
         br.addWidget(self.pbar_busy, 1)
         self.busy_row.setVisible(False)
 
-        # ── Fast-preview indicator (small, non-intrusive) ─────────────────
-        self.lbl_fast_indicator = QLabel("")
-        self.lbl_fast_indicator.setStyleSheet("color: rgba(180,180,80,0.8); font-size: 10px;")
-        self.lbl_fast_indicator.setVisible(False)
+
 
         # ──────────────────────────────────────────────────────────────────
         # Layout
@@ -438,7 +428,6 @@ class StatisticalStretchDialog(QDialog):
         clear_row.addStretch(1)
         slots_box.addLayout(clear_row)
         left.addLayout(slots_box)        
-        left.addWidget(self.lbl_fast_indicator)
         left.addWidget(self.busy_row)
 
         left.addStretch(1)
@@ -537,11 +526,6 @@ class StatisticalStretchDialog(QDialog):
         self.btn_clipstats.clicked.connect(self._do_clip_stats)
 
         # ── Auto-refresh timers ───────────────────────────────────────────
-        # Fast (downsampled) preview — fires 150 ms after last change
-        self._fast_timer = QTimer(self)
-        self._fast_timer.setSingleShot(True)
-        self._fast_timer.setInterval(150)
-        self._fast_timer.timeout.connect(self._do_fast_preview)
 
         # Full-res preview — fires 800 ms after last change
         self._full_timer = QTimer(self)
@@ -611,7 +595,6 @@ class StatisticalStretchDialog(QDialog):
         self._populate_initial_preview()
         # If auto-refresh was saved as enabled, kick off an immediate preview
         if self.chk_auto_refresh.isChecked():
-            self._fast_timer.start()
             self._full_timer.start()
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -620,7 +603,6 @@ class StatisticalStretchDialog(QDialog):
     def _on_auto_refresh_toggled(self, on: bool):
         """When auto-refresh is enabled, immediately kick off a preview."""
         if on:
-            self._fast_timer.start()
             self._full_timer.start()
 
     # ── Parameter slots ───────────────────────────────────────────────────────
@@ -756,7 +738,6 @@ class StatisticalStretchDialog(QDialog):
 
         # Always preview the recalled parameters immediately, regardless of
         # auto-refresh state, so the user can A/B compare slots right away.
-        self._fast_timer.start()
         self._full_timer.start()
 
     def _save_param_slots(self):
@@ -796,52 +777,7 @@ class StatisticalStretchDialog(QDialog):
             return
         if getattr(self, "_job_running", False):
             return
-        # Restart both timers (debounce)
-        self._fast_timer.start()
         self._full_timer.start()
-
-    def _do_fast_preview(self):
-        """Fire a fast downsampled preview (auto-refresh only)."""
-        if getattr(self, "_job_running", False):
-            return
-        if getattr(self, "_fast_running", False):
-            return
-        if sip.isdeleted(self):
-            return
-
-        self._fast_running = True
-        try:
-            self.lbl_fast_indicator.setText(self.tr("⚡ fast preview…"))
-            self.lbl_fast_indicator.setVisible(True)
-        except Exception:
-            pass
-
-        self._fast_thread = QThread(self._main)
-        self._fast_worker = _StretchWorker(self, fast=True)
-        self._fast_worker.moveToThread(self._fast_thread)
-
-        self._fast_thread.started.connect(self._fast_worker.run)
-        self._fast_worker.finished.connect(self._on_fast_preview_done)
-        self._fast_worker.finished.connect(self._fast_thread.quit)
-        self._fast_worker.finished.connect(self._fast_worker.deleteLater)
-        self._fast_thread.finished.connect(self._fast_thread.deleteLater)
-
-        self._fast_thread.start()
-
-    @pyqtSlot(object, str)
-    def _on_fast_preview_done(self, out, err: str):
-        self._fast_running = False
-        try:
-            self.lbl_fast_indicator.setVisible(False)
-        except Exception:
-            pass
-        if sip.isdeleted(self):
-            return
-        if err or out is None:
-            return  # silently skip fast-preview errors
-        # Only show fast preview if a full-res job isn't running
-        if not getattr(self, "_job_running", False):
-            self._set_preview_pixmap(out)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -1051,30 +987,6 @@ class StatisticalStretchDialog(QDialog):
                 f = f / mx
             return f
 
-    def _get_source_float_fast(self) -> np.ndarray | None:
-        """Return a downsampled version of the source image for fast preview."""
-        src = self._get_source_float()
-        if src is None:
-            return None
-
-        max_dim = self._FAST_PREVIEW_MAX_DIM
-        h, w = src.shape[:2]
-        longest = max(h, w)
-        if longest <= max_dim:
-            return src  # already small enough
-
-        scale = max_dim / float(longest)
-        new_h = max(1, int(round(h * scale)))
-        new_w = max(1, int(round(w * scale)))
-
-        # Simple strided downsample (fast, no dependency on cv2)
-        sy = max(1, h // new_h)
-        sx = max(1, w // new_w)
-        if src.ndim == 2:
-            return src[::sy, ::sx].astype(np.float32, copy=False)
-        else:
-            return src[::sy, ::sx, :].astype(np.float32, copy=False)
-
     # ── Stretch ───────────────────────────────────────────────────────────────
 
     def _stretch_params(self) -> dict:
@@ -1255,8 +1167,7 @@ class StatisticalStretchDialog(QDialog):
         if getattr(self, "_job_running", False):
             return
 
-        # Stop auto-refresh timers while full job runs
-        self._fast_timer.stop()
+        # Stop auto-refresh timer while full job runs
         self._full_timer.stop()
 
         self._job_running = True
@@ -1269,7 +1180,7 @@ class StatisticalStretchDialog(QDialog):
         )
 
         self._thread = QThread(self._main)
-        self._worker = _StretchWorker(self, fast=False)
+        self._worker = _StretchWorker(self)
         self._worker.moveToThread(self._thread)
 
         self._thread.started.connect(self._worker.run)
@@ -1557,7 +1468,7 @@ class StatisticalStretchDialog(QDialog):
             return
 
         # Stop all timers
-        for t in ("_fast_timer", "_full_timer", "_clip_timer"):
+        for t in ("_full_timer", "_clip_timer"):
             try:
                 timer = getattr(self, t, None)
                 if timer is not None:
