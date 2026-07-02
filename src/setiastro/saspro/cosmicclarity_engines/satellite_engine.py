@@ -78,7 +78,7 @@ def _build_torch_models(torch):
 
     try:
         from torchvision import models
-        from torchvision.models import ResNet18_Weights, MobileNet_V2_Weights
+        #from torchvision.models import ResNet18_Weights, MobileNet_V2_Weights
         from torchvision import transforms
     except Exception as e:
         raise RuntimeError(f"torchvision is required for Satellite engine torch backend: {e}")
@@ -217,23 +217,7 @@ def _build_torch_models(torch):
                 nn.BatchNorm2d(64),
                 nn.ReLU()
             )
-            try:
-                self.features = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
-            except Exception as e:
-                import os
-                cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "torch", "hub", "checkpoints")
-                filename = "resnet18-f37072fd.pth"
-                url = "https://download.pytorch.org/models/resnet18-f37072fd.pth"
-                raise RuntimeError(
-                    f"Failed to download ResNet18 pretrained weights (SSL certificate error on macOS).\n\n"
-                    f"Please manually download the file and place it in the correct location:\n\n"
-                    f"  Download URL : {url}\n"
-                    f"  Save to      : {os.path.join(cache_dir, filename)}\n\n"
-                    f"On macOS you can run this in Terminal:\n"
-                    f"  mkdir -p \"{cache_dir}\"\n"
-                    f"  curl -L \"{url}\" -o \"{os.path.join(cache_dir, filename)}\"\n\n"
-                    f"Original error: {e}"
-                ) from e
+            self.features = models.resnet18(weights=None)
             self.features.conv1 = nn.Conv2d(64, 64, kernel_size=7, stride=2, padding=3, bias=False)
             self.features.fc = nn.Linear(self.features.fc.in_features, 1)
 
@@ -255,23 +239,7 @@ def _build_torch_models(torch):
                 nn.BatchNorm2d(64),
                 nn.ReLU()
             )
-            try:
-                self.mobilenet = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
-            except Exception as e:
-                import os
-                cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "torch", "hub", "checkpoints")
-                filename = "mobilenet_v2-b0353104.pth"
-                url = "https://download.pytorch.org/models/mobilenet_v2-b0353104.pth"
-                raise RuntimeError(
-                    f"Failed to download MobileNetV2 pretrained weights (SSL certificate error on macOS).\n\n"
-                    f"Please manually download the file and place it in the correct location:\n\n"
-                    f"  Download URL : {url}\n"
-                    f"  Save to      : {os.path.join(cache_dir, filename)}\n\n"
-                    f"On macOS you can run this in Terminal:\n"
-                    f"  mkdir -p \"{cache_dir}\"\n"
-                    f"  curl -L \"{url}\" -o \"{os.path.join(cache_dir, filename)}\"\n\n"
-                    f"Original error: {e}"
-                ) from e
+            self.mobilenet = models.mobilenet_v2(weights=None)
             self.mobilenet.features[0][0] = nn.Conv2d(
                 64, 32, kernel_size=3, stride=2, padding=1, bias=False
             )
@@ -400,6 +368,15 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
     if key in _SAT_CACHE:
         return _SAT_CACHE[key]
 
+    # Verify model files exist before attempting to load
+    missing = []
+    for label, path in [("detect1", p_det1), ("detect2", p_det2), ("remove", p_rem)]:
+        if not path or not os.path.exists(str(path)):
+            missing.append(f"{label}: {path!r}")
+    if missing:
+        raise FileNotFoundError(
+            f"Satellite model file(s) not found:\n" + "\n".join(missing)
+        )
     # ---------------- DirectML via ONNX Runtime ----------------
     if backend == "ort_dml":
         if ort is None:
