@@ -2250,9 +2250,14 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         # Load/cached models ONCE
         # ----------------------------
         try:
+            import traceback as _tb
             models = get_satellite_models(use_gpu=use_gpu, status_cb=lambda s: None)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load Satellite models:\n{e}")
+            detail = _tb.format_exc()
+            QMessageBox.critical(
+                self, "Error",
+                f"Failed to load Satellite models:\n{e}\n\n{detail}"
+            )
             return
 
         # ----------------------------
@@ -2527,7 +2532,12 @@ class SatelliteEngineThread(QThread):
             )
 
             self.log_signal.emit("Loading Satellite models...")
-            models = get_satellite_models(use_gpu=self.use_gpu, status_cb=lambda s: None)
+            try:
+                models = get_satellite_models(use_gpu=self.use_gpu, status_cb=self.log_signal.emit)
+            except Exception as e:
+                import traceback as _tb
+                self.log_signal.emit(f"Failed to load Satellite models: {e}\n{_tb.format_exc()}")
+                return
             self.log_signal.emit("Models loaded.")
 
             os.makedirs(self.output_dir, exist_ok=True)
