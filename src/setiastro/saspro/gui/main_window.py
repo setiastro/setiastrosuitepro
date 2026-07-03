@@ -183,7 +183,7 @@ from setiastro.saspro.resources import (
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
-    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path,
+    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,rcastro_path,
@@ -4601,6 +4601,10 @@ class AstroSuiteProMainWindow(
             pass
 
         dlg.show()  
+
+    def _open_slap_toolkit(self):
+        from setiastro.saspro.slap_toolkit import show_slap_toolkit
+        show_slap_toolkit(self)
 
     def _open_contsub_tool(self):
         from setiastro.saspro.continuum_subtract import ContinuumSubtractTab

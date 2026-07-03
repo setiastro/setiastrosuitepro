@@ -687,7 +687,15 @@ class UpdateMixin:
         Notify the user once if the Aberration Correction model is now available
         on GitHub but not yet installed on disk.
         """
-        from setiastro.saspro.model_manager import correct_model_installed, check_correct_model_available
+        from setiastro.saspro.model_manager import (
+            correct_model_installed,
+            correct_v2_model_installed,
+            check_correct_model_available,
+        )
+
+        # If V2 is installed, it supersedes V1 — no need to nag for the older model
+        if correct_v2_model_installed():
+            return
 
         # Already installed — nothing to say
         installed = correct_model_installed()
@@ -697,11 +705,9 @@ class UpdateMixin:
 
         # Only nag once per session
         if getattr(self, "_correct_model_notified", False):
-
             return
 
         # HEAD probe — skip silently if network is unavailable
-
         available = check_correct_model_available()
 
         if not available:

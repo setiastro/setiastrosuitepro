@@ -34,7 +34,7 @@ from setiastro.saspro.resources import (
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
-    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path,
+    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,rcastro_path,sssc_path,
     selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
@@ -279,6 +279,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_image_combine)
         tb_tl.addAction(self.act_magnitude)
         tb_tl.addAction(self.act_snr)
+        tb_tl.addAction(self.act_slap_toolkit)
 
         self._restore_toolbar_order(tb_tl, "Toolbar/Tools")
         try:
@@ -1080,7 +1081,10 @@ class ToolbarMixin:
         self.act_multiscale_decomp.setIconVisibleInMenu(True)
         self.act_multiscale_decomp.triggered.connect(self._open_multiscale_decomp)
 
-
+        self.act_slap_toolkit = QAction(QIcon(slap_path), self.tr("SLAP Toolkit..."), self)
+        self.act_slap_toolkit.setStatusTip(self.tr("Solar Lunar and Planetary (SLAP) Toolkit"))
+        self.act_slap_toolkit.setIconVisibleInMenu(True)
+        self.act_slap_toolkit.triggered.connect(self._open_slap_toolkit)
 
 
         # --- Extract Luminance main action ---
@@ -1666,6 +1670,7 @@ class ToolbarMixin:
         reg("snr_tool", self.act_snr)
         reg("star_align", self.act_star_align)
         reg("star_register", self.act_star_register)
+        reg("slap", self.act_slap_toolkit)
         reg("mosaic_master", self.act_mosaic_master)
         reg("image_peeker", self.act_image_peeker)
         reg("live_stacking", self.act_live_stacking)

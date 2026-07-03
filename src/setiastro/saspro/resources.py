@@ -283,6 +283,7 @@ class Icons:
     HUBBLE = property(lambda self: _resource_path('hubble.png'))
     COLLAGE = property(lambda self: _resource_path('collage.png'))
     ANNOTATED = property(lambda self: _resource_path('annotated.png'))
+    SLAP = property(lambda self: _resource_path('slap.png'))
     
     # WIMS/WIMI
     WIMS = property(lambda self: _resource_path('wims.png'))
@@ -474,6 +475,7 @@ _LEGACY_ICON_MAP = {
     'nbtorgb_path': 'nbtorgb.png',
     'freqsep_path': 'freqsep.png',
     'multiscale_decomp_path': 'multiscale_decomp.png',
+    'slap_path': 'slap.png',
     'contsub_path': 'contsub.png',
     'nbi_path': 'contadd.png',
     'halo_path': 'halo.png',
