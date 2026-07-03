@@ -1295,7 +1295,13 @@ class SyQonStarlessDialog(QDialog):
     
         if standalone:
             exe_path = self.edt_cli_path.text().strip()
-            if exe_path and os.path.isfile(exe_path):
+            # On Mac, .app bundles are directories not files -- accept
+            # both files (Windows .exe / Linux binary) and directories
+            # (.app bundles on macOS).
+            exe_exists = bool(exe_path) and (
+                os.path.isfile(exe_path) or os.path.isdir(exe_path)
+            )
+            if exe_exists:
                 self.lbl.setText("Ready (Starless Standalone CLI selected).")
                 self.btn_process.setEnabled(True)
             else:
@@ -1525,6 +1531,10 @@ class SyQonStarlessDialog(QDialog):
         # --- Standalone CLI (SyQonStarless.exe / .app -- real C++ build) ---
         if engine_mode == "standalone_cli":
             exe_path = self.edt_cli_path.text().strip()
+            # Resolve macOS .app bundles to the actual binary inside them
+            if exe_path.endswith(".app") and os.path.isdir(exe_path):
+                app_name = os.path.splitext(os.path.basename(exe_path))[0]
+                exe_path = os.path.join(exe_path, "Contents", "MacOS", app_name)
             if not exe_path or not os.path.isfile(exe_path):
                 self._set_busy(False)
                 QMessageBox.warning(self, "SyQon", "Please select a valid Starless Standalone executable.")
