@@ -404,12 +404,27 @@ _MODE_TIPS: Dict[str, Dict[str, str]] = {
 
 class _SectionCard(QGroupBox):
     """
-    Collapsible section card for the SLaP panel.
-    Header has a collapse toggle; body is any widget.
+    Collapsible section card with colored left accent border and icon.
+    accent_color: CSS hex string e.g. "#4a9eff"
+    icon: emoji or text glyph shown in the header
     """
-    def __init__(self, title: str, parent=None):
+    def __init__(self, title: str, parent=None, accent_color: str = "#4a9eff", icon: str = ""):
         super().__init__(parent)
         self.setFlat(True)
+        self._accent = accent_color
+
+        # Outer frame provides the colored left border via stylesheet
+        self.setObjectName("SLaPCard")
+        self.setStyleSheet(f"""
+            QGroupBox#SLaPCard {{
+                border: none;
+                border-left: 3px solid {accent_color};
+                border-radius: 0px;
+                margin-top: 0px;
+                background: rgba(255,255,255,6);
+                border-radius: 4px;
+            }}
+        """)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -418,26 +433,41 @@ class _SectionCard(QGroupBox):
         # ── Header ──
         header = QWidget(self)
         header.setObjectName("SLaPSectionHeader")
-        header.setStyleSheet("""
-            #SLaPSectionHeader {
-                background: rgba(255,255,255,18);
-                border-radius: 4px;
-                padding: 2px;
-            }
+        header.setStyleSheet(f"""
+            #SLaPSectionHeader {{
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {accent_color}40,
+                    stop:0.15 {accent_color}18,
+                    stop:1 rgba(0,0,0,0)
+                );
+                border-radius: 3px;
+                padding: 1px 0px;
+            }}
         """)
         h_lay = QHBoxLayout(header)
-        h_lay.setContentsMargins(6, 4, 6, 4)
+        h_lay.setContentsMargins(8, 5, 8, 5)
+        h_lay.setSpacing(6)
 
         self._toggle = QToolButton(header)
         self._toggle.setArrowType(Qt.ArrowType.DownArrow)
         self._toggle.setCheckable(True)
         self._toggle.setChecked(True)
-        self._toggle.setFixedSize(18, 18)
-        self._toggle.setStyleSheet("border: none; background: transparent;")
+        self._toggle.setFixedSize(16, 16)
+        self._toggle.setStyleSheet("border: none; background: transparent; color: #aaa;")
+
+        # Icon label
+        if icon:
+            icon_lbl = QLabel(icon, header)
+            icon_lbl.setStyleSheet("font-size: 14px; background: transparent;")
+            icon_lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+            h_lay.addWidget(self._toggle)
+            h_lay.addWidget(icon_lbl)
+        else:
+            h_lay.addWidget(self._toggle)
 
         self._title_lbl = QLabel(f"<b>{title}</b>", header)
-
-        h_lay.addWidget(self._toggle)
+        self._title_lbl.setStyleSheet(f"color: #e8e8e8; font-size: 12px; background: transparent;")
         h_lay.addWidget(self._title_lbl)
         h_lay.addStretch(1)
 
@@ -445,14 +475,26 @@ class _SectionCard(QGroupBox):
 
         # ── Body ──
         self._body = QWidget(self)
+        self._body.setObjectName("SLaPCardBody")
+        self._body.setStyleSheet("""
+            #SLaPCardBody {
+                background: transparent;
+            }
+        """)
         body_lay = QVBoxLayout(self._body)
-        body_lay.setContentsMargins(8, 6, 8, 8)
-        body_lay.setSpacing(6)
+        body_lay.setContentsMargins(10, 6, 8, 8)
+        body_lay.setSpacing(5)
         self._body_lay = body_lay
 
         outer.addWidget(self._body)
 
-        self._toggle.toggled.connect(self._body.setVisible)
+        self._toggle.toggled.connect(self._on_toggled)
+
+    def _on_toggled(self, checked: bool):
+        self._body.setVisible(checked)
+        self._toggle.setArrowType(
+            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
+        )
 
     def body_layout(self) -> QVBoxLayout:
         return self._body_lay
@@ -471,21 +513,45 @@ class _SectionCard(QGroupBox):
 
 class _LaunchButton(QPushButton):
     """
-    Styled launch button for a SLaP tool section.
-    Shows tool name + a brief one-line description beneath.
+    Styled launch button with name + subtitle, hover highlight.
+    accent_color: tints the left border and hover background.
     """
-    def __init__(self, label: str, tip: str, parent=None):
+    def __init__(self, label: str, tip: str, parent=None, accent_color: str = "#4a9eff"):
         super().__init__(parent)
         self.setToolTip(tip)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.setStyleSheet(f"""
+            QPushButton {{
+                background: rgba(255,255,255,8);
+                border: 1px solid rgba(255,255,255,12);
+                border-left: 2px solid {accent_color}80;
+                border-radius: 4px;
+                padding: 0px;
+                text-align: left;
+            }}
+            QPushButton:hover {{
+                background: rgba(255,255,255,16);
+                border: 1px solid rgba(255,255,255,22);
+                border-left: 2px solid {accent_color};
+            }}
+            QPushButton:pressed {{
+                background: {accent_color}30;
+                border-left: 3px solid {accent_color};
+            }}
+        """)
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(8, 6, 8, 6)
+        lay.setContentsMargins(10, 6, 8, 6)
         lay.setSpacing(1)
 
         lbl_name = QLabel(f"<b>{label}</b>", self)
+        lbl_name.setStyleSheet("color: #e0e0e0; font-size: 11px; background: transparent;")
         lbl_name.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        lbl_tip = QLabel(f"<span style='font-size:10px;color:#aaa;'>{tip}</span>", self)
+
+        lbl_tip = QLabel(f"<span style='color:#888;'>{tip}</span>", self)
+        lbl_tip.setStyleSheet("font-size: 9px; background: transparent;")
         lbl_tip.setWordWrap(True)
         lbl_tip.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
@@ -531,36 +597,109 @@ class SLaPToolkitDialog(QDialog):
 
     def _build_ui(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # ── Mode selector ────────────────────────────────────
+        # ── Panel header ─────────────────────────────────────
+        header_widget = QWidget(self)
+        header_widget.setObjectName("SLaPHeader")
+        header_widget.setStyleSheet("""
+            #SLaPHeader {
+                background: qlineargradient(
+                    x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #1a2a3a,
+                    stop:1 #0d1a26
+                );
+                border-bottom: 1px solid #2a4a6a;
+            }
+        """)
+        header_lay = QVBoxLayout(header_widget)
+        header_lay.setContentsMargins(12, 10, 12, 10)
+        header_lay.setSpacing(4)
+
+        title_row = QHBoxLayout()
+        lbl_sun = QLabel("☀️", header_widget)
+        lbl_sun.setStyleSheet("font-size: 22px; background: transparent;")
+        lbl_title = QLabel("<b>SLaP Toolkit</b>", header_widget)
+        lbl_title.setStyleSheet(
+            "font-size: 16px; color: #e8d060; letter-spacing: 1px; background: transparent;"
+        )
+        lbl_subtitle = QLabel("Solar · Lunar · Planetary", header_widget)
+        lbl_subtitle.setStyleSheet("font-size: 10px; color: #7aaacc; background: transparent;")
+        title_row.addWidget(lbl_sun)
+        title_row.addSpacing(6)
+        title_row.addWidget(lbl_title)
+        title_row.addSpacing(8)
+        title_row.addWidget(lbl_subtitle)
+        title_row.addStretch(1)
+        header_lay.addLayout(title_row)
+
+        # Mode row inside header
         mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("<b>Mode:</b>"))
-        self.combo_mode = QComboBox(self)
+        lbl_mode = QLabel("Mode:", header_widget)
+        lbl_mode.setStyleSheet("color: #aac; font-size: 11px; background: transparent;")
+        self.combo_mode = QComboBox(header_widget)
         self.combo_mode.addItems(SLAP_MODES)
         self.combo_mode.setToolTip(
             "Select the type of solar-system target you are processing. "
             "Tips and recommended settings will update automatically."
         )
+        self.combo_mode.setStyleSheet("""
+            QComboBox {
+                background: rgba(255,255,255,12);
+                border: 1px solid rgba(100,160,220,50);
+                border-radius: 4px;
+                color: #e0e8f0;
+                padding: 3px 8px;
+                font-size: 11px;
+            }
+            QComboBox:hover {
+                border: 1px solid rgba(100,160,220,120);
+                background: rgba(255,255,255,18);
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 20px;
+            }
+        """)
         self.combo_mode.currentIndexChanged.connect(self._on_mode_changed)
-        mode_row.addWidget(self.combo_mode, 1)
 
-        self.btn_open_workflow = QPushButton("Open in Workflow Assistant", self)
+        self.btn_open_workflow = QPushButton("📋 Workflow", header_widget)
         self.btn_open_workflow.setToolTip(
             "Load the matching canned workflow for this mode into the Workflow Assistant."
         )
+        self.btn_open_workflow.setStyleSheet("""
+            QPushButton {
+                background: rgba(80,140,200,40);
+                border: 1px solid rgba(80,140,200,80);
+                border-radius: 4px;
+                color: #9bc;
+                padding: 3px 10px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background: rgba(80,140,200,80);
+                color: #cde;
+                border: 1px solid rgba(80,140,200,140);
+            }
+        """)
         self.btn_open_workflow.clicked.connect(self._open_workflow)
-        mode_row.addWidget(self.btn_open_workflow)
 
-        root.addLayout(mode_row)
+        mode_row.addWidget(lbl_mode)
+        mode_row.addWidget(self.combo_mode, 1)
+        mode_row.addSpacing(6)
+        mode_row.addWidget(self.btn_open_workflow)
+        header_lay.addLayout(mode_row)
+
+        root.addWidget(header_widget)
 
         # ── Mode tip banner ──────────────────────────────────
         self.lbl_mode_tip = QLabel("", self)
         self.lbl_mode_tip.setWordWrap(True)
         self.lbl_mode_tip.setStyleSheet(
-            "background: rgba(80,160,255,30); border-radius: 4px; "
-            "padding: 6px 8px; font-size: 11px; color: #cde;"
+            "background: rgba(80,140,200,20); "
+            "border-bottom: 1px solid rgba(80,140,200,30); "
+            "padding: 5px 12px; font-size: 10px; color: #9ab;"
         )
         root.addWidget(self.lbl_mode_tip)
 
@@ -568,43 +707,64 @@ class SLaPToolkitDialog(QDialog):
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
         scroll_widget = QWidget(self)
+        scroll_widget.setStyleSheet("background: transparent;")
         self._scroll_lay = QVBoxLayout(scroll_widget)
-        self._scroll_lay.setContentsMargins(0, 0, 0, 0)
+        self._scroll_lay.setContentsMargins(8, 8, 8, 4)
         self._scroll_lay.setSpacing(6)
         scroll.setWidget(scroll_widget)
         root.addWidget(scroll, 1)
 
-        # Build all sections (they store references so we can show/hide tips)
+        # Build all sections
         self._build_sections()
         self._scroll_lay.addStretch(1)
 
         # ── Bottom bar ───────────────────────────────────────
-        bot = QHBoxLayout()
+        bot_widget = QWidget(self)
+        bot_widget.setStyleSheet(
+            "background: rgba(0,0,0,30); border-top: 1px solid rgba(255,255,255,10);"
+        )
+        bot = QHBoxLayout(bot_widget)
+        bot.setContentsMargins(8, 5, 8, 5)
         self.lbl_status = QLabel("Ready.", self)
-        self.lbl_status.setStyleSheet("color: #888; font-size: 10px;")
+        self.lbl_status.setStyleSheet("color: #666; font-size: 10px;")
 
         btn_close = QPushButton("Close", self)
+        btn_close.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,8);
+                border: 1px solid rgba(255,255,255,15);
+                border-radius: 4px;
+                color: #aaa;
+                padding: 3px 14px;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,15);
+                color: #ddd;
+            }
+        """)
         btn_close.clicked.connect(self.close)
 
         bot.addWidget(self.lbl_status, 1)
         bot.addWidget(btn_close)
-        root.addLayout(bot)
+        root.addWidget(bot_widget)
 
     def _build_sections(self):
         """Build all collapsible tool sections once; tips update on mode change."""
 
         # ── 1. Pre-processing ────────────────────────────────
-        sec_pre = _SectionCard("1 · Pre-processing", self)
+        sec_pre = _SectionCard("1 · Pre-processing", self, accent_color="#e8a020", icon="✂️")
         self._tip_pre = QLabel("", self)
         self._tip_pre.setWordWrap(True)
         self._tip_pre.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
         sec_pre.add_widget(self._tip_pre)
 
         row_pre = QHBoxLayout()
-        btn_crop = _LaunchButton("Crop", "Remove stacking edges and border artefacts.")
+        btn_crop = _LaunchButton("Crop", "Remove stacking edges and border artefacts.", accent_color="#e8a020")
         btn_crop.clicked.connect(lambda: self._trigger("crop"))
-        btn_pedestal = _LaunchButton("Pedestal", "Remove the minimum black pedestal value.")
+        btn_pedestal = _LaunchButton("Pedestal", "Remove the minimum black pedestal value.", accent_color="#e8a020")
         btn_pedestal.clicked.connect(lambda: self._trigger("pedestal"))
         row_pre.addWidget(btn_crop)
         row_pre.addWidget(btn_pedestal)
@@ -612,8 +772,75 @@ class SLaPToolkitDialog(QDialog):
 
         self._scroll_lay.addWidget(sec_pre)
 
-        # ── 2. Deconvolution ─────────────────────────────────
-        sec_decon = _SectionCard("2 · Deconvolution", self)
+        # ── 2. Masks ─────────────────────────────────────────
+        sec_mask = _SectionCard("2 · Masks", self, accent_color="#cc4444", icon="🎭")
+        self._tip_mask = QLabel("", self)
+        self._tip_mask.setWordWrap(True)
+        self._tip_mask.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
+        sec_mask.add_widget(self._tip_mask)
+
+        # Mask creation — opens MaskCreationDialog directly on the active doc
+        btn_mask = _LaunchButton(
+            "Create Mask",
+            "Draw freehand, ellipse, or range-selection masks on the active image."
+        )
+        btn_mask.clicked.connect(self._do_create_mask)
+        sec_mask.add_widget(btn_mask)
+
+        # Disc mask — convenience: full-image ellipse mask pre-sized to the solar/lunar disc
+        btn_disc = _LaunchButton(
+            "Quick Disc Mask",
+            "Open Mask Creation with an ellipse pre-fitted to the image bounds — "
+            "ideal for isolating the solar or lunar disc."
+        )
+        btn_disc.clicked.connect(self._do_disc_mask)
+        sec_mask.add_widget(btn_disc)
+
+        # Auto mask — compute and apply the right mask for the current mode instantly
+        self.btn_auto_mask = _LaunchButton(
+            "⚡ Apply SLaP Mode Mask",
+            "Automatically compute and apply the correct mask for the current mode: "
+            "disc mask for Surface, inverted disc for Prominence Only, none for combined.",
+            accent_color="#ddaa00"
+        )
+        self.btn_auto_mask.setStyleSheet("""
+            QPushButton {
+                background: rgba(221,170,0,15);
+                border: 1px solid rgba(221,170,0,40);
+                border-left: 2px solid rgba(221,170,0,160);
+                border-radius: 4px;
+                padding: 0px;
+                text-align: left;
+            }
+            QPushButton:hover {
+                background: rgba(221,170,0,30);
+                border: 1px solid rgba(221,170,0,80);
+                border-left: 3px solid #ddaa00;
+            }
+            QPushButton:pressed {
+                background: rgba(221,170,0,50);
+            }
+        """)
+        self.btn_auto_mask.clicked.connect(self._apply_slap_mask)
+        sec_mask.add_widget(self.btn_auto_mask)
+
+        # Invert / remove mask shortcuts
+        row_mask_ops = QHBoxLayout()
+        btn_invert = _LaunchButton("Invert Mask", "Invert the currently active mask.", accent_color="#cc4444")
+        btn_invert.clicked.connect(lambda: self._trigger("invert_mask"))
+        btn_show = _LaunchButton("Show Mask", "Toggle mask overlay on the active image.", accent_color="#cc4444")
+        btn_show.clicked.connect(self._do_toggle_mask_overlay)
+        btn_remove = _LaunchButton("Remove Mask", "Remove the active mask from the document.", accent_color="#cc4444")
+        btn_remove.clicked.connect(lambda: self._trigger("remove_mask"))
+        row_mask_ops.addWidget(btn_invert)
+        row_mask_ops.addWidget(btn_show)
+        row_mask_ops.addWidget(btn_remove)
+        sec_mask.body_layout().addLayout(row_mask_ops)
+
+        self._scroll_lay.addWidget(sec_mask)
+
+        # ── 3. Deconvolution ─────────────────────────────────
+        sec_decon = _SectionCard("3 · Deconvolution", self, accent_color="#9060e0", icon="🔬")
         self._tip_decon = QLabel("", self)
         self._tip_decon.setWordWrap(True)
         self._tip_decon.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
@@ -628,8 +855,8 @@ class SLaPToolkitDialog(QDialog):
 
         self._scroll_lay.addWidget(sec_decon)
 
-        # ── 3. Multiscale Sharpening ─────────────────────────
-        sec_ms = _SectionCard("3 · Multiscale Sharpening", self)
+        # ── 4. Multiscale Sharpening ─────────────────────────
+        sec_ms = _SectionCard("4 · Multiscale Sharpening", self, accent_color="#2080e0", icon="🔷")
         self._tip_ms = QLabel("", self)
         self._tip_ms.setWordWrap(True)
         self._tip_ms.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
@@ -644,17 +871,17 @@ class SLaPToolkitDialog(QDialog):
 
         self._scroll_lay.addWidget(sec_ms)
 
-        # ── 4. Contrast Enhancement ──────────────────────────
-        sec_ce = _SectionCard("4 · Contrast Enhancement", self)
+        # ── 5. Contrast Enhancement ──────────────────────────
+        sec_ce = _SectionCard("5 · Contrast Enhancement", self, accent_color="#20a060", icon="📊")
         self._tip_ce = QLabel("", self)
         self._tip_ce.setWordWrap(True)
         self._tip_ce.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
         sec_ce.add_widget(self._tip_ce)
 
         row_ce = QHBoxLayout()
-        btn_clahe = _LaunchButton("CLAHE / LHE", "Local histogram equalisation — essential for solar and lunar.")
+        btn_clahe = _LaunchButton("CLAHE / LHE", "Local histogram equalisation — essential for solar and lunar.", accent_color="#20a060")
         btn_clahe.clicked.connect(lambda: self._trigger("clahe"))
-        btn_wavescale = _LaunchButton("WaveScale Dark Enhancer", "Wavelet-based local contrast + prominence boost.")
+        btn_wavescale = _LaunchButton("WaveScale Dark Enhancer", "Wavelet-based local contrast + prominence boost.", accent_color="#20a060")
         btn_wavescale.clicked.connect(lambda: self._trigger("wavescale_dark_enhance"))
         row_ce.addWidget(btn_clahe)
         row_ce.addWidget(btn_wavescale)
@@ -669,8 +896,8 @@ class SLaPToolkitDialog(QDialog):
 
         self._scroll_lay.addWidget(sec_ce)
 
-        # ── 5. Noise Reduction ───────────────────────────────
-        sec_nr = _SectionCard("5 · Noise Reduction", self)
+        # ── 6. Noise Reduction ───────────────────────────────
+        sec_nr = _SectionCard("6 · Noise Reduction", self, accent_color="#20a0a0", icon="🔇")
         self._tip_nr = QLabel("", self)
         self._tip_nr.setWordWrap(True)
         self._tip_nr.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
@@ -685,37 +912,8 @@ class SLaPToolkitDialog(QDialog):
 
         self._scroll_lay.addWidget(sec_nr)
 
-        # ── 6. Tone & Colour ─────────────────────────────────
-        sec_tone = _SectionCard("6 · Tone and Colour", self)
-        self._tip_tone = QLabel("", self)
-        self._tip_tone.setWordWrap(True)
-        self._tip_tone.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
-        sec_tone.add_widget(self._tip_tone)
-
-        btn_curves = _LaunchButton(
-            "Curves",
-            "S-curve for contrast, inverted-V for solar midtone lift. "
-            "Works identically to Photoshop curves."
-        )
-        btn_curves.clicked.connect(lambda: self._trigger("curves"))
-        sec_tone.add_widget(btn_curves)
-
-        btn_wb = _LaunchButton("White Balance", "Balance RGB channels before or after palette application.")
-        btn_wb.clicked.connect(lambda: self._trigger("white_balance"))
-        sec_tone.add_widget(btn_wb)
-
-        btn_sellum = _LaunchButton(
-            "Selective Luminance",
-            "Apply colour/contrast adjustments only to a specific luminance band — "
-            "ideal for taming clipped solar disc vs. dark space."
-        )
-        btn_sellum.clicked.connect(lambda: self._trigger("selective_lum"))
-        sec_tone.add_widget(btn_sellum)
-
-        self._scroll_lay.addWidget(sec_tone)
-
         # ── 7. Colorization ──────────────────────────────────
-        sec_col = _SectionCard("7 · Colorization", self)
+        sec_col = _SectionCard("7 · Colorization", self, accent_color="#e04080", icon="🎨")
         self._tip_col = QLabel("", self)
         self._tip_col.setWordWrap(True)
         self._tip_col.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
@@ -744,46 +942,43 @@ class SLaPToolkitDialog(QDialog):
 
         self._scroll_lay.addWidget(sec_col)
 
-        # ── 8. Masks ─────────────────────────────────────────
-        sec_mask = _SectionCard("8 · Masks", self)
-        self._tip_mask = QLabel("", self)
-        self._tip_mask.setWordWrap(True)
-        self._tip_mask.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
-        sec_mask.add_widget(self._tip_mask)
+        # ── 8. Tone and Colour ─────────────────────────────────
+        sec_tone = _SectionCard("8 · Tone and Colour", self, accent_color="#e07020", icon="🌗")
+        self._tip_tone = QLabel("", self)
+        self._tip_tone.setWordWrap(True)
+        self._tip_tone.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
+        sec_tone.add_widget(self._tip_tone)
 
-        # Mask creation — opens MaskCreationDialog directly on the active doc
-        btn_mask = _LaunchButton(
-            "Create Mask",
-            "Draw freehand, ellipse, or range-selection masks on the active image."
+        btn_curves = _LaunchButton(
+            "Curves",
+            "S-curve for contrast, inverted-V for solar midtone lift. "
+            "Works identically to Photoshop curves."
         )
-        btn_mask.clicked.connect(self._do_create_mask)
-        sec_mask.add_widget(btn_mask)
+        btn_curves.clicked.connect(lambda: self._trigger("curves"))
+        sec_tone.add_widget(btn_curves)
 
-        # Disc mask — convenience: full-image ellipse mask pre-sized to the solar/lunar disc
-        btn_disc = _LaunchButton(
-            "Quick Disc Mask",
-            "Open Mask Creation with an ellipse pre-fitted to the image bounds — "
-            "ideal for isolating the solar or lunar disc."
+        btn_wb = _LaunchButton("White Balance", "Balance RGB channels before or after palette application.", accent_color="#e07020")
+        btn_wb.clicked.connect(lambda: self._trigger("white_balance"))
+        sec_tone.add_widget(btn_wb)
+
+        btn_sellum = _LaunchButton(
+            "Selective Luminance",
+            "Apply colour/contrast adjustments only to a specific luminance band — "
+            "ideal for taming clipped solar disc vs. dark space."
         )
-        btn_disc.clicked.connect(self._do_disc_mask)
-        sec_mask.add_widget(btn_disc)
+        btn_sellum.clicked.connect(lambda: self._trigger("selective_lum"))
+        sec_tone.add_widget(btn_sellum)
 
-        # Planetary stacker shortcut
-        btn_planet_stack = _LaunchButton(
-            "Planetary Stacker",
-            "Open the planetary stacker for lucky-imaging stacking of video frames."
-        )
-        btn_planet_stack.clicked.connect(lambda: self._trigger("planetary_stacker"))
-        sec_mask.add_widget(btn_planet_stack)
-
-        self._scroll_lay.addWidget(sec_mask)
+        self._scroll_lay.addWidget(sec_tone)
 
         # ── 9. Output ────────────────────────────────────────
-        sec_out = _SectionCard("9 · Output", self)
-        btn_save = _LaunchButton("Save As", "Save the processed result to disk.")
+        sec_out = _SectionCard("9 · Output", self, accent_color="#40a840", icon="💾")
+        btn_save = _LaunchButton("Save As", "Save the processed result to disk.", accent_color="#40a840")
         btn_save.clicked.connect(lambda: self._trigger("save_as"))
         sec_out.add_widget(btn_save)
         self._scroll_lay.addWidget(sec_out)
+
+
 
         # Store section refs for show/hide logic
         self._sec_decon = sec_decon
@@ -810,11 +1005,17 @@ class SLaPToolkitDialog(QDialog):
 
     def _do_mono_to_rgb(self):
         """
-        Convert the active mono image to RGB via the registered action,
-        then immediately open Curves so the user can apply a colour palette
-        using the selected SLaP palette as a reference tip.
+        1. Convert the active mono image to RGB (duplicate channel).
+        2. Immediately apply headless curves to colorize using the selected
+           SLaP palette — no dialog, no tip box, just done.
+
+        Palette RGB values are treated as per-channel midpoint multipliers:
+          r=1.0, g=0.85, b=0.55  →  midpoint curve that pushes each channel's
+          output to those relative levels, giving a warm yellow cast.
         """
-        # Step 1: convert mono → RGB using the registered action
+        import numpy as np
+
+        # ── Step 1: mono → RGB ───────────────────────────────────────────
         from setiastro.saspro.workflows import _find_action_by_command_id
         act = _find_action_by_command_id(self.main, "mono_to_rgb")
         if act is None:
@@ -826,22 +1027,105 @@ class SLaPToolkitDialog(QDialog):
             return
         try:
             act.trigger()
-            self._status("Converted to RGB — open Curves to apply palette colours.")
         except Exception as e:
             QMessageBox.critical(self, "SLaP Toolkit", f"Mono to RGB failed:\n{e}")
             return
 
-        # Step 2: show a tip about the currently selected palette
+        # ── Step 2: re-fetch doc after the mono→RGB edit ─────────────────
+        doc = self._active_doc()
+        if doc is None or getattr(doc, "image", None) is None:
+            self._status("Converted to RGB.")
+            return
+
+        # ── Step 3: build per-channel LUTs from palette RGB weights ───────
         pal_name = self.combo_palette.currentText()
         pal = SLAP_PALETTES.get(pal_name, {})
-        r, g, b = pal.get("r", 1.0), pal.get("g", 1.0), pal.get("b", 1.0)
-        tip = (
-            f"Palette tip — {pal_name}:\n"
-            f"In Curves, set per-channel output midpoints to approx:\n"
-            f"  R = {r:.2f}   G = {g:.2f}   B = {b:.2f}\n\n"
-            f"{pal.get('description', '')}"
-        )
-        QMessageBox.information(self, "SLaP Toolkit — Palette Reference", tip)
+        r_w = float(pal.get("r", 1.0))
+        g_w = float(pal.get("g", 1.0))
+        b_w = float(pal.get("b", 1.0))
+
+        # All weights == 1.0 → Planetary/natural — skip curves entirely
+        if abs(r_w - 1.0) < 0.01 and abs(g_w - 1.0) < 0.01 and abs(b_w - 1.0) < 0.01:
+            self._status(f"Converted to RGB — palette: {pal_name} (neutral, no colour shift).")
+            return
+
+        def _weight_to_lut(w: float, size: int = 65536) -> np.ndarray:
+            """
+            Build a monotone LUT that maps [0..1] → [0..1] with a midpoint
+            at (0.5, 0.5*w), shaped by a PCHIP spline through:
+              (0, 0) → (0.5, 0.5*w) → (1.0, min(1, w))
+            This gives a smooth curve that honours the palette weight as a
+            midtone multiplier without hard clipping.
+            """
+            pts_x = np.array([0.0,      0.5,        1.0],            dtype=np.float64)
+            pts_y = np.array([0.0, 0.5 * w, min(1.0, w)],            dtype=np.float64)
+            # ensure monotone y (no inversions for w < 1)
+            pts_y = np.clip(pts_y, 0.0, 1.0)
+            inp = np.linspace(0.0, 1.0, size, dtype=np.float64)
+            try:
+                from scipy.interpolate import PchipInterpolator
+                f = PchipInterpolator(pts_x, pts_y, extrapolate=False)
+                out = np.clip(f(inp), 0.0, 1.0)
+            except ImportError:
+                out = np.interp(inp, pts_x, pts_y)
+            return out.astype(np.float32)
+
+        lut_r = _weight_to_lut(r_w)
+        lut_g = _weight_to_lut(g_w)
+        lut_b = _weight_to_lut(b_w)
+
+        # ── Step 4: apply headlessly ──────────────────────────────────────
+        try:
+            img = np.asarray(doc.image, dtype=np.float32)
+            if img.ndim != 3 or img.shape[2] < 3:
+                self._status(f"Converted to RGB — image isn't 3-channel yet, skipping palette.")
+                return
+
+            out = img.copy()
+            size = len(lut_r)
+            def _apply(ch, lut):
+                idx = np.clip((ch * (size - 1)).astype(np.int32), 0, size - 1)
+                return lut[idx]
+
+            out[:, :, 0] = _apply(img[:, :, 0], lut_r)
+            out[:, :, 1] = _apply(img[:, :, 1], lut_g)
+            out[:, :, 2] = _apply(img[:, :, 2], lut_b)
+            out = np.clip(out, 0.0, 1.0).astype(np.float32)
+
+            # Respect active mask if present
+            mid = getattr(doc, "active_mask_id", None)
+            if mid:
+                masks = getattr(doc, "masks", {}) or {}
+                layer = masks.get(mid)
+                m = np.asarray(getattr(layer, "data", None)) if layer else None
+                if m is not None and m.size > 0:
+                    m = np.clip(m.astype(np.float32), 0.0, 1.0)
+                    if m.ndim == 2:
+                        m = m[:, :, None]
+                    out = m * out + (1.0 - m) * img
+
+            meta = {
+                "step_name": f"SLaP Colorize ({pal_name})",
+                "palette": pal_name,
+                "weights": {"r": r_w, "g": g_w, "b": b_w},
+                "masked": bool(mid),
+                "mask_id": mid,
+            }
+            doc.apply_edit(out, metadata=meta, step_name=f"SLaP Colorize ({pal_name})")
+
+            # Refresh view
+            try:
+                if hasattr(self.main, "_active_view"):
+                    vw = self.main._active_view()
+                    if vw and hasattr(vw, "_render"):
+                        vw._render(rebuild=True)
+            except Exception:
+                pass
+
+            self._status(f"Colorized: {pal_name}  (R={r_w:.2f}  G={g_w:.2f}  B={b_w:.2f})")
+
+        except Exception as e:
+            QMessageBox.critical(self, "SLaP Toolkit", f"Palette colorize failed:\n{e}")
 
     def _do_create_mask(self):
         """Open MaskCreationDialog on the active document."""
@@ -916,6 +1200,161 @@ class SLaPToolkitDialog(QDialog):
             QMessageBox.critical(self, "SLaP Toolkit", f"Could not open Disc Mask:\n{e}")
 
     # ─────────────────────────────────────────────────────────
+    # SLaP auto-mask
+    # ─────────────────────────────────────────────────────────
+
+    def _apply_slap_mask(self):
+        """
+        Compute and apply the appropriate mask for the current SLaP mode
+        directly to the active document — no dialog required.
+
+        Mode → mask strategy:
+          Solar — Surface          : range selection brightness ≥ 0.20
+                                     (captures the bright disc, excludes dark space)
+          Solar — Surface+Prominence: no mask (clear any existing)
+          Solar — Prominence Only  : build disc mask (brightness ≥ 0.20), feather,
+                                     then INVERT → selects the dim prominence region
+          Lunar                    : range selection brightness ≥ 0.15
+                                     (disc isolation — moon is always bright)
+          Planetary                : range selection brightness ≥ 0.10
+                                     (tight disc, very dark background)
+        """
+        import numpy as np
+
+        doc = self._active_doc()
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "SLaP Toolkit", "Open an image first.")
+            return
+
+        mode = self.combo_mode.currentText()
+
+        # ── Surface+Prominence: clear mask so all tools see the full image ──
+        if mode == "Solar — Surface + Prominence":
+            try:
+                mid = getattr(doc, "active_mask_id", None)
+                if mid:
+                    doc.remove_mask(mid)
+                    if hasattr(doc, "changed"):
+                        doc.changed.emit()
+                self._status("Mask cleared — full image active for Surface + Prominence.")
+            except Exception as e:
+                self._status(f"Could not clear mask: {e}")
+            return
+
+        # ── All other modes: compute a luminance range mask ──────────────────
+        img = np.asarray(doc.image, dtype=np.float32)
+
+        # Collapse to luminance
+        if img.ndim == 3 and img.shape[2] >= 3:
+            L = 0.2126 * img[:, :, 0] + 0.7152 * img[:, :, 1] + 0.0722 * img[:, :, 2]
+        elif img.ndim == 3 and img.shape[2] == 1:
+            L = img[:, :, 0]
+        else:
+            L = img
+
+        L = np.clip(L, 0.0, 1.0).astype(np.float32)
+
+        # Per-mode: build the DISC mask (brightness >= threshold), then
+        # invert it for prominence modes so we select the dark region.
+        # For surface modes we use the disc mask directly.
+        mode_params = {
+            # mode:                     (disc_threshold, feather_px)
+            "Solar — Surface":          (0.20, 5),
+            "Solar — Prominence Only":  (0.20, 5),   # same disc threshold, then inverted
+            "Lunar":                    (0.15, 8),
+            "Planetary":                (0.10, 3),
+        }
+        disc_threshold, feather_px = mode_params.get(mode, (0.20, 5))
+
+        # Step 1: build disc mask — bright pixels (the solar/lunar disc)
+        mask = np.where(L >= disc_threshold, 1.0, 0.0).astype(np.float32)
+
+        # Step 2: feather BEFORE inverting so the edge transition is correct
+        if feather_px > 0:
+            try:
+                import cv2
+                mask = cv2.GaussianBlur(mask, (0, 0), float(feather_px))
+            except ImportError:
+                k = max(1, feather_px * 2 + 1)
+                w = np.ones((k,), dtype=np.float32) / float(k)
+                mask = np.apply_along_axis(lambda r: np.convolve(r, w, mode='same'), 1, mask)
+                mask = np.apply_along_axis(lambda c: np.convolve(c, w, mode='same'), 0, mask)
+
+        mask = np.clip(mask, 0.0, 1.0).astype(np.float32)
+
+        # Step 3: invert for prominence — we want the dim region outside the disc
+        invert = (mode == "Solar — Prominence Only")
+        if invert:
+            mask = 1.0 - mask
+
+        # Attach mask to document using MaskLayer
+        try:
+            from setiastro.saspro.masks_core import MaskLayer
+            import uuid
+
+            layer = MaskLayer(
+                id=uuid.uuid4().hex,
+                name=f"SLaP — {mode}",
+                data=mask,
+                invert=False,
+                opacity=1.0,
+                mode="affect",
+                visible=True,
+            )
+            doc.add_mask(layer, make_active=True)
+            if hasattr(doc, "changed"):
+                doc.changed.emit()
+
+            if invert:
+                direction = f"disc ≥ {disc_threshold:.2f} then inverted → prominence region"
+            else:
+                direction = f"brightness ≥ {disc_threshold:.2f}"
+            self._status(
+                f"Mask applied: {mode} ({direction}, feather {feather_px}px). "
+                f"Adjust with Mask Tools if needed."
+            )
+
+            # Refresh the active view overlay
+            try:
+                if hasattr(self.main, "_active_view"):
+                    vw = self.main._active_view()
+                    if vw and hasattr(vw, "_render"):
+                        vw._render(rebuild=True)
+            except Exception:
+                pass
+
+        except Exception as e:
+            QMessageBox.critical(
+                self, "SLaP Toolkit",
+                f"Could not attach mask to document:\n\n{e}"
+            )
+
+    def _do_toggle_mask_overlay(self):
+        """Toggle the mask overlay on the active ImageSubWindow view."""
+        try:
+            if hasattr(self.main, "_active_view"):
+                vw = self.main._active_view()
+            elif hasattr(self.main, "mdi") and self.main.mdi.activeSubWindow():
+                sw = self.main.mdi.activeSubWindow()
+                vw = sw.widget() if sw else None
+            else:
+                vw = None
+
+            if vw is None:
+                self._status("No active view.")
+                return
+
+            if not hasattr(vw, "toggle_mask_overlay"):
+                self._status("Active view does not support mask overlay.")
+                return
+
+            vw.toggle_mask_overlay()
+            state = "ON" if getattr(vw, "show_mask_overlay", False) else "OFF"
+            self._status(f"Mask overlay {state}.")
+        except Exception as e:
+            self._status(f"Mask overlay error: {e}")
+
+    # ─────────────────────────────────────────────────────────
     # Mode logic
     # ─────────────────────────────────────────────────────────
 
@@ -978,7 +1417,34 @@ class SLaPToolkitDialog(QDialog):
         # Deconvolution is less relevant for prominence-only — keep visible
         # but flag in the tip that it's optional (already done via tip text above)
 
+        # Update the auto-mask button label to show what will happen for this mode
+        auto_mask_labels = {
+            "Solar — Surface":
+                "⚡ Apply Disc Mask  (brightness ≥ 0.20)",
+            "Solar — Surface + Prominence":
+                "⚡ Clear Mask  (full image — no mask needed)",
+            "Solar — Prominence Only":
+                "⚡ Apply Prominence Mask  (disc ≥ 0.20, then inverted)",
+            "Lunar":
+                "⚡ Apply Disc Mask  (brightness ≥ 0.15)",
+            "Planetary":
+                "⚡ Apply Disc Mask  (brightness ≥ 0.10)",
+        }
+        if hasattr(self, "btn_auto_mask"):
+            # Update the bold label inside the _LaunchButton
+            try:
+                lbl = self.btn_auto_mask.findChildren(QLabel)[0]
+                lbl.setText(f"<b>{auto_mask_labels.get(mode, '⚡ Apply SLaP Mode Mask')}</b>")
+            except Exception:
+                pass
+
         self._save_mode()
+
+        # Auto-apply the right mask for this mode if a document is already open.
+        # Runs silently — no dialog, no confirmation. If no doc is open yet,
+        # _apply_slap_mask() will return cleanly without an error.
+        if self._active_doc() is not None:
+            self._apply_slap_mask()
 
     def _on_palette_changed(self, name: str):
         pal = SLAP_PALETTES.get(name, {})

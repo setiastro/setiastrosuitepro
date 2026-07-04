@@ -4572,7 +4572,8 @@ class AstroSuiteProMainWindow(
         if doc is None and getattr(self, "docman", None) and self.docman._docs:
             doc = self.docman._docs[-1]
 
-        w = FrequencySeperationTab(doc_manager=self.docman, document=doc)
+        w = FrequencySeperationTab(doc_manager=self.docman, document=doc, parent=self)
+        w.setWindowFlag(Qt.WindowType.Window, True)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.setWindowTitle("Frequency Separation")
 

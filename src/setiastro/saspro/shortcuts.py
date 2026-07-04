@@ -3393,6 +3393,8 @@ class _DebayerPresetDialog(QDialog):
     def result_dict(self) -> dict:
         return {"pattern": self.combo.currentText().upper()}
 
+#src/setiastro/saspro/shortcuts.py
+
 from setiastro.saspro.curves_preset import list_custom_presets, _norm_mode
 
 class _CurvesPresetDialog(QDialog):
