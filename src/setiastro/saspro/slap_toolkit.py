@@ -703,6 +703,65 @@ class SLaPToolkitDialog(QDialog):
         )
         root.addWidget(self.lbl_mode_tip)
 
+        # ── Quick actions bar ────────────────────────────────
+        qa_widget = QWidget(self)
+        qa_widget.setStyleSheet(
+            "background: rgba(0,0,0,20); border-bottom: 1px solid rgba(255,255,255,8);"
+        )
+        qa_lay = QHBoxLayout(qa_widget)
+        qa_lay.setContentsMargins(8, 5, 8, 5)
+        qa_lay.setSpacing(4)
+
+        def _qa_btn(label: str, tip: str, color: str = "#6a8aaa") -> QPushButton:
+            b = QPushButton(label, qa_widget)
+            b.setToolTip(tip)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setStyleSheet(f"""
+                QPushButton {{
+                    background: rgba(255,255,255,8);
+                    border: 1px solid rgba(255,255,255,12);
+                    border-top: 2px solid {color}80;
+                    border-radius: 4px;
+                    color: #bbc;
+                    padding: 3px 7px;
+                    font-size: 10px;
+                }}
+                QPushButton:hover {{
+                    background: rgba(255,255,255,16);
+                    border-top: 2px solid {color};
+                    color: #dde;
+                }}
+                QPushButton:pressed {{
+                    background: {color}30;
+                }}
+            """)
+            return b
+
+        btn_qa_invert = _qa_btn("🔄 Invert Masked Region",
+                                "Invert the image (Ctrl+I). If a mask is active, only the masked region is inverted.",
+                                "#cc8844")
+        btn_qa_invert.clicked.connect(lambda: self._trigger("geom_invert"))
+
+        btn_qa_flip = _qa_btn("↔ Flip", "Flip the image horizontally.", "#6a8aaa")
+        btn_qa_flip.clicked.connect(lambda: self._trigger("geom_flip_horizontal"))
+
+        btn_qa_rotate = _qa_btn("↺ Rotate", "Rotate the image 90°.", "#6a8aaa")
+        btn_qa_rotate.clicked.connect(lambda: self._trigger("geom_rotate_clockwise"))
+
+        btn_qa_resize = _qa_btn("⤢ Resize", "Resize the image.", "#6a8aaa")
+        btn_qa_resize.clicked.connect(lambda: self._trigger("geom_rescale"))
+
+        btn_qa_save = _qa_btn("💾 Save As", "Save the current image to disk.", "#40a840")
+        btn_qa_save.clicked.connect(lambda: self._trigger("save_as"))
+
+        qa_lay.addWidget(btn_qa_invert, 2)
+        qa_lay.addWidget(btn_qa_flip, 1)
+        qa_lay.addWidget(btn_qa_rotate, 1)
+        qa_lay.addWidget(btn_qa_resize, 1)
+        qa_lay.addWidget(btn_qa_save, 1)
+
+        root.addWidget(qa_widget)
+
         # ── Scrollable tool sections ─────────────────────────
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
