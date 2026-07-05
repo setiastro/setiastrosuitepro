@@ -57,9 +57,16 @@ def _get_ort(status_cb=print):
     try:
         import onnxruntime as ort
         return ort
-    except Exception as e:
+    except ImportError as e:
         try:
-            status_cb(f"CosmicClarity Sharpen: onnxruntime not available ({type(e).__name__}: {e})")
+            status_cb(f"CosmicClarity Sharpen: onnxruntime not installed ({e})")
+        except Exception:
+            pass
+        return None
+    except Exception as e:
+        # Catches load errors like missing libcudart — ORT is installed but broken
+        try:
+            status_cb(f"CosmicClarity Sharpen: onnxruntime failed to load ({type(e).__name__}: {e}) — falling back to torch backend.")
         except Exception:
             pass
         return None
