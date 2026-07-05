@@ -987,6 +987,7 @@ class SyQonStarlessDialog(QDialog):
         lay.addLayout(btns)
 
         self.cmb_engine.currentIndexChanged.connect(self._on_engine_changed)
+        self.edt_cli_path.textChanged.connect(self._refresh_state)
         self._toggle_bg(self.chk_show_bg.isChecked())
         self.cmb_model.currentTextChanged.connect(self._on_model_changed)
         self.chk_mtf.toggled.connect(lambda on: self.spin_mtf_median.setEnabled(bool(on)))
@@ -1535,7 +1536,7 @@ class SyQonStarlessDialog(QDialog):
             if exe_path.endswith(".app") and os.path.isdir(exe_path):
                 app_name = os.path.splitext(os.path.basename(exe_path))[0]
                 exe_path = os.path.join(exe_path, "Contents", "MacOS", app_name)
-            if not exe_path or not os.path.isfile(exe_path):
+            if not exe_path or not (os.path.isfile(exe_path) or os.path.isdir(exe_path)):
                 self._set_busy(False)
                 QMessageBox.warning(self, "SyQon", "Please select a valid Starless Standalone executable.")
                 return
