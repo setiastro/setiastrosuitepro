@@ -1310,8 +1310,9 @@ class SyQonStarlessDialog(QDialog):
                     "Starless Standalone CLI mode is selected.\n\n"
                     "Please choose the standalone Starless executable with the Browse button."
                 )
-                self.btn_process.setEnabled(False)
+                self.btn_process.setEnabled(True)
             return
+        self.btn_process.setEnabled(True)
     
         mk    = self._model_kind()
         dst   = self._model_dst_path()
@@ -1337,11 +1338,12 @@ class SyQonStarlessDialog(QDialog):
                 "1) Click \"Get Starless Model Here…\" to purchase/download it.\n"
                 "2) Then click \"Install Downloaded Model…\" and select the downloaded file."
             )
-            self.btn_process.setEnabled(False)
+            self.btn_process.setEnabled(True)
             self.btn_remove.setEnabled(False)
     
         self.btn_buy.setEnabled(True)
         self.btn_install.setEnabled(True)
+        self.btn_process.setEnabled(True)
 
 
     def _open_buy_page(self):
