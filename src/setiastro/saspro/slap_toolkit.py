@@ -586,7 +586,10 @@ class SLaPToolkitDialog(QDialog):
         except Exception:
             pass
         self.resize(520, 820)
-
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.setInterval(4000)
+        self._status_timer.timeout.connect(self._clear_status)
         self._build_ui()
         self._restore_geometry()
         self._on_mode_changed(0)
@@ -1550,7 +1553,22 @@ class SLaPToolkitDialog(QDialog):
 
     def _status(self, msg: str):
         self.lbl_status.setText(msg)
-        QTimer.singleShot(4000, lambda: self.lbl_status.setText("Ready."))
+        self._status_timer.start()   # restarts if already running
+
+    def _clear_status(self):
+        try:
+            self.lbl_status.setText("Ready.")
+        except RuntimeError:
+            pass
+
+    def closeEvent(self, event):
+        self._status_timer.stop()    # cancel before widgets are destroyed
+        self._save_geometry()
+        try:
+            if getattr(self.main, "_slap_dialog", None) is self:
+                self.main._slap_dialog = None
+        except Exception:
+            pass
 
     # ─────────────────────────────────────────────────────────
     # Workflow integration
