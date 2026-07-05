@@ -34,7 +34,7 @@ from setiastro.saspro.resources import (
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
-    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,
+    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,satchroma_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,rcastro_path,sssc_path,
     selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
@@ -210,6 +210,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_hist_transform)
         tb_fn.addAction(self.act_curves)
         tb_fn.addAction(self.act_ghs)
+        tb_fn.addAction(self.act_satchroma)
         tb_fn.addAction(self.act_abe)
         tb_fn.addAction(self.act_graxpert)
         tb_fn.addAction(self.act_remove_stars)
@@ -998,6 +999,11 @@ class ToolbarMixin:
         self.act_ghs.setIconVisibleInMenu(True)
         self.act_ghs.triggered.connect(self._open_hyperbolic)
 
+        self.act_satchroma = QAction(QIcon(satchroma_path), self.tr("Saturation / Chroma"), self)
+        self.act_satchroma.setStatusTip(self.tr("Adjust saturation and chroma"))
+        self.act_satchroma.setIconVisibleInMenu(True)
+        self.act_satchroma.triggered.connect(self._open_satchroma_tool)        
+
         self.act_abe = QAction(QIcon(abeicon_path), self.tr("ADBE..."), self)
         self.act_abe.setStatusTip(self.tr("Automatic (Dynamic) Background Extraction"))
         self.act_abe.setIconVisibleInMenu(True)
@@ -1610,6 +1616,7 @@ class ToolbarMixin:
         reg("stat_stretch",   self.act_stat_stretch)
         reg("star_stretch",   self.act_star_stretch)
         reg("curves",         self.act_curves)
+        reg("satchroma", self.act_satchroma)
         reg("ghs",            self.act_ghs)
         reg("blink",          self.act_blink)
         reg("ppp",            self.act_ppp)

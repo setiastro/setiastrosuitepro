@@ -183,7 +183,7 @@ from setiastro.saspro.resources import (
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
-    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path,
+    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path, satchroma_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,rcastro_path,
@@ -2875,6 +2875,16 @@ class AstroSuiteProMainWindow(
             pass        
         dlg.resize(1000, 650)
         dlg.show()
+
+    def _open_satchroma_tool(self):
+        doc = self._active_doc()
+        if not doc:
+            QMessageBox.information(self, "SatChroma", "No active image.")
+            return
+        from setiastro.saspro.satchroma_tool import SatChromaTool
+        w = SatChromaTool(doc_manager=self.docman, document=doc, parent=self)
+        w.setWindowIcon(QIcon(satchroma_path))
+        w.show()
 
     def _remove_stars(self, doc=None):
         from setiastro.saspro.remove_stars import remove_stars
@@ -6153,6 +6163,31 @@ class AstroSuiteProMainWindow(
                     print("Replay-on-base Curves failed:", e)
             return
 
+        if cid == "satchroma":
+            try:
+                from setiastro.saspro.satchroma_preset import apply_satchroma_via_preset
+                preset_dict = preset if isinstance(preset, dict) else {}
+                apply_satchroma_via_preset(self, base_doc, preset_dict)
+                try:
+                    mode_names = {0: "Saturation (HSV)", 1: "Chroma (Lab)"}
+                    mode_name  = mode_names.get(int(preset_dict.get("mode", 0)), "Saturation")
+                    strength   = float(preset_dict.get("strength", 1.0))
+                    self._log(
+                        f"[Replay] Applied SatChroma to base of "
+                        f"'{target_sw.windowTitle()}' "
+                        f"(mode={mode_name}, strength={strength:.2f})"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "SatChroma",
+                                        f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("SatChroma replay-on-base failed:", e)
+            return
+
+
         if cid == "ghs":
             try:
                 from setiastro.saspro.ghs_preset import apply_ghs_via_preset
@@ -7249,6 +7284,31 @@ class AstroSuiteProMainWindow(
                 
                 QMessageBox.warning(self, "Curves", f"Apply failed:\n{e}")
             return
+
+        if cid == "satchroma":
+            try:
+                from setiastro.saspro.satchroma_preset import apply_satchroma_via_preset
+                apply_satchroma_via_preset(self, doc, preset or {})
+                try:
+                    self._log(
+                        f"Applied SatChroma preset to '{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+                try:
+                    self._last_headless_command = {
+                        "command_id": "satchroma",
+                        "preset":     dict(preset or {}),
+                    }
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "SatChroma", f"Apply failed:\n{e}")
+                except Exception:
+                    pass
+            return
+
 
         if cid == "syqontools":
             self._execute_syqon_tools_command(preset, target_sw=target_sw)

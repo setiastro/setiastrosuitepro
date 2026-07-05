@@ -1,4 +1,4 @@
-# pro/shortcuts.py
+# saspro/shortcuts.py
 from __future__ import annotations
 import json
 import time
@@ -626,6 +626,20 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
             "new_view_title": "Levels",
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "satchroma":
+        from setiastro.saspro.shortcuts import _SatChromaPresetDialog
+        dlg = _SatChromaPresetDialog(parent, initial=cur or {
+            "mode":     0,
+            "strength": 1.0,
+            "points":   [
+                (0.0, 1.0), (1/6, 1.0), (2/6, 1.0),
+                (3/6, 1.0), (4/6, 1.0), (5/6, 1.0), (1.0, 1.0),
+            ],
+            "use_mask": True,
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
 
     if command_id == "syqontools":
         dlg = _SyQonToolsPresetDialog(parent, initial=cur or {})
@@ -2257,6 +2271,92 @@ class _LevelsPresetDialog(QDialog):
             "apply_mode": str(self.cmb_apply.currentData() or "inplace"),
             "new_view_title": self.ed_title.text().strip() or "Levels",
         }
+
+
+class _SatChromaPresetDialog(QDialog):
+    """
+    Preset editor for SatChroma — shown when the user edits a SatChroma
+    shortcut/command-drop entry in the preset editor.
+ 
+    Embeds the full HueCurveCanvas so the user can see and edit the
+    hue curve directly, plus mode and strength controls.
+    """
+ 
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("SatChroma Preset")
+        self.setModal(True)
+        self.resize(560, 460)
+ 
+        cur = initial or {}
+        root = QVBoxLayout(self)
+        root.setSpacing(6)
+ 
+        # Mode
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Mode:"))
+        self._combo_mode = QComboBox(self)
+        self._combo_mode.addItems(["Saturation  (HSV)", "Chroma  (CIE Lab)"])
+        self._combo_mode.setCurrentIndex(int(cur.get("mode", 0)))
+        mode_row.addWidget(self._combo_mode, 1)
+        root.addLayout(mode_row)
+ 
+        # Curve canvas
+        from setiastro.saspro.satchroma_tool import HueCurveCanvas
+        self._canvas = HueCurveCanvas(self)
+        pts = cur.get("points")
+        if pts:
+            self._canvas.set_points([(float(x), float(y)) for x, y in pts])
+        root.addWidget(self._canvas, 1)
+ 
+        # Strength
+        str_row = QHBoxLayout()
+        str_row.addWidget(QLabel("Global strength:"))
+        self._sld = QSlider(Qt.Orientation.Horizontal, self)
+        self._sld.setRange(0, 300)
+        self._spin = QDoubleSpinBox(self)
+        self._spin.setRange(0.0, 3.0)
+        self._spin.setSingleStep(0.05)
+        self._spin.setDecimals(2)
+        self._spin.setFixedWidth(64)
+        val = float(cur.get("strength", 1.0))
+        self._spin.setValue(val)
+        self._sld.setValue(int(val * 100))
+        self._sld.valueChanged.connect(lambda v: self._spin.setValue(v / 100.0))
+        self._spin.valueChanged.connect(lambda v: self._sld.setValue(int(v * 100)))
+        str_row.addWidget(self._sld, 1)
+        str_row.addWidget(self._spin)
+ 
+        btn_reset = QPushButton("Reset Curve")
+        btn_reset.setFixedWidth(84)
+        btn_reset.clicked.connect(self._canvas.reset_points)
+        str_row.addWidget(btn_reset)
+        root.addLayout(str_row)
+ 
+        # Mask
+        self._chk_mask = QCheckBox("Respect active mask", self)
+        self._chk_mask.setChecked(bool(cur.get("use_mask", True)))
+        root.addWidget(self._chk_mask)
+ 
+        # OK / Cancel
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+ 
+    def result_dict(self) -> dict:
+        return {
+            "command_id": "satchroma",
+            "mode":       self._combo_mode.currentIndex(),
+            "strength":   self._spin.value(),
+            "points":     self._canvas.get_points(),
+            "use_mask":   self._chk_mask.isChecked(),
+        }
+
 
 class _StatStretchPresetDialog(QDialog):
     """

@@ -183,6 +183,7 @@ class MenuMixin:
         m_fn.addAction(self.act_remove_stars)
         m_fn.addAction(self.act_rgb_combine)
         m_fn.addAction(self.act_rgb_extract)
+        m_fn.addAction(self.act_satchroma)
         m_fn.addAction(self.act_sfcc)
         m_fn.addAction(self.act_sssc)
         m_fn.addAction(self.act_signature)

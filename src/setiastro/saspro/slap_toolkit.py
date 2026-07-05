@@ -1007,7 +1007,6 @@ class SLaPToolkitDialog(QDialog):
         self._tip_tone.setWordWrap(True)
         self._tip_tone.setStyleSheet("font-size: 10px; color: #aaa; margin: 0 0 4px 0;")
         sec_tone.add_widget(self._tip_tone)
-
         btn_curves = _LaunchButton(
             "Curves",
             "S-curve for contrast, inverted-V for solar midtone lift. "
@@ -1015,11 +1014,16 @@ class SLaPToolkitDialog(QDialog):
         )
         btn_curves.clicked.connect(lambda: self._trigger("curves"))
         sec_tone.add_widget(btn_curves)
-
+        btn_satchroma = _LaunchButton(
+            "Saturation / Chroma",
+            "Hue-selective saturation (HSV) or chroma (Lab) adjustment via a "
+            "draggable curve over the hue wheel."
+        )
+        btn_satchroma.clicked.connect(lambda: self._trigger("satchroma"))
+        sec_tone.add_widget(btn_satchroma)
         btn_wb = _LaunchButton("White Balance", "Balance RGB channels before or after palette application.", accent_color="#e07020")
         btn_wb.clicked.connect(lambda: self._trigger("white_balance"))
         sec_tone.add_widget(btn_wb)
-
         btn_sellum = _LaunchButton(
             "Selective Luminance",
             "Apply colour/contrast adjustments only to a specific luminance band — "
@@ -1027,7 +1031,6 @@ class SLaPToolkitDialog(QDialog):
         )
         btn_sellum.clicked.connect(lambda: self._trigger("selective_lum"))
         sec_tone.add_widget(btn_sellum)
-
         self._scroll_lay.addWidget(sec_tone)
 
         # ── 9. Output ────────────────────────────────────────
