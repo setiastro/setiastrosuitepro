@@ -72,11 +72,17 @@ _HUE_STOPS = [
 def _pchip_lut(points: List[Tuple[float, float]], n: int = N_CURVE) -> np.ndarray:
     xs = np.array([p[0] for p in points], dtype=np.float64)
     ys = np.array([p[1] for p in points], dtype=np.float64)
+
+    # Ensure strictly increasing X — nudge duplicates forward
+    for i in range(1, len(xs)):
+        if xs[i] <= xs[i - 1]:
+            xs[i] = xs[i - 1] + 1e-9
+
     xi = np.linspace(0.0, 1.0, n, dtype=np.float64)
     try:
         from scipy.interpolate import PchipInterpolator
         lut = PchipInterpolator(xs, ys, extrapolate=True)(xi)
-    except ImportError:
+    except Exception:
         lut = np.interp(xi, xs, ys)
     return np.clip(lut, Y_MIN, Y_MAX).astype(np.float32)
 
@@ -536,10 +542,14 @@ class HueCurveCanvas(QWidget):
             elif idx == len(self._pts) - 1:
                 self._pts[-1][1] = m; self._pts[0][1] = m
             else:
-                xlo = self._pts[idx-1][0] + 0.001
-                xhi = self._pts[idx+1][0] - 0.001
-                self._pts[idx][0] = max(xlo, min(xhi, h))
-                self._pts[idx][1] = m
+                xlo = self._pts[idx-1][0] + 0.002
+                xhi = self._pts[idx+1][0] - 0.002
+                if xlo < xhi:
+                    self._pts[idx][0] = max(xlo, min(xhi, h))
+                    self._pts[idx][1] = m
+                else:
+                    # neighbours too close to move horizontally — only allow vertical
+                    self._pts[idx][1] = m
             self.curve_changed.emit()
             self.update()
         else:
