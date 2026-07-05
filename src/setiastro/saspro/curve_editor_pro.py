@@ -662,14 +662,15 @@ class CurveEditor(QWidget):
 
     # ── insert control point ──────────────────────────────────
 
-    def _insert_control(self, sx: float, sy: float):
+    def _insert_control(self, sx: float, sy: float, start_drag: bool = True):
         # find insertion index (keep X-sorted)
         ins = 1
         for i, (px, _) in enumerate(self._pts[1:-1], start=1):
             if px < sx:
                 ins = i + 1
         self._pts.insert(ins, [sx, sy])
-        self._drag_idx = ins
+        if start_drag:
+            self._drag_idx = ins
         self._rebuild_spline()
 
     # ── compatibility shims (no-ops or delegating) ────────────
@@ -693,7 +694,7 @@ class CurveEditor(QWidget):
             frac = float(np.clip(frac, 0.01, 0.99))
             sx = frac * self._SZ
             sy = self._SZ - sx               # identity: output == input
-        self._insert_control(sx, sy)
+        self._insert_control(sx, sy, start_drag=False)
         self.update()
 
     def addEndPoint(self, *args, **kwargs):
