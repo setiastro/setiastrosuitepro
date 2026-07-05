@@ -168,6 +168,7 @@ class MenuMixin:
         m_fn.addAction(self.act_crop)
         m_fn.addAction(self.act_curves)
         m_fn.addAction(self.act_extract_luma)
+        m_fn.addAction(self.act_fx)
         m_fn.addAction(self.act_graxpert)
         m_fn.addAction(self.act_ghs)
         m_fn.addAction(self.act_halobgon)

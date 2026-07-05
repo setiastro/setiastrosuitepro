@@ -34,7 +34,7 @@ from setiastro.saspro.resources import (
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
-    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,satchroma_path,
+    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,satchroma_path, fx_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,rcastro_path,sssc_path,
     selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
@@ -232,6 +232,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_wavescale_de)
         tb_fn.addAction(self.act_clahe)
         tb_fn.addAction(self.act_texture_clarity)
+        tb_fn.addAction(self.act_fx)
         tb_fn.addAction(self.act_morphology)
         tb_fn.addAction(self.act_pixelmath)
         tb_fn.addAction(self.act_signature)
@@ -1351,6 +1352,11 @@ class ToolbarMixin:
         self.act_narrowband_integration.setIconVisibleInMenu(True)
         self.act_narrowband_integration.triggered.connect(self._open_narrowband_integration)
 
+        self.act_fx = QAction(QIcon(fx_path), self.tr("FX"), self)
+        self.act_fx.setStatusTip(self.tr("Open the FX tool for advanced effects"))
+        self.act_fx.setIconVisibleInMenu(True)
+        self.act_fx.triggered.connect(self._open_fx_tool)
+
         # History
         self.act_history_explorer = QAction(self.tr("History Explorer..."), self)
         self.act_history_explorer.setStatusTip(self.tr("Inspect and restore from the slot's history"))
@@ -1676,6 +1682,7 @@ class ToolbarMixin:
         reg("project_load", self.act_project_load)     
         reg("image_combine", self.act_image_combine)   
         reg("psf_viewer", self.act_psf_viewer)
+        reg("fx", self.act_fx)
         reg("dither_analysis", self.act_dither_analysis)
         reg("plate_solve", self.act_plate_solve)
         reg("magnitude_tool", self.act_magnitude)

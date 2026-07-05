@@ -261,6 +261,7 @@ class Icons:
     NARROWBANDNORMALIZATION = property(lambda self: _resource_path('narrowbandnormalization.png'))
     GAIA = property(lambda self: _resource_path('gaia.png'))
     SATCHROMA = property(lambda self: _resource_path('satchroma.png'))
+    FX = property(lambda self: _resource_path('fx.png'))
     
     # Stretching
     STAT_STRETCH = property(lambda self: _resource_path('statstretch.png'))
@@ -462,6 +463,7 @@ _LEGACY_ICON_MAP = {
     'rcastro_path': 'rcastro.png',
     'parallex_path': 'parallax.png',
     'satchroma_path': 'satchroma.png',
+    'fx_path': 'fx.png',
 
     'exoicon_path': 'exoicon.png',
     'peeker_icon': 'gridicon.png',

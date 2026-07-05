@@ -183,7 +183,7 @@ from setiastro.saspro.resources import (
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
-    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path, satchroma_path,
+    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path, satchroma_path, fx_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,rcastro_path,
@@ -4004,6 +4004,27 @@ class AstroSuiteProMainWindow(
             pass
         dlg.resize(900, 650)
         dlg.show()
+
+    def _open_fx_tool(self):
+        """Open the FX dialog (Orton Glow, Soft Focus, Bloom, Vignette, Grain, Split Tone)
+        on the active document."""
+        doc = None
+        if hasattr(self, "mdi") and self.mdi.activeSubWindow():
+            sw = self.mdi.activeSubWindow().widget()
+            doc = getattr(sw, "document", None)
+        if doc is None and getattr(self, "docman", None) and self.docman._docs:
+            doc = self.docman._docs[-1]
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "No image", "Open an image first.")
+            return
+        from setiastro.saspro.fx_module import FXDialog
+        w = FXDialog(self, doc, parent=self)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        try:
+            w.setWindowIcon(QIcon(fx_path))
+        except Exception:
+            pass
+        w.show()
 
     def _open_clahe(self):
         sw = self.mdi.activeSubWindow()

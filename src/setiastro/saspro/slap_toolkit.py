@@ -1031,6 +1031,15 @@ class SLaPToolkitDialog(QDialog):
         )
         btn_sellum.clicked.connect(lambda: self._trigger("selective_lum"))
         sec_tone.add_widget(btn_sellum)
+
+        btn_fx = _LaunchButton(
+            "FX",
+            "Orton glow, soft focus, bloom, vignette, grain, split tone — "
+            "pick an effect from the dropdown."
+        )
+        btn_fx.clicked.connect(lambda: self._trigger("fx"))
+        sec_tone.add_widget(btn_fx)
+
         self._scroll_lay.addWidget(sec_tone)
 
         # ── 9. Output ────────────────────────────────────────
