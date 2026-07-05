@@ -6208,6 +6208,25 @@ class AstroSuiteProMainWindow(
                     print("SatChroma replay-on-base failed:", e)
             return
 
+        if cid == "fx":
+            try:
+                from setiastro.saspro.fx_preset import apply_fx_via_preset, fx_effect_display_name
+                preset_dict = preset if isinstance(preset, dict) else {}
+                apply_fx_via_preset(self, base_doc, preset_dict)
+                try:
+                    effect_name = fx_effect_display_name(preset_dict.get("effect", "orton_glow"))
+                    self._log(
+                        f"[Replay] Applied FX ({effect_name}) to base of "
+                        f"'{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "FX", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("FX replay-on-base failed:", e)
+            return
 
         if cid == "ghs":
             try:
@@ -7330,6 +7349,28 @@ class AstroSuiteProMainWindow(
                     pass
             return
 
+        if cid == "fx":
+            try:
+                from setiastro.saspro.fx_preset import apply_fx_via_preset, fx_effect_display_name
+                apply_fx_via_preset(self, doc, preset or {})
+                try:
+                    effect_name = fx_effect_display_name((preset or {}).get("effect", "orton_glow"))
+                    self._log(f"Applied FX ({effect_name}) preset to '{target_sw.windowTitle()}'")
+                except Exception:
+                    pass
+                try:
+                    self._last_headless_command = {
+                        "command_id": "fx",
+                        "preset":     dict(preset or {}),
+                    }
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "FX", f"Apply failed:\n{e}")
+                except Exception:
+                    pass
+            return
 
         if cid == "syqontools":
             self._execute_syqon_tools_command(preset, target_sw=target_sw)

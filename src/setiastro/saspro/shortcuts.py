@@ -573,6 +573,7 @@ _PRESET_UI_IDS = {
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine","geom_resize_canvas",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
+    "satchroma","fx",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -640,6 +641,10 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
+    if command_id == "fx":
+        from setiastro.saspro.shortcuts import _FXPresetDialog
+        dlg = _FXPresetDialog(parent, initial=cur or {"effect": "orton_glow"})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
     if command_id == "syqontools":
         dlg = _SyQonToolsPresetDialog(parent, initial=cur or {})
@@ -2272,7 +2277,145 @@ class _LevelsPresetDialog(QDialog):
             "new_view_title": self.ed_title.text().strip() or "Levels",
         }
 
+class _FXPresetDialog(QDialog):
+    """
+    Preset editor for FX (Orton Glow, Soft Focus, Bloom, Vignette, Film Grain,
+    Split Tone) — shown when editing an FX shortcut/command-drop entry.
 
+    Builds its controls dynamically from the selected effect's ParamSpec
+    list — same source of truth as the live FXDialog — but without any
+    preview/worker machinery, since this only needs to produce a preset dict.
+    """
+
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("FX Preset")
+        self.setModal(True)
+        self.resize(420, 420)
+
+        from setiastro.saspro.fx_module import EFFECTS
+        self._effects = EFFECTS
+        self._effects_by_key = {e["key"]: e for e in EFFECTS}
+
+        cur = dict(initial or {})
+        initial_key = cur.get("effect", self._effects[0]["key"])
+        self._current_effect = self._effects_by_key.get(initial_key, self._effects[0])
+        self._seed_values = {k: v for k, v in cur.items() if k != "effect"}
+
+        root = QVBoxLayout(self)
+        root.setSpacing(6)
+
+        effect_row = QHBoxLayout()
+        effect_row.addWidget(QLabel("Effect:"))
+        self._combo_effect = QComboBox(self)
+        self._combo_effect.addItems([e["name"] for e in self._effects])
+        idx0 = next((i for i, e in enumerate(self._effects)
+                    if e["key"] == self._current_effect["key"]), 0)
+        self._combo_effect.setCurrentIndex(idx0)
+        self._combo_effect.currentIndexChanged.connect(self._on_effect_changed)
+        effect_row.addWidget(self._combo_effect, 1)
+        root.addLayout(effect_row)
+
+        self._lbl_desc = QLabel("", self)
+        self._lbl_desc.setWordWrap(True)
+        self._lbl_desc.setStyleSheet("font-size: 10px; color: #999;")
+        root.addWidget(self._lbl_desc)
+
+        self._params_grp = QGroupBox("Parameters", self)
+        self._controls_lay = QVBoxLayout(self._params_grp)
+        root.addWidget(self._params_grp, 1)
+
+        btn_reset = QPushButton("Reset to Defaults", self)
+        btn_reset.clicked.connect(self._reset_current)
+        root.addWidget(btn_reset)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+        self._param_widgets: dict = {}
+        self._rebuild_controls(self._current_effect, seed=self._seed_values)
+
+    def _clear_layout(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+            elif item.layout() is not None:
+                self._clear_layout(item.layout())
+
+    def _rebuild_controls(self, eff: dict, seed: dict | None = None):
+        self._lbl_desc.setText(eff["description"])
+        self._clear_layout(self._controls_lay)
+        self._param_widgets = {}
+        seed = seed or {}
+
+        for spec in eff["params"]:
+            if spec.kind == "slider":
+                if spec.key in seed:
+                    try:
+                        raw_default = int(round(float(seed[spec.key]) * spec.scale))
+                        raw_default = max(spec.slider_lo, min(spec.slider_hi, raw_default))
+                    except Exception:
+                        raw_default = spec.slider_default
+                else:
+                    raw_default = spec.slider_default
+
+                real_default = raw_default / spec.scale
+                lbl = QLabel(f"{spec.label}: {spec.fmt(real_default)}")
+                sld = QSlider(Qt.Orientation.Horizontal, self)
+                sld.setRange(spec.slider_lo, spec.slider_hi)
+                sld.setValue(raw_default)
+                sld.setToolTip(spec.tooltip)
+                sld.valueChanged.connect(
+                    lambda v, s=spec, l=lbl: l.setText(f"{s.label}: {s.fmt(v / s.scale)}"))
+                self._controls_lay.addWidget(lbl)
+                self._controls_lay.addWidget(sld)
+                self._param_widgets[spec.key] = ("slider", sld, spec)
+            else:
+                row = QHBoxLayout()
+                row.addWidget(QLabel(f"{spec.label}:"))
+                combo = QComboBox(self)
+                combo.addItems(spec.choices or [])
+                default_choice = seed.get(spec.key, spec.default_choice)
+                if default_choice and default_choice in (spec.choices or []):
+                    combo.setCurrentText(default_choice)
+                elif spec.default_choice:
+                    combo.setCurrentText(spec.default_choice)
+                combo.setToolTip(spec.tooltip)
+                row.addWidget(combo, 1)
+                self._controls_lay.addLayout(row)
+                self._param_widgets[spec.key] = ("combo", combo, spec)
+
+    def _on_effect_changed(self, idx: int):
+        if 0 <= idx < len(self._effects):
+            self._current_effect = self._effects[idx]
+            # cross-effect params rarely share keys; harmless if seed doesn't match
+            self._rebuild_controls(self._current_effect, seed=self._seed_values)
+
+    def _reset_current(self):
+        self._rebuild_controls(self._current_effect, seed={})
+
+    def result_dict(self) -> dict:
+        params = {}
+        for key, (kind, widget, spec) in self._param_widgets.items():
+            if kind == "slider":
+                params[key] = widget.value() / spec.scale
+            else:
+                params[key] = widget.currentText()
+        return {
+            "command_id": "fx",
+            "effect": self._current_effect["key"],
+            **params,
+        }
+    
 class _SatChromaPresetDialog(QDialog):
     """
     Preset editor for SatChroma — shown when the user edits a SatChroma

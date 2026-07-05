@@ -1,11 +1,5 @@
 #saspro/curve_editor_pro.py
 # ============================================================
-#  ____  _         _____           _ _    _ _
-# / ___|| |    __ |_   _|__   ___ | | | _(_) |_
-# \___ \| |   / _` || |/ _ \ / _ \| | |/ / | __|
-#  ___) | |__| (_| || | (_) | (_) | |   <| | |_
-# |____/|_____\__,_||_|\___/ \___/|_|_|\_\_|\__|
-#
 #  Curves Editor  (curve_editor_pro.py)
 #  Part of Seti Astro Suite Pro
 #  Copyright © 2026 Franklin Marek  |  www.setiastro.com

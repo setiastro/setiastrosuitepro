@@ -431,12 +431,9 @@ def fx_headless(doc, effect: str = "orton_glow", **params):
     Apply an FX effect headlessly.
 
     `effect` selects the registry key (see EFFECTS). Any remaining keyword
-    arguments are passed straight through as that effect's params dict —
-    unlike the other tools' headless functions (which take fixed named
-    kwargs), this one is intentionally generic since each effect has a
-    different parameter set. If your replay dispatcher expects a fixed
-    signature per command_id, splat the stored preset dict as
-    fx_headless(doc, **preset) where preset = {"effect": key, **params}.
+    arguments are passed straight through as that effect's params dict.
+    This is a convenience wrapper for direct/scripted use; the shortcuts
+    and command-drop system uses apply_fx_headless()/replay_fx() below.
     """
     if doc is None or getattr(doc, "image", None) is None:
         return
@@ -446,7 +443,6 @@ def fx_headless(doc, effect: str = "orton_glow", **params):
     eff = _EFFECTS_BY_KEY.get(effect)
     if eff is None:
         return
-    # fill any missing params with their defaults so partial presets still work
     full_params = {
         spec.key: (spec.slider_default / spec.scale if spec.kind == "slider" else spec.default_choice)
         for spec in eff["params"]
@@ -462,6 +458,94 @@ def fx_headless(doc, effect: str = "orton_glow", **params):
         "preset": full_params,
         "fx": full_params,
     }, step_name=f"FX — {eff['name']}")
+
+
+def apply_fx_headless(doc, preset: dict, main_window=None) -> bool:
+    """
+    Apply an FX effect to *doc* from a preset dict without opening any dialog.
+    Used by the workflow assistant replay system and command-drop.
+
+    Returns True on success, False on failure.
+
+    preset keys:
+        effect : str   registry key (see EFFECTS), default "orton_glow"
+        ...    : any of that effect's own params (see EFFECTS[key]["params"]);
+                 missing ones fall back to that param's default.
+    """
+    if doc is None or getattr(doc, "image", None) is None:
+        return False
+
+    try:
+        effect = str((preset or {}).get("effect", "orton_glow"))
+        eff = _EFFECTS_BY_KEY.get(effect)
+        if eff is None:
+            return False
+
+        src = _to_float01(np.asarray(doc.image))
+        if src is None:
+            return False
+
+        full_params = {
+            spec.key: (spec.slider_default / spec.scale if spec.kind == "slider" else spec.default_choice)
+            for spec in eff["params"]
+        }
+        for spec in eff["params"]:
+            if spec.key in (preset or {}):
+                full_params[spec.key] = preset[spec.key]
+
+        out = _process_fx(effect, src, full_params)
+        out = _blend_mask(out, src, _active_mask_array_from_doc(doc))
+
+        meta = {
+            "command_id": "fx",
+            "step_name":  f"FX — {eff['name']}",
+            "effect":     effect,
+            "preset":     dict(preset or {}),
+            "fx":         full_params,
+        }
+
+        if main_window is not None and hasattr(main_window, "_last_headless_command"):
+            main_window._last_headless_command = {
+                "command_id": "fx",
+                "preset":     dict(preset or {}),
+            }
+
+        doc.apply_edit(out, metadata=meta, step_name=f"FX — {eff['name']}")
+        return True
+
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def replay_fx(main_window, target_sw=None) -> bool:
+    """
+    Re-apply the last FX operation headlessly on the base document.
+    Mirrors the replay pattern used by Curves, SatChroma, Cosmic Clarity, etc.
+    """
+    last = getattr(main_window, "_last_headless_command", None) or {}
+    if last.get("command_id") != "fx":
+        return False
+
+    preset = dict(last.get("preset") or {})
+
+    doc = None
+    try:
+        if target_sw is not None:
+            sw_widget = target_sw.widget() if hasattr(target_sw, "widget") else target_sw
+            doc = getattr(sw_widget, "document", None)
+        if doc is None and hasattr(main_window, "_active_doc"):
+            doc = main_window._active_doc()
+        if doc is None and getattr(main_window, "docman", None):
+            doc = main_window.docman.get_active_document()
+    except Exception:
+        pass
+
+    if doc is None:
+        return False
+
+    return apply_fx_headless(doc, preset, main_window=main_window)
 
 
 # ─── worker ───────────────────────────────────────────────────────────────────

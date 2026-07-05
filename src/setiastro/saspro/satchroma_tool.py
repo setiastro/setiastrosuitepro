@@ -757,6 +757,7 @@ class SatChromaTool(QDialog):
         self.spin_strength.valueChanged.connect(
             lambda v: self.sld_strength.setValue(int(v * 100)))
         self.spin_strength.valueChanged.connect(self._on_changed)
+        self.sld_strength.valueChanged.connect(self._on_changed)   
 
         btn_reset = QPushButton("Reset Curve")
         btn_reset.setFixedWidth(88)
@@ -843,10 +844,9 @@ class SatChromaTool(QDialog):
     # ── LUT + processing ──────────────────────────────────────
 
     def _build_lut(self) -> np.ndarray:
-        lut    = self.canvas.build_lut()
-        scale  = float(self.spin_strength.value())
-        scaled = (lut - 1.0) * scale + 1.0
-        return np.clip(scaled, Y_MIN, Y_MAX).astype(np.float32)
+        lut   = self.canvas.build_lut()
+        scale = float(self.spin_strength.value())
+        return np.clip(lut * scale, Y_MIN, Y_MAX).astype(np.float32)
 
     def _process(self, img: np.ndarray) -> np.ndarray:
         if img.ndim != 3 or img.shape[2] < 3:
@@ -1097,7 +1097,7 @@ def apply_satchroma_headless(doc, preset: dict, main_window=None) -> bool:
 
         lut    = _pchip_lut(pts)
         scale  = float(preset.get("strength", 1.0))
-        lut    = np.clip((lut - 1.0) * scale + 1.0, Y_MIN, Y_MAX).astype(np.float32)
+        lut = np.clip(lut * scale, Y_MIN, Y_MAX).astype(np.float32)
 
         mode   = int(preset.get("mode", 0))
         src3   = img[:, :, :3].copy()
