@@ -2297,6 +2297,10 @@ class BlinkKeepersDialog(QDialog):
             force_rgb=bool(self._force_rgb),
             bayer_pattern=getattr(self, "_bayer_pattern", None),
         ).astype(np.float32, copy=False)
+        ref_shape = getattr(self.analysis, "ref_image", None)
+        if ref_shape is not None:
+            from setiastro.saspro.ser_stacker import _conform_to_ref_shape
+            img = _conform_to_ref_shape(img, self.analysis.ref_image.shape)
 
         gdx = float(self.analysis.dx[int(fi)]) if (getattr(self.analysis, "dx", None) is not None) else 0.0
         gdy = float(self.analysis.dy[int(fi)]) if (getattr(self.analysis, "dy", None) is not None) else 0.0

@@ -34,7 +34,7 @@ from setiastro.saspro.resources import (
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
-    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path,
+    nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,satchroma_path, fx_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,rcastro_path,sssc_path,
     selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
@@ -210,6 +210,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_hist_transform)
         tb_fn.addAction(self.act_curves)
         tb_fn.addAction(self.act_ghs)
+        tb_fn.addAction(self.act_satchroma)
         tb_fn.addAction(self.act_abe)
         tb_fn.addAction(self.act_graxpert)
         tb_fn.addAction(self.act_remove_stars)
@@ -231,6 +232,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_wavescale_de)
         tb_fn.addAction(self.act_clahe)
         tb_fn.addAction(self.act_texture_clarity)
+        tb_fn.addAction(self.act_fx)
         tb_fn.addAction(self.act_morphology)
         tb_fn.addAction(self.act_pixelmath)
         tb_fn.addAction(self.act_signature)
@@ -279,6 +281,7 @@ class ToolbarMixin:
         tb_tl.addAction(self.act_image_combine)
         tb_tl.addAction(self.act_magnitude)
         tb_tl.addAction(self.act_snr)
+        tb_tl.addAction(self.act_slap_toolkit)
 
         self._restore_toolbar_order(tb_tl, "Toolbar/Tools")
         try:
@@ -997,6 +1000,11 @@ class ToolbarMixin:
         self.act_ghs.setIconVisibleInMenu(True)
         self.act_ghs.triggered.connect(self._open_hyperbolic)
 
+        self.act_satchroma = QAction(QIcon(satchroma_path), self.tr("Saturation / Chroma"), self)
+        self.act_satchroma.setStatusTip(self.tr("Adjust saturation and chroma"))
+        self.act_satchroma.setIconVisibleInMenu(True)
+        self.act_satchroma.triggered.connect(self._open_satchroma_tool)        
+
         self.act_abe = QAction(QIcon(abeicon_path), self.tr("ADBE..."), self)
         self.act_abe.setStatusTip(self.tr("Automatic (Dynamic) Background Extraction"))
         self.act_abe.setIconVisibleInMenu(True)
@@ -1080,7 +1088,10 @@ class ToolbarMixin:
         self.act_multiscale_decomp.setIconVisibleInMenu(True)
         self.act_multiscale_decomp.triggered.connect(self._open_multiscale_decomp)
 
-
+        self.act_slap_toolkit = QAction(QIcon(slap_path), self.tr("SLAP Toolkit..."), self)
+        self.act_slap_toolkit.setStatusTip(self.tr("Solar Lunar and Planetary (SLAP) Toolkit"))
+        self.act_slap_toolkit.setIconVisibleInMenu(True)
+        self.act_slap_toolkit.triggered.connect(self._open_slap_toolkit)
 
 
         # --- Extract Luminance main action ---
@@ -1340,6 +1351,11 @@ class ToolbarMixin:
         self.act_narrowband_integration.setStatusTip(self.tr("Integrate continuum subtracted narrowband data into RGB channels"))
         self.act_narrowband_integration.setIconVisibleInMenu(True)
         self.act_narrowband_integration.triggered.connect(self._open_narrowband_integration)
+
+        self.act_fx = QAction(QIcon(fx_path), self.tr("FX"), self)
+        self.act_fx.setStatusTip(self.tr("Open the FX tool for advanced effects"))
+        self.act_fx.setIconVisibleInMenu(True)
+        self.act_fx.triggered.connect(self._open_fx_tool)
 
         # History
         self.act_history_explorer = QAction(self.tr("History Explorer..."), self)
@@ -1606,6 +1622,7 @@ class ToolbarMixin:
         reg("stat_stretch",   self.act_stat_stretch)
         reg("star_stretch",   self.act_star_stretch)
         reg("curves",         self.act_curves)
+        reg("satchroma", self.act_satchroma)
         reg("ghs",            self.act_ghs)
         reg("blink",          self.act_blink)
         reg("ppp",            self.act_ppp)
@@ -1617,7 +1634,12 @@ class ToolbarMixin:
         reg("contsub",      self.act_contsub)
         reg("narrowband_integration", self.act_narrowband_integration)
         reg("abe",          self.act_abe)
-        reg("create_mask", self.act_create_mask)
+        reg("create_mask",  self.act_create_mask)
+        reg("invert_mask",  self.act_invert_mask)
+        reg("remove_mask",  self.act_remove_mask)
+        reg("show_mask",    self.act_show_mask)
+        reg("hide_mask",    self.act_hide_mask)
+        reg("mono_to_rgb",  self.act_mono_to_rgb)
         reg("graxpert", self.act_graxpert)        
         reg("histogram_transform", self.act_hist_transform)
         reg("remove_stars", self.act_remove_stars)
@@ -1660,12 +1682,14 @@ class ToolbarMixin:
         reg("project_load", self.act_project_load)     
         reg("image_combine", self.act_image_combine)   
         reg("psf_viewer", self.act_psf_viewer)
+        reg("fx", self.act_fx)
         reg("dither_analysis", self.act_dither_analysis)
         reg("plate_solve", self.act_plate_solve)
         reg("magnitude_tool", self.act_magnitude)
         reg("snr_tool", self.act_snr)
         reg("star_align", self.act_star_align)
         reg("star_register", self.act_star_register)
+        reg("slap", self.act_slap_toolkit)
         reg("mosaic_master", self.act_mosaic_master)
         reg("image_peeker", self.act_image_peeker)
         reg("live_stacking", self.act_live_stacking)

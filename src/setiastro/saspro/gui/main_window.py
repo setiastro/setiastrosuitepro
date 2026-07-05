@@ -183,7 +183,7 @@ from setiastro.saspro.resources import (
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
-    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path,
+    disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path, satchroma_path, fx_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,rcastro_path,
@@ -2876,6 +2876,16 @@ class AstroSuiteProMainWindow(
         dlg.resize(1000, 650)
         dlg.show()
 
+    def _open_satchroma_tool(self):
+        doc = self._active_doc()
+        if not doc:
+            QMessageBox.information(self, "SatChroma", "No active image.")
+            return
+        from setiastro.saspro.satchroma_tool import SatChromaTool
+        w = SatChromaTool(doc_manager=self.docman, document=doc, parent=self)
+        w.setWindowIcon(QIcon(satchroma_path))
+        w.show()
+
     def _remove_stars(self, doc=None):
         from setiastro.saspro.remove_stars import remove_stars
         """
@@ -3995,6 +4005,27 @@ class AstroSuiteProMainWindow(
         dlg.resize(900, 650)
         dlg.show()
 
+    def _open_fx_tool(self):
+        """Open the FX dialog (Orton Glow, Soft Focus, Bloom, Vignette, Grain, Split Tone)
+        on the active document."""
+        doc = None
+        if hasattr(self, "mdi") and self.mdi.activeSubWindow():
+            sw = self.mdi.activeSubWindow().widget()
+            doc = getattr(sw, "document", None)
+        if doc is None and getattr(self, "docman", None) and self.docman._docs:
+            doc = self.docman._docs[-1]
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, "No image", "Open an image first.")
+            return
+        from setiastro.saspro.fx_module import FXDialog
+        w = FXDialog(self, doc, parent=self)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        try:
+            w.setWindowIcon(QIcon(fx_path))
+        except Exception:
+            pass
+        w.show()
+
     def _open_clahe(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
@@ -4572,7 +4603,8 @@ class AstroSuiteProMainWindow(
         if doc is None and getattr(self, "docman", None) and self.docman._docs:
             doc = self.docman._docs[-1]
 
-        w = FrequencySeperationTab(doc_manager=self.docman, document=doc)
+        w = FrequencySeperationTab(doc_manager=self.docman, document=doc, parent=self)
+        w.setWindowFlag(Qt.WindowType.Window, True)
         w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         w.setWindowTitle("Frequency Separation")
 
@@ -4601,6 +4633,10 @@ class AstroSuiteProMainWindow(
             pass
 
         dlg.show()  
+
+    def _open_slap_toolkit(self):
+        from setiastro.saspro.slap_toolkit import show_slap_toolkit
+        show_slap_toolkit(self)
 
     def _open_contsub_tool(self):
         from setiastro.saspro.continuum_subtract import ContinuumSubtractTab
@@ -6148,6 +6184,50 @@ class AstroSuiteProMainWindow(
                     print("Replay-on-base Curves failed:", e)
             return
 
+        if cid == "satchroma":
+            try:
+                from setiastro.saspro.satchroma_preset import apply_satchroma_via_preset
+                preset_dict = preset if isinstance(preset, dict) else {}
+                apply_satchroma_via_preset(self, base_doc, preset_dict)
+                try:
+                    mode_names = {0: "Saturation (HSV)", 1: "Chroma (Lab)"}
+                    mode_name  = mode_names.get(int(preset_dict.get("mode", 0)), "Saturation")
+                    strength   = float(preset_dict.get("strength", 1.0))
+                    self._log(
+                        f"[Replay] Applied SatChroma to base of "
+                        f"'{target_sw.windowTitle()}' "
+                        f"(mode={mode_name}, strength={strength:.2f})"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "SatChroma",
+                                        f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("SatChroma replay-on-base failed:", e)
+            return
+
+        if cid == "fx":
+            try:
+                from setiastro.saspro.fx_preset import apply_fx_via_preset, fx_effect_display_name
+                preset_dict = preset if isinstance(preset, dict) else {}
+                apply_fx_via_preset(self, base_doc, preset_dict)
+                try:
+                    effect_name = fx_effect_display_name(preset_dict.get("effect", "orton_glow"))
+                    self._log(
+                        f"[Replay] Applied FX ({effect_name}) to base of "
+                        f"'{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "FX", f"Replay-on-base failed:\n{e}")
+                except Exception:
+                    print("FX replay-on-base failed:", e)
+            return
+
         if cid == "ghs":
             try:
                 from setiastro.saspro.ghs_preset import apply_ghs_via_preset
@@ -7243,6 +7323,53 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 
                 QMessageBox.warning(self, "Curves", f"Apply failed:\n{e}")
+            return
+
+        if cid == "satchroma":
+            try:
+                from setiastro.saspro.satchroma_preset import apply_satchroma_via_preset
+                apply_satchroma_via_preset(self, doc, preset or {})
+                try:
+                    self._log(
+                        f"Applied SatChroma preset to '{target_sw.windowTitle()}'"
+                    )
+                except Exception:
+                    pass
+                try:
+                    self._last_headless_command = {
+                        "command_id": "satchroma",
+                        "preset":     dict(preset or {}),
+                    }
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "SatChroma", f"Apply failed:\n{e}")
+                except Exception:
+                    pass
+            return
+
+        if cid == "fx":
+            try:
+                from setiastro.saspro.fx_preset import apply_fx_via_preset, fx_effect_display_name
+                apply_fx_via_preset(self, doc, preset or {})
+                try:
+                    effect_name = fx_effect_display_name((preset or {}).get("effect", "orton_glow"))
+                    self._log(f"Applied FX ({effect_name}) preset to '{target_sw.windowTitle()}'")
+                except Exception:
+                    pass
+                try:
+                    self._last_headless_command = {
+                        "command_id": "fx",
+                        "preset":     dict(preset or {}),
+                    }
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "FX", f"Apply failed:\n{e}")
+                except Exception:
+                    pass
             return
 
         if cid == "syqontools":

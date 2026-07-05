@@ -168,6 +168,7 @@ class MenuMixin:
         m_fn.addAction(self.act_crop)
         m_fn.addAction(self.act_curves)
         m_fn.addAction(self.act_extract_luma)
+        m_fn.addAction(self.act_fx)
         m_fn.addAction(self.act_graxpert)
         m_fn.addAction(self.act_ghs)
         m_fn.addAction(self.act_halobgon)
@@ -183,6 +184,7 @@ class MenuMixin:
         m_fn.addAction(self.act_remove_stars)
         m_fn.addAction(self.act_rgb_combine)
         m_fn.addAction(self.act_rgb_extract)
+        m_fn.addAction(self.act_satchroma)
         m_fn.addAction(self.act_sfcc)
         m_fn.addAction(self.act_sssc)
         m_fn.addAction(self.act_signature)
@@ -218,6 +220,7 @@ class MenuMixin:
         
         m_tools.addAction(self.act_selective_color)
         m_tools.addAction(self.act_selective_lum) 
+        m_tools.addAction(self.act_slap_toolkit)
         m_tools.addAction(self.act_magnitude)
         m_tools.addAction(self.act_snr)
         m_tools.addSeparator()

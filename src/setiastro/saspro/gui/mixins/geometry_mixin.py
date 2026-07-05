@@ -812,13 +812,39 @@ class GeometryMixin:
     # --- Geometry: headless apply-to-doc helpers ---
 
     def _apply_geom_invert_to_doc(self, doc):
-        """Apply invert to document."""
+        """Apply invert to document, respecting active mask if present."""
         arr = np.asarray(doc.image, dtype=np.float32)
         out = invert_image_numba(arr)
-        if hasattr(doc, "set_image"):
-            doc.set_image(out, step_name="Invert")
+
+        # Blend with active mask if present
+        mid = getattr(doc, "active_mask_id", None)
+        if mid:
+            masks = getattr(doc, "masks", {}) or {}
+            layer = masks.get(mid)
+            m = np.asarray(getattr(layer, "data", None)) if layer else None
+            if m is not None and m.size > 0:
+                m = np.clip(m.astype(np.float32), 0.0, 1.0)
+                if m.ndim == 2 and out.ndim == 3:
+                    m = m[:, :, None]
+                # Resize mask if needed
+                if m.shape[:2] != out.shape[:2]:
+                    yi = np.linspace(0, m.shape[0] - 1, out.shape[0]).astype(np.int32)
+                    xi = np.linspace(0, m.shape[1] - 1, out.shape[1]).astype(np.int32)
+                    m = m[yi][:, xi]
+                    if out.ndim == 3 and m.ndim == 2:
+                        m = m[:, :, None]
+                out = m * out + (1.0 - m) * arr
+
+        meta = {
+            "step_name": "Invert",
+            "masked": bool(mid),
+            "mask_id": mid,
+            "mask_blend": "m*out+(1-m)*src",
+        }
+        if hasattr(doc, "apply_edit"):
+            doc.apply_edit(out.astype(np.float32), metadata=meta, step_name="Invert")
         else:
-            doc.image = out
+            doc.image = out.astype(np.float32)
 
     def _apply_geom_flip_h_to_doc(self, doc):
         """Apply horizontal flip to document with WCS update."""

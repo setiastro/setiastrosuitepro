@@ -260,6 +260,8 @@ class Icons:
     NB_TO_RGB = property(lambda self: _resource_path('nbtorgb.png'))
     NARROWBANDNORMALIZATION = property(lambda self: _resource_path('narrowbandnormalization.png'))
     GAIA = property(lambda self: _resource_path('gaia.png'))
+    SATCHROMA = property(lambda self: _resource_path('satchroma.png'))
+    FX = property(lambda self: _resource_path('fx.png'))
     
     # Stretching
     STAT_STRETCH = property(lambda self: _resource_path('statstretch.png'))
@@ -283,6 +285,7 @@ class Icons:
     HUBBLE = property(lambda self: _resource_path('hubble.png'))
     COLLAGE = property(lambda self: _resource_path('collage.png'))
     ANNOTATED = property(lambda self: _resource_path('annotated.png'))
+    SLAP = property(lambda self: _resource_path('slap.png'))
     
     # WIMS/WIMI
     WIMS = property(lambda self: _resource_path('wims.png'))
@@ -459,6 +462,8 @@ _LEGACY_ICON_MAP = {
     'sssc_path': 'sssc.png',
     'rcastro_path': 'rcastro.png',
     'parallex_path': 'parallax.png',
+    'satchroma_path': 'satchroma.png',
+    'fx_path': 'fx.png',
 
     'exoicon_path': 'exoicon.png',
     'peeker_icon': 'gridicon.png',
@@ -474,6 +479,7 @@ _LEGACY_ICON_MAP = {
     'nbtorgb_path': 'nbtorgb.png',
     'freqsep_path': 'freqsep.png',
     'multiscale_decomp_path': 'multiscale_decomp.png',
+    'slap_path': 'slap.png',
     'contsub_path': 'contsub.png',
     'nbi_path': 'contadd.png',
     'halo_path': 'halo.png',

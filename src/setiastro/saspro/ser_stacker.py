@@ -27,6 +27,34 @@ _BAYER_TO_CV2 = {
     "GBRG": cv2.COLOR_BayerGB2RGB,
 }
 
+def _conform_to_ref_shape(img: np.ndarray, ref_shape: tuple) -> np.ndarray:
+    """
+    Pad (reflect) or crop a frame to match ref_shape (H, W) or (H, W, C).
+    Preference is padding so no data is discarded.
+    """
+    ref_h, ref_w = int(ref_shape[0]), int(ref_shape[1])
+    h, w = img.shape[0], img.shape[1]
+
+    if h == ref_h and w == ref_w:
+        return img
+
+    # Pad if smaller, crop if larger — per axis independently
+    # Step 1: pad
+    pad_h = max(0, ref_h - h)
+    pad_w = max(0, ref_w - w)
+
+    if pad_h > 0 or pad_w > 0:
+        if img.ndim == 2:
+            img = np.pad(img, ((0, pad_h), (0, pad_w)), mode="reflect")
+        else:
+            img = np.pad(img, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
+
+    # Step 2: crop if still oversized
+    if img.shape[0] > ref_h or img.shape[1] > ref_w:
+        img = img[:ref_h, :ref_w] if img.ndim == 2 else img[:ref_h, :ref_w, :]
+
+    return img.astype(img.dtype, copy=False)
+
 def _cfg_bayer_pattern(cfg) -> str | None:
     # cfg.bayer_pattern might be missing in older saved projects; be defensive
     return getattr(cfg, "bayer_pattern", None)
@@ -623,6 +651,7 @@ def _coarse_surface_ref_locked(
     try:
         img0 = _get_frame(src0, 0, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
 
+        _src0_shape = img0.shape  # stash for conforming subsequent frames
         ref0 = _to_mono01(img0).astype(np.float32, copy=False)
         ref0 = _downN(ref0)
         ref0p = _bandpass(ref0) if bandpass else (ref0 - float(ref0.mean()))
@@ -714,7 +743,7 @@ def _coarse_surface_ref_locked(
         pred_x, pred_y = float(rx0), float(ry0)
         for b in boundaries[1:]:
             img = _get_frame(srck, b, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
-
+            img = _conform_to_ref_shape(img, img0.shape) if 'img0' in dir() else img
             cur = _to_mono01(img).astype(np.float32, copy=False)
             cur = _downN(cur)
             curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
@@ -763,6 +792,7 @@ def _coarse_surface_ref_locked(
                     continue
 
                 img = _get_frame(src, i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
+                img = _conform_to_ref_shape(img, _src0_shape)
                 cur = _to_mono01(img).astype(np.float32, copy=False)
                 cur = _downN(cur)
                 curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
@@ -793,6 +823,7 @@ def _coarse_surface_ref_locked(
             pred_x, pred_y = float(rx0), float(ry0)
             for i in range(1, n):
                 img = _get_frame(src, i, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
+                img = _conform_to_ref_shape(img, _src0_shape)
                 cur = _to_mono01(img).astype(np.float32, copy=False)
                 cur = _downN(cur)
                 curp = _bandpass(cur) if bandpass else (cur - float(cur.mean()))
@@ -1436,6 +1467,7 @@ def stack_ser(
                     to_float01=True, force_rgb=bool(to_rgb),
                     bayer_pattern=bayer_pattern
                 ).astype(np.float32, copy=False)
+                img = _conform_to_ref_shape(img, ref_img.shape)
 
                 gdx = float(analysis.dx[int(i)]) if analysis.dx is not None else 0.0
                 gdy = float(analysis.dy[int(i)]) if analysis.dy is not None else 0.0
@@ -1696,6 +1728,7 @@ def _build_reference(
     for j in range(k):
         idx = int(order[j])
         fr = _get_frame(src, idx, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
+        fr = _conform_to_ref_shape(fr, f0.shape)
         acc += fr.astype(np.float32, copy=False)
     ref = acc / float(k)
     return np.clip(ref, 0.0, 1.0).astype(np.float32, copy=False)
@@ -2042,6 +2075,7 @@ def analyze_ser(
                 for i in chunk.tolist():
                     img = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
                                      to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bpat)
+                    img = _conform_to_ref_shape(img, ref_img.shape)
                     cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
                     coarse_dx = float(dx[int(i)])
@@ -2169,6 +2203,7 @@ def analyze_ser(
                 for i in chunk.tolist():
                     img = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
                                      to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bpat)
+                    img = _conform_to_ref_shape(img, ref_img.shape)
 
                     dx_i, dy_i, cf_i = tracker.shift_to_ref(img, ref_center)
                     ang_i = 0.0
@@ -2419,6 +2454,7 @@ def realign_ser(
                     img   = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
                                        to_float01=True, force_rgb=bool(to_rgb),
                                        bayer_pattern=bpat)
+                    img   = _conform_to_ref_shape(img, ref_img.shape)
                     cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
                     # Warm-start from the coarse drift already stored in analysis
@@ -2528,6 +2564,7 @@ def realign_ser(
                     img   = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
                                        to_float01=True, force_rgb=bool(to_rgb),
                                        bayer_pattern=bpat)
+                    img   = _conform_to_ref_shape(img, ref_img.shape)
                     cur_m = _to_mono01(img).astype(np.float32, copy=False)
 
                     # Warm-start from the centroid shifts already in analysis

@@ -32,15 +32,19 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     )
 
 def _get_ort(status_cb=print):
-    """
-    Import onnxruntime AFTER runtime_torch has added runtime site-packages to sys.path.
-    """
     try:
-        import onnxruntime as ort  # type: ignore
+        import onnxruntime as ort
         return ort
-    except Exception as e:
+    except ImportError as e:
         try:
-            status_cb(f"CosmicClarity Denoise: onnxruntime not available ({type(e).__name__}: {e})")
+            status_cb(f"CosmicClarity Denoise: onnxruntime not installed ({e})")
+        except Exception:
+            pass
+        return None
+    except Exception as e:
+        # Catches load errors like missing libcudart — ORT is installed but broken
+        try:
+            status_cb(f"CosmicClarity Denoise: onnxruntime failed to load ({type(e).__name__}: {e}) — falling back to torch backend.")
         except Exception:
             pass
         return None
