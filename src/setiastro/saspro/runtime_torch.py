@@ -528,6 +528,36 @@ def _cp_tag(venv_python: Path) -> str | None:
 def _is_compiled_torch_dir(d: Path) -> bool:
     return any(d.glob("_C.*.pyd")) or any(d.glob("_C.*.so")) or any(d.glob("_C.cpython*"))
 
+def _register_dll_dirs_for_frozen(site: Path, vp: Path, status_cb=print) -> None:
+    """
+    PyInstaller-frozen builds don't get the normal DLL search behavior that a
+    standalone venv python.exe gets just by living inside the venv folder.
+    torch's _C.pyd depends on DLLs under torch/lib (torch_cpu.dll, c10.dll,
+    fbgemm.dll, etc.), and sometimes the venv's own Scripts/DLLs folders.
+    Without registering those directories explicitly, an in-process import
+    inside the frozen exe can fail with "Failed to load PyTorch C extensions"
+    even though a subprocess probe using the venv's own python.exe imports
+    torch fine (this is exactly the venv-probe-ok/in-process-fails mismatch
+    reported by users).
+    """
+    if platform.system() != "Windows" or not getattr(sys, "frozen", False):
+        return
+    candidates = [
+        site / "torch" / "lib",
+        vp.parent,                   # venv\Scripts
+        vp.parent / "DLLs",
+        vp.parent.parent / "DLLs",   # venv\DLLs, if present
+    ]
+    registered = []
+    for d in candidates:
+        try:
+            if d.is_dir():
+                os.add_dll_directory(str(d))
+                registered.append(str(d))
+        except Exception:
+            pass
+    if registered:
+        status_cb(f"[RT] Registered DLL search dirs for frozen import: {registered}")
 
 def _looks_like_source_tree_torch(d: Path) -> bool:
     # A real source tree has _C/__init__.py AND setup.py or CMakeLists.txt
@@ -1564,6 +1594,7 @@ def import_torch(
                     sys.path.insert(0, site_s)
                 _demote_shadow_torch_paths(status_cb=status_cb)
                 _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+                _register_dll_dirs_for_frozen(Path(site_s), vp, status_cb=status_cb)
                 if getattr(sys, "frozen", False):
                     try:
                         os.chdir(Path.home())
@@ -1603,6 +1634,7 @@ def import_torch(
                 sys.path.insert(0, sp)
             _demote_shadow_torch_paths(status_cb=status_cb)
             _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+            _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb) 
             if getattr(sys, "frozen", False):
                 try:
                     os.chdir(Path.home())
@@ -1711,6 +1743,7 @@ def import_torch(
         sys.path.insert(0, sp)
     _demote_shadow_torch_paths(status_cb=status_cb)
     _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+    _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb)
     if getattr(sys, "frozen", False):
         try:
             os.chdir(Path.home())
@@ -1730,6 +1763,27 @@ def import_torch(
             _fcache_clear(rt)
         except Exception:
             pass
+
+        # One retry: purge and re-register DLL dirs in case torch partially
+        # populated sys.modules before add_dll_directory ran, or the first
+        # registration attempt missed a required folder.
+        if not getattr(import_torch, "_dll_retry_done", False):
+            import_torch._dll_retry_done = True
+            status_cb(f"[RT] In-process import failed ({type(e).__name__}: {e}); retrying once after DLL directory registration…")
+            _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+            _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb)
+            try:
+                import torch
+                import torchvision
+                if require_torchaudio:
+                    import torchaudio
+                _torch_sanity_check(status_cb=status_cb)
+                _TORCH_CACHED = torch
+                _write_cache_best_effort(rt, site, venv_ver)
+                return torch
+            except Exception as e2:
+                e = e2  # fall through to diagnostic below using the retry's error
+
         ok_all_final, info_final = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
         msg = "\n".join([f"{k}: ok={ok} :: {out}" for k, (ok, out) in info_final.items()])
         raise RuntimeError(
@@ -1861,6 +1915,7 @@ def add_runtime_to_sys_path(status_cb=print) -> None:
             if c.exists() and sc not in sys.path:
                 sys.path.insert(0, sc)
         _demote_shadow_torch_paths(status_cb=status_cb)
+        _register_dll_dirs_for_frozen(site, vpy, status_cb=status_cb)   # <-- add
     except Exception:
         return
 

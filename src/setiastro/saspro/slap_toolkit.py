@@ -832,6 +832,15 @@ class SLaPToolkitDialog(QDialog):
         row_pre.addWidget(btn_pedestal)
         sec_pre.body_layout().addLayout(row_pre)
 
+        btn_rgb_align = _LaunchButton(
+            "RGB Align",
+            "Align R and B channels to G — useful for atmospheric dispersion or "
+            "channel misalignment in planetary/solar RGB data.",
+            accent_color="#e8a020"
+        )
+        btn_rgb_align.clicked.connect(lambda: self._trigger("rgb_align"))
+        sec_pre.add_widget(btn_rgb_align)
+
         self._scroll_lay.addWidget(sec_pre)
 
         # ── 2. Masks ─────────────────────────────────────────
@@ -1310,6 +1319,11 @@ class SLaPToolkitDialog(QDialog):
                     doc.remove_mask(mid)
                     if hasattr(doc, "changed"):
                         doc.changed.emit()
+                try:
+                    if hasattr(self.main, "_refresh_mask_action_states"):
+                        self.main._refresh_mask_action_states()
+                except Exception:
+                    pass
                 self._status("Mask cleared — full image active for Surface + Prominence.")
             except Exception as e:
                 self._status(f"Could not clear mask: {e}")
@@ -1376,8 +1390,20 @@ class SLaPToolkitDialog(QDialog):
                 visible=True,
             )
             doc.add_mask(layer, make_active=True)
+            # Ensure active_mask_id is set — some add_mask implementations
+            # don't set this automatically when make_active=True
+            if getattr(doc, "active_mask_id", None) != layer.id:
+                doc.active_mask_id = layer.id
             if hasattr(doc, "changed"):
                 doc.changed.emit()
+            # Also call the main window's mask state refresh so toolbar/menu
+            # buttons (Remove Mask, Show Mask etc.) reflect the new mask
+            try:
+                mw = self.main
+                if hasattr(mw, "_refresh_mask_action_states"):
+                    mw._refresh_mask_action_states()
+            except Exception:
+                pass
 
             if invert:
                 direction = f"disc ≥ {disc_threshold:.2f} then inverted → prominence region"
