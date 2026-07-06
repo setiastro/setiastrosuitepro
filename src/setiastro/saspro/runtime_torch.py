@@ -1,4 +1,4 @@
-# pro/runtime_torch.py  (index-url strategy; Python 3.12/3.13/3.14 compatible)
+# src/setiastro/saspro/runtime_torch.py  (index-url strategy; Python 3.12/3.13/3.14 compatible)
 from __future__ import annotations
 import os
 import sys
@@ -1218,25 +1218,28 @@ def _install_torch(
         status_cb("Installing PyTorch with DirectML (torch-directml)…")
         _pip_install_ok(["uninstall", "-y", "torch", "torchvision", "torch-directml"])
 
-        if not _pip_install_ok(["install", "--prefer-binary", "--no-cache-dir", "torch-directml"]):
-            raise RuntimeError("Failed to install torch-directml.")
+        dml_ok = _pip_install_ok(["install", "--prefer-binary", "--no-cache-dir", "torch-directml"])
 
-        _pip_install_ok(["install", "--prefer-binary", "--no-cache-dir", "torchvision"])
+        if not dml_ok:
+            status_cb("[RT] torch-directml is not available for this system/Python. Falling back to CPU.")
+        else:
+            _pip_install_ok(["install", "--prefer-binary", "--no-cache-dir", "torchvision"])
 
-        code = (
-            "import torch, torch_directml; d=torch_directml.device(); "
-            "x=torch.tensor([1]).to(d); y=torch.tensor([2]).to(d); print(int((x+y).item()))"
-        )
-        r = subprocess.run(
-            [str(venv_python), "-c", code],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
-        )
-        if r.returncode != 0 or "3" not in (r.stdout or ""):
-            status_cb((r.stdout or "")[-2000:])
-            raise RuntimeError("torch-directml installed, but DirectML verification failed.")
-
-        status_cb("Installed DirectML backend successfully.")
-        return
+            code = (
+                "import torch, torch_directml; d=torch_directml.device(); "
+                "x=torch.tensor([1]).to(d); y=torch.tensor([2]).to(d); print(int((x+y).item()))"
+            )
+            r = subprocess.run(
+                [str(venv_python), "-c", code],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **_safe_text_kwargs(),
+            )
+            if r.returncode != 0 or "3" not in (r.stdout or ""):
+                status_cb((r.stdout or "")[-2000:])
+                status_cb("[RT] torch-directml installed but verification failed. Falling back to CPU.")
+                _pip_install_ok(["uninstall", "-y", "torch", "torchvision", "torch-directml"])
+            else:
+                status_cb("Installed DirectML backend successfully.")
+                return
 
     # ── CPU fallback ──────────────────────────────────────────────────────────
     status_cb(f"[RT] Installing PyTorch (CPU) for {cp}…")
