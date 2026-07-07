@@ -8,12 +8,14 @@
 #/____/\___/\__/_/_/  |_/____/\__/_/   \____/ 
 #  SASpro Gaia XP Spectral Library                                             
 #
-#  gaia_database.py  —  SASpro Gaia XP Spectral Library
-#  Manages bulk-downloaded Gaia DR3 XP spectrum SQLite files.
-#  Provides a unified lookup layer:
+#  gaia_database.py  —  SASpro Gaia XP Spectral Library + Astrometric Library
+#  Manages bulk-downloaded Gaia DR3 SQLite files, both flavors:
+#    - XP spectra (mag-banded, for color calibration)
+#    - Astrometry (declination-banded, for plate solving / star ID)
+#  Each provides a unified lookup layer:
 #    1. Local bulk library (distributed SQLite files)
-#    2. Live cache DB   (gaia_xp_cache.sqlite)
-#    3. Live archive    (fallback, handled by GaiaDownloader)
+#    2. Live cache DB   (gaia_xp_cache.sqlite, spectral only)
+#    3. Live archive    (fallback, handled by GaiaDownloader, spectral only)
 #
 #  Written by Franklin Marek
 #  www.setiastro.com
@@ -57,14 +59,19 @@ except ImportError:
     HAS_MPL = False
 
 
-# ── Backblaze public URL ───────────────────────────────────────────────────────
-LIBRARY_DOWNLOAD_BASE = "https://f005.backblazeb2.com/file/setiastro-gaia/"
+# ── Backblaze public URLs ──────────────────────────────────────────────────────
+LIBRARY_DOWNLOAD_BASE       = "https://f005.backblazeb2.com/file/setiastro-gaia/"
+# NOTE: confirm the exact host/bucket-name Backblaze assigns once the
+# "setiastro-astrometry" bucket is created — this is a placeholder mirroring
+# the existing spectral bucket's URL pattern.
+ASTRO_LIBRARY_DOWNLOAD_BASE = "https://f005.backblazeb2.com/file/setiastro-astrometry/"
 
 # Gaia XP wavelength grid (nm) — 343 points, 336–1020 nm, 2 nm step
 WL_GRID = np.arange(336, 1022, 2, dtype=np.float32)
 
-# QSettings key for the user-chosen library directory
-_SETTINGS_LIBRARY_DIR = "gaia_library/custom_dir"
+# QSettings keys for user-chosen library directories
+_SETTINGS_LIBRARY_DIR       = "gaia_library/custom_dir"
+_SETTINGS_ASTRO_LIBRARY_DIR = "gaia_astro_library/custom_dir"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -83,6 +90,14 @@ class GroupDef:
     description: str
     recommended: bool = False
     warning:     str  = ""
+    # Astrometric bands only — unused (None) for spectral groups.
+    dec_lo:      Optional[float] = None
+    dec_hi:      Optional[float] = None
+    # Word used in status text ("spectra" for XP groups, "stars" for astrometric).
+    unit_label:  str = "spectra"
+    # True while this group's files aren't hosted anywhere yet — shows a
+    # "Coming Soon" state instead of live Install/Browse/Remove buttons.
+    coming_soon: bool = False
 
 
 GROUP_DEFS: List[GroupDef] = [
@@ -165,8 +180,96 @@ _FILENAME_TO_GROUP: Dict[str, str] = {
 }
 
 
+# ── Astrometric magnitude tiers (planned — not yet hosted anywhere) ───────────
+# Mirrors the Spectrum Library tab's approach: exclusive magnitude ranges,
+# brightest first, so a user installs the small bright tier and adds fainter
+# ones only as needed. Full DR3 astrometry goes to G≈21, well past the XP
+# spectral library's G≈15 ceiling, since it isn't limited to sources with
+# usable BP/RP spectra. Sizes/star-counts below are rough estimates — real
+# numbers will replace these once files are actually built and hosted.
+
+ASTRO_GROUP_DEFS: List[GroupDef] = [
+    GroupDef(
+        key="astro_lt12",
+        label="Bright  (G < 12)",
+        mag_lo=None, mag_hi=12.0,
+        filenames=["gaia_astro_lt12.sqlite"],
+        est_size="~1 GB (est.)",
+        est_stars="~6M stars (est.)",
+        description="Bright astrometric anchors — enough for most wide-field plate solves.",
+        recommended=True,
+        unit_label="stars",
+        coming_soon=True,
+    ),
+    GroupDef(
+        key="astro_12_15",
+        label="Medium  (G 12–15)",
+        mag_lo=12.0, mag_hi=15.0,
+        filenames=["gaia_astro_12_15.sqlite"],
+        est_size="~4 GB (est.)",
+        est_stars="~40M stars (est.)",
+        description="Dense coverage for typical amateur fields.",
+        recommended=True,
+        unit_label="stars",
+        coming_soon=True,
+    ),
+    GroupDef(
+        key="astro_15_17",
+        label="Faint  (G 15–17)",
+        mag_lo=15.0, mag_hi=17.0,
+        filenames=["gaia_astro_15_17.sqlite"],
+        est_size="~6 GB (est.)",
+        est_stars="~120M stars (est.)",
+        description="Deeper coverage for narrower fields and fainter guide stars.",
+        unit_label="stars",
+        coming_soon=True,
+    ),
+    GroupDef(
+        key="astro_17_18",
+        label="Very Faint  (G 17–18)",
+        mag_lo=17.0, mag_hi=18.0,
+        filenames=["gaia_astro_17_18.sqlite"],
+        est_size="~7 GB (est.)",
+        est_stars="~110M stars (est.)",
+        description="For deep, narrow-field solves needing very dense star fields.",
+        unit_label="stars",
+        coming_soon=True,
+    ),
+    GroupDef(
+        key="astro_18_19",
+        label="Extreme  (G 18–19)",
+        mag_lo=18.0, mag_hi=19.0,
+        filenames=["gaia_astro_18_19.sqlite"],
+        est_size="~7.5 GB (est.)",
+        est_stars="~115M stars (est.)",
+        description="Rarely needed — extremely deep solving fields only.",
+        unit_label="stars",
+        coming_soon=True,
+    ),
+    GroupDef(
+        key="astro_19_21",
+        label="Maximum Depth  (G 19–21, full DR3)",
+        mag_lo=19.0, mag_hi=21.0,
+        filenames=["gaia_astro_19_21.sqlite"],
+        est_size="~10 GB+ (est., may need further splitting)",
+        est_stars="~300M+ stars (est.)",
+        description="Full DR3 depth — the practical faint limit of the catalog. "
+                    "Likely to be split into smaller sub-tiers once real file "
+                    "sizes are known.",
+        warning="File size not yet finalized — may exceed a practical per-file "
+                "limit and need splitting once real data exists.",
+        unit_label="stars",
+        coming_soon=True,
+    ),
+]
+
+_ASTRO_FILENAME_TO_GROUP: Dict[str, str] = {
+    fn: g.key for g in ASTRO_GROUP_DEFS for fn in g.filenames
+}
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-#  Library directory  (respects user override stored in QSettings)
+#  Library directories  (each respects its own user override in QSettings)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _default_library_dir() -> Path:
@@ -179,7 +282,7 @@ def _default_library_dir() -> Path:
 
 def get_library_dir() -> Path:
     """
-    Returns the active library directory.
+    Returns the active spectral-library directory.
     Checks QSettings for a user override; falls back to the default
     AppData location if none is set or the stored path no longer exists.
     """
@@ -196,17 +299,49 @@ def get_library_dir() -> Path:
 
 
 def set_library_dir(path: Path):
-    """Persist a user-chosen library directory to QSettings."""
+    """Persist a user-chosen spectral-library directory to QSettings."""
     QSettings().setValue(_SETTINGS_LIBRARY_DIR, str(path))
 
 
 def clear_library_dir_override():
-    """Reset to the default AppData location."""
+    """Reset the spectral library to the default AppData location."""
     QSettings().remove(_SETTINGS_LIBRARY_DIR)
 
 
+def _default_astro_library_dir() -> Path:
+    base = Path(QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.AppDataLocation))
+    d = base / "gaia_astro_library"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_astro_library_dir() -> Path:
+    """Returns the active astrometric-library directory (mirrors get_library_dir())."""
+    s = QSettings()
+    custom = s.value(_SETTINGS_ASTRO_LIBRARY_DIR, "", type=str)
+    if custom:
+        p = Path(custom)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            return p
+        except Exception:
+            pass
+    return _default_astro_library_dir()
+
+
+def set_astro_library_dir(path: Path):
+    """Persist a user-chosen astrometric-library directory to QSettings."""
+    QSettings().setValue(_SETTINGS_ASTRO_LIBRARY_DIR, str(path))
+
+
+def clear_astro_library_dir_override():
+    """Reset the astrometric library to the default AppData location."""
+    QSettings().remove(_SETTINGS_ASTRO_LIBRARY_DIR)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
-#  Data layer
+#  Spectral data layer  (unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 
 @dataclass
@@ -230,6 +365,9 @@ class GroupStatus:
     installed:    List[str]
     missing:      List[str]
     total_mb:     float
+    # Row count for whatever table this group's kind uses ("spectra" or
+    # "stars") — field name kept for backward compatibility, just holds
+    # whichever count applies.
     total_spectra: int
 
     @property
@@ -462,7 +600,7 @@ class GaiaBulkLibrary:
                 pass
 
 
-# ── Singleton ─────────────────────────────────────────────────────────────────
+# ── Spectral singleton ─────────────────────────────────────────────────────────
 
 _library_instance: Optional[GaiaBulkLibrary] = None
 
@@ -482,7 +620,213 @@ def refresh_library():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Migration worker
+#  Astrometric data layer  (new)
+# ══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class StarRecord:
+    source_id: int
+    ra: float
+    dec: float
+    pmra: Optional[float]
+    pmdec: Optional[float]
+    parallax: Optional[float]
+    ref_epoch: float
+    gmag: Optional[float]
+    ruwe: Optional[float]
+    astrometric_params_solved: Optional[int]
+
+
+class GaiaAstrometricLibrary:
+    """
+    Unified lookup layer over the installed Gaia DR3 astrometric SQLite
+    bands (built by gaia_astrometric_builder.py). Uses the same dec_zone +
+    ra composite-index "zone file" technique the builder documents, so
+    bounding-box/radius queries stay fast without needing SQLite's R-Tree
+    extension (which isn't guaranteed to be compiled into every platform's
+    SQLite under a frozen build).
+    """
+
+    def __init__(self, library_dir: Optional[Path] = None):
+        self._dir = library_dir or get_astro_library_dir()
+        self._connections: Dict[str, sqlite3.Connection] = {}
+        self._zone_height_deg = 1.0
+        self._open_installed()
+
+    def _open_installed(self):
+        for path in sorted(self._dir.glob("gaia_astro_dec_*.sqlite")):
+            fname = path.name
+            if fname not in self._connections:
+                try:
+                    conn = sqlite3.connect(str(path), check_same_thread=False)
+                    conn.execute("PRAGMA query_only = ON;")
+                    self._connections[fname] = conn
+                    try:
+                        row = conn.execute(
+                            "SELECT value FROM metadata WHERE key='zone_height_deg'"
+                        ).fetchone()
+                        if row:
+                            self._zone_height_deg = float(row[0])
+                    except Exception:
+                        pass
+                except Exception as e:
+                    print(f"[GaiaAstrometricLibrary] Could not open {fname}: {e}")
+
+    def refresh(self):
+        self._dir = get_astro_library_dir()
+        self._open_installed()
+
+    def close(self):
+        for conn in self._connections.values():
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._connections.clear()
+
+    def close_file(self, filename: str):
+        conn = self._connections.pop(filename, None)
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def installed_bands(self) -> List[str]:
+        return list(self._connections.keys())
+
+    def _dec_zone_of(self, dec: float) -> int:
+        return int(math.floor((dec + 90.0) / self._zone_height_deg))
+
+    def find_stars_in_box(
+        self,
+        ra_lo: float, ra_hi: float,
+        dec_lo: float, dec_hi: float,
+        max_mag: Optional[float] = None,
+    ) -> List[StarRecord]:
+        """
+        Bounding-box query using the dec_zone + ra composite index.
+        Handles RA wraparound at 0/360 by splitting into two ranges
+        when ra_lo > ra_hi (i.e. the box crosses the meridian).
+        """
+        if not self._connections:
+            return []
+
+        zone_lo = self._dec_zone_of(dec_lo)
+        zone_hi = self._dec_zone_of(dec_hi)
+
+        ra_ranges = ([(ra_lo, 360.0), (0.0, ra_hi)] if ra_lo > ra_hi
+                    else [(ra_lo, ra_hi)])
+
+        mag_clause = " AND phot_g_mean_mag < ?" if max_mag is not None else ""
+        results: List[StarRecord] = []
+
+        for conn in self._connections.values():
+            for r_lo, r_hi in ra_ranges:
+                try:
+                    sql = (
+                        "SELECT source_id, ra, dec, pmra, pmdec, parallax, "
+                        "ref_epoch, phot_g_mean_mag, ruwe, astrometric_params_solved "
+                        "FROM stars WHERE dec_zone BETWEEN ? AND ? "
+                        "AND ra BETWEEN ? AND ?" + mag_clause
+                    )
+                    params = [zone_lo, zone_hi, r_lo, r_hi]
+                    if max_mag is not None:
+                        params.append(max_mag)
+                    cur = conn.execute(sql, params)
+                    for row in cur.fetchall():
+                        results.append(StarRecord(
+                            source_id=row[0], ra=row[1], dec=row[2],
+                            pmra=row[3], pmdec=row[4], parallax=row[5],
+                            ref_epoch=row[6], gmag=row[7], ruwe=row[8],
+                            astrometric_params_solved=row[9],
+                        ))
+                except Exception:
+                    continue
+
+        # Zone bounds are coarser than the exact box — final precise dec filter.
+        return [s for s in results if dec_lo <= s.dec <= dec_hi]
+
+    def find_stars_near(
+        self, ra: float, dec: float,
+        radius_arcsec: float = 60.0,
+        max_mag: Optional[float] = None,
+    ) -> List[Tuple[StarRecord, float]]:
+        """Returns (StarRecord, separation_arcsec) pairs within radius, nearest first."""
+        radius_deg = radius_arcsec / 3600.0
+        cosd = max(1e-6, abs(math.cos(math.radians(dec))))
+        box = self.find_stars_in_box(
+            ra - radius_deg / cosd, ra + radius_deg / cosd,
+            dec - radius_deg, dec + radius_deg,
+            max_mag=max_mag,
+        )
+        out = []
+        for s in box:
+            dra  = (s.ra - ra) * cosd
+            ddec = s.dec - dec
+            sep  = math.hypot(dra, ddec) * 3600.0
+            if sep <= radius_arcsec:
+                out.append((s, sep))
+        out.sort(key=lambda t: t[1])
+        return out
+
+    def get_group_status(self) -> List[GroupStatus]:
+        statuses = []
+        for g in ASTRO_GROUP_DEFS:
+            installed, missing = [], []
+            total_mb = 0.0
+            total_stars = 0
+            for fname in g.filenames:
+                path = self._dir / fname
+                if path.exists():
+                    installed.append(fname)
+                    total_mb += path.stat().st_size / (1024 * 1024)
+                    if fname in self._connections:
+                        try:
+                            n = self._connections[fname].execute(
+                                "SELECT COUNT(*) FROM stars").fetchone()[0]
+                            total_stars += n
+                        except Exception:
+                            pass
+                else:
+                    missing.append(fname)
+            statuses.append(GroupStatus(
+                group=g, installed=installed, missing=missing,
+                total_mb=total_mb, total_spectra=total_stars,
+            ))
+        return statuses
+
+    def total_stars(self) -> int:
+        total = 0
+        for conn in self._connections.values():
+            try:
+                total += conn.execute("SELECT COUNT(*) FROM stars").fetchone()[0]
+            except Exception:
+                pass
+        return total
+
+
+# ── Astrometric singleton ──────────────────────────────────────────────────────
+
+_astro_library_instance: Optional[GaiaAstrometricLibrary] = None
+
+
+def get_astro_library() -> GaiaAstrometricLibrary:
+    global _astro_library_instance
+    if _astro_library_instance is None:
+        _astro_library_instance = GaiaAstrometricLibrary()
+    return _astro_library_instance
+
+
+def refresh_astro_library():
+    global _astro_library_instance
+    if _astro_library_instance is not None:
+        _astro_library_instance.close()
+    _astro_library_instance = GaiaAstrometricLibrary()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Migration worker  (generic — used for both spectral and astrometric moves)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _MigrateWorker(QThread):
@@ -568,25 +912,28 @@ class _MigrateWorker(QThread):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Change-location dialog
+#  Change-location dialog  (generic — kind-aware)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _ChangeLocationDialog(QDialog):
     """
     Asks the user where they want the library, and what to do with
-    any files already installed in the current location.
+    any files already installed in the current location. `kind` selects
+    which singleton/settings-key pair to update: "spectral" or "astro".
     """
-    def __init__(self, current_dir: Path, installed_files: List[str], parent=None):
+    def __init__(self, current_dir: Path, installed_files: List[str],
+                 kind: str = "spectral", parent=None):
         super().__init__(parent)
         self.setWindowTitle("Change Library Location")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setModal(True)
         self.setMinimumWidth(520)
 
-        self._current_dir    = current_dir
-        self._installed      = installed_files   # filenames present on disk
-        self._chosen_dir     = current_dir
-        self._chosen_mode    = "move"            # 'move' | 'copy' | 'switch'
+        self._kind         = kind
+        self._current_dir  = current_dir
+        self._installed    = installed_files   # filenames present on disk
+        self._chosen_dir   = current_dir
+        self._chosen_mode  = "move"            # 'move' | 'copy' | 'switch'
 
         v = QVBoxLayout(self)
         v.setSpacing(12)
@@ -715,18 +1062,27 @@ class _ChangeLocationDialog(QDialog):
                                 f"Could not create directory:\n{e}")
             return
 
-        # ── Close all open SQLite connections before touching the files ───────
-        # Windows locks open sqlite files; close the singleton library first.
-        global _library_instance
-        if _library_instance is not None:
-            try:
-                _library_instance.close()
-            except Exception:
-                pass
-            _library_instance = None
+        # ── Close the relevant open SQLite connections before touching files ──
+        # Windows locks open sqlite files; close the right singleton first.
+        if self._kind == "spectral":
+            global _library_instance
+            if _library_instance is not None:
+                try:
+                    _library_instance.close()
+                except Exception:
+                    pass
+                _library_instance = None
+            set_library_dir(dest)
+        else:
+            global _astro_library_instance
+            if _astro_library_instance is not None:
+                try:
+                    _astro_library_instance.close()
+                except Exception:
+                    pass
+                _astro_library_instance = None
+            set_astro_library_dir(dest)
         # ─────────────────────────────────────────────────────────────────────
-
-        set_library_dir(dest)
 
         if self._chosen_mode == "switch" or not self._installed:
             self.accept()
@@ -791,7 +1147,7 @@ class _ChangeLocationDialog(QDialog):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Download workers  (unchanged)
+#  Download workers  (generic — kind selects the download base URL)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _FileDownloadWorker(QThread):
@@ -852,12 +1208,14 @@ class _GroupDownloadWorker(QThread):
     cancelled      = _Signal()
 
     def __init__(self, group: GroupDef, missing: List[str],
-                 dest_dir: Path, parent=None):
+                 dest_dir: Path, download_base: str = LIBRARY_DOWNLOAD_BASE,
+                 parent=None):
         super().__init__(parent)
-        self._group   = group
-        self._missing = missing
-        self._dir     = dest_dir
-        self._cancel  = False
+        self._group         = group
+        self._missing       = missing
+        self._dir           = dest_dir
+        self._download_base = download_base
+        self._cancel        = False
 
     def cancel(self):
         self._cancel = True
@@ -871,7 +1229,7 @@ class _GroupDownloadWorker(QThread):
                 self.cancelled.emit()
                 return
 
-            url  = LIBRARY_DOWNLOAD_BASE + fname
+            url  = self._download_base + fname
             dest = self._dir / fname
             tmp  = dest.with_suffix(".tmp")
 
@@ -1025,7 +1383,7 @@ class SpectrumViewerWidget(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  Group row widget  (unchanged)
+#  Group row widget  (generic — unit_label swaps "spectra" / "stars" in text)
 # ══════════════════════════════════════════════════════════════════════════════
 
 class _GroupRowWidget(QFrame):
@@ -1156,8 +1514,29 @@ class _GroupRowWidget(QFrame):
 
     def update_status(self, status: GroupStatus):
         g = status.group
+        unit = getattr(g, "unit_label", "spectra")
+
         self._lbl_title.setText(g.label)
         self._lbl_desc.setText(g.description)
+
+        if getattr(g, "coming_soon", False):
+            self._lbl_badge.setText("Coming Soon")
+            self._lbl_badge.setStyleSheet(
+                "font-size: 10px; color: #8899cc; font-weight: bold; "
+                "border: 1px solid #8899cc; border-radius: 3px; padding: 1px 5px;")
+            self._lbl_badge.setVisible(True)
+            self._dot.setStyleSheet("color: #444; font-size: 14px;")
+            self._lbl_stats.setText(
+                f"Not yet available  ·  {g.est_stars}  ·  {g.est_size}"
+            )
+            if g.warning:
+                self._lbl_warning.setText(f"⚠  {g.warning}")
+                self._lbl_warning.setVisible(True)
+            self._btn_install.setVisible(False)
+            self._btn_browse.setVisible(False)
+            self._btn_remove.setVisible(False)
+            self._btn_cancel.setVisible(False)
+            return
 
         if g.recommended:
             self._lbl_badge.setText("Recommended")
@@ -1170,7 +1549,7 @@ class _GroupRowWidget(QFrame):
         if status.fully_installed:
             self._dot.setStyleSheet("color: #44cc66; font-size: 14px;")
             self._lbl_stats.setText(
-                f"{status.total_spectra:,} spectra  ·  "
+                f"{status.total_spectra:,} {unit}  ·  "
                 f"{status.total_mb / 1024:.1f} GB on disk  ·  "
                 f"{len(status.installed)}/{len(g.filenames)} files"
             )
@@ -1182,7 +1561,7 @@ class _GroupRowWidget(QFrame):
             self._dot.setStyleSheet("color: #ddaa44; font-size: 14px;")
             self._lbl_stats.setText(
                 f"Partial: {len(status.installed)}/{len(g.filenames)} files  ·  "
-                f"{status.total_spectra:,} spectra  ·  "
+                f"{status.total_spectra:,} {unit}  ·  "
                 f"{status.total_mb / 1024:.1f} GB on disk  —  "
                 f"click Install to resume"
             )
@@ -1254,23 +1633,32 @@ class _GroupRowWidget(QFrame):
             self._lbl_file_count.setText(f"{mb_part}  ·  {done}/{total} files")
 
 
-class _SpectraCountWorker(QThread):
+class _ItemsCountWorker(QThread):
+    """
+    Counts rows across installed group files. Generalized over the previous
+    _SpectraCountWorker: takes the group-def list and table name to count
+    ("spectra" for XP groups, "stars" for astrometric groups) as params so
+    one worker class serves both tabs.
+    """
     progress = _Signal(int)
     finished = _Signal(dict, int)
 
-    def __init__(self, library_dir: Path, parent=None):
+    def __init__(self, library_dir: Path, group_defs: List[GroupDef],
+                 table_name: str, parent=None):
         super().__init__(parent)
-        self._dir    = library_dir
-        self._cancel = False
+        self._dir        = library_dir
+        self._group_defs = group_defs
+        self._table      = table_name
+        self._cancel     = False
 
     def cancel(self):
         self._cancel = True
 
     def run(self):
-        group_counts: dict[str, int] = {g.key: 0 for g in GROUP_DEFS}
+        group_counts: dict[str, int] = {g.key: 0 for g in self._group_defs}
         running_total = 0
 
-        for g in GROUP_DEFS:
+        for g in self._group_defs:
             for fname in g.filenames:
                 if self._cancel:
                     self.finished.emit(group_counts, running_total)
@@ -1281,7 +1669,7 @@ class _SpectraCountWorker(QThread):
                 try:
                     conn = sqlite3.connect(str(path), check_same_thread=True)
                     conn.execute("PRAGMA query_only = ON;")
-                    n = conn.execute("SELECT COUNT(*) FROM spectra").fetchone()[0]
+                    n = conn.execute(f"SELECT COUNT(*) FROM {self._table}").fetchone()[0]
                     conn.close()
                     group_counts[g.key] += n
                     running_total += n
@@ -1301,17 +1689,71 @@ class GaiaDatabaseDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Gaia XP Spectral Library")
+        self.setWindowTitle("Gaia DR3 Library")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setMinimumSize(800, 620)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
-        self._library  = get_library()
-        self._workers: Dict[str, _GroupDownloadWorker] = {}
-        self._rows:    Dict[str, _GroupRowWidget]      = {}
+        self._library       = get_library()
+        self._astro_library = get_astro_library()
+
+        self._workers:       Dict[str, _GroupDownloadWorker] = {}
+        self._rows:          Dict[str, _GroupRowWidget]      = {}
+        self._astro_workers: Dict[str, _GroupDownloadWorker] = {}
+        self._astro_rows:    Dict[str, _GroupRowWidget]      = {}
+
+        self._count_worker       = None
+        self._astro_count_worker = None
 
         self._build_ui()
-        self._refresh_groups()
+        self._refresh_groups("spectral")
+        self._refresh_groups("astro")
+
+    # ── per-kind context helpers ───────────────────────────────────────────
+
+    def _group_defs(self, kind: str) -> List[GroupDef]:
+        return GROUP_DEFS if kind == "spectral" else ASTRO_GROUP_DEFS
+
+    def _download_base(self, kind: str) -> str:
+        return LIBRARY_DOWNLOAD_BASE if kind == "spectral" else ASTRO_LIBRARY_DOWNLOAD_BASE
+
+    def _lib_dir(self, kind: str) -> Path:
+        return get_library_dir() if kind == "spectral" else get_astro_library_dir()
+
+    def _set_lib_dir(self, kind: str, path: Path):
+        if kind == "spectral":
+            set_library_dir(path)
+        else:
+            set_astro_library_dir(path)
+
+    def _library_obj(self, kind: str):
+        return self._library if kind == "spectral" else self._astro_library
+
+    def _refresh_library_obj(self, kind: str):
+        if kind == "spectral":
+            refresh_library()
+            self._library = get_library()
+        else:
+            refresh_astro_library()
+            self._astro_library = get_astro_library()
+
+    def _workers_dict(self, kind: str) -> Dict[str, _GroupDownloadWorker]:
+        return self._workers if kind == "spectral" else self._astro_workers
+
+    def _rows_dict(self, kind: str) -> Dict[str, _GroupRowWidget]:
+        return self._rows if kind == "spectral" else self._astro_rows
+
+    def _group_layout_for(self, kind: str):
+        return self._group_layout if kind == "spectral" else self._astro_group_layout
+
+    def _total_lbl_for(self, kind: str):
+        return self._total_lbl if kind == "spectral" else self._astro_total_lbl
+
+    def _dir_lbl_for(self, kind: str):
+        return self._dir_lbl if kind == "spectral" else self._astro_dir_lbl
+
+    def _table_name(self, kind: str) -> str:
+        return "spectra" if kind == "spectral" else "stars"
 
     def _build_ui(self):
         self.setStyleSheet("""
@@ -1343,81 +1785,22 @@ class GaiaDatabaseDialog(QDialog):
         hdr.setStyleSheet("background: #0a0a18; border-bottom: 1px solid #1a1a3e;")
         hdr_layout = QHBoxLayout(hdr)
         hdr_layout.setContentsMargins(20, 14, 20, 14)
-        title_lbl = QLabel("Gaia XP Spectral Library")
+        title_lbl = QLabel("Gaia DR3 Library")
         title_lbl.setStyleSheet(
             "font-size: 18px; font-weight: bold; color: #8899ee; "
             "letter-spacing: 1px; border: none;")
         hdr_layout.addWidget(title_lbl)
         hdr_layout.addStretch()
-        self._total_lbl = QLabel("")
-        self._total_lbl.setStyleSheet(
-            "font-size: 11px; color: #556688; border: none;")
-        hdr_layout.addWidget(self._total_lbl)
-        btn_count = QPushButton("Count")
-        btn_count.setFixedWidth(60)
-        btn_count.setStyleSheet(
-            "QPushButton { background: #1a1a2e; color: #556688; border: 1px solid #2a2a3e; "
-            "border-radius: 3px; padding: 3px 8px; font-size: 10px; }"
-            "QPushButton:hover { background: #222240; color: #8899ee; }")
-        btn_count.clicked.connect(self._run_spectra_count)
-        hdr_layout.addWidget(btn_count)
         root.addWidget(hdr)
 
         # ── Tabs ──────────────────────────────────────────────────────────
         tabs = QTabWidget()
         root.addWidget(tabs, stretch=1)
 
-        # Tab 1: Library
-        lib_tab    = QWidget()
-        lib_layout = QVBoxLayout(lib_tab)
-        lib_layout.setContentsMargins(16, 16, 16, 16)
-        lib_layout.setSpacing(8)
+        tabs.addTab(self._build_group_tab("spectral"), "Spectrum Library")
+        tabs.addTab(self._build_group_tab("astro"), "Astrometry")
 
-        info_lbl = QLabel(
-            "Install Gaia DR3 XP spectral library files for offline color calibration. "
-            "SASpro checks these before hitting the live Gaia archive. "
-            "Interrupted downloads resume automatically — just click Install again."
-        )
-        info_lbl.setWordWrap(True)
-        info_lbl.setStyleSheet("color: #778; font-size: 11px; margin-bottom: 4px;")
-        lib_layout.addWidget(info_lbl)
-
-        # Directory row — now includes "Change Location…" button
-        dir_row = QHBoxLayout()
-        dir_row.addWidget(QLabel("Library folder:"))
-        self._dir_lbl = QLabel(str(get_library_dir()))
-        self._dir_lbl.setStyleSheet(
-            "color: #6688aa; font-size: 11px; font-family: monospace;")
-        self._dir_lbl.setWordWrap(True)
-        dir_row.addWidget(self._dir_lbl, stretch=1)
-
-        btn_change_loc = QPushButton("Change Location…")
-        btn_change_loc.setFixedWidth(130)
-        btn_change_loc.setToolTip(
-            "Move the library to a different drive or folder.\n"
-            "Useful for keeping large files off your system drive.")
-        btn_change_loc.clicked.connect(self._change_location)
-        dir_row.addWidget(btn_change_loc)
-
-        btn_open_dir = QPushButton("Open Folder")
-        btn_open_dir.setFixedWidth(100)
-        btn_open_dir.clicked.connect(self._open_library_dir)
-        dir_row.addWidget(btn_open_dir)
-        lib_layout.addLayout(dir_row)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        band_container = QWidget()
-        band_container.setStyleSheet("background: transparent;")
-        self._group_layout = QVBoxLayout(band_container)
-        self._group_layout.setSpacing(8)
-        self._group_layout.addStretch()
-        scroll.setWidget(band_container)
-        lib_layout.addWidget(scroll, stretch=1)
-        tabs.addTab(lib_tab, "Library")
-
-        # Tab 2: Spectrum Viewer
+        # Tab: Spectrum Viewer
         viewer_tab    = QWidget()
         viewer_layout = QVBoxLayout(viewer_tab)
         viewer_layout.setContentsMargins(16, 16, 16, 16)
@@ -1501,7 +1884,7 @@ class GaiaDatabaseDialog(QDialog):
         viewer_layout.addWidget(self._source_info)
         tabs.addTab(viewer_tab, "Spectrum Viewer")
 
-        # Tab 3: About
+        # Tab: About
         about_tab    = QWidget()
         about_layout = QVBoxLayout(about_tab)
         about_layout.setContentsMargins(20, 20, 20, 20)
@@ -1526,6 +1909,12 @@ class GaiaDatabaseDialog(QDialog):
         <li>Live download cache (gaia_xp_cache.sqlite)</li>
         <li>Live Gaia archive — fallback when neither has the source</li>
         </ol>
+        <h4 style="color:#8899ee;">Astrometric library</h4>
+        <p>The Astrometry tab (under construction) will install full-depth Gaia DR3
+        <b>gaia_source</b> astrometry (RA, Dec, proper motion, parallax) split by
+        magnitude, mirroring the Spectrum Library tab above — a much denser catalog
+        than the XP spectral library, since it covers the full DR3 source list rather
+        than only sources bright/well-measured enough to have usable BP/RP spectra.</p>
         <h4 style="color:#8899ee;">Citation</h4>
         <p>Gaia Collaboration et al. (2022), Gaia DR3.
         <i>A&amp;A</i> 649, A1.<br>
@@ -1548,44 +1937,144 @@ class GaiaDatabaseDialog(QDialog):
         footer_layout.addWidget(btn_close)
         root.addWidget(footer)
 
+    def _build_group_tab(self, kind: str) -> QWidget:
+        """Builds one group-list tab (Spectrum Library or Astrometry) and stashes
+        its per-kind widget references (dir label, total label, group layout)."""
+        tab    = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(8)
+
+        if kind == "spectral":
+            info_text = (
+                "Install Gaia DR3 XP spectral library files for offline color calibration. "
+                "SASpro checks these before hitting the live Gaia archive. "
+                "Interrupted downloads resume automatically — just click Install again."
+            )
+        else:
+            info_text = (
+                "Install Gaia DR3 astrometric library files (RA/Dec/proper motion/parallax) "
+                "for plate solving and star identification, split by magnitude — start with "
+                "the brightest tier and add fainter ones only as needed, same approach as "
+                "the Spectrum Library tab."
+            )
+
+        info_lbl = QLabel(info_text)
+        info_lbl.setWordWrap(True)
+        info_lbl.setStyleSheet("color: #778; font-size: 11px; margin-bottom: 4px;")
+        layout.addWidget(info_lbl)
+
+        if kind == "astro":
+            banner = QLabel(
+                "🚧 <b>Under construction.</b> This tab previews the planned structure "
+                "for the astrometric library — magnitude tiers, same layout as the "
+                "Spectrum Library tab. Sizes and star counts shown are rough estimates; "
+                "the actual files aren't hosted yet. Check back soon!"
+            )
+            banner.setWordWrap(True)
+            banner.setStyleSheet(
+                "background: #221a08; color: #ddaa55; border: 1px solid #443311; "
+                "border-radius: 4px; padding: 6px 10px; font-size: 11px;")
+            layout.addWidget(banner)
+
+        # Directory row
+        dir_row = QHBoxLayout()
+        dir_row.addWidget(QLabel("Library folder:"))
+        dir_lbl = QLabel(str(self._lib_dir(kind)))
+        dir_lbl.setStyleSheet("color: #6688aa; font-size: 11px; font-family: monospace;")
+        dir_lbl.setWordWrap(True)
+        dir_row.addWidget(dir_lbl, stretch=1)
+
+        btn_change_loc = QPushButton("Change Location…")
+        btn_change_loc.setFixedWidth(130)
+        btn_change_loc.setToolTip(
+            "Move the library to a different drive or folder.\n"
+            "Useful for keeping large files off your system drive.")
+        btn_change_loc.clicked.connect(lambda k=kind: self._change_location(k))
+        dir_row.addWidget(btn_change_loc)
+
+        btn_open_dir = QPushButton("Open Folder")
+        btn_open_dir.setFixedWidth(100)
+        btn_open_dir.clicked.connect(lambda k=kind: self._open_library_dir(k))
+        dir_row.addWidget(btn_open_dir)
+        layout.addLayout(dir_row)
+
+        # Totals + count row
+        total_row = QHBoxLayout()
+        total_lbl = QLabel("")
+        total_lbl.setStyleSheet("font-size: 11px; color: #556688;")
+        total_row.addWidget(total_lbl, stretch=1)
+        btn_count = QPushButton("Count")
+        btn_count.setFixedWidth(60)
+        btn_count.setStyleSheet(
+            "QPushButton { background: #1a1a2e; color: #556688; border: 1px solid #2a2a3e; "
+            "border-radius: 3px; padding: 3px 8px; font-size: 10px; }"
+            "QPushButton:hover { background: #222240; color: #8899ee; }")
+        btn_count.clicked.connect(lambda k=kind: self._run_count(k))
+        total_row.addWidget(btn_count)
+        layout.addLayout(total_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        container = QWidget()
+        container.setStyleSheet("background: transparent;")
+        group_layout = QVBoxLayout(container)
+        group_layout.setSpacing(8)
+        group_layout.addStretch()
+        scroll.setWidget(container)
+        layout.addWidget(scroll, stretch=1)
+
+        if kind == "spectral":
+            self._dir_lbl      = dir_lbl
+            self._total_lbl    = total_lbl
+            self._group_layout = group_layout
+        else:
+            self._astro_dir_lbl      = dir_lbl
+            self._astro_total_lbl    = total_lbl
+            self._astro_group_layout = group_layout
+
+        return tab
+
     # ── Change location ───────────────────────────────────────────────────
 
-    def _change_location(self):
-        if self._workers:
+    def _change_location(self, kind: str = "spectral"):
+        if self._workers_dict(kind):
             QMessageBox.warning(self, "Downloads Active",
                                 "Please wait for active downloads to finish "
                                 "before changing the library location.")
             return
 
-        current_dir = get_library_dir()
+        current_dir = self._lib_dir(kind)
 
         installed_files = [
-            f for g in GROUP_DEFS
+            f for g in self._group_defs(kind)
             for f in g.filenames
             if (current_dir / f).exists()
         ]
 
-        dlg = _ChangeLocationDialog(current_dir, installed_files, parent=self)
+        dlg = _ChangeLocationDialog(current_dir, installed_files, kind=kind, parent=self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
         # ── Reload library from new location and refresh UI ──────────────────
-        refresh_library()
-        self._library = get_library()
-        self._dir_lbl.setText(str(get_library_dir()))
-        self._refresh_groups()
+        self._refresh_library_obj(kind)
+        self._dir_lbl_for(kind).setText(str(self._lib_dir(kind)))
+        self._refresh_groups(kind)
         self.library_changed.emit()
 
     # ── Group management ──────────────────────────────────────────────────
 
-    def _refresh_groups(self):
-        for row in self._rows.values():
-            self._group_layout.removeWidget(row)
+    def _refresh_groups(self, kind: str = "spectral"):
+        rows = self._rows_dict(kind)
+        group_layout = self._group_layout_for(kind)
+        for row in rows.values():
+            group_layout.removeWidget(row)
             row.deleteLater()
-        self._rows.clear()
+        rows.clear()
 
-        lib_dir = get_library_dir()
-        for g in GROUP_DEFS:
+        lib_dir = self._lib_dir(kind)
+        for g in self._group_defs(kind):
             installed = [f for f in g.filenames if (lib_dir / f).exists()]
             missing   = [f for f in g.filenames if not (lib_dir / f).exists()]
             total_mb  = sum(
@@ -1600,58 +2089,48 @@ class GaiaDatabaseDialog(QDialog):
                 total_spectra=0,
             )
             row = _GroupRowWidget(status)
-            row.install_requested.connect(self._on_install)
-            row.remove_requested.connect(self._on_remove)
-            row.browse_requested.connect(self._on_browse)
-            self._group_layout.insertWidget(self._group_layout.count() - 1, row)
-            self._rows[status.group.key] = row
+            row.install_requested.connect(lambda key, k=kind: self._on_install(key, k))
+            row.remove_requested.connect(lambda key, k=kind: self._on_remove(key, k))
+            row.browse_requested.connect(lambda key, k=kind: self._on_browse(key, k))
+            group_layout.insertWidget(group_layout.count() - 1, row)
+            rows[status.group.key] = row
 
-        self._total_lbl.setText(
-            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
-            f"click Count to tally spectra")
+        self._total_lbl_for(kind).setText(
+            f"{self._n_installed_groups(kind)}/{len(self._group_defs(kind))} groups installed  ·  "
+            f"click Count to tally {self._table_name(kind)}")
 
-    def _start_spectra_count(self):
-        existing = getattr(self, "_count_worker", None)
-        if existing is not None:
-            try:
-                existing.cancel()
-                existing.wait(500)
-            except Exception:
-                pass
-        self._count_worker = None
-        self._total_lbl.setText(
-            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
-            f"click Count to tally spectra")
-
-    def _n_installed_groups(self) -> int:
-        lib_dir = get_library_dir()
-        return sum(1 for g in GROUP_DEFS
+    def _n_installed_groups(self, kind: str = "spectral") -> int:
+        lib_dir = self._lib_dir(kind)
+        return sum(1 for g in self._group_defs(kind)
                    if all((lib_dir / f).exists() for f in g.filenames))
 
-    def _run_spectra_count(self):
-        existing = getattr(self, "_count_worker", None)
+    def _run_count(self, kind: str = "spectral"):
+        attr = "_count_worker" if kind == "spectral" else "_astro_count_worker"
+        existing = getattr(self, attr, None)
         if existing is not None and existing.isRunning():
             return
 
-        self._total_lbl.setText(
-            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
-            f"counting… 0 spectra")
+        self._total_lbl_for(kind).setText(
+            f"{self._n_installed_groups(kind)}/{len(self._group_defs(kind))} groups installed  ·  "
+            f"counting… 0 {self._table_name(kind)}")
 
-        worker = _SpectraCountWorker(get_library_dir(), parent=None)
-        worker.progress.connect(self._on_count_progress)
-        worker.finished.connect(self._on_spectra_counted)
+        worker = _ItemsCountWorker(
+            self._lib_dir(kind), self._group_defs(kind), self._table_name(kind), parent=None)
+        worker.progress.connect(lambda total, k=kind: self._on_count_progress(k, total))
+        worker.finished.connect(lambda counts, total, k=kind: self._on_items_counted(k, counts, total))
         worker.start()
-        self._count_worker = worker
+        setattr(self, attr, worker)
 
-    def _on_count_progress(self, running_total: int):
-        self._total_lbl.setText(
-            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
-            f"counting… {running_total:,} spectra")
+    def _on_count_progress(self, kind: str, running_total: int):
+        self._total_lbl_for(kind).setText(
+            f"{self._n_installed_groups(kind)}/{len(self._group_defs(kind))} groups installed  ·  "
+            f"counting… {running_total:,} {self._table_name(kind)}")
 
-    def _on_spectra_counted(self, group_counts: dict, total: int):
-        lib_dir = get_library_dir()
-        for key, row in self._rows.items():
-            g = next((g for g in GROUP_DEFS if g.key == key), None)
+    def _on_items_counted(self, kind: str, group_counts: dict, total: int):
+        lib_dir = self._lib_dir(kind)
+        rows = self._rows_dict(kind)
+        for key, row in rows.items():
+            g = next((g for g in self._group_defs(kind) if g.key == key), None)
             if g is None:
                 continue
             installed = [f for f in g.filenames if (lib_dir / f).exists()]
@@ -1661,33 +2140,39 @@ class GaiaDatabaseDialog(QDialog):
                 for f in installed
             )
             status = GroupStatus(
-                group=g,
-                installed=installed,
-                missing=missing,
-                total_mb=total_mb,
-                total_spectra=group_counts.get(key, 0),
+                group=g, installed=installed, missing=missing,
+                total_mb=total_mb, total_spectra=group_counts.get(key, 0),
             )
             row.update_status(status)
 
-        self._total_lbl.setText(
-            f"{self._n_installed_groups()}/{len(GROUP_DEFS)} groups installed  ·  "
-            f"{total:,} spectra")
-        self._count_worker = None
+        self._total_lbl_for(kind).setText(
+            f"{self._n_installed_groups(kind)}/{len(self._group_defs(kind))} groups installed  ·  "
+            f"{total:,} {self._table_name(kind)}")
 
-    def _on_install(self, key: str):
-        group_def = next(g for g in GROUP_DEFS if g.key == key)
-        lib_dir   = get_library_dir()
+        attr = "_count_worker" if kind == "spectral" else "_astro_count_worker"
+        setattr(self, attr, None)
+
+    def _on_install(self, key: str, kind: str = "spectral"):
+        group_def = next(g for g in self._group_defs(kind) if g.key == key)
+        if getattr(group_def, "coming_soon", False):
+            QMessageBox.information(self, "Coming Soon",
+                                    f"{group_def.label} isn't available yet — check back soon!")
+            return
+        lib_dir   = self._lib_dir(kind)
         missing   = [f for f in group_def.filenames if not (lib_dir / f).exists()]
 
         if not missing:
             return
 
-        row = self._rows.get(key)
+        rows = self._rows_dict(kind)
+        row = rows.get(key)
         if row is None:
             return
 
-        worker = _GroupDownloadWorker(group_def, missing, lib_dir, parent=self)
-        self._workers[key] = worker
+        worker = _GroupDownloadWorker(
+            group_def, missing, lib_dir,
+            download_base=self._download_base(kind), parent=self)
+        self._workers_dict(kind)[key] = worker
 
         row.set_downloading(True, cancel_cb=worker.cancel)
 
@@ -1696,30 +2181,29 @@ class GaiaDatabaseDialog(QDialog):
         worker.group_progress.connect(
             lambda d, t, r=row: r.update_group_progress(d, t) if not sip.isdeleted(r) else None)
         worker.file_done.connect(
-            lambda fname, ok: self._on_file_done(fname, ok))
+            lambda fname, ok, k=kind: self._on_file_done(fname, ok, k))
         worker.group_finished.connect(
-            lambda ok, msg, k=key: self._on_group_finished(k, ok, msg))
+            lambda ok, msg, key=key, k=kind: self._on_group_finished(key, ok, msg, k))
         worker.cancelled.connect(
-            lambda k=key: self._on_cancelled(k))
+            lambda key=key, k=kind: self._on_cancelled(key, k))
         worker.start()
 
-    def _on_file_done(self, fname: str, ok: bool):
+    def _on_file_done(self, fname: str, ok: bool, kind: str = "spectral"):
         if ok:
-            refresh_library()
-            self._library = get_library()
+            self._refresh_library_obj(kind)
 
-    def _on_group_finished(self, key: str, ok: bool, msg: str):
-        row = self._rows.get(key)
+    def _on_group_finished(self, key: str, ok: bool, msg: str, kind: str = "spectral"):
+        rows = self._rows_dict(kind)
+        row = rows.get(key)
         if row:
             row.set_downloading(False)
 
-        worker = self._workers.pop(key, None)
+        worker = self._workers_dict(kind).pop(key, None)
         if worker:
             worker.wait()
 
-        refresh_library()
-        self._library = get_library()
-        self._refresh_groups()
+        self._refresh_library_obj(kind)
+        self._refresh_groups(kind)
         self.library_changed.emit()
 
         if ok:
@@ -1727,37 +2211,45 @@ class GaiaDatabaseDialog(QDialog):
         else:
             QMessageBox.critical(self, "Download Failed", msg)
 
-    def _on_cancelled(self, key: str):
-        row = self._rows.get(key)
+    def _on_cancelled(self, key: str, kind: str = "spectral"):
+        rows = self._rows_dict(kind)
+        row = rows.get(key)
         if row:
             row.set_downloading(False)
-        self._workers.pop(key, None)
-        refresh_library()
-        self._library = get_library()
-        self._refresh_groups()
+        self._workers_dict(kind).pop(key, None)
+        self._refresh_library_obj(kind)
+        self._refresh_groups(kind)
 
-    def _on_remove(self, key: str):
-        group_def = next(g for g in GROUP_DEFS if g.key == key)
-        lib_dir   = get_library_dir()
+    def _on_remove(self, key: str, kind: str = "spectral"):
+        group_def = next(g for g in self._group_defs(kind) if g.key == key)
+        lib_dir   = self._lib_dir(kind)
         installed = [f for f in group_def.filenames if (lib_dir / f).exists()]
         total_gb  = sum(
             (lib_dir / f).stat().st_size / (1024 * 1024 * 1024)
             for f in installed
         )
 
+        fallback_note = (
+            "SASpro will fall back to live Gaia archive downloads for "
+            "sources in this magnitude range."
+            if kind == "spectral" else
+            "SASpro will no longer have offline astrometry for this "
+            "declination band."
+        )
+
         reply = QMessageBox.question(
             self, "Remove Group",
             f"Delete all installed files for '{group_def.label}'?\n\n"
             f"{len(installed)} file(s) · {total_gb:.1f} GB will be freed.\n\n"
-            f"SASpro will fall back to live Gaia archive downloads for "
-            f"sources in this magnitude range.",
+            f"{fallback_note}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
+        lib = self._library_obj(kind)
         for fname in installed:
-            self._library.close_file(fname)
+            lib.close_file(fname)
             path = lib_dir / fname
             try:
                 path.unlink(missing_ok=True)
@@ -1765,14 +2257,17 @@ class GaiaDatabaseDialog(QDialog):
                 QMessageBox.critical(self, "Error", f"Could not delete {fname}:\n{e}")
                 break
 
-        refresh_library()
-        self._library = get_library()
-        self._refresh_groups()
+        self._refresh_library_obj(kind)
+        self._refresh_groups(kind)
         self.library_changed.emit()
 
-    def _on_browse(self, key: str):
-        group_def = next(g for g in GROUP_DEFS if g.key == key)
-        lib_dir   = get_library_dir()
+    def _on_browse(self, key: str, kind: str = "spectral"):
+        group_def = next(g for g in self._group_defs(kind) if g.key == key)
+        if getattr(group_def, "coming_soon", False):
+            QMessageBox.information(self, "Coming Soon",
+                                    f"{group_def.label} isn't available yet — check back soon!")
+            return
+        lib_dir   = self._lib_dir(kind)
         missing   = [f for f in group_def.filenames if not (lib_dir / f).exists()]
 
         if not missing:
@@ -1821,14 +2316,13 @@ class GaiaDatabaseDialog(QDialog):
                 QMessageBox.critical(self, "Error", f"Could not copy {fname}:\n{e}")
 
         if copied > 0:
-            refresh_library()
-            self._library = get_library()
-            self._refresh_groups()
+            self._refresh_library_obj(kind)
+            self._refresh_groups(kind)
             self.library_changed.emit()
 
-    def _open_library_dir(self):
+    def _open_library_dir(self, kind: str = "spectral"):
         import subprocess, sys
-        d = str(get_library_dir())
+        d = str(self._lib_dir(kind))
         if sys.platform == "win32":
             os.startfile(d)
         elif sys.platform == "darwin":
@@ -1836,7 +2330,7 @@ class GaiaDatabaseDialog(QDialog):
         else:
             subprocess.Popen(["xdg-open", d])
 
-    # ── Spectrum viewer ───────────────────────────────────────────────────
+    # ── Spectrum viewer  (unchanged — spectral only) ───────────────────────
 
     def _on_search_mode_changed(self, index: int):
         self._name_row.setVisible(index == 0)
@@ -2042,17 +2536,18 @@ class GaiaDatabaseDialog(QDialog):
         self._viewer_status.setText(f"Spectrum loaded — {source_str}")
 
     def closeEvent(self, event):
-        # Cancel spectra count worker if running
-        count_worker = getattr(self, "_count_worker", None)
-        if count_worker is not None and count_worker.isRunning():
-            count_worker.cancel()
-            count_worker.wait(2000)   # brief wait; it checks _cancel between files
-        self._count_worker = None
+        for attr in ("_count_worker", "_astro_count_worker"):
+            worker = getattr(self, attr, None)
+            if worker is not None and worker.isRunning():
+                worker.cancel()
+                worker.wait(2000)   # brief wait; it checks _cancel between files
+            setattr(self, attr, None)
 
-        for worker in list(self._workers.values()):
-            worker.cancel()
-            worker.wait()
-        self._workers.clear()
+        for workers_dict in (self._workers, self._astro_workers):
+            for worker in list(workers_dict.values()):
+                worker.cancel()
+                worker.wait()
+            workers_dict.clear()
         super().closeEvent(event)
 
 

@@ -1,4 +1,4 @@
-# pro/convo.py
+# saspro/convo.py
 from __future__ import annotations
 
 import os
@@ -17,6 +17,8 @@ from skimage.restoration import denoise_tv_chambolle, denoise_bilateral
 from skimage.color import rgb2lab, lab2rgb
 from skimage.util import img_as_float32
 from skimage.transform import warp, AffineTransform
+from scipy.ndimage import gaussian_filter, median_filter
+from skimage.restoration import denoise_nl_means, denoise_wavelet, estimate_sigma
 
 # ── Qt
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -26,7 +28,7 @@ from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QVBoxLayout, QFrame, QLabel, QSlider, QLineEdit,
     QFormLayout, QTabWidget, QComboBox, QCheckBox, QPushButton, QToolButton,
     QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QFileDialog, QWidget,
-    QSpinBox
+    QSpinBox, QDoubleSpinBox
 )
 import cv2
 # Optional FITS export
@@ -37,26 +39,84 @@ import sep  # PSF estimator
 # Import centralized widgets
 from setiastro.saspro.widgets.spinboxes import CustomSpinBox
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
 
+
+from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
+import numpy as np
+ 
+ 
+class _DenoiseWorker(QThread):
+    """
+    Runs ConvoDeconvoDialog._apply_classical_denoise() on a background thread.
+ 
+    Signals
+    -------
+    progress(str)           — short status message for the UI label
+    finished(object, str)   — (result_ndarray | None, error_msg)
+    """
+    progress = _pyqtSignal(str)
+    finished = _pyqtSignal(object, str)   # ndarray | None, error
+ 
+    def __init__(self, dialog, img: np.ndarray, parent=None):
+        super().__init__(parent)
+        self._dialog = dialog   # reference to the dialog (read-only during run)
+        self._img    = img
+        self._canceled = False
+ 
+    def cancel(self):
+        self._canceled = True
+ 
+    def run(self):
+        try:
+            algo = self._dialog.denoise_algo_combo.currentText()
+            self.progress.emit(f"Running {algo}…")
+            result = self._dialog._apply_classical_denoise(self._img)
+            if self._canceled:
+                self.finished.emit(None, "__canceled__")
+            else:
+                self.finished.emit(result, "")
+        except Exception as exc:
+            import traceback
+            if self._canceled:
+                self.finished.emit(None, "__canceled__")
+            else:
+                self.finished.emit(None, f"{exc}\n\n{traceback.format_exc()}")
 
 # --- GraphicsView with Shift+Click LS center + optional scene ctor -----------
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QGraphicsView, QGraphicsScene
+from PyQt6.QtGui import QPen, QColor, QWheelEvent
+from typing import Optional, Tuple
+ 
+ 
 class InteractiveGraphicsView(QGraphicsView):
+    """
+    GraphicsView with:
+    - Shift+click to set Larson–Sekanina center (crosshair)
+    - Mouse-wheel zoom (smooth trackpad + click-wheel)
+    """
     def __init__(self, scene: QGraphicsScene | None = None, parent=None):
         super().__init__(parent)
         if scene is not None:
             self.setScene(scene)
         self.ls_center: Optional[Tuple[float, float]] = None
         self.cross_items = []
-
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+ 
     def mousePressEvent(self, event):
-        if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and event.button() == Qt.MouseButton.LeftButton:
+        if (
+            event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+            and event.button() == Qt.MouseButton.LeftButton
+        ):
             scene_pt = self.mapToScene(event.position().toPoint())
             x, y = scene_pt.x(), scene_pt.y()
             self.ls_center = (x, y)
             self._draw_crosshair_at(x, y)
             return
         super().mousePressEvent(event)
-
+ 
     def _draw_crosshair_at(self, x: float, y: float):
         for item in self.cross_items:
             self.scene().removeItem(item)
@@ -66,6 +126,41 @@ class InteractiveGraphicsView(QGraphicsView):
         hline = self.scene().addLine(x - size, y, x + size, y, pen)
         vline = self.scene().addLine(x, y - size, x, y + size, pen)
         self.cross_items.extend([hline, vline])
+ 
+    def wheelEvent(self, event: QWheelEvent):
+        """
+        Smooth zoom centred on cursor position.
+        Trackpad: uses pixelDelta (fine-grained).
+        Click-wheel: uses angleDelta (coarse steps).
+        Ctrl held = faster zoom in both cases.
+        """
+        ctrl = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+ 
+        # ── Trackpad path (pixelDelta available) ──────────────
+        dy_px = event.pixelDelta().y()
+        if dy_px != 0:
+            abs_dy = abs(dy_px)
+            if abs_dy <= 3:
+                base = 1.012 if ctrl else 1.010
+            elif abs_dy <= 10:
+                base = 1.025 if ctrl else 1.020
+            else:
+                base = 1.040 if ctrl else 1.030
+            factor = base if dy_px > 0 else 1.0 / base
+            self.scale(factor, factor)
+            event.accept()
+            return
+ 
+        # ── Click-wheel path (angleDelta) ─────────────────────
+        dy_ang = event.angleDelta().y()
+        if dy_ang == 0:
+            event.ignore()
+            return
+        step = 1.20 if ctrl else 1.15
+        factor = step if dy_ang > 0 else 1.0 / step
+        self.scale(factor, factor)
+        event.accept()
+
 
 
 class FloatSliderWithEdit(QWidget):
@@ -177,7 +272,49 @@ class ConvoDeconvoDialog(QDialog):
         left_panel = QFrame(); left_panel.setFrameShape(QFrame.Shape.StyledPanel); left_panel.setFixedWidth(350)
         left_layout = QVBoxLayout(left_panel); main_layout.addWidget(left_panel)
         # Right
-        preview_panel = QFrame(); preview_layout = QVBoxLayout(preview_panel); main_layout.addWidget(preview_panel, stretch=1)
+        preview_panel = QFrame()
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.setSpacing(4)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.addWidget(preview_panel, stretch=1)
+
+        # ── Autostretch toolbar (above zoom row) ─────────────────────
+        stretch_bar = QHBoxLayout()
+        stretch_bar.setSpacing(8)
+
+        self.cb_autostretch = QCheckBox("Auto-stretch preview")
+        self.cb_autostretch.setChecked(False)
+        self.cb_autostretch.setToolTip(
+            "Apply a statistical stretch to the preview only.\n"
+            "The actual image data is NOT modified — this is display only.\n"
+            "Useful for checking denoising / convolution results on linear data."
+        )
+        stretch_bar.addWidget(self.cb_autostretch)
+
+        stretch_bar.addWidget(QLabel("Target median:"))
+        self.s_target_median = QDoubleSpinBox()
+        self.s_target_median.setRange(0.01, 0.60)
+        self.s_target_median.setSingleStep(0.01)
+        self.s_target_median.setDecimals(3)
+        self.s_target_median.setValue(0.25)
+        self.s_target_median.setFixedWidth(70)
+        self.s_target_median.setEnabled(False)   # disabled until checkbox on
+        stretch_bar.addWidget(self.s_target_median)
+
+        self.cb_linked = QCheckBox("Linked")
+        self.cb_linked.setChecked(True)
+        self.cb_linked.setToolTip("Stretch all RGB channels together (linked).")
+        self.cb_linked.setEnabled(False)
+        stretch_bar.addWidget(self.cb_linked)
+
+        stretch_bar.addStretch(1)
+        preview_layout.addLayout(stretch_bar)
+
+        # Wire stretch controls
+        self.cb_autostretch.toggled.connect(self._on_autostretch_toggled)
+        self.s_target_median.valueChanged.connect(self._refresh_display)
+        self.cb_linked.toggled.connect(self._refresh_display)
+
 
         # Tabs
         self.tabs = QTabWidget(); left_layout.addWidget(self.tabs)
@@ -251,6 +388,9 @@ class ConvoDeconvoDialog(QDialog):
             s.valueChanged.connect(self._update_psf_preview)
         for s in (self.rl_psf_radius_slider, self.rl_psf_shape_slider, self.rl_psf_aspect_slider, self.rl_psf_rotation_slider):
             s.valueChanged.connect(self._update_psf_preview)
+        # Autostretch state — mirrors BlemishBlaster pattern
+        self._stretch_original: np.ndarray | None = None
+        self._stretch_is_mono: bool = False
 
         self._update_psf_preview()
 
@@ -284,8 +424,73 @@ class ConvoDeconvoDialog(QDialog):
         if self._original_image is not None:
             self._auto_fit = True
             self._display_in_view(self._original_image)
+            self._cache_stretch_original(self._original_image)
 
-
+    def _on_autostretch_toggled(self, on: bool):
+        """Enable/disable dependent controls and refresh display."""
+        self.s_target_median.setEnabled(on)
+        self.cb_linked.setEnabled(on)
+        self._refresh_display()
+    
+    
+    def _refresh_display(self, *_):
+        """
+        Re-render the preview view from the stored linear original,
+        applying autostretch if enabled.  Called whenever stretch
+        parameters change, or after Preview/Undo/Push updates the image.
+    
+        If no linear original is cached yet, falls back gracefully.
+        """
+        src = getattr(self, "_stretch_original", None)
+        if src is None:
+            # Nothing to redisplay yet — leave view as-is
+            return
+    
+        if not self.cb_autostretch.isChecked():
+            self._display_in_view(src)
+            return
+    
+        tm = float(self.s_target_median.value())
+        src_f = np.asarray(src, dtype=np.float32)
+    
+        is_mono = getattr(self, "_stretch_is_mono", False)
+    
+        if is_mono:
+            # Mono: collapse to single plane, stretch, replicate for display
+            if src_f.ndim == 3:
+                plane = src_f[:, :, 0]
+            else:
+                plane = src_f
+            stretched = stretch_mono_image(
+                plane, target_median=tm, normalize=False,
+                apply_curves=False, no_black_clip=False
+            )
+            disp = np.stack([stretched] * 3, axis=-1).astype(np.float32)
+        else:
+            # Color — linked or unlinked
+            linked = self.cb_linked.isChecked()
+            disp = stretch_color_image(
+                src_f, target_median=tm, linked=linked,
+                normalize=False, apply_curves=False, no_black_clip=False
+            ).astype(np.float32)
+    
+        self._display_in_view(np.clip(disp, 0.0, 1.0))
+    
+    
+    def _cache_stretch_original(self, img: np.ndarray):
+        """
+        Store a linear copy of `img` for the autostretch display path.
+        Call this any time the working image changes:
+        - on showEvent (initial load)
+        - after Preview produces a result
+        - after Undo
+        - after Push (new baseline)
+        """
+        self._stretch_original = np.asarray(img, dtype=np.float32).copy()
+        self._stretch_is_mono = (
+            img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1)
+        )
+    
     # ---------------- DocManager IO helpers ----------------
     def _get_active_image_and_meta(self) -> tuple[Optional[np.ndarray], dict]:
         doc = self._active_doc()
@@ -303,6 +508,7 @@ class ConvoDeconvoDialog(QDialog):
                 self._original_image = img.copy()
                 self._auto_fit = True
                 self._display_in_view(img)
+                self._cache_stretch_original(img)
             self._load_original_on_show = False
         self.conv_psf_label.clear()
         self.sep_psf_preview.clear() if hasattr(self, "sep_psf_preview") else None
@@ -321,6 +527,14 @@ class ConvoDeconvoDialog(QDialog):
         self.sep_psf_preview.clear() if hasattr(self, "sep_psf_preview") else None
         self.rl_status_label.setText("") if hasattr(self, "rl_status_label") else None
         self.custom_psf_bar.setVisible(False) if hasattr(self, "custom_psf_bar") else None
+        self._stretch_original = None
+        if getattr(self, "_denoise_worker", None) is not None:
+            if self._denoise_worker.isRunning():
+                self._denoise_worker.cancel()
+                self._denoise_worker.wait(2000)
+            self._denoise_worker = None
+
+
         super().closeEvent(ev)
 
     # ---------------- Build tabs ----------------
@@ -498,17 +712,343 @@ class ConvoDeconvoDialog(QDialog):
         self.tabs.addTab(psf_tab, self.tr("PSF Estimator"))
 
     def _build_tv_denoise_tab(self):
-        tvd_tab = QWidget(); layout = QVBoxLayout(tvd_tab)
-        form = QFormLayout(); form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        self.tv_weight_slider = FloatSliderWithEdit(minimum=0.0, maximum=1.0, step=0.01, initial=0.1, suffix="")
-        form.addRow("TV Weight:", self.tv_weight_slider)
-        self.tv_iter_slider   = FloatSliderWithEdit(minimum=1, maximum=100, step=1, initial=10, suffix="")
-        form.addRow("Max Iterations:", self.tv_iter_slider)
-        self.tv_multichannel_checkbox = QCheckBox("Multi‐channel"); self.tv_multichannel_checkbox.setChecked(True)
-        self.tv_multichannel_checkbox.setToolTip("If checked and the image is color, run TV on all channels jointly")
-        form.addRow("", self.tv_multichannel_checkbox)
-        layout.addLayout(form); layout.addStretch()
-        self.tabs.addTab(tvd_tab, self.tr("TV Denoise"))
+        from PyQt6.QtWidgets import (
+            QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,
+            QLabel, QComboBox, QCheckBox,
+        )
+        from PyQt6.QtCore import Qt
+    
+        tvd_tab = QWidget()
+        outer = QVBoxLayout(tvd_tab)
+        outer.setSpacing(6)
+    
+        # ── Algorithm selector ───────────────────────────────────
+        algo_row = QHBoxLayout()
+        algo_row.addWidget(QLabel("Method:"))
+        self.denoise_algo_combo = QComboBox()
+        self.denoise_algo_combo.addItems([
+            "TV Chambolle",
+            "Non-Local Means",
+            "Bilateral",
+            "Gaussian",
+            "Median",
+            "Wavelet",
+        ])
+        algo_row.addWidget(self.denoise_algo_combo)
+        algo_row.addStretch(1)
+        outer.addLayout(algo_row)
+    
+        # ── Shared: L*-only ──────────────────────────────────────
+        self.denoise_lum_only_chk = QCheckBox(
+            "Operate on L* only  (color images — preserves chroma)"
+        )
+        self.denoise_lum_only_chk.setChecked(True)
+        self.denoise_lum_only_chk.setToolTip(
+            "When checked, the denoiser runs only on the L* (luminance) channel "
+            "of a Lab-converted image and chroma is left untouched.\n"
+            "Uncheck to run on all channels independently."
+        )
+        outer.addWidget(self.denoise_lum_only_chk)
+    
+        # ── Parameter stack ──────────────────────────────────────
+        self._denoise_param_stack: dict[str, QWidget] = {}
+    
+        # TV Chambolle
+        tv_w = QWidget()
+        tv_f = QFormLayout(tv_w)
+        tv_f.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.tv_weight_slider = FloatSliderWithEdit(
+            minimum=0.0, maximum=1.0, step=0.01, initial=0.10, suffix=""
+        )
+        tv_f.addRow("TV Weight:", self.tv_weight_slider)
+        self.tv_iter_slider = FloatSliderWithEdit(
+            minimum=1, maximum=100, step=1, initial=10, suffix=""
+        )
+        tv_f.addRow("Max Iterations:", self.tv_iter_slider)
+        self.tv_multichannel_checkbox = QCheckBox("Multi-channel")
+        self.tv_multichannel_checkbox.setChecked(True)
+        self.tv_multichannel_checkbox.setVisible(False)
+        tv_f.addRow("", self.tv_multichannel_checkbox)
+        self._denoise_param_stack["TV Chambolle"] = tv_w
+    
+        # Non-Local Means
+        nlm_w = QWidget()
+        nlm_f = QFormLayout(nlm_w)
+        nlm_f.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.nlm_h_slider = FloatSliderWithEdit(
+            minimum=0.001, maximum=0.30, step=0.001, initial=0.015, suffix=""
+        )
+        self.nlm_h_slider.setToolTip(
+            "Cut-off distance (h). Controls denoising strength.\n"
+            "Typical range: 0.01–0.05 for stretched astrophotos."
+        )
+        nlm_f.addRow("h (strength):", self.nlm_h_slider)
+        self.nlm_patch_slider = FloatSliderWithEdit(
+            minimum=3, maximum=15, step=2, initial=5, suffix=" px"
+        )
+        self.nlm_patch_slider.setToolTip(
+            "Patch size (pixels). Larger = more context per comparison, slower."
+        )
+        nlm_f.addRow("Patch size:", self.nlm_patch_slider)
+        self.nlm_dist_slider = FloatSliderWithEdit(
+            minimum=3, maximum=21, step=2, initial=7, suffix=" px"
+        )
+        self.nlm_dist_slider.setToolTip(
+            "Search distance. Larger = better quality, slower."
+        )
+        nlm_f.addRow("Search dist:", self.nlm_dist_slider)
+        nlm_hint = QLabel("  ⓘ  Fast mode — skimage NLM with sigma estimation.")
+        nlm_hint.setStyleSheet("color: #888; font-size: 10px;")
+        nlm_f.addRow("", nlm_hint)
+        self._denoise_param_stack["Non-Local Means"] = nlm_w
+    
+        # Bilateral
+        bil_w = QWidget()
+        bil_f = QFormLayout(bil_w)
+        bil_f.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.bil_d_slider = FloatSliderWithEdit(
+            minimum=1, maximum=25, step=2, initial=9, suffix=" px"
+        )
+        self.bil_d_slider.setToolTip("Diameter of each pixel neighbourhood (d).")
+        bil_f.addRow("Diameter:", self.bil_d_slider)
+        self.bil_sigma_color_slider = FloatSliderWithEdit(
+            minimum=1.0, maximum=200.0, step=1.0, initial=50.0, suffix=""
+        )
+        self.bil_sigma_color_slider.setToolTip(
+            "Sigma in colour space. Higher = pixels further in colour are mixed."
+        )
+        bil_f.addRow("Sigma colour:", self.bil_sigma_color_slider)
+        self.bil_sigma_space_slider = FloatSliderWithEdit(
+            minimum=1.0, maximum=200.0, step=1.0, initial=50.0, suffix=""
+        )
+        self.bil_sigma_space_slider.setToolTip(
+            "Sigma in coordinate space. Higher = pixels further apart are mixed."
+        )
+        bil_f.addRow("Sigma space:", self.bil_sigma_space_slider)
+        bil_hint = QLabel("  ⓘ  Uses OpenCV bilateralFilter (8-bit internally).")
+        bil_hint.setStyleSheet("color: #888; font-size: 10px;")
+        bil_f.addRow("", bil_hint)
+        self._denoise_param_stack["Bilateral"] = bil_w
+    
+        # Gaussian
+        gau_w = QWidget()
+        gau_f = QFormLayout(gau_w)
+        gau_f.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.gau_sigma_slider = FloatSliderWithEdit(
+            minimum=0.1, maximum=10.0, step=0.1, initial=1.0, suffix=" px"
+        )
+        self.gau_sigma_slider.setToolTip(
+            "Gaussian sigma. 1.0 = gentle, 3.0+ = heavy blurring."
+        )
+        gau_f.addRow("Sigma:", self.gau_sigma_slider)
+        self._denoise_param_stack["Gaussian"] = gau_w
+    
+        # Median
+        med_w = QWidget()
+        med_f = QFormLayout(med_w)
+        med_f.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.med_size_slider = FloatSliderWithEdit(
+            minimum=1, maximum=15, step=2, initial=3, suffix=" px"
+        )
+        self.med_size_slider.setToolTip(
+            "Kernel size (odd). 3 = minimal, 5 = moderate.\n"
+            "Good for cosmic ray speckles."
+        )
+        med_f.addRow("Kernel size:", self.med_size_slider)
+        self._denoise_param_stack["Median"] = med_w
+    
+        # Wavelet
+        wav_w = QWidget()
+        wav_f = QFormLayout(wav_w)
+        wav_f.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.wav_sigma_slider = FloatSliderWithEdit(
+            minimum=0.0, maximum=0.30, step=0.001, initial=0.0, suffix=""
+        )
+        self.wav_sigma_slider.setToolTip(
+            "Noise sigma. 0.0 = auto-estimate (BayesShrink)."
+        )
+        wav_f.addRow("Noise σ (0=auto):", self.wav_sigma_slider)
+        self.wav_wavelet_combo = QComboBox()
+        self.wav_wavelet_combo.addItems(
+            ["db1", "db2", "db4", "db8", "sym4", "sym8", "coif1", "bior1.3"]
+        )
+        self.wav_wavelet_combo.setCurrentText("db2")
+        self.wav_wavelet_combo.setToolTip(
+            "Wavelet family. db2–4 = good general purpose.\n"
+            "sym4/sym8 = near-symmetric, good for nebulosity."
+        )
+        wav_f.addRow("Wavelet:", self.wav_wavelet_combo)
+        self.wav_mode_combo = QComboBox()
+        self.wav_mode_combo.addItems(["soft", "hard"])
+        self.wav_mode_combo.setToolTip(
+            "soft = smoother.  hard = sharper edges, may ring."
+        )
+        wav_f.addRow("Threshold mode:", self.wav_mode_combo)
+        wav_hint = QLabel("  ⓘ  skimage.restoration.denoise_wavelet (BayesShrink).")
+        wav_hint.setStyleSheet("color: #888; font-size: 10px;")
+        wav_f.addRow("", wav_hint)
+        self._denoise_param_stack["Wavelet"] = wav_w
+    
+        # ── Stack container ──────────────────────────────────────
+        self._denoise_stack_container = QWidget()
+        stack_layout = QVBoxLayout(self._denoise_stack_container)
+        stack_layout.setContentsMargins(0, 0, 0, 0)
+        for key, w in self._denoise_param_stack.items():
+            w.setVisible(key == "TV Chambolle")
+            stack_layout.addWidget(w)
+        outer.addWidget(self._denoise_stack_container)
+    
+        # ── Status label + cancel button (shown while running) ───
+        status_row = QHBoxLayout()
+        self.denoise_status_label = QLabel("")
+        self.denoise_status_label.setStyleSheet(
+            "color: #7ecfea; font-size: 10px; padding: 1px 2px;"
+        )
+        status_row.addWidget(self.denoise_status_label, stretch=1)
+    
+        self.denoise_cancel_btn = QPushButton("Cancel")
+        self.denoise_cancel_btn.setFixedWidth(60)
+        self.denoise_cancel_btn.setVisible(False)
+        self.denoise_cancel_btn.setStyleSheet(
+            "QPushButton { background: rgba(200,80,0,0.25); border: 1px solid rgba(200,80,0,0.5);"
+            " border-radius: 3px; padding: 2px 6px; font-size: 10px; }"
+            "QPushButton:hover { background: rgba(200,80,0,0.45); }"
+        )
+        self.denoise_cancel_btn.clicked.connect(self._cancel_denoise)
+        status_row.addWidget(self.denoise_cancel_btn)
+        outer.addLayout(status_row)
+    
+        outer.addStretch()
+    
+        # Wire combo → show/hide panels
+        self.denoise_algo_combo.currentTextChanged.connect(self._on_denoise_algo_changed)
+    
+        # Worker slot (created fresh on each Preview click)
+        self._denoise_worker = None
+    
+        self.tabs.addTab(tvd_tab, self.tr("Classical Denoise"))
+
+    
+    
+    def _on_denoise_algo_changed(self, algo: str):
+        """Show only the selected denoiser's parameter panel."""
+        for key, w in self._denoise_param_stack.items():
+            w.setVisible(key == algo)
+
+
+    def _apply_classical_denoise(self, img: np.ndarray) -> np.ndarray:
+        """
+        Dispatch to the selected classical denoiser.
+        Handles L*-only mode for color images uniformly.
+        Returns float32 [0,1].
+        """
+        from skimage.color import rgb2lab, lab2rgb
+    
+        algo = self.denoise_algo_combo.currentText()
+        lum_only = self.denoise_lum_only_chk.isChecked()
+        is_color = (img.ndim == 3 and img.shape[2] == 3)
+    
+        img_f = np.asarray(img, dtype=np.float32)
+
+        # ── L*-only mode: extract L, denoise it, put back ────────
+        if lum_only and is_color:
+            lab = rgb2lab(img_f)
+            L_norm = (lab[:, :, 0] / 100.0).astype(np.float32)
+            L_denoised = self._denoise_single_channel(algo, L_norm)   # ← was _denoise_single_channel(self, ...)
+            lab[:, :, 0] = np.clip(L_denoised * 100.0, 0.0, 100.0)
+            result = np.clip(lab2rgb(lab).astype(np.float32), 0.0, 1.0)
+            return result
+
+        # ── Per-channel mode ────────────────────────────────────
+        if is_color:
+            channels = [
+                self._denoise_single_channel(algo, img_f[:, :, c])   # ← same fix
+                for c in range(3)
+            ]
+            return np.clip(np.stack(channels, axis=2), 0.0, 1.0)
+
+        # ── Mono ─────────────────────────────────────────────────
+        mono = img_f.reshape(img_f.shape[0], img_f.shape[1])
+        return np.clip(self._denoise_single_channel(algo, mono), 0.0, 1.0) 
+    
+    
+    def _denoise_single_channel(self, algo: str, ch: np.ndarray) -> np.ndarray:
+        """
+        Run the selected algorithm on a single 2-D float32 [0,1] channel.
+        Returns float32 [0,1].
+        """
+        ch = np.asarray(ch, dtype=np.float32)
+    
+        if algo == "TV Chambolle":
+            weight   = float(self.tv_weight_slider.value())
+            max_iter = int(round(float(self.tv_iter_slider.value())))
+            return denoise_tv_chambolle(
+                ch, weight=weight, max_num_iter=max_iter, channel_axis=None
+            ).astype(np.float32)
+    
+        elif algo == "Non-Local Means":
+            h_val      = float(self.nlm_h_slider.value())
+            patch_size = int(round(float(self.nlm_patch_slider.value())))
+            patch_dist = int(round(float(self.nlm_dist_slider.value())))
+            # Ensure odd
+            if patch_size % 2 == 0:
+                patch_size += 1
+            if patch_dist % 2 == 0:
+                patch_dist += 1
+            sigma_est = float(np.mean(estimate_sigma(ch, channel_axis=None)))
+            return denoise_nl_means(
+                ch,
+                h=h_val,
+                fast_mode=True,
+                patch_size=patch_size,
+                patch_distance=patch_dist,
+                sigma=sigma_est,
+                channel_axis=None,
+            ).astype(np.float32)
+    
+        elif algo == "Bilateral":
+            d           = int(round(float(self.bil_d_slider.value())))
+            sigma_color = float(self.bil_sigma_color_slider.value())
+            sigma_space = float(self.bil_sigma_space_slider.value())
+            # cv2 bilateral works on 8-bit; convert, filter, convert back
+            ch8 = np.clip(ch * 255.0, 0, 255).astype(np.uint8)
+            filtered = cv2.bilateralFilter(ch8, d, sigma_color, sigma_space)
+            return (filtered.astype(np.float32) / 255.0)
+    
+        elif algo == "Gaussian":
+            sigma = float(self.gau_sigma_slider.value())
+            return np.clip(
+                gaussian_filter(ch, sigma=sigma).astype(np.float32), 0.0, 1.0
+            )
+    
+        elif algo == "Median":
+            size = int(round(float(self.med_size_slider.value())))
+            if size % 2 == 0:
+                size += 1   # enforce odd
+            return np.clip(
+                median_filter(ch, size=size).astype(np.float32), 0.0, 1.0
+            )
+    
+        elif algo == "Wavelet":
+            sigma_val = float(self.wav_sigma_slider.value())
+            wavelet   = self.wav_wavelet_combo.currentText()
+            mode      = self.wav_mode_combo.currentText()
+            # sigma=None triggers BayesShrink auto-estimate
+            sigma_arg = None if sigma_val < 1e-6 else sigma_val
+            return np.clip(
+                denoise_wavelet(
+                    ch,
+                    sigma=sigma_arg,
+                    wavelet=wavelet,
+                    mode=mode,
+                    method="BayesShrink",
+                    channel_axis=None,
+                ).astype(np.float32),
+                0.0, 1.0,
+            )
+    
+        else:
+            return ch.copy()
 
     # ---------------- UI reactions ----------------
     def _on_deconv_algo_changed(self, selected: str):
@@ -738,26 +1278,10 @@ class ConvoDeconvoDialog(QDialog):
                 self._show_message("Unknown deconvolution algorithm")
                 return
 
-        elif current_tab_name == "TV Denoise":
-            weight = self.tv_weight_slider.value()
-            max_iter = int(self.tv_iter_slider.value())
-            multichannel = self.tv_multichannel_checkbox.isChecked()
+        elif current_tab_name == "Classical Denoise":
+            self._launch_classical_denoise(img)
+            return   # worker calls _display_in_view when done
 
-            if img.ndim == 3 and multichannel:
-                processed = denoise_tv_chambolle(img.astype(np.float32), weight=weight, max_num_iter=max_iter, channel_axis=-1).astype(np.float32)
-            else:
-                if img.ndim == 3 and img.shape[2] == 3:
-                    channels_out = [
-                        denoise_tv_chambolle(img[:, :, c].astype(np.float32), weight=weight, max_num_iter=max_iter, channel_axis=None).astype(np.float32)
-                        for c in range(3)
-                    ]
-                    processed = np.stack(channels_out, axis=2)
-                else:
-                    gray = img.astype(np.float32) if img.ndim == 2 else img
-                    processed = denoise_tv_chambolle(gray, weight=weight, max_num_iter=max_iter, channel_axis=None).astype(np.float32)
-
-            processed = np.clip(processed, 0.0, 1.0)
-            processed = processed * self.strength_slider.value() + (1 - self.strength_slider.value()) * img
 
         else:
             self._show_message("Unknown tab")
@@ -773,12 +1297,40 @@ class ConvoDeconvoDialog(QDialog):
             final_result = processed
 
         self._preview_result = final_result
-        self._display_in_view(final_result)
+        self._cache_stretch_original(final_result)
+        self._refresh_display()
+
+
+    def _launch_classical_denoise(self, img: np.ndarray):
+        """
+        Kick off _DenoiseWorker for the Classical Denoise tab.
+        Returns immediately; result arrives via _on_denoise_finished.
+        """
+        # Cancel any previous run that somehow didn't finish
+        if self._denoise_worker is not None and self._denoise_worker.isRunning():
+            self._denoise_worker.cancel()
+            self._denoise_worker.wait(2000)
+    
+        algo = self.denoise_algo_combo.currentText()
+        self.denoise_status_label.setText(f"Running {algo}…")
+        self._set_denoise_running(True)
+    
+        worker = _DenoiseWorker(self, img, parent=self)
+        worker.progress.connect(
+            lambda msg: self.denoise_status_label.setText(msg)
+        )
+        worker.finished.connect(self._on_denoise_finished)
+        self._denoise_worker = worker
+        worker.start()
+    
+
 
     def _on_undo(self):
         if self._original_image is not None:
             self._preview_result = None
             self._display_in_view(self._original_image)
+            self._cache_stretch_original(self._original_image)  # ← ADD
+            self._refresh_display()                   
         else:
             self._show_message("Nothing to undo.")
 
@@ -897,6 +1449,8 @@ class ConvoDeconvoDialog(QDialog):
             self._original_image = img_after.copy()
             self._preview_result = None
             self._display_in_view(self._original_image)
+            self._cache_stretch_original(self._original_image)
+            self._refresh_display()   
 
         # 🔴 Replay wiring (unchanged, just moved under try/except)
         try:
@@ -1205,6 +1759,70 @@ class ConvoDeconvoDialog(QDialog):
             return
 
         QMessageBox.information(self, "Saved", f"PSF saved to:\n{path}")
+
+
+    def _cancel_denoise(self):
+        """Cancel a running denoise worker."""
+        if self._denoise_worker is not None and self._denoise_worker.isRunning():
+            self._denoise_worker.cancel()
+            self.denoise_status_label.setText("Canceling…")
+    
+    
+    def _set_denoise_running(self, running: bool):
+        """Lock/unlock UI around a running denoise job."""
+        self.preview_btn.setEnabled(not running)
+        self.push_btn.setEnabled(not running)
+        self.denoise_cancel_btn.setVisible(running)
+        if not running:
+            # re-enable the algo combo and all param sliders
+            self.denoise_algo_combo.setEnabled(True)
+            self.denoise_lum_only_chk.setEnabled(True)
+            self._denoise_stack_container.setEnabled(True)
+        else:
+            self.denoise_algo_combo.setEnabled(False)
+            self.denoise_lum_only_chk.setEnabled(False)
+            self._denoise_stack_container.setEnabled(False)
+    
+    
+    def _on_denoise_finished(self, result, error_msg: str):
+        """Slot called when _DenoiseWorker finishes."""
+        self._set_denoise_running(False)
+        self._denoise_worker = None
+    
+        if error_msg == "__canceled__":
+            self.denoise_status_label.setText("Canceled.")
+            return
+    
+        if error_msg or result is None:
+            self.denoise_status_label.setText("Error.")
+            QMessageBox.critical(
+                self, "Denoise Error",
+                f"Denoising failed:\n\n{error_msg.splitlines()[0] if error_msg else 'Unknown error'}\n\n"
+                "Check the SASpro log for details."
+            )
+            return
+    
+        # Apply strength blend on GUI thread (fast — just math on arrays)
+        img = self._original_image
+        strength = self.strength_slider.value()
+        processed = np.clip(result, 0.0, 1.0)
+        processed = processed * strength + (1.0 - strength) * img
+    
+        # Masked blend
+        mask = self._get_active_mask_from_doc(processed.shape)
+        if mask is not None:
+            if processed.ndim == 3 and mask.ndim == 2:
+                mask = mask[..., None]
+            final_result = np.clip(
+                processed * mask + self._original_image * (1.0 - mask), 0.0, 1.0
+            )
+        else:
+            final_result = processed
+    
+        self._preview_result = final_result
+        self._cache_stretch_original(final_result)
+        self._refresh_display()
+        self.denoise_status_label.setText("Done.")
 
 
 

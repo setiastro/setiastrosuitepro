@@ -1,119 +1,458 @@
-#pro.layers_dock.py
+# ============================================================
+#  Layers Dock  (src/setiastro/saspro/layers_dock.py)
+#  Part of Seti Astro Suite Pro
+#  Copyright © 2026 Franklin Marek  |  www.setiastro.com
+#  All rights reserved.
+# ============================================================
 from __future__ import annotations
 from typing import Optional
 import json
 import numpy as np
 
-from PyQt6.QtCore import Qt, pyqtSignal, QByteArray, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QByteArray, QTimer, QPoint, QPointF, QRectF, QThread, QObject
 from PyQt6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QListWidget, QListWidgetItem, QAbstractItemView, QSlider, QCheckBox,
-    QPushButton, QFrame, QMessageBox,QDialog, QFormLayout, QDoubleSpinBox, QDialogButtonBox
+    QPushButton, QFrame, QMessageBox, QDialog, QFormLayout, QDoubleSpinBox,
+    QDialogButtonBox, QSizePolicy, QToolButton, QScrollArea,
 )
-from PyQt6.QtGui import QIcon, QDragEnterEvent, QDropEvent, QPixmap, QCursor
+from PyQt6.QtGui import (
+    QIcon, QDragEnterEvent, QDropEvent, QPixmap, QCursor, QImage, QPainter,
+    QPen, QColor, QFont,
+)
 
 from setiastro.saspro.layers import LayerTransform
 from setiastro.saspro.dnd_mime import MIME_VIEWSTATE, MIME_MASK
-from setiastro.saspro.layers import composite_stack, ImageLayer, BLEND_MODES
+from setiastro.saspro.layers import composite_stack, ImageLayer, BLEND_MODES, _apply_levels, _ensure_3c, _float01
+
+
+# ─────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────
+
+def _arr_to_pixmap(arr: np.ndarray) -> QPixmap:
+    """float32 H×W×3 [0,1] → QPixmap."""
+    rgb8 = np.clip(arr[:, :, :3] * 255.0, 0, 255).astype(np.uint8)
+    h, w = rgb8.shape[:2]
+    img = QImage(rgb8.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
+    return QPixmap.fromImage(img)
+
+
+# ─────────────────────────────────────────────────────────────
+# Background composite worker
+# ─────────────────────────────────────────────────────────────
+
+class _CompositeWorker(QObject):
+    """
+    Runs composite_stack off the GUI thread.
+    Emits done(gen, result_array) — caller discards if gen < current_gen.
+    """
+    done = pyqtSignal(int, object)   # (generation, np.ndarray)
+
+    def __init__(self, gen: int, working_base: np.ndarray,
+                 layers: list, parent=None):
+        super().__init__(parent)
+        self._gen         = gen
+        self._working_base = working_base
+        self._layers      = layers
+
+    def run(self):
+        try:
+            if self._layers:
+                result = composite_stack(self._working_base, self._layers)
+                out = result if result is not None else self._working_base
+            else:
+                out = _ensure_3c(_float01(self._working_base))
+            self.done.emit(self._gen, out)
+        except Exception as ex:
+            print("[CompositeWorker] error:", ex)
+            self.done.emit(self._gen, self._working_base)
+
+
+
+# ─────────────────────────────────────────────────────────────
+# Split-preview canvas  (before/after or after-only)
+# ─────────────────────────────────────────────────────────────
+
+class _PreviewCanvas(QWidget):
+    """Zoom/pan canvas with optional vertical split before/after line."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(300, 200)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMouseTracking(True)
+
+        self._before: Optional[QPixmap] = None   # raw base image
+        self._after:  Optional[QPixmap] = None   # composited result
+        self._split_mode = True                  # True = before/after split
+        self._split = 0.5
+
+        self._zoom   = 1.0
+        self._offset = QPoint(0, 0)
+        self._fit_mode = True
+
+        self._panning = False
+        self._pan_start_mouse  = QPoint()
+        self._pan_start_offset = QPoint()
+        self._dragging_split   = False
+
+    # ── public API ───────────────────────────────────────────
+
+    def set_images(self, before: QPixmap, after: QPixmap):
+        self._before = before
+        self._after  = after
+        self._fit_mode = True
+        self._fit()
+        self.update()
+
+    def set_after(self, after: QPixmap):
+        self._after = after
+        self.update()
+
+    def set_split_mode(self, on: bool):
+        self._split_mode = bool(on)
+        self.update()
+
+    def reset_view(self):
+        self._fit_mode = True
+        self._fit()
+        self.update()
+
+    # ── geometry ─────────────────────────────────────────────
+
+    def _fit(self):
+        src = self._before or self._after
+        if src is None:
+            return
+        pw, ph = src.width(), src.height()
+        ww, wh = self.width(), self.height()
+        if pw <= 0 or ph <= 0 or ww <= 0 or wh <= 0:
+            return
+        scale = min(ww / pw, wh / ph)
+        self._zoom   = scale
+        self._offset = QPoint(
+            int((ww - pw * scale) / 2),
+            int((wh - ph * scale) / 2),
+        )
+
+    def _img_rect(self) -> QRectF:
+        src = self._before or self._after
+        if src is None:
+            return QRectF()
+        return QRectF(
+            self._offset.x(), self._offset.y(),
+            src.width()  * self._zoom,
+            src.height() * self._zoom,
+        )
+
+    def _near_split(self, x: int) -> bool:
+        if not self._split_mode:
+            return False
+        r = self._img_rect()
+        sx = r.left() + self._split * r.width()
+        return abs(x - sx) < 7
+
+    # ── paint ─────────────────────────────────────────────────
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(25, 25, 28))
+
+        src = self._before or self._after
+        if src is None:
+            p.setPen(QColor(100, 100, 110))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                       "No image — add a layer or click Preview.")
+            p.end()
+            return
+
+        r = self._img_rect()
+
+        if not self._split_mode or self._before is None or self._after is None:
+            # Single-view: show after (or before if after missing)
+            pm = self._after if self._after is not None else self._before
+            p.drawPixmap(r, pm, QRectF(0, 0, pm.width(), pm.height()))
+        else:
+            split_x = r.left() + self._split * r.width()
+            src_w = self._before.width()
+            src_split = int(self._split * src_w)
+
+            # Before (left)
+            p.drawPixmap(
+                QRectF(r.left(), r.top(), split_x - r.left(), r.height()),
+                self._before,
+                QRectF(0, 0, src_split, self._before.height()),
+            )
+            # After (right)
+            after_src_w = self._after.width()
+            after_split = int(self._split * after_src_w)
+            p.drawPixmap(
+                QRectF(split_x, r.top(), r.right() - split_x, r.height()),
+                self._after,
+                QRectF(after_split, 0, after_src_w - after_split, self._after.height()),
+            )
+
+            # Split line
+            p.setPen(QPen(QColor(255, 220, 60), 2))
+            p.drawLine(QPointF(split_x, r.top()), QPointF(split_x, r.bottom()))
+
+            # Labels
+            p.setFont(QFont("Segoe UI", 9))
+            lbl_w = 54
+            if split_x - r.left() > lbl_w + 4:
+                p.setPen(QColor(200, 200, 200, 180))
+                p.fillRect(QRectF(r.left() + 4, r.top() + 4, lbl_w, 18), QColor(0, 0, 0, 120))
+                p.drawText(QRectF(r.left() + 4, r.top() + 4, lbl_w, 18),
+                           Qt.AlignmentFlag.AlignCenter, "Before")
+            if r.right() - split_x > lbl_w + 4:
+                p.setPen(QColor(200, 200, 200, 180))
+                p.fillRect(QRectF(r.right() - lbl_w - 4, r.top() + 4, lbl_w, 18), QColor(0, 0, 0, 120))
+                p.drawText(QRectF(r.right() - lbl_w - 4, r.top() + 4, lbl_w, 18),
+                           Qt.AlignmentFlag.AlignCenter, "After")
+        p.end()
+
+    # ── mouse ─────────────────────────────────────────────────
+
+    def mousePressEvent(self, ev):
+        x = int(ev.position().x())
+        if self._near_split(x):
+            self._dragging_split = True
+        else:
+            self._panning = True
+            self._pan_start_mouse  = ev.position().toPoint()
+            self._pan_start_offset = QPoint(self._offset)
+
+    def mouseMoveEvent(self, ev):
+        x = int(ev.position().x())
+        if self._dragging_split:
+            r = self._img_rect()
+            if r.width() > 0:
+                self._split = max(0.02, min(0.98,
+                    (ev.position().x() - r.left()) / r.width()))
+            self.update()
+        elif self._panning:
+            delta        = ev.position().toPoint() - self._pan_start_mouse
+            self._offset = self._pan_start_offset + delta
+            if delta.manhattanLength() > 3:
+                self._fit_mode = False
+            self.update()
+        else:
+            if self._near_split(x):
+                self.setCursor(Qt.CursorShape.SplitHCursor)
+            else:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def mouseReleaseEvent(self, ev):
+        self._dragging_split = False
+        self._panning        = False
+
+    def mouseDoubleClickEvent(self, ev):
+        if not self._near_split(int(ev.position().x())):
+            self.reset_view()
+
+    def wheelEvent(self, ev):
+        dy = ev.pixelDelta().y() or ev.angleDelta().y()
+        if dy == 0:
+            return
+        factor = 1.15 if dy > 0 else 1.0 / 1.15
+        old_zoom = self._zoom
+        self._zoom = max(0.05, min(32.0, self._zoom * factor))
+        self._fit_mode = False
+        pos = ev.position().toPoint()
+        self._offset = QPoint(
+            int(pos.x() - (pos.x() - self._offset.x()) * self._zoom / old_zoom),
+            int(pos.y() - (pos.y() - self._offset.y()) * self._zoom / old_zoom),
+        )
+        self.update()
+        ev.accept()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if self._fit_mode:
+            self._fit()
+            self.update()
+
+
+# ─────────────────────────────────────────────────────────────
+# Layers Preview Window
+# ─────────────────────────────────────────────────────────────
+
+class LayersPreviewWindow(QDialog):
+    """
+    Floating non-modal preview window for the Layers dock.
+
+    Shows the composited result against the raw base image.
+    Never touches the base document — read-only display only.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Layers Preview")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self._last_before_id: int = 0
+        try:
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        except Exception:
+            pass
+        self.resize(760, 560)
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(4, 4, 4, 4)
+        root.setSpacing(4)
+
+        # ── toolbar ──────────────────────────────────────────
+        bar = QHBoxLayout()
+
+        self.btn_split = QPushButton("⧉  Split Before/After")
+        self.btn_split.setCheckable(True)
+        self.btn_split.setChecked(True)
+        self.btn_split.setToolTip("Toggle before/after split view")
+        self.btn_split.toggled.connect(self._on_split_toggled)
+
+        self.btn_fit = QPushButton("Fit")
+        self.btn_fit.setFixedWidth(48)
+        self.btn_fit.setToolTip("Reset zoom/pan to fit  (double-click preview also does this)")
+        self.btn_fit.clicked.connect(self.canvas.reset_view if False else lambda: self.canvas.reset_view())
+
+        self.lbl_info = QLabel("Ready.")
+        self.lbl_info.setStyleSheet("color: #888; font-size: 10px;")
+
+        bar.addWidget(self.btn_split)
+        bar.addWidget(self.btn_fit)
+        bar.addStretch(1)
+        bar.addWidget(self.lbl_info)
+        root.addLayout(bar)
+
+        # ── canvas ───────────────────────────────────────────
+        self.canvas = _PreviewCanvas(self)
+        root.addWidget(self.canvas, 1)
+
+        # Fix btn_fit now canvas exists
+        self.btn_fit.clicked.disconnect()
+        self.btn_fit.clicked.connect(self.canvas.reset_view)
+
+    def _on_split_toggled(self, on: bool):
+        self.canvas.set_split_mode(on)
+        self.btn_split.setText("⧉  Split Before/After" if on else "□  After Only")
+
+    def update_composite(self, before_arr: Optional[np.ndarray],
+                          after_arr: Optional[np.ndarray]):
+        """Called by the dock whenever a new composite is ready."""
+        if before_arr is not None:
+            before_px = _arr_to_pixmap(
+                _ensure_3c(_float01(np.asarray(before_arr, dtype=np.float32)))
+            )
+        else:
+            before_px = None
+
+        if after_arr is not None:
+            after_px = _arr_to_pixmap(
+                _ensure_3c(_float01(np.asarray(after_arr, dtype=np.float32)))
+            )
+        else:
+            after_px = None
+
+        # set_images resets zoom/pan — only call when base actually changes.
+        # For parameter tweaks id() of before_arr stays the same → set_after only.
+        before_id = id(before_arr) if before_arr is not None else 0
+        if before_id != self._last_before_id:
+            self._last_before_id = before_id
+            self.canvas.set_images(before_px, after_px)
+        else:
+            if before_px is not None and self.canvas._before is None:
+                self.canvas._before = before_px
+            if after_px is not None:
+                self.canvas.set_after(after_px)
+
+        n_px = after_arr.size if after_arr is not None else 0
+        self.lbl_info.setText(f"Composite ready — {n_px:,} px")
+
+    def closeEvent(self, ev):
+        # Hide rather than destroy so the dock can reopen it cheaply.
+        # Emit finished manually so the dock untoggles the Preview button.
+        ev.ignore()
+        self.hide()
+        self.finished.emit(0)
+
+
+# ─────────────────────────────────────────────────────────────
+# Transform dialog (unchanged from original)
+# ─────────────────────────────────────────────────────────────
 
 class _TransformDialog(QDialog):
-    """
-    Live-preview transform dialog.
-    - Updates the layer transform as the user edits values (debounced).
-    - Cancel restores original transform.
-    - OK keeps current previewed transform.
-    """
     def __init__(self, parent=None, *, t: LayerTransform | None = None,
                  apply_cb=None, cancel_cb=None, debounce_ms: int = 200):
         super().__init__(parent)
         self.setWindowTitle("Layer Transform")
         self.setModal(True)
 
-        self._apply_cb = apply_cb
+        self._apply_cb  = apply_cb
         self._cancel_cb = cancel_cb
-
         self._t0 = t or LayerTransform()
-        # snapshot original so Cancel can revert even if layer mutated live
         self._orig = LayerTransform(
             tx=float(self._t0.tx), ty=float(self._t0.ty),
             rot_deg=float(self._t0.rot_deg),
             sx=float(self._t0.sx), sy=float(self._t0.sy),
             pivot_x=self._t0.pivot_x, pivot_y=self._t0.pivot_y,
         )
-
-        # debounce timer
         self._tmr = QTimer(self)
         self._tmr.setSingleShot(True)
         self._tmr.timeout.connect(self._apply_live)
         self._debounce_ms = int(debounce_ms)
 
-        lay = QVBoxLayout(self)
+        lay  = QVBoxLayout(self)
         form = QFormLayout()
         lay.addLayout(form)
 
-        def mk_spin(minv, maxv, step, dec, val):
+        def mk(lo, hi, step, dec, val):
             s = QDoubleSpinBox(self)
-            s.setRange(minv, maxv)
-            s.setSingleStep(step)
-            s.setDecimals(dec)
-            s.setValue(float(val))
+            s.setRange(lo, hi); s.setSingleStep(step)
+            s.setDecimals(dec); s.setValue(float(val))
             return s
 
-        self.tx = mk_spin(-100000, 100000, 1.0, 2, self._t0.tx)
-        self.ty = mk_spin(-100000, 100000, 1.0, 2, self._t0.ty)
-        self.rot = mk_spin(-3600, 3600, 0.1, 3, self._t0.rot_deg)
-        self.sx = mk_spin(0.001, 1000.0, 0.01, 4, self._t0.sx)
-        self.sy = mk_spin(0.001, 1000.0, 0.01, 4, self._t0.sy)
+        self.tx  = mk(-100000, 100000, 1.0,  2, self._t0.tx)
+        self.ty  = mk(-100000, 100000, 1.0,  2, self._t0.ty)
+        self.rot = mk(-3600,   3600,   0.1,  3, self._t0.rot_deg)
+        self.sx  = mk(0.001,   1000.0, 0.01, 4, self._t0.sx)
+        self.sy  = mk(0.001,   1000.0, 0.01, 4, self._t0.sy)
 
         form.addRow("Translate X (px)", self.tx)
         form.addRow("Translate Y (px)", self.ty)
-        form.addRow("Rotate (deg)", self.rot)
-        form.addRow("Scale X", self.sx)
-        form.addRow("Scale Y", self.sy)
+        form.addRow("Rotate (deg)",     self.rot)
+        form.addRow("Scale X",          self.sx)
+        form.addRow("Scale Y",          self.sy)
 
-        # Buttons
         btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok |
-            QDialogButtonBox.StandardButton.Cancel,
-            parent=self
-        )
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self)
         lay.addWidget(btns)
-
         self.btn_reset = QPushButton("Reset")
         btns.addButton(self.btn_reset, QDialogButtonBox.ButtonRole.ResetRole)
-
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         self.btn_reset.clicked.connect(self._reset)
 
-        # Any value change triggers debounced live preview
         for w in (self.tx, self.ty, self.rot, self.sx, self.sy):
             w.valueChanged.connect(self._schedule_live)
-
-        # Apply initial once so opening dialog matches actual preview
         self._schedule_live()
 
     def _reset(self):
-        self.tx.setValue(0.0)
-        self.ty.setValue(0.0)
-        self.rot.setValue(0.0)
-        self.sx.setValue(1.0)
-        self.sy.setValue(1.0)
+        for w, v in ((self.tx,0),(self.ty,0),(self.rot,0),(self.sx,1),(self.sy,1)):
+            w.setValue(v)
         self._schedule_live()
 
     def _schedule_live(self, *_):
-        # restart debounce
         self._tmr.start(self._debounce_ms)
 
     def _current_transform(self) -> LayerTransform:
         return LayerTransform(
-            tx=float(self.tx.value()),
-            ty=float(self.ty.value()),
+            tx=float(self.tx.value()), ty=float(self.ty.value()),
             rot_deg=float(self.rot.value()),
-            sx=float(self.sx.value()),
-            sy=float(self.sy.value()),
-            pivot_x=None,
-            pivot_y=None,
+            sx=float(self.sx.value()), sy=float(self.sy.value()),
+            pivot_x=None, pivot_y=None,
         )
 
     def _apply_live(self):
@@ -121,13 +460,11 @@ class _TransformDialog(QDialog):
             self._apply_cb(self._current_transform())
 
     def reject(self):
-        # Cancel: restore original, then close
         if callable(self._cancel_cb):
             self._cancel_cb(self._orig)
         super().reject()
 
     def accept(self):
-        # OK: ensure latest values are applied (in case debounce pending)
         try:
             if self._tmr.isActive():
                 self._tmr.stop()
@@ -136,242 +473,202 @@ class _TransformDialog(QDialog):
         self._apply_live()
         super().accept()
 
-# ---------- Small row widget for a layer ----------
+
+# ─────────────────────────────────────────────────────────────
+# Layer row widget
+# ─────────────────────────────────────────────────────────────
+
 class _LayerRow(QWidget):
-    changed = pyqtSignal()
-    requestDelete = pyqtSignal()
-    moveUp = pyqtSignal()
-    moveDown = pyqtSignal()
+    changed          = pyqtSignal()
+    requestDelete    = pyqtSignal()
+    moveUp           = pyqtSignal()
+    moveDown         = pyqtSignal()
     requestTransform = pyqtSignal()
 
     def __init__(self, name: str, mode: str = "Normal", opacity: float = 1.0,
                  visible: bool = True, parent=None, *, is_base: bool = False):
         super().__init__(parent)
-        self._name = name
+        self._name    = name
         self._is_base = bool(is_base)
 
-        v = QVBoxLayout(self); v.setContentsMargins(6, 2, 6, 2)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(6, 2, 6, 2)
 
-        # row 1: visibility, name, mode, opacity, reorder/delete
+        # ── row 1: visibility / name / mode / opacity / buttons ──
         r1 = QHBoxLayout(); v.addLayout(r1)
-        self.chk = QCheckBox(); self.chk.setChecked(visible)
-        self.lbl = QLabel(name)
+        self.chk  = QCheckBox(); self.chk.setChecked(visible)
+        self.lbl  = QLabel(name)
         self.mode = QComboBox(); self.mode.addItems(BLEND_MODES)
-        try: self.mode.setCurrentIndex(max(0, BLEND_MODES.index(mode)))
-        except Exception: self.mode.setCurrentIndex(0)
-        self.sld = QSlider(Qt.Orientation.Horizontal); self.sld.setRange(0, 100); self.sld.setValue(int(round(opacity*100)))
+        try:
+            self.mode.setCurrentIndex(max(0, BLEND_MODES.index(mode)))
+        except Exception:
+            self.mode.setCurrentIndex(0)
+
+        # Opacity: slider + spinbox paired
+        self.sld = QSlider(Qt.Orientation.Horizontal)
+        self.sld.setRange(0, 100)
+        self.sld.setValue(int(round(opacity * 100)))
+        self.spin_opacity = QDoubleSpinBox()
+        self.spin_opacity.setRange(0.0, 1.0)
+        self.spin_opacity.setSingleStep(0.01)
+        self.spin_opacity.setDecimals(2)
+        self.spin_opacity.setFixedWidth(58)
+        self.spin_opacity.setValue(float(opacity))
+
         self.btn_up = QPushButton("↑"); self.btn_up.setFixedWidth(28)
         self.btn_dn = QPushButton("↓"); self.btn_dn.setFixedWidth(28)
         self.btn_x  = QPushButton("✕"); self.btn_x.setFixedWidth(28)
-        self.btn_tf = QPushButton("Transform…")
-        self.btn_tf.setFixedWidth(92)
-        r1.addWidget(self.chk); r1.addWidget(self.lbl, 1)
-        r1.addWidget(self.mode); r1.addWidget(QLabel("Opacity")); r1.addWidget(self.sld, 1); r1.addWidget(self.btn_tf)
-        r1.addWidget(self.btn_up); r1.addWidget(self.btn_dn); r1.addWidget(self.btn_x)
+        self.btn_tf = QPushButton("Transform…"); self.btn_tf.setFixedWidth(92)
 
-        # row 2: mask controls (hidden for base)
+        r1.addWidget(self.chk)
+        r1.addWidget(self.lbl, 1)
+        r1.addWidget(self.mode)
+        r1.addWidget(QLabel("Opacity"))
+        r1.addWidget(self.sld, 1)
+        r1.addWidget(self.spin_opacity)
+        r1.addWidget(self.btn_tf)
+        r1.addWidget(self.btn_up)
+        r1.addWidget(self.btn_dn)
+        r1.addWidget(self.btn_x)
+
+        # ── row 2: mask controls ──────────────────────────────────
         r2 = QHBoxLayout(); v.addLayout(r2)
-        self.mask_combo = QComboBox(); self.mask_combo.setMinimumWidth(140)
+        self.mask_combo  = QComboBox(); self.mask_combo.setMinimumWidth(140)
         self.mask_combo.setPlaceholderText("Mask: (none)")
-        self.mask_invert = QCheckBox("Invert")
-        self.btn_clear_mask = QPushButton("Clear")
-        self.btn_clear_mask.setFixedWidth(52)
-        r2.addWidget(QLabel("Mask")); r2.addWidget(self.mask_combo, 1)
-        r2.addWidget(self.mask_invert); r2.addWidget(self.btn_clear_mask)
-        # Extra controls
-        self.levels_bp_label = None
-        self.levels_bp = None
-        self.levels_wp_label = None
-        self.levels_wp = None
-        self.levels_mt_label = None
-        self.levels_mt = None
-        self.levels_enable = None
-        self.sig_center_label = None
-        self.sig_center = None
-        self.sig_strength_label = None
-        self.sig_strength = None
+        self.mask_invert    = QCheckBox("Invert")
+        self.btn_clear_mask = QPushButton("Clear"); self.btn_clear_mask.setFixedWidth(52)
+        r2.addWidget(QLabel("Mask"))
+        r2.addWidget(self.mask_combo, 1)
+        r2.addWidget(self.mask_invert)
+        r2.addWidget(self.btn_clear_mask)
 
-        self.sig_strength_label = None
-        self.sig_strength = None
-
-# row 3: Levels — built for ALL rows (base and non-base)
-        from PyQt6.QtWidgets import QDoubleSpinBox
-
+        # ── row 3: levels ─────────────────────────────────────────
         r3 = QHBoxLayout(); v.addLayout(r3)
-
         self.levels_enable = QCheckBox()
         self.levels_enable.setToolTip("Enable per-layer levels adjustment")
-        self.levels_enable.setChecked(False)
+
+        def _mk_dspin(lo, hi, step, dec, val):
+            s = QDoubleSpinBox()
+            s.setRange(lo, hi); s.setSingleStep(step)
+            s.setDecimals(dec); s.setValue(float(val))
+            return s
 
         self.levels_bp_label = QLabel("Black")
-        self.levels_bp = QDoubleSpinBox()
-        self.levels_bp.setRange(0.0, 1.0)
-        self.levels_bp.setSingleStep(0.01)
-        self.levels_bp.setDecimals(3)
-        self.levels_bp.setValue(0.0)
-
+        self.levels_bp       = _mk_dspin(0.0, 1.0, 0.01, 3, 0.0)
         self.levels_wp_label = QLabel("White")
-        self.levels_wp = QDoubleSpinBox()
-        self.levels_wp.setRange(0.0, 1.0)
-        self.levels_wp.setSingleStep(0.01)
-        self.levels_wp.setDecimals(3)
-        self.levels_wp.setValue(1.0)
-
+        self.levels_wp       = _mk_dspin(0.0, 1.0, 0.01, 3, 1.0)
         self.levels_mt_label = QLabel("Midtones")
-        self.levels_mt = QDoubleSpinBox()
-        self.levels_mt.setRange(0.01, 1.0)
-        self.levels_mt.setSingleStep(0.01)
-        self.levels_mt.setDecimals(3)
-        self.levels_mt.setValue(0.5)
+        self.levels_mt       = _mk_dspin(0.01, 1.0, 0.01, 3, 0.5)
 
         r3.addWidget(self.levels_enable)
-        r3.addWidget(self.levels_bp_label)
-        r3.addWidget(self.levels_bp)
-        r3.addWidget(self.levels_mt_label)
-        r3.addWidget(self.levels_mt)
-        r3.addWidget(self.levels_wp_label)
-        r3.addWidget(self.levels_wp)
+        r3.addWidget(self.levels_bp_label); r3.addWidget(self.levels_bp)
+        r3.addWidget(self.levels_mt_label); r3.addWidget(self.levels_mt)
+        r3.addWidget(self.levels_wp_label); r3.addWidget(self.levels_wp)
         r3.addStretch(1)
 
+        # ── row 4: sigmoid (non-base only) ────────────────────────
+        self.sig_center_label = self.sig_center = None
+        self.sig_strength_label = self.sig_strength = None
         if not self._is_base:
-            # row 4: Sigmoid parameters — non-base only
             r4 = QHBoxLayout(); v.addLayout(r4)
-
             self.sig_center_label = QLabel("Sigmoid center")
-            self.sig_center = QDoubleSpinBox()
-            self.sig_center.setRange(0.0, 1.0)
-            self.sig_center.setSingleStep(0.01)
-            self.sig_center.setDecimals(3)
-            self.sig_center.setValue(0.5)
-
+            self.sig_center       = _mk_dspin(0.0, 1.0, 0.01, 3, 0.5)
             self.sig_strength_label = QLabel("Strength")
-            self.sig_strength = QDoubleSpinBox()
-            self.sig_strength.setRange(0.1, 50.0)
-            self.sig_strength.setSingleStep(0.5)
-            self.sig_strength.setDecimals(2)
-            self.sig_strength.setValue(10.0)
-
-            r4.addWidget(self.sig_center_label)
-            r4.addWidget(self.sig_center)
-            r4.addWidget(self.sig_strength_label)
-            r4.addWidget(self.sig_strength)
+            self.sig_strength     = _mk_dspin(0.1, 50.0, 0.5, 2, 10.0)
+            r4.addWidget(self.sig_center_label); r4.addWidget(self.sig_center)
+            r4.addWidget(self.sig_strength_label); r4.addWidget(self.sig_strength)
             r4.addStretch(1)
 
+        # ── wire signals ──────────────────────────────────────────
         if self._is_base:
-            # Base row is informational only — except levels which apply to base
-            for w in (
-                self.chk, self.mode, self.sld, self.btn_up, self.btn_tf, self.btn_dn, self.btn_x,
-                self.mask_combo, self.mask_invert, self.btn_clear_mask,
-                self.sig_center, self.sig_strength
-            ):
+            for w in (self.chk, self.mode, self.sld, self.spin_opacity,
+                      self.btn_up, self.btn_tf, self.btn_dn, self.btn_x,
+                      self.mask_combo, self.mask_invert, self.btn_clear_mask):
                 if w is not None:
                     w.setEnabled(False)
             self.lbl.setStyleSheet("color: palette(mid);")
-            # Wire levels for base layer
-            if self.levels_enable is not None:
-                self.levels_enable.toggled.connect(self._update_levels_enabled_ui)
-                self.levels_enable.toggled.connect(self._emit)
-            if self.levels_bp is not None:
-                self.levels_bp.valueChanged.connect(self._clamp_levels_ui)
-            if self.levels_wp is not None:
-                self.levels_wp.valueChanged.connect(self._clamp_levels_ui)
-            if self.levels_mt is not None:
-                self.levels_mt.valueChanged.connect(self._emit)
-            self._update_levels_enabled_ui()
+            self.levels_enable.toggled.connect(self._update_levels_enabled_ui)
+            self.levels_enable.toggled.connect(self._emit)
+            self.levels_bp.valueChanged.connect(self._clamp_levels_ui)
+            self.levels_wp.valueChanged.connect(self._clamp_levels_ui)
+            self.levels_mt.valueChanged.connect(self._emit)
         else:
+            # Opacity: slider ↔ spinbox bidirectional sync
+            self.sld.valueChanged.connect(
+                lambda v: (self.spin_opacity.blockSignals(True),
+                           self.spin_opacity.setValue(v / 100.0),
+                           self.spin_opacity.blockSignals(False),
+                           self._emit()))
+            self.spin_opacity.valueChanged.connect(
+                lambda v: (self.sld.blockSignals(True),
+                           self.sld.setValue(int(round(v * 100))),
+                           self.sld.blockSignals(False),
+                           self._emit()))
+
             self.chk.stateChanged.connect(self._emit)
             self.mode.currentIndexChanged.connect(self._on_mode_changed)
-            self.sld.valueChanged.connect(self._emit)
             self.mask_combo.currentIndexChanged.connect(self._emit)
             self.mask_invert.stateChanged.connect(self._emit)
             self.btn_clear_mask.clicked.connect(self._on_clear_mask)
             self.btn_x.clicked.connect(self.requestDelete.emit)
             self.btn_up.clicked.connect(self.moveUp.emit)
             self.btn_dn.clicked.connect(self.moveDown.emit)
-
             self.btn_tf.clicked.connect(self.requestTransform.emit)
 
-            # Levels controls
-            if self.levels_enable is not None:
-                self.levels_enable.toggled.connect(self._update_levels_enabled_ui)
-                self.levels_enable.toggled.connect(self._emit)
+            self.levels_enable.toggled.connect(self._update_levels_enabled_ui)
+            self.levels_enable.toggled.connect(self._emit)
+            self.levels_bp.valueChanged.connect(self._clamp_levels_ui)
+            self.levels_wp.valueChanged.connect(self._clamp_levels_ui)
+            self.levels_mt.valueChanged.connect(self._emit)
 
-            if self.levels_bp is not None:
-                self.levels_bp.valueChanged.connect(self._clamp_levels_ui)
-            if self.levels_wp is not None:
-                self.levels_wp.valueChanged.connect(self._clamp_levels_ui)
-            if self.levels_mt is not None:
-                self.levels_mt.valueChanged.connect(self._emit)
-
-            # Sigmoid controls emit change + only show for Sigmoid mode
             if self.sig_center is not None:
                 self.sig_center.valueChanged.connect(self._emit)
             if self.sig_strength is not None:
                 self.sig_strength.valueChanged.connect(self._emit)
 
             self.mode.currentIndexChanged.connect(
-                lambda _i: self._update_extra_controls(self.mode.currentText())
-            )
-            # Initial visibility
+                lambda _: self._update_extra_controls(self.mode.currentText()))
+
+        self._update_levels_enabled_ui()
+        if not self._is_base:
             self._update_extra_controls(self.mode.currentText())
-            self._update_levels_enabled_ui()
+
+    # ── public setters ────────────────────────────────────────
+
+    def setName(self, name: str):
+        self._name = name
+        self.lbl.setText(name)
+
+    def setTransformDirty(self, dirty: bool):
+        if self.btn_tf is not None:
+            self.btn_tf.setText("Transform… *" if dirty else "Transform…")
 
     def set_levels_enabled(self, enabled: bool):
-        if self.levels_enable is None:
-            return
         self.levels_enable.blockSignals(True)
         self.levels_enable.setChecked(bool(enabled))
         self.levels_enable.blockSignals(False)
         self._update_levels_enabled_ui()
 
-    def _update_levels_enabled_ui(self):
-        enabled = bool(self.levels_enable.isChecked()) if self.levels_enable is not None else False
+    def set_levels_params(self, bp: float, wp: float, mt: float):
+        for w, v in ((self.levels_bp, bp), (self.levels_wp, wp), (self.levels_mt, mt)):
+            w.blockSignals(True); w.setValue(float(v)); w.blockSignals(False)
 
-        for w in (
-            self.levels_bp_label, self.levels_bp,
-            self.levels_mt_label, self.levels_mt,
-            self.levels_wp_label, self.levels_wp,
-        ):
+    def set_sigmoid_params(self, center: float, strength: float):
+        if self.sig_center is None:
+            return
+        self.sig_center.blockSignals(True);   self.sig_center.setValue(float(center));   self.sig_center.blockSignals(False)
+        self.sig_strength.blockSignals(True);  self.sig_strength.setValue(float(strength)); self.sig_strength.blockSignals(False)
+        self._update_extra_controls(self.mode.currentText())
+
+    # ── internal ─────────────────────────────────────────────
+
+    def _update_levels_enabled_ui(self):
+        enabled = bool(self.levels_enable.isChecked())
+        for w in (self.levels_bp_label, self.levels_bp,
+                  self.levels_mt_label, self.levels_mt,
+                  self.levels_wp_label, self.levels_wp):
             if w is not None:
                 w.setEnabled(enabled)
-
-    def set_levels_params(self, black_point: float, white_point: float, midtones: float):
-        if self.levels_bp is None or self.levels_wp is None or self.levels_mt is None:
-            return
-        self.levels_bp.blockSignals(True)
-        self.levels_wp.blockSignals(True)
-        self.levels_mt.blockSignals(True)
-        self.levels_bp.setValue(float(black_point))
-        self.levels_wp.setValue(float(white_point))
-        self.levels_mt.setValue(float(midtones))
-        self.levels_bp.blockSignals(False)
-        self.levels_wp.blockSignals(False)
-        self.levels_mt.blockSignals(False)
-
-    def setTransformDirty(self, dirty: bool):
-        if hasattr(self, "btn_tf") and self.btn_tf is not None:
-            self.btn_tf.setText("Transform… *" if dirty else "Transform…")
-
-    def _on_transform_clicked(self):
-        # Let the dock handle it; row doesn't own the layer object
-        self.changed.emit()  # (no-op, but keeps pattern)
-        # We'll have the dock connect this via a custom signal (see next step).
-
-
-    def _on_mode_changed(self, _idx: int):
-        # Update which extra controls are visible
-        self._update_extra_controls(self.mode.currentText())
-        # Make our layout recompute height
-        lay = self.layout()
-        if lay is not None:
-            lay.invalidate()
-            lay.activate()
-
-        self.adjustSize()
-        self.updateGeometry()
-        # Tell the dock “something changed”
-        self._emit()
-
 
     def _update_extra_controls(self, mode_text: str):
         is_sig = (mode_text == "Sigmoid")
@@ -379,32 +676,20 @@ class _LayerRow(QWidget):
                   self.sig_strength_label, self.sig_strength):
             if w is not None:
                 w.setVisible(is_sig)
+        # Do NOT call adjustSize()/updateGeometry() — collapses the opacity slider
 
-        # Let the layout recompute our preferred height
-        self.adjustSize()
-        self.updateGeometry()
-
-    def set_sigmoid_params(self, center: float, strength: float):
-        if self.sig_center is None or self.sig_strength is None:
-            return
-        self.sig_center.blockSignals(True)
-        self.sig_strength.blockSignals(True)
-        self.sig_center.setValue(float(center))
-        self.sig_strength.setValue(float(strength))
-        self.sig_center.blockSignals(False)
-        self.sig_strength.blockSignals(False)
+    def _on_mode_changed(self, _idx):
         self._update_extra_controls(self.mode.currentText())
+        lay = self.layout()
+        if lay:
+            lay.invalidate(); lay.activate()
+        self._emit()
 
     def _clamp_levels_ui(self, *_):
-        if self.levels_bp is None or self.levels_wp is None:
-            return
-
         bp = float(self.levels_bp.value())
         wp = float(self.levels_wp.value())
-
         if wp <= bp:
-            sender = self.sender()
-            if sender is self.levels_bp:
+            if self.sender() is self.levels_bp:
                 self.levels_wp.blockSignals(True)
                 self.levels_wp.setValue(min(1.0, bp + 0.001))
                 self.levels_wp.blockSignals(False)
@@ -412,95 +697,115 @@ class _LayerRow(QWidget):
                 self.levels_bp.blockSignals(True)
                 self.levels_bp.setValue(max(0.0, wp - 0.001))
                 self.levels_bp.blockSignals(False)
-
         self._emit()
 
     def _on_clear_mask(self):
-        # select the explicit "(none)" entry
         self.mask_combo.setCurrentIndex(0)
         self._emit()
 
     def _emit(self, *_):
         self.changed.emit()
 
-    def params(self):
+    def params(self) -> dict:
         out = {
-            "visible": self.chk.isChecked(),
-            "mode": self.mode.currentText(),
-            "opacity": self.sld.value() / 100.0,
-            "name": self._name,
-            "mask_index": self.mask_combo.currentIndex(),
-            "mask_src": "Luminance",
+            "visible":     self.chk.isChecked(),
+            "mode":        self.mode.currentText(),
+            "opacity":     self.spin_opacity.value(),
+            "name":        self._name,
+            "mask_index":  self.mask_combo.currentIndex(),
             "mask_invert": self.mask_invert.isChecked(),
+            "levels_enabled": self.levels_enable.isChecked(),
+            "black_point": self.levels_bp.value(),
+            "white_point": self.levels_wp.value(),
+            "midtones":    self.levels_mt.value(),
         }
-
-        if self.levels_enable is not None:
-            out["levels_enabled"] = self.levels_enable.isChecked()
-
-        if self.levels_bp is not None and self.levels_wp is not None and self.levels_mt is not None:
-            out["black_point"] = self.levels_bp.value()
-            out["white_point"] = self.levels_wp.value()
-            out["midtones"] = self.levels_mt.value()
-        if self.sig_center is not None and self.sig_strength is not None:
-            out["sigmoid_center"] = self.sig_center.value()
+        if self.sig_center is not None:
+            out["sigmoid_center"]   = self.sig_center.value()
             out["sigmoid_strength"] = self.sig_strength.value()
         return out
-    def setName(self, name: str):
-        self._name = name
-        self.lbl.setText(name)
 
-# ---------- The Dock ----------
+
+# ─────────────────────────────────────────────────────────────
+# Layers Dock
+# ─────────────────────────────────────────────────────────────
+
 class LayersDock(QDockWidget):
     def __init__(self, main_window):
         super().__init__("Layers", main_window)
         self.setObjectName("LayersDock")
-        self.mw = main_window
+        self.mw     = main_window
         self.docman = main_window.docman
         self._wired_title_sources = set()
 
-        self._apply_timer = QTimer(self)
-        self._apply_timer.setSingleShot(True)
-        self._apply_timer.timeout.connect(self._apply_list_to_view)
-        # Full-resolution apply only fires after the user actually stops moving a
-        # control; long enough that brief mid-drag pauses don't trigger a costly
-        # full render (the live preview keeps things responsive during the drag).
-        self._apply_debounce_ms = 350
+        # ── Preview window (lazy-created) ─────────────────────
+        self._preview_win: Optional[LayersPreviewWindow] = None
 
-        # Live-preview throttle: cap how often we recomposite/redraw while the
-        # user is actively dragging a slider (which fires valueChanged per tick).
+        # ── Cached composite (numpy float32) ─────────────────
+        # Always kept up to date in the background; the base view is
+        # NEVER updated by layers anymore — only push/merge touches it.
+        self._cached_composite: Optional[np.ndarray] = None
+        self._cached_before:    Optional[np.ndarray] = None   # raw base image
+
+        # Cached converted before — only rebuilt when base_doc.image identity changes
+        self._cached_before_display: Optional[np.ndarray] = None
+        self._cached_before_img_id:  int = 0
+
+        # Worker thread state
+        self._composite_gen:    int             = 0   # incremented on every schedule
+        self._composite_thread: Optional[QThread] = None
+        self._composite_worker: Optional[_CompositeWorker] = None
+
+        # ── Timers ────────────────────────────────────────────
+        # Fast debounce → immediate downsampled preview on GUI thread.
+        # Slow debounce → full-res composite on worker thread.
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
-        self._preview_timer.timeout.connect(self._on_preview_throttle)
-        self._preview_interval_ms = 70
-        self._preview_pending = False
+        self._preview_timer.setInterval(80)    # ms — snappy fast preview
+        self._preview_timer.timeout.connect(self._run_fast_preview)
 
-        # UI
+        self._composite_timer = QTimer(self)
+        self._composite_timer.setSingleShot(True)
+        self._composite_timer.setInterval(350)  # ms — full-res after drag settles
+        self._composite_timer.timeout.connect(self._run_composite_threaded)
+
+        # ── UI ────────────────────────────────────────────────
         w = QWidget()
         v = QVBoxLayout(w); v.setContentsMargins(8, 8, 8, 8)
+
+        # Top bar: view selector + preview toggle
         top = QHBoxLayout(); v.addLayout(top)
         top.addWidget(QLabel("View:"))
         self.view_combo = QComboBox()
         top.addWidget(self.view_combo, 1)
+
+        self.btn_preview = QPushButton("👁  Preview")
+        self.btn_preview.setCheckable(True)
+        self.btn_preview.setChecked(False)
+        self.btn_preview.setToolTip(
+            "Open the composite preview window.\n"
+            "The base image in the main view is never modified\n"
+            "until you click Merge → Push to View."
+        )
+        self.btn_preview.toggled.connect(self._on_preview_toggled)
+        top.addWidget(self.btn_preview)
 
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.list.setAlternatingRowColors(True)
         v.addWidget(self.list, 1)
 
-        # buttons
+        # Bottom buttons
         row = QHBoxLayout(); v.addLayout(row)
-
-        self.btn_clear = QPushButton("Clear All Layers")
-
-        self.btn_merge = QPushButton("Merge → Push to View")
-        self.btn_merge.setToolTip("Flatten the visible layers into the current view and add an undo step.")
-
+        self.btn_clear     = QPushButton("Clear All Layers")
+        self.btn_merge     = QPushButton("Merge → Push to View")
         self.btn_merge_new = QPushButton("Merge → New Document")
-        self.btn_merge_new.setToolTip("Flatten the visible layers into a new document (does not modify the base view).")
-
         self.btn_merge_sel = QPushButton("Merge Selected → Single Layer")
-        self.btn_merge_sel.setToolTip("Merge the selected layers into one raster layer (Photoshop-style).")
-
+        self.btn_merge.setToolTip(
+            "Flatten the cached composite and push it to the current view as an undo step.")
+        self.btn_merge_new.setToolTip(
+            "Flatten the cached composite into a new document.")
+        self.btn_merge_sel.setToolTip(
+            "Merge selected layers into a single raster layer.")
         row.addWidget(self.btn_merge)
         row.addWidget(self.btn_merge_new)
         row.addWidget(self.btn_merge_sel)
@@ -508,41 +813,241 @@ class LayersDock(QDockWidget):
         row.addWidget(self.btn_clear)
         self.setWidget(w)
 
-        # dnd (accept drops from views)
         self.setAcceptDrops(True)
+        self.visibilityChanged.connect(self._on_dock_visibility_changed)
 
-        # signals
+        # Signals
         self.view_combo.currentIndexChanged.connect(self._on_pick_view)
         self.btn_clear.clicked.connect(self._clear_layers)
-
-        # keep in sync with MDI/windows
         self.mw.mdi.subWindowActivated.connect(lambda _sw: self._refresh_views())
         self.docman.documentAdded.connect(lambda _d: self._refresh_views())
         self.docman.documentRemoved.connect(lambda _d: self._refresh_views())
-
         self.btn_merge.clicked.connect(self._merge_and_push)
         self.btn_merge_new.clicked.connect(self._merge_to_new_doc)
         self.btn_merge_sel.clicked.connect(self._merge_selected_to_single_layer)
 
-        # initial
         self._refresh_views()
 
-    # ---------- helpers ----------
+    # ─────────────────────────────────────────────────────────
+    # Preview window management
+    # ─────────────────────────────────────────────────────────
+
+    def _ensure_preview_win(self) -> LayersPreviewWindow:
+        if self._preview_win is None:
+            self._preview_win = LayersPreviewWindow(parent=self.mw)
+            self._preview_win.finished.connect(self._on_preview_win_closed)
+        return self._preview_win
+
+    def _on_preview_toggled(self, on: bool):
+        if on:
+            pw = self._ensure_preview_win()
+            pw.show(); pw.raise_(); pw.activateWindow()
+            # Immediately push whatever we have cached
+            if self._cached_before is not None or self._cached_composite is not None:
+                pw.update_composite(self._cached_before, self._cached_composite)
+            else:
+                # Trigger a fresh composite
+                self._schedule_composite()
+        else:
+            if self._preview_win is not None:
+                self._preview_win.hide()
+
+    def _on_preview_win_closed(self, *_):
+        self.btn_preview.blockSignals(True)
+        self.btn_preview.setChecked(False)
+        self.btn_preview.blockSignals(False)
+
+    def _on_dock_visibility_changed(self, visible: bool):
+        if not visible and self._preview_win is not None:
+            self._preview_win.hide()
+            self._on_preview_win_closed()
+
+    def _push_to_preview(self):
+        """Send the current cached composite to the preview window (if open)."""
+        if self._preview_win is None or not self._preview_win.isVisible():
+            return
+        self._preview_win.update_composite(self._cached_before, self._cached_composite)
+
+    # ─────────────────────────────────────────────────────────
+    # Composite engine
+    # ─────────────────────────────────────────────────────────
+
+    def _schedule_composite(self):
+        """
+        Kick off both tiers:
+          - fast preview fires after 80 ms (GUI thread, downsampled)
+          - full-res composite fires after 350 ms (worker thread)
+        Both timers restart on every call so rapid changes coalesce.
+        """
+        self._preview_timer.start()
+        self._composite_timer.start()
+
+    def _get_working_base(self, vw) -> Optional[np.ndarray]:
+        """
+        Return the base image with levels applied, using a cached
+        converted copy so we never re-convert on every composite call
+        unless base_doc.image actually changes.
+        """
+        base_doc = getattr(vw, "document", None)
+        if base_doc is None or getattr(base_doc, "image", None) is None:
+            return None
+
+        base_img = base_doc.image
+        img_id   = id(base_img)
+
+        # Cache raw before (for id() tracking in preview window)
+        if img_id != self._cached_before_img_id:
+            self._cached_before_img_id    = img_id
+            self._cached_before           = np.asarray(base_img, dtype=np.float32)
+            # Also invalidate the display-ready conversion
+            self._cached_before_display   = _ensure_3c(_float01(self._cached_before))
+
+        # Apply base levels on top of the cached 3c float version
+        base_levels = getattr(vw, "_base_levels", None)
+        if base_levels and base_levels.get("enabled", False):
+            return _apply_levels(
+                self._cached_before_display,
+                float(base_levels.get("black_point", 0.0)),
+                float(base_levels.get("white_point", 1.0)),
+                float(base_levels.get("midtones",    0.5)),
+            )
+        return self._cached_before_display
+
+    def _run_fast_preview(self):
+        """
+        Immediate downsampled composite on the GUI thread.
+        Runs at preview-window resolution so it's cheap and fast.
+        """
+        if self._preview_win is None or not self._preview_win.isVisible():
+            return
+
+        vw = self.current_view()
+        if vw is None:
+            return
+
+        working_base = self._get_working_base(vw)
+        if working_base is None:
+            return
+
+        # Determine a sensible max_dim from the preview canvas size
+        try:
+            cw = self._preview_win.canvas.width()
+            ch = self._preview_win.canvas.height()
+            max_dim = max(cw, ch, 512)
+        except Exception:
+            max_dim = 900
+
+        layers = list(getattr(vw, "_layers", []) or [])
+        try:
+            if layers:
+                result = composite_stack(working_base, layers, max_dim=max_dim)
+                fast_composite = result if result is not None else working_base
+            else:
+                fast_composite = _ensure_3c(_float01(working_base))
+        except Exception as ex:
+            print("[LayersDock] fast preview error:", ex)
+            return
+
+        # Push fast result — will be overwritten by full-res shortly
+        self._preview_win.update_composite(self._cached_before, fast_composite)
+        self._preview_win.lbl_info.setText("Fast composite ready — rendering full resolution…")
+
+    def _run_composite_threaded(self):
+        """
+        Full-resolution composite on a worker thread.
+        Uses a generation counter to discard stale results.
+        """
+        vw = self.current_view()
+        if vw is None:
+            return
+
+        working_base = self._get_working_base(vw)
+        if working_base is None:
+            return
+
+        layers = list(getattr(vw, "_layers", []) or [])
+
+        # Increment generation — any in-flight worker with an older gen
+        # will emit its result and it will be silently dropped.
+        self._composite_gen += 1
+        gen = self._composite_gen
+
+        # Cancel previous thread if still running (rare — 350 ms debounce)
+        self._teardown_composite_thread()
+
+        worker = _CompositeWorker(gen, working_base, layers)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run, Qt.ConnectionType.QueuedConnection)
+        worker.done.connect(self._on_composite_done, Qt.ConnectionType.QueuedConnection)
+        worker.done.connect(lambda *_: self._teardown_composite_thread())
+        self._composite_worker = worker
+        self._composite_thread = thread
+        thread.start()
+
+    def _teardown_composite_thread(self):
+        try:
+            if self._composite_thread is not None:
+                self._composite_thread.quit()
+                self._composite_thread.wait(500)
+        except Exception:
+            pass
+        self._composite_thread = None
+        self._composite_worker = None
+
+    def _on_composite_done(self, gen: int, result: np.ndarray):
+        """Receive full-res composite — discard if a newer render is pending."""
+        if gen < self._composite_gen:
+            return   # stale — a newer render is already in flight
+        self._cached_composite = result
+        self._push_to_preview()  # lbl_info updated inside update_composite
+
+    def _run_composite(self):
+        """
+        Synchronous full-res composite — used only by merge/push operations
+        where we need the result immediately on the calling thread.
+        """
+        vw = self.current_view()
+        if vw is None:
+            return
+
+        working_base = self._get_working_base(vw)
+        if working_base is None:
+            return
+
+        layers = list(getattr(vw, "_layers", []) or [])
+        if layers:
+            result = composite_stack(working_base, layers)
+            self._cached_composite = result if result is not None else working_base
+        else:
+            self._cached_composite = _ensure_3c(_float01(working_base))
+
+        self._push_to_preview()
+
+    # ─────────────────────────────────────────────────────────
+    # Row → layer sync + scheduling
+    # ─────────────────────────────────────────────────────────
+
+    def _on_row_changed(self):
+        """Called on every row widget change — sync layers then debounce composite."""
+        vw = self.current_view()
+        if vw:
+            self._sync_layers_from_rows(vw)
+        self._schedule_composite()
+        self._refresh_row_heights()
+
+    # ─────────────────────────────────────────────────────────
+    # View management
+    # ─────────────────────────────────────────────────────────
+
     def _mask_choices(self):
-        out = []
-        for sw in self._all_subwindows():
-            title = sw._effective_title() or "Untitled"
-            out.append((title, sw.document))
-        return out
+        return [(sw._effective_title() or "Untitled", sw.document)
+                for sw in self._all_subwindows()]
 
     def _all_subwindows(self):
         from setiastro.saspro.subwindow import ImageSubWindow
-        subs = []
-        for sw in self.mw.mdi.subWindowList():
-            w = sw.widget()
-            if isinstance(w, ImageSubWindow):
-                subs.append(w)
-        return subs
+        return [sw.widget() for sw in self.mw.mdi.subWindowList()
+                if isinstance(sw.widget(), ImageSubWindow)]
 
     def _refresh_views(self):
         subs = self._all_subwindows()
@@ -552,28 +1057,23 @@ class LayersDock(QDockWidget):
         self.view_combo.clear()
         for w in subs:
             title = w._effective_title() or "Untitled"
-            uid = getattr(getattr(w, "document", None), "uid", None) or id(w)
+            uid   = getattr(getattr(w, "document", None), "uid", None) or id(w)
             self.view_combo.addItem(title, userData=uid)
         self.view_combo.blockSignals(False)
 
-        # Restore selection by uid
         if current_uid is not None:
             for i in range(self.view_combo.count()):
                 if self.view_combo.itemData(i) == current_uid:
-                    self.view_combo.setCurrentIndex(i)
-                    break
+                    self.view_combo.setCurrentIndex(i); break
             else:
-                if subs:
-                    self.view_combo.setCurrentIndex(0)
+                if subs: self.view_combo.setCurrentIndex(0)
         elif subs:
             self.view_combo.setCurrentIndex(0)
 
         self._wire_title_change_listeners(subs)
         self._rebuild_list()
 
-
     def _wire_title_change_listeners(self, subs):
-        # connect once per subwindow
         for sw in subs:
             if sw in self._wired_title_sources:
                 continue
@@ -586,60 +1086,31 @@ class LayersDock(QDockWidget):
 
     def _refresh_titles_only(self):
         subs = self._all_subwindows()
-        if not subs:
-            return
-
-        # Build uid->title map for fast lookup
-        uid_to_title = {}
-        for sw in subs:
-            uid = getattr(getattr(sw, "document", None), "uid", None) or id(sw)
-            uid_to_title[uid] = sw._effective_title() or "Untitled"
-
+        uid_to_title = {
+            (getattr(getattr(sw, "document", None), "uid", None) or id(sw)):
+            (sw._effective_title() or "Untitled")
+            for sw in subs
+        }
         self.view_combo.blockSignals(True)
-        cur_idx = self.view_combo.currentIndex()
+        cur = self.view_combo.currentIndex()
         for i in range(self.view_combo.count()):
             uid = self.view_combo.itemData(i)
             if uid in uid_to_title:
                 self.view_combo.setItemText(i, uid_to_title[uid])
         self.view_combo.blockSignals(False)
-        if 0 <= cur_idx < self.view_combo.count():
-            self.view_combo.setCurrentIndex(cur_idx)
-
-        # Update mask choices shown in each row (titles only)
-        choices = [(sw._effective_title() or "Untitled", sw.document) for sw in subs]
-
-        for i in range(self.list.count()):
-            roww = self.list.itemWidget(self.list.item(i))
-            if not isinstance(roww, _LayerRow):
-                continue
-
-            if getattr(roww, "_is_base", False):
-                vw = self.current_view()
-                base_name = vw._effective_title() if (vw and hasattr(vw, "_effective_title")) else "Current View"
-                roww.setName(f"Base • {base_name}")
-                continue
-
-            if roww.mask_combo.count() > 0:
-                title_for_doc = {doc: title for title, doc in choices}
-                for idx in range(1, roww.mask_combo.count()):
-                    doc = roww.mask_combo.itemData(idx)
-                    if doc in title_for_doc:
-                        roww.mask_combo.setItemText(idx, title_for_doc[doc])
+        if 0 <= cur < self.view_combo.count():
+            self.view_combo.setCurrentIndex(cur)
 
     def _current_view_uid(self):
-        """Return the uid stored in the current combo selection, or None."""
         idx = self.view_combo.currentIndex()
-        if idx < 0:
-            return None
-        return self.view_combo.itemData(idx)
+        return self.view_combo.itemData(idx) if idx >= 0 else None
 
     def current_view(self):
-        """Return the live ImageSubWindow for the currently selected uid, or None."""
         uid = self._current_view_uid()
         if uid is None:
             return None
         for sw in self._all_subwindows():
-            doc = getattr(sw, "document", None)
+            doc   = getattr(sw, "document", None)
             sw_uid = getattr(doc, "uid", None) or id(sw)
             if sw_uid == uid:
                 return sw
@@ -647,6 +1118,11 @@ class LayersDock(QDockWidget):
 
     def _on_pick_view(self, _i):
         self._rebuild_list()
+        self._schedule_composite()
+
+    # ─────────────────────────────────────────────────────────
+    # List building
+    # ─────────────────────────────────────────────────────────
 
     def _rebuild_list(self):
         self.list.clear()
@@ -655,23 +1131,13 @@ class LayersDock(QDockWidget):
             return
 
         choices = self._mask_choices()
-        docs = [d for _, d in choices]
+        docs    = [d for _, d in choices]
 
         for lyr in getattr(vw, "_layers", []):
-            raw_name = getattr(lyr, "name", "Layer")
-            name = raw_name if isinstance(raw_name, str) else str(raw_name)
-
-            # --- Optional dynamic title sync ---
+            name = str(getattr(lyr, "name", "Layer"))
             try:
                 src_doc = getattr(lyr, "src_doc", None)
-                # What the document considers its "base" display name
-                doc_disp = None
                 if src_doc is not None:
-                    dn = getattr(src_doc, "display_name", None)
-                    doc_disp = dn() if callable(dn) else dn
-
-                # If our stored name is just the base doc name, prefer the current view title
-                if src_doc is not None and name == (doc_disp or name):
                     for sw in self._all_subwindows():
                         if getattr(sw, "document", None) is src_doc:
                             t = getattr(sw, "_effective_title", None)
@@ -682,10 +1148,14 @@ class LayersDock(QDockWidget):
                             break
             except Exception:
                 pass
-            mode = getattr(lyr, "mode", "Normal")
-            opacity = float(getattr(lyr, "opacity", 1.0))
-            visible = bool(getattr(lyr, "visible", True))
-            roww = _LayerRow(name, mode, opacity, visible)
+
+            roww = _LayerRow(
+                name,
+                getattr(lyr, "mode",    "Normal"),
+                float(getattr(lyr, "opacity",  1.0)),
+                bool(getattr(lyr,  "visible", True)),
+            )
+            # Mask combo
             roww.mask_combo.blockSignals(True)
             roww.mask_combo.clear()
             roww.mask_combo.addItem("(none)", userData=None)
@@ -695,274 +1165,136 @@ class LayersDock(QDockWidget):
                 roww.mask_combo.setCurrentIndex(1 + docs.index(lyr.mask_doc))
             else:
                 roww.mask_combo.setCurrentIndex(0)
-            
             roww.mask_invert.setChecked(bool(getattr(lyr, "mask_invert", False)))
             roww.mask_combo.blockSignals(False)
-            levels_enabled = getattr(lyr, "levels_enabled", False)
-            black_point = getattr(lyr, "black_point", 0.0)
-            white_point = getattr(lyr, "white_point", 1.0)
-            midtones = getattr(lyr, "midtones", 0.5)
 
-            roww.set_levels_enabled(levels_enabled)
-            roww.set_levels_params(black_point, white_point, midtones)
+            roww.set_levels_enabled(getattr(lyr, "levels_enabled", False))
+            roww.set_levels_params(
+                getattr(lyr, "black_point", 0.0),
+                getattr(lyr, "white_point", 1.0),
+                getattr(lyr, "midtones",    0.5),
+            )
+            roww.set_sigmoid_params(
+                getattr(lyr, "sigmoid_center",   0.5),
+                getattr(lyr, "sigmoid_strength", 10.0),
+            )
 
-            center = getattr(lyr, "sigmoid_center", 0.5)
-            strength = getattr(lyr, "sigmoid_strength", 10.0)
-            roww.set_sigmoid_params(center, strength) 
-
+            t = getattr(lyr, "transform", None)
+            dirty = (t is not None and (
+                abs(t.tx) > 1e-6 or abs(t.ty) > 1e-6 or abs(t.rot_deg) > 1e-6 or
+                abs(t.sx - 1.0) > 1e-6 or abs(t.sy - 1.0) > 1e-6))
+            roww.setTransformDirty(dirty)
 
             self._bind_row(roww)
             it = QListWidgetItem(self.list)
             it.setSizeHint(roww.sizeHint())
             self.list.addItem(it)
             self.list.setItemWidget(it, roww)
-            t = getattr(lyr, "transform", None)
-            dirty = False
-            if t is not None:
-                dirty = (abs(t.tx) > 1e-6 or abs(t.ty) > 1e-6 or abs(t.rot_deg) > 1e-6 or
-                        abs(t.sx - 1.0) > 1e-6 or abs(t.sy - 1.0) > 1e-6)
-            roww.setTransformDirty(dirty)
-        base_name = getattr(vw, "_effective_title", None)
-        base_name = base_name() if callable(base_name) else "Current View"
-        base_label = f"Base • {base_name}"
-        base_row = _LayerRow(base_label, "—", 1.0, True, is_base=True)
-        # Restore saved base levels from the view
+
+        # Base row (always last)
+        base_name = "Current View"
+        try:
+            t = getattr(vw, "_effective_title", None)
+            if callable(t): t = t()
+            if t: base_name = t
+        except Exception:
+            pass
+
+        base_row = _LayerRow(f"Base • {base_name}", "—", 1.0, True, is_base=True)
         base_levels = getattr(vw, "_base_levels", None)
         if base_levels:
             base_row.set_levels_enabled(base_levels.get("enabled", False))
             base_row.set_levels_params(
                 base_levels.get("black_point", 0.0),
                 base_levels.get("white_point", 1.0),
-                base_levels.get("midtones", 0.5),
+                base_levels.get("midtones",    0.5),
             )
-        base_row.changed.connect(self._apply_list_to_view_debounced)
+        base_row.changed.connect(self._on_row_changed)
         itb = QListWidgetItem(self.list)
         itb.setSizeHint(base_row.sizeHint())
         self.list.addItem(itb)
         self.list.setItemWidget(itb, base_row)
-        has_layers = bool(getattr(vw, "_layers", []))
-        self.btn_merge.setEnabled(has_layers)
-        self.btn_clear.setEnabled(has_layers)
-        if hasattr(self, "btn_merge_new"):
-            self.btn_merge_new.setEnabled(has_layers)    
-        has_layers = bool(getattr(vw, "_layers", []))
-        self.btn_merge_sel.setEnabled(has_layers)
+
+        has = bool(getattr(vw, "_layers", []))
+        self.btn_merge.setEnabled(has)
+        self.btn_merge_new.setEnabled(has)
+        self.btn_merge_sel.setEnabled(has)
+        self.btn_clear.setEnabled(has)
         self._refresh_row_heights()
-
-    def _selected_layer_indices(self) -> list[int]:
-        vw = self.current_view()
-        if not vw:
-            return []
-        n = len(getattr(vw, "_layers", []) or [])
-        idxs = []
-        for it in self.list.selectedItems():
-            r = self.list.row(it)
-            if 0 <= r < n:
-                idxs.append(r)
-        idxs = sorted(set(idxs))
-        return idxs
-
-    def _render_stack(self, base_img: np.ndarray, layers: list[ImageLayer]) -> np.ndarray:
-        # composite_stack already respects visibility/opacity/modes/masks
-        out = composite_stack(base_img, layers)
-        return out if out is not None else base_img
-
-    def _open_baked_layer_doc(self, base_doc, arr: np.ndarray, title: str):
-        dm = getattr(self.mw, "docman", None)
-        if not dm or not hasattr(dm, "open_array"):
-            return None
-        meta = dict(getattr(base_doc, "metadata", {}) or {})
-        meta.update({
-            "bit_depth": "32-bit floating point",
-            "is_mono": (arr.ndim == 2 or (arr.ndim == 3 and arr.shape[-1] == 1)),
-            "source": "Layers Merge Selected",
-        })
-        return dm.open_array(arr.astype(np.float32, copy=False), metadata=meta, title=title)
-
-    def _merge_selected_to_single_layer(self):
-        vw = self.current_view()
-        if not vw:
-            return
-
-        layers = list(getattr(vw, "_layers", []) or [])
-        if not layers:
-            QMessageBox.information(self, "Layers", "There are no layers to merge.")
-            return
-
-        sel = self._selected_layer_indices()
-        if len(sel) < 2:
-            QMessageBox.information(self, "Layers", "Select two or more layers to merge.")
-            return
-
-        try:
-            base_doc = getattr(vw, "document", None)
-            if base_doc is None or getattr(base_doc, "image", None) is None:
-                QMessageBox.warning(self, "Layers", "No base image available for this view.")
-                return
-            base_img = base_doc.image
-
-            i0, i1 = sel[0], sel[-1]
-
-            # IMPORTANT ASSUMPTION (matches your UI order):
-            # vw._layers is top-to-bottom in the list, and "below" means larger index.
-            layers_above = layers[:i0]
-            layers_sel   = layers[i0:i1+1]
-            layers_below = layers[i1+1:]
-
-            # 1) Render what exists directly under the selected range
-            under = self._render_stack(base_img, layers_below)
-
-            # 2) Render selected layers on top of that "under" image
-            baked = self._render_stack(under, layers_sel)
-
-
-            # 3) Create a baked raster layer (NO new document)
-            merged_layer = ImageLayer(
-                name=f"Merged ({len(layers_sel)})",
-                src_doc=None,
-                pixels=baked.astype(np.float32, copy=False),
-                visible=True,
-                opacity=1.0,
-                mode="Normal",
-            )
-
-            # Keep masks off by default; you can also decide to inherit the topmost mask
-            merged_layer.mask_doc = None
-            merged_layer.mask_use_luma = True
-            merged_layer.mask_invert = False
-
-            new_layers = layers_above + [merged_layer] + layers_below
-            vw._layers = new_layers
-
-            vw._reinstall_layer_watchers()
-            self._rebuild_list()
-            vw.apply_layer_stack(vw._layers)
-
-            QMessageBox.information(self, "Layers", f"Merged {len(layers_sel)} layers into a single layer.")
-        except Exception as ex:
-            print("[LayersDock] merge_selected error:", ex)
-            QMessageBox.critical(self, "Layers", f"Merge Selected failed:\n{ex}")
-
-
-    def _layer_count(self) -> int:
-        vw = self.current_view()
-        return len(getattr(vw, "_layers", [])) if vw else 0
 
     def _bind_row(self, roww: _LayerRow):
         if getattr(roww, "_is_base", False):
             return
-        roww.changed.connect(self._apply_list_to_view_debounced)
-
+        roww.changed.connect(self._on_row_changed)
         roww.requestDelete.connect(lambda: self._delete_row(roww))
         roww.moveUp.connect(lambda: self._move_row(roww, -1))
         roww.moveDown.connect(lambda: self._move_row(roww, +1))
         roww.requestTransform.connect(lambda rw=roww: self._edit_transform_for_row(rw))
 
-    def _edit_transform_for_row(self, roww: _LayerRow):
-        vw = self.current_view()
-        if not vw:
-            return
-        idx = self._find_row_index(roww)
-        if idx < 0 or idx >= self._layer_count():
-            return
-
-        lyr = vw._layers[idx]
-
-        # Ensure transform exists
-        t = getattr(lyr, "transform", None)
-        if t is None:
-            t = LayerTransform()
-            lyr.transform = t
-
-        # Helper: apply transform + refresh preview
-        def _apply_t(new_t: LayerTransform):
-            lyr.transform = new_t
-            # update the row star immediately (optional)
-            dirty = (abs(new_t.tx) > 1e-6 or abs(new_t.ty) > 1e-6 or abs(new_t.rot_deg) > 1e-6 or
-                    abs(new_t.sx - 1.0) > 1e-6 or abs(new_t.sy - 1.0) > 1e-6)
-            try:
-                roww.setTransformDirty(dirty)
-            except Exception:
-                pass
-
-            # Live preview refresh — downscaled for snappy transform editing
-            vw.apply_layer_stack(vw._layers, preview=True)
-
-        # Helper: cancel revert
-        def _cancel_revert(orig_t: LayerTransform):
-            lyr.transform = orig_t
-            dirty = (abs(orig_t.tx) > 1e-6 or abs(orig_t.ty) > 1e-6 or abs(orig_t.rot_deg) > 1e-6 or
-                    abs(orig_t.sx - 1.0) > 1e-6 or abs(orig_t.sy - 1.0) > 1e-6)
-            try:
-                roww.setTransformDirty(dirty)
-            except Exception:
-                pass
-            vw.apply_layer_stack(vw._layers, preview=True)
-
-        dlg = _TransformDialog(
-            self,
-            t=lyr.transform,
-            apply_cb=_apply_t,
-            cancel_cb=_cancel_revert,
-            debounce_ms=120,
-        )
-        dlg.exec()
-        # Final full-resolution composite once editing is done (OK or Cancel)
-        try:
-            vw.apply_layer_stack(vw._layers)
-        except Exception:
-            pass
-
-
-    def _apply_list_to_view_debounced(self):
-        # Sync the (cheap) control values every tick, but THROTTLE the actual
-        # recomposite/redraw so a fast slider drag doesn't trigger one per pixel.
-        vw = self.current_view()
-        if vw:
-            self._sync_layers_from_rows(vw)
-            self._request_preview(vw)
-        # …and (re)start the debounce timer for the trailing full-resolution apply.
-        self._apply_timer.start(self._apply_debounce_ms)
-        # Also refresh row heights so mode-dependent controls (like Sigmoid)
-        # can expand/collapse the row visually.
-        self._refresh_row_heights()
-
-    def _request_preview(self, vw):
-        """Throttle live previews: render immediately on the leading edge, then at
-        most once per interval while changes keep arriving (coalesced trailing)."""
-        if self._preview_timer.isActive():
-            self._preview_pending = True
-            return
-        self._do_preview(vw)
-        self._preview_timer.start(self._preview_interval_ms)
-
-    def _on_preview_throttle(self):
-        if self._preview_pending:
-            self._preview_pending = False
-            vw = self.current_view()
-            if vw:
-                self._do_preview(vw)
-            self._preview_timer.start(self._preview_interval_ms)
-
-    def _do_preview(self, vw):
-        try:
-            vw.apply_layer_stack(vw._layers, preview=True)
-        except Exception as ex:
-            print("[LayersDock] preview apply error:", ex)
-
     def _refresh_row_heights(self):
-        """Update QListWidgetItem size hints to match current row widgets."""
         try:
             for i in range(self.list.count()):
                 item = self.list.item(i)
                 roww = self.list.itemWidget(item)
                 if roww is not None:
-                    # Ask the row for an up-to-date size hint
-                    item.setSizeHint(roww.sizeHint())
+                    roww.layout().activate()
+                    item.setSizeHint(roww.minimumSizeHint())
         except Exception as ex:
-            print("[LayersDock] _refresh_row_heights error:", ex)
+            print("[LayersDock] _refresh_row_heights:", ex)
 
+    # ─────────────────────────────────────────────────────────
+    # Layer sync
+    # ─────────────────────────────────────────────────────────
 
+    def _sync_layers_from_rows(self, vw) -> None:
+        layers = getattr(vw, "_layers", None) or []
+        n = min(len(layers), self.list.count())
+        for i in range(n):
+            it   = self.list.item(i)
+            roww = self.list.itemWidget(it) if it else None
+            if roww is None or getattr(roww, "_is_base", False):
+                continue
+            try:
+                p   = roww.params()
+                lyr = layers[i]
+                lyr.visible        = bool(p["visible"])
+                lyr.mode           = p["mode"]
+                lyr.opacity        = float(p["opacity"])
+                lyr.levels_enabled = bool(p.get("levels_enabled", False))
+                lyr.black_point    = float(p.get("black_point", 0.0))
+                lyr.midtones       = float(p.get("midtones",    0.5))
+                lyr.white_point    = float(p.get("white_point", 1.0))
+                if "sigmoid_center" in p:
+                    lyr.sigmoid_center   = float(p["sigmoid_center"])
+                if "sigmoid_strength" in p:
+                    lyr.sigmoid_strength = float(p["sigmoid_strength"])
+                mi = p.get("mask_index")
+                lyr.mask_doc    = roww.mask_combo.itemData(mi) if (mi and mi > 0) else None
+                lyr.mask_use_luma = True
+                lyr.mask_invert   = bool(p["mask_invert"])
+            except Exception as ex:
+                print("[LayersDock] sync row error:", ex)
+
+        # Sync base levels
+        n_layers = len(getattr(vw, "_layers", []) or [])
+        base_item = self.list.item(n_layers)
+        if base_item:
+            base_roww = self.list.itemWidget(base_item)
+            if isinstance(base_roww, _LayerRow) and getattr(base_roww, "_is_base", False):
+                try:
+                    p = base_roww.params()
+                    vw._base_levels = {
+                        "enabled":     bool(p.get("levels_enabled", False)),
+                        "black_point": float(p.get("black_point", 0.0)),
+                        "white_point": float(p.get("white_point", 1.0)),
+                        "midtones":    float(p.get("midtones",    0.5)),
+                    }
+                except Exception:
+                    pass
+
+    # ─────────────────────────────────────────────────────────
+    # Row manipulation
+    # ─────────────────────────────────────────────────────────
 
     def _find_row_index(self, roww: _LayerRow) -> int:
         for i in range(self.list.count()):
@@ -970,114 +1302,217 @@ class LayersDock(QDockWidget):
                 return i
         return -1
 
+    def _layer_count(self) -> int:
+        vw = self.current_view()
+        return len(getattr(vw, "_layers", [])) if vw else 0
+
     def _delete_row(self, roww: _LayerRow):
         vw = self.current_view()
-        if not vw:
-            return
+        if not vw: return
         idx = self._find_row_index(roww)
-        if idx < 0:
-            return
-        if idx >= self._layer_count():
-            return
+        if idx < 0 or idx >= self._layer_count(): return
         vw._layers.pop(idx)
         self.list.takeItem(idx)
-        self._apply_list_to_view()
+        self._schedule_composite()
 
     def _move_row(self, roww: _LayerRow, delta: int):
         vw = self.current_view()
-        if not vw:
-            return
+        if not vw: return
         i = self._find_row_index(roww)
-        if i < 0 or i >= self._layer_count():
-            return
+        if i < 0 or i >= self._layer_count(): return
         j = i + delta
-        if j < 0 or j >= self._layer_count():
-            return
+        if j < 0 or j >= self._layer_count(): return
         vw._layers[i], vw._layers[j] = vw._layers[j], vw._layers[i]
         self._rebuild_list()
-        self._apply_list_to_view()
+        self._schedule_composite()
 
-    def _sync_layers_from_rows(self, vw) -> None:
-        """Copy UI control values into the layer objects.
-
-        Hardened against: None rows, the informational base row, and any drift
-        between the widget list and the layer list (delete/reorder/off-by-one).
-        """
-        layers = getattr(vw, "_layers", None) or []
-        n = min(len(layers), self.list.count())
-        for i in range(n):
-            it = self.list.item(i)
-            roww = self.list.itemWidget(it) if it is not None else None
-            if roww is None or getattr(roww, "_is_base", False):
-                continue
-            try:
-                p = roww.params()
-            except Exception:
-                continue
-            lyr = layers[i]
-            try:
-                lyr.visible = bool(p["visible"])
-                lyr.mode = p["mode"]
-                lyr.opacity = float(p["opacity"])
-                lyr.levels_enabled = bool(p.get("levels_enabled", False))
-                lyr.black_point = float(p.get("black_point", 0.0))
-                lyr.midtones = float(p.get("midtones", 0.5))
-                lyr.white_point = float(p.get("white_point", 1.0))
-
-                if "sigmoid_center" in p:
-                    lyr.sigmoid_center = float(p["sigmoid_center"])
-                if "sigmoid_strength" in p:
-                    lyr.sigmoid_strength = float(p["sigmoid_strength"])
-
-                mi = p.get("mask_index")
-                if mi is not None and mi > 0:
-                    lyr.mask_doc = roww.mask_combo.itemData(mi)
-                else:
-                    lyr.mask_doc = None
-
-                # Force luminance masks only
-                lyr.mask_use_luma = True
-                lyr.mask_invert = bool(p["mask_invert"])
-            except Exception as ex:
-                print("[LayersDock] sync row error:", ex)
-        # Sync base layer levels (last row)
+    def _selected_layer_indices(self) -> list[int]:
         vw = self.current_view()
-        if vw:
-            n_layers = len(getattr(vw, "_layers", []) or [])
-            base_item = self.list.item(n_layers)
-            if base_item is not None:
-                base_roww = self.list.itemWidget(base_item)
-                if isinstance(base_roww, _LayerRow) and getattr(base_roww, "_is_base", False):
-                    try:
-                        p = base_roww.params()
-                        vw._base_levels = {
-                            "enabled":     bool(p.get("levels_enabled", False)),
-                            "black_point": float(p.get("black_point", 0.0)),
-                            "white_point": float(p.get("white_point", 1.0)),
-                            "midtones":    float(p.get("midtones", 0.5)),
-                        }
-                    except Exception:
-                        pass
+        if not vw: return []
+        n = len(getattr(vw, "_layers", []) or [])
+        return sorted({self.list.row(it) for it in self.list.selectedItems()
+                       if 0 <= self.list.row(it) < n})
 
+    # ─────────────────────────────────────────────────────────
+    # Transform editing
+    # ─────────────────────────────────────────────────────────
 
-    def _apply_list_to_view(self):
+    def _edit_transform_for_row(self, roww: _LayerRow):
+        vw = self.current_view()
+        if not vw: return
+        idx = self._find_row_index(roww)
+        if idx < 0 or idx >= self._layer_count(): return
+        lyr = vw._layers[idx]
+        t   = getattr(lyr, "transform", None) or LayerTransform()
+        lyr.transform = t
+
+        def _apply_t(new_t):
+            lyr.transform = new_t
+            dirty = (abs(new_t.tx)>1e-6 or abs(new_t.ty)>1e-6 or
+                     abs(new_t.rot_deg)>1e-6 or abs(new_t.sx-1)>1e-6 or abs(new_t.sy-1)>1e-6)
+            try: roww.setTransformDirty(dirty)
+            except Exception: pass
+            self._schedule_composite()
+
+        def _cancel_t(orig_t):
+            lyr.transform = orig_t
+            dirty = (abs(orig_t.tx)>1e-6 or abs(orig_t.ty)>1e-6 or
+                     abs(orig_t.rot_deg)>1e-6 or abs(orig_t.sx-1)>1e-6 or abs(orig_t.sy-1)>1e-6)
+            try: roww.setTransformDirty(dirty)
+            except Exception: pass
+            self._schedule_composite()
+
+        dlg = _TransformDialog(self, t=lyr.transform, apply_cb=_apply_t,
+                               cancel_cb=_cancel_t, debounce_ms=120)
+        dlg.exec()
+        self._schedule_composite()
+
+    # ─────────────────────────────────────────────────────────
+    # Merge / push operations  (use cached composite)
+    # ─────────────────────────────────────────────────────────
+
+    def _get_composite_for_push(self) -> Optional[np.ndarray]:
+        """Return cached composite, running a fresh sync+render if needed."""
         vw = self.current_view()
         if not vw:
-            return
+            return None
+        # Ensure the cache is fresh by syncing rows first
         self._sync_layers_from_rows(vw)
+        self._run_composite()                   # synchronous — called directly
+        return self._cached_composite
+
+    def _merge_and_push(self):
+        vw = self.current_view()
+        if not vw: return
+        layers = list(getattr(vw, "_layers", []) or [])
+        if not layers:
+            QMessageBox.information(self, "Layers", "There are no layers to merge.")
+            return
         try:
-            vw._reinstall_layer_watchers()
-            vw.apply_layer_stack(vw._layers)
+            base_doc = getattr(vw, "document", None)
+            if base_doc is None or getattr(base_doc, "image", None) is None:
+                QMessageBox.warning(self, "Layers", "No base image for this view.")
+                return
+            merged = self._get_composite_for_push()
+            if merged is None:
+                QMessageBox.warning(self, "Layers", "Composite failed.")
+                return
+            meta = dict(getattr(base_doc, "metadata", {}) or {})
+            meta["step_name"] = "Layers Merge"
+            base_doc.apply_edit(merged.copy(), metadata=meta, step_name="Layers Merge")
+            vw._layers      = []
+            vw._base_levels = None
+            if hasattr(vw, "_reinstall_layer_watchers"):
+                vw._reinstall_layer_watchers()
+            self._cached_composite = None
+            self._rebuild_list()
+            # Tell the view to re-render normally now (no composite active)
+            try: vw._render(rebuild=True)
+            except Exception: pass
+            QMessageBox.information(self, "Layers",
+                "Merged visible layers and pushed to the current view.")
         except Exception as ex:
-            print("[LayersDock] apply_list_to_view error:", ex)
+            print("[LayersDock] merge error:", ex)
+            QMessageBox.critical(self, "Layers", f"Merge failed:\n{ex}")
+
+    def _merge_to_new_doc(self):
+        vw = self.current_view()
+        if not vw: return
+        if not getattr(vw, "_layers", []):
+            QMessageBox.information(self, "Layers", "There are no layers to merge.")
+            return
+        try:
+            base_doc = getattr(vw, "document", None)
+            if base_doc is None or getattr(base_doc, "image", None) is None:
+                QMessageBox.warning(self, "Layers", "No base image for this view.")
+                return
+            merged = self._get_composite_for_push()
+            if merged is None:
+                QMessageBox.warning(self, "Layers", "Composite failed.")
+                return
+            self._push_merged_as_new_doc(base_doc, merged)
+            QMessageBox.information(self, "Layers",
+                "Merged visible layers and created a new document.")
+        except Exception as ex:
+            print("[LayersDock] merge_to_new_doc error:", ex)
+            QMessageBox.critical(self, "Layers", f"Merge failed:\n{ex}")
+
+    def _merge_selected_to_single_layer(self):
+        vw = self.current_view()
+        if not vw: return
+        layers = list(getattr(vw, "_layers", []) or [])
+        if not layers:
+            QMessageBox.information(self, "Layers", "There are no layers to merge.")
+            return
+        sel = self._selected_layer_indices()
+        if len(sel) < 2:
+            QMessageBox.information(self, "Layers", "Select two or more layers to merge.")
+            return
+        try:
+            base_doc = getattr(vw, "document", None)
+            if base_doc is None or getattr(base_doc, "image", None) is None:
+                QMessageBox.warning(self, "Layers", "No base image."); return
+            base_img     = base_doc.image
+            i0, i1       = sel[0], sel[-1]
+            layers_above = layers[:i0]
+            layers_sel   = layers[i0:i1+1]
+            layers_below = layers[i1+1:]
+            under        = composite_stack(base_img, layers_below)
+            baked        = composite_stack(under, layers_sel)
+            merged_layer = ImageLayer(
+                name=f"Merged ({len(layers_sel)})",
+                pixels=baked.astype(np.float32, copy=False),
+                visible=True, opacity=1.0, mode="Normal",
+            )
+            merged_layer.mask_doc = None; merged_layer.mask_use_luma = True
+            vw._layers = layers_above + [merged_layer] + layers_below
+            if hasattr(vw, "_reinstall_layer_watchers"):
+                vw._reinstall_layer_watchers()
+            self._rebuild_list()
+            self._schedule_composite()
+            QMessageBox.information(self, "Layers",
+                f"Merged {len(layers_sel)} layers into one.")
+        except Exception as ex:
+            print("[LayersDock] merge_selected error:", ex)
+            QMessageBox.critical(self, "Layers", f"Merge Selected failed:\n{ex}")
+
+    def _push_merged_as_new_doc(self, base_doc, arr: np.ndarray):
+        dm = getattr(self.mw, "docman", None)
+        if not dm or not hasattr(dm, "open_array"):
+            return
+        try:
+            vw   = self.current_view()
+            base = ""
+            if vw and hasattr(vw, "_effective_title"):
+                base = (vw._effective_title() or "").strip()
+            if not base:
+                dn = getattr(base_doc, "display_name", None)
+                base = (dn() if callable(dn) else (dn or "Untitled"))
+            title = base if base.endswith("_merged") else f"{base}_merged"
+            meta  = dict(getattr(base_doc, "metadata", {}) or {})
+            meta.update({"bit_depth": "32-bit floating point",
+                         "is_mono": (arr.ndim == 2 or (arr.ndim == 3 and arr.shape[-1] == 1)),
+                         "source": "Layers Merge", "step_name": "Layers Merge"})
+            newdoc = dm.open_array(arr.astype(np.float32, copy=False), metadata=meta, title=title)
+            if hasattr(self.mw, "_spawn_subwindow_for"):
+                self.mw._spawn_subwindow_for(newdoc)
+        except Exception as ex:
+            print("[LayersDock] _push_merged_as_new_doc:", ex)
 
     def _clear_layers(self):
         vw = self.current_view()
         if not vw: return
         vw._layers = []
-        vw._reinstall_layer_watchers()
+        if hasattr(vw, "_reinstall_layer_watchers"):
+            vw._reinstall_layer_watchers()
+        self._cached_composite = None
         self._rebuild_list()
-        vw.apply_layer_stack([])
+        try: vw._render(rebuild=True)
+        except Exception: pass
+
+    # ─────────────────────────────────────────────────────────
+    # Drag and drop
+    # ─────────────────────────────────────────────────────────
 
     def dragEnterEvent(self, e: QDragEnterEvent):
         md = e.mimeData()
@@ -1086,82 +1521,68 @@ class LayersDock(QDockWidget):
         else:
             e.ignore()
 
-    def dragMoveEvent(self, e: QDragEnterEvent):
+    def dragMoveEvent(self, e):
         self.dragEnterEvent(e)
 
     def dropEvent(self, e: QDropEvent):
         vw = self.current_view()
-        if not vw:
-            e.ignore(); return
+        if not vw: e.ignore(); return
         md = e.mimeData()
         try:
             if md.hasFormat(MIME_VIEWSTATE):
-                st = json.loads(bytes(md.data(MIME_VIEWSTATE)).decode("utf-8"))
-                # Try robust resolution (UIDs/file_path/ptr)
+                st      = json.loads(bytes(md.data(MIME_VIEWSTATE)).decode("utf-8"))
                 src_doc = self._resolve_doc_from_state(st)
                 if src_doc is None:
                     raise RuntimeError("Source doc gone")
                 layer_name = "Layer"
-                src_title = None
                 for sw in self._all_subwindows():
                     if getattr(sw, "document", None) is src_doc:
                         t = getattr(sw, "_effective_title", None)
-                        src_title = t() if callable(t) else t
+                        layer_name = (t() if callable(t) else t) or "Layer"
                         break
-                if src_title:
-                    layer_name = src_title
-                else:
-                    dn = getattr(src_doc, "display_name", None)
-                    layer_name = dn() if callable(dn) else (dn or "Layer")
-
                 new_layer = ImageLayer(
-                    name=layer_name,
-                    src_doc=src_doc,
-                    visible=True,
-                    opacity=1.0,
-                    mode="Normal",
+                    name=layer_name, src_doc=src_doc,
+                    visible=True, opacity=1.0, mode="Normal",
                 )
                 if not hasattr(vw, "_layers") or vw._layers is None:
                     vw._layers = []
                 vw._layers.insert(0, new_layer)
-                vw._reinstall_layer_watchers()
+                if hasattr(vw, "_reinstall_layer_watchers"):
+                    vw._reinstall_layer_watchers()
                 self._rebuild_list()
-                vw.apply_layer_stack(vw._layers)
-                e.acceptProposedAction()
-                return
+                self._schedule_composite()
+                e.acceptProposedAction(); return
 
             if md.hasFormat(MIME_MASK):
-                payload = json.loads(bytes(md.data(MIME_MASK)).decode("utf-8"))
-                # payload may include doc_uid/base_doc_uid/file_path/mask_doc_ptr
+                payload  = json.loads(bytes(md.data(MIME_MASK)).decode("utf-8"))
                 mask_doc = self._resolve_doc_from_state(payload)
                 if mask_doc is None:
                     raise RuntimeError("Mask doc gone")
                 if not getattr(vw, "_layers", None):
-                    QMessageBox.information(self, "No Layers", "Add a layer first, then drop a mask onto it.")
+                    QMessageBox.information(self, "No Layers",
+                        "Add a layer first, then drop a mask onto it.")
                     e.ignore(); return
                 sel_row = self.list.currentRow()
-                if sel_row < 0:
-                    sel_row = 0
-                idx = min(sel_row, len(vw._layers) - 1)
-                layer = vw._layers[idx]
-                layer.mask_doc = mask_doc
-                layer.mask_invert = bool(payload.get("invert", False))
-                try:
-                    layer.mask_feather = float(payload.get("feather", 0.0) or 0.0)
-                except Exception:
-                    layer.mask_feather = 0.0
-                vw._reinstall_layer_watchers()
+                idx     = min(max(sel_row, 0), len(vw._layers) - 1)
+                lyr     = vw._layers[idx]
+                lyr.mask_doc    = mask_doc
+                lyr.mask_invert = bool(payload.get("invert", False))
+                try: lyr.mask_feather = float(payload.get("feather", 0.0) or 0.0)
+                except Exception: lyr.mask_feather = 0.0
+                if hasattr(vw, "_reinstall_layer_watchers"):
+                    vw._reinstall_layer_watchers()
                 self._rebuild_list()
-                vw.apply_layer_stack(vw._layers)
-                e.acceptProposedAction()
-                return
-
+                self._schedule_composite()
+                e.acceptProposedAction(); return
         except Exception as ex:
             print("[LayersDock] drop error:", ex)
         e.ignore()
 
+    # ─────────────────────────────────────────────────────────
+    # Doc resolution helpers
+    # ─────────────────────────────────────────────────────────
+
     def _resolve_doc_ptr(self, ptr: int):
-        """Legacy path: resolve by Python id() pointer."""
         try:
             for d in self.docman.all_documents():
                 if id(d) == ptr:
@@ -1171,182 +1592,27 @@ class LayersDock(QDockWidget):
         return None
 
     def _resolve_doc_from_state(self, st):
-        """
-        Accepts either:
-        - dict payload (preferred): may include doc_uid, base_doc_uid, file_path, doc_ptr/mask_doc_ptr
-        - int legacy pointer
-        Tries, in order: doc_uid → base_doc_uid → legacy ptr → file_path.
-        """
-        # If called with an int, treat it as a raw pointer
         if isinstance(st, int):
             return self._resolve_doc_ptr(st)
-
         if not isinstance(st, dict):
             return None
-
-        # 1) Prefer UIDs
-        doc_uid = st.get("doc_uid")
-        base_uid = st.get("base_doc_uid")
-        if doc_uid and hasattr(self.docman, "get_document_by_uid"):
-            d = self.docman.get_document_by_uid(doc_uid)
-            if d is not None:
-                return d
-        if base_uid and hasattr(self.docman, "get_document_by_uid"):
-            d = self.docman.get_document_by_uid(base_uid)
-            if d is not None:
-                return d
-
-        # 2) Legacy pointer
-        ptr = st.get("doc_ptr") or st.get("mask_doc_ptr")  # mask payloads may use mask_doc_ptr
+        for uid_key in ("doc_uid", "base_doc_uid"):
+            uid = st.get(uid_key)
+            if uid and hasattr(self.docman, "get_document_by_uid"):
+                d = self.docman.get_document_by_uid(uid)
+                if d is not None:
+                    return d
+        ptr = st.get("doc_ptr") or st.get("mask_doc_ptr")
         if isinstance(ptr, int):
             d = self._resolve_doc_ptr(ptr)
             if d is not None:
                 return d
-
-        # 3) Last-ditch: file path match
         fp = (st.get("file_path") or "").strip()
         if fp:
             try:
                 for d in self.docman.all_documents():
-                    meta = getattr(d, "metadata", {}) or {}
-                    if meta.get("file_path") == fp:
+                    if (getattr(d, "metadata", {}) or {}).get("file_path") == fp:
                         return d
             except Exception:
                 pass
-
         return None
-
-
-    def _merge_and_push(self):
-        vw = self.current_view()
-        if not vw:
-            return
-
-        # No layers? Nothing to do.
-        layers = list(getattr(vw, "_layers", []) or [])
-        if not layers:
-            QMessageBox.information(self, "Layers", "There are no layers to merge.")
-            return
-
-        try:
-            # Base image from the current view's document
-            base_doc = getattr(vw, "document", None)
-            if base_doc is None or getattr(base_doc, "image", None) is None:
-                QMessageBox.warning(self, "Layers", "No base image available for this view.")
-                return
-
-            base_img = base_doc.image
-            # Apply base levels to base before compositing (display-only — base_doc.image unchanged)
-            base_levels = getattr(vw, "_base_levels", None)
-            if base_levels and base_levels.get("enabled", False):
-                from setiastro.saspro.layers import _apply_levels, _ensure_3c, _float01
-                base_img = _apply_levels(
-                    _ensure_3c(_float01(base_img)),
-                    float(base_levels.get("black_point", 0.0)),
-                    float(base_levels.get("white_point", 1.0)),
-                    float(base_levels.get("midtones", 0.5)),
-                )
-            merged = composite_stack(base_img, layers)
-            if merged is None:
-                QMessageBox.warning(self, "Layers", "Composite failed (empty result).")
-                return
-
-            # Push into the document as an undoable edit
-            # (assumes document.apply_edit accepts float [0..1] or handles dtype internally)
-            meta = dict(getattr(base_doc, "metadata", {}) or {})
-            meta["step_name"] = "Layers Merge"
-            base_doc.apply_edit(merged.copy(), metadata=meta, step_name="Layers Merge")
-
-            # Clear layers, reset base levels, and update live preview
-            vw._layers = []
-            vw._base_levels = None
-            vw._reinstall_layer_watchers()
-            self._rebuild_list()
-            vw.apply_layer_stack([])
-
-            # Nice confirmation
-            QMessageBox.information(self, "Layers",
-                                    "Merged visible layers and pushed the result to the current view.")
-        except Exception as ex:
-            print("[LayersDock] merge error:", ex)
-            QMessageBox.critical(self, "Layers", f"Merge failed:\n{ex}")
-
-    def _merge_to_new_doc(self):
-        vw = self.current_view()
-        if not vw:
-            return
-
-        layers = list(getattr(vw, "_layers", []) or [])
-        if not layers:
-            QMessageBox.information(self, "Layers", "There are no layers to merge.")
-            return
-
-        try:
-            base_doc = getattr(vw, "document", None)
-            if base_doc is None or getattr(base_doc, "image", None) is None:
-                QMessageBox.warning(self, "Layers", "No base image available for this view.")
-                return
-
-            base_img = base_doc.image
-            # Apply base levels to base before compositing (display-only — base_doc.image unchanged)
-            base_levels = getattr(vw, "_base_levels", None)
-            if base_levels and base_levels.get("enabled", False):
-                from setiastro.saspro.layers import _apply_levels, _ensure_3c, _float01
-                base_img = _apply_levels(
-                    _ensure_3c(_float01(base_img)),
-                    float(base_levels.get("black_point", 0.0)),
-                    float(base_levels.get("white_point", 1.0)),
-                    float(base_levels.get("midtones", 0.5)),
-                )
-            merged = composite_stack(base_img, layers)
-            if merged is None:
-                QMessageBox.warning(self, "Layers", "Composite failed (empty result).")
-                return
-
-            # Push as a new document (same pattern as stars-only)
-            self._push_merged_as_new_doc(base_doc, merged)
-
-            QMessageBox.information(self, "Layers",
-                                    "Merged visible layers and created a new document.")
-        except Exception as ex:
-            print("[LayersDock] merge_to_new_doc error:", ex)
-            QMessageBox.critical(self, "Layers", f"Merge failed:\n{ex}")
-
-    def _push_merged_as_new_doc(self, base_doc, arr: np.ndarray):
-        dm = getattr(self.mw, "docman", None)
-        if not dm or not hasattr(dm, "open_array"):
-            return
-
-        # Derive a friendly title based on the *view title* if possible
-        title = None
-        try:
-            # Use current view title (respects per-view rename)
-            vw = self.current_view()
-            if vw and hasattr(vw, "_effective_title"):
-                base = (vw._effective_title() or "").strip()
-            else:
-                base = ""
-
-            if not base:
-                dn = getattr(base_doc, "display_name", None)
-                base = dn() if callable(dn) else (dn or "Untitled")
-
-            suffix = "_merged"
-            title = base if base.endswith(suffix) else f"{base}{suffix}"
-        except Exception:
-            title = "Merged Layers"
-
-        try:
-            meta = dict(getattr(base_doc, "metadata", {}) or {})
-            meta.update({
-                "bit_depth": "32-bit floating point",
-                "is_mono": (arr.ndim == 2 or (arr.ndim == 3 and arr.shape[-1] == 1)),
-                "source": "Layers Merge",
-                "step_name": "Layers Merge",
-            })
-
-            newdoc = dm.open_array(arr.astype(np.float32, copy=False), metadata=meta, title=title)
-            if hasattr(self.mw, "_spawn_subwindow_for"):
-                self.mw._spawn_subwindow_for(newdoc)
-        except Exception as ex:
-            print("[LayersDock] _push_merged_as_new_doc error:", ex)

@@ -3710,28 +3710,29 @@ class BlinkTab(QWidget):
         QTimer.singleShot(0, self._update_zoom_panel_to_viewport_center)
 
     def wheelEvent(self, event: QWheelEvent):
-        # This handler catches wheel events that bubble up to the BlinkTab
-        # widget itself — e.g. when the file tree hits the top/bottom of its
-        # scrollable content and Qt passes the unhandled wheel event to the
-        # parent. Only zoom the preview if the cursor is actually over the
-        # preview's scroll area; otherwise ignore so nothing is zoomed just
-        # because some other widget ran out of room to scroll.
+        # Only zoom if the cursor is genuinely over the preview scroll area's
+        # viewport. Wheel events that bubble up from the file tree (at its
+        # scroll boundary), buttons, spinboxes, or any other left-column widget
+        # must NOT zoom the preview.
+        #
+        # We must use GLOBAL coordinates mapped into the viewport. Comparing
+        # event.position() against self.scroll_area.geometry() is wrong: the
+        # scroll area lives several widgets deep (preview_widget → right_splitter
+        # → splitter → self), so its geometry() is in preview_widget's coordinate
+        # space, not BlinkTab's. The two never line up correctly, which is why the
+        # previous guard let left-column wheel events fall through to zoom.
         try:
-            pos_in_self = event.position().toPoint()
+            gp = event.globalPosition().toPoint()
         except AttributeError:
-            pos_in_self = event.pos()
+            gp = event.globalPos()
 
-        if not self.scroll_area.geometry().contains(pos_in_self):
-            event.ignore()
-            return
-
-        # Check the vertical delta to determine zoom direction.
-        if event.angleDelta().y() > 0:
-            self.zoom_in()
+        vp = getattr(self, "scroll_area", None)
+        vp = vp.viewport() if vp is not None else None
+        if vp is not None and vp.rect().contains(vp.mapFromGlobal(gp)):
+            self._wheel_zoom(event)
+            event.accept()
         else:
-            self.zoom_out()
-        # Accept the event so it isn’t propagated further (e.g. to the scroll area).
-        event.accept()
+            event.ignore()
 
 
     def zoom_in(self):
