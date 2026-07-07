@@ -371,9 +371,11 @@ class LayersPreviewWindow(QDialog):
         self.lbl_info.setText(f"Composite ready — {n_px:,} px")
 
     def closeEvent(self, ev):
-        # Hide rather than destroy so the dock can reopen it cheaply
+        # Hide rather than destroy so the dock can reopen it cheaply.
+        # Emit finished manually so the dock untoggles the Preview button.
         ev.ignore()
         self.hide()
+        self.finished.emit(0)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -812,6 +814,7 @@ class LayersDock(QDockWidget):
         self.setWidget(w)
 
         self.setAcceptDrops(True)
+        self.visibilityChanged.connect(self._on_dock_visibility_changed)
 
         # Signals
         self.view_combo.currentIndexChanged.connect(self._on_pick_view)
@@ -853,6 +856,11 @@ class LayersDock(QDockWidget):
         self.btn_preview.blockSignals(True)
         self.btn_preview.setChecked(False)
         self.btn_preview.blockSignals(False)
+
+    def _on_dock_visibility_changed(self, visible: bool):
+        if not visible and self._preview_win is not None:
+            self._preview_win.hide()
+            self._on_preview_win_closed()
 
     def _push_to_preview(self):
         """Send the current cached composite to the preview window (if open)."""
@@ -942,6 +950,7 @@ class LayersDock(QDockWidget):
 
         # Push fast result — will be overwritten by full-res shortly
         self._preview_win.update_composite(self._cached_before, fast_composite)
+        self._preview_win.lbl_info.setText("Fast composite ready — rendering full resolution…")
 
     def _run_composite_threaded(self):
         """
@@ -991,7 +1000,7 @@ class LayersDock(QDockWidget):
         if gen < self._composite_gen:
             return   # stale — a newer render is already in flight
         self._cached_composite = result
-        self._push_to_preview()
+        self._push_to_preview()  # lbl_info updated inside update_composite
 
     def _run_composite(self):
         """
