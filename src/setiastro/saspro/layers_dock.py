@@ -9,7 +9,7 @@ from typing import Optional
 import json
 import numpy as np
 
-from PyQt6.QtCore import Qt, pyqtSignal, QByteArray, QTimer, QPoint, QPointF, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QByteArray, QTimer, QPoint, QPointF, QRectF, QThread, QObject
 from PyQt6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
     QListWidget, QListWidgetItem, QAbstractItemView, QSlider, QCheckBox,
@@ -36,6 +36,38 @@ def _arr_to_pixmap(arr: np.ndarray) -> QPixmap:
     h, w = rgb8.shape[:2]
     img = QImage(rgb8.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
     return QPixmap.fromImage(img)
+
+
+# ─────────────────────────────────────────────────────────────
+# Background composite worker
+# ─────────────────────────────────────────────────────────────
+
+class _CompositeWorker(QObject):
+    """
+    Runs composite_stack off the GUI thread.
+    Emits done(gen, result_array) — caller discards if gen < current_gen.
+    """
+    done = pyqtSignal(int, object)   # (generation, np.ndarray)
+
+    def __init__(self, gen: int, working_base: np.ndarray,
+                 layers: list, parent=None):
+        super().__init__(parent)
+        self._gen         = gen
+        self._working_base = working_base
+        self._layers      = layers
+
+    def run(self):
+        try:
+            if self._layers:
+                result = composite_stack(self._working_base, self._layers)
+                out = result if result is not None else self._working_base
+            else:
+                out = _ensure_3c(_float01(self._working_base))
+            self.done.emit(self._gen, out)
+        except Exception as ex:
+            print("[CompositeWorker] error:", ex)
+            self.done.emit(self._gen, self._working_base)
+
 
 
 # ─────────────────────────────────────────────────────────────
@@ -307,7 +339,8 @@ class LayersPreviewWindow(QDialog):
         self.btn_split.setText("⧉  Split Before/After" if on else "□  After Only")
 
     def update_composite(self, before_arr: Optional[np.ndarray],
-                        after_arr: Optional[np.ndarray]):
+                          after_arr: Optional[np.ndarray]):
+        """Called by the dock whenever a new composite is ready."""
         if before_arr is not None:
             before_px = _arr_to_pixmap(
                 _ensure_3c(_float01(np.asarray(before_arr, dtype=np.float32)))
@@ -322,9 +355,8 @@ class LayersPreviewWindow(QDialog):
         else:
             after_px = None
 
-        # set_images resets zoom/pan — only call it when the base image changes
-        # (different document, or view switch). For layer/parameter tweaks the
-        # before array is the same object, so id() stays the same.
+        # set_images resets zoom/pan — only call when base actually changes.
+        # For parameter tweaks id() of before_arr stays the same → set_after only.
         before_id = id(before_arr) if before_arr is not None else 0
         if before_id != self._last_before_id:
             self._last_before_id = before_id
@@ -639,19 +671,16 @@ class _LayerRow(QWidget):
     def _update_extra_controls(self, mode_text: str):
         is_sig = (mode_text == "Sigmoid")
         for w in (self.sig_center_label, self.sig_center,
-                self.sig_strength_label, self.sig_strength):
+                  self.sig_strength_label, self.sig_strength):
             if w is not None:
                 w.setVisible(is_sig)
-        # Don't call adjustSize()/updateGeometry() here — it collapses the opacity slider
+        # Do NOT call adjustSize()/updateGeometry() — collapses the opacity slider
 
     def _on_mode_changed(self, _idx):
         self._update_extra_controls(self.mode.currentText())
-        # Only invalidate the layout — do NOT call adjustSize() on the whole row
-        # as that collapses the opacity slider's stretch
         lay = self.layout()
         if lay:
-            lay.invalidate()
-            lay.activate()
+            lay.invalidate(); lay.activate()
         self._emit()
 
     def _clamp_levels_ui(self, *_):
@@ -715,13 +744,27 @@ class LayersDock(QDockWidget):
         self._cached_composite: Optional[np.ndarray] = None
         self._cached_before:    Optional[np.ndarray] = None   # raw base image
 
+        # Cached converted before — only rebuilt when base_doc.image identity changes
+        self._cached_before_display: Optional[np.ndarray] = None
+        self._cached_before_img_id:  int = 0
+
+        # Worker thread state
+        self._composite_gen:    int             = 0   # incremented on every schedule
+        self._composite_thread: Optional[QThread] = None
+        self._composite_worker: Optional[_CompositeWorker] = None
+
         # ── Timers ────────────────────────────────────────────
-        # Debounce: coalesces rapid slider moves into one composite.
-        # All "changed" signals funnel through here before any render.
+        # Fast debounce → immediate downsampled preview on GUI thread.
+        # Slow debounce → full-res composite on worker thread.
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(80)    # ms — snappy fast preview
+        self._preview_timer.timeout.connect(self._run_fast_preview)
+
         self._composite_timer = QTimer(self)
         self._composite_timer.setSingleShot(True)
-        self._composite_timer.setInterval(220)   # ms — fast enough to feel live
-        self._composite_timer.timeout.connect(self._run_composite)
+        self._composite_timer.setInterval(350)  # ms — full-res after drag settles
+        self._composite_timer.timeout.connect(self._run_composite_threaded)
 
         # ── UI ────────────────────────────────────────────────
         w = QWidget()
@@ -822,43 +865,152 @@ class LayersDock(QDockWidget):
     # ─────────────────────────────────────────────────────────
 
     def _schedule_composite(self):
-        """Debounce: restart the composite timer on every change."""
+        """
+        Kick off both tiers:
+          - fast preview fires after 80 ms (GUI thread, downsampled)
+          - full-res composite fires after 350 ms (worker thread)
+        Both timers restart on every call so rapid changes coalesce.
+        """
+        self._preview_timer.start()
         self._composite_timer.start()
 
-    def _run_composite(self):
+    def _get_working_base(self, vw) -> Optional[np.ndarray]:
         """
-        Compute the full composite and cache it.
-        Does NOT touch the base view document — display-only.
+        Return the base image with levels applied, using a cached
+        converted copy so we never re-convert on every composite call
+        unless base_doc.image actually changes.
+        """
+        base_doc = getattr(vw, "document", None)
+        if base_doc is None or getattr(base_doc, "image", None) is None:
+            return None
+
+        base_img = base_doc.image
+        img_id   = id(base_img)
+
+        # Cache raw before (for id() tracking in preview window)
+        if img_id != self._cached_before_img_id:
+            self._cached_before_img_id    = img_id
+            self._cached_before           = np.asarray(base_img, dtype=np.float32)
+            # Also invalidate the display-ready conversion
+            self._cached_before_display   = _ensure_3c(_float01(self._cached_before))
+
+        # Apply base levels on top of the cached 3c float version
+        base_levels = getattr(vw, "_base_levels", None)
+        if base_levels and base_levels.get("enabled", False):
+            return _apply_levels(
+                self._cached_before_display,
+                float(base_levels.get("black_point", 0.0)),
+                float(base_levels.get("white_point", 1.0)),
+                float(base_levels.get("midtones",    0.5)),
+            )
+        return self._cached_before_display
+
+    def _run_fast_preview(self):
+        """
+        Immediate downsampled composite on the GUI thread.
+        Runs at preview-window resolution so it's cheap and fast.
+        """
+        if self._preview_win is None or not self._preview_win.isVisible():
+            return
+
+        vw = self.current_view()
+        if vw is None:
+            return
+
+        working_base = self._get_working_base(vw)
+        if working_base is None:
+            return
+
+        # Determine a sensible max_dim from the preview canvas size
+        try:
+            cw = self._preview_win.canvas.width()
+            ch = self._preview_win.canvas.height()
+            max_dim = max(cw, ch, 512)
+        except Exception:
+            max_dim = 900
+
+        layers = list(getattr(vw, "_layers", []) or [])
+        try:
+            if layers:
+                result = composite_stack(working_base, layers, max_dim=max_dim)
+                fast_composite = result if result is not None else working_base
+            else:
+                fast_composite = _ensure_3c(_float01(working_base))
+        except Exception as ex:
+            print("[LayersDock] fast preview error:", ex)
+            return
+
+        # Push fast result — will be overwritten by full-res shortly
+        self._preview_win.update_composite(self._cached_before, fast_composite)
+
+    def _run_composite_threaded(self):
+        """
+        Full-resolution composite on a worker thread.
+        Uses a generation counter to discard stale results.
         """
         vw = self.current_view()
         if vw is None:
             return
 
-        base_doc = getattr(vw, "document", None)
-        if base_doc is None or getattr(base_doc, "image", None) is None:
+        working_base = self._get_working_base(vw)
+        if working_base is None:
             return
 
-        # Before = raw base image, never modified
-        base_img = np.asarray(base_doc.image, dtype=np.float32)
-        self._cached_before = base_img
+        layers = list(getattr(vw, "_layers", []) or [])
 
-        # Apply base levels (display-only) before compositing
-        working_base = base_img
-        base_levels = getattr(vw, "_base_levels", None)
-        if base_levels and base_levels.get("enabled", False):
-            working_base = _apply_levels(
-                _ensure_3c(_float01(base_img)),
-                float(base_levels.get("black_point", 0.0)),
-                float(base_levels.get("white_point", 1.0)),
-                float(base_levels.get("midtones",    0.5)),
-            )
+        # Increment generation — any in-flight worker with an older gen
+        # will emit its result and it will be silently dropped.
+        self._composite_gen += 1
+        gen = self._composite_gen
+
+        # Cancel previous thread if still running (rare — 350 ms debounce)
+        self._teardown_composite_thread()
+
+        worker = _CompositeWorker(gen, working_base, layers)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run, Qt.ConnectionType.QueuedConnection)
+        worker.done.connect(self._on_composite_done, Qt.ConnectionType.QueuedConnection)
+        worker.done.connect(lambda *_: self._teardown_composite_thread())
+        self._composite_worker = worker
+        self._composite_thread = thread
+        thread.start()
+
+    def _teardown_composite_thread(self):
+        try:
+            if self._composite_thread is not None:
+                self._composite_thread.quit()
+                self._composite_thread.wait(500)
+        except Exception:
+            pass
+        self._composite_thread = None
+        self._composite_worker = None
+
+    def _on_composite_done(self, gen: int, result: np.ndarray):
+        """Receive full-res composite — discard if a newer render is pending."""
+        if gen < self._composite_gen:
+            return   # stale — a newer render is already in flight
+        self._cached_composite = result
+        self._push_to_preview()
+
+    def _run_composite(self):
+        """
+        Synchronous full-res composite — used only by merge/push operations
+        where we need the result immediately on the calling thread.
+        """
+        vw = self.current_view()
+        if vw is None:
+            return
+
+        working_base = self._get_working_base(vw)
+        if working_base is None:
+            return
 
         layers = list(getattr(vw, "_layers", []) or [])
         if layers:
             result = composite_stack(working_base, layers)
             self._cached_composite = result if result is not None else working_base
         else:
-            # No layers — after = base with levels applied
             self._cached_composite = _ensure_3c(_float01(working_base))
 
         self._push_to_preview()
