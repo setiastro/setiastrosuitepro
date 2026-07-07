@@ -3205,8 +3205,11 @@ class BlinkTab(QWidget):
         while remaining and attempt <= MAX_RETRIES:
             
             total_cpus = os.cpu_count() or 1
-            reserved_cpus = min(4, max(1, int(total_cpus * 0.25)))
-            max_workers = max(1, min(total_cpus - reserved_cpus, 60))
+            # I/O-bound load with the FITS read + numba debayer now serialized:
+            # more than a handful of threads only adds seek/mmap contention with
+            # no throughput gain, and widens the window for the very races we've
+            # locked around. Cap conservatively.
+            max_workers = max(1, min(total_cpus - 1, 8))
 
             futures = {}
             failed = []

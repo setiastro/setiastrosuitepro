@@ -23,6 +23,11 @@ except Exception:
     class VerifyError(Exception):
         pass
 
+import threading
+
+# Serializes astropy FITS reads across Blink's parallel loader threads.
+_FITS_IO_LOCK = threading.Lock()
+
 def _drop_invalid_cards(header: fits.Header) -> fits.Header:
     """
     Return a copy of the FITS header with any cards that raise VerifyError removed.
@@ -1292,25 +1297,35 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         return None, None, None, None
                     raise
 
-                
                 # Open the file appropriately.
+                # memmap=False forces astropy to read the pixel block with one read()
+                # instead of lazily faulting mmap pages. For Blink's full-image loads
+                # that is equal-or-faster (one big read vs thousands of page faults),
+                # and it removes the mmap page-cache that is not safe to fault
+                # concurrently from multiple loader threads (heap corruption -> Abort).
                 if filename.lower().endswith(('.fits.gz', '.fit.gz')):
                     print(f"Loading compressed FITS file: {filename}")
                     with gzip.open(filename, 'rb') as f:
                         file_content = f.read()
-                    hdul = fits.open(BytesIO(file_content))
+                    hdul = fits.open(BytesIO(file_content), memmap=False)
                 else:
                     if filename.lower().endswith(('.fz', '.fz')):
                         print(f"Loading Rice-compressed FITS file: {filename}")
                     else:
                         print(f"Loading FITS file: {filename}")
-                    hdul = fits.open(filename)
+                    hdul = fits.open(filename, memmap=False)
 
                 with hdul as hdul:
-                    # Retrieve image data from the extension indicated by get_valid_header.
-                    image_data = hdul[ext_index].data
-                    if image_data is None:
-                        raise ValueError(f"No image data found in FITS file in extension {ext_index}.")
+                    # Serialize ONLY the data materialization: astropy's lazy .data
+                    # loader (and its pseudo-integer BZERO/BSCALE scaling) is not
+                    # thread-safe. Copy immediately so no HDU view survives the locked
+                    # section; every heavy step below (dtype convert, squeeze,
+                    # transpose, stretch) then runs fully in parallel as before.
+                    with _FITS_IO_LOCK:
+                        raw_data = hdul[ext_index].data
+                        if raw_data is None:
+                            raise ValueError(f"No image data found in FITS file in extension {ext_index}.")
+                        image_data = np.asarray(raw_data, copy=True)
 
                     # Ensure native byte order
                     if image_data.dtype.byteorder not in ('=', '|'):
@@ -2083,38 +2098,32 @@ def get_valid_header(file_path):
     Opens the FITS file (handling compressed files as needed), finds the first IMAGE HDU
     (not a table), and then searches through all HDUs for additional keywords (e.g. BAYERPAT).
     Returns a composite header and the extension index of the image data.
-
     Raises ValueError if no image HDU exists.
     """
-    if file_path.lower().endswith(('.fits.gz', '.fit.gz')):
-        with gzip.open(file_path, 'rb') as f:
-            file_content = f.read()
-        hdul = fits.open(BytesIO(file_content))
-    else:
-        hdul = fits.open(file_path)
-
-    with hdul as hdul:
-        image_hdu = None
-        image_index = None
-
-        # Find first REAL image HDU only
-        for i, hdu in enumerate(hdul):
-            if _is_fits_image_hdu(hdu):
-                image_hdu = hdu
-                image_index = i
-                break
-
-        if image_hdu is None:
-            raise ValueError("No image HDU found in FITS file.")
-
-        composite_header = image_hdu.header.copy()
-        composite_header = _drop_invalid_cards(composite_header)
-
-        for hdu in hdul:
-            if 'BAYERPAT' in hdu.header:
-                composite_header['BAYERPAT'] = hdu.header['BAYERPAT']
-                break
-
+    with _FITS_IO_LOCK:
+        if file_path.lower().endswith(('.fits.gz', '.fit.gz')):
+            with gzip.open(file_path, 'rb') as f:
+                file_content = f.read()
+            hdul = fits.open(BytesIO(file_content), memmap=False)
+        else:
+            hdul = fits.open(file_path, memmap=False)
+        with hdul as hdul:
+            image_hdu = None
+            image_index = None
+            # Find first REAL image HDU only
+            for i, hdu in enumerate(hdul):
+                if _is_fits_image_hdu(hdu):
+                    image_hdu = hdu
+                    image_index = i
+                    break
+            if image_hdu is None:
+                raise ValueError("No image HDU found in FITS file.")
+            composite_header = image_hdu.header.copy()
+            composite_header = _drop_invalid_cards(composite_header)
+            for hdu in hdul:
+                if 'BAYERPAT' in hdu.header:
+                    composite_header['BAYERPAT'] = hdu.header['BAYERPAT']
+                    break
     return composite_header, image_index
 
 def get_bayer_header(file_path):
@@ -2123,20 +2132,19 @@ def get_bayer_header(file_path):
     to find a header that contains the 'BAYERPAT' keyword.
     Returns the header if found, otherwise None.
     """
-
-
     try:
-        # Check for compressed files first.
-        if file_path.lower().endswith(('.fits.gz', '.fit.gz')):
-            with gzip.open(file_path, 'rb') as f:
-                file_content = f.read()
-            hdul = fits.open(BytesIO(file_content))
-        else:
-            hdul = fits.open(file_path)
-        with hdul as hdul:
-            for hdu in hdul:
-                if 'BAYERPAT' in hdu.header:
-                    return hdu.header
+        with _FITS_IO_LOCK:
+            # Check for compressed files first.
+            if file_path.lower().endswith(('.fits.gz', '.fit.gz')):
+                with gzip.open(file_path, 'rb') as f:
+                    file_content = f.read()
+                hdul = fits.open(BytesIO(file_content), memmap=False)
+            else:
+                hdul = fits.open(file_path, memmap=False)
+            with hdul as hdul:
+                for hdu in hdul:
+                    if 'BAYERPAT' in hdu.header:
+                        return hdu.header
     except Exception as e:
         print(f"Error in get_bayer_header: {e}")
     return None

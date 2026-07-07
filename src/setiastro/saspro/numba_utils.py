@@ -3,6 +3,12 @@ from numba import njit, prange
 from numba.typed import List
 import cv2 
 import math
+import threading
+
+# numba parallel=True kernels abort the TBB pool if entered from multiple
+# Python threads at once. Serialize the *call* — prange still saturates all
+# cores from a single invocation, so throughput is unchanged.
+_DEBAYER_LOCK = threading.Lock()
 
 @njit(parallel=True, fastmath=True, cache=True)
 def blend_add_numba(A, B, alpha):
@@ -2371,7 +2377,8 @@ _CFA_CHAN = {
     "GBRG": (1, 2, 0, 1),
 }
 
-def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge"):
+
+def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False, method="edge"):
     bp = (bayer_pattern or "").upper()
     interpolate = not cfa_drizzle
 
@@ -2401,6 +2408,17 @@ def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge
             _edge_aware_interpolate_numba(out)
 
     return out
+
+
+def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge"):
+    # numba parallel=True kernels abort the TBB pool if entered from multiple
+    # Python threads at once. Serialize the *call* — prange still saturates all
+    # cores from a single invocation, so throughput is unchanged, but TBB never
+    # gets re-entered concurrently.
+    with _DEBAYER_LOCK:
+        return _debayer_fits_fast_impl(
+            image_data, bayer_pattern, cfa_drizzle=cfa_drizzle, method=method
+        )
 
 
 def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False, method="edge"):
