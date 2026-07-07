@@ -1990,12 +1990,16 @@ class GaiaDatabaseDialog(QDialog):
         btn_change_loc.setToolTip(
             "Move the library to a different drive or folder.\n"
             "Useful for keeping large files off your system drive.")
-        btn_change_loc.clicked.connect(lambda k=kind: self._change_location(k))
+        btn_change_loc.clicked.connect(
+            self._change_location_spectral if kind == "spectral"
+            else self._change_location_astro)
         dir_row.addWidget(btn_change_loc)
 
         btn_open_dir = QPushButton("Open Folder")
         btn_open_dir.setFixedWidth(100)
-        btn_open_dir.clicked.connect(lambda k=kind: self._open_library_dir(k))
+        btn_open_dir.clicked.connect(
+            self._open_library_dir_spectral if kind == "spectral"
+            else self._open_library_dir_astro)
         dir_row.addWidget(btn_open_dir)
         layout.addLayout(dir_row)
 
@@ -2010,7 +2014,9 @@ class GaiaDatabaseDialog(QDialog):
             "QPushButton { background: #1a1a2e; color: #556688; border: 1px solid #2a2a3e; "
             "border-radius: 3px; padding: 3px 8px; font-size: 10px; }"
             "QPushButton:hover { background: #222240; color: #8899ee; }")
-        btn_count.clicked.connect(lambda k=kind: self._run_count(k))
+        btn_count.clicked.connect(
+            self._run_count_spectral if kind == "spectral"
+            else self._run_count_astro)
         total_row.addWidget(btn_count)
         layout.addLayout(total_row)
 
@@ -2038,7 +2044,30 @@ class GaiaDatabaseDialog(QDialog):
 
     # ── Change location ───────────────────────────────────────────────────
 
+    def _change_location_spectral(self):
+        """Button slot — no positional args, so Qt's clicked(bool) can't leak in."""
+        self._change_location("spectral")
+
+    def _change_location_astro(self):
+        self._change_location("astro")
+
+    def _open_library_dir_spectral(self):
+        self._open_library_dir("spectral")
+
+    def _open_library_dir_astro(self):
+        self._open_library_dir("astro")
+
+    def _run_count_spectral(self):
+        self._run_count("spectral")
+
+    def _run_count_astro(self):
+        self._run_count("astro")
+
     def _change_location(self, kind: str = "spectral"):
+        # Belt-and-suspenders: if a bare clicked.connect ever hands us
+        # Qt's checked=bool, fall back to spectral rather than crashing.
+        if not isinstance(kind, str):
+            kind = "spectral"
         if self._workers_dict(kind):
             QMessageBox.warning(self, "Downloads Active",
                                 "Please wait for active downloads to finish "
