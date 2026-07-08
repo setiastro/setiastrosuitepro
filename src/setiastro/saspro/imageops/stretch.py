@@ -53,6 +53,29 @@ from setiastro.saspro.luminancerecombine import (
     _estimate_noise_sigma_per_channel,   # <-- add this
 )
 
+import functools
+
+# Shared lock serializing EVERY entry into a numba parallel=True region.
+# Imported from numba_utils so debayer and stretch share ONE lock — two
+# different parallel functions entered concurrently abort the process
+# ("Concurrent access has been detected") just as badly as one entered twice.
+# RLock because stretch_color_image calls stretch_mono_image and both serialize.
+try:
+    from setiastro.saspro.legacy.numba_utils import NUMBA_PARALLEL_LOCK
+except Exception:
+    import threading as _threading
+    NUMBA_PARALLEL_LOCK = _threading.RLock()
+
+
+def _numba_serialized(fn):
+    """Serialize a function that enters numba parallel=True regions."""
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        with NUMBA_PARALLEL_LOCK:
+            return fn(*args, **kwargs)
+    return _wrapper
+
+
 def _sample_flat(x: np.ndarray, max_n: int = 400_000) -> np.ndarray:
     flat = np.asarray(x, np.float32).reshape(-1)
     n = flat.size
@@ -428,6 +451,7 @@ def apply_curves_adjustment(image: np.ndarray,
     return np.clip(out, 0.0, 1.0)
 
 # ---- Public API used by Pro ----
+@_numba_serialized
 def stretch_mono_image(image: np.ndarray,
                        target_median: float,
                        normalize: bool = False,
@@ -536,6 +560,7 @@ def recombine_luminance_ratio_linear(
     # mode == "none"
     return out.astype(np.float32, copy=False)
 
+@_numba_serialized
 def stretch_color_image(image: np.ndarray,
                         target_median: float,
                         linked: bool = True,
