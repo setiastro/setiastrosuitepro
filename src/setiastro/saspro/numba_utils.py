@@ -5,10 +5,18 @@ import cv2
 import math
 import threading
 
-# numba parallel=True kernels abort the TBB pool if entered from multiple
-# Python threads at once. Serialize the *call* — prange still saturates all
-# cores from a single invocation, so throughput is unchanged.
-_DEBAYER_LOCK = threading.Lock()
+# ONE process-wide lock guarding EVERY entry into a numba parallel=True region.
+# numba's threading layers (the workqueue layer in particular) are NOT safe to
+# enter concurrently from multiple Python threads — doing so aborts the process
+# ("Concurrent access has been detected"). This MUST be the same lock for
+# debayer, stretch, and any other parallel kernel: two *different* parallel
+# functions entered at the same time collide just as badly as one entered twice.
+# prange still uses every core from a single call, so serializing the call costs
+# no CPU parallelism — it only stops the oversubscription that was aborting.
+# RLock (not Lock): stretch_color_image nests into stretch_mono_image, and both
+# serialize on this same lock, so the same thread must be able to re-enter.
+NUMBA_PARALLEL_LOCK = threading.RLock()
+_DEBAYER_LOCK = NUMBA_PARALLEL_LOCK
 
 @njit(parallel=True, fastmath=True, cache=True)
 def blend_add_numba(A, B, alpha):
@@ -2415,7 +2423,7 @@ def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge
     # Python threads at once. Serialize the *call* — prange still saturates all
     # cores from a single invocation, so throughput is unchanged, but TBB never
     # gets re-entered concurrently.
-    with _DEBAYER_LOCK:
+    with NUMBA_PARALLEL_LOCK:
         return _debayer_fits_fast_impl(
             image_data, bayer_pattern, cfa_drizzle=cfa_drizzle, method=method
         )
