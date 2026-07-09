@@ -1986,6 +1986,16 @@ def _cie_cmf(wl: np.ndarray):
 
 _CMF_X, _CMF_Y, _CMF_Z = _cie_cmf(WL_GRID.astype(np.float64))
 
+# The Sun's north rotational pole (IAU: RA 286.13°, Dec +63.87°, ICRS),
+# expressed as a unit vector in the same galactic frame the explorer plots in.
+# Verified: the angle between this and the ecliptic pole comes out to 7.25°,
+# the Sun's known obliquity — which cross-checks both the pole coordinates and
+# the ICRS->galactic rotation.
+#
+# Note this is a *tilt*, not a direction of motion. It says how the solar
+# system is oriented relative to the galactic disk. Nothing travels along it.
+SOLAR_NORTH_POLE_GAL = np.array([-0.0716, +0.9193, +0.3870], dtype=np.float32)
+
 # XYZ -> linear sRGB (D65)
 _XYZ_TO_RGB = np.array([[ 3.2406, -1.5372, -0.4986],
                         [-0.9689,  1.8758,  0.0415],
@@ -2149,6 +2159,112 @@ def _star_sizes(gmag: np.ndarray, base: float = 4.0) -> np.ndarray:
     return np.maximum(sizes, 1.2).astype(np.float32)
 
 
+_bright_cache: Optional[Dict[str, np.ndarray]] = None
+_BRIGHT_LOAD_ERROR = ""
+
+
+def load_bright_stars() -> Optional[Dict[str, np.ndarray]]:
+    """
+    The hardcoded bright stars Gaia can't see (it saturates below G≈3), built by
+    build_bright_stars_3d.py. Returns arrays shaped like a neighborhood load, or
+    None if the module isn't present.
+
+    Their `source_id` is NEGATIVE — a sentinel meaning "not a Gaia source". The
+    explorer keys off `is_bright` rather than the sign, but a negative id makes
+    an accidental Gaia lookup fail loudly instead of silently hitting the wrong
+    star.
+    """
+    global _bright_cache, _BRIGHT_LOAD_ERROR
+    if _bright_cache is not None:
+        return _bright_cache
+    try:
+        from setiastro.saspro.bright_stars_3d import BRIGHT_STARS_3D
+    except Exception as e:
+        _BRIGHT_LOAD_ERROR = str(e)
+        return None
+
+    n = len(BRIGHT_STARS_3D)
+    if n == 0:
+        return None
+
+    d = {
+        "source_id": np.arange(-1, -(n + 1), -1, dtype=np.int64),
+        "xyz":       np.empty((n, 3), dtype=np.float32),
+        "dist_pc":   np.empty(n, dtype=np.float32),
+        "gmag":      np.empty(n, dtype=np.float32),   # V mag; used for sizing
+        "ruwe":      np.full(n, np.nan, dtype=np.float32),
+        "ra":        np.empty(n, dtype=np.float64),
+        "dec":       np.empty(n, dtype=np.float64),
+        "rgb":       np.empty((n, 3), dtype=np.float32),
+        "is_bright": np.ones(n, dtype=bool),
+        "name":      np.empty(n, dtype=object),
+        "simbad_id": np.empty(n, dtype=object),
+        "sp_type":   np.empty(n, dtype=object),
+        "teff":      np.empty(n, dtype=np.float32),
+        "plx_ok":    np.empty(n, dtype=bool),
+    }
+    for i, row in enumerate(BRIGHT_STARS_3D):
+        (name, sid, ra, dec, vmag, dist, plx, plx_err, plx_ok,
+         x, y, z, r, g, b, teff, sp) = row
+        d["xyz"][i]     = (x, y, z)
+        d["dist_pc"][i] = dist
+        d["gmag"][i]    = vmag
+        d["ra"][i]      = ra
+        d["dec"][i]     = dec
+        d["rgb"][i]     = (r, g, b)
+        d["name"][i]      = name
+        d["simbad_id"][i] = sid
+        d["sp_type"][i]   = sp
+        d["teff"][i]      = teff
+        d["plx_ok"][i]    = bool(plx_ok)
+
+    _bright_cache = d
+    return d
+
+
+def _merge_bright(gaia: Dict[str, np.ndarray], max_pc: float) -> Dict[str, np.ndarray]:
+    """
+    Append the hardcoded bright stars (within max_pc) to a neighborhood load.
+
+    No dedup pass: by construction these stars are absent from gaia_source
+    (Gaia saturates on them), and the one nominal overlap — Arneb, brightest
+    source in the XP library — sits at 680 pc, far outside any radius the
+    extract covers. If a future DR does start resolving them, this is where a
+    positional dedup would go.
+    """
+    bright = load_bright_stars()
+    n_g = len(gaia["source_id"])
+
+    # Give the Gaia rows the extra columns the bright stars carry.
+    out = dict(gaia)
+    out["is_bright"] = np.zeros(n_g, dtype=bool)
+    out["rgb"]       = np.full((n_g, 3), np.nan, dtype=np.float32)
+    out["name"]      = np.full(n_g, None, dtype=object)
+    out["simbad_id"] = np.full(n_g, None, dtype=object)
+    out["sp_type"]   = np.full(n_g, None, dtype=object)
+    out["teff"]      = np.zeros(n_g, dtype=np.float32)
+    out["plx_ok"]    = np.ones(n_g, dtype=bool)
+
+    if bright is None:
+        return out
+
+    keep = bright["dist_pc"] <= max_pc
+    if not keep.any():
+        return out
+
+    for k in out:
+        if k == "xyz":
+            out[k] = np.vstack([out[k], bright[k][keep]])
+        else:
+            out[k] = np.concatenate([out[k], bright[k][keep]])
+
+    # Nearest first, so Alpha Cen / Sirius head the table as they should.
+    order = np.argsort(out["dist_pc"], kind="stable")
+    for k in out:
+        out[k] = out[k][order]
+    return out
+
+
 class _NeighborhoodLoadWorker(QThread):
     """Runs the (potentially large) sphere query off the UI thread."""
     loaded = _Signal(object)
@@ -2305,6 +2421,9 @@ class StellarNeighborhoodTab(QWidget):
         # source_id -> rgb, so re-entering the mode (or reloading the same
         # radius) doesn't re-decompress spectra we've already integrated.
         self._colour_cache: Dict[int, np.ndarray] = {}
+        # True when the Gaia neighborhood extract isn't installed and we're
+        # rendering the hardcoded naked-eye stars alone.
+        self._gaia_missing = False
 
         # The GL widget is created lazily, on first show. Constructing a
         # QOpenGLWidget is what can force Qt to recreate the top-level native
@@ -2315,6 +2434,9 @@ class StellarNeighborhoodTab(QWidget):
         self._scatter = None
         self._sun = None
         self._marker = None
+        self._droplines = None
+        self._axes = None
+        self._axis_labels = []
         self._gl_ready = False
         self._view_slot = None
         self._view_container = None
@@ -2376,6 +2498,29 @@ class StellarNeighborhoodTab(QWidget):
 
         self._grid = gl.GLGridItem()
         self._view.addItem(self._grid)
+
+        # Drop lines: a vertical segment from each star down to the galactic
+        # plane (z=0). Without them a 3D scatter is genuinely ambiguous — a
+        # star high on screen could be far above the plane or merely distant.
+        # mode='lines' means each consecutive vertex PAIR is one segment.
+        self._droplines = gl.GLLinePlotItem(
+            pos=np.zeros((0, 3), dtype=np.float32), mode="lines",
+            width=1.0, antialias=True)
+        self._view.addItem(self._droplines)
+
+        # Galactic axes: +X to the galactic centre, +Y along galactic rotation
+        # (l = 90°), +Z to the north galactic pole. The grid is the galactic
+        # midplane — NOT the ecliptic, which sits ~60° to it.
+        self._axes = gl.GLLinePlotItem(
+            pos=np.zeros((0, 3), dtype=np.float32), mode="lines",
+            width=2.0, antialias=True)
+        self._view.addItem(self._axes)
+
+        self._axis_labels = []
+        for _ in range(4):
+            t = gl.GLTextItem(pos=np.zeros(3), text="", color=(150, 170, 200, 255))
+            self._view.addItem(t)
+            self._axis_labels.append(t)
 
         self._scatter = gl.GLScatterPlotItem(
             pos=np.zeros((0, 3), dtype=np.float32), pxMode=True)
@@ -2455,7 +2600,10 @@ class StellarNeighborhoodTab(QWidget):
         r_row = QHBoxLayout()
         r_row.addWidget(QLabel("Radius (pc):"))
         self._spin_radius = QDoubleSpinBox()
-        self._spin_radius.setRange(0.5, NEIGHBORHOOD_MAX_PC)
+        # The extract stops at NEIGHBORHOOD_MAX_PC, but the hardcoded bright
+        # stars run out to ~680 pc (Arneb). Allow the radius past the extract's
+        # limit; the status line says what you are and aren't seeing out there.
+        self._spin_radius.setRange(0.5, 750.0)
         self._spin_radius.setDecimals(1)
         self._spin_radius.setSingleStep(1.0)
         self._spin_radius.setValue(self.DEFAULT_RADIUS_PC)
@@ -2466,7 +2614,7 @@ class StellarNeighborhoodTab(QWidget):
 
         preset_row = QHBoxLayout()
         preset_row.setSpacing(4)
-        for pc in (3, 10, 25, 50, 100, 300):
+        for pc in (3, 10, 25, 50, 100, 300, 750):
             b = QPushButton(str(pc))
             b.setFixedWidth(38)
             b.setStyleSheet("QPushButton{background:#1a1a2e;color:#9ab;border:1px solid "
@@ -2530,6 +2678,31 @@ class StellarNeighborhoodTab(QWidget):
         s_row.addWidget(self._slider_size, stretch=1)
         cl.addLayout(s_row)
 
+        # Depth cues
+        v_row = QHBoxLayout()
+        self._chk_droplines = QCheckBox("Drop lines")
+        self._chk_droplines.setChecked(True)
+        self._chk_droplines.setToolTip(
+            "Vertical line from each star down to the galactic plane.\n"
+            "Without it, height above the plane and distance from you\n"
+            "are visually indistinguishable.")
+        self._chk_droplines.toggled.connect(lambda _=False: self._recolor())
+        v_row.addWidget(self._chk_droplines)
+
+        self._chk_axes = QCheckBox("Galactic axes")
+        self._chk_axes.setChecked(True)
+        self._chk_axes.setToolTip(
+            "Red   — toward the galactic centre (l=0°)\n"
+            "Green — the direction the Sun is moving in its galactic orbit (l=90°)\n"
+            "Blue  — galactic north\n"
+            "Yellow— the Sun's own rotation axis (a tilt, not a motion)\n\n"
+            "The grid is the galactic midplane, inclined ~60° to the ecliptic —\n"
+            "it is not the plane the planets orbit in.")
+        self._chk_axes.toggled.connect(lambda _=False: self._update_axes())
+        v_row.addWidget(self._chk_axes)
+        v_row.addStretch()
+        cl.addLayout(v_row)
+
         btn_row = QHBoxLayout()
         btn_fit = QPushButton("Fit View")
         btn_fit.clicked.connect(self._fit_view)
@@ -2548,7 +2721,7 @@ class StellarNeighborhoodTab(QWidget):
 
         # nearest-star table
         self._table = QTableWidget(0, 4)
-        self._table.setHorizontalHeaderLabels(["#", "dist (pc)", "G", "RUWE"])
+        self._table.setHorizontalHeaderLabels(["star", "dist (pc)", "mag", "RUWE"])
         self._table.verticalHeader().setVisible(False)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -2585,8 +2758,10 @@ class StellarNeighborhoodTab(QWidget):
 
         note = QLabel(
             "Drag to orbit · scroll to zoom · Ctrl+drag to pan · click a star to select.<br>"
-            "<span style='color:#886;'>Very bright nearby stars (Sirius, Alpha Cen, "
-            "Procyon) are missing — Gaia saturates below G≈3.</span>")
+            "<span style='color:#886;'>Gaia saturates below G≈3, so the naked-eye stars "
+            "(Sirius, Alpha Cen, Vega, Procyon…) carry distances and colours derived from "
+            "other catalogues — Hipparcos parallaxes and B–V photometry via SIMBAD — rather "
+            "than from Gaia astrometry.</span>")
         note.setWordWrap(True)
         note.setStyleSheet("color:#667; font-size:10px;")
         root.addWidget(note)
@@ -2596,18 +2771,34 @@ class StellarNeighborhoodTab(QWidget):
     def _schedule_reload(self):
         self._reload_timer.start()
 
+    def _empty_gaia(self) -> Dict[str, np.ndarray]:
+        """Zero Gaia rows, correct dtypes — so _merge_bright has something to append to."""
+        return {
+            "source_id": np.empty(0, dtype=np.int64),
+            "xyz":       np.empty((0, 3), dtype=np.float32),
+            "dist_pc":   np.empty(0, dtype=np.float32),
+            "gmag":      np.empty(0, dtype=np.float32),
+            "ruwe":      np.empty(0, dtype=np.float32),
+            "ra":        np.empty(0, dtype=np.float64),
+            "dec":       np.empty(0, dtype=np.float64),
+        }
+
     def _reload(self):
         # Never load before the GL view exists — showEvent triggers the first
         # load once _ensure_gl() has run.
         if not HAS_GL or not self._gl_ready:
             return
         lib = get_neighborhood_library()
+
         if not lib.is_installed():
-            self._status.setText(
-                "Neighborhood library not installed. Install "
-                "“Stellar Neighborhood (within 300 pc)” on the Astrometry tab.")
-            self._set_points(None)
+            # No Gaia extract — but the hardcoded bright stars stand alone.
+            # Render them rather than showing an empty box: at 10 pc that is
+            # still Alpha Cen, Sirius, Procyon, Vega, Altair, Fomalhaut.
+            self._gaia_missing = True
+            self._on_loaded(self._empty_gaia())
             return
+
+        self._gaia_missing = False
 
         if self._worker is not None and self._worker.isRunning():
             return
@@ -2641,8 +2832,13 @@ class StellarNeighborhoodTab(QWidget):
         self._spec_rgb = None
         self._spec_found = None
 
+        # Fold in the bright stars Gaia can't see. Done here rather than in the
+        # worker so the merge is cheap and always reflects the current radius.
+        data = _merge_bright(data, self._spin_radius.value())
+
         self._data = data
         n = len(data["source_id"])
+        n_bright = int(data["is_bright"].sum())
 
         truncated = (n >= self.MAX_POINTS)
         cuts = []
@@ -2652,8 +2848,36 @@ class StellarNeighborhoodTab(QWidget):
             cuts.append(f"G≤{self._spin_mag.value():.1f}")
         cut_str = ("  ·  " + ", ".join(cuts)) if cuts else ""
 
+        r = self._spin_radius.value()
+
+        if n == 0:
+            if self._gaia_missing and load_bright_stars() is None:
+                self._status.setText(
+                    "Nothing to show: the neighborhood library isn't installed "
+                    "(Astrometry tab) and bright_stars_3d.py is missing "
+                    f"({_BRIGHT_LOAD_ERROR}).")
+            elif self._gaia_missing:
+                self._status.setText(
+                    f"No stars within {r:.1f} pc. Install “Stellar Neighborhood "
+                    f"(within 300 pc)” on the Astrometry tab for the ~10M faint ones.")
+            else:
+                self._status.setText(f"No stars within {r:.1f} pc matching the cuts.")
+            self._set_points(data)
+            self._fill_table(data)
+            self._fit_view()
+            return
+
+        extra = ""
+        if self._gaia_missing:
+            extra = ("  ·  Gaia neighborhood library not installed — showing only "
+                     "naked-eye stars. Install it on the Astrometry tab.")
+        elif n_bright:
+            extra = f"  ·  incl. {n_bright} naked-eye stars (distances from Hipparcos)"
+        if r > NEIGHBORHOOD_MAX_PC and not self._gaia_missing:
+            extra += (f"  ·  ⚠ beyond {NEIGHBORHOOD_MAX_PC:.0f} pc only the "
+                      f"naked-eye stars are plotted")
         self._status.setText(
-            f"{n:,} stars within {self._spin_radius.value():.1f} pc{cut_str}"
+            f"{n:,} stars within {r:.1f} pc{cut_str}{extra}"
             + ("  ·  ⚠ truncated at the render cap" if truncated else ""))
 
         self._set_points(data)
@@ -2668,6 +2892,7 @@ class StellarNeighborhoodTab(QWidget):
         if data is None or len(data["source_id"]) == 0:
             self._scatter.setData(pos=np.zeros((0, 3), dtype=np.float32))
             self._marker.setData(pos=np.zeros((0, 3), dtype=np.float32))
+            self._droplines.setData(pos=np.zeros((0, 3), dtype=np.float32))
             self._view.set_pick_points(None)
             self._table.setRowCount(0)
             self._clear_info()
@@ -2685,23 +2910,6 @@ class StellarNeighborhoodTab(QWidget):
         """Kick off spectrum -> colour resolution for the loaded stars."""
         if self._data is None or len(self._data["source_id"]) == 0:
             return
-
-        try:
-            lib = get_library()
-            installed = bool(lib.installed_bands())
-        except Exception:
-            installed = False
-
-        if not installed:
-            self._status.setText(
-                "True colour needs XP spectra — install a tier on the "
-                "Spectrum Library tab (Ultra-Bright is only ~220 MB).")
-            self._combo_color.blockSignals(True)
-            self._combo_color.setCurrentIndex(0)
-            self._combo_color.blockSignals(False)
-            self._recolor()
-            return
-
         if self._colour_worker is not None and self._colour_worker.isRunning():
             return
 
@@ -2711,8 +2919,16 @@ class StellarNeighborhoodTab(QWidget):
         # Serve whatever we've already integrated, then only work on the rest.
         rgb   = np.zeros((n, 3), dtype=np.float32)
         found = np.zeros(n, dtype=bool)
+        is_bright = self._data.get("is_bright")
         todo  = []
         for i in range(n):
+            # Bright stars already carry a colour, derived at build time from
+            # B-V through the same CIE integrator. Never ask Gaia for them —
+            # it has no spectrum, that's the whole reason they're hardcoded.
+            if is_bright is not None and is_bright[i]:
+                rgb[i] = self._data["rgb"][i]
+                found[i] = True
+                continue
             c = self._colour_cache.get(int(sids[i]))
             if c is not None:
                 rgb[i] = c
@@ -2721,7 +2937,26 @@ class StellarNeighborhoodTab(QWidget):
                 todo.append(i)
 
         if not todo:
+            # Everything already coloured (all bright, and/or all cached).
+            # No XP tiers needed — don't nag about installing them.
             self._spec_rgb, self._spec_found = rgb, found
+            self._recolor()
+            return
+
+        # Only now do we actually need spectra. If no XP tier is installed we
+        # can still colour the bright stars; the Gaia ones stay grey.
+        try:
+            installed = bool(get_library().installed_bands())
+        except Exception:
+            installed = False
+        if not installed:
+            self._spec_rgb, self._spec_found = rgb, found
+            n_bright = int(found.sum())
+            self._status.setText(
+                f"True colour: {n_bright} naked-eye stars coloured from B–V. "
+                f"Gaia stars need XP spectra — install a tier on the Spectrum "
+                f"Library tab (Ultra-Bright is only ~220 MB)."
+            )
             self._recolor()
             return
 
@@ -2760,18 +2995,126 @@ class StellarNeighborhoodTab(QWidget):
 
         sids = self._data["source_id"]
         for i in np.nonzero(found)[0]:
-            self._colour_cache[int(sids[i])] = merged_rgb[i].copy()
+            sid = int(sids[i])
+            if sid > 0:                     # negative ids are hardcoded stars
+                self._colour_cache[sid] = merged_rgb[i].copy()
 
         self._spec_rgb, self._spec_found = merged_rgb, merged_found
 
-        n_found = int(merged_found.sum())
-        n = len(sids)
-        self._status.setText(
-            f"True colour: {n_found:,}/{n:,} stars have XP spectra "
-            f"({n_found/max(n,1):.0%}). Grey = no spectrum "
-            f"(Gaia XP covers G≈2.2–15)."
-        )
+        # Report the XP-spectrum fraction over GAIA stars only. Bright stars
+        # are coloured from B-V, not from a spectrum; counting them would
+        # inflate the number and misrepresent Gaia's spectroscopic coverage.
+        is_bright = self._data.get("is_bright")
+        if is_bright is None:
+            is_bright = np.zeros(len(sids), dtype=bool)
+        gaia_mask = ~is_bright
+        n_gaia = int(gaia_mask.sum())
+        n_found = int((merged_found & gaia_mask).sum())
+        n_bright = int(is_bright.sum())
+        if n_gaia == 0:
+            self._status.setText(
+                f"True colour: {n_bright} naked-eye stars coloured from B–V "
+                f"(no Gaia stars loaded).")
+        else:
+            bright_note = (f" + {n_bright} naked-eye stars coloured from B–V."
+                           if n_bright else "")
+            self._status.setText(
+                f"True colour: {n_found:,}/{n_gaia:,} Gaia stars have XP spectra "
+                f"({n_found/n_gaia:.0%}). Grey = no spectrum "
+                f"(Gaia XP covers G≈2.2–15).{bright_note}"
+            )
         self._recolor()
+
+    MAX_DROPLINE_STARS = 20_000
+
+    def _update_droplines(self, colors: Optional[np.ndarray] = None):
+        """
+        One segment per star, from (x,y,z) to (x,y,0). Faded toward the plane so
+        it reads as a shadow-line rather than a stalk the star is standing on.
+
+        Capped: 2 vertices per star, so 20k stars = 40k vertices. Beyond that
+        the lines stop clarifying and start being a grey fog anyway.
+        """
+        if not self._gl_ready:
+            return
+        if (self._data is None or len(self._data["source_id"]) == 0
+                or not self._chk_droplines.isChecked()):
+            self._droplines.setData(pos=np.zeros((0, 3), dtype=np.float32))
+            return
+
+        xyz = self._data["xyz"]
+        n = len(xyz)
+        if n > self.MAX_DROPLINE_STARS:
+            # Show them for the nearest stars only — that's where the depth
+            # ambiguity actually matters.
+            keep = np.argsort(self._data["dist_pc"])[: self.MAX_DROPLINE_STARS]
+            xyz = xyz[keep]
+            colors = colors[keep] if colors is not None else None
+            n = len(xyz)
+
+        pts = np.empty((2 * n, 3), dtype=np.float32)
+        pts[0::2] = xyz                       # at the star
+        pts[1::2] = xyz
+        pts[1::2, 2] = 0.0                    # dropped to the galactic plane
+
+        cols = np.empty((2 * n, 4), dtype=np.float32)
+        if colors is not None and len(colors) == n:
+            cols[0::2, :3] = colors[:, :3]
+            cols[1::2, :3] = colors[:, :3]
+        else:
+            cols[:, :3] = 0.55
+        cols[0::2, 3] = 0.33                  # opaque-ish at the star
+        cols[1::2, 3] = 0.0                   # invisible at the plane
+
+        self._droplines.setData(pos=pts, color=cols, width=1.0, antialias=True)
+
+    def _update_axes(self):
+        """
+        Three galactic reference directions plus the Sun's own tilt.
+
+        The first three are large-scale galactic geometry. The fourth — the
+        Sun's rotation axis — is a different kind of thing: it's the tilt of
+        our own star, not a direction anything travels. Drawn short, from the
+        Sun, and labelled so nobody mistakes it for a motion vector.
+        """
+        if not self._gl_ready:
+            return
+        if not self._chk_axes.isChecked():
+            self._axes.setData(pos=np.zeros((0, 3), dtype=np.float32))
+            for t in self._axis_labels:
+                t.setData(text="")
+            return
+
+        r = float(self._spin_radius.value())
+        L = r * 1.15                       # push just past the star field
+        S = r * 0.30                       # solar pole: short, it's a local cue
+
+        sp = SOLAR_NORTH_POLE_GAL * S
+
+        pts = np.array([
+            [0, 0, 0], [L, 0, 0],         # +X -> galactic centre
+            [0, 0, 0], [0, L, 0],         # +Y -> where the Sun is headed
+            [0, 0, 0], [0, 0, L * 0.6],   # +Z -> north galactic pole
+            [0, 0, 0], sp,                # Sun's rotation axis
+        ], dtype=np.float32)
+
+        cols = np.array([
+            [1.00, 0.45, 0.40, 0.15], [1.00, 0.45, 0.40, 0.85],
+            [0.45, 0.95, 0.55, 0.15], [0.45, 0.95, 0.55, 0.75],
+            [0.50, 0.70, 1.00, 0.15], [0.50, 0.70, 1.00, 0.75],
+            [1.00, 0.92, 0.35, 0.25], [1.00, 0.92, 0.35, 0.95],   # solar yellow
+        ], dtype=np.float32)
+
+        self._axes.setData(pos=pts, color=cols, width=2.0, antialias=True)
+
+        labels = [
+            (np.array([L * 1.02, 0, 0]), "toward Galactic Centre", (255, 130, 115, 255)),
+            (np.array([0, L * 1.02, 0]), "Sun's orbital direction", (120, 240, 145, 255)),
+            (np.array([0, 0, L * 0.62]), "Galactic North", (130, 180, 255, 255)),
+            (sp * 1.06,                  "Sun's N pole",  (255, 230, 110, 255)),
+        ]
+        for item, (pos, text, col) in zip(self._axis_labels, labels):
+            item.setData(pos=pos, text=text, color=col)
 
     def _recolor(self):
         if (not HAS_GL or not self._gl_ready or self._data is None
@@ -2800,6 +3143,7 @@ class StellarNeighborhoodTab(QWidget):
 
         self._scatter.setData(pos=self._data["xyz"], color=colors, size=sizes,
                               pxMode=True)
+        self._update_droplines(colors)
 
     def _fit_view(self):
         if not HAS_GL or not self._gl_ready:
@@ -2812,17 +3156,21 @@ class StellarNeighborhoodTab(QWidget):
             self._grid.setSpacing(x=step, y=step, z=step)
         except Exception:
             pass
+        self._update_axes()
 
     # ── table + selection ─────────────────────────────────────────────────
 
     def _fill_table(self, data: dict):
         n = min(len(data["source_id"]), self.TABLE_ROWS)
         self._table.setRowCount(n)
+        ib = data.get("is_bright")
         for i in range(n):
             g = data["gmag"][i]
             r = data["ruwe"][i]
+            bright = ib is not None and ib[i]
+            label = str(data["name"][i]) if bright else f"{i + 1}"
             vals = [
-                str(i + 1),
+                label,
                 f"{data['dist_pc'][i]:.3f}",
                 "—" if not np.isfinite(g) else f"{g:.2f}",
                 "—" if not np.isfinite(r) else f"{r:.2f}",
@@ -2830,6 +3178,9 @@ class StellarNeighborhoodTab(QWidget):
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if bright:
+                    item.setForeground(QColor("#ffd966"))
+                    item.setToolTip("Naked-eye star — too bright for Gaia (saturates below G≈3)")
                 self._table.setItem(i, c, item)
         self._table.resizeColumnsToContents()
 
@@ -2852,6 +3203,9 @@ class StellarNeighborhoodTab(QWidget):
         (available, reason). Cheap: get_spectrum/has_spectrum are primary-key
         lookups on source_id — no spatial search, no scan.
         """
+        if self._selected_is_bright():
+            return False, ("Too bright for Gaia — saturates below G≈3, which is "
+                           "exactly why this star is hardcoded")
         try:
             lib = get_library()
         except Exception as e:
@@ -2895,7 +3249,8 @@ class StellarNeighborhoodTab(QWidget):
         act_simbad = menu.addAction("Resolve in SIMBAD")
         act_web    = menu.addAction("Open in SIMBAD (browser)")
         menu.addSeparator()
-        act_copy   = menu.addAction("Copy source_id")
+        act_copy = menu.addAction(
+            "Copy name" if self._selected_is_bright() else "Copy source_id")
 
         # Menus don't show disabled-item tooltips by default.
         menu.setToolTipsVisible(True)
@@ -2910,8 +3265,10 @@ class StellarNeighborhoodTab(QWidget):
         elif chosen is act_web:
             self._open_simbad_web()
         elif chosen is act_copy:
-            QApplication.clipboard().setText(str(sid))
-            self._status.setText(f"Copied source_id {sid} to clipboard.")
+            txt = (str(self._data["name"][self._selected_idx])
+                   if self._selected_is_bright() else str(sid))
+            QApplication.clipboard().setText(txt)
+            self._status.setText(f"Copied “{txt}” to clipboard.")
 
     def _on_table_context_menu(self, pos):
         """Right-click a row in the nearest-star table -> same menu."""
@@ -2944,19 +3301,39 @@ class StellarNeighborhoodTab(QWidget):
         x, y, z = (float(v) for v in self._data["xyz"][idx])
         ra   = float(self._data["ra"][idx])
         dec  = float(self._data["dec"][idx])
-
-        absg = (g - 5.0 * math.log10(max(d, 1e-6)) + 5.0) if np.isfinite(g) else float("nan")
         ly = d * 3.26156
 
-        self._info.setPlainText(
-            f"Gaia DR3 {sid}\n"
-            f"dist  {d:.4f} pc   ({ly:.3f} ly)\n"
-            f"G {'—' if not np.isfinite(g) else f'{g:.3f}'}"
-            f"   M_G {'—' if not np.isfinite(absg) else f'{absg:.3f}'}"
-            f"   RUWE {'—' if not np.isfinite(ruwe) else f'{ruwe:.3f}'}\n"
-            f"RA {ra:.6f}°   Dec {dec:.6f}°\n"
-            f"galactic XYZ  ({x:.3f}, {y:.3f}, {z:.3f}) pc"
-        )
+        ib = self._data.get("is_bright")
+        if ib is not None and ib[idx]:
+            name = self._data["name"][idx]
+            simbad_id = self._data["simbad_id"][idx] or "—"
+            sp = self._data["sp_type"][idx] or "—"
+            teff = float(self._data["teff"][idx])
+            plx_ok = bool(self._data["plx_ok"][idx])
+
+            warn = ("" if plx_ok else
+                    "\n⚠ weak parallax (SNR<5) — distance is indicative only")
+            self._info.setPlainText(
+                f"{name}    [not in Gaia — saturates below G≈3]\n"
+                f"SIMBAD  {simbad_id}    type {sp}\n"
+                f"dist  {d:.4f} pc   ({ly:.3f} ly)\n"
+                f"V {g:.2f}"
+                + (f"   T_eff≈{teff:.0f} K (from B–V)" if teff else "")
+                + f"\nRA {ra:.6f}°   Dec {dec:.6f}°\n"
+                f"galactic XYZ  ({x:.3f}, {y:.3f}, {z:.3f}) pc"
+                + warn
+            )
+        else:
+            absg = (g - 5.0 * math.log10(max(d, 1e-6)) + 5.0) if np.isfinite(g) else float("nan")
+            self._info.setPlainText(
+                f"Gaia DR3 {sid}\n"
+                f"dist  {d:.4f} pc   ({ly:.3f} ly)\n"
+                f"G {'—' if not np.isfinite(g) else f'{g:.3f}'}"
+                f"   M_G {'—' if not np.isfinite(absg) else f'{absg:.3f}'}"
+                f"   RUWE {'—' if not np.isfinite(ruwe) else f'{ruwe:.3f}'}\n"
+                f"RA {ra:.6f}°   Dec {dec:.6f}°\n"
+                f"galactic XYZ  ({x:.3f}, {y:.3f}, {z:.3f}) pc"
+            )
         self._btn_simbad.setEnabled(True)
         self._btn_simbad_web.setEnabled(True)
 
@@ -2973,11 +3350,26 @@ class StellarNeighborhoodTab(QWidget):
             return None
         return int(self._data["source_id"][self._selected_idx])
 
+    def _selected_is_bright(self) -> bool:
+        if self._data is None or self._selected_idx is None:
+            return False
+        ib = self._data.get("is_bright")
+        return bool(ib is not None and ib[self._selected_idx])
+
+    def _selected_identifier(self) -> Optional[str]:
+        """SIMBAD identifier: the star's name if hardcoded, else its Gaia DR3 id."""
+        if self._data is None or self._selected_idx is None:
+            return None
+        if self._selected_is_bright():
+            sid = self._data["simbad_id"][self._selected_idx]
+            nm  = self._data["name"][self._selected_idx]
+            return str(sid) if sid else str(nm)
+        return f"Gaia DR3 {self._selected_sid()}"
+
     def _resolve_simbad(self):
-        sid = self._selected_sid()
-        if sid is None:
+        ident = self._selected_identifier()
+        if ident is None:
             return
-        ident = f"Gaia DR3 {sid}"
         self._status.setText(f"Resolving {ident} via SIMBAD…")
         QApplication.processEvents()
         try:
@@ -3001,13 +3393,14 @@ class StellarNeighborhoodTab(QWidget):
             self._status.setText(f"SIMBAD lookup failed: {e}")
 
     def _open_simbad_web(self):
-        sid = self._selected_sid()
-        if sid is None:
+        ident = self._selected_identifier()
+        if ident is None:
             return
         from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
+        from urllib.parse import quote_plus
         url = ("https://simbad.cds.unistra.fr/simbad/sim-id?Ident="
-               + f"Gaia+DR3+{sid}")
+               + quote_plus(ident))
         QDesktopServices.openUrl(QUrl(url))
 
     # ── lifecycle ─────────────────────────────────────────────────────────
@@ -3020,6 +3413,9 @@ class StellarNeighborhoodTab(QWidget):
         """
         refresh_neighborhood_library()
         if HAS_GL and self._gl_ready:
+            # Force a reload: installing/removing the extract changes what
+            # _reload() will produce, even at an unchanged radius.
+            self._data = None
             self._reload()
 
     def shutdown(self):
