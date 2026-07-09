@@ -2031,6 +2031,41 @@ def spectrum_to_srgb(flux: np.ndarray) -> np.ndarray:
                     1.055 * np.power(lin, 1.0 / 2.4) - 0.055)
     return np.clip(srgb, 0.0, 1.0).astype(np.float32)
 
+def get_spectrum_any(source_id: int) -> Optional[CalibratedSpectrum]:
+    """
+    Primary-key lookup for one XP spectrum: installed bulk library first, then
+    the live download cache. Returns None if neither has it (the common case —
+    Gaia XP only covers G ≈ 2.2–15).
+    """
+    sid = int(source_id)
+
+    try:
+        spec = get_library().get_spectrum(sid)
+        if spec is not None:
+            return spec
+    except Exception:
+        pass
+
+    try:
+        from setiastro.saspro.gaia_downloader import GaiaSpectraDB
+        base = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppDataLocation)
+        db_path = os.path.join(base, "gaia", "gaia_xp_cache.sqlite")
+        if os.path.exists(db_path):
+            db = GaiaSpectraDB(db_path)
+            cached = db.get_spectrum(sid)
+            db.close()
+            if cached is not None:
+                return CalibratedSpectrum(
+                    source_id=sid,
+                    wavelengths=cached.wavelengths,
+                    flux=cached.flux,
+                    flux_error=cached.flux_error,
+                )
+    except Exception:
+        pass
+
+    return None
 
 class _SpectrumColourWorker(QThread):
     """
@@ -2425,7 +2460,9 @@ class StellarNeighborhoodTab(QWidget):
 
     # Emitted when the user asks to see a star's XP spectrum. The dialog owns
     # the Spectrum Viewer tab, so it handles the actual switch + lookup.
-    spectrumRequested = _Signal(int)   # gaia source_id
+    # object, NOT int: PyQt6 maps a bare `int` signal arg to a 32-bit C++ int,
+    # which silently truncates every 64-bit Gaia DR3 source_id.
+    spectrumRequested = _Signal(object)   # gaia source_id (Python int, 64-bit)
 
     # Opens small on purpose: within a few parsecs there are only a handful of
     # stars, so the first render is instant and obviously correct (you should
@@ -2467,6 +2504,7 @@ class StellarNeighborhoodTab(QWidget):
         self._droplines = None
         self._axes = None
         self._axis_labels = []
+        self._tick_labels = []
         self._gl_ready = False
         self._view_slot = None
         self._view_container = None
@@ -2551,6 +2589,15 @@ class StellarNeighborhoodTab(QWidget):
             t = gl.GLTextItem(pos=np.zeros(3), text="", color=(150, 170, 200, 255))
             self._view.addItem(t)
             self._axis_labels.append(t)
+
+        # Distance tick labels along +X and +Y. A fixed pool — GLTextItem has no
+        # cheap add/remove, and the tick count only ever varies between ~4 and 6
+        # (grid step is r/5). Unused slots get an empty string.
+        self._tick_labels = []
+        for _ in range(self.MAX_TICK_LABELS):
+            t = gl.GLTextItem(pos=np.zeros(3), text="", color=(110, 125, 150, 255))
+            self._view.addItem(t)
+            self._tick_labels.append(t)
 
         self._scatter = gl.GLScatterPlotItem(
             pos=np.zeros((0, 3), dtype=np.float32), pxMode=True)
@@ -2755,6 +2802,15 @@ class StellarNeighborhoodTab(QWidget):
             "it is not the plane the planets orbit in.")
         self._chk_axes.toggled.connect(lambda _=False: self._update_axes())
         v_row.addWidget(self._chk_axes)
+
+        self._chk_ticks = QCheckBox("Scale ticks")
+        self._chk_ticks.setChecked(True)
+        self._chk_ticks.setToolTip(
+            "Label each grid ring with its distance from the Sun, in parsecs.\n"
+            "Grid spacing is one fifth of the current radius.")
+        self._chk_ticks.toggled.connect(lambda _=False: self._update_tick_labels())
+        v_row.addWidget(self._chk_ticks)
+
         v_row.addStretch()
         cl.addLayout(v_row)
 
@@ -3106,6 +3162,7 @@ class StellarNeighborhoodTab(QWidget):
         self._recolor()
 
     MAX_DROPLINE_STARS = 20_000
+    MAX_TICK_LABELS    = 16
 
     def _update_droplines(self, colors: Optional[np.ndarray] = None):
         """
@@ -3196,6 +3253,54 @@ class StellarNeighborhoodTab(QWidget):
         for item, (pos, text, col) in zip(self._axis_labels, labels):
             item.setData(pos=pos, text=text, color=col)
 
+    def _update_tick_labels(self):
+        """
+        Label each grid ring with its distance from the Sun, so a tick is a
+        readable number of parsecs rather than an arbitrary line.
+
+        Ticks are placed on +X and +Y at multiples of the grid spacing set in
+        _fit_view (step = r/5), which is what the grid actually draws. Both axes
+        get labels because at an oblique camera angle one of them is always
+        nearly edge-on and unreadable.
+        """
+        if not self._gl_ready or not self._tick_labels:
+            return
+
+        if not self._chk_ticks.isChecked():
+            for t in self._tick_labels:
+                t.setData(text="")
+            return
+
+        r = float(self._spin_radius.value())
+        step = max(r / 5.0, 0.2)
+
+        # Rings that actually fall inside the grid. Skip k=0 (that's the Sun).
+        n = int(math.floor(r / step + 1e-6))
+        n = max(1, n)
+
+        # Enough decimals to distinguish adjacent ticks, but no more.
+        dec = 0 if step >= 1.0 else (1 if step >= 0.1 else 2)
+
+        slot = 0
+        for k in range(1, n + 1):
+            d = k * step
+            if d > r * 1.001:
+                break
+            txt = f"{d:.{dec}f}"
+            if k == n:
+                txt += " pc"
+
+            for pos in (np.array([d, 0.0, 0.0], dtype=np.float32),
+                        np.array([0.0, d, 0.0], dtype=np.float32)):
+                if slot >= len(self._tick_labels):
+                    break
+                self._tick_labels[slot].setData(
+                    pos=pos, text=txt, color=(110, 125, 150, 255))
+                slot += 1
+
+        for i in range(slot, len(self._tick_labels)):
+            self._tick_labels[i].setData(text="")
+
     def _recolor(self):
         if (not HAS_GL or not self._gl_ready or self._data is None
                 or len(self._data["source_id"]) == 0):
@@ -3237,6 +3342,7 @@ class StellarNeighborhoodTab(QWidget):
         except Exception:
             pass
         self._update_axes()
+        self._update_tick_labels()
 
     # ── table + selection ─────────────────────────────────────────────────
 
@@ -3319,11 +3425,18 @@ class StellarNeighborhoodTab(QWidget):
 
         menu = QMenu(self)
 
-        available, reason = self._spectrum_availability(sid)
+        # Always enabled for Gaia sources — the popup reports a miss far more
+        # usefully than a greyed-out item, and this saves a PK lookup across
+        # every open XP connection on every right-click. Bright stars are the
+        # one genuine exception: Gaia saturates on them, so no XP spectrum
+        # exists by construction.
+        is_bright = self._selected_is_bright()
         act_spec = menu.addAction("View XP Spectrum")
-        act_spec.setEnabled(available)
-        if not available:
-            act_spec.setToolTip(reason)
+        act_spec.setEnabled(not is_bright)
+        if is_bright:
+            act_spec.setToolTip(
+                "Too bright for Gaia — saturates below G≈3, which is exactly "
+                "why this star is hardcoded")
 
         menu.addSeparator()
         act_simbad = menu.addAction("Resolve in SIMBAD")
@@ -3339,7 +3452,7 @@ class StellarNeighborhoodTab(QWidget):
         if chosen is None:
             return
         if chosen is act_spec:
-            self.spectrumRequested.emit(sid)
+            self.spectrumRequested.emit(int(sid))
         elif chosen is act_simbad:
             self._resolve_simbad()
         elif chosen is act_web:
@@ -3455,41 +3568,162 @@ class StellarNeighborhoodTab(QWidget):
             return str(sid) if sid else str(nm)
         return f"Gaia DR3 {self._selected_sid()}"
 
+    @staticmethod
+    def _simbad_row_ids(res, j: int) -> Tuple[str, str]:
+        """(main_id, otype) from a SIMBAD result row, across astroquery versions."""
+        cols = {c.upper(): c for c in res.colnames}
+        main  = str(res[cols["MAIN_ID"]][j]) if "MAIN_ID" in cols else "?"
+        otype = str(res[cols["OTYPE"]][j])   if "OTYPE"   in cols else ""
+        return main.strip(), otype.strip()
+
+    @staticmethod
+    def _nearest_simbad_row(res, ra: float, dec: float):
+        """
+        (row_index, separation_arcsec) of the SIMBAD row closest to (ra, dec).
+
+        astroquery >= 0.4.8 returns 'ra'/'dec' as float degrees. Older versions
+        return 'RA'/'DEC' as sexagesimal strings. Parse whichever we get.
+        """
+        import astropy.units as u
+        from astropy.coordinates import SkyCoord
+
+        cols = {c.upper(): c for c in res.colnames}
+        if "RA" not in cols or "DEC" not in cols:
+            return None, 0.0
+
+        ra_col, dec_col = cols["RA"], cols["DEC"]
+        try:
+            sky = SkyCoord(res[ra_col], res[dec_col], unit=(u.deg, u.deg))
+        except Exception:
+            try:
+                sky = SkyCoord(res[ra_col], res[dec_col],
+                               unit=(u.hourangle, u.deg))   # sexagesimal
+            except Exception:
+                return None, 0.0
+
+        target = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+        seps = target.separation(sky).arcsec
+        j = int(np.argmin(seps))
+        return j, float(seps[j])
+
     def _resolve_simbad(self):
-        ident = self._selected_identifier()
-        if ident is None:
+        # Bright stars have a real identifier; use it directly.
+        if self._selected_is_bright():
+            ident = self._selected_identifier()
+            if ident is None:
+                return
+            self._status.setText(f"Resolving {ident} via SIMBAD…")
+            QApplication.processEvents()
+            try:
+                from astroquery.simbad import Simbad
+                s = Simbad()
+                try:
+                    s.add_votable_fields("otype")
+                except Exception:
+                    pass
+                res = s.query_object(ident)
+                if res is None or len(res) == 0:
+                    self._status.setText(f"SIMBAD has no entry for {ident}.")
+                    return
+                main, otype = self._simbad_row_ids(res, 0)
+                self._info.setPlainText(
+                    self._info.toPlainText()
+                    + f"\nSIMBAD: {main}" + (f"   ({otype})" if otype else ""))
+                self._status.setText(f"SIMBAD: {main}")
+            except Exception as e:
+                self._status.setText(f"SIMBAD lookup failed: {e}")
             return
-        self._status.setText(f"Resolving {ident} via SIMBAD…")
+
+        # Gaia stars: cone search. `Gaia DR3 <id>` only resolves for the subset
+        # SIMBAD has cross-matched — most of a 300 pc neighborhood is faint M
+        # dwarfs it has never catalogued, so query_object returns nothing.
+        if self._data is None or self._selected_idx is None:
+            return
+        i = self._selected_idx
+        ra  = float(self._data["ra"][i])
+        dec = float(self._data["dec"][i])
+        sid = int(self._data["source_id"][i])
+
+        self._status.setText(f"Cone-searching SIMBAD near Gaia DR3 {sid}…")
         QApplication.processEvents()
+
         try:
             from astroquery.simbad import Simbad
+            from astropy.coordinates import SkyCoord
+            import astropy.units as u
+
             s = Simbad()
             try:
                 s.add_votable_fields("otype")
             except Exception:
                 pass
-            res = s.query_object(ident)
+
+            coord = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, frame="icrs")
+
+            # Gaia positions are J2016.0; SIMBAD serves J2000.0. A high-PM star
+            # can sit well outside 10". Widen rather than declare "not found".
+            res = None
+            used_r = 0.0
+            for r_as in (10.0, 30.0, 60.0):
+                try:
+                    res = s.query_region(coord, radius=r_as * u.arcsec)
+                except Exception:
+                    res = None
+                if res is not None and len(res) > 0:
+                    used_r = r_as
+                    break
+
             if res is None or len(res) == 0:
-                self._status.setText(f"SIMBAD has no entry for {ident}.")
+                self._status.setText(
+                    f"No SIMBAD object within 60\" of Gaia DR3 {sid}. "
+                    f"Most faint neighborhood dwarfs are not in SIMBAD.")
                 return
-            cols = {c.upper(): c for c in res.colnames}
-            main = res[cols["MAIN_ID"]][0] if "MAIN_ID" in cols else "?"
-            otype = res[cols["OTYPE"]][0] if "OTYPE" in cols else ""
+
+            j, sep = self._nearest_simbad_row(res, ra, dec)
+            if j is None:
+                self._status.setText("SIMBAD returned rows with unusable coordinates.")
+                return
+
+            main, otype = self._simbad_row_ids(res, j)
+            n_hits = len(res)
+
             extra = f"\nSIMBAD: {main}" + (f"   ({otype})" if otype else "")
+            extra += f"\n  cone match, sep={sep:.2f}\""
+            if n_hits > 1:
+                extra += f"  ({n_hits} objects in {used_r:.0f}\" — nearest shown)"
+            if sep > 10.0:
+                extra += "\n  ⚠ large separation — likely proper motion (J2016 vs J2000), verify"
+
             self._info.setPlainText(self._info.toPlainText() + extra)
-            self._status.setText(f"SIMBAD: {main}")
+            self._status.setText(f"SIMBAD: {main}  (sep {sep:.2f}\")")
+
         except Exception as e:
-            self._status.setText(f"SIMBAD lookup failed: {e}")
+            self._status.setText(f"SIMBAD cone search failed: {e}")
 
     def _open_simbad_web(self):
-        ident = self._selected_identifier()
-        if ident is None:
-            return
         from PyQt6.QtGui import QDesktopServices
         from PyQt6.QtCore import QUrl
         from urllib.parse import quote_plus
-        url = ("https://simbad.cds.unistra.fr/simbad/sim-id?Ident="
-               + quote_plus(ident))
+
+        if self._selected_is_bright():
+            ident = self._selected_identifier()
+            if ident is None:
+                return
+            url = ("https://simbad.cds.unistra.fr/simbad/sim-id?Ident="
+                   + quote_plus(ident))
+        else:
+            # sim-id on a Gaia DR3 id 404s for uncatalogued sources; sim-coo
+            # always lands on something useful.
+            if self._data is None or self._selected_idx is None:
+                return
+            i = self._selected_idx
+            ra  = float(self._data["ra"][i])
+            dec = float(self._data["dec"][i])
+            url = ("https://simbad.cds.unistra.fr/simbad/sim-coo"
+                   f"?Coord={ra:.6f}+{dec:+.6f}"
+                   "&CooFrame=ICRS&CooEpoch=2000&CooEqui=2000"
+                   "&Radius=10&Radius.unit=arcsec")
+
         QDesktopServices.openUrl(QUrl(url))
 
     # ── lifecycle ─────────────────────────────────────────────────────────
@@ -3518,7 +3752,97 @@ class StellarNeighborhoodTab(QWidget):
         self._worker = None
         self._colour_worker = None
 
+class SpectrumPopupDialog(QDialog):
+    """
+    Non-modal single-spectrum window. Opened by right-clicking a star in the
+    Neighborhood Explorer, so the 3D view stays put and several spectra can be
+    compared side by side.
+    """
 
+    def __init__(self, source_id: int, parent=None):
+        super().__init__(parent)
+        sid = int(source_id)
+
+        self.setWindowTitle(f"XP Spectrum — Gaia DR3 {sid}")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        import platform
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setModal(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.resize(720, 460)
+        self.setStyleSheet("QDialog { background:#0d0d1a; color:#ddd; }"
+                           "QLabel { color:#ccc; }"
+                           "QPushButton { background:#1a1a2e; color:#ccc;"
+                           " border:1px solid #334; border-radius:4px; padding:5px 12px; }"
+                           "QPushButton:hover { background:#222240; }")
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(12, 12, 12, 12)
+        v.setSpacing(8)
+
+        self._viewer = SpectrumViewerWidget()
+        v.addWidget(self._viewer, stretch=1)
+
+        self._info = QTextEdit()
+        self._info.setReadOnly(True)
+        self._info.setMaximumHeight(72)
+        self._info.setStyleSheet(
+            "background:#0a0a18; color:#99aacc; border:1px solid #2a2a3e; "
+            "font-size:11px; font-family:monospace;")
+        v.addWidget(self._info)
+
+        row = QHBoxLayout()
+        self._status = QLabel("")
+        self._status.setStyleSheet("color:#668; font-size:11px;")
+        self._status.setWordWrap(True)
+        row.addWidget(self._status, stretch=1)
+        btn_copy = QPushButton("Copy source_id")
+        btn_copy.clicked.connect(
+            lambda: QApplication.clipboard().setText(str(sid)))
+        row.addWidget(btn_copy)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        row.addWidget(btn_close)
+        v.addLayout(row)
+
+        self._load(sid)
+
+    def _load(self, sid: int):
+        spec = get_spectrum_any(sid)
+        if spec is None:
+            self._viewer.clear()
+            self._info.setPlainText(f"source_id: {sid}")
+            self._status.setText(
+                "No XP spectrum for this star in Gaia DR3. XP spectra cover "
+                "roughly G ≈ 2.2–15; most neighborhood dwarfs are fainter.")
+            return
+
+        info = None
+        try:
+            info = get_library().get_source_info(sid)
+        except Exception:
+            pass
+
+        if info:
+            title = f"Gaia DR3 {sid}   (G={info['gmag']:.2f})"
+            self._info.setPlainText(
+                f"source_id: {sid}\n"
+                f"RA: {info['ra']:.6f}°    Dec: {info['dec']:.6f}°    "
+                f"G mag: {info['gmag']:.3f}")
+        else:
+            title = f"Gaia DR3 {sid}"
+            self._info.setPlainText(f"source_id: {sid}")
+
+        self._viewer.show_spectrum(spec, title=title)
+        try:
+            local = get_library().has_spectrum(sid)
+        except Exception:
+            local = False
+        self._status.setText(
+            f"Loaded from {'local library' if local else 'live cache'}.")
+        
 # ══════════════════════════════════════════════════════════════════════════════
 #  Main dialog
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3541,7 +3865,7 @@ class GaiaDatabaseDialog(QDialog):
         self._astro_workers: Dict[str, _GroupDownloadWorker] = {}
         self._astro_rows:    Dict[str, _GroupRowWidget]      = {}
         self._neighborhood_tab = None
-
+        self._spectrum_popups: List[SpectrumPopupDialog] = []
 
         self._build_ui()
         self._refresh_groups("spectral")
@@ -4196,24 +4520,47 @@ class GaiaDatabaseDialog(QDialog):
 
     # ── Cross-tab: Neighborhood Explorer -> Spectrum Viewer ───────────────
 
-    def _show_spectrum_for_source(self, source_id: int):
+    def _show_spectrum_for_source(self, source_id):
         """
-        Right-click a star in the 3D explorer -> "View XP Spectrum". Switches to
-        the Spectrum Viewer tab and runs the existing source_id lookup path, so
-        there's exactly one implementation of "load and draw a spectrum".
+        Right-click a star in the 3D explorer -> "View XP Spectrum". Opens a
+        non-modal popup rather than yanking the user off the Neighborhood tab,
+        so the 3D view keeps its camera and several spectra can sit open at once.
 
-        This is a primary-key hit on source_id across the open XP connections —
-        no coordinate search, no epoch matching. It's about as fast as a lookup
-        gets, which is the whole point of routing through the Gaia ID.
+        source_id arrives as a Python int via an `object` signal — a bare `int`
+        signal would truncate the 64-bit Gaia id to 32 bits.
         """
         try:
-            self._tabs.setCurrentIndex(self._spectrum_tab_index)
-            self._search_mode.setCurrentIndex(2)          # "Gaia source_id"
-            self._sid_edit.setText(str(int(source_id)))
-            self._lookup_spectrum()
+            sid = int(source_id)
+        except Exception:
+            return
+
+        # Already open for this star? Raise it instead of stacking a duplicate.
+        self._spectrum_popups = [
+            p for p in self._spectrum_popups if not sip.isdeleted(p)]
+        for p in self._spectrum_popups:
+            if p.windowTitle().endswith(str(sid)):
+                p.raise_()
+                p.activateWindow()
+                return
+
+        try:
+            dlg = SpectrumPopupDialog(sid, parent=self)
+            self._spectrum_popups.append(dlg)
+            dlg.destroyed.connect(
+                lambda *_: self._prune_spectrum_popups())
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
         except Exception as e:
             QMessageBox.warning(self, "Spectrum",
-                                f"Could not open spectrum for {source_id}:\n{e}")
+                                f"Could not open spectrum for {sid}:\n{e}")
+
+    def _prune_spectrum_popups(self):
+        try:
+            self._spectrum_popups = [
+                p for p in self._spectrum_popups if not sip.isdeleted(p)]
+        except Exception:
+            self._spectrum_popups = []
 
     # ── Spectrum viewer  (unchanged — spectral only) ───────────────────────
 
@@ -4377,24 +4724,7 @@ class GaiaDatabaseDialog(QDialog):
                 label = f"{label}  →  source {sid}  (sep={sep:.2f}\")"
 
         if spec is None and sid is not None:
-            try:
-                from setiastro.saspro.gaia_downloader import GaiaSpectraDB
-                base     = QStandardPaths.writableLocation(
-                    QStandardPaths.StandardLocation.AppDataLocation)
-                db_path  = os.path.join(base, "gaia", "gaia_xp_cache.sqlite")
-                if os.path.exists(db_path):
-                    db = GaiaSpectraDB(db_path)
-                    cached = db.get_spectrum(sid)
-                    db.close()
-                    if cached is not None:
-                        spec = CalibratedSpectrum(
-                            source_id=sid,
-                            wavelengths=cached.wavelengths,
-                            flux=cached.flux,
-                            flux_error=cached.flux_error,
-                        )
-            except Exception:
-                pass
+            spec = get_spectrum_any(sid)
 
         if spec is None:
             self._viewer_status.setText(
