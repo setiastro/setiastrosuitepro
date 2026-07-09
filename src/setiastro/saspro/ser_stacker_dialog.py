@@ -22,7 +22,10 @@ from setiastro.saspro.ser_stack_config import SERStackConfig
 
 from setiastro.saspro.ser_stacker import stack_ser, analyze_ser, AnalyzeResult
 from setiastro.saspro.ser_stacker import _shift_image
-
+# ── Platform-aware anchor gesture text (mirrors serviewer.py) ───────
+import platform as _platform
+_IS_MAC = (_platform.system() == "Darwin")
+ANCHOR_GESTURE_SHORT = "⌃⇧-drag" if _IS_MAC else "Ctrl+Shift+drag"
 
 # ---------------------------------------------------------------------------
 # CollapsibleGroup
@@ -1076,6 +1079,10 @@ class SERStackerDialog(QDialog):
 
         self.lbl_anchor = QLabel("", self)
         self.lbl_anchor.setWordWrap(True)
+        self.lbl_anchor.setToolTip(
+            "Set the anchor in the Planetary Stacker Viewer, then re-run Analyze.\n"
+            f"Gesture: {ANCHOR_GESTURE_SHORT} inside the preview."
+        )
 
         form.addRow("Tracking", self.cmb_track)
         form.addRow("Keep %", self.spin_keep)
@@ -1649,6 +1656,32 @@ class SERStackerDialog(QDialog):
             return "surface"
         return "off"
 
+    def _sync_from_viewer(self):
+            """Re-pull ROI / surface anchor from the parent viewer (non-modal: they can change)."""
+            v = self.parent()
+            if v is None:
+                return
+            try:
+                if hasattr(v, "get_surface_anchor"):
+                    a = v.get_surface_anchor()
+                    a = tuple(int(t) for t in a) if a is not None else None
+                    if a != self._surface_anchor:
+                        self._surface_anchor = a
+                        self._analysis = None
+                        self._keep_mask = None
+                        self._append_log(f"Surface anchor synced from viewer: {a}")
+                if hasattr(v, "get_roi"):
+                    r = v.get_roi()
+                    r = tuple(int(t) for t in r) if r is not None else None
+                    if r != self._roi:
+                        self._roi = r
+                        self._analysis = None
+                        self._keep_mask = None
+                        self._append_log(f"ROI synced from viewer: {r if r is not None else '(full frame)'}")
+            except Exception:
+                pass
+            self._update_anchor_warning()
+
     def _update_anchor_warning(self):
         mode = self._track_mode_value()
         if mode != "surface":
@@ -1657,7 +1690,7 @@ class SERStackerDialog(QDialog):
             return
 
         if self._surface_anchor is None:
-            self.lbl_anchor.setText("REQUIRED (set in SER Viewer with Ctrl+Shift+drag)")
+            self.lbl_anchor.setText(f"REQUIRED (set in SER Viewer with {ANCHOR_GESTURE_SHORT})")
             self.lbl_anchor.setStyleSheet("color:#c66;")
             return
 
@@ -1677,9 +1710,10 @@ class SERStackerDialog(QDialog):
 
     # ---------------- actions ----------------
     def _start_analyze(self):
+        self._sync_from_viewer()
         mode = self._track_mode_value()
         if mode == "surface" and self._surface_anchor is None:
-            self._append_log("Surface mode requires an anchor. Set it in the viewer (Ctrl+Shift+drag).")
+            self._append_log(f"Surface mode requires an anchor. Set it in the viewer ({ANCHOR_GESTURE_SHORT}).")
             return
 
         ref_mode = "best_stack" if self.cmb_ref.currentText().lower().startswith("best stack") else "best_frame"
@@ -1932,9 +1966,10 @@ class SERStackerDialog(QDialog):
 
 
     def _start_stack(self):
+        self._sync_from_viewer()
         mode = self._track_mode_value()
         if mode == "surface" and self._surface_anchor is None:
-            self._append_log("Surface mode requires an anchor. Set it in the viewer (Ctrl+Shift+drag).")
+            self._append_log(f"Surface mode requires an anchor. Set it in the viewer ({ANCHOR_GESTURE_SHORT}).")
             return
         if self._analysis is None:
             QMessageBox.warning(
@@ -2016,7 +2051,6 @@ class SERStackerDialog(QDialog):
 
         self.stackProduced.emit(out, diag)
 
-
     def _on_stack_fail(self, msg: str):
         self.prog.setVisible(False)
         self.btn_stack.setEnabled(True)
@@ -2024,6 +2058,15 @@ class SERStackerDialog(QDialog):
         self.btn_analyze.setEnabled(True)
         self._append_log("FAILED:")
         self._append_log(msg)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._sync_from_viewer()
+
+    def event(self, e):
+        if e.type() == QEvent.Type.WindowActivate:
+            self._sync_from_viewer()
+        return super().event(e)
 
 class BlinkKeepersDialog(QDialog):
     """

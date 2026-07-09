@@ -1243,24 +1243,35 @@ def main(argv: list[str] | None = None) -> int:
     log_file_path = get_log_file_path()
 
     try:
-        logging.basicConfig(
-            filename=log_file_path,
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            filemode='a'  # Append mode
+        _root = logging.getLogger()
+        _root.setLevel(logging.INFO)
+        # A library called basicConfig() during import and left a StreamHandler
+        # at WARNING, which made our basicConfig(filename=...) a silent no-op.
+        # Tear down whatever's there and own the root logger explicitly.
+        for _h in list(_root.handlers):
+            _root.removeHandler(_h)
+            try:
+                _h.close()
+            except Exception:
+                pass
+        _fmt = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        from logging.handlers import RotatingFileHandler
+        _fh = RotatingFileHandler(
+            log_file_path, mode="a", maxBytes=1_000_000, backupCount=3, encoding="utf-8"
         )
-        logging.info(f"Logging to: {log_file_path}")
-        logging.info(f"Platform: {sys.platform}")
-        logging.info(f"PyInstaller bundle: {hasattr(sys, '_MEIPASS')}")
+        _fh.setFormatter(_fmt)
+        _root.addHandler(_fh)
+        logging.info("=" * 60)
+        logging.info("SASpro %s starting — %s", VERSION, log_file_path)        
+        # Optional: also keep console output while running from source
+        _sh = logging.StreamHandler(sys.stdout)
+        _sh.setFormatter(_fmt)
+        _root.addHandler(_sh)
+        logging.info("Logging initialized -> %s", log_file_path)
+        logging.info("Platform: %s", sys.platform)
+        logging.info("PyInstaller bundle: %s", hasattr(sys, "_MEIPASS"))
     except Exception as e:
-        # Ultimate fallback - console only logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[logging.StreamHandler(sys.stdout)]
-        )
-        print(f"Warning: Could not write to log file {log_file_path}: {e}")
-        print("Using console-only logging")
+        print(f"Warning: could not initialize file logging at {log_file_path}: {e}")
         
 
     # Setup crash handlers and app icon

@@ -83,7 +83,7 @@ class GroupDef:
     key:         str
     label:       str
     mag_lo:      Optional[float]
-    mag_hi:      float
+    mag_hi:      Optional[float]
     filenames:   List[str]
     est_size:    str
     est_stars:   str
@@ -180,84 +180,93 @@ _FILENAME_TO_GROUP: Dict[str, str] = {
 }
 
 
-# ── Astrometric magnitude tiers (planned — not yet hosted anywhere) ───────────
-# Mirrors the Spectrum Library tab's approach: exclusive magnitude ranges,
-# brightest first, so a user installs the small bright tier and adds fainter
-# ones only as needed. Full DR3 astrometry goes to G≈21, well past the XP
-# spectral library's G≈15 ceiling, since it isn't limited to sources with
-# usable BP/RP spectra. Sizes/star-counts below are rough estimates — real
-# numbers will replace these once files are actually built and hosted.
+# ── Astrometric magnitude tiers (real split plan — pending upload) ───────────
+# Matches gaia_astro_split_bands.py's SPLIT_PLAN exactly: 41 physical files,
+# grouped here into 5 user-facing tiers at clean magnitude boundaries so the
+# UI reuses the same "one tier = many files, one Install downloads them all"
+# pattern already used by the Spectrum Library tab's faint/very_faint groups.
+# Sizes below are computed from real dry-run row counts (~130.9 bytes/row),
+# not guesses — still marked coming_soon until the files are actually
+# uploaded to the setiastro-astrometry bucket.
+
+def _astro_filenames(lo: float, hi: float, step: float) -> List[str]:
+    """
+    Generate gaia_astro_<lo*10>_<hi*10>.sqlite filenames for a magnitude
+    range, matching gaia_astro_split_bands.py's _make_splits/_filename
+    naming exactly — never hand-type these, a mismatch breaks file lookup.
+    """
+    edges = [round(lo + i * step, 4) for i in range(int(round((hi - lo) / step)) + 1)]
+    edges[0]  = lo
+    edges[-1] = hi
+    return [
+        f"gaia_astro_{int(round(a * 10))}_{int(round(b * 10))}.sqlite"
+        for a, b in zip(edges[:-1], edges[1:])
+    ]
+
 
 ASTRO_GROUP_DEFS: List[GroupDef] = [
     GroupDef(
-        key="astro_lt12",
-        label="Bright  (G < 12)",
-        mag_lo=None, mag_hi=12.0,
-        filenames=["gaia_astro_lt12.sqlite"],
-        est_size="~1 GB (est.)",
-        est_stars="~6M stars (est.)",
+        key="astro_bright",
+        label="Bright  (G < 17)",
+        mag_lo=None, mag_hi=17.0,
+        filenames=(
+            ["gaia_astro_lt15.sqlite", "gaia_astro_150_160.sqlite"]
+            + _astro_filenames(16.0, 17.0, 0.5)
+        ),
+        est_size="~17.0 GB  (4 files)",
+        est_stars="~139.5M stars",
         description="Bright astrometric anchors — enough for most wide-field plate solves.",
         recommended=True,
         unit_label="stars",
         coming_soon=True,
     ),
     GroupDef(
-        key="astro_12_15",
-        label="Medium  (G 12–15)",
-        mag_lo=12.0, mag_hi=15.0,
-        filenames=["gaia_astro_12_15.sqlite"],
-        est_size="~4 GB (est.)",
-        est_stars="~40M stars (est.)",
-        description="Dense coverage for typical amateur fields.",
+        key="astro_faint",
+        label="Faint  (G 17–18)",
+        mag_lo=17.0, mag_hi=18.0,
+        filenames=_astro_filenames(17.0, 18.0, 0.2),
+        est_size="~15.8 GB  (5 files)",
+        est_stars="~129.4M stars",
+        description="Dense coverage for typical narrow-field solves and fainter guide stars.",
         recommended=True,
         unit_label="stars",
         coming_soon=True,
     ),
     GroupDef(
-        key="astro_15_17",
-        label="Faint  (G 15–17)",
-        mag_lo=15.0, mag_hi=17.0,
-        filenames=["gaia_astro_15_17.sqlite"],
-        est_size="~6 GB (est.)",
-        est_stars="~120M stars (est.)",
-        description="Deeper coverage for narrower fields and fainter guide stars.",
-        unit_label="stars",
-        coming_soon=True,
-    ),
-    GroupDef(
-        key="astro_17_18",
-        label="Very Faint  (G 17–18)",
-        mag_lo=17.0, mag_hi=18.0,
-        filenames=["gaia_astro_17_18.sqlite"],
-        est_size="~7 GB (est.)",
-        est_stars="~110M stars (est.)",
+        key="astro_very_faint",
+        label="Very Faint  (G 18–19)",
+        mag_lo=18.0, mag_hi=19.0,
+        filenames=_astro_filenames(18.0, 19.0, 0.1),
+        est_size="~29.2 GB  (10 files)",
+        est_stars="~239.2M stars",
         description="For deep, narrow-field solves needing very dense star fields.",
         unit_label="stars",
         coming_soon=True,
     ),
     GroupDef(
-        key="astro_18_19",
-        label="Extreme  (G 18–19)",
-        mag_lo=18.0, mag_hi=19.0,
-        filenames=["gaia_astro_18_19.sqlite"],
-        est_size="~7.5 GB (est.)",
-        est_stars="~115M stars (est.)",
+        key="astro_extreme",
+        label="Extreme  (G 19–20)",
+        mag_lo=19.0, mag_hi=20.0,
+        filenames=_astro_filenames(19.0, 20.0, 0.1),
+        est_size="~51.2 GB  (10 files)",
+        est_stars="~420.2M stars",
         description="Rarely needed — extremely deep solving fields only.",
+        warning="Large download — ~51 GB total across 10 files.",
         unit_label="stars",
         coming_soon=True,
     ),
     GroupDef(
-        key="astro_19_21",
-        label="Maximum Depth  (G 19–21, full DR3)",
-        mag_lo=19.0, mag_hi=21.0,
-        filenames=["gaia_astro_19_21.sqlite"],
-        est_size="~10 GB+ (est., may need further splitting)",
-        est_stars="~300M+ stars (est.)",
+        key="astro_max_depth",
+        label="Maximum Depth  (G ≥ 20, full DR3)",
+        mag_lo=20.0, mag_hi=None,
+        filenames=_astro_filenames(20.0, 21.0, 0.1) + [
+            "gaia_astro_210_213.sqlite", "gaia_astro_gt213.sqlite",
+        ],
+        est_size="~80.1 GB  (12 files)",
+        est_stars="~656.8M stars",
         description="Full DR3 depth — the practical faint limit of the catalog. "
-                    "Likely to be split into smaller sub-tiers once real file "
-                    "sizes are known.",
-        warning="File size not yet finalized — may exceed a practical per-file "
-                "limit and need splitting once real data exists.",
+                    "Only needed for extreme deep-field work.",
+        warning="Very large download — ~80 GB total across 12 files.",
         unit_label="stars",
         coming_soon=True,
     ),

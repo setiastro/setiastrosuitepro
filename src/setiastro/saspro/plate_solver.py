@@ -2184,14 +2184,25 @@ def _solve_with_GAIA(image: np.ndarray,
           f"FOV={fov_deg:.3f}° — {len(search_centers)} centers × {len(scale_variants)} scales")
     _set_status_ui(parent, "Status: Querying local Gaia DR3 library…")
 
-    # ── 3) Load Gaia library ─────────────────────────────────────────────────
+    # ── 3) Load Gaia library (astrometric preferred, falls back to spectral) ─
+    use_astro = False
+    lib = None
+    astro_lib = None
     try:
-        from setiastro.saspro.gaia_database import get_library
-        lib = get_library()
-        if not lib.installed_bands():
-            return False, "Gaia DR3 solver: no Gaia XP library installed — install bands via Settings → Gaia XP Spectral Library"
+        from setiastro.saspro.gaia_database import get_astro_library, get_library
+        astro_lib = get_astro_library()
+        if astro_lib.installed_bands():
+            use_astro = True
+        else:
+            lib = get_library()
+            if not lib.installed_bands():
+                return False, ("Gaia DR3 solver: no Gaia library installed — install the "
+                              "Astrometry tiers (recommended, denser) or XP Spectral bands "
+                              "via Settings → Gaia DR3 Library")
     except Exception as e:
         return False, f"Gaia DR3 solver: could not load Gaia library: {e}"
+
+    print(f"[GAIA] using {'astrometric' if use_astro else 'spectral'} library")
 
     # ── 4) Detect image stars once (reused across all attempts) ──────────────
     try:
@@ -2296,27 +2307,34 @@ def _solve_with_GAIA(image: np.ndarray,
                     dec_min = min(c.dec.deg for c in corner_sky) - 0.1
                     dec_max = max(c.dec.deg for c in corner_sky) + 0.1
 
-                    all_sources = []
-                    for fname, conn in lib._connections.items():
-                        try:
-                            cur = conn.cursor()
-                            cur.execute("""
-                                SELECT source_id, ra, dec, phot_g_mean_mag FROM sources
-                                WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
-                            """, (dec_min, dec_max, ra_min, ra_max))
-                            all_sources.extend(cur.fetchall())
-                        except Exception as e:
-                            print(f"[GaiaLocal] query failed on {fname}: {e}")
+                    if use_astro:
+                        stars = astro_lib.find_stars_in_box(ra_min, ra_max, dec_min, dec_max)
+                        seen_sids = {
+                            s.source_id: {"ra": s.ra, "dec": s.dec, "gmag": s.gmag, "sid": s.source_id}
+                            for s in stars if s.source_id not in excluded_sids
+                        }
+                    else:
+                        all_sources = []
+                        for fname, conn in lib._connections.items():
+                            try:
+                                cur = conn.cursor()
+                                cur.execute("""
+                                    SELECT source_id, ra, dec, phot_g_mean_mag FROM sources
+                                    WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
+                                """, (dec_min, dec_max, ra_min, ra_max))
+                                all_sources.extend(cur.fetchall())
+                            except Exception as e:
+                                print(f"[GaiaLocal] query failed on {fname}: {e}")
 
-                    if not all_sources:
-                        continue
-
-                    seen_sids = {}
-                    for sid, sra, sdec, gmag in all_sources:
-                        if sid in excluded_sids:
+                        if not all_sources:
                             continue
-                        if sid not in seen_sids:
-                            seen_sids[sid] = {"ra": sra, "dec": sdec, "gmag": gmag, "sid": sid}
+
+                        seen_sids = {}
+                        for sid, sra, sdec, gmag in all_sources:
+                            if sid in excluded_sids:
+                                continue
+                            if sid not in seen_sids:
+                                seen_sids[sid] = {"ra": sra, "dec": sdec, "gmag": gmag, "sid": sid}
 
                     if len(seen_sids) < 10:
                         continue
@@ -2418,6 +2436,7 @@ def _solve_with_GAIA(image: np.ndarray,
         ok_round, result_or_err = _gaia_fit_and_validate(
             img_matched, cat_matched_xy, seed_wcs, cat_sky,
             img_w, img_h, lib, parent,
+            use_astro=use_astro, astro_lib=astro_lib,
         )
 
         if ok_round:
@@ -2448,6 +2467,8 @@ def _gaia_fit_and_validate(
     img_h: int,
     lib,
     parent,
+    use_astro: bool = False,
+    astro_lib=None,
 ) -> tuple[bool, "WCS | str"]:
     """
     Run steps 6-9 of the Gaia solve (TAN fit, iterative refinement,
@@ -2507,7 +2528,6 @@ def _gaia_fit_and_validate(
             prev_rms = rms
 
             try:
-                t_sources = []
                 corners_pix = [(0,0),(img_w-1,0),(0,img_h-1),(img_w-1,img_h-1)]
                 corner_sky  = [wcs_solution.pixel_to_world(x, y) for x, y in corners_pix]
                 t_ra_min  = min(c.ra.deg  for c in corner_sky) - 0.05
@@ -2515,25 +2535,31 @@ def _gaia_fit_and_validate(
                 t_dec_min = min(c.dec.deg for c in corner_sky) - 0.05
                 t_dec_max = max(c.dec.deg for c in corner_sky) + 0.05
 
-                for fname, conn in lib._connections.items():
-                    try:
-                        cur = conn.cursor()
-                        cur.execute("""
-                            SELECT source_id, ra, dec FROM sources
-                            WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
-                        """, (t_dec_min, t_dec_max, t_ra_min, t_ra_max))
-                        t_sources.extend(cur.fetchall())
-                    except Exception:
-                        pass
+                t_seen = {}
+                if use_astro:
+                    for s in astro_lib.find_stars_in_box(t_ra_min, t_ra_max, t_dec_min, t_dec_max):
+                        if s.source_id not in t_seen:
+                            t_seen[s.source_id] = {"ra": s.ra, "dec": s.dec}
+                else:
+                    t_sources = []
+                    for fname, conn in lib._connections.items():
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                SELECT source_id, ra, dec FROM sources
+                                WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
+                            """, (t_dec_min, t_dec_max, t_ra_min, t_ra_max))
+                            t_sources.extend(cur.fetchall())
+                        except Exception:
+                            pass
 
-                if not t_sources:
+                    for sid, sra, sdec in t_sources:
+                        if sid not in t_seen:
+                            t_seen[sid] = {"ra": sra, "dec": sdec}
+
+                if not t_seen:
                     print(f"[GaiaLocal] iter={iteration}: no catalog sources in bbox, stopping")
                     break
-
-                t_seen = {}
-                for sid, sra, sdec in t_sources:
-                    if sid not in t_seen:
-                        t_seen[sid] = {"ra": sra, "dec": sdec}
 
                 t_cat_infos = list(t_seen.values())
                 t_cat_sky_all = SkyCoord(

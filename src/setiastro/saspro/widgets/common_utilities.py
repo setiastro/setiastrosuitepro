@@ -243,9 +243,35 @@ def install_crash_handlers(app: 'QApplication') -> None:
             return str(Path(tempfile.gettempdir()) / "saspro_crash.log")
 
     # 1) Hard crashes → saspro_crash.log
+    # faulthandler writes to a raw file fd, so RotatingFileHandler can't manage it.
+    # Instead: if the existing crash log has grown past a cap, roll it to .1 and
+    # start clean; then append within this session. Bounds the file without
+    # losing the most recent prior crash.
     try:
         crash_path = _get_crash_log_path()
+
+        _CRASH_MAX_BYTES = 512_000  # ~0.5 MB cap
+        try:
+            if os.path.exists(crash_path) and os.path.getsize(crash_path) > _CRASH_MAX_BYTES:
+                _prev = crash_path + ".1"
+                try:
+                    if os.path.exists(_prev):
+                        os.remove(_prev)
+                    os.replace(crash_path, _prev)  # keep one previous generation
+                except Exception:
+                    # if the roll fails (locked, perms), fall back to truncation
+                    open(crash_path, "w", encoding="utf-8", errors="replace").close()
+        except Exception:
+            pass
+
         _crash_log = open(crash_path, "a", encoding="utf-8", errors="replace")
+        # Session banner so multiple runs in one file are distinguishable
+        try:
+            from datetime import datetime as _dt
+            _crash_log.write(f"\n===== faulthandler session {_dt.now().isoformat(timespec='seconds')} =====\n")
+            _crash_log.flush()
+        except Exception:
+            pass
         faulthandler.enable(file=_crash_log, all_threads=True)
         atexit.register(_crash_log.close)
         logging.info("Faulthandler crash log: %s", crash_path)

@@ -28,6 +28,7 @@ plotly = "*"
 exifread = "*"
 lightkurve = "*"
 oktopus = "*"
+PyOpenGL = "*"
 
 # tables & I/O
 pandas = "*"
