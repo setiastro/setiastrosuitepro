@@ -6,12 +6,13 @@
 #  \__ \/ _ \/ __/ / /| | / ___/ __/ ___/ __ \
 # ___/ /  __/ /_/ / ___ |(__  ) /_/ /  / /_/ /
 #/____/\___/\__/_/_/  |_/____/\__/_/   \____/ 
-#  SASpro Gaia XP Spectral Library                                             
+#  SASpro Gaia DR3 Library
 #
-#  gaia_database.py  —  SASpro Gaia XP Spectral Library + Astrometric Library
-#  Manages bulk-downloaded Gaia DR3 SQLite files, both flavors:
-#    - XP spectra (mag-banded, for color calibration)
-#    - Astrometry (declination-banded, for plate solving / star ID)
+#  gaia_database.py  —  SASpro Gaia DR3 Spectral + Astrometric Libraries
+#  Manages bulk-downloaded Gaia DR3 SQLite files, three flavors:
+#    - XP spectra   (magnitude-banded, for color calibration)   34,414,104 rows
+#    - Astrometry   (magnitude-banded, for plate solving)    1,585,128,120 rows
+#    - Neighborhood (<=300 pc extract, for the 3D explorer)
 #  Each provides a unified lookup layer:
 #    1. Local bulk library (distributed SQLite files)
 #    2. Live cache DB   (gaia_xp_cache.sqlite, spectral only)
@@ -19,6 +20,81 @@
 #
 #  Written by Franklin Marek
 #  www.setiastro.com
+# ======================================================
+#
+# ┌──────────────────────────────────────────────────────────────────────┐
+# │  DR4 REBUILD WISHLIST                                                │
+# │                                                                      │
+# │  Gaia DR4 lands Dec 2025. Both catalogs get rebuilt from scratch at  │
+# │  that point, so this is the list of everything we currently work     │
+# │  around, in priority order. None of these are fixable without a      │
+# │  re-fetch — they're all "the column isn't in the file".              │
+# └──────────────────────────────────────────────────────────────────────┘
+#
+#  === ASTROMETRIC BUILDER (gaia_astrometric_builder.py) ===
+#
+#  1. CAPTURE `parallax_error`.  [biggest one]
+#     Currently absent, so we cannot compute parallax_over_error, which is the
+#     standard distance-reliability cut. We substitute (a) parallax > 0, (b) a
+#     RUWE < 1.4 cut, and (c) a hard 300 pc radius on the neighborhood extract.
+#
+#     Be clear about what RUWE does and doesn't do: it is a dimensionless
+#     goodness-of-fit for the 5-parameter astrometric solution. It flags BAD
+#     FITS — unresolved binaries, blends, marginally resolved sources. It does
+#     NOT flag a perfectly clean fit whose parallax is simply too small to
+#     measure. A single star at 5 kpc can have RUWE = 1.0 and a parallax
+#     consistent with zero. That second failure mode is why the radius is
+#     capped at 300 pc: at close range the fractional parallax error is small
+#     almost regardless, so a tight radius does the work parallax_over_error
+#     would otherwise do.
+#
+#     With parallax_error in hand we can drop the arbitrary radius cap and let
+#     each star qualify on its own merit (parallax_over_error > 5, say), which
+#     means the Neighborhood Explorer reaches farther *honestly* rather than
+#     farther *optimistically*. DR4's longer baseline also tightens parallaxes
+#     across the board, so the reachable volume grows twice over.
+#
+#  2. CAPTURE `bp_rp` (and ideally `phot_bp_mean_mag` / `phot_rp_mean_mag`).
+#     Gaia's color index. One REAL per source. Gives real stellar color for
+#     every astrometric source — including the ~80% of the solar neighborhood
+#     that has no XP spectrum at all. Would let the 3D explorer color every
+#     point by temperature instead of coloring 19% and greying out the rest.
+#
+#  3. Consider `pmra_error` / `pmdec_error` and `phot_g_mean_flux_over_error`.
+#     Cheap to carry, useful for weighting the plate solve.
+#
+#  === XP SPECTRAL BUILDER (gaia_bulk_builder.py) ===
+#
+#  4. POPULATE `sources.bp_rp`.
+#     The column exists in the schema and is NULL in every file. Verified with
+#     inspect_xp_colour_sources.py across lt8 / 8_10 / 100_105 / 140_141.
+#
+#  5. POPULATE `synth_phot(source_id, system_key, Sr, Sg, Sb)`.
+#     Table exists, is empty everywhere. If we precompute synthetic RGB at
+#     build time, star coloring becomes three REAL reads instead of a
+#     zlib.decompress + three integrals per star. Today the Neighborhood
+#     Explorer integrates the raw 343-point spectrum against the CIE 1931
+#     color matching functions at runtime (see spectrum_to_srgb below), which
+#     is correct and pretty but caps us at ~20k stars.
+#
+#     If we populate synth_phot we can color millions of points instantly, and
+#     spectrum_to_srgb becomes the *builder's* job rather than the UI's.
+#
+#  6. Note DR4's XP magnitude limit. DR3 XP spectra stop at G ~= 15 and
+#     saturate below G ~= 2.2 (so Sirius, Vega, Alpha Cen, Procyon are all
+#     simply absent — a recurring "is this a bug?" question). If DR4 extends
+#     either end, the tier boundaries in GROUP_DEFS need revisiting.
+#
+#  === GENERAL ===
+#
+#  7. Re-derive every n_items in GROUP_DEFS / ASTRO_GROUP_DEFS after the
+#     rebuild. They are exact row counts, hardcoded so the UI never has to run
+#     COUNT(*) over multi-GB WITHOUT ROWID tables. count_xp_library.py emits a
+#     ready-to-paste block; the astrometric splitter prints its own totals.
+#
+#  8. Watch out for np.trapz — REMOVED in NumPy 2.0. We bind np.trapezoid with
+#     a fallback. Any new numeric code should do the same.
+#
 # ======================================================
 
 from __future__ import annotations
@@ -38,7 +114,7 @@ from urllib.error import URLError, HTTPError
 import numpy as np
 
 from PyQt6.QtCore import (
-    Qt, QThread, QStandardPaths, QSettings,
+    Qt, QThread, QStandardPaths, QSettings, QTimer,
     pyqtSignal as _Signal,
 )
 from PyQt6.QtWidgets import (
@@ -46,6 +122,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QWidget, QMessageBox, QFileDialog,
     QScrollArea, QFrame, QTabWidget, QTextEdit, QLineEdit, QComboBox,
     QSizePolicy, QRadioButton, QButtonGroup,
+    QDoubleSpinBox, QCheckBox, QSlider, QTableWidget, QTableWidgetItem, QMenu,
 )
 from PyQt6.QtGui import QColor
 from PyQt6 import sip
@@ -58,13 +135,28 @@ try:
 except ImportError:
     HAS_MPL = False
 
+# 3D Stellar Neighborhood Explorer needs pyqtgraph's OpenGL module, which in
+# turn needs PyOpenGL. Both are optional — the tab degrades to a message if
+# either is missing (e.g. a headless box, or a frozen build missing the
+# OpenGL.platform.* hidden imports).
+try:
+    import pyqtgraph.opengl as gl
+    HAS_GL = True
+    _GL_IMPORT_ERROR = ""
+except Exception as _e:            # ImportError, or OpenGL platform failures
+    HAS_GL = False
+    _GL_IMPORT_ERROR = str(_e)
+
 
 # ── Backblaze public URLs ──────────────────────────────────────────────────────
 LIBRARY_DOWNLOAD_BASE       = "https://f005.backblazeb2.com/file/setiastro-gaia/"
-# NOTE: confirm the exact host/bucket-name Backblaze assigns once the
-# "setiastro-astrometry" bucket is created — this is a placeholder mirroring
-# the existing spectral bucket's URL pattern.
 ASTRO_LIBRARY_DOWNLOAD_BASE = "https://f005.backblazeb2.com/file/setiastro-astrometry/"
+
+# Precomputed 3D neighborhood extract (built by gaia_neighborhood_builder.py).
+# Lives in the astrometric library dir alongside the magnitude tiers, but has
+# its own schema (`neighborhood` table with galactic XYZ baked in).
+NEIGHBORHOOD_FILENAME = "gaia_neighborhood.sqlite"
+NEIGHBORHOOD_MAX_PC   = 300.0     # radius the extract was built with
 
 # Gaia XP wavelength grid (nm) — 343 points, 336–1020 nm, 2 nm step
 WL_GRID = np.arange(336, 1022, 2, dtype=np.float32)
@@ -95,9 +187,14 @@ class GroupDef:
     dec_hi:      Optional[float] = None
     # Word used in status text ("spectra" for XP groups, "stars" for astrometric).
     unit_label:  str = "spectra"
-    # True while this group's files aren't hosted anywhere yet — shows a
-    # "Coming Soon" state instead of live Install/Browse/Remove buttons.
-    coming_soon: bool = False
+    # Overrides the tab's default table name when counting rows. The
+    # neighborhood extract uses a `neighborhood` table, not `stars`.
+    table_name:  Optional[str] = None
+    # Exact row count for this group, known from the build. When set, the UI
+    # displays it directly instead of running COUNT(*) over multi-GB
+    # WITHOUT ROWID tables — which is minutes of pointless disk churn to
+    # rediscover a number we already have.
+    n_items:     Optional[int] = None
 
 
 GROUP_DEFS: List[GroupDef] = [
@@ -107,7 +204,8 @@ GROUP_DEFS: List[GroupDef] = [
         mag_lo=None, mag_hi=8.0,
         filenames=["gaia_xp_lt8.sqlite"],
         est_size="~220 MB",
-        est_stars="~55k stars",
+        est_stars="54,735 spectra",
+        n_items=54735,
         description="Bright stars from G≈2.2 to G<8 — Arneb, Muphrid, Tania Australis, and tens of "
                     "thousands more. Note: Gaia's detector saturates below G≈2.2, so stars "
                     "like Vega, Sirius, Arcturus and Rigel are not in the dataset.",
@@ -119,7 +217,8 @@ GROUP_DEFS: List[GroupDef] = [
         mag_lo=8.0, mag_hi=10.0,
         filenames=["gaia_xp_8_10.sqlite"],
         est_size="~1.5 GB",
-        est_stars="~385k stars",
+        est_stars="385,269 spectra",
+        n_items=385269,
         description="Covers most calibration stars reachable from backyard setups.",
         recommended=True,
     ),
@@ -134,7 +233,8 @@ GROUP_DEFS: List[GroupDef] = [
             "gaia_xp_115_120.sqlite",
         ],
         est_size="~9.5 GB  (4 files)",
-        est_stars="~2.4M stars",
+        est_stars="2,426,887 spectra",
+        n_items=2426887,
         description="Dense coverage — recommended for wide-field and narrowband imaging.",
         recommended=True,
     ),
@@ -150,7 +250,8 @@ GROUP_DEFS: List[GroupDef] = [
             "gaia_xp_136_138.sqlite", "gaia_xp_138_140.sqlite",
         ],
         est_size="~50 GB  (10 files)",
-        est_stars="~12.9M stars",
+        est_stars="12,852,953 spectra",
+        n_items=12852953,
         description="Deep coverage for long-exposure narrowband work. "
                     "Note: file sizes range from 2–9 GB each.",
         warning="Large download — ~50 GB total. Allow many hours on a typical connection.",
@@ -167,7 +268,8 @@ GROUP_DEFS: List[GroupDef] = [
             "gaia_xp_148_149.sqlite", "gaia_xp_149_150.sqlite",
         ],
         est_size="~73 GB  (10 files)",
-        est_stars="~18.7M stars",
+        est_stars="18,694,260 spectra",
+        n_items=18694260,
         description="Maximum depth. For the deepest narrowband fields. "
                     "Gaia DR3 XP spectra top out at G≈15.",
         warning="Very large download — ~73 GB total. Files range 5–10 GB each. "
@@ -180,14 +282,14 @@ _FILENAME_TO_GROUP: Dict[str, str] = {
 }
 
 
-# ── Astrometric magnitude tiers (real split plan — pending upload) ───────────
+# ── Astrometric magnitude tiers ──────────────────────────────────────────────
 # Matches gaia_astro_split_bands.py's SPLIT_PLAN exactly: 41 physical files,
 # grouped here into 5 user-facing tiers at clean magnitude boundaries so the
 # UI reuses the same "one tier = many files, one Install downloads them all"
-# pattern already used by the Spectrum Library tab's faint/very_faint groups.
-# Sizes below are computed from real dry-run row counts (~130.9 bytes/row),
-# not guesses — still marked coming_soon until the files are actually
-# uploaded to the setiastro-astrometry bucket.
+# pattern the Spectrum Library tab already uses for its faint tiers.
+#
+# Row counts and sizes below are the REAL measured values from the completed
+# split (1,585,128,120 rows / 183.9 GB total), not estimates.
 
 def _astro_filenames(lo: float, hi: float, step: float) -> List[str]:
     """
@@ -206,6 +308,21 @@ def _astro_filenames(lo: float, hi: float, step: float) -> List[str]:
 
 ASTRO_GROUP_DEFS: List[GroupDef] = [
     GroupDef(
+        key="astro_neighborhood",
+        label="Stellar Neighborhood  (within 300 pc)",
+        mag_lo=None, mag_hi=None,
+        filenames=[NEIGHBORHOOD_FILENAME],
+        est_size="~1.5 GB  (1 file)",
+        est_stars="~10–14M stars",
+        description="Precomputed 3D positions (galactic XYZ, Sun at origin) for every "
+                    "Gaia DR3 source with a usable parallax within 300 parsecs. Powers "
+                    "the Stellar Neighborhood Explorer tab. Complete and self-contained — "
+                    "no magnitude tiers needed.",
+        recommended=True,
+        unit_label="stars",
+        table_name="neighborhood",
+    ),
+    GroupDef(
         key="astro_bright",
         label="Bright  (G < 17)",
         mag_lo=None, mag_hi=17.0,
@@ -213,47 +330,48 @@ ASTRO_GROUP_DEFS: List[GroupDef] = [
             ["gaia_astro_lt15.sqlite", "gaia_astro_150_160.sqlite"]
             + _astro_filenames(16.0, 17.0, 0.5)
         ),
-        est_size="~17.0 GB  (4 files)",
-        est_stars="~139.5M stars",
+        est_size="16.9 GB  (4 files)",
+        est_stars="139,482,635 stars",
         description="Bright astrometric anchors — enough for most wide-field plate solves.",
         recommended=True,
         unit_label="stars",
-        coming_soon=True,
+        n_items=139482635,
     ),
     GroupDef(
         key="astro_faint",
         label="Faint  (G 17–18)",
         mag_lo=17.0, mag_hi=18.0,
         filenames=_astro_filenames(17.0, 18.0, 0.2),
-        est_size="~15.8 GB  (5 files)",
-        est_stars="~129.4M stars",
+        est_size="15.7 GB  (5 files)",
+        est_stars="129,386,971 stars",
         description="Dense coverage for typical narrow-field solves and fainter guide stars.",
         recommended=True,
         unit_label="stars",
-        coming_soon=True,
+        n_items=129386971,
     ),
     GroupDef(
         key="astro_very_faint",
         label="Very Faint  (G 18–19)",
         mag_lo=18.0, mag_hi=19.0,
         filenames=_astro_filenames(18.0, 19.0, 0.1),
-        est_size="~29.2 GB  (10 files)",
-        est_stars="~239.2M stars",
+        est_size="28.9 GB  (10 files)",
+        est_stars="239,207,768 stars",
         description="For deep, narrow-field solves needing very dense star fields.",
+        warning="Large download — ~29 GB total across 10 files.",
         unit_label="stars",
-        coming_soon=True,
+        n_items=239207768,
     ),
     GroupDef(
         key="astro_extreme",
         label="Extreme  (G 19–20)",
         mag_lo=19.0, mag_hi=20.0,
         filenames=_astro_filenames(19.0, 20.0, 0.1),
-        est_size="~51.2 GB  (10 files)",
-        est_stars="~420.2M stars",
+        est_size="50.4 GB  (10 files)",
+        est_stars="420,229,783 stars",
         description="Rarely needed — extremely deep solving fields only.",
-        warning="Large download — ~51 GB total across 10 files.",
+        warning="Very large download — ~50 GB total across 10 files.",
         unit_label="stars",
-        coming_soon=True,
+        n_items=420229783,
     ),
     GroupDef(
         key="astro_max_depth",
@@ -262,13 +380,13 @@ ASTRO_GROUP_DEFS: List[GroupDef] = [
         filenames=_astro_filenames(20.0, 21.0, 0.1) + [
             "gaia_astro_210_213.sqlite", "gaia_astro_gt213.sqlite",
         ],
-        est_size="~80.1 GB  (12 files)",
-        est_stars="~656.8M stars",
+        est_size="72.0 GB  (12 files)",
+        est_stars="656,820,963 stars",
         description="Full DR3 depth — the practical faint limit of the catalog. "
-                    "Only needed for extreme deep-field work.",
-        warning="Very large download — ~80 GB total across 12 files.",
+                    "Includes sources with no measured G magnitude.",
+        warning="Enormous download — ~72 GB total across 12 files.",
         unit_label="stars",
-        coming_soon=True,
+        n_items=656820963,
     ),
 ]
 
@@ -560,6 +678,11 @@ class GaiaBulkLibrary:
         return None
 
     def get_group_status(self) -> List[GroupStatus]:
+        """
+        WARNING: runs COUNT(*) on every installed file. The UI no longer calls
+        this — GroupDef.n_items carries exact build-time counts. Kept only for
+        external callers; expect it to be slow on the large tiers.
+        """
         statuses = []
         for g in GROUP_DEFS:
             installed, missing = [], []
@@ -663,8 +786,15 @@ class GaiaAstrometricLibrary:
         self._open_installed()
 
     def _open_installed(self):
-        for path in sorted(self._dir.glob("gaia_astro_dec_*.sqlite")):
+        # The distributed tier files are named gaia_astro_lt15.sqlite,
+        # gaia_astro_150_160.sqlite, ... gaia_astro_gt213.sqlite. (The
+        # gaia_astro_dec_*.sqlite files are the *build-time* declination bands,
+        # never shipped.) Exclude the neighborhood extract, which has its own
+        # schema and its own library class.
+        for path in sorted(self._dir.glob("gaia_astro_*.sqlite")):
             fname = path.name
+            if fname == NEIGHBORHOOD_FILENAME:
+                continue
             if fname not in self._connections:
                 try:
                     conn = sqlite3.connect(str(path), check_same_thread=False)
@@ -780,6 +910,11 @@ class GaiaAstrometricLibrary:
         return out
 
     def get_group_status(self) -> List[GroupStatus]:
+        """
+        WARNING: runs COUNT(*) on every installed file — on the deep tiers that
+        is a full scan of a multi-GB WITHOUT ROWID table. The UI uses
+        GroupDef.n_items instead. Kept only for external callers.
+        """
         statuses = []
         for g in ASTRO_GROUP_DEFS:
             installed, missing = [], []
@@ -832,6 +967,189 @@ def refresh_astro_library():
     if _astro_library_instance is not None:
         _astro_library_instance.close()
     _astro_library_instance = GaiaAstrometricLibrary()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Neighborhood data layer  (3D explorer)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class GaiaNeighborhoodLibrary:
+    """
+    Read-only access to gaia_neighborhood.sqlite — the precomputed extract of
+    every Gaia DR3 source with a usable parallax inside 300 pc, built by
+    gaia_neighborhood_builder.py.
+
+    Galactic Cartesian XYZ (Sun at origin, +Z toward the north galactic pole,
+    disk in the XY plane) are baked in at build time, so the explorer can
+    stream them straight into a GL vertex buffer with no per-point math.
+
+    Quality note: DR3's astrometric builder did not capture parallax_error, so
+    distance reliability rests on (a) parallax > 0 (enforced at build time),
+    (b) a RUWE cut applied here at query time, and (c) a conservative radius.
+    RUWE catches *bad astrometric fits* (binaries, blends); it does NOT catch a
+    clean fit whose parallax is simply too small to be meaningful. That second
+    failure mode is what the radius limit guards against — which is why the
+    extract stops at 300 pc. DR4 will add parallax_error and let this reach
+    farther honestly.
+    """
+
+    def __init__(self, library_dir: Optional[Path] = None):
+        self._dir = library_dir or get_astro_library_dir()
+        self._conn: Optional[sqlite3.Connection] = None
+        self._open()
+
+    def _path(self) -> Path:
+        return self._dir / NEIGHBORHOOD_FILENAME
+
+    def _open(self):
+        p = self._path()
+        if not p.exists():
+            return
+        try:
+            self._conn = sqlite3.connect(str(p), check_same_thread=False)
+            self._conn.execute("PRAGMA query_only = ON;")
+        except Exception as e:
+            print(f"[GaiaNeighborhoodLibrary] Could not open {p.name}: {e}")
+            self._conn = None
+
+    def refresh(self):
+        self.close()
+        self._dir = get_astro_library_dir()
+        self._open()
+
+    def close(self):
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    def is_installed(self) -> bool:
+        return self._conn is not None
+
+    def max_pc(self) -> float:
+        """Radius the extract was built with, read from its metadata table."""
+        if self._conn is None:
+            return NEIGHBORHOOD_MAX_PC
+        try:
+            row = self._conn.execute(
+                "SELECT value FROM metadata WHERE key='max_pc'").fetchone()
+            return float(row[0]) if row else NEIGHBORHOOD_MAX_PC
+        except Exception:
+            return NEIGHBORHOOD_MAX_PC
+
+    def total_stars(self) -> int:
+        if self._conn is None:
+            return 0
+        try:
+            return self._conn.execute("SELECT COUNT(*) FROM neighborhood").fetchone()[0]
+        except Exception:
+            return 0
+
+    def load_sphere(
+        self,
+        max_pc: float,
+        max_ruwe: Optional[float] = 1.4,
+        max_gmag: Optional[float] = None,
+        limit: int = 2_000_000,
+    ) -> Optional[Dict[str, np.ndarray]]:
+        """
+        Fetch every star inside `max_pc`, optionally RUWE- and magnitude-cut,
+        nearest first. Returns numpy arrays ready for GLScatterPlotItem, or
+        None if the library isn't installed.
+
+        `limit` is a hard cap so an accidental 300 pc + no-cuts query can't try
+        to push ~14M points into a vertex buffer and wedge the UI.
+        """
+        if self._conn is None:
+            return None
+
+        where = ["dist_pc <= ?"]
+        params: list = [float(max_pc)]
+        if max_ruwe is not None:
+            # NULL ruwe passes: any row here has a parallax, so it came from a
+            # 5- or 6-parameter solution and should carry a RUWE. NULLs are rare
+            # and dropping them silently would be a quiet data loss.
+            where.append("(ruwe IS NULL OR ruwe < ?)")
+            params.append(float(max_ruwe))
+        if max_gmag is not None:
+            where.append("(phot_g_mean_mag IS NOT NULL AND phot_g_mean_mag <= ?)")
+            params.append(float(max_gmag))
+        params.append(int(limit))
+
+        sql = (
+            "SELECT source_id, x_pc, y_pc, z_pc, dist_pc, phot_g_mean_mag, ruwe, ra, dec "
+            "FROM neighborhood WHERE " + " AND ".join(where) +
+            " ORDER BY dist_pc LIMIT ?"
+        )
+
+        try:
+            rows = self._conn.execute(sql, params).fetchall()
+        except Exception as e:
+            print(f"[GaiaNeighborhoodLibrary] query failed: {e}")
+            return None
+
+        n = len(rows)
+        if n == 0:
+            return {k: np.empty(0, dtype=t) for k, t in (
+                ("source_id", np.int64), ("dist_pc", np.float32),
+                ("gmag", np.float32), ("ruwe", np.float32),
+                ("ra", np.float64), ("dec", np.float64),
+            )} | {"xyz": np.empty((0, 3), dtype=np.float32)}
+
+        src  = np.empty(n, dtype=np.int64)
+        xyz  = np.empty((n, 3), dtype=np.float32)
+        dist = np.empty(n, dtype=np.float32)
+        gmag = np.empty(n, dtype=np.float32)
+        ruwe = np.empty(n, dtype=np.float32)
+        ra   = np.empty(n, dtype=np.float64)
+        dec  = np.empty(n, dtype=np.float64)
+
+        for i, (sid, x, y, z, d, g, r, a, dd) in enumerate(rows):
+            src[i] = sid
+            xyz[i, 0] = x; xyz[i, 1] = y; xyz[i, 2] = z
+            dist[i] = d
+            gmag[i] = np.nan if g is None else g
+            ruwe[i] = np.nan if r is None else r
+            ra[i]   = a
+            dec[i]  = dd
+
+        return {"source_id": src, "xyz": xyz, "dist_pc": dist,
+                "gmag": gmag, "ruwe": ruwe, "ra": ra, "dec": dec}
+
+    def get_star(self, source_id: int) -> Optional[Dict]:
+        if self._conn is None:
+            return None
+        try:
+            row = self._conn.execute(
+                "SELECT source_id, ra, dec, parallax, dist_pc, x_pc, y_pc, z_pc, "
+                "pmra, pmdec, phot_g_mean_mag, ruwe FROM neighborhood WHERE source_id=?",
+                (int(source_id),)).fetchone()
+        except Exception:
+            return None
+        if not row:
+            return None
+        keys = ("source_id", "ra", "dec", "parallax", "dist_pc", "x_pc", "y_pc",
+                "z_pc", "pmra", "pmdec", "gmag", "ruwe")
+        return dict(zip(keys, row))
+
+
+_neighborhood_instance: Optional[GaiaNeighborhoodLibrary] = None
+
+
+def get_neighborhood_library() -> GaiaNeighborhoodLibrary:
+    global _neighborhood_instance
+    if _neighborhood_instance is None:
+        _neighborhood_instance = GaiaNeighborhoodLibrary()
+    return _neighborhood_instance
+
+
+def refresh_neighborhood_library():
+    global _neighborhood_instance
+    if _neighborhood_instance is not None:
+        _neighborhood_instance.close()
+    _neighborhood_instance = GaiaNeighborhoodLibrary()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1528,25 +1846,6 @@ class _GroupRowWidget(QFrame):
         self._lbl_title.setText(g.label)
         self._lbl_desc.setText(g.description)
 
-        if getattr(g, "coming_soon", False):
-            self._lbl_badge.setText("Coming Soon")
-            self._lbl_badge.setStyleSheet(
-                "font-size: 10px; color: #8899cc; font-weight: bold; "
-                "border: 1px solid #8899cc; border-radius: 3px; padding: 1px 5px;")
-            self._lbl_badge.setVisible(True)
-            self._dot.setStyleSheet("color: #444; font-size: 14px;")
-            self._lbl_stats.setText(
-                f"Not yet available  ·  {g.est_stars}  ·  {g.est_size}"
-            )
-            if g.warning:
-                self._lbl_warning.setText(f"⚠  {g.warning}")
-                self._lbl_warning.setVisible(True)
-            self._btn_install.setVisible(False)
-            self._btn_browse.setVisible(False)
-            self._btn_remove.setVisible(False)
-            self._btn_cancel.setVisible(False)
-            return
-
         if g.recommended:
             self._lbl_badge.setText("Recommended")
             self._lbl_badge.setVisible(True)
@@ -1557,8 +1856,12 @@ class _GroupRowWidget(QFrame):
 
         if status.fully_installed:
             self._dot.setStyleSheet("color: #44cc66; font-size: 14px;")
+            # Prefer the exact build-time count when we have it; only fall back
+            # to a live COUNT(*) result (spectral tab) when we don't.
+            n = g.n_items if g.n_items is not None else status.total_spectra
+            n_str = f"{n:,} {unit}" if n else f"— {unit}"
             self._lbl_stats.setText(
-                f"{status.total_spectra:,} {unit}  ·  "
+                f"{n_str}  ·  "
                 f"{status.total_mb / 1024:.1f} GB on disk  ·  "
                 f"{len(status.installed)}/{len(g.filenames)} files"
             )
@@ -1568,9 +1871,13 @@ class _GroupRowWidget(QFrame):
 
         elif status.partially_installed:
             self._dot.setStyleSheet("color: #ddaa44; font-size: 14px;")
+            # Partial: a build-time total would be misleading (not all files are
+            # here), so report files + disk only.
+            counted = (f"{status.total_spectra:,} {unit}  ·  "
+                       if status.total_spectra else "")
             self._lbl_stats.setText(
                 f"Partial: {len(status.installed)}/{len(g.filenames)} files  ·  "
-                f"{status.total_spectra:,} {unit}  ·  "
+                f"{counted}"
                 f"{status.total_mb / 1024:.1f} GB on disk  —  "
                 f"click Install to resume"
             )
@@ -1642,51 +1949,1089 @@ class _GroupRowWidget(QFrame):
             self._lbl_file_count.setText(f"{mb_part}  ·  {done}/{total} files")
 
 
-class _ItemsCountWorker(QThread):
-    """
-    Counts rows across installed group files. Generalized over the previous
-    _SpectraCountWorker: takes the group-def list and table name to count
-    ("spectra" for XP groups, "stars" for astrometric groups) as params so
-    one worker class serves both tabs.
-    """
-    progress = _Signal(int)
-    finished = _Signal(dict, int)
+# ══════════════════════════════════════════════════════════════════════════════
+#  True star colour from XP spectra
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# The XP library's `sources.bp_rp` column is NULL and its `synth_phot` table is
+# empty (never populated by the bulk builder), so there is no shortcut: to get
+# a real colour we integrate the actual 343-point spectrum against the CIE 1931
+# colour matching functions. That costs a zlib.decompress + a few dot products
+# per star, which is fine for thousands and hopeless for millions — hence the
+# star cap and the worker thread.
 
-    def __init__(self, library_dir: Path, group_defs: List[GroupDef],
-                 table_name: str, parent=None):
+# np.trapz was REMOVED in NumPy 2.0. SASpro pins numpy = "*", so bind whichever
+# name exists rather than assuming.
+_trapz = getattr(np, "trapezoid", None) or getattr(np, "trapz")
+
+
+def _cie_cmf(wl: np.ndarray):
+    """
+    CIE 1931 2° colour matching functions via Wyman, Sloan & Shirley (2013),
+    JCGT — multi-lobe piecewise-Gaussian fits. ~1% accurate, no lookup table.
+    """
+    def g(x, mu, s1, s2):
+        s = np.where(x < mu, s1, s2)
+        return np.exp(-0.5 * ((x - mu) / s) ** 2)
+
+    xb = (1.056 * g(wl, 599.8, 37.9, 31.0)
+          + 0.362 * g(wl, 442.0, 16.0, 26.7)
+          - 0.065 * g(wl, 501.1, 20.4, 26.2))
+    yb = (0.821 * g(wl, 568.8, 46.9, 40.5)
+          + 0.286 * g(wl, 530.9, 16.3, 31.1))
+    zb = (1.217 * g(wl, 437.0, 11.8, 36.0)
+          + 0.681 * g(wl, 459.0, 26.0, 13.8))
+    return xb, yb, zb
+
+
+_CMF_X, _CMF_Y, _CMF_Z = _cie_cmf(WL_GRID.astype(np.float64))
+
+# XYZ -> linear sRGB (D65)
+_XYZ_TO_RGB = np.array([[ 3.2406, -1.5372, -0.4986],
+                        [-0.9689,  1.8758,  0.0415],
+                        [ 0.0557, -0.2040,  1.0570]])
+
+
+def spectrum_to_srgb(flux: np.ndarray) -> np.ndarray:
+    """
+    One XP spectrum (343 samples, 336–1020 nm) -> sRGB in 0..1.
+
+    Luminance is normalised away: we keep only chromaticity, because apparent
+    brightness is already encoded in the point size. Without this, every star
+    would render as some shade of "very dim" and the colour would be invisible.
+
+    Verified against blackbodies: 2500 K -> deep orange, 5772 K -> near-white,
+    10000 K -> blue, with B/R strictly increasing in temperature.
+    """
+    X = _trapz(flux * _CMF_X, WL_GRID)
+    Y = _trapz(flux * _CMF_Y, WL_GRID)
+    Z = _trapz(flux * _CMF_Z, WL_GRID)
+    if not np.isfinite(Y) or Y <= 0:
+        return np.array([1.0, 1.0, 1.0], dtype=np.float32)
+
+    xyz = np.array([X, Y, Z], dtype=np.float64) / Y
+    lin = _XYZ_TO_RGB @ xyz
+    lin = np.clip(lin, 0.0, None)          # clip out-of-gamut negatives
+    peak = lin.max()
+    if peak > 0:
+        lin = lin / peak
+
+    srgb = np.where(lin <= 0.0031308,
+                    12.92 * lin,
+                    1.055 * np.power(lin, 1.0 / 2.4) - 0.055)
+    return np.clip(srgb, 0.0, 1.0).astype(np.float32)
+
+
+class _SpectrumColourWorker(QThread):
+    """
+    Resolves true colours for a set of Gaia source_ids off the UI thread.
+
+    get_spectrum(sid) is a primary-key hit, but it may probe each installed XP
+    file in turn, and every hit costs a zlib.decompress. So we cap the work and
+    spend it on the brightest stars, where colour is most visible anyway.
+    """
+    finished_colours = _Signal(object, object)   # rgb (N,3) float32, found mask (N,) bool
+    failed           = _Signal(str)
+
+    def __init__(self, source_ids: np.ndarray, order: np.ndarray, parent=None):
         super().__init__(parent)
-        self._dir        = library_dir
-        self._group_defs = group_defs
-        self._table      = table_name
-        self._cancel     = False
+        self._sids  = source_ids
+        self._order = order          # indices to attempt, brightest first
+        self._cancel = False
 
     def cancel(self):
         self._cancel = True
 
     def run(self):
-        group_counts: dict[str, int] = {g.key: 0 for g in self._group_defs}
-        running_total = 0
+        try:
+            lib = get_library()
+            if not lib.installed_bands():
+                self.failed.emit("No XP spectral tiers installed.")
+                return
 
-        for g in self._group_defs:
-            for fname in g.filenames:
+            n = len(self._sids)
+            rgb   = np.zeros((n, 3), dtype=np.float32)
+            found = np.zeros(n, dtype=bool)
+
+            for i in self._order:
                 if self._cancel:
-                    self.finished.emit(group_counts, running_total)
                     return
-                path = self._dir / fname
-                if not path.exists():
-                    continue
+                sid = int(self._sids[i])
                 try:
-                    conn = sqlite3.connect(str(path), check_same_thread=True)
-                    conn.execute("PRAGMA query_only = ON;")
-                    n = conn.execute(f"SELECT COUNT(*) FROM {self._table}").fetchone()[0]
-                    conn.close()
-                    group_counts[g.key] += n
-                    running_total += n
-                    self.progress.emit(running_total)
+                    spec = lib.get_spectrum(sid)
+                except Exception:
+                    spec = None
+                if spec is None:
+                    continue
+                rgb[i]   = spectrum_to_srgb(spec.flux.astype(np.float64))
+                found[i] = True
+
+            self.finished_colours.emit(rgb, found)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  Stellar Neighborhood Explorer  (3D)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _star_colors(gmag: np.ndarray, dist_pc: np.ndarray, mode: str) -> np.ndarray:
+    """
+    Map a per-star scalar to RGBA. No matplotlib dependency — a hand-rolled
+    blue-white-orange ramp that reads roughly like stellar luminosity.
+
+    mode:
+      "absmag"  — absolute G, M_G = G - 5*log10(d) + 5. A luminosity proxy:
+                  low (bright/luminous) -> blue-white, high (dim dwarfs) -> orange.
+                  NOTE: without BP-RP this is NOT temperature. A luminous red
+                  giant and a hot blue dwarf can share an absolute magnitude.
+      "appmag"  — apparent G, i.e. how bright it looks from here.
+      "dist"    — distance from the Sun.
+    """
+    n = gmag.shape[0]
+    if n == 0:
+        return np.empty((0, 4), dtype=np.float32)
+
+    if mode == "dist":
+        v = dist_pc.astype(np.float64)
+    elif mode == "appmag":
+        v = gmag.astype(np.float64)
+    else:  # absmag
+        with np.errstate(divide="ignore", invalid="ignore"):
+            d = np.maximum(dist_pc.astype(np.float64), 1e-6)
+            v = gmag.astype(np.float64) - 5.0 * np.log10(d) + 5.0
+
+    finite = np.isfinite(v)
+    if not finite.any():
+        out = np.tile(np.array([1, 1, 1, 0.9], dtype=np.float32), (n, 1))
+        return out
+
+    # Robust normalization: 5th-95th percentile so a couple of outliers don't
+    # flatten the whole ramp.
+    lo, hi = np.percentile(v[finite], [5, 95])
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo, hi = np.nanmin(v[finite]), np.nanmax(v[finite])
+        if hi <= lo:
+            hi = lo + 1.0
+    t = np.clip((v - lo) / (hi - lo), 0.0, 1.0)
+    t[~finite] = 0.5   # unknown magnitude -> mid ramp
+
+    # ramp: 0 -> blue-white (luminous), 0.5 -> white/cream, 1 -> orange-red (dim)
+    c0 = np.array([0.68, 0.80, 1.00])
+    c1 = np.array([1.00, 0.99, 0.92])
+    c2 = np.array([1.00, 0.52, 0.28])
+    tt = t[:, None]
+    lower = c0 + (c1 - c0) * (tt / 0.5)
+    upper = c1 + (c2 - c1) * ((tt - 0.5) / 0.5)
+    rgb = np.where(tt < 0.5, lower, upper)
+
+    rgba = np.empty((n, 4), dtype=np.float32)
+    rgba[:, :3] = rgb
+    rgba[:, 3] = 0.85
+    return rgba
+
+
+def _star_sizes(gmag: np.ndarray, base: float = 4.0) -> np.ndarray:
+    """Apparent brightness -> point size in pixels. Brighter stars render bigger."""
+    n = gmag.shape[0]
+    if n == 0:
+        return np.empty(0, dtype=np.float32)
+    g = gmag.astype(np.float64)
+    finite = np.isfinite(g)
+    if not finite.any():
+        return np.full(n, base, dtype=np.float32)
+    lo, hi = np.percentile(g[finite], [2, 98])
+    if hi <= lo:
+        hi = lo + 1.0
+    t = np.clip((g - lo) / (hi - lo), 0.0, 1.0)   # 0 = bright, 1 = faint
+    t[~finite] = 0.8
+    sizes = base * (2.6 - 2.1 * t)                # bright ~2.6x base, faint ~0.5x
+    return np.maximum(sizes, 1.2).astype(np.float32)
+
+
+class _NeighborhoodLoadWorker(QThread):
+    """Runs the (potentially large) sphere query off the UI thread."""
+    loaded = _Signal(object)
+    failed = _Signal(str)
+
+    def __init__(self, max_pc: float, max_ruwe: Optional[float],
+                 max_gmag: Optional[float], limit: int, parent=None):
+        super().__init__(parent)
+        self._max_pc   = max_pc
+        self._max_ruwe = max_ruwe
+        self._max_gmag = max_gmag
+        self._limit    = limit
+
+    def run(self):
+        try:
+            lib = get_neighborhood_library()
+            data = lib.load_sphere(self._max_pc, self._max_ruwe,
+                                   self._max_gmag, self._limit)
+            if data is None:
+                self.failed.emit("Neighborhood library is not installed.")
+                return
+            self.loaded.emit(data)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+if HAS_GL:
+
+    class _PickableGLView(gl.GLViewWidget):
+        """
+        GLViewWidget that reports which scatter point was clicked.
+
+        pyqtgraph has no built-in 3D picking, so we project every displayed
+        point through the current MVP matrix and take the nearest hit within a
+        pixel radius. Cheap enough at the point counts this tab renders, and it
+        avoids a colour-picking render pass.
+
+        Click vs. drag is distinguished by cursor travel: an orbit drag moves
+        several pixels, a selection click does not.
+        """
+        pointPicked      = _Signal(int)          # index into the current point array
+        pointRightClicked = _Signal(int, object)  # index, global QPoint
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._pick_pts: Optional[np.ndarray] = None    # (N,3) float32
+            self._press_pos = None
+
+        def set_pick_points(self, pts: Optional[np.ndarray]):
+            self._pick_pts = pts
+
+        def mousePressEvent(self, ev):
+            self._press_pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+            super().mousePressEvent(ev)
+
+        def mouseReleaseEvent(self, ev):
+            # base class mouseReleaseEvent is a no-op; safe to not call through
+            pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+            if self._press_pos is not None:
+                dx = pos.x() - self._press_pos.x()
+                dy = pos.y() - self._press_pos.y()
+                if (dx * dx + dy * dy) <= 16.0:      # < 4 px travel => a click
+                    idx = self._pick_index(pos)
+                    if idx is not None:
+                        btn = ev.button()
+                        if btn == Qt.MouseButton.LeftButton:
+                            self.pointPicked.emit(idx)
+                        elif btn == Qt.MouseButton.RightButton:
+                            if hasattr(ev, "globalPosition"):
+                                gp = ev.globalPosition().toPoint()
+                            else:
+                                gp = ev.globalPos()
+                            self.pointRightClicked.emit(idx, gp)
+            self._press_pos = None
+
+        def _mvp(self) -> Optional[np.ndarray]:
+            try:
+                # QMatrix4x4.data() is COLUMN-major; reshape gives the transpose.
+                proj = np.array(self.projectionMatrix().data(),
+                                dtype=np.float64).reshape(4, 4).T
+                view = np.array(self.viewMatrix().data(),
+                                dtype=np.float64).reshape(4, 4).T
+                return proj @ view
+            except Exception:
+                return None
+
+        def _pick_index(self, pos) -> Optional[int]:
+            """Nearest displayed point to `pos`, or None if nothing within 12 px."""
+            pts = self._pick_pts
+            if pts is None or len(pts) == 0:
+                return None
+            mvp = self._mvp()
+            if mvp is None:
+                return None
+
+            h = np.empty((pts.shape[0], 4), dtype=np.float64)
+            h[:, :3] = pts
+            h[:, 3] = 1.0
+            clip = h @ mvp.T
+
+            w = clip[:, 3]
+            in_front = w > 1e-9
+            if not in_front.any():
+                return None
+
+            ndc = np.empty((pts.shape[0], 2), dtype=np.float64)
+            ndc[:, 0] = clip[:, 0] / np.where(in_front, w, 1.0)
+            ndc[:, 1] = clip[:, 1] / np.where(in_front, w, 1.0)
+
+            sx = (ndc[:, 0] * 0.5 + 0.5) * self.width()
+            sy = (1.0 - (ndc[:, 1] * 0.5 + 0.5)) * self.height()
+
+            d2 = (sx - pos.x()) ** 2 + (sy - pos.y()) ** 2
+            d2[~in_front] = np.inf
+
+            i = int(np.argmin(d2))
+            if np.isfinite(d2[i]) and d2[i] <= (12.0 ** 2):   # 12 px tolerance
+                return i
+            return None
+
+
+class StellarNeighborhoodTab(QWidget):
+    """
+    Interactive 3D view of every Gaia DR3 star with a usable parallax inside a
+    user-chosen radius. Sun at the origin, galactic plane in XY, +Z toward the
+    north galactic pole.
+    """
+
+    # Emitted when the user asks to see a star's XP spectrum. The dialog owns
+    # the Spectrum Viewer tab, so it handles the actual switch + lookup.
+    spectrumRequested = _Signal(int)   # gaia source_id
+
+    # Opens small on purpose: within a few parsecs there are only a handful of
+    # stars, so the first render is instant and obviously correct (you should
+    # recognise the names). Expand from there.
+    DEFAULT_RADIUS_PC = 3.0
+    MAX_POINTS        = 2_000_000
+    TABLE_ROWS        = 300
+    # Ceiling on stars we'll fetch+decompress spectra for. Each costs a PK
+    # lookup and a zlib.decompress; 20k is a couple of seconds, millions is not
+    # happening. Spent on the brightest stars, where colour actually reads.
+    MAX_SPECTRUM_STARS = 20_000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data: Optional[Dict[str, np.ndarray]] = None
+        self._worker: Optional[_NeighborhoodLoadWorker] = None
+        self._selected_idx: Optional[int] = None
+
+        # True-colour state. _spec_rgb/_spec_found are aligned with self._data.
+        self._colour_worker: Optional[_SpectrumColourWorker] = None
+        self._spec_rgb:   Optional[np.ndarray] = None    # (N,3) float32
+        self._spec_found: Optional[np.ndarray] = None    # (N,) bool
+        # source_id -> rgb, so re-entering the mode (or reloading the same
+        # radius) doesn't re-decompress spectra we've already integrated.
+        self._colour_cache: Dict[int, np.ndarray] = {}
+
+        # The GL widget is created lazily, on first show. Constructing a
+        # QOpenGLWidget is what can force Qt to recreate the top-level native
+        # window (destroying dock layouts), so we don't do it just because the
+        # Gaia dialog was opened — only when this tab is actually visited.
+        self._view = None
+        self._grid = None
+        self._scatter = None
+        self._sun = None
+        self._marker = None
+        self._gl_ready = False
+        self._view_slot = None
+        self._view_container = None
+        self._view_placeholder = None
+        self._gl_build_count = 0
+
+        self._reload_timer = QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(300)
+        self._reload_timer.timeout.connect(self._reload)
+
+        self._build_ui()
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        if not HAS_GL:
+            return
+        # First visit to this tab builds the GL view. That is when Qt rebuilds
+        # the dialog's native window — a one-off flicker of *this dialog*,
+        # which is the price of not flickering the SASpro main window.
+        # _ensure_gl() is idempotent; later visits do nothing.
+        self._ensure_gl()
+        busy = self._worker is not None and self._worker.isRunning()
+        if self._data is None and not busy:
+            self._reload()
+
+    def _ensure_gl(self):
+        """
+        Build the OpenGL view on first display of this tab.
+
+        _gl_ready is set FIRST, not last: addWidget() and the pyqtgraph item
+        constructors can pump the event loop, which could re-deliver showEvent
+        and re-enter this method before it finished. Setting the flag up front
+        makes that a no-op instead of a second stacked viewport.
+        """
+        if self._gl_ready or not HAS_GL:
+            return
+        self._gl_ready = True
+
+        self._gl_build_count = getattr(self, "_gl_build_count", 0) + 1
+        if self._gl_build_count > 1:
+            print(f"[Neighborhood] WARNING: _ensure_gl ran "
+                  f"{self._gl_build_count}x — this should never happen")
+
+        # Nuke whatever is in the container (placeholder, or a stale view).
+        while self._view_slot.count():
+            item = self._view_slot.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        self._view_placeholder = None
+
+        self._view = _PickableGLView()
+        self._view.setMinimumSize(520, 480)
+        self._view.setCameraPosition(distance=self.DEFAULT_RADIUS_PC * 3.0)
+        self._view.pointPicked.connect(self._on_point_picked)
+        self._view.pointRightClicked.connect(self._on_point_right_clicked)
+
+        self._grid = gl.GLGridItem()
+        self._view.addItem(self._grid)
+
+        self._scatter = gl.GLScatterPlotItem(
+            pos=np.zeros((0, 3), dtype=np.float32), pxMode=True)
+        self._view.addItem(self._scatter)
+
+        # Sun marker at the origin
+        self._sun = gl.GLScatterPlotItem(
+            pos=np.zeros((1, 3), dtype=np.float32),
+            color=np.array([[1.0, 0.92, 0.35, 1.0]], dtype=np.float32),
+            size=np.array([16.0], dtype=np.float32), pxMode=True)
+        self._view.addItem(self._sun)
+
+        # Highlight for the selected star
+        self._marker = gl.GLScatterPlotItem(
+            pos=np.zeros((0, 3), dtype=np.float32),
+            color=np.array([[0.35, 1.0, 1.0, 1.0]], dtype=np.float32),
+            size=np.array([18.0], dtype=np.float32), pxMode=True)
+        self._view.addItem(self._marker)
+
+        self._view_slot.addWidget(self._view)
+
+    # ── UI ────────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        if not HAS_GL:
+            msg = QLabel(
+                "<b>3D view unavailable.</b><br><br>"
+                "The Stellar Neighborhood Explorer needs <code>pyqtgraph.opengl</code> "
+                "and <code>PyOpenGL</code>.<br><br>"
+                f"<span style='color:#a66;'>Import error: {_GL_IMPORT_ERROR}</span><br><br>"
+                "Install with:<br><code>pip install PyOpenGL</code>"
+            )
+            msg.setWordWrap(True)
+            msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            msg.setStyleSheet("color:#aab; font-size:12px;")
+            root.addWidget(msg, stretch=1)
+            return
+
+        body = QHBoxLayout()
+        body.setSpacing(10)
+        root.addLayout(body, stretch=1)
+
+        # ── 3D view container (filled lazily on first show) ──
+        # A real QWidget, not a bare layout: we clear its layout before
+        # inserting the GL view, so a second _ensure_gl() can never stack a
+        # second viewport on top of the first.
+        self._view_container = QWidget()
+        self._view_container.setMinimumSize(520, 480)
+        self._view_slot = QVBoxLayout(self._view_container)
+        self._view_slot.setContentsMargins(0, 0, 0, 0)
+
+        self._view_placeholder = QLabel("Initialising 3D view…")
+        self._view_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._view_placeholder.setStyleSheet(
+            "color:#556; font-size:12px; background:#0a0a12; "
+            "border:1px solid #2a2a3e; border-radius:4px;")
+        self._view_slot.addWidget(self._view_placeholder)
+        body.addWidget(self._view_container, stretch=3)
+
+        # ── side panel ──
+        side = QVBoxLayout()
+        side.setSpacing(8)
+        body.addLayout(side, stretch=2)
+
+        ctrl = QFrame()
+        ctrl.setStyleSheet("QFrame { border:1px solid #2a2a3e; border-radius:6px; "
+                           "background:#12121f; }")
+        cl = QVBoxLayout(ctrl)
+        cl.setContentsMargins(10, 10, 10, 10)
+        cl.setSpacing(6)
+
+        # radius
+        r_row = QHBoxLayout()
+        r_row.addWidget(QLabel("Radius (pc):"))
+        self._spin_radius = QDoubleSpinBox()
+        self._spin_radius.setRange(0.5, NEIGHBORHOOD_MAX_PC)
+        self._spin_radius.setDecimals(1)
+        self._spin_radius.setSingleStep(1.0)
+        self._spin_radius.setValue(self.DEFAULT_RADIUS_PC)
+        self._spin_radius.valueChanged.connect(self._schedule_reload)
+        r_row.addWidget(self._spin_radius)
+        r_row.addStretch()
+        cl.addLayout(r_row)
+
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(4)
+        for pc in (3, 10, 25, 50, 100, 300):
+            b = QPushButton(str(pc))
+            b.setFixedWidth(38)
+            b.setStyleSheet("QPushButton{background:#1a1a2e;color:#9ab;border:1px solid "
+                            "#334;border-radius:3px;padding:2px;font-size:10px;}"
+                            "QPushButton:hover{background:#222240;color:#cde;}")
+            b.clicked.connect(lambda _=False, v=pc: self._spin_radius.setValue(float(v)))
+            preset_row.addWidget(b)
+        preset_row.addStretch()
+        cl.addLayout(preset_row)
+
+        # ruwe
+        q_row = QHBoxLayout()
+        self._chk_ruwe = QCheckBox("Max RUWE:")
+        self._chk_ruwe.setChecked(True)
+        self._chk_ruwe.toggled.connect(self._schedule_reload)
+        q_row.addWidget(self._chk_ruwe)
+        self._spin_ruwe = QDoubleSpinBox()
+        self._spin_ruwe.setRange(1.0, 10.0)
+        self._spin_ruwe.setDecimals(2)
+        self._spin_ruwe.setSingleStep(0.1)
+        self._spin_ruwe.setValue(1.4)
+        self._spin_ruwe.valueChanged.connect(self._schedule_reload)
+        q_row.addWidget(self._spin_ruwe)
+        q_row.addStretch()
+        cl.addLayout(q_row)
+
+        # magnitude cut
+        m_row = QHBoxLayout()
+        self._chk_mag = QCheckBox("Max G mag:")
+        self._chk_mag.setChecked(False)
+        self._chk_mag.toggled.connect(self._schedule_reload)
+        m_row.addWidget(self._chk_mag)
+        self._spin_mag = QDoubleSpinBox()
+        self._spin_mag.setRange(-2.0, 22.0)
+        self._spin_mag.setDecimals(1)
+        self._spin_mag.setSingleStep(0.5)
+        self._spin_mag.setValue(12.0)
+        self._spin_mag.valueChanged.connect(self._schedule_reload)
+        m_row.addWidget(self._spin_mag)
+        m_row.addStretch()
+        cl.addLayout(m_row)
+
+        # colour mode
+        c_row = QHBoxLayout()
+        c_row.addWidget(QLabel("Colour by:"))
+        self._combo_color = QComboBox()
+        self._combo_color.addItems(["Absolute G (luminosity)",
+                                    "Apparent G", "Distance",
+                                    "XP Spectrum (true colour)"])
+        self._combo_color.currentIndexChanged.connect(self._on_color_mode_changed)
+        c_row.addWidget(self._combo_color, stretch=1)
+        cl.addLayout(c_row)
+
+        # point size
+        s_row = QHBoxLayout()
+        s_row.addWidget(QLabel("Point size:"))
+        self._slider_size = QSlider(Qt.Orientation.Horizontal)
+        self._slider_size.setRange(10, 120)
+        self._slider_size.setValue(40)
+        self._slider_size.valueChanged.connect(self._recolor)
+        s_row.addWidget(self._slider_size, stretch=1)
+        cl.addLayout(s_row)
+
+        btn_row = QHBoxLayout()
+        btn_fit = QPushButton("Fit View")
+        btn_fit.clicked.connect(self._fit_view)
+        btn_row.addWidget(btn_fit)
+        btn_reload = QPushButton("Reload")
+        btn_reload.clicked.connect(self._reload)
+        btn_row.addWidget(btn_reload)
+        cl.addLayout(btn_row)
+
+        side.addWidget(ctrl)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet("color:#668; font-size:11px;")
+        side.addWidget(self._status)
+
+        # nearest-star table
+        self._table = QTableWidget(0, 4)
+        self._table.setHorizontalHeaderLabels(["#", "dist (pc)", "G", "RUWE"])
+        self._table.verticalHeader().setVisible(False)
+        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setStyleSheet(
+            "QTableWidget{background:#0a0a18;color:#9ab;border:1px solid #2a2a3e;"
+            "font-size:11px;gridline-color:#1a1a2e;}"
+            "QHeaderView::section{background:#12121f;color:#778;border:none;padding:3px;}")
+        self._table.horizontalHeader().setStretchLastSection(True)
+        self._table.itemSelectionChanged.connect(self._on_table_select)
+        self._table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._on_table_context_menu)
+        side.addWidget(self._table, stretch=1)
+
+        # selected-star info
+        self._info = QTextEdit()
+        self._info.setReadOnly(True)
+        self._info.setMaximumHeight(120)
+        self._info.setStyleSheet(
+            "background:#0a0a18; color:#99aacc; border:1px solid #2a2a3e; "
+            "font-size:11px; font-family:monospace;")
+        side.addWidget(self._info)
+
+        sb_row = QHBoxLayout()
+        self._btn_simbad = QPushButton("Resolve in SIMBAD")
+        self._btn_simbad.setEnabled(False)
+        self._btn_simbad.clicked.connect(self._resolve_simbad)
+        sb_row.addWidget(self._btn_simbad)
+        self._btn_simbad_web = QPushButton("Open in browser")
+        self._btn_simbad_web.setEnabled(False)
+        self._btn_simbad_web.clicked.connect(self._open_simbad_web)
+        sb_row.addWidget(self._btn_simbad_web)
+        side.addLayout(sb_row)
+
+        note = QLabel(
+            "Drag to orbit · scroll to zoom · Ctrl+drag to pan · click a star to select.<br>"
+            "<span style='color:#886;'>Very bright nearby stars (Sirius, Alpha Cen, "
+            "Procyon) are missing — Gaia saturates below G≈3.</span>")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#667; font-size:10px;")
+        root.addWidget(note)
+
+    # ── loading ───────────────────────────────────────────────────────────
+
+    def _schedule_reload(self):
+        self._reload_timer.start()
+
+    def _reload(self):
+        # Never load before the GL view exists — showEvent triggers the first
+        # load once _ensure_gl() has run.
+        if not HAS_GL or not self._gl_ready:
+            return
+        lib = get_neighborhood_library()
+        if not lib.is_installed():
+            self._status.setText(
+                "Neighborhood library not installed. Install "
+                "“Stellar Neighborhood (within 300 pc)” on the Astrometry tab.")
+            self._set_points(None)
+            return
+
+        if self._worker is not None and self._worker.isRunning():
+            return
+
+        self._status.setText("Loading…")
+        QApplication.processEvents()
+
+        max_ruwe = self._spin_ruwe.value() if self._chk_ruwe.isChecked() else None
+        max_mag  = self._spin_mag.value()  if self._chk_mag.isChecked()  else None
+
+        self._worker = _NeighborhoodLoadWorker(
+            self._spin_radius.value(), max_ruwe, max_mag, self.MAX_POINTS, parent=None)
+        self._worker.loaded.connect(self._on_loaded)
+        self._worker.failed.connect(self._on_failed)
+        self._worker.start()
+
+    def _on_failed(self, msg: str):
+        self._status.setText(f"Load failed: {msg}")
+        self._worker = None
+
+    def _on_loaded(self, data: dict):
+        self._worker = None
+
+        # The old rgb/found arrays are indexed by position in the *previous*
+        # star list — meaningless now. The source_id cache survives, so nothing
+        # already integrated has to be recomputed.
+        if self._colour_worker is not None and self._colour_worker.isRunning():
+            self._colour_worker.cancel()
+            self._colour_worker.wait(1500)
+        self._colour_worker = None
+        self._spec_rgb = None
+        self._spec_found = None
+
+        self._data = data
+        n = len(data["source_id"])
+
+        truncated = (n >= self.MAX_POINTS)
+        cuts = []
+        if self._chk_ruwe.isChecked():
+            cuts.append(f"RUWE<{self._spin_ruwe.value():.2f}")
+        if self._chk_mag.isChecked():
+            cuts.append(f"G≤{self._spin_mag.value():.1f}")
+        cut_str = ("  ·  " + ", ".join(cuts)) if cuts else ""
+
+        self._status.setText(
+            f"{n:,} stars within {self._spin_radius.value():.1f} pc{cut_str}"
+            + ("  ·  ⚠ truncated at the render cap" if truncated else ""))
+
+        self._set_points(data)
+        self._fill_table(data)
+        self._fit_view()
+        if self._combo_color.currentIndex() == 3:
+            self._start_colour_resolve()
+
+    def _set_points(self, data: Optional[dict]):
+        if not HAS_GL or not self._gl_ready:
+            return
+        if data is None or len(data["source_id"]) == 0:
+            self._scatter.setData(pos=np.zeros((0, 3), dtype=np.float32))
+            self._marker.setData(pos=np.zeros((0, 3), dtype=np.float32))
+            self._view.set_pick_points(None)
+            self._table.setRowCount(0)
+            self._clear_info()
+            return
+        self._view.set_pick_points(data["xyz"])
+        self._recolor()
+
+    def _on_color_mode_changed(self, index: int):
+        if index == 3:                     # XP Spectrum (true colour)
+            self._start_colour_resolve()
+        else:
+            self._recolor()
+
+    def _start_colour_resolve(self):
+        """Kick off spectrum -> colour resolution for the loaded stars."""
+        if self._data is None or len(self._data["source_id"]) == 0:
+            return
+
+        try:
+            lib = get_library()
+            installed = bool(lib.installed_bands())
+        except Exception:
+            installed = False
+
+        if not installed:
+            self._status.setText(
+                "True colour needs XP spectra — install a tier on the "
+                "Spectrum Library tab (Ultra-Bright is only ~220 MB).")
+            self._combo_color.blockSignals(True)
+            self._combo_color.setCurrentIndex(0)
+            self._combo_color.blockSignals(False)
+            self._recolor()
+            return
+
+        if self._colour_worker is not None and self._colour_worker.isRunning():
+            return
+
+        sids = self._data["source_id"]
+        n = len(sids)
+
+        # Serve whatever we've already integrated, then only work on the rest.
+        rgb   = np.zeros((n, 3), dtype=np.float32)
+        found = np.zeros(n, dtype=bool)
+        todo  = []
+        for i in range(n):
+            c = self._colour_cache.get(int(sids[i]))
+            if c is not None:
+                rgb[i] = c
+                found[i] = True
+            else:
+                todo.append(i)
+
+        if not todo:
+            self._spec_rgb, self._spec_found = rgb, found
+            self._recolor()
+            return
+
+        # Spend the budget on the brightest stars — colour reads best there,
+        # and faint M dwarfs mostly have no XP spectrum anyway.
+        todo = np.array(todo, dtype=np.int64)
+        g = self._data["gmag"][todo]
+        g = np.where(np.isfinite(g), g, 99.0)
+        order = todo[np.argsort(g)][: self.MAX_SPECTRUM_STARS]
+
+        self._spec_rgb, self._spec_found = rgb, found
+        self._status.setText(
+            f"Integrating XP spectra for {len(order):,} stars…"
+            + (f"  (capped from {len(todo):,})" if len(todo) > len(order) else ""))
+
+        self._colour_worker = _SpectrumColourWorker(sids, order, parent=None)
+        self._colour_worker.finished_colours.connect(self._on_colours_ready)
+        self._colour_worker.failed.connect(self._on_colours_failed)
+        self._colour_worker.start()
+
+    def _on_colours_failed(self, msg: str):
+        self._colour_worker = None
+        self._status.setText(f"Colour resolve failed: {msg}")
+
+    def _on_colours_ready(self, rgb: np.ndarray, found: np.ndarray):
+        self._colour_worker = None
+        if self._data is None or len(rgb) != len(self._data["source_id"]):
+            return   # data changed under us
+
+        # Merge with anything already cached, then update the cache.
+        if self._spec_rgb is not None and self._spec_found is not None:
+            merged_found = self._spec_found | found
+            merged_rgb = np.where(found[:, None], rgb, self._spec_rgb)
+        else:
+            merged_found, merged_rgb = found, rgb
+
+        sids = self._data["source_id"]
+        for i in np.nonzero(found)[0]:
+            self._colour_cache[int(sids[i])] = merged_rgb[i].copy()
+
+        self._spec_rgb, self._spec_found = merged_rgb, merged_found
+
+        n_found = int(merged_found.sum())
+        n = len(sids)
+        self._status.setText(
+            f"True colour: {n_found:,}/{n:,} stars have XP spectra "
+            f"({n_found/max(n,1):.0%}). Grey = no spectrum "
+            f"(Gaia XP covers G≈2.2–15)."
+        )
+        self._recolor()
+
+    def _recolor(self):
+        if (not HAS_GL or not self._gl_ready or self._data is None
+                or len(self._data["source_id"]) == 0):
+            return
+
+        idx = self._combo_color.currentIndex()
+        sizes = _star_sizes(self._data["gmag"], base=self._slider_size.value() / 10.0)
+
+        if idx == 3:
+            n = len(self._data["source_id"])
+            colors = np.empty((n, 4), dtype=np.float32)
+            if self._spec_rgb is None or self._spec_found is None:
+                colors[:] = np.array([0.45, 0.45, 0.5, 0.5], dtype=np.float32)
+            else:
+                # Stars with a spectrum: their true colour, opaque.
+                colors[:, :3] = self._spec_rgb
+                colors[:, 3] = 0.95
+                # Stars without: dim neutral grey. Not a guess dressed up as
+                # data — you can see exactly which stars Gaia characterised.
+                miss = ~self._spec_found
+                colors[miss] = np.array([0.42, 0.42, 0.48, 0.35], dtype=np.float32)
+        else:
+            mode = {0: "absmag", 1: "appmag", 2: "dist"}[idx]
+            colors = _star_colors(self._data["gmag"], self._data["dist_pc"], mode)
+
+        self._scatter.setData(pos=self._data["xyz"], color=colors, size=sizes,
+                              pxMode=True)
+
+    def _fit_view(self):
+        if not HAS_GL or not self._gl_ready:
+            return
+        r = float(self._spin_radius.value())
+        self._view.setCameraPosition(distance=max(r * 3.0, 2.0))
+        try:
+            self._grid.setSize(x=2 * r, y=2 * r, z=1)
+            step = max(r / 5.0, 0.2)
+            self._grid.setSpacing(x=step, y=step, z=step)
+        except Exception:
+            pass
+
+    # ── table + selection ─────────────────────────────────────────────────
+
+    def _fill_table(self, data: dict):
+        n = min(len(data["source_id"]), self.TABLE_ROWS)
+        self._table.setRowCount(n)
+        for i in range(n):
+            g = data["gmag"][i]
+            r = data["ruwe"][i]
+            vals = [
+                str(i + 1),
+                f"{data['dist_pc'][i]:.3f}",
+                "—" if not np.isfinite(g) else f"{g:.2f}",
+                "—" if not np.isfinite(r) else f"{r:.2f}",
+            ]
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem(v)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self._table.setItem(i, c, item)
+        self._table.resizeColumnsToContents()
+
+    def _on_table_select(self):
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return
+        self._select_index(rows[0].row(), scroll_table=False)
+
+    def _on_point_picked(self, idx: int):
+        self._select_index(idx, scroll_table=True)
+
+    def _on_point_right_clicked(self, idx: int, global_pos):
+        """Right-click a star in the 3D view: select it, then offer actions."""
+        self._select_index(idx, scroll_table=True)
+        self._show_star_menu(global_pos)
+
+    def _spectrum_availability(self, sid: int) -> Tuple[bool, str]:
+        """
+        (available, reason). Cheap: get_spectrum/has_spectrum are primary-key
+        lookups on source_id — no spatial search, no scan.
+        """
+        try:
+            lib = get_library()
+        except Exception as e:
+            return False, f"Spectral library unavailable ({e})"
+
+        if not lib.installed_bands():
+            return False, "No XP spectral tiers installed (Spectrum Library tab)"
+        try:
+            if lib.has_spectrum(sid):
+                return True, ""
+        except Exception as e:
+            return False, f"Lookup failed ({e})"
+
+        # Gaia XP only covers roughly G 2.2–15. Most stars in a 300 pc
+        # neighbourhood are faint M dwarfs well past that limit, so "no
+        # spectrum" is the common, expected case — say so rather than
+        # implying something is broken.
+        g = float("nan")
+        if self._data is not None and self._selected_idx is not None:
+            g = float(self._data["gmag"][self._selected_idx])
+        if np.isfinite(g) and g > 15.0:
+            return False, f"No XP spectrum — G={g:.2f} is past Gaia XP's ~15 mag limit"
+        if np.isfinite(g) and g < 2.2:
+            return False, f"No XP spectrum — G={g:.2f} saturates Gaia's detectors"
+        return False, "Not present in the installed XP tiers"
+
+    def _show_star_menu(self, global_pos):
+        sid = self._selected_sid()
+        if sid is None:
+            return
+
+        menu = QMenu(self)
+
+        available, reason = self._spectrum_availability(sid)
+        act_spec = menu.addAction("View XP Spectrum")
+        act_spec.setEnabled(available)
+        if not available:
+            act_spec.setToolTip(reason)
+
+        menu.addSeparator()
+        act_simbad = menu.addAction("Resolve in SIMBAD")
+        act_web    = menu.addAction("Open in SIMBAD (browser)")
+        menu.addSeparator()
+        act_copy   = menu.addAction("Copy source_id")
+
+        # Menus don't show disabled-item tooltips by default.
+        menu.setToolTipsVisible(True)
+
+        chosen = menu.exec(global_pos)
+        if chosen is None:
+            return
+        if chosen is act_spec:
+            self.spectrumRequested.emit(sid)
+        elif chosen is act_simbad:
+            self._resolve_simbad()
+        elif chosen is act_web:
+            self._open_simbad_web()
+        elif chosen is act_copy:
+            QApplication.clipboard().setText(str(sid))
+            self._status.setText(f"Copied source_id {sid} to clipboard.")
+
+    def _on_table_context_menu(self, pos):
+        """Right-click a row in the nearest-star table -> same menu."""
+        item = self._table.itemAt(pos)
+        if item is None:
+            return
+        self._select_index(item.row(), scroll_table=False)
+        self._show_star_menu(self._table.viewport().mapToGlobal(pos))
+
+    def _select_index(self, idx: int, scroll_table: bool):
+        if self._data is None or idx < 0 or idx >= len(self._data["source_id"]):
+            return
+        self._selected_idx = idx
+
+        if HAS_GL and self._gl_ready:
+            self._marker.setData(pos=self._data["xyz"][idx:idx + 1],
+                                 color=np.array([[0.35, 1.0, 1.0, 1.0]], dtype=np.float32),
+                                 size=np.array([18.0], dtype=np.float32), pxMode=True)
+
+        if scroll_table and idx < self._table.rowCount():
+            self._table.blockSignals(True)
+            self._table.selectRow(idx)
+            self._table.scrollToItem(self._table.item(idx, 0))
+            self._table.blockSignals(False)
+
+        sid  = int(self._data["source_id"][idx])
+        d    = float(self._data["dist_pc"][idx])
+        g    = float(self._data["gmag"][idx])
+        ruwe = float(self._data["ruwe"][idx])
+        x, y, z = (float(v) for v in self._data["xyz"][idx])
+        ra   = float(self._data["ra"][idx])
+        dec  = float(self._data["dec"][idx])
+
+        absg = (g - 5.0 * math.log10(max(d, 1e-6)) + 5.0) if np.isfinite(g) else float("nan")
+        ly = d * 3.26156
+
+        self._info.setPlainText(
+            f"Gaia DR3 {sid}\n"
+            f"dist  {d:.4f} pc   ({ly:.3f} ly)\n"
+            f"G {'—' if not np.isfinite(g) else f'{g:.3f}'}"
+            f"   M_G {'—' if not np.isfinite(absg) else f'{absg:.3f}'}"
+            f"   RUWE {'—' if not np.isfinite(ruwe) else f'{ruwe:.3f}'}\n"
+            f"RA {ra:.6f}°   Dec {dec:.6f}°\n"
+            f"galactic XYZ  ({x:.3f}, {y:.3f}, {z:.3f}) pc"
+        )
+        self._btn_simbad.setEnabled(True)
+        self._btn_simbad_web.setEnabled(True)
+
+    def _clear_info(self):
+        self._info.clear()
+        self._selected_idx = None
+        self._btn_simbad.setEnabled(False)
+        self._btn_simbad_web.setEnabled(False)
+
+    # ── SIMBAD ────────────────────────────────────────────────────────────
+
+    def _selected_sid(self) -> Optional[int]:
+        if self._data is None or self._selected_idx is None:
+            return None
+        return int(self._data["source_id"][self._selected_idx])
+
+    def _resolve_simbad(self):
+        sid = self._selected_sid()
+        if sid is None:
+            return
+        ident = f"Gaia DR3 {sid}"
+        self._status.setText(f"Resolving {ident} via SIMBAD…")
+        QApplication.processEvents()
+        try:
+            from astroquery.simbad import Simbad
+            s = Simbad()
+            try:
+                s.add_votable_fields("otype")
+            except Exception:
+                pass
+            res = s.query_object(ident)
+            if res is None or len(res) == 0:
+                self._status.setText(f"SIMBAD has no entry for {ident}.")
+                return
+            cols = {c.upper(): c for c in res.colnames}
+            main = res[cols["MAIN_ID"]][0] if "MAIN_ID" in cols else "?"
+            otype = res[cols["OTYPE"]][0] if "OTYPE" in cols else ""
+            extra = f"\nSIMBAD: {main}" + (f"   ({otype})" if otype else "")
+            self._info.setPlainText(self._info.toPlainText() + extra)
+            self._status.setText(f"SIMBAD: {main}")
+        except Exception as e:
+            self._status.setText(f"SIMBAD lookup failed: {e}")
+
+    def _open_simbad_web(self):
+        sid = self._selected_sid()
+        if sid is None:
+            return
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+        url = ("https://simbad.cds.unistra.fr/simbad/sim-id?Ident="
+               + f"Gaia+DR3+{sid}")
+        QDesktopServices.openUrl(QUrl(url))
+
+    # ── lifecycle ─────────────────────────────────────────────────────────
+
+    def library_changed(self):
+        """
+        Called when the astrometric library dir / installed files change.
+        If the GL view hasn't been built yet (tab never visited), this is a
+        no-op — showEvent will do the first load when the tab is opened.
+        """
+        refresh_neighborhood_library()
+        if HAS_GL and self._gl_ready:
+            self._reload()
+
+    def shutdown(self):
+        for w in (self._worker, self._colour_worker):
+            if w is not None and w.isRunning():
+                try:
+                    w.cancel()
                 except Exception:
                     pass
-
-        self.finished.emit(group_counts, running_total)
+                w.wait(2000)
+        self._worker = None
+        self._colour_worker = None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1710,13 +3055,22 @@ class GaiaDatabaseDialog(QDialog):
         self._rows:          Dict[str, _GroupRowWidget]      = {}
         self._astro_workers: Dict[str, _GroupDownloadWorker] = {}
         self._astro_rows:    Dict[str, _GroupRowWidget]      = {}
+        self._neighborhood_tab = None
 
-        self._count_worker       = None
-        self._astro_count_worker = None
+
 
         self._build_ui()
         self._refresh_groups("spectral")
         self._refresh_groups("astro")
+
+        # NOTE: the GL view is deliberately NOT built here. Creating a
+        # QOpenGLWidget inside a visible window makes Qt destroy and recreate
+        # that window's native handle. We let that happen to *this dialog*, on
+        # first visit to the Neighborhood Explorer tab (see its showEvent), and
+        # not to the SASpro main window. Building it here instead — while the
+        # dialog is still hidden — hides the flicker but pushes the rebuild up
+        # to the main window, which is much worse. A blinking dialog beats a
+        # blinking main window.
 
     # ── per-kind context helpers ───────────────────────────────────────────
 
@@ -1745,6 +3099,15 @@ class GaiaDatabaseDialog(QDialog):
         else:
             refresh_astro_library()
             self._astro_library = get_astro_library()
+            # The neighborhood extract lives in the same directory, so any
+            # install/remove/relocate on the Astrometry tab can invalidate it.
+            refresh_neighborhood_library()
+            tab = getattr(self, "_neighborhood_tab", None)
+            if tab is not None:
+                try:
+                    tab.library_changed()
+                except Exception:
+                    pass
 
     def _workers_dict(self, kind: str) -> Dict[str, _GroupDownloadWorker]:
         return self._workers if kind == "spectral" else self._astro_workers
@@ -1760,9 +3123,6 @@ class GaiaDatabaseDialog(QDialog):
 
     def _dir_lbl_for(self, kind: str):
         return self._dir_lbl if kind == "spectral" else self._astro_dir_lbl
-
-    def _table_name(self, kind: str) -> str:
-        return "spectra" if kind == "spectral" else "stars"
 
     def _build_ui(self):
         self.setStyleSheet("""
@@ -1804,10 +3164,16 @@ class GaiaDatabaseDialog(QDialog):
 
         # ── Tabs ──────────────────────────────────────────────────────────
         tabs = QTabWidget()
+        self._tabs = tabs
         root.addWidget(tabs, stretch=1)
 
         tabs.addTab(self._build_group_tab("spectral"), "Spectrum Library")
         tabs.addTab(self._build_group_tab("astro"), "Astrometry")
+
+        # Tab: Stellar Neighborhood Explorer (3D)
+        self._neighborhood_tab = StellarNeighborhoodTab()
+        self._neighborhood_tab.spectrumRequested.connect(self._show_spectrum_for_source)
+        tabs.addTab(self._neighborhood_tab, "Neighborhood Explorer")
 
         # Tab: Spectrum Viewer
         viewer_tab    = QWidget()
@@ -1891,7 +3257,7 @@ class GaiaDatabaseDialog(QDialog):
             "background: #0a0a18; color: #99aacc; border: 1px solid #2a2a3e; "
             "font-size: 11px; font-family: monospace;")
         viewer_layout.addWidget(self._source_info)
-        tabs.addTab(viewer_tab, "Spectrum Viewer")
+        self._spectrum_tab_index = tabs.addTab(viewer_tab, "Spectrum Viewer")
 
         # Tab: About
         about_tab    = QWidget()
@@ -1919,11 +3285,23 @@ class GaiaDatabaseDialog(QDialog):
         <li>Live Gaia archive — fallback when neither has the source</li>
         </ol>
         <h4 style="color:#8899ee;">Astrometric library</h4>
-        <p>The Astrometry tab (under construction) will install full-depth Gaia DR3
-        <b>gaia_source</b> astrometry (RA, Dec, proper motion, parallax) split by
-        magnitude, mirroring the Spectrum Library tab above — a much denser catalog
-        than the XP spectral library, since it covers the full DR3 source list rather
-        than only sources bright/well-measured enough to have usable BP/RP spectra.</p>
+        <p>The Astrometry tab installs full-depth Gaia DR3 <b>gaia_source</b> astrometry
+        (RA, Dec, proper motion, parallax) split by magnitude across 41 files —
+        1,585,128,120 sources, 183.9 GB at full depth. It is a far denser catalog than
+        the XP spectral library, which only covers sources bright enough for usable
+        BP/RP spectra. Start with the Bright tier; add depth only if your fields need it.</p>
+        <h4 style="color:#8899ee;">Stellar Neighborhood Explorer</h4>
+        <p>A 3D view of every DR3 source with a usable parallax within 300 parsecs,
+        Sun at the origin, galactic plane in XY. Distances come from
+        <i>d</i> = 1000 / parallax(mas).</p>
+        <p style="color:#a98;">Caveat: DR3 astrometry here does not carry
+        <code>parallax_error</code>, so distance quality is guarded by a RUWE cut plus a
+        conservative 300 pc limit. RUWE flags <i>bad astrometric fits</i> (unresolved
+        binaries, blends) — it does <b>not</b> flag a clean fit whose parallax is simply
+        too small to measure. The radius limit is what guards against that. Gaia DR4
+        will add <code>parallax_error</code> and let this reach farther honestly.
+        Also note Gaia saturates below G≈3, so the very nearest bright stars
+        (Sirius, Alpha Centauri, Procyon) are absent from the catalog entirely.</p>
         <h4 style="color:#8899ee;">Citation</h4>
         <p>Gaia Collaboration et al. (2022), Gaia DR3.
         <i>A&amp;A</i> 649, A1.<br>
@@ -1965,7 +3343,8 @@ class GaiaDatabaseDialog(QDialog):
                 "Install Gaia DR3 astrometric library files (RA/Dec/proper motion/parallax) "
                 "for plate solving and star identification, split by magnitude — start with "
                 "the brightest tier and add fainter ones only as needed, same approach as "
-                "the Spectrum Library tab."
+                "the Spectrum Library tab. The Stellar Neighborhood extract additionally "
+                "powers the 3D Neighborhood Explorer tab."
             )
 
         info_lbl = QLabel(info_text)
@@ -1975,14 +3354,14 @@ class GaiaDatabaseDialog(QDialog):
 
         if kind == "astro":
             banner = QLabel(
-                "🚧 <b>Under construction.</b> This tab previews the planned structure "
-                "for the astrometric library — magnitude tiers, same layout as the "
-                "Spectrum Library tab. Sizes and star counts shown are rough estimates; "
-                "the actual files aren't hosted yet. Check back soon!"
+                "ℹ️ <b>Upload pending.</b> All 41 files are built and verified "
+                "(1,585,128,120 sources, 183.9 GB) but aren't on the CDN yet, so "
+                "<b>Install</b> will fail until they are. Use <b>Browse…</b> to point at "
+                "your local copies for testing."
             )
             banner.setWordWrap(True)
             banner.setStyleSheet(
-                "background: #221a08; color: #ddaa55; border: 1px solid #443311; "
+                "background: #0d1a22; color: #6aa9c4; border: 1px solid #1e3a47; "
                 "border-radius: 4px; padding: 6px 10px; font-size: 11px;")
             layout.addWidget(banner)
 
@@ -2012,21 +3391,13 @@ class GaiaDatabaseDialog(QDialog):
         dir_row.addWidget(btn_open_dir)
         layout.addLayout(dir_row)
 
-        # Totals + count row
+        # Totals row. No Count button on either tab: every group carries an
+        # exact build-time n_items, so COUNT(*) over multi-GB tables would be
+        # disk churn to recompute numbers we already have.
         total_row = QHBoxLayout()
         total_lbl = QLabel("")
         total_lbl.setStyleSheet("font-size: 11px; color: #556688;")
         total_row.addWidget(total_lbl, stretch=1)
-        btn_count = QPushButton("Count")
-        btn_count.setFixedWidth(60)
-        btn_count.setStyleSheet(
-            "QPushButton { background: #1a1a2e; color: #556688; border: 1px solid #2a2a3e; "
-            "border-radius: 3px; padding: 3px 8px; font-size: 10px; }"
-            "QPushButton:hover { background: #222240; color: #8899ee; }")
-        btn_count.clicked.connect(
-            self._run_count_spectral if kind == "spectral"
-            else self._run_count_astro)
-        total_row.addWidget(btn_count)
         layout.addLayout(total_row)
 
         scroll = QScrollArea()
@@ -2065,12 +3436,6 @@ class GaiaDatabaseDialog(QDialog):
 
     def _open_library_dir_astro(self):
         self._open_library_dir("astro")
-
-    def _run_count_spectral(self):
-        self._run_count("spectral")
-
-    def _run_count_astro(self):
-        self._run_count("astro")
 
     def _change_location(self, kind: str = "spectral"):
         # Belt-and-suspenders: if a bare clicked.connect ever hands us
@@ -2133,69 +3498,41 @@ class GaiaDatabaseDialog(QDialog):
             group_layout.insertWidget(group_layout.count() - 1, row)
             rows[status.group.key] = row
 
-        self._total_lbl_for(kind).setText(
-            f"{self._n_installed_groups(kind)}/{len(self._group_defs(kind))} groups installed  ·  "
-            f"click Count to tally {self._table_name(kind)}")
+        self._update_total_label(kind)
+
+    def _update_total_label(self, kind: str):
+        """
+        Sum the exact build-time counts of fully-installed groups. No COUNT(*)
+        anywhere: every group knows its own row count from when it was built.
+        """
+        defs     = self._group_defs(kind)
+        lib_dir  = self._lib_dir(kind)
+        n_groups = self._n_installed_groups(kind)
+        unit     = "spectra" if kind == "spectral" else "stars"
+
+        installed_total = sum(
+            (g.n_items or 0) for g in defs
+            if g.n_items is not None
+            and all((lib_dir / f).exists() for f in g.filenames)
+        )
+        catalog_total = sum(g.n_items or 0 for g in defs)
+
+        if installed_total:
+            txt = (f"{n_groups}/{len(defs)} groups installed  ·  "
+                   f"{installed_total:,} {unit} installed "
+                   f"of {catalog_total:,} in the catalog")
+        else:
+            txt = (f"{n_groups}/{len(defs)} groups installed  ·  "
+                   f"{catalog_total:,} {unit} available")
+        self._total_lbl_for(kind).setText(txt)
 
     def _n_installed_groups(self, kind: str = "spectral") -> int:
         lib_dir = self._lib_dir(kind)
         return sum(1 for g in self._group_defs(kind)
                    if all((lib_dir / f).exists() for f in g.filenames))
 
-    def _run_count(self, kind: str = "spectral"):
-        attr = "_count_worker" if kind == "spectral" else "_astro_count_worker"
-        existing = getattr(self, attr, None)
-        if existing is not None and existing.isRunning():
-            return
-
-        self._total_lbl_for(kind).setText(
-            f"{self._n_installed_groups(kind)}/{len(self._group_defs(kind))} groups installed  ·  "
-            f"counting… 0 {self._table_name(kind)}")
-
-        worker = _ItemsCountWorker(
-            self._lib_dir(kind), self._group_defs(kind), self._table_name(kind), parent=None)
-        worker.progress.connect(lambda total, k=kind: self._on_count_progress(k, total))
-        worker.finished.connect(lambda counts, total, k=kind: self._on_items_counted(k, counts, total))
-        worker.start()
-        setattr(self, attr, worker)
-
-    def _on_count_progress(self, kind: str, running_total: int):
-        self._total_lbl_for(kind).setText(
-            f"{self._n_installed_groups(kind)}/{len(self._group_defs(kind))} groups installed  ·  "
-            f"counting… {running_total:,} {self._table_name(kind)}")
-
-    def _on_items_counted(self, kind: str, group_counts: dict, total: int):
-        lib_dir = self._lib_dir(kind)
-        rows = self._rows_dict(kind)
-        for key, row in rows.items():
-            g = next((g for g in self._group_defs(kind) if g.key == key), None)
-            if g is None:
-                continue
-            installed = [f for f in g.filenames if (lib_dir / f).exists()]
-            missing   = [f for f in g.filenames if not (lib_dir / f).exists()]
-            total_mb  = sum(
-                (lib_dir / f).stat().st_size / (1024 * 1024)
-                for f in installed
-            )
-            status = GroupStatus(
-                group=g, installed=installed, missing=missing,
-                total_mb=total_mb, total_spectra=group_counts.get(key, 0),
-            )
-            row.update_status(status)
-
-        self._total_lbl_for(kind).setText(
-            f"{self._n_installed_groups(kind)}/{len(self._group_defs(kind))} groups installed  ·  "
-            f"{total:,} {self._table_name(kind)}")
-
-        attr = "_count_worker" if kind == "spectral" else "_astro_count_worker"
-        setattr(self, attr, None)
-
     def _on_install(self, key: str, kind: str = "spectral"):
         group_def = next(g for g in self._group_defs(kind) if g.key == key)
-        if getattr(group_def, "coming_soon", False):
-            QMessageBox.information(self, "Coming Soon",
-                                    f"{group_def.label} isn't available yet — check back soon!")
-            return
         lib_dir   = self._lib_dir(kind)
         missing   = [f for f in group_def.filenames if not (lib_dir / f).exists()]
 
@@ -2301,10 +3638,6 @@ class GaiaDatabaseDialog(QDialog):
 
     def _on_browse(self, key: str, kind: str = "spectral"):
         group_def = next(g for g in self._group_defs(kind) if g.key == key)
-        if getattr(group_def, "coming_soon", False):
-            QMessageBox.information(self, "Coming Soon",
-                                    f"{group_def.label} isn't available yet — check back soon!")
-            return
         lib_dir   = self._lib_dir(kind)
         missing   = [f for f in group_def.filenames if not (lib_dir / f).exists()]
 
@@ -2367,6 +3700,27 @@ class GaiaDatabaseDialog(QDialog):
             subprocess.Popen(["open", d])
         else:
             subprocess.Popen(["xdg-open", d])
+
+    # ── Cross-tab: Neighborhood Explorer -> Spectrum Viewer ───────────────
+
+    def _show_spectrum_for_source(self, source_id: int):
+        """
+        Right-click a star in the 3D explorer -> "View XP Spectrum". Switches to
+        the Spectrum Viewer tab and runs the existing source_id lookup path, so
+        there's exactly one implementation of "load and draw a spectrum".
+
+        This is a primary-key hit on source_id across the open XP connections —
+        no coordinate search, no epoch matching. It's about as fast as a lookup
+        gets, which is the whole point of routing through the Gaia ID.
+        """
+        try:
+            self._tabs.setCurrentIndex(self._spectrum_tab_index)
+            self._search_mode.setCurrentIndex(2)          # "Gaia source_id"
+            self._sid_edit.setText(str(int(source_id)))
+            self._lookup_spectrum()
+        except Exception as e:
+            QMessageBox.warning(self, "Spectrum",
+                                f"Could not open spectrum for {source_id}:\n{e}")
 
     # ── Spectrum viewer  (unchanged — spectral only) ───────────────────────
 
@@ -2574,12 +3928,12 @@ class GaiaDatabaseDialog(QDialog):
         self._viewer_status.setText(f"Spectrum loaded — {source_str}")
 
     def closeEvent(self, event):
-        for attr in ("_count_worker", "_astro_count_worker"):
-            worker = getattr(self, attr, None)
-            if worker is not None and worker.isRunning():
-                worker.cancel()
-                worker.wait(2000)   # brief wait; it checks _cancel between files
-            setattr(self, attr, None)
+        tab = getattr(self, "_neighborhood_tab", None)
+        if tab is not None:
+            try:
+                tab.shutdown()
+            except Exception:
+                pass
 
         for workers_dict in (self._workers, self._astro_workers):
             for worker in list(workers_dict.values()):

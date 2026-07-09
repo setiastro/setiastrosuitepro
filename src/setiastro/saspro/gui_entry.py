@@ -1176,6 +1176,36 @@ def _bootstrap_imports():
     })
 
 
+
+
+def _init_opengl_before_qapp():
+    """
+    MUST run before QApplication is constructed.
+
+    Creating the first QOpenGLWidget after the app is up makes Qt destroy and
+    recreate the top-level native window — which wipes the dock layout. Setting
+    AA_ShareOpenGLContexts up front lets the later GL widget (the Gaia
+    Neighborhood Explorer) share the existing context instead of forcing a
+    window rebuild.
+
+    pyqtgraph's GLViewWidget still issues fixed-function calls (glMatrixMode,
+    glLoadMatrixf), so it needs a compatibility profile, not core.
+    """    
+    import sys
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QSurfaceFormat
+    from PyQt6.QtWidgets import QApplication    
+
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
+
+    fmt = QSurfaceFormat()
+    fmt.setDepthBufferSize(24)
+    fmt.setStencilBufferSize(8)
+    fmt.setProfile(QSurfaceFormat.OpenGLContextProfile.CompatibilityProfile)
+    fmt.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
+    QSurfaceFormat.setDefaultFormat(fmt)
+
+
 def main(argv: list[str] | None = None) -> int:
     """
     Main entry point for Seti Astro Suite Pro.
@@ -1185,9 +1215,11 @@ def main(argv: list[str] | None = None) -> int:
     - Direct import and call
     - When running as a module: python -m setiastro.saspro
     """
+    _init_opengl_before_qapp()
     global _splash, _app, _splash_initialized
     from PyQt6.QtCore import QTimer
-
+    import logging
+    logging.getLogger("OpenGL.acceleratesupport").setLevel(logging.WARNING)
     open_paths = _collect_open_paths(argv)
     
     # Initialize splash if not already done

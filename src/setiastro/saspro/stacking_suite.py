@@ -7249,7 +7249,7 @@ class StackingSuiteDialog(QDialog):
 
             # Distortion / Transform
             "align/model": "homography",
-            "align/max_cp": 200,
+            "align/max_cp": 300,
             "align/downsample": 2,
             "align/h_reproj": 3.0,
 
@@ -7257,10 +7257,10 @@ class StackingSuiteDialog(QDialog):
             "refinement_passes": 1,
             "shift_tolerance": 0.2,
             "accept_shift_px": 2.0,
-            "align/det_sigma": 24.0,
+            "align/det_sigma": 5.0,
             "align/auto_threshold": True,
-            "align/minarea": 20,
-            "align/limit_stars": 150,
+            "align/minarea": 5,
+            "align/limit_stars": 300,
             "align/timeout_per_job_sec": 300,
 
             # Performance
@@ -7290,13 +7290,13 @@ class StackingSuiteDialog(QDialog):
 
             # Rejection
             "rejection_algorithm": "Weighted Windsorized Sigma Clipping",
-            "sigma_high": 4.0,
-            "sigma_low": 4.0,
+            "sigma_high": 3.0,
+            "sigma_low": 3.0,
 
             # Cosmetic (Advanced)
             "cosmetic/custom_enable": True,
-            "cosmetic/hot_sigma": 3.5,
-            "cosmetic/cold_sigma": 3.5,
+            "cosmetic/hot_sigma": 2.5,
+            "cosmetic/cold_sigma": 2.5,
             "cosmetic/star_mean_ratio": 0.22,
             "cosmetic/star_max_ratio": 0.55,
             "cosmetic/sat_quantile": 0.9995,
