@@ -121,7 +121,7 @@ from PyQt6.QtWidgets import (
     QApplication, QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QWidget, QMessageBox, QFileDialog,
     QScrollArea, QFrame, QTabWidget, QTextEdit, QLineEdit, QComboBox,
-    QSizePolicy, QRadioButton, QButtonGroup,
+    QSizePolicy, QRadioButton, QButtonGroup, QSplitter,
     QDoubleSpinBox, QCheckBox, QSlider, QTableWidget, QTableWidgetItem, QMenu,
 )
 from PyQt6.QtGui import QColor
@@ -312,8 +312,8 @@ ASTRO_GROUP_DEFS: List[GroupDef] = [
         label="Stellar Neighborhood  (within 300 pc)",
         mag_lo=None, mag_hi=None,
         filenames=[NEIGHBORHOOD_FILENAME],
-        est_size="~1.5 GB  (1 file)",
-        est_stars="~10–14M stars",
+        est_size="~2.5 GB  (1 file)",
+        est_stars="14,708,327 stars",
         description="Precomputed 3D positions (galactic XYZ, Sun at origin) for every "
                     "Gaia DR3 source with a usable parallax within 300 parsecs. Powers "
                     "the Stellar Neighborhood Explorer tab. Complete and self-contained — "
@@ -2341,14 +2341,44 @@ if HAS_GL:
             self._press_pos = None
 
         def _mvp(self) -> Optional[np.ndarray]:
+            """
+            Model-view-projection matrix, across pyqtgraph versions.
+
+            0.13.x:  projectionMatrix(region=None)      -- derives the viewport
+            0.14.0:  projectionMatrix(region, viewport) -- both REQUIRED
+
+            Calling the 0.13 form on 0.14 raises TypeError. That used to be
+            swallowed by a bare except, so _pick_index returned None and every
+            click silently did nothing. Try the new signature first, fall back
+            to the old, and report anything else rather than hiding it.
+            """
             try:
-                # QMatrix4x4.data() is COLUMN-major; reshape gives the transpose.
-                proj = np.array(self.projectionMatrix().data(),
-                                dtype=np.float64).reshape(4, 4).T
-                view = np.array(self.viewMatrix().data(),
-                                dtype=np.float64).reshape(4, 4).T
-                return proj @ view
+                viewport = self.getViewport()
             except Exception:
+                viewport = (0, 0, self.width(), self.height())
+
+            proj_q = None
+            try:
+                # pyqtgraph >= 0.14: region and viewport are required.
+                proj_q = self.projectionMatrix(viewport, viewport)
+            except TypeError:
+                try:
+                    proj_q = self.projectionMatrix()      # pyqtgraph <= 0.13
+                except Exception as e:
+                    print(f"[Neighborhood] projectionMatrix failed: {e}")
+                    return None
+            except Exception as e:
+                print(f"[Neighborhood] projectionMatrix failed: {e}")
+                return None
+
+            try:
+                view_q = self.viewMatrix()
+                # QMatrix4x4.data() is COLUMN-major; reshape gives the transpose.
+                proj = np.array(proj_q.data(), dtype=np.float64).reshape(4, 4).T
+                view = np.array(view_q.data(), dtype=np.float64).reshape(4, 4).T
+                return proj @ view
+            except Exception as e:
+                print(f"[Neighborhood] viewMatrix failed: {e}")
                 return None
 
         def _pick_index(self, pos) -> Optional[int]:
@@ -2491,7 +2521,7 @@ class StellarNeighborhoodTab(QWidget):
         self._view_placeholder = None
 
         self._view = _PickableGLView()
-        self._view.setMinimumSize(520, 480)
+        self._view.setMinimumSize(280, 260)
         self._view.setCameraPosition(distance=self.DEFAULT_RADIUS_PC * 3.0)
         self._view.pointPicked.connect(self._on_point_picked)
         self._view.pointRightClicked.connect(self._on_point_right_clicked)
@@ -2563,16 +2593,21 @@ class StellarNeighborhoodTab(QWidget):
             root.addWidget(msg, stretch=1)
             return
 
-        body = QHBoxLayout()
-        body.setSpacing(10)
-        root.addLayout(body, stretch=1)
+        body = QSplitter(Qt.Orientation.Horizontal)
+        body.setChildrenCollapsible(False)
+        body.setHandleWidth(6)
+        body.setStyleSheet(
+            "QSplitter::handle { background:#1a1a2e; }"
+            "QSplitter::handle:hover { background:#2a2a4e; }")
+        self._splitter = body
+        root.addWidget(body, stretch=1)
 
         # ── 3D view container (filled lazily on first show) ──
         # A real QWidget, not a bare layout: we clear its layout before
         # inserting the GL view, so a second _ensure_gl() can never stack a
         # second viewport on top of the first.
         self._view_container = QWidget()
-        self._view_container.setMinimumSize(520, 480)
+        self._view_container.setMinimumSize(280, 260)
         self._view_slot = QVBoxLayout(self._view_container)
         self._view_slot.setContentsMargins(0, 0, 0, 0)
 
@@ -2582,12 +2617,32 @@ class StellarNeighborhoodTab(QWidget):
             "color:#556; font-size:12px; background:#0a0a12; "
             "border:1px solid #2a2a3e; border-radius:4px;")
         self._view_slot.addWidget(self._view_placeholder)
-        body.addWidget(self._view_container, stretch=3)
+        body.addWidget(self._view_container)
 
         # ── side panel ──
-        side = QVBoxLayout()
+        # QSplitter takes widgets, not layouts — so the side column gets a host
+        # widget. Everything below still does side.addWidget(...) unchanged.
+        self._side_container = QWidget()
+        side = QVBoxLayout(self._side_container)
+        side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(8)
-        body.addLayout(side, stretch=2)
+
+        # The side stack (controls + table + info + buttons) has a ~500px natural
+        # minimum that cannot compress. Scroll it rather than letting it dictate
+        # the dialog's height.
+        self._side_scroll = QScrollArea()
+        self._side_scroll.setWidgetResizable(True)
+        self._side_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._side_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._side_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        self._side_scroll.setWidget(self._side_container)
+        self._side_scroll.setMinimumWidth(300)
+        body.addWidget(self._side_scroll)
+
+        # 3D view gets the growth; the side panel keeps its width on resize.
+        body.setStretchFactor(0, 3)
+        body.setStretchFactor(1, 1)
 
         ctrl = QFrame()
         ctrl.setStyleSheet("QFrame { border:1px solid #2a2a3e; border-radius:6px; "
@@ -2739,7 +2794,8 @@ class StellarNeighborhoodTab(QWidget):
         # selected-star info
         self._info = QTextEdit()
         self._info.setReadOnly(True)
-        self._info.setMaximumHeight(120)
+        self._info.setMinimumHeight(72)
+        self._info.setMaximumHeight(96)
         self._info.setStyleSheet(
             "background:#0a0a18; color:#99aacc; border:1px solid #2a2a3e; "
             "font-size:11px; font-family:monospace;")
@@ -2764,7 +2820,31 @@ class StellarNeighborhoodTab(QWidget):
             "than from Gaia astrometry.</span>")
         note.setWordWrap(True)
         note.setStyleSheet("color:#667; font-size:10px;")
+        note.setMaximumHeight(44)
+        note.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._restore_splitter()
+        body.splitterMoved.connect(lambda *_: self._save_splitter())        
         root.addWidget(note)
+
+    _SPLIT_KEY = "gaia_neighborhood/splitter_state"
+
+    def _save_splitter(self):
+        try:
+            QSettings("SetiAstro", "SASpro").setValue(
+                self._SPLIT_KEY, self._splitter.saveState())
+        except Exception:
+            pass
+
+    def _restore_splitter(self):
+        try:
+            st = QSettings("SetiAstro", "SASpro").value(self._SPLIT_KEY)
+            if st:
+                self._splitter.restoreState(st)
+                return
+        except Exception:
+            pass
+        # First run: give the 3D view ~70% of the width.
+        self._splitter.setSizes([700, 300])
 
     # ── loading ───────────────────────────────────────────────────────────
 
@@ -3288,11 +3368,20 @@ class StellarNeighborhoodTab(QWidget):
                                  color=np.array([[0.35, 1.0, 1.0, 1.0]], dtype=np.float32),
                                  size=np.array([18.0], dtype=np.float32), pxMode=True)
 
-        if scroll_table and idx < self._table.rowCount():
-            self._table.blockSignals(True)
-            self._table.selectRow(idx)
-            self._table.scrollToItem(self._table.item(idx, 0))
-            self._table.blockSignals(False)
+        if scroll_table:
+            if idx < self._table.rowCount():
+                self._table.blockSignals(True)
+                self._table.selectRow(idx)
+                self._table.scrollToItem(self._table.item(idx, 0),
+                                         QTableWidget.ScrollHint.PositionAtCenter)
+                self._table.blockSignals(False)
+            else:
+                # The table only lists the nearest TABLE_ROWS stars. A star
+                # picked from the 3D view can legitimately lie beyond that, so
+                # clear the stale highlight rather than leaving a wrong row lit.
+                self._table.blockSignals(True)
+                self._table.clearSelection()
+                self._table.blockSignals(False)
 
         sid  = int(self._data["source_id"][idx])
         d    = float(self._data["dist_pc"][idx])
@@ -3441,7 +3530,7 @@ class GaiaDatabaseDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Gaia DR3 Library")
         self.setWindowFlag(Qt.WindowType.Window, True)
-        self.setMinimumSize(800, 620)
+        self.setMinimumSize(800, 480)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
         self._library       = get_library()
@@ -3454,10 +3543,18 @@ class GaiaDatabaseDialog(QDialog):
         self._neighborhood_tab = None
 
 
-
         self._build_ui()
         self._refresh_groups("spectral")
         self._refresh_groups("astro")
+
+        # Size AFTER the layout exists — resize() before _build_ui() is discarded
+        # when the layout is installed and Qt re-derives from sizeHint().
+        try:
+            avail = self.screen().availableGeometry()
+            self.resize(min(1180, int(avail.width()  * 0.88)),
+                        min(840,  int(avail.height() * 0.84)))
+        except Exception:
+            self.resize(1000, 680)
 
         # NOTE: the GL view is deliberately NOT built here. Creating a
         # QOpenGLWidget inside a visible window makes Qt destroy and recreate
