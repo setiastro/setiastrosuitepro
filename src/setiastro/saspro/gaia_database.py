@@ -3854,6 +3854,8 @@ class GaiaDatabaseDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Gaia DR3 Library")
         self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
         self.setMinimumSize(800, 480)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
@@ -3879,6 +3881,11 @@ class GaiaDatabaseDialog(QDialog):
                         min(840,  int(avail.height() * 0.84)))
         except Exception:
             self.resize(1000, 680)
+
+        geom = QSettings("SetiAstro", "SASpro").value("GaiaDatabaseDialog/geometry")
+        if geom is not None:
+            try: self.restoreGeometry(geom)
+            except Exception: pass
 
         # NOTE: the GL view is deliberately NOT built here. Creating a
         # QOpenGLWidget inside a visible window makes Qt destroy and recreate
@@ -4757,7 +4764,11 @@ class GaiaDatabaseDialog(QDialog):
                 tab.shutdown()
             except Exception:
                 pass
-
+        try:
+            QSettings("SetiAstro", "SASpro").setValue(
+                "GaiaDatabaseDialog/geometry", self.saveGeometry())
+        except Exception:
+            pass
         for workers_dict in (self._workers, self._astro_workers):
             for worker in list(workers_dict.values()):
                 worker.cancel()
