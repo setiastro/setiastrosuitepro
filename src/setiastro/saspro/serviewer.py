@@ -97,6 +97,19 @@ class _TrimExportWorker(QObject):
             else:
                 self.failed.emit(msg)
 
+# ── Platform-aware anchor gesture text ──────────────────────────────
+import platform as _platform
+_IS_MAC = (_platform.system() == "Darwin")
+
+# On macOS Qt swaps Control<->Meta, and AppKit delivers Ctrl+LeftClick as RightButton.
+# Both physical Ctrl (MetaModifier) and Cmd (ControlModifier) are accepted by the
+# event filter, plus Shift + right-drag.
+ANCHOR_GESTURE_SHORT = "⌃⇧-drag" if _IS_MAC else "Ctrl+Shift+drag"
+ANCHOR_GESTURE_LONG = (
+    "⌃⇧-drag (Control+Shift+drag), ⌘⇧-drag, or Shift + right-drag"
+    if _IS_MAC else
+    "Ctrl+Shift+drag"
+)
 
 class SERViewer(QDialog):
     """
@@ -313,7 +326,7 @@ class SERViewer(QDialog):
             "Planetary: tracks planets/disks by brightness threshold centroid.\n"
             "Surface: tracks by surface features — use for the Moon, Sun, or\n"
             "         objects filling a large portion of the frame.\n"
-            "         Set a surface anchor with Ctrl+Shift+drag.\n"
+            f"         Set a surface anchor with {ANCHOR_GESTURE_SHORT}.\n"
             "Off: no tracking (stack without alignment)."
         )
 
@@ -328,7 +341,7 @@ class SERViewer(QDialog):
         self.lbl_anchor.setWordWrap(True)
         self.lbl_anchor.setToolTip(
             "Surface tracking needs an anchor patch.\n"
-            "Ctrl+Shift+drag to define it (within ROI)."
+            f"{ANCHOR_GESTURE_LONG} to define it (within ROI)."
         )
 
         self.btn_stack = QPushButton("Open Stacker…", self)
@@ -683,18 +696,20 @@ class SERViewer(QDialog):
     def _update_anchor_label(self):
         a = getattr(self, "_surface_anchor", None)
         if a is None:
-            self.lbl_anchor.setText("Surface anchor: (not set)  •  Ctrl+Shift+drag to set")
+            self.lbl_anchor.setText(f"Surface anchor: (not set)  •  {ANCHOR_GESTURE_SHORT} to set")
             self.lbl_anchor.setStyleSheet("color:#888;")
         else:
             x, y, w, h = a
-            self.lbl_anchor.setText(f"Surface anchor: x={x}, y={y}, w={w}, h={h}  •  Ctrl+Shift+drag to change")
+            self.lbl_anchor.setText(
+                f"Surface anchor: x={x}, y={y}, w={w}, h={h}  •  {ANCHOR_GESTURE_SHORT} to change"
+            )
             self.lbl_anchor.setStyleSheet("color:#4a4;")
 
     def _on_track_mode_changed(self):
         mode = self._track_mode_value()
         self._update_anchor_label()
         if mode == "surface" and self._surface_anchor is None:
-            self.lbl_anchor.setText("Surface anchor: REQUIRED  •  Ctrl+Shift+drag to set")
+            self.lbl_anchor.setText(f"Surface anchor: REQUIRED  •  {ANCHOR_GESTURE_SHORT} to set")
             self.lbl_anchor.setStyleSheet("color:#c66;")
         self._refresh()
     
@@ -729,11 +744,19 @@ class SERViewer(QDialog):
 
                 # ---- Left-drag pan and ROI ----
                 if et == QEvent.Type.MouseButtonPress:
-                    if event.button() == Qt.MouseButton.LeftButton:
-                        mods = event.modifiers()
+                    btn  = event.button()
+                    mods = event.modifiers()
 
-                        is_shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
-                        is_ctrl  = bool(mods & Qt.KeyboardModifier.ControlModifier)
+                    is_shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+                    # macOS: Qt swaps Control<->Meta (Cmd -> ControlModifier, Ctrl -> MetaModifier)
+                    is_ctrl  = bool(mods & (Qt.KeyboardModifier.ControlModifier |
+                                            Qt.KeyboardModifier.MetaModifier))
+                    # macOS: Ctrl+LeftClick is delivered by AppKit as RightButton
+                    is_rmb_anchor = (btn == Qt.MouseButton.RightButton and is_shift)
+                    if is_rmb_anchor:
+                        is_ctrl = True
+
+                    if btn == Qt.MouseButton.LeftButton or is_rmb_anchor:
 
                         if is_shift:
                             # Shift+Drag = ROI, Ctrl+Shift+Drag = Anchor
@@ -761,6 +784,8 @@ class SERViewer(QDialog):
                             return True
 
                         # Normal left-drag pan
+                        if btn != Qt.MouseButton.LeftButton:
+                            return False
                         self._panning = True
                         self._pan_start_pos = event.position().toPoint()
                         self._pan_start_h = self.scroll.horizontalScrollBar().value()
@@ -788,7 +813,7 @@ class SERViewer(QDialog):
                         return True
                     
                 if et == QEvent.Type.MouseButtonRelease:
-                    if event.button() == Qt.MouseButton.LeftButton:
+                    if event.button() in (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton):
 
                         # --- finish ROI/anchor rubberband drag ---
                         if self._roi_dragging:

@@ -7249,7 +7249,7 @@ class StackingSuiteDialog(QDialog):
 
             # Distortion / Transform
             "align/model": "homography",
-            "align/max_cp": 200,
+            "align/max_cp": 300,
             "align/downsample": 2,
             "align/h_reproj": 3.0,
 
@@ -7257,10 +7257,10 @@ class StackingSuiteDialog(QDialog):
             "refinement_passes": 1,
             "shift_tolerance": 0.2,
             "accept_shift_px": 2.0,
-            "align/det_sigma": 24.0,
+            "align/det_sigma": 5.0,
             "align/auto_threshold": True,
-            "align/minarea": 20,
-            "align/limit_stars": 150,
+            "align/minarea": 5,
+            "align/limit_stars": 300,
             "align/timeout_per_job_sec": 300,
 
             # Performance
@@ -7290,13 +7290,13 @@ class StackingSuiteDialog(QDialog):
 
             # Rejection
             "rejection_algorithm": "Weighted Windsorized Sigma Clipping",
-            "sigma_high": 4.0,
-            "sigma_low": 4.0,
+            "sigma_high": 3.0,
+            "sigma_low": 3.0,
 
             # Cosmetic (Advanced)
             "cosmetic/custom_enable": True,
-            "cosmetic/hot_sigma": 3.5,
-            "cosmetic/cold_sigma": 3.5,
+            "cosmetic/hot_sigma": 2.5,
+            "cosmetic/cold_sigma": 2.5,
             "cosmetic/star_mean_ratio": 0.22,
             "cosmetic/star_max_ratio": 0.55,
             "cosmetic/sat_quantile": 0.9995,
@@ -8704,11 +8704,38 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
+    def _consume_pending_light_add(self):
+        import json
+        s = self.settings
+        raw = s.value("stacking/pending_light_add", None)
+        if not raw:
+            return
+        s.remove("stacking/pending_light_add")
+        s.sync()
+        try:
+            paths = [p for p in json.loads(raw) if p and os.path.isfile(p)]
+        except Exception:
+            paths = []
+        if not paths:
+            return
+        self._ingest_paths_with_progress(
+            paths=paths,
+            tree=self.light_tree,
+            expected_type="LIGHT",
+            title="Adding Light Files…",
+        )
+        try:
+            self.assign_best_master_files()
+        except Exception:
+            pass
+        self._refresh_quick_stack_summary_later()
+
     def _restore_tab_file_lists(self):
         import json
         s = self.settings
 
         if not s.value("stacking/restart_state/pending", False, type=bool):
+            self._consume_pending_light_add()
             return
 
         def _load_dict(key):
@@ -8794,6 +8821,7 @@ class StackingSuiteDialog(QDialog):
         s.sync()
 
         self.update_status("✅ Restored tab file lists from previous session.")
+        self._consume_pending_light_add()
 
     def _restart_self(self):
         self._save_tab_file_lists()   # ← save before destroying
@@ -8809,8 +8837,13 @@ class StackingSuiteDialog(QDialog):
         if not hasattr(app, "_stacking_suite_ref"):
             app._stacking_suite_ref = None
 
+        wrench_path  = self._wrench_path
+        spinner_path = self._spinner_path
+
         def spawn():
-            new = StackingSuiteDialog(parent=parent)
+            new = StackingSuiteDialog(parent=parent,
+                                      wrench_path=wrench_path,
+                                      spinner_path=spinner_path)
             if geom:
                 new.restoreGeometry(geom)
             if cur_tab is not None:
@@ -8823,88 +8856,6 @@ class StackingSuiteDialog(QDialog):
 
         QTimer.singleShot(0, spawn)
         self.close()
-
-    def _on_stacking_directory_changed(self, old_dir: str, new_dir: str):
-        # Stop any running worker safely
-        if hasattr(self, "alignment_thread") and self.alignment_thread:
-            try:
-                if self.alignment_thread.isRunning():
-                    self.alignment_thread.requestInterruption()
-                    self.alignment_thread.wait(1500)
-            except Exception:
-                pass
-
-        self._ensure_stacking_subdirs(new_dir)
-        self._clear_integration_state()
-
-        # 🔁 RESCAN + REPOPULATE (the key bit you’re missing)
-        self._reload_lists_for_new_dir()
-
-        # If your tabs populate on change, poke the active one:
-        if hasattr(self, "on_tab_changed"):
-            self.on_tab_changed(self.tabs.currentIndex())
-
-        # Update any path labels
-        self._update_stacking_path_display()
-
-        # Reload any persisted master selections
-        try:
-            self.restore_saved_master_calibrations()
-        except Exception:
-            pass
-
-        self.update_status(self.tr(f"📂 Stacking directory changed:\n    {old_dir or '(none)'} → {new_dir}"))
-
-    def _reload_lists_for_new_dir(self):
-        base = self.stacking_directory or ""
-        self.conversion_output_directory = os.path.join(base, "Converted_Images")
-
-        self.dark_files  = self._discover_grouped(os.path.join(base, "Calibrated_Darks"))
-        self.flat_files  = self._discover_grouped(os.path.join(base, "Calibrated_Flats"))
-        self.light_files = self._discover_grouped(os.path.join(base, "Calibrated_Lights"))
-
-        self.master_files.clear()
-        self.master_sizes.clear()
-
-        self.rebuild_dark_tree()
-        self.rebuild_flat_tree()
-        self.rebuild_light_tree()
-        self.populate_calibrated_lights()
-
-        self.update_status(self.tr(f"🔄 Re-scanned calibrated sets in: {base}"))
-        
-    def _discover_grouped(self, root_dir: str) -> dict:
-        """
-        Walk 'root_dir' and return {group_name: [file_paths,...]}.
-        Group = immediate subfolder name; if files are directly in root, group 'Ungrouped'.
-        """
-        groups = {}
-        if not root_dir or not os.path.isdir(root_dir):
-            return groups
-
-        valid_ext = (".fit", ".fits", ".xisf", ".tif", ".tiff")
-        root_dir = os.path.normpath(root_dir)
-
-        for dirpath, _, files in os.walk(root_dir):
-            for fn in files:
-                if not fn.lower().endswith(valid_ext):
-                    continue
-                fpath = os.path.normpath(os.path.join(dirpath, fn))
-                parent = os.path.basename(os.path.dirname(fpath))
-                group  = parent if os.path.dirname(fpath) != root_dir else "Ungrouped"
-                groups.setdefault(group, []).append(fpath)
-
-        # Stable ordering helps
-        for g in groups:
-            groups[g].sort()
-        return groups
-
-    def _refresh_all_tabs_once(self):
-        current = self.tabs.currentIndex()
-        if hasattr(self, "on_tab_changed"):
-            for idx in range(self.tabs.count()):
-                self.on_tab_changed(idx)
-        self.tabs.setCurrentIndex(current)
 
     def _ensure_stacking_subdirs(self, base_dir: str):
         try:
@@ -8922,67 +8873,22 @@ class StackingSuiteDialog(QDialog):
         except Exception as e:
             self.update_status(self.tr(f"⚠️ Could not ensure subfolders in '{base_dir}': {e}"))
 
-    def _clear_integration_state(self):
-        # wipe per-run state so we don't “blend” two directories
-        self.per_group_drizzle.clear()
-        self.manual_dark_overrides.clear()
-        self.manual_flat_overrides.clear()
-        self.reg_files.clear()
-        self.session_tags.clear()
-        self.deleted_calibrated_files.clear()
-        self._norm_map.clear()
-        setattr(self, "valid_transforms", {})
-        setattr(self, "frame_weights", {})
-        setattr(self, "_global_autocrop_rect", None)
-
-
-    def _rebuild_tabs_after_dir_change(self):
-        # Rebuild the tab widgets so any path assumptions inside them reset to the new dir
-        current = self.tabs.currentIndex()
-
-        # Remove all tabs & delete widgets
-        while self.tabs.count():
-            w = self.tabs.widget(0)
-            self.tabs.removeTab(0)
-            try:
-                w.deleteLater()
-            except Exception:
-                pass
-
-        # Recreate against the new base path
-        # Create tabs
-        self.conversion_tab = self.create_conversion_tab()
-        self.dark_tab = self.create_dark_tab()
-        self.flat_tab = self.create_flat_tab()
-        self.light_tab = self.create_light_tab()
-        add_runtime_to_sys_path(status_cb=lambda *_: None)
-        self.image_integration_tab = self.create_image_registration_tab()
-        self.quick_stack_tab = self.create_quick_stack_tab()
-
-        # Add tabs
-        self.tabs.addTab(self.quick_stack_tab, self.tr("Quick Stack"))
-        self.tabs.addTab(self.conversion_tab, self.tr("Convert Camera RAW/TIFF Formats"))
-        self.tabs.addTab(self.dark_tab, self.tr("Darks"))
-        self.tabs.addTab(self.flat_tab, self.tr("Flats"))
-        self.tabs.addTab(self.light_tab, self.tr("Lights"))
-        self.tabs.addTab(self.image_integration_tab, self.tr("Image Integration"))
-        self.tabs.setCurrentWidget(self.quick_stack_tab)
-
-        # Restore previously active tab if possible
-        if 0 <= current < self.tabs.count():
-            self.tabs.setCurrentIndex(current)
-        else:
-            self.tabs.setCurrentIndex(1)  # Darks by default
-
     def select_stacking_directory(self):
         """ Opens a dialog to choose a stacking directory. """
         directory = QFileDialog.getExistingDirectory(self, self.tr("Select Stacking Directory"))
-        if directory:
-            self.stacking_directory = directory
-            self.dir_path_edit.setText(directory)  # No more AttributeError
-            self.settings.setValue("stacking/dir", directory)  # Save the new directory
-            self._update_stacking_path_display()
-
+        if not directory:
+            return
+        old = self._norm_dir(self.stacking_directory or "")
+        self.stacking_directory = directory
+        self.dir_path_edit.setText(directory)
+        self.settings.setValue("stacking/dir", directory)
+        self._update_stacking_path_display()
+        # First-time set (old empty): no state to refresh, carry on.
+        # Actual change: same proven path as the settings dialog — restart.
+        if old and self._norm_dir(directory) != old:
+            self._reopen_stacking_log_file()
+            self.update_status(self.tr("🔁 Stacking directory changed — restarting to apply…"))
+            self._restart_self()
     def _bind_shared_setting_checkbox(self, key: str, checkbox: QCheckBox, default: bool = True):
         """Bind a QCheckBox to a shared QSettings key and keep all bound boxes in sync."""
         import weakref
@@ -12563,6 +12469,167 @@ class StackingSuiteDialog(QDialog):
         self._refresh_quick_stack_summary_later()
 
     
+    # ── Mixed-target guard ──────────────────────────────────────────────────
+
+    # Priority order; first non-junk value wins. Deliberately narrow —
+    # keys like IMAGE/SOURCE hold filenames or provenance in the wild.
+    _OBJECT_HEADER_KEYS = ("OBJECT", "OBJNAME", "TARGNAME", "TARGET")
+
+    # Values that mean "not actually a target name".
+    _OBJECT_JUNK = {
+        "", "none", "unknown", "no target", "notarget", "n/a", "na", "null",
+        "test", "dark", "darks", "flat", "flats", "bias", "light", "lights",
+        "dark frame", "flat frame", "flat field", "bias frame", "calibration",
+    }
+
+    def _normalize_object_name(self, v) -> str:
+        """Collapse whitespace; return '' for missing/blank/junk values."""
+        if v is None:
+            return ""
+        s = re.sub(r"\s+", " ", str(v).strip())
+        return "" if s.lower() in self._OBJECT_JUNK else s
+
+    def _object_from_header(self, header) -> str:
+        for key in self._OBJECT_HEADER_KEYS:
+            obj = self._normalize_object_name(header.get(key))
+            if obj:
+                return obj
+        return ""
+
+    def _object_from_path(self, path: str) -> str:
+        """Header-only read of the target name. Returns '' on failure."""
+        try:
+            header, ok = get_valid_header(path)
+            if not ok or header is None:
+                return ""
+            return self._object_from_header(header)
+        except Exception:
+            return ""
+
+    def _seed_pipeline_objects_from_calibrated(self) -> set:
+        """Probe a sample of <stacking_dir>/Calibrated for target names."""
+        objs = set()
+        base = self.stacking_directory or ""
+        cal = os.path.join(base, "Calibrated")
+        if not base or not os.path.isdir(cal):
+            return objs
+        exts = (".fit", ".fits", ".fz", ".ftz")
+        probed = 0
+        try:
+            for fn in sorted(os.listdir(cal)):
+                if not fn.lower().endswith(exts):
+                    continue
+                obj = self._object_from_path(os.path.join(cal, fn))
+                if obj:
+                    objs.add(obj)
+                probed += 1
+                if probed >= 25:
+                    break
+        except Exception:
+            pass
+        return objs
+
+    def _ensure_pipeline_objects(self) -> set:
+        objs = getattr(self, "_pipeline_objects", None)
+        if objs is None:
+            objs = self._seed_pipeline_objects_from_calibrated()
+            self._pipeline_objects = objs
+        return objs
+
+    def _maybe_offer_new_stacking_dir(self, paths) -> bool:
+        """
+        Pre-ingest guard for LIGHT adds: if incoming files carry a different
+        FITS OBJECT than the current pipeline, offer to create/switch to a
+        per-target stacking directory (using the existing full-refresh path).
+        Returns False only if the user cancels the add outright.
+        """
+        try:
+            cur_dir = self.stacking_directory or ""
+            if not cur_dir:
+                return True
+
+            existing = self._ensure_pipeline_objects()
+            if not existing:
+                return True  # empty pipeline — nothing to conflict with
+
+            incoming = set()
+            busy = self._busy_progress(self.tr("Checking target names in FITS headers…"))
+            try:
+                for p in list(paths)[:300]:
+                    obj = self._object_from_path(p)
+                    if obj:
+                        incoming.add(obj)
+            finally:
+                busy.close()
+            if not incoming:
+                return True  # no OBJECT keywords — can't compare, don't nag
+
+            existing_cf = {s.casefold() for s in existing}
+            new_targets = sorted(s for s in incoming if s.casefold() not in existing_cf)
+            if not new_targets:
+                return True
+
+            primary = new_targets[0]
+            safe = self._sanitize_name(primary).strip().replace(" ", "_") or "NewTarget"
+            suggested = os.path.join(os.path.dirname(os.path.normpath(cur_dir)),
+                                     f"saspro_stacking_{safe}")
+            resuming = os.path.isdir(suggested)
+
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Icon.Warning)
+            msg.setWindowTitle(self.tr("Different Target Detected"))
+            msg.setText(self.tr(
+                "The files you're adding are for <b>{0}</b>, but this stacking "
+                "directory already contains <b>{1}</b>.<br><br>"
+                "Mixing targets in one stacking directory will send both to "
+                "Image Integration as a single set — they'll try to register to "
+                "one reference frame and the stack will fail."
+            ).format(", ".join(new_targets), ", ".join(sorted(existing))))
+            msg.setInformativeText(self.tr("{0}:<br><code>{1}</code>").format(
+                self.tr("Existing folder for this target found — switch to it")
+                if resuming else self.tr("Suggested new stacking directory"),
+                suggested))
+            switch_btn = msg.addButton(
+                self.tr("Switch to Target Folder") if resuming
+                else self.tr("Create && Switch"),
+                QMessageBox.ButtonRole.AcceptRole)
+            mix_btn = msg.addButton(self.tr("Add Anyway (mix targets)"),
+                                    QMessageBox.ButtonRole.DestructiveRole)
+            msg.addButton(QMessageBox.StandardButton.Cancel)
+            msg.setDefaultButton(switch_btn)
+            msg.exec()
+
+            clicked = msg.clickedButton()
+            if clicked is switch_btn:
+                import json
+                os.makedirs(suggested, exist_ok=True)
+                # Lights are per-target: don't carry the old target's light
+                # tree across the restart. Darks/flats carry over on purpose
+                # (calibration library is target-independent).
+                self.light_files.clear()
+                self.reg_files.clear()
+                self.manual_light_files = []
+                self.stacking_directory = suggested
+                self.settings.setValue("stacking/dir", suggested)
+                try:
+                    self.dir_path_edit.setText(suggested)
+                except Exception:
+                    pass
+                # Stash the in-flight add; the restarted suite ingests it.
+                self.settings.setValue("stacking/pending_light_add",
+                                       json.dumps([str(p) for p in paths]))
+                self.update_status(self.tr(
+                    "🔁 Switching stacking directory to {0} — restarting…"
+                ).format(suggested))
+                self._restart_self()
+                return False  # this instance is dying; don't ingest here
+            if clicked is mix_btn:
+                return True
+            return False
+        except Exception as e:
+            print("mixed-target guard failed:", e)
+            return True  # never block adds on a guard bug
+
     def add_light_files(self):
         auto = self.settings.value("stacking/auto_session", True, type=bool)
         if auto:
@@ -12726,6 +12793,10 @@ class StackingSuiteDialog(QDialog):
 
         self.settings.setValue("last_opened_folder", os.path.dirname(files[0]))
 
+        if expected_type.upper() == "LIGHT":
+            if not self._maybe_offer_new_stacking_dir(files):
+                return
+
         # Show a standalone progress dialog while ingesting
         self._ingest_paths_with_progress(
             paths=files,
@@ -12762,6 +12833,10 @@ class StackingSuiteDialog(QDialog):
         paths = self._collect_fits_paths(directory, recursive=recursive)
         if not paths:
             return
+
+        if expected_type.upper() == "LIGHT":
+            if not self._maybe_offer_new_stacking_dir(paths):
+                return
 
         auto_session = self.settings.value("stacking/auto_session", True, type=bool)
 
@@ -13278,6 +13353,12 @@ class StackingSuiteDialog(QDialog):
             header, ok = get_valid_header(path)
             if not ok or header is None:
                 raise RuntimeError("Header read failed")
+
+            # Record target name for the mixed-target guard
+            if expected_type_u == "LIGHT":
+                _obj = self._object_from_header(header)
+                if _obj:
+                    self._ensure_pipeline_objects().add(_obj)
 
             # --- Basic image size ---
             try:

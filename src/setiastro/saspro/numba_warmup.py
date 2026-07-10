@@ -27,6 +27,7 @@ def _do_warmup():
     - Calibration (2+ functions)
     """
     try:
+        #print("[numba] warmup thread started")
         # Import numba functions - expanded set
         from setiastro.saspro.legacy.numba_utils import (
             # Blending operations (7)
@@ -37,25 +38,19 @@ def _do_warmup():
             blend_screen_numba,
             blend_overlay_numba,
             blend_difference_numba,
-            # Geometric transforms (6)
+            # Geometric transforms
             rescale_image_numba,
             flip_horizontal_numba,
             flip_vertical_numba,
             rotate_180_numba,
             bin2x2_numba,
-            apply_rotation_numba,
-            # Image processing (5)
+            # Image processing
             invert_image_numba,
             apply_flat_division_numba,
-            subtract_dark_numba,
-            apply_gain_numba,
-            clip_image_numba,
-            # Statistical operations (5)
+            subtract_dark,
+            # Statistical operations
             kappa_sigma_clip_weighted,
             windsorized_sigma_clip_weighted,
-            percentile_clip_weighted,
-            median_filter_numba,
-            apply_color_correction_numba,
         )
         
         # Create small dummy arrays for warmup
@@ -83,15 +78,10 @@ def _do_warmup():
             # Image processing
             (invert_image_numba, [dummy_rgb]),
             (apply_flat_division_numba, [dummy_rgb, dummy_rgb]),
-            (subtract_dark_numba, [dummy_mono, dummy_mono]),
-            (apply_gain_numba, [dummy_mono, 1.0]),
-            (clip_image_numba, [dummy_rgb, 0.0, 1.0]),
+            (subtract_dark, [dummy_3d_mono, dummy_mono]),
             # Statistical operations (with multiple frames)
             (kappa_sigma_clip_weighted, [dummy_3d_mono, np.ones(8)]),
             (windsorized_sigma_clip_weighted, [dummy_3d_mono, np.ones(8)]),
-            (percentile_clip_weighted, [dummy_3d_mono, 50.0]),
-            (median_filter_numba, [dummy_mono, 3]),
-            (apply_color_correction_numba, [dummy_rgb, dummy_rgb]),
         ]
         
         for func, args in warmup_funcs:
@@ -102,9 +92,29 @@ def _do_warmup():
                 pass
         
         logging.debug("Numba warmup completed successfully")
+
+        # Log the resolved numba threading layer. Requires that at least one
+        # parallel=True kernel above actually executed (the reduction/blend
+        # kernels do). workqueue is NOT threadsafe; the blink loader stays safe
+        # via NUMBA_PARALLEL_LOCK regardless, but a workqueue fallback here is
+        # the signal that a user is on the config that can hit concurrent-numba
+        # races — so surface it in the log for future diagnosis.
+        try:
+            import numba
+            _layer = numba.threading_layer()
+            #print(f"[numba] threading layer resolved: {_layer}")
+            logging.info("Numba threading layer resolved: %s", _layer)
+            if _layer not in ("tbb", "omp"):
+                logging.warning("Numba resolved to '%s' (NOT threadsafe).", _layer)
+        except Exception as _e:
+            #print(f"[numba] layer probe skipped: {_e!r}")
+            logging.info("Numba threading-layer probe skipped: %r", _e)
         
     except Exception as e:
-        logging.debug(f"Numba warmup failed (non-critical): {e}")
+        import traceback
+        #print(f"[numba] warmup failed: {e!r}")
+        traceback.print_exc()
+        logging.warning("Numba warmup failed (non-critical): %r", e)
     finally:
         _warmup_done.set()
 

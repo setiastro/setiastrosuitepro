@@ -1073,9 +1073,9 @@ class ToolbarMixin:
         self.act_nbextract.setStatusTip(self.tr("Empirically calibrated dual-band narrowband channel extraction (Ha/OIII, SII/OIII, SII/Hβ)"))
         self.act_nbextract.triggered.connect(self._open_nbextract)
 
-        self.act_gaia_database = QAction(QIcon(gaia_path), self.tr("Gaia XP Spectral Library..."), self)
+        self.act_gaia_database = QAction(QIcon(gaia_path), self.tr("Gaia Local Library..."), self)
         self.act_gaia_database.setObjectName("gaia_database")
-        self.act_gaia_database.setToolTip(self.tr("Manage Gaia DR3 XP spectral library databases"))
+        self.act_gaia_database.setToolTip(self.tr("Manage Gaia DR3 XP spectral and astrometric library databases"))
         self.act_gaia_database.triggered.connect(self._open_gaia_database)
 
         self.act_convo = QAction(QIcon(convoicon_path), self.tr("Convolution / Deconvolution..."), self)
