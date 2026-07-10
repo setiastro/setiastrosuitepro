@@ -18,9 +18,10 @@ from setiastro.saspro.resources import _get_base_path
 class GPUWorker(QThread):
     resultReady = pyqtSignal(float)
 
-    def __init__(self, has_nvidia: bool, parent=None):
+    def __init__(self, has_nvidia: bool, has_rocm: bool = False, parent=None):
         super().__init__(parent)
         self._has_nvidia = has_nvidia
+        self._has_rocm = has_rocm
 
         # cache + throttle (Windows PowerShell is expensive)
         self._last_win_poll = 0.0
@@ -80,10 +81,43 @@ class GPUWorker(QThread):
         except Exception:
             # keep last known value instead of spamming 0.0
             return self._cached_win_val
+        
+    def _get_rocm_gpu_load(self) -> float:
+        try:
+            out = subprocess.check_output(
+                ["rocm-smi", "--showuse", "--csv"],
+                timeout=0.6,
+                stderr=subprocess.DEVNULL,
+            )
+            text = out.decode("utf-8", errors="ignore").strip()
+            lines = [l for l in text.splitlines() if l.strip()]
+            if len(lines) < 2:
+                return 0.0
+
+            header = [h.strip().strip('"') for h in lines[0].split(",")]
+            use_col = next(
+                (i for i, h in enumerate(header) if "use" in h.lower() and "%" in h),
+                None,
+            )
+            if use_col is None:
+                return 0.0
+
+            vals = []
+            for row in lines[1:]:
+                cols = [c.strip().strip('"') for c in row.split(",")]
+                if use_col < len(cols):
+                    try:
+                        vals.append(float(cols[use_col]))
+                    except ValueError:
+                        pass
+            return max(vals) if vals else 0.0
+        except Exception:
+            return 0.0
 
     def _get_gpu_load(self) -> float:
         nv_val = 0.0
         win_val = 0.0
+        rocm_val = 0.0
 
         # NVIDIA (fast)
         if self._has_nvidia:
@@ -99,11 +133,15 @@ class GPUWorker(QThread):
             except Exception:
                 pass
 
+        # AMD ROCm (Linux)
+        if self._has_rocm:
+            rocm_val = self._get_rocm_gpu_load()
+
         # Windows integrated (slow, throttled)
         if os.name == "nt":
             win_val = self._get_windows_gpu_load()
 
-        return max(nv_val, win_val)
+        return max(nv_val, win_val, rocm_val)
 
     def run(self):
         while not self.isInterruptionRequested():
@@ -155,6 +193,7 @@ class ResourceBackend(QObject):
         self._cpu_ema = None  # exponential moving average
         self._last_cpu_times = None
         self._last_cpu_sample_t = 0.0
+
         # Check if nvidia-smi is reachable once
         has_nvidia = False
         try:
@@ -164,8 +203,17 @@ class ResourceBackend(QObject):
         except Exception:
             pass
 
+        # Check if rocm-smi is reachable once (AMD, Linux)
+        has_rocm = False
+        try:
+            import shutil
+            if shutil.which("rocm-smi"):
+                has_rocm = True
+        except Exception:
+            pass
+
         # Start Background GPU Worker
-        self._gpu_worker = GPUWorker(has_nvidia, self)
+        self._gpu_worker = GPUWorker(has_nvidia, has_rocm, self)
         self._gpu_worker.resultReady.connect(self._on_gpu_measured)
         self._gpu_worker.start()
 
