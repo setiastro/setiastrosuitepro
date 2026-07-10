@@ -122,7 +122,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QProgressBar, QWidget, QMessageBox, QFileDialog,
     QScrollArea, QFrame, QTabWidget, QTextEdit, QLineEdit, QComboBox,
     QSizePolicy, QRadioButton, QButtonGroup, QSplitter,
-    QDoubleSpinBox, QCheckBox, QSlider, QTableWidget, QTableWidgetItem, QMenu,
+    QDoubleSpinBox, QCheckBox, QSlider, QTableWidget, QTableWidgetItem, QMenu,QSpinBox
 )
 from PyQt6.QtGui import QColor
 from PyQt6 import sip
@@ -2467,9 +2467,12 @@ class StellarNeighborhoodTab(QWidget):
     # Opens small on purpose: within a few parsecs there are only a handful of
     # stars, so the first render is instant and obviously correct (you should
     # recognise the names). Expand from there.
-    DEFAULT_RADIUS_PC = 3.0
-    MAX_POINTS        = 2_000_000
-    TABLE_ROWS        = 300
+    DEFAULT_RADIUS_PC   = 3.0
+    DEFAULT_MAX_POINTS  = 2_000_000
+    MAX_POINTS_HARD_CAP = 15_000_000   # driver-safe ceiling; VBO size and
+                                       # single-frame pan cost climb hard
+                                       # past this on integrated GPUs
+    TABLE_ROWS          = 300
     # Ceiling on stars we'll fetch+decompress spectra for. Each costs a PK
     # lookup and a zlib.decompress; 20k is a couple of seconds, millions is not
     # happening. Spent on the brightest stars, where colour actually reads.
@@ -2491,6 +2494,15 @@ class StellarNeighborhoodTab(QWidget):
         # True when the Gaia neighborhood extract isn't installed and we're
         # rendering the hardcoded naked-eye stars alone.
         self._gaia_missing = False
+
+        # User-adjustable render cap. Kept as an instance attribute so worker
+        # calls use the current value; persisted across sessions.
+        try:
+            saved = int(QSettings("SetiAstro", "SASpro").value(
+                "gaia/neighborhood/max_points", self.DEFAULT_MAX_POINTS))
+        except Exception:
+            saved = self.DEFAULT_MAX_POINTS
+        self.MAX_POINTS = max(10_000, min(saved, self.MAX_POINTS_HARD_CAP))
 
         # The GL widget is created lazily, on first show. Constructing a
         # QOpenGLWidget is what can force Qt to recreate the top-level native
@@ -2770,6 +2782,26 @@ class StellarNeighborhoodTab(QWidget):
         c_row.addWidget(self._combo_color, stretch=1)
         cl.addLayout(c_row)
 
+        # render cap
+        rc_row = QHBoxLayout()
+        rc_row.addWidget(QLabel("Render cap:"))
+        self._spin_max_points = QSpinBox()
+        self._spin_max_points.setRange(10_000, self.MAX_POINTS_HARD_CAP)
+        self._spin_max_points.setSingleStep(100_000)
+        self._spin_max_points.setGroupSeparatorShown(True)
+        self._spin_max_points.setSuffix(" stars")
+        self._spin_max_points.setValue(self.MAX_POINTS)
+        self._spin_max_points.setToolTip(
+            "Maximum stars to fetch, decompress and render.\n"
+            "Larger values cost RAM (~64 bytes per star for positions +\n"
+            "colours) and GPU upload time. Values above a few million may\n"
+            "stutter on integrated GPUs and take tens of seconds to draw."
+        )
+        self._spin_max_points.editingFinished.connect(self._on_max_points_changed)
+        rc_row.addWidget(self._spin_max_points)
+        rc_row.addStretch()
+        cl.addLayout(rc_row)
+
         # point size
         s_row = QHBoxLayout()
         s_row.addWidget(QLabel("Point size:"))
@@ -2815,7 +2847,14 @@ class StellarNeighborhoodTab(QWidget):
         cl.addLayout(v_row)
 
         btn_row = QHBoxLayout()
+        btn_reset = QPushButton("Reset View")
+        btn_reset.setToolTip("Recenter on the Sun and restore the default "
+                             "angle and zoom for the current radius.")
+        btn_reset.clicked.connect(self._reset_view)
+        btn_row.addWidget(btn_reset)
         btn_fit = QPushButton("Fit View")
+        btn_fit.setToolTip("Rescale zoom and grid to the current radius "
+                           "without changing the camera angle.")
         btn_fit.clicked.connect(self._fit_view)
         btn_row.addWidget(btn_fit)
         btn_reload = QPushButton("Reload")
@@ -2951,6 +2990,36 @@ class StellarNeighborhoodTab(QWidget):
         self._worker.failed.connect(self._on_failed)
         self._worker.start()
 
+    def _on_max_points_changed(self):
+        v = int(self._spin_max_points.value())
+        if v == self.MAX_POINTS:
+            return
+        # One-time warning above the "reasonable" band; users who cranked it
+        # to 8M and forgot get reminded rather than silently freezing their
+        # session on the next reload.
+        SOFT_WARN = 5_000_000
+        if v > SOFT_WARN and not getattr(self, "_ack_render_cap_high", False):
+            ret = QMessageBox.warning(
+                self, "High render cap",
+                f"Rendering {v:,} stars can use several hundred MB of RAM "
+                "and may take tens of seconds to draw and pan smoothly, "
+                "especially on integrated graphics.\n\nContinue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ret != QMessageBox.StandardButton.Yes:
+                self._spin_max_points.blockSignals(True)
+                self._spin_max_points.setValue(self.MAX_POINTS)
+                self._spin_max_points.blockSignals(False)
+                return
+            self._ack_render_cap_high = True
+        self.MAX_POINTS = v
+        try:
+            QSettings("SetiAstro", "SASpro").setValue(
+                "gaia/neighborhood/max_points", v)
+        except Exception:
+            pass
+        self._schedule_reload()
+
     def _on_failed(self, msg: str):
         self._status.setText(f"Load failed: {msg}")
         self._worker = None
@@ -3014,7 +3083,11 @@ class StellarNeighborhoodTab(QWidget):
                       f"naked-eye stars are plotted")
         self._status.setText(
             f"{n:,} stars within {r:.1f} pc{cut_str}{extra}"
-            + ("  ·  ⚠ truncated at the render cap" if truncated else ""))
+            + (f"  ·  ⚠ truncated at render cap ({self.MAX_POINTS:,}); "
+               "raise it in the controls to see more"
+               if truncated else
+               ("  ·  entire local catalog"
+                if n > 1_000_000 and r >= NEIGHBORHOOD_MAX_PC else "")))
 
         self._set_points(data)
         self._fill_table(data)
@@ -3344,6 +3417,36 @@ class StellarNeighborhoodTab(QWidget):
         self._update_axes()
         self._update_tick_labels()
 
+    def _reset_view(self):
+        """Sun-centered, default angles, zoom fit to the current radius."""
+        if not HAS_GL or not self._gl_ready:
+            return
+        from pyqtgraph import Vector
+        r = float(self._spin_radius.value())
+        # opts["center"] is what Ctrl+drag panning moves; reset it explicitly.
+        try:
+            self._view.opts["center"] = Vector(0, 0, 0)
+        except Exception:
+            pass
+        # pyqtgraph's defaults: azimuth 45°, elevation 30°. These match the
+        # camera pyqtgraph installs on GLViewWidget construction, so a
+        # fresh-from-open view and a post-reset view look identical.
+        self._view.setCameraPosition(
+            pos=Vector(0, 0, 0),
+            distance=max(r * 3.0, 2.0),
+            azimuth=45.0,
+            elevation=30.0,
+        )
+        try:
+            self._grid.setSize(x=2 * r, y=2 * r, z=1)
+            step = max(r / 5.0, 0.2)
+            self._grid.setSpacing(x=step, y=step, z=step)
+        except Exception:
+            pass
+        self._update_axes()
+        self._update_tick_labels()
+        self._view.update()
+
     # ── table + selection ─────────────────────────────────────────────────
 
     def _fill_table(self, data: dict):
@@ -3664,7 +3767,7 @@ class StellarNeighborhoodTab(QWidget):
             # can sit well outside 10". Widen rather than declare "not found".
             res = None
             used_r = 0.0
-            for r_as in (10.0, 30.0, 60.0):
+            for r_as in (20.0, 60.0):
                 try:
                     res = s.query_region(coord, radius=r_as * u.arcsec)
                 except Exception:
@@ -3691,7 +3794,7 @@ class StellarNeighborhoodTab(QWidget):
             extra += f"\n  cone match, sep={sep:.2f}\""
             if n_hits > 1:
                 extra += f"  ({n_hits} objects in {used_r:.0f}\" — nearest shown)"
-            if sep > 10.0:
+            if sep > 20.0:
                 extra += "\n  ⚠ large separation — likely proper motion (J2016 vs J2000), verify"
 
             self._info.setPlainText(self._info.toPlainText() + extra)
@@ -4175,19 +4278,6 @@ class GaiaDatabaseDialog(QDialog):
         info_lbl.setWordWrap(True)
         info_lbl.setStyleSheet("color: #778; font-size: 11px; margin-bottom: 4px;")
         layout.addWidget(info_lbl)
-
-        if kind == "astro":
-            banner = QLabel(
-                "ℹ️ <b>Upload pending.</b> All 41 files are built and verified "
-                "(1,585,128,120 sources, 183.9 GB) but aren't on the CDN yet, so "
-                "<b>Install</b> will fail until they are. Use <b>Browse…</b> to point at "
-                "your local copies for testing."
-            )
-            banner.setWordWrap(True)
-            banner.setStyleSheet(
-                "background: #0d1a22; color: #6aa9c4; border: 1px solid #1e3a47; "
-                "border-radius: 4px; padding: 6px 10px; font-size: 11px;")
-            layout.addWidget(banner)
 
         # Directory row
         dir_row = QHBoxLayout()
