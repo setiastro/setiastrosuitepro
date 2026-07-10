@@ -98,8 +98,36 @@ def _build_torch_models(torch):
 
     class SimpleGate(nn.Module):
         def forward(self, x):
-            x1, x2 = x.chunk(2, dim=1)
+            # DirectML can't multiply the two non-contiguous strided views that
+            # chunk() returns — it fails with a bare "Unspecified error". Slice
+            # into contiguous halves instead. No-op cost on CUDA/CPU/MPS.
+            c = x.shape[1] // 2
+            x1 = x[:, :c].contiguous()
+            x2 = x[:, c:].contiguous()
             return x1 * x2
+
+    class DMLSafePixelShuffle(nn.Module):
+        """
+        PixelShuffle(r) rewritten as reshape+permute. DirectML's native
+        PixelShuffle intermittently fails with a bare "Unspecified error";
+        the manual form uses only ops DirectML handles. Numerically identical
+        to nn.PixelShuffle, so weights load unchanged. Only used on the
+        torch-directml device — CUDA/MPS/CPU keep the faster native op.
+        """
+        def __init__(self, upscale_factor: int):
+            super().__init__()
+            self.r = int(upscale_factor)
+
+        def forward(self, x):
+            r = self.r
+            n, c, h, w = x.shape
+            oc = c // (r * r)
+            # (N, oc, r, r, H, W)
+            x = x.reshape(n, oc, r, r, h, w)
+            # -> (N, oc, H, r, W, r)
+            x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
+            # -> (N, oc, H*r, W*r)
+            return x.reshape(n, oc, h * r, w * r)
 
     class NAFBlock(nn.Module):
         def __init__(self, channels: int):
@@ -154,8 +182,10 @@ def _build_torch_models(torch):
             dec_blk_nums=(2, 2, 2, 2),
             middle_blk_num: int = 4,
             residual_out: bool = True,
+            dml_safe: bool = False,
         ):
             super().__init__()
+            _Shuffle = DMLSafePixelShuffle if dml_safe else nn.PixelShuffle
             self.intro = nn.Conv2d(in_ch, width, 3, padding=1, bias=True)
 
             self.encoders = nn.ModuleList()
@@ -175,7 +205,7 @@ def _build_torch_models(torch):
                 self.ups.append(
                     nn.Sequential(
                         nn.Conv2d(ch, ch * 2, 1, bias=True),
-                        nn.PixelShuffle(2),
+                        _Shuffle(2),
                     )
                 )
                 ch //= 2
@@ -431,6 +461,7 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
         dec_blk_nums=(2, 2, 2, 2),
         middle_blk_num=4,
         residual_out=True,
+        dml_safe=(backend == "torch_dml"),
     )
     rem = _load_model_weights_lenient(torch, nn, rem, p_rem, device).eval()
 
@@ -441,8 +472,24 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
                 _ = rem(x)
             status_cb("CosmicClarity Satellite: DirectML model smoke test passed")
         except Exception as e:
-            status_cb(f"CosmicClarity Satellite: DirectML smoke test failed ({type(e).__name__}: {e})")
-            raise
+            import traceback
+            status_cb("CosmicClarity Satellite: DirectML smoke test FAILED — "
+                      "falling back to CPU. Details:")
+            status_cb(traceback.format_exc())
+            # Don't hard-fail the whole engine on a DirectML quirk: rebuild on CPU
+            # so the user still gets satellite removal, just slower.
+            status_cb(f"CosmicClarity Satellite: retrying on CPU "
+                      f"({type(e).__name__}: {e})")
+            device = torch.device("cpu")
+            det1 = _load_model_weights_lenient(torch, nn, BinaryClassificationCNN(3), p_det1, device).eval()
+            det2 = _load_model_weights_lenient(torch, nn, BinaryClassificationCNN2(3), p_det2, device).eval()
+            rem  = _load_model_weights_lenient(
+                torch, nn,
+                NAFNetSatelliteRemover(width=32, enc_blk_nums=(2, 4, 6, 8),
+                                       dec_blk_nums=(2, 2, 2, 2),
+                                       middle_blk_num=4, residual_out=True),
+                p_rem, device).eval()
+            backend = "cpu"
 
     out = {
         "backend": backend,
