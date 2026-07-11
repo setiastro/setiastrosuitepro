@@ -17379,6 +17379,9 @@ class StackingSuiteDialog(QDialog):
 
                 if do_satellite:
                     try:
+                        _status_queue.put(
+                            f"🛰️ Satellite mask: {os.path.basename(fi['light_file'])}…"
+                        )
                         original = np.asarray(light_data, dtype=np.float32, copy=True)
                         _, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
                             light_data, is_mono=is_mono
@@ -17503,7 +17506,15 @@ class StackingSuiteDialog(QDialog):
         _group_frame_count   = 0
         _group_frame_total   = 0
 
+        def _drain_status():
+            try:
+                while True:
+                    self.update_status(self.tr(_status_queue.get_nowait()))
+            except _queue.Empty:
+                pass
+
         while True:
+            _drain_status()
             item = raw_queue.get()
             if item is None:
                 break
@@ -17588,14 +17599,17 @@ class StackingSuiteDialog(QDialog):
             del light_data
             QApplication.processEvents()
             
-        # wait for consumer to finish saving
+        # wait for consumer to finish saving — keep draining status so
+        # satellite removal progress stays visible
         result_queue.put(None)
-        consumer_thread.join()
+        while consumer_thread.is_alive():
+            _drain_status()
+            QApplication.processEvents()
+            consumer_thread.join(timeout=0.1)
         producer_thread.join()
 
-        # drain status messages
-        while not _status_queue.empty():
-            self.update_status(self.tr(_status_queue.get_nowait()))
+        # drain any final status messages
+        _drain_status()
         QApplication.processEvents()
 
         # explicit cleanup — force memory back to OS
