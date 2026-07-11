@@ -16,6 +16,7 @@ from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
 from setiastro.saspro import astroalign
 
 import sep
+sep.set_extract_pixstack(20000000)
 
 import cv2
 

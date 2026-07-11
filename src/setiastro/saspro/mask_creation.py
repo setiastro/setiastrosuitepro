@@ -878,9 +878,13 @@ class MaskPreviewDialog(QDialog):
 
 class MaskCreationDialog(QDialog):
     """Mask creation UI for SASpro documents (returns a np mask on OK)."""
-    def __init__(self, image01: np.ndarray, parent=None, auto_push_on_ok: bool = True):
+    def __init__(self, image01: np.ndarray, parent=None,
+                 auto_push_on_ok: bool = True, wcs=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Mask Creation"))
+        # Optional WCS enables the Gaia Local DB star-mask augment. Silently
+        # unavailable (checkbox greyed) if None or not celestial.
+        self.wcs = wcs if (wcs is not None and getattr(wcs, "has_celestial", False)) else None
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -1055,6 +1059,8 @@ class MaskCreationDialog(QDialog):
         is_star = (mask_type == "Star Mask")  # match your exact string
         self._star_thresh_row.setVisible(is_star)
         self._btn_trial_detect.setVisible(is_star)
+        if hasattr(self, "_gaia_augment_row"):
+            self._gaia_augment_row.setVisible(is_star)
 
     def _build_star_thresh_controls(self, parent_layout):
         """Call this during __init__ to build the hidden threshold row."""
@@ -1087,6 +1093,68 @@ class MaskCreationDialog(QDialog):
         row_layout.addStretch()
         parent_layout.addWidget(self._star_thresh_row)
 
+        # Gaia augment: SEP finds what it can, Gaia fills in the catalogued
+        # stars SEP missed (saturated cores, dim ones below threshold).
+        # Requires plate-solved WCS and the astrometric library installed.
+        self._gaia_augment_row = QWidget()
+        gar_layout = QHBoxLayout(self._gaia_augment_row)
+        gar_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._chk_gaia_augment = QCheckBox("Augment with Gaia Local DB")
+        self._chk_gaia_augment.setStyleSheet("color:#eaeaea;font-size:11px;")
+        try:
+            from PyQt6.QtCore import QSettings
+            self._chk_gaia_augment.setChecked(
+                QSettings("SetiAstro", "SASpro").value(
+                    "mask/gaia_augment", False, type=bool))
+        except Exception:
+            pass
+
+        def _persist_augment(on):
+            try:
+                from PyQt6.QtCore import QSettings
+                QSettings("SetiAstro", "SASpro").setValue(
+                    "mask/gaia_augment", bool(on))
+            except Exception:
+                pass
+        self._chk_gaia_augment.toggled.connect(_persist_augment)
+
+        # Availability gate — grey out with an explanatory tooltip when it
+        # can't work, rather than failing silently or throwing at generate.
+        gaia_ok, gaia_reason = self._check_gaia_augment_available()
+        self._chk_gaia_augment.setEnabled(gaia_ok)
+        if not gaia_ok:
+            self._chk_gaia_augment.setChecked(False)
+            self._chk_gaia_augment.setToolTip(gaia_reason)
+        else:
+            self._chk_gaia_augment.setToolTip(
+                "Add Gaia Local DB catalogued stars to the mask, sized to match\n"
+                "the SEP-detected stars. Handles saturated cores SEP misses.\n"
+                "Requires a plate-solved image and an installed astrometric band."
+            )
+
+        # Max-G limit so wide-field frames don't spend a minute masking
+        # 10,000 faint stars nobody cares about.
+        lbl_g = QLabel("Max G:")
+        lbl_g.setStyleSheet("color:#eaeaea;font-size:11px;")
+        self._spin_gaia_maxg = QDoubleSpinBox()
+        self._spin_gaia_maxg.setRange(6.0, 20.0)
+        self._spin_gaia_maxg.setSingleStep(0.5)
+        self._spin_gaia_maxg.setDecimals(1)
+        self._spin_gaia_maxg.setValue(17.0)
+        self._spin_gaia_maxg.setFixedWidth(60)
+        self._spin_gaia_maxg.setToolTip(
+            "Skip Gaia stars fainter than this G magnitude.\n"
+            "17 is a good default; raise for very deep/narrowband data."
+        )
+
+        gar_layout.addWidget(self._chk_gaia_augment)
+        gar_layout.addSpacing(12)
+        gar_layout.addWidget(lbl_g)
+        gar_layout.addWidget(self._spin_gaia_maxg)
+        gar_layout.addStretch()
+        parent_layout.addWidget(self._gaia_augment_row)
+
         # Trial Detect button
         self._btn_trial_detect = QPushButton("🔍 Trial Detect")
         self._btn_trial_detect.setFixedHeight(26)
@@ -1111,6 +1179,8 @@ class MaskCreationDialog(QDialog):
         self._star_thresh_row.setVisible(False)
         self._btn_trial_detect.setVisible(False)
         self._lbl_trial_result.setVisible(False)
+        if hasattr(self, "_gaia_augment_row"):
+            self._gaia_augment_row.setVisible(False)
 
     def _run_trial_detect(self):
         import sep
@@ -1286,6 +1356,8 @@ class MaskCreationDialog(QDialog):
         self._star_thresh_row.setVisible(is_star)
         self._btn_trial_detect.setVisible(is_star)
         self._lbl_trial_result.setVisible(is_star and self._lbl_trial_result.text() != "")
+        if hasattr(self, "_gaia_augment_row"):
+            self._gaia_augment_row.setVisible(is_star)
 
     def _on_link_switch(self, checked: bool):
         if checked:
@@ -1362,6 +1434,165 @@ class MaskCreationDialog(QDialog):
         out = np.sqrt((cb - cb.mean())**2 + (cr - cr.mean())**2)
         return (out - out.min()) / (out.max() - out.min() + 1e-12)
 
+    def _check_gaia_augment_available(self) -> tuple[bool, str]:
+        """Availability + reason string for the Gaia augment checkbox."""
+        if getattr(self, "wcs", None) is None:
+            return (False,
+                    "Gaia augment requires a plate-solved image.\n"
+                    "Run Plate Solve on the image first.")
+        try:
+            from setiastro.saspro.gaia_database import get_astro_library
+            if not get_astro_library().installed_bands():
+                return (False,
+                        "No Gaia Local DB astrometric bands installed.\n"
+                        "Open Settings → Gaia Local DB Library → Astrometry to install.")
+        except Exception as e:
+            return (False, f"Gaia astrometric library unavailable:\n{e}")
+        return (True, "")
+
+    def _augment_star_mask_with_gaia(self, out: np.ndarray, sep_objs) -> np.ndarray:
+        """
+        Add Gaia Local DB catalogued stars to a SEP-derived star mask. Radius
+        per Gaia star is derived from a fit of SEP radius vs. G-mag on
+        stars that appear in both — so the drawn circles visually match
+        what SEP produced.
+        """
+        if not getattr(self, "_chk_gaia_augment", None) \
+                or not self._chk_gaia_augment.isChecked():
+            return out
+        if getattr(self, "wcs", None) is None or cv2 is None:
+            return out
+
+        import numpy as np
+        try:
+            from setiastro.saspro.gaia_database import get_astro_library
+            astro_lib = get_astro_library()
+            if not astro_lib.installed_bands():
+                return out
+        except Exception as e:
+            print(f"[MaskGaia] library open failed: {e}")
+            return out
+
+        h, w = out.shape[:2]
+        wcs = self.wcs
+
+        # Frame extent in sky coords via the four corners.
+        try:
+            corners_px = np.array([[0, 0], [w - 1, 0],
+                                   [w - 1, h - 1], [0, h - 1]], dtype=np.float64)
+            sky = wcs.pixel_to_world(corners_px[:, 0], corners_px[:, 1])
+            ra_arr  = np.asarray(sky.ra.deg,  dtype=np.float64)
+            dec_arr = np.asarray(sky.dec.deg, dtype=np.float64)
+        except Exception as e:
+            print(f"[MaskGaia] WCS corner mapping failed: {e}")
+            return out
+
+        dec_lo, dec_hi = float(dec_arr.min()), float(dec_arr.max())
+        # Wraparound-aware RA range: if the span > 180° we've straddled 0/360.
+        ra_min, ra_max = float(ra_arr.min()), float(ra_arr.max())
+        if ra_max - ra_min > 180.0:
+            ra_lo, ra_hi = ra_max, ra_min       # find_stars_in_box handles wrap
+        else:
+            ra_lo, ra_hi = ra_min, ra_max
+
+        try:
+            max_g = float(self._spin_gaia_maxg.value())
+        except Exception:
+            max_g = 17.0
+
+        try:
+            stars = astro_lib.find_stars_in_box(
+                ra_lo, ra_hi, dec_lo, dec_hi, max_mag=max_g)
+        except Exception as e:
+            print(f"[MaskGaia] catalog query failed: {e}")
+            return out
+        if not stars:
+            print("[MaskGaia] no catalog stars in frame")
+            return out
+
+        # Sky → pixel for all Gaia stars in one call.
+        try:
+            g_ra  = np.array([s.ra  for s in stars], dtype=np.float64)
+            g_dec = np.array([s.dec for s in stars], dtype=np.float64)
+            xs, ys = wcs.world_to_pixel_values(g_ra, g_dec)
+            xs = np.asarray(xs, dtype=np.float64)
+            ys = np.asarray(ys, dtype=np.float64)
+        except Exception as e:
+            print(f"[MaskGaia] world_to_pixel failed: {e}")
+            return out
+
+        in_frame = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+        xs, ys = xs[in_frame], ys[in_frame]
+        gmags = np.array([s.gmag for s in stars], dtype=np.float64)[in_frame]
+
+        # Build the radius vs. G-mag mapping from SEP results if we have
+        # enough coverage; otherwise fall back to a mag-based formula.
+        radius_fn = self._fit_gaia_radius_model(sep_objs, gmags)
+
+        MAX_RADIUS = 10   # matches _generate_star_mask's cap
+        drawn = 0
+        skipped_duplicate = 0
+        # 3-px duplicate skip: if SEP already put a mask disc where this
+        # Gaia star is, skip (avoids double-drawing bright stars that both
+        # found — Gaia's job is filling gaps, not painting over SEP).
+        for x, y, g in zip(xs, ys, gmags):
+            ix, iy = int(round(x)), int(round(y))
+            if 0 <= iy < h and 0 <= ix < w and out[iy, ix] > 0:
+                skipped_duplicate += 1
+                continue
+            r = int(max(1, min(MAX_RADIUS, round(radius_fn(g)))))
+            cv2.circle(out, (ix, iy), r, 1.0, -1)
+            drawn += 1
+
+        print(f"[MaskGaia] added {drawn} Gaia stars "
+              f"({skipped_duplicate} already SEP-masked, "
+              f"{len(stars) - int(in_frame.sum())} out of frame, "
+              f"G<={max_g})")
+        return out
+
+    def _fit_gaia_radius_model(self, sep_objs, gmags_reference):
+        """
+        Returns a callable f(gmag) -> pixel_radius that matches how SEP
+        drew radii for stars in this same image. Fits from SEP objects
+        when there are enough to be meaningful; falls back to a static
+        model otherwise so the augment still works on very sparse frames.
+        """
+        import numpy as np
+
+        # Fallback: cheap monotone map — bright stars bigger, faint ~2px.
+        def fallback(g):
+            g = float(g)
+            if g <= 6.0:  return 10.0
+            if g >= 15.0: return 2.0
+            return 10.0 - (g - 6.0) * (8.0 / 9.0)
+
+        if sep_objs is None or len(sep_objs) < 15:
+            return fallback
+
+        try:
+            sep_r = np.array([float(max(o["a"], o["b"])) * 1.5
+                              for o in sep_objs], dtype=np.float64)
+            # Rank both by size and use as a rank-to-mag pseudo-fit. We
+            # don't know the SEP objects' magnitudes without re-measuring,
+            # so anchor by percentile: brightest SEP radius ~= brightest
+            # Gaia G in frame, faintest to faintest.
+            r_bright = float(np.percentile(sep_r, 95))
+            r_faint  = float(np.percentile(sep_r,  5))
+            g_bright = float(np.percentile(gmags_reference,  5))
+            g_faint  = float(np.percentile(gmags_reference, 95))
+            if g_faint - g_bright < 0.5 or r_bright <= r_faint:
+                return fallback
+
+            slope = (r_faint - r_bright) / (g_faint - g_bright)
+            intercept = r_bright - slope * g_bright
+
+            def fitted(g):
+                r = slope * float(g) + intercept
+                return max(1.0, min(15.0, r))
+            return fitted
+        except Exception:
+            return fallback
+
     def _generate_star_mask(self):
         import sep
         import numpy as np
@@ -1396,6 +1627,8 @@ class MaskCreationDialog(QDialog):
             r = int(max(o['a'], o['b']) * 1.5)
             if r <= MAX_RADIUS:
                 cv2.circle(out, (x, y), max(1, r), 1.0, -1)
+
+        out = self._augment_star_mask_with_gaia(out, objs)
         return np.clip(out, 0, 1)
 
     def generate_preview_mask(self) -> np.ndarray | None:
@@ -1606,8 +1839,33 @@ def create_mask_and_attach(parent, document) -> bool:
         QMessageBox.information(parent, "No image", "Open an image first.")
         return False
 
+    # Pull WCS from the doc for the Gaia augment. Match WIMI's extraction
+    # order: wcs_header wins (it's the WCS-only header the solver writes),
+    # then original_header. Use naxis=2 + .celestial to strip stub 3rd
+    # axes on RGB images — the plain WCS(hdr) path produces naxis=3 for
+    # colour cubes and fails has_celestial even on a valid solve.
+    wcs = None
+    meta = getattr(document, "metadata", {}) or {}
+    try:
+        from astropy.wcs import WCS
+        hdr = meta.get("wcs_header") or meta.get("original_header")
+        if hdr is not None:
+            w = WCS(hdr, naxis=2, relax=True)
+            if w.naxis > 2:
+                w = w.celestial
+            if w.naxis == 2 and getattr(w, "has_celestial", False):
+                wcs = w
+    except Exception as e:
+        print(f"[MaskGaia] WCS extraction failed: {e}")
+        wcs = None
+    print(f"[MaskGaia] WCS available for augment: "
+          f"{wcs is not None} (keys present: "
+          f"wcs_header={'wcs_header' in meta}, "
+          f"original_header={'original_header' in meta})")
+
     # NOW we let the dialog auto-push when user hits OK
-    dlg = MaskCreationDialog(document.image, parent=parent, auto_push_on_ok=True)
+    dlg = MaskCreationDialog(document.image, parent=parent,
+                             auto_push_on_ok=True, wcs=wcs)
     if dlg.exec() != QDialog.DialogCode.Accepted:
         return False
 

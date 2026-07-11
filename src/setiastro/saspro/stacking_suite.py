@@ -23,6 +23,7 @@ import math            # used in compute_safe_chunk
 import psutil          # used in bytes_available / compute_safe_chunk
 from typing import List
 from setiastro.saspro.legacy.numba_utils import *
+from setiastro.saspro.debayer import debayer_array
 
 # Memory management utilities
 from setiastro.saspro.memory_utils import (
@@ -30,7 +31,7 @@ from setiastro.saspro.memory_utils import (
     should_use_memmap, cleanup_memmap, get_thumbnail_cache,
     LRUDict,  # LRU-bounded dict for caches
 )
-from setiastro.saspro.cfa_utils import effective_bayer_from_header, roworder_is_bottom_up
+from setiastro.saspro.bayer_utils import effective_bayer_from_header
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor, QPalette, QPainter, QPen, QTransform, QColor, QBrush, QCursor
@@ -63,6 +64,7 @@ import contextlib
 NO_GRAD = contextlib.nullcontext  # fallback when torch isn’t present
 from typing import List, Tuple, Optional
 import sep
+sep.set_extract_pixstack(20000000)
 from pathlib import Path
 from setiastro.saspro.legacy.xisf import XISF  # ← add this
 from PyQt6 import sip
@@ -6990,11 +6992,7 @@ class StackingSuiteDialog(QDialog):
             H = int(img.shape[0]) if img.ndim >= 2 else 0
             eff_bp, xoff, yoff, roworder = effective_bayer_from_header(header, height=H)
 
-            if eff_bp in {"RGGB","BGGR","GRBG","GBRG"}:
-                # If bottom-up, flip pixels so the image is upright before demosaic
-                if roworder_is_bottom_up(roworder):
-                    img = np.ascontiguousarray(np.flipud(img))
-
+            if eff_bp in {"RGGB", "BGGR", "GRBG", "GBRG"}:
                 # Stamp what we actually used (leave BAYERPAT as-is)
                 try:
                     header["BAYER_EFF"] = eff_bp
@@ -7005,11 +7003,15 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
 
-                try:
-                    from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
-                    return debayer_raw_fast(img, bayer_pattern=eff_bp, cfa_drizzle=cfa, method="edge")
-                except Exception:
-                    return debayer_fits_fast(img, eff_bp, cfa_drizzle=cfa)
+                # Single shared implementation — flip-in/flip-out lives in
+                # debayer_array, so the pipeline can never drift from the dialog.
+                return debayer_array(
+                    img,
+                    pattern=eff_bp,
+                    roworder=roworder,
+                    method="edge",
+                    cfa_drizzle=cfa,
+                )
 
             return image
 
@@ -17378,6 +17380,9 @@ class StackingSuiteDialog(QDialog):
 
                 if do_satellite:
                     try:
+                        _status_queue.put(
+                            f"🛰️ Satellite mask: {os.path.basename(fi['light_file'])}…"
+                        )
                         original = np.asarray(light_data, dtype=np.float32, copy=True)
                         _, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
                             light_data, is_mono=is_mono
@@ -17502,7 +17507,15 @@ class StackingSuiteDialog(QDialog):
         _group_frame_count   = 0
         _group_frame_total   = 0
 
+        def _drain_status():
+            try:
+                while True:
+                    self.update_status(self.tr(_status_queue.get_nowait()))
+            except _queue.Empty:
+                pass
+
         while True:
+            _drain_status()
             item = raw_queue.get()
             if item is None:
                 break
@@ -17587,14 +17600,17 @@ class StackingSuiteDialog(QDialog):
             del light_data
             QApplication.processEvents()
             
-        # wait for consumer to finish saving
+        # wait for consumer to finish saving — keep draining status so
+        # satellite removal progress stays visible
         result_queue.put(None)
-        consumer_thread.join()
+        while consumer_thread.is_alive():
+            _drain_status()
+            QApplication.processEvents()
+            consumer_thread.join(timeout=0.1)
         producer_thread.join()
 
-        # drain status messages
-        while not _status_queue.empty():
-            self.update_status(self.tr(_status_queue.get_nowait()))
+        # drain any final status messages
+        _drain_status()
         QApplication.processEvents()
 
         # explicit cleanup — force memory back to OS

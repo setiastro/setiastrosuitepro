@@ -156,6 +156,7 @@ import numpy as np
 
 from setiastro.saspro import astroalign
 import sep
+sep.set_extract_pixstack(20000000)
 import re
 import warnings
 import json

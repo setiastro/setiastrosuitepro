@@ -1007,6 +1007,22 @@ class CustomGraphicsView(QGraphicsView):
                 encoded_name = quote(object_name)
                 url = f"https://simbad.cds.unistra.fr/simbad/sim-basic?Ident={encoded_name}&submit=SIMBAD+search"
                 webbrowser.open(url)
+            elif source == "GaiaLocal":
+                # Simbad has no reverse index on Gaia DR3 ids — sim-id 404s
+                # for the fainter sources that motivated the augment in the
+                # first place. 20" cone at the star's coords always lands.
+                ra_f  = clicked_object.get("ra")
+                dec_f = clicked_object.get("dec")
+                if ra_f is None or dec_f is None:
+                    return
+                url = (
+                    "https://simbad.cds.unistra.fr/simbad/sim-coo?"
+                    f"Coord={ra_f:+.6f}{dec_f:+.6f}"
+                    "&CooFrame=ICRS&CooEpoch=2000&CooEqui=2000"
+                    "&Radius=20&Radius.unit=arcsec"
+                    "&submit=submit+query"
+                )
+                webbrowser.open(url)
             elif source == "Vizier":
                 # Format the NED search URL with proper RA, Dec, and radius
                 radius = 5 / 60  # Radius in arcminutes (5 arcseconds)
@@ -1278,6 +1294,17 @@ class CustomGraphicsView(QGraphicsView):
             encoded_name = quote(name)
             webbrowser.open(
                 f"https://simbad.cds.unistra.fr/simbad/sim-basic?Ident={encoded_name}&submit=SIMBAD+search"
+            )
+        elif source == "GaiaLocal" and ra_f is not None:
+            # Simbad has no reverse index on Gaia DR3 ids — sim-id 404s for
+            # the fainter sources that motivated the local augment. A 20"
+            # cone at the object's coords always lands on something useful.
+            webbrowser.open(
+                "https://simbad.cds.unistra.fr/simbad/sim-coo?"
+                f"Coord={ra_f:+.6f}{dec_f:+.6f}"
+                "&CooFrame=ICRS&CooEpoch=2000&CooEqui=2000"
+                "&Radius=20&Radius.unit=arcsec"
+                "&submit=submit+query"
             )
         elif source == "Vizier" and ra_f is not None:
             radius = 5 / 60
@@ -3596,6 +3623,24 @@ class WIMIDialog(QDialog):
         self.advanced_search_panel.addLayout(toggle_buttons_layout)   
 
         # Add Simbad Search buttons below the toggle buttons
+        # Local-Gaia augment: when checked, query the astrometric library
+        # for stars in the same region and append those without a Simbad
+        # match within 10". Silently no-op if no astrometric bands are
+        # installed. Persists across sessions.
+        self.augment_with_gaia_checkbox = QCheckBox(
+            self.tr("Augment search with local Gaia DR3"))
+        self.augment_with_gaia_checkbox.setToolTip(
+            "Adds Gaia DR3 sources from the local astrometric library that\n"
+            "Simbad didn't return. Useful for faint fields where most stars\n"
+            "aren't in Simbad. Requires an installed astrometric band (Settings\n"
+            "→ Gaia DR3 Library → Astrometry)."
+        )
+        self.augment_with_gaia_checkbox.setChecked(
+            self.settings.value("wimi/augment_with_gaia", False, type=bool))
+        self.augment_with_gaia_checkbox.toggled.connect(
+            lambda on: self.settings.setValue("wimi/augment_with_gaia", bool(on)))
+        self.advanced_search_panel.addWidget(self.augment_with_gaia_checkbox)
+
         search_button_layout = QHBoxLayout()
 
         self.simbad_defined_region_button = QPushButton(self.tr("Search Defined Region"))
@@ -8092,6 +8137,157 @@ class WIMIDialog(QDialog):
         return float((self.circle_radius * self.pixscale) / 3600.0)
 
 
+    def _augment_results_with_local_gaia(
+        self,
+        query_results: list,
+        ra_center: float,
+        dec_center: float,
+        radius_deg: float,
+    ) -> list:
+        """
+        Append local Gaia DR3 astrometric-library sources to a Simbad results
+        set. Skips sources within 10" of an existing Simbad result (Simbad
+        wins on collision; 10" tolerance absorbs high-PM J2000↔J2016 drift).
+        Silently no-op if no astrometric band is installed.
+        """
+        if not getattr(self, "augment_with_gaia_checkbox", None) \
+                or not self.augment_with_gaia_checkbox.isChecked():
+            return query_results
+
+        try:
+            from setiastro.saspro.gaia_database import get_astro_library
+        except Exception as e:
+            print(f"[WIMI/Gaia] astrometric library import failed: {e}")
+            return query_results
+
+        try:
+            astro_lib = get_astro_library()
+            if not astro_lib.installed_bands():
+                return query_results
+        except Exception as e:
+            print(f"[WIMI/Gaia] astrometric library open failed: {e}")
+            return query_results
+
+        # Bounding box around the search circle. RA span widens with dec.
+        cosd = max(1e-6, abs(math.cos(math.radians(dec_center))))
+        ra_lo = (ra_center - radius_deg / cosd) % 360.0
+        ra_hi = (ra_center + radius_deg / cosd) % 360.0
+        dec_lo = max(-90.0, dec_center - radius_deg)
+        dec_hi = min( 90.0, dec_center + radius_deg)
+
+        try:
+            stars = astro_lib.find_stars_in_box(ra_lo, ra_hi, dec_lo, dec_hi)
+        except Exception as e:
+            print(f"[WIMI/Gaia] find_stars_in_box failed: {e}")
+            return query_results
+        if not stars:
+            return query_results
+
+        # 10" Simbad-collision filter using a KDTree in tangent-plane arcsec.
+        # (Skips the O(N·M) all-pairs loop that would eat wide-field runs.)
+        import numpy as np
+        DUP_ARCSEC = 10.0
+        keep_mask = np.ones(len(stars), dtype=bool)
+        if query_results:
+            try:
+                from scipy.spatial import cKDTree
+                s_ra  = np.array([q["ra"]  for q in query_results
+                                  if isinstance(q.get("ra"),  (int, float))
+                                  and isinstance(q.get("dec"), (int, float))],
+                                 dtype=np.float64)
+                s_dec = np.array([q["dec"] for q in query_results
+                                  if isinstance(q.get("ra"),  (int, float))
+                                  and isinstance(q.get("dec"), (int, float))],
+                                 dtype=np.float64)
+                if len(s_ra) > 0:
+                    # Local tangent-plane: 1° dec = 3600", 1° ra = 3600·cos(dec)".
+                    cosd_c = max(1e-6, math.cos(math.radians(dec_center)))
+                    s_xy = np.column_stack([
+                        ((s_ra - ra_center) * cosd_c) * 3600.0,
+                        ( s_dec - dec_center)          * 3600.0,
+                    ])
+                    tree = cKDTree(s_xy)
+                    g_ra  = np.array([s.ra  for s in stars], dtype=np.float64)
+                    g_dec = np.array([s.dec for s in stars], dtype=np.float64)
+                    g_xy = np.column_stack([
+                        ((g_ra - ra_center) * cosd_c) * 3600.0,
+                        ( g_dec - dec_center)         * 3600.0,
+                    ])
+                    d, _ = tree.query(g_xy, k=1,
+                                      distance_upper_bound=DUP_ARCSEC)
+                    keep_mask = ~np.isfinite(d)
+            except Exception as e:
+                print(f"[WIMI/Gaia] dupe filter fell back to naive: {e}")
+
+        # Circle clip (find_stars_in_box returns a box; the search is a circle).
+        added = 0
+        for s, keep in zip(stars, keep_mask):
+            if not keep:
+                continue
+            d_ra  = (s.ra - ra_center) * cosd
+            d_dec =  s.dec - dec_center
+            if (d_ra * d_ra + d_dec * d_dec) > (radius_deg * radius_deg):
+                continue
+
+            plx = float(s.parallax) if s.parallax is not None else None
+            dist_pc = None
+            if plx is not None and plx > 0.1:
+                dist_pc = 1000.0 / plx        # mas → pc
+            absG = None
+            if dist_pc is not None and s.gmag is not None:
+                try:
+                    absG = float(s.gmag) - 5.0 * (math.log10(dist_pc) - 1.0)
+                except Exception:
+                    absG = None
+
+            name = f"Gaia DR3 {int(s.source_id)}"
+            plx_txt   = f"{plx:.6f}"   if plx     is not None else "N/A"
+            dist_txt  = f"{dist_pc:.6f}" if dist_pc is not None else "N/A"
+            absG_txt  = f"{absG:.6f}"  if absG    is not None else "N/A"
+            gmag_txt  = f"{float(s.gmag):.6f}" if s.gmag is not None else "N/A"
+
+            # Column order MUST match the Simbad loop at line 8293 so
+            # _show_gaia_spectrum_for_item (which reads item.text(0..2))
+            # and _tree_item_for_object (matches on text(2)==name) both work.
+            item = QTreeWidgetItem([
+                f"{float(s.ra):.6f}",   # 0 RA
+                f"{float(s.dec):.6f}",  # 1 Dec
+                name,                   # 2 name
+                "N/A",                  # 3 diameter (Simbad's arcmin slot)
+                "*",                    # 4 short type
+                "Star (Gaia DR3)",      # 5 long type
+                gmag_txt,               # 6 Bmag slot — reused for G
+                gmag_txt,               # 7 Vmag slot — reused for G
+                plx_txt,                # 8 parallax mas
+                "",                     # 9 spectral type
+                absG_txt,               # 10 absolute mag
+                "N/A",                  # 11 redshift
+                dist_txt,               # 12 distance
+            ])
+            self.results_tree.addTopLevelItem(item)
+
+            query_results.append({
+                "ra": float(s.ra), "dec": float(s.dec),
+                "name": name,
+                "diameter": "N/A",
+                "diameter_unit": "arcmin",
+                "short_type": "*",
+                "long_type": "Star (Gaia DR3)",
+                "redshift": "N/A",
+                "comoving_distance":
+                    f"{dist_pc:.2f} pc" if dist_pc is not None else "N/A",
+                "source": "GaiaLocal",
+                "Bmag": "N/A", "Vmag": "N/A",
+                "parallax_mas": plx if plx is not None else "N/A",
+                "spectral_type": "N/A",
+                "absolute_mag": absG if absG is not None else "N/A",
+            })
+            added += 1
+
+        print(f"[WIMI/Gaia] augmented Simbad results with "
+              f"{added} local Gaia sources (from {len(stars)} in box)")
+        return query_results
+
     def query_simbad(self, radius_deg, max_results=None):
         """Two-step SIMBAD lookup with debug prints for flux/plx/sp data."""
         max_results = max_results if max_results is not None else self.max_results
@@ -8306,6 +8502,10 @@ class WIMIDialog(QDialog):
                 'spectral_type': spec,
                 'absolute_mag': absV
             })
+
+        # Local Gaia DR3 augment (checkbox-gated; no-op if unchecked or no library).
+        query_results = self._augment_results_with_local_gaia(
+            query_results, ra_center, dec_center, radius_deg)
 
         # ——— 5) Finally hand off to your preview/plotter ———
         self.main_preview.set_query_results(query_results)

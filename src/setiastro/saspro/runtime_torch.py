@@ -908,8 +908,13 @@ _ROCM_PYTORCH_NIGHTLY_INDICES: list[tuple[str, str]] = [
     ("rocm6.2", "https://download.pytorch.org/whl/nightly/rocm6.2"),
 ]
 
+# AMD's per-architecture nightly buckets (https://rocm.nightlies.amd.com/v2/).
+# APUs (gfx115x) historically fall outside the generic PyTorch ROCm wheels'
+# compiled kernel set, so they NEED the arch-specific bucket — being absent
+# here means falling through to a generic wheel that raises
+# "HIP error: invalid device function" at first real op.
 _ROCM_AMD_GFX_BUCKETS_WITH_TORCH = {
-    "gfx1151",
+    "gfx1150", "gfx1151",
     "gfx1100", "gfx1101", "gfx1102",
     "gfx1200", "gfx1201",
 }
@@ -1143,7 +1148,23 @@ def _install_torch(
                 if ok:
                     status_cb(f"Installed PyTorch ROCm from {label} (torch.version.cuda={cuda_tag}).")
                     return
-                status_cb(f"ROCm check failed ({cuda_tag!r}, {err!r}). Trying next…")
+                # Distinguish the two ROCm failure modes so the log points at the
+                # actual fix, rather than just cycling indices silently.
+                errs = (err or "")
+                if "invalid device function" in errs.lower() or "no kernel image" in errs.lower():
+                    status_cb(
+                        f"ROCm wheel from {label} has NO kernels for {rocm_arch} "
+                        f"(HIP: invalid device function). This is an arch/wheel mismatch, "
+                        f"not a driver problem — trying next index…"
+                    )
+                elif "hsa" in errs.lower() or "page fault" in errs.lower() or "walker_error" in errs.lower():
+                    status_cb(
+                        f"ROCm wheel from {label} loaded but the GPU faulted "
+                        f"({errs[:200]}). Often a driver/runtime mismatch (DKMS on an "
+                        f"APU, or a stale HSA_OVERRIDE_GFX_VERSION). Trying next index…"
+                    )
+                else:
+                    status_cb(f"ROCm check failed from {label} (cuda_tag={cuda_tag!r}, err={errs[:200]!r}). Trying next…")
                 _pip_install_ok(["uninstall", "-y", "torch", "torchvision", "torchaudio"])
             else:
                 status_cb(f"No compatible PyTorch ROCm wheels from {label}.")

@@ -27,6 +27,7 @@ from bisect import bisect_right
 # 3rd-party (your code already expects these)
 import cv2
 import sep
+sep.set_extract_pixstack(20000000)
 import pyqtgraph as pg
 from collections import OrderedDict
 from setiastro.saspro.legacy.image_manager import load_image

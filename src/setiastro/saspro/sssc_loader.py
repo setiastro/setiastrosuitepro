@@ -125,6 +125,7 @@ class SSSCLoader(QThread):
             import numpy          # noqa
             import scipy          # noqa
             import sep            # noqa
+            sep.set_extract_pixstack(20000000)  # noqa
             from astropy.io import fits    # noqa
             from astropy.wcs import WCS   # noqa
             from astroquery.simbad import Simbad  # noqa

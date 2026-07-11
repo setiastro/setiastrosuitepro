@@ -2,6 +2,7 @@
 from __future__ import annotations
 import numpy as np
 import sep
+sep.set_extract_pixstack(20000000)
 
 def measure_stars_sep(
     img_norm_mono: np.ndarray,

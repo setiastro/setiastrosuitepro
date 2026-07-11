@@ -245,6 +245,7 @@ def parallax_correction_rgb01(
     use_gpu: bool = True,
     prefer_dml: bool = True,
     progress_cb: Optional[ProgressCB] = None,
+    mode="classic",
 ) -> Tuple[np.ndarray, dict]:
     """
     Aberration correction — boolean pass, no level conditioning.
@@ -256,7 +257,8 @@ def parallax_correction_rgb01(
     torch  = import_torch(prefer_cuda=use_gpu, prefer_xpu=False, prefer_dml=prefer_dml, status_cb=lambda *_: None)
     device = _infer_device(torch, prefer_cuda=use_gpu, prefer_dml=prefer_dml)
 
-    model, config = load_parallax_model(ckpt_path, variant="correction")
+    mode = str(mode or "classic").strip().lower()
+    model, config = load_parallax_model(ckpt_path, variant="correction", mode=mode)
     model.to(device).eval()
 
     def _infer(patch_hwc: np.ndarray) -> np.ndarray:
@@ -268,12 +270,13 @@ def parallax_correction_rgb01(
     result = _run_tiled_cosine(
         _infer, _ensure_rgb(img_rgb01),
         tile=tile, overlap=overlap, pad=pad,
-        normalize_brightness=True, target_median=0.10,
-        progress_cb=progress_cb, label="[Correction]",
+        normalize_brightness=(mode != "aesthetics"), target_median=0.10,
+        progress_cb=progress_cb, label=f"[Correction/{mode}]",
     )
 
     info = {
         "variant": "correction",
+        "mode":    mode,
         "device":  str(device),
         "torch_version": getattr(torch, "__version__", None),
         "tile": tile, "overlap": overlap, "pad": pad,
@@ -295,6 +298,7 @@ def parallax_star_reduce_rgb01(
     pad: int = 96,
     use_gpu: bool = True,
     prefer_dml: bool = True,
+    mode: str = "classic",
     progress_cb: Optional[ProgressCB] = None,
 ) -> Tuple[np.ndarray, dict]:
     """
@@ -304,39 +308,56 @@ def parallax_star_reduce_rgb01(
     from setiastro.saspro.runtime_torch import import_torch
     from setiastro.saspro.syqon_parallax_model.model import load_parallax_model
 
+    mode   = str(mode or "classic").strip().lower()
     level  = int(np.clip(level, 1, 10))
-    hybrid = level > 6
     torch  = import_torch(prefer_cuda=use_gpu, prefer_xpu=False, prefer_dml=prefer_dml, status_cb=lambda *_: None)
     device = _infer_device(torch, prefer_cuda=use_gpu, prefer_dml=prefer_dml)
     F      = torch.nn.functional
 
-    model, config = load_parallax_model(ckpt_path, variant="star_reduce")
+    model, config = load_parallax_model(ckpt_path, variant="star_reduce", mode=mode)
     model.to(device).eval()
 
-    if hybrid:
-        def _infer(patch_hwc: np.ndarray) -> np.ndarray:
-            t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
-            with torch.no_grad():
-                out = _hybrid_star_reduction(model, t, level, torch, F)
-            return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
-    else:
-        lv_t = torch.tensor([float(level) / 10.0], dtype=torch.float32, device=device)
+    if mode == "aesthetics":
+        # NAFNet 4-channel: RGB + constant level plane.
+        # Model trained on level 1-7; clamp caller's 1-10 range into that.
+        aesth_level = int(np.clip(level, 1, 7))
+        lvl_norm    = (float(aesth_level) - 1.0) / 6.0
 
         def _infer(patch_hwc: np.ndarray) -> np.ndarray:
             t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
+            b, _, h, w = t.shape
+            lvl_ch = torch.full((b, 1, h, w), lvl_norm, dtype=t.dtype, device=device)
+            t4 = torch.cat([t, lvl_ch], dim=1)
             with torch.no_grad():
-                out = model(t, lv_t)
+                out = model(t4)
             return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
+    else:
+        hybrid = level > 6
+        if hybrid:
+            def _infer(patch_hwc: np.ndarray) -> np.ndarray:
+                t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
+                with torch.no_grad():
+                    out = _hybrid_star_reduction(model, t, level, torch, F)
+                return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
+        else:
+            lv_t = torch.tensor([float(level) / 10.0], dtype=torch.float32, device=device)
+
+            def _infer(patch_hwc: np.ndarray) -> np.ndarray:
+                t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
+                with torch.no_grad():
+                    out = model(t, lv_t)
+                return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
 
     result = _run_tiled_cosine(
         _infer, _ensure_rgb(img_rgb01),
         tile=tile, overlap=overlap, pad=pad,
-        normalize_brightness=True, target_median=0.10,
-        progress_cb=progress_cb, label=f"[StarReduce L{level}]",
+        normalize_brightness=(mode != "aesthetics"), target_median=0.10,
+        progress_cb=progress_cb, label=f"[StarReduce/{mode} L{level}]",
     )
 
     info = {
         "variant": "star_reduce",
+        "mode":    mode,
         "level":   level,
         "device":  str(device),
         "torch_version": getattr(torch, "__version__", None),
@@ -359,6 +380,7 @@ def parallax_sharpen_rgb01(
     pad: int = 96,
     use_gpu: bool = True,
     prefer_dml: bool = True,
+    mode: str = "classic",
     progress_cb: Optional[ProgressCB] = None,
 ) -> Tuple[np.ndarray, dict]:
     """
@@ -378,7 +400,8 @@ def parallax_sharpen_rgb01(
     torch  = import_torch(prefer_cuda=use_gpu, prefer_xpu=False, prefer_dml=prefer_dml, status_cb=lambda *_: None)
     device = _infer_device(torch, prefer_cuda=use_gpu, prefer_dml=prefer_dml)
 
-    model, config = load_parallax_model(ckpt_path, variant="sharpen")
+    mode = str(mode or "classic").strip().lower()
+    model, config = load_parallax_model(ckpt_path, variant="sharpen", mode=mode)
     model.to(device).eval()
 
     # AstroNAFLiteDeblur is the only Parallax model using grouped/depthwise
@@ -452,6 +475,7 @@ def parallax_sharpen_rgb01(
     info = {
         "variant": "sharpen",
         "alpha":   alpha,
+        "mode":    mode,
         "device":  str(device),
         "torch_version": getattr(torch, "__version__", None),
         "tile": tile, "overlap": overlap, "pad": pad,

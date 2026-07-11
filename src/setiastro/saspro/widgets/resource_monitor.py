@@ -18,9 +18,15 @@ from setiastro.saspro.resources import _get_base_path
 class GPUWorker(QThread):
     resultReady = pyqtSignal(float)
 
-    def __init__(self, has_nvidia: bool, parent=None):
+    def __init__(self, has_nvidia: bool, has_rocm: bool = False, parent=None):
         super().__init__(parent)
         self._has_nvidia = has_nvidia
+        self._has_rocm = has_rocm
+
+        # rocm-smi output format has shifted across ROCm releases; cache the
+        # resolved column index so we parse the header once, not every poll.
+        self._rocm_use_col: int | None = None
+        self._rocm_broken = False   # set if rocm-smi errors hard, so we stop retrying
 
         # cache + throttle (Windows PowerShell is expensive)
         self._last_win_poll = 0.0
@@ -81,9 +87,54 @@ class GPUWorker(QThread):
             # keep last known value instead of spamming 0.0
             return self._cached_win_val
 
+    def _get_rocm_gpu_load(self) -> float:
+        if self._rocm_broken:
+            return 0.0
+        try:
+            out = subprocess.check_output(
+                ["rocm-smi", "--showuse", "--csv"],
+                timeout=1.0, stderr=subprocess.DEVNULL,
+            )
+            lines = [l for l in out.decode("utf-8", "ignore").strip().splitlines()
+                     if l.strip()]
+            if len(lines) < 2:
+                return 0.0
+
+            header = [h.strip().strip('"') for h in lines[0].split(",")]
+            # Resolve the "% use" column once. Header phrasing varies by ROCm
+            # version ("GPU use (%)", "GPU_use_(%)", "GPU use %"), so match on
+            # substrings rather than an exact string or a fixed index.
+            if self._rocm_use_col is None:
+                for i, h in enumerate(header):
+                    hl = h.lower()
+                    if "use" in hl and "%" in hl:
+                        self._rocm_use_col = i
+                        break
+            col = self._rocm_use_col
+            if col is None:
+                return 0.0
+
+            vals = []
+            for row in lines[1:]:
+                cols = [c.strip().strip('"') for c in row.split(",")]
+                if col < len(cols):
+                    try:
+                        vals.append(float(cols[col]))
+                    except ValueError:
+                        pass
+            return max(vals) if vals else 0.0
+
+        except FileNotFoundError:
+            # rocm-smi vanished (uninstalled mid-session) — stop trying.
+            self._rocm_broken = True
+            return 0.0
+        except Exception:
+            return 0.0
+
     def _get_gpu_load(self) -> float:
         nv_val = 0.0
         win_val = 0.0
+        rocm_val = 0.0
 
         # NVIDIA (fast)
         if self._has_nvidia:
@@ -99,11 +150,15 @@ class GPUWorker(QThread):
             except Exception:
                 pass
 
+        # AMD ROCm (Linux)
+        if self._has_rocm:
+            rocm_val = self._get_rocm_gpu_load()
+
         # Windows integrated (slow, throttled)
         if os.name == "nt":
             win_val = self._get_windows_gpu_load()
 
-        return max(nv_val, win_val)
+        return max(nv_val, win_val, rocm_val)
 
     def run(self):
         while not self.isInterruptionRequested():
@@ -157,15 +212,19 @@ class ResourceBackend(QObject):
         self._last_cpu_sample_t = 0.0
         # Check if nvidia-smi is reachable once
         has_nvidia = False
+        has_rocm = False
         try:
             import shutil
             if shutil.which("nvidia-smi"):
                 has_nvidia = True
+            # Only bother probing rocm-smi on Linux; it doesn't exist elsewhere.
+            if os.name != "nt" and shutil.which("rocm-smi"):
+                has_rocm = True
         except Exception:
             pass
 
         # Start Background GPU Worker
-        self._gpu_worker = GPUWorker(has_nvidia, self)
+        self._gpu_worker = GPUWorker(has_nvidia, has_rocm, self)
         self._gpu_worker.resultReady.connect(self._on_gpu_measured)
         self._gpu_worker.start()
 

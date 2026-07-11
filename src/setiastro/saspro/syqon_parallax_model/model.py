@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 # ============================================================================
 # SyQon Parallax — model architectures
 #
@@ -293,14 +291,172 @@ def _build_AstroNAFLiteDeblur():
 
     return AstroNAFLiteDeblur, build_nafnet_lite
 
+# ---------------------------------------------------------------------------
+# NAFNet  (aesthetics correction + star_reduce + sharpen)
+# Standard NAFNet with LayerNorm2d (permute), PixelUnshuffle down,
+# PixelShuffle up, and global residual add. Dims inferred from state dict.
+# ---------------------------------------------------------------------------
+
+def _build_NAFNet():
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class LayerNorm2d(nn.Module):
+        def __init__(self, n: int, eps: float = 1e-6):
+            super().__init__()
+            self.norm = nn.LayerNorm(n, eps=eps)
+
+        def forward(self, x):
+            x = x.permute(0, 2, 3, 1)
+            x = self.norm(x)
+            return x.permute(0, 3, 1, 2)
+
+    class SimpleGate(nn.Module):
+        def forward(self, x):
+            a, b = x.chunk(2, dim=1)
+            return a * b
+
+    class SimplifiedChannelAttention(nn.Module):
+        def __init__(self, channels: int):
+            super().__init__()
+            self.pool = nn.AdaptiveAvgPool2d(1)
+            self.conv = nn.Conv2d(channels, channels, 1, bias=True)
+
+        def forward(self, x):
+            return x * self.conv(self.pool(x))
+
+    class NAFBlock(nn.Module):
+        def __init__(self, channels: int, dw_expand: int = 2, ffn_expand: int = 2, dropout_rate: float = 0.0):
+            super().__init__()
+            dw_c  = channels * dw_expand
+            ffn_c = channels * ffn_expand
+            self.norm1 = LayerNorm2d(channels)
+            self.conv1 = nn.Conv2d(channels, dw_c, 1, bias=True)
+            self.conv2 = nn.Conv2d(dw_c, dw_c, 3, padding=1, groups=dw_c, bias=True)
+            self.sg    = SimpleGate()
+            self.sca   = SimplifiedChannelAttention(dw_c // 2)
+            self.conv3 = nn.Conv2d(dw_c // 2, channels, 1, bias=True)
+            self.drop1 = nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity()
+            self.beta  = nn.Parameter(torch.zeros(1, channels, 1, 1))
+            self.norm2 = LayerNorm2d(channels)
+            self.conv4 = nn.Conv2d(channels, ffn_c, 1, bias=True)
+            self.conv5 = nn.Conv2d(ffn_c // 2, channels, 1, bias=True)
+            self.drop2 = nn.Dropout(dropout_rate) if dropout_rate > 0 else nn.Identity()
+            self.gamma = nn.Parameter(torch.zeros(1, channels, 1, 1))
+
+        def forward(self, x):
+            identity = x
+            x = self.norm1(x); x = self.conv1(x); x = self.conv2(x)
+            x = self.sg(x); x = self.sca(x); x = self.conv3(x)
+            x = self.drop1(x)
+            y = identity + x * self.beta
+
+            identity = y
+            y = self.norm2(y); y = self.conv4(y); y = self.sg(y)
+            y = self.conv5(y); y = self.drop2(y)
+            return identity + y * self.gamma
+
+    class NAFNet(nn.Module):
+        def __init__(self, in_channels=3, out_channels=3, width=32,
+                     middle_blk_num=4, enc_blk_nums=(2, 2, 2), dec_blk_nums=(2, 2, 2)):
+            super().__init__()
+            self.intro  = nn.Conv2d(in_channels,  width, 3, padding=1, bias=True)
+            self.ending = nn.Conv2d(width, out_channels, 3, padding=1, bias=True)
+
+            self.encoders    = nn.ModuleList()
+            self.decoders    = nn.ModuleList()
+            self.upsamples   = nn.ModuleList()
+            self.downsamples = nn.ModuleList()
+
+            chan = width
+            for num in enc_blk_nums:
+                self.encoders.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
+                self.downsamples.append(nn.Sequential(
+                    nn.PixelUnshuffle(2),
+                    nn.Conv2d(chan * 4, chan * 2, 1, bias=False),
+                ))
+                chan *= 2
+
+            self.middle_blks = nn.Sequential(*[NAFBlock(chan) for _ in range(middle_blk_num)])
+
+            for num in dec_blk_nums:
+                self.upsamples.append(nn.Sequential(
+                    nn.Conv2d(chan, chan * 2, 1, bias=False),
+                    nn.PixelShuffle(2),
+                ))
+                chan //= 2
+                self.decoders.append(nn.Sequential(*[NAFBlock(chan) for _ in range(num)]))
+
+            self.padder_size = 2 ** len(enc_blk_nums)
+
+        def forward(self, inp):
+            _, _, H, W = inp.shape
+            ph = (self.padder_size - H % self.padder_size) % self.padder_size
+            pw = (self.padder_size - W % self.padder_size) % self.padder_size
+            x = F.pad(inp, (0, pw, 0, ph), mode="reflect") if (ph or pw) else inp
+
+            x_intro = self.intro(x)
+            skips = []
+            e = x_intro
+            for enc, dn in zip(self.encoders, self.downsamples):
+                e = enc(e); skips.append(e); e = dn(e)
+            m = self.middle_blks(e)
+            d = m
+            for up, dec, sk in zip(self.upsamples, self.decoders, reversed(skips)):
+                d = up(d); d = d + sk; d = dec(d)
+
+            out = self.ending(d)
+            # global residual — add input's first out_channels back (SyQon pattern)
+            out = out + x[:, :out.shape[1], :, :]
+
+            if ph or pw:
+                out = out[:, :, :H, :W]
+            return out
+
+    return NAFNet
+
+
+def _infer_nafnet_dims(sd: dict, mc: dict) -> dict:
+    """Infer in/out/width from a NAFNet state dict, falling back to config."""
+    if "intro.weight" in sd:
+        width       = int(sd["intro.weight"].shape[0])
+        in_channels = int(sd["intro.weight"].shape[1])
+    else:
+        width       = int(mc.get("width", 32))
+        in_channels = int(mc.get("img_channels", mc.get("in_channels", 3)))
+    if "ending.weight" in sd:
+        out_channels = int(sd["ending.weight"].shape[0])
+    else:
+        out_channels = int(mc.get("out_channels", 3))
+    return {
+        "in_channels":  in_channels,
+        "out_channels": out_channels,
+        "width":        width,
+    }
 
 # ---------------------------------------------------------------------------
 # Checkpoint helpers
 # ---------------------------------------------------------------------------
 
 def _clean_state_dict(sd: dict) -> dict:
-    """Strip torch.compile '_orig_mod.' prefix if present."""
+    """Strip DataParallel 'module.' and torch.compile '_orig_mod.' prefixes."""
+    if not sd:
+        return sd
+    keys = list(sd.keys())
+    if keys and all(k.startswith("module.") for k in keys):
+        sd = {k[7:]: v for k, v in sd.items()}
     return {(k[10:] if k.startswith("_orig_mod.") else k): v for k, v in sd.items()}
+
+
+def _extract_state_dict(ckpt) -> dict:
+    """Find the actual state dict inside a checkpoint. SyQon uses various keys."""
+    if not isinstance(ckpt, dict):
+        return ckpt
+    for key in ("model", "model_state_dict", "state_dict"):
+        if key in ckpt and isinstance(ckpt[key], dict):
+            return ckpt[key]
+    return ckpt
 
 
 def _load_pth(path: str) -> dict:
@@ -350,16 +506,47 @@ def create_parallax_model(variant: ParallaxVariant = "correction"):
 
     raise ValueError(f"Unknown Parallax variant: {variant!r}")
 
-
-def load_parallax_model(ckpt_path: str, variant: ParallaxVariant = "correction"):
+def load_parallax_model(ckpt_path: str,
+                        variant: ParallaxVariant = "correction",
+                        mode: str = "classic"):
     """
-    Load a SyQon Parallax model from a .pth checkpoint, using strict=True.
+    Load a SyQon Parallax model.
+
+    variant: "correction" | "star_reduce" | "sharpen"
+    mode:    "classic"    — StellarDirectNet (correction/star_reduce) or AstroNAFLiteDeblur (sharpen)
+             "aesthetics" — NAFNet for all three variants; star_reduce takes 4-channel input
+                            (RGB + level plane); correction/sharpen take 3-channel.
 
     Returns (model, config_dict)
     """
     ckpt   = _load_pth(ckpt_path)
     config = ckpt.get("config", {})
+    mode   = str(mode or "classic").strip().lower()
 
+    if mode == "aesthetics":
+        NAFNet = _build_NAFNet()
+        sd = _clean_state_dict(_extract_state_dict(ckpt))
+        mc = config.get("model", {})
+        dims = _infer_nafnet_dims(sd, mc)
+        model = NAFNet(
+            in_channels    = dims["in_channels"],
+            out_channels   = dims["out_channels"],
+            width          = dims["width"],
+            middle_blk_num = mc.get("middle_blk_num", 4),
+            enc_blk_nums   = tuple(mc.get("enc_blk_nums", [2, 2, 2])),
+            dec_blk_nums   = tuple(mc.get("dec_blk_nums", [2, 2, 2])),
+        )
+        missing, unexpected = model.load_state_dict(sd, strict=False)
+        if missing or unexpected:
+            print(f"[Parallax/aesthetics] state_dict mismatch — missing={len(missing)} unexpected={len(unexpected)}")
+            if missing:
+                print(f"  first missing: {list(missing)[:5]}")
+            if unexpected:
+                print(f"  first unexpected: {list(unexpected)[:5]}")
+        model.eval()
+        return model, config
+
+    # classic (unchanged from before)
     if variant in ("correction", "star_reduce"):
         StellarDirectNet = _build_StellarDirectNet()
         mc = config.get("model", {})
@@ -372,7 +559,7 @@ def load_parallax_model(ckpt_path: str, variant: ParallaxVariant = "correction")
             cond_level=(variant == "star_reduce"),
             aggressive_correction=tc.get("aggressive_correction", False),
         )
-        sd = _clean_state_dict(ckpt.get("model_state_dict", ckpt))
+        sd = _clean_state_dict(_extract_state_dict(ckpt))
         model.load_state_dict(sd, strict=True)
 
     elif variant == "sharpen":
@@ -381,7 +568,7 @@ def load_parallax_model(ckpt_path: str, variant: ParallaxVariant = "correction")
         preset        = args.get("preset", "balanced")
         upsample_mode = args.get("upsample_mode", "bilinear")
         model = build_nafnet_lite(preset_name=preset, upsample_mode=upsample_mode, img_channels=3)
-        sd = _clean_state_dict(ckpt.get("model_state_dict", ckpt))
+        sd = _clean_state_dict(_extract_state_dict(ckpt))
         model.load_state_dict(sd, strict=True)
 
     else:

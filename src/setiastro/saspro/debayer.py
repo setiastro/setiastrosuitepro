@@ -414,10 +414,13 @@ class DebayerDialog(QDialog):
         self._xoff = xoff
         self._yoff = yoff
 
+        # ROWORDER=BOTTOM-UP means the on-disk array is stored bottom-to-top
+        # relative to the Bayer pattern in the header. Flip once to top-down so
+        # the header pattern (e.g. RGGB) applies as-written. This is the ONLY
+        # orientation correction — detect_bayer_pattern no longer bumps yoff by
+        # height parity, so the two can't stack into a wrong pattern.
         if _roworder_is_bottom_up(roworder):
-            # flip to top-down so display orientation is sane
             self._src = np.ascontiguousarray(np.flipud(self._src))
-
         # detect CFA family (BAYER/XTRANS/None)
         self._cfa_family = _detect_cfa_family(active_doc)
 
@@ -546,13 +549,57 @@ class DebayerDialog(QDialog):
         self.status.setText("Failed.")
 
     def _on_done(self, rgb: np.ndarray, used_pattern: str):
-        # Hand back to doc manager with an undo step name
+        # We flipped the mosaic to top-down before debayering so the Bayer phase
+        # was correct. Flip the RGB result back so the output matches the
+        # original display orientation.
+        if _roworder_is_bottom_up(self._roworder):
+            rgb = np.ascontiguousarray(np.flipud(rgb))
         _apply_result_to_doc(self.dm, self.doc, rgb, step_name=f"Debayer ({used_pattern})")
         self.status.setText("Done.")
         self.accept()
 
 
 # -------- headless (shortcut / DnD) -----------------------------------------
+
+def debayer_array(
+    mono: np.ndarray,
+    *,
+    pattern: str,
+    roworder: str = "",
+    method: str = "edge",
+    cfa_drizzle: bool = False,
+) -> np.ndarray:
+    """
+    Pure Bayer demosaic: mono mosaic array in -> RGB array out. No doc, no Qt,
+    no side effects. This is the single source of truth for the flip-in /
+    debayer / flip-out orientation handling, shared by the interactive dialog
+    and the stacking pipeline.
+
+    `pattern` must already be a resolved RGGB/BGGR/GRBG/GBRG token — this
+    function does NOT re-detect. Callers own detection so each can apply its
+    own header-reading rules.
+    """
+    if debayer_fits_fast is None:
+        raise RuntimeError("Numba debayer kernels not available.")
+
+    pat = (pattern or "").upper()
+    if pat not in _VALID:
+        raise ValueError(f"Unsupported Bayer pattern: {pat!r}")
+
+    m = _mono_as_float32_contig(np.asarray(mono))
+
+    # Bottom-up: flip to top-down so the Bayer phase matches `pattern`,
+    # debayer, then flip the RGB back so output orientation matches input.
+    flipped = _roworder_is_bottom_up(roworder)
+    if flipped:
+        m = np.ascontiguousarray(np.flipud(m))
+
+    meth = method if method in ("edge", "bilinear", "strict_cfa") else "edge"
+    rgb = debayer_fits_fast(m, pat, cfa_drizzle=cfa_drizzle, method=meth)
+
+    if flipped:
+        rgb = np.ascontiguousarray(np.flipud(rgb))
+    return rgb
 
 def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]:
     """
@@ -571,6 +618,7 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
         raise RuntimeError("Debayer expects a single-channel (mosaic) image.")
     mono = _mono_as_float32_contig(mono_in)
     xoff, yoff, roworder = _detect_bayer_offsets_and_roworder(doc)
+    # Match DebayerDialog: single flip to top-down when ROWORDER is bottom-up.
     if _roworder_is_bottom_up(roworder):
         mono = np.ascontiguousarray(np.flipud(mono))
     family = _detect_cfa_family(doc)
@@ -611,9 +659,11 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
         raise RuntimeError("Numba debayer kernels not available.")
 
     rgb = debayer_fits_fast(mono, pat, cfa_drizzle=False, method=method_tok)
+    # Flip back to match original orientation (see DebayerDialog._on_done).
+    if _roworder_is_bottom_up(roworder):
+        rgb = np.ascontiguousarray(np.flipud(rgb))
     _apply_result_to_doc(dm, doc, rgb, step_name=f"Debayer ({pat}/{method_tok})")
     return pat, rgb
-
 
 # -------- headless command runner (Scripts / Presets / Replay) ---------------
 

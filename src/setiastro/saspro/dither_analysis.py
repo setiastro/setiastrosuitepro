@@ -2137,6 +2137,7 @@ class DitherAnalysisWindow(QWidget):
 
     def _run_trial_detect(self):
         import sep
+        sep.set_extract_pixstack(20000000)
         import numpy as np
         from PyQt6.QtWidgets import QApplication
 
