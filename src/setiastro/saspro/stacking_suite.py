@@ -64,6 +64,7 @@ import contextlib
 NO_GRAD = contextlib.nullcontext  # fallback when torch isn’t present
 from typing import List, Tuple, Optional
 import sep
+sep.set_extract_pixstack(20000000)
 from pathlib import Path
 from setiastro.saspro.legacy.xisf import XISF  # ← add this
 from PyQt6 import sip

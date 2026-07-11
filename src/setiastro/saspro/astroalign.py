@@ -111,6 +111,7 @@ def _shape(image):
 def _find_sources(img, detection_sigma=5, min_area=5, mask=None):
     """Return (x, y) star positions sorted by flux descending."""
     import sep
+    sep.set_extract_pixstack(20000000)
     image = np.ascontiguousarray(img.astype(np.float32))
     bkg = sep.Background(image, mask=mask)
     thresh = detection_sigma * bkg.globalrms

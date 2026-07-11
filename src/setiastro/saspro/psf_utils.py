@@ -2,6 +2,7 @@
 from __future__ import annotations
 import numpy as np
 import sep
+sep.set_extract_pixstack(20000000)
 
 EPS = 1e-6
 

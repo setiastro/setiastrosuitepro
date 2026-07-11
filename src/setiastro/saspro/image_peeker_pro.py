@@ -29,6 +29,7 @@ from astropy.stats import sigma_clipped_stats
 from scipy.interpolate import griddata
 
 import sep
+sep.set_extract_pixstack(20000000)
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 # bring in your existing helpers/classes from the snippet you posted

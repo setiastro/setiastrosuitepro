@@ -2298,17 +2298,25 @@ class _GaiaSolveWorker(QThread):
     status = pyqtSignal(str)
     done = pyqtSignal(bool, object)   # (ok, Header|error_str)
 
-    def __init__(self, image: np.ndarray, seed_header, parent=None):
+    def __init__(self, image: np.ndarray, seed_header, settings_scope=None, parent=None):
         super().__init__(parent)
         self._image = image
         self._seed_header = seed_header
+        # Capture the org/app name so the worker thread opens the same
+        # QSettings file as the caller (avoids the "SASpro" vs
+        # "Seti Astro Suite Pro" mismatch when the main app uses QSettings()).
+        self._settings_scope = settings_scope  # (org, app) tuple or None
 
     def run(self):
         try:
             # QSettings is not safe to share across threads — make a
             # thread-local instance rather than borrowing the GUI's.
             from PyQt6.QtCore import QSettings
-            settings = QSettings("SetiAstro", "SASpro")
+            if self._settings_scope:
+                org, app = self._settings_scope
+                settings = QSettings(org, app)
+            else:
+                settings = QSettings("SetiAstro", "SASpro")
             ok, res = _solve_with_GAIA(
                 self._image, self._seed_header,
                 parent=None, settings=settings,
@@ -2319,7 +2327,6 @@ class _GaiaSolveWorker(QThread):
             ok, res = False, f"Gaia DR3 solver: worker exception: {e}"
         self.done.emit(ok, res)
 
-
 def _solve_with_GAIA_threaded(parent, settings, image, seed_header) -> tuple[bool, "Header | str"]:
     """
     Same signature/contract as _solve_with_GAIA but runs it in a QThread,
@@ -2329,7 +2336,20 @@ def _solve_with_GAIA_threaded(parent, settings, image, seed_header) -> tuple[boo
     result = {}
     loop = QEventLoop()
 
-    worker = _GaiaSolveWorker(image, seed_header)
+    # Pass the caller's QSettings scope so the worker reads from the same
+    # storage file (e.g. "Seti Astro Suite Pro" when called from the main
+    # window, not the hard-coded fallback "SASpro").
+    _scope = None
+    if settings is not None:
+        try:
+            _org = settings.organizationName()
+            _app = settings.applicationName()
+            if _org or _app:
+                _scope = (_org, _app)
+        except Exception:
+            pass
+
+    worker = _GaiaSolveWorker(image, seed_header, settings_scope=_scope)
     worker.status.connect(lambda t: _set_status_ui(parent, t))   # queued → GUI thread
 
     def _on_done(ok, res):
@@ -2377,7 +2397,14 @@ def _solve_with_GAIA(image: np.ndarray,
     
     # Check if we're in manual seed mode — if so, prefer settings over header
     _seed_mode = _get_seed_mode(settings) if settings is not None else "auto"
-    
+
+    if _seed_mode == "none":
+        return False, (
+            "Gaia DR3 solver: blind solving is not supported by the In-House Gaia DR3 solver. "
+            "A seed position is required. Set Seed Mode to 'Auto' (uses header RA/Dec) or "
+            "'Manual' (enter coordinates), or switch to ASTAP for blind solving."
+        )
+
     if _seed_mode == "manual" and settings is not None:
         ra_s  = _get_manual_ra(settings)
         dec_s = _get_manual_dec(settings)
@@ -2467,7 +2494,7 @@ def _solve_with_GAIA(image: np.ndarray,
 
     try:
         import sep
-        sep.set_extract_pixstack(5_000_000)
+        sep.set_extract_pixstack(20000000)
         from setiastro.saspro.star_alignment import _detect_stars_uniform
 
         _sigma_levels = [50, 25, 15, 10, 5, 3]

@@ -149,6 +149,7 @@ from astropy.wcs.wcs import NoConvergence
 
 # ── SEP
 import sep
+sep.set_extract_pixstack(20000000)
 
 # ── Matplotlib
 from matplotlib.figure import Figure

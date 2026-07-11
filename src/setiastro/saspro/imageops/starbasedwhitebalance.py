@@ -11,6 +11,7 @@ except Exception:  # pragma: no cover
 
 try:
     import sep  # Source Extractor
+    sep.set_extract_pixstack(20000000)
 except Exception as e:  # pragma: no cover
     sep = None
     _sep_import_error = e

@@ -192,6 +192,7 @@ from astropy.wcs.wcs import NoConvergence
 
 # ── SEP (Source Extractor)
 import sep
+sep.set_extract_pixstack(20000000)
 
 # ── Matplotlib backend for Qt
 from matplotlib.figure import Figure

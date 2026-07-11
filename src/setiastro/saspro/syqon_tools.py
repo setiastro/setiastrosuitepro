@@ -990,29 +990,51 @@ class _SyQonSharpenHubPage(QWidget):
         box  = QGroupBox("SyQon Parallax", self)
         form = QFormLayout(box)
  
-        # Three compact model rows: status icon + name + Install + Remove on one line
-        for attr_lbl, row_label, setting_key, canonical_name in [
-            ("_correction_lbl",  "Correction model",     "syqon/parallax_correction_path",  "parallax_correction.pth"),
-            ("_star_reduce_lbl", "Star reduction model", "syqon/parallax_star_reduce_path", "parallax_star_reduction.pth"),
-            ("_sharpen_lbl",     "Sharpen model",        "syqon/parallax_sharpen_path",     "parallax_sharpen.pth"),
-        ]:
+        # Mode selector — chooses which model triplet to use for processing
+        self.cmb_mode = QComboBox(self)
+        self.cmb_mode.addItem("Classic",    userData="classic")
+        self.cmb_mode.addItem("Aesthetics", userData="aesthetics")
+        saved_mode = str(self.settings.value("syqon/parallax_mode", "classic", type=str) or "classic").lower()
+        idx = self.cmb_mode.findData(saved_mode)
+        if idx >= 0:
+            self.cmb_mode.setCurrentIndex(idx)
+        self.cmb_mode.currentIndexChanged.connect(
+            lambda *_: self.settings.setValue("syqon/parallax_mode", self.mode())
+        )
+        form.addRow("Mode:", self.cmb_mode)
+
+        # Six install rows in a 2-column grid: Classic left, Aesthetics right
+        from PyQt6.QtWidgets import QGridLayout
+
+        models_wrap = QWidget(self)
+        grid = QGridLayout(models_wrap)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(4)
+
+        def _hdr(text):
+            l = QLabel(text, self)
+            l.setStyleSheet("color:#8e8e93; font-size:10px; font-weight:bold;")
+            return l
+
+        def _build_row(attr_lbl, row_label, setting_key, canonical_name):
             saved = str(self.settings.value(setting_key, "", type=str) or "")
             installed = bool(saved and Path(saved).exists())
- 
+
             status_lbl = QLabel("✔  " + row_label if installed else "✘  " + row_label, self)
             status_lbl.setStyleSheet(
                 "color: #2ed573; font-weight: bold;" if installed else "color: #ff6b6b; font-weight: bold;"
             )
             status_lbl.setToolTip(saved if installed else "Not installed")
             setattr(self, attr_lbl, status_lbl)
- 
+
             btn_i = QPushButton("Install…", self)
             btn_r = QPushButton("Remove", self)
             btn_i.setFixedWidth(72)
             btn_r.setFixedWidth(62)
             btn_i.clicked.connect(self._make_install_fn(setting_key, status_lbl, canonical_name))
             btn_r.clicked.connect(self._make_remove_fn(setting_key, status_lbl, row_label))
- 
+
             row_w = QWidget(self)
             row_l = QHBoxLayout(row_w)
             row_l.setContentsMargins(0, 0, 0, 0)
@@ -1020,7 +1042,29 @@ class _SyQonSharpenHubPage(QWidget):
             row_l.addWidget(status_lbl, 1)
             row_l.addWidget(btn_i)
             row_l.addWidget(btn_r)
-            form.addRow(row_w)
+            return row_w
+
+        classic_rows = [
+            ("_correction_lbl",       "Correction",     "syqon/parallax_correction_path",             "parallax_correction.pth"),
+            ("_star_reduce_lbl",      "Star reduction", "syqon/parallax_star_reduce_path",            "parallax_star_reduction.pth"),
+            ("_sharpen_lbl",          "Sharpen",        "syqon/parallax_sharpen_path",                "parallax_sharpen.pth"),
+        ]
+        aesth_rows = [
+            ("_correction_aesth_lbl", "Correction",     "syqon/parallax_correction_aesthetics_path",  "parallax_correction_aesthetics.pth"),
+            ("_star_reduce_aesth_lbl","Star reduction", "syqon/parallax_star_reduce_aesthetics_path", "parallax_star_reduction_aesthetics.pth"),
+            ("_sharpen_aesth_lbl",    "Sharpen",        "syqon/parallax_sharpen_aesthetics_path",     "parallax_sharpen_aesthetics.pth"),
+        ]
+
+        grid.addWidget(_hdr("Classic models"),    0, 0)
+        grid.addWidget(_hdr("Aesthetics models"), 0, 1)
+        for i, (c, a) in enumerate(zip(classic_rows, aesth_rows), start=1):
+            grid.addWidget(_build_row(*c), i, 0)
+            grid.addWidget(_build_row(*a), i, 1)
+
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+        form.addRow(models_wrap)
  
         # Get Models Here + Clear AI Cache row
         ar = QHBoxLayout()
@@ -1175,6 +1219,22 @@ class _SyQonSharpenHubPage(QWidget):
         self.btn_cancel.clicked.connect(self._cancel)
         lay.addWidget(self.btn_cancel)
  
+    def mode(self) -> str:
+        try:
+            return str(self.cmb_mode.currentData() or "classic").lower()
+        except Exception:
+            return "classic"
+
+    def _key_for(self, variant: str) -> str:
+        base = {
+            "correction":  "syqon/parallax_correction_path",
+            "star_reduce": "syqon/parallax_star_reduce_path",
+            "sharpen":     "syqon/parallax_sharpen_path",
+        }[variant]
+        if self.mode() == "aesthetics":
+            return base.replace("_path", "_aesthetics_path")
+        return base
+
     # ------------------------------------------------------------------
     # Install / remove
     # ------------------------------------------------------------------
@@ -1253,9 +1313,9 @@ class _SyQonSharpenHubPage(QWidget):
         p = str(self.settings.value(key, "", type=str) or "")
         return p if (p and Path(p).exists()) else None
  
-    def correction_model_path(self)  -> str | None: return self._model_path("syqon/parallax_correction_path")
-    def star_reduce_model_path(self) -> str | None: return self._model_path("syqon/parallax_star_reduce_path")
-    def sharpen_model_path(self)     -> str | None: return self._model_path("syqon/parallax_sharpen_path")
+    def correction_model_path(self)  -> str | None: return self._model_path(self._key_for("correction"))
+    def star_reduce_model_path(self) -> str | None: return self._model_path(self._key_for("star_reduce"))
+    def sharpen_model_path(self)     -> str | None: return self._model_path(self._key_for("sharpen"))
  
     # ------------------------------------------------------------------
     # Busy state
@@ -1389,6 +1449,8 @@ class _SyQonSharpenHubPage(QWidget):
         self.settings.setValue("syqon/parallax_pad",           int(self.spin_pad.value()))
         self.settings.setValue("syqon/parallax_use_mtf",       bool(self.chk_mtf.isChecked()))
         self.settings.setValue("syqon/parallax_mtf_target",    float(self.spin_mtf.value()))
+        mode = self.mode()
+        self.settings.setValue("syqon/parallax_mode", mode)        
  
         src = np.asarray(doc.image, dtype=np.float32)
         self._orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
@@ -1444,6 +1506,7 @@ class _SyQonSharpenHubPage(QWidget):
             overlap         = int(self.spin_overlap.value()),
             pad             = int(self.spin_pad.value()),
             parent          = self,
+            mode=mode,
         )
         self.proc_thr.progress.connect(self._on_progress)
         self.proc_thr.finished.connect(self._on_finished)
@@ -1455,7 +1518,7 @@ class _SyQonParallaxProcessThread(QThread):
     finished = pyqtSignal(object, dict, str)
  
     def __init__(self, x_for_net, *, do_correct, correction_path, star_level,
-                 star_path, sharpen_alpha, sharpen_path, tile, overlap, pad, parent=None):
+                 star_path, sharpen_alpha, sharpen_path, tile, overlap, pad, parent=None, mode="classic"):
         super().__init__(parent)
         self.x_for_net       = np.asarray(x_for_net, dtype=np.float32)
         self.do_correct      = bool(do_correct)
@@ -1468,6 +1531,7 @@ class _SyQonParallaxProcessThread(QThread):
         self.overlap         = int(overlap)
         self.pad             = int(pad)
         self._cancel         = False
+        self.mode = str(mode or "classic").lower()
  
     def cancel(self): self._cancel = True
  
@@ -1500,6 +1564,7 @@ class _SyQonParallaxProcessThread(QThread):
                     current, self.correction_path,
                     tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
+                    mode=self.mode,
                     progress_cb=_cb(f"[{s}/{n}] Aberration Correction"),
                 )
                 info["correction"] = inf
@@ -1510,6 +1575,7 @@ class _SyQonParallaxProcessThread(QThread):
                     current, self.star_path, self.star_level,
                     tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
+                    mode=self.mode,
                     progress_cb=_cb(f"[{s}/{n}] Star Reduction L{self.star_level}"),
                 )
                 info["star_reduce"] = inf
@@ -1520,6 +1586,7 @@ class _SyQonParallaxProcessThread(QThread):
                     current, self.sharpen_path, self.sharpen_alpha,
                     tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
+                    mode=self.mode,
                     progress_cb=_cb(f"[{s}/{n}] Sharpening α={self.sharpen_alpha:.2f}"),
                 )
                 info["sharpen"] = inf
@@ -1786,11 +1853,11 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
         parallax_star_reduce_rgb01,
         parallax_sharpen_rgb01,
     )
-    from setiastro.saspro.syqon_paths import (
-        syqon_parallax_correction_model_path,
-        syqon_parallax_star_reduction_model_path,
-        syqon_parallax_sharpen_model_path,
-    )
+    #from setiastro.saspro.syqon_paths import (
+    #    syqon_parallax_correction_model_path,
+    #    syqon_parallax_star_reduction_model_path,
+    #    syqon_parallax_sharpen_model_path,
+    #)
  
     preset = dict(preset or {})
  
@@ -1802,28 +1869,32 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
     pad           = int(preset.get("parallax_pad",            96))
     use_mtf       = bool(preset.get("parallax_use_mtf",       True))
     mtf_target    = float(preset.get("parallax_mtf_target",   0.15))
- 
+    mode = str(preset.get("parallax_mode", "classic") or "classic").lower()
+    settings = QSettings()
+    _keys = {
+        "correction":  "syqon/parallax_correction_path",
+        "star_reduce": "syqon/parallax_star_reduce_path",
+        "sharpen":     "syqon/parallax_sharpen_path",
+    }
+    if mode == "aesthetics":
+        _keys = {k: v.replace("_path", "_aesthetics_path") for k, v in _keys.items()}
+
+    def _installed(variant):
+        p = str(settings.value(_keys[variant], "", type=str) or "")
+        return p if (p and Path(p).exists()) else None
     # Validate model paths
-    if do_correct:
-        p = syqon_parallax_correction_model_path()
-        if not p.exists():
-            QMessageBox.warning(main, "SyQon Parallax",
-                                "Correction model not installed. Install it from the SyQon Tools hub.")
-            return
- 
-    if star_level > 0:
-        p = syqon_parallax_star_reduction_model_path()
-        if not p.exists():
-            QMessageBox.warning(main, "SyQon Parallax",
-                                "Star reduction model not installed. Install it from the SyQon Tools hub.")
-            return
- 
-    if sharpen_alpha > 0.0:
-        p = syqon_parallax_sharpen_model_path()
-        if not p.exists():
-            QMessageBox.warning(main, "SyQon Parallax",
-                                "Sharpen model not installed. Install it from the SyQon Tools hub.")
-            return
+    if do_correct and _installed("correction") is None:
+        QMessageBox.warning(main, "SyQon Parallax",
+                            f"Correction model ({mode}) not installed. Install it from the SyQon Tools hub.")
+        return
+    if star_level > 0 and _installed("star_reduce") is None:
+        QMessageBox.warning(main, "SyQon Parallax",
+                            f"Star reduction model ({mode}) not installed. Install it from the SyQon Tools hub.")
+        return
+    if sharpen_alpha > 0.0 and _installed("sharpen") is None:
+        QMessageBox.warning(main, "SyQon Parallax",
+                            f"Sharpen model ({mode}) not installed. Install it from the SyQon Tools hub.")
+        return
  
     if not do_correct and star_level == 0 and sharpen_alpha <= 0.0:
         QMessageBox.warning(main, "SyQon Parallax",
@@ -1860,15 +1931,16 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
     thr = _SyQonParallaxProcessThread(
         x_for_net       = x_for_net,
         do_correct      = do_correct,
-        correction_path = str(syqon_parallax_correction_model_path()) if do_correct else "",
+        correction_path = _installed("correction") or "",
         star_level      = star_level,
-        star_path       = str(syqon_parallax_star_reduction_model_path()) if star_level > 0 else "",
+        star_path       = _installed("star_reduce") or "",
         sharpen_alpha   = sharpen_alpha,
-        sharpen_path    = str(syqon_parallax_sharpen_model_path()) if sharpen_alpha > 0 else "",
+        sharpen_path    = _installed("sharpen") or "",
         tile            = tile,
         overlap         = overlap,
         pad             = pad,
         parent          = dlg,
+        mode            = mode,
     )
  
     def _on_prog(pct: int, stage: str):
