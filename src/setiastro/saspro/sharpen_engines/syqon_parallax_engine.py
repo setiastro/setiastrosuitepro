@@ -33,10 +33,14 @@ def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
             return torch_directml.device()
         except Exception:
             pass
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None:
+        try:
+            if mps.is_available() and mps.is_built():
+                return torch.device("mps")
+        except Exception:
+            pass
     return torch.device("cpu")
-
 
 # ---------------------------------------------------------------------------
 # Tiling helpers
@@ -429,11 +433,13 @@ def parallax_sharpen_rgb01(
     weight_sum    = torch.zeros((1, 1, height, width), dtype=torch.float32)
     base_window   = _tent_window_torch(tile, torch)
 
-    # Only CUDA benefits from autocast here (fp16). MPS autocast is unsupported
-    # in some torch builds and even when supported, we run fp32 on it anyway —
-    # so skip it entirely. CPU (Intel Mac) is fp32, no autocast.
+    # Only CUDA benefits from autocast (fp16). Everything else — MPS, CPU,
+    # DirectML — runs plain fp32 with NO autocast context at all. This matters
+    # because torch.amp.autocast validates device_type in its constructor
+    # BEFORE checking enabled=, so passing device_type="mps" raises
+    # "unsupported autocast device_type 'mps'" even with enabled=False.
     use_autocast   = (device.type == "cuda")
-    autocast_dtype = torch.float16 if device.type == "cuda" else torch.float32
+    autocast_dtype = torch.float16
 
     for idx, (top, left) in enumerate(coords, start=1):
         bottom = min(top + tile, height)
@@ -450,7 +456,10 @@ def parallax_sharpen_rgb01(
         )
 
         with torch.no_grad():
-            with torch.amp.autocast(device_type=device.type, dtype=autocast_dtype, enabled=use_autocast):
+            if use_autocast:
+                with torch.amp.autocast(device_type="cuda", dtype=autocast_dtype):
+                    pred_tile = model(tile_tensor)
+            else:
                 pred_tile = model(tile_tensor)
 
         pred_tile = pred_tile.float().cpu()
