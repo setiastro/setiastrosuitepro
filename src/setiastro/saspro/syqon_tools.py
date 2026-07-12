@@ -992,8 +992,8 @@ class _SyQonSharpenHubPage(QWidget):
  
         # Mode selector — chooses which model triplet to use for processing
         self.cmb_mode = QComboBox(self)
-        self.cmb_mode.addItem("Classic",    userData="classic")
-        self.cmb_mode.addItem("Aesthetics", userData="aesthetics")
+        self.cmb_mode.addItem("Natural",    userData="classic")
+        self.cmb_mode.addItem("Defined", userData="aesthetics")
         saved_mode = str(self.settings.value("syqon/parallax_mode", "classic", type=str) or "classic").lower()
         idx = self.cmb_mode.findData(saved_mode)
         if idx >= 0:
@@ -1055,8 +1055,8 @@ class _SyQonSharpenHubPage(QWidget):
             ("_sharpen_aesth_lbl",    "Sharpen",        "syqon/parallax_sharpen_aesthetics_path",     "parallax_sharpen_aesthetics.pth"),
         ]
 
-        grid.addWidget(_hdr("Classic models"),    0, 0)
-        grid.addWidget(_hdr("Aesthetics models"), 0, 1)
+        grid.addWidget(_hdr("Natural models"),    0, 0)
+        grid.addWidget(_hdr("Defined models"), 0, 1)
         for i, (c, a) in enumerate(zip(classic_rows, aesth_rows), start=1):
             grid.addWidget(_build_row(*c), i, 0)
             grid.addWidget(_build_row(*a), i, 1)
