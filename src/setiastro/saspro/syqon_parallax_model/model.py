@@ -422,9 +422,11 @@ def _infer_nafnet_dims(sd: dict, mc: dict) -> dict:
     if "intro.weight" in sd:
         width       = int(sd["intro.weight"].shape[0])
         in_channels = int(sd["intro.weight"].shape[1])
+        dims_source = "state_dict"
     else:
         width       = int(mc.get("width", 32))
         in_channels = int(mc.get("img_channels", mc.get("in_channels", 3)))
+        dims_source = "config_default"
     if "ending.weight" in sd:
         out_channels = int(sd["ending.weight"].shape[0])
     else:
@@ -433,6 +435,7 @@ def _infer_nafnet_dims(sd: dict, mc: dict) -> dict:
         "in_channels":  in_channels,
         "out_channels": out_channels,
         "width":        width,
+        "source":       dims_source,
     }
 
 # ---------------------------------------------------------------------------
@@ -528,6 +531,24 @@ def load_parallax_model(ckpt_path: str,
         sd = _clean_state_dict(_extract_state_dict(ckpt))
         mc = config.get("model", {})
         dims = _infer_nafnet_dims(sd, mc)
+
+        # Variant/channel sanity check — catches the "installed correction
+        # model in the star reduction slot" mistake before it surfaces as
+        # an opaque tensor shape error inside the tiling loop.
+        expected_in = 4 if variant == "star_reduce" else 3
+        if dims["in_channels"] != expected_in and dims["source"] == "state_dict":
+            raise RuntimeError(
+                f"SyQon Parallax (Aesthetics/{variant}): the installed model at\n"
+                f"  {ckpt_path}\n"
+                f"has intro.weight with {dims['in_channels']} input channels, but the "
+                f"'{variant}' stage requires a model with {expected_in}. "
+                f"This usually means the wrong file was chosen when installing "
+                f"the aesthetics models — the Star Reduction aesthetics model is "
+                f"the 4-channel file (RGB + level plane), while Correction and "
+                f"Sharpen are 3-channel. Re-install the correct file from the "
+                f"SyQon Tools hub."
+            )
+
         model = NAFNet(
             in_channels    = dims["in_channels"],
             out_channels   = dims["out_channels"],
