@@ -1,10 +1,10 @@
 {
-  "version": "1.19.4.post2",
+  "version": "1.19.5",
   "downloads": {
       "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.4/setiastrosuitepro_windows.zip",
       "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.4/SetiAstroSuitePro_macOS_Intel.dmg",
       "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.4/SetiAstroSuitePro_AppleSilicon.dmg",
       "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.4/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.19.4\nGAIA Astrometric DB integration into Create Mask->Star Mask->GAIA augmentation and WIMI->Advanced Search->GAIA Augmentation\n\nParallax Aesthetic Model support.\n\nMajor overhaul of debayer to catch edge cases.\n\nBug and UX tweaks to: Runtime Torch (rocm), resource monitor (rocm), SEP internal limits, and others."
+ "notes": "Seti Astro Suite Pro\n\nV1.19.5\nGAIA Database Neighborhood Explorer updates. Asterism Explorer, see the true shape of some common constellations. Wedge Exploration, right click any star and slice a wedge towards it to see sturcture. Minimum Distance, create a shell of data. Cube, fill the whole volume, not just a sphere.\n\nSyQon Parallax bug fixes."
 }
