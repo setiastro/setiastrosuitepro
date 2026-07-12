@@ -1047,17 +1047,27 @@ class GaiaNeighborhoodLibrary:
         except Exception:
             return 0
 
-    def load_sphere(
+    def load_region(
         self,
-        max_pc: float,
+        extent_pc: float,
+        shape: str = "sphere",
         max_ruwe: Optional[float] = 1.4,
         max_gmag: Optional[float] = None,
         limit: int = 2_000_000,
+        min_pc: Optional[float] = None,
+        wedge: Optional[tuple] = None,     # (l0, b0, half_l, half_b) degrees
     ) -> Optional[Dict[str, np.ndarray]]:
         """
-        Fetch every star inside `max_pc`, optionally RUWE- and magnitude-cut,
+        Fetch every star inside a region, optionally RUWE- and magnitude-cut,
         nearest first. Returns numpy arrays ready for GLScatterPlotItem, or
         None if the library isn't installed.
+
+        shape:
+          "sphere" — dist_pc <= extent_pc  (the classic radius query)
+          "cube"   — |x|,|y|,|z| <= extent_pc: an axis-aligned box of HALF-side
+                     extent_pc centred on the Sun. The box spans ±extent_pc on
+                     each axis, exactly matching the drawn grid, so it fills the
+                     square's corners a sphere of the same radius leaves empty.
 
         `limit` is a hard cap so an accidental 300 pc + no-cuts query can't try
         to push ~14M points into a vertex buffer and wedge the UI.
@@ -1065,8 +1075,51 @@ class GaiaNeighborhoodLibrary:
         if self._conn is None:
             return None
 
-        where = ["dist_pc <= ?"]
-        params: list = [float(max_pc)]
+        e = float(extent_pc)
+        if shape == "cube":
+            # A cube of half-side e is contained in the sphere of radius e*sqrt(3),
+            # so this dist_pc bound excludes nothing inside the box but lets SQLite
+            # prune with the dist_pc index before the per-axis test — an index
+            # range scan instead of a full-table scan of ~14M rows.
+            where = [
+                "dist_pc <= ?",
+                "x_pc BETWEEN ? AND ?",
+                "y_pc BETWEEN ? AND ?",
+                "z_pc BETWEEN ? AND ?",
+            ]
+            params: list = [e * math.sqrt(3.0), -e, e, -e, e, -e, e]
+        else:
+            where = ["dist_pc <= ?"]
+            params = [e]
+        # Inner radius: a floor on dist_pc carves a shell (sphere) or a box with
+        # the inner sphere hollowed out (cube). Kept on the dist_pc index.
+        if min_pc is not None and min_pc > 0.0:
+            where.append("dist_pc >= ?")
+            params.append(float(min_pc))
+        # Angular wedge: a cone of galactic directions centred on (l0, b0) with
+        # half-widths half_l (longitude / along the plane) and half_b (latitude /
+        # north–south). Expressed purely on x/y/z so it needs no SQL trig (not
+        # guaranteed in a frozen SQLite) and stays on the dist_pc index.
+        if wedge is not None:
+            l0, b0, half_l, half_b = wedge
+            # NS band -> z bounds:  b in [b0±hb]  <=>  z/dist in [sin lo, sin hi].
+            b_lo = max(-90.0, b0 - half_b)
+            b_hi = min(90.0, b0 + half_b)
+            where.append("z_pc >= dist_pc * ?")
+            params.append(math.sin(math.radians(b_lo)))
+            where.append("z_pc <= dist_pc * ?")
+            params.append(math.sin(math.radians(b_hi)))
+            # Longitude band (skip at >=90° = no limit). dot = x·cos l0 + y·sin l0
+            # = |xy|·cos(Δl); |Δl|<=hl  <=>  dot>=0 and dot² >= (x²+y²)cos²(hl).
+            if half_l < 90.0:
+                cl0 = math.cos(math.radians(l0))
+                sl0 = math.sin(math.radians(l0))
+                cdl2 = math.cos(math.radians(half_l)) ** 2
+                where.append("(x_pc * ? + y_pc * ?) >= 0")
+                params.extend([cl0, sl0])
+                where.append("(x_pc * ? + y_pc * ?) * (x_pc * ? + y_pc * ?) "
+                             ">= (x_pc * x_pc + y_pc * y_pc) * ?")
+                params.extend([cl0, sl0, cl0, sl0, cdl2])
         if max_ruwe is not None:
             # NULL ruwe passes: any row here has a parallax, so it came from a
             # 5- or 6-parameter solution and should carry a RUWE. NULLs are rare
@@ -1086,8 +1139,8 @@ class GaiaNeighborhoodLibrary:
 
         try:
             rows = self._conn.execute(sql, params).fetchall()
-        except Exception as e:
-            print(f"[GaiaNeighborhoodLibrary] query failed: {e}")
+        except Exception as e2:
+            print(f"[GaiaNeighborhoodLibrary] query failed: {e2}")
             return None
 
         n = len(rows)
@@ -1117,6 +1170,16 @@ class GaiaNeighborhoodLibrary:
 
         return {"source_id": src, "xyz": xyz, "dist_pc": dist,
                 "gmag": gmag, "ruwe": ruwe, "ra": ra, "dec": dec}
+
+    def load_sphere(
+        self,
+        max_pc: float,
+        max_ruwe: Optional[float] = 1.4,
+        max_gmag: Optional[float] = None,
+        limit: int = 2_000_000,
+    ) -> Optional[Dict[str, np.ndarray]]:
+        """Back-compat shim — a spherical load_region()."""
+        return self.load_region(max_pc, "sphere", max_ruwe, max_gmag, limit)
 
     def get_star(self, source_id: int) -> Optional[Dict]:
         if self._conn is None:
@@ -2257,7 +2320,10 @@ def load_bright_stars() -> Optional[Dict[str, np.ndarray]]:
     return d
 
 
-def _merge_bright(gaia: Dict[str, np.ndarray], max_pc: float) -> Dict[str, np.ndarray]:
+def _merge_bright(gaia: Dict[str, np.ndarray], extent_pc: float,
+                  shape: str = "sphere",
+                  min_pc: Optional[float] = None,
+                  wedge: Optional[tuple] = None) -> Dict[str, np.ndarray]:
     """
     Append the hardcoded bright stars (within max_pc) to a neighborhood load.
 
@@ -2283,7 +2349,28 @@ def _merge_bright(gaia: Dict[str, np.ndarray], max_pc: float) -> Dict[str, np.nd
     if bright is None:
         return out
 
-    keep = bright["dist_pc"] <= max_pc
+    if shape == "cube":
+        b = bright["xyz"]
+        keep = ((np.abs(b[:, 0]) <= extent_pc)
+                & (np.abs(b[:, 1]) <= extent_pc)
+                & (np.abs(b[:, 2]) <= extent_pc))
+    else:
+        keep = bright["dist_pc"] <= extent_pc
+    if min_pc is not None and min_pc > 0.0:
+        keep &= bright["dist_pc"] >= min_pc
+    if wedge is not None:
+        l0, b0, half_l, half_b = wedge
+        bx = bright["xyz"]
+        x, y, z = bx[:, 0], bx[:, 1], bx[:, 2]
+        rr = np.sqrt(x * x + y * y + z * z)
+        rr = np.where(rr > 0, rr, 1.0)
+        b_star = np.degrees(np.arcsin(np.clip(z / rr, -1.0, 1.0)))
+        l_star = np.degrees(np.arctan2(y, x))
+        dlon = (l_star - l0 + 180.0) % 360.0 - 180.0
+        wk = np.abs(b_star - b0) <= half_b
+        if half_l < 90.0:
+            wk &= np.abs(dlon) <= half_l
+        keep &= wk
     if not keep.any():
         return out
 
@@ -2300,24 +2387,182 @@ def _merge_bright(gaia: Dict[str, np.ndarray], max_pc: float) -> Dict[str, np.nd
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  Asterisms — familiar constellations in true 3D
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# These stars are naked-eye bright (G ≲ 3), which is exactly why Gaia doesn't
+# have them — so there's no database to query and hardcoding is both the fast
+# path and the only accurate one. Each entry lists its stars as
+# (name, ra_deg, dec_deg, dist_pc); XYZ is derived at load time via astropy into
+# the same galactic frame the explorer plots in. `lines` are index pairs into
+# `stars` (0-based, in listed order) drawn as connectors.
+#
+# RA/Dec are precise (sky positions don't move). DISTANCES are the honest weak
+# point: Hipparcos/Gaia parallaxes for the nearby ones, but the distant OB stars
+# — Orion's belt especially — are poorly constrained (published values disagree
+# by 2x). Values flagged "approx" are good enough for the visual and easy to
+# tune. The whole point of the demo is the depth *spread*, not 3-sig-fig ranges.
+
+ASTERISMS: Dict[str, dict] = {
+    "Orion": {
+        "stars": [
+            ("Betelgeuse", 88.7929,  7.4071, 168.0),  # α — approx; 150–220 pc, contested
+            ("Bellatrix",  81.2828,  6.3497,  77.0),  # γ
+            ("Alnitak",    85.1897, -1.9426, 250.0),  # ζ belt — approx
+            ("Alnilam",    84.0534, -1.2019, 600.0),  # ε belt — approx, the far one
+            ("Mintaka",    83.0016, -0.2991, 380.0),  # δ belt — approx
+            ("Saiph",      86.9391, -9.6696, 198.0),  # κ
+            ("Rigel",      78.6345, -8.2017, 265.0),  # β
+            ("Meissa",     83.7845,  9.9341, 330.0),  # λ head — approx
+        ],
+        "lines": [(0, 1), (0, 2), (1, 4), (2, 3), (3, 4),
+                  (2, 5), (4, 6), (7, 0), (7, 1)],
+    },
+    "Big Dipper": {
+        "stars": [
+            ("Dubhe",  165.9319, 61.7511, 37.7),  # α — breaks the group (123 ly)
+            ("Merak",  165.4603, 56.3825, 24.5),  # β
+            ("Phecda", 178.4577, 53.6948, 25.5),  # γ
+            ("Megrez", 183.8565, 57.0326, 24.7),  # δ
+            ("Alioth", 193.5073, 55.9598, 25.3),  # ε
+            ("Mizar",  200.9814, 54.9254, 25.6),  # ζ
+            ("Alkaid", 206.8852, 49.3133, 31.9),  # η — breaks the group (104 ly)
+        ],
+        "lines": [(0, 1), (1, 2), (2, 3), (3, 0),   # bowl
+                  (3, 4), (4, 5), (5, 6)],          # handle
+    },
+    "Leo": {
+        "stars": [
+            ("Regulus",  152.0929, 11.9672,  24.0),  # α
+            ("Eta Leo",  151.8333, 16.7627, 550.0),  # η — distant supergiant, approx
+            ("Algieba",  154.9926, 19.8415,  40.0),  # γ
+            ("Adhafera", 154.1725, 23.4173,  84.0),  # ζ
+            ("Rasalas",  148.1913, 26.0068,  38.0),  # μ
+            ("Ras Elased", 146.4626, 23.7740, 75.0),  # ε
+            ("Zosma",    168.5271, 20.5237,  18.0),  # δ
+            ("Chort",    168.5600, 15.4297,  50.0),  # θ
+            ("Denebola", 177.2649, 14.5720,  11.0),  # β — the near tail
+        ],
+        "lines": [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5),   # the Sickle
+                  (2, 6), (6, 7), (7, 0), (6, 8), (7, 8)],   # body + tail
+    },
+    "Scorpius": {
+        "stars": [
+            ("Acrab",    241.3593, -19.8055, 120.0),  # β head
+            ("Dschubba", 240.0834, -22.6217, 150.0),  # δ head
+            ("Pi Sco",   239.7130, -26.1141, 180.0),  # π head
+            ("Antares",  247.3519, -26.4320, 170.0),  # α heart
+            ("Tau Sco",  248.9705, -28.2160, 150.0),  # τ
+            ("Eps Sco",  252.5410, -34.2935,  20.0),  # ε — foreground surprise
+            ("Mu Sco",   253.0839, -38.0175, 155.0),  # μ — approx
+            ("Zeta Sco", 253.4986, -42.3612, 150.0),  # ζ — approx (bright pair)
+            ("Eta Sco",  258.0377, -43.2392,  22.0),  # η — foreground surprise
+            ("Sargas",   264.3297, -42.9978,  90.0),  # θ
+            ("Kappa Sco",265.6220, -39.0300, 145.0),  # κ — approx
+            ("Lesath",   262.6910, -37.2958, 175.0),  # υ — approx
+            ("Shaula",   263.4022, -37.1038, 180.0),  # λ stinger
+        ],
+        "lines": [(0, 1), (1, 2), (1, 3),                       # head fan → heart
+                  (3, 4), (4, 5), (5, 6), (6, 7), (7, 8),        # tail curve
+                  (8, 9), (9, 10), (10, 12), (12, 11)],          # to the stinger
+    },
+    "Cygnus": {
+        # The Northern Cross. Gienah (ε) is a 22 pc foreground star while Sadr
+        # sits ~560 pc back — the cross is a nearby wingtip on a distant body.
+        "stars": [
+            ("Deneb",   310.3580, 45.2803, 433.0),  # α — approx; 430–800 pc, contested
+            ("Sadr",    305.5571, 40.2567, 560.0),  # γ chest — approx (~1800 ly)
+            ("Gienah",  311.5528, 33.9696,  22.3),  # ε wing — near foreground
+            ("Fawaris", 296.2443, 45.1310,  50.0),  # δ wing — approx
+            ("Albireo", 292.6804, 27.9597, 120.0),  # β beak — approx (Gaia ~100–120 pc)
+        ],
+        "lines": [(0, 1), (1, 4), (2, 1), (3, 1)],  # tail–chest–beak + the crossbeam
+    },
+    "Boötes": {
+        # The Kite. Arcturus and Muphrid are both ~11 pc — the bottom apex is
+        # right on top of you while the rest of the kite floats at 26–68 pc.
+        "stars": [
+            ("Arcturus", 213.9153, 19.1824, 11.26),  # α
+            ("Muphrid",  208.6714, 18.3977, 11.41),  # η — near, like Arcturus
+            ("Izar",     221.2467, 27.0742, 63.0),   # ε — approx
+            ("Delta Boo",224.6390, 33.3151, 37.0),   # δ — approx
+            ("Nekkar",   225.4867, 40.3903, 68.0),   # β — approx
+            ("Seginus",  218.0196, 38.3082, 26.0),   # γ — approx
+            ("Rho Boo",  218.0186, 30.3714, 45.0),   # ρ — approx
+        ],
+        "lines": [(0, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 0),  # the kite
+                  (0, 1)],                                          # foot to Muphrid
+    },
+    "Taurus": {
+        # The face is the Hyades V at ~47 pc, but Aldebaran (20 pc) is a line-of-
+        # sight impostor floating in front of it, and the ζ horn runs back to
+        # ~130 pc. Distances beyond Aldebaran are approximate.
+        "stars": [
+            ("Aldebaran", 68.9802, 16.5093,  20.4),  # α — foreground, NOT a Hyad
+            ("Ain",       67.1543, 19.1804,  45.0),  # ε — Hyades
+            ("Delta Tau", 65.7338, 17.5426,  47.0),  # δ¹ — Hyades
+            ("Gamma Tau", 64.4735, 15.6276,  47.0),  # γ — nose of the V
+            ("Theta Tau", 67.1683, 15.8712,  47.0),  # θ — Hyades
+            ("Elnath",    81.5730, 28.6075,  40.0),  # β — north horn tip
+            ("Zeta Tau",  84.4111, 21.1425, 130.0),  # ζ — south horn tip, approx
+        ],
+        "lines": [(1, 2), (2, 3), (0, 4), (4, 3),   # the V (both branches → nose)
+                  (1, 5), (0, 6)],                   # the two horns
+    },
+    "Cassiopeia": {
+        # The W. Caph (β) is ~17 pc while Gamma sits ~168 pc back, so the zigzag
+        # skews hard in depth. Distances beyond the near stars are approximate.
+        "stars": [
+            ("Segin",   28.5988, 63.6701, 130.0),  # ε — approx (~440 ly)
+            ("Ruchbah", 21.4538, 60.2353,  30.5),  # δ
+            ("Gamma Cas",14.1772, 60.7167, 168.0), # γ — approx (~550 ly)
+            ("Schedar", 10.1268, 56.5373,  70.0),  # α — approx (~228 ly)
+            ("Caph",     2.2945, 59.1498,  16.7),  # β — near foreground
+        ],
+        "lines": [(0, 1), (1, 2), (2, 3), (3, 4)],  # the W zigzag
+    },
+    "Summer Triangle": {
+        # Three "equal-looking" first-magnitude stars spanning almost 85× in
+        # depth — the single hardest depth-shock in the set. Deneb's distance is
+        # contested (430–800 pc); the near two are rock-solid Gaia/Hipparcos.
+        "stars": [
+            ("Vega",   279.2347, 38.7837,   7.68),  # α Lyr
+            ("Altair", 297.6958,  8.8683,   5.13),  # α Aql
+            ("Deneb",  310.3580, 45.2803, 433.0),   # α Cyg — approx, far vertex
+        ],
+        "lines": [(0, 1), (1, 2), (2, 0)],
+    },
+}
+ASTERISM_ORDER = ["Orion", "Big Dipper", "Leo", "Scorpius",
+                  "Cygnus", "Boötes", "Taurus",
+                  "Cassiopeia", "Summer Triangle"]
+
+
 class _NeighborhoodLoadWorker(QThread):
     """Runs the (potentially large) sphere query off the UI thread."""
     loaded = _Signal(object)
     failed = _Signal(str)
 
-    def __init__(self, max_pc: float, max_ruwe: Optional[float],
-                 max_gmag: Optional[float], limit: int, parent=None):
+    def __init__(self, extent_pc: float, shape: str, max_ruwe: Optional[float],
+                 max_gmag: Optional[float], limit: int,
+                 min_pc: Optional[float] = None, wedge: Optional[tuple] = None,
+                 parent=None):
         super().__init__(parent)
-        self._max_pc   = max_pc
+        self._extent   = extent_pc
+        self._shape    = shape
         self._max_ruwe = max_ruwe
         self._max_gmag = max_gmag
         self._limit    = limit
+        self._min      = min_pc
+        self._wedge    = wedge
 
     def run(self):
         try:
             lib = get_neighborhood_library()
-            data = lib.load_sphere(self._max_pc, self._max_ruwe,
-                                   self._max_gmag, self._limit)
+            data = lib.load_region(self._extent, self._shape, self._max_ruwe,
+                                   self._max_gmag, self._limit,
+                                   min_pc=self._min, wedge=self._wedge)
             if data is None:
                 self.failed.emit("Neighborhood library is not installed.")
                 return
@@ -2451,6 +2696,85 @@ if HAS_GL:
             return None
 
 
+class _WedgeDialog(QDialog):
+    """
+    Popup for the right-click "Wedge slice from here" action. The clicked star
+    fixes the wedge's centre direction (its galactic l, b); the user only picks
+    two half-angles — how wide along the galactic plane, and how far north/south
+    — so nobody has to reason in raw galactic coordinates.
+    """
+    def __init__(self, star_name, l0, b0, plane_init, ns_init, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Wedge Slice")
+        self.setModal(True)
+        self.setStyleSheet("QDialog{background:#0d0d1a;color:#ddd;}"
+                           "QLabel{color:#ccc;}"
+                           "QPushButton{background:#1a1a2e;color:#ccc;"
+                           "border:1px solid #334;border-radius:4px;padding:5px 12px;}"
+                           "QPushButton:hover{background:#222240;}")
+        v = QVBoxLayout(self)
+        v.setSpacing(10)
+        v.setContentsMargins(14, 14, 14, 14)
+
+        head = QLabel(f"Slice a wedge centred on <b>{star_name}</b>")
+        head.setWordWrap(True)
+        v.addWidget(head)
+        sub = QLabel(f"direction: galactic l = {l0:.1f}°,  b = {b0:+.1f}°")
+        sub.setStyleSheet("color:#89a; font-size:11px; font-family:monospace;")
+        v.addWidget(sub)
+
+        p_row = QHBoxLayout()
+        p_row.addWidget(QLabel("Along plane  ±"))
+        self._sp_plane = QDoubleSpinBox()
+        self._sp_plane.setRange(1.0, 90.0)
+        self._sp_plane.setDecimals(0)
+        self._sp_plane.setSuffix("°")
+        self._sp_plane.setValue(plane_init)
+        self._sp_plane.setToolTip("Half-width in galactic longitude — how far the "
+                                  "wedge opens left/right along the disk.\n90° = no "
+                                  "longitude limit.")
+        p_row.addWidget(self._sp_plane)
+        p_row.addStretch()
+        v.addLayout(p_row)
+
+        n_row = QHBoxLayout()
+        n_row.addWidget(QLabel("North–south ±"))
+        self._sp_ns = QDoubleSpinBox()
+        self._sp_ns.setRange(1.0, 90.0)
+        self._sp_ns.setDecimals(0)
+        self._sp_ns.setSuffix("°")
+        self._sp_ns.setValue(ns_init)
+        self._sp_ns.setToolTip("Half-width in galactic latitude — how far the wedge "
+                               "opens above/below the disk.\nKeep it small to slice a "
+                               "flat structure edge-on.")
+        n_row.addWidget(self._sp_ns)
+        n_row.addStretch()
+        v.addLayout(n_row)
+
+        tip = QLabel("Radial depth is still set by the Radius / Min-distance "
+                     "controls — combine a thin shell with a narrow wedge to "
+                     "isolate a structure.")
+        tip.setWordWrap(True)
+        tip.setStyleSheet("color:#667; font-size:10px;")
+        v.addWidget(tip)
+
+        b_row = QHBoxLayout()
+        b_row.addStretch()
+        ok = QPushButton("Slice")
+        ok.clicked.connect(self.accept)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        b_row.addWidget(ok)
+        b_row.addWidget(cancel)
+        v.addLayout(b_row)
+
+    def plane_half(self) -> float:
+        return float(self._sp_plane.value())
+
+    def ns_half(self) -> float:
+        return float(self._sp_ns.value())
+
+
 class StellarNeighborhoodTab(QWidget):
     """
     Interactive 3D view of every Gaia DR3 star with a usable parallax inside a
@@ -2494,6 +2818,21 @@ class StellarNeighborhoodTab(QWidget):
         # True when the Gaia neighborhood extract isn't installed and we're
         # rendering the hardcoded naked-eye stars alone.
         self._gaia_missing = False
+
+        # Asterism overlay state (constellations in true 3D). Independent of the
+        # Gaia layer; while active it owns the view and Gaia loading is paused.
+        self._asterism_active = False
+        self._aster_xyz: Optional[np.ndarray] = None
+        self._aster_cache: Dict[str, tuple] = {}
+        self._aster_scatter = None
+        self._aster_lines = None
+        self._aster_labels: List = []
+
+        # Angular wedge slice, set from a star's right-click menu. Persists as a
+        # filter until cleared; anchored on a direction, so radius changes keep it.
+        self._wedge: Optional[tuple] = None       # (l0, b0, half_l, half_b) deg
+        self._wedge_active = False
+        self._suppress_fit = False                # keep viewpoint after slicing
 
         # User-adjustable render cap. Kept as an instance attribute so worker
         # calls use the current value; persisted across sessions.
@@ -2615,6 +2954,21 @@ class StellarNeighborhoodTab(QWidget):
             pos=np.zeros((0, 3), dtype=np.float32), pxMode=True)
         self._view.addItem(self._scatter)
 
+        # Asterism overlay: lines added before points so stars draw on top of
+        # their connectors, plus a text-label pool (one slot per star).
+        self._aster_lines = gl.GLLinePlotItem(
+            pos=np.zeros((0, 3), dtype=np.float32), mode="lines",
+            width=2.0, antialias=True)
+        self._view.addItem(self._aster_lines)
+        self._aster_scatter = gl.GLScatterPlotItem(
+            pos=np.zeros((0, 3), dtype=np.float32), pxMode=True)
+        self._view.addItem(self._aster_scatter)
+        self._aster_labels = []
+        for _ in range(self.MAX_ASTERISM_STARS):
+            t = gl.GLTextItem(pos=np.zeros(3), text="", color=(220, 230, 255, 255))
+            self._view.addItem(t)
+            self._aster_labels.append(t)
+
         # Sun marker at the origin
         self._sun = gl.GLScatterPlotItem(
             pos=np.zeros((1, 3), dtype=np.float32),
@@ -2710,9 +3064,24 @@ class StellarNeighborhoodTab(QWidget):
         cl.setContentsMargins(10, 10, 10, 10)
         cl.setSpacing(6)
 
+        # region shape
+        sh_row = QHBoxLayout()
+        sh_row.addWidget(QLabel("Region:"))
+        self._combo_shape = QComboBox()
+        self._combo_shape.addItems(["Sphere (radius)", "Cube (fills the grid)"])
+        self._combo_shape.setToolTip(
+            "Sphere: every star within the radius of the Sun.\n"
+            "Cube: an axis-aligned box of half-side = the value below, centred\n"
+            "on the Sun. Fills the square grid's corners a sphere leaves empty —\n"
+            "the box spans ±value on each axis and matches the drawn grid.")
+        self._combo_shape.currentIndexChanged.connect(self._on_shape_changed)
+        sh_row.addWidget(self._combo_shape, stretch=1)
+        cl.addLayout(sh_row)
+
         # radius
         r_row = QHBoxLayout()
-        r_row.addWidget(QLabel("Radius (pc):"))
+        self._lbl_radius = QLabel("Radius (pc):")
+        r_row.addWidget(self._lbl_radius)
         self._spin_radius = QDoubleSpinBox()
         # The extract stops at NEIGHBORHOOD_MAX_PC, but the hardcoded bright
         # stars run out to ~680 pc (Arneb). Allow the radius past the extract's
@@ -2738,6 +3107,28 @@ class StellarNeighborhoodTab(QWidget):
             preset_row.addWidget(b)
         preset_row.addStretch()
         cl.addLayout(preset_row)
+
+        # minimum distance -> carve a shell (e.g. 200–220 pc) instead of a solid
+        # region from the Sun outward.
+        mn_row = QHBoxLayout()
+        self._chk_min = QCheckBox("Min dist (pc):")
+        self._chk_min.setChecked(False)
+        self._chk_min.setToolTip(
+            "Exclude everything closer than this, leaving a shell between the\n"
+            "min distance and the radius. Slice out (say) 200–220 pc to see\n"
+            "where a structure actually lives instead of burying it under all\n"
+            "the foreground stars.")
+        self._chk_min.toggled.connect(self._schedule_reload)
+        mn_row.addWidget(self._chk_min)
+        self._spin_min = QDoubleSpinBox()
+        self._spin_min.setRange(0.0, 750.0)
+        self._spin_min.setDecimals(1)
+        self._spin_min.setSingleStep(1.0)
+        self._spin_min.setValue(0.0)
+        self._spin_min.valueChanged.connect(self._schedule_reload)
+        mn_row.addWidget(self._spin_min)
+        mn_row.addStretch()
+        cl.addLayout(mn_row)
 
         # ruwe
         q_row = QHBoxLayout()
@@ -2781,6 +3172,32 @@ class StellarNeighborhoodTab(QWidget):
         self._combo_color.currentIndexChanged.connect(self._on_color_mode_changed)
         c_row.addWidget(self._combo_color, stretch=1)
         cl.addLayout(c_row)
+
+        # asterism overlay
+        a_row = QHBoxLayout()
+        a_row.addWidget(QLabel("Asterism:"))
+        self._combo_asterism = QComboBox()
+        self._combo_asterism.addItem("— none —")
+        for nm in ASTERISM_ORDER:
+            self._combo_asterism.addItem(nm)
+        self._combo_asterism.setToolTip(
+            "Overlay a familiar constellation with its stars at their real\n"
+            "distances and the connecting lines drawn in true 3D. The pattern\n"
+            "only lines up from the Sun's viewpoint — orbit to see how far apart\n"
+            "the stars actually are. (These stars are too bright for Gaia, so\n"
+            "their positions are hardcoded from Hipparcos/Gaia parallaxes.)")
+        # Connect AFTER populating so filling the list doesn't fire the handler.
+        self._combo_asterism.currentIndexChanged.connect(self._on_asterism_changed)
+        a_row.addWidget(self._combo_asterism, stretch=1)
+        self._btn_earth_view = QPushButton("Earth View")
+        self._btn_earth_view.setEnabled(False)
+        self._btn_earth_view.setToolTip(
+            "Snap the camera to the Sun, looking toward the asterism — the 3D\n"
+            "lines collapse into the flat shape you see from Earth. Then orbit\n"
+            "to watch the stars pull apart in depth.")
+        self._btn_earth_view.clicked.connect(self._asterism_earth_view)
+        a_row.addWidget(self._btn_earth_view)
+        cl.addLayout(a_row)
 
         # render cap
         rc_row = QHBoxLayout()
@@ -2860,6 +3277,12 @@ class StellarNeighborhoodTab(QWidget):
         btn_reload = QPushButton("Reload")
         btn_reload.clicked.connect(self._reload)
         btn_row.addWidget(btn_reload)
+        self._btn_clear_wedge = QPushButton("Clear Wedge")
+        self._btn_clear_wedge.setEnabled(False)
+        self._btn_clear_wedge.setToolTip(
+            "Remove the angular wedge slice and show the full field again.")
+        self._btn_clear_wedge.clicked.connect(self._clear_wedge)
+        btn_row.addWidget(self._btn_clear_wedge)
         cl.addLayout(btn_row)
 
         side.addWidget(ctrl)
@@ -2946,6 +3369,10 @@ class StellarNeighborhoodTab(QWidget):
     def _schedule_reload(self):
         self._reload_timer.start()
 
+    def _on_shape_changed(self, index: int):
+        self._lbl_radius.setText("Half-size (pc):" if index == 1 else "Radius (pc):")
+        self._schedule_reload()
+
     def _empty_gaia(self) -> Dict[str, np.ndarray]:
         """Zero Gaia rows, correct dtypes — so _merge_bright has something to append to."""
         return {
@@ -2963,6 +3390,22 @@ class StellarNeighborhoodTab(QWidget):
         # load once _ensure_gl() has run.
         if not HAS_GL or not self._gl_ready:
             return
+        # An asterism overlay owns the view while it's up — freeze Gaia loading
+        # so radius/cut changes don't yank the camera off the constellation.
+        if getattr(self, "_asterism_active", False):
+            return
+        self._active_shape = (
+            "cube" if self._combo_shape.currentIndex() == 1 else "sphere")
+
+        # Inner radius for shell slicing (None = solid region from the Sun out).
+        min_pc = self._spin_min.value() if self._chk_min.isChecked() else None
+        if min_pc is not None and min_pc >= self._spin_radius.value():
+            self._data = None
+            self._status.setText("Min distance ≥ radius — nothing to show. "
+                                 "Lower the min or raise the radius.")
+            self._set_points(None)
+            return
+
         lib = get_neighborhood_library()
 
         if not lib.is_installed():
@@ -2984,8 +3427,10 @@ class StellarNeighborhoodTab(QWidget):
         max_ruwe = self._spin_ruwe.value() if self._chk_ruwe.isChecked() else None
         max_mag  = self._spin_mag.value()  if self._chk_mag.isChecked()  else None
 
+        wedge = self._wedge if self._wedge_active else None
         self._worker = _NeighborhoodLoadWorker(
-            self._spin_radius.value(), max_ruwe, max_mag, self.MAX_POINTS, parent=None)
+            self._spin_radius.value(), self._active_shape, max_ruwe, max_mag,
+            self.MAX_POINTS, min_pc=min_pc, wedge=wedge, parent=None)
         self._worker.loaded.connect(self._on_loaded)
         self._worker.failed.connect(self._on_failed)
         self._worker.start()
@@ -3039,7 +3484,10 @@ class StellarNeighborhoodTab(QWidget):
 
         # Fold in the bright stars Gaia can't see. Done here rather than in the
         # worker so the merge is cheap and always reflects the current radius.
-        data = _merge_bright(data, self._spin_radius.value())
+        shape = getattr(self, "_active_shape", "sphere")
+        min_pc = self._spin_min.value() if self._chk_min.isChecked() else None
+        wedge = self._wedge if self._wedge_active else None
+        data = _merge_bright(data, self._spin_radius.value(), shape, min_pc, wedge)
 
         self._data = data
         n = len(data["source_id"])
@@ -3054,6 +3502,14 @@ class StellarNeighborhoodTab(QWidget):
         cut_str = ("  ·  " + ", ".join(cuts)) if cuts else ""
 
         r = self._spin_radius.value()
+        if min_pc is not None and min_pc > 0.0:
+            kind = "cube shell" if shape == "cube" else "shell"
+            region = f"{min_pc:.1f}–{r:.1f} pc {kind}"
+        else:
+            region = f"±{r:.1f} pc cube" if shape == "cube" else f"{r:.1f} pc"
+        if wedge is not None:
+            l0, b0, hl, hb = wedge
+            region += f", wedge l={l0:.0f}°±{hl:.0f}° b={b0:+.0f}°±{hb:.0f}°"
 
         if n == 0:
             if self._gaia_missing and load_bright_stars() is None:
@@ -3063,13 +3519,16 @@ class StellarNeighborhoodTab(QWidget):
                     f"({_BRIGHT_LOAD_ERROR}).")
             elif self._gaia_missing:
                 self._status.setText(
-                    f"No stars within {r:.1f} pc. Install “Stellar Neighborhood "
+                    f"No stars within {region}. Install “Stellar Neighborhood "
                     f"(within 300 pc)” on the Astrometry tab for the ~10M faint ones.")
             else:
-                self._status.setText(f"No stars within {r:.1f} pc matching the cuts.")
+                self._status.setText(f"No stars within {region} matching the cuts.")
             self._set_points(data)
             self._fill_table(data)
-            self._fit_view()
+            if getattr(self, "_suppress_fit", False):
+                self._suppress_fit = False
+            else:
+                self._fit_view()
             return
 
         extra = ""
@@ -3082,7 +3541,7 @@ class StellarNeighborhoodTab(QWidget):
             extra += (f"  ·  ⚠ beyond {NEIGHBORHOOD_MAX_PC:.0f} pc only the "
                       f"naked-eye stars are plotted")
         self._status.setText(
-            f"{n:,} stars within {r:.1f} pc{cut_str}{extra}"
+            f"{n:,} stars within {region}{cut_str}{extra}"
             + (f"  ·  ⚠ truncated at render cap ({self.MAX_POINTS:,}); "
                "raise it in the controls to see more"
                if truncated else
@@ -3091,12 +3550,17 @@ class StellarNeighborhoodTab(QWidget):
 
         self._set_points(data)
         self._fill_table(data)
-        self._fit_view()
+        if getattr(self, "_suppress_fit", False):
+            self._suppress_fit = False
+        else:
+            self._fit_view()
         if self._combo_color.currentIndex() == 3:
             self._start_colour_resolve()
 
     def _set_points(self, data: Optional[dict]):
         if not HAS_GL or not self._gl_ready:
+            return
+        if getattr(self, "_asterism_active", False):
             return
         if data is None or len(data["source_id"]) == 0:
             self._scatter.setData(pos=np.zeros((0, 3), dtype=np.float32))
@@ -3236,6 +3700,7 @@ class StellarNeighborhoodTab(QWidget):
 
     MAX_DROPLINE_STARS = 20_000
     MAX_TICK_LABELS    = 16
+    MAX_ASTERISM_STARS = 16
 
     def _update_droplines(self, colors: Optional[np.ndarray] = None):
         """
@@ -3375,6 +3840,8 @@ class StellarNeighborhoodTab(QWidget):
             self._tick_labels[i].setData(text="")
 
     def _recolor(self):
+        if getattr(self, "_asterism_active", False):
+            return
         if (not HAS_GL or not self._gl_ready or self._data is None
                 or len(self._data["source_id"]) == 0):
             return
@@ -3406,6 +3873,9 @@ class StellarNeighborhoodTab(QWidget):
     def _fit_view(self):
         if not HAS_GL or not self._gl_ready:
             return
+        if getattr(self, "_asterism_active", False):
+            self._frame_asterism()
+            return
         r = float(self._spin_radius.value())
         self._view.setCameraPosition(distance=max(r * 3.0, 2.0))
         try:
@@ -3420,6 +3890,9 @@ class StellarNeighborhoodTab(QWidget):
     def _reset_view(self):
         """Sun-centered, default angles, zoom fit to the current radius."""
         if not HAS_GL or not self._gl_ready:
+            return
+        if getattr(self, "_asterism_active", False):
+            self._frame_asterism()
             return
         from pyqtgraph import Vector
         r = float(self._spin_radius.value())
@@ -3446,6 +3919,199 @@ class StellarNeighborhoodTab(QWidget):
         self._update_axes()
         self._update_tick_labels()
         self._view.update()
+
+    # ── asterisms ─────────────────────────────────────────────────────────
+
+    def _asterism_arrays(self, name: str):
+        """(xyz float32 (N,3), names list, lines list) for an asterism, cached.
+        RA/Dec/dist -> galactic cartesian via astropy, matching the frame the
+        Gaia extract and bright-star table already use."""
+        cache = self._aster_cache
+        if name in cache:
+            return cache[name]
+        entry = ASTERISMS.get(name)
+        if entry is None:
+            return None
+        stars = entry["stars"]
+        try:
+            import astropy.units as u
+            from astropy.coordinates import SkyCoord
+        except Exception as e:
+            self._status.setText(f"astropy required for asterisms: {e}")
+            return None
+        ra   = np.array([s[1] for s in stars], dtype=np.float64)
+        dec  = np.array([s[2] for s in stars], dtype=np.float64)
+        dist = np.array([s[3] for s in stars], dtype=np.float64)
+        cart = SkyCoord(ra=ra * u.deg, dec=dec * u.deg, distance=dist * u.pc,
+                        frame="icrs").galactic.cartesian
+        xyz = np.empty((len(stars), 3), dtype=np.float32)
+        xyz[:, 0] = cart.x.to_value(u.pc)
+        xyz[:, 1] = cart.y.to_value(u.pc)
+        xyz[:, 2] = cart.z.to_value(u.pc)
+        res = (xyz, [s[0] for s in stars], entry["lines"])
+        cache[name] = res
+        return res
+
+    def _on_asterism_changed(self, index: int):
+        name = self._combo_asterism.itemText(index)
+        if index <= 0:                     # "— none —"
+            self._clear_asterism()
+            self._btn_earth_view.setEnabled(False)
+            return
+        self._load_asterism(name)
+        self._btn_earth_view.setEnabled(True)
+
+    def _load_asterism(self, name: str):
+        if not HAS_GL or not self._gl_ready:
+            return
+        res = self._asterism_arrays(name)
+        if res is None:
+            return
+        xyz, names, lines = res
+        self._aster_xyz = xyz
+        self._asterism_active = True
+
+        # Hide the Gaia layer — the constellation is the whole show. Keep the
+        # Sun marker at the origin as a reference; drop everything else.
+        self._scatter.setData(pos=np.zeros((0, 3), dtype=np.float32))
+        self._droplines.setData(pos=np.zeros((0, 3), dtype=np.float32))
+        self._marker.setData(pos=np.zeros((0, 3), dtype=np.float32))
+        self._axes.setData(pos=np.zeros((0, 3), dtype=np.float32))
+        for t in self._axis_labels:
+            t.setData(text="")
+        for t in self._tick_labels:
+            t.setData(text="")
+        self._view.set_pick_points(None)
+        self._clear_info()
+        self._table.setRowCount(0)
+
+        # Stars
+        self._aster_scatter.setData(
+            pos=xyz,
+            color=np.tile(np.array([1.0, 0.95, 0.80, 1.0], dtype=np.float32),
+                          (len(xyz), 1)),
+            size=np.full(len(xyz), 10.0, dtype=np.float32), pxMode=True)
+
+        # Connecting lines
+        if lines:
+            seg = np.empty((2 * len(lines), 3), dtype=np.float32)
+            for k, (i, j) in enumerate(lines):
+                seg[2 * k]     = xyz[i]
+                seg[2 * k + 1] = xyz[j]
+            self._aster_lines.setData(pos=seg, color=(0.45, 0.85, 1.0, 0.75),
+                                      width=2.0, antialias=True, mode="lines")
+        else:
+            self._aster_lines.setData(pos=np.zeros((0, 3), dtype=np.float32))
+
+        # Labels
+        for idx, lbl in enumerate(self._aster_labels):
+            if idx < len(names):
+                lbl.setData(pos=xyz[idx], text=names[idx], color=(220, 230, 255, 255))
+            else:
+                lbl.setData(text="")
+
+        self._frame_asterism()
+
+        dists = [s[3] for s in ASTERISMS[name]["stars"]]
+        self._status.setText(
+            f"{name}: {len(xyz)} stars spanning {min(dists):.0f}–{max(dists):.0f} pc "
+            f"in depth. The flat shape you know is a line-of-sight illusion — click "
+            f"“Earth View” to flatten it, then drag to orbit and watch the stars "
+            f"pull apart. (Bright naked-eye stars, hardcoded — not from Gaia.)")
+
+    def _clear_asterism(self):
+        self._asterism_active = False
+        self._aster_xyz = None
+        if HAS_GL and self._gl_ready:
+            self._aster_scatter.setData(pos=np.zeros((0, 3), dtype=np.float32))
+            self._aster_lines.setData(pos=np.zeros((0, 3), dtype=np.float32))
+            for lbl in self._aster_labels:
+                lbl.setData(text="")
+        # Restore the Gaia layer and recenter on the Sun. Asterism framing left
+        # opts['center'] out at the constellation centroid, so a plain _fit_view
+        # would look at empty space (black screen) — _reset_view puts the center
+        # back at the origin.
+        if self._data is not None:
+            self._recolor()
+            self._reset_view()
+        else:
+            self._reload()
+            self._reset_view()
+
+    def _open_wedge_dialog(self):
+        if self._data is None or self._selected_idx is None:
+            return
+        idx = self._selected_idx
+        x, y, z = (float(v) for v in self._data["xyz"][idx])
+        r = math.sqrt(x * x + y * y + z * z)
+        if r < 1e-9:
+            self._status.setText("Can't wedge on the Sun — pick a star.")
+            return
+        l0 = math.degrees(math.atan2(y, x)) % 360.0
+        b0 = math.degrees(math.asin(max(-1.0, min(1.0, z / r))))
+        if self._selected_is_bright():
+            name = str(self._data["name"][idx])
+        else:
+            name = f"Gaia DR3 {int(self._data['source_id'][idx])}"
+        dl_init = self._wedge[2] if self._wedge else 20.0
+        db_init = self._wedge[3] if self._wedge else 15.0
+        dlg = _WedgeDialog(name, l0, b0, dl_init, db_init, parent=self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._apply_wedge(l0, b0, dlg.plane_half(), dlg.ns_half())
+
+    def _apply_wedge(self, l0: float, b0: float, half_l: float, half_b: float):
+        self._wedge = (l0, b0, half_l, half_b)
+        self._wedge_active = True
+        self._btn_clear_wedge.setEnabled(True)
+        self._suppress_fit = True     # keep the viewpoint you sliced from
+        self._reload()
+
+    def _clear_wedge(self):
+        if not self._wedge_active:
+            return
+        self._wedge_active = False
+        self._wedge = None
+        self._btn_clear_wedge.setEnabled(False)
+        self._reload()
+
+    def _frame_asterism(self):
+        """Angled 3/4 view that frames the whole asterism — depth visible at a
+        glance. Also grows the galactic grid to reach out under the stars."""
+        if not HAS_GL or not self._gl_ready or self._aster_xyz is None:
+            return
+        from pyqtgraph import Vector
+        xyz = self._aster_xyz
+        c = xyz.mean(axis=0)
+        spread = (float(np.linalg.norm(xyz - c, axis=1).max())
+                  if len(xyz) > 1 else 50.0)
+        try:
+            reach = float(np.linalg.norm(c)) + spread
+            self._grid.setSize(x=2 * reach, y=2 * reach, z=1)
+            self._grid.setSpacing(x=reach / 6.0, y=reach / 6.0, z=reach / 6.0)
+        except Exception:
+            pass
+        self._view.setCameraPosition(pos=Vector(*c), distance=max(spread * 2.6, 5.0),
+                                     azimuth=45.0, elevation=25.0)
+
+    def _asterism_earth_view(self):
+        """Camera at the Sun looking toward the asterism centroid: the 3D lines
+        collapse into the familiar Earth-sky projection."""
+        if not self._asterism_active or self._aster_xyz is None:
+            return
+        from pyqtgraph import Vector
+        c = self._aster_xyz.mean(axis=0)
+        r = float(np.linalg.norm(c))
+        if r < 1e-6:
+            return
+        az = math.degrees(math.atan2(-c[1], -c[0]))
+        el = math.degrees(math.asin(max(-1.0, min(1.0, -c[2] / r))))
+        self._view.setCameraPosition(pos=Vector(*c), distance=r,
+                                     azimuth=az, elevation=el)
+        self._status.setText(
+            "Earth View — camera at the Sun. The lines now match the flat pattern "
+            "you see in the night sky. Drag to orbit and watch the stars separate "
+            "in depth.")
 
     # ── table + selection ─────────────────────────────────────────────────
 
@@ -3545,6 +4211,9 @@ class StellarNeighborhoodTab(QWidget):
         act_simbad = menu.addAction("Resolve in SIMBAD")
         act_web    = menu.addAction("Open in SIMBAD (browser)")
         menu.addSeparator()
+        act_wedge = menu.addAction("Wedge slice from here…")
+        act_wedge_clear = menu.addAction("Clear wedge slice") if self._wedge_active else None
+        menu.addSeparator()
         act_copy = menu.addAction(
             "Copy name" if self._selected_is_bright() else "Copy source_id")
 
@@ -3560,6 +4229,10 @@ class StellarNeighborhoodTab(QWidget):
             self._resolve_simbad()
         elif chosen is act_web:
             self._open_simbad_web()
+        elif chosen is act_wedge:
+            self._open_wedge_dialog()
+        elif act_wedge_clear is not None and chosen is act_wedge_clear:
+            self._clear_wedge()
         elif chosen is act_copy:
             txt = (str(self._data["name"][self._selected_idx])
                    if self._selected_is_bright() else str(sid))

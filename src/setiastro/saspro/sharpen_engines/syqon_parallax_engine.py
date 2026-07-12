@@ -429,7 +429,10 @@ def parallax_sharpen_rgb01(
     weight_sum    = torch.zeros((1, 1, height, width), dtype=torch.float32)
     base_window   = _tent_window_torch(tile, torch)
 
-    use_autocast   = device.type in ("cuda", "mps")
+    # Only CUDA benefits from autocast here (fp16). MPS autocast is unsupported
+    # in some torch builds and even when supported, we run fp32 on it anyway —
+    # so skip it entirely. CPU (Intel Mac) is fp32, no autocast.
+    use_autocast   = (device.type == "cuda")
     autocast_dtype = torch.float16 if device.type == "cuda" else torch.float32
 
     for idx, (top, left) in enumerate(coords, start=1):
