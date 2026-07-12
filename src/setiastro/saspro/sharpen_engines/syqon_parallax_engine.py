@@ -433,12 +433,15 @@ def parallax_sharpen_rgb01(
     weight_sum    = torch.zeros((1, 1, height, width), dtype=torch.float32)
     base_window   = _tent_window_torch(tile, torch)
 
-    # Only CUDA benefits from autocast (fp16). Everything else — MPS, CPU,
-    # DirectML — runs plain fp32 with NO autocast context at all. This matters
-    # because torch.amp.autocast validates device_type in its constructor
-    # BEFORE checking enabled=, so passing device_type="mps" raises
-    # "unsupported autocast device_type 'mps'" even with enabled=False.
-    use_autocast   = (device.type == "cuda")
+    # Autocast (fp16) only on CUDA, and NEVER on macOS. On Mac we always run
+    # fp32 with no autocast context at all — the MPS autocast path is broken
+    # or absent on several configs (notably Intel Mac Pro on Tahoe 26, where
+    # the OS falsely reports MPS as available), and torch.amp.autocast
+    # validates device_type in its constructor BEFORE honoring enabled=,
+    # so even a disabled context with device_type="mps" raises. fp32
+    # everywhere on Mac is correct and safe.
+    import sys as _sys
+    use_autocast   = (device.type == "cuda") and (_sys.platform != "darwin")
     autocast_dtype = torch.float16
 
     for idx, (top, left) in enumerate(coords, start=1):
