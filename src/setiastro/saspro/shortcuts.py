@@ -580,6 +580,42 @@ def _has_preset_editor_for_command(command_id: str) -> bool:
     """Return True if we have a bespoke UI for this command_id."""
     return command_id in _PRESET_UI_IDS
 
+def _preset_opener_for_command(command_id: str):
+    """
+    Map a command_id → a callable(main_window, preset) that opens the LIVE tool
+    dialog seeded from the preset. Distinct from _open_preset_editor_for_command
+    (which opens a small preset-editing form). Returns None if none exists, in
+    which case callers fall back to a plain QAction trigger.
+    """
+    if command_id == "abe":
+        from setiastro.saspro.abe_preset import open_abe_with_preset
+        return open_abe_with_preset
+    if command_id == "stat_stretch":
+        from setiastro.saspro.stat_stretch import open_stat_stretch_with_preset
+        return open_stat_stretch_with_preset
+    if command_id == "star_stretch":
+        from setiastro.saspro.star_stretch import open_star_stretch_with_preset
+        return open_star_stretch_with_preset
+    if command_id == "linear_fit":
+        from setiastro.saspro.linear_fit import open_linear_fit_with_preset
+        return open_linear_fit_with_preset
+    if command_id in ("levels", "histogram_transform"):
+        from setiastro.saspro.histogram_transform_pro import open_levels_with_preset
+        return open_levels_with_preset
+    if command_id == "curves":
+        from setiastro.saspro.curves_preset import open_curves_with_preset
+        return open_curves_with_preset
+    if command_id == "ghs":
+        from setiastro.saspro.ghs_preset import open_ghs_with_preset
+        return open_ghs_with_preset
+    if command_id == "satchroma":
+        from setiastro.saspro.satchroma_preset import open_satchroma_with_preset
+        return open_satchroma_with_preset
+    if command_id == "graxpert":
+        from setiastro.saspro.graxpert_preset import open_graxpert_with_preset
+        return open_graxpert_with_preset
+    return None
+
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
 def _open_preset_editor_for_command(parent, command_id: str, initial: dict | None):
     """
@@ -1025,8 +1061,15 @@ class ShortcutButton(QToolButton):
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e: QMouseEvent):
-        # double-click still runs the action (open dialog)
-        self._mgr.trigger(self.command_id)
+        # Double-click opens the tool. If this shortcut carries a preset, route
+        # through the preset-aware opener so the dialog is seeded (manual points,
+        # correction mode, etc.); otherwise plain-trigger the QAction as before.
+        preset = None
+        try:
+            preset = self._load_preset()
+        except Exception:
+            preset = None
+        self._mgr.trigger_with_preset(self.command_id, preset)
 
     def _delete(self):
         self._mgr.delete_by_id(self.sid, persist=True)       # ← was command_id
@@ -1389,6 +1432,31 @@ class ShortcutManager:
         act = self.registry.get(command_id)
         if act:
             act.trigger()
+
+    def trigger_with_preset(self, command_id: str, preset: dict | None):
+        """
+        Like trigger(), but if a preset is present AND the command has a
+        preset-aware opener, route through the opener so the tool dialog is
+        seeded (settings, correction mode, manual points, etc.). Falls back
+        to a plain QAction trigger when there's no preset or no opener.
+
+        This is what makes double-clicking a desktop shortcut honor the preset
+        it carries — the plain QAction (e.g. _open_abe_tool) builds a bare
+        dialog and never sees the preset.
+        """
+        if not preset:
+            return self.trigger(command_id)
+
+        opener = _preset_opener_for_command(command_id)
+        if opener is None:
+            return self.trigger(command_id)
+
+        try:
+            opener(self.mw, preset)
+            return
+        except Exception as ex:
+            self._debug(f"trigger_with_preset({command_id!r}) opener failed: {ex!r}; falling back to plain trigger")
+            return self.trigger(command_id)
 
     def _on_widget_destroyed(self, sid: str):
         # Called from QObject.destroyed — never touch the widget, just clean maps
@@ -3029,9 +3097,9 @@ class _RemoveGreenPresetDialog(QDialog):
 
         # Local labels so there’s no external dependency.
         MODE_LABELS = {
-            "avg": "Average neutral (G → min(avg(R,B), G))",
-            "max": "Average neutral MAX (G → min(max(R,B), G))",
-            "min": "Average neutral MIN (G → min(min(R,B), G))",
+            "avg": "Average of other two channels",
+            "max": "Max of other two channels",
+            "min": "Min of other two channels",
         }
         MODE_INDEX = {"avg": 0, "max": 1, "min": 2}
 
@@ -3041,6 +3109,18 @@ class _RemoveGreenPresetDialog(QDialog):
         self.spin_amount.setDecimals(2)
         self.spin_amount.setSingleStep(0.05)
         self.spin_amount.setValue(float(init.get("amount", 1.00)))  # default full SCNR
+
+        # Target channel
+        CHANNEL_INDEX = {"G": 0, "R": 1, "B": 2, "M": 3, "C": 4, "Y": 5}
+        self.combo_channel = QComboBox()
+        self.combo_channel.addItem("Green",   userData="G")
+        self.combo_channel.addItem("Red",     userData="R")
+        self.combo_channel.addItem("Blue",    userData="B")
+        self.combo_channel.addItem("Magenta", userData="M")
+        self.combo_channel.addItem("Cyan",    userData="C")
+        self.combo_channel.addItem("Yellow",  userData="Y")
+        init_ch = str(init.get("channel", init.get("target_channel", "G"))).upper()
+        self.combo_channel.setCurrentIndex(CHANNEL_INDEX.get(init_ch, 0))
 
         # Mode
         self.combo_mode = QComboBox()
@@ -3056,6 +3136,7 @@ class _RemoveGreenPresetDialog(QDialog):
 
         # Layout
         form = QFormLayout(self)
+        form.addRow("Target channel:", self.combo_channel)
         form.addRow("Amount (0–1):", self.spin_amount)
         form.addRow("Neutral mode:", self.combo_mode)
         form.addRow("", self.cb_preserve)
@@ -3073,6 +3154,7 @@ class _RemoveGreenPresetDialog(QDialog):
             "amount": float(self.spin_amount.value()),                 # 0..1
             "mode": self.combo_mode.currentData() or "avg",            # "avg" | "max" | "min"
             "preserve_lightness": bool(self.cb_preserve.isChecked()),  # True/False
+            "channel": self.combo_channel.currentData() or "G",        # "R" | "G" | "B"
         }
 
 

@@ -3,7 +3,7 @@ from PyQt6.QtCore import Qt, QEvent, QPointF, QTimer, QSettings, QByteArray
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QScrollArea, QComboBox, QSlider, QToolButton, QWidget,
                              QMessageBox, QDoubleSpinBox)
-from PyQt6.QtGui import QPixmap, QImage, QPen, QColor
+from PyQt6.QtGui import QPixmap, QImage, QPen, QColor, QIcon
 import numpy as np
 
 
@@ -388,6 +388,33 @@ class GhsDialogPro(QDialog):
         rowb.addWidget(self.btn_hist)
         left.addLayout(rowb)
         left.addStretch(1)
+
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        # After the stretch → pins to the lower-left corner.
+        # Deferred import avoids any shortcuts.py <-> ghs_dialog_pro cycle.
+        from setiastro.saspro.shortcuts import PresetDragHandle
+        try:
+            from setiastro.saspro.resources import uhs_path
+            _ghs_icon = QIcon(uhs_path)
+        except Exception:
+            _ghs_icon = QIcon()
+
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "ghs",
+            self._ghs_params,
+            icon=_ghs_icon,
+            tooltip=self.tr(
+                "Drag to the canvas to create a Hyperbolic Stretch shortcut\n"
+                "with these exact settings (function, channel, all sliders).\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        left.addLayout(drag_row)
 
         main.addLayout(left, 0)
 
@@ -1017,6 +1044,32 @@ class GhsDialogPro(QDialog):
         mode = key2mode.get(key, "K (Brightness)")
         out = _apply_mode_any(img, mode, lut)
         return out.astype(np.float32, copy=False)
+
+    def _ghs_params(self) -> dict:
+        """
+        Canonical preset for the drag handle — identical construction to the
+        ghs_params dict built in _on_apply_ready (and consumed by
+        _lut_from_ghs_preset). Function-dependent: GHS adds alpha/beta,
+        ArcSinh/Log/Exp add strength (/10), PIP adds strength (/100).
+        Keep this in lockstep with _on_apply_ready.
+        """
+        mode = self._current_mode()
+        params = {
+            "function": mode,
+            "gamma":    self.sG.value() / 100.0,
+            "lp":       self.sLP.value() / 360.0,
+            "hp":       self.sHP.value() / 360.0,
+            "pivot":    float(self._sym_u),
+            "channel":  self.cmb_ch.currentText(),
+        }
+        if mode == self.MODE_GHS:
+            params["alpha"] = self.sA.value() / 50.0
+            params["beta"]  = self.sB.value() / 50.0
+        elif mode in (self.MODE_ARCSINH, self.MODE_LOG, self.MODE_EXP):
+            params["strength"] = self.sS.value() / 10.0
+        elif mode == self.MODE_PIP:
+            params["strength"] = self.sP.value() / 100.0
+        return params
 
     def _on_apply_ready(self, out01: np.ndarray):
         try:

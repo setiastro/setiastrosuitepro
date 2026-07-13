@@ -345,6 +345,44 @@ class StarStretchDialog(QDialog):
             "scnr_green":     self.chk_scnr.isChecked(),
         }
 
+    def seed_from_preset(self, p: dict | None) -> None:
+        """
+        Public: load a preset dict (same schema as _star_stretch_params) into
+        the live controls, so a double-clicked shortcut opens the dialog seeded.
+
+        Divisor trap: both sliders are /100 on the way OUT in
+        _star_stretch_params (stretch_factor, color_boost); seeding multiplies
+        back (widget = value * 100). Labels are set explicitly since we block
+        signals during the push (the valueChanged handlers that format them
+        won't fire).
+        """
+        if not p:
+            return
+
+        widgets = [self.sld_st, self.sld_sat, self.chk_scnr]
+        for w in widgets:
+            try:
+                w.blockSignals(True)
+            except Exception:
+                pass
+
+        try:
+            stretch = float(p.get("stretch_factor", 5.0))
+            self.sld_st.setValue(int(round(stretch * 100)))
+            self.lbl_st.setText(f"Stretch Amount: {stretch:.2f}")
+
+            boost = float(p.get("color_boost", 1.0))
+            self.sld_sat.setValue(int(round(boost * 100)))
+            self.lbl_sat.setText(f"Color Boost: {boost:.2f}")
+
+            self.chk_scnr.setChecked(bool(p.get("scnr_green", False)))
+        finally:
+            for w in widgets:
+                try:
+                    w.blockSignals(False)
+                except Exception:
+                    pass
+
     def _finish_apply(self):
         try:
             _marr, mid, mname = self._active_mask_layer()
@@ -652,3 +690,37 @@ def _guess_spinner_path() -> str | None:
         if os.path.exists(c):
             return c
     return None
+
+def open_star_stretch_with_preset(main_window, preset: dict | None = None):
+    """
+    Open the live Star Stretch dialog seeded from a preset. Used by the
+    double-click preset-open path (ShortcutManager.trigger_with_preset).
+    Resolves the active document from the active MDI subwindow first —
+    matching the tool's toolbar opener — so it seeds onto the visible image.
+    """
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            w = sw.widget()
+            doc = getattr(w, "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None:
+        return
+
+    dlg = StarStretchDialog(main_window, doc)
+    try:
+        dlg.setWindowIcon(QIcon(starstretch_path))
+    except Exception:
+        pass
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()

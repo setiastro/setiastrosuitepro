@@ -495,6 +495,10 @@ class HistogramTransformDialogPro(QDialog):
         self._persist_prefix = "histogram_transform"
         self._geom_restored = False
         self._restoring_ui = True
+        # Preset to seed on first show. _restore_ui_state resets black/mid/white
+        # to defaults ALWAYS on show; stashing here lets us re-apply the preset as
+        # its final step so the reset can't stomp a seeded shortcut.
+        self._pending_preset = None
 
         # --- performance knobs ---
         self._preview_max_dim = 1400       # preview downsample cap (fast)
@@ -814,7 +818,16 @@ class HistogramTransformDialogPro(QDialog):
         finally:
             self._restoring_ui = False
             self._update_channel_ui_for_image()
-            self._schedule()
+            # Seed preset LAST — after the unconditional default-reset above, so a
+            # double-clicked shortcut's black/mid/white survive. seed_from_preset
+            # ends with its own _schedule(), so we skip the bare _schedule() here
+            # when a preset was applied.
+            if self._pending_preset is not None:
+                p = self._pending_preset
+                self._pending_preset = None
+                self.seed_from_preset(p)
+            else:
+                self._schedule()
 
     def _make_preview_base(self, rgb01: np.ndarray) -> np.ndarray:
         """
@@ -1100,6 +1113,59 @@ class HistogramTransformDialogPro(QDialog):
             "channel": str(chan),
         }
 
+    def seed_from_preset(self, p: dict | None) -> None:
+        """
+        Public: load a preset dict (same schema as _levels_params) into the live
+        controls, so a double-clicked shortcut opens the dialog seeded.
+
+        CRITICAL midtone trap: the preset's 'mid' is the RELATIVE MTF value
+        (m_rel), the inverse of _sanitize_points()'s
+            m_rel = (m_abs - b) / (w - b).
+        The spinbox is ABSOLUTE, so we reconstruct
+            m_abs = b + m_rel * (w - b)
+        before pushing it. Seeding m_rel straight into sp_mid would misplace the
+        midtone whenever black/white were moved off 0/1, and would re-relativize
+        on the next apply.
+
+        Channel trap: mono images force L and disable the combo
+        (_update_channel_ui_for_image). Seed the channel only if the combo is
+        enabled (RGB) and the value resolves; otherwise leave the forced L.
+        """
+        if not p:
+            return
+
+        b = float(p.get("black", 0.0))
+        w = float(p.get("white", 1.0))
+        if w <= b + 1e-8:
+            w = min(1.0, b + 1e-8)
+        m_rel = float(np.clip(float(p.get("mid", 0.5)), 0.0, 1.0))
+        m_abs = float(np.clip(b + m_rel * (w - b), 0.0, 1.0))
+
+        blocked = (self.sp_black, self.sp_mid, self.sp_white,
+                   self.sl_black, self.sl_mid, self.sl_white,
+                   self.cb_channel)
+        for ww in blocked:
+            ww.blockSignals(True)
+        try:
+            self.sp_black.setValue(b)
+            self.sp_mid.setValue(m_abs)
+            self.sp_white.setValue(w)
+            self.sl_black.setValue(int(round(b * 100000)))
+            self.sl_mid.setValue(int(round(m_abs * 100000)))
+            self.sl_white.setValue(int(round(w * 100000)))
+
+            # Channel: only when the combo is enabled (RGB image). Mono keeps L.
+            if self.cb_channel.isEnabled():
+                chan = str(p.get("channel", "L") or "L").upper().strip()
+                idx = self.cb_channel.findData(chan)
+                if idx >= 0:
+                    self.cb_channel.setCurrentIndex(idx)
+        finally:
+            for ww in blocked:
+                ww.blockSignals(False)
+
+        self._schedule()
+
     def _apply_result_fullres(self) -> np.ndarray:
         b, m_abs, m_rel, w = self._sanitize_points()
         img = np.clip(np.asarray(self.document.image, dtype=np.float32), 0.0, 1.0)
@@ -1289,3 +1355,39 @@ def levels_doc(
         doc.image = result
 
     return result
+
+def open_levels_with_preset(main_window, preset: dict | None = None):
+    """
+    Open the live Levels (Histogram Transform) dialog seeded from a preset.
+    Used by the double-click preset-open path (ShortcutManager.trigger_with_preset).
+    Resolves the active document from the active MDI subwindow first, matching the
+    other tools' openers, so it seeds onto the visible image.
+    """
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            w = sw.widget()
+            doc = getattr(w, "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None:
+        return
+
+    dlg = HistogramTransformDialogPro(main_window, doc)
+    try:
+        from setiastro.saspro.resources import histogram_transform_path
+        dlg.setWindowIcon(QIcon(histogram_transform_path))
+    except Exception:
+        pass
+    # Stash, don't seed pre-show: _restore_ui_state (queued from showEvent) resets
+    # black/mid/white on show and would stomp a pre-show seed. It applies this as
+    # its last step instead.
+    if preset:
+        dlg._pending_preset = dict(preset)
+    dlg.show(); dlg.raise_(); dlg.activateWindow()

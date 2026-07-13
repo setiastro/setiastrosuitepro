@@ -1,4 +1,4 @@
-# pro/graxpert_preset.py
+# saspro/graxpert_preset.py
 from __future__ import annotations
 import os
 import shutil
@@ -285,3 +285,13 @@ class GraXpertPresetDialog(QDialog):
             if ai_version:  # only include if explicitly chosen
                 out["ai_version"] = ai_version
         return out
+
+def open_graxpert_with_preset(main_window, preset: dict | None = None):
+    """
+    Double-click preset-open path: reuse the standard GraXpert flow
+    (remove_gradient_with_graxpert), but pre-seed the op/param prompt from the
+    shortcut's preset. Modal .exec() inside, exactly like the toolbar action —
+    the only difference is the prompt opens pre-filled.
+    """
+    from setiastro.saspro.graxpert import remove_gradient_with_graxpert
+    remove_gradient_with_graxpert(main_window, seed_preset=dict(preset or {}))

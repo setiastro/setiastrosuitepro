@@ -244,11 +244,11 @@ class _BXTPanel(QWidget):
         self.sld_ash = _form_slider(form, "Adjust Star Halos (−0.5 – 0.5):",
                                     -0.5, 0.5, 0.0, decimals=2, scale=100)
 
-        self.chk_auto_nsr = QCheckBox("Auto-detect nonstellar PSF radius  (recommended)")
+        self.chk_auto_nsr = QCheckBox("Auto-detect nonstellar PSF (recommended)")
         self.chk_auto_nsr.setChecked(True)
         form.addRow("", self.chk_auto_nsr)
 
-        self.sld_nsr = _form_slider(form, "Manual Nonstellar Radius (0 – 8 px):",
+        self.sld_nsr = _form_slider(form, "Manual Nonstellar PSF (0 – 8 px):",
                                     0.0, 8.0, 0.0, decimals=1, scale=10)
         self.sld_nsr.setEnabled(False)
         self.chk_auto_nsr.toggled.connect(
@@ -282,6 +282,14 @@ class _BXTPanel(QWidget):
         self.sld_sn.setEnabled(not checked)
 
     def build_args(self) -> list[str]:
+        # CLI ≥ 1.0.0 renamed:
+        #   --no-auto-nonstellar-radius → --no-auto-nonstellar-psf
+        #   --nonstellar-radius         → --nonstellar-diameter
+        s = QSettings()
+        uses_psf_flag = bool(s.value("rcastro/uses_nonstellar_psf_flag", False, type=bool))
+        no_auto_flag = "--no-auto-nonstellar-psf" if uses_psf_flag else "--no-auto-nonstellar-radius"
+        nsr_value_flag = "--nonstellar-diameter" if uses_psf_flag else "--nonstellar-radius"
+
         args: list[str] = []
 
         if self.chk_correct_only.isChecked():
@@ -289,8 +297,8 @@ class _BXTPanel(QWidget):
             # --correct-only forces all sharpening to 0 — only NSR is still valid
             if not self.chk_auto_nsr.isChecked():
                 nsr = self.sld_nsr.value() / 10.0
-                args += ["--no-auto-nonstellar-radius",
-                         "--nonstellar-radius", f"{nsr:.1f}"]
+                args += [no_auto_flag,
+                         nsr_value_flag, f"{nsr:.1f}"]
         else:
             ss = self.sld_ss.value() / 100.0
             if ss > 0:
@@ -302,8 +310,8 @@ class _BXTPanel(QWidget):
 
             if not self.chk_auto_nsr.isChecked():
                 nsr = self.sld_nsr.value() / 10.0
-                args += ["--no-auto-nonstellar-radius",
-                         "--nonstellar-radius", f"{nsr:.1f}"]
+                args += [no_auto_flag,
+                         nsr_value_flag, f"{nsr:.1f}"]
 
             sn = self.sld_sn.value() / 100.0
             if sn > 0:
@@ -960,6 +968,10 @@ class RCAstroDialog(QDialog):
             s.setValue("rcastro/supports_ml_version", supports_ml2)
             self.bxt_panel.set_ml_version_supported(supports_ml2)
             self.nxt_panel.set_ml_version_supported(supports_ml2)
+
+            # CLI ≥ 1.0.0 renamed --no-auto-nonstellar-radius to --no-auto-nonstellar-psf
+            uses_nonstellar_psf = bool(ver and ver >= (1, 0, 0))
+            s.setValue("rcastro/uses_nonstellar_psf_flag", uses_nonstellar_psf)
 
             for line in out.splitlines():
                 line = line.strip()

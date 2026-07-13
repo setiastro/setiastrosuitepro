@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
     QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton
 )
-from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QIcon
 from PyQt6 import sip
 
 from scipy.interpolate import RBFInterpolator
@@ -649,6 +649,10 @@ class ABEDialog(QDialog):
         self._main = parent
         self.doc = document
         self._manual_points: list[QPointF] = []
+        # Points to seed on first show (set by open_abe_with_preset before show()).
+        # Kept separate from _manual_points so _on_active_doc_changed's clear,
+        # which can fire during the show sequence, cannot wipe them pre-seed.
+        self._pending_manual_points = None
 
         self._connected_current_doc_changed = False
         if hasattr(self._main, "currentDocumentChanged"):
@@ -828,6 +832,33 @@ class ABEDialog(QDialog):
 
         opts.addStretch(1)
 
+        # ── Drag-to-canvas grip (PI-style "new instance") ────────────────
+        # After the final opts.addStretch(1) → pins to the lower-left corner.
+        # Deferred import avoids an abe.py <-> shortcuts.py import cycle.
+        from setiastro.saspro.shortcuts import PresetDragHandle
+        try:
+            from setiastro.saspro.resources import abeicon_path
+            _icon = QIcon(abeicon_path)
+        except Exception:
+            _icon = QIcon()
+
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "abe",
+            self._abe_params,
+            icon=_icon,
+            tooltip=self.tr(
+                "Drag to the canvas to create an ADBE shortcut\n"
+                "with these exact settings.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        opts.addLayout(drag_row)
+
         # ⬇️ New right-side stack: toolbar row ABOVE the preview
         right = QVBoxLayout()
         right.addLayout(self._build_toolbar())      # Zoom In / Out / Fit / Autostretch
@@ -925,6 +956,9 @@ class ABEDialog(QDialog):
             # Switching to Auto — clear manual sample points
             # (they were placed manually and Auto will generate its own)
             if self._manual_points:
+                _log = getattr(self._main, "_log", None)
+                if callable(_log):
+                    _log(f"[ABE] _sample_mode_changed(Auto): CLEARING {len(self._manual_points)} pts")
                 self._manual_points.clear()
 
         # In manual mode, # sample points is not used for fitting
@@ -952,6 +986,60 @@ class ABEDialog(QDialog):
         pts = np.array([[int(round(p.x())), int(round(p.y()))] for p in self._manual_points], dtype=np.int32)
         return pts
 
+    def seed_manual_points(self, pts) -> None:
+        """
+        Public: load manual sample points (full-image pixel coords) into the
+        dialog, switch to Manual mode, and redraw so the yellow squares appear.
+
+        Called from _after_show (step 5), AFTER render+fit have built the base
+        pixmap. Robust to point shape: accepts [[x,y],...], [(x,y),...], an
+        (N,2) array, or a flat [x0,y0,x1,y1,...]. Logs what it seeds instead of
+        silently swallowing — a bare except here previously hid every failure.
+        """
+        log = getattr(self._main, "_log", None)
+        try:
+            if sip.isdeleted(self):
+                return
+        except Exception:
+            return
+
+        norm = []
+        try:
+            arr = np.asarray(pts, dtype=float)
+            if arr.ndim == 2 and arr.shape[1] == 2:
+                norm = [(float(x), float(y)) for x, y in arr]
+            elif arr.ndim == 1 and arr.size >= 2 and arr.size % 2 == 0:
+                arr = arr.reshape(-1, 2)
+                norm = [(float(x), float(y)) for x, y in arr]
+        except Exception as e:
+            if callable(log):
+                log(f"[ABE] seed_manual_points: could not parse points: {e!r}")
+            norm = []
+
+        if callable(log):
+            log(f"[ABE] seed_manual_points: seeding {len(norm)} point(s)")
+
+        if not norm:
+            return
+
+        self._manual_points = [QPointF(x, y) for x, y in norm]
+
+        # Flip to Manual WITHOUT emitting currentTextChanged. Otherwise the
+        # connected _sample_mode_changed slot runs against the freshly-seeded
+        # list: its Auto branch clears _manual_points outright, and its Manual
+        # branch clears polygons — either way it stomps the seed we just set.
+        # blockSignals lets us set the combo silently; we then set sp_samples'
+        # enabled state by hand (the one side effect we still want).
+        if self.cmb_sample_mode.findText("Manual") >= 0:
+            _blocked = self.cmb_sample_mode.blockSignals(True)
+            try:
+                self.cmb_sample_mode.setCurrentText("Manual")
+            finally:
+                self.cmb_sample_mode.blockSignals(_blocked)
+            self.sp_samples.setEnabled(False)   # manual mode → # samples unused
+
+        self.btn_clear_samples.setEnabled(len(self._manual_points) > 0)
+        self._redraw_overlay()
 
     def _find_nearest_manual_point_index(self, img_pt: QPointF, max_dist_px: float = 20.0) -> int:
         if not self._manual_points:
@@ -1122,6 +1210,9 @@ class ABEDialog(QDialog):
     def _on_active_doc_changed(self, doc):
         if doc is None or getattr(doc, "image", None) is None:
             return
+        _log = getattr(self._main, "_log", None)
+        if callable(_log):
+            _log(f"[ABE] _on_active_doc_changed: CLEARING {len(self._manual_points)} pts")
         self.doc = doc
         self._polygons.clear()
         self._drawing_poly = None
@@ -1176,6 +1267,42 @@ class ABEDialog(QDialog):
             correction_mode=correction_mode,
             rng=rng,
         )
+
+    def _abe_params(self) -> dict:
+        """
+        Serialize the live UI into the exact schema apply_abe_via_preset() reads.
+        Single source of truth = the headless consumer in abe_preset.py.
+
+        Traps mirrored here:
+          • rbf_smooth — sp_rbf is an integer spinbox shown as "×0.01"; the
+            consumer wants the already-scaled float (100 -> 1.0), exactly as
+            _run_abe()/_do_apply() compute it. Raw widget value inflates 100x.
+          • correction_mode — read the radio pair; abe_run() branches
+            subtract vs divide on this string.
+          • manual_points — mode-dependent key. Only Manual mode with points
+            contributes, captured in FULL-IMAGE pixel coords (Nx2), matching
+            what _run_abe() hands abe_run(). Absent/empty => headless
+            auto-samples, exactly like the dialog. JSON round-trips as
+            [[x,y],...]; consumer coerces.
+        """
+        params = {
+            "degree":              int(self.sp_degree.value()),
+            "samples":             int(self.sp_samples.value()),
+            "downsample":          int(self.sp_down.value()),
+            "patch":               int(self.sp_patch.value()),
+            "rbf":                 bool(self.chk_use_rbf.isChecked()),
+            "rbf_smooth":          float(self.sp_rbf.value()) * 0.01,   # ×0.01 trap
+            "seed":                int(self.sp_seed.value()),
+            "make_background_doc": bool(self.chk_make_bg_doc.isChecked()),
+            "correction_mode":     "divide" if self.radio_divide.isChecked() else "subtract",
+        }
+
+        # Mode-dependent: mirror _run_abe()'s gate exactly.
+        mp = self._manual_points_array() if self._manual_mode() else None
+        if mp is not None and len(mp) > 0:
+            params["manual_points"] = mp.tolist()   # [[x,y],...] JSON-safe ints
+
+        return params
 
     def _degree_changed(self, v: int):
         # Make it clear what 0 means, and default RBF on (can still be unchecked)
@@ -1618,8 +1745,15 @@ class ABEDialog(QDialog):
         # manual sample squares (yellow outlines)
         if self._manual_points:
             patch = int(max(1, self.sp_patch.value()))
-            hx = 0.5 * patch * sx
-            hy = 0.5 * patch * sy
+            # On-screen half-size from the patch, but never below a visible
+            # floor. At fit-scale on a large image (this file: ~4500px in a
+            # ~480px viewport, scale ≈ 0.1) patch*scale collapses to ~0.8px and
+            # the squares disappear — which is exactly why preset-seeded points
+            # rendered but were invisible while zoomed-in manual placement showed
+            # fine. Clamp so points are always visible regardless of zoom.
+            MIN_HALF_PX = 4.0
+            hx = max(0.5 * patch * sx, MIN_HALF_PX)
+            hy = max(0.5 * patch * sy, MIN_HALF_PX)
 
             pen3 = QPen(QColor(255, 220, 0), 2)
             painter.setPen(pen3)
@@ -2092,6 +2226,13 @@ class ABEDialog(QDialog):
 
                 # 4) Fit to the now-correct viewport
                 self.fit_to_preview()
+
+                # 5) Seed preset manual points LAST — base pixmap now exists,
+                #    so the yellow sample squares composite onto a real preview.
+                if self._pending_manual_points is not None:
+                    pts = self._pending_manual_points
+                    self._pending_manual_points = None
+                    self.seed_manual_points(pts)
 
             QTimer.singleShot(0, _after_show)
             return

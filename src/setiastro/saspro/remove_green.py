@@ -31,11 +31,10 @@ def _ensure_rgb(arr: np.ndarray) -> np.ndarray | None:
 
 # ---------- SCNR core (with modes + preserve lightness) ----------
 _SCNR_MODE_LABELS = {
-    "avg": "Average(R,B)",
-    "max": "Max(R,B)",
-    "min": "Min(R,B)",
+    "avg": "Average of other two",
+    "max": "Max of other two",
+    "min": "Min of other two",
 }
-
 def _compute_neutral(r: np.ndarray, b: np.ndarray, mode: str) -> np.ndarray:
     if mode == "max":
         return np.maximum(r, b)
@@ -44,11 +43,25 @@ def _compute_neutral(r: np.ndarray, b: np.ndarray, mode: str) -> np.ndarray:
     # default "avg"
     return (r + b) * 0.5
 
-def _apply_scnr_rgb(rgb: np.ndarray, amount: float, mode: str = "avg", preserve_lightness: bool = True) -> np.ndarray:
+_CHANNEL_INDEX = {"R": 0, "G": 1, "B": 2}
+_CHANNEL_LABELS = {
+    "R": "Red",   "G": "Green",   "B": "Blue",
+    "C": "Cyan",  "M": "Magenta", "Y": "Yellow",
+}
+# CMY channels are just RGB SCNR applied in inverted space:
+#   Cyan    = inverted Red
+#   Magenta = inverted Green
+#   Yellow  = inverted Blue
+_CMY_TO_RGB = {"C": "R", "M": "G", "Y": "B"}
+_VALID_CHANNELS = ("R", "G", "B", "C", "M", "Y")
+
+def _apply_scnr_rgb(rgb: np.ndarray, amount: float, mode: str = "avg",
+                    preserve_lightness: bool = True, channel: str = "G") -> np.ndarray:
     """
-    SCNR green suppression:
-      G' = G - amount * max(0, G - neutral)
-    where neutral is avg/max/min of (R,B) depending on mode.
+    SCNR channel suppression (default target: Green):
+      C' = C - amount * max(0, C - neutral)
+    where C is the target channel and neutral is avg/max/min of the OTHER
+    two channels, per `mode`.
 
     If preserve_lightness=True:
       compute per-pixel scale s = Y_before / Y_after (Rec.709 luma),
@@ -57,12 +70,35 @@ def _apply_scnr_rgb(rgb: np.ndarray, amount: float, mode: str = "avg", preserve_
     rgb = np.clip(rgb.astype(np.float32, copy=False), 0.0, 1.0)
     R, G, B = rgb[..., 0], rgb[..., 1], rgb[..., 2]
 
-    # choose neutral comparator (avg/max/min of R,B)
-    neutral = _compute_neutral(R, B, mode)
-    excess  = np.maximum(0.0, G - neutral)
-    G_new   = np.clip(G - float(np.clip(amount, 0.0, 1.0)) * excess, 0.0, 1.0)
+    ch = (channel or "G").upper()
+    if ch not in _VALID_CHANNELS:
+        ch = "G"
 
-    out = np.stack([R, G_new, B], axis=-1)
+    # For CMY targets: invert → suppress complementary RGB channel → invert back
+    inverted = ch in _CMY_TO_RGB
+    if inverted:
+        rgb_work = 1.0 - rgb
+        eff_ch = _CMY_TO_RGB[ch]
+    else:
+        rgb_work = rgb
+        eff_ch = ch
+
+    ci = _CHANNEL_INDEX[eff_ch]
+    others = [i for i in (0, 1, 2) if i != ci]
+    A  = rgb_work[..., others[0]]
+    Bc = rgb_work[..., others[1]]
+    C  = rgb_work[..., ci]
+
+    # neutral comparator from the other two channels
+    neutral = _compute_neutral(A, Bc, mode)
+    excess  = np.maximum(0.0, C - neutral)
+    C_new   = np.clip(C - float(np.clip(amount, 0.0, 1.0)) * excess, 0.0, 1.0)
+
+    out = rgb_work.astype(np.float32, copy=True)
+    out[..., ci] = C_new
+
+    if inverted:
+        out = np.clip(1.0 - out, 0.0, 1.0)
 
     if not preserve_lightness:
         return out
@@ -89,6 +125,7 @@ def remove_green_headless(
     amount: float = 1.0,
     mode: str = "avg",                  # "avg" | "max" | "min"
     preserve_lightness: bool = True,
+    channel: str = "G",                 # "R" | "G" | "B"
 ):
     """
     Run SCNR on doc.image (RGB only), blend with active mask if present, push as undoable edit.
@@ -111,8 +148,13 @@ def remove_green_headless(
     mode = (mode or "avg").lower()
     if mode not in ("avg", "max", "min"):
         mode = "avg"
+    ch = (channel or "G").upper()
+    if ch not in _VALID_CHANNELS:
+        ch = "G"
 
-    processed = _apply_scnr_rgb(rgb, amt, mode=mode, preserve_lightness=preserve_lightness)
+    processed = _apply_scnr_rgb(rgb, amt, mode=mode,
+                                preserve_lightness=preserve_lightness,
+                                channel=ch)
 
     # put processed back into original shape if source had >=3 channels
     if src.ndim == 3 and src.shape[2] > 3:
@@ -137,18 +179,21 @@ def remove_green_headless(
         src_f = _to_float01(src)
         out = np.clip(src_f * (1.0 - m) + out * m, 0.0, 1.0)
 
+    step_label = f"SCNR (Remove {_CHANNEL_LABELS[ch]})"
     meta = {
-        "step_name": "Remove Green",
+        "step_name": step_label,
         "remove_green": {
             "amount": amt,
             "mode": mode,
             "preserve_lightness": bool(preserve_lightness),
-            "mode_label": _SCNR_MODE_LABELS.get(mode, "Average(R,B)"),
+            "mode_label": _SCNR_MODE_LABELS.get(mode, "Average"),
+            "channel": ch,
+            "channel_label": _CHANNEL_LABELS[ch],
         },
         "bit_depth": "32-bit floating point",
         "is_mono": (out.ndim == 2),
     }
-    doc.apply_edit(out.astype(np.float32, copy=False), metadata=meta, step_name="Remove Green")
+    doc.apply_edit(out.astype(np.float32, copy=False), metadata=meta, step_name=step_label)
 
 # ---------- dialog ----------
 class RemoveGreenDialog(QDialog):
@@ -167,7 +212,23 @@ class RemoveGreenDialog(QDialog):
 
     def _build_ui(self):
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel(self.tr("Select the amount to remove green:")))
+
+        # target channel
+        row_ch = QHBoxLayout()
+        row_ch.addWidget(QLabel(self.tr("Target channel:")))
+        self.channel_box = QComboBox()
+        self.channel_box.addItem(self.tr("Green"),   userData="G")
+        self.channel_box.addItem(self.tr("Red"),     userData="R")
+        self.channel_box.addItem(self.tr("Blue"),    userData="B")
+        self.channel_box.addItem(self.tr("Magenta"), userData="M")
+        self.channel_box.addItem(self.tr("Cyan"),    userData="C")
+        self.channel_box.addItem(self.tr("Yellow"),  userData="Y")
+        self.channel_box.setCurrentIndex(0)
+        row_ch.addWidget(self.channel_box)
+        row_ch.addStretch(1)
+        lay.addLayout(row_ch)
+
+        lay.addWidget(QLabel(self.tr("Select the amount to suppress:")))
 
         # amount
         self.slider = QSlider(Qt.Orientation.Horizontal)
@@ -198,6 +259,18 @@ class RemoveGreenDialog(QDialog):
         self.cb_preserve.setChecked(True)
         lay.addWidget(self.cb_preserve)
 
+        # status label (cleared on any parameter change, set on Apply)
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(self.status_label)
+
+        # clear status whenever the user changes anything
+        self.slider.valueChanged.connect(lambda _=None: self.status_label.clear())
+        self.mode_box.currentIndexChanged.connect(lambda _=None: self.status_label.clear())
+        self.channel_box.currentIndexChanged.connect(lambda _=None: self.status_label.clear())
+        self.cb_preserve.toggled.connect(lambda _=None: self.status_label.clear())
+
         # buttons
         row = QHBoxLayout()
         btn_apply = QPushButton(self.tr("Apply")); btn_apply.clicked.connect(self._apply)
@@ -205,7 +278,7 @@ class RemoveGreenDialog(QDialog):
         row.addStretch(1); row.addWidget(btn_apply); row.addWidget(btn_cancel)
         lay.addLayout(row)
 
-        self.resize(460, 200)
+        self.resize(460, 220)
 
     def set_amount(self, amt: float):
         try:
@@ -218,6 +291,14 @@ class RemoveGreenDialog(QDialog):
         idx = {"avg":0, "max":1, "min":2}.get(m, 0)
         try:
             self.mode_box.setCurrentIndex(idx)
+        except Exception:
+            pass
+
+    def set_channel(self, channel: str | None):
+        c = (channel or "G").upper()
+        idx = {"G": 0, "R": 1, "B": 2, "M": 3, "C": 4, "Y": 5}.get(c, 0)
+        try:
+            self.channel_box.setCurrentIndex(idx)
         except Exception:
             pass
 
@@ -235,21 +316,24 @@ class RemoveGreenDialog(QDialog):
         amount   = self.slider.value() / 100.0
         mode     = self.mode_box.currentData() or "avg"
         preserve = self.cb_preserve.isChecked()
+        channel  = self.channel_box.currentData() or "G"
 
         # Build a preset dict so headless + replay use the same schema
         preset = {
             "amount": float(amount),
             "mode":   str(mode),
             "preserve_lightness": bool(preserve),
+            "channel": str(channel),
         }
 
         # Apply to this doc
-        remove_green_headless(self.doc, amount=amount, mode=mode, preserve_lightness=preserve)
+        remove_green_headless(self.doc, amount=amount, mode=mode,
+                              preserve_lightness=preserve, channel=channel)
 
         # Log + record for Replay Last Action (if main supports it)
         if hasattr(self.main, "_log"):
             self.main._log(
-                f"Remove Green: amount={amount:.2f}, mode={mode}, "
+                f"SCNR (channel={channel}): amount={amount:.2f}, mode={mode}, "
                 f"preserve_lightness={preserve}"
             )
 
@@ -261,13 +345,31 @@ class RemoveGreenDialog(QDialog):
             }
             if hasattr(self.main, "_log"):
                 self.main._log(
-                    f"[Replay] Recorded Remove Green preset "
-                    f"(amount={amount:.2f}, mode={mode}, "
+                    f"[Replay] Recorded SCNR preset "
+                    f"(channel={channel}, amount={amount:.2f}, mode={mode}, "
                     f"preserve_lightness={preserve})"
                 )
         except Exception:
             # Never let replay bookkeeping kill the dialog
             pass
+
+        # Show applied status (channel name + doc name)
+        try:
+            ch_label = _CHANNEL_LABELS.get(str(channel).upper(), str(channel))
+            doc_name = ""
+            try:
+                if hasattr(self.doc, "display_name"):
+                    doc_name = self.doc.display_name() or ""
+            except Exception:
+                pass
+            if doc_name:
+                self.status_label.setText(
+                    self.tr(f"✓ Removed {ch_label} from “{doc_name}”")
+                )
+            else:
+                self.status_label.setText(self.tr(f"✓ Removed {ch_label}"))
+        except Exception:
+            self.status_label.setText(self.tr("✓ Applied"))
 
         # Dialog stays open so user can apply to other images
         # Refresh document reference for next operation
@@ -319,16 +421,21 @@ def open_remove_green_dialog(main, doc=None, preset: dict | None = None):
         preserve = preset.get("preserve_lightness", preset.get("preserve", True))
         dlg.set_preserve_lightness(bool(preserve))
 
-    dlg.show()
+        channel = preset.get("channel", preset.get("target_channel", "G"))
+        dlg.set_channel(str(channel))
 
+    dlg.show()
 
 def apply_remove_green_preset_to_doc(main, doc, preset: dict):
     amt = float(preset.get("amount", preset.get("strength", preset.get("value", 1.0))))
     mode = str(preset.get("mode", preset.get("neutral_mode", "avg"))).lower()
     preserve = bool(preset.get("preserve_lightness", preset.get("preserve", True)))
-    remove_green_headless(doc, amount=amt, mode=mode, preserve_lightness=preserve)
+    channel = str(preset.get("channel", preset.get("target_channel", "G"))).upper()
+    remove_green_headless(doc, amount=amt, mode=mode,
+                          preserve_lightness=preserve, channel=channel)
     if hasattr(main, "_log"):
         name = doc.display_name() if hasattr(doc, "display_name") else "Image"
         main._log(
-            f"Remove Green (headless) on '{name}'; amount={amt:.2f}, mode={mode}, preserve_lightness={preserve}"
+            f"SCNR (headless) on '{name}'; channel={channel}, amount={amt:.2f}, "
+            f"mode={mode}, preserve_lightness={preserve}"
         )
