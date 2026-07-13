@@ -8,11 +8,13 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QCheckBox,
     QPushButton, QScrollArea, QWidget, QMessageBox
 )
-from PyQt6.QtGui import QPixmap, QImage, QMovie
+from PyQt6.QtGui import QPixmap, QImage, QMovie, QIcon
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
+from setiastro.saspro.shortcuts import PresetDragHandle
+from setiastro.saspro.resources import starstretch_path
 
 # --- use your Numba kernels; fall back to pure numpy SCNR if needed ----
 try:
@@ -154,7 +156,7 @@ class StarStretchDialog(QDialog):
         self._panning = False
         self._pan_start = QPointF()
         self._apply_when_ready = False  
-
+        self._headless = False  # True when constructed for a headless preset apply (no geometry save)
         # UI
         main = QHBoxLayout(self)
 
@@ -213,6 +215,25 @@ class StarStretchDialog(QDialog):
         left.addWidget(self.lbl_spin)
 
         left.addStretch(1)
+
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "star_stretch",
+            self._star_stretch_params,
+            icon=QIcon(starstretch_path),
+            tooltip=self.tr(
+                "Drag to the canvas to create a Star Stretch shortcut\n"
+                "with these exact settings.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        left.addLayout(drag_row)
+
         main.addLayout(left, 0)
 
         # Right column (preview with zoom/pan)
@@ -298,10 +319,11 @@ class StarStretchDialog(QDialog):
             self._finish_apply()
 
     def _apply_to_doc(self):
-        try:
-            self._save_window_geometry()
-        except Exception:
-            pass        
+        if not self._headless and self.isVisible():
+            try:
+                self._save_window_geometry()
+            except Exception:
+                pass
         # If we don't have a preview yet, compute it and auto-apply when ready.
         if self._preview is None:
             if getattr(self, "_thr", None) and self._thr.isRunning():
@@ -314,6 +336,52 @@ class StarStretchDialog(QDialog):
 
         # We do have a preview → finish immediately
         self._finish_apply()  
+
+    def _star_stretch_params(self) -> dict:
+        """Canonical preset — single source of truth for apply + the drag handle."""
+        return {
+            "stretch_factor": self.sld_st.value() / 100.0,
+            "color_boost":    self.sld_sat.value() / 100.0,
+            "scnr_green":     self.chk_scnr.isChecked(),
+        }
+
+    def seed_from_preset(self, p: dict | None) -> None:
+        """
+        Public: load a preset dict (same schema as _star_stretch_params) into
+        the live controls, so a double-clicked shortcut opens the dialog seeded.
+
+        Divisor trap: both sliders are /100 on the way OUT in
+        _star_stretch_params (stretch_factor, color_boost); seeding multiplies
+        back (widget = value * 100). Labels are set explicitly since we block
+        signals during the push (the valueChanged handlers that format them
+        won't fire).
+        """
+        if not p:
+            return
+
+        widgets = [self.sld_st, self.sld_sat, self.chk_scnr]
+        for w in widgets:
+            try:
+                w.blockSignals(True)
+            except Exception:
+                pass
+
+        try:
+            stretch = float(p.get("stretch_factor", 5.0))
+            self.sld_st.setValue(int(round(stretch * 100)))
+            self.lbl_st.setText(f"Stretch Amount: {stretch:.2f}")
+
+            boost = float(p.get("color_boost", 1.0))
+            self.sld_sat.setValue(int(round(boost * 100)))
+            self.lbl_sat.setText(f"Color Boost: {boost:.2f}")
+
+            self.chk_scnr.setChecked(bool(p.get("scnr_green", False)))
+        finally:
+            for w in widgets:
+                try:
+                    w.blockSignals(False)
+                except Exception:
+                    pass
 
     def _finish_apply(self):
         try:
@@ -341,11 +409,7 @@ class StarStretchDialog(QDialog):
             # 🔁 Record as last headless-style command for Replay
             try:
                 if mw and hasattr(mw, "_remember_last_headless_command"):
-                    preset = {
-                        "stretch_factor": self.sld_st.value()/100.0,
-                        "color_boost": self.sld_sat.value()/100.0,
-                        "scnr_green": self.chk_scnr.isChecked(),
-                    }
+                    preset = self._star_stretch_params()
                     mw._remember_last_headless_command(
                         "star_stretch",
                         preset,
@@ -361,10 +425,11 @@ class StarStretchDialog(QDialog):
         
         # Dialog stays open so user can apply to other images
         # Refresh document reference for next operation
-        try:
-            self._save_window_geometry()
-        except Exception:
-            pass
+        if not self._headless and self.isVisible():
+            try:
+                self._save_window_geometry()
+            except Exception:
+                pass
 
         self.close()
         return
@@ -552,10 +617,11 @@ class StarStretchDialog(QDialog):
         return (m * out + (1.0 - m) * src).astype(np.float32, copy=False)
 
     def closeEvent(self, ev):
-        try:
-            self._save_window_geometry()
-        except Exception:
-            pass        
+        if not self._headless and self.isVisible():
+            try:
+                self._save_window_geometry()
+            except Exception:
+                pass
         # 1) Disconnect active-doc tracking (Fabio hook)
         try:
             if self._connected_current_doc_changed and hasattr(self._main, "currentDocumentChanged"):
@@ -624,3 +690,37 @@ def _guess_spinner_path() -> str | None:
         if os.path.exists(c):
             return c
     return None
+
+def open_star_stretch_with_preset(main_window, preset: dict | None = None):
+    """
+    Open the live Star Stretch dialog seeded from a preset. Used by the
+    double-click preset-open path (ShortcutManager.trigger_with_preset).
+    Resolves the active document from the active MDI subwindow first —
+    matching the tool's toolbar opener — so it seeds onto the visible image.
+    """
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            w = sw.widget()
+            doc = getattr(w, "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None:
+        return
+
+    dlg = StarStretchDialog(main_window, doc)
+    try:
+        dlg.setWindowIcon(QIcon(starstretch_path))
+    except Exception:
+        pass
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()

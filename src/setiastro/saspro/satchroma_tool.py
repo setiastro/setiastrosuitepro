@@ -26,7 +26,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 from PyQt6.QtGui import (
     QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath,
-    QPen, QBrush, QPixmap,
+    QPen, QBrush, QPixmap, QIcon,
 )
 from PyQt6.QtCore import (
     QPoint, QPointF, QRectF, QSettings, QSize, Qt, QTimer, QThread, QObject, pyqtSignal,
@@ -813,6 +813,35 @@ class SatChromaTool(QDialog):
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_cancel)
         left_lay.addLayout(btn_row)
+
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        # Reuses the dialog's existing get_preset() as the single source of
+        # truth — same dict _remember_last_headless_command and the headless
+        # apply_satchroma_headless already use.
+        # Deferred import avoids any shortcuts.py <-> satchroma_tool cycle.
+        from setiastro.saspro.shortcuts import PresetDragHandle
+        try:
+            from setiastro.saspro.resources import satchroma_path
+            _sc_icon = QIcon(satchroma_path)
+        except Exception:
+            _sc_icon = QIcon()
+
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "satchroma",
+            self.get_preset,
+            icon=_sc_icon,
+            tooltip=self.tr(
+                "Drag to the canvas to create a SatChroma shortcut with the\n"
+                "current mode, curve, strength, and mask setting.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        left_lay.addLayout(drag_row)
 
         splitter.addWidget(left)
 

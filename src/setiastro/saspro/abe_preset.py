@@ -75,10 +75,31 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
     rbf_smooth  = float(p.get("rbf_smooth", 1.0))       # dialog default = 100 × 0.01 = 1.0
     make_bg_doc = bool(p.get("make_background_doc", False))
     seed        = int(p.get("seed", 42))
+    correction_mode = str(p.get("correction_mode", "subtract")).lower()
+    if correction_mode not in ("subtract", "divide"):
+        correction_mode = "subtract"
 
     src01 = _doc_image_float01(doc)
     if src01 is None:
         return
+
+    # Manual sample points (optional). JSON round-trips as [[x,y],...].
+    # abe_run expects FULL-IMAGE pixel coords; None/empty => auto-sample.
+    # These are pixel-absolute — meaningful on the same (or same-size) image the
+    # points were placed on. Filter to the target's bounds; if that leaves
+    # nothing (e.g. dropped on a much smaller image), fall back to auto-sampling.
+    manual_points = None
+    _mp = p.get("manual_points", None)
+    if _mp is not None and len(_mp) > 0:
+        mp_arr = np.asarray(_mp, dtype=np.int32)
+        if mp_arr.ndim == 2 and mp_arr.shape[1] == 2 and len(mp_arr) > 0:
+            H, W = src01.shape[:2]
+            keep = (
+                (mp_arr[:, 0] >= 0) & (mp_arr[:, 0] < W) &
+                (mp_arr[:, 1] >= 0) & (mp_arr[:, 1] < H)
+            )
+            mp_arr = mp_arr[keep]
+            manual_points = mp_arr if len(mp_arr) > 0 else None
 
     # Sanitize params we actually used (this is what we’ll store for Replay)
     params = {
@@ -90,6 +111,11 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
         "rbf_smooth": rbf_smooth,
         "seed": seed,
         "make_background_doc": make_bg_doc,
+        "correction_mode": correction_mode,
+        # Replay stores the count only (matches the dialog's _do_apply). The
+        # shortcut payload itself carries the full point list via the preset,
+        # so shortcut round-trip keeps exact points; "replay last" auto-samples.
+        "manual_sample_count": int(len(manual_points)) if manual_points is not None else 0,
     }
 
     # 🔁 Remember this as the last headless command for Replay
@@ -121,6 +147,8 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
         exclusion_mask=None,
         return_background=True,
         progress_cb=None,
+        manual_points=manual_points,
+        correction_mode=correction_mode,
         rng=rng,
     )
 
@@ -147,6 +175,8 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
             "patch": patch_size,
             "rbf": use_rbf,
             "rbf_smooth": rbf_smooth,
+            "correction_mode": correction_mode,
+            "manual_sample_count": int(len(manual_points)) if manual_points is not None else 0,
             "exclusion": "none",  # explicit marker for audit/history
         },
         "masked": bool(mid),
@@ -189,14 +219,35 @@ def open_abe_with_preset(main_window, preset: dict | None = None):
     dlg = ABEDialog(main_window, doc)
     p = dict(preset or {})
     try:
-        dlg.sp_degree.setValue(int(np.clip(p.get("degree", 2), 1, 6)))
+        dlg.sp_degree.setValue(int(np.clip(p.get("degree", 2), 0, 6)))   # allow 0 (RBF-only)
         dlg.sp_samples.setValue(int(np.clip(p.get("samples", 120), 20, 100000)))
         dlg.sp_seed.setValue(int(np.clip(p.get("seed", 42), -1, 99999)))
         dlg.sp_down.setValue(int(np.clip(p.get("downsample", 6), 1, 64)))
         dlg.sp_patch.setValue(int(np.clip(p.get("patch", 15), 5, 151)))
         dlg.chk_use_rbf.setChecked(bool(p.get("rbf", True)))
         dlg.sp_rbf.setValue(int(np.clip(float(p.get("rbf_smooth", 1.0)) * 100.0, 0, 100000)))
+
+        # correction mode
+        _mode = str(p.get("correction_mode", "subtract")).lower()
+        dlg.radio_divide.setChecked(_mode == "divide")
+        dlg.radio_subtract.setChecked(_mode != "divide")
         # polygons intentionally untouched (== none)
     except Exception:
         pass
+
+    # Manual sample points — stage as PENDING in its OWN try so a hiccup in the
+    # param-setting block above can never skip it. The dialog seeds these as the
+    # final step of its deferred showEvent, after the base pixmap is built.
+    try:
+        _mp = p.get("manual_points", None)
+        _log = getattr(main_window, "_log", None)
+        if _mp is not None and len(_mp) > 0:
+            dlg._pending_manual_points = list(_mp)
+            if callable(_log):
+                _log(f"[ABE] open_with_preset: staged {len(_mp)} manual point(s) for seeding")
+        elif callable(_log):
+            _log("[ABE] open_with_preset: preset carried no manual points")
+    except Exception:
+        pass
+
     dlg.show(); dlg.raise_(); dlg.activateWindow()

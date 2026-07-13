@@ -1,4 +1,4 @@
-# pro/graxpert.py
+# saspro/graxpert.py
 from __future__ import annotations
 import os
 import platform
@@ -11,10 +11,11 @@ import numpy as np
 
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QTextEdit, QPushButton, QFileDialog,
+    QDialog, QVBoxLayout, QHBoxLayout, QTextEdit, QPushButton, QFileDialog,
     QMessageBox, QInputDialog, QFormLayout, QDialogButtonBox, QDoubleSpinBox,
     QRadioButton, QLabel, QComboBox, QCheckBox, QWidget
 )
+from PyQt6.QtGui import QIcon
 from setiastro.saspro.config import Config
 
 # Prefer the exact loader you used in SASv2
@@ -110,6 +111,79 @@ class GraXpertOperationDialog(QDialog):
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
 
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        # Deferred import avoids a shortcuts.py <-> graxpert import cycle.
+        from setiastro.saspro.shortcuts import PresetDragHandle
+        try:
+            from setiastro.saspro.resources import graxperticon_path
+            _gx_icon = QIcon(graxperticon_path)
+        except Exception:
+            from PyQt6.QtGui import QIcon as _QIcon
+            _gx_icon = _QIcon()
+
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "graxpert",
+            self.get_preset,
+            icon=_gx_icon,
+            tooltip=self.tr(
+                "Drag to the canvas to create a GraXpert shortcut with these\n"
+                "exact settings (operation, parameter, model, GPU).\n"
+                "Drop directly on an image to run it headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        root.addLayout(drag_row)
+
+    def seed_from_preset(self, preset: dict | None):
+        """
+        Pre-fill op / param / gpu / model from a preset. Set the op radio FIRST —
+        its toggled handler (_to_bg/_to_dn) rewrites the param label and resets
+        the spinbox to a default, so the param value must be set AFTER the radio.
+        """
+        if not preset:
+            return
+        p = dict(preset)
+        op = str(p.get("op", "background")).lower()
+
+        if op == "denoise":
+            self.rb_dn.setChecked(True)
+        else:
+            self.rb_bg.setChecked(True)
+
+        if op == "background":
+            if "smoothing" in p:
+                self.spin.setValue(float(p["smoothing"]))
+        else:
+            if "strength" in p:
+                self.spin.setValue(float(p["strength"]))
+            ai = str(p.get("ai_version") or "")
+            idx = self.model_combo.findData(ai)
+            if idx >= 0:
+                self.model_combo.setCurrentIndex(idx)
+
+        if "gpu" in p:
+            self.cb_gpu.setChecked(bool(p["gpu"]))
+
+    def get_preset(self) -> dict:
+        """
+        Emit current UI state as a run_graxpert_via_preset-compatible dict — the
+        exact inverse of seed_from_preset and the same schema the headless
+        consumer reads. Single source of truth = result() (raw widget values).
+        """
+        op, val, ai_version, use_gpu = self.result()
+        p = {"op": op, "gpu": bool(use_gpu)}
+        if op == "background":
+            p["smoothing"] = float(val)
+        else:
+            p["strength"] = float(val)
+            if ai_version:
+                p["ai_version"] = ai_version
+        return p
+
     def result(self):
         op = "background" if self.rb_bg.isChecked() else "denoise"
         val = float(self.spin.value())
@@ -144,7 +218,7 @@ def _build_graxpert_cmd(
     return cmd
 
 # ---------- Public entry point (call this from your main window) ----------
-def remove_gradient_with_graxpert(main_window, target_doc=None):
+def remove_gradient_with_graxpert(main_window, target_doc=None, seed_preset=None):
     """
     Exactly mirror SASv2 flow:
       - write input_image.tif
@@ -184,11 +258,37 @@ def remove_gradient_with_graxpert(main_window, target_doc=None):
         )
         return
 
-    # 2) smoothing/denoise prompt
+    # 2) smoothing/denoise prompt — NON-MODAL. The dialog runs itself on OK
+    #    (see _graxpert_run_from_dialog wired below); we retain a reference on
+    #    main_window so it isn't garbage-collected while shown.
     op_dlg = GraXpertOperationDialog(main_window)
-    if op_dlg.exec() != QDialog.DialogCode.Accepted:
-        return
+    if seed_preset:
+        try:
+            op_dlg.seed_from_preset(seed_preset)
+        except Exception:
+            pass
+
+    op_dlg.accepted.connect(
+        lambda mw=main_window, d=doc, dlg=op_dlg: _graxpert_run_from_dialog(mw, d, dlg)
+    )
+
+    main_window._graxpert_op_dialog = op_dlg  # retain against GC
+    op_dlg.show()
+    op_dlg.raise_()
+    op_dlg.activateWindow()
+    return
+
+
+def _graxpert_run_from_dialog(main_window, doc, op_dlg):
+    """Post-prompt GraXpert run — fired by the dialog's OK (non-modal path)."""
     operation, param, ai_version, use_gpu = op_dlg.result()
+
+    # Drop the retained reference now that we've read the values.
+    try:
+        if getattr(main_window, "_graxpert_op_dialog", None) is op_dlg:
+            main_window._graxpert_op_dialog = None
+    except Exception:
+        pass
 
     # 3) resolve GraXpert executable
     exe = _resolve_graxpert_exec(main_window)
@@ -664,3 +764,4 @@ def _fallback_read_float01(path: str) -> np.ndarray | None:
         if mx > 5.0:
             arr = arr / mx
     return arr
+

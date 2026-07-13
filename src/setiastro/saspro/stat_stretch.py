@@ -5,10 +5,10 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QDoubleSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QSlider, QToolBar, QToolButton, QComboBox, QProgressBar, QApplication
 )
-from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
+from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor, QIcon, QDrag
 import numpy as np
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer, QSettings, QByteArray
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer, QSettings, QByteArray, QMimeData, QPoint
 from PyQt6.QtWidgets import QProgressDialog, QApplication
 from .doc_manager import ImageDocument
 # use your existing stretch code
@@ -21,7 +21,9 @@ from setiastro.saspro.imageops.stretch import (
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.luminancerecombine import LUMA_PROFILES
-
+from setiastro.saspro.shortcuts import PresetDragHandle, _pack_cmd_payload
+from setiastro.saspro.resources import statstretch_path
+from setiastro.saspro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ACTION
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Workers
@@ -92,6 +94,7 @@ class StatisticalStretchDialog(QDialog):
         self._hdr_knee_user_locked = False
         self._pending_close = False
         self._suppress_replay_record = False
+        self._headless = False   # True when constructed for a headless preset apply (no geometry save)
 
         self._clip_timer = None
 
@@ -432,6 +435,24 @@ class StatisticalStretchDialog(QDialog):
 
         left.addStretch(1)
 
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "stat_stretch",
+            self._stretch_params,
+            icon=QIcon(statstretch_path),
+            tooltip=self.tr(
+                "Drag to the canvas to create a Statistical Stretch shortcut\n"
+                "with these exact settings.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        left.addLayout(drag_row)
+
         right = QVBoxLayout()
         right.addLayout(zoom_row)
         right.addWidget(self.preview_scroll, 1)
@@ -650,6 +671,101 @@ class StatisticalStretchDialog(QDialog):
             self._save_param_slots()
         except Exception:
             pass
+
+    def seed_from_preset(self, p: dict | None) -> None:
+        """
+        Public: load a preset dict (same schema as _stretch_params) into the
+        live controls, mirroring _recall_param_slot's widget-push logic exactly
+        — same blockSignals guards, the _hdr_knee_user_locked set (so a seeded
+        hdr_knee isn't overwritten by _suggest_hdr_knee_from_target), and the
+        dependent enable-state fixups.
+
+        Called by open_stat_stretch_with_preset() after construction so a
+        double-clicked shortcut opens the dialog seeded with its settings.
+        Divisor traps are handled here (widget = preset_value * scale), the
+        inverse of _stretch_params()'s value/scale on the way out.
+        """
+        if not p:
+            return
+
+        widgets = [
+            self.sld_target, self.spin_target,
+            self.chk_linked, self.chk_normalize,
+            self.sld_bp, self.chk_no_black_clip,
+            self.chk_hdr, self.sld_hdr_amt, self.sld_hdr_knee,
+            self.chk_luma_only, self.cmb_luma, self.sld_luma_blend,
+            self.chk_curves, self.sld_curves,
+        ]
+        for w in widgets:
+            try:
+                w.blockSignals(True)
+            except Exception:
+                pass
+
+        try:
+            self._hdr_knee_user_locked = True  # seeded knee should stick exactly
+
+            target = float(p.get("target_median", 0.25))
+            self.spin_target.setValue(target)
+            self.sld_target.setValue(int(round(target * 1000)))
+
+            self.chk_linked.setChecked(bool(p.get("linked", False)))
+            self.chk_normalize.setChecked(bool(p.get("normalize", False)))
+
+            bp_sigma = float(p.get("blackpoint_sigma", 5.0))
+            self.sld_bp.setValue(int(round(bp_sigma * 100)))
+            self.lbl_bp.setText(f"{bp_sigma:.2f}")
+            self.chk_no_black_clip.setChecked(bool(p.get("no_black_clip", False)))
+
+            self.chk_hdr.setChecked(bool(p.get("hdr_compress", False)))
+            hdr_amt = float(p.get("hdr_amount", 0.15))
+            self.sld_hdr_amt.setValue(int(round(hdr_amt * 100)))
+            self.lbl_hdr_amt.setText(f"{hdr_amt:.2f}")
+            hdr_knee = float(p.get("hdr_knee", 0.75))
+            self.sld_hdr_knee.setValue(int(round(hdr_knee * 100)))
+            self.lbl_hdr_knee.setText(f"{hdr_knee:.2f}")
+
+            self.chk_luma_only.setChecked(bool(p.get("luma_only", False)))
+            luma_mode = str(p.get("luma_mode", "rec709"))
+            if self.cmb_luma.findText(luma_mode) >= 0:
+                self.cmb_luma.setCurrentText(luma_mode)
+            luma_blend = float(p.get("luma_blend", 0.6))
+            self.sld_luma_blend.setValue(int(round(luma_blend * 100)))
+            self.lbl_luma_blend.setText(f"{luma_blend:.2f}")
+
+            self.chk_curves.setChecked(bool(p.get("apply_curves", False)))
+            curves_boost = float(p.get("curves_boost", 0.2))
+            self.sld_curves.setValue(int(round(curves_boost * 100)))
+            self.lbl_curves_val.setText(f"{curves_boost:.2f}")
+        finally:
+            for w in widgets:
+                try:
+                    w.blockSignals(False)
+                except Exception:
+                    pass
+
+        # Re-apply dependent enable/disable states (same as _recall_param_slot tail)
+        try:
+            self.row_bp.setEnabled(not self.chk_no_black_clip.isChecked())
+        except Exception:
+            pass
+        try:
+            self.hdr_row.setEnabled(self.chk_hdr.isChecked())
+        except Exception:
+            pass
+        try:
+            self.curves_row.setEnabled(self.chk_curves.isChecked())
+        except Exception:
+            pass
+        try:
+            luma_on = self.chk_luma_only.isChecked()
+            self.cmb_luma.setEnabled(luma_on)
+            self.luma_blend_row.setEnabled(luma_on)
+            self.chk_linked.setEnabled(not luma_on)
+        except Exception:
+            pass
+
+        self._schedule_clip_stats()
 
     def _recall_param_slot(self, slot: int):
         """Restore all controls from the given slot and trigger a preview."""
@@ -1423,7 +1539,8 @@ class StatisticalStretchDialog(QDialog):
                 except Exception as e:
                     print(f"Failed to remember Statistical Stretch last headless command: {e}")
 
-        self._save_window_geometry()
+        if not self._headless and self.isVisible():
+            self._save_window_geometry()
         self.close()
 
     @pyqtSlot(object, str)
@@ -1481,7 +1598,8 @@ class StatisticalStretchDialog(QDialog):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
         except Exception:
             pass
-        self._save_window_geometry()
+        if not self._headless and self.isVisible():
+            self._save_window_geometry()
         super().closeEvent(ev)
 
     def _update_preview_scaled(self):
@@ -1554,3 +1672,36 @@ class StatisticalStretchDialog(QDialog):
                     return True
 
         return super().eventFilter(obj, ev)
+
+def open_stat_stretch_with_preset(main_window, preset: dict | None = None):
+    # Resolve the active document the same way the toolbar opener does, so a
+    # double-clicked shortcut seeds onto the image the user is looking at.
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            w = sw.widget()
+            doc = getattr(w, "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None:
+        return
+
+    from setiastro.saspro.stat_stretch import StatisticalStretchDialog
+    dlg = StatisticalStretchDialog(main_window, doc)
+    try:
+        from setiastro.saspro.resources import statstretch_path
+        dlg.setWindowIcon(QIcon(statstretch_path))
+    except Exception:
+        pass
+    dlg.resize(980, 620)
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()

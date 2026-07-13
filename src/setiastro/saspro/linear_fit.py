@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDialogButtonBox,
     QPushButton, QGroupBox, QMessageBox, QGridLayout, QWidget, QProgressBar
 )
+from PyQt6.QtGui import QIcon
 
 # --------------------------------------------------------------------------------------
 # Preset editor (used by Shortcuts “Edit Preset…”). Import into shortcuts.py like:
@@ -302,6 +303,33 @@ class LinearFitDialog(QDialog):
         v.addWidget(self.status)
         v.addWidget(self.bar)
 
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        # Deferred import: shortcuts.py imports this module at load time
+        # (_LinearFitPresetDialog), so a top-level import here would cycle.
+        from setiastro.saspro.shortcuts import PresetDragHandle
+        try:
+            from setiastro.saspro.resources import linearfit_path
+            _lf_icon = QIcon(linearfit_path)
+        except Exception:
+            _lf_icon = QIcon()
+
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "linear_fit",
+            self._linear_fit_params,
+            icon=_lf_icon,
+            tooltip=self.tr(
+                "Drag to the canvas to create a Linear Fit shortcut\n"
+                "with these exact settings.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        v.addLayout(drag_row)
+
         # Buttons
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._go)
@@ -317,6 +345,79 @@ class LinearFitDialog(QDialog):
                 self.status.setText("Mono image selected. Choose a reference view.")
         except Exception:
             pass
+
+    def _linear_fit_params(self) -> dict:
+        """
+        Canonical preset captured from the live UI. Mode-dependent, matching
+        what _on_done records and what apply_linear_fit_via_preset consumes:
+          • rescale_mode_idx always
+          • rgb_mode_idx only in RGB mode (self.combo_rgb exists only then)
+          • ref_name stashed in mono mode (informational; the headless mono
+            path still prompts for a reference at drop time)
+        """
+        p: dict = {
+            "mode": self.mode,
+            "rescale_mode_idx": int(self.combo_rescale.currentIndex()),
+        }
+        if self.mode == "rgb":
+            p["rgb_mode_idx"] = int(self.combo_rgb.currentIndex())
+        else:
+            try:
+                if getattr(self, "_ref_docs", None):
+                    idx = int(self.combo_ref.currentIndex())
+                    if 0 <= idx < len(self._ref_docs):
+                        p["ref_name"] = self._ref_docs[idx].display_name()
+            except Exception:
+                pass
+        return p
+
+    def seed_from_preset(self, p: dict | None) -> None:
+        """
+        Public: load a preset dict (same schema as _linear_fit_params) into the
+        live controls, so a double-clicked shortcut opens the dialog seeded.
+
+        Conditional-widget trap: combo_rgb exists ONLY in RGB mode, combo_ref
+        ONLY in mono mode — __init__ builds one or the other from the ACTIVE
+        image's shape. The preset's mode (captured on the source image) can
+        disagree with self.mode (set by the image this dialog opened on), so we
+        seed only the keys the current dialog actually has widgets for:
+          • combo_rescale  — always present, seed unconditionally
+          • combo_rgb      — RGB mode only, and only if preset carries rgb_mode_idx
+                             (a mono-captured preset won't have it)
+          • combo_ref      — mono mode only; best-effort match by ref_name, since
+                             the preset only stores a name string and the actual
+                             reference docs are resolved from currently-open views
+        Both combos are plain index selects — no divisor transforms.
+        """
+        if not p:
+            return
+
+        try:
+            ridx = int(p.get("rescale_mode_idx", 1))
+            if 0 <= ridx < self.combo_rescale.count():
+                self.combo_rescale.setCurrentIndex(ridx)
+        except Exception:
+            pass
+
+        if self.mode == "rgb" and hasattr(self, "combo_rgb"):
+            if "rgb_mode_idx" in p:
+                try:
+                    gidx = int(p.get("rgb_mode_idx", 0))
+                    if 0 <= gidx < self.combo_rgb.count():
+                        self.combo_rgb.setCurrentIndex(gidx)
+                except Exception:
+                    pass
+        elif self.mode == "mono" and hasattr(self, "combo_ref"):
+            # Best-effort: match the stored reference name against open views.
+            ref_name = p.get("ref_name")
+            if ref_name and getattr(self, "_ref_docs", None):
+                try:
+                    for i, d in enumerate(self._ref_docs):
+                        if d.display_name() == ref_name:
+                            self.combo_ref.setCurrentIndex(i)
+                            break
+                except Exception:
+                    pass
 
     def _go(self):
         rescale_idx = int(self.combo_rescale.currentIndex())
@@ -538,3 +639,45 @@ def run_linear_fit_via_preset(main, preset=None, target_doc=None):
         return
 
     apply_linear_fit_via_preset(main, dm, doc, p)
+
+def open_linear_fit_with_preset(main_window, preset: dict | None = None):
+    """
+    Open the live Linear Fit dialog seeded from a preset. Used by the
+    double-click preset-open path (ShortcutManager.trigger_with_preset).
+
+    Note: LinearFitDialog decides RGB-vs-mono from the ACTIVE image at
+    construction, so the preset can only seed what the resulting dialog has
+    widgets for (see seed_from_preset). Resolves the active doc from the active
+    MDI subwindow first, matching how the other tools' openers resolve it.
+    """
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            w = sw.widget()
+            doc = getattr(w, "document", None)
+    except Exception:
+        doc = None
+
+    dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+    if doc is None and dm is not None:
+        doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+               else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None or dm is None:
+        return
+
+    try:
+        dlg = LinearFitDialog(main_window, dm, doc)
+    except Exception:
+        return
+
+    try:
+        from setiastro.saspro.resources import linearfit_path
+        dlg.setWindowIcon(QIcon(linearfit_path))
+    except Exception:
+        pass
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()

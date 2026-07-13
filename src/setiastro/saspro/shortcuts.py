@@ -580,6 +580,42 @@ def _has_preset_editor_for_command(command_id: str) -> bool:
     """Return True if we have a bespoke UI for this command_id."""
     return command_id in _PRESET_UI_IDS
 
+def _preset_opener_for_command(command_id: str):
+    """
+    Map a command_id → a callable(main_window, preset) that opens the LIVE tool
+    dialog seeded from the preset. Distinct from _open_preset_editor_for_command
+    (which opens a small preset-editing form). Returns None if none exists, in
+    which case callers fall back to a plain QAction trigger.
+    """
+    if command_id == "abe":
+        from setiastro.saspro.abe_preset import open_abe_with_preset
+        return open_abe_with_preset
+    if command_id == "stat_stretch":
+        from setiastro.saspro.stat_stretch import open_stat_stretch_with_preset
+        return open_stat_stretch_with_preset
+    if command_id == "star_stretch":
+        from setiastro.saspro.star_stretch import open_star_stretch_with_preset
+        return open_star_stretch_with_preset
+    if command_id == "linear_fit":
+        from setiastro.saspro.linear_fit import open_linear_fit_with_preset
+        return open_linear_fit_with_preset
+    if command_id in ("levels", "histogram_transform"):
+        from setiastro.saspro.histogram_transform_pro import open_levels_with_preset
+        return open_levels_with_preset
+    if command_id == "curves":
+        from setiastro.saspro.curves_preset import open_curves_with_preset
+        return open_curves_with_preset
+    if command_id == "ghs":
+        from setiastro.saspro.ghs_preset import open_ghs_with_preset
+        return open_ghs_with_preset
+    if command_id == "satchroma":
+        from setiastro.saspro.satchroma_preset import open_satchroma_with_preset
+        return open_satchroma_with_preset
+    if command_id == "graxpert":
+        from setiastro.saspro.graxpert_preset import open_graxpert_with_preset
+        return open_graxpert_with_preset
+    return None
+
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
 def _open_preset_editor_for_command(parent, command_id: str, initial: dict | None):
     """
@@ -797,7 +833,69 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
     # Unknown / no bespoke UI
     return None
 
+# ---------- live-tool "drag me to the canvas" grip ----------
+class PresetDragHandle(QToolButton):
+    """
+    PI-style grip for a live tool dialog. Dragging it emits a MIME_CMD-only
+    payload whose preset is captured from the tool's CURRENT UI via get_preset().
+    Dropped on empty canvas → ShortcutCanvas creates a shortcut carrying those
+    live settings; dropped on an image view → runs the tool headlessly with them.
+    """
+    def __init__(self, command_id: str, get_preset, *, icon: QIcon | None = None,
+                 tooltip: str | None = None, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._command_id = str(command_id)
+        self._get_preset = get_preset
+        self._press_pos: QPoint | None = None
+        if icon is not None and not icon.isNull():
+            self.setIcon(icon)
+            self.setIconSize(QSize(20, 20))
+        else:
+            self.setText("\u283f")
+        self.setAutoRaise(True)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        self.setToolTip(tooltip or self.tr(
+            "Drag to the canvas to create a shortcut with the current settings"))
 
+    def mousePressEvent(self, e: QMouseEvent):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = e.position().toPoint()
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e: QMouseEvent):
+        if (self._press_pos is not None
+                and (e.buttons() & Qt.MouseButton.LeftButton)
+                and (e.position().toPoint() - self._press_pos).manhattanLength()
+                    >= QApplication.startDragDistance()):
+            self._press_pos = None
+            self._start_drag()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e: QMouseEvent):
+        self._press_pos = None
+        super().mouseReleaseEvent(e)
+
+    def _build_preset(self) -> dict:
+        try:
+            p = self._get_preset() or {}
+            return p if isinstance(p, dict) else dict(p)
+        except Exception:
+            return {}
+
+    def _start_drag(self):
+        md = QMimeData()
+        md.setData(MIME_CMD, _pack_cmd_payload(self._command_id, self._build_preset()))
+        drag = QDrag(self)
+        drag.setMimeData(md)
+        pm = self.icon().pixmap(32, 32) if not self.icon().isNull() else QPixmap(32, 32)
+        if pm.isNull():
+            pm = QPixmap(32, 32)
+            pm.fill(Qt.GlobalColor.darkGray)
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        drag.exec(Qt.DropAction.CopyAction)
+        
 # ---------- the button that sits on the MDI desktop ----------
 class ShortcutButton(QToolButton):
     def __init__(self,
@@ -963,8 +1061,15 @@ class ShortcutButton(QToolButton):
         super().mouseReleaseEvent(e)
 
     def mouseDoubleClickEvent(self, e: QMouseEvent):
-        # double-click still runs the action (open dialog)
-        self._mgr.trigger(self.command_id)
+        # Double-click opens the tool. If this shortcut carries a preset, route
+        # through the preset-aware opener so the dialog is seeded (manual points,
+        # correction mode, etc.); otherwise plain-trigger the QAction as before.
+        preset = None
+        try:
+            preset = self._load_preset()
+        except Exception:
+            preset = None
+        self._mgr.trigger_with_preset(self.command_id, preset)
 
     def _delete(self):
         self._mgr.delete_by_id(self.sid, persist=True)       # ← was command_id
@@ -1293,6 +1398,10 @@ class ShortcutManager:
         self.settings = QSettings()  # shared settings store for positions + presets
         self.selected: set[str] = set()  # ← set of shortcut_ids
 
+        # --- persistence safety flags ---
+        self._loading = False           # True while load_shortcuts() runs (suppresses saves)
+        self._allow_empty_save = False  # True only for intentional clear / delete-all
+
     # ---- registry ----
     def register_action(self, command_id: str, action: QAction):
         action.setProperty("command_id", command_id)
@@ -1323,6 +1432,31 @@ class ShortcutManager:
         act = self.registry.get(command_id)
         if act:
             act.trigger()
+
+    def trigger_with_preset(self, command_id: str, preset: dict | None):
+        """
+        Like trigger(), but if a preset is present AND the command has a
+        preset-aware opener, route through the opener so the tool dialog is
+        seeded (settings, correction mode, manual points, etc.). Falls back
+        to a plain QAction trigger when there's no preset or no opener.
+
+        This is what makes double-clicking a desktop shortcut honor the preset
+        it carries — the plain QAction (e.g. _open_abe_tool) builds a bare
+        dialog and never sees the preset.
+        """
+        if not preset:
+            return self.trigger(command_id)
+
+        opener = _preset_opener_for_command(command_id)
+        if opener is None:
+            return self.trigger(command_id)
+
+        try:
+            opener(self.mw, preset)
+            return
+        except Exception as ex:
+            self._debug(f"trigger_with_preset({command_id!r}) opener failed: {ex!r}; falling back to plain trigger")
+            return self.trigger(command_id)
 
     def _on_widget_destroyed(self, sid: str):
         # Called from QObject.destroyed — never touch the widget, just clean maps
@@ -1647,7 +1781,12 @@ class ShortcutManager:
 
     # ---- persistence (QSettings JSON blob) ----
     def save_shortcuts(self):
-       
+        # GUARD 1: never persist while a load is in progress. During load,
+        # add_shortcut() fires this repeatedly while self.widgets is still being
+        # rebuilt — a save here could write a half-built (or empty) set.
+        if self._loading:
+            return
+
         data = []
         for sid, w in list(self.widgets.items()):
             if _is_dead(w):
@@ -1655,8 +1794,9 @@ class ShortcutManager:
                 self.selected.discard(sid)
                 continue
             try:
-                if not w.isVisible():
-                    continue
+                # Do NOT filter on isVisible(): a freshly created shortcut whose
+                # top-level window hasn't been shown yet reports not-visible and
+                # would be silently dropped, persisting an empty/partial set.
                 p = w.pos()
                 data.append({
                     "id": sid,
@@ -1669,52 +1809,72 @@ class ShortcutManager:
                 self.widgets.pop(sid, None)
                 self.selected.discard(sid)
 
+        # GUARD 2 (safety net): refuse to overwrite a non-empty stored set with an
+        # empty one unless this empty state is an explicit clear/delete-all. This
+        # is what actually prevents a transient startup race from wiping shortcuts.
+        if not data and not self._allow_empty_save:
+            try:
+                existing = self.settings.value(SET_KEY_V2, "", type=str) or ""
+                had_existing = bool(json.loads(existing)) if existing else False
+            except Exception:
+                had_existing = False
+            if had_existing:
+                self._debug("save_shortcuts: refusing to overwrite stored shortcuts with an empty set")
+                return
+
         # Save new format and remove legacy
         self.settings.setValue(SET_KEY_V2, json.dumps(data))
         self.settings.remove(SET_KEY_V1)
         self.settings.sync()
 
     def load_shortcuts(self):
-        # try v2 first
-        raw_v2 = self.settings.value(SET_KEY_V2, "", type=str) or ""
-        if raw_v2:
+        self._loading = True
+        migrated_v1 = False
+        try:
+            # try v2 first
+            raw_v2 = self.settings.value(SET_KEY_V2, "", type=str) or ""
+            if raw_v2:
+                try:
+                    arr = json.loads(raw_v2)
+                    for entry in arr:
+                        sid = entry.get("id") or uuid.uuid4().hex
+                        cid = entry.get("command_id")
+                        x = int(entry.get("x", 10))
+                        y = int(entry.get("y", 10))
+                        label = entry.get("label") or self._default_label_for(cid)
+                        self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid)
+                    return
+                except Exception as e:
+                    try:
+                        self.mw._log(f"Shortcuts v2: failed to load ({e})")
+                    except Exception:
+                        pass
+
+            # migrate v1 (positions only)
+            raw_v1 = self.settings.value(SET_KEY_V1, "", type=str) or ""
+            if not raw_v1:
+                return
             try:
-                arr = json.loads(raw_v2)
+                arr = json.loads(raw_v1)
                 for entry in arr:
-                    sid = entry.get("id") or uuid.uuid4().hex
-                    cid = entry.get("command_id")
+                    cid = entry.get("id") or entry.get("command_id")  # old key was "id" = command_id
                     x = int(entry.get("x", 10))
                     y = int(entry.get("y", 10))
-                    label = entry.get("label") or self._default_label_for(cid)
+                    # each old entry becomes its own instance
+                    sid = uuid.uuid4().hex
+                    label = self._default_label_for(cid)
                     self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid)
-                return
+                migrated_v1 = True
             except Exception as e:
                 try:
-                    self.mw._log(f"Shortcuts v2: failed to load ({e})")
+                    self.mw._log(f"Shortcuts v1: failed to migrate ({e})")
                 except Exception:
                     pass
-
-        # migrate v1 (positions only)
-        raw_v1 = self.settings.value(SET_KEY_V1, "", type=str) or ""
-        if not raw_v1:
-            return
-        try:
-            arr = json.loads(raw_v1)
-            for entry in arr:
-                cid = entry.get("id") or entry.get("command_id")  # old key was "id" = command_id
-                x = int(entry.get("x", 10))
-                y = int(entry.get("y", 10))
-                # each old entry becomes its own instance
-                sid = uuid.uuid4().hex
-                label = self._default_label_for(cid)
-                self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid)
-            # after migrating, persist as v2
-            self.save_shortcuts()
-        except Exception as e:
-            try:
-                self.mw._log(f"Shortcuts v1: failed to migrate ({e})")
-            except Exception:
-                pass
+        finally:
+            self._loading = False
+            # Persist the v1→v2 migration now that saving is re-enabled.
+            if migrated_v1:
+                self.save_shortcuts()
 
 
     def _load_keybinds(self) -> dict:
@@ -2168,14 +2328,22 @@ class ShortcutManager:
             except RuntimeError:
                 pass
         if persist:
-            self.save_shortcuts()
+            self._allow_empty_save = True
+            try:
+                self.save_shortcuts()
+            finally:
+                self._allow_empty_save = False
 
     def delete_selected(self):
         # bulk delete, then persist once
         for sid in list(self.selected):
             self.delete_by_id(sid, persist=False)
         self.selected.clear()
-        self.save_shortcuts()
+        self._allow_empty_save = True
+        try:
+            self.save_shortcuts()
+        finally:
+            self._allow_empty_save = False
 
     def remove(self, sid: str):
         # legacy single-remove (kept for callers)
@@ -2929,9 +3097,9 @@ class _RemoveGreenPresetDialog(QDialog):
 
         # Local labels so there’s no external dependency.
         MODE_LABELS = {
-            "avg": "Average neutral (G → min(avg(R,B), G))",
-            "max": "Average neutral MAX (G → min(max(R,B), G))",
-            "min": "Average neutral MIN (G → min(min(R,B), G))",
+            "avg": "Average of other two channels",
+            "max": "Max of other two channels",
+            "min": "Min of other two channels",
         }
         MODE_INDEX = {"avg": 0, "max": 1, "min": 2}
 
@@ -2941,6 +3109,18 @@ class _RemoveGreenPresetDialog(QDialog):
         self.spin_amount.setDecimals(2)
         self.spin_amount.setSingleStep(0.05)
         self.spin_amount.setValue(float(init.get("amount", 1.00)))  # default full SCNR
+
+        # Target channel
+        CHANNEL_INDEX = {"G": 0, "R": 1, "B": 2, "M": 3, "C": 4, "Y": 5}
+        self.combo_channel = QComboBox()
+        self.combo_channel.addItem("Green",   userData="G")
+        self.combo_channel.addItem("Red",     userData="R")
+        self.combo_channel.addItem("Blue",    userData="B")
+        self.combo_channel.addItem("Magenta", userData="M")
+        self.combo_channel.addItem("Cyan",    userData="C")
+        self.combo_channel.addItem("Yellow",  userData="Y")
+        init_ch = str(init.get("channel", init.get("target_channel", "G"))).upper()
+        self.combo_channel.setCurrentIndex(CHANNEL_INDEX.get(init_ch, 0))
 
         # Mode
         self.combo_mode = QComboBox()
@@ -2956,6 +3136,7 @@ class _RemoveGreenPresetDialog(QDialog):
 
         # Layout
         form = QFormLayout(self)
+        form.addRow("Target channel:", self.combo_channel)
         form.addRow("Amount (0–1):", self.spin_amount)
         form.addRow("Neutral mode:", self.combo_mode)
         form.addRow("", self.cb_preserve)
@@ -2973,6 +3154,7 @@ class _RemoveGreenPresetDialog(QDialog):
             "amount": float(self.spin_amount.value()),                 # 0..1
             "mode": self.combo_mode.currentData() or "avg",            # "avg" | "max" | "min"
             "preserve_lightness": bool(self.cb_preserve.isChecked()),  # True/False
+            "channel": self.combo_channel.currentData() or "G",        # "R" | "G" | "B"
         }
 
 
