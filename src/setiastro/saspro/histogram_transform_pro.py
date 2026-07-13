@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QCursor, QIcon
 from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QEvent
-from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QCursor
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QLabel, QPushButton, QCheckBox, QDoubleSpinBox, QSlider,
     QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QScrollArea, QMessageBox,
@@ -622,6 +622,36 @@ class HistogramTransformDialogPro(QDialog):
         left.addLayout(brow)
 
         left.addStretch(1)
+
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        # Placed AFTER the stretch so it pins to the lower-left corner.
+        # Deferred import to avoid any shortcuts.py <-> this-module import cycle.
+        from setiastro.saspro.shortcuts import PresetDragHandle
+        try:
+            from setiastro.saspro.resources import histogram_transform_path
+            _lv_icon = QIcon(histogram_transform_path)
+        except Exception:
+            _lv_icon = QIcon()
+
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        # NOTE: command_id is "levels", NOT "histogram_transform" — the drop
+        # dispatcher and replay both key on "levels".
+        self.preset_drag_handle = PresetDragHandle(
+            "levels",
+            self._levels_params,
+            icon=_lv_icon,
+            tooltip=self.tr(
+                "Drag to the canvas to create a Levels shortcut\n"
+                "with these exact settings.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        left.addLayout(drag_row)
+
         root.addWidget(left_host, 0)
 
         # RIGHT: preview w/ zoom
@@ -1048,6 +1078,28 @@ class HistogramTransformDialogPro(QDialog):
         return super().eventFilter(obj, ev)
 
     # ---------- apply ----------
+    def _levels_params(self) -> dict:
+        """
+        Canonical preset — single source of truth for the drag handle.
+        CRITICAL: emits the *relative* midtone (m_rel), because that is what
+        apply_histogram_transform_channel consumes and what the headless
+        apply_levels_via_preset expects as its 'mid' key. Capturing the raw
+        absolute sp_mid value here would make dropped shortcuts diverge from
+        the live tool whenever black/white are moved off 0/1.
+        """
+        b, _m_abs, m_rel, w = self._sanitize_points()
+        chan = "L"
+        try:
+            chan = str(self.cb_channel.currentData() or "L")
+        except Exception:
+            chan = "L"
+        return {
+            "black": float(b),
+            "mid": float(m_rel),
+            "white": float(w),
+            "channel": str(chan),
+        }
+
     def _apply_result_fullres(self) -> np.ndarray:
         b, m_abs, m_rel, w = self._sanitize_points()
         img = np.clip(np.asarray(self.document.image, dtype=np.float32), 0.0, 1.0)

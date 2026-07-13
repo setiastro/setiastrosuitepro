@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDialogButtonBox,
     QPushButton, QGroupBox, QMessageBox, QGridLayout, QWidget, QProgressBar
 )
+from PyQt6.QtGui import QIcon
 
 # --------------------------------------------------------------------------------------
 # Preset editor (used by Shortcuts “Edit Preset…”). Import into shortcuts.py like:
@@ -302,6 +303,33 @@ class LinearFitDialog(QDialog):
         v.addWidget(self.status)
         v.addWidget(self.bar)
 
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        # Deferred import: shortcuts.py imports this module at load time
+        # (_LinearFitPresetDialog), so a top-level import here would cycle.
+        from setiastro.saspro.shortcuts import PresetDragHandle
+        try:
+            from setiastro.saspro.resources import linearfit_path
+            _lf_icon = QIcon(linearfit_path)
+        except Exception:
+            _lf_icon = QIcon()
+
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "linear_fit",
+            self._linear_fit_params,
+            icon=_lf_icon,
+            tooltip=self.tr(
+                "Drag to the canvas to create a Linear Fit shortcut\n"
+                "with these exact settings.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        v.addLayout(drag_row)
+
         # Buttons
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._go)
@@ -317,6 +345,31 @@ class LinearFitDialog(QDialog):
                 self.status.setText("Mono image selected. Choose a reference view.")
         except Exception:
             pass
+
+    def _linear_fit_params(self) -> dict:
+        """
+        Canonical preset captured from the live UI. Mode-dependent, matching
+        what _on_done records and what apply_linear_fit_via_preset consumes:
+          • rescale_mode_idx always
+          • rgb_mode_idx only in RGB mode (self.combo_rgb exists only then)
+          • ref_name stashed in mono mode (informational; the headless mono
+            path still prompts for a reference at drop time)
+        """
+        p: dict = {
+            "mode": self.mode,
+            "rescale_mode_idx": int(self.combo_rescale.currentIndex()),
+        }
+        if self.mode == "rgb":
+            p["rgb_mode_idx"] = int(self.combo_rgb.currentIndex())
+        else:
+            try:
+                if getattr(self, "_ref_docs", None):
+                    idx = int(self.combo_ref.currentIndex())
+                    if 0 <= idx < len(self._ref_docs):
+                        p["ref_name"] = self._ref_docs[idx].display_name()
+            except Exception:
+                pass
+        return p
 
     def _go(self):
         rescale_idx = int(self.combo_rescale.currentIndex())

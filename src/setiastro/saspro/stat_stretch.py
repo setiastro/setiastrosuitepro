@@ -5,10 +5,10 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QDoubleSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QSlider, QToolBar, QToolButton, QComboBox, QProgressBar, QApplication
 )
-from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor
+from PyQt6.QtGui import QImage, QPixmap, QMouseEvent, QCursor, QIcon, QDrag
 import numpy as np
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer, QSettings, QByteArray
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QSize, QEvent, QTimer, QSettings, QByteArray, QMimeData, QPoint
 from PyQt6.QtWidgets import QProgressDialog, QApplication
 from .doc_manager import ImageDocument
 # use your existing stretch code
@@ -21,7 +21,9 @@ from setiastro.saspro.imageops.stretch import (
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.luminancerecombine import LUMA_PROFILES
-
+from setiastro.saspro.shortcuts import PresetDragHandle, _pack_cmd_payload
+from setiastro.saspro.resources import statstretch_path
+from setiastro.saspro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ACTION
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Workers
@@ -92,6 +94,7 @@ class StatisticalStretchDialog(QDialog):
         self._hdr_knee_user_locked = False
         self._pending_close = False
         self._suppress_replay_record = False
+        self._headless = False   # True when constructed for a headless preset apply (no geometry save)
 
         self._clip_timer = None
 
@@ -431,6 +434,24 @@ class StatisticalStretchDialog(QDialog):
         left.addWidget(self.busy_row)
 
         left.addStretch(1)
+
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "stat_stretch",
+            self._stretch_params,
+            icon=QIcon(statstretch_path),
+            tooltip=self.tr(
+                "Drag to the canvas to create a Statistical Stretch shortcut\n"
+                "with these exact settings.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        left.addLayout(drag_row)
 
         right = QVBoxLayout()
         right.addLayout(zoom_row)
@@ -1423,7 +1444,8 @@ class StatisticalStretchDialog(QDialog):
                 except Exception as e:
                     print(f"Failed to remember Statistical Stretch last headless command: {e}")
 
-        self._save_window_geometry()
+        if not self._headless and self.isVisible():
+            self._save_window_geometry()
         self.close()
 
     @pyqtSlot(object, str)
@@ -1481,7 +1503,8 @@ class StatisticalStretchDialog(QDialog):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
         except Exception:
             pass
-        self._save_window_geometry()
+        if not self._headless and self.isVisible():
+            self._save_window_geometry()
         super().closeEvent(ev)
 
     def _update_preview_scaled(self):

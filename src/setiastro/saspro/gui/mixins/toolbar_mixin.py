@@ -1642,6 +1642,7 @@ class ToolbarMixin:
         reg("mono_to_rgb",  self.act_mono_to_rgb)
         reg("graxpert", self.act_graxpert)        
         reg("histogram_transform", self.act_hist_transform)
+        reg("levels", self.act_hist_transform)
         reg("remove_stars", self.act_remove_stars)
         reg("add_stars", self.act_add_stars)
         reg("pedestal",       self.act_pedestal)

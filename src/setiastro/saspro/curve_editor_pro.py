@@ -1016,6 +1016,34 @@ class CurvesDialogPro(QDialog):
         rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
         left.addStretch(1)
+
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        # After the stretch → pins to the lower-left corner.
+        # Deferred import avoids any shortcuts.py <-> curve_editor_pro cycle.
+        from setiastro.saspro.shortcuts import PresetDragHandle
+        try:
+            from setiastro.saspro.resources import curves_path
+            _cv_icon = QIcon(curves_path)
+        except Exception:
+            _cv_icon = QIcon()
+
+        drag_row = QHBoxLayout()
+        drag_row.setContentsMargins(0, 0, 0, 0)
+        self.preset_drag_handle = PresetDragHandle(
+            "curves",
+            self._curves_params,
+            icon=_cv_icon,
+            tooltip=self.tr(
+                "Drag to the canvas to create a Curves shortcut with ALL current\n"
+                "channel curves baked in.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        left.addLayout(drag_row)
+
         top.addLayout(left, 0)
 
         right = QVBoxLayout()
@@ -1684,6 +1712,36 @@ class CurvesDialogPro(QDialog):
             above_full = max(0, min(total_full, int(round(above_prev*scale))))
             out[ch] = (below_full, above_full, below_full/float(total_full), above_full/float(total_full))
         return out
+
+    def _curves_params(self) -> dict:
+        """
+        Canonical multi-curve preset for the drag handle — identical in shape to
+        what _save_current_as_preset persists and what apply_curves_via_preset
+        consumes (kind="curves_multi", modes keyed by K/R/G/B/L*/a*/b*/Chroma/
+        Saturation, points normalized 0..1).
+
+        CRITICAL: flush the active channel's live editor state into the store
+        first, exactly as _save_current_as_preset / export_preview_ops do —
+        otherwise mid-edit adjustments on the current channel are lost.
+        """
+        try:
+            self._curves_store[self._current_mode_key] = self._editor_points_norm()
+        except Exception:
+            pass
+
+        modes = {}
+        for k, pts in self._curves_store.items():
+            if not isinstance(pts, (list, tuple)) or len(pts) < 2:
+                continue
+            modes[k] = [(float(x), float(y)) for (x, y) in pts]
+
+        return {
+            "command_id": "curves",
+            "kind": "curves_multi",
+            "version": 2,
+            "active": str(self._current_mode_key or "K"),
+            "modes": modes,
+        }
 
     def export_preview_ops(self):
         try:
