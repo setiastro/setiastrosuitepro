@@ -2925,8 +2925,24 @@ def save_image(img_array,
             q = 95 if jpeg_quality is None else int(jpeg_quality)
             q = max(1, min(100, q))
 
-            # subsampling=0 keeps best chroma quality; optimize can reduce size a bit
-            img.save(filename, quality=q, subsampling=0, optimize=True)
+            # Bump ImageFile.MAXBLOCK so the optimize=True pass has a big enough
+            # output buffer. Without this, large / noisy images (common in astro)
+            # trip the ancient PIL bug that raises
+            # "broken data stream when writing image file".
+            # See https://github.com/python-pillow/Pillow/issues/148
+            from PIL import ImageFile as _PIL_ImageFile
+            w_px, h_px = img.size
+            needed_block = max(_PIL_ImageFile.MAXBLOCK, w_px * h_px * 4 + (1 << 20))
+            _PIL_ImageFile.MAXBLOCK = needed_block
+
+            # subsampling=0 keeps best chroma quality; optimize can reduce size a bit.
+            # Fall back without optimize if the encoder still complains.
+            try:
+                img.save(filename, quality=q, subsampling=0, optimize=True)
+            except Exception as jpg_err:
+                print(f"[legacy_save_image] JPEG optimize pass failed ({jpg_err}); "
+                      f"retrying without optimize.")
+                img.save(filename, quality=q, subsampling=0, optimize=False)
 
             print(f"Saved 8-bit JPG image to: {filename} (quality={q})")
             return

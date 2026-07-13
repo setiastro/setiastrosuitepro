@@ -4,6 +4,8 @@ from numba import njit, prange
 from numba.typed import List
 import cv2 
 import math
+import os
+import sys
 import threading
 
 # ONE process-wide lock guarding EVERY entry into a numba parallel=True region.
@@ -16,8 +18,61 @@ import threading
 # no CPU parallelism — it only stops the oversubscription that was aborting.
 # RLock (not Lock): stretch_color_image nests into stretch_mono_image, and both
 # serialize on this same lock, so the same thread must be able to re-enter.
-NUMBA_PARALLEL_LOCK = threading.RLock()
+class _NoOpLock:
+    """Context-manager stand-in used when numba-parallel serialization is
+    disabled. On platforms where concurrent entry into numba parallel regions is
+    safe (Windows / Linux in our testing), we skip the real RLock entirely so
+    parallel loaders / debayer calls run concurrently at full speed."""
+    __slots__ = ()
+    def acquire(self, *a, **k): return True
+    def release(self): pass
+    def __enter__(self): return self
+    def __exit__(self, exc_type, exc, tb): return False
+
+
+def _default_numba_serialize() -> bool:
+    # Explicit override via environment. Set this BEFORE importing any SASpro
+    # module to make it authoritative for every importer of NUMBA_PARALLEL_LOCK:
+    #   SASPRO_NUMBA_SERIALIZE=1  -> always serialize (safe, slower)
+    #   SASPRO_NUMBA_SERIALIZE=0  -> never serialize (fast)
+    ev = os.environ.get("SASPRO_NUMBA_SERIALIZE", "").strip().lower()
+    if ev in ("1", "true", "yes", "on"):
+        return True
+    if ev in ("0", "false", "no", "off"):
+        return False
+    # Default: only macOS has shown the "Concurrent access has been detected"
+    # abort when numba's threading layer is re-entered from multiple Python
+    # threads. Everywhere else we default to the fast, unserialized path.
+    return sys.platform == "darwin"
+
+
+_NUMBA_SERIALIZE = _default_numba_serialize()
+
+# On serialize platforms this is a real re-entrant lock; on fast platforms it's a
+# no-op so debayer / stretch calls run concurrently.
+NUMBA_PARALLEL_LOCK = threading.RLock() if _NUMBA_SERIALIZE else _NoOpLock()
 _DEBAYER_LOCK = NUMBA_PARALLEL_LOCK
+
+
+def numba_parallel_serialized() -> bool:
+    """True when numba parallel entry is being serialized (safe/slow mode)."""
+    return _NUMBA_SERIALIZE
+
+
+def set_numba_parallel_serialize(enabled: bool) -> None:
+    """Swap the module-level lock at runtime.
+
+    Updates the module global, so it controls every call that looks up
+    NUMBA_PARALLEL_LOCK by name at call time (e.g. debayer_fits_fast — the path
+    Blink's concurrent load workers hit). Modules that imported the lock *object*
+    by reference at import time keep their original lock; for a fully
+    authoritative override across all importers, set the SASPRO_NUMBA_SERIALIZE
+    environment variable before importing SASpro."""
+    global _NUMBA_SERIALIZE, NUMBA_PARALLEL_LOCK, _DEBAYER_LOCK
+    enabled = bool(enabled)
+    _NUMBA_SERIALIZE = enabled
+    NUMBA_PARALLEL_LOCK = threading.RLock() if enabled else _NoOpLock()
+    _DEBAYER_LOCK = NUMBA_PARALLEL_LOCK
 
 @njit(parallel=True, fastmath=True, cache=True)
 def blend_add_numba(A, B, alpha):

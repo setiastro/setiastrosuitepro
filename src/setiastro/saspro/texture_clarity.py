@@ -60,6 +60,27 @@ def _apply_texture(image: np.ndarray, amount: float, radius: float) -> np.ndarra
     return np.clip(img + (b1 - b2) * 2.0 * amount, 0.0, 1.0)
 
 
+def _apply_unsharp(image: np.ndarray, amount: float, radius: float,
+                   threshold: float = 0.0) -> np.ndarray:
+    """Classic unsharp mask: img + amount * (img - gaussian(img)).
+
+    threshold (in 0–1 units) suppresses sharpening of low-amplitude
+    differences (noise) with a soft linear ramp from t to 2t.
+    """
+    if abs(amount) < 0.001 or cv2 is None:
+        return image
+    img = np.ascontiguousarray(np.nan_to_num(image), dtype=np.float32)
+    try:
+        blur = cv2.GaussianBlur(img, (0, 0), radius)
+    except Exception:
+        return image
+    diff = img - blur
+    if threshold > 0.0:
+        w = np.clip((np.abs(diff) - threshold) / max(threshold, 1e-6), 0.0, 1.0)
+        diff = diff * w
+    return np.clip(img + amount * diff, 0.0, 1.0)
+
+
 def _apply_clarity(image: np.ndarray, amount: float, radius: float,
                    mask_strength: float = 1.0) -> np.ndarray:
     """Bilateral-based local contrast with midtone mask."""
@@ -93,8 +114,10 @@ def _apply_clarity(image: np.ndarray, amount: float, radius: float,
 
 
 def _compute(image: np.ndarray, t_amt: float, t_rad: float,
+             u_amt: float, u_rad: float, u_thr: float,
              c_amt: float, c_rad: float, mask_strength: float) -> np.ndarray:
     out = _apply_texture(image, t_amt, t_rad)
+    out = _apply_unsharp(out, u_amt, u_rad, u_thr)
     out = _apply_clarity(out, c_amt, c_rad, mask_strength)
     return out
 
@@ -103,6 +126,9 @@ def _process(src_float: np.ndarray, params: dict) -> np.ndarray:
     """Apply texture+clarity, handling mono and RGB correctly."""
     t_amt        = float(params.get("t_amt", 0.0))
     t_rad        = float(params.get("t_rad", 1.0))
+    u_amt        = float(params.get("u_amt", 0.0))
+    u_rad        = float(params.get("u_rad", 2.0))
+    u_thr        = float(params.get("u_thr", 0.0))
     c_amt        = float(params.get("c_amt", 0.0))
     c_rad        = float(params.get("c_rad", 1.0))
     mask_str     = float(params.get("mask_str", 1.0))
@@ -110,12 +136,14 @@ def _process(src_float: np.ndarray, params: dict) -> np.ndarray:
     if src_float.ndim == 3 and src_float.shape[2] >= 3:
         R, G, B = src_float[..., 0], src_float[..., 1], src_float[..., 2]
         L = 0.2126 * R + 0.7152 * G + 0.0722 * B
-        L_new = _compute(L, t_amt, t_rad, c_amt, c_rad, mask_str)
+        L_new = _compute(L, t_amt, t_rad, u_amt, u_rad, u_thr,
+                         c_amt, c_rad, mask_str)
         ratio = L_new / (L + 1e-7)
         out = np.clip(src_float[..., :3] * ratio[..., None], 0.0, 1.0)
     else:
         s = src_float.squeeze() if src_float.ndim == 3 else src_float
-        out = _compute(s, t_amt, t_rad, c_amt, c_rad, mask_str)
+        out = _compute(s, t_amt, t_rad, u_amt, u_rad, u_thr,
+                       c_amt, c_rad, mask_str)
         if src_float.ndim == 3:
             out = out[..., None]
 
@@ -149,6 +177,8 @@ def _blend_mask(out: np.ndarray, src: np.ndarray,
 # ─── headless entry point ─────────────────────────────────────────────────────
 
 def texture_clarity_headless(doc, texture_amount=0.0, texture_radius=1.0,
+                             unsharp_amount=0.0, unsharp_radius=2.0,
+                             unsharp_threshold=0.0,
                              clarity_amount=0.0, clarity_radius=1.0,
                              mask_strength=1.0):
     if doc is None or getattr(doc, "image", None) is None:
@@ -157,6 +187,8 @@ def texture_clarity_headless(doc, texture_amount=0.0, texture_radius=1.0,
     if src is None:
         return
     params = dict(t_amt=texture_amount, t_rad=texture_radius,
+                  u_amt=unsharp_amount, u_rad=unsharp_radius,
+                  u_thr=unsharp_threshold,
                   c_amt=clarity_amount, c_rad=clarity_radius,
                   mask_str=mask_strength)
     out = _process(src, params)
@@ -293,6 +325,30 @@ class TextureClarityDialog(QDialog):
             tg.addWidget(w)
         left.addWidget(tex_grp)
 
+        # Unsharp Mask
+        usm_grp = QGroupBox("Unsharp Mask")
+        ug = QVBoxLayout(usm_grp)
+        self.lbl_u_amt = QLabel("Amount: 0.00")
+        self.sl_u_amt  = QSlider(Qt.Orientation.Horizontal)
+        self.sl_u_amt.setRange(0, 200); self.sl_u_amt.setValue(0)
+        self.sl_u_amt.setToolTip("0.00 – 2.00  (strength of the sharpening)")
+        self.lbl_u_rad = QLabel("Radius: 2.0")
+        self.sl_u_rad  = QSlider(Qt.Orientation.Horizontal)
+        self.sl_u_rad.setRange(1, 100); self.sl_u_rad.setValue(20)
+        self.sl_u_rad.setToolTip("0.1 – 10.0 px  (Gaussian sigma)")
+        self.lbl_u_thr = QLabel("Threshold: 0.000")
+        self.sl_u_thr  = QSlider(Qt.Orientation.Horizontal)
+        self.sl_u_thr.setRange(0, 100); self.sl_u_thr.setValue(0)
+        self.sl_u_thr.setToolTip(
+            "0.000 – 0.100  — differences below this are not sharpened\n"
+            "(protects background noise)"
+        )
+        for w in (self.lbl_u_amt, self.sl_u_amt,
+                  self.lbl_u_rad, self.sl_u_rad,
+                  self.lbl_u_thr, self.sl_u_thr):
+            ug.addWidget(w)
+        left.addWidget(usm_grp)
+
         # Clarity
         clar_grp = QGroupBox("Clarity")
         cg = QVBoxLayout(clar_grp)
@@ -379,6 +435,12 @@ class TextureClarityDialog(QDialog):
             lambda v: self._param_changed(self.lbl_t_amt, f"Amount: {v/100:.2f}"))
         self.sl_t_rad.valueChanged.connect(
             lambda v: self._param_changed(self.lbl_t_rad, f"Radius: {v/10:.1f}"))
+        self.sl_u_amt.valueChanged.connect(
+            lambda v: self._param_changed(self.lbl_u_amt, f"Amount: {v/100:.2f}"))
+        self.sl_u_rad.valueChanged.connect(
+            lambda v: self._param_changed(self.lbl_u_rad, f"Radius: {v/10:.1f}"))
+        self.sl_u_thr.valueChanged.connect(
+            lambda v: self._param_changed(self.lbl_u_thr, f"Threshold: {v/1000:.3f}"))
         self.sl_c_amt.valueChanged.connect(
             lambda v: self._param_changed(self.lbl_c_amt, f"Amount: {v/100:.2f}"))
         self.sl_c_rad.valueChanged.connect(
@@ -426,6 +488,9 @@ class TextureClarityDialog(QDialog):
         params = {
             "t_amt":    self.sl_t_amt.value() / 100.0,
             "t_rad":    self.sl_t_rad.value() / 10.0,
+            "u_amt":    self.sl_u_amt.value() / 100.0,
+            "u_rad":    self.sl_u_rad.value() / 10.0,
+            "u_thr":    self.sl_u_thr.value() / 1000.0,
             "c_amt":    self.sl_c_amt.value() / 100.0,
             "c_rad":    self.sl_c_rad.value() / 10.0,
             "mask_str": self.sl_mask.value()  / 100.0,
@@ -457,18 +522,26 @@ class TextureClarityDialog(QDialog):
 
     def _reset(self):
         for sld in (self.sl_t_amt, self.sl_t_rad,
+                    self.sl_u_amt, self.sl_u_rad, self.sl_u_thr,
                     self.sl_c_amt, self.sl_c_rad, self.sl_mask):
             sld.blockSignals(True)
         self.sl_t_amt.setValue(0)
         self.sl_t_rad.setValue(10)
+        self.sl_u_amt.setValue(0)
+        self.sl_u_rad.setValue(20)
+        self.sl_u_thr.setValue(0)
         self.sl_c_amt.setValue(0)
         self.sl_c_rad.setValue(30)
         self.sl_mask.setValue(100)
         for sld in (self.sl_t_amt, self.sl_t_rad,
+                    self.sl_u_amt, self.sl_u_rad, self.sl_u_thr,
                     self.sl_c_amt, self.sl_c_rad, self.sl_mask):
             sld.blockSignals(False)
         self.lbl_t_amt.setText("Amount: 0.00")
         self.lbl_t_rad.setText("Radius: 1.0")
+        self.lbl_u_amt.setText("Amount: 0.00")
+        self.lbl_u_rad.setText("Radius: 2.0")
+        self.lbl_u_thr.setText("Threshold: 0.000")
         self.lbl_c_amt.setText("Amount: 0.00")
         self.lbl_c_rad.setText("Radius: 3.0")
         self.lbl_mask.setText("Midtone strength: 1.00  (1=midtones only, 0=everywhere)")
@@ -483,6 +556,9 @@ class TextureClarityDialog(QDialog):
         params = dict(
             t_amt    = self.sl_t_amt.value() / 100.0,
             t_rad    = self.sl_t_rad.value() / 10.0,
+            u_amt    = self.sl_u_amt.value() / 100.0,
+            u_rad    = self.sl_u_rad.value() / 10.0,
+            u_thr    = self.sl_u_thr.value() / 1000.0,
             c_amt    = self.sl_c_amt.value() / 100.0,
             c_rad    = self.sl_c_rad.value() / 10.0,
             mask_str = self.sl_mask.value()  / 100.0,
@@ -492,6 +568,9 @@ class TextureClarityDialog(QDialog):
             self.doc,
             texture_amount = params["t_amt"],
             texture_radius = params["t_rad"],
+            unsharp_amount = params["u_amt"],
+            unsharp_radius = params["u_rad"],
+            unsharp_threshold = params["u_thr"],
             clarity_amount = params["c_amt"],
             clarity_radius = params["c_rad"],
             mask_strength  = params["mask_str"],

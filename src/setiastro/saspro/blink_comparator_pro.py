@@ -1,4 +1,5 @@
 # pro/blink_comparator_pro.py
+# thread safe version
 from __future__ import annotations
 
 from setiastro.saspro.main_helpers import non_blocking_sleep
@@ -6,6 +7,7 @@ from setiastro.saspro.main_helpers import non_blocking_sleep
 # ⬇️ keep your existing imports used by the code you pasted
 import os
 import re
+import sys
 import time
 import psutil
 import numpy as np
@@ -47,6 +49,35 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 
 from setiastro.saspro.star_metrics import measure_stars_sep
+
+def _blink_thread_safety_mode() -> str:
+    """Return 'safe' or 'fast'. QSettings 'blink/thread_safety' may be:
+       'auto' (default) -> safe on macOS, fast elsewhere
+       'safe'           -> force serialized numba + conservative workers
+       'fast'           -> force concurrent numba + aggressive workers"""
+    try:
+        mode = QSettings().value("blink/thread_safety", "auto", type=str) or "auto"
+    except Exception:
+        mode = "auto"
+    mode = str(mode).strip().lower()
+    if mode not in ("auto", "safe", "fast"):
+        mode = "auto"
+    if mode == "auto":
+        return "safe" if sys.platform == "darwin" else "fast"
+    return mode
+
+
+def _blink_apply_thread_safety() -> str:
+    """Push the current mode into numba_utils so debayer calls made by our load
+    workers use the right locking behavior. Returns 'safe' / 'fast'."""
+    mode = _blink_thread_safety_mode()
+    try:
+        from setiastro.saspro.legacy.numba_utils import set_numba_parallel_serialize
+        set_numba_parallel_serialize(mode == "safe")
+    except Exception:
+        pass
+    return mode
+
 
 def _percentile_scale(arr, lo=0.5, hi=99.5):
     a = np.asarray(arr, dtype=np.float32)
@@ -3203,14 +3234,24 @@ class BlinkTab(QWidget):
         completed = []
         attempt = 0
 
+        # Apply platform / QSettings thread-safety mode once, before the pool.
+        _mode = _blink_apply_thread_safety()
+
         while remaining and attempt <= MAX_RETRIES:
-            
+
             total_cpus = os.cpu_count() or 1
-            # I/O-bound load with the FITS read + numba debayer now serialized:
-            # more than a handful of threads only adds seek/mmap contention with
-            # no throughput gain, and widens the window for the very races we've
-            # locked around. Cap conservatively.
-            max_workers = max(1, min(total_cpus - 1, 8))
+            if _mode == "safe":
+                # macOS / forced-safe: FITS read + numba debayer are serialized,
+                # so extra threads only add seek/mmap contention with no
+                # throughput gain, and widen the window for the races we've
+                # locked around. Cap conservatively.
+                max_workers = max(1, min(total_cpus - 1, 8))
+            else:
+                # Fast path (original pre-thread-safety behavior): reserve ~25%
+                # of cores (capped at 4) for the GUI/OS, then scale out to the
+                # rest, capped at 60.
+                reserved_cpus = min(4, max(1, int(total_cpus * 0.25)))
+                max_workers = max(1, min(total_cpus - reserved_cpus, 60))
 
             futures = {}
             failed = []

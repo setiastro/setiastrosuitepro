@@ -3,13 +3,15 @@ from __future__ import annotations
 import os
 import platform
 import shutil
+import tempfile
 import numpy as np
 
 from PyQt6.QtWidgets import (
     QMessageBox, QDialog, QFormLayout, QDialogButtonBox, QComboBox,
     QCheckBox, QSpinBox, QDoubleSpinBox, QLabel,
+    QLineEdit, QPushButton, QHBoxLayout, QWidget, QFileDialog,
 )
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, QSettings
 from setiastro.saspro.legacy.image_manager import save_image, load_image
 from setiastro.saspro.cosmicclarity_engines.darkstar_engine import (
     darkstar_starremoval_rgb01,
@@ -21,6 +23,7 @@ from .remove_stars import (
     _mtf_params_unlinked, _apply_mtf_unlinked_rgb, _invert_mtf_unlinked_rgb,
     _active_mask3_from_doc, _mask_blend_with_doc_mask, _push_as_new_doc,
     _ensure_exec_bit, _pad_reflect, _crop_unpad, _extract_stars_only,
+    _detect_starnet_version, _safe_rmdir,
 )
 from setiastro.saspro.starless_engines.syqon_nafnet_engine import nafnet_starless_rgb01
 
@@ -151,8 +154,9 @@ def _run_starnet_headless(main, doc, p):
             pass
 
     starnet_dir = os.path.dirname(exe) or os.getcwd()
-    in_path     = os.path.join(starnet_dir, "imagetoremovestars.tif")
-    out_path    = os.path.join(starnet_dir, "starless.tif")
+    tmp_dir     = tempfile.mkdtemp(prefix="SASpro_StarNet_")
+    in_path     = os.path.join(tmp_dir, "imagetoremovestars.tif")
+    out_path    = os.path.join(tmp_dir, "starless.tif")
 
     try:
         save_image(img_for_starnet, in_path, original_format="tif",
@@ -160,14 +164,22 @@ def _run_starnet_headless(main, doc, p):
                    image_meta=None, file_meta=None)
     except Exception as e:
         QMessageBox.critical(main, "StarNet", f"Failed to write input TIFF:\n{e}")
+        _safe_rmdir(tmp_dir)
         return
 
-    exe_name = os.path.basename(exe).lower()
-    sysname  = platform.system()
+    exe_name        = os.path.basename(exe).lower()
+    sysname         = platform.system()
+    starnet_version = _detect_starnet_version(exe)
+
     if sysname in ("Windows", "Linux"):
-        command = [exe, in_path, out_path, "256"]
+        if starnet_version == "v25":
+            command = [exe, "-i", in_path, "-o", out_path, "-s", "256"]
+        else:
+            command = [exe, in_path, out_path, "256"]
     else:
-        if "starnet2" in exe_name:
+        if starnet_version == "v25":
+            command = [exe, "-i", in_path, "-o", out_path, "-s", "256"]
+        elif "starnet2" in exe_name:
             command = [exe, "--input", in_path, "--output", out_path]
         else:
             command = [exe, in_path, out_path]
@@ -182,12 +194,12 @@ def _run_starnet_headless(main, doc, p):
 def _finish_starnet(main, doc, rc, dlg, in_path, out_path, did_stretch):
     if rc != 0 or not os.path.exists(out_path):
         QMessageBox.critical(main, "StarNet", "StarNet failed or no output image produced.")
-        _safe_rm(in_path); _safe_rm(out_path); dlg.close(); return
+        _safe_rm(in_path); _safe_rm(out_path); _safe_rmdir(os.path.dirname(in_path)); dlg.close(); return
 
     starless_rgb, _, _, _ = load_image(out_path)
     if starless_rgb is None:
         QMessageBox.critical(main, "StarNet", "Failed to load starless image.")
-        _safe_rm(in_path); _safe_rm(out_path); dlg.close(); return
+        _safe_rm(in_path); _safe_rm(out_path); _safe_rmdir(os.path.dirname(in_path)); dlg.close(); return
 
     if starless_rgb.ndim == 2 or (starless_rgb.ndim == 3 and starless_rgb.shape[2] == 1):
         starless_rgb = np.stack([starless_rgb]*3, axis=-1)
@@ -237,7 +249,7 @@ def _finish_starnet(main, doc, rc, dlg, in_path, out_path, did_stretch):
     except Exception as e:
         QMessageBox.critical(main, "StarNet", f"Failed to apply starless result:\n{e}")
 
-    _safe_rm(in_path); _safe_rm(out_path); dlg.close()
+    _safe_rm(in_path); _safe_rm(out_path); _safe_rmdir(os.path.dirname(in_path)); dlg.close()
 
 
 # ---------- DarkStar headless ----------
@@ -438,6 +450,32 @@ class RemoveStarsPresetDialog(QDialog):
         self.cmb_stride.setCurrentText(str(int(p.get("stride", 512))))
 
         # SyQon options
+        self.syq_engine = QComboBox()
+        self.syq_engine.addItem("Integrated (built-in model)", "integrated")
+        self.syq_engine.addItem("Standalone CLI (SyQonStarless)", "standalone_cli")
+        em = str(p.get("engine_mode", "integrated")).strip().lower()
+        self.syq_engine.setCurrentIndex(
+            1 if em in ("standalone_cli", "cli", "standalone") else 0
+        )
+
+        self.lbl_cli_path   = QLabel("CLI executable:")
+        self.syq_cli_path   = QLineEdit()
+        self.syq_cli_browse = QPushButton("Browse…")
+        self.syq_cli_browse.clicked.connect(self._browse_syqon_cli)
+        cli_default = str(p.get("cli_path") or "")
+        if not cli_default:
+            try:
+                cli_default = str(QSettings().value("syqon/standalone_cli_path", "", type=str))
+            except Exception:
+                cli_default = ""
+        self.syq_cli_path.setText(cli_default)
+
+        self.syq_cli_row = QWidget()
+        _cli_row_lay = QHBoxLayout(self.syq_cli_row)
+        _cli_row_lay.setContentsMargins(0, 0, 0, 0)
+        _cli_row_lay.addWidget(self.syq_cli_path, 1)
+        _cli_row_lay.addWidget(self.syq_cli_browse)
+
         self.syq_model = QComboBox()
         self.syq_model.addItem("Nadir",     "nadir")
         self.syq_model.addItem("AxiomV2",   "axiomv2")
@@ -489,6 +527,8 @@ class RemoveStarsPresetDialog(QDialog):
         form.addRow("", self.chk_disable_gpu)
         form.addRow("", self.chk_show)
         form.addRow(QLabel("— SyQon —"))
+        form.addRow("Engine:", self.syq_engine)
+        form.addRow(self.lbl_cli_path, self.syq_cli_row)
         form.addRow("Model:", self.syq_model)
         form.addRow("Tile size:", self.syq_tile)
         form.addRow("Overlap:", self.syq_overlap)
@@ -511,16 +551,48 @@ class RemoveStarsPresetDialog(QDialog):
             self.chk_linear.setEnabled(is_starnet)
             for w in (self.cmb_mode, self.cmb_stride, self.chk_disable_gpu, self.chk_show):
                 w.setEnabled(is_darkstar)
-            for w in (self.syq_model, self.syq_tile, self.syq_overlap, self.syq_use_mtf,
-                      self.syq_mtf_median, self.lbl_mtf_median, self.syq_make_stars,
-                      self.syq_pad, self.syq_pad_px, self.syq_extract):
+            for w in (self.syq_engine, self.syq_model, self.syq_tile, self.syq_overlap,
+                      self.syq_use_mtf, self.syq_mtf_median, self.lbl_mtf_median,
+                      self.syq_make_stars, self.syq_pad, self.syq_pad_px, self.syq_extract,
+                      self.syq_cli_path, self.syq_cli_browse, self.lbl_cli_path,
+                      self.syq_cli_row):
                 w.setEnabled(is_syqon)
-            # keep mtf_median sub-gated on checkbox when syqon is active
             if is_syqon:
-                self.syq_mtf_median.setEnabled(self.syq_use_mtf.isChecked())
+                is_cli = (self.syq_engine.currentData() == "standalone_cli")
+                # Model + MTF only apply to the integrated engine
+                for w in (self.syq_model, self.syq_use_mtf,
+                          self.syq_mtf_median, self.lbl_mtf_median):
+                    w.setEnabled(not is_cli)
+                # CLI path row only visible for standalone CLI
+                for w in (self.syq_cli_row, self.lbl_cli_path):
+                    w.setVisible(is_cli)
+                if not is_cli:
+                    self.syq_mtf_median.setEnabled(self.syq_use_mtf.isChecked())
+            else:
+                for w in (self.syq_cli_row, self.lbl_cli_path):
+                    w.setVisible(False)
 
         self.cmb_tool.currentIndexChanged.connect(lambda _: _toggle())
+        self.syq_engine.currentIndexChanged.connect(lambda _: _toggle())
         _toggle()
+
+    def _browse_syqon_cli(self):
+        start = self.syq_cli_path.text().strip()
+        if not start:
+            try:
+                start = str(QSettings().value("syqon/standalone_cli_path", "", type=str))
+            except Exception:
+                start = ""
+        filt = "Executable (*.exe)" if os.name == "nt" else "All Files (*)"
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Starless Standalone Executable", start, filt
+        )
+        if path:
+            self.syq_cli_path.setText(path)
+            try:
+                QSettings().setValue("syqon/standalone_cli_path", path)
+            except Exception:
+                pass
 
     def result_dict(self) -> dict:
         idx = self.cmb_tool.currentIndex()
@@ -537,6 +609,8 @@ class RemoveStarsPresetDialog(QDialog):
         # SyQon
         return {
             "tool":               "syqon",
+            "engine_mode":        str(self.syq_engine.currentData() or "integrated"),
+            "cli_path":           self.syq_cli_path.text().strip(),
             "model_kind":         str(self.syq_model.currentData() or "nadir"),
             "tile_size":          int(self.syq_tile.value()),
             "overlap":            int(self.syq_overlap.value()),
@@ -604,6 +678,11 @@ class _SyQonEngineThread(QThread):
 
 
 def _run_syqon_headless(main, doc, p):
+    engine_mode = str(p.get("engine_mode", "integrated")).strip().lower()
+    if engine_mode in ("standalone_cli", "cli", "standalone"):
+        _run_syqon_standalone_cli_headless(main, doc, p)
+        return
+
     from .remove_stars import _syqon_norm_kind, _syqon_data_dir, _syqon_model_path
     model_kind = _syqon_norm_kind(str(p.get("model_kind", "nadir")))
 
@@ -753,6 +832,156 @@ def _run_syqon_headless(main, doc, p):
     thr.progress_signal.connect(_on_prog)
     thr.finished_signal.connect(_on_done)
     dlg.cancel_button.clicked.connect(lambda: dlg.append_text("Cancel not supported for SyQon thread yet.\n"))
+    dlg.show(); thr.start(); dlg.exec()
+
+
+# ---------- SyQon Standalone CLI headless ----------
+def _run_syqon_standalone_cli_headless(main, doc, p):
+    from .remove_stars import _SyQonStandaloneCLIThread
+
+    # Resolve exe path — preset first, then QSettings
+    exe_path = str(p.get("cli_path") or p.get("exe_path") or "").strip()
+    if not exe_path:
+        try:
+            s = getattr(main, "settings", None) or QSettings()
+            exe_path = str(s.value("syqon/standalone_cli_path", "", type=str)).strip()
+        except Exception:
+            pass
+
+    # Resolve macOS .app bundles to the actual binary inside
+    if exe_path.endswith(".app") and os.path.isdir(exe_path):
+        app_name = os.path.splitext(os.path.basename(exe_path))[0]
+        exe_path = os.path.join(exe_path, "Contents", "MacOS", app_name)
+
+    if not exe_path or not (os.path.isfile(exe_path) or os.path.isdir(exe_path)):
+        QMessageBox.warning(
+            main, "SyQon",
+            "SyQon Starless standalone CLI path not configured.\n"
+            "Open the interactive SyQon tool once to set it, or provide "
+            "'cli_path' in the preset."
+        )
+        return
+
+    tile          = int(p.get("tile_size", 512))
+    overlap       = int(p.get("overlap", 64))
+    make_stars    = bool(p.get("make_stars", True))
+    pad_edges     = bool(p.get("pad_edges", True))
+    pad_pixels    = int(p.get("pad_pixels", 128))
+    stars_extract = str(p.get("stars_extract", "subtract")).lower()
+    device        = str(p.get("device", "Auto"))
+
+    # ---- prep image ----
+    src = np.asarray(doc.image)
+    orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
+
+    x = np.nan_to_num(src.astype(np.float32, copy=False),
+                      nan=0.0, posinf=0.0, neginf=0.0)
+    scale_factor = float(np.max(x)) if x.size else 1.0
+    x01 = (x / scale_factor) if scale_factor > 1.01 else x
+    x01 = np.clip(x01, 0.0, 1.0).astype(np.float32, copy=False)
+
+    if x01.ndim == 2:
+        xrgb = np.stack([x01] * 3, axis=-1)
+    elif x01.ndim == 3 and x01.shape[2] == 1:
+        xrgb = np.repeat(x01, 3, axis=2)
+    else:
+        xrgb = x01[..., :3]
+
+    H0, W0 = xrgb.shape[:2]
+    if pad_edges and pad_pixels > 0:
+        xrgb = _pad_reflect(xrgb, pad_pixels)
+
+    # ---- progress dialog + thread ----
+    dlg = _ProcDialog(main, title="SyQon Starless CLI Progress")
+    dlg.append_text("Starting SyQon Starless (standalone CLI)…\n")
+
+    thr = _SyQonStandaloneCLIThread(
+        input_rgb01=xrgb, exe_path=exe_path,
+        tile=tile, overlap=overlap, device=device, parent=dlg,
+    )
+
+    def _on_prog(pct, stage):
+        dlg.set_progress(int(pct), 100, str(stage or ""))
+
+    def _on_done(starless_rgb, stars_rgb, info, err):
+        if err or starless_rgb is None:
+            QMessageBox.critical(main, "SyQon",
+                                 f"SyQon Starless failed:\n{err or 'Unknown error'}")
+            dlg.close(); return
+
+        starless_lin = np.asarray(starless_rgb, dtype=np.float32)
+        if starless_lin.ndim == 2:
+            starless_lin = np.stack([starless_lin] * 3, axis=-1)
+
+        if scale_factor > 1.01:
+            starless_lin = np.clip(starless_lin * scale_factor,
+                                   0.0, 1.0).astype(np.float32, copy=False)
+
+        if pad_edges and pad_pixels > 0:
+            starless_lin = _crop_unpad(starless_lin, pad_pixels, H0, W0)
+
+        orig = np.asarray(doc.image, dtype=np.float32)
+        if orig.ndim == 2:
+            original_rgb = np.stack([orig] * 3, axis=-1)
+        elif orig.ndim == 3 and orig.shape[2] == 1:
+            original_rgb = np.repeat(orig, 3, axis=2)
+        else:
+            original_rgb = orig[..., :3]
+
+        starless_rgb_out = starless_lin.astype(np.float32, copy=False)
+
+        if make_stars:
+            stars_only = _extract_stars_only(original_rgb, starless_rgb_out,
+                                             mode=stars_extract)
+            m3 = _active_mask3_from_doc(doc, stars_only.shape[1], stars_only.shape[0])
+            if m3 is not None:
+                stars_only *= m3
+            stars_to_push = (stars_only.mean(axis=2).astype(np.float32, copy=False)
+                             if orig_was_mono else stars_only)
+            _push_as_new_doc(main, doc, stars_to_push,
+                             title_suffix="_stars",
+                             source="Stars-Only (SyQon CLI)")
+
+        final_starless = _mask_blend_with_doc_mask(doc, starless_rgb_out, original_rgb)
+        final_to_apply = (final_starless.mean(axis=2).astype(np.float32, copy=False)
+                          if orig_was_mono else final_starless)
+        final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+
+        meta = {
+            "step_name": "Stars Removed",
+            "bit_depth": "32-bit floating point",
+            "is_mono":   bool(orig_was_mono),
+            "replay_last": {
+                "op": "remove_stars",
+                "params": {
+                    "tool":          "syqon",
+                    "engine_mode":   "standalone_cli",
+                    "cli_path":      exe_path,
+                    "tile_size":     tile,
+                    "overlap":       overlap,
+                    "make_stars":    make_stars,
+                    "pad_edges":     pad_edges,
+                    "pad_pixels":    pad_pixels,
+                    "stars_extract": stars_extract,
+                    "device":        device,
+                    "label":         "Remove Stars (SyQon CLI)",
+                }
+            }
+        }
+
+        try:
+            doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
+            if hasattr(main, "_log"):
+                main._log("Stars Removed (SyQon Standalone CLI, headless)")
+        except Exception as e:
+            QMessageBox.critical(main, "SyQon",
+                                 f"Failed to apply starless result:\n{e}")
+
+        dlg.close()
+
+    thr.progress.connect(_on_prog)
+    thr.finished.connect(_on_done)
+    dlg.cancel_button.clicked.connect(thr.cancel)
     dlg.show(); thr.start(); dlg.exec()
 
 

@@ -61,17 +61,30 @@ import functools
 # ("Concurrent access has been detected") just as badly as one entered twice.
 # RLock because stretch_color_image calls stretch_mono_image and both serialize.
 try:
-    from setiastro.saspro.legacy.numba_utils import NUMBA_PARALLEL_LOCK
+    from setiastro.saspro.legacy import numba_utils as _numba_utils
+    NUMBA_PARALLEL_LOCK = _numba_utils.NUMBA_PARALLEL_LOCK
 except Exception:
+    _numba_utils = None
     import threading as _threading
     NUMBA_PARALLEL_LOCK = _threading.RLock()
 
 
 def _numba_serialized(fn):
-    """Serialize a function that enters numba parallel=True regions."""
+    """Serialize a function that enters numba parallel=True regions — but only
+    when the active policy calls for it.
+
+    We must resolve the lock at CALL time, not decoration time. numba_utils can
+    swap its module-level lock at runtime (e.g. Blink flipping fast/safe mode);
+    if we captured the lock object here at import, that swap would never reach
+    these stretch functions. Looking it up fresh via the module each call keeps
+    us in sync. On fast platforms numba_utils hands back a no-op lock, so the
+    `with` costs effectively nothing."""
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
-        with NUMBA_PARALLEL_LOCK:
+        lock = NUMBA_PARALLEL_LOCK
+        if _numba_utils is not None:
+            lock = getattr(_numba_utils, "NUMBA_PARALLEL_LOCK", lock)
+        with lock:
             return fn(*args, **kwargs)
     return _wrapper
 
