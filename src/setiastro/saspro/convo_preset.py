@@ -412,3 +412,43 @@ def run_convo_via_preset(main, doc_or_preset=None, preset: dict | None = None, *
 
     apply_convo_via_preset(main, doc, p)
 
+def open_convo_with_preset(main_window, preset: dict | None = None):
+    from PyQt6.QtGui import QIcon
+
+    # Resolve doc: active MDI subwindow first, then docman fallback.
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    dm = getattr(main_window, "doc_manager", None) or getattr(main_window, "dm", None) \
+         or getattr(main_window, "docman", None)
+    if doc is None and dm is not None:
+        doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+               else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    # Constructor is (doc_manager, parent, doc) — NOT (parent, doc).
+    dlg = ConvoDeconvoDialog(doc_manager=dm, parent=main_window, doc=doc)
+    try:
+        from setiastro.saspro.resources import convoicon_path
+        dlg.setWindowIcon(QIcon(convoicon_path))
+    except Exception:
+        pass
+
+    # Controls have no on-show reset -> seed before show. LS center defers via showEvent.
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+
+    try:
+        main_window._convo_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+    except Exception:
+        pass
+
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg

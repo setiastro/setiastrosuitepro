@@ -622,7 +622,13 @@ def _preset_opener_for_command(command_id: str):
         return open_white_balance_with_preset      
     if command_id == "remove_stars":
         from setiastro.saspro.remove_stars_preset import open_remove_stars_with_preset
-        return open_remove_stars_with_preset     
+        return open_remove_stars_with_preset   
+    if command_id == "remove_green":
+        from setiastro.saspro.remove_green import open_remove_green_with_preset
+        return open_remove_green_with_preset  
+    if command_id == "convo":
+        from setiastro.saspro.convo_preset import open_convo_with_preset
+        return open_convo_with_preset        
     return None
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----

@@ -6489,10 +6489,14 @@ class AstroSuiteProMainWindow(
                         "preserve_lightness",
                         preset_dict.get("preserve", True)
                     ))
+                    channel = str(preset_dict.get(
+                        "channel",
+                        preset_dict.get("target_channel", "G")
+                    )).upper()
                     self._log(
                         f"[Replay] Applied Remove Green to base of "
                         f"'{target_sw.windowTitle()}' "
-                        f"(amount={amt:.2f}, mode={mode}, "
+                        f"(channel={channel}, amount={amt:.2f}, mode={mode}, "
                         f"preserve_lightness={'yes' if preserve else 'no'})"
                     )
                 except Exception:
@@ -7555,11 +7559,14 @@ class AstroSuiteProMainWindow(
                                    raw.get("neutral_mode", "avg"))).lower()
                 preserve = bool(raw.get("preserve_lightness",
                                         raw.get("preserve", True)))
+                channel = str(raw.get("channel",
+                                      raw.get("target_channel", "G"))).upper()
 
                 preset_dict = {
                     "amount": amt,
                     "mode": mode,
                     "preserve_lightness": preserve,
+                    "channel": channel,
                 }
 
                 # Apply to the current doc (ROI or full view)
@@ -7574,7 +7581,7 @@ class AstroSuiteProMainWindow(
                     if hasattr(self, "_log"):
                         self._log(
                             f"[Replay] Recorded Remove Green preset from command drop "
-                            f"(amount={amt:.2f}, mode={mode}, "
+                            f"(channel={channel}, amount={amt:.2f}, mode={mode}, "
                             f"preserve_lightness={'yes' if preserve else 'no'})"
                         )
                 except Exception:
@@ -8251,6 +8258,45 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 QMessageBox.warning(self, cid.replace("_", " ").title(), str(e))
             return
+
+        # ---------- Final fallback: trigger the registered QAction on the target view ----------
+        # Function-bundle steps for commands that don't have a dedicated HCD branch or
+        # an _apply_{cid}_to_doc method (e.g. checkpoint_save, some project-level ops)
+        # end up here. Activate the target subwindow so the action runs against the
+        # right doc, then trigger the QAction like a normal menu/toolbar invocation.
+        #
+        # NB: we import QApplication locally because the function_bundle branch
+        # above also has `from PyQt6.QtWidgets import QApplication`, which turns
+        # QApplication into a function-local name for the entire method (Python
+        # scoping rule). If we hit this fallback without going through that branch,
+        # the module-level QApplication would raise UnboundLocalError.
+        from PyQt6.QtWidgets import QApplication as _QApplication
+        try:
+            act = self._find_action_by_cid(cid)
+        except Exception:
+            act = None
+        if act is not None:
+            try:
+                if target_sw is not None:
+                    self.mdi.setActiveSubWindow(target_sw)
+                    _QApplication.processEvents()
+                act.trigger()
+                try:
+                    self._log(f"{cid} triggered on '{target_sw.windowTitle()}' (QAction fallback)")
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, cid.replace("_", " ").title(), str(e))
+                except Exception:
+                    pass
+            return
+
+        # Truly unknown — log so we notice next time
+        try:
+            self._log(f"[HCD] unhandled command_id={cid!r} (no HCD branch, no _apply_*_to_doc, no QAction)")
+        except Exception:
+            pass
 
     def _find_action_by_cid(self, cid: str) -> QAction | None:
         if not cid:
