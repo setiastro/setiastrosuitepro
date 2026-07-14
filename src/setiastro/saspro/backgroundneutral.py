@@ -328,6 +328,7 @@ class BackgroundNeutralizationDialog(QDialog):
         super().__init__(parent)
         self._main = parent
         self.doc = doc
+        self._pending_preset = None  # stash for double-click-open seeding (survives reload/clear)
 
         self._connected_current_doc_changed = False
         if hasattr(self._main, "currentDocumentChanged"):
@@ -404,6 +405,31 @@ class BackgroundNeutralizationDialog(QDialog):
         zoom_row.addStretch(1)  # optional: keeps them left-aligned
 
         layout.addLayout(zoom_row)
+
+        # --- preset drag handle (grip) ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import neutral_path
+                _grip_icon = QIcon(neutral_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "background_neutral", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Background Neutralization "
+                    "shortcut with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            layout.addLayout(drag_row)
+        except Exception:
+            pass
 
         # Events
         self.btn_apply.clicked.connect(self._on_apply)
@@ -598,6 +624,81 @@ class BackgroundNeutralizationDialog(QDialog):
         h = int(max(1.0, min(bounds.height() - y, self.current_rect_scene.height())))
         return (x, y, w, h)
 
+    # -------- preset emit (grip) --------
+    def get_preset(self) -> dict:
+        """Emit current state as the BN preset schema (inverse of seed_from_preset).
+        Box present (drawn or Find Background) -> rect; nothing drawn -> auto.
+        Mirrors the normalization _on_apply records for Replay Last."""
+        try:
+            rect = self._scene_rect_to_image_rect()
+        except Exception:
+            return {"mode": "auto"}
+        try:
+            img = self._doc_image_normalized()
+            H, W = img.shape[:2]
+            if W > 0 and H > 0:
+                x, y, w, h = rect
+                return {
+                    "mode": "rect",
+                    "rect_norm": [
+                        float(x) / float(W),
+                        float(y) / float(H),
+                        float(w) / float(W),
+                        float(h) / float(H),
+                    ],
+                }
+        except Exception:
+            pass
+        return {"mode": "auto"}
+
+    # -------- preset seed (double-click open) --------
+    def seed_from_preset(self, p: dict | None):
+        """Inverse of get_preset. Rect -> draw sample box; Auto -> clear (finder runs on apply)."""
+        p = dict(p or {})
+        mode = (p.get("mode") or "auto").lower()
+
+        # Clear any existing selection overlay first.
+        if self.selection_item is not None:
+            try:
+                self.scene.removeItem(self.selection_item)
+            except Exception:
+                pass
+            self.selection_item = None
+
+        if mode != "rect":
+            self.current_rect_scene = QRectF()
+            return
+
+        rn = p.get("rect_norm")
+        try:
+            rn = list(rn) if rn is not None else None
+        except Exception:
+            rn = None
+        if not rn or len(rn) != 4:
+            self.current_rect_scene = QRectF()
+            return
+
+        try:
+            bounds = self.pixmap_item.boundingRect()
+            W = float(bounds.width()); H = float(bounds.height())
+        except Exception:
+            self.current_rect_scene = QRectF()
+            return
+        if W <= 0.0 or H <= 0.0:
+            self.current_rect_scene = QRectF()
+            return
+
+        x = float(np.clip(float(rn[0]), 0.0, 1.0)) * W
+        y = float(np.clip(float(rn[1]), 0.0, 1.0)) * H
+        w = max(1.0, float(np.clip(float(rn[2]), 0.0, 1.0)) * W)
+        h = max(1.0, float(np.clip(float(rn[3]), 0.0, 1.0)) * H)
+        self.current_rect_scene = QRectF(x, y, w, h)
+
+        # Draw the sample rectangle; cosmetic pen keeps it visible at any zoom.
+        pen = QPen(QColor(255, 0, 0), 2, Qt.PenStyle.SolidLine)
+        pen.setCosmetic(True)
+        self.selection_item = self.scene.addRect(self.current_rect_scene, pen)
+
     def _on_apply(self):
         try:
             rect = self._scene_rect_to_image_rect()
@@ -746,8 +847,18 @@ class BackgroundNeutralizationDialog(QDialog):
 
     def showEvent(self, e):
         super().showEvent(e)
-        # fit after the widget is actually visible
-        QTimer.singleShot(0, self.fit_to_view)
+        # fit + (optionally) seed after the widget is visible and laid out
+        QTimer.singleShot(0, self._after_show)
+
+    def _after_show(self):
+        self.fit_to_view()
+        p = getattr(self, "_pending_preset", None)
+        if p is not None:
+            self._pending_preset = None
+            try:
+                self.seed_from_preset(p)
+            except Exception:
+                pass
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -769,3 +880,47 @@ def run_background_neutral_via_preset(main, preset=None, target_doc=None):
         return
 
     apply_background_neutral_to_doc(doc, p)
+
+
+def open_background_neutral_with_preset(main_window, preset: dict | None = None):
+    from PyQt6.QtGui import QIcon
+
+    # Resolve doc: active MDI subwindow first, then docman fallback.
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None:
+        return
+
+    try:
+        from setiastro.saspro.resources import neutral_path
+        _icon = QIcon(neutral_path)
+    except Exception:
+        _icon = QIcon()
+
+    dlg = BackgroundNeutralizationDialog(main_window, doc, _icon)
+
+    # Stash preset; seeding runs as the last step in _after_show (after fit and
+    # after any activation-driven _load_image reload that would clear the scene).
+    try:
+        dlg._pending_preset = dict(preset) if preset else None
+    except Exception:
+        dlg._pending_preset = None
+
+    # Retain against GC (dialog has WA_DeleteOnClose).
+    try:
+        main_window._bn_preset_dialog = dlg
+    except Exception:
+        pass
+
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg

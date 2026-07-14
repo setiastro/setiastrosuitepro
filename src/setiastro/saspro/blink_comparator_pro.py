@@ -35,7 +35,10 @@ from collections import OrderedDict
 from setiastro.saspro.legacy.image_manager import load_image
 
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
-from setiastro.saspro.bayer_utils import detect_bayer_pattern
+from setiastro.saspro.bayer_utils import (
+    detect_bayer_pattern,
+    detect_bayer_offsets_and_roworder,
+)
 from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     get_satellite_models,
     _normalize_for_satellite,
@@ -44,7 +47,7 @@ from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     _is_border_tile,
     stretch_image,
 )
-from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
+from setiastro.saspro.legacy.numba_utils import debayer_raw_fast, debayer_fits_fast
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 
@@ -2754,7 +2757,10 @@ class BlinkTab(QWidget):
         self.progress_bar.setValue(0)
         QApplication.processEvents()
 
-        # load one-by-one (or you could parallelize as you like)
+        # Throttle UI updates so paints aren't starved when total_new is large.
+        # Aim for ~100 updates over the whole load regardless of file count.
+        step = max(1, total_new // 100)
+
         for i, path in enumerate(sorted(file_paths, key=lambda p: self._natural_key(os.path.basename(p)))):
             try:
                 _, hdr, bit_depth, is_mono, stored, back = self._load_one_image(path, target_dtype, self._load_scale)
@@ -2775,12 +2781,14 @@ class BlinkTab(QWidget):
                 'load_scale':      self._load_scale,
             })
 
-            # update progress bar
-            self.progress_bar.setValue(i+1)
-            QApplication.processEvents()
-
             # and add it into the tree under the correct object/filter/exp
             self.add_item_to_tree(path)
+
+            # throttled progress update
+            done = i + 1
+            if done == total_new or (done % step) == 0:
+                self.progress_bar.setValue(done)
+                QApplication.processEvents()
 
         # update status
         self.loading_label.setText(self.tr("Loaded {0} images.").format(len(self.loaded_images)))
@@ -3183,12 +3191,42 @@ class BlinkTab(QWidget):
 
     @staticmethod
     def debayer_image(image, file_path, header):
-        """Check if image is OSC (One-Shot Color) and debayer if required."""
+        """
+        Debayer a mono mosaic into RGB using SASpro's canonical debayer_array,
+        which is the same core the Debayer dialog and stacking pipeline use.
+        It owns the ROWORDER=BOTTOM-UP flip-in / flip-out, so we don't have to.
+        """
         _ = file_path
-        bayer_pattern = detect_bayer_pattern(header, image_shape=np.asarray(image).shape)
-        if bayer_pattern:
-            image = debayer_raw_fast(image, bayer_pattern=bayer_pattern)
-        return image
+        arr = np.asarray(image)
+        if arr.ndim != 2:
+            return image
+
+        try:
+            bayer_pattern = detect_bayer_pattern(header, image_shape=arr.shape)
+        except Exception:
+            bayer_pattern = None
+        if not bayer_pattern:
+            return image
+
+        try:
+            _xoff, _yoff, roworder = detect_bayer_offsets_and_roworder(header)
+        except Exception:
+            roworder = ""
+
+        try:
+            # Local import avoids any import-time cycle between blink and debayer.
+            from setiastro.saspro.debayer import debayer_array
+            return debayer_array(
+                arr,
+                pattern=bayer_pattern,
+                roworder=roworder,
+                method="edge",
+                cfa_drizzle=False,
+            )
+        except Exception:
+            # Last-ditch fallback: raw kernel with no orientation correction.
+            # Better a slightly-wrong preview than a crashed loader.
+            return debayer_raw_fast(arr, bayer_pattern=bayer_pattern)
 
     @staticmethod
     def _natural_key(path: str):
@@ -3233,6 +3271,7 @@ class BlinkTab(QWidget):
         remaining = list(file_paths)
         completed = []
         attempt = 0
+        last_pct = -1
 
         # Apply platform / QSettings thread-safety mode once, before the pool.
         _mode = _blink_apply_thread_safety()
@@ -3267,8 +3306,11 @@ class BlinkTab(QWidget):
                         result = fut.result()
                         completed.append(result)
                         done = len(completed)
-                        self.progress_bar.setValue(int(100 * done / total))
-                        QApplication.processEvents()
+                        pct = int(100 * done / total)
+                        if pct != last_pct:
+                            self.progress_bar.setValue(pct)
+                            QApplication.processEvents()
+                            last_pct = pct
                     except Exception as e:
                         print(f"[WARN][Attempt {attempt}] Failed to load {path}: {e}")
                         failed.append(path)

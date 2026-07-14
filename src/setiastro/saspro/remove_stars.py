@@ -986,6 +986,30 @@ class SyQonStarlessDialog(QDialog):
         btns.addWidget(self.btn_close)
         lay.addLayout(btns)
 
+        # --- preset drag handle (grip) ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                _grip_icon = QIcon(syqon_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "remove_stars", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Remove Stars (SyQon) shortcut "
+                    "with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            lay.addLayout(drag_row)
+        except Exception:
+            pass
+
         self.cmb_engine.currentIndexChanged.connect(self._on_engine_changed)
         self.edt_cli_path.textChanged.connect(self._refresh_state)
         self._toggle_bg(self.chk_show_bg.isChecked())
@@ -996,6 +1020,79 @@ class SyQonStarlessDialog(QDialog):
         self.chk_live_preview.toggled.connect(self._toggle_live_preview_window)
         self._refresh_engine_ui()
         self._refresh_state()
+
+    # -------- preset emit (grip) --------
+    def get_preset(self) -> dict:
+        """Mirror RemoveStarsPresetDialog.result_dict() syqon branch (the canonical schema).
+        shadow_clip is intentionally omitted (dead in headless); use_amp/rgb_perchan are
+        settings-backed and restored on construction, not carried by the shortcut."""
+        return {
+            "tool": "syqon",
+            "engine_mode": self._engine_mode(),
+            "cli_path": self.edt_cli_path.text().strip(),
+            "model_kind": self._model_kind(),
+            "tile_size": int(self.spin_tile.value()),
+            "overlap": int(self.spin_overlap.value()),
+            "use_mtf": bool(self.chk_mtf.isChecked()),
+            "mtf_target_median": float(self.spin_mtf_median.value()),
+            "make_stars": bool(self.chk_make_stars.isChecked()),
+            "pad_edges": bool(self.chk_pad.isChecked()),
+            "pad_pixels": int(self.spin_pad.value()),
+            "stars_extract": str(self.cmb_stars_extract.currentText()),
+        }
+
+    # -------- preset seed (double-click open) --------
+    def seed_from_preset(self, p: dict | None):
+        p = dict(p or {})
+        widgets = [
+            self.cmb_engine, self.edt_cli_path, self.cmb_model,
+            self.spin_tile, self.spin_overlap, self.chk_make_stars,
+            self.chk_pad, self.spin_pad, self.cmb_stars_extract,
+            self.chk_mtf, self.spin_mtf_median,
+        ]
+        for w in widgets:
+            try: w.blockSignals(True)
+            except Exception: pass
+        try:
+            em = str(p.get("engine_mode", "integrated")).strip().lower()
+            i = self.cmb_engine.findData(
+                "standalone_cli" if em in ("standalone_cli", "cli", "standalone") else "integrated"
+            )
+            if i >= 0:
+                self.cmb_engine.setCurrentIndex(i)
+
+            if p.get("cli_path"):
+                self.edt_cli_path.setText(str(p.get("cli_path")))
+
+            j = self.cmb_model.findData(_syqon_norm_kind(str(p.get("model_kind", "nadir"))))
+            if j >= 0:
+                self.cmb_model.setCurrentIndex(j)
+
+            if "tile_size" in p:   self.spin_tile.setValue(int(p.get("tile_size")))
+            if "overlap" in p:     self.spin_overlap.setValue(int(p.get("overlap")))
+            if "make_stars" in p:  self.chk_make_stars.setChecked(bool(p.get("make_stars")))
+            if "pad_edges" in p:   self.chk_pad.setChecked(bool(p.get("pad_edges")))
+            if "pad_pixels" in p:  self.spin_pad.setValue(int(p.get("pad_pixels")))
+            if p.get("stars_extract"):
+                self.cmb_stars_extract.setCurrentText(str(p.get("stars_extract")))
+            if "use_mtf" in p:     self.chk_mtf.setChecked(bool(p.get("use_mtf")))
+            if "mtf_target_median" in p:
+                self.spin_mtf_median.setValue(float(p.get("mtf_target_median")))
+        finally:
+            for w in widgets:
+                try: w.blockSignals(False)
+                except Exception: pass
+
+        # Re-apply dependent enable/visibility the blocked signals skipped.
+        for fn in (self._refresh_engine_ui, self._on_model_changed, self._refresh_state):
+            try: fn()
+            except Exception: pass
+        try:
+            self.spin_mtf_median.setEnabled(
+                self.chk_mtf.isChecked() and self._engine_mode() != "standalone_cli"
+            )
+        except Exception:
+            pass
 
     def _engine_mode(self) -> str:
         return str(self.cmb_engine.currentData() or "integrated")
@@ -1651,15 +1748,31 @@ class SyQonStarlessDialog(QDialog):
         super().closeEvent(ev)
 
 
-def _run_syqon(main, doc, icon_path=starnet_path):
+def open_syqon_starless_with_preset(main, doc, preset: dict | None = None):
     if not _ENABLE_SYQON:
         QMessageBox.information(
             main, "SyQon",
             "SyQon is disabled until permission/licensing is confirmed."
         )
-        return
+        return None
     dlg = SyQonStarlessDialog(main, doc, parent=main, icon=QIcon(starnet_path))
-    dlg.exec()
+    dlg.setModal(False)
+    # No on-show reset in this dialog; __init__ populates from settings, seed overrides.
+    if preset:
+        try:
+            dlg.seed_from_preset(preset)
+        except Exception:
+            pass
+    try:
+        main._syqon_starless_dialog = dlg   # retain against GC (non-modal .show())
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg
+
+
+def _run_syqon(main, doc, icon_path=starnet_path):
+    open_syqon_starless_with_preset(main, doc, preset=None)
     
 import os, time, tempfile, subprocess
 from pathlib import Path
@@ -2410,19 +2523,46 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
 # ------------------------------------------------------------
 # CosmicClarityDarkStar
 # ------------------------------------------------------------
+def _open_darkstar_config(main, doc, icon_path=None, preset=None):
+    from PyQt6.QtWidgets import QMessageBox
+    if not _ensure_darkstar_model_available(main):
+        return None
+    cfg = DarkStarConfigDialog(main)
+    try:
+        cfg.setWindowIcon(QIcon(starnet_path))
+    except Exception:
+        pass
+    cfg.setModal(False)
+    if preset:
+        try:
+            cfg.seed_from_preset(preset)
+        except Exception:
+            pass
+    try:
+        main._darkstar_cfg_dialog = cfg   # retain against GC (non-modal .show())
+    except Exception:
+        pass
+    # Non-blocking .show(): nobody reads .result(), so fire the run on `accepted`.
+    cfg.accepted.connect(lambda: _darkstar_run_from_dialog(main, doc, cfg))
+    cfg.show(); cfg.raise_(); cfg.activateWindow()
+    return cfg
+
+
 def _run_darkstar(main, doc, icon_path=None):
+    _open_darkstar_config(main, doc, icon_path=icon_path, preset=None)
+
+
+def open_darkstar_with_preset(main, doc, preset=None):
+    return _open_darkstar_config(main, doc, icon_path=None, preset=preset)
+
+
+def _darkstar_run_from_dialog(main, doc, cfg):
     import numpy as np
     from PyQt6.QtWidgets import QMessageBox
-
-    if not _ensure_darkstar_model_available(main):
-        return
-    # --- Config dialog (keep as-is) ---
-    cfg = DarkStarConfigDialog(main)
-    if icon_path:
-        try: cfg.setWindowIcon(QIcon(starnet_path))
-        except Exception: pass
-    if not cfg.exec():
-        return
+    try:
+        main._darkstar_cfg_dialog = None
+    except Exception:
+        pass
     v = cfg.get_values()
 
     disable_gpu = bool(v["disable_gpu"])
@@ -3087,6 +3227,64 @@ class DarkStarConfigDialog(QDialog):
 
         layout.addLayout(form)
         layout.addWidget(btns)
+
+        # --- preset drag handle (grip) ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                _grip_icon = QIcon(starnet_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "remove_stars", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Remove Stars (DarkStar) shortcut "
+                    "with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            layout.addLayout(drag_row)
+        except Exception:
+            pass
+
+    def get_preset(self) -> dict:
+        """Limited schema by design (matches RemoveStarsPresetDialog.result_dict darkstar
+        branch and the headless consumer). Advanced params follow QSettings, not the shortcut."""
+        return {
+            "tool": "darkstar",
+            "disable_gpu": bool(self.chk_disable_gpu.isChecked()),
+            "mode": self.cmb_mode.currentText(),
+            "show_extracted_stars": bool(self.chk_show_stars.isChecked()),
+            "stride": int(self.cmb_chunk_size.currentData()),
+        }
+
+    def seed_from_preset(self, p: dict | None):
+        p = dict(p or {})
+        widgets = [self.chk_disable_gpu, self.cmb_mode, self.chk_show_stars, self.cmb_chunk_size]
+        for w in widgets:
+            try: w.blockSignals(True)
+            except Exception: pass
+        try:
+            if "disable_gpu" in p:
+                self.chk_disable_gpu.setChecked(bool(p.get("disable_gpu")))
+            if p.get("mode"):
+                self.cmb_mode.setCurrentText(str(p.get("mode")))
+            if "show_extracted_stars" in p:
+                self.chk_show_stars.setChecked(bool(p.get("show_extracted_stars")))
+            stride = p.get("stride", p.get("chunk_size"))
+            if stride is not None:
+                idx = self.cmb_chunk_size.findData(int(stride))
+                if idx >= 0:
+                    self.cmb_chunk_size.setCurrentIndex(idx)
+        finally:
+            for w in widgets:
+                try: w.blockSignals(False)
+                except Exception: pass
 
     def get_values(self):
         vals = {

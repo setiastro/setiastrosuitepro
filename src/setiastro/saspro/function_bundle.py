@@ -744,6 +744,165 @@ class FunctionBundleDialog(QDialog):
         except Exception:
             pass
 
+    # ---------- doc-change waiter ----------
+    # Steps that intentionally don't mutate the image — skip the change wait.
+    _NOOP_CIDS = frozenset({
+        "checkpoint_save",
+        "save_project",
+        "save_active",
+        "save_active_as",
+        "export_fits_bundle",
+        "plate_solve",          # writes header/WCS, may or may not emit `changed`
+        "psf_viewer",
+        "image_peeker",
+    })
+
+    def _doc_edit_count(self, doc) -> int:
+        """
+        Best-effort edit-generation counter. Different SASpro doc classes have
+        used different names over time; try each and fall back to len(history).
+        """
+        if doc is None:
+            return -1
+        for attr in ("edit_count", "_edit_count", "revision", "_revision", "version"):
+            try:
+                v = getattr(doc, attr, None)
+                if callable(v):
+                    v = v()
+                if isinstance(v, int):
+                    return v
+            except Exception:
+                pass
+        # Fallback: length of history / undo stack if present
+        for attr in ("history", "_history", "undo_stack", "_undo_stack"):
+            try:
+                h = getattr(doc, attr, None)
+                if h is not None:
+                    return len(h)
+            except Exception:
+                pass
+        return -1
+
+    def arm_doc_change_watcher(self, sw):
+
+        try:
+            view = sw.widget() if sw is not None else None
+            doc  = getattr(view, "document", None)
+        except Exception:
+            doc = None
+
+        handle = {
+            "doc":        doc,
+            "fired":      False,
+            "start":      self._doc_edit_count(doc) if doc is not None else -1,
+            "connected":  False,
+            "sig":        None,
+            "listener":   None,
+        }
+
+        if doc is None:
+            return handle
+
+        def _on_changed(*_a, **_kw):
+            handle["fired"] = True
+
+        sig = getattr(doc, "changed", None)
+        if sig is not None:
+            try:
+                sig.connect(_on_changed)
+                handle["sig"] = sig
+                handle["listener"] = _on_changed
+                handle["connected"] = True
+            except Exception:
+                pass
+
+        return handle
+
+    def _wait_for_doc_change(self, mw, sw, cid: str, handle: dict | None = None,
+                             *, timeout_ms: int = 120_000,
+                             poll_ms: int = 25):
+        """
+        Wait until the target subwindow's document reports a change (either
+        via its `changed` signal or via a bumped edit counter). `handle`
+        must be the object returned by arm_doc_change_watcher(), created
+        BEFORE the step ran — otherwise a synchronous tool can emit changed
+        before we connect and we'd hit the timeout.
+
+        Also honors the CC-running flag: as long as CC is active, keeps
+        waiting regardless of the doc-change timeout.
+        """
+        # No-op cids: nothing to wait for.
+        if cid in self._NOOP_CIDS:
+            self._pump_events(0)
+            return "noop"
+
+        # If caller forgot to arm, do the old behavior (best-effort).
+        if handle is None:
+            handle = self.arm_doc_change_watcher(sw)
+
+        doc = handle.get("doc")
+        if doc is None:
+            self._pump_events(0)
+            return "no_doc"
+
+        # If the signal already fired synchronously between arm and now,
+        # we're done immediately.
+        if handle.get("fired"):
+            self._detach_doc_change_watcher(handle)
+            self._wait_for_cosmicclarity(mw)
+            self._pump_events(0)
+            return "signal_sync"
+
+        # If the edit counter has already ticked (synchronous tools that
+        # don't emit `changed` but do increment history), also done.
+        start_count = int(handle.get("start", -1))
+        cur = self._doc_edit_count(doc)
+        if start_count >= 0 and cur > start_count:
+            self._detach_doc_change_watcher(handle)
+            self._wait_for_cosmicclarity(mw)
+            self._pump_events(0)
+            return "count_sync"
+
+        reason = "timeout"
+        try:
+            t0 = time.monotonic()
+            while True:
+                if handle.get("fired"):
+                    reason = "signal"
+                    break
+                cur = self._doc_edit_count(doc)
+                if start_count >= 0 and cur > start_count:
+                    reason = "count"
+                    break
+
+                # Keep spinning while CC is running regardless of timeout
+                if self._is_cc_running(mw):
+                    QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, poll_ms)
+                    QThread.msleep(poll_ms)
+                    continue
+
+                if (time.monotonic() - t0) * 1000.0 >= timeout_ms:
+                    reason = "timeout"
+                    break
+
+                QApplication.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, poll_ms)
+                QThread.msleep(poll_ms)
+        finally:
+            self._detach_doc_change_watcher(handle)
+
+        self._wait_for_cosmicclarity(mw)
+        self._pump_events(0)
+        return reason
+
+    def _detach_doc_change_watcher(self, handle: dict):
+        if not handle or not handle.get("connected"):
+            return
+        try:
+            handle["sig"].disconnect(handle["listener"])
+        except Exception:
+            pass
+        handle["connected"] = False
+
     # ---------- CC wait helpers ----------
     def _is_cc_running(self, mw) -> bool:
         # main-window flag
@@ -1251,12 +1410,24 @@ class FunctionBundleDialog(QDialog):
                 _fb(f"  BEGIN step[{i}/{total}] cid={cid} payload={repr(st)}")
 
             try:
+                # Arm BEFORE the step runs — many tools apply synchronously
+                # inside _handle_command_drop and emit `changed` before we'd
+                # otherwise have a listener attached.
+                _watch = self.arm_doc_change_watcher(sw)
+
                 mw._handle_command_drop(st, target_sw=sw)
 
+                # Wait for this step's document mutation to actually land before
+                # moving on. Tools that spawn background workers (Statistical
+                # Stretch, GraXpert, Cosmic Clarity, RC-Astro, etc.) return from
+                # HCD immediately, and the next step would otherwise run on the
+                # pre-edit image. Known no-op cids skip this wait.
+                _reason = self._wait_for_doc_change(mw, sw, str(cid), _watch)
+
                 if str(cid).lower().startswith("cosmic"):
-                    _fb(f"  <<< END   CC step[{i}/{total}] cid={cid} OK")
+                    _fb(f"  <<< END   CC step[{i}/{total}] cid={cid} OK (waiter={_reason})")
                 else:
-                    _fb(f"  END   step[{i}/{total}] cid={cid} OK")
+                    _fb(f"  END   step[{i}/{total}] cid={cid} OK (waiter={_reason})")
 
             except Exception as e:
                 errors.append(str(e))

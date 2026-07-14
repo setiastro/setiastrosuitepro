@@ -265,6 +265,7 @@ class ConvoDeconvoDialog(QDialog):
         self._preview_result: Optional[np.ndarray] = None
         self._auto_fit = False
         self._load_original_on_show = True
+        self._pending_ls_center = None  # stash for double-click-open LS center seed
 
         # ── Layout: left controls / right preview
         main_layout = QHBoxLayout(self)
@@ -346,6 +347,31 @@ class ConvoDeconvoDialog(QDialog):
         self.push_btn    = QPushButton(self.tr("Push"))
         row2.addWidget(self.push_btn); row2.addWidget(self.close_btn)
         left_layout.addLayout(row2)
+
+        # --- preset drag handle (grip) ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import convoicon_path
+                _grip_icon = QIcon(convoicon_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "convo", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Convolution/Deconvolution shortcut "
+                    "with these exact settings (current tab).\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            left_layout.addLayout(drag_row)
+        except Exception:
+            pass
 
         left_layout.addStretch()
         self.rl_status_label = QLabel(""); self.rl_status_label.setStyleSheet("color:#fff;background:#333;padding:4px;")
@@ -513,6 +539,9 @@ class ConvoDeconvoDialog(QDialog):
         self.conv_psf_label.clear()
         self.sep_psf_preview.clear() if hasattr(self, "sep_psf_preview") else None
         self._update_psf_preview()
+        # Seed LS center now that the scene exists and has been fitted.
+        from PyQt6.QtCore import QTimer as _QTimer
+        _QTimer.singleShot(0, self._seed_ls_center)
 
     def closeEvent(self, ev):
         # Clear state so next open starts fresh
@@ -1394,17 +1423,214 @@ class ConvoDeconvoDialog(QDialog):
 
             return p
 
-        # ── TV Denoise tab ──────────────────────────────────────────────
-        if current_tab_name == "TV Denoise":
-            return {
-                "op": "tv",
-                "tv_weight":       float(self.tv_weight_slider.value()),
-                "tv_iter":         int(round(float(self.tv_iter_slider.value()))),
-                "tv_multichannel": bool(self.tv_multichannel_checkbox.isChecked()),
-                "strength":        strength,
-            }
+        # ── Classical Denoise tab ───────────────────────────────────────
+        if current_tab_name == self.tr("Classical Denoise") or current_tab_name == "Classical Denoise":
+            # Reuse the grip emitter so Replay and the shortcut stay identical.
+            return self.get_preset()
 
         return None
+
+    # -------- preset emit (grip) --------
+    def get_preset(self) -> dict | None:
+        """Emit current UI state as a Convo/Deconvo preset.
+        Does NOT rely on _build_replay_preset's tab-name match (which is stale for
+        the denoise tab); maps the real tab text to op directly so the tv grip works."""
+        tab = self.tabs.tabText(self.tabs.currentIndex())
+        strength = float(self.strength_slider.value())
+
+        if tab == self.tr("Convolution") or tab == "Convolution":
+            return {
+                "op": "convolution",
+                "radius":   float(self.conv_radius_slider.value()),
+                "kurtosis": float(self.conv_shape_slider.value()),
+                "aspect":   float(self.conv_aspect_slider.value()),
+                "rotation": float(self.conv_rotation_slider.value()),
+                "strength": strength,
+            }
+
+        if tab == self.tr("Deconvolution") or tab == "Deconvolution":
+            p = {
+                "op": "deconvolution",
+                "algo": self.deconv_algo_combo.currentText(),
+                "psf_radius":   float(self.rl_psf_radius_slider.value()),
+                "psf_kurtosis": float(self.rl_psf_shape_slider.value()),
+                "psf_aspect":   float(self.rl_psf_aspect_slider.value()),
+                "psf_rotation": float(self.rl_psf_rotation_slider.value()),
+                "rl_iter":   float(self.rl_iterations_slider.value()),
+                "rl_reg":    self.rl_reg_combo.currentText(),
+                "rl_dering": bool(self.rl_clip_checkbox.isChecked()),
+                "luminance_only": bool(self.rl_luminance_only_checkbox.isChecked()),
+                "wiener_nsr":    float(self.wiener_nsr_slider.value()),
+                "wiener_reg":    self.wiener_reg_combo.currentText(),
+                "wiener_dering": bool(self.wiener_dering_checkbox.isChecked()),
+                "ls_rstep":    float(self.ls_radial_slider.value()),
+                "ls_astep":    float(self.ls_angular_slider.value()),
+                "ls_operator": self.ls_operator_combo.currentText(),
+                "ls_blend":    self.ls_blend_combo.currentText(),
+                "vc_iter":  float(self.vc_iterations_slider.value()),
+                "vc_relax": float(self.vc_relax_slider.value()),
+                "strength": strength,
+            }
+            if getattr(self.view, "ls_center", None) is not None:
+                cx, cy = self.view.ls_center  # (x, y)
+                p["center"] = [float(cx), float(cy)]
+            return p
+
+        # Classical Denoise tab -> op:"denoise", carries the selected method + its params.
+        algo = self.denoise_algo_combo.currentText()
+        p = {
+            "op": "denoise",
+            "denoise_algo": algo,
+            "lum_only": bool(self.denoise_lum_only_chk.isChecked()),
+            "strength": strength,
+        }
+        if algo == "TV Chambolle":
+            p["tv_weight"]       = float(self.tv_weight_slider.value())
+            p["tv_iter"]         = int(round(float(self.tv_iter_slider.value())))
+            p["tv_multichannel"] = bool(self.tv_multichannel_checkbox.isChecked())
+        elif algo == "Non-Local Means":
+            p["nlm_h"]     = float(self.nlm_h_slider.value())
+            p["nlm_patch"] = int(round(float(self.nlm_patch_slider.value())))
+            p["nlm_dist"]  = int(round(float(self.nlm_dist_slider.value())))
+        elif algo == "Bilateral":
+            p["bil_d"]           = int(round(float(self.bil_d_slider.value())))
+            p["bil_sigma_color"] = float(self.bil_sigma_color_slider.value())
+            p["bil_sigma_space"] = float(self.bil_sigma_space_slider.value())
+        elif algo == "Gaussian":
+            p["gau_sigma"] = float(self.gau_sigma_slider.value())
+        elif algo == "Median":
+            p["med_size"] = int(round(float(self.med_size_slider.value())))
+        elif algo == "Wavelet":
+            p["wav_sigma"]   = float(self.wav_sigma_slider.value())
+            p["wav_wavelet"] = self.wav_wavelet_combo.currentText()
+            p["wav_mode"]    = self.wav_mode_combo.currentText()
+        return p
+
+    # -------- preset seed (double-click open) --------
+    def seed_from_preset(self, p: dict | None):
+        """Inverse of get_preset. FloatSliderWithEdit stores true floats -> no divisors.
+        LS center is deferred to _seed_ls_center (needs scene/fit to exist first)."""
+        p = dict(p or {})
+        op = str(p.get("op", "convolution")).lower()
+
+        def _sv(widget, key, cast=float):
+            if key in p and p[key] is not None:
+                try:
+                    widget.setValue(cast(p[key]))
+                except Exception:
+                    pass
+
+        def _combo(widget, key):
+            if p.get(key) is not None:
+                try:
+                    widget.setCurrentText(str(p[key]))
+                except Exception:
+                    pass
+
+        def _chk(widget, key):
+            if key in p and p[key] is not None:
+                try:
+                    widget.setChecked(bool(p[key]))
+                except Exception:
+                    pass
+
+        if op == "convolution":
+            _sv(self.conv_radius_slider,   "radius")
+            _sv(self.conv_shape_slider,    "kurtosis")
+            _sv(self.conv_aspect_slider,   "aspect")
+            _sv(self.conv_rotation_slider, "rotation")
+            _sv(self.strength_slider,      "strength")
+            self._select_tab(self.tr("Convolution"), "Convolution")
+
+        elif op == "deconvolution":
+            _combo(self.deconv_algo_combo, "algo")
+            _sv(self.rl_psf_radius_slider,   "psf_radius")
+            _sv(self.rl_psf_shape_slider,    "psf_kurtosis")
+            _sv(self.rl_psf_aspect_slider,   "psf_aspect")
+            _sv(self.rl_psf_rotation_slider, "psf_rotation")
+            _sv(self.rl_iterations_slider,   "rl_iter")
+            _combo(self.rl_reg_combo,        "rl_reg")
+            _chk(self.rl_clip_checkbox,      "rl_dering")
+            _chk(self.rl_luminance_only_checkbox, "luminance_only")
+            _sv(self.wiener_nsr_slider,      "wiener_nsr")
+            _combo(self.wiener_reg_combo,    "wiener_reg")
+            _chk(self.wiener_dering_checkbox,"wiener_dering")
+            _sv(self.ls_radial_slider,       "ls_rstep")
+            _sv(self.ls_angular_slider,      "ls_astep")
+            _combo(self.ls_operator_combo,   "ls_operator")
+            _combo(self.ls_blend_combo,      "ls_blend")
+            _sv(self.vc_iterations_slider,   "vc_iter")
+            _sv(self.vc_relax_slider,        "vc_relax")
+            _sv(self.strength_slider,        "strength")
+            # Drive algo-dependent panel/PSF-group visibility.
+            try:
+                self._on_deconv_algo_changed(self.deconv_algo_combo.currentText())
+            except Exception:
+                pass
+            # Stash LS center for after-show (crosshair needs the scene fitted).
+            c = p.get("center")
+            if c and len(c) == 2:
+                self._pending_ls_center = (float(c[0]), float(c[1]))
+            self._select_tab(self.tr("Deconvolution"), "Deconvolution")
+
+        else:  # denoise (or legacy "tv")
+            # Legacy tv presets have no denoise_algo -> map to TV Chambolle.
+            algo = str(p.get("denoise_algo", "TV Chambolle"))
+            try:
+                self.denoise_algo_combo.setCurrentText(algo)
+            except Exception:
+                pass
+            # Show the right param panel for the seeded method.
+            try:
+                self._on_denoise_algo_changed(self.denoise_algo_combo.currentText())
+            except Exception:
+                pass
+            _chk(self.denoise_lum_only_chk, "lum_only")
+            _sv(self.strength_slider, "strength")
+
+            if algo == "TV Chambolle":
+                _sv(self.tv_weight_slider, "tv_weight")
+                _sv(self.tv_iter_slider,   "tv_iter")
+                _chk(self.tv_multichannel_checkbox, "tv_multichannel")
+            elif algo == "Non-Local Means":
+                _sv(self.nlm_h_slider,     "nlm_h")
+                _sv(self.nlm_patch_slider, "nlm_patch")
+                _sv(self.nlm_dist_slider,  "nlm_dist")
+            elif algo == "Bilateral":
+                _sv(self.bil_d_slider,           "bil_d")
+                _sv(self.bil_sigma_color_slider, "bil_sigma_color")
+                _sv(self.bil_sigma_space_slider, "bil_sigma_space")
+            elif algo == "Gaussian":
+                _sv(self.gau_sigma_slider, "gau_sigma")
+            elif algo == "Median":
+                _sv(self.med_size_slider, "med_size")
+            elif algo == "Wavelet":
+                _sv(self.wav_sigma_slider, "wav_sigma")
+                _combo(self.wav_wavelet_combo, "wav_wavelet")
+                _combo(self.wav_mode_combo,    "wav_mode")
+
+            self._select_tab(self.tr("Classical Denoise"), "Classical Denoise")
+
+    def _select_tab(self, *names):
+        for i in range(self.tabs.count()):
+            t = self.tabs.tabText(i)
+            if t in names:
+                self.tabs.setCurrentIndex(i)
+                return
+
+    def _seed_ls_center(self):
+        """Apply a stashed LS center after the scene is built and fitted."""
+        c = getattr(self, "_pending_ls_center", None)
+        if not c:
+            return
+        self._pending_ls_center = None
+        try:
+            cx, cy = c
+            self.view.ls_center = (cx, cy)
+            if hasattr(self.view, "_draw_crosshair_at"):
+                self.view._draw_crosshair_at(cx, cy)
+        except Exception:
+            pass
 
 
     def _on_push_to_doc(self):
@@ -2025,3 +2251,4 @@ def open_convo_deconvo(doc_manager, parent=None, doc=None) -> ConvoDeconvoDialog
     dlg = ConvoDeconvoDialog(doc_manager=doc_manager, parent=parent, doc=doc)
     dlg.show()
     return dlg
+

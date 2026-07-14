@@ -173,6 +173,29 @@ class MorphologyDialogPro(QDialog):
         row.addStretch(1); row.addWidget(btn_apply); row.addWidget(btn_reset); row.addWidget(btn_cancel)
         v.addLayout(row)
 
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import morpho_path
+                _grip_icon = QIcon(morpho_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "morphology", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Morphology shortcut with these settings.\n"
+                    "Drop directly on an image to apply them headlessly."),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            v.addLayout(drag_row)
+        except Exception:
+            pass
+
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.timeout.connect(self._update_preview)
 
         self._set_pix(self._disp_base)
@@ -195,6 +218,45 @@ class MorphologyDialogPro(QDialog):
         it = int(self.sp_iter.value())
         if k % 2 == 0: k += 1
         return op, k, it
+
+    # ── preset emit / seed ─────────────────────────────────────────────
+    def get_preset(self) -> dict:
+        """Emit side — byte-for-byte what _apply records / the consumer reads."""
+        op, k, it = self._params()
+        return {"operation": op, "kernel": int(k), "iterations": int(it)}
+
+    def seed_from_preset(self, p: dict | None):
+        """Exact inverse of get_preset."""
+        p = dict(p or {})
+
+        op = str(p.get("operation", "erosion")).lower()
+        op_text = {v: k for k, v in self.OP_MAP.items()}.get(op, "Erosion")
+
+        try:
+            k = int(p.get("kernel", 3))
+        except (TypeError, ValueError):
+            k = 3
+        if k % 2 == 0:
+            k += 1
+        k = max(1, min(31, k))
+
+        try:
+            it = int(p.get("iterations", 1))
+        except (TypeError, ValueError):
+            it = 1
+        it = max(1, min(10, it))
+
+        for w in (self.cb_op, self.sp_kernel, self.sp_iter):
+            w.blockSignals(True)
+        try:
+            self.cb_op.setCurrentText(op_text)
+            self.sp_kernel.setValue(k)
+            self.sp_iter.setValue(it)
+        finally:
+            for w in (self.cb_op, self.sp_kernel, self.sp_iter):
+                w.blockSignals(False)
+
+        self._update_preview()
 
     def _update_preview(self):
         op, k, it = self._params()
@@ -412,3 +474,49 @@ def run_morphology_via_preset(main, preset: dict | None = None, *, target_doc=No
         QMessageBox.critical(main, "Morphology", str(e))
         if hasattr(main, "_log"):
             main._log(f"❌ Morphology failed: {e}")
+
+
+def open_morphology_with_preset(main_window, preset: dict | None = None):
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            try:
+                doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                       else getattr(dm, "active_document", None))
+            except Exception:
+                doc = None
+    if doc is None:
+        try:
+            ad = getattr(main_window, "_active_doc", None)
+            if callable(ad):
+                doc = ad()
+        except Exception:
+            doc = None
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    _icon = QIcon()
+    try:
+        from setiastro.saspro.resources import morphology_path
+        _icon = QIcon(morphology_path)
+    except Exception:
+        _icon = QIcon()
+
+    dlg = MorphologyDialogPro(main_window, doc, icon=_icon)   # parent FIRST, doc SECOND
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    try:
+        main_window._morphology_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg

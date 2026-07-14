@@ -357,6 +357,33 @@ class _CosmicClarityPresetDialog(QDialog):
         self.newview.setChecked(bool(p.get("create_new_view", False)))
         f.addRow(self.newview)
 
+        # --- Global controls (apply to sharpen AND denoise) ---
+        self.compat = QCheckBox("GPU Compatibility Mode (slower, safer)")
+        self.compat.setChecked(bool(p.get("compat_mode", p.get("denoise_compat_mode", False))))
+        self.compat.setToolTip(
+            "Safer inference settings. Recommended if sharpen/denoise fails,\n"
+            "hangs, or produces GPU errors on older hardware."
+        )
+        f.addRow(self.compat)
+
+        self.temp_stretch = QCheckBox("Temporary Stretch for AI (linear assist)")
+        self.temp_stretch.setChecked(bool(p.get("temp_stretch", False)))
+        f.addRow(self.temp_stretch)
+
+        self.target_median = QDoubleSpinBox()
+        self.target_median.setRange(0.01, 0.50)
+        self.target_median.setSingleStep(0.01)
+        try:
+            self.target_median.setValue(max(0.01, min(0.50, float(p.get("target_median", 0.25)))))
+        except Exception:
+            self.target_median.setValue(0.25)
+        self._target_median_label = QLabel("Target Median (0.01–0.50):")
+        f.addRow(self._target_median_label, self.target_median)
+        self.temp_stretch.toggled.connect(
+            lambda on: (self.target_median.setEnabled(on), self._target_median_label.setEnabled(on)))
+        self.target_median.setEnabled(self.temp_stretch.isChecked())
+        self._target_median_label.setEnabled(self.temp_stretch.isChecked())
+
         # --- Stellar Correction Mode (only shown if model installed) ---
         self._corr_label = QLabel("Stellar Correction:")
         corr_row = QWidget()
@@ -428,6 +455,28 @@ class _CosmicClarityPresetDialog(QDialog):
             "Reduces tiling artifacts on images with extreme bright/dark contrast within a single tile."
         )
         f.addRow(self.correct_conservative)
+
+        # Correction model version (sharpen-only; mirrors main dialog combo)
+        self.correct_ver = QComboBox()
+        self.correct_ver.addItems(["V2 (latest)", "V1"])
+        cv = str(p.get("correct_model_version", "V2 (latest)"))
+        if self.correct_ver.findText(cv) >= 0:
+            self.correct_ver.setCurrentText(cv)
+        self._correct_ver_label = QLabel("Correction Model:")
+        f.addRow(self._correct_ver_label, self.correct_ver)
+
+        # Tiling (sharpen-only; mirrors main dialog chunk/overlap dropdowns)
+        self.chunk = QComboBox()
+        self.chunk.addItems(["128", "192", "256", "320", "384", "512", "640", "768", "1024"])
+        self.chunk.setCurrentText(str(int(p.get("chunk_size", 256))))
+        self._chunk_label = QLabel("Chunk Size:")
+        f.addRow(self._chunk_label, self.chunk)
+
+        self.overlap = QComboBox()
+        self.overlap.addItems(["16", "32", "48", "64", "80", "96", "128", "192", "256", "320", "384", "512"])
+        self.overlap.setCurrentText(str(int(p.get("overlap", 64))))
+        self._overlap_label = QLabel("Overlap:")
+        f.addRow(self._overlap_label, self.overlap)
         # Track sharpen sub-widgets for visibility toggling
         self._sharpen_sub_widgets = [
             self._sh_mode_label, self.sh_mode,
@@ -436,6 +485,10 @@ class _CosmicClarityPresetDialog(QDialog):
             self._st_label, self.st_amt,
             self._nst_label, self.nst_amt,
             self.sh_sep,
+            self.correct_conservative,
+            self._correct_ver_label, self.correct_ver,
+            self._chunk_label, self.chunk,
+            self._overlap_label, self.overlap,
         ]
 
         # --- Denoise controls ---
@@ -520,16 +573,29 @@ class _CosmicClarityPresetDialog(QDialog):
         for w in self._denoise_sub_widgets:
             w.setVisible(show_dn)
 
+        # temp-stretch / target-median / compat apply to sharpen+denoise, not superres
+        globals_active = not show_sr
+        for w in (self.compat, self.temp_stretch,
+                  self._target_median_label, self.target_median):
+            w.setVisible(globals_active)
+
         self._scale_label.setVisible(show_sr)
         self.scale.setVisible(show_sr)
 
     def result_dict(self) -> dict:
         m = self.mode.currentText()
+        compat = bool(self.compat.isChecked())
+
         out = {
             "mode": m,
             "gpu": bool(self.gpu.isChecked()),
             "create_new_view": bool(self.newview.isChecked()),
-            "aberration_first": False, 
+            "aberration_first": False,
+
+            # global compatibility controls (mirror build_preset_from_ui's derivation)
+            "compat_mode": compat,
+            "execution_mode": "compatibility" if compat else "auto",
+            "batch_size_override": 1 if compat else 0,
         }
         if m in ("sharpen", "both"):
             scm = (
@@ -547,6 +613,15 @@ class _CosmicClarityPresetDialog(QDialog):
                 "nonstellar_amount": float(self.nst_amt.value()),
                 "sharpen_channels_separately": bool(self.sh_sep.isChecked()),
                 "correct_conservative": bool(self.correct_conservative.isChecked()),
+                "correct_model_version": self.correct_ver.currentText(),
+                "chunk_size": int(self.chunk.currentText()),
+                "overlap": int(self.overlap.currentText()),
+                "temp_stretch": bool(self.temp_stretch.isChecked()),
+                "target_median": float(self.target_median.value()),
+
+                # sharpen compatibility controls
+                "sharpen_execution_mode": "compatibility" if compat else "auto",
+                "sharpen_batch_size_override": 1 if compat else 0,
             })
         if m in ("denoise", "both"):
             dn_model = self.dn_model.currentText()
@@ -557,6 +632,13 @@ class _CosmicClarityPresetDialog(QDialog):
                 "separate_channels": bool(self.dn_sep.isChecked()),
                 "denoise_lite":    (dn_model == "Lite (faster)"),
                 "denoise_walking": (dn_model == "Walking Noise"),
+
+                # denoise compatibility controls
+                "denoise_compat_mode": compat,
+                "denoise_execution_mode": "compatibility" if compat else "auto",
+                "denoise_batch_size_override": 1 if compat else 0,
+                "temp_stretch": bool(self.temp_stretch.isChecked()),
+                "target_median": float(self.target_median.value()),
             })
         if m == "superres":
             out["scale"] = int(self.scale.currentText())

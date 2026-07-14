@@ -441,6 +441,92 @@ class _SyQonDenoiseHubPage(QWidget):
 
         self._refresh_state()
 
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import syqon_path
+                _grip_icon = QIcon(syqon_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "syqontools", self.get_preset, icon=_grip_icon,
+                tooltip="Drag to the canvas to create a SyQon Prism (Denoise) shortcut.\n"
+                        "Drop directly on an image to apply it headlessly.",
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            self.layout().addLayout(drag_row)
+        except Exception:
+            pass
+
+    # ── preset emit / seed (grip + double-click) ───────────────────────
+    def get_preset(self) -> dict:
+        """
+        Emit the prism_* prefixed schema that run_syqon_tools_via_preset /
+        _run_syqon_prism_headless read — NOT the unprefixed replay_last keys.
+        Includes family so the shared consumer routes to denoise.
+        """
+        return {
+            "family":                  "denoise",
+            "prism_model_kind":        self.model_kind(),
+            "prism_tile_size":         int(self.spin_tile.value()),
+            "prism_overlap":           int(self.spin_overlap.value()),
+            "prism_pad":               int(self.spin_pad.value()),
+            "prism_strength":          float(self.spin_strength.value()),
+            "prism_use_mtf":           bool(self.chk_mtf.isChecked()),
+            "prism_mtf_target_median": float(self.spin_mtf_median.value()),
+            "prism_use_amp":           bool(self.chk_amp.isChecked()),
+        }
+
+    def seed_from_preset(self, preset: dict | None):
+        p = dict(preset or {})
+
+        mk = str(p.get("prism_model_kind", self.model_kind())).lower()
+        i = self.cmb_model.findData(mk)
+        if i >= 0:
+            self.cmb_model.blockSignals(True)
+            try:
+                self.cmb_model.setCurrentIndex(i)
+            finally:
+                self.cmb_model.blockSignals(False)
+
+        def _seti(spin, key, lo, hi):
+            if key in p:
+                try:
+                    spin.setValue(max(lo, min(hi, int(p[key]))))
+                except (TypeError, ValueError):
+                    pass
+
+        _seti(self.spin_tile,    "prism_tile_size", 128, 2048)
+        _seti(self.spin_overlap, "prism_overlap",    16,  512)
+        _seti(self.spin_pad,     "prism_pad",         0, 2048)
+
+        if "prism_strength" in p:
+            try:
+                self.spin_strength.setValue(max(0.0, min(1.0, float(p["prism_strength"]))))
+            except (TypeError, ValueError):
+                pass  # slider follows via its sync signal
+
+        if "prism_use_mtf" in p:
+            self.chk_mtf.setChecked(bool(p["prism_use_mtf"]))
+        if "prism_mtf_target_median" in p:
+            try:
+                self.spin_mtf_median.setValue(max(0.01, min(0.50, float(p["prism_mtf_target_median"]))))
+            except (TypeError, ValueError):
+                pass
+        if "prism_use_amp" in p:
+            self.chk_amp.setChecked(bool(p["prism_use_amp"]))
+
+        # chk_mtf drives spin_mtf_median enable-state via its toggled signal;
+        # sync by hand in case setChecked didn't change state.
+        self.spin_mtf_median.setEnabled(self.chk_mtf.isChecked())
+
+        self._refresh_state()
+
     def _toggle_live_preview_window(self, on: bool):
             on = bool(on)
             if not on:
@@ -1173,7 +1259,23 @@ class _SyQonSharpenHubPage(QWidget):
         self.spin_pad.setRange(0, 2048)
         self.spin_pad.setValue(int(self.settings.value("syqon/parallax_pad", 96)))
         form.addRow("Edge pad (px):", self.spin_pad)
- 
+
+        self.cmb_batch = QComboBox(self)
+        for label in ("Auto", "1", "2", "4", "8"):
+            self.cmb_batch.addItem(label, userData=label)
+        saved_batch = str(self.settings.value("syqon/parallax_batch_size", "Auto", type=str) or "Auto")
+        bidx = self.cmb_batch.findData(saved_batch)
+        if bidx >= 0:
+            self.cmb_batch.setCurrentIndex(bidx)
+        self.cmb_batch.setToolTip(
+            "Number of tiles fed to the model per forward pass.\n"
+            "Auto — chosen from tile size + GPU VRAM (recommended).\n"
+            "Higher = faster on native GPUs (CUDA/MPS/XPU) with enough VRAM,\n"
+            "but can OOM if tile size and image are large.\n"
+            "CPU always runs at 1; DirectML is capped at 2."
+        )
+        form.addRow("Batch size:", self.cmb_batch)
+
         pad_help = QLabel("Pads edges before tiling (reflect) to prevent border artifacts.\nTypical: overlap or overlap+32. 0 disables padding.")
         pad_help.setWordWrap(True)
         pad_help.setStyleSheet("color:#888;")
@@ -1218,7 +1320,103 @@ class _SyQonSharpenHubPage(QWidget):
         self.btn_cancel.setVisible(False)
         self.btn_cancel.clicked.connect(self._cancel)
         lay.addWidget(self.btn_cancel)
+
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import syqon_path
+                _grip_icon = QIcon(syqon_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "syqontools", self.get_preset, icon=_grip_icon,
+                tooltip="Drag to the canvas to create a SyQon Parallax (Sharpen) shortcut.\n"
+                        "Drop directly on an image to apply it headlessly.",
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            lay.addLayout(drag_row)
+        except Exception:
+            pass
  
+    # ── preset emit / seed (grip + double-click) ───────────────────────
+    def get_preset(self) -> dict:
+        """Emit the parallax_* prefixed schema _run_syqon_parallax_headless reads."""
+        return {
+            "family":                 "sharpening",
+            "parallax_mode":          self.mode(),
+            "parallax_correct":       bool(self.chk_correction.isChecked()),
+            "parallax_star_level":    int(self.spin_star.value()),
+            "parallax_sharpen_alpha": float(self.spin_sharpen.value()),
+            "parallax_tile_size":     int(self.spin_tile.value()),
+            "parallax_overlap":       int(self.spin_overlap.value()),
+            "parallax_pad":           int(self.spin_pad.value()),
+            "parallax_use_mtf":       bool(self.chk_mtf.isChecked()),
+            "parallax_mtf_target":    float(self.spin_mtf.value()),
+            "parallax_mtf_linked":    bool(self.chk_mtf_linked.isChecked()),
+            "parallax_batch_size":    str(self.cmb_batch.currentData() or "Auto"),
+        }
+
+    def seed_from_preset(self, preset: dict | None):
+        p = dict(preset or {})
+
+        if "parallax_mode" in p:
+            i = self.cmb_mode.findData(str(p["parallax_mode"]).lower())
+            if i >= 0:
+                self.cmb_mode.blockSignals(True)
+                try:
+                    self.cmb_mode.setCurrentIndex(i)
+                finally:
+                    self.cmb_mode.blockSignals(False)
+
+        if "parallax_correct" in p:
+            self.chk_correction.setChecked(bool(p["parallax_correct"]))
+        if "parallax_star_level" in p:
+            try:
+                self.spin_star.setValue(max(0, min(10, int(p["parallax_star_level"]))))
+            except (TypeError, ValueError):
+                pass
+        if "parallax_sharpen_alpha" in p:
+            try:
+                self.spin_sharpen.setValue(max(0.0, min(2.0, float(p["parallax_sharpen_alpha"]))))
+            except (TypeError, ValueError):
+                pass  # slider follows via sync signal
+
+        def _seti(spin, key, lo, hi):
+            if key in p:
+                try:
+                    spin.setValue(max(lo, min(hi, int(p[key]))))
+                except (TypeError, ValueError):
+                    pass
+
+        _seti(self.spin_tile,    "parallax_tile_size", 128, 2048)
+        _seti(self.spin_overlap, "parallax_overlap",     8,  512)
+        _seti(self.spin_pad,     "parallax_pad",         0, 2048)
+
+        if "parallax_use_mtf" in p:
+            self.chk_mtf.setChecked(bool(p["parallax_use_mtf"]))
+        if "parallax_mtf_target" in p:
+            try:
+                self.spin_mtf.setValue(max(0.01, min(0.50, float(p["parallax_mtf_target"]))))
+            except (TypeError, ValueError):
+                pass
+        if "parallax_mtf_linked" in p:
+            self.chk_mtf_linked.setChecked(bool(p["parallax_mtf_linked"]))
+        if "parallax_batch_size" in p:
+            j = self.cmb_batch.findData(str(p["parallax_batch_size"]))
+            if j >= 0:
+                self.cmb_batch.setCurrentIndex(j)
+
+        # chk_mtf drives enable-state of spin_mtf + chk_mtf_linked via its toggled
+        # signal; sync by hand after seeding.
+        en = self.chk_mtf.isChecked()
+        self.spin_mtf.setEnabled(en)
+        self.chk_mtf_linked.setEnabled(en)
+
     def mode(self) -> str:
         try:
             return str(self.cmb_mode.currentData() or "classic").lower()
@@ -1323,8 +1521,8 @@ class _SyQonSharpenHubPage(QWidget):
  
     def _set_busy(self, busy: bool):
         for w in (self.btn_buy, self.btn_clear_cache, self.spin_tile, self.spin_overlap,
-                  self.spin_pad, self.chk_correction, self.spin_star, self.spin_sharpen,
-                  self.chk_mtf):
+                  self.spin_pad, self.cmb_batch, self.chk_correction, self.spin_star,
+                  self.spin_sharpen, self.chk_mtf):
             w.setEnabled(not busy)
         self.spin_mtf.setEnabled((not busy) and self.chk_mtf.isChecked())
         self.pbar.setVisible(busy)
@@ -1401,6 +1599,7 @@ class _SyQonSharpenHubPage(QWidget):
                         "pad":           int(self.spin_pad.value()),
                         "use_mtf":       bool(self.chk_mtf.isChecked()),
                         "mtf_target":    float(self.spin_mtf.value()),
+                        "batch_size":    str(self.cmb_batch.currentData() or "Auto"),
                     }
                 }
             }
@@ -1450,7 +1649,9 @@ class _SyQonSharpenHubPage(QWidget):
         self.settings.setValue("syqon/parallax_use_mtf",       bool(self.chk_mtf.isChecked()))
         self.settings.setValue("syqon/parallax_mtf_target",    float(self.spin_mtf.value()))
         mode = self.mode()
-        self.settings.setValue("syqon/parallax_mode", mode)        
+        self.settings.setValue("syqon/parallax_mode", mode)
+        batch_size = str(self.cmb_batch.currentData() or "Auto")
+        self.settings.setValue("syqon/parallax_batch_size", batch_size)        
  
         src = np.asarray(doc.image, dtype=np.float32)
         self._orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
@@ -1506,7 +1707,8 @@ class _SyQonSharpenHubPage(QWidget):
             overlap         = int(self.spin_overlap.value()),
             pad             = int(self.spin_pad.value()),
             parent          = self,
-            mode=mode,
+            mode            = mode,
+            batch_size      = batch_size,
         )
         self.proc_thr.progress.connect(self._on_progress)
         self.proc_thr.finished.connect(self._on_finished)
@@ -1518,7 +1720,8 @@ class _SyQonParallaxProcessThread(QThread):
     finished = pyqtSignal(object, dict, str)
  
     def __init__(self, x_for_net, *, do_correct, correction_path, star_level,
-                 star_path, sharpen_alpha, sharpen_path, tile, overlap, pad, parent=None, mode="classic"):
+                 star_path, sharpen_alpha, sharpen_path, tile, overlap, pad,
+                 parent=None, mode="classic", batch_size="Auto"):
         super().__init__(parent)
         self.x_for_net       = np.asarray(x_for_net, dtype=np.float32)
         self.do_correct      = bool(do_correct)
@@ -1532,6 +1735,7 @@ class _SyQonParallaxProcessThread(QThread):
         self.pad             = int(pad)
         self._cancel         = False
         self.mode = str(mode or "classic").lower()
+        self.batch_size = batch_size if batch_size is not None else "Auto"
  
     def cancel(self): self._cancel = True
  
@@ -1565,6 +1769,7 @@ class _SyQonParallaxProcessThread(QThread):
                     tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
                     mode=self.mode,
+                    batch_size=self.batch_size,
                     progress_cb=_cb(f"[{s}/{n}] Aberration Correction"),
                 )
                 info["correction"] = inf
@@ -1576,6 +1781,7 @@ class _SyQonParallaxProcessThread(QThread):
                     tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
                     mode=self.mode,
+                    batch_size=self.batch_size,
                     progress_cb=_cb(f"[{s}/{n}] Star Reduction L{self.star_level}"),
                 )
                 info["star_reduce"] = inf
@@ -1587,6 +1793,7 @@ class _SyQonParallaxProcessThread(QThread):
                     tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
                     mode=self.mode,
+                    batch_size=self.batch_size,
                     progress_cb=_cb(f"[{s}/{n}] Sharpening α={self.sharpen_alpha:.2f}"),
                 )
                 info["sharpen"] = inf
@@ -1869,7 +2076,9 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
     pad           = int(preset.get("parallax_pad",            96))
     use_mtf       = bool(preset.get("parallax_use_mtf",       True))
     mtf_target    = float(preset.get("parallax_mtf_target",   0.15))
+    mtf_linked    = bool(preset.get("parallax_mtf_linked",    False))
     mode = str(preset.get("parallax_mode", "classic") or "classic").lower()
+    batch_size = preset.get("parallax_batch_size", "Auto")
     settings = QSettings()
     _keys = {
         "correction":  "syqon/parallax_correction_path",
@@ -1917,8 +2126,15 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
         xrgb = x01[..., :3]
  
     if use_mtf:
-        mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=mtf_target)
-        x_for_net  = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
+        if mtf_linked:
+            from setiastro.saspro.remove_stars import (
+                _mtf_params_linked, _apply_mtf_linked_rgb,
+            )
+            mtf_params = _mtf_params_linked(xrgb, targetbg=mtf_target)
+            x_for_net  = _apply_mtf_linked_rgb(xrgb, mtf_params)
+        else:
+            mtf_params = _mtf_params_unlinked(xrgb, shadows_clipping=-2.8, targetbg=mtf_target)
+            x_for_net  = _apply_mtf_unlinked_rgb(xrgb, mtf_params)
     else:
         mtf_params = None
         x_for_net  = xrgb
@@ -1941,6 +2157,7 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
         pad             = pad,
         parent          = dlg,
         mode            = mode,
+        batch_size      = batch_size,
     )
  
     def _on_prog(pct: int, stage: str):
@@ -1957,7 +2174,11 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
             result = np.stack([result] * 3, axis=-1)
  
         if use_mtf and mtf_params is not None:
-            result = _invert_mtf_unlinked_rgb(result, mtf_params)
+            if mtf_linked:
+                from setiastro.saspro.remove_stars import _invert_mtf_linked_rgb
+                result = _invert_mtf_linked_rgb(result, mtf_params)
+            else:
+                result = _invert_mtf_unlinked_rgb(result, mtf_params)
  
         if scale_factor > 1.01:
             result = np.clip(result * scale_factor, 0.0, 1.0).astype(np.float32)
@@ -1984,6 +2205,8 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
                     "pad":           pad,
                     "use_mtf":       use_mtf,
                     "mtf_target":    mtf_target,
+                    "mtf_linked":    mtf_linked,
+                    "batch_size":    str(batch_size),
                 }
             }
         }
@@ -2017,9 +2240,23 @@ def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
     mtf_target = float(preset.get("prism_mtf_target_median", 0.10))
     use_amp = bool(preset.get("prism_use_amp", False))
 
-    model_path = syqon_prism_model_path(model_kind)
-    if not model_path.exists():
-        QMessageBox.warning(main, "SyQon Prism", "Model is not installed. Install it first from the SyQon Tools hub.")
+    # Resolve the model the SAME way the UI does: prefer the remembered install
+    # path in QSettings, fall back to the canonical path (older installs).
+    from PyQt6.QtCore import QSettings as _QSettings
+    _s = _QSettings()
+    _remembered = str(_s.value(f"syqon/prism_model_installed_path/{model_kind}", "", type=str) or "").strip()
+    model_path = None
+    if _remembered:
+        _pp = Path(_remembered)
+        if _pp.exists() and _pp.is_file():
+            model_path = _pp
+    if model_path is None:
+        _canon = syqon_prism_model_path(model_kind)
+        if _canon.exists() and _canon.is_file():
+            model_path = _canon
+    if model_path is None:
+        QMessageBox.warning(main, "SyQon Prism",
+            f"Model ({model_kind}) is not installed. Install it first from the SyQon Tools hub.")
         return
 
     src = np.asarray(doc.image).astype(np.float32, copy=False)
@@ -2164,3 +2401,68 @@ def run_syqon_starless_via_preset(main, doc, preset: dict | None = None):
     preset = dict(preset or {})
     preset["family"] = "starless"
     return run_syqon_tools_via_preset(main, doc, preset)    
+
+def open_syqontools_with_preset(main_window, preset: dict | None = None):
+    p = dict(preset or {})
+
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            try:
+                doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                       else getattr(dm, "active_document", None))
+            except Exception:
+                doc = None
+    if doc is None:
+        try:
+            ad = getattr(main_window, "_active_doc", None)
+            if callable(ad):
+                doc = ad()
+        except Exception:
+            doc = None
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    _icon = QIcon()
+    try:
+        from setiastro.saspro.resources import syqon_path
+        _icon = QIcon(syqon_path)
+    except Exception:
+        _icon = QIcon()
+
+    docman = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+    get_active = getattr(main_window, "_active_doc", None)
+    if not callable(get_active):
+        _d = doc
+        def get_active():
+            return _d
+
+    dlg = SyQonToolsDialog(main_window, docman, get_active, icon=_icon)
+
+    family = str(p.get("family", "denoise") or "denoise").strip().lower()
+    fam_idx = dlg.cmb_family.findData(family)
+    if fam_idx >= 0:
+        dlg.cmb_family.setCurrentIndex(fam_idx)   # fires _on_family_changed -> _sync_page
+
+    try:
+        if family == "denoise":
+            dlg.page_denoise.seed_from_preset(p)
+        elif family == "sharpening":
+            dlg.page_sharpen.seed_from_preset(p)
+        # starless is owned by remove_stars' embedded dialog — no seed here
+    except Exception:
+        pass
+
+    try:
+        main_window._syqontools_dialog = dlg   # retain against GC
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg

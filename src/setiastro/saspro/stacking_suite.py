@@ -9068,6 +9068,85 @@ class StackingSuiteDialog(QDialog):
         # show fewer decimals if step is 1.0
         return f"Temp: {t:+.0f}C" if step >= 1.0 else f"Temp: {t:+.1f}C"
 
+    def _prompt_missing_filter(self, path):
+        """
+        Small dialog for a file with no FILTER keyword.
+        Returns (filter_str_or_None, apply_to_all_bool).
+        None means "leave as Unknown".
+        """
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QLabel, QLineEdit, QCheckBox,
+            QDialogButtonBox,
+        )
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Filter Information Not Found")
+        lay = QVBoxLayout(dlg)
+
+        lay.addWidget(QLabel(
+            f"No FILTER keyword found in:\n{os.path.basename(path)}\n\n"
+            f"Do you want to specify a filter type for grouping?"
+        ))
+
+        edit = QLineEdit()
+        edit.setPlaceholderText("e.g. HaO3, LP, UVIR cut, S2O3, L, Ha, OIII, SII, R, G, B")
+        lay.addWidget(edit)
+
+        apply_all_cb = QCheckBox("Apply this choice to all remaining files missing FILTER")
+        lay.addWidget(apply_all_cb)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Set Filter")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Leave as Unknown")
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+
+        accepted = (dlg.exec() == QDialog.DialogCode.Accepted)
+        apply_all = bool(apply_all_cb.isChecked())
+        if not accepted:
+            return (None, apply_all)
+        text = edit.text().strip()
+        return (text if text else None, apply_all)
+
+    def _resolve_filter_for_path(self, path, header):
+        """
+        Return a sanitized filter name for `path`. Prompts (once per batch,
+        with optional apply-to-all) when the header has no FILTER keyword.
+        Records the resolution in self._path_filter_override so downstream
+        writers (calibrated lights, master flats) can carry it forward.
+        """
+        if not hasattr(self, "_missing_filter_policy") or self._missing_filter_policy is None:
+            self._missing_filter_policy = {}
+        if not hasattr(self, "_path_filter_override") or self._path_filter_override is None:
+            self._path_filter_override = {}
+
+        raw = header.get("FILTER")
+        if raw not in (None, ""):
+            name = self._sanitize_name(str(raw))
+            self._path_filter_override[path] = name
+            return name
+
+        pol = self._missing_filter_policy
+        if "apply_all" in pol:
+            chosen = pol["apply_all"]  # str or None
+            if chosen:
+                self._path_filter_override[path] = chosen
+                return chosen
+            return "Unknown"
+
+        chosen_filter, apply_all = self._prompt_missing_filter(path)
+        if chosen_filter:
+            name = self._sanitize_name(chosen_filter)
+            if apply_all:
+                pol["apply_all"] = name
+            self._path_filter_override[path] = name
+            return name
+        else:
+            if apply_all:
+                pol["apply_all"] = None
+            return "Unknown"
 
     def _tree_for_type(self, t: str):
         t = (t or "").upper()
@@ -13229,6 +13308,13 @@ class StackingSuiteDialog(QDialog):
         return best[0] if best[0] else candidates[0][1]
 
     def _ingest_paths_with_progress(self, paths, tree, expected_type, title, manual_session_name=None):
+        # Reset per-batch missing-FILTER policy; keep _path_filter_override
+        # accumulating across batches so the calibrated/master writers can find
+        # a filter for any path ingested in this session.
+        self._missing_filter_policy = {}
+        if not hasattr(self, "_path_filter_override") or self._path_filter_override is None:
+            self._path_filter_override = {}
+
         total = len(paths)
         dlg = QProgressDialog(title, "Cancel", 0, total, self)
         dlg.setWindowTitle("Please wait")
@@ -13565,8 +13651,7 @@ class StackingSuiteDialog(QDialog):
 
             # === FLATs ===
             elif expected_type_u == "FLAT":
-                filter_name_raw = header.get("FILTER") or "Unknown"
-                filter_name = self._sanitize_name(filter_name_raw)
+                filter_name = self._resolve_filter_for_path(path, header)
 
                 flat_key = f"{filter_name} - {exposure_text} ({image_size})"
                 composite_key = (flat_key, session_tag)
@@ -13595,8 +13680,7 @@ class StackingSuiteDialog(QDialog):
 
             # === LIGHTs ===
             elif expected_type_u == "LIGHT":
-                filter_name_raw = header.get("FILTER") or "Unknown"
-                filter_name = self._sanitize_name(filter_name_raw)
+                filter_name = self._resolve_filter_for_path(path, header)
 
                 light_key = f"{filter_name} - {exposure_text} ({image_size})"
                 composite_key = (light_key, session_tag)
@@ -13636,15 +13720,24 @@ class StackingSuiteDialog(QDialog):
         Adds multiple master calibration files to the correct treebox with metadata including image dimensions.
         This version only reads the FITS header to extract image dimensions, making it much faster.
         """
+        # Reset per-batch missing-FILTER policy for this master-add batch
+        self._missing_filter_policy = {}
+        if not hasattr(self, "_path_filter_override") or self._path_filter_override is None:
+            self._path_filter_override = {}
+
         for file_path in files:
             try:
                 # Read only the FITS header (fast)
                 header, _kind = get_valid_header(file_path)
-                
+
                 # Check for both EXPOSURE and EXPTIME
                 exposure = header.get("EXPOSURE", header.get("EXPTIME", "Unknown"))
-                filter_name = header.get("FILTER", "Unknown")
-                filter_name     = self._sanitize_name(filter_name)
+
+                # Only master flats need a filter; only prompt in that case.
+                if file_type.upper() == "FLAT":
+                    filter_name = self._resolve_filter_for_path(file_path, header)
+                else:
+                    filter_name = self._sanitize_name(header.get("FILTER") or "Unknown")
                 # Extract image dimensions from header keywords NAXIS1 and NAXIS2
                 width = header.get("NAXIS1")
                 height = header.get("NAXIS2")
@@ -14467,7 +14560,10 @@ class StackingSuiteDialog(QDialog):
                 session = "Default"
 
             try:
-                filter_name, exposure_size = filter_exposure.split(" - ")
+                # rsplit so a filter name containing " - " (rare, but possible from
+                # the manual-entry prompt) doesn't break parsing — we want the
+                # rightmost " - " which separates filter from exposure/size.
+                filter_name, exposure_size = filter_exposure.rsplit(" - ", 1)
                 exposure_time_str, image_size = exposure_size.split(" (")
                 image_size = image_size.rstrip(")")
             except ValueError:
@@ -16734,18 +16830,33 @@ class StackingSuiteDialog(QDialog):
                 max_val = float(np.max(light_data))
 
                 try:
+                    has_mask = (rejection_mask_2d is not None) and bool(np.any(rejection_mask_2d))
                     if hasattr(hdr, "add_history"):
                         hdr.add_history("Calibrated: bias/dark sub, flat division")
-                        if rejection_mask_2d is not None and np.any(rejection_mask_2d):
+                        if has_mask:
                             hdr.add_history("Satellite rejection mask saved as sidecar")
                     else:
                         hdr["HISTORY"] = "Calibrated: bias/dark sub, flat division"
                     hdr["CALMIN"] = (min_val, "Min pixel before save (float)")
                     hdr["CALMAX"] = (max_val, "Max pixel before save (float)")
-                    if rejection_mask_2d is not None:
-                        hdr["SATMASK"] = (
-                            1, "Binary satellite reject mask written as sidecar"
-                        )
+                    if has_mask:
+                        hdr["SATMASK"] = (1, "Binary satellite reject mask written as sidecar")
+
+                    # Carry forward the filter name resolved at ingest time — see
+                    # the GPU path for the full rationale. resolved_filter is set
+                    # in calibrate_lights() before dispatching to CPU or GPU.
+                    try:
+                        chosen = fi.get("resolved_filter")
+                        if chosen:
+                            current = None
+                            try:
+                                current = hdr.get("FILTER")
+                            except Exception:
+                                current = None
+                            if current in (None, "", "Unknown") or str(current).strip() != str(chosen).strip():
+                                hdr["FILTER"] = (str(chosen), "Filter name (SASpro ingest)")
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 
@@ -17067,6 +17178,25 @@ class StackingSuiteDialog(QDialog):
                         "light_gain":   light_gain,
                         "light_offset": light_offset,                        
                     })
+
+        # Attach the resolved filter override to each frame_info so both the GPU
+        # and CPU calibration paths can inject it into the saved header. The
+        # tree/group filter value is already correct for files ingested via
+        # process_fits_header (which now consults _path_filter_override), but the
+        # source FITS/XISF header itself may still be blank — so we carry the
+        # resolved name forward here.
+        try:
+            overrides = getattr(self, "_path_filter_override", None) or {}
+            for fi in frame_infos:
+                src = fi.get("light_file")
+                resolved = overrides.get(src) if src else None
+                if not resolved:
+                    gf = fi.get("filter_name") or ""
+                    if gf and gf != "Unknown":
+                        resolved = gf
+                fi["resolved_filter"] = resolved or None
+        except Exception:
+            pass
 
         if not frame_infos:
             self.update_status(self.tr("⚠️ No light files to calibrate."))
@@ -17419,6 +17549,24 @@ class StackingSuiteDialog(QDialog):
                     hdr["CALMAX"] = (max_val, "Max pixel before save (float)")
                     if rej_mask is not None:
                         hdr["SATMASK"] = (1, "Binary satellite reject mask written as sidecar")
+
+                    # Carry forward a filter name resolved at ingest time (either from
+                    # the source header, or user-supplied via the missing-FILTER prompt).
+                    # We prefer the ingest-time override so that files that came in without
+                    # a FILTER keyword still end up with a proper FILTER on the calibrated
+                    # frame — otherwise integration/registration can't group them.
+                    try:
+                        chosen = fi.get("resolved_filter")
+                        if chosen:
+                            current = None
+                            try:
+                                current = hdr.get("FILTER")
+                            except Exception:
+                                current = None
+                            if current in (None, "", "Unknown") or str(current).strip() != str(chosen).strip():
+                                hdr["FILTER"] = (str(chosen), "Filter name (SASpro ingest)")
+                    except Exception:
+                        pass
                 except Exception:
                     pass
 

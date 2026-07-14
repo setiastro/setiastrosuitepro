@@ -992,3 +992,43 @@ def _safe_rm(p):
     except Exception as e:
         import logging
         logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+
+# ---------- Double-click open (seed live dialog) ----------
+def open_remove_stars_with_preset(main_window, preset: dict | None = None):
+    """
+    Double-click a Remove Stars shortcut -> open the matching tool dialog seeded.
+      tool=syqon    -> SyQon Starless dialog (non-modal), seeded
+      tool=darkstar -> DarkStar config dialog (non-modal), seeded
+      tool=starnet  -> no settings dialog; run headless with the seeded preset
+    Drop-on-image still routes through run_remove_stars_via_preset().
+    """
+    p = dict(preset or {})
+    tool = str(p.get("tool", "starnet")).strip().lower()
+
+    # Resolve doc: active MDI subwindow first, then docman fallback.
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    if tool in ("syqon", "syqon_starless", "nafnet"):
+        from .remove_stars import open_syqon_starless_with_preset
+        return open_syqon_starless_with_preset(main_window, doc, p)
+
+    if tool in ("darkstar", "cosmicclarity", "cosmic_clarity"):
+        from .remove_stars import open_darkstar_with_preset
+        return open_darkstar_with_preset(main_window, doc, p)
+
+    # StarNet (or unknown): no settings surface -> run headless with the seeded preset.
+    run_remove_stars_via_preset(main_window, p, target_doc=doc)
+    return None        

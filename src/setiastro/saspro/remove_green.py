@@ -123,10 +123,13 @@ def _apply_scnr_rgb(rgb: np.ndarray, amount: float, mode: str = "avg",
 def remove_green_headless(
     doc,
     amount: float = 1.0,
-    mode: str = "avg",                  # "avg" | "max" | "min"
+    mode: str = "avg",
     preserve_lightness: bool = True,
-    channel: str = "G",                 # "R" | "G" | "B"
+    channel: str = "G",
 ):
+    _dbg = np.asarray(getattr(doc, "image", None))
+    print(f"[RG headless] shape={getattr(_dbg, 'shape', None)} "
+          f"amount={amount} mode={mode} channel={channel} preserve={preserve_lightness}")
     """
     Run SCNR on doc.image (RGB only), blend with active mask if present, push as undoable edit.
     """
@@ -278,6 +281,32 @@ class RemoveGreenDialog(QDialog):
         row.addStretch(1); row.addWidget(btn_apply); row.addWidget(btn_cancel)
         lay.addLayout(row)
 
+        # --- preset drag handle (grip) ---
+        try:
+            from PyQt6.QtGui import QIcon
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import green_path
+                _grip_icon = QIcon(green_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "remove_green", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Remove Green (SCNR) shortcut "
+                    "with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            lay.addLayout(drag_row)
+        except Exception:
+            pass
+
         self.resize(460, 220)
 
     def set_amount(self, amt: float):
@@ -305,6 +334,33 @@ class RemoveGreenDialog(QDialog):
     def set_preserve_lightness(self, preserve: bool | None):
         try:
             self.cb_preserve.setChecked(True if preserve is None else bool(preserve))
+        except Exception:
+            pass
+
+    # -------- preset emit (grip) --------
+    def get_preset(self) -> dict:
+        """Emit current state as the SCNR preset schema (inverse of seed_from_preset).
+        Mirrors exactly what _apply records for Replay Last."""
+        return {
+            "amount": float(self.slider.value() / 100.0),
+            "mode": str(self.mode_box.currentData() or "avg"),
+            "preserve_lightness": bool(self.cb_preserve.isChecked()),
+            "channel": str(self.channel_box.currentData() or "G"),
+        }
+
+    # -------- preset seed (double-click open) --------
+    def seed_from_preset(self, p: dict | None):
+        """Inverse of get_preset. Reuses the set_* helpers (which handle the /100
+        amount divisor). Accepts legacy key aliases like the existing opener does."""
+        p = dict(p or {})
+        amt = p.get("amount", p.get("strength", p.get("value", None)))
+        if amt is not None:
+            self.set_amount(float(amt))
+        self.set_mode(str(p.get("mode", p.get("neutral_mode", "avg"))))
+        self.set_channel(str(p.get("channel", p.get("target_channel", "G"))))
+        self.set_preserve_lightness(p.get("preserve_lightness", p.get("preserve", True)))
+        try:
+            self.status_label.clear()
         except Exception:
             pass
 
@@ -439,3 +495,44 @@ def apply_remove_green_preset_to_doc(main, doc, preset: dict):
             f"SCNR (headless) on '{name}'; channel={channel}, amount={amt:.2f}, "
             f"mode={mode}, preserve_lightness={preserve}"
         )
+
+def open_remove_green_with_preset(main_window, preset: dict | None = None):
+    """Double-click a Remove Green shortcut -> open the dialog seeded.
+    Subwindow-first doc resolution (harmonized with _open_<tool>_tool)."""
+    from PyQt6.QtGui import QIcon
+
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    dlg = RemoveGreenDialog(main_window, doc, parent=main_window)
+    try:
+        from setiastro.saspro.resources import green_path
+        dlg.setWindowIcon(QIcon(green_path))
+    except Exception:
+        pass
+
+    # No on-show reset -> seed directly before show.
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+
+    try:
+        main_window._remove_green_dialog = dlg
+    except Exception:
+        pass
+
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg

@@ -462,6 +462,22 @@ def _extract_state_dict(ckpt) -> dict:
     return ckpt
 
 
+def _checkpoint_args(ckpt) -> dict:
+    """Return training arguments saved by the aesthetics trainers.
+
+    SyQon's aesthetics checkpoints (e.g. best_starreduction.pt) store the
+    architecture — width, middle_blk_num, enc_blk_nums, dec_blk_nums — inside
+    ``ckpt["args"]``, NOT under ``ckpt["config"]["model"]``. Ignoring this
+    causes the NAFNet reconstruction to fall back to defaults, silently
+    building a smaller network whose state_dict then fails to align.
+    """
+    import argparse as _argparse
+    args = ckpt.get("args", {}) if isinstance(ckpt, dict) else {}
+    if isinstance(args, _argparse.Namespace):
+        return vars(args)
+    return args if isinstance(args, dict) else {}
+
+
 def _load_pth(path: str) -> dict:
     import torch
     try:
@@ -530,6 +546,7 @@ def load_parallax_model(ckpt_path: str,
         NAFNet = _build_NAFNet()
         sd = _clean_state_dict(_extract_state_dict(ckpt))
         mc = config.get("model", {})
+        args_dict = _checkpoint_args(ckpt)
         dims = _infer_nafnet_dims(sd, mc)
 
         # Variant/channel sanity check — catches the "installed correction
@@ -549,21 +566,41 @@ def load_parallax_model(ckpt_path: str,
                 f"SyQon Tools hub."
             )
 
+        # Prefer training args (where SyQon's aesthetics checkpoints actually
+        # stash the architecture — width, block counts), then config.model,
+        # then reasonable defaults. This is the fix SyQon shipped in the Siril
+        # v1.2.2 script and is required for best_starreduction.pt to load at
+        # its true size (width=64, [2,2,2]/[2,2,2]/4) instead of a smaller
+        # default that silently misaligns keys.
+        middle_blk_num = int(args_dict.get("middle_blk_num", mc.get("middle_blk_num", 4)))
+        enc_blk_nums   = tuple(args_dict.get("enc_blk_nums",   mc.get("enc_blk_nums",   [2, 2, 2])))
+        dec_blk_nums   = tuple(args_dict.get("dec_blk_nums",   mc.get("dec_blk_nums",   [2, 2, 2])))
+
         model = NAFNet(
             in_channels    = dims["in_channels"],
             out_channels   = dims["out_channels"],
             width          = dims["width"],
-            middle_blk_num = mc.get("middle_blk_num", 4),
-            enc_blk_nums   = tuple(mc.get("enc_blk_nums", [2, 2, 2])),
-            dec_blk_nums   = tuple(mc.get("dec_blk_nums", [2, 2, 2])),
+            middle_blk_num = middle_blk_num,
+            enc_blk_nums   = enc_blk_nums,
+            dec_blk_nums   = dec_blk_nums,
         )
-        missing, unexpected = model.load_state_dict(sd, strict=False)
-        if missing or unexpected:
-            print(f"[Parallax/aesthetics] state_dict mismatch — missing={len(missing)} unexpected={len(unexpected)}")
-            if missing:
-                print(f"  first missing: {list(missing)[:5]}")
-            if unexpected:
-                print(f"  first unexpected: {list(unexpected)[:5]}")
+        # Strict load: never silently run a partial / randomly-initialised
+        # network (SyQon's own guidance). If block counts are wrong, this
+        # raises with a specific message instead of running degraded output.
+        try:
+            model.load_state_dict(sd, strict=True)
+        except RuntimeError as e:
+            raise RuntimeError(
+                f"SyQon Parallax ({variant}, aesthetics): checkpoint at\n"
+                f"  {ckpt_path}\n"
+                f"could not be strictly loaded into the reconstructed NAFNet "
+                f"(width={dims['width']}, middle_blk={middle_blk_num}, "
+                f"enc={list(enc_blk_nums)}, dec={list(dec_blk_nums)}, "
+                f"in_ch={dims['in_channels']}). "
+                f"This usually means the checkpoint stores different block "
+                f"counts than what the loader inferred. Underlying torch error:\n"
+                f"  {e}"
+            ) from e
         model.eval()
         return model, config
 

@@ -231,6 +231,31 @@ class CLAHEDialogPro(QDialog):
         row.addStretch(1); row.addWidget(self.btn_apply); row.addWidget(self.btn_reset); row.addWidget(self.btn_close)
         v.addLayout(row)
 
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import clahe_path
+                _grip_icon = QIcon(clahe_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "clahe", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a CLAHE shortcut "
+                    "with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            v.addLayout(drag_row)
+        except Exception:
+            pass
+
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.timeout.connect(self._update_preview)
 
         self._set_pix(self._disp_base)
@@ -397,9 +422,121 @@ class CLAHEDialogPro(QDialog):
         n = max(2, min(n, 128))
         return (n, n)
 
+    # -------- preset emit (grip) --------
+    def get_preset(self) -> dict:
+        """Emit current slider state as the CLAHE preset schema (inverse of seed_from_preset).
+        Mirrors exactly what _apply records for Replay Last."""
+        return {
+            "clip_limit": float(self.s_clip.value()) / 10.0,
+            "tile_px": int(self.s_tile.value()),
+            "blend": float(self.s_blend.value()) / 100.0,
+        }
+
+    # -------- preset seed (double-click open) --------
+    def seed_from_preset(self, p: dict | None):
+        """Inverse of get_preset. clip is int×10, blend is int×100 (percent),
+        tile_px is direct pixels. Supports legacy 'tile' (tile-count) presets.
+        Block signals around sets, then set labels + fire one preview by hand."""
+        p = dict(p or {})
+
+        # clip_limit -> slider int (×10)
+        try:
+            ci = int(round(float(p.get("clip_limit", 2.0)) * 10.0))
+            ci = max(self.s_clip.minimum(), min(self.s_clip.maximum(), ci))
+        except Exception:
+            ci = self.s_clip.value()
+
+        # tile: prefer tile_px (direct); fall back to legacy tile-count heuristic.
+        try:
+            if "tile_px" in p:
+                tp = int(p.get("tile_px", 128))
+            else:
+                legacy = max(2, min(int(p.get("tile", 8)), 128))
+                tp = int(round(2048 / float(legacy)))
+            tp = max(self.s_tile.minimum(), min(self.s_tile.maximum(), tp))
+        except Exception:
+            tp = self.s_tile.value()
+
+        # blend -> percent int; accept 0..1 or 0..100.
+        try:
+            b = float(p.get("blend", 1.0))
+            if b <= 1.0:
+                b = b * 100.0
+            bi = int(round(b))
+            bi = max(self.s_blend.minimum(), min(self.s_blend.maximum(), bi))
+        except Exception:
+            bi = self.s_blend.value()
+
+        for w in (self.s_clip, self.s_tile, self.s_blend):
+            try: w.blockSignals(True)
+            except Exception: pass
+        try:
+            self.s_clip.setValue(ci)
+            self.s_tile.setValue(tp)
+            self.s_blend.setValue(bi)
+        finally:
+            for w in (self.s_clip, self.s_tile, self.s_blend):
+                try: w.blockSignals(False)
+                except Exception: pass
+
+        # Labels are driven by the (now-blocked) valueChanged lambdas -> set by hand.
+        self.lbl_clip.setText(f"{ci/10.0:.1f}")
+        self.lbl_tile.setText(f"{tp} px")
+        self.lbl_blend.setText(f"{bi}%")
+
+        # One preview reflecting the seeded state.
+        try:
+            self._update_preview()
+        except Exception:
+            pass
+
     def _reset(self):
         self.s_clip.setValue(20)
         self.s_tile.setValue(128)
         self.s_blend.setValue(100)
         self._set_pix(self._disp_base)
         self.view.fit_to_item(self.pix)
+
+
+def open_clahe_with_preset(main_window, preset: dict | None = None):
+    from PyQt6.QtGui import QIcon
+
+    # Resolve doc: active MDI subwindow first, then docman fallback.
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    _icon = QIcon()
+    try:
+        from setiastro.saspro.resources import clahe_path
+        _icon = QIcon(clahe_path)
+    except Exception:
+        pass
+
+    # Constructor takes a QIcon (not a path).
+    dlg = CLAHEDialogPro(main_window, doc, icon=_icon)
+
+    # No on-show reset -> seed directly before show.
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+
+    try:
+        main_window._clahe_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+    except Exception:
+        pass
+
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg

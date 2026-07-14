@@ -4211,10 +4211,28 @@ class AstroSuiteProMainWindow(
             QMessageBox.information(self, "Aberration Correction", "Active view has no image.")
             return
 
+        # Live active-doc resolver so the non-modal dialog tracks view switches
+        # (a lambda closing over `doc` would pin it to this one image forever).
+        def _get_active():
+            try:
+                d = getattr(self, "_active_doc", None)
+                if callable(d):
+                    r = d()
+                    if r is not None:
+                        return r
+            except Exception:
+                pass
+            try:
+                s = self.mdi.activeSubWindow()
+                ww = s.widget() if (s and hasattr(s, "widget")) else None
+                return getattr(ww, "document", None)
+            except Exception:
+                return None
+
         try:
-            # pass a callable that returns the current doc (matches your dialog signature)
-            dlg = AberrationAIDialog(self, self.docman, get_active_doc_callable=lambda: doc, icon=QIcon(aberration_path))
-            dlg.exec()
+            dlg = AberrationAIDialog(self, self.docman, _get_active, icon=QIcon(aberration_path))
+            self._aberration_ai_dialog = dlg          # retain ref (dialog is NOT WA_DeleteOnClose)
+            dlg.show(); dlg.raise_(); dlg.activateWindow()
         except Exception as e:
             print(f"Failed to open Aberration AI: {e}")
 
@@ -4224,31 +4242,32 @@ class AstroSuiteProMainWindow(
 
         preset = dict(preset or {})
         family = str(preset.get("family", "starless") or "starless").strip().lower()
-        auto_run = bool(preset.get("auto_run", False))
 
+        # Resolve the doc: prefer the explicit drop target, else the active doc.
         doc = None
         if target_sw is not None:
             try:
                 w = target_sw.widget() if callable(getattr(target_sw, "widget", None)) else getattr(target_sw, "widget", None)
-                if hasattr(w, "doc") and w.doc is not None:
-                    doc = w.doc
-                elif hasattr(w, "document") and w.document is not None:
+                if hasattr(w, "document") and w.document is not None:
                     doc = w.document
+                elif hasattr(w, "doc") and w.doc is not None:
+                    doc = w.doc
             except Exception:
                 doc = None
-
         if doc is None:
             try:
                 doc = self.get_active_doc()
             except Exception:
                 doc = None
 
-        # UI path
-        if not auto_run:
-            self._open_syqon_tools()
+        # A drop on a specific window is a HEADLESS apply, regardless of auto_run.
+        # auto_run only matters for the no-target path handled elsewhere. Only fall
+        # back to the UI if we genuinely have no document to act on.
+        if doc is None or getattr(doc, "image", None) is None:
+            self._open_syqon_tools(preset)
             return
 
-        # Headless route
+        # Starless is owned by remove_stars' preset runner.
         if family == "starless":
             remove_stars_preset = {
                 "tool": "syqon",
@@ -4263,13 +4282,10 @@ class AstroSuiteProMainWindow(
             run_remove_stars_via_preset(self, doc, remove_stars_preset)
             return
 
-        if family == "denoise":
-            run_syqon_tools_via_preset(self, doc, preset)
-            return
-
-        # sharpening not implemented yet
-        self._open_syqon_tools(preset)
-
+        # Denoise (Prism) AND Sharpening (Parallax) both route through the shared
+        # headless entrypoint, which dispatches on family internally.
+        run_syqon_tools_via_preset(self, doc, preset)
+        
     def _open_syqon_tools(self):
         from setiastro.saspro.syqon_tools import SyQonToolsDialog
 
@@ -6489,10 +6505,14 @@ class AstroSuiteProMainWindow(
                         "preserve_lightness",
                         preset_dict.get("preserve", True)
                     ))
+                    channel = str(preset_dict.get(
+                        "channel",
+                        preset_dict.get("target_channel", "G")
+                    )).upper()
                     self._log(
                         f"[Replay] Applied Remove Green to base of "
                         f"'{target_sw.windowTitle()}' "
-                        f"(amount={amt:.2f}, mode={mode}, "
+                        f"(channel={channel}, amount={amt:.2f}, mode={mode}, "
                         f"preserve_lightness={'yes' if preserve else 'no'})"
                     )
                 except Exception:
@@ -7260,6 +7280,11 @@ class AstroSuiteProMainWindow(
                     open_ghs_with_preset(self, preset)
                     return
 
+            if cid == "syqontools":
+                from setiastro.saspro.syqon_tools import open_syqontools_with_preset
+                open_syqontools_with_preset(self, preset)
+                return
+
             # Fallback: trigger QAction by cid (ok when no target)
             act = self._find_action_by_cid(cid)
             if act:
@@ -7555,11 +7580,14 @@ class AstroSuiteProMainWindow(
                                    raw.get("neutral_mode", "avg"))).lower()
                 preserve = bool(raw.get("preserve_lightness",
                                         raw.get("preserve", True)))
+                channel = str(raw.get("channel",
+                                      raw.get("target_channel", "G"))).upper()
 
                 preset_dict = {
                     "amount": amt,
                     "mode": mode,
                     "preserve_lightness": preserve,
+                    "channel": channel,
                 }
 
                 # Apply to the current doc (ROI or full view)
@@ -7574,7 +7602,7 @@ class AstroSuiteProMainWindow(
                     if hasattr(self, "_log"):
                         self._log(
                             f"[Replay] Recorded Remove Green preset from command drop "
-                            f"(amount={amt:.2f}, mode={mode}, "
+                            f"(channel={channel}, amount={amt:.2f}, mode={mode}, "
                             f"preserve_lightness={'yes' if preserve else 'no'})"
                         )
                 except Exception:
@@ -7738,7 +7766,20 @@ class AstroSuiteProMainWindow(
                 
                 QMessageBox.warning(self, "WaveScale Dark Enhancer", f"Apply failed:\n{e}")
             return
-
+        if cid == "texture_clarity":
+            from setiastro.saspro.texture_clarity import texture_clarity_headless
+            texture_clarity_headless(
+                doc,
+                texture_amount    = preset.get("t_amt", 0.0),
+                texture_radius    = preset.get("t_rad", 1.0),
+                unsharp_amount    = preset.get("u_amt", 0.0),
+                unsharp_radius    = preset.get("u_rad", 2.0),
+                unsharp_threshold = preset.get("u_thr", 0.0),
+                clarity_amount    = preset.get("c_amt", 0.0),
+                clarity_radius    = preset.get("c_rad", 1.0),
+                mask_strength     = preset.get("mask_str", 1.0),
+            )
+            return
 
         if cid == "extract_luminance":
             try:
@@ -8251,6 +8292,45 @@ class AstroSuiteProMainWindow(
             except Exception as e:
                 QMessageBox.warning(self, cid.replace("_", " ").title(), str(e))
             return
+
+        # ---------- Final fallback: trigger the registered QAction on the target view ----------
+        # Function-bundle steps for commands that don't have a dedicated HCD branch or
+        # an _apply_{cid}_to_doc method (e.g. checkpoint_save, some project-level ops)
+        # end up here. Activate the target subwindow so the action runs against the
+        # right doc, then trigger the QAction like a normal menu/toolbar invocation.
+        #
+        # NB: we import QApplication locally because the function_bundle branch
+        # above also has `from PyQt6.QtWidgets import QApplication`, which turns
+        # QApplication into a function-local name for the entire method (Python
+        # scoping rule). If we hit this fallback without going through that branch,
+        # the module-level QApplication would raise UnboundLocalError.
+        from PyQt6.QtWidgets import QApplication as _QApplication
+        try:
+            act = self._find_action_by_cid(cid)
+        except Exception:
+            act = None
+        if act is not None:
+            try:
+                if target_sw is not None:
+                    self.mdi.setActiveSubWindow(target_sw)
+                    _QApplication.processEvents()
+                act.trigger()
+                try:
+                    self._log(f"{cid} triggered on '{target_sw.windowTitle()}' (QAction fallback)")
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, cid.replace("_", " ").title(), str(e))
+                except Exception:
+                    pass
+            return
+
+        # Truly unknown — log so we notice next time
+        try:
+            self._log(f"[HCD] unhandled command_id={cid!r} (no HCD branch, no _apply_*_to_doc, no QAction)")
+        except Exception:
+            pass
 
     def _find_action_by_cid(self, cid: str) -> QAction | None:
         if not cid:
