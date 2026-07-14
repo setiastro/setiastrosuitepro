@@ -634,7 +634,10 @@ def _preset_opener_for_command(command_id: str):
         return open_wavescale_hdr_with_preset
     if command_id == "wavescale_dark_enhance":
         from setiastro.saspro.wavescalede import open_wavescalede_with_preset
-        return open_wavescalede_with_preset              
+        return open_wavescalede_with_preset   
+    if command_id == "clahe":
+        from setiastro.saspro.clahe import open_clahe_with_preset
+        return open_clahe_with_preset               
     return None
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
@@ -3488,8 +3491,19 @@ class _CLAHEPresetDialog(QDialog):
             px_guess = int(round(px_guess / 8)) * 8
             self.sp_tile_px.setValue(px_guess)
 
+        self.dp_blend = QDoubleSpinBox()
+        self.dp_blend.setRange(0.00, 1.00)
+        self.dp_blend.setDecimals(2)
+        self.dp_blend.setSingleStep(0.05)
+        # Accept fractional (0..1) or percent (0..100) presets.
+        _b = float(init.get("blend", 1.0))
+        if _b > 1.0:
+            _b = _b / 100.0
+        self.dp_blend.setValue(max(0.0, min(1.0, _b)))
+
         form.addRow("Clip limit:", self.dp_clip)
         form.addRow("Tile size (px):", self.sp_tile_px)
+        form.addRow("Blend amount:", self.dp_blend)
 
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
@@ -3504,6 +3518,7 @@ class _CLAHEPresetDialog(QDialog):
         return {
             "clip_limit": float(self.dp_clip.value()),
             "tile_px": int(self.sp_tile_px.value()),
+            "blend": float(self.dp_blend.value()),
         }
 
 class _MorphologyPresetDialog(QDialog):
