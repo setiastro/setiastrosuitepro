@@ -804,6 +804,29 @@ class CosmicClarityDialogPro(QDialog):
         row.addWidget(b_run)
         row.addWidget(b_close)
         outer.addLayout(row)
+
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import cosmic_path
+                _grip_icon = QIcon(cosmic_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "cosmic_clarity", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Cosmic Clarity shortcut with these settings.\n"
+                    "Drop directly on an image to apply them headlessly."),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            outer.addLayout(drag_row)
+        except Exception:
+            pass
  
         # ------------------------------------------------------------------
         # Step 1: load chunk/overlap (no save signals yet)
@@ -1789,6 +1812,24 @@ class CosmicClarityDialogPro(QDialog):
 
         return preset
 
+    # ── preset emit / seed (grip + double-click) ───────────────────────
+    def get_preset(self) -> dict:
+        try:
+            p = self.build_preset_from_ui()
+            return p
+        except Exception as e:
+            import traceback
+            print(f"[CC-GRIP] get_preset RAISED: {type(e).__name__}: {e}", flush=True)
+            traceback.print_exc()
+            raise
+
+    def seed_from_preset(self, p: dict | None):
+        """Seed side for double-click — exact inverse of get_preset. apply_preset
+        already inverts every divisor, sets mode first, and drives _mode_changed
+        itself, so it is the seed. (dict(p or {}) guards the None case, which
+        apply_preset does not.)"""
+        self.apply_preset(dict(p or {}))
+
     def _deferred_resize(self):
         self.adjustSize()
         s = QSettings()
@@ -1846,6 +1887,59 @@ class CosmicClarityDialogPro(QDialog):
         if self._closing_after_cancel:
             self._closing_after_cancel = False
             super().reject()
+
+def open_cosmic_clarity_with_preset(main_window, preset: dict | None = None):
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            try:
+                doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                       else getattr(dm, "active_document", None))
+            except Exception:
+                doc = None
+    if doc is None:
+        try:
+            ad = getattr(main_window, "_active_doc", None)
+            if callable(ad):
+                doc = ad()
+        except Exception:
+            doc = None
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    _icon = QIcon()
+    try:
+        from setiastro.saspro.resources import cosmic_path
+        _icon = QIcon(cosmic_path)
+    except Exception:
+        _icon = QIcon()
+
+    # Interactive open. bypass_guard stays False so a genuine in-progress headless
+    # run still blocks a second panel; the guard is inactive during normal use.
+    dlg = CosmicClarityDialogPro(main_window, doc, icon=_icon)
+
+    # If __init__ early-rejected (models missing / guard active), its widgets were
+    # never built — don't seed a zombie; let its own scheduled reject fire.
+    if not hasattr(dlg, "cmb_mode"):
+        return dlg
+
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    try:
+        main_window._cosmic_clarity_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg
 
 # =============================================================================
 # Satellite removal 

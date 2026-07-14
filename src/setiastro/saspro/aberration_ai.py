@@ -762,6 +762,29 @@ class AberrationAIDialog(QDialog):
         row5.addStretch(1); row5.addWidget(self.btn_run); row5.addWidget(btn_close)
         v.addLayout(row5)
 
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import aberration_path
+                _grip_icon = QIcon(aberration_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "aberrationai", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create an Aberration AI shortcut with these settings.\n"
+                    "Drop directly on an image to apply them headlessly."),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            v.addLayout(drag_row)
+        except Exception:
+            pass
+
         info = QLabel(
             "Model and weights © Riccardo Alberghi — "
             "<a href='https://github.com/riccardoalberghi'>more information</a>."
@@ -1353,3 +1376,133 @@ class AberrationAIDialog(QDialog):
             except RuntimeError:
                 pass
         self._worker = None
+
+    # ── preset emit / seed ─────────────────────────────────────────────
+    def get_preset(self) -> dict:
+        """
+        Emit side — mirrors what _on_ok records into _last_headless_command.
+        border_px is hardcoded to 10 in _on_ok (no border widget), so it's
+        emitted as 10. model is the currently-resolved QSettings model
+        (custom-if-enabled else downloaded); '' → headless consumer falls
+        back to QSettings at drop time.
+        """
+        auto_gpu = bool(self.chk_auto.isChecked())
+        preset = {
+            "model": resolve_aberration_model_path(),
+            "patch": int(self.spin_patch.value()),
+            "overlap": int(self.spin_overlap.value()),
+            "border_px": 10,
+            "auto_gpu": auto_gpu,
+        }
+        if not auto_gpu:
+            preset["provider"] = self.cmb_provider.currentText() or "CPUExecutionProvider"
+        return preset
+
+    def seed_from_preset(self, p: dict | None):
+        """
+        Inverse of get_preset for the widgets that exist. Does NOT write the
+        model path to QSettings (global, destructive) and there is no border
+        widget (dialog always applies border=10) — both noted asymmetries vs
+        get_preset. On Apple Silicon the CPU / Auto-off lock is left intact.
+        """
+        p = dict(p or {})
+
+        try:
+            patch = int(p.get("patch", 512))
+        except (TypeError, ValueError):
+            patch = 512
+        patch = max(128, min(2048, patch))
+
+        try:
+            overlap = int(p.get("overlap", 64))
+        except (TypeError, ValueError):
+            overlap = 64
+        overlap = max(16, min(512, overlap))
+
+        self.spin_patch.blockSignals(True)
+        self.spin_overlap.blockSignals(True)
+        try:
+            self.spin_patch.setValue(patch)
+            self.spin_overlap.setValue(overlap)
+        finally:
+            self.spin_patch.blockSignals(False)
+            self.spin_overlap.blockSignals(False)
+
+        # Apple Silicon is hard-locked to CPU / Auto-off in __init__ — respect it.
+        if not IS_APPLE_ARM:
+            auto_gpu = bool(p.get("auto_gpu", True))
+            self.chk_auto.blockSignals(True)
+            try:
+                self.chk_auto.setChecked(auto_gpu)
+            finally:
+                self.chk_auto.blockSignals(False)
+
+            if not auto_gpu:
+                prov = str(p.get("provider", "") or "")
+                if prov:
+                    i = self.cmb_provider.findText(prov)
+                    if i >= 0:
+                        self.cmb_provider.blockSignals(True)
+                        try:
+                            self.cmb_provider.setCurrentIndex(i)
+                        finally:
+                            self.cmb_provider.blockSignals(False)
+
+
+def open_aberration_ai_with_preset(main_window, preset: dict | None = None):
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm0 = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm0 is not None:
+            try:
+                doc = (dm0.get_active_document() if hasattr(dm0, "get_active_document")
+                       else getattr(dm0, "active_document", None))
+            except Exception:
+                doc = None
+    if doc is None:
+        try:
+            ad = getattr(main_window, "_active_doc", None)
+            if callable(ad):
+                doc = ad()
+        except Exception:
+            doc = None
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    _icon = QIcon()
+    try:
+        from setiastro.saspro.resources import aberration_path
+        _icon = QIcon(aberration_path)
+    except Exception:
+        _icon = QIcon()
+
+    docman = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+    get_active = getattr(main_window, "_active_doc", None)
+    if not callable(get_active):
+        _dm = docman
+        def get_active():
+            try:
+                if _dm is not None:
+                    return (_dm.get_active_document() if hasattr(_dm, "get_active_document")
+                            else getattr(_dm, "active_document", None))
+            except Exception:
+                return None
+            return None
+
+    dlg = AberrationAIDialog(main_window, docman, get_active, icon=_icon)  # (parent, docman, get_active_doc, icon)
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    try:
+        main_window._aberration_ai_dialog = dlg   # retain against GC (not WA_DeleteOnClose here)
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg                            

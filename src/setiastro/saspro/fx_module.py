@@ -747,6 +747,30 @@ class FXDialog(QDialog):
             btn_row.addWidget(b)
         left.addLayout(btn_row)
 
+        # --- preset drag handle (grip), pinned lower-left in the controls column ---
+        try:
+            from PyQt6.QtGui import QIcon
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import fx_path
+                _grip_icon = QIcon(fx_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "fx", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create an FX shortcut with these settings.\n"
+                    "Drop directly on an image to apply them headlessly."),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            left.addLayout(drag_row)
+        except Exception:
+            pass
+
         root.addWidget(left_w, 0)
 
         # ── right: preview ────────────────────────────────────────────────────
@@ -863,6 +887,54 @@ class FXDialog(QDialog):
             else:
                 params[key] = widget.currentText()
         return params
+
+    # ── preset emit / seed ────────────────────────────────────────────────────
+
+    def get_preset(self) -> dict:
+        """
+        Emit side. Byte-for-byte what apply_fx_headless() reads and what
+        _on_apply_finished feeds _remember_last_headless_command: a FLAT dict
+        {effect, <this effect's real-unit params>}. _get_params() already
+        divides by spec.scale, so no divisor handling here. Only the active
+        effect's keys are emitted (widgets are rebuilt per effect).
+        """
+        return {"effect": self._current_effect["key"], **self._get_params()}
+
+    def seed_from_preset(self, p: dict | None):
+        """Exact inverse of get_preset."""
+        p = dict(p or {})
+
+        # 1) pick the effect FIRST so this effect's param widgets exist (trap 7)
+        effect_key = str(p.get("effect", self._current_effect["key"]))
+        if effect_key not in _EFFECTS_BY_KEY:
+            effect_key = self._current_effect["key"]
+        self._select_effect(effect_key)   # rebuilds _param_widgets + triggers a preview
+
+        # 2) push each of this effect's params into its widget. Signals stay live
+        #    on purpose: the slider label lives in _rebuild_controls' lambda closure
+        #    (no stored handle), so we rely on valueChanged -> _on_slider_changed to
+        #    keep it in sync. The shared single-shot debounce coalesces the flurry
+        #    into one preview, which we force below.
+        for key, (kind, widget, spec) in self._param_widgets.items():
+            if key not in p:
+                continue
+            val = p[key]
+            if kind == "slider":
+                try:
+                    raw = int(round(float(val) * spec.scale))
+                except (TypeError, ValueError):
+                    continue
+                raw = max(spec.slider_lo, min(spec.slider_hi, raw))
+                widget.setValue(raw)
+            else:
+                try:
+                    widget.setCurrentText(str(val))
+                except Exception:
+                    pass
+
+        # 3) one immediate, authoritative preview (cancel the pending debounce)
+        self._preview_timer.stop()
+        self._trigger_preview()
 
     # ── before/after toggle ───────────────────────────────────────────────────
 
@@ -1164,4 +1236,48 @@ def open_fx_dialog(main, doc=None, initial_effect: str = "orton_glow", preset: d
         return
     dlg = FXDialog(main, doc, parent=main, initial_effect=initial_effect)
     dlg.show()
+    return dlg
+
+
+def open_fx_with_preset(main_window, preset: dict | None = None):
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            try:
+                doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                       else getattr(dm, "active_document", None))
+            except Exception:
+                doc = None
+    if doc is None:
+        try:
+            ad = getattr(main_window, "_active_doc", None)
+            if callable(ad):
+                doc = ad()
+        except Exception:
+            doc = None
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    p = dict(preset or {})
+    initial_effect = str(p.get("effect", "orton_glow"))
+    if initial_effect not in _EFFECTS_BY_KEY:
+        initial_effect = "orton_glow"
+
+    dlg = FXDialog(main_window, doc, parent=main_window, initial_effect=initial_effect)
+    try:
+        dlg.seed_from_preset(p)
+    except Exception:
+        pass
+    try:
+        main_window._fx_dialog = dlg   # retain against GC
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
     return dlg

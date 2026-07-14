@@ -637,7 +637,31 @@ def _preset_opener_for_command(command_id: str):
         return open_wavescalede_with_preset   
     if command_id == "clahe":
         from setiastro.saspro.clahe import open_clahe_with_preset
-        return open_clahe_with_preset               
+        return open_clahe_with_preset    
+    if command_id == "texture_clarity":
+        from setiastro.saspro.texture_clarity import open_texture_clarity_with_preset
+        return open_texture_clarity_with_preset    
+    if command_id == "fx":
+        from setiastro.saspro.fx_module import open_fx_with_preset
+        return open_fx_with_preset      
+    if command_id == "morphology":
+        from setiastro.saspro.morphology import open_morphology_with_preset
+        return open_morphology_with_preset  
+    if command_id == "halo_b_gon":
+        from setiastro.saspro.halobgon import open_halo_b_gon_with_preset
+        return open_halo_b_gon_with_preset    
+    if command_id == "aberrationai":
+        from setiastro.saspro.aberration_ai import open_aberration_ai_with_preset
+        return open_aberration_ai_with_preset  
+    if command_id in ("cosmic_clarity", "cosmic", "cosmicclarity"):
+        from setiastro.saspro.cosmicclarity import open_cosmic_clarity_with_preset
+        return open_cosmic_clarity_with_preset   
+    if command_id == "rcastro":
+        from setiastro.saspro.rcastro import open_rcastro_with_preset
+        return open_rcastro_with_preset 
+    if command_id == "syqontools":
+        from setiastro.saspro.syqon_tools import open_syqontools_with_preset
+        return open_syqontools_with_preset                     
     return None
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
@@ -741,6 +765,15 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
+    if command_id == "texture_clarity":
+        dlg = _TextureClarityPresetDialog(parent, initial=cur or {
+            "t_amt": 0.0, "t_rad": 1.0,
+            "u_amt": 0.0, "u_rad": 2.0, "u_thr": 0.0,
+            "c_amt": 0.0, "c_rad": 3.0,
+            "mask_str": 1.0,
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
     if command_id == "rcastro":
         from setiastro.saspro.rcastro import RCAstroPresetDialog
         dlg = RCAstroPresetDialog(parent, initial=cur or {
@@ -824,7 +857,12 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
     if command_id == "halo_b_gon":
         dlg = _HaloBGonPresetDialog(parent, initial=cur)
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
-
+    if command_id == "aberrationai":
+        from setiastro.saspro.aberration_ai_preset import AberrationAIPresetDialog
+        dlg = AberrationAIPresetDialog(parent, initial=cur or {
+            "patch": 512, "overlap": 64, "border_px": 10, "auto_gpu": True,
+        })
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
     if command_id in ("geom_rescale","rescale"):
         dlg = _RescalePresetDialog(parent, initial=cur or {"factor":1.0})
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
@@ -908,8 +946,16 @@ class PresetDragHandle(QToolButton):
             return {}
 
     def _start_drag(self):
+        preset = self._build_preset()
+        try:
+            packed = _pack_cmd_payload(self._command_id, preset)
+        except Exception as ex:
+            import traceback
+            print(f"[GRIP] _pack_cmd_payload RAISED: {type(ex).__name__}: {ex}", flush=True)
+            traceback.print_exc()
+            return
         md = QMimeData()
-        md.setData(MIME_CMD, _pack_cmd_payload(self._command_id, self._build_preset()))
+        md.setData(MIME_CMD, packed)
         drag = QDrag(self)
         drag.setMimeData(md)
         pm = self.icon().pixmap(32, 32) if not self.icon().isNull() else QPixmap(32, 32)
@@ -919,7 +965,7 @@ class PresetDragHandle(QToolButton):
         drag.setPixmap(pm)
         drag.setHotSpot(pm.rect().center())
         drag.exec(Qt.DropAction.CopyAction)
-        
+
 # ---------- the button that sits on the MDI desktop ----------
 class ShortcutButton(QToolButton):
     def __init__(self,
@@ -2896,7 +2942,95 @@ class _StarStretchPresetDialog(QDialog):
             "scnr_green":     bool(self.chk_scnr.isChecked()),
         }
 
+class _TextureClarityPresetDialog(QDialog):
+    """Preset editor for Texture & Clarity. Matches parameter set of
+    texture_clarity_headless() / TextureClarityDialog sliders."""
 
+    def __init__(self, parent, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Texture & Clarity — Preset")
+        self.setModal(True)
+        cur = dict(initial or {})
+
+        v = QVBoxLayout(self)
+        v.setSpacing(6)
+
+        def _spin(minv, maxv, step, decimals, val):
+            sp = QDoubleSpinBox(self)
+            sp.setRange(float(minv), float(maxv))
+            sp.setSingleStep(float(step))
+            sp.setDecimals(int(decimals))
+            sp.setValue(float(val))
+            sp.setFixedWidth(90)
+            return sp
+
+        def _row(parent_layout, label_text, spin):
+            row = QHBoxLayout()
+            lbl = QLabel(label_text, self)
+            lbl.setMinimumWidth(150)
+            row.addWidget(lbl)
+            row.addWidget(spin)
+            row.addStretch(1)
+            parent_layout.addLayout(row)
+
+        # Texture
+        tex_grp = QGroupBox("Texture", self)
+        tg = QVBoxLayout(tex_grp)
+        self.t_amt = _spin(-1.0, 1.0, 0.05, 2, cur.get("t_amt", 0.0))
+        self.t_rad = _spin( 0.1, 10.0, 0.1, 1, cur.get("t_rad", 1.0))
+        _row(tg, "Amount (−1.00 to 1.00):", self.t_amt)
+        _row(tg, "Radius (0.1 – 10.0 px):",  self.t_rad)
+        v.addWidget(tex_grp)
+
+        # Unsharp Mask
+        usm_grp = QGroupBox("Unsharp Mask", self)
+        ug = QVBoxLayout(usm_grp)
+        self.u_amt = _spin(0.0, 2.0,  0.05, 2, cur.get("u_amt", 0.0))
+        self.u_rad = _spin(0.1, 10.0, 0.1,  1, cur.get("u_rad", 2.0))
+        self.u_thr = _spin(0.0, 0.1,  0.001, 3, cur.get("u_thr", 0.0))
+        _row(ug, "Amount (0.00 – 2.00):",     self.u_amt)
+        _row(ug, "Radius (0.1 – 10.0 px):",   self.u_rad)
+        _row(ug, "Threshold (0.000 – 0.100):", self.u_thr)
+        v.addWidget(usm_grp)
+
+        # Clarity
+        clar_grp = QGroupBox("Clarity", self)
+        cg = QVBoxLayout(clar_grp)
+        self.c_amt = _spin(-1.0, 1.0, 0.05, 2, cur.get("c_amt", 0.0))
+        self.c_rad = _spin( 0.1, 10.0, 0.1, 1, cur.get("c_rad", 3.0))
+        _row(cg, "Amount (−1.00 to 1.00):", self.c_amt)
+        _row(cg, "Radius (0.1 – 10.0 px):",  self.c_rad)
+        v.addWidget(clar_grp)
+
+        # Clarity midtone mask
+        mask_grp = QGroupBox("Clarity Mask", self)
+        mg = QVBoxLayout(mask_grp)
+        self.mask_str = _spin(0.0, 1.0, 0.05, 2, cur.get("mask_str", 1.0))
+        _row(mg, "Midtone strength (1=midtones, 0=everywhere):", self.mask_str)
+        v.addWidget(mask_grp)
+
+        # OK / Cancel
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        v.addWidget(btns)
+
+    def result_dict(self) -> dict:
+        return {
+            "t_amt":    self.t_amt.value(),
+            "t_rad":    self.t_rad.value(),
+            "u_amt":    self.u_amt.value(),
+            "u_rad":    self.u_rad.value(),
+            "u_thr":    self.u_thr.value(),
+            "c_amt":    self.c_amt.value(),
+            "c_rad":    self.c_rad.value(),
+            "mask_str": self.mask_str.value(),
+        }
+
+class _SyQonToolsPresetDialog(QDialog):
     """
     Preset editor for command_id="syqontools"
  
@@ -3009,7 +3143,19 @@ class _StarStretchPresetDialog(QDialog):
         # ── Parallax group ──
         self.grp_parallax = QGroupBox("Parallax Preset", self)
         fpar = QFormLayout(self.grp_parallax)
- 
+
+        self.cmb_par_mode = QComboBox(self)
+        self.cmb_par_mode.addItem("Natural", userData="classic")
+        self.cmb_par_mode.addItem("Defined", userData="aesthetics")
+        _pm = str(init.get("parallax_mode", "classic") or "classic").strip().lower()
+        _pmi = self.cmb_par_mode.findData(_pm)
+        self.cmb_par_mode.setCurrentIndex(max(0, _pmi))
+        self.cmb_par_mode.setToolTip(
+            "Model set used for all Parallax stages.\n"
+            "Natural — classic models.\n"
+            "Defined — aesthetics models.")
+        fpar.addRow("Mode:", self.cmb_par_mode)
+
         self.chk_par_correct = QCheckBox("Aberration correction", self)
         self.chk_par_correct.setChecked(bool(init.get("parallax_correct", True)))
         fpar.addRow("", self.chk_par_correct)
@@ -3018,9 +3164,9 @@ class _StarStretchPresetDialog(QDialog):
         star_row = QWidget(self)
         star_lay = QHBoxLayout(star_row)
         star_lay.setContentsMargins(0, 0, 0, 0); star_lay.setSpacing(12)
-        star_lbl = QLabel("Star reduction (0=off, 1–6):", self)
+        star_lbl = QLabel("Star reduction (0=off, 1–10):", self)
         self.spin_par_star = QSpinBox(self)
-        self.spin_par_star.setRange(0, 6)
+        self.spin_par_star.setRange(0, 10)
         self.spin_par_star.setValue(int(init.get("parallax_star_level", 3)))
         self.spin_par_star.setFixedWidth(52)
         star_lay.addWidget(star_lbl)
@@ -3049,6 +3195,14 @@ class _StarStretchPresetDialog(QDialog):
         self.spin_par_pad.setRange(0, 2048)
         self.spin_par_pad.setValue(int(init.get("parallax_pad", 96)))
         fpar.addRow("Edge pad:", self.spin_par_pad)
+
+        self.cmb_par_batch = QComboBox(self)
+        for _l in ("Auto", "1", "2", "4", "8"):
+            self.cmb_par_batch.addItem(_l, userData=_l)
+        _b = str(init.get("parallax_batch_size", "Auto") or "Auto")
+        _bi = self.cmb_par_batch.findData(_b)
+        self.cmb_par_batch.setCurrentIndex(max(0, _bi))
+        fpar.addRow("Batch size:", self.cmb_par_batch)
  
         self.chk_par_mtf = QCheckBox("Apply temporary stretch (recommended for linear data)", self)
         self.chk_par_mtf.setChecked(bool(init.get("parallax_use_mtf", True)))
@@ -3059,8 +3213,14 @@ class _StarStretchPresetDialog(QDialog):
         self.spin_par_mtf.setSingleStep(0.01)
         self.spin_par_mtf.setValue(float(init.get("parallax_mtf_target", 0.15)))
         self.spin_par_mtf.setEnabled(self.chk_par_mtf.isChecked())
-        self.chk_par_mtf.toggled.connect(self.spin_par_mtf.setEnabled)
         fpar.addRow("MTF target median:", self.spin_par_mtf)
+
+        self.chk_par_mtf_linked = QCheckBox("Linked stretch (preserves star colors)", self)
+        self.chk_par_mtf_linked.setChecked(bool(init.get("parallax_mtf_linked", False)))
+        self.chk_par_mtf_linked.setEnabled(self.chk_par_mtf.isChecked())
+        fpar.addRow("", self.chk_par_mtf_linked)
+        self.chk_par_mtf.toggled.connect(self.spin_par_mtf.setEnabled)
+        self.chk_par_mtf.toggled.connect(self.chk_par_mtf_linked.setEnabled)
  
         lay.addWidget(self.grp_parallax)
  
@@ -3102,6 +3262,7 @@ class _StarStretchPresetDialog(QDialog):
             "prism_use_amp":           bool(self.chk_prism_amp.isChecked()),
  
             # Parallax
+            "parallax_mode":          str(self.cmb_par_mode.currentData() or "classic"),
             "parallax_correct":       bool(self.chk_par_correct.isChecked()),
             "parallax_star_level":    int(self.spin_par_star.value()),
             "parallax_sharpen_alpha": float(self.spin_par_sharpen.value()),
@@ -3110,6 +3271,8 @@ class _StarStretchPresetDialog(QDialog):
             "parallax_pad":           int(self.spin_par_pad.value()),
             "parallax_use_mtf":       bool(self.chk_par_mtf.isChecked()),
             "parallax_mtf_target":    float(self.spin_par_mtf.value()),
+            "parallax_mtf_linked":    bool(self.chk_par_mtf_linked.isChecked()),
+            "parallax_batch_size":    str(self.cmb_par_batch.currentData() or "Auto"),
         }
 
 

@@ -864,6 +864,30 @@ class RCAstroDialog(QDialog):
         btn_row.addWidget(btn_close)
         root.addLayout(btn_row)
 
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from PyQt6.QtGui import QIcon
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import rcastro_path
+                _grip_icon = QIcon(rcastro_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "rcastro", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create an RC-Astro shortcut for the ACTIVE tab's "
+                    "product and settings.\nDrop directly on an image to apply them headlessly."),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            root.addLayout(drag_row)
+        except Exception:
+            pass
+
         foot = QLabel("Franklin Marek  |  www.setiastro.com")
         foot.setAlignment(Qt.AlignmentFlag.AlignCenter)
         foot.setStyleSheet("color:#444; font-size:10px;")
@@ -1049,6 +1073,86 @@ class RCAstroDialog(QDialog):
         self.nxt_panel.save_settings(s)
 
     # ── Run ───────────────────────────────────────────────────────────────────
+    # ── preset emit / seed (grip + double-click) ───────────────────────
+    def get_preset(self) -> dict:
+        """
+        Emit the ACTIVE tab's product + human-readable params — mirroring how
+        _run() dispatches on the current tab. Deliberately OMITS `args`: frozen
+        CLI args bake in version-gated flag names (--nonstellar-diameter vs
+        --nonstellar-radius, --ml-version) that the consumer re-derives correctly
+        from these readable params against current QSettings at drop time.
+        Returns {} for the Licenses tab (no product).
+        """
+        product_map = {0: "bxt", 1: "sxt", 2: "nxt"}
+        product = product_map.get(self.tabs.currentIndex())
+        if product is None:
+            return {}
+        p: dict = {"product": product, "engine": self.cmb_engine.currentText()}
+        if product == "bxt":
+            b = self.bxt_panel
+            p.update({
+                "correct_only":       b.chk_correct_only.isChecked(),
+                "sharpen_stars":      b.sld_ss.value()  / 100.0,
+                "adjust_star_halos":  b.sld_ash.value() / 100.0,
+                "auto_nsr":           b.chk_auto_nsr.isChecked(),
+                "nonstellar_radius":  b.sld_nsr.value() / 10.0,
+                "sharpen_nonstellar": b.sld_sn.value()  / 100.0,
+                "ml_version": 2 if b.cmb_model.currentIndex() == 1 else None,
+            })
+        elif product == "sxt":
+            x = self.sxt_panel
+            p.update({
+                "stars":    x.chk_stars.isChecked(),
+                "unscreen": x.chk_unscreen.isChecked(),
+                "overlap":  x.sld_overlap.value() / 100.0,
+            })
+        elif product == "nxt":
+            n = self.nxt_panel
+            p.update({
+                "nxt_mode":      n._active_mode(),
+                "denoise":       n.sld_dn.value()  / 100.0,
+                "denoise_int":   n.sld_di.value()  / 100.0,
+                "denoise_color": n.sld_dc.value()  / 100.0,
+                "freq_hf":       n.sld_hf.value()  / 100.0,
+                "freq_lf":       n.sld_lf.value()  / 100.0,
+                "freq_ihf":      n.sld_ihf.value() / 100.0,
+                "freq_ilf":      n.sld_ilf.value() / 100.0,
+                "freq_chf":      n.sld_chf.value() / 100.0,
+                "freq_clf":      n.sld_clf.value() / 100.0,
+                "freq_scale":    n.sld_fs.value()  / 10.0,
+                "iterations":    float(n.sp_iter.value()),
+                "ml_version": 2 if n.cmb_model.currentIndex() == 1 else None,
+            })
+        return p
+
+    def seed_from_preset(self, preset: dict | None):
+        """
+        Inverse of get_preset: select the product tab, set engine, then seed that
+        panel via the shared _apply_*_preset helpers (which set NXT mode first).
+        Reuses the exact seeders the standalone editor uses, so there's one seed
+        surface. Does not restore `args` (not emitted; re-derived on run).
+        """
+        p = dict(preset or {})
+        product = str(p.get("product", "bxt")).lower()
+        tab_idx = {"bxt": 0, "sxt": 1, "nxt": 2}.get(product, 0)
+        self.tabs.setCurrentIndex(tab_idx)
+
+        if "engine" in p:
+            eng = str(p["engine"])
+            i = self.cmb_engine.findText(eng)
+            if i >= 0:
+                self.cmb_engine.setCurrentIndex(i)
+            else:
+                self.cmb_engine.setCurrentText(eng)
+
+        if product == "bxt":
+            _apply_bxt_preset(self.bxt_panel, p)
+            self.bxt_panel._on_correct_only_toggled(
+                self.bxt_panel.chk_correct_only.isChecked())
+        elif product == "sxt":
+            _apply_sxt_preset(self.sxt_panel, p)
+        elif product == "nxt":
+            _apply_nxt_preset(self.nxt_panel, p)
 
     def _run(self):
         exe = self._get_exe()
@@ -1378,7 +1482,9 @@ class RCAstroPresetDialog(QDialog):
         }
         panel = {"bxt": self._bxt, "sxt": self._sxt, "nxt": self._nxt}[product]
         out["args"] = panel.build_args()
-        # Also store human-readable params for re-display
+        # Also store human-readable params for re-display / durable re-derivation.
+        # NB: we intentionally rely on these (not the frozen `args`) for durability,
+        # so they must cover every control build_args() reads.
         if product == "bxt":
             out["correct_only"]        = self._bxt.chk_correct_only.isChecked()
             out["sharpen_stars"]       = self._bxt.sld_ss.value()  / 100.0
@@ -1390,10 +1496,18 @@ class RCAstroPresetDialog(QDialog):
         elif product == "sxt":
             out["stars"]    = self._sxt.chk_stars.isChecked()
             out["unscreen"] = self._sxt.chk_unscreen.isChecked()
+            out["overlap"]  = self._sxt.sld_overlap.value() / 100.0
         elif product == "nxt":
+            out["nxt_mode"]      = self._nxt._active_mode()   # simple | ic | freq
             out["denoise"]       = self._nxt.sld_dn.value()  / 100.0
             out["denoise_int"]   = self._nxt.sld_di.value()  / 100.0
             out["denoise_color"] = self._nxt.sld_dc.value()  / 100.0
+            out["freq_hf"]       = self._nxt.sld_hf.value()  / 100.0
+            out["freq_lf"]       = self._nxt.sld_lf.value()  / 100.0
+            out["freq_ihf"]      = self._nxt.sld_ihf.value() / 100.0
+            out["freq_ilf"]      = self._nxt.sld_ilf.value() / 100.0
+            out["freq_chf"]      = self._nxt.sld_chf.value() / 100.0
+            out["freq_clf"]      = self._nxt.sld_clf.value() / 100.0
             out["freq_scale"]    = self._nxt.sld_fs.value()  / 10.0
             out["iterations"]    = float(self._nxt.sp_iter.value())
             out["ml_version"] = 2 if self._nxt.cmb_model.currentIndex() == 1 else None
@@ -1421,21 +1535,46 @@ def _apply_sxt_preset(panel: _SXTPanel, p: dict):
         panel.chk_stars.setChecked(bool(p["stars"]))
     if "unscreen" in p:
         panel.chk_unscreen.setChecked(bool(p["unscreen"]))
+    if "overlap" in p:
+        panel.sld_overlap.setValue(int(round(float(p["overlap"]) * 100)))
 
 
 def _apply_nxt_preset(panel: _NXTPanel, p: dict):
+    # Mode FIRST — build_args() only emits the active mode's sliders, so the
+    # radio must be set before (and the freq sliders below only matter in freq mode).
+    mode = str(p.get("nxt_mode", "")).lower()
+    if mode == "ic":
+        panel.rb_ic.setChecked(True)
+    elif mode == "freq":
+        panel.rb_freq.setChecked(True)
+    elif mode == "simple":
+        panel.rb_simple.setChecked(True)
     if "denoise" in p:
         panel.sld_dn.setValue(int(float(p["denoise"]) * 100))
     if "denoise_int" in p:
         panel.sld_di.setValue(int(float(p["denoise_int"]) * 100))
     if "denoise_color" in p:
         panel.sld_dc.setValue(int(float(p["denoise_color"]) * 100))
+    # Frequency-mode sliders
+    if "freq_hf" in p:
+        panel.sld_hf.setValue(int(float(p["freq_hf"]) * 100))
+    if "freq_lf" in p:
+        panel.sld_lf.setValue(int(float(p["freq_lf"]) * 100))
+    if "freq_ihf" in p:
+        panel.sld_ihf.setValue(int(float(p["freq_ihf"]) * 100))
+    if "freq_ilf" in p:
+        panel.sld_ilf.setValue(int(float(p["freq_ilf"]) * 100))
+    if "freq_chf" in p:
+        panel.sld_chf.setValue(int(float(p["freq_chf"]) * 100))
+    if "freq_clf" in p:
+        panel.sld_clf.setValue(int(float(p["freq_clf"]) * 100))
     if "freq_scale" in p:
         panel.sld_fs.setValue(int(float(p["freq_scale"]) * 10))
     if "iterations" in p:
         panel.sp_iter.setValue(float(p["iterations"]))
     if "ml_version" in p:
         panel.cmb_model.setCurrentIndex(1 if p["ml_version"] == 2 else 0)
+    panel._update_mode()   # sync enabled-state after mode + sliders set
 
 
 # ---------------------------------------------------------------------------
@@ -1595,4 +1734,51 @@ def open_rcastro_dialog(parent, doc=None, doc_manager=None,
     )
     dlg.show()
     dlg.raise_()
+    return dlg
+
+
+def open_rcastro_with_preset(main_window, preset: dict | None = None):
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            try:
+                doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                       else getattr(dm, "active_document", None))
+            except Exception:
+                doc = None
+    if doc is None:
+        try:
+            ad = getattr(main_window, "_active_doc", None)
+            if callable(ad):
+                doc = ad()
+        except Exception:
+            doc = None
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    _icon = None
+    try:
+        from PyQt6.QtGui import QIcon
+        from setiastro.saspro.resources import rcastro_path
+        _icon = QIcon(rcastro_path)
+    except Exception:
+        _icon = None
+
+    dlg = RCAstroDialog(main_window, doc=doc, rcastro_icon=_icon)
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    try:
+        main_window._rcastro_dialog = dlg   # retain against GC (WA_DeleteOnClose set in dialog)
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
     return dlg

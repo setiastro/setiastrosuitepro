@@ -1710,6 +1710,7 @@ class ToolbarMixin:
         reg("linear_fit", self.act_linear_fit)
         reg("debayer", self.act_debayer)
         reg("cosmicclarity", self.actCosmicUI)
+        reg("cosmic_clarity", self.actCosmicUI)
         reg("cosmicclaritysat", self.actCosmicSat)
         reg("aberrationai", self.actAberrationAI)
         reg("syqontools", self.actSyQonTools)

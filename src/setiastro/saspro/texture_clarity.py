@@ -232,7 +232,7 @@ class TextureClarityWorker(QThread):
 # ─── dialog ───────────────────────────────────────────────────────────────────
 
 class TextureClarityDialog(QDialog):
-    def __init__(self, main, doc, parent=None):
+    def __init__(self, main, doc, parent=None, preset: dict | None = None):
         super().__init__(parent)
         self.main = main
         self.doc  = doc
@@ -270,6 +270,8 @@ class TextureClarityDialog(QDialog):
         self._preview_timer.timeout.connect(self._trigger_preview)
 
         self._build_ui()
+        if preset:
+            self._apply_preset_to_sliders(preset)
         self._cache_original()
         self._trigger_preview()
 
@@ -403,6 +405,32 @@ class TextureClarityDialog(QDialog):
         for b in (self.btn_apply, self.btn_reset, self.btn_cancel):
             btn_row.addWidget(b)
         left.addLayout(btn_row)
+
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from PyQt6.QtGui import QIcon
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import texture_clarity_path
+                _grip_icon = QIcon(texture_clarity_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "texture_clarity", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Texture and Clarity shortcut "
+                    "with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            left.addLayout(drag_row)
+        except Exception:
+            pass
 
         root.addWidget(left_w, 0)
 
@@ -548,6 +576,58 @@ class TextureClarityDialog(QDialog):
         self._preview_timer.start()
 
     # ── apply ─────────────────────────────────────────────────────────────────
+
+    def get_preset(self) -> dict:
+        """Emit current slider state as the Texture/Clarity preset schema.
+        Inverse of _apply_preset_to_sliders; identical to what _apply records."""
+        return dict(
+            t_amt    = self.sl_t_amt.value() / 100.0,
+            t_rad    = self.sl_t_rad.value() / 10.0,
+            u_amt    = self.sl_u_amt.value() / 100.0,
+            u_rad    = self.sl_u_rad.value() / 10.0,
+            u_thr    = self.sl_u_thr.value() / 1000.0,
+            c_amt    = self.sl_c_amt.value() / 100.0,
+            c_rad    = self.sl_c_rad.value() / 10.0,
+            mask_str = self.sl_mask.value()  / 100.0,
+        )
+
+    def _apply_preset_to_sliders(self, p: dict):
+        """Seed sliders from a preset dict. Silent-clamp anything out of range."""
+        def _seed(sld, val, scale, lbl, fmt):
+            try:
+                v = int(round(float(val) * scale))
+            except (TypeError, ValueError):
+                return
+            v = max(sld.minimum(), min(sld.maximum(), v))
+            sld.blockSignals(True)
+            sld.setValue(v)
+            sld.blockSignals(False)
+            lbl.setText(fmt(v))
+
+        if "t_amt" in p:
+            _seed(self.sl_t_amt, p["t_amt"], 100, self.lbl_t_amt,
+                lambda v: f"Amount: {v/100:.2f}")
+        if "t_rad" in p:
+            _seed(self.sl_t_rad, p["t_rad"], 10, self.lbl_t_rad,
+                lambda v: f"Radius: {v/10:.1f}")
+        if "u_amt" in p:
+            _seed(self.sl_u_amt, p["u_amt"], 100, self.lbl_u_amt,
+                lambda v: f"Amount: {v/100:.2f}")
+        if "u_rad" in p:
+            _seed(self.sl_u_rad, p["u_rad"], 10, self.lbl_u_rad,
+                lambda v: f"Radius: {v/10:.1f}")
+        if "u_thr" in p:
+            _seed(self.sl_u_thr, p["u_thr"], 1000, self.lbl_u_thr,
+                lambda v: f"Threshold: {v/1000:.3f}")
+        if "c_amt" in p:
+            _seed(self.sl_c_amt, p["c_amt"], 100, self.lbl_c_amt,
+                lambda v: f"Amount: {v/100:.2f}")
+        if "c_rad" in p:
+            _seed(self.sl_c_rad, p["c_rad"], 10, self.lbl_c_rad,
+                lambda v: f"Radius: {v/10:.1f}")
+        if "mask_str" in p:
+            _seed(self.sl_mask, p["mask_str"], 100, self.lbl_mask,
+                lambda v: f"Midtone strength: {v/100:.2f}  (1=midtones only, 0=everywhere)")
 
     def _apply(self):
         if self.doc is None:
@@ -737,7 +817,7 @@ class TextureClarityDialog(QDialog):
         super().closeEvent(ev)
 
 
-# ─── public entry point ───────────────────────────────────────────────────────
+# ─── public entry points ───────────────────────────────────────────────────────
 
 def open_texture_clarity_dialog(main, doc=None, preset: dict | None = None):
     if doc is None:
@@ -747,5 +827,10 @@ def open_texture_clarity_dialog(main, doc=None, preset: dict | None = None):
     if doc is None or getattr(doc, "image", None) is None:
         QMessageBox.information(main, "Texture & Clarity", "Open an image first.")
         return
-    dlg = TextureClarityDialog(main, doc, parent=main)
+    dlg = TextureClarityDialog(main, doc, parent=main, preset=preset)
     dlg.show()
+
+
+def open_texture_clarity_with_preset(main, preset: dict | None = None):
+    """Preset-aware live opener for the shortcut / bundle system."""
+    open_texture_clarity_dialog(main, doc=None, preset=preset)

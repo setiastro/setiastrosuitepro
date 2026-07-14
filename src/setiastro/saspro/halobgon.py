@@ -333,6 +333,29 @@ class HaloBGonDialogPro(QDialog):
         row2.addStretch(1); row2.addWidget(b_apply); row2.addWidget(b_reset); row2.addWidget(b_cancel)
         v.addLayout(row2)
 
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import halo_path
+                _grip_icon = QIcon(halo_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "halo_b_gon", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Halo-B-Gon shortcut with these settings.\n"
+                    "Drop directly on an image to apply them headlessly."),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            v.addLayout(drag_row)
+        except Exception:
+            pass
+
         self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.timeout.connect(self._update_preview)
 
         self._set_pix(self._disp_base)
@@ -348,6 +371,38 @@ class HaloBGonDialogPro(QDialog):
 
     def _params(self):
         return int(self.sl.value()), bool(self.cb_linear.isChecked())
+
+    # ── preset emit / seed ─────────────────────────────────────────────
+    def get_preset(self) -> dict:
+        """Emit side — byte-for-byte what _apply records / the consumer reads.
+        The Apply-to target is a live-session choice the headless consumer
+        can't honor, so it is deliberately NOT part of the preset."""
+        lvl, lin = self._params()
+        return {"reduction": int(lvl), "linear": bool(lin)}
+
+    def seed_from_preset(self, p: dict | None):
+        """Exact inverse of get_preset."""
+        p = dict(p or {})
+
+        try:
+            lvl = int(p.get("reduction", 0))
+        except (TypeError, ValueError):
+            lvl = 0
+        lvl = max(0, min(3, lvl))
+        lin = bool(p.get("linear", False))
+
+        self.sl.blockSignals(True)
+        self.cb_linear.blockSignals(True)
+        try:
+            self.sl.setValue(lvl)
+            self.cb_linear.setChecked(lin)
+        finally:
+            self.sl.blockSignals(False)
+            self.cb_linear.blockSignals(False)
+
+        # label is driven by a valueChanged lambda we just blocked — set by hand
+        self.lbl.setText(["Extra Low", "Low", "Medium", "High"][lvl])
+        self._update_preview()
 
     def _update_preview(self):
         lvl, lin = self._params()
@@ -493,3 +548,48 @@ class HaloBGonDialogPro(QDialog):
         self.cb_linear.setChecked(False)
         self._set_pix(self._disp_base)
         self._update_preview()
+
+def open_halo_b_gon_with_preset(main_window, preset: dict | None = None):
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            try:
+                doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                       else getattr(dm, "active_document", None))
+            except Exception:
+                doc = None
+    if doc is None:
+        try:
+            ad = getattr(main_window, "_active_doc", None)
+            if callable(ad):
+                doc = ad()
+        except Exception:
+            doc = None
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    _icon = QIcon()
+    try:
+        from setiastro.saspro.resources import halo_path
+        _icon = QIcon(halo_path)
+    except Exception:
+        _icon = QIcon()
+
+    dlg = HaloBGonDialogPro(main_window, doc, icon=_icon)   # parent FIRST, doc SECOND
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    try:
+        main_window._halo_b_gon_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg
