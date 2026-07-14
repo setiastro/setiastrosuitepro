@@ -628,7 +628,13 @@ def _preset_opener_for_command(command_id: str):
         return open_remove_green_with_preset  
     if command_id == "convo":
         from setiastro.saspro.convo_preset import open_convo_with_preset
-        return open_convo_with_preset        
+        return open_convo_with_preset  
+    if command_id == "wavescale_hdr":
+        from setiastro.saspro.wavescale_hdr import open_wavescale_hdr_with_preset
+        return open_wavescale_hdr_with_preset
+    if command_id == "wavescale_dark_enhance":
+        from setiastro.saspro.wavescalede import open_wavescalede_with_preset
+        return open_wavescalede_with_preset              
     return None
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----

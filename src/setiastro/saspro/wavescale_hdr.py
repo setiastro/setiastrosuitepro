@@ -355,6 +355,31 @@ class WaveScaleHDRDialogPro(QDialog):
         main.addLayout(h)
         main.addLayout(bot)
 
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import hdr_path
+                _grip_icon = QIcon(hdr_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "wavescale_hdr", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a WaveScale HDR shortcut "
+                    "with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)   # pushes grip to the left edge
+            main.addLayout(drag_row)
+        except Exception:
+            pass
+
         # mask window
         self.mask_win = MaskDisplayWindow(self)
         if not self._headless:
@@ -404,6 +429,19 @@ class WaveScaleHDRDialogPro(QDialog):
         self.s_gamma.setValue(mg_i)
         # refresh mask preview (even if window is hidden)
         self._update_mask_from_gamma()
+
+    def get_preset(self) -> dict:
+        """Emit current slider state as the WaveScale HDR preset schema.
+        Exact inverse of apply_preset; mirrors what _apply_to_doc records."""
+        return {
+            "n_scales": int(self.s_scales.value()),
+            "compression_factor": float(self.s_comp.value()) / 100.0,
+            "mask_gamma": float(self.s_gamma.value()) / 100.0,
+        }
+
+    def seed_from_preset(self, p: dict | None):
+        """Alias to apply_preset for the standard opener naming."""
+        self.apply_preset(dict(p or {}))
 
     def _headless_guard_active(self) -> bool:
         """Only guard true concurrent *headless* runs; ignore stale locks."""
@@ -704,3 +742,49 @@ class WaveScaleHDRDialogPro(QDialog):
             self.tr("HDR Mask (L × Active Mask)") if self._get_doc_active_mask_2d() is not None else self.tr("HDR Mask (L-based)")
         )
         self.mask_win.update_mask(mask_comb)     
+
+def open_wavescale_hdr_with_preset(main_window, preset: dict | None = None):
+    from PyQt6.QtGui import QIcon  # noqa: F401  (icon_path is a str here)
+
+    # Resolve doc: active MDI subwindow first, then docman fallback.
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    _icon_path = None
+    try:
+        from setiastro.saspro.resources import hdr_path
+        _icon_path = hdr_path
+    except Exception:
+        _icon_path = None
+
+    # Interactive dialog; bypass the headless-lock guard so opening never blocks.
+    dlg = WaveScaleHDRDialogPro(
+        main_window, doc, icon_path=_icon_path,
+        headless=False, bypass_guard=True,
+    )
+
+    # No on-show reset of the sliders -> seed directly before show.
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+
+    try:
+        main_window._wavescale_hdr_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+    except Exception:
+        pass
+
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg        

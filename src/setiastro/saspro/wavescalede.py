@@ -298,6 +298,31 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         main.addLayout(h)
         main.addLayout(bot)
 
+        # --- preset drag handle (grip), pinned lower-left ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import dse_icon_path
+                _grip_icon = QIcon(dse_icon_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "wavescale_dark_enhance", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a WaveScale Dark Enhancer shortcut "
+                    "with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)   # pushes grip to the left edge
+            main.addLayout(drag_row)
+        except Exception:
+            pass
+
         # mask window (show immediately)
         self.mask_win = _MaskWindow(self); self.mask_win.show()
 
@@ -430,6 +455,48 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         self.btn_apply.setEnabled(False)
         self.btn_toggle.setChecked(False); self.btn_toggle.setText(self.tr("Show Original"))
         self._update_mask_only()
+
+    # -------- preset emit (grip) --------
+    def get_preset(self) -> dict:
+        """Emit current slider state as the DSE preset schema (inverse of seed_from_preset).
+        Mirrors exactly what _apply_to_doc records."""
+        return {
+            "n_scales": int(self.s_scales.value()),
+            "boost_factor": float(self.s_boost.value()) / 100.0,
+            "mask_gamma": float(self.s_gamma.value()) / 100.0,
+            "iterations": int(self.s_iters.value()),
+        }
+
+    # -------- preset seed (double-click open) --------
+    def seed_from_preset(self, p: dict | None):
+        """Inverse of get_preset. boost/gamma sliders are int×100; scales/iters direct.
+        Clamps to each slider's range."""
+        p = dict(p or {})
+        try:
+            ns = int(round(float(p.get("n_scales", 6))))
+            self.s_scales.setValue(max(2, min(10, ns)))
+        except Exception:
+            pass
+        try:
+            bi = int(round(float(p.get("boost_factor", 5.0)) * 100.0))
+            self.s_boost.setValue(max(10, min(1000, bi)))
+        except Exception:
+            pass
+        try:
+            gi = int(round(float(p.get("mask_gamma", 1.0)) * 100.0))
+            self.s_gamma.setValue(max(10, min(1000, gi)))
+        except Exception:
+            pass
+        try:
+            it = int(round(float(p.get("iterations", 2))))
+            self.s_iters.setValue(max(1, min(10, it)))
+        except Exception:
+            pass
+        # Refresh the mask window (depends on gamma AND n_scales).
+        try:
+            self._update_mask_only()
+        except Exception:
+            pass
 
     # --- live mask (no full recompute) ---
     def _update_mask_only(self):
@@ -650,3 +717,45 @@ def install_wavescale_dark_enhancer(main_window: QMainWindow,
         sm.register_action(command_id, act)
 
     return act
+
+def open_wavescalede_with_preset(main_window, preset: dict | None = None):
+    from PyQt6.QtGui import QIcon  # noqa: F401 (icon_path is a str)
+
+    # Resolve doc: active MDI subwindow first, then docman fallback.
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None:
+        return None
+
+    _icon_path = None
+    try:
+        from setiastro.saspro.resources import dse_icon_path
+        _icon_path = dse_icon_path
+    except Exception:
+        _icon_path = None
+
+    dlg = WaveScaleDarkEnhancerDialogPro(main_window, doc, icon_path=_icon_path)
+
+    # No on-show reset of the sliders -> seed directly before show.
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+
+    try:
+        main_window._wavescalede_dialog = dlg   # retain against GC (WA_DeleteOnClose)
+    except Exception:
+        pass
+
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg

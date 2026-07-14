@@ -1423,15 +1423,10 @@ class ConvoDeconvoDialog(QDialog):
 
             return p
 
-        # ── TV Denoise tab ──────────────────────────────────────────────
-        if current_tab_name == "TV Denoise":
-            return {
-                "op": "tv",
-                "tv_weight":       float(self.tv_weight_slider.value()),
-                "tv_iter":         int(round(float(self.tv_iter_slider.value()))),
-                "tv_multichannel": bool(self.tv_multichannel_checkbox.isChecked()),
-                "strength":        strength,
-            }
+        # ── Classical Denoise tab ───────────────────────────────────────
+        if current_tab_name == self.tr("Classical Denoise") or current_tab_name == "Classical Denoise":
+            # Reuse the grip emitter so Replay and the shortcut stay identical.
+            return self.get_preset()
 
         return None
 
@@ -1481,14 +1476,35 @@ class ConvoDeconvoDialog(QDialog):
                 p["center"] = [float(cx), float(cy)]
             return p
 
-        # Classical Denoise tab -> tv op (real tab name is "Classical Denoise")
-        return {
-            "op": "tv",
-            "tv_weight":       float(self.tv_weight_slider.value()),
-            "tv_iter":         int(round(float(self.tv_iter_slider.value()))),
-            "tv_multichannel": bool(self.tv_multichannel_checkbox.isChecked()),
-            "strength":        strength,
+        # Classical Denoise tab -> op:"denoise", carries the selected method + its params.
+        algo = self.denoise_algo_combo.currentText()
+        p = {
+            "op": "denoise",
+            "denoise_algo": algo,
+            "lum_only": bool(self.denoise_lum_only_chk.isChecked()),
+            "strength": strength,
         }
+        if algo == "TV Chambolle":
+            p["tv_weight"]       = float(self.tv_weight_slider.value())
+            p["tv_iter"]         = int(round(float(self.tv_iter_slider.value())))
+            p["tv_multichannel"] = bool(self.tv_multichannel_checkbox.isChecked())
+        elif algo == "Non-Local Means":
+            p["nlm_h"]     = float(self.nlm_h_slider.value())
+            p["nlm_patch"] = int(round(float(self.nlm_patch_slider.value())))
+            p["nlm_dist"]  = int(round(float(self.nlm_dist_slider.value())))
+        elif algo == "Bilateral":
+            p["bil_d"]           = int(round(float(self.bil_d_slider.value())))
+            p["bil_sigma_color"] = float(self.bil_sigma_color_slider.value())
+            p["bil_sigma_space"] = float(self.bil_sigma_space_slider.value())
+        elif algo == "Gaussian":
+            p["gau_sigma"] = float(self.gau_sigma_slider.value())
+        elif algo == "Median":
+            p["med_size"] = int(round(float(self.med_size_slider.value())))
+        elif algo == "Wavelet":
+            p["wav_sigma"]   = float(self.wav_sigma_slider.value())
+            p["wav_wavelet"] = self.wav_wavelet_combo.currentText()
+            p["wav_mode"]    = self.wav_mode_combo.currentText()
+        return p
 
     # -------- preset seed (double-click open) --------
     def seed_from_preset(self, p: dict | None):
@@ -1557,12 +1573,42 @@ class ConvoDeconvoDialog(QDialog):
                 self._pending_ls_center = (float(c[0]), float(c[1]))
             self._select_tab(self.tr("Deconvolution"), "Deconvolution")
 
-        else:  # tv
-            _sv(self.tv_weight_slider, "tv_weight")
-            _sv(self.tv_iter_slider,   "tv_iter")
-            _chk(self.tv_multichannel_checkbox, "tv_multichannel")
-            _sv(self.strength_slider,  "strength")
-            self._on_denoise_algo_changed(self.denoise_algo_combo.currentText())
+        else:  # denoise (or legacy "tv")
+            # Legacy tv presets have no denoise_algo -> map to TV Chambolle.
+            algo = str(p.get("denoise_algo", "TV Chambolle"))
+            try:
+                self.denoise_algo_combo.setCurrentText(algo)
+            except Exception:
+                pass
+            # Show the right param panel for the seeded method.
+            try:
+                self._on_denoise_algo_changed(self.denoise_algo_combo.currentText())
+            except Exception:
+                pass
+            _chk(self.denoise_lum_only_chk, "lum_only")
+            _sv(self.strength_slider, "strength")
+
+            if algo == "TV Chambolle":
+                _sv(self.tv_weight_slider, "tv_weight")
+                _sv(self.tv_iter_slider,   "tv_iter")
+                _chk(self.tv_multichannel_checkbox, "tv_multichannel")
+            elif algo == "Non-Local Means":
+                _sv(self.nlm_h_slider,     "nlm_h")
+                _sv(self.nlm_patch_slider, "nlm_patch")
+                _sv(self.nlm_dist_slider,  "nlm_dist")
+            elif algo == "Bilateral":
+                _sv(self.bil_d_slider,           "bil_d")
+                _sv(self.bil_sigma_color_slider, "bil_sigma_color")
+                _sv(self.bil_sigma_space_slider, "bil_sigma_space")
+            elif algo == "Gaussian":
+                _sv(self.gau_sigma_slider, "gau_sigma")
+            elif algo == "Median":
+                _sv(self.med_size_slider, "med_size")
+            elif algo == "Wavelet":
+                _sv(self.wav_sigma_slider, "wav_sigma")
+                _combo(self.wav_wavelet_combo, "wav_wavelet")
+                _combo(self.wav_mode_combo,    "wav_mode")
+
             self._select_tab(self.tr("Classical Denoise"), "Classical Denoise")
 
     def _select_tab(self, *names):
