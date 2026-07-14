@@ -104,6 +104,58 @@ def _pad_tile_np(tile: np.ndarray, tile_size: int) -> np.ndarray:
     pad_mode = "reflect" if h > 1 and w > 1 else "edge"
     return np.pad(tile, ((0, pad_h), (0, pad_w), (0, 0)), mode=pad_mode)
 
+
+def _resolve_batch_size(cfg, device, tile: int) -> int:
+    """
+    Resolve a UI/preset ``batch_size`` value into an integer batch count.
+
+    cfg  : "Auto", "1", "2", "4", "8", or an int
+    device: torch.device the model is running on
+
+    CPU: always 1 (batching mostly hurts here).
+    DirectML: capped at 2 even if user requests more — batching is fragile
+              on DML in current torch-directml builds and OOMs silently.
+    Native GPU (CUDA/MPS/XPU): "Auto" picks from a tile-area × VRAM heuristic;
+              explicit ints pass through.
+    """
+    if device is None or getattr(device, "type", "cpu") == "cpu":
+        return 1
+
+    dev_str = str(device).lower()
+    is_dml  = "privateuseone" in dev_str or "dml" in dev_str
+
+    val = str(cfg).strip()
+    if val.lower() == "auto":
+        if is_dml:
+            return 1
+        # Tile-area heuristic — smaller tiles allow bigger batches
+        if tile <= 384:
+            base = 4
+        elif tile <= 640:
+            base = 2
+        else:
+            base = 1
+        # Scale up on high-VRAM CUDA cards
+        try:
+            import torch as _t
+            if getattr(device, "type", None) == "cuda":
+                gb = _t.cuda.get_device_properties(device).total_memory / (1024.0 ** 3)
+                if gb >= 12.0:
+                    base = max(base, 4)
+                elif gb < 6.0:
+                    base = 1
+        except Exception:
+            pass
+        return max(1, base)
+
+    try:
+        b = max(1, int(val))
+    except Exception:
+        b = 1
+    if is_dml and b > 2:
+        b = 2
+    return b
+
 # ---------------------------------------------------------------------------
 # Hybrid Neural-Morphological Star Reduction (levels 7-10)
 #
@@ -140,9 +192,11 @@ def _erode_circular(img, size: int, torch, F):
 
 
 def _hybrid_star_reduction(model, t, level: int, torch, F):
-    """t: (1,3,H,W) float32 in [0,1] (post brightness normalization).
-    Runs model once at safe level=5, then blends in morphological erosion."""
-    safe_lv = torch.tensor([5.0 / 10.0], dtype=torch.float32, device=t.device)
+    """t: (B,3,H,W) float32 in [0,1] (post brightness normalization).
+    Runs model once at safe level=5, then blends in morphological erosion.
+    Batch-safe: safe_lv is broadcast to match t's batch dim."""
+    b = t.shape[0]
+    safe_lv = torch.full((b,), 5.0 / 10.0, dtype=torch.float32, device=t.device)
     pred_neural = model(t, safe_lv)
 
     diff = torch.abs(pred_neural - t)
@@ -177,7 +231,7 @@ def _hybrid_star_reduction(model, t, level: int, torch, F):
 # ---------------------------------------------------------------------------
 
 def _run_tiled_cosine(
-    infer_fn,
+    infer_batch_fn,
     img: np.ndarray,
     *,
     tile: int,
@@ -187,7 +241,14 @@ def _run_tiled_cosine(
     target_median: float = 0.10,
     progress_cb: Optional[ProgressCB] = None,
     label: str = "",
+    batch_size: int = 1,
 ) -> np.ndarray:
+    """
+    Batched cosine-blend tiled runner.
+    infer_batch_fn: callable taking list[(H,W,3) float32], returning
+                    list[(H,W,3) float32] of the same length.
+    Streams patches into flush-when-full batches so memory usage stays flat.
+    """
     img_padded, orig_hw = _pad_reflect(img, pad)
     H, W = img_padded.shape[:2]
 
@@ -200,6 +261,29 @@ def _run_tiled_cosine(
     w_acc   = np.zeros((H, W, 1), dtype=np.float32)
     done    = 0
 
+    bs = max(1, int(batch_size))
+    batch_meta: list = []      # list of (y0, y1, x0, x1, ph, pw, scale|None)
+    batch_patches: list = []
+
+    def _flush():
+        nonlocal done
+        if not batch_patches:
+            return
+        preds = infer_batch_fn(batch_patches)
+        for meta, pred in zip(batch_meta, preds):
+            y0, y1, x0, x1, ph, pw, scale = meta
+            pred = np.clip(pred, 0.0, 1.0)
+            if scale is not None:
+                pred = np.clip(pred / scale, 0.0, 1.0).astype(np.float32)
+            wlocal = w2[:ph, :pw, :]
+            out_acc[y0:y1, x0:x1, :] += pred[:ph, :pw, :] * wlocal
+            w_acc  [y0:y1, x0:x1, :] += wlocal
+            done += 1
+            if callable(progress_cb):
+                progress_cb(done, total, f"{label} tile {done}/{total}…")
+        batch_meta.clear()
+        batch_patches.clear()
+
     for y0 in ys:
         for x0 in xs:
             y1 = min(y0 + tile, H)
@@ -209,6 +293,7 @@ def _run_tiled_cosine(
 
             patch_in = _pad_tile_np(patch, tile) if (ph != tile or pw != tile) else patch
 
+            scale = None
             if normalize_brightness:
                 # Per-tile median shift — keeps model input in trained brightness
                 # range regardless of source image brightness.
@@ -216,19 +301,14 @@ def _run_tiled_cosine(
                 tile_median = float(np.median(patch_in))
                 tile_median = max(tile_median, 1e-3)
                 scale       = min(target_median / tile_median, target_median / 1e-3)
-                patch_norm  = np.clip(patch_in * scale, 0.0, 1.0).astype(np.float32)
-                pred_norm   = np.clip(infer_fn(patch_norm), 0.0, 1.0)
-                pred        = np.clip(pred_norm / scale, 0.0, 1.0).astype(np.float32)
-            else:
-                pred = np.clip(infer_fn(patch_in), 0.0, 1.0)
+                patch_in    = np.clip(patch_in * scale, 0.0, 1.0).astype(np.float32)
 
-            wlocal = w2[:ph, :pw, :]
-            out_acc[y0:y1, x0:x1, :] += pred[:ph, :pw, :] * wlocal
-            w_acc  [y0:y1, x0:x1, :] += wlocal
+            batch_meta.append((y0, y1, x0, x1, ph, pw, scale))
+            batch_patches.append(patch_in)
+            if len(batch_patches) >= bs:
+                _flush()
 
-            done += 1
-            if callable(progress_cb):
-                progress_cb(done, total, f"{label} tile {done}/{total}…")
+    _flush()
 
     np.maximum(w_acc, 1e-8, out=w_acc)
     result = np.clip(out_acc / w_acc, 0.0, 1.0)
@@ -250,10 +330,14 @@ def parallax_correction_rgb01(
     prefer_dml: bool = True,
     progress_cb: Optional[ProgressCB] = None,
     mode="classic",
+    batch_size="Auto",
 ) -> Tuple[np.ndarray, dict]:
     """
     Aberration correction — boolean pass, no level conditioning.
     Returns (corrected_rgb01, info_dict).
+
+    batch_size: "Auto" (default), or an integer 1/2/4/8. See
+                _resolve_batch_size for the auto heuristic.
     """
     from setiastro.saspro.runtime_torch import import_torch
     from setiastro.saspro.syqon_parallax_model.model import load_parallax_model
@@ -265,23 +349,30 @@ def parallax_correction_rgb01(
     model, config = load_parallax_model(ckpt_path, variant="correction", mode=mode)
     model.to(device).eval()
 
-    def _infer(patch_hwc: np.ndarray) -> np.ndarray:
-        t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
+    bs = _resolve_batch_size(batch_size, device, tile)
+
+    def _infer_batch(patches: list) -> list:
+        stacked = np.stack([np.ascontiguousarray(p.transpose(2, 0, 1)) for p in patches])
+        t = torch.from_numpy(stacked).to(device, dtype=torch.float32, non_blocking=True)
         with torch.no_grad():
             out = model(t)
-        return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
+        out = out.clamp(0.0, 1.0).float().cpu().numpy()
+        return [out[i].transpose(1, 2, 0) for i in range(out.shape[0])]
 
     result = _run_tiled_cosine(
-        _infer, _ensure_rgb(img_rgb01),
+        _infer_batch, _ensure_rgb(img_rgb01),
         tile=tile, overlap=overlap, pad=pad,
         normalize_brightness=(mode != "aesthetics"), target_median=0.10,
         progress_cb=progress_cb, label=f"[Correction/{mode}]",
+        batch_size=bs,
     )
 
     info = {
         "variant": "correction",
         "mode":    mode,
         "device":  str(device),
+        "batch_size_cfg":    str(batch_size),
+        "batch_size_active": int(bs),
         "torch_version": getattr(torch, "__version__", None),
         "tile": tile, "overlap": overlap, "pad": pad,
     }
@@ -304,10 +395,13 @@ def parallax_star_reduce_rgb01(
     prefer_dml: bool = True,
     mode: str = "classic",
     progress_cb: Optional[ProgressCB] = None,
+    batch_size="Auto",
 ) -> Tuple[np.ndarray, dict]:
     """
-    Star reduction at level 1-6, normalised to level/10.
+    Star reduction at level 1-6 (classic) or 1-7 (aesthetics).
     Returns (reduced_rgb01, info_dict).
+
+    batch_size: "Auto" (default) or int 1/2/4/8.
     """
     from setiastro.saspro.runtime_torch import import_torch
     from setiastro.saspro.syqon_parallax_model.model import load_parallax_model
@@ -321,42 +415,54 @@ def parallax_star_reduce_rgb01(
     model, config = load_parallax_model(ckpt_path, variant="star_reduce", mode=mode)
     model.to(device).eval()
 
+    bs = _resolve_batch_size(batch_size, device, tile)
+
     if mode == "aesthetics":
         # NAFNet 4-channel: RGB + constant level plane.
-        # Model trained on level 1-7; clamp caller's 1-10 range into that.
+        # Aesthetics star_reduce model was trained on level 1-7; clamp
+        # caller's 1-10 range into that.
         aesth_level = int(np.clip(level, 1, 7))
         lvl_norm    = (float(aesth_level) - 1.0) / 6.0
 
-        def _infer(patch_hwc: np.ndarray) -> np.ndarray:
-            t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
+        def _infer_batch(patches: list) -> list:
+            stacked = np.stack([np.ascontiguousarray(p.transpose(2, 0, 1)) for p in patches])
+            t = torch.from_numpy(stacked).to(device, dtype=torch.float32, non_blocking=True)
             b, _, h, w = t.shape
             lvl_ch = torch.full((b, 1, h, w), lvl_norm, dtype=t.dtype, device=device)
             t4 = torch.cat([t, lvl_ch], dim=1)
             with torch.no_grad():
                 out = model(t4)
-            return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
+            out = out.clamp(0.0, 1.0).float().cpu().numpy()
+            return [out[i].transpose(1, 2, 0) for i in range(out.shape[0])]
     else:
         hybrid = level > 6
         if hybrid:
-            def _infer(patch_hwc: np.ndarray) -> np.ndarray:
-                t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
+            def _infer_batch(patches: list) -> list:
+                stacked = np.stack([np.ascontiguousarray(p.transpose(2, 0, 1)) for p in patches])
+                t = torch.from_numpy(stacked).to(device, dtype=torch.float32, non_blocking=True)
                 with torch.no_grad():
                     out = _hybrid_star_reduction(model, t, level, torch, F)
-                return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
+                out = out.clamp(0.0, 1.0).float().cpu().numpy()
+                return [out[i].transpose(1, 2, 0) for i in range(out.shape[0])]
         else:
-            lv_t = torch.tensor([float(level) / 10.0], dtype=torch.float32, device=device)
+            lv_scalar = float(level) / 10.0
 
-            def _infer(patch_hwc: np.ndarray) -> np.ndarray:
-                t = torch.from_numpy(np.ascontiguousarray(patch_hwc.transpose(2, 0, 1)[None], dtype=np.float32)).to(device)
+            def _infer_batch(patches: list) -> list:
+                N = len(patches)
+                stacked = np.stack([np.ascontiguousarray(p.transpose(2, 0, 1)) for p in patches])
+                t = torch.from_numpy(stacked).to(device, dtype=torch.float32, non_blocking=True)
+                lv = torch.full((N,), lv_scalar, dtype=torch.float32, device=device)
                 with torch.no_grad():
-                    out = model(t, lv_t)
-                return out[0].clamp(0.0, 1.0).float().cpu().numpy().transpose(1, 2, 0)
+                    out = model(t, lv)
+                out = out.clamp(0.0, 1.0).float().cpu().numpy()
+                return [out[i].transpose(1, 2, 0) for i in range(out.shape[0])]
 
     result = _run_tiled_cosine(
-        _infer, _ensure_rgb(img_rgb01),
+        _infer_batch, _ensure_rgb(img_rgb01),
         tile=tile, overlap=overlap, pad=pad,
         normalize_brightness=(mode != "aesthetics"), target_median=0.10,
         progress_cb=progress_cb, label=f"[StarReduce/{mode} L{level}]",
+        batch_size=bs,
     )
 
     info = {
@@ -364,6 +470,8 @@ def parallax_star_reduce_rgb01(
         "mode":    mode,
         "level":   level,
         "device":  str(device),
+        "batch_size_cfg":    str(batch_size),
+        "batch_size_active": int(bs),
         "torch_version": getattr(torch, "__version__", None),
         "tile": tile, "overlap": overlap, "pad": pad,
     }
@@ -386,6 +494,7 @@ def parallax_sharpen_rgb01(
     prefer_dml: bool = True,
     mode: str = "classic",
     progress_cb: Optional[ProgressCB] = None,
+    batch_size="Auto",
 ) -> Tuple[np.ndarray, dict]:
     """
     Sharpening with blend alpha 0.0 (passthrough) → 1.0 (full sharpen).
@@ -444,7 +553,37 @@ def parallax_sharpen_rgb01(
     use_autocast   = (device.type == "cuda") and (_sys.platform != "darwin")
     autocast_dtype = torch.float16
 
-    for idx, (top, left) in enumerate(coords, start=1):
+    bs = _resolve_batch_size(batch_size, device, tile)
+
+    # Streaming batch: gather up to bs padded tiles, run one forward pass,
+    # scatter results back into the accumulator with per-tile trim.
+    batch_recs: list = []   # (top, left, bottom, right, tile_h, tile_w, tile_padded_np)
+    done = 0
+
+    def _flush_sharpen():
+        nonlocal done
+        if not batch_recs:
+            return
+        stacked = np.stack([r[6].transpose(2, 0, 1) for r in batch_recs])  # (B,3,H,W)
+        batch_tensor = torch.from_numpy(stacked).float().to(device)
+        with torch.no_grad():
+            if use_autocast:
+                with torch.amp.autocast(device_type="cuda", dtype=autocast_dtype):
+                    pred_batch = model(batch_tensor)
+            else:
+                pred_batch = model(batch_tensor)
+        pred_batch = pred_batch.float().cpu()
+        for bi, (top, left, bottom, right, tile_h, tile_w, _) in enumerate(batch_recs):
+            pred_patch   = pred_batch[bi:bi+1][:, :, :tile_h, :tile_w]
+            window_patch = base_window[:, :, :tile_h, :tile_w]
+            output_tensor[:, :, top:bottom, left:right] += pred_patch * window_patch
+            weight_sum   [:, :, top:bottom, left:right] += window_patch
+            done += 1
+            if callable(progress_cb):
+                progress_cb(done, total, f"[Sharpen] tile {done}/{total}…")
+        batch_recs.clear()
+
+    for (top, left) in coords:
         bottom = min(top + tile, height)
         right  = min(left + tile, width)
         tile_h = bottom - top
@@ -453,28 +592,11 @@ def parallax_sharpen_rgb01(
         tile_data        = img_padded[top:bottom, left:right, :]
         tile_data_padded = _pad_tile_np(tile_data, tile)
 
-        tile_tensor = (
-            torch.from_numpy(tile_data_padded)
-            .permute(2, 0, 1).unsqueeze(0).float().to(device)
-        )
+        batch_recs.append((top, left, bottom, right, tile_h, tile_w, tile_data_padded))
+        if len(batch_recs) >= bs:
+            _flush_sharpen()
 
-        with torch.no_grad():
-            if use_autocast:
-                with torch.amp.autocast(device_type="cuda", dtype=autocast_dtype):
-                    pred_tile = model(tile_tensor)
-            else:
-                pred_tile = model(tile_tensor)
-
-        pred_tile = pred_tile.float().cpu()
-
-        pred_patch   = pred_tile[0:1][:, :, :tile_h, :tile_w]
-        window_patch = base_window[:, :, :tile_h, :tile_w]
-
-        output_tensor[:, :, top:bottom, left:right] += pred_patch * window_patch
-        weight_sum   [:, :, top:bottom, left:right] += window_patch
-
-        if callable(progress_cb):
-            progress_cb(idx, total, f"[Sharpen] tile {idx}/{total}…")
+    _flush_sharpen()
 
     # Reconstruct, unpad, then alpha blend against original unpadded image
     reconstructed = output_tensor / torch.clamp(weight_sum, min=1e-6)
@@ -492,6 +614,8 @@ def parallax_sharpen_rgb01(
         "alpha":   alpha,
         "mode":    mode,
         "device":  str(device),
+        "batch_size_cfg":    str(batch_size),
+        "batch_size_active": int(bs),
         "torch_version": getattr(torch, "__version__", None),
         "tile": tile, "overlap": overlap, "pad": pad,
     }

@@ -641,6 +641,31 @@ class WhiteBalanceDialog(QDialog):
         btn_row.addWidget(self.btn_cancel)
         self.main_layout.addLayout(btn_row)
 
+        # --- preset drag handle (grip) ---
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            try:
+                from setiastro.saspro.resources import whitebalance_path
+                _grip_icon = QIcon(whitebalance_path)
+            except Exception:
+                _grip_icon = QIcon()
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "white_balance", self.get_preset, icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a White Balance shortcut "
+                    "with these exact settings.\n"
+                    "Drop directly on an image to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            self.main_layout.addLayout(drag_row)
+        except Exception:
+            pass
+
         self.setLayout(self.main_layout)
 
         # Debounce: wait for slider to settle before firing detection
@@ -748,6 +773,68 @@ class WhiteBalanceDialog(QDialog):
             return
         self.star_count.setText(self.tr("Detection failed."))
         self.preview.clear()
+    # ---- preset emit (grip) ---------------------------------------------
+    def get_preset(self) -> dict:
+        """Emit current state as the WB preset schema (inverse of seed_from_preset).
+        Mirrors exactly what _on_apply records for Replay Last."""
+        mode = self.type_combo.currentText()
+        if mode == "Manual":
+            return {
+                "mode": "manual",
+                "r_gain": float(self.r_spin.value()),
+                "g_gain": float(self.g_spin.value()),
+                "b_gain": float(self.b_spin.value()),
+            }
+        if mode == "Auto":
+            return {"mode": "auto"}
+        return {
+            "mode": "star",
+            "threshold": float(self.thr_slider.value()),
+            "use_color_matrix": bool(self.chk_color_matrix.isChecked()),
+        }
+
+    # ---- preset seed (double-click open) --------------------------------
+    def seed_from_preset(self, p: dict | None):
+        """Inverse of get_preset. Block signals around all sets, then re-sync
+        the threshold label and mode-group visibility by hand."""
+        p = dict(p or {})
+        mode = (p.get("mode") or "star").lower()
+
+        widgets = [
+            self.type_combo, self.thr_slider,
+            self.r_spin, self.g_spin, self.b_spin,
+            self.chk_color_matrix,
+        ]
+        for wdg in widgets:
+            try:
+                wdg.blockSignals(True)
+            except Exception:
+                pass
+        try:
+            if mode == "manual":
+                self.type_combo.setCurrentText("Manual")
+                self.r_spin.setValue(float(p.get("r_gain", 1.0)))
+                self.g_spin.setValue(float(p.get("g_gain", 1.0)))
+                self.b_spin.setValue(float(p.get("b_gain", 1.0)))
+            elif mode == "auto":
+                self.type_combo.setCurrentText("Auto")
+            else:  # star
+                self.type_combo.setCurrentText("Star-Based")
+                iv = int(round(float(p.get("threshold", 50.0))))
+                iv = max(self.thr_slider.minimum(), min(self.thr_slider.maximum(), iv))
+                self.thr_slider.setValue(iv)
+                self.thr_label.setText(str(iv))
+                self.chk_color_matrix.setChecked(bool(p.get("use_color_matrix", False)))
+        finally:
+            for wdg in widgets:
+                try:
+                    wdg.blockSignals(False)
+                except Exception:
+                    pass
+
+        # Re-apply dependent state that the blocked signals would have set.
+        self._update_mode_widgets()
+
     # ---- apply ----------------------------------------------------------
     def _on_apply(self):
         mode = self.type_combo.currentText()
@@ -1041,3 +1128,46 @@ class WhiteBalanceDialog(QDialog):
             self._detection_worker = None
         except Exception:
             pass
+
+
+def open_white_balance_with_preset(main_window, preset: dict | None = None):
+    from PyQt6.QtGui import QIcon
+
+    # Resolve doc: active MDI subwindow first, then docman fallback.
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None or getattr(doc, "image", None) is None:
+        return
+
+    try:
+        from setiastro.saspro.resources import whitebalance_path
+        _icon = QIcon(whitebalance_path)
+    except Exception:
+        _icon = QIcon()
+
+    dlg = WhiteBalanceDialog(main_window, doc, _icon)
+
+    # No on-show reset in this dialog -> seed directly before show.
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+
+    # Retain against GC (dialog has WA_DeleteOnClose).
+    try:
+        main_window._wb_preset_dialog = dlg
+    except Exception:
+        pass
+
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg

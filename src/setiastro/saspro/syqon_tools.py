@@ -1173,7 +1173,23 @@ class _SyQonSharpenHubPage(QWidget):
         self.spin_pad.setRange(0, 2048)
         self.spin_pad.setValue(int(self.settings.value("syqon/parallax_pad", 96)))
         form.addRow("Edge pad (px):", self.spin_pad)
- 
+
+        self.cmb_batch = QComboBox(self)
+        for label in ("Auto", "1", "2", "4", "8"):
+            self.cmb_batch.addItem(label, userData=label)
+        saved_batch = str(self.settings.value("syqon/parallax_batch_size", "Auto", type=str) or "Auto")
+        bidx = self.cmb_batch.findData(saved_batch)
+        if bidx >= 0:
+            self.cmb_batch.setCurrentIndex(bidx)
+        self.cmb_batch.setToolTip(
+            "Number of tiles fed to the model per forward pass.\n"
+            "Auto — chosen from tile size + GPU VRAM (recommended).\n"
+            "Higher = faster on native GPUs (CUDA/MPS/XPU) with enough VRAM,\n"
+            "but can OOM if tile size and image are large.\n"
+            "CPU always runs at 1; DirectML is capped at 2."
+        )
+        form.addRow("Batch size:", self.cmb_batch)
+
         pad_help = QLabel("Pads edges before tiling (reflect) to prevent border artifacts.\nTypical: overlap or overlap+32. 0 disables padding.")
         pad_help.setWordWrap(True)
         pad_help.setStyleSheet("color:#888;")
@@ -1323,8 +1339,8 @@ class _SyQonSharpenHubPage(QWidget):
  
     def _set_busy(self, busy: bool):
         for w in (self.btn_buy, self.btn_clear_cache, self.spin_tile, self.spin_overlap,
-                  self.spin_pad, self.chk_correction, self.spin_star, self.spin_sharpen,
-                  self.chk_mtf):
+                  self.spin_pad, self.cmb_batch, self.chk_correction, self.spin_star,
+                  self.spin_sharpen, self.chk_mtf):
             w.setEnabled(not busy)
         self.spin_mtf.setEnabled((not busy) and self.chk_mtf.isChecked())
         self.pbar.setVisible(busy)
@@ -1401,6 +1417,7 @@ class _SyQonSharpenHubPage(QWidget):
                         "pad":           int(self.spin_pad.value()),
                         "use_mtf":       bool(self.chk_mtf.isChecked()),
                         "mtf_target":    float(self.spin_mtf.value()),
+                        "batch_size":    str(self.cmb_batch.currentData() or "Auto"),
                     }
                 }
             }
@@ -1450,7 +1467,9 @@ class _SyQonSharpenHubPage(QWidget):
         self.settings.setValue("syqon/parallax_use_mtf",       bool(self.chk_mtf.isChecked()))
         self.settings.setValue("syqon/parallax_mtf_target",    float(self.spin_mtf.value()))
         mode = self.mode()
-        self.settings.setValue("syqon/parallax_mode", mode)        
+        self.settings.setValue("syqon/parallax_mode", mode)
+        batch_size = str(self.cmb_batch.currentData() or "Auto")
+        self.settings.setValue("syqon/parallax_batch_size", batch_size)        
  
         src = np.asarray(doc.image, dtype=np.float32)
         self._orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
@@ -1506,7 +1525,8 @@ class _SyQonSharpenHubPage(QWidget):
             overlap         = int(self.spin_overlap.value()),
             pad             = int(self.spin_pad.value()),
             parent          = self,
-            mode=mode,
+            mode            = mode,
+            batch_size      = batch_size,
         )
         self.proc_thr.progress.connect(self._on_progress)
         self.proc_thr.finished.connect(self._on_finished)
@@ -1518,7 +1538,8 @@ class _SyQonParallaxProcessThread(QThread):
     finished = pyqtSignal(object, dict, str)
  
     def __init__(self, x_for_net, *, do_correct, correction_path, star_level,
-                 star_path, sharpen_alpha, sharpen_path, tile, overlap, pad, parent=None, mode="classic"):
+                 star_path, sharpen_alpha, sharpen_path, tile, overlap, pad,
+                 parent=None, mode="classic", batch_size="Auto"):
         super().__init__(parent)
         self.x_for_net       = np.asarray(x_for_net, dtype=np.float32)
         self.do_correct      = bool(do_correct)
@@ -1532,6 +1553,7 @@ class _SyQonParallaxProcessThread(QThread):
         self.pad             = int(pad)
         self._cancel         = False
         self.mode = str(mode or "classic").lower()
+        self.batch_size = batch_size if batch_size is not None else "Auto"
  
     def cancel(self): self._cancel = True
  
@@ -1565,6 +1587,7 @@ class _SyQonParallaxProcessThread(QThread):
                     tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
                     mode=self.mode,
+                    batch_size=self.batch_size,
                     progress_cb=_cb(f"[{s}/{n}] Aberration Correction"),
                 )
                 info["correction"] = inf
@@ -1576,6 +1599,7 @@ class _SyQonParallaxProcessThread(QThread):
                     tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
                     mode=self.mode,
+                    batch_size=self.batch_size,
                     progress_cb=_cb(f"[{s}/{n}] Star Reduction L{self.star_level}"),
                 )
                 info["star_reduce"] = inf
@@ -1587,6 +1611,7 @@ class _SyQonParallaxProcessThread(QThread):
                     tile=self.tile, overlap=self.overlap, pad=self.pad,
                     use_gpu=True, prefer_dml=True,
                     mode=self.mode,
+                    batch_size=self.batch_size,
                     progress_cb=_cb(f"[{s}/{n}] Sharpening α={self.sharpen_alpha:.2f}"),
                 )
                 info["sharpen"] = inf
@@ -1870,6 +1895,7 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
     use_mtf       = bool(preset.get("parallax_use_mtf",       True))
     mtf_target    = float(preset.get("parallax_mtf_target",   0.15))
     mode = str(preset.get("parallax_mode", "classic") or "classic").lower()
+    batch_size = preset.get("parallax_batch_size", "Auto")
     settings = QSettings()
     _keys = {
         "correction":  "syqon/parallax_correction_path",
@@ -1941,6 +1967,7 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
         pad             = pad,
         parent          = dlg,
         mode            = mode,
+        batch_size      = batch_size,
     )
  
     def _on_prog(pct: int, stage: str):

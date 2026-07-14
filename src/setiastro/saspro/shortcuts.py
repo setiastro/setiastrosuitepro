@@ -614,6 +614,15 @@ def _preset_opener_for_command(command_id: str):
     if command_id == "graxpert":
         from setiastro.saspro.graxpert_preset import open_graxpert_with_preset
         return open_graxpert_with_preset
+    if command_id == "background_neutral":
+        from setiastro.saspro.backgroundneutral import open_background_neutral_with_preset
+        return open_background_neutral_with_preset 
+    if command_id == "white_balance":
+        from setiastro.saspro.whitebalance import open_white_balance_with_preset
+        return open_white_balance_with_preset      
+    if command_id == "remove_stars":
+        from setiastro.saspro.remove_stars_preset import open_remove_stars_with_preset
+        return open_remove_stars_with_preset     
     return None
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
