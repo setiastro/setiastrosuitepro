@@ -119,20 +119,24 @@ def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg
     import astropy.units as u
     from astropy.coordinates import SkyCoord
 
+    # astroquery/astropy config validators require an INT timeout; a float
+    # like 20.0 raises VdtTypeError. Coerce once, reuse everywhere.
+    _timeout_i = int(round(float(hard_timeout_s)))
+
     try:
         from astroquery import conf as aq_conf
-        aq_conf.timeout = float(hard_timeout_s)
-    except ImportError:
+        aq_conf.timeout = _timeout_i
+    except Exception:
         pass
 
     try:
         from astroquery.simbad import conf as simbad_conf
-        simbad_conf.timeout = float(hard_timeout_s)
-    except ImportError:
+        simbad_conf.timeout = _timeout_i
+    except Exception:
         pass
 
     try:
-        Simbad.TIMEOUT = float(hard_timeout_s)
+        Simbad.TIMEOUT = _timeout_i
     except Exception:
         pass
     Simbad.reset_votable_fields()
