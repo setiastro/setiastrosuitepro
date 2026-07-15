@@ -363,8 +363,10 @@ def _mono_as_float32_contig(arr: np.ndarray) -> np.ndarray:
         a = a.astype(np.float32, copy=False) / float(info.max if info.max > 0 else 1.0)
     else:
         a = a.astype(np.float32, copy=False)
-        # if it looks like 0..65535 in float, normalize too
-        if a.max() > 2.0:
+        # Only rescale genuine 16-bit ADU stored as float (max approaches
+        # thousands/65535). Flat-divided linear astro data legitimately exceeds
+        # 1.0 — even 2–3× — and must NOT be crushed by /65535.
+        if a.max() > 256.0:
             a = a / 65535.0
     return np.ascontiguousarray(a)
 

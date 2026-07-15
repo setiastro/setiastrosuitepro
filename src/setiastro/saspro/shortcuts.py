@@ -88,8 +88,12 @@ KEYBINDS_KEY = "Keybinds/v1"   # JSON dict: {command_id: "Ctrl+Alt+S"}
 # Used when dragging a DESKTOP shortcut onto a view for headless run
 
 
-def _pack_cmd_payload(command_id: str, preset: dict | None = None) -> bytes:
-    return json.dumps({"command_id": command_id, "preset": preset or {}}).encode("utf-8")
+def _pack_cmd_payload(command_id: str, preset: dict | None = None,
+                      name: str | None = None) -> bytes:
+    payload = {"command_id": command_id, "preset": preset or {}}
+    if name:
+        payload["name"] = str(name)
+    return json.dumps(payload).encode("utf-8")
 
 def _unpack_cmd_payload(b: bytes) -> dict:
     return json.loads(b.decode("utf-8"))
@@ -1070,7 +1074,8 @@ class ShortcutButton(QToolButton):
     def _start_command_drag(self):
         md = QMimeData()
      
-        md.setData(MIME_CMD, _pack_cmd_payload(self.command_id, self._load_preset() or {}))
+        md.setData(MIME_CMD, _pack_cmd_payload(
+            self.command_id, self._load_preset() or {}, name=self.text()))
         drag = QDrag(self)
         drag.setMimeData(md)
         pm = self.icon().pixmap(32, 32)
