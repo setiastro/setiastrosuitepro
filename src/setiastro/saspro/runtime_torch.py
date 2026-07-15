@@ -493,6 +493,9 @@ _TORCH_COMPAT: dict[str, tuple[str, str]] = {
     "2.5":  ("0.20.*", "2.5.*"),
     "2.4":  ("0.19.*", "2.4.*"),
     "2.3":  ("0.18.*", "2.3.*"),
+    "2.2":  ("0.17.*", "2.2.*"),
+    "2.1":  ("0.16.*", "2.1.*"),
+    "2.0":  ("0.15.*", "2.0.*"),
 }
 
 
@@ -1100,6 +1103,39 @@ def _install_torch(
                                  f"torch=={tv}", "torchvision"]):
                 return
         raise RuntimeError("Failed to find a matching PyTorch wheel for macOS arm64.")
+
+    # ── macOS Intel (x86_64) → CPU only, PyPI ─────────────────────────────────
+    # PyTorch dropped official macOS x86_64 wheels after 2.2.x, and those
+    # older wheels only covered Python ≤ 3.11.  The whl/cpu index has no
+    # macOS wheels at all, so we must use PyPI directly and cap the ladder.
+    if sysname == "Darwin":
+        # Python 3.12+ has no x86_64 macOS wheels on PyPI for any torch version.
+        if ver[1] >= 12:
+            raise RuntimeError(
+                f"PyTorch does not publish macOS x86_64 (Intel) wheels for "
+                f"Python 3.{ver[1]}. Support was discontinued after torch 2.2.x "
+                f"(Python ≤ 3.11). Hardware-accelerated features are unavailable "
+                f"on Intel Macs with Python 3.12+. Consider Apple Silicon or "
+                f"running the app under Python 3.11."
+            )
+        status_cb("Installing PyTorch for macOS Intel x86_64 (CPU only, PyPI)…")
+        # Versions known to publish x86_64 macOS wheels on PyPI
+        macos_x86_ladder = ["2.2.*", "2.1.*", "2.0.*"]
+        base_pypi = ["install", "--prefer-binary", "--no-cache-dir"]
+        for v in macos_x86_ladder:
+            fam = v.replace(".*", "")
+            tv_v, _ = _TORCH_COMPAT.get(fam, (None, None))
+            if tv_v and _pip_install_ok(base_pypi + [f"torch=={v}", f"torchvision=={tv_v}"]):
+                status_cb(f"Installed torch {v} for macOS x86_64 (CPU).")
+                return
+            if _pip_install_ok(base_pypi + [f"torch=={v}", "torchvision"]):
+                status_cb(f"Installed torch {v} for macOS x86_64 (CPU).")
+                return
+        raise RuntimeError(
+            "Failed to install PyTorch for macOS x86_64. No compatible wheel "
+            "was found on PyPI for this Python version. PyTorch x86_64 macOS "
+            "support ended after 2.2.x."
+        )
 
     # ── AMD ROCm (Linux only) ──────────────────────────────────────────────────
     rocm_arch = _detect_rocm_arch() if (prefer_rocm and sysname == "Linux") else ""

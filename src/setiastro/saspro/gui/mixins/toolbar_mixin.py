@@ -244,8 +244,8 @@ class ToolbarMixin:
         except Exception:
             pass
 
-        tbCosmic = DraggableToolBar(self.tr("Cosmic Clarity"), self)
-        tbCosmic.setObjectName("Cosmic Clarity")
+        tbCosmic = DraggableToolBar(self.tr("Smart Tools"), self)
+        tbCosmic.setObjectName("Smart Tools")
         tbCosmic.setSettingsKey("Toolbar/Cosmic")
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, tbCosmic)
 
