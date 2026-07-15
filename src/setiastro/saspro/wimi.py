@@ -6420,6 +6420,101 @@ class WIMIDialog(QDialog):
         if path:
             self._load_image(path)
 
+    @staticmethod
+    def _clean_wcs_value(v):
+        """
+        Repair a single header value. Handles the bad-card-slice leak where a
+        numeric value keeps its '=' separator and padding, e.g.
+        ' =      3473.8688852069'. Strips the stray '=', quotes and whitespace
+        and returns a number when the value clearly is one; otherwise returns
+        the original string untouched (so CTYPE1='RA---TAN' is preserved).
+        """
+        import numpy as np
+        if isinstance(v, (bool, int, float, np.integer, np.floating)) or v is None:
+            return v
+        s = str(v).strip()
+        if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+            s = s[1:-1].strip()
+        if s.startswith("="):
+            s = s[1:].strip()
+        try:
+            if s.lstrip("+-").isdigit():
+                return int(s)
+            return float(s)
+        except Exception:
+            return str(v)
+
+    def _normalize_wcs_header(self, header):
+        """
+        Coerce any header-like (fits.Header, dict, snapshot dict, or raw string)
+        into a clean fits.Header, repairing malformed values along the way.
+        Never raises; returns a (possibly empty) fits.Header.
+        """
+        from astropy.io import fits
+
+        if isinstance(header, str):
+            h = None
+            for sep in ("\n", ""):
+                try:
+                    parsed = fits.Header.fromstring(header, sep=sep)
+                    if len(parsed) > 0:
+                        h = parsed
+                        break
+                except Exception:
+                    h = None
+            if not isinstance(h, fits.Header):
+                h = fits.Header()
+
+        elif isinstance(header, dict):
+            fmt = header.get("format")
+            h = fits.Header()
+            if fmt == "fits-cards" and isinstance(header.get("cards"), list):
+                for card in header["cards"]:
+                    try:
+                        k = str(card[0]).strip()
+                        if not k:
+                            continue
+                        val = self._clean_wcs_value(card[1])
+                        cm = str(card[2]) if len(card) > 2 else ""
+                        h[k] = (val, cm)
+                    except Exception:
+                        continue
+                return h
+            src = header.get("items") if (fmt == "dict" and isinstance(header.get("items"), dict)) else header
+            for k, v in src.items():
+                try:
+                    kk = str(k).strip()
+                    if not kk or kk in ("format", "items", "cards", "text"):
+                        continue
+                    h[kk] = self._clean_wcs_value(v)
+                except Exception:
+                    continue
+            return h
+
+        elif isinstance(header, fits.Header):
+            h = header.copy()
+        else:
+            return fits.Header()
+
+        # Value-repair pass (fixes the stray '=' leak on an already-built Header)
+        for key in list(h.keys()):
+            if not key or key in ("COMMENT", "HISTORY"):
+                continue
+            try:
+                cur = h[key]
+            except Exception:
+                continue
+            if not isinstance(cur, str):
+                continue
+            cleaned = self._clean_wcs_value(cur)
+            if cleaned != cur:
+                try:
+                    h[key] = cleaned
+                except Exception:
+                    pass
+
+        return h
+
     def _sanitize_wcs_header(self, header):
         """
         Coerce WCS/SIP keywords to proper numeric types and fix common SIP issues.
@@ -6428,7 +6523,7 @@ class WIMIDialog(QDialog):
         from copy import deepcopy
         import numpy as np
 
-        hdr = deepcopy(header)
+        hdr = self._normalize_wcs_header(header)
 
         def _to_int(key):
             if key in hdr:
@@ -6614,14 +6709,10 @@ class WIMIDialog(QDialog):
         """ Initialize WCS data from a FITS header or constructed XISF header """
         from astropy.io import fits
 
-        # normalize header → always keep a real fits.Header on self.header
-        if isinstance(header, fits.Header):
-            self.header = header.copy()
-        else:
-            h = fits.Header()
-            for k, v in dict(header).items():
-                h[k] = v
-            self.header = h
+        # Always keep a clean fits.Header on self.header. Repairs cards whose
+        # values leaked a stray '=' from bad card slicing upstream, e.g.
+        # CRPIX1 stored as the string ' =      3473.8688852069'.
+        self.header = self._normalize_wcs_header(header)
 
         try:
             # Build WCS — request naxis=2 but also guard against color cubes

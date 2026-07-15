@@ -86,25 +86,86 @@ class CopyAstrometryDialog(QDialog):
         return None
 
     def _extract_wcs_dict_for(self, doc):
+        import sys
+        _h = (getattr(doc, "metadata", {}) or {}).get("original_header")
+        print(f"[copyastro] original_header type={type(_h).__name__} "
+            f"repr={repr(_h)[:120]}", file=sys.stderr)
         # Prefer the MW helper you already have (returns a flat dict of FITS cards)
+        from astropy.io import fits
+
+        # Prefer the MW helper if it exists (returns a flat dict of FITS cards)
         if hasattr(self._mw, "_extract_wcs_dict"):
             try:
                 d = self._mw._extract_wcs_dict(doc)
-                if d: return dict(d)
+                if d:
+                    return dict(d)
             except Exception:
                 pass
 
-        # Fallback: read from original_header
         meta = getattr(doc, "metadata", {}) or {}
-        hdr  = meta.get("original_header") or {}
-        try:
-            keys = [str(k).upper() for k in getattr(hdr, "keys", lambda: hdr.keys())()]
-            if "CRVAL1" in keys and "CRVAL2" in keys:
-                return {k: hdr[k] for k in getattr(hdr, "keys", lambda: hdr.keys())()}
-        except Exception:
-            pass
-        return {}
+        raw = meta.get("wcs_header") or meta.get("original_header")
+        if raw is None:
+            return {}
 
+        # Coerce whatever original_header is into a real fits.Header WITHOUT
+        # ever indexing a string/blob by guessed keyword (that returns column
+        # slices → the ' = 3473...' leak).
+        hdr = None
+        if isinstance(raw, fits.Header):
+            hdr = raw
+        elif isinstance(raw, str):
+            # flattened 80-col blob → parse by CARD, never by fixed offset
+            try:
+                hdr = fits.Header.fromstring(raw)
+                if len(hdr) == 0:
+                    hdr = fits.Header.fromstring(raw, sep="\n")
+            except Exception:
+                hdr = None
+        elif isinstance(raw, dict):
+            fmt = raw.get("format")
+            if fmt == "fits-cards" and isinstance(raw.get("cards"), list):
+                hdr = fits.Header()
+                for card in raw["cards"]:
+                    try:
+                        k = str(card[0]).strip()
+                        if k:
+                            hdr[k] = (card[1], str(card[2]) if len(card) > 2 else "")
+                    except Exception:
+                        continue
+            elif fmt == "dict" and isinstance(raw.get("items"), dict):
+                hdr = fits.Header()
+                for k, v in raw["items"].items():
+                    try:
+                        hdr[str(k)] = v
+                    except Exception:
+                        continue
+            else:
+                # plain flat dict of keyword→value
+                hdr = fits.Header()
+                for k, v in raw.items():
+                    if k in ("format", "items", "cards", "text"):
+                        continue
+                    try:
+                        hdr[str(k)] = v
+                    except Exception:
+                        continue
+
+        if not isinstance(hdr, fits.Header):
+            return {}
+
+        keys = {str(k).upper() for k in hdr.keys()}
+        if "CRVAL1" not in keys or "CRVAL2" not in keys:
+            return {}
+
+        # Build the dict by iterating real cards — keyword/value/comment come
+        # from astropy, never from column arithmetic.
+        out = {}
+        for card in hdr.cards:
+            kw = card.keyword
+            if kw in ("COMMENT", "HISTORY", ""):
+                continue
+            out[kw] = card.value
+        return out
     def _load_sources(self):
         self.combo.clear()
         self._candidates.clear()

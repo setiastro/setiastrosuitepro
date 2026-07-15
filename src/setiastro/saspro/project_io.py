@@ -340,6 +340,26 @@ class ProjectWriter:
                 # only now create the JSON-safe version and write meta.json
                 safe_meta = _json_sanitize(meta)
                 z.writestr(f"{base}/meta.json", json.dumps(safe_meta, indent=2))
+                
+                # --- table payload (rows/headers for TableDocument) -----------------
+                is_table_doc = (
+                    str(meta.get("doc_type", "")).lower() == "table"
+                    or (getattr(doc, "rows", None) is not None
+                        and getattr(doc, "headers", None) is not None)
+                )
+                if is_table_doc:
+                    try:
+                        table_payload = {
+                            "headers": list(getattr(doc, "headers", []) or []),
+                            "rows": [list(r) for r in (getattr(doc, "rows", []) or [])],
+                            "column_kinds": list(meta.get("column_kinds", []) or []),
+                        }
+                        z.writestr(
+                            f"{base}/table.pkl",
+                            pickle.dumps(table_payload, protocol=pickle.HIGHEST_PROTOCOL),
+                        )
+                    except Exception:
+                        pass  # non-fatal
 
                 # --- current image ---------------------------------------------------
                 if getattr(doc, "image", None) is not None:
@@ -475,7 +495,27 @@ class ProjectReader:
                         img = None
 
                 disp = meta.get("display_name") or "Untitled"
-                doc = self.dm.create_document(img, metadata=meta, name=disp)
+
+                is_table_doc = str(meta.get("doc_type", "")).lower() == "table"
+                if is_table_doc:
+                    headers, rows = [], []
+                    try:
+                        payload = pickle.loads(z.read(f"{base}/table.pkl"))
+                        headers = list(payload.get("headers", []) or [])
+                        rows = [list(r) for r in (payload.get("rows", []) or [])]
+                        ck = payload.get("column_kinds")
+                        if ck and not meta.get("column_kinds"):
+                            meta["column_kinds"] = list(ck)
+                    except Exception:
+                        headers, rows = [], []
+                    doc = self.dm.create_table_document(
+                        headers=headers,
+                        rows=rows,
+                        metadata=meta,
+                        title=disp,
+                    )
+                else:
+                    doc = self.dm.create_document(img, metadata=meta, name=disp)
                 doc_id_map[doc_id] = doc
 
                 # --- restore embedded header, if present --------------------------
