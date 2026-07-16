@@ -609,16 +609,34 @@ def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
                 getattr(mod, "__version__", "") == "0.0.0+unavailable"
             )
 
-            if is_stub or (tf and ("site-packages" not in tf) and ("dist-packages" not in tf)):
+            is_shadow = bool(
+                tf and
+                ("site-packages" not in tf) and
+                ("dist-packages" not in tf)
+            )
+
+            # A successfully imported torch always registers torch._C.  If the
+            # parent package is still cached but the extension is missing, the
+            # module graph is already partial and must be discarded as a unit.
+            # Re-importing just torch._C is unsafe: CPython extension modules
+            # are not generally re-initializable, and doing so has caused both
+            # "module functions cannot set METH_CLASS or METH_STATIC" and
+            # native crashes in the ROCm/CUDA loaders.
+            is_partial = (
+                "torch._C" not in sys.modules and
+                getattr(mod, "_C", None) is not None
+            )
+
+            if is_stub or is_shadow or is_partial:
                 for k in list(sys.modules.keys()):
                     if k == "torch" or k.startswith("torch."):
                         sys.modules.pop(k, None)
                 if is_stub:
                     status_cb("[RT] Purged torch stub from sys.modules before real import")
+                elif is_partial:
+                    status_cb("[RT] Purged partial torch import before retry")
                 else:
                     status_cb(f"[RT] Purged shadowed torch import: {tf}")
-
-        sys.modules.pop("torch._C", None)
         importlib.invalidate_caches()
     except Exception:
         pass
