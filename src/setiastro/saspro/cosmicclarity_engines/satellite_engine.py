@@ -1090,6 +1090,15 @@ def satellite_remove_image(
     # Undo calibrated-image normalization back to original range
     out_rgb = _denormalize_from_satellite(out_rgb01, orig_min, scale)
 
+    # "Clip Satellite Trail to 0.000" must produce a TRUE zero in the output range.
+    # The trail is driven to 0.0 in NORMALIZED [0,1] space, but denormalize() adds
+    # orig_min back — so clipped pixels land at min(image), not 0.000. Force the
+    # authoritative trail-mask pixels to literal 0.0 after denormalization.
+    if clip_trail:
+        tmask = np.asarray(trail_mask, dtype=bool)
+        if tmask.any():
+            out_rgb[tmask] = 0.0
+
     # Preserve original mono-style convention
     src = np.asarray(image)
     if (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1):
