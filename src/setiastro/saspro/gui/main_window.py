@@ -8442,115 +8442,167 @@ class AstroSuiteProMainWindow(
         """
         Apply a WCS/SIP solution (flat dict of FITS cards) to an ImageDocument.
 
-        - Updates doc.metadata['wcs_header'] with the new WCS/SIP cards.
-        - Preserves all acquisition cards already in doc.metadata['fits_header'].
-        - Builds a full doc.metadata['original_header'] = fits_header + wcs_header.
-        - Rebuilds astropy.wcs.WCS from the combined header.
-        - Sets HasAstrometricSolution flags and mirrors WCS into image_meta["WCS"].
+        CLEAN-SLATE semantics:
+          - The incoming wcs_dict FULLY REPLACES any prior WCS/SIP solution.
+          - Stale WCS/SIP cards are stripped from the acquisition header first.
+          - wcs_header is rebuilt card-by-card from wcs_dict, never by
+            re-parsing a serialized header string (no column drift possible).
+          - original_header = acquisition (WCS-stripped) + fresh WCS/SIP.
 
-        Used by:
-          * CopyAstrometryDialog
-          * Ctrl+drag/drop ASTROMETRY payloads
+        Used by CopyAstrometryDialog and Ctrl+drag/drop ASTROMETRY payloads.
         """
         if doc is None or not wcs_dict:
             return False
 
         from astropy.io import fits
+        from astropy.wcs import WCS
+        import numpy as _np
+        import re as _re
+        import sys
+
+        print(f"[apply IN ] CRPIX1={wcs_dict.get('CRPIX1')!r}", file=sys.stderr)
+
+        # ---- helpers ----------------------------------------------------
+        def _is_wcs_or_sip_key(k) -> bool:
+            K = str(k).upper()
+            if K in ("NAXIS", "NAXIS1", "NAXIS2", "NAXIS3"):
+                return False  # image geometry, not the solution — keep it
+            if K in getattr(self, "_WCS_KEY_SET", set()):
+                return True
+            if K in ("RADECSYS", "EPOCH", "A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER"):
+                return True
+            if _re.match(r"^(A|B|AP|BP)_\d+_\d+$", K):
+                return True
+            return False
+
+        def _clean_val(v):
+            # Repair a value that leaked its '=' separator / quotes upstream;
+            # return a number when it clearly is one, else leave unchanged.
+            if isinstance(v, (bool, int, float, _np.integer, _np.floating)) or v is None:
+                return v.item() if hasattr(v, "item") else v
+            s = str(v).strip()
+            if (s.startswith("'") and s.endswith("'")) or (s.startswith('"') and s.endswith('"')):
+                s = s[1:-1].strip()
+            if s.startswith("="):
+                s = s[1:].strip()
+            try:
+                return int(s) if _re.fullmatch(r"[+-]?\d+", s) else float(s)
+            except Exception:
+                return v
+
+        def _hdr_from_any(raw) -> fits.Header:
+            """Coerce any stored header form into a clean fits.Header. String
+            blobs are parsed PER CARD, so a stray '\\n' can never drift the
+            fixed-width column boundaries the way Header.fromstring does."""
+            if raw is None:
+                return fits.Header()
+            if isinstance(raw, fits.Header):
+                return raw.copy()
+            if isinstance(raw, dict):
+                fmt = raw.get("format")
+                if fmt == "fits-cards" and isinstance(raw.get("cards"), list):
+                    h = fits.Header()
+                    for card in raw["cards"]:
+                        try:
+                            k = str(card[0]).strip()
+                            if not k:
+                                continue
+                            c = str(card[2]) if len(card) > 2 else ""
+                            h[k] = (_clean_val(card[1]), c)
+                        except Exception:
+                            continue
+                    return h
+                if fmt == "dict" and isinstance(raw.get("items"), dict):
+                    h = fits.Header()
+                    for k, v in raw["items"].items():
+                        try:
+                            h[str(k)] = _clean_val(v)
+                        except Exception:
+                            continue
+                    return h
+                h = fits.Header()
+                for k, v in raw.items():
+                    if k in ("format", "items", "cards", "text"):
+                        continue
+                    try:
+                        h[str(k)] = _clean_val(v)
+                    except Exception:
+                        continue
+                return h
+            if isinstance(raw, str):
+                s = raw.strip()
+                if not s:
+                    return fits.Header()
+                if "\n" in s:  # tostring(sep='\n') / repr → parse line by line
+                    h = fits.Header()
+                    for line in s.split("\n"):
+                        line = line.rstrip()
+                        if not line or line.strip() == "END":
+                            continue
+                        try:
+                            h.append(fits.Card.fromstring(line), end=True)
+                        except Exception:
+                            continue
+                    return h
+                try:
+                    return fits.Header.fromstring(s)  # genuine 80-col blob, safe
+                except Exception:
+                    return fits.Header()
+            return fits.Header()
 
         meta = getattr(doc, "metadata", {}) or {}
 
-        # --- 1) Get current headers ----------------------------------------
-        fits_hdr  = meta.get("fits_header")
-        wcs_hdr   = meta.get("wcs_header")
-        orig_hdr  = meta.get("original_header")
+        # ---- 1) Acquisition header (prefer fits_header, else original) --
+        acq = meta.get("fits_header")
+        if not isinstance(acq, fits.Header):
+            acq = _hdr_from_any(acq if acq is not None else meta.get("original_header"))
 
-        # --- 2) Normalize fits_hdr to fits.Header --------------------------
-        if not isinstance(fits_hdr, fits.Header):
-            if isinstance(fits_hdr, str) and fits_hdr.strip():
-                try:
-                    fits_hdr = fits.Header.fromstring(fits_hdr)
-                except Exception:
-                    fits_hdr = fits.Header()
-            elif isinstance(orig_hdr, fits.Header):
-                fits_hdr = orig_hdr.copy()
-            elif isinstance(orig_hdr, str) and orig_hdr.strip():
-                try:
-                    fits_hdr = fits.Header.fromstring(orig_hdr)
-                except Exception:
-                    fits_hdr = fits.Header()
-            else:
-                fits_hdr = fits.Header()
+        # ---- 2) Strip ALL stale WCS/SIP cards ---------------------------
+        acq_clean = fits.Header()
+        for card in acq.cards:
+            try:
+                if card.keyword in ("", "COMMENT", "HISTORY"):
+                    acq_clean.append(card, end=True)
+                elif not _is_wcs_or_sip_key(card.keyword):
+                    acq_clean.append(card, end=True)
+            except Exception:
+                continue
 
-        # --- 3) Normalize wcs_hdr to fits.Header ---------------------------
-        if not isinstance(wcs_hdr, fits.Header):
-            if isinstance(wcs_hdr, str) and wcs_hdr.strip():
-                try:
-                    wcs_hdr = fits.Header.fromstring(wcs_hdr)
-                except Exception:
-                    wcs_hdr = fits.Header()
-            else:
-                wcs_hdr = fits.Header()
-
-        # --- 4) Normalize / sanitize the incoming WCS dict -----------------
-        if hasattr(self, "_normalize_wcs_dict"):
-            w = self._normalize_wcs_dict(wcs_dict)
-        else:
-            w = dict(wcs_dict)
-
-        # --- 5) Merge WCS into wcs_header ----------------------------------
-        changed = False
+        # ---- 3) Build a FRESH wcs_header from the incoming dict ONLY -----
+        w = self._coerce_wcs_numbers(dict(wcs_dict)) if hasattr(self, "_coerce_wcs_numbers") else dict(wcs_dict)
+        wcs_hdr = fits.Header()
         for k, v in w.items():
             try:
-                # coerce numpy scalars to plain Python types
-                if hasattr(v, "item"):
-                    v = v.item()
-                old = wcs_hdr.get(k)
-                if old != v:
-                    wcs_hdr[k] = v
-                    changed = True
+                wcs_hdr[str(k).upper()] = _clean_val(v)
             except Exception:
                 pass
 
-        # --- 6) Build combined header for export / WCS object --------------
-        full_hdr = fits_hdr.copy()
+        # ---- 4) Combine: acquisition (stripped) + fresh WCS -------------
+        full_hdr = acq_clean.copy()
         for card in wcs_hdr.cards:
             try:
-                full_hdr[card.keyword] = card.value, card.comment
+                full_hdr[card.keyword] = (card.value, card.comment)
             except Exception:
                 pass
 
-        # Mark solution flags
+        # ---- 5) Solution flags -----------------------------------------
         try:
-            if full_hdr.get("HasAstrometricSolution") is not True:
-                full_hdr["HasAstrometricSolution"] = True
-                changed = True
+            full_hdr["HasAstrometricSolution"] = True
         except Exception:
             pass
+        meta["HasAstrometricSolution"] = True
 
-        if meta.get("HasAstrometricSolution") is not True:
-            meta["HasAstrometricSolution"] = True
-            changed = True
-
-        # --- 7) Mirror into image_meta["WCS"] for quick lookups -----------
+        # ---- 6) Mirror clean WCS into image_meta["WCS"] ----------------
         im = meta.get("image_meta")
         if not isinstance(im, dict):
             im = {}
-        # coerce numpy scalars in w before storing
-        clean_w = {}
-        for k, v in w.items():
-            try:
-                clean_w[k] = v.item() if hasattr(v, "item") else v
-            except Exception:
-                clean_w[k] = v
-        im["WCS"] = clean_w
+        im["WCS"] = {str(k).upper(): _clean_val(v) for k, v in w.items()}
         meta["image_meta"] = im
 
-        # --- 8) Build astropy WCS from the combined header -----------------
+        # ---- 7) Rebuild astropy WCS ------------------------------------
         try:
-            from astropy.wcs import WCS
             meta["wcs"] = WCS(full_hdr)
         except Exception as e:
-            # Log the failure so it's visible but don't hard-fail the whole operation
             try:
                 import logging
                 logging.getLogger(__name__).warning(
@@ -8560,32 +8612,39 @@ class AstroSuiteProMainWindow(
                 pass
             meta.pop("wcs", None)
 
-        # --- 9) Store headers back into metadata ---------------------------
-        meta["fits_header"]     = fits_hdr
+        # ---- 8) Store clean headers (all real fits.Header objects) ------
+        meta["fits_header"]     = acq_clean
         meta["wcs_header"]      = wcs_hdr
         meta["original_header"] = full_hdr
 
+        # ---- 9) Refresh JSON-safe snapshot so the dock shows clean data -
+        meta.pop("__header_snapshot__", None)
+        try:
+            from setiastro.saspro.doc_manager import _snapshot_header_for_metadata
+            _snapshot_header_for_metadata(meta)
+        except Exception:
+            pass
+
         doc.metadata = meta
 
-        # --- 10) Notify UI / listeners ------------------------------------
-        if changed and hasattr(doc, "changed"):
+        # ---- 10) Notify UI / listeners ---------------------------------
+        if hasattr(doc, "changed"):
             try:
                 doc.changed.emit()
             except Exception:
                 pass
-
         if hasattr(self, "_refresh_header_viewer"):
             try:
                 self._refresh_header_viewer(doc)
             except Exception:
                 pass
-
         if hasattr(self, "currentDocumentChanged"):
             try:
                 self.currentDocumentChanged.emit(doc)
             except Exception:
                 pass
 
+        print(f"[apply OUT] CRPIX1={(doc.metadata.get('wcs_header') or {}).get('CRPIX1', '<none>')!r}", file=sys.stderr)
         return True
     
     def _on_astrometry_drop(self, payload: dict, target_subwindow):

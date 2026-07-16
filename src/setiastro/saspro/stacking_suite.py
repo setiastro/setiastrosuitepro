@@ -3065,19 +3065,20 @@ def _compute_scale(ref_target_median: float,
         - extreme values are tamed into a reasonable range (≈ [-0.5, 2])
           without clipping: pure linear transform.
     """
-    eps = 1e-6
+    # Division guard ONLY — must sit far below any real data median so we never
+    # reject legitimately tiny values. Debayered OSC data here lives at ~1e-7,
+    # and the old 1e-6 floor was silently discarding the refined (correct) scale.
+    eps = 1e-30
 
-    # --- 1) Original behavior: preview-based scale with optional refinement ---
-    s0 = ref_target_median / max(preview_median, eps)  # first guess (from preview)
+    # preview_median is measured on the PRE-debayer preview, so it can be on a
+    # completely different scale than `img` (raw ~0.03 vs debayered ~4e-7 when the
+    # debayer path rescales by ~2^16). It is only a fallback first guess.
+    s0 = ref_target_median / max(preview_median, eps)
 
+    # The image's own median shares the scale of ref_target_median → authoritative.
     m_post = _median_fast_sample(img, stride=refine_stride)
-    if m_post > eps:
-        s1 = ref_target_median / m_post
-        # if preview and refined differ a lot, trust refined; otherwise keep s0 (avoids jitter)
-        if abs(s1 - s0) / max(s0, eps) >= refine_if_rel_err:
-            s = float(s1)
-        else:
-            s = float(s0)
+    if np.isfinite(m_post) and m_post > eps:
+        s = float(ref_target_median / m_post)
     else:
         s = float(s0)
 
@@ -5558,7 +5559,7 @@ class StackingSuiteDialog(QDialog):
         self._light_exp_item = {}    # (filter_name, want_label) -> QTreeWidgetItem
 
         self.setWindowTitle(self.tr("Stacking Suite"))
-        self.setGeometry(300, 200, 800, 720)
+        self.resize(800, 720)
 
         self.per_group_drizzle = {}
         self.manual_dark_overrides = {}
@@ -8602,6 +8603,42 @@ class StackingSuiteDialog(QDialog):
             cb.setChecked(on)
             cb.blockSignals(False)
 
+    def showEvent(self, e):
+        super().showEvent(e)
+        # X11/KWin: defer one event-loop turn so real frame margins exist
+        QTimer.singleShot(0, self._place_on_screen)
+
+    def _place_on_screen(self):
+        from PyQt6.QtGui import QGuiApplication
+        from PyQt6.QtCore import QRect
+
+        # First show of this instance: center on the main window's screen
+        # instead of trusting a raw virtual-desktop coordinate.
+        if not getattr(self, "_placed_once", False):
+            self._placed_once = True
+            host = self.parent().screen() if self.parent() else None
+            screen = host or QGuiApplication.primaryScreen()
+            ag = screen.availableGeometry()
+            self.move(ag.center() - self.rect().center())
+
+        # Every show: clamp the *frame* fully on-screen so the title bar can
+        # never land above the visible area (KWin won't rescue it; Windows does).
+        frame = self.frameGeometry()
+        screen = QGuiApplication.screenAt(frame.center()) or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry()
+
+        r = QRect(frame)
+        r.setWidth(min(r.width(), avail.width()))
+        r.setHeight(min(r.height(), avail.height()))
+        if r.left()   < avail.left():   r.moveLeft(avail.left())
+        if r.top()    < avail.top():    r.moveTop(avail.top())
+        if r.right()  > avail.right():  r.moveRight(avail.right())
+        if r.bottom() > avail.bottom(): r.moveBottom(avail.bottom())
+
+        if r.topLeft() != frame.topLeft() or r.size() != frame.size():
+            self.resize(r.size())
+            self.move(r.topLeft())
+
     def closeEvent(self, e):
         # Graceful shutdown for any running workers
         try:
@@ -8848,6 +8885,7 @@ class StackingSuiteDialog(QDialog):
                                       spinner_path=spinner_path)
             if geom:
                 new.restoreGeometry(geom)
+                new._placed_once = True 
             if cur_tab is not None:
                 try:
                     new.tabs.setCurrentIndex(cur_tab)
@@ -9094,21 +9132,21 @@ class StackingSuiteDialog(QDialog):
         apply_all_cb = QCheckBox("Apply this choice to all remaining files missing FILTER")
         lay.addWidget(apply_all_cb)
 
-        btns = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        btns.button(QDialogButtonBox.StandardButton.Ok).setText("Set Filter")
-        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("Leave as Unknown")
-        btns.accepted.connect(dlg.accept)
-        btns.rejected.connect(dlg.reject)
+        btns = QDialogButtonBox()
+        set_btn = btns.addButton("Set Filter", QDialogButtonBox.ButtonRole.AcceptRole)
+        unknown_btn = btns.addButton("Leave as Unknown", QDialogButtonBox.ButtonRole.AcceptRole)
+        btns.clicked.connect(lambda b: dlg.done(2 if b is unknown_btn else 1))
         lay.addWidget(btns)
 
-        accepted = (dlg.exec() == QDialog.DialogCode.Accepted)
+        result = dlg.exec()
         apply_all = bool(apply_all_cb.isChecked())
-        if not accepted:
-            return (None, apply_all)
+
+        if result == 2:
+            # "Leave as Unknown": affirmative choice → FILTER = "Unknown"
+            return ("Unknown", apply_all)
+
         text = edit.text().strip()
-        return (text if text else None, apply_all)
+        return (text if text else "Unknown", apply_all)
 
     def _resolve_filter_for_path(self, path, header):
         """
@@ -9137,16 +9175,11 @@ class StackingSuiteDialog(QDialog):
             return "Unknown"
 
         chosen_filter, apply_all = self._prompt_missing_filter(path)
-        if chosen_filter:
-            name = self._sanitize_name(chosen_filter)
-            if apply_all:
-                pol["apply_all"] = name
-            self._path_filter_override[path] = name
-            return name
-        else:
-            if apply_all:
-                pol["apply_all"] = None
-            return "Unknown"
+        name = self._sanitize_name(chosen_filter) if chosen_filter else "Unknown"
+        if apply_all:
+            pol["apply_all"] = name
+        self._path_filter_override[path] = name
+        return name
 
     def _tree_for_type(self, t: str):
         t = (t or "").upper()
@@ -12519,6 +12552,20 @@ class StackingSuiteDialog(QDialog):
         # Deduplicate while preserving order
         merged = list(dict.fromkeys(self.manual_light_files + new_files))
         self.manual_light_files = merged
+
+        # Resolve FILTER for each new path (prompts once per batch, apply-to-all
+        # supported) so calibrated-light grouping and downstream writers have a
+        # filter name — mirrors the header-ingest path in process_fits_header.
+        self._missing_filter_policy = {}
+        if not hasattr(self, "_path_filter_override") or self._path_filter_override is None:
+            self._path_filter_override = {}
+        for f in new_files:
+            try:
+                header, ok = get_valid_header(f)
+                if ok and header is not None:
+                    self._resolve_filter_for_path(f, header)
+            except Exception as e:
+                self.update_status(self.tr(f"⚠️ Filter resolve failed for {os.path.basename(f)}: {e}"))
 
         self.populate_calibrated_lights()
         self._refresh_reg_tree_summaries()
@@ -19641,6 +19688,30 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
+            # ── DEBUG: normalization stage tracer (traces first 2 frames) ──
+            def _ndbg(tag, a, fp):
+                if not getattr(self, "_norm_dbg_on", False):
+                    return
+                try:
+                    arr = np.asarray(a)
+                    fin = np.isfinite(arr)
+                    nfin = int(fin.sum())
+                    if nfin:
+                        amin = float(arr[fin].min()); amax = float(arr[fin].max())
+                        amed = float(np.median(arr[fin]))
+                    else:
+                        amin = amax = amed = float("nan")
+                    nz = int((arr == 0).sum())
+                    flag = "  ⛔ALL-ZERO" if (arr.size and nz == arr.size) else ""
+                    self.update_status(
+                        f"🔬[{tag}] {os.path.basename(str(fp))} "
+                        f"shape={arr.shape} dtype={arr.dtype} "
+                        f"min={amin:.6g} max={amax:.6g} med={amed:.6g} "
+                        f"zeros={nz}/{arr.size} nonfinite={arr.size - nfin}{flag}"
+                    )
+                except Exception as _e:
+                    self.update_status(f"🔬[{tag}] stats failed: {_e}")
+
             normalized_files = []
             chunks = list(chunk_list(measured_frames, chunk_size))
             total_chunks = len(chunks)
@@ -19679,7 +19750,12 @@ class StackingSuiteDialog(QDialog):
                                 self.update_status(self.tr(f"⚠️ No data for {fp}"))
                                 continue
 
+                            self._norm_dbg_seen = getattr(self, "_norm_dbg_seen", 0) + 1
+                            self._norm_dbg_on = (self._norm_dbg_seen <= 0)
+                            _ndbg("00 loaded", img, fp)
+
                             img = _to_writable_f32(img)
+                            _ndbg("01 to_f32", img, fp)
 
                             bayerish = (
                                 self._hdr_get(hdr, 'BAYERPAT')
@@ -19695,6 +19771,8 @@ class StackingSuiteDialog(QDialog):
                             else:
                                 if img.ndim == 3 and img.shape[-1] == 1:
                                     img = np.squeeze(img, axis=-1)
+
+                            _ndbg("02 debayer", img, fp)
 
                             # meridian flip assist
                             if self.auto_rot180 and ref_pa is not None:
@@ -19754,6 +19832,8 @@ class StackingSuiteDialog(QDialog):
                                     self._upscale_factor_by_orig[
                                         os.path.normcase(os.path.normpath(fp))
                                     ] = (sx, sy)
+                            _ndbg("03 geom", img, fp)
+
                             # 3) Brightness normalization / scale refine
                             pm = float(preview_medians.get(fp, 0.0))
                             s, offset = _compute_scale(
@@ -19764,11 +19844,19 @@ class StackingSuiteDialog(QDialog):
                                 refine_if_rel_err=0.10,
                                 return_offset=True,
                             )
+                            if getattr(self, "_norm_dbg_on", False):
+                                self.update_status(
+                                    f"🔬[04 scale-args] {os.path.basename(fp)} "
+                                    f"ref_target_median={ref_target_median:.6g} pm={pm:.6g} "
+                                    f"→ s={s:.6g} offset={offset:.6g}"
+                                )
                             img = _apply_scale_inplace(img, s, offset=offset)
+                            _ndbg("05 after-scale", img, fp)
 
                             # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
                             if hasattr(self, "_norm_target_hw") and self._norm_target_hw:
                                 img = _force_shape_hw(img, *self._norm_target_hw)
+                            _ndbg("06 force_hw", img, fp)
 
                             if abe_enabled:
                                 scaled_images.append(img.astype(np.float32, copy=False))
@@ -19795,6 +19883,7 @@ class StackingSuiteDialog(QDialog):
                                 _key = path.normcase(path.normpath(fp))
                                 _val = path.normpath(out_path)
                                 self._orig2norm[_key] = _val
+                                _ndbg("07 pre-write", img, fp)
                                 fits.PrimaryHDU(data=img.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
                                 normalized_files.append(out_path)
 
@@ -21241,6 +21330,7 @@ class StackingSuiteDialog(QDialog):
             base = f"MasterLight_{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
+            out_path_orig = self._dedupe_out_path(out_path_orig)
             # ── NEW: plate solve before saving ──────────────────────────
             hdr_orig = self._maybe_plate_solve_master(
                 integrated_image, hdr_orig, label=f"'{group_key}' master", status_cb=log
@@ -21352,6 +21442,7 @@ class StackingSuiteDialog(QDialog):
                 base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
                 base_crop = self._normalize_master_stem(base_crop)
                 out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
+                out_path_crop = self._dedupe_out_path(out_path_crop)
 
                 save_image(
                     img_array=cropped_img,
@@ -22524,6 +22615,7 @@ class StackingSuiteDialog(QDialog):
             base = f"MasterLight_{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
+            out_path_orig = self._dedupe_out_path(out_path_orig)
             # ── NEW: plate solve before saving ──────────────────────────
             hdr_orig = self._maybe_plate_solve_master(
                 integrated_image, hdr_orig, label=f"'{group_key}' master", status_cb=log
@@ -22641,6 +22733,7 @@ class StackingSuiteDialog(QDialog):
                 base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
                 base_crop = self._normalize_master_stem(base_crop)
                 out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
+                out_path_crop = self._dedupe_out_path(out_path_crop)
 
                 save_image(
                     img_array=cropped_img,
@@ -22817,6 +22910,7 @@ class StackingSuiteDialog(QDialog):
                         f"MasterCometOnly_{display_group_c}_{len(usable)}stacked",
                         "fit"
                     )
+                    comet_path = self._dedupe_out_path(comet_path)
                     save_image(
                         comet_only, comet_path, "fit", "32-bit floating point",
                         original_header=(ref_header_c or ref_header),
@@ -22843,6 +22937,7 @@ class StackingSuiteDialog(QDialog):
                             f"MasterCometOnly_{display_group_cc}_{len(usable)}stacked_autocrop",
                             "fit"
                         )
+                        comet_path_crop = self._dedupe_out_path(comet_path_crop)
                         save_image(
                             comet_only_crop, comet_path_crop, "fit", "32-bit floating point",
                             original_header=hdr_c_crop,
@@ -22872,6 +22967,7 @@ class StackingSuiteDialog(QDialog):
                             f"MasterCometBlend_{display_group_c}_{len(usable)}stacked",
                             "fit"
                         )
+                        blend_path = self._dedupe_out_path(blend_path)
                         save_image(blend, blend_path, "fit", "32-bit floating point",
                                 ref_header, is_mono=is_mono_blend)
                         log(f"✅ Saved CometBlend → {blend_path}")
@@ -22892,6 +22988,7 @@ class StackingSuiteDialog(QDialog):
                                 f"MasterCometBlend_{display_group_bc}_{len(usable)}stacked_autocrop",
                                 "fit"
                             )
+                            blend_path_crop = self._dedupe_out_path(blend_path_crop)
                             save_image(
                                 blend_crop, blend_path_crop, "fit", "32-bit floating point",
                                 original_header=hdr_b_crop,
@@ -24618,6 +24715,7 @@ class StackingSuiteDialog(QDialog):
         base_stem = f"MasterLight_{display_group_driz}_{len(file_list)}stacked_drizzle"
         base_stem = self._normalize_master_stem(base_stem)
         out_path_orig = self._build_out(self._master_light_dir(), base_stem, "fit")
+        out_path_orig = self._dedupe_out_path(out_path_orig)
 
         hdr_orig = hdr.copy() if hdr is not None else fits.Header()
         hdr_orig["IMAGETYP"] = "MASTER STACK - DRIZZLE"
@@ -24674,6 +24772,7 @@ class StackingSuiteDialog(QDialog):
             base_crop = f"MasterLight_{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
             base_crop = self._normalize_master_stem(base_crop)
             out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
+            out_path_crop = self._dedupe_out_path(out_path_crop)
 
             cropped_drizzle = self._normalize_stack_01(cropped_drizzle)
             hdr_crop = self._maybe_plate_solve_master(
@@ -25642,6 +25741,19 @@ class StackingSuiteDialog(QDialog):
 
         stem = re.sub(r'\((\d+)x(\d+)\)', r'\1x\2', stem)
         return stem
+
+    def _dedupe_out_path(self, path: str) -> str:
+        """Return `path` unchanged if free; otherwise insert _1, _2, … before
+        the extension until an unused name is found. Reusable at every save site."""
+        if not os.path.exists(path):
+            return path
+        stem, ext = os.path.splitext(path)
+        i = 1
+        while True:
+            candidate = f"{stem}_{i}{ext}"
+            if not os.path.exists(candidate):
+                return candidate
+            i += 1
 
     def _build_out(self, directory: str, stem: str, ext: str) -> str:
         """
