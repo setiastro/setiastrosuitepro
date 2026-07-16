@@ -293,12 +293,10 @@ class _BXTPanel(QWidget):
         args: list[str] = []
 
         if self.chk_correct_only.isChecked():
+            # --correct-only pins ansp=true, ash/nsd/sn/ss=0 on the CLI side.
+            # Passing any of those flags ourselves contradicts the mode's pins,
+            # so emit the single flag and nothing else.
             args.append("--correct-only")
-            # --correct-only forces all sharpening to 0 — only NSR is still valid
-            if not self.chk_auto_nsr.isChecked():
-                nsr = self.sld_nsr.value() / 10.0
-                args += [no_auto_flag,
-                         nsr_value_flag, f"{nsr:.1f}"]
         else:
             ss = self.sld_ss.value() / 100.0
             if ss > 0:
