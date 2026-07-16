@@ -600,32 +600,49 @@ def _ban_shadow_torch_paths(status_cb=print) -> None:
 _demote_shadow_torch_paths = _ban_shadow_torch_paths
 
 
-def _purge_bad_torch_from_sysmodules(status_cb=print) -> None:
+def _purge_bad_torch_from_sysmodules(status_cb=print, *, rocm: bool = False) -> None:
     try:
         if "torch" in sys.modules:
             mod = sys.modules["torch"]
             tf = getattr(mod, "__file__", "") or ""
 
-            # Detect our own stub by its sentinel version string
             is_stub = (
                 not tf and
                 getattr(mod, "__version__", "") == "0.0.0+unavailable"
             )
 
-            if is_stub or (tf and ("site-packages" not in tf) and ("dist-packages" not in tf)):
+            is_shadow = bool(
+                tf and
+                ("site-packages" not in tf) and
+                ("dist-packages" not in tf)
+            )
+
+            is_partial = (
+                "torch._C" not in sys.modules and
+                getattr(mod, "_C", None) is not None
+            )
+
+            if is_stub or is_shadow or is_partial:
                 for k in list(sys.modules.keys()):
                     if k == "torch" or k.startswith("torch."):
                         sys.modules.pop(k, None)
                 if is_stub:
                     status_cb("[RT] Purged torch stub from sys.modules before real import")
+                elif is_partial:
+                    status_cb("[RT] Purged partial torch import before retry")
                 else:
                     status_cb(f"[RT] Purged shadowed torch import: {tf}")
 
-        sys.modules.pop("torch._C", None)
+        # ROCm-only: some ROCm/HIP builds leave a torch._C that must be evicted
+        # explicitly before re-import. This is unsafe on CUDA/DML (extension
+        # modules aren't re-initializable) so it is gated to the ROCm path.
+        if rocm and "torch._C" in sys.modules:
+            sys.modules.pop("torch._C", None)
+            status_cb("[RT] ROCm: evicted torch._C before re-import")
+
         importlib.invalidate_caches()
     except Exception:
         pass
-
 
 def _torch_sanity_check(status_cb=print):
     try:
@@ -1627,7 +1644,7 @@ def import_torch(
     )
 
     _ban_shadow_torch_paths(status_cb=status_cb)
-    _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+    _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
 
     rt = _user_runtime_dir(status_cb=status_cb)
     vp = _ensure_venv(rt, status_cb=status_cb)
@@ -1650,7 +1667,7 @@ def import_torch(
                 if site_s not in sys.path:
                     sys.path.insert(0, site_s)
                 _demote_shadow_torch_paths(status_cb=status_cb)
-                _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+                _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
                 _register_dll_dirs_for_frozen(Path(site_s), vp, status_cb=status_cb)
                 if getattr(sys, "frozen", False):
                     try:
@@ -1690,7 +1707,7 @@ def import_torch(
             if sp not in sys.path:
                 sys.path.insert(0, sp)
             _demote_shadow_torch_paths(status_cb=status_cb)
-            _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+            _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
             _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb) 
             if getattr(sys, "frozen", False):
                 try:
@@ -1799,7 +1816,7 @@ def import_torch(
     if sp not in sys.path:
         sys.path.insert(0, sp)
     _demote_shadow_torch_paths(status_cb=status_cb)
-    _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+    _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
     _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb)
     if getattr(sys, "frozen", False):
         try:
@@ -1827,7 +1844,7 @@ def import_torch(
         if not getattr(import_torch, "_dll_retry_done", False):
             import_torch._dll_retry_done = True
             status_cb(f"[RT] In-process import failed ({type(e).__name__}: {e}); retrying once after DLL directory registration…")
-            _purge_bad_torch_from_sysmodules(status_cb=status_cb)
+            _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
             _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb)
             try:
                 import torch
