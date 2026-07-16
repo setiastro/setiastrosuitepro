@@ -633,13 +633,6 @@ def _purge_bad_torch_from_sysmodules(status_cb=print, *, rocm: bool = False) -> 
                 else:
                     status_cb(f"[RT] Purged shadowed torch import: {tf}")
 
-        # ROCm-only: some ROCm/HIP builds leave a torch._C that must be evicted
-        # explicitly before re-import. This is unsafe on CUDA/DML (extension
-        # modules aren't re-initializable) so it is gated to the ROCm path.
-        if rocm and "torch._C" in sys.modules:
-            sys.modules.pop("torch._C", None)
-            status_cb("[RT] ROCm: evicted torch._C before re-import")
-
         importlib.invalidate_caches()
     except Exception:
         pass
