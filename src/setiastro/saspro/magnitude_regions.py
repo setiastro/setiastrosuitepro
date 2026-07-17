@@ -202,9 +202,16 @@ class RegionLibrary:
 
 
 # ------------------------------------------------- quadrant backgrounds -------
-def find_quadrant_backgrounds(img_f, box, margin, auto_rect_box):
+def find_quadrant_backgrounds(img_f, box, margin, auto_rect_box,
+                              exclude_rect=None, exclude_pad=None):
     """Best background box in each of the 4 image quadrants.
-    Returns [(label, x, y, w, h), ...] in full-image pixel coords."""
+    Returns [(label, x, y, w, h), ...] in full-image pixel coords.
+
+    exclude_rect: (x, y, w, h) in full-image px — typically the PRIMARY
+      background box. In whichever quadrant it overlaps, a keep-out zone (the
+      rect grown by exclude_pad on every side) is blanked before the search so
+      the qualifying box in that quadrant can't duplicate the primary. Other
+      quadrants are unaffected."""
     a = np.asarray(img_f)
     H, W = a.shape[:2]
     if a.ndim == 2:
@@ -213,6 +220,22 @@ def find_quadrant_backgrounds(img_f, box, margin, auto_rect_box):
         rgb = a[..., :3]
     else:
         rgb = np.dstack([a[..., 0]] * 3)
+
+    if exclude_pad is None:
+        exclude_pad = int(box)  # one box-width of separation by default
+
+    # Full-image exclusion mask (True = keep out). Built once, sliced per quad.
+    keepout = None
+    ex_rect_px = None
+    if exclude_rect is not None:
+        ex, ey, ew, eh = (int(v) for v in exclude_rect)
+        pad = int(exclude_pad)
+        kx0 = max(0, ex - pad); ky0 = max(0, ey - pad)
+        kx1 = min(W, ex + ew + pad); ky1 = min(H, ey + eh + pad)
+        if kx1 > kx0 and ky1 > ky0:
+            keepout = np.zeros((H, W), dtype=bool)
+            keepout[ky0:ky1, kx0:kx1] = True
+            ex_rect_px = (kx0, ky0, kx1, ky1)
 
     hh, ww = H // 2, W // 2
     quads = [
@@ -224,6 +247,15 @@ def find_quadrant_backgrounds(img_f, box, margin, auto_rect_box):
     out = []
     for label, qx, qy, qw, qh in quads:
         crop = rgb[qy:qy + qh, qx:qx + qw, :]
+
+        # If the keep-out zone touches this quadrant, blank those pixels so the
+        # darkest-region search can't re-pick the primary's spot.
+        if keepout is not None:
+            qk = keepout[qy:qy + qh, qx:qx + qw]
+            if qk.any():
+                crop = crop.copy()
+                crop[qk] = np.inf  # auto_rect_box seeks the DARKEST box → +inf is never chosen
+
         m = int(max(0, min(int(margin), min(qw, qh) // 2 - int(box) - 1)))
         try:
             bx, by, bw, bh = auto_rect_box(crop, box=int(box), margin=m)
@@ -231,7 +263,6 @@ def find_quadrant_backgrounds(img_f, box, margin, auto_rect_box):
         except Exception:
             continue
     return out
-
 
 # ------------------------------------------------------- µ for one background -
 def _mad_sigma(vals):

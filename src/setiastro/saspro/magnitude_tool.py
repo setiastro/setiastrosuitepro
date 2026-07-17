@@ -92,8 +92,14 @@ def _run_in_subprocess(timeout_s: float, target, *args, **kwargs):
     if kind == "ok":
         return payload
 
-    err_repr, tb = payload
-    raise RuntimeError(f"Catalog query failed: {err_repr}\n{tb}")
+    err_msg, tb = payload
+    # Full traceback goes to the console for debugging; the UI gets one line.
+    try:
+        import sys
+        print(f"[Catalog subprocess error]\n{tb}", file=sys.stderr)
+    except Exception:
+        pass
+    raise RuntimeError(err_msg)
 
 
 def _row_get(tab_row, colname: str):
@@ -110,7 +116,7 @@ def _subproc_entry(q, target, args, kwargs):
         out = target(*args, **kwargs)
         q.put(("ok", out))
     except Exception as e:
-        q.put(("err", (repr(e), traceback.format_exc())))
+        q.put(("err", (str(e), traceback.format_exc())))
 
 
 def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg: float,
@@ -132,46 +138,82 @@ def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg
 
     try:
         from astroquery.simbad import conf as simbad_conf
-        simbad_conf.timeout = _timeout_i
     except Exception:
-        pass
+        simbad_conf = None
 
     try:
         Simbad.TIMEOUT = _timeout_i
     except Exception:
         pass
-    Simbad.reset_votable_fields()
-    # try “new” fields first, then fallback
-    try:
-        Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec")
-    except Exception:
-        Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)")
-
-    Simbad.ROW_LIMIT = int(row_limit)
 
     center = SkyCoord(center_ra_deg * u.deg, center_dec_deg * u.deg, frame="icrs")
 
+    def _host_of(server: str) -> str:
+        s = str(server).replace("https://", "").replace("http://", "")
+        return s.split("/")[0]
+
+    def _configure_fields():
+        # This makes a TAP capabilities network call in modern astroquery,
+        # which is the exact call that fails when the endpoint is down. Doing
+        # it per-mirror means a dead endpoint on one mirror is recoverable.
+        Simbad.reset_votable_fields()
+        try:
+            Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec")
+        except Exception:
+            # legacy field names (older astroquery)
+            Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)")
+
     last_err = None
     for server in (servers or []):
+        host = _host_of(server)
+
+        # Fast reachability probe: skip a dead/DNS-broken mirror in ~3s instead
+        # of letting a stalled TLS handshake ride the subprocess out to its kill.
+        if not _tcp_reachable(host, 443, timeout_s=3.0):
+            last_err = RuntimeError(f"{host}: not reachable (DNS/connect failed)")
+            continue
+
         try:
-            try:
-                simbad_conf.server = server
-            except Exception:
-                pass
+            if simbad_conf is not None:
+                try:
+                    simbad_conf.server = server
+                except Exception:
+                    pass
+
+            Simbad.ROW_LIMIT = int(row_limit)
+            _configure_fields()
+
             tab = Simbad.query_region(center, radius=radius_deg * u.deg)
             if tab is None:
+                last_err = RuntimeError(f"{host}: query returned no table")
                 continue
-            # Return as “simple” python structures (picklable)
+
             return {
                 "colnames": list(tab.colnames),
-                "rows": [ {c: tab[i][c] for c in tab.colnames} for i in range(len(tab)) ]
+                "rows": [{c: tab[i][c] for c in tab.colnames} for i in range(len(tab))],
             }
         except Exception as e:
             last_err = e
             continue
 
-    raise RuntimeError(f"SIMBAD failed on all servers. Last error: {last_err!r}")
+    raise RuntimeError(_classify_simbad_error(last_err))
 
+def _classify_simbad_error(err) -> str:
+    """Turn a raw SIMBAD/pyvo exception into a short, user-facing reason."""
+    if err is None:
+        return "SIMBAD query failed (unknown error)."
+    s = f"{type(err).__name__}: {err}"
+    low = s.lower()
+    if "dalservice" in low or "capabilities" in low:
+        return ("SIMBAD is unreachable (the service capabilities endpoint failed). "
+                "The server may be down or blocked by your network — try again later.")
+    if "timeout" in low or "timed out" in low:
+        return "SIMBAD timed out (server slow or unreachable). Try again later."
+    if any(k in low for k in ("connection", "dns", "getaddrinfo", "name or service", "failed to resolve")):
+        return "SIMBAD connection failed (DNS or network issue). Try again later."
+    if "not reachable" in low:
+        return f"SIMBAD mirrors were not reachable ({err})."
+    return f"SIMBAD query failed: {s.splitlines()[0]}"
 
 def _tcp_reachable(host: str, port: int, timeout_s: float = 2.0) -> bool:
     """
@@ -1531,7 +1573,8 @@ class FullImageAnnotatedDialog(QDialog):
     annotated, suitable for export to PNG for white papers etc.
     """
     def __init__(self, parent, img_rgb8: np.ndarray, obj_mask: np.ndarray,
-                 bg_rect: QRect, target_opacity: float = 0.35):
+                 bg_rect: QRect, target_opacity: float = 0.35,
+                 qualifying_bgs=None):
         super().__init__(parent)
         self.setWindowTitle("Full Image — Target & Background Annotated")
         self.setWindowFlag(Qt.WindowType.Window, True)
@@ -1547,7 +1590,8 @@ class FullImageAnnotatedDialog(QDialog):
         self._obj_mask = obj_mask
         self._bg_rect = bg_rect
         self._opacity = target_opacity
-
+        self._qualifying_bgs = list(qualifying_bgs or [])   # [(label, QRect), ...]
+        self._show_qual_bg = False
         # build the annotated pixmap once
         self._annotated_pix = self._build_pixmap()
 
@@ -1564,6 +1608,11 @@ class FullImageAnnotatedDialog(QDialog):
         self._spn_opacity.setValue(target_opacity)
         self._spn_opacity.valueChanged.connect(self._on_opacity_changed)
         ctrl.addWidget(self._spn_opacity)
+        self._btn_qual = QPushButton("Show Qualifying Backgrounds")
+        self._btn_qual.setCheckable(True)
+        self._btn_qual.setEnabled(bool(self._qualifying_bgs))
+        self._btn_qual.toggled.connect(self._on_toggle_qual)
+        ctrl.addWidget(self._btn_qual)        
         ctrl.addStretch(1)
 
         self._btn_save = QPushButton("Save Image…")
@@ -1587,6 +1636,9 @@ class FullImageAnnotatedDialog(QDialog):
             QPainter.RenderHint.SmoothPixmapTransform
         )
         self._view.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self._view.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+        self._view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self._view.viewport().installEventFilter(self)        
         self._pix_item = self._scene.addPixmap(self._annotated_pix)
         self._scene.setSceneRect(self._pix_item.boundingRect())
         lay.addWidget(self._view, 1)
@@ -1642,7 +1694,7 @@ class FullImageAnnotatedDialog(QDialog):
             pen = QPen(QColor(255, 215, 0), 3)
             pen.setCosmetic(False)
             painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.setBrush(QColor(255, 215, 0, int(0.35 * 255)))  # translucent gold fill
             painter.drawRect(self._bg_rect)
 
             # label
@@ -1670,6 +1722,22 @@ class FullImageAnnotatedDialog(QDialog):
 
             painter.end()
 
+        # qualifying per-quadrant backgrounds (cyan) — robustness-check placements
+        if self._show_qual_bg and self._qualifying_bgs:
+            painter = QPainter(pix)
+            pen = QPen(QColor(0, 200, 255), 3)   # cyan, distinct from gold primary
+            pen.setCosmetic(False)
+            painter.setPen(pen)
+            painter.setBrush(QColor(0, 200, 255, int(0.35 * 255)))  # translucent cyan fill
+            for _label, r in self._qualifying_bgs:
+                if r is not None and not r.isNull():
+                    painter.drawRect(r)
+            painter.setPen(QColor(0, 200, 255))
+            for label, r in self._qualifying_bgs:
+                if r is not None and not r.isNull():
+                    painter.drawText(r.left() + 4, r.top() - 6, f"BG {label}")
+            painter.end()
+
         return pix
 
     def _on_opacity_changed(self, val):
@@ -1684,6 +1752,27 @@ class FullImageAnnotatedDialog(QDialog):
 
     def _zoom_100(self):
         self._view.resetTransform()
+
+    def _on_toggle_qual(self, checked: bool):
+        self._show_qual_bg = bool(checked)
+        self._btn_qual.setText(
+            "Hide Qualifying Backgrounds" if self._show_qual_bg
+            else "Show Qualifying Backgrounds"
+        )
+        self._annotated_pix = self._build_pixmap()
+        self._pix_item.setPixmap(self._annotated_pix)
+        self._scene.setSceneRect(self._pix_item.boundingRect())
+
+    def eventFilter(self, source, event):
+        if source is self._view.viewport() and event.type() == QEvent.Type.Wheel:
+            angle = event.angleDelta().y()
+            if angle != 0:
+                factor = 1.25 if angle > 0 else 0.8
+                new_scale = self._view.transform().m11() * factor
+                if 0.02 <= new_scale <= 200.0:
+                    self._view.scale(factor, factor)
+            return True
+        return super().eventFilter(source, event)
 
     def _on_save(self):
         from PyQt6.QtWidgets import QFileDialog
@@ -1903,12 +1992,31 @@ class MagnitudeToolDialog(QDialog):
 
         opacity = float(self.roi_opacity.value()) if hasattr(self, "roi_opacity") else 0.35
 
+        # Compute qualifying per-quadrant backgrounds on the LINEAR image, so the
+        # boxes drawn here are exactly the placements the robustness check measures.
+        qual_bgs = []
+        try:
+            img, _hdr, _doc = self._get_active_image_and_header()
+            if img is not None:
+                img_f = _to_float_image(img)
+                box = int(self.bg_box_size.value()) if hasattr(self, "bg_box_size") else 50
+                px, py, pw, ph = (self.background_rect.x(), self.background_rect.y(),
+                                  self.background_rect.width(), self.background_rect.height())
+                quads = mreg.find_quadrant_backgrounds(
+                    img_f, box=box, margin=100, auto_rect_box=auto_rect_box,
+                    exclude_rect=(px, py, pw, ph) if not self.background_rect.isNull() else None)
+                qual_bgs = [(lbl, QRect(int(x), int(y), int(w), int(h)))
+                            for (lbl, x, y, w, h) in quads]
+        except Exception:
+            qual_bgs = []
+
         dlg = FullImageAnnotatedDialog(
             parent=self,
             img_rgb8=img_rgb8,
             obj_mask=self.object_mask,
             bg_rect=self.background_rect,
             target_opacity=opacity,
+            qualifying_bgs=qual_bgs,
         )
         dlg.show()
         dlg.raise_()
@@ -2186,8 +2294,12 @@ class MagnitudeToolDialog(QDialog):
                 m[y0:y1, x0:x1] = True
             return m
 
+        px, py, pw, ph = (self.background_rect.x(), self.background_rect.y(),
+                          self.background_rect.width(), self.background_rect.height())
         quads = mreg.find_quadrant_backgrounds(
-            img_f, box=int(self.bg_box_size.value()), margin=100, auto_rect_box=auto_rect_box)
+            img_f, box=int(self.bg_box_size.value()), margin=100,
+            auto_rect_box=auto_rect_box,
+            exclude_rect=(px, py, pw, ph) if not self.background_rect.isNull() else None)
 
         rows = [("Primary", primary_bg_mask)]
         rows += [(f"Quad {lbl}", rect_mask(x, y, w, h)) for (lbl, x, y, w, h) in quads]
@@ -2364,20 +2476,26 @@ class MagnitudeToolDialog(QDialog):
                 self.star_list = apass
             else:
                 # 2) If APASS is empty, try SIMBAD
+                simbad_reason = ""
                 try:
                     self.lbl_info.setText("Querying SIMBAD (subprocess)…")
                     QApplication.processEvents()
                     self.star_list = self._fetch_simbad_stars_and_cache(img, hdr, doc) or []
                 except Exception as e:
                     self.star_list = []
-                    QMessageBox.warning(self, "SIMBAD Error", str(e))
+                    simbad_reason = str(e)  # already a one-line reason from the worker
 
                 if not self.star_list:
+                    detail = (f"\n\nSIMBAD: {simbad_reason}" if simbad_reason else "")
+                    self.lbl_info.setText("Catalog unavailable — no stars fetched.")
                     QMessageBox.information(
                         self, "Catalog Unavailable",
-                        "APASS returned no stars (or failed), no cached stars were available, "
-                        "and SIMBAD is currently unavailable.\n\n"
-                        "Try a wider field / verify WCS / try again later."
+                        "No catalog stars could be retrieved:\n"
+                        "• APASS returned no stars (or failed)\n"
+                        "• No cached stars were available\n"
+                        "• SIMBAD could not be reached"
+                        + detail
+                        + "\n\nTry a wider field, verify the WCS solution, or try again later."
                     )
                     return
 
@@ -2941,13 +3059,16 @@ class MagnitudeToolDialog(QDialog):
         radius_deg = float(radius.to_value(u.deg))
 
         # ---- mirror list (use yours or keep static) ----
-        servers = ["simbad.u-strasbg.fr", "simbad.harvard.edu"]
-        HARD_TIMEOUT_S = 20.0
+        # unistra is the current primary; u-strasbg redirects to it; harvard is
+        # the independent US mirror. Order = try-first order.
+        servers = ["simbad.cds.unistra.fr", "simbad.u-strasbg.fr", "simbad.harvard.edu"]
+        HARD_TIMEOUT_S = 15.0
         ROW_LIMIT = 10000
 
-        # Total wall time allowed for the whole subprocess run.
-        # Should be > HARD_TIMEOUT_S, because worker may try multiple mirrors.
-        SUBPROC_TIMEOUT_S = 60.0
+        # Whole-run cap. Worst case ≈ n_mirrors × (reachability 3s + query 15s).
+        # This is the hard backstop for a mirror that accepts the connection but
+        # never responds — the case the reachability probe can't catch.
+        SUBPROC_TIMEOUT_S = 55.0
 
         # status text (safe; no astroquery here)
         try:
