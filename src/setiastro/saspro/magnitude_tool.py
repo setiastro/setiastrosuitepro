@@ -41,7 +41,7 @@ from PyQt6.QtCore import Qt, QRect, QEvent, QPointF, QRectF, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget, QWidget,
     QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout,QComboBox, QGraphicsPathItem, QGraphicsEllipseItem,
-    QMessageBox, QApplication, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsItem
+    QMessageBox, QApplication, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsItem, QListWidget, QListWidgetItem, QCheckBox, QInputDialog
 )
 from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QPainter, QPainterPath
 from astropy.coordinates import SkyCoord
@@ -52,6 +52,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 # IMPORTANT: use the centralized one (adjust import path to where you moved it)
 from setiastro.saspro.sfcc import pickles_match_for_simbad
+from setiastro.saspro import magnitude_regions as mreg
 
 # Reuse useful SFCC pieces
 from setiastro.saspro.sfcc import non_blocking_sleep  # already used in SFCC; optional
@@ -745,6 +746,53 @@ def _is_narrowband_like(header) -> bool:
     ]
     return any(tok in s for tok in nb_tokens)
 
+class _RegionManagerDialog(QDialog):
+    def __init__(self, parent, lib):
+        super().__init__(parent)
+        self.setWindowTitle("Saved Regions")
+        self.setModal(True)
+        self._lib = lib
+        self.selected_name = None
+
+        v = QVBoxLayout(self)
+        self._list = QListWidget(self)
+        for n in lib.names():
+            r = lib.get(n)
+            tag = f"   [{r.kind}]" + (f"  {r.object_name}" if r.object_name else "")
+            it = QListWidgetItem(f"{n}{tag}", self._list)
+            it.setData(Qt.ItemDataRole.UserRole, n)
+        self._list.itemDoubleClicked.connect(lambda *_: self._accept())
+        v.addWidget(self._list)
+
+        row = QHBoxLayout()
+        b_load = QPushButton("Load"); b_del = QPushButton("Delete"); b_close = QPushButton("Close")
+        b_load.clicked.connect(self._accept)
+        b_del.clicked.connect(self._delete)
+        b_close.clicked.connect(self.reject)
+        row.addWidget(b_load); row.addWidget(b_del); row.addStretch(1); row.addWidget(b_close)
+        v.addLayout(row)
+        self.resize(440, 340)
+
+    def _current_name(self):
+        it = self._list.currentItem()
+        return it.data(Qt.ItemDataRole.UserRole) if it else None
+
+    def _accept(self):
+        n = self._current_name()
+        if n:
+            self.selected_name = n
+            self.accept()
+
+    def _delete(self):
+        n = self._current_name()
+        if not n:
+            return
+        if QMessageBox.question(self, "Delete", f"Delete region '{n}'?",
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                                ) == QMessageBox.StandardButton.Yes:
+            self._lib.remove(n)
+            self._list.takeItem(self._list.currentRow())
+
 class _ResultsDialog(QDialog):
     """
     Non-blocking results window. Stays open alongside ZP graphs or other dialogs.
@@ -1356,6 +1404,30 @@ class MagnitudeRegionDialog(QDialog):
         h = int(max(1.0, min(bounds.height() - y, r.height())))
         return QRect(x, y, w, h)
 
+    def _current_geometry_px(self):
+        mode = self.mode_combo.currentText()
+        if mode == "Box" and not self.target_rect_scene.isNull():
+            r = self.target_rect_scene
+            corners = [(r.left(), r.top()), (r.right(), r.top()),
+                       (r.right(), r.bottom()), (r.left(), r.bottom())]
+            return {"kind": "box", "verts_px": mreg.densify_polygon(corners, per_edge=16)}
+        if mode == "Ellipse" and not self.target_rect_scene.isNull():
+            r = self.target_rect_scene
+            cx, cy = r.center().x(), r.center().y()
+            ax, ay = r.width() / 2.0, r.height() / 2.0
+            th = np.linspace(0.0, 2.0 * np.pi, 160, endpoint=False)
+            verts = np.column_stack([cx + ax * np.cos(th), cy + ay * np.sin(th)])
+            return {"kind": "ellipse", "verts_px": verts}
+        if mode == "Freehand" and not self._path.isEmpty():
+            verts = []
+            for poly in self._path.toSubpathPolygons():
+                for i in range(poly.count()):
+                    p = poly.at(i)
+                    verts.append((p.x(), p.y()))
+            if len(verts) >= 3:
+                return {"kind": "freehand", "verts_px": np.asarray(verts, dtype=np.float64)}
+        return None
+
     def _on_use_target(self):
         mask = self._target_mask()
         if mask is None or int(mask.sum()) < 25:
@@ -1386,7 +1458,7 @@ class MagnitudeRegionDialog(QDialog):
         parent = self.parent()
         if parent is not None:
             if hasattr(parent, "set_object_mask"):
-                parent.set_object_mask(mask)
+                parent.set_object_mask(mask, geometry=self._current_geometry_px())
 
             # (optional but recommended) also pass bg as mask if you add the setter
             if hasattr(parent, "set_background_rect"):
@@ -1651,6 +1723,7 @@ class MagnitudeToolDialog(QDialog):
         self.setMinimumSize(520, 320)
         self.sys_floor_mag = 0.10  # mag (typical 0.05–0.15)
         self.object_mask = None
+        self.object_geometry = None   # {"kind":..., "verts_px": Nx2} from picker/recall
         self.background_mask = None
         self.doc_manager = doc_manager
 
@@ -1682,6 +1755,15 @@ class MagnitudeToolDialog(QDialog):
         self.btn_pick = QPushButton("Step 3: Pick Target Region…")
         self.btn_pick.clicked.connect(self.open_region_picker)
         v.addWidget(self.btn_pick)
+        region_row = QHBoxLayout()
+        self.btn_save_region = QPushButton("Save Region…")
+        self.btn_save_region.clicked.connect(self.save_region_to_library)
+        self.btn_load_region = QPushButton("Load Region…")
+        self.btn_load_region.clicked.connect(self.load_region_from_library)
+        region_row.addWidget(self.btn_save_region)
+        region_row.addWidget(self.btn_load_region)
+        v.addLayout(region_row)
+
         self.btn_zp_plot = QPushButton("Show ZP Graphs…")
         self.btn_zp_plot.clicked.connect(self.show_zp_graphs)
         self.btn_zp_plot.setEnabled(False)
@@ -1748,7 +1830,9 @@ class MagnitudeToolDialog(QDialog):
         )
         hint.setWordWrap(True)
         form.addRow("", hint)
-
+        self.chk_verify_bg = QCheckBox("Verify against 4-quadrant backgrounds")
+        self.chk_verify_bg.setChecked(False)
+        form.addRow("", self.chk_verify_bg)
         v.addWidget(box)
         # --- ROI preview (cropped) ---
         roi_box = QGroupBox("ROI preview")
@@ -1828,6 +1912,86 @@ class MagnitudeToolDialog(QDialog):
         )
         dlg.show()
         dlg.raise_()
+
+    def save_region_to_library(self):
+        if self.object_mask is None or np.count_nonzero(self.object_mask) < 25:
+            QMessageBox.information(self, "No Region", "Draw or load a target region first.")
+            return
+        _img, hdr, _doc = self._get_active_image_and_header()
+        wcs, pixscale = _build_wcs_and_pixscale(hdr)
+        if wcs is None:
+            QMessageBox.warning(self, "No WCS", "Storing a region needs a plate-solved (WCS) image.")
+            return
+
+        geom = getattr(self, "object_geometry", None)
+        if geom and geom.get("verts_px") is not None:
+            kind = geom.get("kind", "freehand")
+            verts_px = np.asarray(geom["verts_px"], dtype=np.float64)
+        else:
+            # fallback: rebuild a box polygon from the mask bbox
+            ys, xs = np.nonzero(self.object_mask)
+            x0, x1, y0, y1 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
+            kind = "box"
+            verts_px = mreg.densify_polygon(
+                [(x0, y0), (x1, y0), (x1, y1), (x0, y1)], per_edge=16)
+
+        obj_default = _header_str(hdr, "OBJECT")
+        name, ok = QInputDialog.getText(self, "Save Region", "Region name:",
+                                        text=(obj_default or ""))
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+
+        region = mreg.build_sky_region(name, kind, verts_px, self.object_mask, wcs,
+                                       object_name=obj_default, pixscale=pixscale)
+        lib = mreg.RegionLibrary()
+        if lib.get(name) is not None:
+            if QMessageBox.question(
+                self, "Overwrite", f"Region '{name}' already exists. Overwrite?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) != QMessageBox.StandardButton.Yes:
+                return
+        lib.add(region, overwrite=True)
+
+        ctr = (f"RA={region.ra_center:.5f}, Dec={region.dec_center:.5f}"
+               if region.ra_center is not None else "center N/A")
+        QMessageBox.information(self, "Saved", f"Saved region '{name}'.\n{ctr}\n\n{lib.path}")
+
+    def load_region_from_library(self):
+        img, hdr, _doc = self._get_active_image_and_header()
+        if img is None:
+            QMessageBox.warning(self, "No Image", "Open an image first.")
+            return
+        wcs, _pixscale = _build_wcs_and_pixscale(hdr)
+        if wcs is None:
+            QMessageBox.warning(self, "No WCS", "Recalling a region needs a plate-solved (WCS) image.")
+            return
+        lib = mreg.RegionLibrary()
+        if not lib.names():
+            QMessageBox.information(self, "Library Empty", "No saved regions yet.")
+            return
+
+        dlg = _RegionManagerDialog(self, lib)
+        if dlg.exec() != QDialog.DialogCode.Accepted or not dlg.selected_name:
+            return
+        region = lib.get(dlg.selected_name)
+        if region is None:
+            return
+
+        H, W = np.asarray(img).shape[:2]
+        mask, px = mreg.region_to_mask(region, H, W, wcs)
+        if np.count_nonzero(mask) < 25:
+            QMessageBox.warning(
+                self, "Off-Field",
+                "The recalled region projects to <25 px on this image "
+                "(different field, or region off-frame).")
+            return
+
+        self.set_object_mask(mask, geometry={"kind": region.kind, "verts_px": px})
+        ctr = (f"RA={region.ra_center:.5f}, Dec={region.dec_center:.5f}"
+               if region.ra_center is not None else "")
+        self.lbl_info.setText(
+            f"Loaded region '{region.name}' ({int(np.count_nonzero(mask))} px). {ctr}")
 
     # --- external wiring (from your ROI tool) ---
     def clear_all(self):
@@ -1911,8 +2075,9 @@ class MagnitudeToolDialog(QDialog):
             dlg.show()
             dlg.raise_()
 
-    def set_object_mask(self, mask: np.ndarray):
+    def set_object_mask(self, mask: np.ndarray, geometry=None):
         self.object_mask = mask
+        self.object_geometry = geometry
         self._update_roi_preview()
 
     def set_background_mask(self, mask: np.ndarray):
@@ -1988,6 +2153,90 @@ class MagnitudeToolDialog(QDialog):
         except Exception:
             return np.clip(a, 0.0, 1.0).astype(np.float32, copy=False)
 
+    def _background_robustness_text(self, img_f, obj_mask, hdr, primary_bg_mask):
+        if not (getattr(self, "chk_verify_bg", None) and self.chk_verify_bg.isChecked()):
+            return ""
+        _, pixscale = _build_wcs_and_pixscale(hdr)
+        if not (pixscale and pixscale > 0):
+            return "\nBackground robustness: N/A (no pixscale from WCS).\n"
+
+        mode = (self.last_zp.get("mode") or ("mono" if img_f.ndim == 2 else "rgb"))
+        try:
+            sys_floor = float(self.sys_floor_spin.value())
+        except Exception:
+            sys_floor = float(getattr(self, "sys_floor_mag", 0.0) or 0.0)
+
+        if mode == "mono":
+            zp_sem = self.last_zp.get("sem")
+            if zp_sem is None:
+                sd = self.last_zp.get("std"); n = int(self.last_zp.get("n") or 0)
+                zp_sem = (float(sd) / math.sqrt(n)) if (sd is not None and n > 1) else None
+            zp_state = {"ZP": self.last_zp.get("ZP"), "zp_sem": zp_sem}
+        else:
+            zp_state = {k: self.last_zp.get(k)
+                        for k in ("ZP_R", "ZP_G", "ZP_B", "sem_R", "sem_G", "sem_B")}
+
+        H, W = img_f.shape[:2]
+
+        def rect_mask(x, y, w, h):
+            m = np.zeros((H, W), dtype=bool)
+            x0, y0 = max(0, x), max(0, y)
+            x1, y1 = min(W, x + w), min(H, y + h)
+            if x1 > x0 and y1 > y0:
+                m[y0:y1, x0:x1] = True
+            return m
+
+        quads = mreg.find_quadrant_backgrounds(
+            img_f, box=int(self.bg_box_size.value()), margin=100, auto_rect_box=auto_rect_box)
+
+        rows = [("Primary", primary_bg_mask)]
+        rows += [(f"Quad {lbl}", rect_mask(x, y, w, h)) for (lbl, x, y, w, h) in quads]
+        results = [(lbl, mreg.measure_mu(img_f, obj_mask, bm, pixscale, zp_state, sys_floor, mode))
+                   for (lbl, bm) in rows]
+
+        lines = ["", "Background robustness (object µ vs background placement):"]
+        if mode == "mono":
+            prim = next((r["mu"] for l, r in results if l == "Primary" and r), None)
+            prim3 = next((r["mu_3"] for l, r in results if l == "Primary" and r), None)
+            vals = []
+            for lbl, r in results:
+                mu = r.get("mu") if r else None
+                if mu is None:
+                    lines.append(f"  {lbl:<12} µ = N/A"); continue
+                vals.append(mu)
+                if prim is not None and lbl != "Primary":
+                    lines.append(f"  {lbl:<12} µ = {mu:.3f}   (Δ {mu - prim:+.3f})")
+                else:
+                    lines.append(f"  {lbl:<12} µ = {mu:.3f}")
+            if len(vals) >= 2 and prim is not None:
+                maxdev = max(abs(v - prim) for v in vals)
+                spread = max(vals) - min(vals)
+                tail = f"   |   Primary total 3σ = ±{prim3:.3f} mag" if prim3 else ""
+                lines.append(f"  Spread (max−min) = {spread:.3f} mag{tail}")
+                if prim3:
+                    verdict = "ROBUST" if maxdev <= prim3 else "SENSITIVE"
+                    lines.append(f"  → {verdict}: max |Δµ| = {maxdev:.3f} mag "
+                                 f"= {maxdev / prim3:.2f}× the 3σ envelope.")
+        else:
+            chan = ["R", "G", "B"]
+            for lbl, r in results:
+                if not r or r.get("mu") is None:
+                    lines.append(f"  {lbl:<12} µ(R,G,B) = N/A"); continue
+                s = ", ".join((f"{m:.3f}" if m is not None else "N/A") for m in r["mu"])
+                lines.append(f"  {lbl:<12} µ(R,G,B) = {s}")
+            prim = next((r for l, r in results if l == "Primary" and r), None)
+            if prim and prim.get("mu") is not None:
+                pm, p3 = prim["mu"], prim.get("mu_3")
+                for c in range(3):
+                    cvals = [r["mu"][c] for _, r in results
+                             if r and r.get("mu") and r["mu"][c] is not None]
+                    if len(cvals) >= 2 and pm[c] is not None:
+                        maxdev = max(abs(v - pm[c]) for v in cvals)
+                        spread = max(cvals) - min(cvals)
+                        env = p3[c] if p3 else None
+                        extra = f"  (3σ ±{env:.3f}, {maxdev / env:.2f}×)" if env else ""
+                        lines.append(f"  {chan[c]}: spread {spread:.3f}, max|Δ| {maxdev:.3f}{extra}")
+        return "\n".join(lines) + "\n"
 
     def _update_roi_preview(self):
         """
@@ -2467,7 +2716,7 @@ class MagnitudeToolDialog(QDialog):
                 )
             else:
                 msg += "Surface brightness: N/A (no pixscale from WCS)\n"
-
+            msg += self._background_robustness_text(img_f, obj_mask, hdr, bg_mask)
             dlg = _ResultsDialog(self, "Magnitude Results", msg)
             dlg.show()
             dlg.raise_()
@@ -2563,7 +2812,7 @@ class MagnitudeToolDialog(QDialog):
             )
         else:
             msg += "Surface brightness: N/A (no pixscale from WCS)\n"
-
+        msg += self._background_robustness_text(img_f, obj_mask, hdr, bg_mask)
         dlg = _ResultsDialog(self, "Magnitude Results", msg)
         dlg.show()
         dlg.raise_()
