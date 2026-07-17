@@ -3490,7 +3490,7 @@ class WIMIDialog(QDialog):
         right_panel.addLayout(label_layout)
 
         self.results_tree = QTreeWidget()
-        self.results_tree.setHeaderLabels(["RA", "Dec", "Name", "Diameter", "Type", "Long Type", "Redshift/Parallax (z/mas)", "Comoving Radial Distance (GLy)"])
+        self.results_tree.setHeaderLabels(["RA", "Dec", "Name", "Diameter", "Type", "Long Type", "Redshift (z)", "Parallax (mas)", "Distance"])
         self.results_tree.setFixedHeight(150)
         self.results_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results_tree.customContextMenuRequested.connect(self.open_context_menu)
@@ -4769,7 +4769,7 @@ class WIMIDialog(QDialog):
     def save_collage_of_objects(self):
         """Save a collage of 128x128 pixel patches centered around each object, with dynamically spaced text below."""
         # Options for display
-        options = ["Name", "RA", "Dec", "Short Type", "Long Type", "Redshift", "Comoving Distance"]
+        options = ["Name", "RA", "Dec", "Short Type", "Long Type", "Redshift", "Parallax", "Distance"]
 
         # Create a custom dialog to select information to display
         dialog = QDialog(self)
@@ -4870,14 +4870,21 @@ class WIMIDialog(QDialog):
                         text = f"Type: {obj['short_type']}"
                     elif field == "Long Type" and obj.get("long_type") != "N/A":
                         text = f"{obj['long_type']}"
-                    elif field == "Redshift" and obj.get("redshift") != "N/A":
-                        try:
-                            val_float = float(obj['redshift'])
-                            text = f"Redshift: {val_float:.5f}"
-                        except ValueError:
-                            text = f"Redshift: {obj['redshift']}"
-                    elif field == "Comoving Distance" and obj.get("comoving_distance") != "N/A":
-                        text = f"Distance: {obj['comoving_distance']} GLy"
+                    elif field == "Redshift":
+                        z = _wimi_num_or_none(obj.get("redshift"))
+                        if z is None:
+                            continue
+                        text = f"Redshift: z = {z:.6f}"
+                    elif field == "Parallax":
+                        plx = _wimi_num_or_none(obj.get("parallax_mas"))
+                        if plx is None:
+                            continue
+                        text = f"Parallax: {plx:.3f} mas"
+                    elif field == "Distance":
+                        _z, _plx, dist_cell = wimi_result_columns(obj)
+                        if dist_cell in ("N/A", "\u2014"):
+                            continue
+                        text = f"Distance: {dist_cell}"
                     else:
                         continue  # Skip if field is not available or set to "N/A"
 
@@ -5002,7 +5009,7 @@ class WIMIDialog(QDialog):
                 if d_ly <= 0:
                     continue
 
-                zshift = float(obj.get("redshift", 0.0))
+                zshift = _wimi_num_or_none(obj.get("redshift")) or 0.0
 
                 px, py = self.wcs.world_to_pixel_values(ra, dec)
                 if not (0 <= px < full_w and 0 <= py < full_h):
@@ -6156,15 +6163,17 @@ class WIMIDialog(QDialog):
         """Refresh the TreeWidget to reflect current results."""
         self.results_tree.clear()
         for obj in self.results:
+            z_cell, plx_cell, dist_cell = wimi_result_columns(obj)
             item = QTreeWidgetItem([
                 str(obj['ra']),
                 str(obj['dec']),
                 obj['name'],
-                str(obj['diameter']),
+                str(obj.get('diameter_display', obj['diameter'])),
                 obj['short_type'],
                 obj['long_type'],
-                str(obj['redshift']),
-                str(obj['comoving_distance'])
+                z_cell,
+                plx_cell,
+                dist_cell,
             ])
             self.results_tree.addTopLevelItem(item)
 
@@ -7643,17 +7652,8 @@ class WIMIDialog(QDialog):
             dist  = r.get("distance", "N/A")   # AU or whatever you decide
             src   = r.get("source", "MinorDB")
 
-            item = QTreeWidgetItem([
-                f"{ra:.6f}",
-                f"{dec:.6f}",
-                name,
-                str(mag),
-                "MP",
-                qtype,
-                str(dist),
-                src,
-            ])
-            self.results_tree.addTopLevelItem(item)
+            dist_num = _wimi_num_or_none(dist)
+            dist_disp = f"{dist_num:g} AU" if dist_num is not None else "N/A"
 
             query_results.append({
                 "ra": ra,
@@ -7662,13 +7662,16 @@ class WIMIDialog(QDialog):
                 "diameter": mag,
                 "short_type": "MP",
                 "long_type": qtype,
-                "redshift": dist,
-                "comoving_distance": dist,
+                "redshift": "N/A",          # not meaningful for minor bodies
+                "parallax_mas": "N/A",
+                "comoving_distance": dist,  # kept as-is (AU) for any legacy reader
+                "distance_display": dist_disp,
                 "source": src,
             })
 
         self.main_preview.set_query_results(query_results)
         self.query_results = query_results
+        self.update_results_tree()
         self.update_object_count()
 
     def _query_minor_planets_from_db(
@@ -8332,31 +8335,10 @@ class WIMIDialog(QDialog):
                     absG = None
 
             name = f"Gaia DR3 {int(s.source_id)}"
-            plx_txt   = f"{plx:.6f}"   if plx     is not None else "N/A"
-            dist_txt  = f"{dist_pc:.6f}" if dist_pc is not None else "N/A"
-            absG_txt  = f"{absG:.6f}"  if absG    is not None else "N/A"
-            gmag_txt  = f"{float(s.gmag):.6f}" if s.gmag is not None else "N/A"
+            dist_ly_val = (dist_pc * 3.261563777) if dist_pc is not None else "N/A"
 
-            # Column order MUST match the Simbad loop at line 8293 so
-            # _show_gaia_spectrum_for_item (which reads item.text(0..2))
-            # and _tree_item_for_object (matches on text(2)==name) both work.
-            item = QTreeWidgetItem([
-                f"{float(s.ra):.6f}",   # 0 RA
-                f"{float(s.dec):.6f}",  # 1 Dec
-                name,                   # 2 name
-                "N/A",                  # 3 diameter (Simbad's arcmin slot)
-                "*",                    # 4 short type
-                "Star (Gaia DR3)",      # 5 long type
-                gmag_txt,               # 6 Bmag slot — reused for G
-                gmag_txt,               # 7 Vmag slot — reused for G
-                plx_txt,                # 8 parallax mas
-                "",                     # 9 spectral type
-                absG_txt,               # 10 absolute mag
-                "N/A",                  # 11 redshift
-                dist_txt,               # 12 distance
-            ])
-            self.results_tree.addTopLevelItem(item)
-
+            # Row is rendered by update_results_tree() from the dict below, so the
+            # columns always line up with the header (RA, Dec, Name, ..., z, plx, dist).
             query_results.append({
                 "ra": float(s.ra), "dec": float(s.dec),
                 "name": name,
@@ -8367,6 +8349,7 @@ class WIMIDialog(QDialog):
                 "redshift": "N/A",
                 "comoving_distance":
                     f"{dist_pc:.2f} pc" if dist_pc is not None else "N/A",
+                "distance_ly": dist_ly_val,
                 "source": "GaiaLocal",
                 "Bmag": "N/A", "Vmag": "N/A",
                 "parallax_mas": plx if plx is not None else "N/A",
@@ -8544,14 +8527,21 @@ class WIMIDialog(QDialog):
                 pv = plx  # already positive; absolute if you want
                 dist_pc  = 1000.0 / pv
                 dist_ly  = dist_pc * 3.261563777
-                # store comoving distance in Gyr for consistency with your zs_raw pipeline:
+                # store comoving distance in Gly for consistency with your zs_raw pipeline:
                 distance = round(dist_ly / 1e9, 9)
-                red_val  = pv  # mas, goes in the "redshift" column but clearly not a z
+                z_val    = "N/A"   # a parallax is not a redshift — keep them apart
+                plx_val  = pv
+                dist_ly_val = dist_ly
             else:
                 # no usable parallax → fall back to redshift if present
-                red_val  = red_z if red_z is not None else "--"
-                distance = (calculate_comoving_distance(red_val)
-                            if isinstance(red_val, (int, float)) else "N/A")
+                z_val    = red_z if red_z is not None else "N/A"
+                plx_val  = "N/A"
+                if isinstance(z_val, (int, float)):
+                    distance    = calculate_comoving_distance(z_val)   # GLy
+                    dist_ly_val = float(distance) * 1e9
+                else:
+                    distance    = "N/A"
+                    dist_ly_val = "N/A"
 
             # absolute V magnitude if we have Vmag & plx
             absV = None
@@ -8570,26 +8560,19 @@ class WIMIDialog(QDialog):
             else:
                 diam_display = "N/A"
 
-            item = QTreeWidgetItem([
-                f"{ra:.6f}", f"{dec:.6f}", name,
-                diam_display,
-                short_type, long_type,
-                f"{red_val:.6f}" if isinstance(red_val, (int, float)) else str(red_val),
-                f"{distance:.6f}" if isinstance(distance, float) else str(distance)
-            ])
-            self.results_tree.addTopLevelItem(item)
-
             query_results.append({
                 'ra': ra, 'dec': dec, 'name': name,
                 'diameter': diam,           # arcmin float or "N/A"
+                'diameter_display': diam_display,  # human-readable (arcmin/arcsec)
                 'diameter_unit': 'arcmin',  # explicit so downstream code is unambiguous
                 'short_type': short_type,
                 'long_type': long_type,
-                'redshift': red_val,
-                'comoving_distance': distance,
+                'redshift': z_val,                 # true z, or "N/A"
+                'comoving_distance': distance,     # GLy (kept for 3D model / collage)
+                'distance_ly': dist_ly_val,        # canonical light-years for display
                 'source': "Simbad",
                 'Bmag': Bmag, 'Vmag': Vmag,
-                'parallax_mas': plx,
+                'parallax_mas': plx_val,           # mas, or "N/A"
                 'spectral_type': spec,
                 'absolute_mag': absV
             })
@@ -8601,6 +8584,7 @@ class WIMIDialog(QDialog):
         # ——— 5) Finally hand off to your preview/plotter ———
         self.main_preview.set_query_results(query_results)
         self.query_results = query_results
+        self.update_results_tree()
         self.update_object_count()
 
 
@@ -8687,78 +8671,41 @@ class WIMIDialog(QDialog):
                     diameter   = catalog_id
 
                     # ——— robust redshift/parallax parsing ———
-                    if "cz" in row.colnames:
-                        raw = row["cz"]
-                        try:
-                            cz = float(raw)
-                            zval = cz / 299792.458
-                            redshift = f"{zval:.6f}"
-                            comoving_distance = f"{calculate_comoving_distance(zval):.5f} GLy"
-                        except Exception:
-                            redshift = str(raw)
-                            comoving_distance = "N/A"
+                    # Redshift, parallax and distance are tracked separately so the
+                    # tree can show them in their own columns.
+                    redshift = "N/A"
+                    parallax_val = "N/A"
+                    comoving_distance = "N/A"
+                    dist_ly_val = "N/A"
 
-                    elif "z" in row.colnames:
-                        raw = row["z"]
+                    z_col = next((c for c in ("cz", "z", "zhelio", "zcmb", "zph")
+                                  if c in row.colnames), None)
+                    if z_col is not None:
+                        raw = row[z_col]
                         try:
                             zval = float(raw)
                             if np.isnan(zval):
                                 raise ValueError
+                            if z_col == "cz":          # cz is in km/s
+                                zval = zval / 299792.458
+                            cg = calculate_comoving_distance(zval)   # GLy
                             redshift = f"{zval:.6f}"
-                            comoving_distance = f"{calculate_comoving_distance(zval):.5f} GLy"
+                            comoving_distance = f"{cg:.5f} GLy"
+                            dist_ly_val = float(cg) * 1e9
                         except Exception:
                             redshift = str(raw)
-                            comoving_distance = "N/A"
-
-                    elif "zhelio" in row.colnames:
-                        raw = row["zhelio"]
-                        try:
-                            zval = float(raw)
-                            if np.isnan(zval):
-                                raise ValueError
-                            redshift = f"{zval:.6f}"
-                            comoving_distance = f"{calculate_comoving_distance(zval):.5f} GLy"
-                        except Exception:
-                            redshift = str(raw)
-                            comoving_distance = "N/A"
-
-                    elif "zcmb" in row.colnames:
-                        raw = row["zcmb"]
-                        try:
-                            zval = float(raw)
-                            if np.isnan(zval):
-                                raise ValueError
-                            redshift = f"{zval:.6f}"
-                            comoving_distance = f"{calculate_comoving_distance(zval):.5f} GLy"
-                        except Exception:
-                            redshift = str(raw)
-                            comoving_distance = "N/A"
-
-                    elif "zph" in row.colnames:
-                        raw = row["zph"]
-                        try:
-                            zval = float(raw)
-                            if np.isnan(zval):
-                                raise ValueError
-                            redshift = f"{zval:.6f}"
-                            comoving_distance = f"{calculate_comoving_distance(zval):.5f} GLy"
-                        except Exception:
-                            redshift = str(raw)
-                            comoving_distance = "N/A"
 
                     elif "Plx" in row.colnames:
                         raw = row["Plx"]
                         try:
                             pv = abs(float(raw))
-                            redshift = f"{pv:.3f} (Parallax mas)"
-                            comoving_distance = f"{1000/pv * 3.2615637769:.5f} Ly"
+                            if pv <= 0 or np.isnan(pv):
+                                raise ValueError
+                            dist_ly_val = 1000.0 / pv * 3.2615637769
+                            parallax_val = pv
+                            comoving_distance = f"{dist_ly_val:.5f} Ly"
                         except Exception:
                             redshift = str(raw)
-                            comoving_distance = "N/A"
-
-                    else:
-                        redshift = "N/A"
-                        comoving_distance = "N/A"
                     # ——— end parsing block ———
 
                     # Duplicate handling: first entry wins, SDSS overrides Pan-STARRS
@@ -8771,7 +8718,9 @@ class WIMIDialog(QDialog):
                             "short_type": type_short,
                             "long_type": long_type,
                             "redshift": redshift,
+                            "parallax_mas": parallax_val,
                             "comoving_distance": comoving_distance,
+                            "distance_ly": dist_ly_val,
                             "source": "Vizier"
                         }
                     else:
@@ -8783,23 +8732,17 @@ class WIMIDialog(QDialog):
                                 "short_type": type_short,
                                 "long_type": long_type,
                                 "redshift": redshift,
+                                "parallax_mas": parallax_val,
                                 "comoving_distance": comoving_distance,
+                                "distance_ly": dist_ly_val,
                                 "source": "Vizier"
                             })
 
-            # Populate tree & preview
-            all_results = []
-            for e in unique_entries.values():
-                item = QTreeWidgetItem([
-                    e["ra"], e["dec"], e["name"], e["diameter"],
-                    e["short_type"], e["long_type"],
-                    e["redshift"], e["comoving_distance"]
-                ])
-                self.results_tree.addTopLevelItem(item)
-                all_results.append(e)
-
+            # Hand off; the tree is rebuilt from these dicts by update_results_tree().
+            all_results = list(unique_entries.values())
             self.main_preview.set_query_results(all_results)
             self.query_results = all_results
+            self.update_results_tree()
             self.update_object_count()
 
         except Exception as err:
@@ -8857,20 +8800,8 @@ class WIMIDialog(QDialog):
                 instrument = safe_get(obj.get("instrument_name", "N/A"))
                 jpeg_url = safe_get(obj.get("dataURL", "N/A"))  # Adjust URL field as needed
 
-                # Add to TreeWidget
-                item = QTreeWidgetItem([
-                    ra,
-                    dec,
-                    target_name,
-                    instrument,
-                    "N/A",  # Placeholder for observation date if needed
-                    "N/A",  # Other placeholder
-                    jpeg_url,  # URL in place of long type
-                    "MAST"  # Source
-                ])
-                self.results_tree.addTopLevelItem(item)
-
-                # Append full details as a dictionary to query_results
+                # Append full details as a dictionary to query_results;
+                # the tree is rebuilt from these by update_results_tree().
                 query_results.append({
                     'ra': ra,
                     'dec': dec,
@@ -8879,13 +8810,16 @@ class WIMIDialog(QDialog):
                     'short_type': "N/A",
                     'long_type': jpeg_url,
                     'redshift': "N/A",
+                    'parallax_mas': "N/A",
                     'comoving_distance': "N/A",
+                    'distance_ly': "N/A",
                     'source': "Mast"
                 })
 
             # Set query results in the CustomGraphicsView for display
             self.main_preview.set_query_results(query_results)
             self.query_results = query_results  # Keep a reference to results in MainWindow
+            self.update_results_tree()
             self.update_object_count()
 
         except Exception as e:
@@ -9032,6 +8966,76 @@ class WIMIDialog(QDialog):
         super().closeEvent(event)
 
 # Function to calculate comoving radial distance (in Gly)
+def _wimi_num_or_none(x):
+    """Best-effort float. Returns None for None/masked/'N/A'/'--'/non-numeric/non-finite."""
+    if x is None:
+        return None
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, (int, float)):
+        return float(x) if np.isfinite(x) else None
+    try:
+        if ma.is_masked(x):
+            return None
+    except Exception:
+        pass
+    s = str(x).strip()
+    if s == "" or s == "--" or s.upper() == "N/A":
+        return None
+    try:
+        v = float(s)
+    except ValueError:
+        return None
+    return v if np.isfinite(v) else None
+
+
+def format_distance_ly(d_ly):
+    """Adaptive light-year distance string so nearby stars don't read as 0.000005 GLy.
+
+    Picks the unit that keeps the number human-readable: Gly / Mly / kly / ly.
+    """
+    d = _wimi_num_or_none(d_ly)
+    if d is None or d <= 0:
+        return "N/A"
+    if d >= 1e9:
+        return f"{d / 1e9:.3f} Gly"
+    if d >= 1e6:
+        return f"{d / 1e6:.2f} Mly"
+    if d >= 1e3:
+        return f"{d / 1e3:.2f} kly"
+    return f"{d:.1f} ly"
+
+
+def wimi_result_columns(obj):
+    """Return (redshift_cell, parallax_cell, distance_cell) display strings for a result dict.
+
+    Redshift and parallax are shown in separate columns; distance uses an adaptive
+    unit. Tolerant of legacy fields where a parallax was stored under 'redshift' and
+    distance under 'comoving_distance' (in GLy).
+    """
+    z = _wimi_num_or_none(obj.get("redshift"))
+    plx = _wimi_num_or_none(obj.get("parallax_mas"))
+
+    z_cell = f"z = {z:.6f}" if z is not None else "\u2014"
+    plx_cell = f"{plx:.3f}" if plx is not None else "\u2014"
+
+    # Explicit display override wins (e.g. minor bodies quoted in AU).
+    disp = obj.get("distance_display")
+    if disp:
+        dist_cell = str(disp)
+    else:
+        d_ly = _wimi_num_or_none(obj.get("distance_ly"))
+        if d_ly is None:
+            # Fall back to parallax, then to legacy comoving_distance (GLy).
+            if plx is not None and plx > 0:
+                d_ly = (1000.0 / plx) * 3.261563777
+            else:
+                cg = _wimi_num_or_none(obj.get("comoving_distance"))
+                d_ly = cg * 1e9 if cg is not None else None
+        dist_cell = format_distance_ly(d_ly)
+    return z_cell, plx_cell, dist_cell
+
+
 def calculate_comoving_distance(z):
     z = abs(z)
     # Initialize variables
@@ -9077,4 +9081,3 @@ def calculate_orientation(header):
 
     print("CD or PC matrix not found in header.")
     return None
-
