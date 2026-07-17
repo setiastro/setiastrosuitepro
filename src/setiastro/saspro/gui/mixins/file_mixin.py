@@ -564,7 +564,22 @@ class FileMixin:
         before = path
         path, ext_norm = _normalize_save_path_chosen_filter(path, selected_filter)
 
-        if before != path:
+        if os.path.basename(before) != os.path.basename(path):
+            note = ""
+            if os.path.exists(path):
+                note = self.tr('\n\n"{name}" already exists and will be OVERWRITTEN.') \
+                    .replace("{name}", os.path.basename(path))
+            resp = QMessageBox.warning(
+                self, self.tr("Filename adjusted"),
+                self.tr("The filename was changed to a safe form:\n\n  {typed}\n-> {final}{note}\n\nSave with this name?")
+                    .replace("{typed}", os.path.basename(before))
+                    .replace("{final}", os.path.basename(path))
+                    .replace("{note}", note),
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if resp != QMessageBox.StandardButton.Save:
+                return
             self._log(f"Adjusted filename for safety:\n  {before}\n-> {path}")
 
         dlg = ExportDialog(
@@ -806,8 +821,25 @@ class FileMixin:
         before = path
         path, ext_norm = _normalize_save_path_chosen_filter(path, selected_filter)
 
-        # If we changed the path (e.g., sanitized), inform once
-        if before != path:
+        # If sanitization changed the filename, the native dialog's own overwrite
+        # prompt fired on the name the user TYPED — which may differ from what we're
+        # about to write. Warn here so we don't silently clobber a different file.
+        if os.path.basename(before) != os.path.basename(path):
+            note = ""
+            if os.path.exists(path):
+                note = self.tr('\n\n"{name}" already exists and will be OVERWRITTEN.') \
+                    .replace("{name}", os.path.basename(path))
+            resp = QMessageBox.warning(
+                self, self.tr("Filename adjusted"),
+                self.tr("The filename was changed to a safe form:\n\n  {typed}\n-> {final}{note}\n\nSave with this name?")
+                    .replace("{typed}", os.path.basename(before))
+                    .replace("{final}", os.path.basename(path))
+                    .replace("{note}", note),
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if resp != QMessageBox.StandardButton.Save:
+                return
             self._log(f"Adjusted filename for safety:\n  {before}\n-> {path}")
 
         # --- Bit depth selection ----------------------------------------
@@ -1284,7 +1316,26 @@ class FileMixin:
         if not path:
             return
 
+        before = path
         path, ext_norm = _normalize_save_path_chosen_filter(path, chosen_filter)
+
+        if os.path.basename(before) != os.path.basename(path):
+            note = ""
+            if os.path.exists(path):
+                note = self.tr('\n\n"{name}" already exists and will be OVERWRITTEN.') \
+                    .replace("{name}", os.path.basename(path))
+            resp = QMessageBox.warning(
+                self, self.tr("Filename adjusted"),
+                self.tr("The filename was changed to a safe form:\n\n  {typed}\n-> {final}{note}\n\nSave with this name?")
+                    .replace("{typed}", os.path.basename(before))
+                    .replace("{final}", os.path.basename(path))
+                    .replace("{note}", note),
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
+            )
+            if resp != QMessageBox.StandardButton.Save:
+                return
+            self._log(f"Adjusted filename for safety:\n  {before}\n-> {path}")
 
         from setiastro.saspro.save_options import ExportDialog
         current_bd = meta.get("bit_depth")
