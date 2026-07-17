@@ -1115,18 +1115,19 @@ def _install_torch(
         raise RuntimeError("Failed to find a matching PyTorch wheel for macOS arm64.")
 
     # ── macOS Intel (x86_64) → CPU only, PyPI ─────────────────────────────────
-    # PyTorch dropped official macOS x86_64 wheels after 2.2.x, and those
-    # older wheels only covered Python ≤ 3.11.  The whl/cpu index has no
-    # macOS wheels at all, so we must use PyPI directly and cap the ladder.
+    # PyTorch's last x86_64 macOS wheels are torch 2.2.2 / torchvision 0.17.2,
+    # covering cp38–cp312.  There are NO cp313/cp314 x86_64 wheels, and 2.3.0+
+    # dropped x86_64 macOS entirely.  So Python 3.12 works (CPU only); 3.13+ has
+    # nothing, and we bail early so pip never tries to build torch from sdist.
     if sysname == "Darwin":
-        # Python 3.12+ has no x86_64 macOS wheels on PyPI for any torch version.
-        if ver[1] >= 12:
+        # Only 3.13+ is unsupported on Intel — 3.12 has a real cp312 2.2.2 wheel.
+        if ver[1] >= 13:
             raise RuntimeError(
-                f"PyTorch does not publish macOS x86_64 (Intel) wheels for "
-                f"Python 3.{ver[1]}. Support was discontinued after torch 2.2.x "
-                f"(Python ≤ 3.11). Hardware-accelerated features are unavailable "
-                f"on Intel Macs with Python 3.12+. Consider Apple Silicon or "
-                f"running the app under Python 3.11."
+                f"PyTorch publishes no macOS x86_64 (Intel) wheels for "
+                f"Python 3.{ver[1]}. The last Intel-Mac build is torch 2.2.2, "
+                f"which supports Python ≤ 3.12. Run the SASpro runtime under "
+                f"Python 3.12 to enable (CPU-only) torch on this Intel Mac, or "
+                f"switch to Apple Silicon / Linux for GPU acceleration."
             )
         status_cb("Installing PyTorch for macOS Intel x86_64 (CPU only, PyPI)…")
         # Versions known to publish x86_64 macOS wheels on PyPI
