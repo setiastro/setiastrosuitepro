@@ -4990,24 +4990,40 @@ class WIMIDialog(QDialog):
         rows = []
         for obj in self.results:
             try:
+                # Skip solar-system minor bodies — their AU distances are not
+                # meaningful on a light-year axis and distort the plot.
+                if obj.get("short_type") == "MP" or obj.get("source", "").lower().startswith("minor"):
+                    continue
+
                 name = obj["name"]
                 ra   = float(obj["ra"])
                 dec  = float(obj["dec"])
 
-                # distance in ly (robust parse; always positive; +10 to avoid log10(0))
-                try:
-                    d_gy = float(obj["comoving_distance"])  # e.g., GLy
-                    d_ly = abs(d_gy) * 1e9 + 10
-                except (ValueError, TypeError):
-                    raw_cd = str(obj["comoving_distance"]).strip()
-                    if raw_cd.endswith("GLy"):
-                        d_ly = abs(float(raw_cd[:-3].strip())) * 1e9 + 10
-                    elif raw_cd.endswith("Ly"):
-                        d_ly = abs(float(raw_cd[:-2].strip())) + 10
-                    else:
-                        d_ly = abs(float(raw_cd)) + 10
-                if d_ly <= 0:
+                # distance in ly — prefer the canonical numeric field so parallax
+                # stars (including augmented local Gaia) are always included.
+                plx = _wimi_num_or_none(obj.get("parallax_mas"))
+
+                d_ly = _wimi_num_or_none(obj.get("distance_ly"))
+                if d_ly is None and plx is not None and plx > 0:
+                    d_ly = (1000.0 / plx) * 3.261563777
+                if d_ly is None:
+                    # legacy fallback: parse whatever is in comoving_distance
+                    raw_cd = str(obj.get("comoving_distance", "")).strip()
+                    low = raw_cd.lower()
+                    try:
+                        if low.endswith("gly"):
+                            d_ly = abs(float(raw_cd[:-3].strip())) * 1e9
+                        elif low.endswith("pc"):
+                            d_ly = abs(float(raw_cd[:-2].strip())) * 3.261563777
+                        elif low.endswith("ly"):
+                            d_ly = abs(float(raw_cd[:-2].strip()))
+                        else:
+                            d_ly = abs(float(raw_cd)) * 1e9   # bare number = GLy (legacy)
+                    except (ValueError, TypeError):
+                        d_ly = None
+                if d_ly is None or d_ly <= 0:
                     continue
+                d_ly = d_ly + 10.0   # +10 to avoid log10(0)
 
                 zshift = _wimi_num_or_none(obj.get("redshift")) or 0.0
 
@@ -5018,12 +5034,17 @@ class WIMIDialog(QDialog):
                 zval = math.log10(d_ly) if z_scale == "Logarithmic" else d_ly
                 ra0, dec0 = self.wcs.pixel_to_world_values(px, py)
 
+                # Show parallax for stars, redshift for extragalactic objects.
+                if plx is not None and plx > 0:
+                    extra_line = f"Parallax: {plx:.3f} mas"
+                else:
+                    extra_line = f"Redshift: {zshift:.5f}"
                 label = (
                     f"<b>{name}</b><br>"
                     f"RA: {ra:.6f}<br>"
                     f"Dec: {dec:.6f}<br>"
                     f"Distance: {eng_notation(d_ly)} ly<br>"
-                    f"Redshift: {zshift:.5f}"
+                    f"{extra_line}"
                 )
                 enc = urllib.parse.quote(name)
                 url = (
@@ -8352,6 +8373,7 @@ class WIMIDialog(QDialog):
                 "distance_ly": dist_ly_val,
                 "source": "GaiaLocal",
                 "Bmag": "N/A", "Vmag": "N/A",
+                "Gmag": float(s.gmag) if s.gmag is not None else "N/A",
                 "parallax_mas": plx if plx is not None else "N/A",
                 "spectral_type": "N/A",
                 "absolute_mag": absG if absG is not None else "N/A",
