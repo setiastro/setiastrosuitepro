@@ -5235,12 +5235,20 @@ class WIMIDialog(QDialog):
         use_image_bg  = settings["bg_mode"].startswith("HR Diagram")
         show_sun      = settings["show_sun"]
     
+        # Native B−V / abs-mag domain that the background HR image actually spans.
+        # The axis may extend past this (brown-dwarf territory); the image stays
+        # pinned to its true scale so the main sequence doesn't smear.
+        IMG_BV0, IMG_BV1 = -0.3, 2.25
+        IMG_Y0,  IMG_Y1  = -9.0, 19.0
+
         if settings["range_mode"].startswith("Default"):
-            x0, x1 = -0.3, 2.25
-            y0, y1 = -9.0, 19.0
+            x0, x1 = IMG_BV0, IMG_BV1
+            y0, y1 = IMG_Y0, IMG_Y1
+            auto_extend = True
         else:
             x0 = settings["x_min"];  x1 = settings["x_max"]
             y0 = settings["y_min"];  y1 = settings["y_max"]
+            auto_extend = False
     
         # ── Try to get Gaia library ───────────────────────────────────────────
         lib = None
@@ -5295,6 +5303,18 @@ class WIMIDialog(QDialog):
     
                 # Parallax — from qr_by_name or obj itself
                 qr  = qr_by_name.get(name, obj)
+
+                # Local Gaia astrometric augment carries no photometric colour:
+                # that catalog has G + parallax only (bp_rp is NULL), so the only
+                # available B−V is XP-synthesised. For the faint red dwarfs this
+                # population is made of, the synthesis is dominated by near-zero
+                # blue flux and lands them at implausible B−V ≈ 2.5–3, smeared
+                # against the right edge. Plotting a colour we don't trust is worse
+                # than leaving them off — they still appear in the 3D distance
+                # model, which only needs parallax.
+                if (obj.get("source") or qr.get("source")) == "GaiaLocal":
+                    continue
+
                 plx = None
                 for k in ("parallax_mas", "PLX_VALUE", "plx"):
                     v = qr.get(k)
@@ -5415,6 +5435,23 @@ class WIMIDialog(QDialog):
         teff_arr = np.array(teff_list)
         n_xp     = sum(used_xp_list)
         n_total  = len(B_list)
+
+        # ── Auto-extend axes so no star falls off the plot ────────────────────
+        # Gaia XP classifies well past B−V = 2.25 (into brown-dwarf territory),
+        # so widen the window when needed. The right edge never drops below 2.25.
+        if auto_extend and bv_arr.size:
+            pad_x, pad_y = 0.15, 0.5
+            bv_hi = float(np.nanmax(bv_arr)); bv_lo = float(np.nanmin(bv_arr))
+            mv_hi = float(np.nanmax(Mv_arr)); mv_lo = float(np.nanmin(Mv_arr))
+            if bv_hi + pad_x > x1:
+                x1 = math.ceil((bv_hi + pad_x) * 4.0) / 4.0   # round up to 0.25
+            if bv_lo - pad_x < x0:
+                x0 = math.floor((bv_lo - pad_x) * 4.0) / 4.0
+            # y-axis is drawn inverted (range = [y1, y0]); keep faint/bright ends in view
+            if mv_hi + pad_y > y1:
+                y1 = math.ceil(mv_hi + pad_y)
+            if mv_lo - pad_y < y0:
+                y0 = math.floor(mv_lo - pad_y)
     
         # ── Colors ───────────────────────────────────────────────────────────
         if use_realistic:
@@ -5513,7 +5550,17 @@ class WIMIDialog(QDialog):
             )
     
         # ── Axis ticks ───────────────────────────────────────────────────────
-        bv_ticks = [-0.3, 0.0, 0.5, 1.0, 1.5, 2.0, 2.25]
+        base_ticks = [-0.3, 0.0, 0.5, 1.0, 1.5, 2.0, 2.25]
+        bv_ticks = [t for t in base_ticks if x0 - 1e-9 <= t <= x1 + 1e-9]
+        # extend past 2.25 toward the brown-dwarf end in 0.5 steps
+        t = 2.5
+        while t <= x1 + 1e-9:
+            bv_ticks.append(round(t, 2)); t += 0.5
+        # extend blueward past -0.3 if the window grew that way
+        t = -0.5
+        while t >= x0 - 1e-9:
+            bv_ticks.insert(0, round(t, 2)); t -= 0.5
+        bv_ticks = sorted(set(bv_ticks))
         t_ticks  = [4600.0*(1/(0.92*x+1.7)+1/(0.92*x+0.62)) for x in bv_ticks]
         tick_lbl = [f"{x:.2f}<br>{int(t):,} K" for x, t in zip(bv_ticks, t_ticks)]
     
@@ -5533,9 +5580,17 @@ class WIMIDialog(QDialog):
         if use_image_bg:
             from setiastro.saspro.resources import hrdiagram_path
             pil_img = _PILImage.open(hrdiagram_path)
+            if auto_extend:
+                # Pin the reference image to its true B−V/mag scale; any extended
+                # region beyond it (e.g. brown dwarfs past 2.25) stays blank.
+                ix, iy   = IMG_BV0, IMG_Y0
+                isx, isy = (IMG_BV1 - IMG_BV0), (IMG_Y1 - IMG_Y0)
+            else:
+                ix, iy   = x0, y0
+                isx, isy = (x1 - x0), (y1 - y0)
             fig.add_layout_image(dict(
                 source=pil_img, xref="x", yref="y",
-                x=x0, y=y0, sizex=(x1-x0), sizey=(y1-y0),
+                x=ix, y=iy, sizex=isx, sizey=isy,
                 xanchor="left", yanchor="top",
                 sizing="stretch", opacity=1.0, layer="below",
             ))
@@ -8373,7 +8428,6 @@ class WIMIDialog(QDialog):
                 "distance_ly": dist_ly_val,
                 "source": "GaiaLocal",
                 "Bmag": "N/A", "Vmag": "N/A",
-                "Gmag": float(s.gmag) if s.gmag is not None else "N/A",
                 "parallax_mas": plx if plx is not None else "N/A",
                 "spectral_type": "N/A",
                 "absolute_mag": absG if absG is not None else "N/A",
