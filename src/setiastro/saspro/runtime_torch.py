@@ -245,6 +245,31 @@ def _user_runtime_dir(status_cb=print) -> Path:
     return _RUNTIME_DIR_CACHED
 
 
+def mps_is_usable(torch=None) -> bool:
+    """
+    True ONLY on Apple Silicon with a working MPS backend.
+
+    Intel Macs can report torch.backends.mps.is_available()==True — the AMD/Intel
+    GPU is Metal-capable and the x86_64 wheel is built with MPS — but the MPS
+    backend is not functional there: selecting it "loads" fine and then faults on
+    the first real op (surfaces as a bogus "NumPy not available" error). Gate on
+    architecture FIRST; never trust is_available() alone on macOS.
+    """
+    if platform.system() != "Darwin":
+        return False
+    m = platform.machine().lower()
+    if not ("arm64" in m or "aarch64" in m):
+        return False
+    try:
+        if torch is None:
+            import torch as _t
+            torch = _t
+        b = getattr(getattr(torch, "backends", None), "mps", None)
+        return bool(b and torch.backends.mps.is_available())
+    except Exception:
+        return False
+
+
 def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
     if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
         return torch.device("cuda")
@@ -258,9 +283,7 @@ def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
             return d
         except Exception:
             pass
-    if (prefer_cuda or prefer_xpu or prefer_dml) and \
-            getattr(getattr(torch, "backends", None), "mps", None) and \
-            torch.backends.mps.is_available():
+    if (prefer_cuda or prefer_xpu or prefer_dml) and mps_is_usable(torch):
         return torch.device("mps")
     return torch.device("cpu")
 
