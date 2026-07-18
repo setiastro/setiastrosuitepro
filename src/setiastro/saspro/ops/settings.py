@@ -873,11 +873,18 @@ class SettingsDialog(QDialog):
         torch_ok, torch_txt = self._pkg_status("torch", "torch")
         dml_ok, dml_txt     = self._pkg_status("torch-directml", "torch_directml")
         tv_ok, tv_txt       = self._pkg_status("torchvision", "torchvision")
+        ta_ok, ta_txt       = self._pkg_status("torchaudio", "torchaudio")
 
         lines = [
             f"Torch: <b>{torch_txt}</b>",
             f"TorchVision: <b>{tv_txt}</b>",
         ]
+
+        # torchaudio is installed best-effort and required by no SASpro tool —
+        # only surface it when actually present, so its absence never reads as a
+        # problem (mirrors the optional Torch-DirectML line below).
+        if ta_ok:
+            lines.append(f"TorchAudio: <b>{ta_txt}</b>")
 
         if dml_ok:
             lines.append(f"Torch-DirectML: <b>{dml_txt}</b>")

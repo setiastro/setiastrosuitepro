@@ -1264,6 +1264,110 @@ def load_fits_vector_extension(path: str, key: str | int):
 
         return arr, _drop_invalid_cards(hdu.header), meta
 
+def _recover_image_any(filename):
+    """
+    Last-resort reader for when the format-specific path in load_image raises
+    or yields nothing. Tries several backends and returns a clean float32 array
+    (mono 2D or RGB HxWx3) plus best-effort (bit_depth, is_mono), or
+    (None, None, None) if every backend fails.
+
+    Normalization matches load_image's own convention: unsigned ints scaled by
+    dtype max, signed ints min-max normalized, floats passed through unchanged
+    (no max-based rescale), so linear data isn't darkened. This is what rescues
+    GraXpert's float TIFFs on some Intel macs where the primary reader chokes.
+    """
+    import numpy as np
+    arr = None
+
+    # 1) tifffile
+    try:
+        import tifffile as _tiff
+        arr = _tiff.imread(filename)
+    except Exception:
+        arr = None
+
+    # 2) imageio v3
+    if arr is None:
+        try:
+            import imageio.v3 as _iio
+            arr = _iio.imread(filename)
+        except Exception:
+            arr = None
+
+    # 3) PIL
+    if arr is None:
+        try:
+            from PIL import Image as _Image
+            with _Image.open(filename) as im:
+                arr = np.array(im)
+        except Exception:
+            arr = None
+
+    # 4) OpenCV (BGR -> RGB)
+    if arr is None:
+        try:
+            import cv2 as _cv2
+            arr = _cv2.imread(filename, _cv2.IMREAD_UNCHANGED)
+            if arr is not None and arr.ndim == 3 and arr.shape[2] >= 3:
+                arr = arr[:, :, :3][:, :, ::-1]
+        except Exception:
+            arr = None
+
+    # 5) FITS (GraXpert sometimes emits .fits alongside the .tif basename)
+    if arr is None:
+        try:
+            from astropy.io import fits as _fits
+            with _fits.open(filename, memmap=False) as _hdul:
+                for _hdu in _hdul:
+                    if getattr(_hdu, "data", None) is not None:
+                        arr = np.asarray(_hdu.data)
+                        break
+        except Exception:
+            arr = None
+
+    if arr is None:
+        return None, None, None
+
+    arr = np.asarray(arr)
+
+    # native byte order
+    if arr.dtype.byteorder not in ('=', '|'):
+        try:
+            arr = arr.astype(arr.dtype.newbyteorder('='))
+        except Exception:
+            pass
+
+    # squeeze singletons, drop alpha, planar -> interleaved
+    arr = np.squeeze(arr)
+    if arr.ndim == 3:
+        if arr.shape[2] == 1:
+            arr = arr[..., 0]
+        elif arr.shape[2] == 4:
+            arr = arr[..., :3]
+        elif arr.shape[0] in (3, 4) and arr.shape[2] not in (3, 4):
+            arr = np.transpose(arr, (1, 2, 0))
+            if arr.shape[2] == 4:
+                arr = arr[..., :3]
+
+    # dtype-based normalization (matches load_image)
+    if np.issubdtype(arr.dtype, np.unsignedinteger):
+        maxv = float(np.iinfo(arr.dtype).max) or 1.0
+        image = arr.astype(np.float32) / maxv
+        bit_depth = f"{arr.dtype.itemsize * 8}-bit"
+    elif np.issubdtype(arr.dtype, np.integer):
+        data = arr.astype(np.float32)
+        dmin, dmax = float(data.min()), float(data.max())
+        image = (data - dmin) / (dmax - dmin) if dmax > dmin else np.zeros_like(data)
+        bit_depth = f"{arr.dtype.itemsize * 8}-bit signed"
+    else:
+        image = arr.astype(np.float32)
+        bit_depth = "32-bit floating point"
+
+    if not np.all(np.isfinite(image)):
+        image = np.nan_to_num(image, nan=0.0, posinf=1.0, neginf=0.0)
+
+    return image, bit_depth, (image.ndim == 2)
+
 def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = False):
     """
     Loads an image from the specified filename with support for various formats.
@@ -2091,6 +2195,37 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     print(f"Error reading image {filename} after {max_retries} retries: {e}")
             else:
                 print(f"Error reading image {filename}: {e}")
+
+            # ── Last-resort recovery ──────────────────────────────────────
+            # The format-specific path raised. Rather than returning all-None
+            # (which crashes callers doing result.astype(...)), try generic
+            # backends. This rescues GraXpert float TIFFs on some Intel macs.
+            try:
+                rec_img, rec_bit, rec_mono = _recover_image_any(filename)
+            except Exception:
+                rec_img = None
+            if rec_img is not None:
+                try:
+                    rec_img = _finalize_loaded_image(rec_img)
+                except Exception:
+                    pass
+                print(f"Recovered {filename} via generic fallback reader "
+                      f"(bit_depth={rec_bit}, mono={rec_mono}).")
+                meta = {
+                    "file_path": filename,
+                    "fits_header": None,
+                    "bit_depth": rec_bit,
+                    "mono": rec_mono,
+                    "recovered": True,
+                }
+                if return_metadata:
+                    return rec_img, None, rec_bit, rec_mono, meta
+                return rec_img, None, rec_bit, rec_mono
+
+            # Give up — but return a consistently-sized tuple so a caller that
+            # unpacks a return_metadata=True result doesn't mis-unpack a 4-tuple.
+            if return_metadata:
+                return None, None, None, None, {}
             return None, None, None, None
 
 def get_valid_header(file_path):
