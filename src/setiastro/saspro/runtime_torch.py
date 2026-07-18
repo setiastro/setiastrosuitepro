@@ -1059,6 +1059,34 @@ def _ordered_rocm_nightly_indices(detected_rocm_ver: str, status_cb=print) -> li
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Optional torchaudio (best-effort; not required by any SASpro tool)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _best_effort_torchaudio(venv_python, pip_base: list[str], torch_family: str, status_cb=print) -> None:
+    """
+    Opportunistically add a matching torchaudio using the SAME pip args/index the
+    torch install just used. NOT required by any SASpro tool — any failure is
+    logged and ignored, never gates a launch. Reusing the caller's index matters:
+    an unpinned torchaudio from the wrong index can pull a mismatched (e.g. CPU)
+    torch and clobber a freshly installed GPU build.
+    """
+    _tv, ta = _TORCH_COMPAT.get(torch_family, (None, None))
+    spec = f"torchaudio=={ta}" if ta else "torchaudio"
+    try:
+        env = _clean_subprocess_env()
+        r = subprocess.run(
+            [str(venv_python), "-m", "pip", *pip_base, spec],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, **_safe_text_kwargs(),
+        )
+        if r.returncode == 0:
+            status_cb(f"[RT] Added optional torchaudio ({spec}).")
+        else:
+            status_cb("[RT] torchaudio unavailable on this index/Python — skipping (optional).")
+    except Exception as e:
+        status_cb(f"[RT] torchaudio best-effort install errored ({type(e).__name__}); skipping (optional).")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Core torch install — index-url strategy (no URL probing)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1108,9 +1136,11 @@ def _install_torch(
     if sysname == "Darwin" and ("arm64" in machine or "aarch64" in machine):
         status_cb("Installing PyTorch for macOS arm64 (MPS via PyPI)…")
         ladder = _TORCH_VERSION_LADDER.get((ver[0], ver[1]), ["2.11.*"])
+        base_pypi = ["install", "--prefer-binary", "--no-cache-dir"]
         for tv in ladder:
-            if _pip_install_ok(["install", "--prefer-binary", "--no-cache-dir",
-                                 f"torch=={tv}", "torchvision"]):
+            fam = tv.replace(".*", "")
+            if _pip_install_ok(base_pypi + [f"torch=={tv}", "torchvision"]):
+                _best_effort_torchaudio(venv_python, base_pypi, fam, status_cb=status_cb)
                 return
         raise RuntimeError("Failed to find a matching PyTorch wheel for macOS arm64.")
 
@@ -1130,16 +1160,22 @@ def _install_torch(
                 f"switch to Apple Silicon / Linux for GPU acceleration."
             )
         status_cb("Installing PyTorch for macOS Intel x86_64 (CPU only, PyPI)…")
-        # Versions known to publish x86_64 macOS wheels on PyPI
+        # torch 2.2.2 / torchvision 0.17.2 / torchaudio 2.2.2 are the last
+        # x86_64 macOS wheels (cp38–cp312).  Install all three as a matched set —
+        # Cosmic Clarity / SyQon import torchaudio, and a cp312 wheel exists, so
+        # there is no reason to omit it (this was the "No module named
+        # 'torchaudio'" failure Intel users hit after a "successful" install).
         macos_x86_ladder = ["2.2.*", "2.1.*", "2.0.*"]
         base_pypi = ["install", "--prefer-binary", "--no-cache-dir"]
         for v in macos_x86_ladder:
             fam = v.replace(".*", "")
-            tv_v, _ = _TORCH_COMPAT.get(fam, (None, None))
+            tv_v, _ta = _TORCH_COMPAT.get(fam, (None, None))
             if tv_v and _pip_install_ok(base_pypi + [f"torch=={v}", f"torchvision=={tv_v}"]):
+                _best_effort_torchaudio(venv_python, base_pypi, fam, status_cb=status_cb)
                 status_cb(f"Installed torch {v} for macOS x86_64 (CPU).")
                 return
             if _pip_install_ok(base_pypi + [f"torch=={v}", "torchvision"]):
+                _best_effort_torchaudio(venv_python, base_pypi, fam, status_cb=status_cb)
                 status_cb(f"Installed torch {v} for macOS x86_64 (CPU).")
                 return
         raise RuntimeError(
@@ -1193,6 +1229,7 @@ def _install_torch(
             if installed:
                 ok, cuda_tag, err = _check_cuda_in_venv(venv_python, status_cb=status_cb)
                 if ok:
+                    _best_effort_torchaudio(venv_python, base, fam, status_cb=status_cb)
                     status_cb(f"Installed PyTorch ROCm from {label} (torch.version.cuda={cuda_tag}).")
                     return
                 # Distinguish the two ROCm failure modes so the log points at the
@@ -1237,6 +1274,7 @@ def _install_torch(
         if installed:
             ok, err = _check_xpu_in_venv(venv_python, status_cb=status_cb)
             if ok:
+                _best_effort_torchaudio(venv_python, base, fam, status_cb=status_cb)
                 status_cb("Installed PyTorch Intel XPU.")
                 return
             status_cb(f"XPU runtime test failed: {err!r}. Uninstalling and falling back…")
@@ -1292,6 +1330,11 @@ def _install_torch(
 
                         cuda_ok, cuda_tag_found, err = _check_cuda_in_venv(venv_python, status_cb=status_cb)
                         if cuda_ok:
+                            _best_effort_torchaudio(
+                                venv_python, base,
+                                ".".join(torch_ver.split(".")[:2]),
+                                status_cb=status_cb,
+                            )
                             status_cb(f"[RT] CUDA verified (torch {torch_ver}+{try_cu}, cuda={cuda_tag_found}).")
                             installed_cuda = True
                             break
@@ -1349,11 +1392,13 @@ def _install_torch(
 
     for v in ladder:
         fam = v.replace(".*", "")
-        tv_v, _ = _TORCH_COMPAT.get(fam, (None, None))
+        tv_v, _ta = _TORCH_COMPAT.get(fam, (None, None))
         if tv_v and _pip_install_ok(base_cpu + [f"torch=={v}", f"torchvision=={tv_v}"]):
+            _best_effort_torchaudio(venv_python, base_cpu, fam, status_cb=status_cb)
             status_cb(f"[RT] CPU torch {v} installed via PyTorch CPU index.")
             return
         if _pip_install_ok(base_cpu + [f"torch=={v}", "torchvision"]):
+            _best_effort_torchaudio(venv_python, base_cpu, fam, status_cb=status_cb)
             status_cb(f"[RT] CPU torch {v} installed via PyTorch CPU index.")
             return
 
@@ -1361,10 +1406,12 @@ def _install_torch(
     base_pypi = ["install", "--prefer-binary", "--no-cache-dir"]
     for v in ladder:
         fam = v.replace(".*", "")
-        tv_v, _ = _TORCH_COMPAT.get(fam, (None, None))
+        tv_v, _ta = _TORCH_COMPAT.get(fam, (None, None))
         if tv_v and _pip_install_ok(base_pypi + [f"torch=={v}", f"torchvision=={tv_v}"]):
+            _best_effort_torchaudio(venv_python, base_pypi, fam, status_cb=status_cb)
             return
         if _pip_install_ok(base_pypi + [f"torch=={v}", "torchvision"]):
+            _best_effort_torchaudio(venv_python, base_pypi, fam, status_cb=status_cb)
             return
 
     raise RuntimeError(
@@ -1562,6 +1609,12 @@ def import_torch(
     global _TORCH_CACHED
     if _TORCH_CACHED is not None:
         return _TORCH_CACHED
+
+    # torchaudio is installed opportunistically (see _install_torch) but is NOT a
+    # required dependency of any SASpro tool. Never let its absence gate import,
+    # marker validation, or install — force off regardless of caller so a missing
+    # or failed torchaudio can't block startup.
+    require_torchaudio = False
 
     # Conservative ROCm redirect on Linux
     if platform.system() == "Linux" and prefer_cuda and not prefer_rocm:
@@ -1996,6 +2049,9 @@ def prewarm_torch_cache(
     ensure_numpy: bool = False,
     validate_marker: bool = True,
 ) -> None:
+    # Keep in lockstep with import_torch: torchaudio never gates anything, so the
+    # cached require_torchaudio flag must match (else the fast-path misses every launch).
+    require_torchaudio = False
     try:
         _ban_shadow_torch_paths(status_cb=status_cb)
         _purge_bad_torch_from_sysmodules(status_cb=status_cb)

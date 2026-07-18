@@ -8613,8 +8613,12 @@ class WIMIDialog(QDialog):
                 z_val    = red_z if red_z is not None else "N/A"
                 plx_val  = "N/A"
                 if isinstance(z_val, (int, float)):
-                    distance    = calculate_comoving_distance(z_val)   # GLy
-                    dist_ly_val = float(distance) * 1e9
+                    distance = calculate_comoving_distance(z_val)   # GLy, or None if z<0
+                    if distance is None:
+                        distance    = "N/A"
+                        dist_ly_val = "N/A"
+                    else:
+                        dist_ly_val = float(distance) * 1e9
                 else:
                     distance    = "N/A"
                     dist_ly_val = "N/A"
@@ -8764,10 +8768,11 @@ class WIMIDialog(QDialog):
                                 raise ValueError
                             if z_col == "cz":          # cz is in km/s
                                 zval = zval / 299792.458
-                            cg = calculate_comoving_distance(zval)   # GLy
+                            cg = calculate_comoving_distance(zval)   # GLy, or None if z<0
                             redshift = f"{zval:.6f}"
-                            comoving_distance = f"{cg:.5f} GLy"
-                            dist_ly_val = float(cg) * 1e9
+                            if cg is not None:
+                                comoving_distance = f"{cg:.5f} GLy"
+                                dist_ly_val = float(cg) * 1e9
                         except Exception:
                             redshift = str(raw)
 
@@ -9113,7 +9118,12 @@ def wimi_result_columns(obj):
 
 
 def calculate_comoving_distance(z):
-    z = abs(z)
+    # A negative value is a blueshift (peculiar motion toward us), not a
+    # cosmological recession — a comoving distance is meaningless there, so
+    # omit it rather than folding the sign away with abs(). Callers treat
+    # None as "no distance".
+    if z is None or z < 0:
+        return None
     # Initialize variables
     WR = 4.165E-5 / ((H0 / 100) ** 2)  # Omega radiation
     WK = 1 - WM - WV - WR  # Omega curvature

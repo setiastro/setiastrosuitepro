@@ -481,6 +481,7 @@ class RemoveStarsPresetDialog(QDialog):
         self.syq_model.addItem("AxiomV2",   "axiomv2")
         self.syq_model.addItem("AxiomV2.1", "axiomv2.1")
         self.syq_model.addItem("AxiomV2.2", "axiomv2.2")
+        self.syq_model.addItem("AxiomV3", "axiomv3")
         self.syq_model.setCurrentIndex(0)
         mk = str(p.get("model_kind", "nadir")).strip().lower()
         from .remove_stars import _syqon_norm_kind

@@ -650,25 +650,69 @@ def _on_graxpert_finished(parent,
 
     # 2) read pixels (we *do not* want its header to replace ours)
     arr, header = None, None
+    bit_depth = "32-bit floating point"
+    is_mono = None
+    out_meta = {}
+
     if _legacy_load_image is not None:
         try:
             out = _legacy_load_image(output_file, return_metadata=True)
-            if out and len(out) == 5:
+            if out is None:
+                raise ValueError("legacy loader returned None")
+            if len(out) == 5:
                 a, h, bit_depth, is_mono, out_meta = out
-            else:
+            elif len(out) == 4:
                 a, h, bit_depth, is_mono = out
                 out_meta = {}
-            arr, header = a, h
-        except Exception:
-            arr = None
-            header = None
-            bit_depth = "32-bit floating point"
-            is_mono = None
-            out_meta = {}
-    else:
-        out_meta = {}
-        bit_depth = "32-bit floating point"
-        is_mono = None
+            else:
+                raise ValueError(f"unexpected loader return arity: {len(out)}")
+            arr, header = a, h  # a may still be None; caught by the fallback below
+        except Exception as e:
+            if hasattr(parent, "_log"):
+                try:
+                    parent._log(f"[GraXpert] legacy loader failed on {output_file}: {e}")
+                except Exception:
+                    pass
+            arr, header = None, None
+
+    # Fallback: the legacy loader returns None (or raises) on some GraXpert
+    # outputs — notably certain float TIFFs from Intel macOS builds. Read the
+    # pixels directly so the result still imports.
+    if arr is None:
+        arr = _fallback_read_float01(output_file)
+        header = None  # no trustworthy header from the fallback path
+        if arr is not None and hasattr(parent, "_log"):
+            try:
+                parent._log(f"[GraXpert] recovered output via fallback reader: {output_file}")
+            except Exception:
+                pass
+
+    # Still nothing → fail cleanly instead of crashing on .astype(None).
+    if arr is None:
+        QMessageBox.critical(
+            parent,
+            "GraXpert",
+            "GraXpert finished, but SASpro couldn't read its output image:\n"
+            f"{output_file}\n\n"
+            "The file may be in a format the loader doesn't recognize. "
+            "Make sure 'tifffile' and 'imageio' are installed, or check the "
+            "GraXpert log above."
+        )
+        shutil.rmtree(working_dir, ignore_errors=True)
+        return
+
+    # Normalize to clean float32 before handing off.
+    arr = np.asarray(arr)
+    if arr.ndim == 3 and arr.shape[2] == 1:
+        arr = arr[..., 0]
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        arr = arr[..., :3]  # drop alpha if the loader tacked one on
+    arr = arr.astype(np.float32, copy=False) if np.issubdtype(arr.dtype, np.floating) \
+          else arr.astype(np.float32)
+    if not np.all(np.isfinite(arr)):
+        arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+    if is_mono is None:
+        is_mono = (arr.ndim == 2)
     # Decide how it appears in history/undo
     step_label = op_label or "GraXpert Gradient Removal"
 
@@ -703,7 +747,7 @@ def _on_graxpert_finished(parent,
     # 4) apply to the target doc
     try:
         target_doc.apply_edit(
-            arr.astype(np.float32, copy=False),
+            arr,  # validated float32 above
             metadata=base_meta,
             step_name=step_label,
         )
