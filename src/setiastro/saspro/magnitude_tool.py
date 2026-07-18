@@ -543,7 +543,7 @@ def _per_star_radii(
 
     return r_ap_arr, r_in_arr, r_out_arr
 
-def _compute_zero_points_mono(matches, img_f, r_ap, r_in, r_out, band="L", clip_sigma=2.5):
+def _compute_zero_points_mono(matches, img_f, band="L", clip_sigma=2.5):
     xs = np.array([m["x"] for m in matches], dtype=np.float64)
     ys = np.array([m["y"] for m in matches], dtype=np.float64)
 
@@ -590,7 +590,7 @@ def _compute_zero_points_mono(matches, img_f, r_ap, r_in, r_out, band="L", clip_
     }
     return out
 
-def _compute_zero_points(matches, img_f, r_ap, r_in, r_out, clip_sigma=2.5):
+def _compute_zero_points(matches, img_f, clip_sigma=2.5):
     xs = np.array([m["x"] for m in matches], dtype=np.float64)
     ys = np.array([m["y"] for m in matches], dtype=np.float64)
 
@@ -1873,30 +1873,32 @@ class MagnitudeToolDialog(QDialog):
         self.sep_sigma = QSpinBox()
         self.sep_sigma.setRange(2, 50)
         self.sep_sigma.setValue(5)
+        self.sep_sigma.setToolTip(
+            "Detection threshold for SEP source extraction, in multiples of the "
+            "background noise (σ above background).\n\n"
+            "Only pixels brighter than this many σ are treated as sources. This sets "
+            "which stars are found for matching to the catalog and for the zero-point "
+            "fit — it does NOT affect the object/background measurement itself.\n\n"
+            "Lower = detects fainter stars (more matches, but more noise and spurious "
+            "detections); higher = only bright, clean stars. Raise toward 8–10 for "
+            "noisy data or crowded fields with many false detections; 5 suits most stacks."
+        )
         form.addRow("SEP detect σ", self.sep_sigma)
-
-        self.ap_r = QDoubleSpinBox()
-        self.ap_r.setRange(1.0, 25.0)
-        self.ap_r.setSingleStep(0.5)
-        self.ap_r.setValue(6.0)
-        form.addRow("Aperture radius (px)", self.ap_r)
-
-        self.ann_in = QDoubleSpinBox()
-        self.ann_in.setRange(2.0, 60.0)
-        self.ann_in.setSingleStep(0.5)
-        self.ann_in.setValue(12.0)
-        form.addRow("Annulus r_in (px)", self.ann_in)
-
-        self.ann_out = QDoubleSpinBox()
-        self.ann_out.setRange(3.0, 80.0)
-        self.ann_out.setSingleStep(0.5)
-        self.ann_out.setValue(18.0)
-        form.addRow("Annulus r_out (px)", self.ann_out)
 
         self.clip_sigma = QDoubleSpinBox()
         self.clip_sigma.setRange(1.0, 10.0)
         self.clip_sigma.setSingleStep(0.5)
         self.clip_sigma.setValue(2.5)
+        self.clip_sigma.setToolTip(
+            "Sigma-clip threshold for rejecting outlier stars when deriving the "
+            "photometric zero point.\n\n"
+            "Each matched star gives one ZP estimate (m_cat − m_inst); stars whose "
+            "ZP deviates by more than this many standard deviations from the median "
+            "are discarded, over 3 iterations, before the final ZP is taken.\n\n"
+            "Lower = more aggressive rejection (cleaner fit, fewer stars); "
+            "higher = keeps more stars. 2.5 is a good default; drop toward 2.0 for "
+            "crowded or blended fields, raise toward 3.0 if too few stars survive."
+        )
         form.addRow("ZP sigma-clip", self.clip_sigma)
 
         # --- Systematic uncertainty floor (rolled into total; popup reports totals only) ---
@@ -1905,12 +1907,32 @@ class MagnitudeToolDialog(QDialog):
         self.sys_floor_spin.setDecimals(3)
         self.sys_floor_spin.setSingleStep(0.01)
         self.sys_floor_spin.setValue(float(getattr(self, "sys_floor_mag", 0.10) or 0.0))
+        self.sys_floor_spin.setToolTip(
+            "Systematic uncertainty floor, in magnitudes, added in quadrature to the "
+            "statistical error: total σ = √(σ_stat² + σ_sys²).\n\n"
+            "This is a conservative catch-all for effects not captured by photon/"
+            "background statistics — zero-point color term, narrowband-to-broadband "
+            "mapping, flat-field residuals, and background-placement sensitivity.\n\n"
+            "The reported ± value is 3× the combined σ (total 3σ). 0.10 mag is a "
+            "defensible default for calibrated narrowband surface photometry; raise it "
+            "if you know your calibration is less certain, lower only with justification."
+        )
         form.addRow("Systematic floor (mag)", self.sys_floor_spin)
 
         self.bg_box_size = QSpinBox()
         self.bg_box_size.setRange(10, 300)
         self.bg_box_size.setSingleStep(5)
         self.bg_box_size.setValue(50)
+        self.bg_box_size.setToolTip(
+            "Side length, in pixels, of the automatically-placed background sampling "
+            "box (the box is square).\n\n"
+            "The tool searches for the darkest, most source-free region of this size "
+            "to estimate the sky background that's subtracted from the object. The same "
+            "size is used for the four per-quadrant boxes in the robustness check.\n\n"
+            "Larger = more pixels, lower background noise (σ ∝ 1/√area), but harder to "
+            "fit into a clean gap in a crowded or nebulosity-filled field; smaller = "
+            "fits tight gaps but noisier. 50 px is a good balance for most fields."
+        )
         form.addRow("Auto background box (px)", self.bg_box_size)
 
         hint = QLabel(
@@ -2602,9 +2624,6 @@ class MagnitudeToolDialog(QDialog):
             zp = _compute_zero_points_mono(
                 matches=matches,
                 img_f=img_f,
-                r_ap=float(self.ap_r.value()),
-                r_in=float(self.ann_in.value()),
-                r_out=float(self.ann_out.value()),
                 band=band,
                 clip_sigma=float(self.clip_sigma.value()),
             )
@@ -2620,9 +2639,6 @@ class MagnitudeToolDialog(QDialog):
             zp = _compute_zero_points(
                 matches=matches,
                 img_f=img_f,
-                r_ap=float(self.ap_r.value()),
-                r_in=float(self.ann_in.value()),
-                r_out=float(self.ann_out.value()),
                 clip_sigma=float(self.clip_sigma.value()),
             )
             self.last_zp = {"mode": "rgb", **zp}
