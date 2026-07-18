@@ -290,7 +290,9 @@ class SettingsDialog(QDialog):
  
         # Apple MPS is handled automatically by runtime_torch for macOS arm64;
         # we surface it here as an explicit option so users can force it.
-        if platform.system() == "Darwin":
+        if platform.system() == "Darwin" and (
+            "arm64" in platform.machine().lower() or "aarch64" in platform.machine().lower()
+        ):
             self._accel_items.append((self.tr("Apple Silicon GPU (MPS)"), "cuda"))
  
         self._accel_items.append((self.tr("CPU only"), "cpu"))

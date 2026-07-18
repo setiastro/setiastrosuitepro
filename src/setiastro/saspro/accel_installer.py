@@ -9,6 +9,7 @@ from typing import Callable, Optional
 from setiastro.saspro.runtime_torch import (
     import_torch, add_runtime_to_sys_path,
     _user_runtime_dir, _venv_paths, _SUPPORTED_PY_MINORS,
+    mps_is_usable,
 )
 
 LogCB = Callable[[str], None]
@@ -274,7 +275,9 @@ def current_backend() -> str:
         if cuda_tag and has_nv:
             return f"CPU (CUDA {cuda_tag} not available — check NVIDIA driver/CUDA runtime)"
 
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        # is_available() is True on Intel Macs with a Metal-capable Radeon, but
+        # MPS faults on first use there — only Apple Silicon reports it usable.
+        if mps_is_usable(torch):
             return "Apple MPS"
 
         if _plat.system() == "Windows" and not has_nv:
