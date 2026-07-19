@@ -17,6 +17,8 @@ from typing import Callable, Optional, Tuple
 
 import numpy as np
 
+from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np
+
 ProgressCB = Callable[[int, int, str], None]
 
 
@@ -33,13 +35,13 @@ def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
             return torch_directml.device()
         except Exception:
             pass
-    mps = getattr(torch.backends, "mps", None)
-    if mps is not None:
-        try:
-            if mps.is_available() and mps.is_built():
-                return torch.device("mps")
-        except Exception:
-            pass
+    # MPS only on Apple Silicon. is_available()/is_built() both report True on
+    # Intel Macs with a Metal-capable Radeon, but the backend faults on first use
+    # there and torch surfaces it as the misleading "Numpy is not available".
+    # Use the shared gate so this picker can't drift from best_device/current_backend.
+    from setiastro.saspro.runtime_torch import mps_is_usable
+    if mps_is_usable(torch):
+        return torch.device("mps")
     return torch.device("cpu")
 
 # ---------------------------------------------------------------------------
@@ -353,10 +355,10 @@ def parallax_correction_rgb01(
 
     def _infer_batch(patches: list) -> list:
         stacked = np.stack([np.ascontiguousarray(p.transpose(2, 0, 1)) for p in patches])
-        t = torch.from_numpy(stacked).to(device, dtype=torch.float32, non_blocking=True)
+        t = np_to_torch(stacked, device=device, dtype=torch.float32, torch=torch)
         with torch.no_grad():
             out = model(t)
-        out = out.clamp(0.0, 1.0).float().cpu().numpy()
+        out = torch_to_np(out.clamp(0.0, 1.0).float())
         return [out[i].transpose(1, 2, 0) for i in range(out.shape[0])]
 
     result = _run_tiled_cosine(
@@ -409,6 +411,15 @@ def parallax_star_reduce_rgb01(
     mode   = str(mode or "classic").strip().lower()
     level  = int(np.clip(level, 1, 10))
     torch  = import_torch(prefer_cuda=use_gpu, prefer_xpu=False, prefer_dml=prefer_dml, status_cb=lambda *_: None)
+
+    import numpy as _np
+    print("[np-check] numpy:", _np.__version__)
+    try:
+        torch.from_numpy(_np.zeros(1, dtype=_np.float32)); print("[np-check] from_numpy: OK")
+    except Exception as e:
+        print("[np-check] from_numpy FAILED:", e)
+    print("[np-check] device:", _infer_device(torch))
+
     device = _infer_device(torch, prefer_cuda=use_gpu, prefer_dml=prefer_dml)
     F      = torch.nn.functional
 
@@ -426,23 +437,23 @@ def parallax_star_reduce_rgb01(
 
         def _infer_batch(patches: list) -> list:
             stacked = np.stack([np.ascontiguousarray(p.transpose(2, 0, 1)) for p in patches])
-            t = torch.from_numpy(stacked).to(device, dtype=torch.float32, non_blocking=True)
+            t = np_to_torch(stacked, device=device, dtype=torch.float32, torch=torch)
             b, _, h, w = t.shape
             lvl_ch = torch.full((b, 1, h, w), lvl_norm, dtype=t.dtype, device=device)
             t4 = torch.cat([t, lvl_ch], dim=1)
             with torch.no_grad():
                 out = model(t4)
-            out = out.clamp(0.0, 1.0).float().cpu().numpy()
+            out = torch_to_np(out.clamp(0.0, 1.0).float())
             return [out[i].transpose(1, 2, 0) for i in range(out.shape[0])]
     else:
         hybrid = level > 6
         if hybrid:
             def _infer_batch(patches: list) -> list:
                 stacked = np.stack([np.ascontiguousarray(p.transpose(2, 0, 1)) for p in patches])
-                t = torch.from_numpy(stacked).to(device, dtype=torch.float32, non_blocking=True)
+                t = np_to_torch(stacked, device=device, dtype=torch.float32, torch=torch)
                 with torch.no_grad():
                     out = _hybrid_star_reduction(model, t, level, torch, F)
-                out = out.clamp(0.0, 1.0).float().cpu().numpy()
+                out = torch_to_np(out.clamp(0.0, 1.0).float())
                 return [out[i].transpose(1, 2, 0) for i in range(out.shape[0])]
         else:
             lv_scalar = float(level) / 10.0
@@ -450,11 +461,11 @@ def parallax_star_reduce_rgb01(
             def _infer_batch(patches: list) -> list:
                 N = len(patches)
                 stacked = np.stack([np.ascontiguousarray(p.transpose(2, 0, 1)) for p in patches])
-                t = torch.from_numpy(stacked).to(device, dtype=torch.float32, non_blocking=True)
+                t = np_to_torch(stacked, device=device, dtype=torch.float32, torch=torch)
                 lv = torch.full((N,), lv_scalar, dtype=torch.float32, device=device)
                 with torch.no_grad():
                     out = model(t, lv)
-                out = out.clamp(0.0, 1.0).float().cpu().numpy()
+                out = torch_to_np(out.clamp(0.0, 1.0).float())
                 return [out[i].transpose(1, 2, 0) for i in range(out.shape[0])]
 
     result = _run_tiled_cosine(
@@ -565,7 +576,7 @@ def parallax_sharpen_rgb01(
         if not batch_recs:
             return
         stacked = np.stack([r[6].transpose(2, 0, 1) for r in batch_recs])  # (B,3,H,W)
-        batch_tensor = torch.from_numpy(stacked).float().to(device)
+        batch_tensor = np_to_torch(stacked, device=device, dtype=torch.float32, torch=torch)
         with torch.no_grad():
             if use_autocast:
                 with torch.amp.autocast(device_type="cuda", dtype=autocast_dtype):
@@ -600,7 +611,7 @@ def parallax_sharpen_rgb01(
 
     # Reconstruct, unpad, then alpha blend against original unpadded image
     reconstructed = output_tensor / torch.clamp(weight_sum, min=1e-6)
-    reconstructed = reconstructed.squeeze(0).permute(1, 2, 0).numpy()
+    reconstructed = torch_to_np(reconstructed.squeeze(0).permute(1, 2, 0))
     reconstructed = _unpad(reconstructed, orig_hw, pad)
 
     final_output = img + alpha * (reconstructed - img)

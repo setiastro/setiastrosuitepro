@@ -5,6 +5,8 @@ import os
 from typing import Callable, Optional, Tuple, Any
 import numpy as np
 
+from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np
+
 
 ProgressCB = Callable[[int, int, str], None]
 
@@ -38,7 +40,11 @@ def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
         except Exception:
             pass
 
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    # is_available() reports True on Intel Macs with a Metal-capable Radeon, but
+    # MPS faults on first use there (surfaces as "Numpy is not available"). Route
+    # through the shared gate so this picker can't drift from best_device.
+    from setiastro.saspro.runtime_torch import mps_is_usable
+    if mps_is_usable(torch):
         return torch.device("mps")
 
     return torch.device("cpu")
@@ -169,13 +175,12 @@ def _to_torch_chw(img_chw, device, torch):
     if x.ndim != 3:
         raise ValueError("expected CHW float32")
     x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-    t = torch.from_numpy(x[None, ...])
-    return t.to(device=device, dtype=torch.float32)
+    return np_to_torch(x[None, ...], device=device, dtype=torch.float32, torch=torch)
 
 
 def _predict_tile(model, t, *, device, use_amp: bool, amp_dtype: str, info: dict, torch):
     def _to_numpy(pred_t):
-        pred_np = pred_t[0].detach().to("cpu").numpy().transpose(1, 2, 0)
+        pred_np = torch_to_np(pred_t[0].detach()).transpose(1, 2, 0)
         return pred_np.astype(np.float32, copy=False)
 
     if use_amp and device.type == "cuda":
