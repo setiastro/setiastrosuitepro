@@ -244,6 +244,29 @@ def _user_runtime_dir(status_cb=print) -> Path:
 
     return _RUNTIME_DIR_CACHED
 
+def np_to_torch(arr, device=None, dtype=None, torch=None):
+    """numpy → torch without torch's numpy C-bridge (dead under numpy 2.x +
+    torch 2.2.2 on Intel Mac). DLPack is a separate zero-copy protocol that
+    does NOT go through _ARRAY_API, so it works regardless of the bridge state."""
+    import numpy as np
+    if torch is None:
+        import torch
+    a = np.ascontiguousarray(arr)
+    try:
+        t = torch.from_dlpack(a)              # numpy ndarrays expose __dlpack__ (numpy≥1.22)
+    except Exception:
+        # buffer-protocol fallback (one copy, still bridge-free)
+        t = torch.frombuffer(bytearray(a.astype(np.float32, copy=False).tobytes()),
+                             dtype=torch.float32).reshape(a.shape)
+    if dtype is not None: t = t.to(dtype)
+    if device is not None: t = t.to(device)
+    return t
+
+def torch_to_np(t):
+    """torch → numpy without .numpy() (dead under the same conditions)."""
+    import numpy as np
+    tc = t.detach().cpu().contiguous()
+    return np.from_dlpack(tc)                 # torch tensors expose __dlpack__; DLPack manages lifetime
 
 def mps_is_usable(torch=None) -> bool:
     """
