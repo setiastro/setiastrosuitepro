@@ -9,6 +9,7 @@ import numpy as np
 # Keep these imports because your runtime torch loader is still the right way
 # to get CUDA / DirectML / MPS / CPU fallback behavior.
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
+from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
 from setiastro.saspro.resources import get_resources
 
 ProgressCB = Callable[[int, int, str], None]  # (done, total, stage)
@@ -582,8 +583,10 @@ def load_darkstar_models(*, use_gpu: bool, status_cb=print) -> DarkStarModels:
         dev = torch.device("cuda")
         return _build_and_load(dev, "cuda", f"Dark Star: using CUDA ({torch.cuda.get_device_name(0)})")
 
-    # MPS
-    if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    # MPS — Apple Silicon only. is_available() is True on Intel Macs with a
+    # Metal-capable Radeon, but MPS faults on first use there ("Numpy is not
+    # available"); the shared gate returns False on Intel so it falls to CPU.
+    if use_gpu and mps_is_usable(torch):
         dev = torch.device("mps")
         return _build_and_load(dev, "mps", "Dark Star: using MPS")
 
@@ -648,14 +651,14 @@ def _infer_tiles_rgb_batched(
         batch_np = np.transpose(batch_np, (0, 3, 1, 2))         # NCHW
         batch_np = batch_np.astype(np.float32, copy=False)
 
-        x = torch.from_numpy(batch_np)
+        x = np_to_torch(batch_np, torch=torch)
         if hasattr(device, "type") and device.type == "cuda":
             x = x.pin_memory().to(device=device, dtype=torch.float32, non_blocking=True)
         else:
             x = x.to(device=device, dtype=torch.float32)
 
         with torch.no_grad(), _autocast_context(torch, device):
-            y = model(x).detach().float().cpu().numpy()         # NCHW
+            y = torch_to_np(model(x).detach().float())          # NCHW
 
         y = np.transpose(y, (0, 2, 3, 1))                       # NHWC
 
@@ -682,10 +685,10 @@ def _infer_tile_rgb_with_model(models: DarkStarModels, tile_rgb: np.ndarray, mod
     torch = models.torch
     dev = models.device
 
-    t = torch.from_numpy(tile_rgb.transpose(2, 0, 1)[None, ...]).to(dev)
+    t = np_to_torch(tile_rgb.transpose(2, 0, 1)[None, ...], device=dev, torch=torch)
 
     with torch.no_grad(), _autocast_context(torch, dev):
-        y = model(t)[0].detach().float().cpu().numpy()
+        y = torch_to_np(model(t)[0].detach().float())
 
     y = np.transpose(y, (1, 2, 0))
     return y[:h0, :w0, :].astype(np.float32, copy=False)

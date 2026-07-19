@@ -13,6 +13,7 @@ import cv2
 
 from setiastro.saspro.resources import get_resources
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
+from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
 
 warnings.filterwarnings("ignore")
 
@@ -416,7 +417,10 @@ def load_models(use_gpu: bool = True, *, lite: bool = False, walking: bool = Fal
     # 2) MPS
     if use_gpu:
         try:
-            mps_ok = bool(hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+            # is_available() is True on Intel Macs with a Metal-capable Radeon,
+            # but MPS faults on first use there ("Numpy is not available"). The
+            # shared gate is Apple-Silicon-only, so Intel falls through to CPU.
+            mps_ok = mps_is_usable(torch)
         except Exception:
             mps_ok = False
 
@@ -501,10 +505,10 @@ def _infer_chunk_rgb(models: DenoiseModels, model: Any, chunk_rgb: np.ndarray) -
     dev = models.device
 
     inp = np.ascontiguousarray(np.transpose(chunk_p, (2, 0, 1))[None, ...])  # (1,3,H,W)
-    t = torch.from_numpy(inp).to(dev, non_blocking=True)
+    t = np_to_torch(inp, device=dev, torch=torch)
 
     with torch.no_grad(), _autocast_context(torch, dev):
-        y = model(t)[0].detach().float().cpu().numpy()
+        y = torch_to_np(model(t)[0].detach().float())
 
     y = np.transpose(y, (1, 2, 0))
     return y[:h0, :w0].astype(np.float32, copy=False)
@@ -536,12 +540,12 @@ def _infer_chunk_2d(models: DenoiseModels, model: Any, chunk2d: np.ndarray) -> n
     torch = models.torch
     dev = models.device
 
-    t = torch.from_numpy(chunk_p).unsqueeze(0).unsqueeze(0).to(dev, non_blocking=True)
+    t = np_to_torch(chunk_p, device=dev, torch=torch).unsqueeze(0).unsqueeze(0)
     t3 = t.expand(-1, 3, -1, -1).contiguous()
 
     with torch.no_grad(), _autocast_context(torch, dev):
         y = model(t3)
-        y = y[0, 0].detach().float().cpu().numpy()
+        y = torch_to_np(y[0, 0].detach().float())
 
     return y[:h0, :w0].astype(np.float32, copy=False)
 
@@ -875,11 +879,11 @@ def denoise_rgb_with_color_model(
                     ).astype(np.float32, copy=False)  # (B,H,W,3)
 
                     inp = np.ascontiguousarray(np.transpose(batch_np, (0, 3, 1, 2)))  # (B,3,H,W)
-                    t = torch.from_numpy(inp).to(dev, non_blocking=True)
+                    t = np_to_torch(inp, device=dev, torch=torch)
 
                     with torch.no_grad(), _autocast_context(torch, dev):
                         out = models.color(t)  # (B,3,H,W)
-                        pred = out.detach().float().cpu().numpy()
+                        pred = torch_to_np(out.detach().float())
 
                     pred = np.transpose(pred, (0, 2, 3, 1)).astype(np.float32, copy=False)
 
@@ -1229,12 +1233,12 @@ def denoise_channel(
                         axis=0
                     ).astype(np.float32, copy=False)  # (B,H,W)
 
-                    t = torch.from_numpy(batch_np).unsqueeze(1).to(dev, non_blocking=True)
+                    t = np_to_torch(batch_np, device=dev, torch=torch).unsqueeze(1)
                     t3 = t.expand(-1, 3, -1, -1).contiguous()
 
                     with torch.no_grad(), _autocast_context(torch, dev):
                         out = model(t3)  # (B,3,H,W)
-                        pred = out[:, 0, :, :].detach().float().cpu().numpy()
+                        pred = torch_to_np(out[:, 0, :, :].detach().float())
 
                     for k, (y, x) in enumerate(batch_coords):
                         acc[y:y + chunk_size, x:x + chunk_size] += pred[k] * weight
