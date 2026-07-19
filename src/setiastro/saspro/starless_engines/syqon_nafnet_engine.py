@@ -8,6 +8,8 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
+from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np
+
 ProgressCB = Callable[[int, int, str], None]  # (done, total, stage)
 
 # module-global cached session for comet stacking (or any repeated use)
@@ -26,7 +28,11 @@ def _infer_device(torch, *, prefer_cuda: bool = True, prefer_dml: bool = True):
         except Exception:
             pass
 
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    # is_available() reports True on Intel Macs with a Metal-capable Radeon, but
+    # MPS faults on first use there (surfaces as "Numpy is not available"). Route
+    # through the shared gate so this picker can't drift from best_device.
+    from setiastro.saspro.runtime_torch import mps_is_usable
+    if mps_is_usable(torch):
         return torch.device("mps")
 
     return torch.device("cpu")
@@ -383,8 +389,7 @@ def _to_torch_chw(img_chw, device, torch):
         raise ValueError("expected CHW float32")
     x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
     x = np.clip(x, 0.0, 1.0)
-    t = torch.from_numpy(x[None, ...])
-    return t.to(device=device, dtype=torch.float32)
+    return np_to_torch(x[None, ...], device=device, dtype=torch.float32, torch=torch)
 
 
 def _pad_to_multiple(t, multiple=8, torch=None):
@@ -432,7 +437,7 @@ def _predict_tile(model, t, *, device, use_amp, amp_dtype, info, torch):
         return model(inp)
 
     def _to_numpy(pred_t):
-        pred_np = pred_t[0].detach().to("cpu").numpy().transpose(1, 2, 0)
+        pred_np = torch_to_np(pred_t[0].detach()).transpose(1, 2, 0)
         if is_axiomv22:
             pred_np = (pred_np + 1.0) * 0.5
         pred_np = pred_np[:orig_H, :orig_W, :]
@@ -942,15 +947,15 @@ def run_signal_pass(
             tile_mask = feed_mask[y0:y1, x0:x1]
 
             try:
-                img_t = torch.from_numpy(img_chw[None, ...]).to(device=device, dtype=torch.float32)
-                msk_t = torch.from_numpy(msk_hw[None, None, ...]).to(device=device, dtype=torch.float32)
+                img_t = np_to_torch(img_chw[None, ...], device=device, dtype=torch.float32, torch=torch)
+                msk_t = np_to_torch(msk_hw[None, None, ...], device=device, dtype=torch.float32, torch=torch)
                 with torch.no_grad():
                     out = signal_model(img_t, msk_t)
                 if isinstance(out, dict):
                     result_t = out.get("inpainted") or next(iter(out.values()))
                 else:
                     result_t = out
-                out_chw = result_t[0].clamp(0.0, 1.0).float().cpu().numpy()
+                out_chw = torch_to_np(result_t[0].clamp(0.0, 1.0).float())
             except Exception as exc:
                 return starless, False, f"Signal 1.0 inference failed: {exc}"
 

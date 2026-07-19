@@ -8,6 +8,7 @@ import os
 import numpy as np
 from setiastro.saspro.resources import get_resources
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
+from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
 import math
 
 # Optional deps used by auto-PSF
@@ -376,11 +377,10 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
 
     if use_gpu:
         try:
-            mps_ok = bool(
-                hasattr(torch, "backends")
-                and hasattr(torch.backends, "mps")
-                and torch.backends.mps.is_available()
-            )
+            # is_available() is True on Intel Macs with a Metal-capable Radeon,
+            # but MPS faults on first use there ("Numpy is not available"). The
+            # shared gate is Apple-Silicon-only, so Intel falls through to CPU.
+            mps_ok = mps_is_usable(torch)
         except Exception:
             mps_ok = False
 
@@ -800,11 +800,11 @@ def _infer_chunks_batched_rgb(
                     padded.append(np.ascontiguousarray(np.transpose(c, (2, 0, 1))))  # HWC->CHW
 
                 arr = np.stack(padded, axis=0)  # (B, 3, H, W)
-                t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+                t = np_to_torch(arr, device=dev, dtype=torch.float32, torch=torch)
 
                 with torch.no_grad(), _autocast_context(torch, dev):
                     y = model(t)                          # (B, 3, H, W)
-                    y = y.detach().float().cpu().numpy()  # (B, 3, H, W)
+                    y = torch_to_np(y.detach().float())   # (B, 3, H, W)
 
                 for bi in range(len(batch)):
                     oh, ow = orig_shapes[bi]
@@ -816,9 +816,9 @@ def _infer_chunks_batched_rgb(
                         single = np.ascontiguousarray(
                             np.transpose(chunks_hwc[s + bi], (2, 0, 1))[np.newaxis]
                         )
-                        t_single = torch.from_numpy(single).to(dev, dtype=torch.float32)
+                        t_single = np_to_torch(single, device=dev, dtype=torch.float32, torch=torch)
                         with torch.no_grad():
-                            y_single = model(t_single).detach().float().cpu().numpy()
+                            y_single = torch_to_np(model(t_single).detach().float())
                         tile_out = np.transpose(
                             y_single[0, :, :oh, :ow], (1, 2, 0)
                         ).astype(np.float32, copy=False)
@@ -844,13 +844,12 @@ def _infer_chunk_psf(models: SharpenModels, model: Any, chunk2d: np.ndarray, psf
     torch = models.torch
     dev   = models.device
     chunk2d = np.asarray(chunk2d, np.float32)
-    t = torch.from_numpy(np.ascontiguousarray(chunk2d)).unsqueeze(0).unsqueeze(0)
-    t = t.to(dev, dtype=torch.float32)
+    t = np_to_torch(np.ascontiguousarray(chunk2d), device=dev, dtype=torch.float32, torch=torch).unsqueeze(0).unsqueeze(0)
     t_rgb = t.expand(-1, 3, -1, -1)
     psf_t = torch.tensor([[float(psf01)]], dtype=torch.float32, device=dev)
     with torch.no_grad(), _autocast_context(torch, dev):
         y = model(t_rgb, psf_t)
-        y = y[:, 0].detach().float().cpu().numpy()[0]
+        y = torch_to_np(y[:, 0].detach().float())[0]
     return y.astype(np.float32, copy=False)
 
 
@@ -922,12 +921,12 @@ def _infer_chunks_batched(
                     padded.append(np.ascontiguousarray(c))
 
                 arr = np.stack(padded, axis=0)[:, None, :, :]  # (B,1,H,W)
-                t = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+                t = np_to_torch(arr, device=dev, dtype=torch.float32, torch=torch)
                 t_rgb = t.expand(-1, 3, -1, -1)
 
                 with torch.no_grad(), _autocast_context(torch, dev):
                     y = model(t_rgb)
-                    y = y[:, 0].detach().float().cpu().numpy()
+                    y = torch_to_np(y[:, 0].detach().float())
 
                 for bi, out_ch in enumerate(y):
                     oh, ow = orig_shapes[bi]
@@ -935,13 +934,14 @@ def _infer_chunks_batched(
                     if not np.isfinite(tile_out).all():
                         # Re-run this tile in full float32 without autocast
                         c = np.asarray(chunks2d[s + bi], np.float32)
-                        t_single = torch.from_numpy(
-                            np.ascontiguousarray(c)[np.newaxis, np.newaxis]
-                        ).to(dev, dtype=torch.float32)
+                        t_single = np_to_torch(
+                            np.ascontiguousarray(c)[np.newaxis, np.newaxis],
+                            device=dev, dtype=torch.float32, torch=torch,
+                        )
                         t_rgb = t_single.expand(-1, 3, -1, -1)
                         with torch.no_grad():
                             y_single = model(t_rgb)
-                            y_single = y_single[:, 0].detach().float().cpu().numpy()[0]
+                            y_single = torch_to_np(y_single[:, 0].detach().float())[0]
                         tile_out = y_single[:oh, :ow].astype(np.float32, copy=False)
                         if not np.isfinite(tile_out).all():
                             tile_out = chunks2d[s + bi][:oh, :ow].astype(np.float32, copy=False)
@@ -1020,13 +1020,13 @@ def _infer_chunks_psf_batched(
                 arr = np.stack(padded, axis=0)[:, None, :, :]  # (B,1,H,W)
                 psf_arr = np.array([[p] for p in psf_batch], dtype=np.float32)  # (B,1)
 
-                t     = torch.from_numpy(arr).to(dev, dtype=torch.float32)
+                t     = np_to_torch(arr, device=dev, dtype=torch.float32, torch=torch)
                 t_rgb = t.expand(-1, 3, -1, -1)
-                psf_t = torch.from_numpy(psf_arr).to(dev, dtype=torch.float32)
+                psf_t = np_to_torch(psf_arr, device=dev, dtype=torch.float32, torch=torch)
 
                 with torch.no_grad(), _autocast_context(torch, dev):
                     y = model(t_rgb, psf_t)
-                    y = y[:, 0].detach().float().cpu().numpy()
+                    y = torch_to_np(y[:, 0].detach().float())
 
                 for bi, out_ch in enumerate(y):
                     oh, ow = orig_shapes[bi]
@@ -1066,13 +1066,12 @@ def _infer_chunk(models: SharpenModels, model: Any, chunk2d: np.ndarray) -> np.n
 
     torch = models.torch
     dev   = models.device
-    t     = torch.from_numpy(np.ascontiguousarray(chunk2d)).unsqueeze(0).unsqueeze(0)
-    t     = t.to(dev, dtype=torch.float32)
+    t     = np_to_torch(np.ascontiguousarray(chunk2d), device=dev, dtype=torch.float32, torch=torch).unsqueeze(0).unsqueeze(0)
     t_rgb = t.expand(-1, 3, -1, -1)
 
     with torch.no_grad(), _autocast_context(torch, dev):
         y = model(t_rgb)
-        y = y[:, 0].detach().float().cpu().numpy()[0]
+        y = torch_to_np(y[:, 0].detach().float())[0]
 
     return y.astype(np.float32, copy=False)
 

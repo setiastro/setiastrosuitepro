@@ -21,6 +21,7 @@ def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
         status_cb=status_cb,
     )
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
+from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
 
 
 from setiastro.saspro.resources import get_resources
@@ -206,7 +207,7 @@ def _pick_backend(torch, use_gpu: bool):
         return ("pytorch", torch.device("cuda"))
     if use_gpu and ort is not None and ("DmlExecutionProvider" in ort.get_available_providers()):
         return ("onnx", "DirectML")
-    if use_gpu and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    if use_gpu and mps_is_usable(torch):
         return ("pytorch", torch.device("mps"))
     return ("pytorch", torch.device("cpu"))
 
@@ -273,8 +274,10 @@ def load_superres(scale: int, use_gpu: bool = True, status_cb=print) -> Dict[str
         _cached[key] = out
         return out
 
-    # MPS (mac)
-    if bool(use_gpu) and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    # MPS (mac) — Apple Silicon only. is_available() is True on Intel Macs with
+    # a Metal-capable Radeon, but MPS faults on first use there ("Numpy is not
+    # available"); the shared gate returns False on Intel so it falls to CPU.
+    if bool(use_gpu) and mps_is_usable(torch):
         device = torch.device("mps")
         status_cb("CosmicClarity SuperRes: using MPS")
         key = (_BACKEND_TAG, scale, "mps")
@@ -368,7 +371,7 @@ def superres_rgb01(
             if engine["backend"] == "pytorch":
                 t = engine["torch"]  # torch module from runtime_torch
 
-                pt = t.from_numpy(patch_in.transpose(2, 0, 1)).unsqueeze(0).to(engine["device"])
+                pt = np_to_torch(patch_in.transpose(2, 0, 1), device=engine["device"], torch=t).unsqueeze(0)
 
                 with t.no_grad():
                     if use_amp and dev_type == "cuda":
@@ -376,7 +379,7 @@ def superres_rgb01(
                             out = engine["model"](pt)
                     else:
                         out = engine["model"](pt)
-                out_np = out[0].detach().cpu().numpy()   # (C,H,W)
+                out_np = torch_to_np(out[0].detach().float())   # (C,H,W)
             else:
                 # ONNX (DirectML)
                 inp = np.expand_dims(patch_in.transpose(2, 0, 1), axis=0).astype(np.float32)

@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 import numpy as np
 from setiastro.saspro.resources import get_resources
+from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
 
 # Optional deps
 try:
@@ -388,8 +389,11 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
             except Exception:
                 backend = "ort_dml" if ort_dml_ok else "cpu"
         else:
-            # 4) MPS (macOS)
-            if use_gpu and hasattr(torch, "backends") and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            # 4) MPS (macOS) — Apple Silicon only. is_available() is True on
+            # Intel Macs with a Metal-capable Radeon, but MPS faults on first
+            # use there ("Numpy is not available"); the shared gate returns
+            # False on Intel so it falls to CPU.
+            if use_gpu and mps_is_usable(torch):
                 backend = "mps"
             else:
                 backend = "cpu"
@@ -820,7 +824,7 @@ def _torch_detect_batch(tiles_rgb01: list[np.ndarray], models: Dict[str, Any], b
         batch_np = np.stack(resized[i:i+batch_size], axis=0)  # NHWC
         batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)  # NCHW
 
-        x = torch.from_numpy(batch_np)
+        x = np_to_torch(batch_np, torch=torch)
         if hasattr(device, "type") and device.type == "cuda":
             x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
         else:
@@ -834,9 +838,9 @@ def _torch_detect_batch(tiles_rgb01: list[np.ndarray], models: Dict[str, Any], b
             idxs = keep1.nonzero(as_tuple=False).flatten()
             with torch.no_grad():
                 o2 = det2(x[idxs]).flatten()
-            keep2 = (o2 > 0.25).detach().cpu().numpy()
+            keep2 = torch_to_np((o2 > 0.25).detach().float()).astype(bool)
 
-            idxs_cpu = idxs.detach().cpu().numpy()
+            idxs_cpu = torch_to_np(idxs.detach().float()).astype(np.int64)
             for local_j, passed in zip(idxs_cpu, keep2):
                 if passed:
                     flags[i + int(local_j)] = True
@@ -870,14 +874,14 @@ def _torch_remove_batch(
         batch_np = np.stack(batch_tiles, axis=0)  # NHWC
         batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)  # NCHW
 
-        x = torch.from_numpy(batch_np)
+        x = np_to_torch(batch_np, torch=torch)
         if hasattr(device, "type") and device.type == "cuda":
             x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
         else:
             x = x.to(device=device, dtype=torch.float32)
 
         with torch.no_grad(), _autocast_context(torch, device):
-            y = rem(x).detach().cpu().numpy()  # NCHW
+            y = torch_to_np(rem(x).detach().float())  # NCHW
 
         y = np.transpose(y, (0, 2, 3, 1))  # NHWC
 
@@ -937,10 +941,10 @@ def _torch_remove(tile_rgb01: np.ndarray, models: Dict[str, Any]) -> np.ndarray:
             mode="reflect",
         )
 
-    x = torch.from_numpy(tile).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=torch.float32)
+    x = np_to_torch(tile, device=device, dtype=torch.float32, torch=torch).permute(2, 0, 1).unsqueeze(0)
 
     with torch.no_grad(), _autocast_context(torch, device):
-        out = rem(x).squeeze(0).detach().cpu().numpy().transpose(1, 2, 0)
+        out = torch_to_np(rem(x).squeeze(0).detach().float()).transpose(1, 2, 0)
 
     # crop back to original tile size
     out = out[:h, :w, :]
@@ -1199,7 +1203,7 @@ def _satellite_remove_rgb(
             batch_np = np.stack(resized[i:i + detect_bs], axis=0)
             batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
 
-            x = torch.from_numpy(batch_np)
+            x = np_to_torch(batch_np, torch=torch)
             if hasattr(device, "type") and device.type == "cuda":
                 x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
             else:
@@ -1215,8 +1219,8 @@ def _satellite_remove_rgb(
                 idxs = keep1.nonzero(as_tuple=False).flatten()
                 with torch.no_grad():
                     o2 = det2(x[idxs]).flatten()
-                keep2 = (o2 > 0.25).detach().cpu().numpy()
-                idxs_cpu = idxs.detach().cpu().numpy()
+                keep2 = torch_to_np((o2 > 0.25).detach().float()).astype(bool)
+                idxs_cpu = torch_to_np(idxs.detach().float()).astype(np.int64)
 
                 for local_j, passed in zip(idxs_cpu, keep2):
                     if passed:
@@ -1264,7 +1268,7 @@ def _satellite_remove_rgb(
                 batch_np = np.stack(batch_tiles, axis=0)
                 batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
 
-                x = torch.from_numpy(batch_np)
+                x = np_to_torch(batch_np, torch=torch)
                 if hasattr(device, "type") and device.type == "cuda":
                     x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
                 else:
@@ -1272,7 +1276,7 @@ def _satellite_remove_rgb(
 
                 rem = models["removal_model"]
                 with torch.no_grad(), _autocast_context(torch, device):
-                    y = rem(x).detach().cpu().numpy()
+                    y = torch_to_np(rem(x).detach().float())
 
                 y = np.transpose(y, (0, 2, 3, 1))
 
