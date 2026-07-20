@@ -14,7 +14,7 @@ import re
 import time
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QSettings, pyqtSlot
+from PyQt6.QtCore import Qt, QSettings, pyqtSlot, pyqtSignal
 from PyQt6.QtGui import QColor, QFont
 from PyQt6.QtWidgets import (
     QDialog, QHBoxLayout, QLabel, QPushButton,
@@ -288,6 +288,8 @@ class _MonitorRow:
 #  StackingMonitorDialog
 # ═══════════════════════════════════════════════════════════════════════════
 class StackingMonitorDialog(QDialog):
+    cancel_requested = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Stacking Execution Monitor")
@@ -414,6 +416,12 @@ class StackingMonitorDialog(QDialog):
         self._lbl_total.setObjectName("elapsed_label")
         bot.addWidget(self._lbl_total, stretch=1)
 
+        self.btn_stop = QPushButton("■ Stop")
+        self.btn_stop.setFixedHeight(26)
+        self.btn_stop.setToolTip("Request a graceful stop after the current tile/frame")
+        self.btn_stop.clicked.connect(self._on_stop_clicked)
+        bot.addWidget(self.btn_stop)
+
         btn_clear = QPushButton("Clear")
         btn_clear.setFixedHeight(26)
         btn_clear.clicked.connect(self.clear)
@@ -465,6 +473,11 @@ class StackingMonitorDialog(QDialog):
     def start_run(self):
         self.clear()
         self._run_start = time.monotonic()
+        try:
+            self.btn_stop.setEnabled(True)
+            self.btn_stop.setText("■ Stop")
+        except Exception:
+            pass
         self._tick_timer.start()
         self.show()
         self.raise_()
@@ -532,6 +545,32 @@ class StackingMonitorDialog(QDialog):
             self._lbl_total.setStyleSheet(
                 "color:#ff4d4f; font-size:12px; font-weight:bold;"
             )
+
+    def _on_stop_clicked(self):
+        try:
+            self.btn_stop.setEnabled(False)
+            self.btn_stop.setText("Stopping…")
+        except Exception:
+            pass
+        print("[CANCEL] _on_stop_clicked: emitting cancel_requested")
+        self.cancel_requested.emit()
+        print("[CANCEL] _on_stop_clicked: emit returned")
+
+    def mark_stopped(self):
+        """Terminal 'stopped by user' state — amber, not failure-red."""
+        for op, idx in list(self._open.items()):
+            row = self._rows[idx]
+            row.finish(_ST_WARN, "stopped")
+            self._refresh_row(idx)
+        self._open.clear()
+        self._tick_timer.stop()
+        total_s = ""
+        if self._run_start is not None:
+            t = time.monotonic() - self._run_start
+            m, s = divmod(int(t), 60)
+            total_s = f"{m:02d}:{s:02d}"
+        self._lbl_total.setText(f"⏹ Stopped by user ({total_s})")
+        self._lbl_total.setStyleSheet("color:#ffa726; font-size:12px; font-weight:bold;")
 
     def clear(self):
         self._table.setRowCount(0)
