@@ -2436,9 +2436,17 @@ _CFA_CHAN = {
     "GBRG": (1, 2, 0, 1),
 }
 
-def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False, method="edge"):
+def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
+                            method="edge", preserve_zeros=True):
     bp = (bayer_pattern or "").upper()
     interpolate = not cfa_drizzle
+
+    # Hard-zero pixels (satellite/cosmic-ray trails clipped to exactly 0.0
+    # upstream) must survive demosaic. The interp kernels use 0 as the
+    # "unsampled CFA site" sentinel, so without this they treat clipped pixels
+    # as holes and fill them from neighbors — reviving the removed trail and
+    # defeating rejection in the stack.
+    zero_mask = (image_data == 0) if preserve_zeros else None
 
     # 1) lay down samples
     if bp == "RGGB":
@@ -2458,28 +2466,32 @@ def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False, method
         if m == "bilinear":
             _bilinear_interpolate_numba(out)
         elif m == "strict_cfa":
-            # Rebuild from scratch using the strict kernel (no interpolation)
             out = np.zeros_like(out)
             r0, c0r, r1, c1r = _CFA_CHAN[bp]
             _strict_cfa_fill(image_data, out, r0, c0r, r1, c1r)
         else:   # "edge" default
             _edge_aware_interpolate_numba(out)
 
+    # 3) re-assert clipped pixels as (0,0,0) across all channels
+    if zero_mask is not None and zero_mask.any():
+        out[zero_mask] = 0.0
+
     return out
 
 
-def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False, method="edge"):
-    # numba parallel=True kernels abort the TBB pool if entered from multiple
-    # Python threads at once. Serialize the *call* — prange still saturates all
-    # cores from a single invocation, so throughput is unchanged, but TBB never
-    # gets re-entered concurrently.
+def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False,
+                      method="edge", preserve_zeros=True):
     with NUMBA_PARALLEL_LOCK:
         return _debayer_fits_fast_impl(
-            image_data, bayer_pattern, cfa_drizzle=cfa_drizzle, method=method
+            image_data, bayer_pattern, cfa_drizzle=cfa_drizzle,
+            method=method, preserve_zeros=preserve_zeros,
         )
 
-def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False, method="edge"):
-    return debayer_fits_fast(raw_image_data, bayer_pattern, cfa_drizzle=cfa_drizzle, method=method)
+def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False,
+                     method="edge", preserve_zeros=True):
+    return debayer_fits_fast(raw_image_data, bayer_pattern,
+                             cfa_drizzle=cfa_drizzle, method=method,
+                             preserve_zeros=preserve_zeros)
 
 
 @njit(parallel=True, fastmath=True, cache=True)

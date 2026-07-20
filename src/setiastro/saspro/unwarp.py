@@ -32,6 +32,7 @@ from __future__ import annotations
 import math
 import re
 from typing import Optional, Tuple, List, Callable, Dict, Any
+from concurrent.futures import as_completed
 
 import numpy as np
 
@@ -374,17 +375,49 @@ def unwarp_image(
         out = np.empty((outH, outW, nchan), dtype=np.float32)
     else:
         out = np.empty((outH, outW), dtype=np.float32)
-
+    # after w_out is built, before the banded resample loop:
+    px, py = _border_and_grid_pixels(W, H)
+    ra_s, dec_s = wcs.all_pix2world(px, py, 0)          # true sky of source pixels
+    ox, oy = w_out.wcs_world2pix(ra_s, dec_s, 0)         # where they land in output
+    # account for the origin shift so we compare like-for-like against source px,py
+    shift = np.hypot((ox - geom["x0"]) - px, (oy - geom["y0"]) - py)
+    finite = np.isfinite(shift)
+    geom["max_shift_px"] = float(np.nanmax(shift[finite])) if finite.any() else 0.0
+    geom["med_shift_px"] = float(np.nanmedian(shift[finite])) if finite.any() else 0.0
     # Work in horizontal bands so a huge canvas doesn't allocate several
     # full-frame coordinate arrays at once, and so progress can be reported.
     band = max(16, min(256, outH))
     xline = np.arange(outW)
     done = 0
-    for y0b in range(0, outH, band):
+    from concurrent.futures import ThreadPoolExecutor
+    import os
+
+    src_f = src.astype(np.float32, copy=False)
+    if is_color:
+        out = np.empty((outH, outW, nchan), dtype=np.float32)
+    else:
+        out = np.empty((outH, outW), dtype=np.float32)
+
+    band = max(16, min(256, outH))
+    y_starts = list(range(0, outH, band))
+    xline = np.arange(outW)
+
+    # thread-local WCS copies (WCS objects are NOT concurrency-safe)
+    import threading
+    _local = threading.local()
+    def _wcs_pair():
+        p = getattr(_local, "pair", None)
+        if p is None:
+            p = (w_out.deepcopy(), wcs.deepcopy())
+            _local.pair = p
+        return p
+
+    def _do_block(y0b):
+        wl, ws = _wcs_pair()
         y1b = min(outH, y0b + band)
         yy, xx = np.meshgrid(np.arange(y0b, y1b), xline, indexing="ij")
-        ra, dec = w_out.all_pix2world(xx.ravel(), yy.ravel(), 0)  # linear fwd
-        sx, sy = wcs.all_world2pix(ra, dec, 0)                    # SIP inverse
+        ra, dec = wl.all_pix2world(xx.ravel(), yy.ravel(), 0)   # linear fwd
+        sx, sy = ws.all_world2pix(ra, dec, 0)                   # SIP inverse
         coords = np.vstack([sy, sx])
         rows = y1b - y0b
         if is_color:
@@ -396,12 +429,20 @@ def unwarp_image(
             samp = map_coordinates(src_f, coords, order=order,
                                    mode="constant", cval=fill)
             out[y0b:y1b, :] = samp.reshape(rows, outW)
+        return rows
 
-        done = y1b
-        if progress is not None:
-            pct = int(done / outH * 100)
-            if progress(pct, f"Resampling… {done}/{outH} rows") is False:
-                raise RuntimeError("cancelled")
+    max_workers = min(len(y_starts), (os.cpu_count() or 4))
+    done_rows = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(_do_block, y0b): y0b for y0b in y_starts}
+        for fut in as_completed(futures):
+            rows = fut.result()          # re-raise worker exceptions here
+            done_rows += rows
+            if progress is not None:
+                pct = int(done_rows / outH * 100)
+                if progress(pct, f"Resampling… {done_rows}/{outH} rows") is False:
+                    ex.shutdown(wait=False, cancel_futures=True)
+                    raise RuntimeError("cancelled")
 
     return out, w_out, geom
 
@@ -631,6 +672,7 @@ class UnwarpDialog(QDialog):
             self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setModal(False)
         self.setMinimumWidth(460)
+        self.setMinimumHeight(560) 
         try:
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         except Exception:
@@ -724,6 +766,7 @@ class UnwarpDialog(QDialog):
         self._status = QLabel("")
         self._status.setStyleSheet("color:#778; font-size:11px;")
         self._status.setWordWrap(True)
+        self._status.setMinimumHeight(78)   # room for the 4-line success readout
         v.addWidget(self._status)
 
         # Buttons
@@ -958,6 +1001,7 @@ class UnwarpDialog(QDialog):
         fill = float("nan") if self._chk_nan.isChecked() else 0.0
 
         self._set_busy(True)
+        self._reset_status_style()
         self._worker = _UnwarpWorker(
             img, wcs, get_doc_header(doc),
             expand=self._chk_expand.isChecked(), order=order, fill=fill,
@@ -989,10 +1033,49 @@ class UnwarpDialog(QDialog):
     def _on_failed(self, msg: str):
         self._set_busy(False)
         self._worker = None
+        self._reset_status_style()
         self._refresh_info()
         if msg != "Cancelled.":
             QMessageBox.warning(self, "Unwarp", f"Unwarp failed:\n{msg}")
         self._status.setText(msg)
+
+    def _result_summary(self, geom, verb):
+        n = geom.get("sip_order", 0)
+        iw, ih, ow, oh = geom["in_w"], geom["in_h"], geom["outW"], geom["outH"]
+        grow = geom.get("growth", 1.0)
+        max_px = geom.get("max_shift_px", 0.0)
+        med_px = geom.get("med_shift_px", 0.0)
+        scale = getattr(self, "_last_scale_arcsec", 0.0)
+
+        lines = [f"✓ {verb} — SIP order {n} distortion removed."]
+        if scale > 0:
+            lines.append(
+                f"Peak edge to edge correction: {max_px:.1f}px ({max_px*scale:.2f}\")   ·   "
+                f"median {med_px:.1f}px ({med_px*scale:.2f}\")")
+        else:
+            lines.append(f"Peak edge correction: {max_px:.1f}px   ·   median {med_px:.1f}px")
+        lines.append(
+            f"Canvas {iw}×{ih} → {ow}×{oh}"
+            + (f"  (×{grow:.2f})" if ow*oh != iw*ih else "  (unchanged)"))
+        lines.append("The result carries a clean linear WCS. Re-solve to confirm "
+                     "the residuals collapse.")
+        return "\n".join(lines)
+
+    _STATUS_PLAIN   = "color:#778; font-size:11px;"
+    _STATUS_SUCCESS = ("color:#8 fdb98; font-size:13px; font-weight:600; "
+                       "line-height:150%;")
+
+    def _show_result(self, text: str):
+        head, *rest = text.split("\n")
+        body = "<br>".join(rest)
+        self._status.setTextFormat(Qt.TextFormat.RichText)
+        self._status.setStyleSheet("font-size:13px; line-height:150%;")
+        self._status.setText(
+            f"<span style='color:#8fdb98; font-weight:700;'>{head}</span>"
+            f"<br><span style='color:#9ab;'>{body}</span>")
+
+    def _reset_status_style(self):
+        self._status.setStyleSheet(self._STATUS_PLAIN)
 
     def _on_finished(self, image, wcs, header, geom):
         self._worker = None
@@ -1000,7 +1083,11 @@ class UnwarpDialog(QDialog):
         self._result = (image, wcs, header, geom)
         mode = getattr(self, "_pending_mode", "new")
         doc = getattr(self, "_pending_doc", None)
-
+        try:
+            src_wcs = extract_wcs(doc) if doc is not None else None
+            self._last_scale_arcsec = pixel_scale_arcsec(src_wcs) if src_wcs else 0.0
+        except Exception:
+            self._last_scale_arcsec = 0.0
         metadata = build_unwarp_metadata(doc, wcs, header, image)
         title = f"{doc_title(doc)} [unwarped]" if doc is not None else "Unwarped"
 
@@ -1010,13 +1097,11 @@ class UnwarpDialog(QDialog):
             elif mode == "apply" and doc is not None:
                 self._apply_inplace(doc, image, metadata)
                 self._remember_replay()
-                self._status.setText(
-                    f"Unwarped in place → {geom['outW']}×{geom['outH']}.")
+                self._show_result(self._result_summary(geom, "Unwarped in place"))
             else:
                 self._create_new(image, metadata, title)
                 self._remember_replay()
-                self._status.setText(
-                    f"Opened unwarped result → {geom['outW']}×{geom['outH']}.")
+                self._show_result(self._result_summary(geom, "Opened unwarped result"))
         except Exception as e:
             QMessageBox.warning(
                 self, "Unwarp",
