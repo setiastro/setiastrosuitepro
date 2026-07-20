@@ -3139,6 +3139,13 @@ class StarRegistrationThread(QThread):
         super().__init__()
         self.reference = reference_image_path_or_view
         self.parent_window = parent_window
+        self._cancel_check = None
+        pw = parent_window
+        if pw is not None and hasattr(pw, "_cancel_event"):
+            # capture the shared event directly — thread-safe to read from here
+            self._cancel_event = pw._cancel_event
+        else:
+            self._cancel_event = None        
         self.original_files = [os.path.normpath(f) for f in files_to_align]
         self.files_to_align = self.original_files.copy()
         self.output_directory = os.path.normpath(output_directory)
@@ -3160,6 +3167,7 @@ class StarRegistrationThread(QThread):
         self.drizzle_xforms = {}  # {orig_norm_path: (kind, matrix)}
         self.min_fwhm        = float(self.align_prefs.get("min_fwhm", 1.2))
         self.max_ellipticity = float(self.align_prefs.get("max_ellipticity", 0.6))
+
     @staticmethod
     def _aa_model_and_residual(src_gray: np.ndarray,
                             ref2d: np.ndarray,
@@ -3312,7 +3320,9 @@ class StarRegistrationThread(QThread):
         residual_rms = float(np.sqrt(np.mean(res**2))) if res.size else float("inf")
         return kind, X, residual_rms, nin
 
-
+    def _is_cancelled(self) -> bool:
+        ev = getattr(self, "_cancel_event", None)
+        return bool(ev is not None and ev.is_set())
 
     def _estimate_model_transform(self, src_gray_full: np.ndarray) -> tuple[str, object]:
         """
@@ -3543,10 +3553,16 @@ class StarRegistrationThread(QThread):
 
             # Registration passes (compute deltas only)
             for pass_idx in range(self.max_refinement_passes):
+                if self._is_cancelled():
+                    self.registration_complete.emit(False, "Cancelled by user.")
+                    return
                 self.progress_update.emit(f"⏳ Refinement Pass {pass_idx + 1}/{self.max_refinement_passes}…")
                 print(f"[SRT] starting pass {pass_idx}, work_list={len(self.original_files)}")
                 success, msg = self.run_one_registration_pass(None, None, pass_idx)
                 print(f"[SRT] pass {pass_idx} completed: {success} ({msg})")
+                if self._is_cancelled():
+                    self.registration_complete.emit(False, "Cancelled by user.")
+                    return
                 if not success:
                     any_aligned = any(x is not None for x in self.alignment_matrices.values())
                     if not any_aligned:
@@ -3670,6 +3686,11 @@ class StarRegistrationThread(QThread):
                 pending.add(f)
 
             while pending:
+                if self._is_cancelled():
+                    self.progress_update.emit("⏹ Cancelling alignment — stopping at next frame boundary…")
+                    for f in pending:
+                        f.cancel()
+                    break
                 done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
                 for fut in done:
                     returned_path = fut_info.pop(fut, "<unknown>")
@@ -3712,7 +3733,8 @@ class StarRegistrationThread(QThread):
                         f"(refine={refine_model}, final={final_model}): dx={T_new[0,2]:.2f}, dy={T_new[1,2]:.2f}"
                     )
                     self._increment_progress()
-
+            if self._is_cancelled():
+                return False, "Cancelled by user."
             pass_deltas, aligned_count = [], 0
             for orig in self.original_files:
                 k = os.path.normpath(orig)

@@ -2967,6 +2967,68 @@ def save_fits_bundle(
 
     print(f"Saved FITS bundle to: {filename} ({len(items)} item(s))")
     
+# ──────────────────────────────────────────────────────────────────────────
+# ICC profile handling for export
+# ──────────────────────────────────────────────────────────────────────────
+import functools
+
+# Where to find a Display P3 ICC profile, in priority order. Ship a copy with
+# the app (first entry) so wide-gamut tagging works on EVERY platform — the
+# macOS system path only exists on Macs, which is why the old Darwin-only code
+# left Windows/Linux exports untagged (and therefore flat).
+_P3_PROFILE_CANDIDATES = (
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "DisplayP3.icc"),
+    "/System/Library/ColorSync/Profiles/Display P3.icc",
+)
+
+
+@functools.lru_cache(maxsize=8)
+def _read_profile_bytes(path: str):
+    try:
+        if path and os.path.exists(path):
+            with open(path, "rb") as f:
+                return f.read()
+    except Exception:
+        pass
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def _srgb_profile_bytes():
+    try:
+        from PIL import ImageCms
+        return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+    except Exception as e:
+        print(f"[save_image] Could not build sRGB ICC profile: {e}")
+        return None
+
+
+def _export_icc_profile_bytes(color_space: str = "P3"):
+    """
+    Return ICC profile bytes to embed on save, chosen by the colour space the
+    pixel data represents — NOT the OS doing the writing.
+
+    SASpro renders its viewport in a wide-gamut (Display P3) space, so an
+    untagged export is interpreted as sRGB by colour-managed viewers and looks
+    flat/desaturated compared to SASpro. Embedding the matching profile lets
+    those viewers reproduce the on-screen colour.
+
+      "P3"   -> Display P3; falls back to sRGB only if no P3 profile file is
+                available on this machine.
+      "sRGB" -> sRGB.
+    """
+    cs = (color_space or "P3").strip().lower()
+    if cs in ("p3", "display p3", "display-p3", "displayp3"):
+        for cand in _P3_PROFILE_CANDIDATES:
+            b = _read_profile_bytes(cand)
+            if b is not None:
+                return b
+        print("[save_image] No Display P3 profile found on this machine; "
+              "tagging sRGB instead. Drop a DisplayP3.icc into the app "
+              "'resources' folder so wide-gamut exports match SASpro everywhere.")
+    return _srgb_profile_bytes()
+
+
 def save_image(img_array,
                filename,
                original_format,
@@ -3050,7 +3112,12 @@ def save_image(img_array,
         # ---------------------------------------------------------------------
         if fmt == "png":
             img = Image.fromarray((np.clip(img_array, 0, 1) * 255).astype(np.uint8))
-            img.save(filename)
+            _png_kwargs = {}
+            if export_opts.get("embed_icc", True):
+                _icc = _export_icc_profile_bytes(export_opts.get("icc_color_space", "P3"))
+                if _icc is not None:
+                    _png_kwargs["icc_profile"] = _icc   # PIL uses icc_profile (underscore)
+            img.save(filename, **_png_kwargs)
             print(f"Saved 8-bit PNG image to: {filename}")
             return
 
@@ -3072,12 +3139,17 @@ def save_image(img_array,
 
             # subsampling=0 keeps best chroma quality; optimize can reduce size a bit.
             # Fall back without optimize if the encoder still complains.
+            _jpg_icc = (_export_icc_profile_bytes(export_opts.get("icc_color_space", "P3"))
+                        if export_opts.get("embed_icc", True) else None)
+            _jpg_kwargs = {"quality": q, "subsampling": 0}
+            if _jpg_icc is not None:
+                _jpg_kwargs["icc_profile"] = _jpg_icc   # PIL uses icc_profile (underscore)
             try:
-                img.save(filename, quality=q, subsampling=0, optimize=True)
+                img.save(filename, optimize=True, **_jpg_kwargs)
             except Exception as jpg_err:
                 print(f"[legacy_save_image] JPEG optimize pass failed ({jpg_err}); "
                       f"retrying without optimize.")
-                img.save(filename, quality=q, subsampling=0, optimize=False)
+                img.save(filename, optimize=False, **_jpg_kwargs)
 
             print(f"Saved 8-bit JPG image to: {filename} (quality={q})")
             return
@@ -3117,6 +3189,21 @@ def save_image(img_array,
                 kwargs["resolutionunit"] = "inch"
             if comp is not None:
                 kwargs["compression"] = comp
+            # --- ICC profile ---
+            if export_opts.get("embed_icc", True):
+                try:
+                    # Tag with the wide-gamut (Display P3) profile on EVERY
+                    # platform — SASpro renders its viewport in P3, so an
+                    # untagged or sRGB-tagged file looks flat/desaturated in
+                    # colour-managed viewers (Windows Photo Viewer, Preview,
+                    # browsers). The profile follows the DATA's colour space,
+                    # not the OS writing the file.
+                    _icc_bytes = _export_icc_profile_bytes(
+                        export_opts.get("icc_color_space", "P3"))
+                    if _icc_bytes is not None:
+                        kwargs["iccprofile"] = _icc_bytes
+                except Exception as _icc_err:
+                    print(f"[save_image] Could not embed ICC profile: {_icc_err}")                
             if bd == "8-bit":
                 tiff.imwrite(filename, (np.clip(img_array, 0, 1) * 255).astype(np.uint8), **kwargs)
             elif bd == "16-bit":

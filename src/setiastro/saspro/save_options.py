@@ -94,10 +94,22 @@ class ExportDialog(QDialog):
             self.combo_depth.setCurrentText(current_bit_depth)
         core_form.addRow(self.tr("Bit depth"), self.combo_depth)
 
-        # Embed profile (placeholder – wire later if/when you support ICC)
+        # Embed profile
         self.chk_embed_icc = QCheckBox(self.tr("Embed ICC profile (if available)"))
         self.chk_embed_icc.setChecked(True)
         core_form.addRow(self.tr("Color"), self.chk_embed_icc)
+
+        # Colour space to tag on export. SASpro renders in Display P3, so P3
+        # reproduces the on-screen look in colour-managed viewers; sRGB is the
+        # safe, universal choice for web/sharing.
+        self.combo_color_space = QComboBox(self)
+        self.combo_color_space.addItem(self.tr("Display P3 (match SASpro)"), "P3")
+        self.combo_color_space.addItem(self.tr("sRGB (universal)"), "sRGB")
+        self.combo_color_space.setToolTip(self.tr(
+            "Display P3 matches the vivid colours shown in SASpro on wide-gamut "
+            "screens. sRGB is safest for the web and older viewers."))
+        self.chk_embed_icc.toggled.connect(self.combo_color_space.setEnabled)
+        core_form.addRow(self.tr("Colour space"), self.combo_color_space)
 
         lay.addWidget(core_box)
 
@@ -254,6 +266,12 @@ class ExportDialog(QDialog):
             embed = s.value(self._k("embed_icc"), True, type=bool)
             self.chk_embed_icc.setChecked(bool(embed))
 
+            cs = s.value(self._k("icc_color_space"), "P3", type=str) or "P3"
+            _cs_idx = self.combo_color_space.findData(cs)
+            if _cs_idx >= 0:
+                self.combo_color_space.setCurrentIndex(_cs_idx)
+            self.combo_color_space.setEnabled(self.chk_embed_icc.isChecked())
+
             if self._ext == "jpg":
                 q = s.value(self._k("jpeg_quality"), 95, type=int)
                 self.jpeg_quality_spin.setValue(max(1, min(100, int(q))))
@@ -290,6 +308,7 @@ class ExportDialog(QDialog):
         try:
             s.setValue(self._k("bit_depth"), self.combo_depth.currentText())
             s.setValue(self._k("embed_icc"), bool(self.chk_embed_icc.isChecked()))
+            s.setValue(self._k("icc_color_space"), self.combo_color_space.currentData())
 
             if self._ext == "jpg":
                 s.setValue(self._k("jpeg_quality"), int(self.jpeg_quality_spin.value()))
@@ -331,6 +350,7 @@ class ExportDialog(QDialog):
 
         # common
         opts["embed_icc"] = bool(self.chk_embed_icc.isChecked())
+        opts["icc_color_space"] = self.combo_color_space.currentData() or "P3"
 
         # TIFF
         if self._ext == "tif":

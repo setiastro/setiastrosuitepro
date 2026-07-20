@@ -118,24 +118,24 @@ class PreviewPane(QWidget):
 
         self.fit_to_view()
 
-    def load_qimage(self, img: QImage):
+    def load_qimage(self, img: QImage, source_float: np.ndarray | None = None):
         """
-        Call this to (re)load a fresh image.
-        We immediately convert it to a numpy array once
-        so we never have to touch the QImage bits again.
+        (Re)load a fresh image. If `source_float` is provided (H×W or H×W×3,
+        float32 in [0..1]), it is kept as the true high-bit-depth source for
+        stretching; otherwise we fall back to the 8-bit QImage (lossy).
         """
-        # keep a local copy of the QImage (for fast redisplay)
-        self.original_image   = img.copy()
+        self.original_image = img.copy()
 
-        # one & only time we go QImage→numpy
-        self._image_array     = self.qimage_to_numpy(self.original_image)
+        if source_float is not None:
+            self._image_array = np.asarray(source_float, dtype=np.float32)
+        else:
+            # legacy path — only 8-bit data available
+            self._image_array = self.qimage_to_numpy(self.original_image)
 
-        # reset any existing stretch state
         self.stretched_image  = None
         self.is_autostretched = False
         self.zoom_factor      = 1.0
         self.zoom_slider.setValue(100)
-
         self._update_display()
 
     def set_overlay(self, overlays):
@@ -318,15 +318,8 @@ class PreviewPane(QWidget):
         return super().eventFilter(source, evt)
 
     def load_numpy(self, arr: np.ndarray):
-        """
-        Convenience wrapper: take an H×W or H×W×3 NumPy array (float in [0..1] or uint8),
-        convert it to a QImage and display.
-        """
-        # Convert to QImage
         qimg = self.numpy_to_qimage(arr)
-        # Delegate to your existing loader
-        self.load_qimage(qimg)
-
+        self.load_qimage(qimg, source_float=np.asarray(arr, dtype=np.float32))
 
 def field_curvature_analysis(
     img: np.ndarray,
@@ -1058,9 +1051,14 @@ class DistortionGridDialog(QDialog):
                 arcsec_per_pix: float,
                 n_grid_lines: int = 10,
                 amplify: float    = 20.0,
+                document=None,
+                main_window=None,
                 parent=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Astrometric Distortion & Histogram"))
+
+        self._doc = document
+        self._main_window = main_window
 
         # — 1) detect stars — single high-sigma pass, then subsample if too many
         gray = img.mean(-1).astype(np.float32) if img.ndim==3 else img.astype(np.float32)
@@ -1077,7 +1075,6 @@ class DistortionGridDialog(QDialog):
             n = len(stars) if stars is not None else 0
 
         if n > _target_max:
-            # Keep the brightest _target_max stars
             order = np.argsort(stars['flux'])[::-1][:_target_max]
             stars = stars[order]
 
@@ -1099,90 +1096,33 @@ class DistortionGridDialog(QDialog):
         disp_star_pix    = np.hypot(dx_star_pix, dy_star_pix)
         disp_star_arcsec = disp_star_pix * arcsec_per_pix
 
-        # — 4) warp helper for grid lines / annotations —
+        # — store everything the grid rebuild needs —
         H, W = data.shape
+        self._A, self._B = A, B
+        self._crpix1, self._crpix2 = crpix1, crpix2
+        self._H, self._W = H, W
+        self._arcsec_per_pix = float(arcsec_per_pix)
+        self._n_grid_lines = int(n_grid_lines)
 
-        def warp_points(xs, ys):
-            """Evaluate SIP distortion only at the given sample points."""
-            xs = np.asarray(xs, dtype=np.float64)
-            ys = np.asarray(ys, dtype=np.float64)
-            u = xs - crpix1
-            v = ys - crpix2
-            dx_pix, dy_pix = eval_sip(A, B, u, v)
-            return dx_pix * amplify, dy_pix * amplify
-
-        # — 5) build the distortion grid scene —
-        scene = QGraphicsScene(self)
-        scene.setBackgroundBrush(QColor(30,30,30))
-        pen  = QPen(QColor(255,100,100), 1)
-        label_font = QFont("Arial", 12, QFont.Weight.Bold)
+        # — 4) grid scene + view (populated by _rebuild_grid) —
+        self._scene = QGraphicsScene(self)
+        self._scene.setBackgroundBrush(QColor(30,30,30))
+        self._view = QGraphicsView(self._scene)
+        self._view.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         title = QLabel(self.tr("Astrometric Distortion Grid"))
         title.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("color: white;")
 
-        # draw horizontal + vertical grid lines
-        for i in range(n_grid_lines+1):
-            y0  = i*(H-1)/n_grid_lines
-            xs  = np.linspace(0, W-1, 200)
-            ys  = np.full_like(xs, y0)
-            dx_line, dy_line = warp_points(xs, ys)
-            warped = np.column_stack([xs + dx_line, ys + dy_line])
-            path = QPainterPath(QPointF(*warped[0]))
-            for px,py in warped[1:]:
-                path.lineTo(QPointF(px,py))
-            scene.addPath(path, pen)
-
-        for j in range(n_grid_lines+1):
-            x0  = j*(W-1)/n_grid_lines
-            ys  = np.linspace(0, H-1, 200)
-            xs  = np.full_like(ys, x0)
-            dx_line, dy_line = warp_points(xs, ys)
-            warped = np.column_stack([xs + dx_line, ys + dy_line])
-            path = QPainterPath(QPointF(*warped[0]))
-            for px,py in warped[1:]:
-                path.lineTo(QPointF(px,py))
-            scene.addPath(path, pen)
-
-        # annotate each grid intersection (vectorized point computation)
-        ii_grid, jj_grid = np.meshgrid(np.arange(n_grid_lines+1), np.arange(n_grid_lines+1))
-        x0_all = (jj_grid.ravel() * (W-1) / n_grid_lines)
-        y0_all = (ii_grid.ravel() * (H-1) / n_grid_lines)
-        dx_pix_all, dy_pix_all = warp_points(x0_all, y0_all)
-        dx_pix_all /= amplify  # un-amplify to get raw pixel distortion for the label
-        dy_pix_all /= amplify
-
-        idx = 0
-        for i in range(n_grid_lines+1):
-            for j in range(n_grid_lines+1):
-                y0 = i*(H-1)/n_grid_lines
-                x0 = j*(W-1)/n_grid_lines
-
-                d_pix    = math.hypot(dx_pix_all[idx], dy_pix_all[idx])
-                d_arcsec = d_pix * arcsec_per_pix
-
-                px = x0 + dx_pix_all[idx] * amplify
-                py = y0 + dy_pix_all[idx] * amplify
-
-                txt = QGraphicsTextItem(f"{d_arcsec:.1f}\"")
-                txt.setFont(label_font)
-                txt.setScale(5.0)
-                txt.setDefaultTextColor(QColor(200,200,200))
-                txt.setPos(px + 4, py + 4)
-                scene.addItem(txt)
-                idx += 1
-
-        view = QGraphicsView(scene)
-        view.setRenderHint(QPainter.RenderHint.Antialiasing)
-        view.fitInView(scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
-
-        # pack title + view vertically
         left_layout = QVBoxLayout()
         left_layout.addWidget(title)
-        left_layout.addWidget(view, 1)
+        left_layout.addWidget(self._view, 1)
 
-        # — 6) histogram of per-star residuals (arcsec) —
+        init_amp = max(0.0, min(200.0, float(amplify)))
+        self._rebuild_grid(init_amp)
+
+        # — 5) histogram of per-star residuals (arcsec) —
         fig    = Figure(figsize=(4,4))
         canvas = FigureCanvas(fig)
         ax     = fig.add_subplot(111)
@@ -1192,10 +1132,32 @@ class DistortionGridDialog(QDialog):
         ax.set_title(self.tr("Residual histogram"))
         fig.tight_layout()
 
-        # side-by-side layout
         hl = QHBoxLayout()
         hl.addLayout(left_layout, 1)
         hl.addWidget(canvas, 1)
+
+        # — 6) controls: warp slider + Unwarp hook —
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel(self.tr("Grid warp:")))
+        self._amp_slider = QSlider(Qt.Orientation.Horizontal)
+        self._amp_slider.setRange(0, 200)
+        self._amp_slider.setValue(int(round(init_amp)))
+        self._amp_slider.setMinimumWidth(160)
+        self._amp_slider.valueChanged.connect(self._on_amp_changed)
+        self._amp_value = QLabel(f"×{int(round(init_amp))}")
+        ctrl.addWidget(self._amp_slider, 1)
+        ctrl.addWidget(self._amp_value)
+        ctrl.addSpacing(16)
+
+        self._unwarp_btn = QPushButton(self.tr("Unwarp This Image…"))
+        self._unwarp_btn.setToolTip(self.tr(
+            "Resample the image onto a distortion-free grid using this SIP "
+            "solution, then re-solve to confirm a clean field."))
+        self._unwarp_btn.clicked.connect(self._open_unwarp)
+        if self._doc is None:
+            self._unwarp_btn.setEnabled(False)
+            self._unwarp_btn.setToolTip(self.tr("No document is associated with this analysis view."))
+        ctrl.addWidget(self._unwarp_btn)
 
         # close button
         btn = QPushButton(self.tr("Close"))
@@ -1204,8 +1166,106 @@ class DistortionGridDialog(QDialog):
         # final
         v = QVBoxLayout(self)
         v.addLayout(hl)
+        v.addLayout(ctrl)
         v.addWidget(btn, 0)
-        
+
+    def _on_amp_changed(self, v: int):
+        self._amp_value.setText(f"×{v}")
+        self._rebuild_grid(float(v))
+
+    def _rebuild_grid(self, amplify: float):
+        self._amplify = float(amplify)
+        A, B = self._A, self._B
+        crpix1, crpix2 = self._crpix1, self._crpix2
+        H, W = self._H, self._W
+        n = self._n_grid_lines
+
+        scene = self._scene
+        scene.clear()
+        pen = QPen(QColor(255,100,100), 1)
+        label_font = QFont("Arial", 12, QFont.Weight.Bold)
+
+        def warp_points(xs, ys):
+            xs = np.asarray(xs, dtype=np.float64)
+            ys = np.asarray(ys, dtype=np.float64)
+            dx_pix, dy_pix = eval_sip(A, B, xs - crpix1, ys - crpix2)
+            return dx_pix * self._amplify, dy_pix * self._amplify
+
+        # horizontal grid lines
+        for i in range(n+1):
+            y0 = i*(H-1)/n
+            xs = np.linspace(0, W-1, 200); ys = np.full_like(xs, y0)
+            dxl, dyl = warp_points(xs, ys)
+            warped = np.column_stack([xs + dxl, ys + dyl])
+            path = QPainterPath(QPointF(*warped[0]))
+            for px, py in warped[1:]:
+                path.lineTo(QPointF(px, py))
+            scene.addPath(path, pen)
+
+        # vertical grid lines
+        for j in range(n+1):
+            x0 = j*(W-1)/n
+            ys = np.linspace(0, H-1, 200); xs = np.full_like(ys, x0)
+            dxl, dyl = warp_points(xs, ys)
+            warped = np.column_stack([xs + dxl, ys + dyl])
+            path = QPainterPath(QPointF(*warped[0]))
+            for px, py in warped[1:]:
+                path.lineTo(QPointF(px, py))
+            scene.addPath(path, pen)
+
+        # annotate intersections — label is the true (un-amplified) residual,
+        # position uses the current amplification so it tracks the warped node
+        ii, jj = np.meshgrid(np.arange(n+1), np.arange(n+1))
+        x0_all = jj.ravel() * (W-1) / n
+        y0_all = ii.ravel() * (H-1) / n
+        dxr, dyr = eval_sip(A, B, x0_all - crpix1, y0_all - crpix2)  # raw pixels
+        for idx in range(x0_all.size):
+            d_arcsec = math.hypot(dxr[idx], dyr[idx]) * self._arcsec_per_pix
+            px = x0_all[idx] + dxr[idx] * self._amplify
+            py = y0_all[idx] + dyr[idx] * self._amplify
+            txt = QGraphicsTextItem(f"{d_arcsec:.1f}\"")
+            txt.setFont(label_font)
+            txt.setScale(5.0)
+            txt.setDefaultTextColor(QColor(200,200,200))
+            txt.setPos(px + 4, py + 4)
+            scene.addItem(txt)
+
+        scene.setSceneRect(scene.itemsBoundingRect())
+        self._view.fitInView(scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        QTimer.singleShot(0, lambda: self._view.fitInView(
+            self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio))
+
+    def _open_unwarp(self):
+        doc = self._doc
+        if doc is None:
+            return
+        mw = self._main_window
+        try:
+            from setiastro.saspro.unwarp import UnwarpDialog
+        except Exception as e:
+            QMessageBox.warning(self, self.tr("Unwarp"),
+                                self.tr("Unwarp tool unavailable:\n{0}").format(e))
+            return
+        dm = None
+        if mw is not None:
+            dm = getattr(mw, "doc_manager", None) or getattr(mw, "docman", None)
+        dlg = UnwarpDialog(
+            parent=mw or self,
+            settings=getattr(mw, "settings", None) if mw is not None else None,
+            doc_manager=dm,
+            list_open_docs_fn=getattr(mw, "_list_open_docs", None) if mw is not None else None,
+            document=doc,
+        )
+        try:
+            from setiastro.saspro.resources import unwarp_path
+            dlg.setWindowIcon(QIcon(unwarp_path))
+        except Exception:
+            pass
+        dlg.show(); dlg.raise_(); dlg.activateWindow()
+
 def make_header_from_xisf_meta(meta: dict) -> fits.Header:
     """
     meta is the dict you returned as original_header for XISF:
@@ -1660,7 +1720,10 @@ class ImagePeekerDialogPro(QDialog):
 
                 DistortionGridDialog(
                     img=np.clip(arr, 0, 1), sip_meta=hdr, arcsec_per_pix=float(asp),
-                    n_grid_lines=10, amplify=60.0, parent=self
+                    n_grid_lines=10, amplify=60.0,
+                    document=self._coerce_doc(self.document),
+                    main_window=self.parent(),
+                    parent=self
                 ).show()
 
 
@@ -1707,17 +1770,22 @@ class ImagePeekerDialogPro(QDialog):
             self._update_sep_color_button()
 
     def _refresh_mosaic(self):
-        arr, _ = self._arr_and_meta()
+        arr, _ = self._arr_and_meta()          # this is the 32-bit float image
         if arr is None or arr.size == 0:
             return
-        # ensure RGB for preview
-        if arr.ndim == 2: arr = np.repeat(arr[...,None], 3, axis=2)
-        qimg = self._to_qimage(np.clip(arr, 0, 1))
-        n = max(2, int(self.grid_spin.value()))
+        if arr.ndim == 2:
+            arr = np.repeat(arr[..., None], 3, axis=2)
+        arr = np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
+
+        n   = max(2, int(self.grid_spin.value()))
         ps  = int(self.panel_slider.value())
         sep = int(self.sep_slider.value())
-        mosaic = self._build_mosaic(qimg, n, ps, sep, QColor(0,0,0))
-        self.preview_pane.load_qimage(mosaic)
+
+        # tile in FLOAT so the stretch sees full precision
+        mosaic_f = build_mosaic_numpy(arr, grid=n, panel=ps, sep=sep, background=0.0)
+
+        qimg = self._to_qimage(mosaic_f)       # 8-bit, for immediate display only
+        self.preview_pane.load_qimage(qimg, source_float=mosaic_f)
 
     def _on_ok(self):
         # user clicked OK → generate & display the mosaic

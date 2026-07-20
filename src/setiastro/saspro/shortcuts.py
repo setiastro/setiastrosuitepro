@@ -577,7 +577,7 @@ _PRESET_UI_IDS = {
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine","geom_resize_canvas",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
-    "satchroma","fx",
+    "satchroma","fx","unwarp",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -665,8 +665,11 @@ def _preset_opener_for_command(command_id: str):
         return open_rcastro_with_preset 
     if command_id == "syqontools":
         from setiastro.saspro.syqon_tools import open_syqontools_with_preset
-        return open_syqontools_with_preset                     
-    return None
+        return open_syqontools_with_preset   
+    if command_id == "unwarp":
+        from setiastro.saspro.unwarp import open_unwarp_with_preset
+        return open_unwarp_with_preset
+    return None                      
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
 def _open_preset_editor_for_command(parent, command_id: str, initial: dict | None):
@@ -733,7 +736,10 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
         from setiastro.saspro.shortcuts import _FXPresetDialog
         dlg = _FXPresetDialog(parent, initial=cur or {"effect": "orton_glow"})
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
-
+    if command_id == "unwarp":
+        from setiastro.saspro.unwarp import _UnwarpPresetDialog
+        dlg = _UnwarpPresetDialog(parent, initial=cur or {"expand": True, "order": 3, "fill_nan": False})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
     if command_id == "syqontools":
         dlg = _SyQonToolsPresetDialog(parent, initial=cur or {})
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None

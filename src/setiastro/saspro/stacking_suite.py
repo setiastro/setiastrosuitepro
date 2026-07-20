@@ -2453,6 +2453,13 @@ class AfterAlignWorker(QObject):
                 payload
             )
 
+        except StackCancelled:
+            self.finished.emit(
+                False,
+                self.tr("Cancelled by user."),
+                {"cancelled": True}
+            )
+
         except Exception as e:
             self.finished.emit(
                 False,
@@ -3260,7 +3267,7 @@ class _Progress:
             max(1, int(maximum)),
             owner
         )
-        self._pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self._pd.setWindowModality(Qt.WindowModality.NonModal)
         self._pd.setMinimumDuration(0)
         self._pd.setAutoClose(False)
         self._pd.setAutoReset(False)
@@ -5541,6 +5548,10 @@ class FlatStrengthPreviewDialog(QDialog):
     def adjusted_flat(self) -> np.ndarray:
         return self._adjusted_flat()
      
+class StackCancelled(BaseException):
+    """Cooperative cancel — raised at a checkpoint, unwinds to a phase boundary.
+    Subclasses BaseException on purpose so `except Exception` blocks don't eat it."""
+
 class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
@@ -5818,8 +5829,19 @@ class StackingSuiteDialog(QDialog):
 
     def _start_exec_monitor(self):
         m = self._get_exec_monitor()
-        # If a run is already active (timer running, rows present),
-        # just ensure the window is visible — don't clear it
+        # Force-clear any stale connection (from a previous run or a different
+        # connection type) so the reconnect below always lands.
+        try:
+            m.cancel_requested.disconnect(self.request_cancel)
+        except TypeError:
+            print("[CANCEL] _start_exec_monitor: no prior connection to disconnect")
+        try:
+            m.cancel_requested.connect(
+                self.request_cancel,
+                Qt.ConnectionType.DirectConnection
+            )
+        except Exception as e:
+            print(f"[CANCEL] _start_exec_monitor: CONNECT FAILED: {e!r}")
         if m._run_start is not None and m._tick_timer.isActive():
             m.show()
             m.raise_()
@@ -6224,7 +6246,6 @@ class StackingSuiteDialog(QDialog):
         return tab
 
     def _run_full_pipeline(self):
-        from PyQt6.QtWidgets import QMessageBox
 
         has_lights = bool(
             getattr(self, "light_files", None)
@@ -6284,7 +6305,6 @@ class StackingSuiteDialog(QDialog):
         self.calibrate_lights()
 
     def _cleanup_temp_files(self):
-        from PyQt6.QtWidgets import QMessageBox
         import shutil
 
         stacking_dir = getattr(self, "stacking_directory", None)
@@ -7326,6 +7346,106 @@ class StackingSuiteDialog(QDialog):
 
         self.settings.sync()
 
+    def _export_stacking_settings_file(self, dialog):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        import json, datetime
+
+        path, _ = QFileDialog.getSaveFileName(
+            dialog, self.tr("Export Stacking Settings"),
+            "SASpro_stacking_settings.json",
+            self.tr("JSON files (*.json);;All files (*)")
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".json"):
+            path += ".json"
+
+        data = {k: self.settings.value(k)
+                for k in self.settings.allKeys()
+                if self._is_shareable_stacking_key(k)}
+
+        payload = {
+            "format": "saspro-stacking-settings",
+            "version": 1,
+            "exported": datetime.datetime.now().isoformat(timespec="seconds"),
+            "settings": data,
+        }
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, default=str)
+        except Exception as e:
+            QMessageBox.critical(dialog, self.tr("Export failed"),
+                                self.tr("Could not write settings file:\n{0}").format(e))
+            return
+
+        QMessageBox.information(dialog, self.tr("Settings exported"),
+            self.tr("Stacking settings exported to:\n{0}").format(path))
+
+
+    def _import_stacking_settings_file(self, dialog):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        import json
+
+        path, _ = QFileDialog.getOpenFileName(
+            dialog, self.tr("Import Stacking Settings"), "",
+            self.tr("JSON files (*.json);;All files (*)")
+        )
+        if not path:
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(dialog, self.tr("Import failed"),
+                                self.tr("Could not read settings file:\n{0}").format(e))
+            return
+
+        if not isinstance(payload, dict) or payload.get("format") != "saspro-stacking-settings":
+            QMessageBox.warning(dialog, self.tr("Invalid file"),
+                self.tr("This does not look like a SASpro stacking settings file."))
+            return
+
+        data = payload.get("settings", {})
+        if not isinstance(data, dict) or not data:
+            QMessageBox.warning(dialog, self.tr("Nothing to import"),
+                self.tr("The file contains no stacking settings."))
+            return
+
+        msg = self.tr(
+            "Import stacking settings from this file?\n\n"
+            "This will overwrite your current stacking configuration and "
+            "restart the Stacking Suite.\n\n"
+            "(Your local stacking directory is left unchanged.)"
+        )
+        if QMessageBox.question(dialog, self.tr("Import settings"), msg,
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                                ) != QMessageBox.StandardButton.Yes:
+            return
+
+        applied = 0
+        for key, val in data.items():
+            if self._is_shareable_stacking_key(key):
+                self.settings.setValue(key, val)
+                applied += 1
+
+        self.settings.sync()
+        dialog.accept()
+        self.update_status(self.tr("📥 Imported {0} stacking settings.").format(applied))
+        self._restart_self()
+
+
+    @staticmethod
+    def _is_shareable_stacking_key(key) -> bool:
+        if not isinstance(key, str) or not key.startswith("stacking/"):
+            return False
+        low = key.lower()
+        if low in ("stacking/dir", "stacking/active_profile"):
+            return False
+        if low.startswith("stacking/profiles") or "/profiles/" in low:
+            return False
+        return True
 
     def open_stacking_settings(self, origin: str = "stacking"):
         """Opens a 2-column Stacking Settings dialog."""
@@ -7365,14 +7485,16 @@ class StackingSuiteDialog(QDialog):
         btn_save   = QPushButton(self.tr("Save"))
         btn_load   = QPushButton(self.tr("Load"))
         btn_delete = QPushButton(self.tr("Delete"))
-
+        btn_export = QPushButton(self.tr("Export…"))
+        btn_import = QPushButton(self.tr("Import…"))
         prof_layout.addWidget(prof_label)
         prof_layout.addWidget(self.profile_combo, 1)
         prof_layout.addWidget(btn_new)
         prof_layout.addWidget(btn_save)
         prof_layout.addWidget(btn_load)
         prof_layout.addWidget(btn_delete)
-
+        prof_layout.addWidget(btn_export)
+        prof_layout.addWidget(btn_import)
         root.addWidget(gb_profiles)
 
         # Now your scroll area, as before
@@ -8321,7 +8443,8 @@ class StackingSuiteDialog(QDialog):
         btns.accepted.connect(lambda: self.save_stacking_settings(dialog, origin=origin))
         btns.rejected.connect(dialog.reject)
         root.addWidget(btns)
-
+        btn_export.clicked.connect(lambda: self._export_stacking_settings_file(dialog))
+        btn_import.clicked.connect(lambda: self._import_stacking_settings_file(dialog))
         dialog.resize(900, 640)
         dialog.exec()
 
@@ -9148,17 +9271,24 @@ class StackingSuiteDialog(QDialog):
         text = edit.text().strip()
         return (text if text else "Unknown", apply_all)
 
+    def _begin_filter_batch(self):
+        """Call at the start of each add-files / add-folder operation so a
+        previous batch's 'apply to all remaining files' choice doesn't carry
+        into a new, unrelated group. Does NOT clear _path_filter_override —
+        that's the permanent per-file record and must survive."""
+        self._missing_filter_policy = {}
+
     def _resolve_filter_for_path(self, path, header):
-        """
-        Return a sanitized filter name for `path`. Prompts (once per batch,
-        with optional apply-to-all) when the header has no FILTER keyword.
-        Records the resolution in self._path_filter_override so downstream
-        writers (calibrated lights, master flats) can carry it forward.
-        """
         if not hasattr(self, "_missing_filter_policy") or self._missing_filter_policy is None:
             self._missing_filter_policy = {}
         if not hasattr(self, "_path_filter_override") or self._path_filter_override is None:
             self._path_filter_override = {}
+
+        # Already resolved this exact file? Keep that decision.
+        # Prevents a later batch's "apply to all" (or any tree rebuild)
+        # from retroactively relabeling files that were already added.
+        if path in self._path_filter_override:
+            return self._path_filter_override[path]
 
         raw = header.get("FILTER")
         if raw not in (None, ""):
@@ -9168,7 +9298,7 @@ class StackingSuiteDialog(QDialog):
 
         pol = self._missing_filter_policy
         if "apply_all" in pol:
-            chosen = pol["apply_all"]  # str or None
+            chosen = pol["apply_all"]
             if chosen:
                 self._path_filter_override[path] = chosen
                 return chosen
@@ -11370,7 +11500,6 @@ class StackingSuiteDialog(QDialog):
     
 
     def _show_gpu_accel_fix_help(self):
-        from PyQt6.QtWidgets import QMessageBox, QApplication
         msg = QMessageBox(self)
         msg.setWindowTitle("GPU still not being used?")
         msg.setIcon(QMessageBox.Icon.Information)
@@ -13365,7 +13494,7 @@ class StackingSuiteDialog(QDialog):
         total = len(paths)
         dlg = QProgressDialog(title, "Cancel", 0, total, self)
         dlg.setWindowTitle("Please wait")
-        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
         dlg.setMinimumDuration(0)
         dlg.setAutoReset(True)
         dlg.setAutoClose(True)
@@ -13461,7 +13590,7 @@ class StackingSuiteDialog(QDialog):
         """
         dlg = QProgressDialog(text, None, 0, 0, self)
         dlg.setWindowTitle("Please wait")
-        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
         dlg.setMinimumDuration(0)
         dlg.setCancelButton(None)
         dlg.show()
@@ -17017,6 +17146,7 @@ class StackingSuiteDialog(QDialog):
         import threading
 
         self._start_exec_monitor()
+        self._reset_cancel()
 
         if not self.stacking_directory:
             QMessageBox.warning(self, "Error", "Please set the stacking directory first.")
@@ -17514,7 +17644,7 @@ class StackingSuiteDialog(QDialog):
         # ── producer: loads raw lights from disk ──────────────────────────
         def _producer():
             for fi in frame_infos:
-                if pipeline_error.is_set():
+                if pipeline_error.is_set() or self._cancelled():
                     break
                 try:
                     light_data, hdr, bit_depth, is_mono = load_image(fi["light_file"])
@@ -17711,6 +17841,10 @@ class StackingSuiteDialog(QDialog):
 
         while True:
             _drain_status()
+            if self._cancelled():
+                pipeline_error.set()   # tell producer to stop feeding
+                self.update_status(self.tr("⏹ Calibration cancelling — draining pipeline…"))
+                break
             item = raw_queue.get()
             if item is None:
                 break
@@ -17795,8 +17929,29 @@ class StackingSuiteDialog(QDialog):
             del light_data
             QApplication.processEvents()
             
-        # wait for consumer to finish saving — keep draining status so
-        # satellite removal progress stays visible
+        # If we broke out early (cancel), the producer may be blocked on a full
+        # raw_queue. Drain it so the producer can run to its sentinel and exit.
+        cancelled = self._cancelled()
+        if cancelled:
+            import queue as _q
+            drained = 0
+            while producer_thread.is_alive():
+                try:
+                    dumped = raw_queue.get_nowait()
+                    if dumped is not None:
+                        drained += 1
+                except _q.Empty:
+                    producer_thread.join(timeout=0.05)
+            # swallow the sentinel if it's still sitting there
+            try:
+                raw_queue.get_nowait()
+            except _q.Empty:
+                pass
+            if drained:
+                self.update_status(self.tr(f"⏹ Discarded {drained} un-calibrated frame(s) on cancel."))
+
+        # wait for consumer to finish saving whatever already made it into
+        # result_queue — keep draining status so satellite progress stays visible
         result_queue.put(None)
         while consumer_thread.is_alive():
             _drain_status()
@@ -17828,6 +17983,17 @@ class StackingSuiteDialog(QDialog):
             pass
 
         gc.collect()
+
+        if cancelled:
+            self.update_status(self.tr("⏹ Calibration stopped by user."))
+            try:
+                if self._exec_monitor is not None:
+                    self._exec_monitor.mark_stopped()
+            except Exception:
+                pass
+            self.populate_calibrated_lights()   # surface whatever completed
+            self._refresh_quick_stack_summary_later()
+            return   # skip auto-register-after-cal on cancel
 
         self.update_status(self.tr("✅ Calibration Complete!"))
         QApplication.processEvents()
@@ -18844,6 +19010,28 @@ class StackingSuiteDialog(QDialog):
 
         return hdr
 
+    def _cancelled(self) -> bool:
+        ev = getattr(self, "_cancel_event", None)
+        result = bool(ev is not None and ev.is_set())
+        import traceback
+        caller = traceback.extract_stack(limit=2)[0]
+        return result
+
+    def _reset_cancel(self):
+        import threading, traceback
+        caller = traceback.extract_stack(limit=2)[0]
+        if not hasattr(self, "_cancel_event") or self._cancel_event is None:
+            self._cancel_event = threading.Event()
+        self._cancel_event.clear()
+
+    def request_cancel(self):
+        import threading, traceback
+        caller = traceback.extract_stack(limit=2)[0]
+        if not hasattr(self, "_cancel_event") or self._cancel_event is None:
+            self._cancel_event = threading.Event()
+        self._cancel_event.set()
+        self.update_status(self.tr("🛑 Cancel requested — finishing current tile/frame, then stopping…"))
+
     def register_images(self):
 
         # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
@@ -18959,6 +19147,7 @@ class StackingSuiteDialog(QDialog):
             return
         
         self._start_exec_monitor()
+        self._reset_cancel()
         self.update_status(self.tr("🧹 Doing a little tidying up..."))
         user_ref_locked = bool(getattr(self, "_user_ref_locked", False))
 
@@ -19215,6 +19404,8 @@ class StackingSuiteDialog(QDialog):
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             for idx, chunk in enumerate(chunks, 1):
+                if self._cancelled():
+                    raise StackCancelled()
                 self.update_status(self.tr(f"📦 Measuring chunk {idx}/{total_chunks} ({len(chunk)} frames)"))
                 chunk_images = []
                 chunk_valid_files = []
@@ -19224,6 +19415,8 @@ class StackingSuiteDialog(QDialog):
                     futs = {executor.submit(self._quick_preview_any, fp, target_xbin, target_ybin): fp
                             for fp in chunk}
                     for fut in as_completed(futs):
+                        if self._cancelled():
+                            raise StackCancelled()
                         fp = futs[fut]
                         try:
                             preview = fut.result()
@@ -19679,6 +19872,8 @@ class StackingSuiteDialog(QDialog):
             norm_dir = os.path.join(self.stacking_directory, "Normalized_Images")
             os.makedirs(norm_dir, exist_ok=True)
 
+            if self._cancelled():
+                raise StackCancelled()
             self.update_status(self.tr("📏 Phase: Normalization starting…"))
 
             ocv_prev = None
@@ -19723,6 +19918,8 @@ class StackingSuiteDialog(QDialog):
             self._norm_target_hw = (int(ref_H), int(ref_W))
 
             for idx, chunk in enumerate(chunks, 1):
+                if self._cancelled():
+                    raise StackCancelled()
                 self.update_status(self.tr(f"🌀 Normalizing chunk {idx}/{total_chunks} ({len(chunk)} frames)…"))
                 QApplication.processEvents()
 
@@ -19743,6 +19940,8 @@ class StackingSuiteDialog(QDialog):
                 with ThreadPoolExecutor(max_workers=io_workers) as ex:
                     futs = {ex.submit(self._load_image_any, fp): fp for fp in chunk}
                     for fut in as_completed(futs):
+                        if self._cancelled():
+                            raise StackCancelled()
                         fp = futs[fut]
                         try:
                             img, hdr = fut.result()
@@ -20021,7 +20220,7 @@ class StackingSuiteDialog(QDialog):
             self.alignment_thread.registration_complete.connect(self.on_registration_complete)
 
             self.align_progress = QProgressDialog("Aligning stars…", None, 0, 0, self)
-            self.align_progress.setWindowModality(Qt.WindowModality.WindowModal)
+            self.align_progress.setWindowModality(Qt.WindowModality.NonModal)
             self.align_progress.setMinimumDuration(0)
             self.align_progress.setCancelButton(None)
             self.align_progress.setWindowTitle("Stellar Alignment")
@@ -20044,6 +20243,14 @@ class StackingSuiteDialog(QDialog):
             )
             self.alignment_thread.start()
 
+        except StackCancelled:
+            self._set_registration_busy(False)
+            mon = getattr(self, "_exec_monitor", None)
+            if mon is not None:
+                try: mon.mark_stopped()
+                except Exception: pass
+            self.update_status(self.tr("⏹ Registration cancelled by user."))
+            return
         except Exception as e:
             self._set_registration_busy(False)
             raise
@@ -20711,6 +20918,20 @@ class StackingSuiteDialog(QDialog):
 
     def on_registration_complete(self, success, msg):
         self.update_status(self.tr("📏 Phase: Star alignment complete."))
+
+        # Cancel requested during (or before) alignment — stop here instead of
+        # launching integration. Alignment itself can't be interrupted mid-flight
+        # (it's a black-box thread), but we refuse to start the next phase.
+        if self._cancelled():
+            self._set_registration_busy(False)
+            self.alignment_thread = None
+            mon = getattr(self, "_exec_monitor", None)
+            if mon is not None:
+                try: mon.mark_stopped()
+                except Exception: pass
+            self.update_status(self.tr("⏹ Stopped after alignment (cancel requested)."))
+            return
+
         prev = getattr(self, "_align_det_sigma_prev", None)
         if prev is not None:
             self.settings.setValue("stacking/align/det_sigma", prev)
@@ -20980,7 +21201,7 @@ class StackingSuiteDialog(QDialog):
             self.post_thread.start()
 
             self.post_progress = QProgressDialog("Stacking & drizzle (if enabled)…", None, 0, 0, self)
-            self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
+            self.post_progress.setWindowModality(Qt.WindowModality.NonModal)
             self.post_progress.setCancelButton(None)
             self.post_progress.setMinimumDuration(0)
             self.post_progress.setWindowTitle("Post-Alignment")
@@ -21000,7 +21221,7 @@ class StackingSuiteDialog(QDialog):
         if autocrop_enabled_ui:
             pd = QProgressDialog("Calculating autocrop bounding box…", None, 0, 0, self)
             pd.setWindowTitle("Auto Crop")
-            pd.setWindowModality(Qt.WindowModality.WindowModal)
+            pd.setWindowModality(Qt.WindowModality.NonModal)
             pd.setCancelButton(None)
             pd.setMinimumDuration(0)
             pd.setRange(0, 0)
@@ -21973,18 +22194,46 @@ class StackingSuiteDialog(QDialog):
             self.update_status(self.tr(message))
         except Exception:
             pass
+        was_cancelled = bool(
+            (isinstance(payload, dict) and payload.get("cancelled"))
+            or (not ok and isinstance(message, str) and "cancel" in message.lower())
+        )
         try:
             if self._exec_monitor is not None:
-                summary = ""
-                if isinstance(payload, dict):
-                    lines = payload.get("summary_lines") or []
-                    summary = "  ".join(str(l) for l in lines if l and not l.startswith("•"))[:80]
-                self._exec_monitor.finish_run(ok, summary)
+                if was_cancelled:
+                    self._exec_monitor.mark_stopped()
+                else:
+                    summary = ""
+                    if isinstance(payload, dict):
+                        lines = payload.get("summary_lines") or []
+                        summary = "  ".join(str(l) for l in lines if l and not l.startswith("•"))[:80]
+                    self._exec_monitor.finish_run(ok, summary)
                 self._exec_monitor_pipeline_active = False
         except Exception:
             pass
+
+        if was_cancelled:
+            self._cfa_for_this_run = None
+            self.update_status(self.tr("⏹ Stacking stopped by user."))
+            try:
+                QMessageBox.information(self, self.tr("Stopped"),
+                                        self.tr("Stacking was cancelled. Any partial master was discarded."))
+            except Exception:
+                pass
+            QApplication.processEvents()
+            return
         # ---- MF launch request from GUI thread ----
         if ok and isinstance(payload, dict) and payload.get("action") == "launch_mf":
+            if self._cancelled():
+                self._set_registration_busy(False)
+                try:
+                    if self._exec_monitor is not None:
+                        self._exec_monitor.mark_stopped()
+                except Exception:
+                    pass
+                self.update_status(self.tr("⏹ Stopped before MFDeconv (cancel requested)."))
+                self._cfa_for_this_run = None
+                return
             try:
                 grouped_files = payload["grouped_files"]
                 transforms_dict = payload["transforms_dict"]
@@ -23565,10 +23814,29 @@ class StackingSuiteDialog(QDialog):
         fut = tp.submit(_read_comet_tile_into, buf0, y0, y1, x0, x1)
         use_buf0 = True
 
+        def _abort_cleanup():
+            try: tp.shutdown(wait=False)
+            except Exception: pass
+            for mm in (warp_mms or []):
+                try: del mm
+                except Exception: pass
+            try: shutil.rmtree(warp_dir, ignore_errors=True)
+            except Exception: pass
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            if tmp_root is not None:
+                try: shutil.rmtree(tmp_root, ignore_errors=True)
+                except Exception: pass
+
         _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
 
         with _ctx_instance:
             for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                if self._cancelled():
+                    _abort_cleanup()
+                    log(f"⏹ Comet integration cancelled for group '{group_key}'.")
+                    raise StackCancelled()
                 t0_tile = _time.perf_counter()
 
                 th, tw = fut.result()
@@ -23751,6 +24019,14 @@ class StackingSuiteDialog(QDialog):
         return views
 
     def _start_after_align_worker(self, aligned_light_files: dict[str, list[str]]):
+        if self._cancelled():
+            self._set_registration_busy(False)
+            mon = getattr(self, "_exec_monitor", None)
+            if mon is not None:
+                try: mon.mark_stopped()
+                except Exception: pass
+            self.update_status(self.tr("⏹ Stopped before integration (cancel requested)."))
+            return
         # Snapshot UI settings
         if getattr(self, "_suppress_normal_integration_once", False):
             self._suppress_normal_integration_once = False
@@ -23800,7 +24076,7 @@ class StackingSuiteDialog(QDialog):
         self.post_thread.start()
 
         self.post_progress = QProgressDialog("Stacking & drizzle/mfdeconv (if enabled)…", None, 0, 0, self)
-        self.post_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.post_progress.setWindowModality(Qt.WindowModality.NonModal)
         self.post_progress.setCancelButton(None)
         self.post_progress.setMinimumDuration(0)
         self.post_progress.setWindowTitle("Post-Alignment")
@@ -23861,7 +24137,8 @@ class StackingSuiteDialog(QDialog):
             self.update_status(self.tr("⏸ Another job is running; ignoring extra click."))
             return
         self._set_registration_busy(True, label="Integrating")
-        self._start_exec_monitor() 
+        self._start_exec_monitor()
+        self._reset_cancel() 
 
         try:
             self.update_status(self.tr("🔄 Integrating Previously Registered Images…"))
@@ -24008,6 +24285,8 @@ class StackingSuiteDialog(QDialog):
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             for idx, chunk in enumerate(chunks, 1):
+                if self._cancelled():
+                    raise StackCancelled()
                 self.update_status(self.tr(f"📦 Measuring chunk {idx}/{total_chunks} ({len(chunk)} frames)"))
                 QApplication.processEvents()
 
@@ -25197,9 +25476,24 @@ class StackingSuiteDialog(QDialog):
             f"({'GPU' if use_gpu else 'CPU'}, {n_rows}×{n_cols} grid, "
             f"chunk {chunk_h}×{chunk_w}, prefetch={PREFETCH_DEPTH})…")
 
+        def _abort_cleanup():
+            try: tp.shutdown(wait=False)
+            except Exception: pass
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            sources.clear()
+            if integrated_memmap_path is not None:
+                try: cleanup_memmap(None, integrated_memmap_path)
+                except Exception: pass
+
         _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
         with _ctx_instance:
             for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                if self._cancelled():
+                    _abort_cleanup()
+                    log(f"⏹ Integration cancelled for group '{group_key}'.")
+                    raise StackCancelled()
                 t0 = time.perf_counter()
 
                 fut, bidx, _ = pending.popleft()
@@ -25558,11 +25852,24 @@ class StackingSuiteDialog(QDialog):
             f"io_workers={_io_workers}, {'GPU' if use_gpu else 'CPU'}")
 
         # ── Main tile loop ─────────────────────────────────────────────────────
+        def _abort_cleanup():
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            sources.clear()
+            if integrated_memmap_path is not None:
+                try: cleanup_memmap(None, integrated_memmap_path)
+                except Exception: pass
+
         _ctx_instance = (
             _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
         )
         with _ctx_instance:
             for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                if self._cancelled():
+                    _abort_cleanup()
+                    log(f"⏹ [LowRAM] Integration cancelled for group '{group_key}'.")
+                    raise StackCancelled()
                 t0 = time.perf_counter()
 
                 th, tw = _read_tile_parallel(y0, y1, x0, x1)
