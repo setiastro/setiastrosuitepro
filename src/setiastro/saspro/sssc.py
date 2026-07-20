@@ -838,8 +838,11 @@ def _solve_system_response(
                 if ch_data[ch_name] is not None
             ]
 
-            # Stage 2 gains used throughout — we minimize the SAME residual
-            # that gets reported as RMS, not an internal surrogate.
+            # Stage 1 scalar gains (k_R, k_G=1, k_B) used throughout the solver
+            # loss — we minimize the SAME residual that gets reported as RMS,
+            # not an internal surrogate. NOTE: pixel correction later uses the
+            # 9-element Stage 2 quadratic coefficients; these scalars are
+            # solver-only. Different objects, different roles — don't conflate.
             s3_gains = {"R": k_R, "G": 1.0, "B": k_B}
 
             # ── x0: Stage 2 operating point (flat per-channel scale) ──────────
@@ -961,8 +964,8 @@ def _solve_system_response(
 
             def _rms_loss(x):
                 """
-                Sum of squared fractional residuals using Stage 2 gains.
-                This is exactly what gets reported as RMS.
+                Sum of squared fractional residuals using the Stage 1 scalar
+                gains (k_R, k_G=1, k_B). This is exactly what gets reported as RMS.
                 """
                 total = 0.0
                 for ci, (ch_name, cd) in enumerate(active_channels):

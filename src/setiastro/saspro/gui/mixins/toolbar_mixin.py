@@ -31,7 +31,7 @@ from setiastro.saspro.resources import (
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
     stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,gaia_path,
-    signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path,
+    signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path, unwarp_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,satchroma_path, fx_path,
@@ -325,7 +325,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_planet_projection)
         tb_star.addAction(self.act_flythrough)
         tb_star.addAction(self.act_plate_solve)
-        
+        tb_star.addAction(self.act_unwarp)        
         tb_star.addAction(self.act_star_align)
         tb_star.addAction(self.act_star_register)
         tb_star.addAction(self.act_rgb_align)
@@ -1404,6 +1404,11 @@ class ToolbarMixin:
         self.act_plate_solve.setStatusTip(self.tr("Solve WCS/SIP for the active image or a file"))
         self.act_plate_solve.triggered.connect(self._open_plate_solver)
 
+        self.act_unwarp = QAction(QIcon(unwarp_path), self.tr("Unwarp..."), self)
+        self.act_unwarp.setIconVisibleInMenu(True)
+        self.act_unwarp.setStatusTip(self.tr("Remove SIP distortion from a plate-solved image"))
+        self.act_unwarp.triggered.connect(self._open_unwarp)
+
         self.act_star_align = QAction(QIcon(staralign_path), self.tr("Stellar Alignment..."), self)
         self.act_star_align.setIconVisibleInMenu(True)
         self.act_star_align.setStatusTip(self.tr("Align images via astroalign / triangles"))
@@ -1686,6 +1691,7 @@ class ToolbarMixin:
         reg("fx", self.act_fx)
         reg("dither_analysis", self.act_dither_analysis)
         reg("plate_solve", self.act_plate_solve)
+        reg("unwarp", self.act_unwarp)
         reg("magnitude_tool", self.act_magnitude)
         reg("snr_tool", self.act_snr)
         reg("star_align", self.act_star_align)

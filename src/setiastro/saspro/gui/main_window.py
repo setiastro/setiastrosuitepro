@@ -180,7 +180,7 @@ from setiastro.saspro.resources import (
     jwstpupil_path, signature_icon_path, livestacking_path, hrdiagram_path,
     convoicon_path, spcc_icon_path, sasp_data_path, exoicon_path, peeker_icon,rotatearbitrary_path,
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
-    starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path,
+    starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path, unwarp_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
     satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path, satchroma_path, fx_path,
@@ -4871,6 +4871,17 @@ class AstroSuiteProMainWindow(
 
         return {"CTYPE1","CTYPE2","CRVAL1","CRVAL2"}.issubset(keys)
 
+    def _open_unwarp(self):
+        from setiastro.saspro.unwarp import UnwarpDialog
+        dlg = UnwarpDialog(
+            parent=self,
+            settings=self.settings,
+            doc_manager=self.doc_manager,
+            list_open_docs_fn=self._list_open_docs,
+            document=self._active_doc(),
+        )
+        dlg.setWindowIcon(QIcon(unwarp_path))
+        dlg.show()
 
     def _open_finder_chart(self):
         doc = self._active_doc()
@@ -7373,7 +7384,34 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     pass
             return
-
+        if cid == "unwarp":
+            # Unwarp needs the full frame + its real WCS/SIP, so prefer the base
+            # document (a Preview/ROI doc won't carry the full solution).
+            u_doc = base_doc if base_doc is not None else doc
+            if u_doc is None or getattr(u_doc, "image", None) is None:
+                QMessageBox.information(self, "Unwarp", "Target view has no image.")
+                return
+            try:
+                from setiastro.saspro.unwarp import apply_unwarp_to_doc
+                ok = apply_unwarp_to_doc(u_doc, preset or {}, main_window=self)
+                if ok:
+                    try:
+                        self._last_headless_command = {
+                            "command_id": "unwarp",
+                            "preset": dict(preset or {}),
+                        }
+                    except Exception:
+                        pass
+                    self._log(f"Applied Unwarp (remove SIP) to '{target_sw.windowTitle()}'")
+                else:
+                    # No WCS / no SIP → apply_unwarp_to_doc is a logged no-op
+                    QMessageBox.information(
+                        self, "Unwarp",
+                        "This image has no SIP distortion to remove.\n"
+                        "Plate solve with SIP enabled first.")
+            except Exception as e:
+                QMessageBox.warning(self, "Unwarp", f"Apply failed:\n{e}")
+            return
         if cid == "fx":
             try:
                 from setiastro.saspro.fx_preset import apply_fx_via_preset, fx_effect_display_name

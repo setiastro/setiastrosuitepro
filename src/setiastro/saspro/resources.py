@@ -181,6 +181,7 @@ class Icons:
     HISTOGRAM_TRANSFORM = property(lambda self: _resource_path('histogram_transform.png'))
     MOSAIC = property(lambda self: _resource_path('mosaic.png'))
     PLATE_SOLVE = property(lambda self: _resource_path('platesolve.png'))
+    UNWARP = property(lambda self: _resource_path('unwarp.png'))
     PSF = property(lambda self: _resource_path('psf.png'))
     ISOPHOTE = property(lambda self: _resource_path('isophote.png'))
     
@@ -464,7 +465,7 @@ _LEGACY_ICON_MAP = {
     'parallex_path': 'parallax.png',
     'satchroma_path': 'satchroma.png',
     'fx_path': 'fx.png',
-
+    'unwarp_path': 'unwarp.png',
     'exoicon_path': 'exoicon.png',
     'peeker_icon': 'gridicon.png',
     'dse_icon_path': 'dse.png',
