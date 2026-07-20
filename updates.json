@@ -1,10 +1,10 @@
 {
-  "version": "1.19.9",
+  "version": "1.19.10",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.9/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.9/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.9/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.9/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.10/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.10/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.10/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.10/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.19.9\nUpdates to WIMI, Magnitude Tool, GraXpert and tiff opening, runtime torch."
+ "notes": "Seti Astro Suite Pro\n\nV1.19.10\nNew Feature: UnWarp. After you PlateSolve, if the WCS has SIP (poly degree warp terms) this can unwarp your image to remove fisheye or pincushion lens distortion of your image restoring it to true astrometrical shape. This can be called directly in Star Stuff or from the Image Peeker's Astrometric Distortion Analysis tool.\n\nAdded DisplayP3 ICC profile for exporting images. This will preserve the vibrance you see in SASpro during export as some have noted a drop in saturation and brilliance when saving as tiff, jpg, and png.\n\nStacking Suite has a Stop button on the execution monitor, import/export stacking settings, and a bug fix in the filter name popup.\n\nBug fix with debayering with pixels at a 0.00 value."
 }
