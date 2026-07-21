@@ -210,18 +210,47 @@ class PaletteAdjustDialog(QDialog):
                 self._change_zoom(1.1 if evt.angleDelta().y() > 0 else 0.9); return True
         return super().eventFilter(obj, evt)
 
+class PaletteGridWindow(QDialog):
+    """Non-modal companion window holding the palette thumbnail grid."""
+    def __init__(self, owner, grid_host):
+        super().__init__(owner)
+        self.setWindowTitle("Palette Gallery")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setModal(False)
+        self._owner = owner
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(grid_host)
+        lay.addWidget(scroll)
+
+    def closeEvent(self, e):
+        # Don't destroy the grid; just hide so the toggle can reopen it.
+        try:
+            self._owner.btn_gallery.setChecked(False)
+        except Exception:
+            pass
+        self.hide()
+        e.ignore()
+
 
 class PerfectPalettePicker(QWidget):
     THUMB_CROP = 512  # side length for thumbnail center crops
     PALETTES = [
-        "SHO","HOO","HSO","HOS",
-        "OSS","OHH","OSH","OHS",
-        "HSS","Realistic1","Realistic2","Foraxx"
+        "HHO","HOO","HOS","HSO",
+        "HSS","OHH","OHS","OOS",
+        "OSH","OSS","SHH","SHO",
+        "SOH","SOO",
+        "Realistic1","Realistic2","Foraxx",
+        "Dynamic Inverse",
     ]
 
     def __init__(self, doc_manager=None, parent=None):
         super().__init__(parent)
         self.doc_manager = doc_manager
+        self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowTitle("Perfect Palette Picker")
         self._settings = QSettings()
         self._persist_prefix = "perfect_palette_picker"
@@ -253,6 +282,12 @@ class PerfectPalettePicker(QWidget):
         self._pan_last: QPoint | None = None
 
         self._build_ui()
+
+        # Ensure PPP (and its gallery) don't outlive the application.
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._on_app_quit)
 
     def _k(self, key: str) -> str:
         return f"{self._persist_prefix}/{key}"
@@ -310,6 +345,12 @@ class PerfectPalettePicker(QWidget):
         self.btn_push.clicked.connect(self._push_final)
         left.addWidget(self.btn_push)
 
+        self.btn_gallery = QPushButton("Show Palette Gallery")
+        self.btn_gallery.setCheckable(True)
+        self.btn_gallery.setChecked(True)
+        self.btn_gallery.toggled.connect(self._toggle_gallery)
+        left.addWidget(self.btn_gallery)
+
         left.addStretch(1)
         root.addWidget(left_host, 0)
 
@@ -356,7 +397,8 @@ class PerfectPalettePicker(QWidget):
         self.thumb_size = QSize(220, 110)
         btn_w = self.thumb_size.width() + 2
         btn_h = self.thumb_size.height() + 2
-        cols, rows = 4, 3
+        cols = 6            # was 4  →  18 palettes = clean 3×6
+        rows = (len(self.PALETTES) + cols - 1) // cols
 
         for idx, name in enumerate(self.PALETTES):
             r, c = divmod(idx, cols)
@@ -370,14 +412,17 @@ class PerfectPalettePicker(QWidget):
             self._thumb_buttons[name] = b
             self.grid.addWidget(b, r, c)
 
-        grid_host = QWidget(self); grid_host.setLayout(self.grid)
+        grid_host = QWidget(); grid_host.setLayout(self.grid)
         hspacing = self.grid.horizontalSpacing(); vspacing = self.grid.verticalSpacing()
         m = self.grid.contentsMargins()
         grid_w = cols*btn_w + (cols-1)*hspacing + m.left() + m.right()
         grid_h = rows*btn_h + (rows-1)*vspacing + m.top() + m.bottom()
-        grid_host.setFixedSize(grid_w, grid_h)
-        grid_host.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        right.addWidget(grid_host, 0, alignment=Qt.AlignmentFlag.AlignHCenter)
+        grid_host.setMinimumSize(grid_w, grid_h)   # was setFixedSize
+        self._grid_host = grid_host                 # stash for the popout
+
+        # grid now lives in its own non-modal gallery window (created below)
+        self._gallery = PaletteGridWindow(self, grid_host)
+        self._gallery.resize(grid_w + 40, grid_h + 40)
 
         self.status = QLabel(""); right.addWidget(self.status, 0)
 
@@ -385,7 +430,7 @@ class PerfectPalettePicker(QWidget):
         root.addWidget(right_host, 1)
         self.chk_linear.stateChanged.connect(lambda *_: self._save_ui_state())
         self.setLayout(root)
-        self.setMinimumSize(left_host.width() + grid_w + 48, max(560, grid_h + 200))
+        self.setMinimumSize(left_host.width() + 480, 560)
 
     def _resize_to(self, arr: np.ndarray | None, size: tuple[int, int]) -> np.ndarray | None:
         """Resize np array to (w,h). Keeps dtype/scale. Uses INTER_AREA for downsizing."""
@@ -413,6 +458,9 @@ class PerfectPalettePicker(QWidget):
             s = self._settings
             s.setValue(self._k("window_geometry"), self.saveGeometry())
             s.setValue(self._k("linear"), bool(self.chk_linear.isChecked()))
+            if getattr(self, "_gallery", None) is not None:
+                s.setValue(self._k("gallery_geometry"), self._gallery.saveGeometry())
+                s.setValue(self._k("gallery_visible"), bool(self._gallery.isVisible()))
             try:
                 s.sync()
             except Exception:
@@ -433,6 +481,10 @@ class PerfectPalettePicker(QWidget):
             self.chk_linear.blockSignals(True)
             self.chk_linear.setChecked(linear)
             self.chk_linear.blockSignals(False)
+
+            gg = s.value(self._k("gallery_geometry"), None)
+            if gg is not None and getattr(self, "_gallery", None) is not None:
+                self._gallery.restoreGeometry(gg)
 
         except Exception:
             pass
@@ -585,16 +637,38 @@ class PerfectPalettePicker(QWidget):
 
         def _after():
             self._restore_ui_state()
+            # Open the palette gallery alongside the main window,
+            # honoring last session's visibility (default: open).
+            if getattr(self, "_gallery", None) is not None:
+                want_visible = bool(self._settings.value(
+                    self._k("gallery_visible"), True, type=bool))
+                self.btn_gallery.blockSignals(True)
+                self.btn_gallery.setChecked(want_visible)
+                self.btn_gallery.blockSignals(False)
+                if want_visible:
+                    self._gallery.show()
+                    self._gallery.raise_()
             # center scrollbars if nothing loaded yet
             if self._base_pm is None:
                 self._center_scrollbars()
         QTimer.singleShot(0, _after)
+
+    def _on_app_quit(self):
+        try:
+            self._save_ui_state()
+        except Exception:
+            pass
+        if getattr(self, "_gallery", None) is not None:
+            self._gallery.deleteLater()
+        self.close()
 
     def closeEvent(self, e):
         try:
             self._save_ui_state()
         except Exception:
             pass
+        if getattr(self, "_gallery", None) is not None:
+            self._gallery.deleteLater()
         super().closeEvent(e)
 
     # ------------- build/caches -------------
@@ -901,7 +975,19 @@ class PerfectPalettePicker(QWidget):
         h.setValue((h.maximum() + h.minimum()) // 2)
         v.setValue((v.maximum() + v.minimum()) // 2)
 
+    def _foraxx_gate(self, x):
+        """Foraxx-style dynamic gate: x^(1-x), clipped to [0,1] domain.
+        Rises 0→1 across the input but stays high through the midrange,
+        so blends lean toward the 'present' signal without hard thresholds."""
+        x = np.clip(np.nan_to_num(x), 1e-6, 1.0)
+        return x ** (1.0 - x)
+
     def _map_channels_or_special(self, name, ha, oo, si):
+        # Record TRUE presence before substitution masks it, so Foraxx can
+        # pick real-tricolor vs bicolor correctly.
+        has_real_si = si is not None
+        has_real_ha = ha is not None
+
         # substitution
         if ha is None and si is not None: ha = si
         if si is None and ha is not None: si = ha
@@ -916,6 +1002,11 @@ class PerfectPalettePicker(QWidget):
             "OSH": (oo, si, ha),
             "OHS": (oo, ha, si),
             "HSS": (ha, si, si),
+            "SOH": (si, oo, ha),   # completes the 6 full permutations
+            "SHH": (si, ha, ha),   # SII-red bicolor
+            "SOO": (si, oo, oo),   # SII-red / OIII bicolor
+            "HHO": (ha, ha, oo),   # Ha-forward warm bicolor
+            "OOS": (oo, oo, si),   # OIII-forward cool bicolor            
         }
         if name in basic:
             return basic[name]
@@ -932,25 +1023,54 @@ class PerfectPalettePicker(QWidget):
                 b = (oo if oo is not None else 0)
                 return r,g,b
             if name == "Foraxx":
-                if ha is not None and oo is not None and si is None:
-                    r = ha; b = oo
-                    t = ha * oo
-                    g = (t**(1 - t))*ha + (1 - (t**(1 - t)))*oo
-                    return r,g,b
-                if ha is not None and oo is not None and si is not None:
-                    t = np.clip(oo, 1e-6, 1.0)**(1 - np.clip(oo, 1e-6, 1.0))
-                    r = t*si + (1 - t)*ha
-                    t2 = ha * oo
-                    g = (t2**(1 - t2))*ha + (1 - (t2**(1 - t2)))*oo
+                # Bicolor Foraxx: Ha + OIII only (no real SII)
+                if has_real_ha and oo is not None and not has_real_si:
+                    r = ha
                     b = oo
-                    return r,g,b
+                    t = self._foraxx_gate(ha * oo)
+                    g = t * ha + (1.0 - t) * oo
+                    return r, g, b
+                # Tricolor Foraxx: real Ha + OIII + SII
+                if has_real_si and oo is not None and (ha is not None):
+                    t  = self._foraxx_gate(oo)
+                    r  = t * si + (1.0 - t) * ha
+                    t2 = self._foraxx_gate(ha * oo)
+                    g  = t2 * ha + (1.0 - t2) * oo
+                    b  = oo
+                    return r, g, b
                 return basic["SHO"]
+            if name == "Dynamic Inverse":
+                S = np.clip(np.nan_to_num(ha), 0.0, 1.0)
+                O = np.clip(np.nan_to_num(oo), 0.0, 1.0)
+                H = np.clip(np.nan_to_num(si), 0.0, 1.0)
+
+                # Red: Ha in OIII-voids, SII in OIII-rich zones.
+                tO = 1.0 - O
+                r  = tO * H + (1.0 - tO) * S
+
+                # Green: OIII fills the Ha gaps (gated by Ha absence).
+                tH = self._foraxx_gate(1.0 - H)
+                g  = (1.0 - tH) * H + tH * O
+
+                # Blue: OIII, biased into Ha-free regions.
+                b  = tH * O + (1.0 - tH) * (0.5 * O)
+
+                r = np.clip(r, 0.0, 1.0)
+                g = np.clip(g, 0.0, 1.0)
+                b = np.clip(b, 0.0, 1.0)
+                return r, g, b
         except Exception:
             return basic.get("SHO", (ha, oo, si))
 
         return basic.get("SHO", (ha, oo, si))
 
-    # ------------- push to new subwindow -------------
+    def _toggle_gallery(self, on: bool):
+        if on:
+            self._gallery.show()
+            self._gallery.raise_()
+        else:
+            self._gallery.hide()
+
     # ------------- push to new subwindow -------------
     def _get_doc_manager(self):
         """
