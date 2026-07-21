@@ -1119,6 +1119,68 @@ def xisf_fits_header_from_meta(image_meta: dict, file_meta: dict | None = None) 
 
     return hdr
 
+def _flip_vertical_wcs_header(hdr, naxis2):
+    """Update a FITS/WCS header for an np.flipud (vertical) flip of the image."""
+    if hdr is None:
+        return hdr
+    h = hdr.copy()
+    # Reference pixel reflects about the vertical center (FITS is 1-based)
+    if "CRPIX2" in h:
+        try:
+            h["CRPIX2"] = (naxis2 + 1) - float(h["CRPIX2"])
+        except Exception:
+            pass
+    # Negate the 2nd column of the linear transform (CD or PC form)
+    for k in ("CD1_2", "CD2_2", "PC1_2", "PC2_2"):
+        if k in h:
+            try:
+                h[k] = -float(h[k])
+            except Exception:
+                pass
+    # SIP: v-exponent parity flips A/AP; B/BP additionally negate overall
+    for prefix, negate in (("A_", False), ("AP_", False), ("B_", True), ("BP_", True)):
+        okey = f"{prefix}ORDER"
+        if okey not in h:
+            continue
+        try:
+            order = int(h[okey])
+        except Exception:
+            continue
+        for i in range(order + 1):
+            for j in range(order + 1 - i):
+                ck = f"{prefix}{i}_{j}"
+                if ck in h:
+                    try:
+                        val = float(h[ck]) * ((-1) ** j)
+                        h[ck] = -val if negate else val
+                    except Exception:
+                        pass
+    return h
+
+
+def _apply_roworder_flip(image, header):
+    """
+    SASpro works internally top-down (row 0 = top of frame). FITS tagged
+    ROWORDER='BOTTOM-UP' (e.g. Siril output) store row 0 at the bottom, so flip
+    them to top-down and update the WCS to match. Absent/TOP-DOWN => unchanged.
+    """
+    try:
+        roworder = str(header.get("ROWORDER", "")).strip().upper() if header is not None else ""
+    except Exception:
+        roworder = ""
+    if roworder != "BOTTOM-UP":
+        return image, header
+
+    naxis2 = image.shape[0]
+    image = np.ascontiguousarray(np.flipud(image))  # flipud is fine for (H,W) and (H,W,3)
+    if header is not None:
+        header = _flip_vertical_wcs_header(header, naxis2)
+        try:  # retag so a re-save + reload doesn't double-flip
+            header["ROWORDER"] = ("TOP-DOWN", "Reoriented to top-down by SASpro on load")
+            header.add_history("SASpro: flipped BOTTOM-UP->TOP-DOWN on load; WCS updated")
+        except Exception:
+            pass
+    return image, header
 
 def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
     """
@@ -1566,6 +1628,8 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
 
                     print(f"Loaded FITS image: shape={image.shape}, bit depth={bit_depth}, mono={is_mono}")
                     image = _finalize_loaded_image(image)
+                    # Normalize row order to SASpro's internal top-down convention
+                    image, original_header = _apply_roworder_flip(image, original_header)   # <-- add
 
                     # NEW: build metadata + attach WCS
                     meta = {

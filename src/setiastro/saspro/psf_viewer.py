@@ -131,7 +131,7 @@ class _StarWidget(QWidget):
         # HFR ellipse (orange) — rotated to match star orientation
         p.save()
         p.translate(cx, cy)
-        p.rotate(90.0 - math.degrees(theta))
+        p.rotate(math.degrees(theta))     # was: 90.0 - math.degrees(theta)
         p.setPen(QPen(QColor(255, 140, 0), 1.8, Qt.PenStyle.SolidLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(QRectF(-hfr_a, -hfr_b, hfr_a * 2, hfr_b * 2))
@@ -140,7 +140,7 @@ class _StarWidget(QWidget):
         # FWHM ellipse (green) — rotated to match star orientation
         p.save()
         p.translate(cx, cy)
-        p.rotate(90.0 - math.degrees(theta))
+        p.rotate(math.degrees(theta))     # was: 90.0 - math.degrees(theta)
         p.setPen(QPen(QColor(80, 200, 80), 1.8, Qt.PenStyle.SolidLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(QRectF(-fwhm_a, -fwhm_b, fwhm_a * 2, fwhm_b * 2))
@@ -154,14 +154,14 @@ class _StarWidget(QWidget):
         # Major axis — red
         arm_a = a_px * 2.4
         dx_a  =  arm_a * cos_t
-        dy_a  = -arm_a * sin_t
+        dy_a  =  arm_a * sin_t  
         p.setPen(QPen(QColor(220, 60, 60), 2.0))
         p.drawLine(QPointF(cx - dx_a, cy - dy_a), QPointF(cx + dx_a, cy + dy_a))
 
         # Minor axis — blue
         arm_b = b_px * 2.4
         dx_b  = -arm_b * sin_t
-        dy_b  = -arm_b * cos_t
+        dy_b  =  arm_b * cos_t
         p.setPen(QPen(QColor(80, 120, 220), 2.0))
         p.drawLine(QPointF(cx - dx_b, cy - dy_b), QPointF(cx + dx_b, cy + dy_b))
 
@@ -519,10 +519,21 @@ class PSFViewer(QDialog):
             ecc_arr = np.sqrt(1.0 - (b_arr / np.maximum(a_arr, 1e-9)) ** 2)
             a     = float(np.median(a_arr))
             b     = float(np.median(b_arr))
-            theta = float(np.median(np.array(self.star_list["theta"], dtype=float)))
             fwhm  = float(np.median(np.array(self.star_list["FWHM"],  dtype=float)))
             hfr   = float(np.median(np.array(self.star_list["HFR"],   dtype=float)))
             ecc   = float(np.median(ecc_arr))
+
+            # SEP theta is in the array frame (x=col, y=row). The star stamp bakes
+            # the blob row-0-at-top (y down), so raw theta matches a main view that
+            # also renders row-0-at-top. If the main image view shows FITS
+            # orientation (row 0 at bottom / y up), the on-screen display is flipped
+            # vertically relative to the stamp → negate theta so the stamp's
+            # elongation matches the real star's lean in the image.
+            MAIN_VIEW_IS_YUP = False   # set True if the main image view is FITS/y-up
+            theta = float(np.median(np.array(self.star_list["theta"], dtype=float)))
+            if MAIN_VIEW_IS_YUP:
+                theta = -theta
+
             self._star_widget.set_star(a, b, theta, fwhm, hfr, ecc)
         except Exception:
             self._star_widget.clear()
@@ -595,7 +606,8 @@ class PSFViewer(QDialog):
         else:
             if self.histogram_mode == "PSF":
                 data  = np.array(self.star_list["HFR"],  dtype=float)
-                edges = np.linspace(0, 7.5, 51)
+                hi    = float(data.max()) if data.size else 7.5
+                edges = np.linspace(0.0, max(hi, 1e-6), 51)
             else:
                 data  = np.array(self.star_list["flux"], dtype=float)
                 edges = (np.linspace(data.min(), data.max(), 51)
