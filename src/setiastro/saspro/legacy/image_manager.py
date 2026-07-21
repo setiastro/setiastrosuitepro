@@ -1491,7 +1491,7 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         raw_data = hdul[ext_index].data
                         if raw_data is None:
                             raise ValueError(f"No image data found in FITS file in extension {ext_index}.")
-                        image_data = np.asarray(raw_data, copy=True)
+                        image_data = np.array(raw_data, copy=True)
 
                     # Ensure native byte order
                     if image_data.dtype.byteorder not in ('=', '|'):
