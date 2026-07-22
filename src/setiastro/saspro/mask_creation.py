@@ -34,6 +34,10 @@ from PyQt6.QtWidgets import (
 from .masks_core import MaskLayer
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.imageops.stretch import stretch_color_image
+from setiastro.saspro.imageops.diffuse_structure_mask import (
+    diffuse_structure_mask,
+    suggest_diffuse_structure_settings,
+)
 
 # ---------- small utils ----------
 
@@ -969,7 +973,8 @@ class MaskCreationDialog(QDialog):
         controls.addWidget(QLabel("Mask Type:"))
         self.type_dd = QComboBox()
         self.type_dd.addItems([
-            "Binary","Range Selection","Lightness","Chrominance","Star Mask",
+            "Binary","Range Selection","Diffuse Structure",
+            "Lightness","Chrominance","Star Mask",
             "Color: Red","Color: Orange","Color: Yellow",
             "Color: Green","Color: Cyan","Color: Blue","Color: Magenta"
         ])
@@ -1020,6 +1025,180 @@ class MaskCreationDialog(QDialog):
         self.lower_sl.valueChanged.connect(self._on_linked)
         self.link_cb.toggled.connect(self._on_link_switch)
         layout.addWidget(self.range_box); self.range_box.hide()
+
+        # Diffuse Structure Mask
+        self.diffuse_box = QGroupBox(self.tr("Diffuse Structure Mask"))
+        dg = QGridLayout(self.diffuse_box)
+        diffuse_help = QLabel(self.tr(
+            "Finds coherent galaxy and nebula structure, including faint emission "
+            "and nearby dark dust. Higher sensitivity includes subtler detail."
+        ))
+        diffuse_help.setWordWrap(True)
+        dg.addWidget(diffuse_help, 0, 0, 1, 3)
+
+        self.diffuse_profile = QComboBox()
+        self.diffuse_profile.addItem(self.tr("Extended structure"), "extended")
+        self.diffuse_profile.addItem(
+            self.tr("Brightness weighted"), "brightness_weighted"
+        )
+        self.diffuse_profile.setToolTip(self.tr(
+            "Extended structure protects the whole detected object. Brightness "
+            "weighted protects bright cores, arms, and clumps more strongly so "
+            "nearby halo and inter-arm regions can darken."
+        ))
+        dg.addWidget(QLabel(self.tr("Profile:")), 1, 0)
+        dg.addWidget(self.diffuse_profile, 1, 1)
+        self.diffuse_auto = QPushButton(self.tr("Auto"))
+        self.diffuse_auto.setToolTip(self.tr(
+            "Analyze this image and choose editable diffuse-mask settings."
+        ))
+        dg.addWidget(self.diffuse_auto, 1, 2)
+
+        self.diffuse_sensitivity = QSlider(Qt.Orientation.Horizontal)
+        self.diffuse_sensitivity.setRange(50, 2000)  # value / 100
+        self.diffuse_sensitivity.setSingleStep(5)
+        self.diffuse_sensitivity.setPageStep(10)
+        self.diffuse_sensitivity.setValue(100)
+        self.diffuse_sensitivity.setToolTip(
+            self.tr("Higher values retain fainter connected nebulosity; lower values are more selective.")
+        )
+        self.diffuse_sensitivity_label = QLabel("1.00")
+        dg.addWidget(QLabel(self.tr("Sensitivity:")), 2, 0)
+        dg.addWidget(self.diffuse_sensitivity, 2, 1)
+        dg.addWidget(self.diffuse_sensitivity_label, 2, 2)
+
+        self.diffuse_feather = QSlider(Qt.Orientation.Horizontal)
+        self.diffuse_feather.setRange(0, 40)  # value * 0.25 percent
+        self.diffuse_feather.setSingleStep(1)
+        self.diffuse_feather.setPageStep(4)
+        self.diffuse_feather.setValue(3)
+        self.diffuse_feather.setToolTip(
+            self.tr("Soft-edge sigma as a percentage of the image's shorter side.")
+        )
+        self.diffuse_feather_label = QLabel("0.75 %")
+        dg.addWidget(QLabel(self.tr("Feather:")), 3, 0)
+        dg.addWidget(self.diffuse_feather, 3, 1)
+        dg.addWidget(self.diffuse_feather_label, 3, 2)
+
+        self.diffuse_min_area = QSlider(Qt.Orientation.Horizontal)
+        self.diffuse_min_area.setRange(1, 500)  # value / 100 percent
+        self.diffuse_min_area.setSingleStep(1)
+        self.diffuse_min_area.setPageStep(10)
+        self.diffuse_min_area.setValue(10)
+        self.diffuse_min_area.setToolTip(
+            self.tr(
+                "Reject disconnected objects smaller than this percentage of "
+                "the image. This is a discrete keep/reject filter, so each "
+                "connected object changes as a whole."
+            )
+        )
+        self.diffuse_min_area_label = QLabel("0.10 %")
+        dg.addWidget(QLabel(self.tr("Minimum object area:")), 4, 0)
+        dg.addWidget(self.diffuse_min_area, 4, 1)
+        dg.addWidget(self.diffuse_min_area_label, 4, 2)
+
+        self.diffuse_envelope = QSlider(Qt.Orientation.Horizontal)
+        self.diffuse_envelope.setRange(0, 100)  # value * 0.25 percent
+        self.diffuse_envelope.setSingleStep(1)
+        self.diffuse_envelope.setPageStep(4)
+        self.diffuse_envelope.setValue(0)
+        self.diffuse_envelope.setToolTip(self.tr(
+            "Reach into nearby faint or dark structure and fill inward gaps up "
+            "to this fraction of the image. High values may bridge nearby structures."
+        ))
+        self.diffuse_envelope_label = QLabel("0.00 %")
+        dg.addWidget(QLabel(self.tr("Envelope fill:")), 5, 0)
+        dg.addWidget(self.diffuse_envelope, 5, 1)
+        dg.addWidget(self.diffuse_envelope_label, 5, 2)
+
+        self.diffuse_reject_stars = QCheckBox(self.tr("Suppress compact stars"))
+        self.diffuse_reject_stars.setChecked(False)
+        self.diffuse_reject_stars.setToolTip(self.tr(
+            "Optionally suppress PSF-scale peaks during detection. Leave this "
+            "off for starless images or when stars should remain protected."
+        ))
+        dg.addWidget(self.diffuse_reject_stars, 6, 0, 1, 3)
+
+        self.diffuse_quality = QComboBox()
+        self.diffuse_quality.addItem(self.tr("Low"), 700)
+        self.diffuse_quality.addItem(self.tr("Medium"), 1400)
+        self.diffuse_quality.addItem(self.tr("Ultra"), 0)
+        self.diffuse_quality.setCurrentIndex(1)
+        self.diffuse_quality.setToolTip(self.tr(
+            "Low is fastest, Medium balances detail and speed, and Ultra "
+            "keeps the final structure outline at the document's native "
+            "pixel resolution."
+        ))
+        dg.addWidget(QLabel(self.tr("Quality:")), 7, 0)
+        dg.addWidget(self.diffuse_quality, 7, 1, 1, 2)
+
+        self.diffuse_invert = QCheckBox(self.tr("Invert"))
+        self.diffuse_invert.setToolTip(
+            self.tr("Protect the background instead of the detected diffuse structure.")
+        )
+        dg.addWidget(self.diffuse_invert, 8, 0, 1, 3)
+        dg.setColumnStretch(2, 1)
+
+        def update_diffuse_sensitivity(value):
+            self.diffuse_sensitivity_label.setText(f"{value / 100.0:.2f}")
+            self._schedule_live_preview()
+
+        def update_diffuse_feather(value):
+            self.diffuse_feather_label.setText(f"{value * 0.25:.2f} %")
+            self._schedule_live_preview()
+
+        def update_diffuse_min_area(value):
+            self.diffuse_min_area_label.setText(f"{value / 100.0:.2f} %")
+            self._schedule_live_preview()
+
+        def update_diffuse_envelope(value):
+            self.diffuse_envelope_label.setText(f"{value * 0.25:.2f} %")
+            self._schedule_live_preview()
+
+        def auto_tune_diffuse():
+            self.diffuse_auto.setEnabled(False)
+            self.diffuse_auto.setText(self.tr("Analyzing…"))
+            QApplication.processEvents()
+            try:
+                settings = suggest_diffuse_structure_settings(self.image)
+                profile_index = self.diffuse_profile.findData(settings["profile"])
+                if profile_index >= 0:
+                    self.diffuse_profile.setCurrentIndex(profile_index)
+                self.diffuse_sensitivity.setValue(
+                    round(float(settings["sensitivity"]) * 100.0)
+                )
+                self.diffuse_feather.setValue(
+                    round(float(settings["feather_fraction"]) * 400.0)
+                )
+                self.diffuse_min_area.setValue(
+                    round(float(settings["min_area_fraction"]) * 10000.0)
+                )
+                self.diffuse_envelope.setValue(
+                    round(float(settings["envelope_fraction"]) * 400.0)
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    self,
+                    self.tr("Auto mask analysis failed"),
+                    str(exc),
+                )
+            finally:
+                self.diffuse_auto.setText(self.tr("Auto"))
+                self.diffuse_auto.setEnabled(True)
+            self._schedule_live_preview()
+
+        self.diffuse_sensitivity.valueChanged.connect(update_diffuse_sensitivity)
+        self.diffuse_feather.valueChanged.connect(update_diffuse_feather)
+        self.diffuse_min_area.valueChanged.connect(update_diffuse_min_area)
+        self.diffuse_envelope.valueChanged.connect(update_diffuse_envelope)
+        self.diffuse_auto.clicked.connect(auto_tune_diffuse)
+        self.diffuse_profile.currentIndexChanged.connect(self._schedule_live_preview)
+        self.diffuse_reject_stars.toggled.connect(self._schedule_live_preview)
+        self.diffuse_quality.currentIndexChanged.connect(self._schedule_live_preview)
+        self.diffuse_invert.toggled.connect(self._schedule_live_preview)
+        layout.addWidget(self.diffuse_box)
+        self.diffuse_box.hide()
+
         self._build_star_thresh_controls(layout)
         self.type_dd.currentTextChanged.connect(self._on_type_changed)
 
@@ -1316,15 +1495,14 @@ class MaskCreationDialog(QDialog):
         return (mask > 0).astype(np.float32)
 
     def _schedule_live_preview(self, *_):
-        if self.range_box.isVisible():
+        if self.range_box.isVisible() or self.diffuse_box.isVisible():
             self._preview_timer.start()
 
     def _undo_shape(self):
         if not self.canvas.undo_last_shape():
             return
         self._invalidate_base_mask()
-        if hasattr(self, "range_box") and self.range_box.isVisible():
-            self._schedule_live_preview()
+        self._schedule_live_preview()
 
 
     # ---- callbacks
@@ -1338,13 +1516,14 @@ class MaskCreationDialog(QDialog):
     def _clear_shapes(self):
         self.canvas.clear_shapes()
         self._invalidate_base_mask()
-        if hasattr(self, "range_box") and self.range_box.isVisible():
-            self._schedule_live_preview()
+        self._schedule_live_preview()
 
     def _on_type_changed(self, txt: str):
         show_range = (txt == "Range Selection")
+        show_diffuse = (txt == "Diffuse Structure")
         self.range_box.setVisible(show_range)
-        if show_range:
+        self.diffuse_box.setVisible(show_diffuse)
+        if show_range or show_diffuse:
             if not self.live_preview.isVisible():
                 self.live_preview.show()
             self._schedule_live_preview()
@@ -1658,6 +1837,28 @@ class MaskCreationDialog(QDialog):
             )
             m = base * rs
 
+        elif t == "Diffuse Structure":
+            processing_limit = int(self.diffuse_quality.currentData()) or None
+            structure = diffuse_structure_mask(
+                self.image,
+                sensitivity=float(self.diffuse_sensitivity.value()) / 100.0,
+                feather_fraction=float(self.diffuse_feather.value()) / 400.0,
+                min_area_fraction=float(self.diffuse_min_area.value()) / 10000.0,
+                envelope_fraction=float(self.diffuse_envelope.value()) / 400.0,
+                profile=str(self.diffuse_profile.currentData()),
+                reject_stars=self.diffuse_reject_stars.isChecked(),
+                _processing_limit=processing_limit,
+            )
+            if structure.shape != img.shape[:2]:
+                structure = cv2.resize(
+                    structure,
+                    (img.shape[1], img.shape[0]),
+                    interpolation=cv2.INTER_AREA,
+                )
+            if self.diffuse_invert.isChecked():
+                structure = 1.0 - structure
+            m = base * structure
+
         elif t == "Lightness":
             comp = (
                 (img[..., 0]*0.2989 + img[..., 1]*0.5870 + img[..., 2]*0.1140).astype(np.float32)
@@ -1696,6 +1897,21 @@ class MaskCreationDialog(QDialog):
             rs = self._range_selection_mask(comp, L, U, fuzz, smooth,
                                             self.screen_cb.isChecked(), self.invert_cb.isChecked())
             m = base * rs
+        elif t == "Diffuse Structure":
+            processing_limit = int(self.diffuse_quality.currentData()) or None
+            structure = diffuse_structure_mask(
+                self.image,
+                sensitivity=float(self.diffuse_sensitivity.value()) / 100.0,
+                feather_fraction=float(self.diffuse_feather.value()) / 400.0,
+                min_area_fraction=float(self.diffuse_min_area.value()) / 10000.0,
+                envelope_fraction=float(self.diffuse_envelope.value()) / 400.0,
+                profile=str(self.diffuse_profile.currentData()),
+                reject_stars=self.diffuse_reject_stars.isChecked(),
+                _processing_limit=processing_limit,
+            )
+            if self.diffuse_invert.isChecked():
+                structure = 1.0 - structure
+            m = base * structure
         elif t == "Lightness":
             m = np.where(base > 0, self._component_lightness(), 0.0)
         elif t == "Chrominance":
@@ -1893,5 +2109,3 @@ def create_mask_and_attach(parent, document) -> bool:
         pass
 
     return True
-
-
