@@ -209,17 +209,20 @@ def _show_tip_bar(main_window) -> None:
     btn_dismiss.clicked.connect(_dismiss)
     btn_dontshow.clicked.connect(_dont_show)
 
-    # Position it just below the menu bar
+    # Position it at the bottom of the window, above the status bar
     try:
-        menu_bar = main_window.menuBar()
-        menu_bottom = menu_bar.geometry().bottom()
-
         bar.setFixedHeight(36)
-        bar.setFixedWidth(main_window.rect().width())
-        bar.move(0, menu_bottom + 1)
+
+        def _place_bottom():
+            r = main_window.rect()
+            sb = main_window.statusBar()
+            sb_h = sb.height() if (sb is not None and sb.isVisible()) else 0
+            bar.setFixedWidth(r.width())
+            bar.move(0, r.height() - sb_h - bar.height())
+
+        _place_bottom()
         bar.raise_()
         bar.show()
-        main_window.statusBar().setVisible(True)  # restore status bar since we're not using it anymore
         main_window._tip_bar = bar
 
         # Auto-dismiss after 20 seconds
@@ -232,16 +235,13 @@ def _show_tip_bar(main_window) -> None:
             except RuntimeError:
                 pass  # already deleted, no problem
 
-        # Keep it pinned on resize
+        # Keep it pinned to the bottom on resize
         original_resize = main_window.resizeEvent
         def _patched_resize(event):
             try:
                 original_resize(event)
                 if bar.isVisible():
-                    mb = main_window.menuBar()
-                    r = main_window.rect()
-                    bar.setFixedWidth(r.width())
-                    bar.move(0, mb.geometry().bottom() + 1)
+                    _place_bottom()
                     bar.raise_()
             except Exception:
                 pass
