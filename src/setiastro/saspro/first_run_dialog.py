@@ -214,11 +214,26 @@ def _show_tip_bar(main_window) -> None:
         bar.setFixedHeight(36)
 
         def _place_bottom():
+            from PyQt6.QtWidgets import QDockWidget
             r = main_window.rect()
+
             sb = main_window.statusBar()
             sb_h = sb.height() if (sb is not None and sb.isVisible()) else 0
+
+            # Sum heights of dock widgets currently docked in the BOTTOM area
+            # (skip floating ones and hidden ones — they take no bottom space).
+            dock_h = 0
+            try:
+                for dock in main_window.findChildren(QDockWidget):
+                    if not dock.isVisible() or dock.isFloating():
+                        continue
+                    if main_window.dockWidgetArea(dock) == Qt.DockWidgetArea.BottomDockWidgetArea:
+                        dock_h = max(dock_h, dock.height())
+            except Exception:
+                dock_h = 0
+
             bar.setFixedWidth(r.width())
-            bar.move(0, r.height() - sb_h - bar.height())
+            bar.move(0, r.height() - sb_h - dock_h - bar.height())
 
         _place_bottom()
         bar.raise_()
