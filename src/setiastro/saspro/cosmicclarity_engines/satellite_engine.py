@@ -8,6 +8,22 @@ import numpy as np
 from setiastro.saspro.resources import get_resources
 from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
 
+from setiastro.saspro.cosmicclarity_engines._backend_guard import (
+    DeviceLostError,
+    EngineCancelled,
+    safe_exception_str,
+    is_device_lost_error as _is_device_lost_error,
+    is_backend_unusable_error as _is_backend_unusable_error,
+    is_recoverable_batch_error as _is_recoverable_batch_error,
+    iter_batch_sizes as _iter_batch_sizes,
+    device_type as _device_type,
+    dml_disabled as _dml_disabled,
+    disable_dml as _disable_dml,
+    cap_chunk_size_for_device as _cap_chunk_size_for_device,
+    tick as _tick,
+    evict_models as _evict_models,
+)
+
 # Optional deps
 try:
     import onnxruntime as ort
@@ -130,6 +146,13 @@ def _build_torch_models(torch):
             # -> (N, oc, H*r, W*r)
             return x.reshape(n, oc, h * r, w * r)
 
+    class GlobalAvgPool2d(nn.Module):
+        """Drop-in for nn.AdaptiveAvgPool2d(1) — same reasoning as SimpleGate and
+        DMLSafePixelShuffle above. Parameterless, so state_dict keys are
+        unchanged (sca.1.weight / sca.1.bias)."""
+        def forward(self, x):
+            return x.mean(dim=(2, 3), keepdim=True)
+
     class NAFBlock(nn.Module):
         def __init__(self, channels: int):
             super().__init__()
@@ -141,7 +164,7 @@ def _build_torch_models(torch):
             )
             self.sg = SimpleGate()
             self.sca = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1),
+                GlobalAvgPool2d(),
                 nn.Conv2d(channels, channels, 1, bias=True),
             )
             self.conv2 = nn.Conv2d(channels, channels, 1, bias=True)
@@ -380,14 +403,20 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
         backend = "cuda"
     else:
         # 2) torch-directml (Windows)
-        if use_gpu and is_windows:
+        if use_gpu and is_windows and not _dml_disabled():
             try:
                 import torch_directml
                 dml = torch_directml.device()
                 _ = (torch.ones(1, device=dml) + 1).to("cpu").item()
                 backend = "torch_dml"
-            except Exception:
+            except Exception as e:
+                # The old bare `except Exception:` discarded every diagnostic.
+                status_cb(f"CosmicClarity Satellite: torch-directml unavailable "
+                          f"({safe_exception_str(e)})")
                 backend = "ort_dml" if ort_dml_ok else "cpu"
+        elif use_gpu and is_windows:
+            status_cb("CosmicClarity Satellite: DirectML disabled this session, using CPU.")
+            backend = "cpu"
         else:
             # 4) MPS (macOS) — Apple Silicon only. is_available() is True on
             # Intel Macs with a Metal-capable Radeon, but MPS faults on first
@@ -507,6 +536,51 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
     }
     _SAT_CACHE[key] = out
     return out
+
+def _satellite_batch_sizes(models: Dict[str, Any], chunk_size: int, compatibility_mode: bool) -> tuple[int, int]:
+    """
+    Returns (detect_bs, remove_bs). The old fixed 32/8 was tuned for CUDA and
+    applied to every backend. On DirectML that is a multi-second dispatch
+    against the Windows TDR watchdog — a latency budget, not a VRAM one.
+    """
+    dev = _device_type(models.get("device"))
+    cs = int(chunk_size)
+
+    if dev == "dml":
+        return (4, 1)
+    if dev in ("mps", "cpu"):
+        return (8, 2) if compatibility_mode else (16, 4)
+    if compatibility_mode:
+        return (8, 2)
+    return (32, 8 if cs <= 256 else 4)
+
+
+def _with_batch_fallback(fn: Callable[[int], Any], initial_bs: int, *, label: str):
+    """
+    Run fn(batch_size), halving on recoverable errors. fn must be idempotent —
+    both callers below reset their output slots on entry.
+
+    A lost device is never retried: the D3D12 device is gone for the life of the
+    process and every further dispatch fails.
+    """
+    last_err = None
+    for bs in _iter_batch_sizes(initial_bs):
+        try:
+            return fn(bs)
+        except EngineCancelled:
+            raise
+        except Exception as e:
+            last_err = e
+            if _is_device_lost_error(e):
+                raise DeviceLostError(safe_exception_str(e)) from e
+            if bs == 1 or not _is_recoverable_batch_error(e):
+                break
+            print(f"[Satellite] {label} failed at batch_size={bs}, retrying smaller. {safe_exception_str(e)}")
+
+    if last_err is not None and _is_device_lost_error(last_err):
+        raise DeviceLostError(safe_exception_str(last_err)) from last_err
+    raise last_err
+
 
 def _safe_reflect_mode_for_hw(h: int, w: int) -> str:
     # np.pad(..., mode="reflect") requires dimensions > 1
@@ -986,6 +1060,63 @@ def satellite_remove_image(
     image: np.ndarray,
     models: Dict[str, Any],
     *,
+    status_cb=print,
+    **kwargs,
+):
+    """
+    Public entry point. Owns the tile-size cap and the device-loss / CPU-fallback
+    policy; _satellite_remove_image_impl does the work against whichever bundle
+    it is handed. Every other keyword passes straight through.
+    """
+    req_chunk = int(kwargs.get("chunk_size", 256))
+    req_overlap = int(kwargs.get("overlap", 64))
+
+    def _fit(bundle):
+        cs = _cap_chunk_size_for_device(bundle.get("device"), req_chunk)
+        out = dict(kwargs)
+        out["chunk_size"] = cs
+        out["overlap"] = min(req_overlap, max(0, cs - 1))
+        return out
+
+    eff = _fit(models)
+    if eff["chunk_size"] != req_chunk:
+        status_cb(f"[Satellite] tile size reduced {req_chunk} -> {eff['chunk_size']} on "
+                  f"backend={_device_type(models.get('device'))} to stay inside the TDR window.")
+
+    try:
+        return _satellite_remove_image_impl(image, models, **eff)
+
+    except EngineCancelled:
+        raise
+
+    except Exception as e:
+        dev = _device_type(models.get("device"))
+        hard = _is_device_lost_error(e)        # adapter gone — poison DirectML
+        soft = _is_backend_unusable_error(e)   # backend can't run it — fall back only
+
+        if dev != "cpu" and (hard or soft):
+            status_cb(f"[Satellite] GPU path failed on backend={dev}: {safe_exception_str(e)}")
+
+            if hard and dev == "dml":
+                # Process-wide. Denoise, sharpen and Dark Star must stop handing
+                # out DirectML for the rest of this session too.
+                _disable_dml("Adapter was removed or hung during satellite removal.",
+                             status_cb=status_cb)
+
+            if hard:
+                _evict_models(_SAT_CACHE, models, tag="Satellite", status_cb=status_cb)
+
+            status_cb("[Satellite] retrying on CPU.")
+            cpu_models = get_satellite_models(use_gpu=False, status_cb=status_cb)
+            return _satellite_remove_image_impl(image, cpu_models, **_fit(cpu_models))
+
+        raise
+
+
+def _satellite_remove_image_impl(
+    image: np.ndarray,
+    models: Dict[str, Any],
+    *,
     mode: str = "full",
     clip_trail: bool = True,
     sensitivity: float = 0.1,
@@ -1144,22 +1275,19 @@ def _satellite_remove_rgb(
 
     # ---------------- ONNX path ----------------
     if is_onnx:
+        det1_sess = models["detection_model1"]
+        det2_sess = models["detection_model2"]
+        rem_sess  = models["removal_model"]
+
         for idx, (tile, y0, x0) in enumerate(all_tiles, start=1):
             orig = tile.astype(np.float32)
-
-            det1_sess = models["detection_model1"]
-            det2_sess = models["detection_model2"]
-            rem_sess  = models["removal_model"]
+            y1 = y0 + tile.shape[0]
+            x1 = x0 + tile.shape[1]
 
             d1 = _onnx_detect(orig, det1_sess)
-            d2 = _onnx_detect(orig, det2_sess) if d1 else False
+            detected = bool(d1 and _onnx_detect(orig, det2_sess))
 
-            detected = bool(d1 and d2)
             if detected:
-                for idx, (tile, y0, x0) in enumerate(all_tiles, start=1):
-                    orig = tile.astype(np.float32)
-                    y1 = y0 + tile.shape[0]   # ADD THIS
-                    x1 = x0 + tile.shape[1]   # ADD THIS
                 pred = _onnx_remove(orig, rem_sess)
                 if clip_trail:
                     final, trail_mask = _apply_clip_trail_logic(
@@ -1168,6 +1296,11 @@ def _satellite_remove_rgb(
                 else:
                     final = pred
                     trail_mask = np.zeros(orig.shape[:2], dtype=bool)
+
+                # Match the torch path: only interior detections count, border
+                # tiles are reflected padding and false-positive constantly.
+                if not _is_border_tile(y0, x0, y1, x1, H, W, border_size):
+                    trail_any = True
             else:
                 final = orig
                 trail_mask = np.zeros(orig.shape[:2], dtype=bool)
@@ -1175,19 +1308,13 @@ def _satellite_remove_rgb(
             out_tiles[idx - 1] = (final, y0, x0)
             mask_tiles[idx - 1] = (trail_mask, y0, x0)
 
-            if progress_cb is not None:
-                progress_cb(idx, total)
+            _tick(progress_cb, idx, total)
 
     # ---------------- Torch path ----------------
     else:
         tiles_only = [tile.astype(np.float32) for (tile, _, _) in all_tiles]
 
-        if compatibility_mode:
-            detect_bs = 8
-            remove_bs = 2
-        else:
-            detect_bs = 32
-            remove_bs = 8
+        detect_bs, remove_bs = _satellite_batch_sizes(models, chunk_size, compatibility_mode)
 
         detected_flags = [False] * total
         done_flags = [False] * total
@@ -1196,50 +1323,117 @@ def _satellite_remove_rgb(
         device = models["device"]
         det1 = models["detection_model1"]
         det2 = models["detection_model2"]
+        rem = models["removal_model"]
 
         resized = [_resize_tile_for_detect(t) for t in tiles_only]
 
-        for i in range(0, len(resized), detect_bs):
-            batch_np = np.stack(resized[i:i + detect_bs], axis=0)
-            batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
-
+        def _to_device(batch_np):
             x = np_to_torch(batch_np, torch=torch)
             if hasattr(device, "type") and device.type == "cuda":
-                x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
-            else:
-                x = x.to(device=device, dtype=torch.float32)
+                return x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+            return x.to(device=device, dtype=torch.float32)
 
-            with torch.no_grad():
-                o1 = det1(x).flatten()
-            keep1 = (o1 > 0.5)
+        def _detect_pass(bs: int) -> list[bool]:
+            # Reset so a smaller-batch retry starts clean.
+            for k in range(total):
+                out_tiles[k] = None
+                mask_tiles[k] = None
+                done_flags[k] = False
+            flags = [False] * total
 
-            local_detected = np.zeros(len(batch_np), dtype=bool)
+            for i in range(0, len(resized), bs):
+                batch_np = np.stack(resized[i:i + bs], axis=0)
+                batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
+                x = _to_device(batch_np)
 
-            if keep1.any():
-                idxs = keep1.nonzero(as_tuple=False).flatten()
                 with torch.no_grad():
-                    o2 = det2(x[idxs]).flatten()
-                keep2 = torch_to_np((o2 > 0.25).detach().float()).astype(bool)
-                idxs_cpu = torch_to_np(idxs.detach().float()).astype(np.int64)
+                    o1 = det1(x).flatten()
+                keep1 = (o1 > 0.5)
 
-                for local_j, passed in zip(idxs_cpu, keep2):
-                    if passed:
-                        local_detected[int(local_j)] = True
+                local_detected = np.zeros(len(batch_np), dtype=bool)
 
-            for local_j in range(len(batch_np)):
-                global_j = i + local_j
-                detected_flags[global_j] = bool(local_detected[local_j])
+                if keep1.any():
+                    idxs = keep1.nonzero(as_tuple=False).flatten()
+                    with torch.no_grad():
+                        o2 = det2(x[idxs]).flatten()
+                    keep2 = torch_to_np((o2 > 0.25).detach().float()).astype(bool)
+                    idxs_cpu = torch_to_np(idxs.detach().float()).astype(np.int64)
+                    for local_j, passed in zip(idxs_cpu, keep2):
+                        if passed:
+                            local_detected[int(local_j)] = True
 
-            for local_j in range(len(batch_np)):
-                global_j = i + local_j
-                if not detected_flags[global_j]:
-                    tile, y0, x0 = all_tiles[global_j]
-                    out_tiles[global_j] = (tile.astype(np.float32), y0, x0)
-                    mask_tiles[global_j] = (np.zeros(tile.shape[:2], dtype=bool), y0, x0)
-                    done_flags[global_j] = True
+                for local_j in range(len(batch_np)):
+                    global_j = i + local_j
+                    flags[global_j] = bool(local_detected[local_j])
+                    if not flags[global_j]:
+                        tile, y0, x0 = all_tiles[global_j]
+                        out_tiles[global_j] = (tile.astype(np.float32), y0, x0)
+                        mask_tiles[global_j] = (np.zeros(tile.shape[:2], dtype=bool), y0, x0)
+                        done_flags[global_j] = True
 
-            if progress_cb is not None:
-                progress_cb(sum(done_flags), total)
+                _tick(progress_cb, sum(done_flags), total)
+
+            return flags
+
+        detected_flags = _with_batch_fallback(_detect_pass, detect_bs, label="detection")
+
+        detected_indices = [i for i, flag in enumerate(detected_flags) if flag]
+        # Only count interior tile detections toward trail_any — border tiles have
+        # reflected padding content that causes false positives for skip-save logic
+        trail_any = any(
+            not _is_border_tile(
+                all_tiles[i][1], all_tiles[i][2],
+                all_tiles[i][1] + all_tiles[i][0].shape[0],
+                all_tiles[i][2] + all_tiles[i][0].shape[1],
+                H, W, border_size
+            )
+            for i in detected_indices
+        )
+
+        if detected_indices:
+            padded_tiles = []
+            orig_shapes = []
+
+            for idx in detected_indices:
+                padded, h, w = _pad_tile_to_shape_rgb(tiles_only[idx], chunk_size, chunk_size)
+                padded_tiles.append(padded)
+                orig_shapes.append((h, w))
+
+            def _remove_pass(bs: int) -> None:
+                for batch_start in range(0, len(padded_tiles), bs):
+                    batch_tiles = padded_tiles[batch_start:batch_start + bs]
+                    batch_np = np.stack(batch_tiles, axis=0)
+                    batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
+                    x = _to_device(batch_np)
+
+                    with torch.no_grad(), _autocast_context(torch, device):
+                        y = torch_to_np(rem(x).detach().float())
+
+                    y = np.transpose(y, (0, 2, 3, 1))
+
+                    for local_j, pred in enumerate(y):
+                        src_idx = detected_indices[batch_start + local_j]
+                        h, w = orig_shapes[batch_start + local_j]
+                        pred = np.clip(pred[:h, :w, :], 0.0, 1.0).astype(np.float32)
+
+                        orig, y0, x0 = all_tiles[src_idx]
+                        orig = orig.astype(np.float32)
+
+                        if clip_trail:
+                            final, trail_mask = _apply_clip_trail_logic(
+                                pred, orig, sensitivity, return_mask=True
+                            )
+                        else:
+                            final = pred
+                            trail_mask = np.zeros(orig.shape[:2], dtype=bool)
+
+                        out_tiles[src_idx] = (final, y0, x0)
+                        mask_tiles[src_idx] = (trail_mask, y0, x0)
+                        done_flags[src_idx] = True
+
+                    _tick(progress_cb, sum(done_flags), total)
+
+            _with_batch_fallback(_remove_pass, remove_bs, label="removal")
 
         detected_indices = [i for i, flag in enumerate(detected_flags) if flag]
         # Only count interior tile detections toward trail_any — border tiles have
