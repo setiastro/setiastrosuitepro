@@ -3,48 +3,69 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 import numpy as np
 
-# Reuse LUT + apply engine from Curves editor (with a safe fallback import)
-from setiastro.saspro.curve_editor_pro import build_curve_lut, _apply_mode_any  # if your file name lacks the 's'
+# Apply engine from the Curves editor
+from setiastro.saspro.curve_editor_pro import _apply_mode_any
 
-# Optional PCHIP interpolation (nice-to-have; we’ll fall back to np.interp)
-try:
-    from scipy.interpolate import PchipInterpolator as _PCHIP
-    _HAS_PCHIP = True
-except Exception:
-    _HAS_PCHIP = False
+
+def _dlg():
+    """
+    Deferred import of the dialog module. Every stretch LUT lives there — one
+    analytic implementation per function, shared by the dialog and this
+    headless path, so replay and interactive apply cannot diverge.
+
+    Kept deferred to preserve the existing ghs_dialog_pro <-> shortcuts <->
+    openers cycle avoidance.
+    """
+    from setiastro.saspro import ghs_dialog_pro as _m
+    return _m
+
+
+def _resolve_mode(fn: str, D) -> str:
+    """
+    Stored 'function' string -> a current MODE_* constant.
+
+    Exact match first, then the dialog's legacy aliases, then a substring
+    rescue for anything hand-edited. The substring pass checks GHS explicitly:
+    the old code had no GHS branch at all, so a Cranfield/Payne preset silently
+    fell through to the Universal curve.
+    """
+    canon = D.canonical_function(str(fn or ""))
+    known = (D.MODE_UHS, D.MODE_GHS, D.MODE_ARCSINH,
+             D.MODE_LOG, D.MODE_EXP, D.MODE_PIP)
+    if canon in known:
+        return canon
+
+    low = str(fn or "").lower()
+    if "arcsinh" in low:
+        return D.MODE_ARCSINH
+    if "logarith" in low:
+        return D.MODE_LOG
+    if "expon" in low:
+        return D.MODE_EXP
+    if "pip" in low or "inverted" in low:
+        return D.MODE_PIP
+    if any(k in low for k in ("cranfield", "payne", "generalis", "generaliz")):
+        return D.MODE_GHS
+    return D.MODE_UHS
+
+
+def _short_label(mode: str, D) -> str:
+    """
+    Compact name for history steps. Without this the new mode produces
+    "Hyperbolic Stretch (Generalised Hyperbolic Stretch (Cranfield/Payne))"
+    in the undo stack.
+    """
+    return {
+        D.MODE_UHS:     "Universal",
+        D.MODE_GHS:     "GHS \u2014 Cranfield/Payne",
+        D.MODE_ARCSINH: "ArcSinh",
+        D.MODE_LOG:     "Logarithmic",
+        D.MODE_EXP:     "Exponential",
+        D.MODE_PIP:     "Power of Inverted Pixels",
+    }.get(mode, mode)
 
 
 # ---------- helpers: points -> scene -> interpolator -> LUT ----------
-
-def _points_norm_to_scene(points_norm: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
-    """(x:[0..1], y:[0..1 up]) → scene coords (x:[0..360], y:[0..360] down)."""
-    pts = []
-    for x, y in points_norm:
-        x = float(max(0.0, min(1.0, x)))
-        y = float(max(0.0, min(1.0, y)))
-        xs = 360.0 * x
-        ys = 360.0 * (1.0 - y)
-        pts.append((xs, ys))
-    # Ensure strict endpoints exist
-    if not any(abs(px - 0.0) < 1e-6 for px, _ in pts):   pts.append((0.0, 360.0))
-    if not any(abs(px - 360.0) < 1e-6 for px, _ in pts): pts.append((360.0, 0.0))
-    pts = sorted(pts, key=lambda t: t[0])
-    # Make X strictly increasing
-    out, lastx = [], -1e9
-    for x, y in pts:
-        if x <= lastx: x = lastx + 1e-3
-        out.append((min(360.0, max(0.0, x)), min(360.0, max(0.0, y))))
-        lastx = out[-1][0]
-    return out
-
-def _interpolator_from_scene_points(points_scene: List[Tuple[float, float]]):
-    xs = np.array([p[0] for p in points_scene], dtype=np.float64)
-    ys = np.array([p[1] for p in points_scene], dtype=np.float64)
-    if _HAS_PCHIP and xs.size >= 2:
-        return _PCHIP(xs, ys)
-    def _lin(x):
-        return np.interp(x, xs, ys)
-    return _lin
 
 def _norm_channel(ch: str | None) -> str:
     m = (ch or "K (Brightness)").strip().lower()
@@ -57,118 +78,64 @@ def _norm_channel(ch: str | None) -> str:
 
 # ---------- GHS parameterization → normalized control curve ----------
 
-def _ghs_points_norm(alpha: float, beta: float, gamma: float,
-                     pivot: float, lp: float, hp: float,
-                     N: int = 128) -> List[Tuple[float, float]]:
-    """
-    Returns a monotone set of (x,y) in [0..1] implementing your dialog’s math.
-    """
-    a = float(np.clip(alpha, 0.02, 10.0))     # sliders 1..500 → /50 gives 0.02..10
-    b = float(np.clip(beta,  0.02, 10.0))
-    g = float(np.clip(gamma, 0.01,  5.0))     # slider 1..500 → /100 gives 0.01..5
-    SP = float(np.clip(pivot, 0.0, 1.0))
-    LP = float(np.clip(lp,    0.0, 1.0))
-    HP = float(np.clip(hp,    0.0, 1.0))
-
-    us = np.linspace(0.0, 1.0, int(max(16, N)))
-    left  = us <= 0.5
-    right = ~left
-
-    # Generalized hyperbolic halves around 0.5
-    rawL = us**a / (us**a + b*(1.0-us)**a)
-    rawR = us**a / (us**a + (1.0/b)*(1.0-us)**a)
-
-    midL = (0.5**a) / (0.5**a + b*(0.5)**a)
-    midR = (0.5**a) / (0.5**a + (1.0/b)*(0.5)**a)
-    eps = 1e-6
-
-    # Domain remap to pivot SP
-    up = np.empty_like(us)
-    vp = np.empty_like(us)
-
-    # Left → [0..SP]
-    up[left] = 2.0 * SP * us[left]
-    vp[left] = rawL[left] * (SP / max(midL, eps))
-
-    # Right → [SP..1]
-    up[right] = SP + 2.0*(1.0 - SP)*(us[right] - 0.5)
-    vp[right] = SP + (rawR[right] - midR) * ((1.0 - SP) / max(1.0 - midR, eps))
-
-    # LP/HP protection (blend toward identity y=x on each side)
-    if LP > 0:
-        m = up <= SP
-        vp[m] = (1.0 - LP)*vp[m] + LP*up[m]
-    if HP > 0:
-        m = up >= SP
-        vp[m] = (1.0 - HP)*vp[m] + HP*up[m]
-
-    # Gamma lift
-    if abs(g - 1.0) > 1e-6:
-        vp = np.clip(vp, 0.0, 1.0) ** (1.0 / g)
-
-    # Clamp + enforce monotonicity (guards against tiny numerical dips)
-    vp = np.clip(vp, 0.0, 1.0)
-    vp = np.maximum.accumulate(vp)
-
-    pts = list(zip(up.tolist(), vp.tolist()))
-    # Make sure endpoints exist exactly
-    if pts[0][0] != 0.0:      pts.insert(0, (0.0, 0.0))
-    if pts[-1][0] != 1.0:     pts.append((1.0, 1.0))
-    return pts
-
 
 def _lut_from_ghs_preset(preset: Dict) -> tuple[np.ndarray, str, Dict]:
+    m = _dlg()
+    D = m.GhsDialogPro
     p = dict(preset or {})
-    fn   = str(p.get("function", "Hyperbolic Stretch"))
-    ch   = _norm_channel(p.get("channel", "K (Brightness)"))
+
+    mode  = _resolve_mode(p.get("function", ""), D)
+    ch    = _norm_channel(p.get("channel", "K (Brightness)"))
     gamma = float(p.get("gamma", 1.0))
     lp    = float(p.get("lp",    0.0))
     hp    = float(p.get("hp",    0.0))
     pivot = float(p.get("pivot", 0.5))
 
-    fn_lower = fn.lower()
+    # 'function' is written back canonicalised, so a preset saved before the
+    # rename gets upgraded in place the first time it replays.
+    base = {"function": mode, "channel": ch,
+            "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
 
-    if "arcsinh" in fn_lower:
-        from setiastro.saspro.ghs_dialog_pro import _build_arcsinh_lut
+    if mode == D.MODE_GHS:
+        ghs_D  = float(p.get("ghs_D",  0.0))
+        ghs_b  = float(p.get("ghs_b",  0.0))
+        ghs_LP = float(p.get("ghs_LP", 0.0))
+        ghs_HP = float(p.get("ghs_HP", 1.0))
+        ghs_BP = float(p.get("ghs_BP", 0.0))
+        lut01 = m._build_cranfield_lut(ghs_D, ghs_b, pivot,
+                                       LP=ghs_LP, HP=ghs_HP, BP=ghs_BP, g=gamma)
+        params = {**base, "ghs_D": ghs_D, "ghs_b": ghs_b,
+                  "ghs_LP": ghs_LP, "ghs_HP": ghs_HP, "ghs_BP": ghs_BP}
+
+    elif mode == D.MODE_ARCSINH:
         strength = float(p.get("strength", 5.0))
-        lut01 = _build_arcsinh_lut(strength, gamma, lp, hp, pivot)
-        params = {"function": fn, "channel": ch, "strength": strength,
-                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+        lut01 = m._build_arcsinh_lut(strength, gamma, lp, hp, pivot)
+        params = {**base, "strength": strength}
 
-    elif "log" in fn_lower:
-        from setiastro.saspro.ghs_dialog_pro import _build_log_lut
+    elif mode == D.MODE_LOG:
         strength = float(p.get("strength", 5.0))
-        lut01 = _build_log_lut(strength, gamma, lp, hp, pivot)
-        params = {"function": fn, "channel": ch, "strength": strength,
-                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+        lut01 = m._build_log_lut(strength, gamma, lp, hp, pivot)
+        params = {**base, "strength": strength}
 
-    elif "exp" in fn_lower:
-        from setiastro.saspro.ghs_dialog_pro import _build_exp_lut
+    elif mode == D.MODE_EXP:
         strength = float(p.get("strength", 5.0))
-        lut01 = _build_exp_lut(strength, gamma, lp, hp, pivot)
-        params = {"function": fn, "channel": ch, "strength": strength,
-                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+        lut01 = m._build_exp_lut(strength, gamma, lp, hp, pivot)
+        params = {**base, "strength": strength}
 
-    elif "pip" in fn_lower or "inverted" in fn_lower:
-        from setiastro.saspro.ghs_dialog_pro import _build_pip_lut
+    elif mode == D.MODE_PIP:
         strength = float(p.get("strength", 1.0))
-        lut01 = _build_pip_lut(strength, gamma, lp, hp, pivot)
-        params = {"function": fn, "channel": ch, "strength": strength,
-                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+        lut01 = m._build_pip_lut(strength, gamma, lp, hp, pivot)
+        params = {**base, "strength": strength}
 
-    else:
-        # Default: Hyperbolic Stretch (GHS)
+    else:  # D.MODE_UHS
         alpha = float(p.get("alpha", 1.0))
         beta  = float(p.get("beta",  1.0))
-        ptsN  = _ghs_points_norm(alpha, beta, gamma, pivot, lp, hp, N=128)
-        ptsS  = _points_norm_to_scene(ptsN)
-        fn_interp = _interpolator_from_scene_points(ptsS)
-        lut01 = build_curve_lut(fn_interp, size=65536)
-        params = {"function": fn, "channel": ch, "alpha": alpha, "beta": beta,
-                  "gamma": gamma, "lp": lp, "hp": hp, "pivot": pivot}
+        # Same analytic builder the dialog uses — no spline round-trip, so
+        # headless replay is bit-identical to an interactive apply.
+        lut01 = m._build_uhs_lut(alpha, beta, gamma, lp, hp, pivot)
+        params = {**base, "alpha": alpha, "beta": beta}
 
     return lut01, ch, params
-
 
 # ---------- optional: mask-aware blend (same semantics as your dialogs) ----------
 
@@ -234,8 +201,9 @@ def apply_ghs_via_preset(main_window, doc, preset: Dict):
         remember = getattr(main_window, "remember_last_headless_command", None)
         if remember is None:
             remember = getattr(main_window, "_remember_last_headless_command", None)
+        label = _short_label(params.get("function", ""), _dlg().GhsDialogPro)
         if callable(remember):
-            remember("ghs", params, description=f"Hyperbolic Stretch ({params.get('function','GHS')})")
+            remember("ghs", params, description=f"Hyperbolic Stretch ({label})")
             try:
                 if hasattr(main_window, "_log"):
                     main_window._log(f"[Replay] GHS headless stored: fn={params.get('function')}, "
@@ -249,8 +217,9 @@ def apply_ghs_via_preset(main_window, doc, preset: Dict):
     if mask is not None:
         out01 = _blend_with_mask(out01, src01, doc)
 
+    step = f"Hyperbolic Stretch ({_short_label(params.get('function', ''), _dlg().GhsDialogPro)})"
     meta = {
-        "step_name": f"Hyperbolic Stretch ({params.get('function', 'GHS')})",
+        "step_name": step,
         "ghs": params,
         "masked": bool(mid),
         "mask_id": mid,
@@ -261,7 +230,7 @@ def apply_ghs_via_preset(main_window, doc, preset: Dict):
     doc.apply_edit(
         out01.astype(np.float32, copy=False),
         metadata=meta,
-        step_name=f"Hyperbolic Stretch ({params.get('function', 'GHS')})",
+        step_name=step,
     )
 
 
@@ -273,41 +242,35 @@ def open_ghs_with_preset(main_window, preset: Dict | None = None):
     if doc is None:
         return
 
-    from setiastro.saspro.ghs_dialog_pro import GhsDialogPro
-    dlg = GhsDialogPro(main_window, doc)
+    m = _dlg()
+    D = m.GhsDialogPro
+    dlg = D(main_window, doc)
 
     p = dict(preset or {})
-    fn = str(p.get("function", "Hyperbolic Stretch"))
-    fn_lower = fn.lower()
+    mode = _resolve_mode(p.get("function", ""), D)
 
     try:
-        # Set function selector
-        if "arcsinh" in fn_lower:
-            idx = dlg.cmb_fn.findText("ArcSinh Stretch")
-        elif "log" in fn_lower:
-            idx = dlg.cmb_fn.findText("Logarithmic Stretch")
-        elif "exp" in fn_lower:
-            idx = dlg.cmb_fn.findText("Exponential Stretch")
-        elif "pip" in fn_lower or "inverted" in fn_lower:
-            idx = dlg.cmb_fn.findText("Power of Inverted Pixels")
-        else:
-            idx = dlg.cmb_fn.findText("Hyperbolic Stretch")
+        idx = dlg.cmb_fn.findText(mode)
         dlg.cmb_fn.setCurrentIndex(idx if idx >= 0 else 0)
 
-        # GHS-specific sliders
-        if "alpha" in p:
-            dlg.sA.setValue(int(np.clip(float(p["alpha"]) * 50.0, 1, 500)))
-        if "beta" in p:
-            dlg.sB.setValue(int(np.clip(float(p["beta"]) * 50.0, 1, 500)))
+        if mode == D.MODE_UHS:
+            dlg.sA.setValue(int(np.clip(float(p.get("alpha", 1.0)) * 50.0, 1, 500)))
+            dlg.sB.setValue(int(np.clip(float(p.get("beta",  1.0)) * 50.0, 1, 500)))
 
-        # Strength-based sliders (arcsinh/log/exp use /10, pip uses /100)
-        if "strength" in p:
-            if "pip" in fn_lower or "inverted" in fn_lower:
-                dlg.sP.setValue(int(np.clip(float(p["strength"]) * 100.0, 0, 200)))
-            else:
-                dlg.sS.setValue(int(np.clip(float(p["strength"]) * 10.0, 1, 1000)))
+        elif mode == D.MODE_GHS:
+            dlg.sD.setValue(  int(np.clip(float(p.get("ghs_D",  0.0)) * 100.0,      0,  1000)))
+            dlg.sBb.setValue( int(np.clip(float(p.get("ghs_b",  0.0)) * 100.0,   -500,  1500)))
+            dlg.sgLP.setValue(int(np.clip(float(p.get("ghs_LP", 0.0)) * 10000.0,    0, 10000)))
+            dlg.sgHP.setValue(int(np.clip(float(p.get("ghs_HP", 1.0)) * 10000.0,    0, 10000)))
+            dlg.sBP.setValue( int(np.clip(float(p.get("ghs_BP", 0.0)) * 10000.0,    0, 10000)))
 
-        # Shared sliders
+        elif mode == D.MODE_PIP:
+            dlg.sP.setValue(int(np.clip(float(p.get("strength", 1.0)) * 100.0, 0, 200)))
+
+        else:  # ArcSinh / Log / Exp
+            dlg.sS.setValue(int(np.clip(float(p.get("strength", 5.0)) * 10.0, 1, 1000)))
+
+        # Shared
         dlg.sG.setValue(int(np.clip(float(p.get("gamma", 1.0)) * 100.0, 1, 500)))
         dlg.sLP.setValue(int(np.clip(float(p.get("lp", 0.0)) * 360.0, 0, 360)))
         dlg.sHP.setValue(int(np.clip(float(p.get("hp", 0.0)) * 360.0, 0, 360)))
@@ -320,7 +283,15 @@ def open_ghs_with_preset(main_window, preset: Dict | None = None):
         dlg._set_sym_u(pv)
         dlg.editor.setSymmetryPoint(pv * 360.0, 0)
         dlg._rebuild_from_params()
-    except Exception:
-        pass
+    except Exception as e:
+        # A bare pass here means a renamed slider attribute produces a dialog
+        # that opens with default values and no indication anything failed.
+        try:
+            if hasattr(main_window, "_log"):
+                main_window._log(f"[GHS] preset seeding failed ({mode}): {e}")
+            else:
+                print("[GHS] preset seeding failed:", e)
+        except Exception:
+            pass
 
     dlg.show(); dlg.raise_(); dlg.activateWindow()
