@@ -50,7 +50,10 @@ from typing import Optional, List, Set
 #  7. menubar_mixin.py       (saspro/gui/mixins/menubar_mixin.py or _init_menubar in toolbar_mixin)
 #                             - Save As Format submenu  add m_save_as.addAction(self.act_save_xyz)
 #
-# That's 7 files / 8+ touchpoints. Yes, it's a lot. No, we can't easily collapse them
+#  8. shortcuts.py           (saspro/shortcuts.py)
+#                             - OPENABLE_ENDINGS     add .xyz, or drag-and-drop
+#                               onto the canvas will silently reject the file
+# That's 8 files / 8+ touchpoints. Yes, it's a lot. No, we can't easily collapse them
 # without a larger refactor. This comment is the next best thing.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
