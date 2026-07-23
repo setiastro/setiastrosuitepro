@@ -1,10 +1,26 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from typing import Any, Callable, Optional
 
 import os
 import numpy as np
+
+from setiastro.saspro.cosmicclarity_engines._backend_guard import (
+    DeviceLostError,
+    EngineCancelled,
+    safe_exception_str,
+    is_device_lost_error as _is_device_lost_error,
+    is_backend_unusable_error as _is_backend_unusable_error,
+    is_recoverable_batch_error as _is_recoverable_batch_error,
+    iter_batch_sizes as _iter_batch_sizes,
+    device_type as _device_type,
+    dml_disabled as _dml_disabled,
+    disable_dml as _disable_dml,
+    cap_chunk_size_for_device as _cap_chunk_size_for_device,
+    tick as _tick,
+    evict_models as _evict_models,
+)   
 
 # Keep these imports because your runtime torch loader is still the right way
 # to get CUDA / DirectML / MPS / CPU fallback behavior.
@@ -102,6 +118,13 @@ def _build_darkstar_nafnet_model(torch):
             x1, x2 = x.chunk(2, dim=1)
             return x1 * x2
 
+    class GlobalAvgPool2d(nn.Module):
+        """Drop-in for nn.AdaptiveAvgPool2d(1). Numerically identical, but avoids
+        the adaptive-pool op, a long-standing torch-directml weak spot.
+        Parameterless, so state_dict keys are unchanged (sca.1.weight/bias)."""
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return x.mean(dim=(2, 3), keepdim=True)
+
     class NAFBlock(nn.Module):
         def __init__(self, channels: int):
             super().__init__()
@@ -119,7 +142,7 @@ def _build_darkstar_nafnet_model(torch):
             )
             self.sg = SimpleGate()
             self.sca = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1),
+                GlobalAvgPool2d(),
                 nn.Conv2d(channels, channels, kernel_size=1, bias=True),
             )
             self.conv2 = nn.Conv2d(channels, channels, kernel_size=1, bias=True)
@@ -591,13 +614,16 @@ def load_darkstar_models(*, use_gpu: bool, status_cb=print) -> DarkStarModels:
         return _build_and_load(dev, "mps", "Dark Star: using MPS")
 
     # DirectML torch
-    if use_gpu and is_windows:
+    if use_gpu and is_windows and not _dml_disabled():
         try:
             import torch_directml
             dev = torch_directml.device()
+            _ = (torch.ones(1, device=dev) + 1).to("cpu").item()   # smoke test before loading weights
             return _build_and_load(dev, "torch_dml", "Dark Star: using DirectML (torch-directml)")
-        except Exception:
-            pass
+        except Exception as e:
+            # The old bare `except Exception: pass` discarded every diagnostic
+            # about why DirectML declined to come up.
+            status_cb(f"Dark Star: torch-directml unavailable, falling back. {safe_exception_str(e)}")
 
     # CPU
     dev = torch.device("cpu")
@@ -617,6 +643,29 @@ def _pad_tile_to_shape_rgb(tile: np.ndarray, out_h: int, out_w: int) -> tuple[np
         tile = np.pad(tile, ((0, pad_h), (0, pad_w), (0, 0)), mode="reflect")
 
     return tile, h, w
+
+def _darkstar_batch_size(models: DarkStarModels, params) -> int:
+    """
+    The old fixed 8 (or 2 in compatibility mode) was chosen for CUDA and applied
+    everywhere. At the 512 default tile size that is an enormous single dispatch
+    on DirectML, which runs fp32 with no autocast and is watchdogged by TDR.
+    """
+    dev = _device_type(models.device)
+    cs = int(getattr(params, "chunk_size", 512))
+    compat = bool(getattr(params, "compatibility_mode", False))
+
+    if dev == "dml":
+        return 1
+    if dev == "mps":
+        if compat:
+            return 1
+        return 4 if cs <= 256 else 2
+    if dev == "cpu":
+        return 2 if compat else 4
+    if compat:
+        return 2
+    return 8 if cs <= 512 else 4
+
 
 def _infer_tiles_rgb_batched(
     tiles_rgb: list[np.ndarray],
@@ -642,38 +691,54 @@ def _infer_tiles_rgb_batched(
         padded_tiles.append(padded)
         orig_shapes.append((h, w))
 
-    outs: list[np.ndarray] = []
-    done = int(progress_start)
+    last_err = None
 
-    for i in range(0, len(padded_tiles), batch_size):
-        batch_tiles = padded_tiles[i:i + batch_size]
-        batch_np = np.stack(batch_tiles, axis=0)                # NHWC
-        batch_np = np.transpose(batch_np, (0, 3, 1, 2))         # NCHW
-        batch_np = batch_np.astype(np.float32, copy=False)
+    for bs in _iter_batch_sizes(batch_size):
+        try:
+            outs: list[np.ndarray] = []
+            done = int(progress_start)
 
-        x = np_to_torch(batch_np, torch=torch)
-        if hasattr(device, "type") and device.type == "cuda":
-            x = x.pin_memory().to(device=device, dtype=torch.float32, non_blocking=True)
-        else:
-            x = x.to(device=device, dtype=torch.float32)
+            for i in range(0, len(padded_tiles), bs):
+                batch_tiles = padded_tiles[i:i + bs]
+                batch_np = np.stack(batch_tiles, axis=0)                # NHWC
+                batch_np = np.transpose(batch_np, (0, 3, 1, 2))         # NCHW
+                batch_np = batch_np.astype(np.float32, copy=False)
 
-        with torch.no_grad(), _autocast_context(torch, device):
-            y = torch_to_np(model(x).detach().float())          # NCHW
+                x = np_to_torch(batch_np, torch=torch)
+                if hasattr(device, "type") and device.type == "cuda":
+                    x = x.pin_memory().to(device=device, dtype=torch.float32, non_blocking=True)
+                else:
+                    x = x.to(device=device, dtype=torch.float32)
 
-        y = np.transpose(y, (0, 2, 3, 1))                       # NHWC
+                with torch.no_grad(), _autocast_context(torch, device):
+                    y = torch_to_np(model(x).detach().float())          # NCHW
 
-        for j, out in enumerate(y):
-            h, w = orig_shapes[i + j]
-            outs.append(out[:h, :w, :].astype(np.float32, copy=False))
+                y = np.transpose(y, (0, 2, 3, 1))                       # NHWC
 
-        done += len(batch_tiles)
-        if callable(progress_cb):
-            try:
-                progress_cb(done, progress_total, stage_name)
-            except Exception:
-                pass
+                for j, out in enumerate(y):
+                    h, w = orig_shapes[i + j]
+                    outs.append(out[:h, :w, :].astype(np.float32, copy=False))
 
-    return outs, done
+                done += len(batch_tiles)
+                _tick(progress_cb, done, progress_total, stage_name)
+
+            return outs, done
+
+        except EngineCancelled:
+            raise
+        except Exception as e:
+            last_err = e
+            if _is_device_lost_error(e):
+                # Never retry smaller — the D3D12 device is gone for the life
+                # of the process and every further dispatch fails.
+                raise DeviceLostError(safe_exception_str(e)) from e
+            if bs == 1 or not _is_recoverable_batch_error(e):
+                break
+            print(f"[Dark Star] batched inference failed at batch_size={bs}, retrying smaller. {safe_exception_str(e)}")
+
+    if last_err is not None and _is_device_lost_error(last_err):
+        raise DeviceLostError(safe_exception_str(last_err)) from last_err
+    raise last_err
 
 # -----------------------------------------------------------------------------
 # Inference helpers
@@ -712,10 +777,7 @@ def _run_rgb_chunked_with_model(
 
     tiles_only = [np.asarray(tile, np.float32) for (tile, _, _) in chunks]
 
-    if bool(getattr(params, "compatibility_mode", False)):
-        infer_bs = 2
-    else:
-        infer_bs = 8
+    infer_bs = _darkstar_batch_size(models, params)
 
     pred_tiles, done = _infer_tiles_rgb_batched(
         tiles_rgb=tiles_only,
@@ -734,11 +796,7 @@ def _run_rgb_chunked_with_model(
     for pred, (_, i, j) in zip(pred_tiles, chunks):
         out_tiles.append((pred, i, j))
 
-    if callable(progress_cb):
-        try:
-            progress_cb(done, progress_total, f"{stage_name} — stitching")
-        except Exception:
-            pass
+    _tick(progress_cb, done, progress_total, f"{stage_name} — stitching")
 
     starless_b = stitch_chunks_soft_blend(
         out_tiles,
@@ -855,6 +913,75 @@ def darkstar_starremoval_rgb01(
     status_cb=print,
 ) -> tuple[np.ndarray, Optional[np.ndarray], bool]:
     """
+    Public entry point. Owns backend selection, the tile-size cap and the
+    device-loss / CPU-fallback policy; _darkstar_impl does the actual work
+    against whichever bundle it is handed.
+    """
+    models = load_darkstar_models(use_gpu=params.use_gpu, status_cb=status_cb)
+
+    eff = _dc_replace(
+        params,
+        chunk_size=_cap_chunk_size_for_device(models.device, int(params.chunk_size)),
+    )
+    if eff.chunk_size != params.chunk_size:
+        status_cb(
+            f"Dark Star: tile size reduced {params.chunk_size} -> {eff.chunk_size} "
+            f"on backend={_device_type(models.device)} to stay inside the TDR window."
+        )
+
+    try:
+        return _darkstar_impl(
+            img_rgb01, models=models, params=eff,
+            progress_cb=progress_cb, status_cb=status_cb,
+        )
+
+    except EngineCancelled:
+        raise
+
+    except Exception as e:
+        try:
+            dev = _device_type(models.device) if models is not None else "unknown"
+        except Exception:
+            dev = "unknown"
+
+        hard = _is_device_lost_error(e)        # adapter gone — poison DirectML
+        soft = _is_backend_unusable_error(e)   # backend can't run it — fall back only
+
+        if params.use_gpu and dev != "cpu" and (hard or soft):
+            status_cb(f"Dark Star: GPU path failed on backend={dev}: {safe_exception_str(e)}")
+
+            if hard and dev == "dml":
+                # Process-wide. Denoise and sharpen must stop handing out
+                # DirectML for the rest of this session too.
+                _disable_dml("Adapter was removed or hung during star removal.", status_cb=status_cb)
+
+            if hard:
+                _evict_models(_MODELS_CACHE, models, tag="Dark Star", status_cb=status_cb)
+                models = None
+
+            status_cb("Dark Star: retrying on CPU.")
+            cpu_models = load_darkstar_models(use_gpu=False, status_cb=status_cb)
+            cpu_params = _dc_replace(
+                params,
+                chunk_size=_cap_chunk_size_for_device(cpu_models.device, int(params.chunk_size)),
+            )
+            return _darkstar_impl(
+                img_rgb01, models=cpu_models, params=cpu_params,
+                progress_cb=progress_cb, status_cb=status_cb,
+            )
+
+        raise
+
+
+def _darkstar_impl(
+    img_rgb01: np.ndarray,
+    *,
+    models: DarkStarModels,
+    params: DarkStarParams,
+    progress_cb: Optional[ProgressCB] = None,
+    status_cb=print,
+) -> tuple[np.ndarray, Optional[np.ndarray], bool]:
+    """
     Input : float32 image in [0..1], shape HxW, HxWx1, or HxWx3
     Output: (starless_rgb01, stars_only_rgb01 or None, was_mono)
 
@@ -870,8 +997,6 @@ def darkstar_starremoval_rgb01(
 
     img = np.asarray(img_rgb01, np.float32)
     was_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
-
-    models = load_darkstar_models(use_gpu=params.use_gpu, status_cb=status_cb)
 
     # -------------------------------------------------------------------------
     # Case 1: pure 2D mono

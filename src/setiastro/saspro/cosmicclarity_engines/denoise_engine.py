@@ -21,7 +21,25 @@ from typing import Callable
 
 ProgressCB = Callable[[int, int], bool]  # True=continue, False=cancel
 
+from setiastro.saspro.cosmicclarity_engines._backend_guard import (
+    DeviceLostError,
+    EngineCancelled as DenoiseCancelled,
+    safe_exception_str,
+    is_device_lost_error as _is_device_lost_error,
+    is_backend_unusable_error as _is_backend_unusable_error,
+    is_recoverable_batch_error as _is_recoverable_batch_error,
+    iter_batch_sizes as _iter_batch_sizes,
+    dml_disabled as _dml_disabled,
+    disable_dml as _disable_dml,
+    prefer_ort_dml as _prefer_ort_dml,
+    cap_chunk_size_for_device as _cap_chunk_size_for_device,
+    tick as _tick,
+)
+from setiastro.saspro.cosmicclarity_engines import _backend_guard as _bg
 
+
+def _evict_models(models) -> None:
+    _bg.evict_models(_MODELS_CACHE, models, tag="CC Denoise")
 
 def _get_torch(*, prefer_cuda: bool, prefer_dml: bool, status_cb=print):
     from setiastro.saspro.runtime_torch import import_torch
@@ -118,32 +136,13 @@ class DenoiseModels:
 _MODELS_CACHE: dict[tuple[str, str], DenoiseModels] = {}
 _BACKEND_TAG = "cc_denoise_ai4_nafnet"
 
-def _is_device_lost_error(err: Exception) -> bool:
-    s = f"{type(err).__name__}: {err}".lower()
-    needles = [
-        "887a0005",
-        "getdeviceremovedreason",
-        "device removed",
-        "device lost",
-        "gpu-apparaat",
-        "onderbroken",
-        "dmlexecutionprovider",
-        "executionprovider.cpp",
-        "privateuseone",
-    ]
-    return any(n in s for n in needles)
+# DeviceLostError, DenoiseCancelled, _prefer_ort_dml, _is_device_lost_error,
+# _tick and _evict_models all come from _backend_guard now — see the import
+# block at the top of this file. The local copies that used to live here were
+# shadowing those imports, which meant this module's DeviceLostError was a
+# different class object from the one _backend_guard.is_device_lost_error()
+# isinstance-checks against, and no other engine could catch it.
 
-
-def _iter_batch_sizes(initial: int):
-    bs = max(1, int(initial))
-    yielded = set()
-    while bs >= 1:
-        if bs not in yielded:
-            yielded.add(bs)
-            yield bs
-        if bs == 1:
-            break
-        bs = max(1, bs // 2)
 
 def _pad2d_to_multiple(x: np.ndarray, mult: int = 16, mode: str = "reflect") -> tuple[np.ndarray, int, int]:
     """Pad 2D array on bottom/right so H,W are multiples of `mult`."""
@@ -234,6 +233,15 @@ def _load_torch_models(torch, device, *, lite: bool, walking: bool = False) -> D
             x1, x2 = x.chunk(2, dim=1)
             return x1 * x2
 
+    class GlobalAvgPool2d(nn.Module):
+        """
+        Drop-in for nn.AdaptiveAvgPool2d(1). Numerically identical, but avoids
+        the adaptive-pool op, which is a long-standing weak spot on
+        torch-directml. Parameterless, so state_dict keys are unchanged.
+        """
+        def forward(self, x):
+            return x.mean(dim=(2, 3), keepdim=True)
+
     class NAFBlock(nn.Module):
         def __init__(self, channels):
             super().__init__()
@@ -245,7 +253,7 @@ def _load_torch_models(torch, device, *, lite: bool, walking: bool = False) -> D
             )
             self.sg = SimpleGate()
             self.sca = nn.Sequential(
-                nn.AdaptiveAvgPool2d(1),
+                GlobalAvgPool2d(),
                 nn.Conv2d(channels, channels, 1, bias=True),
             )
             self.conv2 = nn.Conv2d(channels, channels, 1, bias=True)
@@ -435,7 +443,7 @@ def load_models(use_gpu: bool = True, *, lite: bool = False, walking: bool = Fal
             return models
 
     # 3) Torch-DirectML
-    if use_gpu and is_windows:
+    if use_gpu and is_windows and not _dml_disabled() and not _prefer_ort_dml():
         try:
             import torch_directml
             cache_key = (backend_tag, "dml_torch")
@@ -453,7 +461,10 @@ def load_models(use_gpu: bool = True, *, lite: bool = False, walking: bool = Fal
             status_cb(f"CosmicClarity Denoise: DirectML (torch-directml) failed, falling back. {type(e).__name__}: {e}")
 
     # 4) ORT DirectML
-    if use_gpu and ort is not None:
+    # Also gated on _dml_disabled(): if the adapter just hung under
+    # torch-directml it will hang again under ORT on the same workload. Drop the
+    # `and not _dml_disabled()` here if you'd rather try ORT before CPU.
+    if use_gpu and ort is not None and not _dml_disabled():
         try:
             prov = ort.get_available_providers()
         except Exception:
@@ -662,33 +673,6 @@ def _make_blend_weight_2d(chunk_size: int, border_size: int = 16) -> np.ndarray:
 
     return w
 
-def _iter_batch_sizes(initial: int):
-    bs = max(1, int(initial))
-    yielded = set()
-    while bs >= 1:
-        if bs not in yielded:
-            yielded.add(bs)
-            yield bs
-        if bs == 1:
-            break
-        bs = max(1, bs // 2)
-
-# The second _is_recoverable_batch_error (lower in file) should be:
-def _is_recoverable_batch_error(err: Exception) -> bool:
-    msg = f"{type(err).__name__}: {err}".lower()
-    needles = [
-        "out of memory",
-        "cuda", "cudnn", "cublas",
-        "directml", "dml",
-        "privateuseone",
-        "mps",
-        "allocation", "alloc", "resource",
-        "execution provider",
-        "insufficient memory", "bad allocation", "memory",
-        "unknown error",   # torch-directml internal failures
-    ]
-    return any(n in msg for n in needles)
-
 def _auto_batch_size(models, chunk_size, *, rgb, execution_mode="auto", batch_size_override=0):
     if batch_size_override and batch_size_override > 0:
         return int(batch_size_override)
@@ -720,9 +704,19 @@ def _auto_batch_size(models, chunk_size, *, rgb, execution_mode="auto", batch_si
         if cs <= 512: return 4 if rgb else 8
         return 2
 
-    if dev in ("mps", "dml"):
-        # Walking model is heavier — start conservative on DML to avoid
-        # the "unknown error" that DirectML emits when it runs out of resources
+    if dev == "dml":
+        # DirectML has no autocast (fp32 only) and runs against the Windows TDR
+        # watchdog: one oversized dispatch past TdrDelay and the D3D12 device is
+        # lost permanently. This is a *latency* budget, not a VRAM budget — a
+        # 16GB card does not help. Stay small on the full-width NAFNet.
+        if is_walking:
+            return 1
+        if getattr(models, "variant", "") == "lite":
+            if cs <= 256: return 2 if rgb else 4
+            return 1
+        return 1
+
+    if dev == "mps":
         if is_walking:
             return 1
         if cs <= 256: return 4 if rgb else 6
@@ -784,13 +778,7 @@ def _legacy_denoise_rgb_with_color_model(
         out[yy0:yy1, xx0:xx1, :] += src
         wts[yy0:yy1, xx0:xx1] += 1.0
 
-        if progress_cb is not None:
-            try:
-                cont = progress_cb(idx + 1, total)
-                if cont is False:
-                    raise RuntimeError("Cancelled.")
-            except Exception:
-                pass
+        _tick(progress_cb, idx + 1, total)
 
     out /= np.maximum(wts[..., None], 1.0)
     return out.astype(np.float32, copy=False)
@@ -858,13 +846,7 @@ def denoise_rgb_with_color_model(
                         acc[y:y + chunk_size, x:x + chunk_size, :] += pred[k] * weight3
                         wts[y:y + chunk_size, x:x + chunk_size] += weight
 
-                    if progress_cb is not None:
-                        try:
-                            cont = progress_cb(min(start + len(batch_coords), total), total)
-                            if cont is False:
-                                raise RuntimeError("Cancelled.")
-                        except Exception:
-                            pass
+                    _tick(progress_cb, min(start + len(batch_coords), total), total)
 
             else:
                 torch = models.torch
@@ -891,24 +873,27 @@ def denoise_rgb_with_color_model(
                         acc[y:y + chunk_size, x:x + chunk_size, :] += pred[k] * weight3
                         wts[y:y + chunk_size, x:x + chunk_size] += weight
 
-                    if progress_cb is not None:
-                        try:
-                            cont = progress_cb(min(start + len(batch_coords), total), total)
-                            if cont is False:
-                                raise RuntimeError("Cancelled.")
-                        except Exception:
-                            pass
+                    _tick(progress_cb, min(start + len(batch_coords), total), total)
 
             out = acc / np.maximum(wts[..., None], 1e-8)
             return out[:H, :W, :].astype(np.float32, copy=False)
 
+        except DenoiseCancelled:
+            raise
         except Exception as e:
             last_err = e
+            if _is_device_lost_error(e):
+                # Do NOT shrink the batch and do NOT fall through to the legacy
+                # single-tile path — both would re-enter inference on a device
+                # that no longer exists.
+                raise DeviceLostError(safe_exception_str(e)) from e
             if batch_size == 1 or not _is_recoverable_batch_error(e):
                 break
-            print(f"[CC Denoise] RGB batched path failed at batch_size={batch_size}, retrying smaller batch. {type(e).__name__}: {e}")
+            print(f"[CC Denoise] RGB batched path failed at batch_size={batch_size}, retrying smaller batch. {safe_exception_str(e)}")
 
-    print(f"[CC Denoise] RGB batched path failed, falling back to legacy single-tile path. {type(last_err).__name__}: {last_err}")
+    if last_err is not None and _is_device_lost_error(last_err):
+        raise DeviceLostError(safe_exception_str(last_err)) from last_err
+    print(f"[CC Denoise] RGB batched path failed, falling back to legacy single-tile path. {safe_exception_str(last_err)}")
     return _legacy_denoise_rgb_with_color_model(
         img_rgb,
         models,
@@ -1128,13 +1113,7 @@ def _legacy_denoise_channel(
         den2d = _infer_chunk_2d(models, model, chunk)
         out_chunks.append((den2d, i, j))
 
-        if progress_cb is not None:
-            try:
-                cont = progress_cb(idx + 1, total)
-                if cont is False:
-                    raise RuntimeError("Cancelled.")
-            except Exception:
-                pass
+        _tick(progress_cb, idx + 1, total)
 
     return stitch_chunks_ignore_border(out_chunks, channel.shape, border_size=16)
 
@@ -1213,13 +1192,7 @@ def denoise_channel(
                         acc[y:y + chunk_size, x:x + chunk_size] += pred[k] * weight
                         wts[y:y + chunk_size, x:x + chunk_size] += weight
 
-                    if progress_cb is not None:
-                        try:
-                            cont = progress_cb(min(start + len(batch_coords), total), total)
-                            if cont is False:
-                                raise RuntimeError("Cancelled.")
-                        except Exception:
-                            pass
+                    _tick(progress_cb, min(start + len(batch_coords), total), total)
 
             else:
                 torch = models.torch
@@ -1244,24 +1217,24 @@ def denoise_channel(
                         acc[y:y + chunk_size, x:x + chunk_size] += pred[k] * weight
                         wts[y:y + chunk_size, x:x + chunk_size] += weight
 
-                    if progress_cb is not None:
-                        try:
-                            cont = progress_cb(min(start + len(batch_coords), total), total)
-                            if cont is False:
-                                raise RuntimeError("Cancelled.")
-                        except Exception:
-                            pass
+                    _tick(progress_cb, min(start + len(batch_coords), total), total)
 
             out = acc / np.maximum(wts, 1e-8)
             return out[:H, :W].astype(np.float32, copy=False)
 
+        except DenoiseCancelled:
+            raise
         except Exception as e:
             last_err = e
+            if _is_device_lost_error(e):
+                raise DeviceLostError(safe_exception_str(e)) from e
             if batch_size == 1 or not _is_recoverable_batch_error(e):
                 break
-            print(f"[CC Denoise] mono batched path failed at batch_size={batch_size}, retrying smaller batch. {type(e).__name__}: {e}")
+            print(f"[CC Denoise] mono batched path failed at batch_size={batch_size}, retrying smaller batch. {safe_exception_str(e)}")
 
-    print(f"[CC Denoise] mono batched path failed, falling back to legacy single-tile path. {type(last_err).__name__}: {last_err}")
+    if last_err is not None and _is_device_lost_error(last_err):
+        raise DeviceLostError(safe_exception_str(last_err)) from last_err
+    print(f"[CC Denoise] mono batched path failed, falling back to legacy single-tile path. {safe_exception_str(last_err)}")
     return _legacy_denoise_channel(
         channel,
         models,
@@ -1294,7 +1267,12 @@ def denoise_rgb01(
         batch_size_override = 1
         chunk_size = min(int(chunk_size), 256)
 
-    models = load_models(use_gpu=use_gpu, lite=lite, walking=walking)
+    models = load_models(use_gpu=use_gpu, lite=lite, walking=walking, status_cb=print)
+
+    # Applied here, before _tile_count_2d and the progress totals are derived
+    # from it, so the tile grid and the progress bar agree.
+    chunk_size = _cap_chunk_size_for_device(models.device, int(chunk_size))
+
     tm = float(np.clip(target_median, 0.01, 0.50))
 
     def _log(msg: str):
@@ -1368,8 +1346,7 @@ def denoise_rgb01(
             mono_s = add_border(mono_s, border_size=16)
 
             total_units = _tile_count_2d(*mono_s.shape[:2])
-            if progress_cb is not None:
-                progress_cb(0, total_units)
+            _tick(progress_cb, 0, total_units)
 
             den_m = denoise_channel(
                 mono_s,
@@ -1412,8 +1389,7 @@ def denoise_rgb01(
 
         if separate_channels or denoise_mode == "separate":
             total_units = tile_units * 3
-            if progress_cb is not None:
-                progress_cb(0, total_units)
+            _tick(progress_cb, 0, total_units)
 
             out_ch = []
             for c in range(3):
@@ -1433,8 +1409,7 @@ def denoise_rgb01(
 
         elif denoise_mode == "luminance":
             total_units = tile_units
-            if progress_cb is not None:
-                progress_cb(0, total_units)
+            _tick(progress_cb, 0, total_units)
 
             y, cb, cr = extract_luminance(stretched)
             den_y = denoise_channel(
@@ -1453,8 +1428,7 @@ def denoise_rgb01(
         else:
             # full mode = luminance pass + color pass
             total_units = tile_units * 2
-            if progress_cb is not None:
-                progress_cb(0, total_units)
+            _tick(progress_cb, 0, total_units)
 
             y, cb, cr = extract_luminance(stretched)
 
@@ -1503,12 +1477,35 @@ def denoise_rgb01(
 
     try:
         return _run_with(models)
+
+    except DenoiseCancelled:
+        raise
+
     except Exception as e:
-        dev = _device_type(models)   # ← use helper
-        if use_gpu and dev != "cpu" and _is_device_lost_error(e):
-            _log(f"[CC Denoise] GPU device lost on backend={dev}; retrying on CPU.")
-            cpu_models = load_models(use_gpu=False, lite=lite, walking=walking)
+        try:
+            dev = _device_type(models) if models is not None else "unknown"
+        except Exception:
+            dev = "unknown"
+
+        hard = _is_device_lost_error(e)   # adapter is gone — poison DirectML
+        soft = _is_backend_unusable_error(e)   # backend can't run it — fall back only
+
+        if use_gpu and dev != "cpu" and (hard or soft):
+            _log(f"[CC Denoise] GPU path failed on backend={dev}: {safe_exception_str(e)}")
+
+            if hard and dev == "dml":
+                # Process-wide. Sharpen and every other CC engine must stop
+                # handing out DirectML for the rest of this session.
+                _disable_dml("Adapter was removed or hung during denoising.", status_cb=_log)
+
+            if hard:
+                _evict_models(models)
+                models = None
+
+            _log("[CC Denoise] Retrying on CPU.")
+            cpu_models = load_models(use_gpu=False, lite=lite, walking=walking, status_cb=_log)
             return _run_with(cpu_models)
+
         raise
 
 

@@ -9,6 +9,22 @@ import numpy as np
 from setiastro.saspro.resources import get_resources
 from setiastro.saspro.runtime_torch import _user_runtime_dir, _venv_paths, _check_cuda_in_venv
 from setiastro.saspro.runtime_torch import np_to_torch, torch_to_np, mps_is_usable
+from setiastro.saspro.cosmicclarity_engines._backend_guard import (
+    DeviceLostError,
+    EngineCancelled,
+    safe_exception_str as _safe_exception_str,
+    is_device_lost_error as _is_device_lost_error,
+    is_backend_unusable_error as _is_backend_unusable_error,
+    is_recoverable_batch_error as _is_recoverable_batch_error,
+    iter_batch_sizes as _iter_batch_sizes,
+    device_type as _device_type,
+    dml_disabled as _dml_disabled,
+    disable_dml as _disable_dml,
+    prefer_ort_dml as _prefer_ort_dml,
+    cap_chunk_size_for_device as _cap_chunk_size_for_device,
+    tick as _tick,
+    evict_models as _evict_models,
+)
 import math
 
 # Optional deps used by auto-PSF
@@ -71,17 +87,6 @@ def _get_ort(status_cb=print):
         except Exception:
             pass
         return None
-
-def _safe_exception_str(err: Exception) -> str:
-    """Convert exception to string safely, handling non-UTF-8 encoded messages (e.g. Japanese Windows)."""
-    try:
-        return f"{type(err).__name__}: {err}"
-    except Exception:
-        pass
-    try:
-        return f"{type(err).__name__}: {str(err).encode('utf-8', errors='replace').decode('utf-8')}"
-    except Exception:
-        return type(err).__name__
 
 def _nullcontext():
     from contextlib import nullcontext
@@ -281,31 +286,13 @@ def measure_psf_radius(chunk2d: np.ndarray, default_radius: float = 3.0) -> floa
         return default_radius
 
 
-def _is_device_lost_error(err: Exception) -> bool:
-    s = _safe_exception_str(err).lower()
-    needles = ["887a0005", "getdeviceremovedreason", "device removed", "device lost",
-               "gpu-apparaat", "onderbroken", "dmlexecutionprovider", "executionprovider.cpp"]
-    return any(n in s for n in needles)
-
-
-def _iter_batch_sizes(initial: int):
-    bs = max(1, int(initial))
-    yielded = set()
-    while bs >= 1:
-        if bs not in yielded:
-            yielded.add(bs)
-            yield bs
-        if bs == 1:
-            break
-        bs = max(1, bs // 2)
-
-
-def _is_recoverable_batch_error(err: Exception) -> bool:
-    msg = _safe_exception_str(err).lower()
-    needles = ["out of memory", "cuda", "cudnn", "cublas", "directml", "dml", "mps",
-               "allocation", "alloc", "resource", "execution provider", "insufficient memory",
-               "bad allocation", "memory", "887a0005", "device removed", "device lost"]
-    return any(n in msg for n in needles)
+# _is_device_lost_error, _is_backend_unusable_error, _is_recoverable_batch_error
+# and _iter_batch_sizes now live in _backend_guard so that a device loss in any
+# Cosmic Clarity engine is visible to all of them. See the import block above.
+#
+# Note the old _is_recoverable_batch_error listed "887a0005" / "device removed" /
+# "device lost" as recoverable — meaning a lost adapter caused the batch loop to
+# halve and RE-DISPATCH onto a dead device, three separate times per run.
 
 
 # ---------------- Model bundle ----------------
@@ -394,7 +381,7 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
             return models
 
 
-    if use_gpu and is_windows:
+    if use_gpu and is_windows and not _dml_disabled() and not _prefer_ort_dml():
         try:
             import torch_directml
             cache_key = (backend_tag, "dml_torch")
@@ -405,12 +392,23 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
             models = _load_torch_models(torch, dml)
             _MODELS_CACHE[cache_key] = models
             return models
+        except Exception as e:
+            # The old bare `except Exception: pass` here threw away every
+            # diagnostic about why DirectML declined to come up.
+            try:
+                status_cb(f"CosmicClarity Sharpen: torch-directml unavailable, falling back. {_safe_exception_str(e)}")
+            except Exception:
+                pass
+
+
+    # Also gated on _dml_disabled(): if the adapter just hung under
+    # torch-directml it will hang again under ORT on the same workload. Drop the
+    # `and not _dml_disabled()` if you'd rather try ORT before CPU.
+    if use_gpu and ort is not None and not _dml_disabled():
+        try:
+            prov = ort.get_available_providers()
         except Exception:
-            pass
-
-
-    if use_gpu and ort is not None:
-        prov = ort.get_available_providers()
+            prov = []
         if "DmlExecutionProvider" in prov:
             cache_key = (backend_tag, "dml_ort")
             if cache_key in _MODELS_CACHE:
@@ -500,6 +498,13 @@ def _load_torch_models(torch, device) -> SharpenModels:
             x1, x2 = x.chunk(2, dim=1)
             return x1 * x2
 
+    class GlobalAvgPool2d(nn.Module):
+        """Drop-in for nn.AdaptiveAvgPool2d(1). Numerically identical, but avoids
+        the adaptive-pool op, a long-standing torch-directml weak spot.
+        Parameterless, so state_dict keys are unchanged (sca.1.weight / sca.1.bias)."""
+        def forward(self, x):
+            return x.mean(dim=(2, 3), keepdim=True)
+
     class NAFBlock(nn.Module):
         def __init__(self, channels):
             super().__init__()
@@ -507,7 +512,7 @@ def _load_torch_models(torch, device) -> SharpenModels:
             self.conv1  = nn.Conv2d(channels, channels * 2, 1, bias=True)
             self.dwconv = nn.Conv2d(channels * 2, channels * 2, 3, padding=1, groups=channels * 2, bias=True)
             self.sg     = SimpleGate()
-            self.sca    = nn.Sequential(nn.AdaptiveAvgPool2d(1), nn.Conv2d(channels, channels, 1, bias=True))
+            self.sca    = nn.Sequential(GlobalAvgPool2d(), nn.Conv2d(channels, channels, 1, bias=True))
             self.conv2  = nn.Conv2d(channels, channels, 1, bias=True)
             self.norm2  = LayerNorm2d(channels)
             self.ffn1   = nn.Conv2d(channels, channels * 2, 1, bias=True)
@@ -738,7 +743,7 @@ def _recommended_batch_size(
         return 1
     if models.is_onnx:
         return 1
-    dev = getattr(models.device, "type", str(models.device)).lower()
+    dev = _device_type(models.device)
     if dev == "cuda":
         if chunk_size <= 256:  return 16 if not psf else 12
         if chunk_size <= 384:  return 8  if not psf else 6
@@ -747,6 +752,12 @@ def _recommended_batch_size(
     if dev == "mps":
         if chunk_size <= 256:  return 4 if not psf else 3
         return 2
+    if dev == "dml":
+        # Explicit, not incidental. DirectML has no autocast (fp32 only) and is
+        # watchdogged by TDR; one oversized dispatch loses the device for good.
+        # Batch is already floored at 1 here, so the real lever on this engine is
+        # chunk_size — see _cap_chunk_size_for_device in _sharpen_plane.
+        return 1
     return 1
 
 
@@ -833,11 +844,19 @@ def _infer_chunks_batched_rgb(
 
             return outputs
 
+        except EngineCancelled:
+            raise
         except Exception as e:
             last_err = e
+            if _is_device_lost_error(e):
+                # Do NOT shrink the batch — that would re-dispatch onto a device
+                # that no longer exists.
+                raise DeviceLostError(_safe_exception_str(e)) from e
             if bs == 1 or not _is_recoverable_batch_error(e):
                 break
 
+    if last_err is not None and _is_device_lost_error(last_err):
+        raise DeviceLostError(_safe_exception_str(last_err)) from last_err
     raise last_err
 
 def _infer_chunk_psf(models: SharpenModels, model: Any, chunk2d: np.ndarray, psf01: float) -> np.ndarray:
@@ -948,9 +967,7 @@ def _infer_chunks_batched(
                     outputs[s + bi] = tile_out
 
                 done += len(batch)
-                if progress_cb is not None:
-                    if progress_cb(progress_done_start + done, progress_total) is False:
-                        raise RuntimeError("Cancelled.")
+                _tick(progress_cb, progress_done_start + done, progress_total)
 
             return outputs
 
@@ -983,9 +1000,7 @@ def _infer_chunks_psf_batched(
         outputs = []
         for idx, (ch, psf01) in enumerate(zip(chunks2d, psf01_list), start=1):
             outputs.append(_infer_chunk_psf_onnx(models, model, ch, psf01))
-            if progress_cb is not None:
-                if progress_cb(progress_done_start + idx, progress_total) is False:
-                    raise RuntimeError("Cancelled.")
+            _tick(progress_cb, progress_done_start + idx, progress_total)
         return outputs
 
     torch = models.torch
@@ -1102,6 +1117,7 @@ def _correct_rgb_image(
         return image_rgb
     H, W = image_rgb.shape[:2]
     chunk_size = max(64, min(1024, int(chunk_size)))
+    chunk_size = _cap_chunk_size_for_device(models.device, chunk_size)
     overlap    = max(0, min(chunk_size - 1, int(overlap)))
     WHITE_COMPRESS = 0.75 if conservative_compression else 0.95
 
@@ -1463,21 +1479,42 @@ def sharpen_image_array(image: np.ndarray,
 
         return np.clip(sharpened, 0.0, 1.0), was_mono
 
+    models = None
     try:
         progress_cb(0, 1, "Loading models")
         models = load_sharpen_models(use_gpu=params.use_gpu, status_cb=status_cb)
         out, was_mono = _run_with(models)
         return out, was_mono
 
+    except EngineCancelled:
+        raise
+
     except Exception as e:
         try:
-            dev = getattr(models.device, "type", None) or str(models.device)
+            dev = _device_type(models.device) if models is not None else "unknown"
         except Exception:
             dev = "unknown"
 
-        if params.use_gpu and str(dev).lower() != "cpu" and _is_device_lost_error(e):
+        hard = _is_device_lost_error(e)
+        soft = _is_backend_unusable_error(e)
+
+        if params.use_gpu and dev != "cpu" and (hard or soft):
             try:
-                status_cb(f"CosmicClarity Sharpen: GPU device lost on backend={dev}; retrying on CPU.")
+                status_cb(f"CosmicClarity Sharpen: GPU path failed on backend={dev}: {_safe_exception_str(e)}")
+            except Exception:
+                pass
+
+            if hard and dev == "dml":
+                # Process-wide: denoise, sharpen and every other CC engine must
+                # stop handing out DirectML for the rest of this session.
+                _disable_dml("Adapter was removed or hung during sharpening.", status_cb=status_cb)
+
+            if hard:
+                _evict_models(_MODELS_CACHE, models, tag="CC Sharpen", status_cb=status_cb)
+                models = None
+
+            try:
+                status_cb("CosmicClarity Sharpen: retrying on CPU.")
             except Exception:
                 pass
             cpu_models = load_sharpen_models(use_gpu=False, status_cb=status_cb)
@@ -1496,6 +1533,7 @@ def _sharpen_plane(models: SharpenModels,
     chunk_size = int(getattr(params, "chunk_size", 256))
     overlap    = int(getattr(params, "overlap", 64))
     chunk_size = max(64, min(1024, chunk_size))
+    chunk_size = _cap_chunk_size_for_device(models.device, chunk_size)
     overlap    = max(0,  min(chunk_size - 1, overlap))
 
     H, W   = plane.shape

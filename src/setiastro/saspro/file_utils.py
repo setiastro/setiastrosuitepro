@@ -26,7 +26,7 @@ from typing import Optional, List, Set
 #                             - EXT_ALIASES          if the ext has aliases (e.g. jpeg→jpg)
 #                             - ALLOWED_BIT_DEPTHS   add the format + its supported depths
 #
-#  2. save_options.py        (pro/save_options.py)
+#  2. save_options.py        (saspro/save_options.py)
 #                             - _BIT_DEPTHS dict     same depths as above, controls Export dialog
 #
 #  3. doc_manager.py         (saspro/doc_manager.py)
@@ -37,17 +37,17 @@ from typing import Optional, List, Set
 #                             - load_image()          add a new `elif filename.endswith('.xyz'):` branch
 #                             - The actual writer/reader can live in saspro/imageops/
 #
-#  5. file_mixin.py          (pro/gui/mixins/file_mixin.py)
+#  5. file_mixin.py          (saspro/gui/mixins/file_mixin.py)
 #                             - open_files()          add *.xyz to the file dialog filter string
 #                             - save_active()         add to the filter string
 #                             - save_active_as_format() add to fmt_map and all_filters
 #
-#  6. toolbar_mixin.py       (pro/gui/mixins/toolbar_mixin.py)
+#  6. toolbar_mixin.py       (saspro/gui/mixins/toolbar_mixin.py)
 #                             - _create_actions()     create self.act_save_xyz + connect
 #                             - _init_toolbar()       add act_save_xyz to save_menu dropdown
 #                             - _rebind_view_dropdowns() add act_save_xyz to save_menu rebuild
 #
-#  7. menubar_mixin.py       (pro/gui/mixins/menubar_mixin.py or _init_menubar in toolbar_mixin)
+#  7. menubar_mixin.py       (saspro/gui/mixins/menubar_mixin.py or _init_menubar in toolbar_mixin)
 #                             - Save As Format submenu  add m_save_as.addAction(self.act_save_xyz)
 #
 # That's 7 files / 8+ touchpoints. Yes, it's a lot. No, we can't easily collapse them
