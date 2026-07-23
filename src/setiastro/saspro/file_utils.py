@@ -83,8 +83,10 @@ ALLOWED_BIT_DEPTHS = {
     "tif":  {"8-bit", "16-bit", "32-bit unsigned", "32-bit floating point"},
     "xisf": {"16-bit", "32-bit unsigned", "32-bit floating point"},
     "psb":  {"16-bit", "32-bit floating point"},
+    "webp": {"8-bit"},
 }
 
+WEBP_MAX_DIM = 16383
 
 # ---------------------------------------------------------------------------
 # Extension Normalization

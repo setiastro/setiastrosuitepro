@@ -107,6 +107,7 @@ class MenuMixin:
         m_save_as.addAction(self.act_save_tiff)
         m_save_as.addAction(self.act_save_png)
         m_save_as.addAction(self.act_save_jpeg)
+        m_save_as.addAction(self.act_save_webp)
         m_save_as.addAction(self.act_save_psb)
         m_file.addAction(self.act_export_fits_bundle)
         m_file.addAction(self.act_checkpoint_save) 

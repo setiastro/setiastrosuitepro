@@ -633,14 +633,14 @@ class FileMixin:
     def open_files(self):
         # One-stop "All Supported" plus focused groups the user can switch to
         filters = (
-            "All Supported (*.png *.jpg *.jpeg *.tif *.tiff "
+            "All Supported (*.png *.jpg *.jpeg *.webp *.tif *.tiff "
             "*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf *.pdf "
             "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.psb);;"
             "PDF (*.pdf);;"
             "Astro (FITS/XISF) (*.xisf *.fits *.fit *.fts *.fits.gz *.fit.gz *.fz);;"
             "RAW Images (*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
             "Photoshop Documents (*.psb);;"
-            "Common Images (*.png *.jpg *.jpeg *.tif *.tiff);;"
+            "Common Images (*.png *.jpg *.jpeg *.webp *.tif *.tiff);;"
             "All Files (*)"
         )
 
@@ -777,6 +777,7 @@ class FileMixin:
             "TIFF (*.tif *.tiff);;"
             "PNG (*.png);;"
             "JPEG (*.jpg *.jpeg);;"
+            "WebP (*.webp);;"
             "Photoshop Large Doc (*.psb)"
         )
 
@@ -1244,7 +1245,7 @@ class FileMixin:
         """
         Save active document directly in a specific format,
         pre-populating the file dialog with the right extension.
-        fmt: 'fits', 'xisf', 'tiff', 'png', 'jpeg'
+        fmt: 'fits', 'xisf', 'tiff', 'png', 'jpeg', 'webp', 'psb'
         """
         from setiastro.saspro.main_helpers import (
             best_doc_name as _best_doc_name,
@@ -1262,6 +1263,7 @@ class FileMixin:
             "tiff":  ("TIFF (*.tif *.tiff)",              ".tiff"),
             "png":   ("PNG (*.png)",                      ".png"),
             "jpeg":  ("JPEG (*.jpg *.jpeg)",              ".jpg"),
+            "webp":  ("WebP (*.webp)",                    ".webp"),
             "psb":   ("Photoshop Large Doc (*.psb)",      ".psb"),
         }
         if fmt not in fmt_map:
@@ -1277,6 +1279,7 @@ class FileMixin:
             "TIFF (*.tif *.tiff)",
             "PNG (*.png)",
             "JPEG (*.jpg *.jpeg)",
+            "WebP (*.webp)",
             "Photoshop Large Doc (*.psb)",
         ]
         # Move chosen filter to top

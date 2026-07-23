@@ -2233,7 +2233,39 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     image = np.array(img, dtype=np.float32) / 255.0
                     bit_depth = "8-bit"
                 else:
-                    raise ValueError("Unsupported JPG format!")            
+                    raise ValueError("Unsupported JPG format!")     
+                  
+            elif filename.lower().endswith('.webp'):
+                print(f"Loading WebP file: {filename}")
+                with Image.open(filename) as im:
+                    if im.mode not in ('RGB', 'RGBA', 'L'):
+                        im = im.convert('RGBA' if 'A' in im.getbands() else 'RGB')
+                    arr = np.array(im)          # NOT np.asarray(copy=...) — numpy 1.x
+
+                if arr.ndim == 3 and arr.shape[2] == 4:
+                    print("Detected RGBA WebP image. Dropping alpha channel.")
+                    arr = arr[:, :, :3]
+
+                bit_depth = "8-bit"
+
+                if arr.ndim == 2:
+                    is_mono = True
+                elif arr.ndim == 3 and arr.shape[2] == 3:
+                    # WebP has no grayscale mode, so we always *write* mono as
+                    # RGB. Collapse an identical-channel image back to mono so
+                    # a save/reload round-trip doesn't silently 3-channel it.
+                    if (np.array_equal(arr[..., 0], arr[..., 1]) and
+                            np.array_equal(arr[..., 1], arr[..., 2])):
+                        print("WebP channels identical; treating as mono.")
+                        arr = arr[..., 0]
+                        is_mono = True
+                    else:
+                        is_mono = False
+                else:
+                    raise ValueError(f"Unsupported WebP dimensions: {arr.shape}")
+
+                image = arr.astype(np.float32) / 255.0                
+
             elif filename.lower().endswith('.psb'):
                 print(f"Loading PSB file: {filename}")
                 from setiastro.saspro.imageops.save_psb import load_psb
@@ -2244,6 +2276,13 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
 
             print(f"Loaded image: shape={image.shape}, bit depth={bit_depth}, mono={is_mono}")
             image = _finalize_loaded_image(image)
+            if return_metadata:
+                return image, original_header, bit_depth, is_mono, {
+                    "file_path": filename,
+                    "fits_header": original_header,
+                    "bit_depth": bit_depth,
+                    "mono": is_mono,
+                }
             return image, original_header, bit_depth, is_mono
 
         except Exception as e:
@@ -3217,7 +3256,33 @@ def save_image(img_array,
 
             print(f"Saved 8-bit JPG image to: {filename} (quality={q})")
             return
+        # ---------------------------------------------------------------------
+        # WebP — 8-bit only; lossless by default
+        # ---------------------------------------------------------------------
+        if fmt == "webp":
+            from setiastro.saspro.imageops.webp_io import save_webp
 
+            lossless = bool(export_opts.get("webp_lossless", True))
+
+            q = export_opts.get("webp_quality")
+            if q is None:
+                q = 95 if jpeg_quality is None else int(jpeg_quality)
+            q = max(1, min(100, int(q)))
+
+            icc = (_export_icc_profile_bytes(export_opts.get("icc_color_space", "P3"))
+                   if export_opts.get("embed_icc", True) else None)
+
+            save_webp(
+                filename,
+                img_array,
+                lossless=lossless,
+                quality=q,
+                method=int(export_opts.get("webp_method", 4)),
+                icc_profile=icc,
+            )
+            print(f"Saved 8-bit WebP image to: {filename} "
+                  f"(lossless={lossless}, quality={q})")
+            return
         # ---------------------------------------------------------------------
         # TIFF — honor bit depth (fallback to 32-bit floating point)
         # ---------------------------------------------------------------------
