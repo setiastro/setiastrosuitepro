@@ -1,4 +1,20 @@
 # saspro/ghs_dialog_pro.py
+#
+# Copyright (C) Franklin Marek / SetiAstro
+#
+# This file is part of SetiAstro Suite Pro (SASpro).
+#
+# SASpro is free software: you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation, version 3 of the License.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+
 from PyQt6.QtCore import (Qt, QEvent, QPointF, QTimer, QSettings, QByteArray,
                           QSize, pyqtSignal)
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -86,8 +102,15 @@ def _build_uhs_lut(a, b, g, lp, hp, sym_u, N=65536):
 # Generalised Hyperbolic Stretch — Cranfield / Payne
 #
 # The GHS method and its equations are the work of Mike Cranfield and David
-# Payne. SASpro does not claim authorship of the concept or the mathematics;
-# this is an independent numpy implementation of the published closed form.
+# Payne. SASpro claims authorship of neither; this is an independent numpy
+# implementation written from their published formulation, offered here with
+# credit and thanks.
+#
+# GHS project information and licence terms:
+#     https://ghsastro.co.uk/information/
+#
+# Their reference implementation is GPLv3, as is SASpro.
+# ---------------------------------------------------------------------------
 #
 # The family is the integral of a local stretch kernel taken outward from the
 # symmetry point SP. Writing t = |x - SP|:
@@ -911,10 +934,26 @@ class GhsDialogPro(QDialog):
         "GHS":                MODE_UHS,
     }
 
+    # Compact names for history steps and replay descriptions. The full mode
+    # strings nest badly inside "Hyperbolic Stretch (...)".
+    SHORT_LABELS = {
+        MODE_UHS:     "UHS",
+        MODE_GHS:     "GHS",
+        MODE_ARCSINH: "ArcSinh",
+        MODE_LOG:     "Log",
+        MODE_EXP:     "Exp",
+        MODE_PIP:     "PIP",
+    }
+
     @classmethod
     def canonical_function(cls, name: str) -> str:
         """Normalise a stored preset's 'function' value to a current MODE_*."""
         return cls.LEGACY_FN_ALIASES.get(name, name)
+
+    @classmethod
+    def short_label(cls, name: str) -> str:
+        """Compact display name for an undo step, e.g. MODE_GHS -> 'GHS'."""
+        return cls.SHORT_LABELS.get(cls.canonical_function(name), name)
 
     def __init__(self, parent, document):
         super().__init__(parent)
@@ -1588,9 +1627,11 @@ class GhsDialogPro(QDialog):
             # Single construction point — see _ghs_params().
             ghs_params = self._ghs_params()
 
+            step = f"Hyperbolic Stretch ({self.short_label(mode)})"
+
             _marr, mid, mname = self._active_mask_layer()
             meta = {
-                "step_name": f"Hyperbolic Stretch ({mode})",
+                "step_name": step,
                 "ghs":        ghs_params,
                 "masked":     bool(mid),
                 "mask_id":    mid,
@@ -1616,7 +1657,7 @@ class GhsDialogPro(QDialog):
                     try:
                         mw._remember_last_headless_command(
                             "ghs", ghs_params,
-                            description=f"Hyperbolic Stretch ({mode})",
+                            description=step,
                         )
                         try:
                             mw._log(f"[Replay] GHS stored: fn={mode}, "
@@ -1628,7 +1669,7 @@ class GhsDialogPro(QDialog):
 
             self.doc.apply_edit(out_masked.copy(),
                                 metadata=meta,
-                                step_name=f"Hyperbolic Stretch ({mode})")
+                                step_name=step)
 
             self._load_from_doc()
 

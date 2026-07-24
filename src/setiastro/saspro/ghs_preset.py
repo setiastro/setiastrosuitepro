@@ -50,19 +50,8 @@ def _resolve_mode(fn: str, D) -> str:
 
 
 def _short_label(mode: str, D) -> str:
-    """
-    Compact name for history steps. Without this the new mode produces
-    "Hyperbolic Stretch (Generalised Hyperbolic Stretch (Cranfield/Payne))"
-    in the undo stack.
-    """
-    return {
-        D.MODE_UHS:     "Universal",
-        D.MODE_GHS:     "GHS \u2014 Cranfield/Payne",
-        D.MODE_ARCSINH: "ArcSinh",
-        D.MODE_LOG:     "Logarithmic",
-        D.MODE_EXP:     "Exponential",
-        D.MODE_PIP:     "Power of Inverted Pixels",
-    }.get(mode, mode)
+    """Compact name for history steps — table lives on GhsDialogPro."""
+    return D.short_label(mode)
 
 
 # ---------- helpers: points -> scene -> interpolator -> LUT ----------

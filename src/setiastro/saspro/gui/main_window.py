@@ -9116,7 +9116,7 @@ class AstroSuiteProMainWindow(
         QShortcut(QKeySequence("Ctrl+Shift+P"), self, activated=self._focus_command_search)
 
 
-        # Enter runs the first visible completion
+        # Enter runs the matched / highlighted completion (not blindly row 0)
         self._cmd_edit.returnPressed.connect(self._trigger_first_visible_completion)
 
         # Initial population
@@ -9162,8 +9162,27 @@ class AstroSuiteProMainWindow(
                 act.trigger()
 
     def _trigger_first_visible_completion(self):
+        """Run exact edit-text match, else highlighted popup row, else first filter hit."""
+        text = (self._cmd_edit.text() or "").strip()
+        if text:
+            needle = text.casefold()
+            for row in range(self._cmd_model.rowCount()):
+                idx = self._cmd_model.index(row, 0)
+                title = (idx.data(Qt.ItemDataRole.DisplayRole) or "").strip()
+                if title.casefold() == needle:
+                    self._run_selected_completion(idx)
+                    return
+        
         popup = self._cmd_completer.popup()
-        m = popup.model()
+        if popup is not None and popup.isVisible():
+            cur = popup.currentIndex()
+            if cur.isValid():
+                self._run_selected_completion(cur)
+                return
+
+        m = popup.model() if popup is not None else None
+        if m is None:
+            m = self._cmd_completer.completionModel()
         if m and m.rowCount() > 0:
             self._run_selected_completion(m.index(0, 0))
 
