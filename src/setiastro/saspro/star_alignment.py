@@ -6793,7 +6793,7 @@ class MosaicMasterDialog(QDialog):
                     reprojected = np.nan_to_num(rpj, nan=0.0).astype(np.float32)
 
             # Pedestal-free grayscale for star detection (astroalign never sees PED)
-            cov_r = (reprojected if reprojected.ndim == 2 else reprojected[..., 0]) > (0.5 * PED)
+            cov_r = (reprojected if reprojected.ndim == 2 else reprojected[..., 0]) > (0.995 * PED)
             reproj_red = self._strip_pedestal(
                 reprojected if reprojected.ndim == 2 else reprojected[..., 0], PED, cov_r
             )
@@ -6853,7 +6853,19 @@ class MosaicMasterDialog(QDialog):
 
             # --- real footprint, then drop the pedestal ---
             gray_ped = aligned[..., 0] if aligned.ndim == 3 else aligned
-            coverage = gray_ped > (0.5 * PED)
+
+            # A fully covered pixel is PED + data, and data >= 0, so anything
+            # below PED had interpolation reach past the panel edge into
+            # borderValue=0. Lanczos4 spans 8x8, so contamination extends ~4px
+            # in; erode to clear the ringing band, where overshoot can push a
+            # contaminated pixel back above PED.
+            EDGE_TRIM = 8
+            coverage = gray_ped > (0.995 * PED)
+            if EDGE_TRIM > 0 and coverage.any():
+                k = cv2.getStructuringElement(
+                    cv2.MORPH_ELLIPSE, (2 * EDGE_TRIM + 1, 2 * EDGE_TRIM + 1))
+                coverage = cv2.erode(coverage.astype(np.uint8), k).astype(bool)
+
             if not coverage.any():
                 print(f"[Mosaic] {self._item_label(itm)}: empty footprint, skipping.")
                 continue
