@@ -8,10 +8,12 @@
 from __future__ import annotations
 import numpy as np
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QEvent, QPointF, QPoint, QTimer, QSettings, QByteArray, QRectF
+from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QEvent, QPointF, QPoint, QTimer,
+                          QSettings, QByteArray, QRectF, QSize)
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QLineEdit,
-    QWidget, QMessageBox, QRadioButton, QButtonGroup, QToolButton, QInputDialog, QMenu, QSizePolicy
+    QWidget, QMessageBox, QRadioButton, QButtonGroup, QToolButton, QInputDialog, QMenu,
+    QSizePolicy, QCheckBox, QScrollBar
 )
 from PyQt6.QtGui import (
     QPixmap, QImage, QWheelEvent, QPainter, QPainterPath, QPen, QColor, QBrush,
@@ -722,6 +724,601 @@ class ImageLabel(QLabel):
         self.mouseMoved.emit(event.position().x(), event.position().y())
         super().mouseMoveEvent(event)
 
+# ─────────────────────────────────────────────────────────────
+# Histogram + transfer-curve view
+#
+# Shared by CurvesDialogPro and GhsDialogPro. Draws per-channel histograms
+# with x-zoom/pan and, optionally, the exact transfer curve that will be
+# applied — no spline, no resampled control points, so the drawing cannot
+# drift from the result.
+#
+# Two ways to feed it the "after" state:
+#   set_result(lut=...)          - push the before-histogram through a
+#                                  monotone LUT (cheap; GHS uses this)
+#   set_result(result_image=...) - histogram an already-processed image
+#                                  (Curves uses this, because it composites
+#                                  several LUTs plus Lab/HSV round-trips and
+#                                  there is no single LUT to push through)
+# ─────────────────────────────────────────────────────────────
+
+_HIST_BINS          = 8192      # useful when zoomed into the first 1-2%
+_CURVE_POINTS       = 1024
+_SMOOTH_PX          = 2.5       # Gaussian kernel width in SCREEN pixels
+_HIST_SAMPLES_REF   = 2_000_000 # reference pass: once per image load
+_HIST_SAMPLES_LIVE  = 600_000   # live pass: every debounce tick
+
+_HV_CH_COLORS = {
+    "K": QColor(220, 220, 220),
+    "R": QColor(255,  80,  80),
+    "G": QColor(110, 220,  95),
+    "B": QColor( 80, 145, 255),
+}
+_HV_MARKER_COLORS = {
+    "SP": QColor(255, 255, 255),
+    "LP": QColor( 90, 135, 255),
+    "HP": QColor(255, 210,  80),
+    "BP": QColor(255, 120, 120),
+}
+
+# "b*" must not resolve to the blue channel, and Chroma/Saturation/L*/a*
+# have no channel of their own — they all fall back to K.
+_HV_CHANNEL_ALIASES = {
+    "K": "K", "K (BRIGHTNESS)": "K", "BRIGHTNESS": "K", "LUMA": "K",
+    "R": "R", "RED": "R",
+    "G": "G", "GREEN": "G",
+    "B": "B", "BLUE": "B",
+}
+
+
+def _hist_of(a, max_n=_HIST_SAMPLES_REF):
+    flat = np.asarray(a, dtype=np.float32).ravel()
+    if flat.size > max_n:
+        flat = flat[:: max(1, flat.size // max_n)]
+    flat = flat[np.isfinite(flat)]
+    if flat.size == 0:
+        flat = np.zeros(1, dtype=np.float32)
+    h, _ = np.histogram(np.clip(flat, 0.0, 1.0), bins=_HIST_BINS, range=(0.0, 1.0))
+    return h.astype(np.float32)
+
+
+def _channel_hists(img, max_n=_HIST_SAMPLES_REF):
+    arr = np.asarray(img, dtype=np.float32)
+    out = {}
+    if arr.ndim == 3 and arr.shape[2] >= 3:
+        for i, name in enumerate(("R", "G", "B")):
+            out[name] = _hist_of(arr[..., i], max_n)
+        out["K"] = (out["R"] + out["G"] + out["B"]) / 3.0
+        return True, out
+    h = _hist_of(arr if arr.ndim == 2 else arr[..., 0], max_n)
+    for name in ("K", "R", "G", "B"):
+        out[name] = h
+    return False, out
+
+
+def _remap_hist(hist, lut):
+    """
+    Push a histogram through a monotone LUT, treating each bin as an INTERVAL
+    rather than a point.
+
+    Mapping bin centres and bincount-ing leaves gaps wherever the transform
+    expands the input — adjacent centres land 2-3 output bins apart and
+    everything between gets nothing, which reads as a comb. Since the LUT is
+    monotone the correct answer is the input CDF resampled onto the output
+    axis: exact, mass-preserving, no gaps, and it degrades gracefully where
+    the LUT is flat because the image is clipping.
+    """
+    n = int(hist.size)
+    edges = np.linspace(0.0, 1.0, n + 1)
+    idx = np.clip((edges * (lut.size - 1)).astype(np.int64), 0, lut.size - 1)
+    edges_out = np.asarray(lut, dtype=np.float64)[idx]
+    cdf = np.concatenate(([0.0], np.cumsum(hist, dtype=np.float64)))
+    out = np.diff(np.interp(edges, edges_out, cdf))
+    return np.maximum(out, 0.0).astype(np.float32)
+
+
+def _clip_pct(hist, lut):
+    centers = (np.arange(_HIST_BINS, dtype=np.float64) + 0.5) / _HIST_BINS
+    idx = np.clip((centers * (lut.size - 1)).astype(np.int64), 0, lut.size - 1)
+    mapped = np.asarray(lut, dtype=np.float64)[idx]
+    total = float(hist.sum())
+    if total <= 0.0:
+        return 0.0, 0.0
+    return (float(hist[mapped <= 0.0].sum()) / total * 100.0,
+            float(hist[mapped >= 1.0].sum()) / total * 100.0)
+
+
+def _smooth_path(pts):
+    """
+    Quadratic Beziers through segment midpoints: every sample becomes a control
+    point and the result is C1 continuous, so the outline reads as a curve
+    instead of a polyline.
+    """
+    path = QPainterPath()
+    if not pts:
+        return path
+    path.moveTo(pts[0][0], pts[0][1])
+    if len(pts) < 3:
+        for x, y in pts[1:]:
+            path.lineTo(x, y)
+        return path
+    for i in range(1, len(pts) - 1):
+        x0, y0 = pts[i]
+        x1, y1 = pts[i + 1]
+        path.quadTo(x0, y0, (x0 + x1) * 0.5, (y0 + y1) * 0.5)
+    path.lineTo(pts[-1][0], pts[-1][1])
+    return path
+
+
+class _HistCanvas(QWidget):
+    pivotPicked  = pyqtSignal(float)
+    rangeChanged = pyqtSignal(float, float)
+
+    def __init__(self, parent=None, min_h=190):
+        super().__init__(parent)
+        self.setMinimumSize(240, int(min_h))
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._is_rgb = False
+        self._channel = "K"
+        self._before = {}
+        self._after = {}
+        self._curve = None
+        self._markers = {}
+        self._log = False
+        self._x0, self._x1 = 0.0, 1.0
+        self._vlines = None
+
+    # -- data
+    def set_histograms(self, is_rgb, before, after):
+        self._is_rgb, self._before, self._after = bool(is_rgb), before or {}, after or {}
+        self.update()
+
+    def set_curve(self, c):
+        self._curve = c; self.update()
+
+    def set_markers(self, m):
+        self._markers = dict(m or {}); self.update()
+
+    def set_channel(self, ch):
+        self._channel = ch if ch in _HV_CH_COLORS else "K"; self.update()
+
+    def set_log(self, on):
+        self._log = bool(on); self.update()
+
+    def set_value_lines(self, r, g, b, gray):
+        self._vlines = (r, g, b, bool(gray)); self.update()
+
+    def clear_value_lines(self):
+        self._vlines = None; self.update()
+
+    # -- x range
+    def view_range(self):
+        return self._x0, self._x1
+
+    def set_view_range(self, x0, x1, emit=True):
+        x0 = float(np.clip(x0, 0.0, 1.0)); x1 = float(np.clip(x1, 0.0, 1.0))
+        if x1 <= x0:
+            x0, x1 = 0.0, 1.0
+        self._x0, self._x1 = x0, x1
+        self.update()
+        if emit:
+            self.rangeChanged.emit(x0, x1)
+
+    def reset_view(self):
+        self.set_view_range(0.0, 1.0)
+
+    def zoom_x(self, factor, center=0.5):
+        span = max(1e-6, self._x1 - self._x0)
+        new = float(np.clip(span * factor, 0.0005, 1.0))
+        if new >= 0.999999:
+            self.reset_view(); return
+        c = float(np.clip(center, 0.0, 1.0))
+        x0 = self._x0 + c * span - new * c
+        x1 = x0 + new
+        if x0 < 0.0: x1 -= x0; x0 = 0.0
+        if x1 > 1.0: x0 -= (x1 - 1.0); x1 = 1.0
+        self.set_view_range(max(0.0, x0), min(1.0, x1))
+
+    def pan_to_fraction(self, f):
+        span = max(1e-9, self._x1 - self._x0)
+        if span >= 0.999999:
+            self.reset_view(); return
+        x0 = float(np.clip(f, 0.0, 1.0)) * (1.0 - span)
+        self.set_view_range(x0, x0 + span)
+
+    # -- geometry
+    def _plot_rect(self):
+        return self.rect().adjusted(8, 6, -8, -6)
+
+    def _px(self, v, rect):
+        span = max(1e-9, self._x1 - self._x0)
+        return rect.left() + rect.width() * (float(v) - self._x0) / span
+
+    def _vis(self, v):
+        return self._x0 <= float(v) <= self._x1
+
+    def _names(self):
+        if self._channel == "K":
+            return ("R", "G", "B") if self._is_rgb else ("K",)
+        return (self._channel,)
+
+    # -- events
+    def _emit_pivot(self, ev):
+        rect = self._plot_rect(); p = ev.position()
+        if not rect.contains(int(p.x()), int(p.y())):
+            return False
+        nx = (float(p.x()) - rect.left()) / max(1.0, float(rect.width() - 1))
+        self.pivotPicked.emit(float(np.clip(self._x0 + nx * (self._x1 - self._x0), 0.0, 1.0)))
+        ev.accept()
+        return True
+
+    def mouseDoubleClickEvent(self, ev):
+        if not self._emit_pivot(ev):
+            super().mouseDoubleClickEvent(ev)
+
+    def mousePressEvent(self, ev):
+        if (ev.modifiers() & Qt.KeyboardModifier.ControlModifier) and self._emit_pivot(ev):
+            return
+        super().mousePressEvent(ev)
+
+    def wheelEvent(self, ev):
+        rect = self._plot_rect(); p = ev.position()
+        if rect.contains(int(p.x()), int(p.y())):
+            nx = (float(p.x()) - rect.left()) / max(1.0, float(rect.width() - 1))
+            d = ev.angleDelta().y()
+            if d > 0:   self.zoom_x(0.80, nx)
+            elif d < 0: self.zoom_x(1.25, nx)
+            ev.accept(); return
+        super().wheelEvent(ev)
+
+    # -- painting
+    def _draw_hists(self, p, rect, coll, fill_a, line_a):
+        w = max(1, rect.width())
+        n = _HIST_BINS
+
+        i0 = int(np.floor(self._x0 * (n - 1)))
+        i1 = int(np.ceil(self._x1 * (n - 1)))
+        i0 = max(0, min(n - 2, i0))
+        i1 = max(i0 + 1, min(n - 1, i1))
+        n_vis = i1 - i0 + 1
+
+        # Kernel in screen pixels, so it tracks the zoom: wide in bins when
+        # zoomed out (anti-aliases bins sharing a pixel), narrow when zoomed in
+        # (keeps real structure). The Bezier outline covers the rest.
+        sigma = max(0.6, _SMOOTH_PX * n_vis / float(w))
+        rad = int(min(128, max(1, round(3.0 * sigma))))
+        kern = np.exp(-0.5 * (np.arange(-rad, rad + 1) / sigma) ** 2)
+        kern /= kern.sum()
+
+        lo = max(0, i0 - rad)
+        hi = min(n - 1, i1 + rad)
+        src_x = np.arange(lo, hi + 1, dtype=np.float64)
+
+        m_out = int(max(2, min(n_vis, 2 * w)))
+        pos = np.linspace(float(i0), float(i1), m_out)
+
+        for name in self._names():
+            h = coll.get(name)
+            if h is None or h.size != n:
+                continue
+
+            seg = np.asarray(h[lo:hi + 1], dtype=np.float64)
+            if self._log:
+                seg = np.log10(seg + 1.0)
+            seg = np.convolve(np.pad(seg, rad, mode="edge"), kern, mode="valid")
+
+            vals = np.interp(pos, src_x, seg)
+            mx = float(vals.max())
+            if mx <= 0.0:
+                continue
+            vals = vals / mx
+
+            bottom = float(rect.bottom())
+            pts = []
+            for xb, v in zip(pos, vals):
+                x = self._px(xb / (n - 1), rect)
+                y = bottom - rect.height() * float(v)
+                pts.append((float(x), float(y)))
+
+            outline = _smooth_path(pts)
+            filled = QPainterPath(outline)
+            filled.lineTo(pts[-1][0], bottom)
+            filled.lineTo(pts[0][0], bottom)
+            filled.closeSubpath()
+
+            col = QColor(_HV_CH_COLORS[name])
+            f = QColor(col); f.setAlpha(fill_a)
+            l = QColor(col); l.setAlpha(line_a)
+            p.fillPath(filled, f)
+            p.setPen(QPen(l, 1))
+            p.drawPath(outline)
+
+    def _draw_curve(self, p, rect):
+        p.setPen(QPen(QColor(120, 120, 120, 110), 1, Qt.PenStyle.DashLine))
+        p.drawLine(rect.left(),  int(rect.bottom() - rect.height() * self._x0),
+                   rect.right(), int(rect.bottom() - rect.height() * self._x1))
+        if self._curve is None:
+            return
+        c = np.asarray(self._curve, dtype=np.float32)
+        if c.size < 2:
+            return
+        # sample the VISIBLE range, otherwise a zoomed view keeps only a
+        # handful of samples and the curve vanishes at the zoom floor
+        m = int(max(2, min(2 * max(1, rect.width()), _CURVE_POINTS)))
+        xs = np.linspace(self._x0, self._x1, m)
+        idx = np.clip((xs * (c.size - 1)).astype(np.int64), 0, c.size - 1)
+        ys = np.clip(c[idx], 0.0, 1.0)
+
+        bottom = float(rect.bottom()); h = rect.height()
+        path = QPainterPath()
+        path.moveTo(float(self._px(xs[0], rect)), float(bottom - h * float(ys[0])))
+        for i in range(1, m):
+            path.lineTo(float(self._px(xs[i], rect)), float(bottom - h * float(ys[i])))
+        col = QColor(_HV_CH_COLORS[self._channel]); col.setAlpha(235)
+        p.setPen(QPen(col, 2)); p.drawPath(path)
+
+    def _draw_markers(self, p, rect):
+        for name, val in self._markers.items():
+            if val is None or not self._vis(val):
+                continue
+            col = _HV_MARKER_COLORS.get(name, QColor(200, 200, 200))
+            x = self._px(float(np.clip(val, 0.0, 1.0)), rect)
+            p.setPen(QPen(col, 1, Qt.PenStyle.DashLine))
+            p.drawLine(int(x), rect.top(), int(x), rect.bottom())
+            p.setPen(col); p.drawText(int(x) + 3, rect.top() + 12, name)
+
+    def _draw_vlines(self, p, rect):
+        if self._vlines is None:
+            return
+        r, g, b, gray = self._vlines
+        items = [(r, _HV_CH_COLORS["K"])] if gray else [
+            (r, _HV_CH_COLORS["R"]), (g, _HV_CH_COLORS["G"]), (b, _HV_CH_COLORS["B"])]
+        for val, col in items:
+            if not self._vis(val):
+                continue
+            c = QColor(col); c.setAlpha(170)
+            x = self._px(float(np.clip(val, 0.0, 1.0)), rect)
+            p.setPen(QPen(c, 1, Qt.PenStyle.DotLine))
+            p.drawLine(int(x), rect.top(), int(x), rect.bottom())
+
+    def paintEvent(self, ev):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = self._plot_rect()
+        p.fillRect(self.rect(), QColor(7, 7, 7))
+        p.fillRect(rect, QColor(0, 0, 0))
+
+        major = QPen(QColor(65, 65, 65), 1, Qt.PenStyle.SolidLine)
+        minor = QPen(QColor(42, 42, 42), 1, Qt.PenStyle.DotLine)
+        for i in range(11):
+            x = rect.left() + rect.width() * i / 10.0
+            y = rect.top() + rect.height() * i / 10.0
+            p.setPen(major if i in (0, 5, 10) else minor)
+            p.drawLine(int(x), rect.top(), int(x), rect.bottom())
+            p.drawLine(rect.left(), int(y), rect.right(), int(y))
+
+        self._draw_hists(p, rect, self._before, 18, 90)
+        self._draw_hists(p, rect, self._after,  55, 175)
+        self._draw_curve(p, rect)
+        self._draw_markers(p, rect)
+        self._draw_vlines(p, rect)
+
+        if self._x0 > 0.0 or self._x1 < 1.0:
+            p.setPen(QColor(190, 190, 190, 190))
+            p.drawText(rect.left() + 6, rect.bottom() - 5,
+                       f"x: {self._x0:.5f} \u2013 {self._x1:.5f}")
+        p.setPen(QPen(QColor(115, 115, 115), 1))
+        p.drawRect(rect)
+        p.end()
+
+
+class StretchCurveView(QWidget):
+    """
+    Histogram + optional transfer curve.
+
+    compact=True  drops the clip readout — use it where the host dialog
+                  already reports clipping (CurvesDialogPro does, per channel
+                  with counts, in its status line).
+    show_curve=False draws histograms only.
+
+    Also exposes a small CurveEditor-shaped facade (setSymmetryPoint /
+    clearSymmetryLine / updateValueLines / control_points / curve_item / ...)
+    so GhsDialogPro can use it in place of the editor unchanged.
+    """
+
+    pivotPicked = pyqtSignal(float)
+
+    control_points = ()
+    curve_item = None
+
+    def __init__(self, parent=None, compact=False, show_curve=True, min_canvas_h=None):
+        super().__init__(parent)
+        self._sym_cb = None
+        self._preview_cb = None
+        self._is_rgb = False
+        self._before = {}
+        self._after_direct = None
+        self._lut = None
+        self._channel = "K"
+        self._compact = bool(compact)
+        self._show_curve = bool(show_curve)
+
+        if min_canvas_h is None:
+            min_canvas_h = 120 if compact else 190
+        self.canvas = _HistCanvas(self, min_h=min_canvas_h)
+
+        self.chk_log  = QCheckBox(self.tr("Log"))
+        self.chk_log.setToolTip(self.tr("Logarithmic histogram scaling (display only)"))
+        self.btn_zout = QPushButton("-");   self.btn_zout.setFixedWidth(24)
+        self.btn_zin  = QPushButton("+");   self.btn_zin.setFixedWidth(24)
+        self.btn_1to1 = QPushButton("1:1"); self.btn_1to1.setFixedWidth(38)
+        self.btn_zout.setToolTip(self.tr("Zoom out (x axis)"))
+        self.btn_zin.setToolTip(self.tr("Zoom in (x axis)"))
+        self.btn_1to1.setToolTip(self.tr("Reset x axis to full range"))
+        if compact:
+            for _w in (self.btn_zout, self.btn_zin, self.btn_1to1):
+                _w.setMaximumHeight(20)
+
+        head = QHBoxLayout(); head.setContentsMargins(0, 0, 0, 0); head.setSpacing(4)
+        head.addWidget(self.chk_log); head.addStretch(1)
+        head.addWidget(self.btn_zout); head.addWidget(self.btn_zin); head.addWidget(self.btn_1to1)
+
+        self.pan = QScrollBar(Qt.Orientation.Horizontal)
+        self.pan.setRange(0, 10000); self.pan.setPageStep(10000)
+        self.pan.setSingleStep(100); self.pan.setEnabled(False)
+        self.pan.setToolTip(self.tr("Pan the visible histogram range after zooming"))
+        if compact:
+            self.pan.setFixedHeight(12)
+
+        self.lbl_clip = QLabel("Clip %: 0.0000 shadows / 0.0000 highlights")
+        self.lbl_clip.setStyleSheet("color: #9a9a9a; font-size: 11px;")
+        self.lbl_clip.setVisible(not compact)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0); lay.setSpacing(2)
+        lay.addLayout(head)
+        lay.addWidget(self.canvas, 1)
+        lay.addWidget(self.pan)
+        if not compact:
+            lay.addWidget(self.lbl_clip)
+
+        self._pan_syncing = False
+        self.chk_log.toggled.connect(self.canvas.set_log)
+        self.btn_zin.clicked.connect(lambda: self.canvas.zoom_x(0.80, 0.5))
+        self.btn_zout.clicked.connect(lambda: self.canvas.zoom_x(1.25, 0.5))
+        self.btn_1to1.clicked.connect(self.canvas.reset_view)
+        self.canvas.rangeChanged.connect(self._sync_pan)
+        self.pan.valueChanged.connect(self._on_pan)
+        self.canvas.pivotPicked.connect(self._on_pivot)
+
+    def sizeHint(self):
+        return QSize(340, 160 if self._compact else 300)
+
+    def _sync_pan(self, x0, x1):
+        span = max(0.0, float(x1) - float(x0))
+        self._pan_syncing = True
+        try:
+            if span >= 0.999999:
+                self.pan.setEnabled(False); self.pan.setPageStep(10000); self.pan.setValue(0)
+            else:
+                self.pan.setEnabled(True)
+                self.pan.setPageStep(max(1, int(round(span * 10000))))
+                self.pan.setValue(int(np.clip(round(x0 / max(1e-9, 1.0 - span) * 10000), 0, 10000)))
+        finally:
+            self._pan_syncing = False
+
+    def _on_pan(self, v):
+        if not self._pan_syncing:
+            self.canvas.pan_to_fraction(v / 10000.0)
+
+    def _on_pivot(self, u):
+        self.pivotPicked.emit(float(u))
+        if callable(self._sym_cb):
+            try:
+                self._sym_cb(float(u), 0.0)
+            except Exception:
+                pass
+
+    # -- primary API
+    def set_reference_image(self, img):
+        """The unmodified image. Call once whenever the document changes."""
+        if img is None:
+            self._is_rgb, self._before = False, {}
+        else:
+            self._is_rgb, self._before = _channel_hists(img, _HIST_SAMPLES_REF)
+        self._refresh()
+
+    def set_result(self, result_image=None, lut=None, markers=None, clear_result=False):
+        """
+        Update the 'after' state in one call, so a caller that has both a LUT
+        and a processed image doesn't trigger two repaints per tick.
+
+        result_image wins over lut for the histogram; lut still drives the
+        transfer curve and the clip readout.
+        """
+        if result_image is not None:
+            _rgb, self._after_direct = _channel_hists(result_image, _HIST_SAMPLES_LIVE)
+        elif clear_result:
+            self._after_direct = None
+        if lut is not None:
+            self._lut = np.asarray(lut, dtype=np.float32)
+        elif clear_result:
+            self._lut = None
+        if markers is not None:
+            self.canvas.set_markers(markers)
+        self._refresh()
+
+    def set_lut(self, lut01, markers=None):
+        """LUT-only path (GHS)."""
+        self._lut = None if lut01 is None else np.asarray(lut01, dtype=np.float32)
+        self._after_direct = None
+        if markers is not None:
+            self.canvas.set_markers(markers)
+        self._refresh()
+
+    def set_markers(self, m):
+        self.canvas.set_markers(m)
+
+    def set_curve_visible(self, on: bool):
+        self._show_curve = bool(on)
+        self._refresh()
+
+    def set_channel(self, ch):
+        """Accepts 'K', 'K (Brightness)', 'R', 'G', 'B'. Anything else -> K."""
+        self._channel = _HV_CHANNEL_ALIASES.get(str(ch or "K").strip().upper(), "K")
+        self.canvas.set_channel(self._channel)
+        self._refresh()
+
+    def _refresh(self):
+        if not self._before:
+            self.canvas.set_histograms(self._is_rgb, {}, {})
+            self.canvas.set_curve(None)
+            return
+
+        self.canvas.set_curve(self._lut if (self._show_curve and self._lut is not None) else None)
+
+        if self._after_direct is not None:
+            after = dict(self._after_direct)
+        elif self._lut is not None:
+            touched = ("R", "G", "B") if self._channel == "K" else (self._channel,)
+            after = {}
+            for name in ("R", "G", "B", "K"):
+                h = self._before.get(name)
+                if h is None:
+                    continue
+                after[name] = _remap_hist(h, self._lut) if (name in touched or name == "K") else h
+        else:
+            after = {}
+
+        self.canvas.set_histograms(self._is_rgb, self._before, after)
+
+        if not self._compact and self._lut is not None:
+            ref = self._before.get("K", self._before.get("R"))
+            if ref is not None:
+                lo, hi = _clip_pct(ref, self._lut)
+                self.lbl_clip.setText(f"Clip %: {lo:.4f} shadows / {hi:.4f} highlights")
+
+    # -- CurveEditor compatibility facade
+    def setPreviewCallback(self, cb):   self._preview_cb = cb
+    def setSymmetryCallback(self, cb):  self._sym_cb = cb
+    def initCurve(self):                pass
+    def updateCurve(self):              pass
+    def addControlPoint(self, *a, **k): pass
+    def getCurveFunction(self):         return None
+
+    def setSymmetryPoint(self, x360, _y=0.0):
+        m = dict(self.canvas._markers)
+        m["SP"] = float(np.clip(float(x360) / 360.0, 0.0, 1.0))
+        self.canvas.set_markers(m)
+
+    def clearSymmetryLine(self):
+        m = dict(self.canvas._markers); m.pop("SP", None)
+        self.canvas.set_markers(m)
+
+    def updateValueLines(self, r, g, b, grayscale=False):
+        self.canvas.set_value_lines(r, g, b, grayscale)
+
+    def clearValueLines(self):
+        self.canvas.clear_value_lines()
 
 # ── misc helpers (unchanged from original) ────────────────────────────────────
 
@@ -954,9 +1551,11 @@ class CurvesDialogPro(QDialog):
         left = QVBoxLayout()
         self.editor = CurveEditor(self)
         left.addWidget(self.editor)
-        self.hist = HistogramWidget(self)
-        self.hist.setMinimumHeight(120)
-        self.hist.setMaximumHeight(140)
+        # compact: CurvesDialogPro already reports clipping per channel with
+        # counts in lbl_status, so the widget's own readout is redundant.
+        self.hist = StretchCurveView(self, compact=True)
+        self.hist.setMinimumHeight(190)
+        self.hist.setMaximumHeight(240)
         left.addWidget(self.hist, 0)
 
         self.mode_group = QButtonGroup(self)
@@ -1171,6 +1770,10 @@ class CurvesDialogPro(QDialog):
             pass
         key = self._active_mode_key()
         self._current_mode_key = key
+        try:
+            self.hist.set_channel(key)
+        except Exception:
+            pass
         self._editor_set_from_norm(self._curves_store.get(key, [(0.0,0.0),(1.0,1.0)]))
         self._refresh_overlays()
         self._quick_preview()
@@ -1424,6 +2027,7 @@ class CurvesDialogPro(QDialog):
         mapped = self._map_label_xy_to_image_ij(x, y)
         if not mapped:
             self.editor.clearValueLines()
+            self.hist.clearValueLines()
             self._set_status("")
             return
         img = self._preview_img
@@ -1433,12 +2037,14 @@ class CurvesDialogPro(QDialog):
             ix = max(0, min(W-1, int(round(ix))))
             iy = max(0, min(H-1, int(round(iy))))
         except Exception:
-            self.editor.clearValueLines(); self._set_status(""); return
+            self.editor.clearValueLines(); self.hist.clearValueLines()
+            self._set_status(""); return
 
         if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
             v = float(img[iy,ix] if img.ndim == 2 else img[iy,ix,0])
             v = float(np.clip(0.0 if not np.isfinite(v) else v, 0.0, 1.0))
             self.editor.updateValueLines(v, 0.0, 0.0, grayscale=True)
+            self.hist.updateValueLines(v, 0.0, 0.0, grayscale=True)
             self._set_status(self.tr("Cursor ({0}, {1})  K: {2:.3f}").format(ix,iy,v))
         else:
             C = img.shape[2]
@@ -1451,6 +2057,7 @@ class CurvesDialogPro(QDialog):
             g = float(np.clip(g if np.isfinite(g) else 0.0, 0.0, 1.0))
             b = float(np.clip(b if np.isfinite(b) else 0.0, 0.0, 1.0))
             self.editor.updateValueLines(r, g, b, grayscale=False)
+            self.hist.updateValueLines(r, g, b, grayscale=False)
             self._set_status(self.tr("Cursor ({0}, {1})  R: {2:.3f}  G: {3:.3f}  B: {4:.3f}").format(ix,iy,r,g,b))
 
     def _map_label_xy_to_image_ij(self, x, y):
@@ -1601,8 +2208,8 @@ class CurvesDialogPro(QDialog):
             self._hist_base = arr[::step,::step,...]
         else:
             self._hist_base = arr
-        self._h0_rgb = _compute_hist_rgb(self._hist_base)
-        self.hist.set_histograms(self._h0_rgb, None)
+        self.hist.set_reference_image(self._hist_base)
+        self.hist.set_channel(self._current_mode())
         self._show_proc = True
         self._quick_preview()
         self._update_preview_pix(
@@ -1623,10 +2230,9 @@ class CurvesDialogPro(QDialog):
         self._update_preview_pix(img)
         try:
             if not on:
-                self.hist.set_histograms(self._h0_rgb, None)
+                self.hist.set_result(clear_result=True)
             else:
-                h1_rgb = _compute_hist_rgb(self._preview_proc)
-                self.hist.set_histograms(self._h0_rgb, h1_rgb)
+                self.hist.set_result(result_image=self._preview_proc)
         except Exception:
             pass
         self._set_status(self.tr("Preview ON") if self._show_proc else self.tr("Preview OFF"))
@@ -1642,7 +2248,12 @@ class CurvesDialogPro(QDialog):
             self._update_preview_pix(self._preview_proc)
         try:
             hist_proc = self._apply_all_curves_once(self._hist_base, luts)
-            self.hist.set_histograms(self._h0_rgb, _compute_hist_rgb(hist_proc))
+            # result_image rather than a LUT: the composite spans several
+            # per-channel LUTs plus Lab/HSV round-trips, so there is no single
+            # monotone LUT to push the histogram through. The active channel's
+            # LUT still drives the curve overlay.
+            self.hist.set_result(result_image=hist_proc,
+                                 lut=luts.get(self._current_mode_key))
         except Exception:
             pass
         try:
@@ -1939,7 +2550,8 @@ class CurvesDialogPro(QDialog):
                 if 0<=lp.x()<self.label.width() and 0<=lp.y()<self.label.height():
                     self._on_preview_mouse_moved(lp.x(), lp.y())
                 else:
-                    self.editor.clearValueLines(); self._set_status("")
+                    self.editor.clearValueLines(); self.hist.clearValueLines()
+                    self._set_status("")
                 return False
 
             if ev.type()==QEvent.Type.MouseButtonDblClick and ev.button()==Qt.MouseButton.LeftButton:
@@ -1959,7 +2571,8 @@ class CurvesDialogPro(QDialog):
                 ev.accept(); return True
 
         if obj is self.label and ev.type()==QEvent.Type.Leave:
-            self.editor.clearValueLines(); self._set_status(""); return False
+            self.editor.clearValueLines(); self.hist.clearValueLines()
+            self._set_status(""); return False
 
         if obj is self.label and ev.type()==QEvent.Type.MouseButtonDblClick:
             if ev.button() != Qt.MouseButton.LeftButton:
@@ -2005,7 +2618,7 @@ class CurvesDialogPro(QDialog):
         self._refresh_overlays()
         self._quick_preview()
         try:
-            self.hist.set_histograms(self._h0_rgb, None)
+            self.hist.set_result(clear_result=True)
         except Exception:
             pass
         self._set_status(self.tr("All curves reset."))

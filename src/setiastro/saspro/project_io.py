@@ -85,6 +85,52 @@ def _is_dead(obj) -> bool:
         pass
     return False
 
+def _deserialize_header_any(payload):
+    """Inverse of _serialize_header_any -- rebuild an astropy Header."""
+    if payload is None:
+        return None
+    try:
+        from astropy.io.fits import Header
+    except Exception:
+        return payload
+    if isinstance(payload, Header):
+        return payload
+    if not isinstance(payload, dict):
+        return payload
+
+    fmt = str(payload.get("format", "")).lower()
+
+    if fmt in ("fits-cards", "dict"):
+        src = payload.get("cards") if fmt == "fits-cards" else payload.get("items")
+        rows = []
+        if fmt == "fits-cards" and isinstance(src, (list, tuple)):
+            rows = [(r[0], r[1] if len(r) > 1 else None,
+                     r[2] if len(r) > 2 else "") for r in src
+                    if isinstance(r, (list, tuple)) and r]
+        elif isinstance(src, dict):
+            rows = [(k, v, "") for k, v in src.items()]
+
+        hdr = Header()
+        for k, v, c in rows:
+            try:
+                key = str(k).strip().upper()
+                if not key or key in ("END", "COMMENT", "HISTORY"):
+                    continue
+                if not (v is None or isinstance(v, (str, bool, int, float))):
+                    continue
+                hdr[key] = (v, str(c or ""))
+            except Exception:
+                continue
+        return hdr if len(hdr) else None
+
+    if fmt in ("repr", "unknown"):
+        txt = payload.get("text")
+        if isinstance(txt, str):
+            try:
+                return Header.fromstring(txt, sep="\n")
+            except Exception:
+                return None
+    return payload
 
 # --- NEW: header + file helpers ---------------------------------------------
 def _serialize_header_any(hdr) -> dict:
@@ -524,9 +570,10 @@ class ProjectReader:
                     hdr_path = meta.get("_embedded_header", "original_header.json")
                     if f"{base}/{hdr_path}".replace("//", "/") in z.namelist():
                         hdr_json = json.loads(z.read(f"{base}/{hdr_path}").decode("utf-8"))
-                        setattr(doc, "original_header", hdr_json)
+                        hdr_obj = _deserialize_header_any(hdr_json)
+                        setattr(doc, "original_header", hdr_obj)
                         try:
-                            doc.metadata["original_header"] = hdr_json
+                            doc.metadata["original_header"] = hdr_obj
                         except Exception:
                             pass
                 except Exception:

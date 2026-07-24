@@ -94,6 +94,7 @@ class ToolbarMixin:
             save_menu.addAction(self.act_save_tiff)
             save_menu.addAction(self.act_save_png)
             save_menu.addAction(self.act_save_jpeg)
+            save_menu.addAction(self.act_save_webp)
             save_menu.addAction(self.act_save_psb)
             btn_save.setMenu(save_menu)
             btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)        
@@ -624,6 +625,10 @@ class ToolbarMixin:
                 btn.setMenu(menu)
                 btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
+                # Re-apply style: _restore_toolbar_order() calls tb.clear(), which
+                # destroys the QToolButton and the stylesheet set in _init_toolbar.
+                self._style_toggle_toolbutton(btn)
+
         # ---- Fit dropdown ----
         tb_fit = self._toolbar_containing_action(self.act_zoom_fit)
         if tb_fit:
@@ -633,16 +638,7 @@ class ToolbarMixin:
                 fit_menu.addAction(self.act_auto_fit_resize)  # use the real action
                 btn_fit.setMenu(fit_menu)
                 btn_fit.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
-        tb = self._toolbar_containing_action(self.act_autostretch)
-        if tb:
-            btn = tb.widgetForAction(self.act_autostretch)
-            if isinstance(btn, QToolButton):
-                # ... build menu ...
-                btn.setMenu(menu)
-                btn.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
 
-                # IMPORTANT: re-apply style after action moves / rebind
-                self._style_toggle_toolbutton(btn)
         tb_save = self._toolbar_containing_action(self.act_save)
         if tb_save:
             btn_save = tb_save.widgetForAction(self.act_save)
@@ -653,6 +649,7 @@ class ToolbarMixin:
                 save_menu.addAction(self.act_save_tiff)
                 save_menu.addAction(self.act_save_png)
                 save_menu.addAction(self.act_save_jpeg)
+                save_menu.addAction(self.act_save_webp)
                 save_menu.addAction(self.act_save_psb)
                 btn_save.setMenu(save_menu)
                 btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
@@ -767,6 +764,7 @@ class ToolbarMixin:
         self.act_save_tiff  = QAction(self.tr("TIFF (.tiff)"),  self)
         self.act_save_png   = QAction(self.tr("PNG (.png)"),    self)
         self.act_save_jpeg  = QAction(self.tr("JPEG (.jpg)"),   self)
+        self.act_save_webp  = QAction(self.tr("WebP (.webp)"),  self)
         self.act_save_psb = QAction(self.tr("Photoshop Large Doc (.psb)"), self)
 
         self.act_save_fits.triggered.connect(lambda: self.save_active_as_format("fits"))
@@ -774,6 +772,7 @@ class ToolbarMixin:
         self.act_save_tiff.triggered.connect(lambda: self.save_active_as_format("tiff"))
         self.act_save_png.triggered.connect(lambda:  self.save_active_as_format("png"))
         self.act_save_jpeg.triggered.connect(lambda: self.save_active_as_format("jpeg"))
+        self.act_save_webp.triggered.connect(lambda: self.save_active_as_format("webp"))
         self.act_save_psb.triggered.connect(lambda: self.save_active_as_format("psb"))
 
         self.act_export_fits_bundle = QAction(self.tr("Export FITS Bundle..."), self)

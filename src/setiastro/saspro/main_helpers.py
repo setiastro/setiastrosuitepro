@@ -1,5 +1,5 @@
 
-# pro/main_helpers.py
+# saspro/main_helpers.py
 """
 Helper functions extracted from the main module.
 
@@ -65,7 +65,15 @@ def normalize_save_path_chosen_filter(path: str, selected_filter: str) -> Tuple[
       - sanitizes the basename (spaces, illegal chars, trailing dots)
     """
     raw_path = (path or "").strip().rstrip(".")
-    allowed = _exts_from_filter(selected_filter) or ["png"]  # safe fallback
+
+    allowed = _exts_from_filter(selected_filter)
+    if not allowed:
+        # Some platforms hand back an empty selected_filter. Trust the extension
+        # the user actually typed rather than forcing PNG onto it — otherwise an
+        # explicit "Save As <format>" can silently change format.
+        typed_ext = _normalize_ext(os.path.splitext(raw_path)[1])
+        allowed = [typed_ext] if typed_ext else ["png"]
+
     default_ext = allowed[0]
 
     # Split dir + basename (sanitize only the basename)

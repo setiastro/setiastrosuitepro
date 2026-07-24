@@ -35,11 +35,12 @@ SASS_VER    = 1
 TOOLBAR_REORDER_MIME = "application/x-saspro-toolbar-reorder"
 # Accept these endings (case-insensitive)
 OPENABLE_ENDINGS = (
-    ".png", ".jpg", ".jpeg",
+    ".png", ".jpg", ".jpeg", ".webp",
     ".tif", ".tiff",
-    ".fits", ".fit",
+    ".fits", ".fit", ".fts",
     ".fits.gz", ".fit.gz", ".fz",
     ".xisf",
+    ".psb",
     ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef",
 )
 

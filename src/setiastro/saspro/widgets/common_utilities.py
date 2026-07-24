@@ -23,7 +23,9 @@ import atexit
 from typing import TYPE_CHECKING, Optional, List, Any
 
 from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt, QCoreApplication
-from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QMessageBox
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                             QMessageBox, QPushButton, QPlainTextEdit)
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QApplication, QMdiArea
@@ -54,6 +56,86 @@ def get_build_timestamp() -> str:
         return "Running locally from source code"
     return BUILD_TIMESTAMP
 
+# ---------------------------------------------------------------------------
+# Licensing
+# ---------------------------------------------------------------------------
+
+SOURCE_URL  = "https://github.com/setiastro/setiastrosuitepro"
+GPL_URL     = "https://www.gnu.org/licenses/gpl-3.0.html"
+
+
+def _license_dir():
+    """
+    Directory holding LICENSE (GPLv3 text) and license.txt (bundled
+    third-party licences).
+
+    Frozen build: the installer drops both alongside the executable.
+    Source checkout: walk up from this file until LICENSE turns up.
+    """
+    from pathlib import Path
+
+    if getattr(sys, "frozen", False):
+        base = Path(sys.executable).resolve().parent
+        if (base / "LICENSE").exists() or (base / "license.txt").exists():
+            return base
+        mei = getattr(sys, "_MEIPASS", None)      # onefile fallback
+        if mei:
+            return Path(mei)
+        return base
+
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "LICENSE").exists():
+            return parent
+    return here.parent
+
+
+def find_license_file(name: str) -> Optional[str]:
+    """Absolute path to a licence file if it shipped, else None."""
+    from pathlib import Path
+    try:
+        p = Path(_license_dir()) / name
+        return str(p) if p.is_file() else None
+    except Exception:
+        return None
+
+
+class LicenseViewer(QDialog):
+    """
+    Plain-text licence viewer.
+
+    Deliberately in-app rather than QDesktopServices.openUrl: LICENSE has no
+    file extension, so handing it to the shell prompts "how do you want to
+    open this file?" on Windows and does something unpredictable elsewhere.
+    """
+
+    def __init__(self, parent, title: str, path: str):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(780, 640)
+
+        lay = QVBoxLayout(self)
+
+        view = QPlainTextEdit(self)
+        view.setReadOnly(True)
+        view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        mono = QFont("Courier New")
+        mono.setStyleHint(QFont.StyleHint.Monospace)
+        mono.setPointSize(9)
+        view.setFont(mono)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                view.setPlainText(fh.read())
+        except OSError as e:
+            view.setPlainText(f"Could not read {path}\n\n{e}")
+        lay.addWidget(view, 1)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        btn = QPushButton(self.tr("Close"))
+        btn.clicked.connect(self.accept)
+        row.addWidget(btn)
+        lay.addLayout(row)
 
 # ---------------------------------------------------------------------------
 # About Dialog
@@ -93,8 +175,31 @@ class AboutDialog(QDialog):
             about_lines.append(f"<p><b>{self.tr('Build:')}</b> {build_timestamp}</p>")
 
         about_lines.extend([
-            f"<p>{self.tr('Website:')} <a href='http://www.setiastro.com'>www.setiastro.com</a></p>",
+            f"<p>{self.tr('Website:')} <a href='https://www.setiastro.com'>www.setiastro.com</a></p>",
+            f"<p>{self.tr('Source code:')} <a href='{SOURCE_URL}'>{SOURCE_URL}</a></p>",
             f"<p>{self.tr('Donations:')} <a href='https://www.setiastro.com/checkout/donate?donatePageId=65ae7e7bac20370d8c04c1ab'>{self.tr('Click here to donate')}</a></p>",
+        ])
+
+        # GPLv3 notice. Kept as the standard wording so it reads as the licence
+        # notice it is, not a paraphrase.
+        gpl_para = self.tr(
+            "Seti Astro Suite Pro is free software: you can redistribute it and/or "
+            "modify it under the terms of the GNU General Public License as published "
+            "by the Free Software Foundation, version 3 of the License."
+        )
+        warranty_para = self.tr(
+            "This program is distributed in the hope that it will be useful, but "
+            "WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY "
+            "or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License "
+            "for more details."
+        )
+        gpl_link_text = self.tr("Read the GNU General Public License v3")
+
+        about_lines.extend([
+            "<hr>",
+            f"<p style='font-size:11px;'>{gpl_para}</p>",
+            f"<p style='font-size:11px;'>{warranty_para}</p>",
+            f"<p style='font-size:11px;'><a href='{GPL_URL}'>{gpl_link_text}</a></p>",
         ])
 
         about_text = "".join(about_lines)
@@ -103,8 +208,39 @@ class AboutDialog(QDialog):
         label.setTextFormat(Qt.TextFormat.RichText)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         label.setOpenExternalLinks(True)
+        label.setWordWrap(True)
 
         layout.addWidget(label)
+
+        # Buttons for the licence files that shipped with this build. Shown only
+        # when the file is actually present, so a source checkout or an install
+        # that missed them doesn't offer a dead button.
+        btn_row = QHBoxLayout()
+
+        _lic = find_license_file("LICENSE")
+        if _lic:
+            b_lic = QPushButton(self.tr("License"))
+            b_lic.setToolTip(self.tr("GNU General Public License v3"))
+            b_lic.clicked.connect(
+                lambda _checked=False, p=_lic: LicenseViewer(
+                    self, self.tr("License"), p).exec())
+            btn_row.addWidget(b_lic)
+
+        _third = find_license_file("license.txt")
+        if _third:
+            b_third = QPushButton(self.tr("Third-Party Licenses"))
+            b_third.setToolTip(self.tr("Licences for the bundled libraries"))
+            b_third.clicked.connect(
+                lambda _checked=False, p=_third: LicenseViewer(
+                    self, self.tr("Third-Party Licenses"), p).exec())
+            btn_row.addWidget(b_third)
+
+        btn_row.addStretch(1)
+        b_close = QPushButton(self.tr("Close"))
+        b_close.clicked.connect(self.accept)
+        btn_row.addWidget(b_close)
+
+        layout.addLayout(btn_row)
         self.setLayout(layout)
 
 
@@ -328,6 +464,10 @@ def install_crash_handlers(app: 'QApplication') -> None:
 
 __all__ = [
     'AboutDialog',
+    'LicenseViewer',
+    'find_license_file',
+    'SOURCE_URL',
+    'GPL_URL',
     'ProjectSaveWorker',
     'DECOR_GLYPHS',
     'strip_ui_decorations',

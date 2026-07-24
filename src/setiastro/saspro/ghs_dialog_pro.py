@@ -1,17 +1,37 @@
-# pro/ghs_dialog_pro.py
-from PyQt6.QtCore import Qt, QEvent, QPointF, QTimer, QSettings, QByteArray
+# saspro/ghs_dialog_pro.py
+#
+# Copyright (C) Franklin Marek / SetiAstro
+#
+# This file is part of SetiAstro Suite Pro (SASpro).
+#
+# SASpro is free software: you can redistribute it and/or modify it under the
+# terms of the GNU General Public License as published by the Free Software
+# Foundation, version 3 of the License.
+#
+# This program is distributed in the hope that it will be useful, but WITHOUT
+# ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License along with
+# this program. If not, see <https://www.gnu.org/licenses/>.
+
+from PyQt6.QtCore import (Qt, QEvent, QPointF, QTimer, QSettings, QByteArray,
+                          QSize, pyqtSignal)
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                              QScrollArea, QComboBox, QSlider, QToolButton, QWidget,
-                             QMessageBox, QDoubleSpinBox)
-from PyQt6.QtGui import QPixmap, QImage, QPen, QColor, QIcon
+                             QMessageBox, QDoubleSpinBox, QCheckBox, QScrollBar, QSplitter,
+                             QSizePolicy)
+from PyQt6.QtGui import (QPixmap, QImage, QPen, QColor, QIcon,
+                         QPainter, QPainterPath)
 import numpy as np
 
 
 
 # Reuse the engine from curves_editor_pro
 from .curve_editor_pro import (
-    CurveEditor, _CurvesWorker, _apply_mode_any, build_curve_lut,
-    _float_to_qimage_rgb8, _downsample_for_preview, ImageLabel
+    _CurvesWorker, _apply_mode_any, build_curve_lut,
+    _float_to_qimage_rgb8, _downsample_for_preview, ImageLabel,
+    StretchCurveView,
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
@@ -19,47 +39,166 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 # Stretch function implementations
 # ---------------------------------------------------------------------------
 
-def _build_ghs_lut(a, b, g, lp, hp, sym_u, N=65536):
+def _build_uhs_lut(a, b, g, lp, hp, sym_u, N=65536):
     """
-    Generalized Hyperbolic Stretch → returns a float32 LUT of length N,
+    Universal Hyperbolic Stretch (SASpro) → float32 LUT of length N,
     indexed 0..N-1 → output 0..1.
-    """
-    us = np.linspace(0.0, 1.0, N, dtype=np.float64)
-    SP  = float(sym_u)
-    eps = 1e-9
 
-    left  = us <= 0.5
+    Distinct from Cranfield/Payne GHS below: here alpha is the slope exponent
+    acting directly at the symmetry point and beta biases the two halves
+    against each other, so the user has a direct handle on local slope AT SP.
+    GHS instead sets a global stretch amount D plus a concentration parameter
+    b and renormalises through the protection points. Neither is a
+    reparameterisation of the other.
+    """
+    eps = 1e-9
+    SP  = float(np.clip(sym_u, 1e-6, 1.0 - 1e-6))
+    a   = float(a)
+    b   = max(float(b), eps)
+
+    # xs is the LUT INPUT axis: entry i corresponds to input i/(N-1).
+    xs = np.linspace(0.0, 1.0, int(N), dtype=np.float64)
+    left  = xs <= SP
     right = ~left
 
-    rawL = us**a / (us**a + b*(1.0-us)**a + eps)
-    rawR = us**a / (us**a + (1.0/b)*(1.0-us)**a + eps)
+    # The curve is parametric: parameter u maps to input position
+    #   up(u) = 2*SP*u                      for u <= 0.5   (covers input [0, SP])
+    #   up(u) = SP + 2*(1-SP)*(u - 0.5)     for u >  0.5   (covers input [SP, 1])
+    # A LUT is indexed by INPUT, so we invert up(u) — it is piecewise linear
+    # and strictly increasing, so this is exact — and evaluate at that u.
+    # Writing vp out against u instead is what put the pivot at 0.5.
+    u = np.empty_like(xs)
+    u[left]  = xs[left] / (2.0 * SP)
+    u[right] = 0.5 + (xs[right] - SP) / (2.0 * (1.0 - SP))
+    u = np.clip(u, 0.0, 1.0)
 
-    midL = (0.5**a) / (0.5**a + b*(0.5)**a + eps)
-    midR = (0.5**a) / (0.5**a + (1.0/b)*(0.5)**a + eps)
+    rawL = u**a / (u**a + b * (1.0 - u)**a + eps)
+    rawR = u**a / (u**a + (1.0 / b) * (1.0 - u)**a + eps)
 
-    up = np.empty_like(us)
-    vp = np.empty_like(us)
+    midL = (0.5**a) / (0.5**a + b * (0.5**a) + eps)
+    midR = (0.5**a) / (0.5**a + (1.0 / b) * (0.5**a) + eps)
 
-    up[left]  = 2.0 * SP * us[left]
+    vp = np.empty_like(xs)
     vp[left]  = rawL[left] * (SP / max(midL, eps))
-
-    up[right] = SP + 2.0*(1.0 - SP)*(us[right] - 0.5)
     vp[right] = SP + (rawR[right] - midR) * ((1.0 - SP) / max(1.0 - midR, eps))
 
+    # LP/HP blend back toward identity. Because we are now working on the input
+    # axis directly, "identity" is simply xs — this is the same blend the
+    # original did against up[], which is what xs now is.
     if lp > 0:
-        m = up <= SP
-        vp[m] = (1.0 - lp)*vp[m] + lp*up[m]
+        m = xs <= SP
+        vp[m] = (1.0 - lp) * vp[m] + lp * xs[m]
     if hp > 0:
-        m = up >= SP
-        vp[m] = (1.0 - hp)*vp[m] + hp*up[m]
+        m = xs >= SP
+        vp[m] = (1.0 - hp) * vp[m] + hp * xs[m]
 
     if abs(g - 1.0) > 1e-6:
-        vp = np.clip(vp, 0.0, 1.0) ** (1.0 / g)
+        vp = np.clip(vp, 0.0, 1.0) ** (1.0 / max(g, 1e-6))
 
     vp = np.clip(vp, 0.0, 1.0)
     vp = np.maximum.accumulate(vp)
     return vp.astype(np.float32)
 
+# ---------------------------------------------------------------------------
+# Generalised Hyperbolic Stretch — Cranfield / Payne
+#
+# The GHS method and its equations are the work of Mike Cranfield and David
+# Payne. SASpro claims authorship of neither; this is an independent numpy
+# implementation written from their published formulation, offered here with
+# credit and thanks.
+#
+# GHS project information and licence terms:
+#     https://ghsastro.co.uk/information/
+#
+# Their reference implementation is GPLv3, as is SASpro.
+# ---------------------------------------------------------------------------
+#
+# The family is the integral of a local stretch kernel taken outward from the
+# symmetry point SP. Writing t = |x - SP|:
+#
+#     b > 0   g(t) = 1 - (1 + D*b*t) ** (-1/b)              hyperbolic
+#     b = 0   g(t) = 1 - exp(-D*t)                          exponential
+#     b = -1  g(t) = log(1 + D*t)                           logarithmic
+#     b < 0   g(t) = ((1 + D*B*t)**((B-1)/B) - 1)/(B-1)     where B = -b
+#
+# g is monotone increasing with g(0) = 0, so the transform is the odd
+# extension about SP:  G(x) = sign(x-SP) * g(|x-SP|).
+#
+# Shadow/highlight protection replaces G with its own tangent line outside
+# [LP, HP] — that is what stops the stretch amplifying read noise below LP or
+# blowing stellar cores above HP. Finally G is affinely rescaled so f(0)=0 and
+# f(1)=1.
+#
+# D is entered as ln(D+1) in the UI so the slider behaves linearly across the
+# useful range instead of doing everything in its first few percent.
+# ---------------------------------------------------------------------------
+
+def _ghs_g(t, D, b):
+    """Monotone increasing, g(0) = 0, defined for t >= 0."""
+    t = np.maximum(np.asarray(t, dtype=np.float64), 0.0)
+    if b > 1e-9:
+        return 1.0 - np.power(1.0 + D * b * t, -1.0 / b)
+    if b > -1e-9:                                   # b == 0
+        return 1.0 - np.exp(-D * t)
+    B = -b
+    if abs(B - 1.0) < 1e-9:                         # b == -1
+        return np.log1p(D * t)
+    return (np.power(1.0 + D * B * t, (B - 1.0) / B) - 1.0) / (B - 1.0)
+
+
+def _ghs_gprime(t, D, b):
+    """dg/dt — the slope used for the linear protection segments."""
+    t = max(float(t), 0.0)
+    if b > 1e-9:
+        return D * (1.0 + D * b * t) ** (-(1.0 + b) / b)
+    if b > -1e-9:
+        return D * float(np.exp(-D * t))
+    B = -b
+    return D * (1.0 + D * B * t) ** (-1.0 / B)
+
+
+def _build_cranfield_lut(D_display, b, SP, LP=0.0, HP=1.0, BP=0.0,
+                         g=1.0, N=65536):
+    """Generalised Hyperbolic Stretch → float32 LUT of length N, [0,1]→[0,1]."""
+    D  = float(np.expm1(max(0.0, float(D_display))))
+    b  = float(b)
+    SP = float(np.clip(SP, 0.0, 1.0))
+    LP = float(np.clip(LP, 0.0, SP))
+    HP = float(np.clip(HP, SP, 1.0))
+    BP = float(np.clip(BP, 0.0, 0.999999))
+
+    xs = np.linspace(0.0, 1.0, int(N), dtype=np.float64)
+    x  = np.maximum(0.0, (xs - BP) / (1.0 - BP))    # black point first
+
+    if D <= 0.0:
+        vp = x
+    else:
+        d = x - SP
+        G = np.where(d >= 0.0,
+                     _ghs_g(np.abs(d), D, b),
+                     -_ghs_g(np.abs(d), D, b))
+
+        if LP > 0.0:                                 # shadow protection
+            tl = SP - LP
+            G  = np.where(x < LP,
+                          -_ghs_g(tl, D, b) + _ghs_gprime(tl, D, b) * (x - LP),
+                          G)
+        if HP < 1.0:                                 # highlight protection
+            th = HP - SP
+            G  = np.where(x > HP,
+                          _ghs_g(th, D, b) + _ghs_gprime(th, D, b) * (x - HP),
+                          G)
+
+        lo, hi = float(G[0]), float(G[-1])
+        vp = (G - lo) / (hi - lo) if (hi - lo) > 1e-12 else x
+
+    vp = np.nan_to_num(vp, nan=0.0, posinf=1.0, neginf=0.0)
+    vp = np.clip(vp, 0.0, 1.0)
+    if abs(float(g) - 1.0) > 1e-6:
+        vp = vp ** (1.0 / max(float(g), 1e-6))
+    vp = np.clip(vp, 0.0, 1.0)
+    vp = np.maximum.accumulate(vp)
+    return vp.astype(np.float32)
 
 def _build_arcsinh_lut(strength, g, lp, hp, sym_u, N=65536):
     """
@@ -229,7 +368,6 @@ def _build_pip_lut(strength, g, lp, hp, sym_u, N=65536):
     vp = np.maximum.accumulate(vp)
     return vp.astype(np.float32)
 
-
 # ---------------------------------------------------------------------------
 # Dialog
 # ---------------------------------------------------------------------------
@@ -242,11 +380,41 @@ class GhsDialogPro(QDialog):
     - Right: same preview/zoom/pan as CurvesDialogPro
     """
     # ---- stretch-mode constants ----
-    MODE_GHS     = "Hyperbolic Stretch"
+    MODE_UHS     = "Universal Hyperbolic Stretch"
+    MODE_GHS     = "Generalised Hyperbolic Stretch (Cranfield/Payne)"
     MODE_ARCSINH = "ArcSinh Stretch"
     MODE_LOG     = "Logarithmic Stretch"
     MODE_EXP     = "Exponential Stretch"
     MODE_PIP     = "Power of Inverted Pixels"
+
+    # Presets, canvas shortcuts and replay commands saved before this rename
+    # stored function="Hyperbolic Stretch". Map old names forward on load so
+    # existing shortcuts and Workflow Assistant steps keep working.
+    LEGACY_FN_ALIASES = {
+        "Hyperbolic Stretch": MODE_UHS,
+        "GHS":                MODE_UHS,
+    }
+
+    # Compact names for history steps and replay descriptions. The full mode
+    # strings nest badly inside "Hyperbolic Stretch (...)".
+    SHORT_LABELS = {
+        MODE_UHS:     "UHS",
+        MODE_GHS:     "GHS",
+        MODE_ARCSINH: "ArcSinh",
+        MODE_LOG:     "Log",
+        MODE_EXP:     "Exp",
+        MODE_PIP:     "PIP",
+    }
+
+    @classmethod
+    def canonical_function(cls, name: str) -> str:
+        """Normalise a stored preset's 'function' value to a current MODE_*."""
+        return cls.LEGACY_FN_ALIASES.get(name, name)
+
+    @classmethod
+    def short_label(cls, name: str) -> str:
+        """Compact display name for an undo step, e.g. MODE_GHS -> 'GHS'."""
+        return cls.SHORT_LABELS.get(cls.canonical_function(name), name)
 
     def __init__(self, parent, document):
         super().__init__(parent)
@@ -273,13 +441,23 @@ class GhsDialogPro(QDialog):
 
         # ---------- layout ----------
         main = QHBoxLayout(self)
+        main.setContentsMargins(0, 0, 0, 0)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.splitter.setChildrenCollapsible(False)
+        self.splitter.setHandleWidth(6)
+        main.addWidget(self.splitter)
+        self.splitter.splitterMoved.connect(lambda *_: self._fit())
 
         # ── Left controls ────────────────────────────────────────────────
-        left = QVBoxLayout()
-        self.editor = CurveEditor(self)
-        left.addWidget(self.editor)
+        self._left_panel = QWidget(self)
+        left = QVBoxLayout(self._left_panel)
+        left.setContentsMargins(6, 6, 6, 6)
+        self.editor = StretchCurveView(self)
+        left.addWidget(self.editor, 1)
 
-        hint = QLabel(self.tr("Tip: Ctrl+Click (or double-click) the image to set the symmetry pivot"))
+        hint = QLabel(self.tr("Double-click the image or histogram to set the pivot. "
+                              "Wheel over the histogram zooms."))
+        hint.setWordWrap(True)          # without this the label alone sets the panel width
         hint.setStyleSheet("color: #888; font-size: 11px;")
         left.addWidget(hint)
 
@@ -287,7 +465,18 @@ class GhsDialogPro(QDialog):
         fn_row = QHBoxLayout()
         fn_row.addWidget(QLabel(self.tr("Function:")))
         self.cmb_fn = QComboBox(self)
-        self.cmb_fn.addItems([self.MODE_GHS, self.MODE_ARCSINH, self.MODE_LOG, self.MODE_EXP, self.MODE_PIP])
+        self.cmb_fn.addItems([self.MODE_UHS, self.MODE_GHS, self.MODE_ARCSINH,
+                              self.MODE_LOG, self.MODE_EXP, self.MODE_PIP])
+        self.cmb_fn.setItemData(
+            0, self.tr("SASpro's own hyperbolic stretch — alpha sets the slope "
+                       "directly at the symmetry point, beta biases shadows "
+                       "against highlights."),
+            Qt.ItemDataRole.ToolTipRole)
+        self.cmb_fn.setItemData(
+            1, self.tr("Generalised Hyperbolic Stretch — mathematics by Mike "
+                       "Cranfield and David Payne. D is the overall stretch "
+                       "factor, b controls how tightly it concentrates around SP."),
+            Qt.ItemDataRole.ToolTipRole)
         fn_row.addWidget(self.cmb_fn)
         left.addLayout(fn_row)
 
@@ -299,26 +488,44 @@ class GhsDialogPro(QDialog):
         ch_row.addWidget(self.cmb_ch)
         left.addLayout(ch_row)
 
+        # By default a combo sizes to its longest item, which the GHS entry
+        # would otherwise widen the whole panel to fit. The popup still shows
+        # the full text; only the closed state elides.
+        for _cmb in (self.cmb_fn, self.cmb_ch):
+            _cmb.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            _cmb.setMinimumContentsLength(16)
+            _cmb.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
         # ── Parameter sliders ────────────────────────────────────────────
         # We build ALL sliders up front and show/hide the relevant ones.
 
-        def _mk_row(name, lo, hi, val, divisor, fmt="{:.2f}"):
+        def _mk_row(name, lo, hi, val, divisor, fmt="{:.2f}", vw=40):
             row   = QHBoxLayout()
             lab   = QLabel(name); lab.setFixedWidth(28); row.addWidget(lab)
             s     = QSlider(Qt.Orientation.Horizontal)
             s.setRange(lo, hi); s.setValue(val)
             row.addWidget(s)
             disp_val = val / divisor
-            v     = QLabel(fmt.format(disp_val)); v.setFixedWidth(40)
+            v     = QLabel(fmt.format(disp_val)); v.setFixedWidth(vw)
             row.addWidget(v)
             # store divisor on the slider for convenience
             s._divisor = divisor
             s._fmt     = fmt
             return row, s, v
 
-        # GHS: α, β
+        # UHS (SASpro): α, β
         self._row_A, self.sA, self.labA = _mk_row("α", 1, 500, 50,  50.0)
         self._row_B, self.sB, self.labB = _mk_row("β", 1, 500, 50,  50.0)
+
+        # GHS (Cranfield/Payne): D is the stretch factor entered as ln(D+1),
+        # b is local stretch intensity, and LP/HP/BP here are protection
+        # *points* in [0,1] — not the 0..1 blend weights the other modes use.
+        self._row_D,   self.sD,   self.labD   = _mk_row("D",  0,    1000,  0,     100.0,   "{:.2f}")
+        self._row_Bb,  self.sBb,  self.labBb  = _mk_row("b",  -500, 1500,  0,     100.0,   "{:.2f}")
+        self._row_gLP, self.sgLP, self.labgLP = _mk_row("LP", 0,    10000, 0,     10000.0, "{:.4f}", 56)
+        self._row_gHP, self.sgHP, self.labgHP = _mk_row("HP", 0,    10000, 10000, 10000.0, "{:.4f}", 56)
+        self._row_BP,  self.sBP,  self.labBP  = _mk_row("BP", 0,    10000, 0,     10000.0, "{:.4f}", 56)
         # ArcSinh: Strength (1..1000 → /10 → 0.1..100)
         self._row_S, self.sS, self.labS = _mk_row("Str", 1, 1000, 50, 10.0)
         # PIP: Strength (0..200 → /100 → 0.0..2.0)
@@ -326,7 +533,10 @@ class GhsDialogPro(QDialog):
         # Shared: γ
         self._row_G, self.sG, self.labG = _mk_row("γ",  1, 500, 100, 100.0)
 
-        for row in (self._row_A, self._row_B, self._row_S, self._row_P, self._row_G):
+        for row in (self._row_A, self._row_B,
+                    self._row_D, self._row_Bb,
+                    self._row_gLP, self._row_gHP, self._row_BP,
+                    self._row_S, self._row_P, self._row_G):
             left.addLayout(row)
 
         # LP / HP
@@ -344,6 +554,10 @@ class GhsDialogPro(QDialog):
 
         left.addLayout(rowLP)
         left.addLayout(rowHP)
+        # kept so _update_slider_visibility can hide the whole row, name label
+        # included — GHS uses its own LP/HP protection points instead
+        self._row_LPw = rowLP
+        self._row_HPw = rowHP
         # SP (Symmetry Point) — slider + editable spinbox, both synced
         rowSP = QHBoxLayout()
         rowSP.addWidget(QLabel("SP"))
@@ -361,10 +575,6 @@ class GhsDialogPro(QDialog):
         left.addLayout(rowSP)
         self._sp_syncing = False          # guard against feedback loops
 
-
-        # ── Buttons ──────────────────────────────────────────────────────
-        left.addLayout(rowSP)
-        self._sp_syncing = False
 
         # ── Toggle Preview button ────────────────────────────────────────
         toggle_row = QHBoxLayout()
@@ -416,10 +626,14 @@ class GhsDialogPro(QDialog):
         drag_row.addStretch(1)
         left.addLayout(drag_row)
 
-        main.addLayout(left, 0)
+        self._left_panel.setMinimumWidth(300)
+        self._left_panel.setMaximumWidth(620)
+        self.splitter.addWidget(self._left_panel)
 
         # ── Right preview panel ──────────────────────────────────────────
-        right   = QVBoxLayout()
+        self._right_panel = QWidget(self)
+        right = QVBoxLayout(self._right_panel)
+        right.setContentsMargins(6, 6, 6, 6)
         zoombar = QHBoxLayout()
         zoombar.addStretch(1)
 
@@ -445,7 +659,10 @@ class GhsDialogPro(QDialog):
         self.scroll.viewport().installEventFilter(self)
 
         right.addWidget(self.scroll, 1)
-        main.addLayout(right, 1)
+        self.splitter.addWidget(self._right_panel)
+        self.splitter.setStretchFactor(0, 0)   # left keeps its width on resize
+        self.splitter.setStretchFactor(1, 1)   # preview absorbs the change
+        self.splitter.setSizes([360, 900])
 
         # ---------- wiring ----------
         self._suppress_editor_preview = False
@@ -453,13 +670,21 @@ class GhsDialogPro(QDialog):
         self.editor.setSymmetryCallback(self._on_symmetry_pick)
 
         # All value-bearing sliders (sSP drives _sym_u via its own handler)
-        self._all_sliders = (self.sA, self.sB, self.sS, self.sP, self.sG, self.sLP, self.sHP, self.sSP)
+        self._all_sliders = (self.sA, self.sB, self.sD, self.sBb,
+                             self.sgLP, self.sgHP, self.sBP,
+                             self.sS, self.sP, self.sG,
+                             self.sLP, self.sHP, self.sSP)
         for s in self._all_sliders:
             s.sliderPressed.connect(self._on_any_slider_pressed)
             s.sliderReleased.connect(self._on_any_slider_released)
         # non-SP sliders drive rebuild directly
-        for s in (self.sA, self.sB, self.sS, self.sP, self.sG, self.sLP, self.sHP):
+        for s in (self.sA, self.sB, self.sD, self.sBb,
+                  self.sgLP, self.sgHP, self.sBP,
+                  self.sS, self.sP, self.sG, self.sLP, self.sHP):
             s.valueChanged.connect(self._schedule_rebuild_from_params)
+
+        # histogram double-click / Ctrl+click also sets the pivot
+        self.editor.pivotPicked.connect(self._on_hist_pivot)
 
         # SP slider <-> spinbox bidirectional sync (each also triggers rebuild)
         self.sSP.valueChanged.connect(self._on_sp_slider_changed)
@@ -537,6 +762,7 @@ class GhsDialogPro(QDialog):
         """Show/hide parameter rows based on the active stretch function."""
         mode = self._current_mode()
 
+        uhs_only  = mode == self.MODE_UHS
         ghs_only  = mode == self.MODE_GHS
         asi_only  = mode in (self.MODE_ARCSINH, self.MODE_LOG, self.MODE_EXP)
         pip_only  = mode == self.MODE_PIP
@@ -548,17 +774,25 @@ class GhsDialogPro(QDialog):
                 if w is not None:
                     w.setVisible(visible)
 
-        _set_row_visible(self._row_A, ghs_only)
-        _set_row_visible(self._row_B, ghs_only)
-        _set_row_visible(self._row_S, asi_only)
-        _set_row_visible(self._row_P, pip_only)
-        # γ, LP, HP always visible
+        _set_row_visible(self._row_A,   uhs_only)
+        _set_row_visible(self._row_B,   uhs_only)
+        _set_row_visible(self._row_D,   ghs_only)
+        _set_row_visible(self._row_Bb,  ghs_only)
+        _set_row_visible(self._row_gLP, ghs_only)
+        _set_row_visible(self._row_gHP, ghs_only)
+        _set_row_visible(self._row_BP,  ghs_only)
+        _set_row_visible(self._row_S,   asi_only)
+        _set_row_visible(self._row_P,   pip_only)
+
+        # GHS carries its own LP/HP protection points, so the generic 0..1
+        # LP/HP blend weights are hidden for that mode.
+        _set_row_visible(self._row_LPw, not ghs_only)
+        _set_row_visible(self._row_HPw, not ghs_only)
 
         # SP is meaningless for PIP — disable and grey it out
         sp_active = not pip_only
         self.sSP.setEnabled(sp_active)
         self.spSP.setEnabled(sp_active)
-        # γ, LP, HP, SP always visible
 
     # -----------------------------------------------------------------------
     # Histogram support
@@ -659,6 +893,11 @@ class GhsDialogPro(QDialog):
     def _update_labels_fast(self):
         self.labA.setText(f"{self.sA.value()/50.0:.2f}")
         self.labB.setText(f"{self.sB.value()/50.0:.2f}")
+        self.labD.setText(f"{self.sD.value()/100.0:.2f}")
+        self.labBb.setText(f"{self.sBb.value()/100.0:.2f}")
+        self.labgLP.setText(f"{self.sgLP.value()/10000.0:.4f}")
+        self.labgHP.setText(f"{self.sgHP.value()/10000.0:.4f}")
+        self.labBP.setText(f"{self.sBP.value()/10000.0:.4f}")
         self.labS.setText(f"{self.sS.value()/10.0:.1f}")
         self.labP.setText(f"{self.sP.value()/100.0:.2f}")
         self.labG.setText(f"{self.sG.value()/100.0:.2f}")
@@ -680,267 +919,31 @@ class GhsDialogPro(QDialog):
     # -----------------------------------------------------------------------
 
     def _rebuild_from_params_now(self):
+        """
+        Single source of truth: build the LUT once, hand the SAME float32 array
+        to the curve view and to the preview. No spline in between, so what the
+        curve shows is exactly what lands on the pixels.
+        """
         self._update_labels_fast()
+        lut = self._build_lut01()
+        if lut is None:
+            return
+        self.editor.set_lut(lut, markers=self._current_markers())
+        self._quick_preview_with(lut)
+
+    def _current_markers(self) -> dict:
+        """Vertical reference lines drawn over the histogram."""
         mode = self._current_mode()
-
         if mode == self.MODE_GHS:
-            self._rebuild_ghs()
-        elif mode == self.MODE_ARCSINH:
-            self._rebuild_arcsinh()
-        elif mode == self.MODE_LOG:
-            self._rebuild_log()
-        elif mode == self.MODE_EXP:
-            self._rebuild_exp()
-        elif mode == self.MODE_PIP:
-            self._rebuild_pip()
-
-    # ---- GHS ---------------------------------------------------------------
-
-    def _rebuild_ghs(self):
-        a  = self.sA.value() / 50.0
-        b  = self.sB.value() / 50.0
-        g  = self.sG.value() / 100.0
-        lp = self.sLP.value() / 360.0
-        hp = self.sHP.value() / 360.0
-        SP = float(self._sym_u)
-        eps = 1e-6
-
-        N = len(self.editor.control_points) or 20
-        if len(self.editor.control_points) == 0:
-            for _ in range(N):
-                self.editor.addControlPoint(0, 0)
-
-        us    = np.linspace(0.0, 1.0, N)
-        left  = us <= 0.5
-        right = ~left
-
-        rawL = us**a / (us**a + b*(1.0-us)**a + eps)
-        rawR = us**a / (us**a + (1.0/b)*(1.0-us)**a + eps)
-
-        midL = (0.5**a) / (0.5**a + b*(0.5)**a + eps)
-        midR = (0.5**a) / (0.5**a + (1.0/b)*(0.5)**a + eps)
-
-        up = np.empty_like(us); vp = np.empty_like(us)
-        up[left]  = 2.0 * SP * us[left]
-        vp[left]  = rawL[left] * (SP / max(midL, eps))
-        up[right] = SP + 2.0*(1.0 - SP)*(us[right] - 0.5)
-        vp[right] = SP + (rawR[right] - midR) * ((1.0 - SP) / max(1.0 - midR, eps))
-
-        if lp > 0:
-            m = up <= SP; vp[m] = (1.0 - lp)*vp[m] + lp*up[m]
-        if hp > 0:
-            m = up >= SP; vp[m] = (1.0 - hp)*vp[m] + hp*up[m]
-
-        if abs(g - 1.0) > 1e-6:
-            vp = np.clip(vp, 0.0, 1.0) ** (1.0 / g)
-
-        vp = np.clip(vp, 0.0, 1.0)
-        vp = np.maximum.accumulate(vp)
-
-        self._push_handles_to_editor(up, vp)
-
-    # ---- ArcSinh -----------------------------------------------------------
-
-    def _rebuild_arcsinh(self):
-        s  = max(self.sS.value() / 10.0, 1e-6)   # 0.1 .. 100
-        g  = self.sG.value() / 100.0
-        lp = self.sLP.value() / 360.0
-        hp = self.sHP.value() / 360.0
-        SP = float(self._sym_u)
-
-        N = len(self.editor.control_points) or 20
-        if len(self.editor.control_points) == 0:
-            for _ in range(N):
-                self.editor.addControlPoint(0, 0)
-
-        us = np.linspace(0.0, 1.0, N, dtype=np.float64)
-
-        # Pivot-aware ArcSinh: stretch x relative to SP so that f(SP) == SP.
-        # We shift the input by SP, apply asinh, then normalise each half
-        # independently so the curve passes through (0,0), (SP,SP), (1,1).
-        eps = 1e-15
-        shifted = us - SP                               # centred on pivot
-
-        raw = np.arcsinh(s * shifted)                  # unbounded, centred on 0
-
-        # normalise left half  [0..SP] → output [0..SP]
-        raw_at_sp_left  = np.arcsinh(s * (0.0 - SP))  # raw value at x=0
-        raw_at_zero     = np.arcsinh(s * 0.0)          # raw value at x=SP (== 0)
-        span_left       = raw_at_zero - raw_at_sp_left + eps
-
-        # normalise right half [SP..1] → output [SP..1]
-        raw_at_sp_right = np.arcsinh(s * 0.0)          # raw value at x=SP (== 0)
-        raw_at_one      = np.arcsinh(s * (1.0 - SP))   # raw value at x=1
-        span_right      = raw_at_one - raw_at_sp_right + eps
-
-        vp = np.empty_like(us)
-        left  = us <= SP
-        right = ~left
-
-        # left half maps raw ∈ [raw(0), 0] → output ∈ [0, SP]
-        vp[left]  = SP * (raw[left]  - raw_at_sp_left)  / span_left
-        # right half maps raw ∈ [0, raw(1)] → output ∈ [SP, 1]
-        vp[right] = SP + (1.0 - SP) * (raw[right] - raw_at_sp_right) / span_right
-
-        up = us.copy()
-        if lp > 0:
-            m = up <= SP; vp[m] = (1.0 - lp)*vp[m] + lp*up[m]
-        if hp > 0:
-            m = up >= SP; vp[m] = (1.0 - hp)*vp[m] + hp*up[m]
-
-        if abs(g - 1.0) > 1e-6:
-            vp = np.clip(vp, 0.0, 1.0) ** (1.0 / g)
-
-        vp = np.clip(vp, 0.0, 1.0)
-        vp = np.maximum.accumulate(vp)
-
-        self._push_handles_to_editor(up, vp)
-
-
-    # ---- Logarithmic Stretch -----------------------------------------------
-
-    def _rebuild_log(self):
-        s  = max(self.sS.value() / 10.0, 1e-6)
-        g  = self.sG.value() / 100.0
-        lp = self.sLP.value() / 360.0
-        hp = self.sHP.value() / 360.0
-        SP = float(self._sym_u)
-
-        N = len(self.editor.control_points) or 20
-        if len(self.editor.control_points) == 0:
-            for _ in range(N):
-                self.editor.addControlPoint(0, 0)
-
-        us  = np.linspace(0.0, 1.0, N, dtype=np.float64)
-        eps = 1e-15
-
-        def _signed_log(d):
-            return np.sign(d) * np.log1p(s * np.abs(d))
-
-        raw = _signed_log(us - SP)
-
-        raw_at_left  = _signed_log(0.0 - SP)
-        raw_at_pivot = _signed_log(0.0)        # == 0
-        raw_at_right = _signed_log(1.0 - SP)
-
-        span_left  = raw_at_pivot - raw_at_left  + eps
-        span_right = raw_at_right - raw_at_pivot + eps
-
-        vp    = np.empty_like(us)
-        left  = us <= SP
-        right = ~left
-        vp[left]  = SP * (raw[left]  - raw_at_left)  / span_left
-        vp[right] = SP + (1.0 - SP) * (raw[right] - raw_at_pivot) / span_right
-
-        up = us.copy()
-        if lp > 0:
-            m = up <= SP; vp[m] = (1.0 - lp)*vp[m] + lp*up[m]
-        if hp > 0:
-            m = up >= SP; vp[m] = (1.0 - hp)*vp[m] + hp*up[m]
-
-        if abs(g - 1.0) > 1e-6:
-            vp = np.clip(vp, 0.0, 1.0) ** (1.0 / g)
-
-        vp = np.clip(vp, 0.0, 1.0)
-        vp = np.maximum.accumulate(vp)
-        self._push_handles_to_editor(up, vp)
-
-    # ---- Exponential Stretch ------------------------------------------------
-
-    def _rebuild_exp(self):
-        s  = max(self.sS.value() / 10.0, 1e-6)
-        g  = self.sG.value() / 100.0
-        lp = self.sLP.value() / 360.0
-        hp = self.sHP.value() / 360.0
-        SP = float(self._sym_u)
-
-        N = len(self.editor.control_points) or 20
-        if len(self.editor.control_points) == 0:
-            for _ in range(N):
-                self.editor.addControlPoint(0, 0)
-
-        us  = np.linspace(0.0, 1.0, N, dtype=np.float64)
-        eps = 1e-15
-
-        raw_right_at_one = np.expm1(s * (1.0 - SP))
-        raw_left_at_zero = np.expm1(s * SP)
-
-        vp    = np.empty_like(us)
-        left  = us <= SP
-        right = ~left
-
-        raw_r = np.expm1(s * (us[right] - SP))
-        vp[right] = SP + (1.0 - SP) * raw_r / (raw_right_at_one + eps)
-
-        raw_l = np.expm1(s * (SP - us[left]))
-        vp[left] = SP - SP * raw_l / (raw_left_at_zero + eps)
-
-        up = us.copy()
-        if lp > 0:
-            m = up <= SP; vp[m] = (1.0 - lp)*vp[m] + lp*up[m]
-        if hp > 0:
-            m = up >= SP; vp[m] = (1.0 - hp)*vp[m] + hp*up[m]
-
-        if abs(g - 1.0) > 1e-6:
-            vp = np.clip(vp, 0.0, 1.0) ** (1.0 / g)
-
-        vp = np.clip(vp, 0.0, 1.0)
-        vp = np.maximum.accumulate(vp)
-        self._push_handles_to_editor(up, vp)
-
-    # ---- Power of Inverted Pixels ------------------------------------------
-
-    def _rebuild_pip(self):
-        s  = self.sP.value() / 100.0   # 0.0 .. 2.0
-        g  = self.sG.value() / 100.0
-        lp = self.sLP.value() / 360.0
-        hp = self.sHP.value() / 360.0
-        SP = float(self._sym_u)
-
-        N = len(self.editor.control_points) or 20
-        if len(self.editor.control_points) == 0:
-            for _ in range(N):
-                self.editor.addControlPoint(0, 0)
-
-        us   = np.linspace(0.0, 1.0, N, dtype=np.float64)
-        base = np.clip(us, 1e-9, 1.0)
-        exp  = 1.0 - s * us        # exponent = 1 - strength*x
-        vp   = base ** exp         # x^(1 - s*x)
-
-        up = us.copy()
-        if lp > 0:
-            m = up <= SP; vp[m] = (1.0 - lp)*vp[m] + lp*up[m]
-        if hp > 0:
-            m = up >= SP; vp[m] = (1.0 - hp)*vp[m] + hp*up[m]
-
-        if abs(g - 1.0) > 1e-6:
-            vp = np.clip(vp, 0.0, 1.0) ** (1.0 / g)
-
-        vp = np.clip(vp, 0.0, 1.0)
-        vp = np.maximum.accumulate(vp)
-
-        self._push_handles_to_editor(up, vp)
-
-    # ---- shared handle writer ----------------------------------------------
-
-    def _push_handles_to_editor(self, up: np.ndarray, vp: np.ndarray):
-        """Write normalised (up, vp) ∈ [0,1]² into the CurveEditor handles."""
-        xs  = up * 360.0
-        ys  = (1.0 - vp) * 360.0
-        pts = list(zip(xs.astype(float), ys.astype(float)))
-
-        self._suppress_editor_preview = True
-        try:
-            cps_sorted = sorted(self.editor.control_points, key=lambda p: p.scenePos().x())
-            for p, (x, y) in zip(cps_sorted, pts):
-                p.setPos(x, y)
-
-            self._recolor_curve()
-            self.editor.updateCurve()
-        finally:
-            self._suppress_editor_preview = False
-
-        self._quick_preview()
+            return {
+                "SP": float(self._sym_u),
+                "LP": self.sgLP.value() / 10000.0,
+                "HP": self.sgHP.value() / 10000.0,
+                "BP": self.sBP.value() / 10000.0,
+            }
+        if mode == self.MODE_PIP:
+            return {}
+        return {"SP": float(self._sym_u)}
 
     # -----------------------------------------------------------------------
     # LUT building (used by preview & apply)
@@ -955,16 +958,20 @@ class GhsDialogPro(QDialog):
         SP   = float(self._sym_u)
 
         try:
-            if mode == self.MODE_GHS:
-                # GHS: always derive the LUT from the curve editor itself,
-                # so the applied result exactly matches what the curve shows.
-                fn = getattr(self.editor, "getCurveFunction", None)
-                if not fn:
-                    return None
-                f = fn()
-                if f is None:
-                    return None
-                return build_curve_lut(f, size=65536)
+            if mode == self.MODE_UHS:
+                a = self.sA.value() / 50.0
+                b = self.sB.value() / 50.0
+                return _build_uhs_lut(a, b, g, lp, hp, SP)
+            elif mode == self.MODE_GHS:
+                return _build_cranfield_lut(
+                    D_display=self.sD.value() / 100.0,
+                    b=self.sBb.value() / 100.0,
+                    SP=SP,
+                    LP=self.sgLP.value() / 10000.0,
+                    HP=self.sgHP.value() / 10000.0,
+                    BP=self.sBP.value() / 10000.0,
+                    g=g,
+                )
             elif mode == self.MODE_ARCSINH:
                 s = max(self.sS.value() / 10.0, 1e-6)
                 return _build_arcsinh_lut(s, g, lp, hp, SP)
@@ -986,16 +993,9 @@ class GhsDialogPro(QDialog):
     # -----------------------------------------------------------------------
 
     def _recolor_curve(self):
-        color_map = {
-            "K (Brightness)": Qt.GlobalColor.white,
-            "R": Qt.GlobalColor.red,
-            "G": Qt.GlobalColor.green,
-            "B": Qt.GlobalColor.blue,
-        }
-        ch = self.cmb_ch.currentText()
-        if getattr(self.editor, "curve_item", None):
-            pen = QPen(color_map[ch]); pen.setWidth(3)
-            self.editor.curve_item.setPen(pen)
+        # The view colours the curve and histograms from the active channel,
+        # and only re-maps the channel(s) the LUT actually touches.
+        self.editor.set_channel(self.cmb_ch.currentText())
         self._quick_preview()
 
     # -----------------------------------------------------------------------
@@ -1003,13 +1003,15 @@ class GhsDialogPro(QDialog):
     # -----------------------------------------------------------------------
 
     def _quick_preview(self):
-        if self._preview_img is None:
-            return
         lut01 = self._build_lut01()
         if lut01 is None:
             return
-        # apply_mode_any expects an 8-bit LUT via build_curve_lut
-        # but _build_lut01 already returns a full float LUT we can use directly
+        self._quick_preview_with(lut01)
+
+    def _quick_preview_with(self, lut01):
+        """Preview from an already-built LUT — avoids building it twice per tick."""
+        if self._preview_img is None or lut01 is None:
+            return
         mode = self.cmb_ch.currentText()
         out  = _apply_mode_any(self._preview_img, mode, lut01)
         out  = self._blend_with_mask(out)
@@ -1062,9 +1064,15 @@ class GhsDialogPro(QDialog):
             "pivot":    float(self._sym_u),
             "channel":  self.cmb_ch.currentText(),
         }
-        if mode == self.MODE_GHS:
+        if mode == self.MODE_UHS:
             params["alpha"] = self.sA.value() / 50.0
             params["beta"]  = self.sB.value() / 50.0
+        elif mode == self.MODE_GHS:
+            params["ghs_D"]  = self.sD.value() / 100.0
+            params["ghs_b"]  = self.sBb.value() / 100.0
+            params["ghs_LP"] = self.sgLP.value() / 10000.0
+            params["ghs_HP"] = self.sgHP.value() / 10000.0
+            params["ghs_BP"] = self.sBP.value() / 10000.0
         elif mode in (self.MODE_ARCSINH, self.MODE_LOG, self.MODE_EXP):
             params["strength"] = self.sS.value() / 10.0
         elif mode == self.MODE_PIP:
@@ -1077,26 +1085,14 @@ class GhsDialogPro(QDialog):
 
             mode = self._current_mode()
 
-            # Build params dict common to all modes
-            ghs_params = {
-                "function":  mode,
-                "gamma":     self.sG.value() / 100.0,
-                "lp":        self.sLP.value() / 360.0,
-                "hp":        self.sHP.value() / 360.0,
-                "pivot":     float(self._sym_u),
-                "channel":   self.cmb_ch.currentText(),
-            }
-            if mode == self.MODE_GHS:
-                ghs_params["alpha"] = self.sA.value() / 50.0
-                ghs_params["beta"]  = self.sB.value() / 50.0
-            elif mode in (self.MODE_ARCSINH, self.MODE_LOG, self.MODE_EXP):
-                ghs_params["strength"] = self.sS.value() / 10.0
-            elif mode == self.MODE_PIP:
-                ghs_params["strength"] = self.sP.value() / 100.0
+            # Single construction point — see _ghs_params().
+            ghs_params = self._ghs_params()
+
+            step = f"Hyperbolic Stretch ({self.short_label(mode)})"
 
             _marr, mid, mname = self._active_mask_layer()
             meta = {
-                "step_name": f"Hyperbolic Stretch ({mode})",
+                "step_name": step,
                 "ghs":        ghs_params,
                 "masked":     bool(mid),
                 "mask_id":    mid,
@@ -1122,7 +1118,7 @@ class GhsDialogPro(QDialog):
                     try:
                         mw._remember_last_headless_command(
                             "ghs", ghs_params,
-                            description=f"Hyperbolic Stretch ({mode})",
+                            description=step,
                         )
                         try:
                             mw._log(f"[Replay] GHS stored: fn={mode}, "
@@ -1134,17 +1130,18 @@ class GhsDialogPro(QDialog):
 
             self.doc.apply_edit(out_masked.copy(),
                                 metadata=meta,
-                                step_name=f"Hyperbolic Stretch ({mode})")
+                                step_name=step)
 
             self._load_from_doc()
 
             # Reset to defaults for next pass
             self._set_sym_u(0.5)
             self.editor.clearSymmetryLine()
-            self.editor.initCurve()
             self.sA.setValue(50);  self.sB.setValue(50);  self.sG.setValue(100)
             self.sS.setValue(50);  self.sP.setValue(100)
             self.sLP.setValue(0);  self.sHP.setValue(0)
+            self.sD.setValue(0);   self.sBb.setValue(0)
+            self.sgLP.setValue(0); self.sgHP.setValue(10000); self.sBP.setValue(0)
             self._rebuild_from_params()
 
         except Exception as e:
@@ -1164,6 +1161,7 @@ class GhsDialogPro(QDialog):
             arr = arr / np.iinfo(img.dtype).max
         self._full_img    = arr
         self._preview_img = _downsample_for_preview(arr, 1200)
+        self.editor.set_reference_image(self._preview_img)
         self._update_preview_pix(self._preview_img)
 
     def _apply_zoom(self):
@@ -1361,6 +1359,9 @@ class GhsDialogPro(QDialog):
             g = s.value("ghs/window_geometry", None)
             if g is not None:
                 self.restoreGeometry(g)
+            st = s.value("ghs/splitter_state", None)
+            if st is not None and getattr(self, "splitter", None) is not None:
+                self.splitter.restoreState(st)
         except Exception:
             pass
 
@@ -1368,6 +1369,8 @@ class GhsDialogPro(QDialog):
         try:
             s = QSettings()
             s.setValue("ghs/window_geometry", self.saveGeometry())
+            if getattr(self, "splitter", None) is not None:
+                s.setValue("ghs/splitter_state", self.splitter.saveState())
         except Exception:
             pass
 
@@ -1395,6 +1398,8 @@ class GhsDialogPro(QDialog):
             self.sA.setValue(50);  self.sB.setValue(50);  self.sG.setValue(100)
             self.sS.setValue(50);  self.sP.setValue(100)
             self.sLP.setValue(0);  self.sHP.setValue(0)
+            self.sD.setValue(0);   self.sBb.setValue(0)
+            self.sgLP.setValue(0); self.sgHP.setValue(10000); self.sBP.setValue(0)
         finally:
             for s in self._all_sliders:
                 s.blockSignals(False)
