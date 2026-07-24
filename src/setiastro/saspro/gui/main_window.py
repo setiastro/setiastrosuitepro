@@ -5001,7 +5001,7 @@ class AstroSuiteProMainWindow(
         dlg.show()
 
     def _open_mosaic_master(self):
-        from setiastro.saspro.star_alignment import MosaicMasterDialog
+        from setiastro.saspro.mosaic_master import MosaicMasterDialog
         dlg = MosaicMasterDialog(
             settings=self.settings,
             parent=self,
