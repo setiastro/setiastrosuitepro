@@ -5208,7 +5208,125 @@ def load_api_key():
     return api_key
 
 
+def _as_hwc(img):
+    a = np.asarray(img, dtype=np.float32)
+    return a[:, :, None] if a.ndim == 2 else a
 
+
+def estimate_background_level(img, *, tiles=16, keep_frac=0.15, valid=None,
+                              min_tile_valid=0.60, clip_sigma=2.5, clip_iters=3):
+    """
+    Robust per-channel sky level for one panel.
+
+    Ranks tiles by luminance median, keeps the darkest `keep_frac`, then
+    sigma-clips the pixels in those tiles (hard on the high side to kill
+    stars/nebulosity, loose on the low side) and takes the per-channel median.
+
+    Tile *selection* is done on luminance so all channels are measured over the
+    same sky region -- that preserves the panel's background color.
+
+    Returns (levels, sigmas), each shape (C,).
+    """
+    a = _as_hwc(img)
+    H, W, C = a.shape
+    finite = np.isfinite(a).all(axis=2)
+    valid = finite if valid is None else (valid.astype(bool) & finite)
+    if not valid.any():
+        return np.zeros(C, np.float32), np.zeros(C, np.float32)
+
+    lum = a.mean(axis=2)
+    ys = np.linspace(0, H, tiles + 1).astype(int)
+    xs = np.linspace(0, W, tiles + 1).astype(int)
+
+    tile_lum, boxes = [], []
+    for i in range(tiles):
+        for j in range(tiles):
+            y0, y1, x0, x1 = ys[i], ys[i + 1], xs[j], xs[j + 1]
+            if y1 <= y0 or x1 <= x0:
+                continue
+            v = valid[y0:y1, x0:x1]
+            if v.size == 0 or v.sum() < min_tile_valid * v.size:
+                continue
+            tile_lum.append(float(np.median(lum[y0:y1, x0:x1][v])))
+            boxes.append((y0, y1, x0, x1))
+
+    if boxes:
+        order = np.argsort(np.asarray(tile_lum, np.float32))
+        k = max(1, int(round(keep_frac * len(order))))
+        sel = [boxes[t] for t in order[:k]]
+    else:
+        sel = [(0, H, 0, W)]
+
+    chunks = [a[y0:y1, x0:x1][valid[y0:y1, x0:x1]] for (y0, y1, x0, x1) in sel]
+    chunks = [c for c in chunks if c.size]
+    if not chunks:
+        return np.zeros(C, np.float32), np.zeros(C, np.float32)
+    px = np.concatenate(chunks, axis=0)          # (N, C)
+
+    l = px.mean(axis=1)
+    keep = np.ones(l.shape, bool)
+    for _ in range(clip_iters):
+        m = float(np.median(l[keep]))
+        s = 1.4826 * float(np.median(np.abs(l[keep] - m)))
+        if not np.isfinite(s) or s <= 0:
+            break
+        nxt = keep & (l < m + clip_sigma * s) & (l > m - 6.0 * clip_sigma * s)
+        if nxt.sum() < 64 or nxt.sum() == keep.sum():
+            break
+        keep = nxt
+
+    lev = np.median(px[keep], axis=0).astype(np.float32)
+    sig = (1.4826 * np.median(np.abs(px[keep] - lev), axis=0)).astype(np.float32)
+    return lev, sig
+
+def solve_linear_match(src, ref, mask, *, fit_scale=True, max_samples=300_000,
+                       iters=4, clip=2.5, gain_limits=(0.25, 4.0)):
+    """
+    Robust per-channel solve of ref ~= a*src + b over `mask`.
+    Returns (a, b, n_used) with a,b shape (C,).
+    """
+    s, r = _as_hwc(src), _as_hwc(ref)
+    C = s.shape[2]
+    a_out = np.ones(C, np.float32)
+    b_out = np.zeros(C, np.float32)
+
+    idx = np.flatnonzero(mask.ravel())
+    if idx.size < 2000:
+        return a_out, b_out, int(idx.size)
+    if idx.size > max_samples:
+        idx = np.random.default_rng(12345).choice(idx, max_samples, replace=False)
+
+    S = s.reshape(-1, C)[idx].astype(np.float64)
+    R = r.reshape(-1, C)[idx].astype(np.float64)
+
+    for c in range(C):
+        x, y = S[:, c], R[:, c]
+        good = np.isfinite(x) & np.isfinite(y)
+        aa, bb = 1.0, 0.0
+        for _ in range(iters):
+            n = int(good.sum())
+            if n < 500:
+                break
+            if fit_scale:
+                A = np.column_stack([x[good], np.ones(n)])
+                sol, *_ = np.linalg.lstsq(A, y[good], rcond=None)
+                aa, bb = float(sol[0]), float(sol[1])
+            else:
+                aa, bb = 1.0, float(np.median(y[good] - x[good]))
+            res = y - (aa * x + bb)
+            m = float(np.median(res[good]))
+            sd = 1.4826 * float(np.median(np.abs(res[good] - m)))
+            if not np.isfinite(sd) or sd <= 0:
+                break
+            nxt = good & (np.abs(res - m) < clip * sd)
+            if nxt.sum() == good.sum():
+                break
+            good = nxt
+        if not np.isfinite(aa) or not np.isfinite(bb):
+            aa, bb = 1.0, 0.0
+        a_out[c] = float(np.clip(aa, *gain_limits))
+        b_out[c] = float(bb)
+    return a_out, b_out, int(idx.size)
 
 class MosaicMasterDialog(QDialog):
     def __init__(self, settings: QSettings, parent=None, image_manager=None,
@@ -5465,6 +5583,43 @@ class MosaicMasterDialog(QDialog):
             a0 = np.mean(a0, axis=2)
         m = np.median(np.clip(a0, np.percentile(a0, 1), np.percentile(a0, 99)))
         return float(max(m, 1e-6))
+
+    @staticmethod
+    def _bg_offset(levels, like):
+        """Reshape a per-channel level vector so it broadcasts against `like`."""
+        v = np.asarray(levels, np.float32).ravel()
+        if v.size == 0:
+            return np.float32(0.0)
+        if like.ndim == 2:
+            return np.float32(v.mean())
+        C = like.shape[2]
+        if v.size < C:
+            v = np.concatenate([v, np.repeat(v[-1:], C - v.size)])
+        return v[:C].astype(np.float32).reshape(1, 1, C)
+
+    @staticmethod
+    def _strip_pedestal(img, ped, coverage):
+        """Remove the transport pedestal and zero everything outside coverage."""
+        out = (img - ped).astype(np.float32, copy=False)
+        out[~coverage] = 0.0
+        return out
+
+    @staticmethod
+    def _linearize_wcs(w):
+        """SIP is only valid inside the frame it was fit to. The mosaic canvas
+        is much larger than any single panel, so the destination frame must be
+        pure linear TAN. Source panels keep their SIP — that's what makes the
+        inverse mapping correct."""
+        out = w.deepcopy()
+        try:
+            out.sip = None
+        except Exception:
+            pass
+        try:
+            out.wcs.ctype = [str(c).replace("-SIP", "") for c in out.wcs.ctype]
+        except Exception:
+            pass
+        return out
 
     def _normalize_linear(self, arr, target_med):
         """Linear median match only (no stretch/curves). Returns float32 array."""
@@ -5976,10 +6131,10 @@ class MosaicMasterDialog(QDialog):
         # ------------------------------------------------------------
         # 3) Establish mosaic WCS + output bounding box
         # ------------------------------------------------------------
-        reference_wcs = self._build_wcs(
+        reference_wcs = self._linearize_wcs(self._build_wcs(
             wcs_items[0]["wcs"].to_header(relax=True),
             wcs_items[0]["image"].shape
-        ).deepcopy()
+        ))
 
         min_x, min_y, max_x, max_y = self.compute_mosaic_bounding_box(wcs_items, reference_wcs)
         mosaic_width  = int(max_x - min_x)
@@ -6013,27 +6168,35 @@ class MosaicMasterDialog(QDialog):
         self.weight_mosaic, _ = smart_zeros((mosaic_height, mosaic_width), dtype=np.float32)
 
         # ------------------------------------------------------------
-        # 5) Normalization target — compute ONCE, apply ALWAYS
+        # 5) Background reference — measured once from the first panel
         # ------------------------------------------------------------
         did_normalize = bool(self.normalizeCheckBox.isChecked())
 
-        # IMPORTANT: compute from RAW first panel image, not from dict list in a way that can drift
+        # Pedestal added before warping so the valid-pixel footprint survives
+        # every remap/warp (border fill is 0, real data lands near PED).
+        self._BG_PED = 1.0
+        self._bg_fit_gain = True   # False -> offset-only overlap fit
+
+        self._ref_bg = None
         if did_normalize:
             try:
-                first_raw = wcs_items[0]["image"]
-                self._mosaic_target_median = self._target_median_from_first([{"image": first_raw}])
-            except Exception:
-                # fallback: compute directly
-                a0 = wcs_items[0]["image"].astype(np.float32, copy=False)
-                if a0.ndim == 3:
-                    a0m = np.mean(a0, axis=2)
-                else:
-                    a0m = a0
-                lo = np.percentile(a0m, 1)
-                hi = np.percentile(a0m, 99)
-                self._mosaic_target_median = float(max(np.median(np.clip(a0m, lo, hi)), 1e-6))
+                ref_raw = wcs_items[0]["image"].astype(np.float32, copy=False)
+                self._ref_bg, self._ref_sig = estimate_background_level(ref_raw)
+                print(f"[Mosaic] reference sky level = {self._ref_bg} "
+                      f"(sigma {self._ref_sig})")
+            except Exception as e:
+                print(f"[Mosaic] background estimate failed on reference: {e}")
+                self._ref_bg = None
 
-            print(f"[Mosaic] normalization target median = {self._mosaic_target_median:.6g}")
+        use_bg_match = bool(did_normalize and self._ref_bg is not None)
+
+        # Legacy fallback target, only used if the estimator bailed out
+        if did_normalize and not use_bg_match:
+            self._mosaic_target_median = self._target_median_from_first(
+                [{"image": wcs_items[0]["image"]}]
+            )
+            print(f"[Mosaic] falling back to median match, "
+                  f"target = {self._mosaic_target_median:.6g}")
 
         # Reprojection helpers cache
         if not hasattr(self, "_H_cache"):
@@ -6046,6 +6209,7 @@ class MosaicMasterDialog(QDialog):
         # 6) Main loop: normalize -> reproject -> (optional) star align -> accumulate
         # ------------------------------------------------------------
         first_image = True
+        PED = float(self._BG_PED)
 
         for idx, itm in enumerate(wcs_items):
             arr = itm["image"]
@@ -6055,49 +6219,63 @@ class MosaicMasterDialog(QDialog):
 
             img_lin = arr.astype(np.float32, copy=False)
 
-            # --- record original stats (pre-normalization) for optional unstretch ---
+            # --- stats kept only for the legacy unstretch path ---
             mono_for_stats = img_lin if img_lin.ndim == 2 else np.mean(img_lin, axis=2)
-            self.stretch_original_mins.append(float(np.min(mono_for_stats)))
-            self.stretch_original_medians.append(float(np.median(mono_for_stats)))
+            self.stretch_original_mins.append(float(np.nanmin(mono_for_stats)))
+            self.stretch_original_medians.append(float(np.nanmedian(mono_for_stats)))
 
-            # --- ALWAYS normalize here if enabled (even in WCS-only) ---
-            if did_normalize:
+            # --- background match: shift this panel's sky onto the reference sky ---
+            if use_bg_match:
+                lev_i, _ = estimate_background_level(img_lin)
+                img_lin = (img_lin
+                           - self._bg_offset(lev_i, img_lin)
+                           + self._bg_offset(self._ref_bg, img_lin)).astype(np.float32, copy=False)
+                print(f"[Mosaic] {self._item_label(itm)}: sky {lev_i} -> {self._ref_bg}")
+            elif did_normalize:
                 img_lin = self._normalize_linear(img_lin, float(self._mosaic_target_median))
+
+            # --- carry the footprint through the warp on a pedestal ---
+            img_ped = (img_lin + PED).astype(np.float32, copy=False)
 
             # --- Reprojection mode ---
             mode = self.reprojectModeCombo.currentText()
 
             if mode.startswith("Fast — SIP"):
                 reprojected = self._warp_via_wcs_remap_exact(
-                    img_lin, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width), tile=512
+                    img_ped, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width), tile=512
                 ).astype(np.float32, copy=False)
                 reprojected = self._polish_reprojected(reprojected)
-                reproj_red = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
 
             elif mode.startswith("Fast — Homography"):
                 reprojected = self._warp_via_wcs_homography(
-                    img_lin, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width), H_cache=self._H_cache
+                    img_ped, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width),
+                    H_cache=self._H_cache
                 ).astype(np.float32, copy=False)
                 reprojected = self._polish_reprojected(reprojected)
-                reproj_red = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
 
             else:
                 # Precise — Full WCS
-                if img_lin.ndim == 3:
+                if img_ped.ndim == 3:
                     channels = []
-                    for c in range(3):
-                        rpj, _ = reproject_interp((img_lin[..., c], itm["wcs"]), mosaic_wcs,
-                                                shape_out=(mosaic_height, mosaic_width))
+                    for c in range(img_ped.shape[2]):
+                        rpj, _ = reproject_interp((img_ped[..., c], itm["wcs"]), mosaic_wcs,
+                                                  shape_out=(mosaic_height, mosaic_width))
                         channels.append(np.nan_to_num(rpj, nan=0.0).astype(np.float32))
                     reprojected = np.stack(channels, axis=-1)
-                    reproj_red = reprojected[..., 0]
                 else:
-                    rpj, _ = reproject_interp((img_lin, itm["wcs"]), mosaic_wcs,
-                                            shape_out=(mosaic_height, mosaic_width))
+                    rpj, _ = reproject_interp((img_ped, itm["wcs"]), mosaic_wcs,
+                                              shape_out=(mosaic_height, mosaic_width))
                     reprojected = np.nan_to_num(rpj, nan=0.0).astype(np.float32)
-                    reproj_red = reprojected  # 2D
+
+            # Pedestal-free grayscale for star detection (astroalign never sees PED)
+            cov_r = (reprojected if reprojected.ndim == 2 else reprojected[..., 0]) > (0.5 * PED)
+            reproj_red = self._strip_pedestal(
+                reprojected if reprojected.ndim == 2 else reprojected[..., 0], PED, cov_r
+            )
 
             # --- Optional star alignment/refinement (skipped in WCS-only) ---
+            # NOTE: `reprojected` keeps the pedestal here on purpose, so the
+            # footprint survives warpAffine/warpPerspective (border fill = 0).
             if wcs_only:
                 aligned = reprojected
                 if first_image:
@@ -6108,13 +6286,18 @@ class MosaicMasterDialog(QDialog):
                     first_image = False
                 else:
                     transform_method = self.transform_combo.currentText()
-                    mosaic_gray = (self.final_mosaic if self.final_mosaic.ndim == 2
-                                else np.mean(self.final_mosaic, axis=-1))
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        mos_now = self.final_mosaic / np.maximum(
+                            self.weight_mosaic[..., None] if self.final_mosaic.ndim == 3
+                            else self.weight_mosaic, 1e-12)
+                    mos_now = np.nan_to_num(mos_now, nan=0.0, posinf=0.0, neginf=0.0)
+                    mosaic_gray = mos_now if mos_now.ndim == 2 else np.mean(mos_now, axis=-1)
 
                     try:
                         self.status_label.setText("Computing affine transform with astroalign...")
                         QApplication.processEvents()
-                        transform_obj, (src_pts, dst_pts) = self._aa_find_transform_with_backoff(reproj_red, mosaic_gray)
+                        transform_obj, (src_pts, dst_pts) = self._aa_find_transform_with_backoff(
+                            reproj_red, mosaic_gray)
                         transform_matrix = transform_obj.params[0:2, :].astype(np.float32)
                     except Exception as e:
                         self.status_label.setText(f"Astroalign failed: {e}. Using identity transform.")
@@ -6129,24 +6312,57 @@ class MosaicMasterDialog(QDialog):
                     if transform_method in ["Homography Transform", "Polynomial Warp Based Transform"]:
                         self.status_label.setText(f"Starting refined alignment using {transform_method}...")
                         QApplication.processEvents()
-                        refined_result = self.refined_alignment(affine_aligned, mosaic_gray, method=transform_method)
+                        refined_result = self.refined_alignment(affine_aligned, mosaic_gray,
+                                                                method=transform_method)
                         if refined_result is not None:
                             aligned, best_inliers2 = refined_result
-                            self.status_label.setText(f"Refined alignment succeeded with {best_inliers2} inliers.")
+                            self.status_label.setText(
+                                f"Refined alignment succeeded with {best_inliers2} inliers.")
                         else:
-                            self.status_label.setText("Refined alignment failed; falling back to affine alignment.")
+                            self.status_label.setText(
+                                "Refined alignment failed; falling back to affine alignment.")
 
             # If mosaic is color but aligned is mono, expand for accumulation only
             if is_color and aligned.ndim == 2:
                 aligned = np.repeat(aligned[..., None], 3, axis=2)
 
+            # --- real footprint, then drop the pedestal ---
+            gray_ped = aligned[..., 0] if aligned.ndim == 3 else aligned
+            coverage = gray_ped > (0.5 * PED)
+            if not coverage.any():
+                print(f"[Mosaic] {self._item_label(itm)}: empty footprint, skipping.")
+                continue
+            aligned = self._strip_pedestal(aligned, PED, coverage)
+
+            # --- overlap refinement: solve mosaic ≈ a*panel + b where they share sky ---
+            if use_bg_match and not first_image:
+                overlap = coverage & (self.weight_mosaic > 0)
+                n_ov = int(overlap.sum())
+                if n_ov > 5000:
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        mos_est = self.final_mosaic / np.maximum(
+                            self.weight_mosaic[..., None] if self.final_mosaic.ndim == 3
+                            else self.weight_mosaic, 1e-12)
+                    mos_est = np.nan_to_num(mos_est, nan=0.0, posinf=0.0, neginf=0.0)
+                    a, b, n = solve_linear_match(aligned, mos_est, overlap,
+                                                 fit_scale=self._bg_fit_gain)
+                    aligned = (aligned * self._bg_offset(a, aligned)
+                               + self._bg_offset(b, aligned)).astype(np.float32, copy=False)
+                    aligned[~coverage] = 0.0
+                    print(f"[Mosaic] {self._item_label(itm)}: overlap fit a={a}, b={b} ({n} px)")
+                else:
+                    print(f"[Mosaic] {self._item_label(itm)}: overlap {n_ov} px, "
+                          f"keeping pedestal-only match.")
+
             gray_aligned = aligned[..., 0] if aligned.ndim == 3 else aligned
 
-            # --- Weight mask ---
-            binary_mask = (gray_aligned > 0).astype(np.uint8)
+            # --- Weight mask (built from the true footprint, not from >0) ---
+            binary_mask = coverage.astype(np.uint8)
             smooth_mask = cv2.distanceTransform(binary_mask, cv2.DIST_L2, 5)
-            smooth_mask = (smooth_mask / np.max(smooth_mask)) if np.max(smooth_mask) > 0 else binary_mask.astype(np.float32)
+            mx = float(np.max(smooth_mask))
+            smooth_mask = (smooth_mask / mx) if mx > 0 else binary_mask.astype(np.float32)
             smooth_mask = cv2.GaussianBlur(smooth_mask, (15, 15), 0)
+            smooth_mask *= binary_mask   # blur must not bleed outside the panel
 
             # --- Accumulate ---
             if is_color:
@@ -6177,7 +6393,7 @@ class MosaicMasterDialog(QDialog):
         # ------------------------------------------------------------
         # 8) Optional “unstretch” (your existing logic)
         # ------------------------------------------------------------
-        if (did_normalize and
+        if (did_normalize and not use_bg_match and
             hasattr(self, "_mosaic_target_median") and float(self._mosaic_target_median) > 0 and
             getattr(self, "stretch_original_medians", None) and len(self.stretch_original_medians) > 0 and
             getattr(self, "stretch_original_mins", None) and len(self.stretch_original_mins) > 0):
@@ -7239,7 +7455,8 @@ class MosaicMasterDialog(QDialog):
                 linked=False,         # "unlinked" mode
                 normalize=True,       # Ensures final values are in [0,1]
                 apply_curves=False,   # Adjust if needed
-                curves_boost=0.0
+                curves_boost=0.0,
+                no_black_clip=True
             )
         else:
             # Mono image => use stretch_mono_image
@@ -7248,7 +7465,8 @@ class MosaicMasterDialog(QDialog):
                 target_median=0.25,
                 normalize=True,
                 apply_curves=False,
-                curves_boost=0.0
+                curves_boost=0.0,
+                no_black_clip=True,
             )
 
         # Convert [0,1] => [0,255]
