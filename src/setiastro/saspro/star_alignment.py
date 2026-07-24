@@ -4321,11 +4321,98 @@ def _coerce_num(val, tp=float):
         return tp(float(m.group(0)))
     raise ValueError
 
+def coerce_to_header(hdr_in):
+    """
+    Accept whatever the app hands us as a header and return an astropy Header,
+    or None.
+
+    Project files serialize headers to JSON, so a restored view carries a list
+    of [key, value, comment] rows -- sometimes wrapped in an extra list -- while
+    an on-disk load returns a real Header. Everything downstream wants a Header.
+    """
+    if hdr_in is None:
+        return None
+    if isinstance(hdr_in, Header):
+        return hdr_in.copy()
+
+    if isinstance(hdr_in, (bytes, bytearray)):
+        try:
+            hdr_in = hdr_in.decode("utf-8", "replace")
+        except Exception:
+            return None
+
+    if isinstance(hdr_in, str):
+        s = hdr_in.strip()
+        if s[:1] in ("[", "{"):
+            try:
+                import json
+                hdr_in = json.loads(s)
+            except Exception:
+                return None
+        else:
+            try:
+                return Header.fromstring(s, sep="\n") if "\n" in s else Header.fromstring(s)
+            except Exception:
+                return None
+
+    rows = []
+    if isinstance(hdr_in, dict):
+        # ProjectWriter._serialize_header_any wraps headers for JSON. Unwrap
+        # before treating the dict's own keys as FITS cards -- otherwise the
+        # wrapper's "format" key becomes the only card and the real WCS is
+        # dropped on the floor.
+        fmt = str(hdr_in.get("format", "")).lower()
+        if fmt == "fits-cards" and isinstance(hdr_in.get("cards"), (list, tuple)):
+            return coerce_to_header(hdr_in["cards"])
+        if fmt == "dict" and isinstance(hdr_in.get("items"), dict):
+            return coerce_to_header(hdr_in["items"])
+        if fmt in ("repr", "unknown"):
+            # repr(Header) is the concatenated card images -- fromstring can
+            # read it back. Anything else is unrecoverable.
+            txt = hdr_in.get("text")
+            return coerce_to_header(txt) if isinstance(txt, str) else None
+        rows = [(k, v, "") for k, v in hdr_in.items()]
+    elif isinstance(hdr_in, (list, tuple)):
+        seq = list(hdr_in)
+        # Unwrap [[row, row, ...]] -- one extra level of nesting from the
+        # serializer. Loop, in case there's more than one.
+        while (len(seq) == 1 and isinstance(seq[0], (list, tuple))
+               and seq[0] and isinstance(seq[0][0], (list, tuple))):
+            seq = list(seq[0])
+        for row in seq:
+            if isinstance(row, (list, tuple)):
+                if len(row) >= 3:
+                    rows.append((row[0], row[1], row[2]))
+                elif len(row) == 2:
+                    rows.append((row[0], row[1], ""))
+            elif hasattr(row, "keyword") and hasattr(row, "value"):   # a Card
+                rows.append((row.keyword, row.value, getattr(row, "comment", "")))
+    else:
+        return None
+
+    hdr = Header()
+    for k, v, c in rows:
+        try:
+            key = str(k).strip().upper()
+            # COMMENT/HISTORY need add_comment/add_history and repeat; none of
+            # them carry WCS, so drop them.
+            if not key or key in ("END", "COMMENT", "HISTORY", ""):
+                continue
+            if not (v is None or isinstance(v, (str, bool, int, float))):
+                continue
+            hdr[key] = (v, str(c) if c is not None else "")
+        except Exception:
+            continue
+
+    return hdr if len(hdr) else None
+
 def sanitize_wcs_header(hdr_in):
     """Return a cleaned astropy Header suitable for WCS(relax=True) with SIP kept."""
-    if not hdr_in:
+    if hdr_in is None:
         return None
-    hdr = Header(hdr_in) if not isinstance(hdr_in, Header) else hdr_in.copy()
+    hdr = coerce_to_header(hdr_in)
+    if hdr is None:
+        return None
 
     # Drop any lingering 3rd-axis WCS bits
     for k in list(hdr.keys()):
@@ -4355,6 +4442,13 @@ def sanitize_wcs_header(hdr_in):
                 import logging
                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
 
+    # Declared inverse-SIP order with no coefficients is worse than none --
+    # astropy builds a zero polynomial from it.
+    if not any(re.match(r"^(AP|BP)_\d+_\d+$", str(k)) for k in hdr.keys()):
+        for k in ("AP_ORDER", "BP_ORDER"):
+            if k in hdr:
+                del hdr[k]
+
     # SIP orders: ensure ints + pair up A/B and AP/BP if one is missing
     for k in ("A_ORDER","B_ORDER","AP_ORDER","BP_ORDER"):
         if k in hdr:
@@ -4375,6 +4469,41 @@ def sanitize_wcs_header(hdr_in):
 
     return hdr
 
+def _wcs_is_usable(w, hdr=None) -> bool:
+    """
+    A header carrying only CTYPE1/CTYPE2 still gives is_celestial == True --
+    astropy fills in CRVAL=(0,0), CRPIX=(0,0), CDELT=(1,1). That is not an
+    astrometric solution; it silently places every panel at the origin.
+    Require the keys that make a solution a solution.
+    """
+    if w is None:
+        return False
+    try:
+        if not w.is_celestial:
+            return False
+    except Exception:
+        return False
+
+    if hdr is not None:
+        has_ref = all(k in hdr for k in ("CRVAL1", "CRVAL2", "CRPIX1", "CRPIX2"))
+        has_cd    = any(k in hdr for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2"))
+        has_pc    = any(k in hdr for k in ("PC1_1", "PC1_2", "PC2_1", "PC2_2"))
+        has_cdelt = ("CDELT1" in hdr and "CDELT2" in hdr)
+        if not (has_ref and (has_cd or has_pc or has_cdelt)):
+            return False
+
+    # Scale sanity: astro pixel scales are arcsec/px. The astropy default of
+    # 1 deg/px is orders of magnitude past anything real.
+    try:
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        sc = np.asarray(proj_plane_pixel_scales(w), float)
+        if not np.all(np.isfinite(sc)) or np.any(sc <= 0.0) or np.any(sc > 1.0):
+            return False
+    except Exception:
+        pass
+
+    return True
+
 def get_wcs_from_header(header):
     """Build a WCS while keeping SIP terms; suppress fix warnings; force 2D if needed."""
     if not header:
@@ -4388,14 +4517,14 @@ def get_wcs_from_header(header):
         warnings.filterwarnings("ignore", category=FITSFixedWarning)
         try:
             w = WCS(hdr, naxis=naxis, relax=True)  # relax=True keeps SIP/AP/BP
-            return w if w.is_celestial else None
+            return w if _wcs_is_usable(w, hdr) else None
         except Exception:
             try:
                 w = WCS(hdr, naxis=2, relax=True)
-                return w if w.is_celestial else None
+                return w if _wcs_is_usable(w, hdr) else None
             except Exception:
                 return None
-    
+            
 def robust_api_request(method, url, data=None, files=None, prompt_on_failure=False):
     """
     Sends an API request without automatic retries. If the request fails (network error or invalid JSON response),
@@ -5279,33 +5408,88 @@ def estimate_background_level(img, *, tiles=16, keep_frac=0.15, valid=None,
     sig = (1.4826 * np.median(np.abs(px[keep] - lev), axis=0)).astype(np.float32)
     return lev, sig
 
-def solve_linear_match(src, ref, mask, *, fit_scale=True, max_samples=300_000,
-                       iters=4, clip=2.5, gain_limits=(0.25, 4.0)):
+def _overlap_blocks(src, ref, mask, block=16, min_frac=0.9):
     """
-    Robust per-channel solve of ref ~= a*src + b over `mask`.
-    Returns (a, b, n_used) with a,b shape (C,).
+    Reduce an overlap to block means before fitting.
+
+    Per-pixel, a sky-dominated overlap carries almost no signal variance, so an
+    OLS slope is attenuated by var(signal)/(var(signal)+var(noise)) and
+    collapses toward zero. Noise averages down as 1/block; real structure does
+    not. After an NxN reduction the same fit is well conditioned.
+
+    Returns (S, R), each (Nblocks, C), or (None, None) if there isn't enough.
     """
     s, r = _as_hwc(src), _as_hwc(ref)
     C = s.shape[2]
+
+    ys, xs = np.nonzero(mask)
+    if ys.size < 8 * block * block:
+        return None, None
+
+    y0, x0 = int(ys.min()), int(xs.min())
+    bh = (int(ys.max()) + 1 - y0) // block
+    bw = (int(xs.max()) + 1 - x0) // block
+    if bh < 2 or bw < 2:
+        return None, None
+    y1, x1 = y0 + bh * block, x0 + bw * block
+
+    w = mask[y0:y1, x0:x1].astype(np.float32)
+    cnt = w.reshape(bh, block, bw, block).sum(axis=(1, 3))
+    ok = cnt >= (min_frac * block * block)
+    n = int(ok.sum())
+    if n < 32:
+        return None, None
+
+    S = np.empty((n, C), np.float64)
+    R = np.empty((n, C), np.float64)
+    for c in range(C):
+        sb = (s[y0:y1, x0:x1, c] * w).reshape(bh, block, bw, block).sum(axis=(1, 3))
+        rb = (r[y0:y1, x0:x1, c] * w).reshape(bh, block, bw, block).sum(axis=(1, 3))
+        S[:, c] = sb[ok] / cnt[ok]
+        R[:, c] = rb[ok] / cnt[ok]
+    return S, R
+
+def solve_linear_match(src, ref, mask, *, fit_scale=True, pivot=None,
+                       block=16, iters=4, clip=2.5, gain_limits=(0.05, 20.0),
+                       verbose=True):
+    """
+    Robust per-channel solve of  ref ~= a*(src - p) + p + b  over `mask`,
+    where p is the pivot (the common sky level).
+
+    Pivoting about the sky decorrelates a and b: after the stage-1 pedestal
+    match the residual between panels is purely multiplicative on signal
+    *above* sky, so that is the quantity the gain should scale.
+
+    Returns (a, b, n_used) with a, b shape (C,). Apply as:
+        out = (src - p) * a + p + b
+    """
+    s0 = _as_hwc(src)
+    C = s0.shape[2]
     a_out = np.ones(C, np.float32)
     b_out = np.zeros(C, np.float32)
 
-    idx = np.flatnonzero(mask.ravel())
-    if idx.size < 2000:
-        return a_out, b_out, int(idx.size)
-    if idx.size > max_samples:
-        idx = np.random.default_rng(12345).choice(idx, max_samples, replace=False)
+    p = np.zeros(C, np.float64)
+    if pivot is not None:
+        pv = np.asarray(pivot, np.float64).ravel()
+        if pv.size:
+            p = np.resize(pv, C)
 
-    S = s.reshape(-1, C)[idx].astype(np.float64)
-    R = r.reshape(-1, C)[idx].astype(np.float64)
+    S, R = _overlap_blocks(src, ref, mask, block=block)
+    if S is None:
+        if verbose:
+            print("[match] overlap too small to fit")
+        return a_out, b_out, 0
+    n_blocks = S.shape[0]
 
     for c in range(C):
-        x, y = S[:, c], R[:, c]
+        x = S[:, c] - p[c]
+        y = R[:, c] - p[c]
         good = np.isfinite(x) & np.isfinite(y)
         aa, bb = 1.0, 0.0
+
         for _ in range(iters):
             n = int(good.sum())
-            if n < 500:
+            if n < 16:
                 break
             if fit_scale:
                 A = np.column_stack([x[good], np.ones(n)])
@@ -5313,20 +5497,106 @@ def solve_linear_match(src, ref, mask, *, fit_scale=True, max_samples=300_000,
                 aa, bb = float(sol[0]), float(sol[1])
             else:
                 aa, bb = 1.0, float(np.median(y[good] - x[good]))
+
             res = y - (aa * x + bb)
             m = float(np.median(res[good]))
             sd = 1.4826 * float(np.median(np.abs(res[good] - m)))
             if not np.isfinite(sd) or sd <= 0:
                 break
             nxt = good & (np.abs(res - m) < clip * sd)
-            if nxt.sum() == good.sum():
+            if nxt.sum() < 16 or nxt.sum() == good.sum():
                 break
             good = nxt
-        if not np.isfinite(aa) or not np.isfinite(bb):
+
+        if not (np.isfinite(aa) and np.isfinite(bb)):
             aa, bb = 1.0, 0.0
-        a_out[c] = float(np.clip(aa, *gain_limits))
+
+        clamped = float(np.clip(aa, *gain_limits))
+        if verbose and abs(clamped - aa) > 1e-6:
+            print(f"[match] ch{c}: gain {aa:.3f} clamped to {clamped:.3f}")
+        a_out[c] = clamped
         b_out[c] = float(bb)
-    return a_out, b_out, int(idx.size)
+
+    return a_out, b_out, n_blocks
+
+class _ViewPickerDialog(QDialog):
+    """Multi-select 'Add from View'. Checkable rows instead of a single-pick
+    dropdown, so a whole mosaic's worth of panels goes in with one OK."""
+
+    def __init__(self, entries, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add from View")
+        self.resize(480, 440)
+        self._entries = entries
+
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel("Check the views to add to the mosaic:"))
+
+        self._list = QListWidget()
+        for e in entries:
+            it = QListWidgetItem(e["picker_label"])
+            it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            if e["already"]:
+                # Present but not selectable -- re-adding would create a second
+                # entry under the same view:// key, and remove_selected strips
+                # every row matching a key, so one removal would take both.
+                it.setCheckState(Qt.CheckState.Unchecked)
+                it.setFlags(it.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                it.setToolTip("Already added to this mosaic.")
+            else:
+                it.setCheckState(Qt.CheckState.Checked)
+                it.setToolTip(e["key"])
+            self._list.addItem(it)
+        v.addWidget(self._list, 1)
+
+        row = QHBoxLayout()
+        b_all = QPushButton("All")
+        b_all.clicked.connect(lambda: self._set_all(True))
+        b_none = QPushButton("None")
+        b_none.clicked.connect(lambda: self._set_all(False))
+        b_wcs = QPushButton("Only solved")
+        b_wcs.setToolTip("Check only views that already carry a WCS.")
+        b_wcs.clicked.connect(self._only_wcs)
+        for b in (b_all, b_none, b_wcs):
+            row.addWidget(b)
+        row.addStretch(1)
+        self._count = QLabel("")
+        row.addWidget(self._count)
+        v.addLayout(row)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        v.addWidget(btns)
+
+        self._list.itemChanged.connect(lambda _it: self._update_count())
+        self._update_count()
+
+    def _enabled_rows(self):
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            if it.flags() & Qt.ItemFlag.ItemIsEnabled:
+                yield i, it
+
+    def _set_all(self, on):
+        st = Qt.CheckState.Checked if on else Qt.CheckState.Unchecked
+        for _i, it in self._enabled_rows():
+            it.setCheckState(st)
+
+    def _only_wcs(self):
+        for i, it in self._enabled_rows():
+            it.setCheckState(Qt.CheckState.Checked
+                             if self._entries[i]["wcs"] is not None
+                             else Qt.CheckState.Unchecked)
+
+    def _update_count(self):
+        self._count.setText(f"{len(self.selected_entries())} selected")
+
+    def selected_entries(self):
+        return [self._entries[i] for i, it in self._enabled_rows()
+                if it.checkState() == Qt.CheckState.Checked]
 
 class MosaicMasterDialog(QDialog):
     def __init__(self, settings: QSettings, parent=None, image_manager=None,
@@ -5561,6 +5831,64 @@ class MosaicMasterDialog(QDialog):
 
         self.setLayout(layout)
 
+    def _collect_view_candidates(self):
+        """Every open view that has image data, tagged with WCS/already-added."""
+        already = {d.get("path") for d in self.loaded_images}
+        entries = []
+
+        for title, doc in self._iter_docs():
+            try:
+                img = (doc.get_image()
+                       if hasattr(doc, "get_image") and callable(doc.get_image)
+                       else getattr(doc, "image", None))
+            except Exception:
+                img = None
+            if not isinstance(img, np.ndarray):
+                continue
+
+            try:
+                meta = (doc.get_metadata()
+                        if hasattr(doc, "get_metadata") and callable(doc.get_metadata)
+                        else getattr(doc, "metadata", {}) or {})
+            except Exception:
+                meta = {}
+            if not isinstance(meta, dict):
+                meta = {}
+
+            raw_hdr = (meta.get("original_header") or meta.get("header")
+                       or meta.get("fits_header"))
+            try:
+                header = sanitize_wcs_header(raw_hdr) if raw_hdr is not None else None
+                wcs_obj = get_wcs_from_header(header) if header else None
+            except Exception as e:
+                print(f"[Mosaic] header unreadable for {title!r}: "
+                      f"{type(e).__name__}: {e}")
+                header, wcs_obj = None, None
+
+            h, w = img.shape[:2]
+            display_name = str(title).strip() if title else "View"
+            key = f"view://{id(doc)}"
+
+            tags = []
+            if wcs_obj is not None:
+                tags.append("WCS")
+            if key in already:
+                tags.append("added")
+
+            base_label = f"{display_name} — {w}×{h}"
+            entries.append({
+                "key": key,
+                "display": display_name,
+                "base_label": base_label,
+                "picker_label": base_label + (f"   [{', '.join(tags)}]" if tags else ""),
+                "image": img,
+                "meta": meta,
+                "header": header,
+                "wcs": wcs_obj,
+                "already": key in already,
+            })
+        return entries
+
     def _on_reproject_mode_changed(self, t: str):
         self.settings.setValue("mosaic/reproject_mode", t)
         self.settings.sync()
@@ -5649,6 +5977,116 @@ class MosaicMasterDialog(QDialog):
         pts = np.array([[x, y] for y in ys for x in xs], dtype=np.float32)  # shape (9,2)
         return pts
 
+    @staticmethod
+    def _radec_to_vec(ra_deg, dec_deg):
+        r = np.radians(np.asarray(ra_deg, float))
+        d = np.radians(np.asarray(dec_deg, float))
+        cd = np.cos(d)
+        return np.stack([cd * np.cos(r), cd * np.sin(r), np.sin(d)], axis=-1)
+
+    @staticmethod
+    def _gnomonic(ra, dec, ra0, dec0):
+        """TAN-project (ra, dec) about (ra0, dec0). Degrees in, degrees out.
+        Handles the RA wrap correctly, unlike a naive coordinate difference."""
+        r = np.radians(np.asarray(ra, float)); d = np.radians(np.asarray(dec, float))
+        r0 = np.radians(float(ra0)); d0 = np.radians(float(dec0))
+        cd, sd = np.cos(d), np.sin(d)
+        cdr = np.cos(r - r0)
+        den = np.sin(d0) * sd + np.cos(d0) * cd * cdr
+        den = np.where(np.abs(den) < 1e-12, np.nan, den)
+        x = np.degrees(cd * np.sin(r - r0) / den)
+        y = np.degrees((np.cos(d0) * sd - np.sin(d0) * cd * cdr) / den)
+        return x, y
+
+    def _order_panels(self, items):
+        """
+        Reorder panels so the sequence starts near the field centre and every
+        later panel overlaps sky that has already been placed.
+
+        Footprints are computed with all_pix2world only -- forward SIP is a
+        plain polynomial evaluation, so nothing iterates and nothing diverges,
+        and this runs before the mosaic WCS exists.
+        """
+        n = len(items)
+        if n < 3:
+            return list(items)
+
+        NS = 16
+        per_panel, vecs = [], []
+        for itm in items:
+            h, w = itm["image"].shape[:2]
+            xs = np.linspace(0, w - 1, NS); ys = np.linspace(0, h - 1, NS)
+            px = np.concatenate([xs, xs, np.zeros(NS), np.full(NS, w - 1)])
+            py = np.concatenate([np.zeros(NS), np.full(NS, h - 1), ys, ys])
+            try:
+                ra, dec = itm["wcs"].all_pix2world(px, py, 0)
+                g = np.isfinite(ra) & np.isfinite(dec)
+                ra, dec = ra[g], dec[g]
+            except Exception:
+                ra = dec = np.array([])
+            per_panel.append((ra, dec))
+            if ra.size:
+                vecs.append(self._radec_to_vec(ra, dec))
+
+        if not vecs:
+            return list(items)
+
+        # Field centre as a unit vector -- immune to the RA wrap
+        c = np.concatenate(vecs, axis=0).mean(axis=0)
+        c /= max(float(np.linalg.norm(c)), 1e-12)
+        ra0 = float(np.degrees(np.arctan2(c[1], c[0])))
+        dec0 = float(np.degrees(np.arcsin(np.clip(c[2], -1.0, 1.0))))
+
+        boxes = []
+        for (ra, dec) in per_panel:
+            if ra.size == 0:
+                boxes.append(None); continue
+            x, y = self._gnomonic(ra, dec, ra0, dec0)
+            g = np.isfinite(x) & np.isfinite(y)
+            boxes.append((float(x[g].min()), float(y[g].min()),
+                          float(x[g].max()), float(y[g].max())) if g.any() else None)
+
+        def area(b):
+            return (b[2] - b[0]) * (b[3] - b[1]) if b else 0.0
+
+        def frac_overlap(a, b):
+            """Shared area as a fraction of the smaller panel."""
+            if a is None or b is None:
+                return 0.0
+            dx = min(a[2], b[2]) - max(a[0], b[0])
+            dy = min(a[3], b[3]) - max(a[1], b[1])
+            if dx <= 0 or dy <= 0:
+                return 0.0
+            return (dx * dy) / max(1e-12, min(area(a), area(b)))
+
+        def d2(b):
+            if b is None:
+                return float("inf")
+            cx = 0.5 * (b[0] + b[2]); cy = 0.5 * (b[1] + b[3])
+            return cx * cx + cy * cy
+
+        order = [min(range(n), key=lambda i: d2(boxes[i]))]
+        remaining = set(range(n)) - set(order)
+
+        while remaining:
+            best, best_ov = None, 0.0
+            for i in remaining:
+                # Against each placed panel individually -- NOT their union box,
+                # which would fill in the hollow of an L and invent overlap.
+                ov = max((frac_overlap(boxes[i], boxes[j]) for j in order), default=0.0)
+                if ov > best_ov:
+                    best, best_ov = i, ov
+            if best is None:
+                best = min(remaining, key=lambda i: d2(boxes[i]))
+                print(f"[Mosaic] {self._item_label(items[best])} shares no sky with "
+                      f"any placed panel -- WCS placement, pedestal-only sky match.")
+            order.append(best)
+            remaining.discard(best)
+
+        out = [items[i] for i in order]
+        print("[Mosaic] panel order: " + " -> ".join(self._item_label(x) for x in out))
+        return out
+
     def _compute_wcs_homography(self, src_wcs, dst_wcs, src_shape, dst_shape):
         """
         Build a single 3x3 homography H that maps src pixel coords -> dst pixel coords
@@ -5690,61 +6128,142 @@ class MosaicMasterDialog(QDialog):
                 out[..., c] = cv2.warpPerspective(img[..., c], H33, (W, H), flags=cv2.INTER_LANCZOS4)
             return out
 
+    def _dst_footprint_bbox(self, src_shape, src_wcs, dst_wcs, out_shape, pad=16, n=96):
+        """
+        Bounding box (x0, y0, x1, y1) of the source panel inside the destination
+        canvas, computed forward (all_pix2world -> wcs_world2pix) so no SIP
+        inversion is involved. Returns None if the panel misses the canvas.
+        """
+        H, W = int(out_shape[0]), int(out_shape[1])
+        h, w = int(src_shape[0]), int(src_shape[1])
+
+        xs = np.linspace(0, w - 1, n)
+        ys = np.linspace(0, h - 1, n)
+        px = np.concatenate([xs, xs, np.zeros(n), np.full(n, w - 1)])
+        py = np.concatenate([np.zeros(n), np.full(n, h - 1), ys, ys])
+
+        try:
+            ra, dec = src_wcs.all_pix2world(px, py, 0)      # forward SIP: no iteration
+            dx, dy = dst_wcs.wcs_world2pix(ra, dec, 0)      # dst is linear: exact
+        except Exception:
+            return (0, 0, W, H)
+
+        good = np.isfinite(dx) & np.isfinite(dy)
+        if not good.any():
+            return None
+
+        x0 = max(0, int(np.floor(dx[good].min())) - pad)
+        y0 = max(0, int(np.floor(dy[good].min())) - pad)
+        x1 = min(W, int(np.ceil(dx[good].max())) + pad + 1)
+        y1 = min(H, int(np.ceil(dy[good].max())) + pad + 1)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x0, y0, x1, y1)
+
     def _warp_via_wcs_remap_exact(self, src_img, src_wcs, dst_wcs, out_shape, tile=512):
         """
-        Inverse mapping: for each mosaic pixel (x_d,y_d), find (x_s,y_s) via
-        world = dst_wcs.pixel_to_world(x_d, y_d)
-        x_s,y_s = src_wcs.world_to_pixel(world)
-        and cv2.remap() from src -> dst. Handles SIP & distortions accurately.
-        Tiled to reduce RAM and reuses the same map for all 3 channels if color.
+        Inverse mapping dst -> world -> src, tiled, restricted to the panel's
+        actual footprint in the destination frame. Outside that box the SIP
+        inverse cannot converge (the polynomial has no inverse beyond its fit
+        domain), so we never ask it to. Every solved coordinate is validated by
+        a forward round trip before it is used.
         """
-        H, W = out_shape
+        import warnings
+
+        H, W = int(out_shape[0]), int(out_shape[1])
         is_color = (src_img.ndim == 3)
-        dst = np.zeros((H, W, 3), np.float32) if is_color else np.zeros((H, W), np.float32)
+        nch = src_img.shape[2] if is_color else 1
+        sh, sw = src_img.shape[:2]
 
-        # process in tiles to keep memory bounded
-        for y0 in range(0, H, tile):
-            y1 = min(y0 + tile, H)
-            h = y1 - y0
-            ys = np.arange(y0, y1, dtype=np.float64)[:, None]  # (h,1)
-            for x0 in range(0, W, tile):
-                x1 = min(x0 + tile, W)
-                w = x1 - x0
-                xs = np.arange(x0, x1, dtype=np.float64)[None, :]  # (1,w)
+        dst = (np.zeros((H, W, nch), np.float32) if is_color
+               else np.zeros((H, W), np.float32))
 
-                # meshgrid of dst pixels in this tile
-                Xd, Yd = np.broadcast_to(xs, (h, w)), np.broadcast_to(ys, (h, w))
+        box = self._dst_footprint_bbox(src_img.shape, src_wcs, dst_wcs, (H, W))
+        if box is None:
+            print("[Mosaic] panel footprint falls outside the mosaic canvas.")
+            return dst
+        bx0, by0, bx1, by1 = box
 
-                # dst->world->src (vectorized)
-                # NOTE: astropy wants x, y order
-                world = dst_wcs.pixel_to_world(Xd, Yd)
-                Xs, Ys = src_wcs.world_to_pixel(world)  # float32/64
+        frac = ((bx1 - bx0) * (by1 - by0)) / float(max(1, W * H))
+        print(f"[Mosaic] footprint x[{bx0}:{bx1}] y[{by0}:{by1}] "
+              f"({frac * 100:.1f}% of canvas)")
 
-                # OpenCV remap expects float32 maps (mapx = x, mapy = y in source image coords)
-                mapx = Xs.astype(np.float32)
-                mapy = Ys.astype(np.float32)
+        # --- round-trip tolerance: a quarter of a source pixel, in degrees ---
+        try:
+            from astropy.wcs.utils import proj_plane_pixel_scales
+            scale_deg = float(np.mean(proj_plane_pixel_scales(src_wcs)))
+        except Exception:
+            scale_deg = 1.0 / 3600.0
+        tol_deg = 0.25 * scale_deg
 
-                if is_color:
-                    # remap each channel with same map
-                    patch = np.empty((h, w, 3), np.float32)
-                    for c in range(3):
-                        patch[..., c] = cv2.remap(
-                            src_img[..., c], mapx, mapy,
+        rejected = 0
+
+        with warnings.catch_warnings():
+            # Residual non-convergence at the footprint edge is expected and is
+            # handled by the validation below, not by hoping it doesn't happen.
+            warnings.filterwarnings("ignore", message=".*all_world2pix.*")
+            warnings.filterwarnings("ignore", message=".*failed to converge.*")
+
+            for y0 in range(by0, by1, tile):
+                y1 = min(y0 + tile, by1)
+                hh = y1 - y0
+                ys = np.arange(y0, y1, dtype=np.float64)[:, None]
+
+                for x0 in range(bx0, bx1, tile):
+                    x1 = min(x0 + tile, bx1)
+                    ww = x1 - x0
+                    xs = np.arange(x0, x1, dtype=np.float64)[None, :]
+
+                    Xd = np.broadcast_to(xs, (hh, ww))
+                    Yd = np.broadcast_to(ys, (hh, ww))
+
+                    # dst is linear now, so wcs_pix2world is exact and cheap
+                    ra, dec = dst_wcs.wcs_pix2world(Xd.ravel(), Yd.ravel(), 0)
+                    sx, sy = src_wcs.all_world2pix(ra, dec, 0)   # iterative SIP inverse
+
+                    mapx = sx.reshape(hh, ww).astype(np.float32)
+                    mapy = sy.reshape(hh, ww).astype(np.float32)
+
+                    bad = ~(np.isfinite(mapx) & np.isfinite(mapy))
+                    bad |= (mapx < -1.0) | (mapx > sw) | (mapy < -1.0) | (mapy > sh)
+
+                    # Round-trip validation: a diverged solve that happens to land
+                    # inside the frame still fails to map back to the sky we asked
+                    # for. Forward SIP is a plain polynomial evaluation — no
+                    # iteration, no divergence.
+                    ok = ~bad
+                    if ok.any():
+                        rx = np.where(ok, mapx, 0.0).astype(np.float64).ravel()
+                        ry = np.where(ok, mapy, 0.0).astype(np.float64).ravel()
+                        ra2, dec2 = src_wcs.all_pix2world(rx, ry, 0)
+                        dra = ((ra2 - ra + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec))
+                        err = np.hypot(dra, dec2 - dec).reshape(hh, ww)
+                        bad |= ~np.isfinite(err)
+                        bad |= (err > tol_deg)
+
+                    if bad.any():
+                        rejected += int(bad.sum())
+                        mapx = np.where(bad, np.float32(-1.0), mapx)
+                        mapy = np.where(bad, np.float32(-1.0), mapy)
+
+                    if is_color:
+                        for c in range(nch):
+                            dst[y0:y1, x0:x1, c] = cv2.remap(
+                                src_img[..., c], mapx, mapy,
+                                interpolation=cv2.INTER_LANCZOS4,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+                    else:
+                        dst[y0:y1, x0:x1] = cv2.remap(
+                            src_img, mapx, mapy,
                             interpolation=cv2.INTER_LANCZOS4,
-                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0
-                        )
-                else:
-                    patch = cv2.remap(
-                        src_img, mapx, mapy,
-                        interpolation=cv2.INTER_LANCZOS4,
-                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0
-                    )
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
 
-                dst[y0:y1, x0:x1] = patch
+        if rejected:
+            tot = (bx1 - bx0) * (by1 - by0)
+            print(f"[Mosaic] rejected {rejected} / {tot} mapped pixels "
+                  f"({100.0 * rejected / max(1, tot):.1f}% of footprint box)")
 
         return dst
-
-
     def _get_astrometry_api_key(self) -> str:
         # Prefer QSettings; fall back to your legacy loader if present.
         key = self.settings.value("api/astrometry_key", "", type=str)
@@ -5888,68 +6407,44 @@ class MosaicMasterDialog(QDialog):
         self.update_status()
 
     def add_image_from_view(self):
-        items = self._iter_docs()
-        if not items:
-            QMessageBox.information(self, "Add from View", "No open views found.")
+        entries = self._collect_view_candidates()
+        if not entries:
+            QMessageBox.information(self, "Add from View",
+                                    "No views with image data are open.")
             return
 
-        candidates = []
-        for title, doc in items:
-            # image
-            try:
-                img = doc.get_image() if hasattr(doc, "get_image") and callable(doc.get_image) else getattr(doc, "image", None)
-            except Exception:
-                img = None
-            if not isinstance(img, np.ndarray):
-                continue
-
-            # metadata/header
-            try:
-                meta = doc.get_metadata() if hasattr(doc, "get_metadata") and callable(doc.get_metadata) else getattr(doc, "metadata", {}) or {}
-            except Exception:
-                meta = {}
-
-            header = (meta.get("original_header") or meta.get("header") or meta.get("fits_header"))
-            header = sanitize_wcs_header(header) if header else None
-            wcs_obj = get_wcs_from_header(header) if header else None
-
-            h, w = img.shape[:2]
-
-            display_name = str(title).strip() if title else "View"     # <- clean
-            list_label = f"{display_name} — {w}×{h}"                   # <- fancy UI
-
-            key = f"view://{id(doc)}"
-
-            candidates.append((list_label, display_name, img, meta, key, header, wcs_obj))
-
-        if not candidates:
-            QMessageBox.information(self, "Add from View", "No views with image data are open.")
+        dlg = _ViewPickerDialog(entries, parent=self)
+        if not dlg.exec():
             return
 
-        labels = [c[0] for c in candidates]
-        choice, ok = QInputDialog.getItem(self, "Select View", "Choose a view to add:", labels, 0, False)
-        if not ok or not choice:
+        chosen = dlg.selected_entries()
+        if not chosen:
             return
 
-        list_label, display_name, image, metadata, path_key, header, wcs_obj = candidates[labels.index(choice)]
+        for e in chosen:
+            img = e["image"]
+            meta = e["meta"]
+            self.loaded_images.append({
+                "path": e["key"],
+                "display": e["display"],
+                "image": img,
+                "header": e["header"],
+                "wcs": e["wcs"],
+                "bit_depth": meta.get("bit_depth"),
+                "is_mono": meta.get("is_mono", img.ndim == 2),
+                "transform": None,
+            })
 
-        d = {
-            "path": path_key,             # internal id for removal
-            "display": display_name,      # <- used by status strings / logs
-            "image": image,
-            "header": header,
-            "wcs": wcs_obj,
-            "bit_depth": (metadata.get("bit_depth") if isinstance(metadata, dict) else None),
-            "is_mono": (metadata.get("is_mono", image.ndim == 2) if isinstance(metadata, dict) else (image.ndim == 2)),
-            "transform": None,
-        }
-        self.loaded_images.append(d)
+            item = QListWidgetItem(
+                e["base_label"] + (" [WCS]" if e["wcs"] is not None else ""))
+            item.setToolTip(e["key"])
+            self.images_list.addItem(item)
 
-        txt = list_label + (" [WCS]" if wcs_obj is not None else "")
-        item = QListWidgetItem(txt)
-        item.setToolTip(path_key)
-        self.images_list.addItem(item)
         self.update_status()
+        n_solved = sum(1 for e in chosen if e["wcs"] is not None)
+        self.status_label.setText(
+            f"{len(self.loaded_images)} images loaded "
+            f"({len(chosen)} added, {n_solved} already solved).")
 
 
     def _item_label(self, item: dict) -> str:
@@ -6127,7 +6622,37 @@ class MosaicMasterDialog(QDialog):
                 self.spinnerMovie.stop()
             self.spinnerLabel.hide()
             return
+        wcs_items = self._order_panels(wcs_items)
 
+        # Panels must be at different sky positions. A degenerate WCS (one that
+        # parsed but carries no real astrometry) puts them all at the origin and
+        # collapses the mosaic to a single panel.
+        cents = []
+        for itm in wcs_items:
+            h, w = itm["image"].shape[:2]
+            try:
+                ra, dec = itm["wcs"].all_pix2world([w / 2.0], [h / 2.0], 0)
+                cents.append((float(ra[0]), float(dec[0])))
+            except Exception:
+                cents.append((float("nan"), float("nan")))
+            print(f"[Mosaic] {self._item_label(itm)}: centre "
+                  f"RA={cents[-1][0]:.5f} Dec={cents[-1][1]:.5f}")
+
+        fin = np.array([c for c in cents if np.isfinite(c[0])], dtype=float)
+        if len(fin) > 1:
+            spread = float(np.hypot(*(fin.max(axis=0) - fin.min(axis=0))))
+            print(f"[Mosaic] panel centre spread = {spread:.4f} deg")
+            if spread < 1e-4:
+                if self.spinnerMovie:
+                    self.spinnerMovie.stop()
+                self.spinnerLabel.hide()
+                QMessageBox.warning(
+                    self, "Mosaic Master",
+                    "All panels report the same sky position, so the mosaic "
+                    "would collapse onto one panel.\n\n"
+                    "Their WCS parsed but carries no real astrometric solution. "
+                    "Re-plate-solve the panels and try again.")
+                return        
         # ------------------------------------------------------------
         # 3) Establish mosaic WCS + output bounding box
         # ------------------------------------------------------------
@@ -6345,11 +6870,15 @@ class MosaicMasterDialog(QDialog):
                             else self.weight_mosaic, 1e-12)
                     mos_est = np.nan_to_num(mos_est, nan=0.0, posinf=0.0, neginf=0.0)
                     a, b, n = solve_linear_match(aligned, mos_est, overlap,
-                                                 fit_scale=self._bg_fit_gain)
-                    aligned = (aligned * self._bg_offset(a, aligned)
-                               + self._bg_offset(b, aligned)).astype(np.float32, copy=False)
+                                                 fit_scale=self._bg_fit_gain,
+                                                 pivot=self._ref_bg)
+                    pv = self._bg_offset(self._ref_bg, aligned)
+                    aligned = ((aligned - pv) * self._bg_offset(a, aligned)
+                               + pv + self._bg_offset(b, aligned)
+                               ).astype(np.float32, copy=False)
                     aligned[~coverage] = 0.0
-                    print(f"[Mosaic] {self._item_label(itm)}: overlap fit a={a}, b={b} ({n} px)")
+                    print(f"[Mosaic] {self._item_label(itm)}: a={a}, b={b} "
+                          f"({n} blocks)")
                 else:
                     print(f"[Mosaic] {self._item_label(itm)}: overlap {n_ov} px, "
                           f"keeping pedestal-only match.")
