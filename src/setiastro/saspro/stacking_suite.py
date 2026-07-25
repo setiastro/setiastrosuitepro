@@ -185,6 +185,63 @@ def _cal_out_name(light_file: str, calibrated_dir: str) -> str:
     dir_hash = hashlib.md5(src_dir.encode()).hexdigest()[:6]
     return os.path.join(calibrated_dir, f"{dir_hash}_{root}_c.fit")
 
+
+def _satmask_sidecar_for(fits_path: str) -> str:
+    """Canonical satellite-mask sidecar path for a given FITS frame."""
+    return os.path.splitext(fits_path)[0] + "_satmask.npy"
+
+
+def _carry_satmask_sidecar(cal_fits: str, norm_fits: str, log_fn=None) -> bool:
+    """Carry a calibration-time satellite-trail mask sidecar onto the
+    normalized frame that supersedes it.
+
+    Calibration writes the mask next to the calibrated light as
+        <cal_stem>_satmask.npy            e.g.  1c1edc_<name>_c_satmask.npy
+    Normalization renames the frame (new source-dir hash prefix + ``_n``):
+        1c1edc_<name>_c.fit   ->   68b8bc_1c1edc_<name>_c_n.fit
+    but historically left the sidecar behind under the *old* stem. The
+    registration stage (StarRegistrationWorker) then looks for a source mask
+    next to its ``_n.fit`` input, doesn't find one, logs
+    "no source sidecar found", and never warps/writes the aligned mask — so
+    integration finds nothing to apply.
+
+    Copying the sidecar to
+        <norm_stem>_satmask.npy           e.g.  68b8bc_1c1edc_<name>_c_n_satmask.npy
+    lets registration find it, warp it into registered space, and emit the
+    aligned ``<..._n_r>_satmask.npy`` that integration already consumes.
+
+    Note: this assumes the normalized frame keeps the calibrated frame's 2-D
+    geometry (debayering preserves H×W; only a canonical-size reshape would
+    change it). The mask is round-tripped through numpy so the on-disk dtype
+    stays uint8 regardless of how the source was written.
+
+    Returns True if a sidecar was carried forward.
+    """
+    try:
+        src = _satmask_sidecar_for(cal_fits)
+        if not os.path.exists(src):
+            return False
+        dst = _satmask_sidecar_for(norm_fits)
+        if os.path.abspath(src) == os.path.abspath(dst):
+            return False
+        m = np.load(src, allow_pickle=False)
+        np.save(dst, np.asarray(m, dtype=np.uint8), allow_pickle=False)
+        if log_fn is not None:
+            try:
+                log_fn(f"🛰️ Carried satellite mask → {os.path.basename(dst)}")
+            except Exception:
+                pass
+        return True
+    except Exception as e:
+        if log_fn is not None:
+            try:
+                log_fn(f"⚠️ Could not carry satellite mask sidecar for "
+                       f"{os.path.basename(norm_fits)}: {e}")
+            except Exception:
+                pass
+        return False
+
+
 _WINDOWS_RESERVED = {
     "CON","PRN","AUX","NUL",
     "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
@@ -20085,6 +20142,9 @@ class StackingSuiteDialog(QDialog):
                                 _ndbg("07 pre-write", img, fp)
                                 fits.PrimaryHDU(data=img.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
                                 normalized_files.append(out_path)
+                                # Carry the satellite-trail mask sidecar onto the
+                                # normalized frame so registration can find + warp it.
+                                _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
 
                         except Exception as e:
                             self.update_status(self.tr(f"⚠️ Error normalizing {fp}: {e}"))
@@ -20134,6 +20194,9 @@ class StackingSuiteDialog(QDialog):
                         self._orig2norm[_key] = _val
                         fits.PrimaryHDU(data=img_out.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
                         normalized_files.append(out_path)
+                        # Carry the satellite-trail mask sidecar onto the
+                        # normalized frame so registration can find + warp it.
+                        _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
 
             # restore OpenCV threads
             try:
@@ -25412,6 +25475,10 @@ class StackingSuiteDialog(QDialog):
             forced_reject = np.asarray(forced_reject_2d, dtype=bool)[..., None]
             valid = np.isfinite(ts) & (ts != 0.0) & (~forced_reject)
             ts_masked = np.where(valid, ts, np.nan)
+            # NaN reads as valid in the != 0.0 numba kernels (NaN != 0.0 is True)
+            # and poisons masked pixels to NaN. Give those kernels 0.0 for invalid/
+            # masked samples so their '0.0 == no-data' rule drops them from num AND den.
+            ts_zeroed = np.where(valid, ts, 0.0)
             base_rej = np.any(~valid, axis=-1)
 
             if algo in ("Comet Median", "Simple Median (No Rejection)"):
@@ -25437,15 +25504,15 @@ class StackingSuiteDialog(QDialog):
                 return np.where(np.isfinite(result), result, 0.0).astype(np.float32), base_rej
 
             fn_map = {
-                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
-                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
-                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted(ts_masked, weights_array, kappa=self.kappa, iterations=self.iterations),
-                "Trimmed Mean":                        lambda: trimmed_mean_weighted(ts_masked, weights_array, trim_fraction=self.trim_fraction),
-                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted(ts_masked, weights_array, threshold=self.esd_threshold),
-                "Biweight Estimator":                  lambda: biweight_location_weighted(ts_masked, weights_array, tuning_constant=self.biweight_constant),
-                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted(ts_masked, weights_array, threshold=self.modz_threshold),
+                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high),
+                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high),
+                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted(ts_zeroed, weights_array, kappa=self.kappa, iterations=self.iterations),
+                "Trimmed Mean":                        lambda: trimmed_mean_weighted(ts_zeroed, weights_array, trim_fraction=self.trim_fraction),
+                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted(ts_zeroed, weights_array, threshold=self.esd_threshold),
+                "Biweight Estimator":                  lambda: biweight_location_weighted(ts_zeroed, weights_array, tuning_constant=self.biweight_constant),
+                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted(ts_zeroed, weights_array, threshold=self.modz_threshold),
             }
-            fn = fn_map.get(algo, lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high))
+            fn = fn_map.get(algo, lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high))
             tile_result, tile_rej_map = fn()
             tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
             if tile_rej_map.ndim == 4:
@@ -25796,6 +25863,10 @@ class StackingSuiteDialog(QDialog):
             forced_reject = np.asarray(forced_reject_2d, dtype=bool)[..., None]
             valid = np.isfinite(ts) & (ts != 0.0) & (~forced_reject)
             ts_masked = np.where(valid, ts, np.nan)
+            # NaN reads as valid in the != 0.0 numba kernels (NaN != 0.0 is True)
+            # and poisons masked pixels to NaN. Give those kernels 0.0 for invalid/
+            # masked samples so their '0.0 == no-data' rule drops them from num AND den.
+            ts_zeroed = np.where(valid, ts, 0.0)
             base_rej = np.any(~valid, axis=-1)
 
             if algo in ("Comet Median", "Simple Median (No Rejection)"):
@@ -25821,16 +25892,16 @@ class StackingSuiteDialog(QDialog):
                 return np.where(np.isfinite(result), result, 0.0).astype(np.float32), base_rej
 
             fn_map = {
-                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
-                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted(ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high),
-                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted(ts_masked, weights_array, kappa=self.kappa, iterations=self.iterations),
-                "Trimmed Mean":                        lambda: trimmed_mean_weighted(ts_masked, weights_array, trim_fraction=self.trim_fraction),
-                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted(ts_masked, weights_array, threshold=self.esd_threshold),
-                "Biweight Estimator":                  lambda: biweight_location_weighted(ts_masked, weights_array, tuning_constant=self.biweight_constant),
-                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted(ts_masked, weights_array, threshold=self.modz_threshold),
+                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high),
+                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high),
+                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted(ts_zeroed, weights_array, kappa=self.kappa, iterations=self.iterations),
+                "Trimmed Mean":                        lambda: trimmed_mean_weighted(ts_zeroed, weights_array, trim_fraction=self.trim_fraction),
+                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted(ts_zeroed, weights_array, threshold=self.esd_threshold),
+                "Biweight Estimator":                  lambda: biweight_location_weighted(ts_zeroed, weights_array, tuning_constant=self.biweight_constant),
+                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted(ts_zeroed, weights_array, threshold=self.modz_threshold),
             }
             fn = fn_map.get(algo, lambda: windsorized_sigma_clip_weighted(
-                ts_masked, weights_array, lower=self.sigma_low, upper=self.sigma_high
+                ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high
             ))
             tile_result, tile_rej_map = fn()
             tile_rej_map = np.asarray(tile_rej_map, dtype=bool)

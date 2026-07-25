@@ -1618,6 +1618,22 @@ class StellarAlignmentDialog(QDialog):
                 continue
         raise last_exc
 
+    def _accept_wcs_fallback(self, wcs_prealigned, reason: str):
+        """WCS→Stellar refinement failed but the WCS stage produced a good
+        buffer — keep it instead of bailing."""
+        self.aligned_image = np.asarray(wcs_prealigned, np.float32)
+        self.stretched_image = None
+        if self.autostretch_enabled:
+            self.apply_autostretch()
+        disp = (self.stretched_image if (self.autostretch_enabled and self.stretched_image is not None)
+                else self.aligned_image)
+        self.update_preview(self.result_preview_label, disp)
+        self.status_label.setText("Star refinement failed — kept WCS alignment.")
+        QApplication.processEvents()
+        QMessageBox.information(
+            self, "Alignment Complete",
+            f"Star refinement failed ({reason}); kept the WCS (SIP) alignment.")
+
     def run_alignment(self):
         self.status_label.setText("Starting Alignment…")
         QApplication.processEvents()
@@ -1809,6 +1825,8 @@ class StellarAlignmentDialog(QDialog):
             #       src_pts are in tgt_small coords, tgt_pts in src_small coords
             transform_obj, (src_pts_s, tgt_pts_s) = self.aa_find_transform_with_backoff(tgt_small, src_small)
         except Exception as e:
+            if wcs_prealigned is not None:
+                return self._accept_wcs_fallback(wcs_prealigned, f"astroalign: {e}")
             QMessageBox.warning(self, "Alignment Error", f"Astroalign failed: {e}")
             return
 
@@ -1828,6 +1846,8 @@ class StellarAlignmentDialog(QDialog):
         try:
             kind, X = _estimate_transform_from_pairs(model, src_xy, tgt_xy, h_reproj)
         except Exception as e:
+            if wcs_prealigned is not None:
+                return self._accept_wcs_fallback(wcs_prealigned, f"transform estimation: {e}")
             QMessageBox.warning(self, "Alignment Error", f"Transform estimation failed: {e}")
             return
 
