@@ -1458,14 +1458,18 @@ class MosaicMasterDialog(QDialog):
 
         instructions = QLabel(
             "Mosaic Master:\n"
-            "1) Add images - Highly Recommend Images be Linear FITS\n"
-            "2) Choose Transformation Type:\n"
-            "....Partial Affine - Great for Images with Translation, Rotation, and Scaling Needs\n"
-            "....Affine - Great for Images that also have skew distortions\n"
-            "....Homography - Great for Images that also have lens or perspective distortion\n"
-            "....Polynomial Warp - Useful in large mosaics to bend the images together\n"
+            "1) Add images — linear FITS with a plate solve (WCS) work best\n"
+            "2) Choose Reprojection Mode:\n"
+            "....Exact — SIP-aware remap (recommended): reprojects each panel by its\n"
+            "....   full WCS/SIP solution. Handles scale, rotation, flip, and field of\n"
+            "....   view automatically — no manual tuning.\n"
+            "....Fast — Homography: one global transform per panel. Quicker, but only\n"
+            "....   exact for SIP-free TAN panels.\n"
             "3) Align & Create Mosaic\n"
-            "4) Save to Image Manager"
+            "4) Save to New View\n"
+            "\n"
+            "Advanced: the Transformation Type below only affects the optional star\n"
+            "refinement after reprojection — leave it on Affine unless you have a reason."
         )
         instructions.setWordWrap(True)
         layout.addWidget(instructions)
@@ -2152,10 +2156,19 @@ class MosaicMasterDialog(QDialog):
         if self.final_mosaic is None:
             QMessageBox.information(self, "Mosaic Master", "No mosaic available to push.")
             return
-        img = self.final_mosaic.astype(np.float32, copy=False)
+        img = self.final_mosaic.astype(np.float32, copy=False)   # ⚠️ keep dimensionality
 
-        # ⚠️ KEEP DIMENSIONALITY — don't force 3ch here
-        meta = dict(self.wcs_metadata or {})
+        is_mono = (img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1))
+
+        # Attach the mosaic WCS as a real header under 'original_header', so the
+        # pushed view is plate-solved just like a save-to-new-view mosaic.
+        hdr = None
+        if self.wcs_metadata and any(self.wcs_metadata.values()):
+            hdr = sanitize_wcs_header(self.wcs_metadata) or coerce_to_header(self.wcs_metadata)
+
+        meta = {"step_name": "Mosaic Master", "is_mono": bool(is_mono)}
+        if hdr is not None:
+            meta["original_header"] = hdr
 
         dm = self._docman
         if dm is not None:
@@ -4167,26 +4180,37 @@ class MosaicMasterDialog(QDialog):
         """
         Prepare the final mosaic (and its WCS metadata) and return (image, metadata).
         Does not push anywhere. Returns None on failure.
+
+        The mosaic's WCS is the linear-TAN frame every tile was reprojected into
+        (mosaic_wcs, stored as self.wcs_metadata in align_images), so it's the exact
+        astrometric solution for the output canvas — not a fit. We attach it under
+        'original_header' so the rest of SASpro (plate viewer, re-open, FITS save,
+        Stellar Alignment) finds it the same way it does for any solved frame.
         """
         if self.final_mosaic is None:
             print("No mosaic to finalize.")
             return None
 
-        # Build metadata header
-        if not self.wcs_metadata or not any(self.wcs_metadata.values()):
-            print("WCS metadata not available; creating minimal header.")
-            is_mono = (self.final_mosaic.ndim == 2 or
-                    (self.final_mosaic.ndim == 3 and self.final_mosaic.shape[2] == 1))
-            minimal_header = self.create_minimal_fits_header(self.final_mosaic, is_mono)
-            meta = dict(minimal_header)
-        else:
-            meta = dict(self.wcs_metadata)
-
-        # Add helpful tags
         is_mono = (self.final_mosaic.ndim == 2 or
-                (self.final_mosaic.ndim == 3 and self.final_mosaic.shape[2] == 1))
-        meta["step_name"] = "Mosaic Master"
-        meta["is_mono"] = bool(is_mono)
+                   (self.final_mosaic.ndim == 3 and self.final_mosaic.shape[2] == 1))
+
+        # Build the header
+        if not self.wcs_metadata or not any(self.wcs_metadata.values()):
+            # No WCS available (e.g. Seestar-mode mosaic) — minimal header only.
+            print("WCS metadata not available; creating minimal header.")
+            hdr = self.create_minimal_fits_header(self.final_mosaic, is_mono)
+        else:
+            # Keep it as a real, sanitized Header so WCS(relax=True) reparses it.
+            hdr = sanitize_wcs_header(self.wcs_metadata) or coerce_to_header(self.wcs_metadata)
+            if hdr is None:
+                print("WCS metadata present but unparseable; falling back to minimal header.")
+                hdr = self.create_minimal_fits_header(self.final_mosaic, is_mono)
+
+        meta = {
+            "original_header": hdr,        # ← where SASpro reads WCS from
+            "step_name": "Mosaic Master",
+            "is_mono": bool(is_mono),
+        }
 
         # Keep the array as-is (2D mono or 3-channel)
         return self.final_mosaic, meta
