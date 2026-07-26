@@ -344,8 +344,8 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
     Retry astroalign.find_transform() with progressively stricter detection,
     serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
     """
-    tgt32 = np.ascontiguousarray(tgt_gray.astype(np.float32))
-    src32 = np.ascontiguousarray(src_gray.astype(np.float32))
+    tgt32 = _masked(tgt_gray, _zero_ignore_mask(tgt_gray))
+    src32 = _masked(src_gray, _zero_ignore_mask(src_gray))
     try:
         curr = sep.get_extract_pixstack()
         if curr < 1_500_000:
@@ -872,6 +872,24 @@ def _cap_points(src_pts: np.ndarray, tgt_pts: np.ndarray, max_cp: int) -> tuple[
     idx = np.linspace(0, src_pts.shape[0]-1, max_cp, dtype=int)
     return src_pts[idx], tgt_pts[idx]
 
+def _zero_ignore_mask(gray2d: np.ndarray, edge_trim: int = 8) -> np.ndarray | None:
+    """SEP 'ignore' mask (True = skip) for the border-fill left by WCS
+    reprojection: exact-zero pixels, dilated inward a few px to also swallow
+    the Lanczos ringing fringe at the footprint edge. None if nothing to mask."""
+    m = (gray2d == 0.0)
+    if not m.any():
+        return None
+    if edge_trim > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*edge_trim+1, 2*edge_trim+1))
+        m = cv2.dilate(m.astype(np.uint8), k).astype(bool)   # grow the ignore region
+    return m
+
+def _masked(gray2d: np.ndarray, mask: np.ndarray | None):
+    g = np.ascontiguousarray(gray2d.astype(np.float32))
+    if mask is None:
+        return g
+    # full 2-D bool mask avoids the ma.nomask scalar that _mask() chokes on
+    return np.ma.MaskedArray(g, mask=np.asarray(mask, bool), fill_value=0.0)
 
 # ---------------------------------------------------------------------
 # Stellar Alignment (Dialog) — uses Active View or File (no slots)
@@ -1586,8 +1604,8 @@ class StellarAlignmentDialog(QDialog):
         Retry astroalign.find_transform() with progressively stricter detection,
         serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
         """
-        tgt32 = np.ascontiguousarray(tgt_gray.astype(np.float32))
-        src32 = np.ascontiguousarray(src_gray.astype(np.float32))
+        tgt32 = _masked(tgt_gray, _zero_ignore_mask(tgt_gray))
+        src32 = _masked(src_gray, _zero_ignore_mask(src_gray))
         try:
             curr = sep.get_extract_pixstack()
             if curr < 1_500_000:
@@ -1817,24 +1835,30 @@ class StellarAlignmentDialog(QDialog):
         #    src_small, tgt_small = src_gray, tgt_gray
         src_small, tgt_small = src_gray, tgt_gray
 
-        self.status_label.setText("Computing alignment with astroalign…")
-        QApplication.processEvents()
-        try:
-            # NOTE: astroalign returns matched points as (src_pts, tgt_pts)
-            #       but we called it with (tgt_small, src_small), so:
-            #       src_pts are in tgt_small coords, tgt_pts in src_small coords
-            transform_obj, (src_pts_s, tgt_pts_s) = self.aa_find_transform_with_backoff(tgt_small, src_small)
-        except Exception as e:
-            if wcs_prealigned is not None:
-                return self._accept_wcs_fallback(wcs_prealigned, f"astroalign: {e}")
-            QMessageBox.warning(self, "Alignment Error", f"Astroalign failed: {e}")
-            return
+        pairs = None
+        if wcs_prealigned is not None:
+            _minarea = int(_align_prefs(self.settings).get("minarea", 10))
+            pairs = _proximity_match_pairs(
+                tgt_small, src_small,
+                det_sigma=float(self.xf_det_sigma.value()),
+                minarea=_minarea, tol_px=5.0)
 
-        # Convert to float32 arrays
-        src_xy = np.asarray(src_pts_s, dtype=np.float32)
-        tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
+        if pairs is not None:
+            src_xy, tgt_xy = pairs
+            self.status_label.setText(
+                f"Matched {len(src_xy)} stars by proximity (WCS pre-aligned).")
+        else:
+            try:
+                transform_obj, (src_pts_s, tgt_pts_s) = \
+                    self.aa_find_transform_with_backoff(tgt_small, src_small)
+            except Exception as e:
+                if wcs_prealigned is not None:
+                    return self._accept_wcs_fallback(wcs_prealigned, f"astroalign: {e}")
+                QMessageBox.warning(self, "Alignment Error", f"Astroalign failed: {e}")
+                return
+            src_xy = np.asarray(src_pts_s, dtype=np.float32)
+            tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
 
-        # Cap control points
         src_xy, tgt_xy = _cap_points(src_xy, tgt_xy, max_cp)
 
         # If we solved on a downsampled pair, re-fit transform at full resolution for accuracy
@@ -1872,7 +1896,10 @@ class StellarAlignmentDialog(QDialog):
                     axis=2
                 )
             transform_3x3 = np.eye(3, dtype=np.float32); transform_3x3[:2] = X
-            self.show_transform_info(transform_3x3)
+            _note = ("NOTE: WCS/SIP reprojection was applied first; this matrix is\n"
+                     "only the residual star-refinement on top of that alignment."
+                     if wcs_prealigned is not None else None)
+            self.show_transform_info(transform_3x3, stage_note=_note)
 
         elif kind == "homography":
             if tgt.ndim == 2:
@@ -1891,7 +1918,10 @@ class StellarAlignmentDialog(QDialog):
                 )
             # Optional: show homography info as well
             try:
-                self.show_transform_info(np.array(X, dtype=np.float64, copy=False))
+                _note = ("NOTE: WCS/SIP reprojection was applied first; this matrix is\n"
+                         "only the residual star-refinement on top of that alignment."
+                         if wcs_prealigned is not None else None)
+                self.show_transform_info(np.array(X, dtype=np.float64, copy=False), stage_note=_note)
             except Exception:
                 pass
 
@@ -1910,14 +1940,34 @@ class StellarAlignmentDialog(QDialog):
 
         disp = self.stretched_image if (self.autostretch_enabled and self.stretched_image is not None) else self.aligned_image
         self.update_preview(self.result_preview_label, disp)
-        _label = f"WCS → {model}" if wcs_prealigned is not None else model
+
+        if wcs_prealigned is not None:
+            _resid_txt = "a residual correction"   # poly: no single scalar
+            try:
+                if kind == "affine":
+                    A = np.asarray(X, np.float64).reshape(2, 3)
+                    _resid_txt = f"a {float(np.hypot(A[0, 2], A[1, 2])):.1f}px residual correction"
+                elif kind == "homography":
+                    Hm = np.asarray(X, np.float64).reshape(3, 3)
+                    w = Hm[2, 2] if abs(Hm[2, 2]) > 1e-12 else 1.0
+                    _resid_txt = f"a {float(np.hypot(Hm[0, 2] / w, Hm[1, 2] / w)):.1f}px residual correction"
+            except Exception:
+                pass
+            _label = f"WCS/SIP reprojection + {model} refinement"
+            _detail = (f"WCS/SIP reprojection did the primary alignment "
+                       f"(scale, rotation, orientation, field of view); the {model} "
+                       f"star pass then applied {_resid_txt}.")
+        else:
+            _label = model
+            _detail = f"Aligned using {model} star matching."
+
         self.status_label.setText(f"Alignment complete ({_label}).")
         QApplication.processEvents()
-        QMessageBox.information(self, "Alignment Complete", f"Alignment completed using {_label}.")
+        QMessageBox.information(self, "Alignment Complete", _detail)
 
 
 
-    def show_transform_info(self, matrix):
+    def show_transform_info(self, matrix, *, stage_note: str | None = None):
         a, b, tx = matrix[0]
         c, d, ty = matrix[1]
         translation = (tx, ty)
@@ -1938,6 +1988,8 @@ class StellarAlignmentDialog(QDialog):
             f"Rotation: {rotation_deg:.2f}°\n"
             f"Skew (shear): {shear:.3f}\n"
         )
+        if stage_note:
+            info_text += f"\n{stage_note}\n"
 
         info_dialog = QDialog(self)
         info_dialog.setWindowTitle("Transformation Matrix Details")
@@ -3412,6 +3464,42 @@ def _project_to_similarity(T2x3: np.ndarray) -> np.ndarray:
     out[:, 2] = t
     return out
 
+def _proximity_match_pairs(tgt_gray, ref_gray, *, det_sigma=12.0, minarea=10,
+                           tol_px=5.0, max_total=2000,
+                           min_fwhm=1.2, max_ellipticity=0.6):
+    """ICP-style match for two already-near-aligned frames (post-WCS-reproject).
+    Nearest-neighbour in pixel space, like the Gaia plate solver. Returns
+    (src_xy, tgt_xy) in target/reference coords, or None if too few matches."""
+    P_t = _detect_stars_uniform(tgt_gray, det_sigma, minarea, grid=(6, 6),
+                                max_per_cell=60, max_total=max_total,
+                                min_fwhm=min_fwhm, max_ellipticity=max_ellipticity,
+                                mask=_zero_ignore_mask(tgt_gray))
+    P_r = _detect_stars_uniform(ref_gray, det_sigma, minarea, grid=(6, 6),
+                                max_per_cell=60, max_total=max_total,
+                                min_fwhm=min_fwhm, max_ellipticity=max_ellipticity,
+                                mask=_zero_ignore_mask(ref_gray))
+    if len(P_t) < 8 or len(P_r) < 8:
+        return None
+
+    dist, idx = KDTree(P_r).query(P_t, k=1, workers=-1)
+    keep = dist < float(tol_px)
+    if keep.sum() < 8:
+        return None
+
+    # collapse many target stars snapping to one reference star → keep the closest
+    order = np.argsort(dist[keep])
+    t_sel = np.flatnonzero(keep)[order]
+    r_sel = idx[t_sel]
+    seen, s_t, s_r = set(), [], []
+    for ti, ri in zip(t_sel, r_sel):
+        ri = int(ri)
+        if ri in seen:
+            continue
+        seen.add(ri); s_t.append(ti); s_r.append(ri)
+    if len(s_t) < 8:
+        return None
+    return P_t[np.array(s_t)].astype(np.float32), P_r[np.array(s_r)].astype(np.float32)
+
 def _detect_stars_uniform(img32: np.ndarray,
                           det_sigma: float = 12.0,
                           minarea: int = 10,
@@ -3419,19 +3507,17 @@ def _detect_stars_uniform(img32: np.ndarray,
                           max_per_cell: int = 25,
                           max_total: int = 500,
                           min_fwhm: float = 1.2,
-                          max_ellipticity: float = 0.6) -> np.ndarray:
+                          max_ellipticity: float = 0.6, mask=None) -> np.ndarray:
     import numpy as np
     import sep
 
     img32 = np.asarray(img32, np.float32, order="C")
     H, W = img32.shape[:2]
 
-    bkg = sep.Background(img32, bw=64, bh=64)
+    bkg = sep.Background(img32, bw=64, bh=64, mask=mask)                    # <- mask
     thresh = float(det_sigma) * float(bkg.globalrms)
-
-    # Request shape parameters from SEP
     objs = sep.extract(img32 - bkg.back(), thresh, minarea=int(minarea),
-                       segmentation_map=False)
+                       mask=mask, segmentation_map=False)                   # <- mask
     if objs is None or len(objs) == 0:
         return np.empty((0,2), np.float32)
 
