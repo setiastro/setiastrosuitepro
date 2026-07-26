@@ -344,8 +344,8 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
     Retry astroalign.find_transform() with progressively stricter detection,
     serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
     """
-    tgt32 = np.ascontiguousarray(tgt_gray.astype(np.float32))
-    src32 = np.ascontiguousarray(src_gray.astype(np.float32))
+    tgt32 = _masked(tgt_gray, _zero_ignore_mask(tgt_gray))
+    src32 = _masked(src_gray, _zero_ignore_mask(src_gray))
     try:
         curr = sep.get_extract_pixstack()
         if curr < 1_500_000:
@@ -376,6 +376,161 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
             continue
     raise last_exc
 
+# ---------------------------------------------------------------------
+# WCS-based alignment (no stars): reproject TARGET onto the REFERENCE grid
+# using each image's full WCS (SIP included), exactly like Mosaic Master's
+# exact remap. Handles arbitrary scale / rotation / flip / FOV as long as
+# both images carry a usable plate solve.
+# ---------------------------------------------------------------------
+
+def _wcs_from_header(header):
+    """Sanitize + build a usable WCS (SIP kept) or None. The header parsing
+    lives in mosaic_master; import it lazily so there's no import cycle
+    (mosaic_master imports qs_*/ASTROMETRY_API_URL back from here)."""
+    if header is None:
+        return None
+    try:
+        from setiastro.saspro.mosaic_master import get_wcs_from_header
+    except Exception:
+        return None
+    try:
+        return get_wcs_from_header(header)
+    except Exception:
+        return None
+
+
+def _wcs_align_footprint_bbox(tgt_shape, tgt_wcs, ref_wcs, out_shape, pad=16, n=96):
+    """Bounding box (x0,y0,x1,y1) of the target inside the reference grid.
+    Target-boundary pixels -> world (forward SIP) -> reference pixels."""
+    H, W = int(out_shape[0]), int(out_shape[1])
+    h, w = int(tgt_shape[0]), int(tgt_shape[1])
+    xs = np.linspace(0, w - 1, n); ys = np.linspace(0, h - 1, n)
+    px = np.concatenate([xs, xs, np.zeros(n), np.full(n, w - 1)])
+    py = np.concatenate([np.zeros(n), np.full(n, h - 1), ys, ys])
+    try:
+        ra, dec = tgt_wcs.all_pix2world(px, py, 0)   # forward SIP: exact
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dx, dy = ref_wcs.all_world2pix(ra, dec, 0)
+    except Exception:
+        return (0, 0, W, H)
+    good = np.isfinite(dx) & np.isfinite(dy)
+    if not good.any():
+        return None
+    x0 = max(0, int(np.floor(dx[good].min())) - pad)
+    y0 = max(0, int(np.floor(dy[good].min())) - pad)
+    x1 = min(W, int(np.ceil(dx[good].max())) + pad + 1)
+    y1 = min(H, int(np.ceil(dy[good].max())) + pad + 1)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def wcs_reproject_align(tgt_img, tgt_wcs, ref_wcs, out_shape,
+                        tile=512, progress_cb=None, log=None):
+    """
+    Resample tgt_img onto the reference pixel grid so output pixel (x,y) sees
+    the same sky as reference pixel (x,y). Inverse mapping, tiled, footprint-
+    limited, with a forward round-trip check to drop diverged SIP solves.
+
+    tgt_img   : HxW or HxWxC float
+    tgt_wcs   : WCS of tgt_img (SIP kept)
+    ref_wcs   : WCS defining the OUTPUT grid (the reference image's own WCS)
+    out_shape : (H, W) of the reference image
+    Returns float32 (H, W[,C]).
+    """
+    _log = log or (lambda *_a, **_k: None)
+
+    H, W = int(out_shape[0]), int(out_shape[1])
+    is_color = (tgt_img.ndim == 3)
+    nch = tgt_img.shape[2] if is_color else 1
+    sh, sw = tgt_img.shape[:2]
+    src = np.ascontiguousarray(tgt_img.astype(np.float32, copy=False))
+
+    dst = (np.zeros((H, W, nch), np.float32) if is_color
+           else np.zeros((H, W), np.float32))
+
+    box = _wcs_align_footprint_bbox(tgt_img.shape, tgt_wcs, ref_wcs, (H, W))
+    if box is None:
+        _log("[WCS-align] target footprint falls outside the reference frame.")
+        return dst
+    bx0, by0, bx1, by1 = box
+    frac = ((bx1 - bx0) * (by1 - by0)) / float(max(1, W * H))
+    _log(f"[WCS-align] footprint x[{bx0}:{bx1}] y[{by0}:{by1}] "
+         f"({frac * 100:.1f}% of reference)")
+
+    try:
+        from astropy.wcs.utils import proj_plane_pixel_scales
+        scale_deg = float(np.mean(proj_plane_pixel_scales(tgt_wcs)))
+    except Exception:
+        scale_deg = 1.0 / 3600.0
+    tol_deg = 0.25 * scale_deg
+
+    rejected = 0
+    n_tiles = (max(1, -(-(by1 - by0) // tile)) *
+               max(1, -(-(bx1 - bx0) // tile)))
+    done_tiles = 0
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*all_world2pix.*")
+        warnings.filterwarnings("ignore", message=".*failed to converge.*")
+
+        for y0 in range(by0, by1, tile):
+            y1 = min(y0 + tile, by1); hh = y1 - y0
+            ys = np.arange(y0, y1, dtype=np.float64)[:, None]
+            for x0 in range(bx0, bx1, tile):
+                x1 = min(x0 + tile, bx1); ww = x1 - x0
+                xs = np.arange(x0, x1, dtype=np.float64)[None, :]
+                Xd = np.broadcast_to(xs, (hh, ww))
+                Yd = np.broadcast_to(ys, (hh, ww))
+
+                # reference pixel -> world (forward SIP, exact)
+                ra, dec = ref_wcs.all_pix2world(Xd.ravel(), Yd.ravel(), 0)
+                # world -> target pixel (iterative SIP inverse)
+                sx, sy = tgt_wcs.all_world2pix(ra, dec, 0)
+
+                mapx = sx.reshape(hh, ww).astype(np.float32)
+                mapy = sy.reshape(hh, ww).astype(np.float32)
+
+                bad = ~(np.isfinite(mapx) & np.isfinite(mapy))
+                bad |= (mapx < -1.0) | (mapx > sw) | (mapy < -1.0) | (mapy > sh)
+
+                ok = ~bad
+                if ok.any():
+                    rx = np.where(ok, mapx, 0.0).astype(np.float64).ravel()
+                    ry = np.where(ok, mapy, 0.0).astype(np.float64).ravel()
+                    ra2, dec2 = tgt_wcs.all_pix2world(rx, ry, 0)
+                    dra = ((ra2 - ra + 180.0) % 360.0 - 180.0) * np.cos(np.radians(dec))
+                    err = np.hypot(dra, dec2 - dec).reshape(hh, ww)
+                    bad |= ~np.isfinite(err)
+                    bad |= (err > tol_deg)
+
+                if bad.any():
+                    rejected += int(bad.sum())
+                    mapx = np.where(bad, np.float32(-1.0), mapx)
+                    mapy = np.where(bad, np.float32(-1.0), mapy)
+
+                if is_color:
+                    for c in range(nch):
+                        dst[y0:y1, x0:x1, c] = cv2.remap(
+                            src[..., c], mapx, mapy,
+                            interpolation=cv2.INTER_LANCZOS4,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+                else:
+                    dst[y0:y1, x0:x1] = cv2.remap(
+                        src, mapx, mapy,
+                        interpolation=cv2.INTER_LANCZOS4,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+
+                done_tiles += 1
+                if progress_cb is not None and (done_tiles % 8) == 0:
+                    progress_cb(done_tiles / max(1, n_tiles))
+
+    if rejected:
+        tot = (bx1 - bx0) * (by1 - by0)
+        _log(f"[WCS-align] rejected {rejected}/{tot} mapped pixels "
+             f"({100.0 * rejected / max(1, tot):.1f}% of footprint)")
+    return dst
 
 def _warp_like_ref(target_img: np.ndarray, M_2x3: np.ndarray, ref_shape_hw: tuple[int,int]) -> np.ndarray:
     H, W = ref_shape_hw
@@ -717,6 +872,24 @@ def _cap_points(src_pts: np.ndarray, tgt_pts: np.ndarray, max_cp: int) -> tuple[
     idx = np.linspace(0, src_pts.shape[0]-1, max_cp, dtype=int)
     return src_pts[idx], tgt_pts[idx]
 
+def _zero_ignore_mask(gray2d: np.ndarray, edge_trim: int = 8) -> np.ndarray | None:
+    """SEP 'ignore' mask (True = skip) for the border-fill left by WCS
+    reprojection: exact-zero pixels, dilated inward a few px to also swallow
+    the Lanczos ringing fringe at the footprint edge. None if nothing to mask."""
+    m = (gray2d == 0.0)
+    if not m.any():
+        return None
+    if edge_trim > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*edge_trim+1, 2*edge_trim+1))
+        m = cv2.dilate(m.astype(np.uint8), k).astype(bool)   # grow the ignore region
+    return m
+
+def _masked(gray2d: np.ndarray, mask: np.ndarray | None):
+    g = np.ascontiguousarray(gray2d.astype(np.float32))
+    if mask is None:
+        return g
+    # full 2-D bool mask avoids the ma.nomask scalar that _mask() chokes on
+    return np.ma.MaskedArray(g, mask=np.asarray(mask, bool), fill_value=0.0)
 
 # ---------------------------------------------------------------------
 # Stellar Alignment (Dialog) — uses Active View or File (no slots)
@@ -756,7 +929,10 @@ class StellarAlignmentDialog(QDialog):
         self.autostretch_enabled = False
         self.source_was_mono = False
         self.target_was_mono = False
-
+        self.source_header = None
+        self.target_header = None
+        self.source_wcs = None
+        self.target_wcs = None
         self.source_file_path = None
         self.target_file_path = None
         self._align_progress_in_slot = False
@@ -832,6 +1008,39 @@ class StellarAlignmentDialog(QDialog):
 
         xform_box = QGroupBox("Transform / Distortion")
         xf = QFormLayout(xform_box)
+        # Alignment method
+        self.xf_method = QComboBox()
+        self.xf_method.addItems([
+            "Stellar (star matching)",
+            "WCS / SIP (plate solve, no stars)",
+            "WCS → Stellar refinement",
+        ])
+        self.xf_method.setToolTip(
+            "Stellar: astroalign star matching (best when both frames are the same scope).\n"
+            "WCS/SIP: reproject via each image's plate solve — handles arbitrary scale,\n"
+            "  rotation, flip/mirror, FOV. Needs both images plate-solved.\n"
+            "WCS → Stellar: WCS gets cross-instrument frames onto the same grid, then a\n"
+            "  star pass refines the residual for sub-pixel accuracy. Best of both."
+        )
+        _saved_method = self.settings.value("stacking/align/method", "stellar", type=str)
+        self.xf_method.setCurrentIndex(
+            {"stellar": 0, "wcs": 1, "wcs_stellar": 2}.get(str(_saved_method).lower(), 0))
+        xf.addRow("Method:", self.xf_method)
+
+        # WCS plate-solve status row (used by the WCS / WCS→Stellar methods)
+        wcs_status_row = QHBoxLayout()
+        self.btn_check_wcs = QPushButton("Check WCS")
+        self.btn_check_wcs.setFixedHeight(26)
+        self.btn_check_wcs.setToolTip(
+            "Report whether the current source and target carry a usable plate solve."
+        )
+        self.btn_check_wcs.clicked.connect(self._refresh_wcs_status)
+        self._lbl_wcs_status = QLabel("")
+        self._lbl_wcs_status.setStyleSheet("color:#888;font-size:10px;")
+        self._lbl_wcs_status.setWordWrap(True)
+        wcs_status_row.addWidget(self.btn_check_wcs)
+        wcs_status_row.addWidget(self._lbl_wcs_status, 1)
+        xf.addRow("", wcs_status_row)
 
         self.xf_model = QComboBox()
         self.xf_model.addItems([
@@ -899,6 +1108,27 @@ class StellarAlignmentDialog(QDialog):
         _toggle_rows()
         self.xf_model.currentIndexChanged.connect(lambda _ : _toggle_rows())
 
+        def _method_key():
+            return ("stellar", "wcs", "wcs_stellar")[self.xf_method.currentIndex()]
+
+        def _toggle_method(_=None):
+            m = _method_key()
+            uses_stars = (m != "wcs")           # star controls used by stellar + refinement
+            uses_wcs   = (m != "stellar")       # WCS status relevant unless pure stellar
+            for wdg in (self.xf_model, self.xf_maxcp, self.xf_downsample,
+                        self.xf_det_sigma, self.btn_trial_detect):
+                wdg.setEnabled(uses_stars)
+            self.xf_h_reproj.setEnabled(uses_stars and self.xf_model.currentIndex() == 1)
+            lab = xf.labelForField(self.xf_h_reproj)
+            if lab is not None:
+                lab.setEnabled(uses_stars and self.xf_model.currentIndex() == 1)
+            self.btn_check_wcs.setEnabled(uses_wcs)
+            if uses_stars:
+                _toggle_rows()
+        self._method_key = _method_key
+        self.xf_method.currentIndexChanged.connect(_toggle_method)
+        _toggle_method()
+
         controls.addWidget(xform_box)
 
         # run + status
@@ -941,6 +1171,16 @@ class StellarAlignmentDialog(QDialog):
 
         # populate combos initially
         self._populate_view_combos()
+
+    def _doc_header(self, doc):
+        try:
+            meta = (doc.get_metadata() if hasattr(doc, "get_metadata") and callable(doc.get_metadata)
+                    else getattr(doc, "metadata", {}) or {})
+        except Exception:
+            meta = {}
+        if not isinstance(meta, dict):
+            return None
+        return meta.get("original_header") or meta.get("header") or meta.get("fits_header")
 
     def _run_trial_detect(self):
         import sep
@@ -1031,6 +1271,8 @@ class StellarAlignmentDialog(QDialog):
         s.setValue("stacking/align/downsample", int(self.xf_downsample.value()))
         s.setValue("stacking/align/h_reproj", float(self.xf_h_reproj.value()))
         s.setValue("stacking/align/det_sigma", float(self.xf_det_sigma.value()))
+        s.setValue("stacking/align/method",
+                   ("stellar", "wcs", "wcs_stellar")[self.xf_method.currentIndex()])
 
     # ------------------------
     # Source/Target loaders (File / Active View)
@@ -1068,6 +1310,8 @@ class StellarAlignmentDialog(QDialog):
         if self.source_was_mono:
             img = np.stack([img]*3, axis=-1)
         self.stellar_source = img
+        self.source_header = self._doc_header(doc)
+        self.source_wcs = _wcs_from_header(self.source_header)        
         self.lbl_source_file.setText(self.source_view_combo.currentText())
 
     def load_target_from_view(self):
@@ -1080,6 +1324,8 @@ class StellarAlignmentDialog(QDialog):
         if self.target_was_mono:
             img = np.stack([img]*3, axis=-1)
         self.stellar_target = img
+        self.target_header = self._doc_header(doc)
+        self.target_wcs = _wcs_from_header(self.target_header)        
         self.lbl_target_file.setText(self.target_view_combo.currentText())
 
     def select_source_file(self):
@@ -1096,6 +1342,8 @@ class StellarAlignmentDialog(QDialog):
         if image.ndim == 2:
             image = np.stack([image]*3, axis=-1)
         self.stellar_source = image
+        self.source_header = header
+        self.source_wcs = _wcs_from_header(header)        
         self.lbl_source_file.setText(os.path.basename(path))
         self.source_file_path = path
 
@@ -1113,8 +1361,109 @@ class StellarAlignmentDialog(QDialog):
         if image.ndim == 2:
             image = np.stack([image]*3, axis=-1)
         self.stellar_target = image
+        self.target_header = header
+        self.target_wcs = _wcs_from_header(header)        
         self.lbl_target_file.setText(os.path.basename(path))
         self.target_file_path = path
+
+    def _refresh_wcs_status(self):
+        """Report source/target plate-solve availability without popping warnings."""
+        def _wcs_for(is_source):
+            if is_source:
+                from_view, combo, hdr = (self.source_from_view_radio.isChecked(),
+                                         self.source_view_combo, self.source_header)
+            else:
+                from_view, combo, hdr = (self.target_from_view_radio.isChecked(),
+                                         self.target_view_combo, self.target_header)
+            if from_view:
+                doc = combo.currentData()
+                hdr = self._doc_header(doc) if doc is not None else None
+            return _wcs_from_header(hdr)
+
+        self.source_wcs = _wcs_for(True)
+        self.target_wcs = _wcs_for(False)
+        s_ok, t_ok = self.source_wcs is not None, self.target_wcs is not None
+        both = s_ok and t_ok
+        self._lbl_wcs_status.setStyleSheet(
+            f"color:{'#4caf50' if both else '#ffc107'};font-size:10px;")
+        self._lbl_wcs_status.setText(
+            f"{'✓' if s_ok else '⚠'} Source WCS   |   {'✓' if t_ok else '⚠'} Target WCS")
+        return both
+    
+    def _resolve_both_wcs(self) -> bool:
+        """Make sure images + both WCS objects are populated from current
+        selections. Returns True if both WCS are usable."""
+        try:
+            if self.source_from_view_radio.isChecked():
+                self.load_source_from_view()
+            if self.target_from_view_radio.isChecked():
+                self.load_target_from_view()
+        except Exception:
+            pass
+        if self.source_wcs is None and self.source_header is not None:
+            self.source_wcs = _wcs_from_header(self.source_header)
+        if self.target_wcs is None and self.target_header is not None:
+            self.target_wcs = _wcs_from_header(self.target_header)
+        return (self.source_wcs is not None) and (self.target_wcs is not None)
+
+    def _wcs_prealign_target(self):
+        """Reproject the target onto the source grid via WCS/SIP and return the
+        buffer (source-sized, target's channel layout). None on failure."""
+        # Load images + WCS from the current selections FIRST. "Check WCS" only
+        # populates the WCS objects, not the pixel buffers, so the buffers can
+        # still be None here even when both plate solves are good.
+        if not self._resolve_both_wcs():
+            missing = [n for n, w in (("source", self.source_wcs),
+                                      ("target", self.target_wcs)) if w is None]
+            QMessageBox.warning(
+                self, "WCS Alignment",
+                "No usable plate solve for the "
+                f"{' and '.join(missing)} image — skipping the WCS stage.")
+            return None
+
+        if self.stellar_source is None or self.stellar_target is None:
+            QMessageBox.warning(
+                self, "WCS Alignment",
+                "Source or target image could not be loaded.")
+            return None
+
+        H, W = self.stellar_source.shape[:2]
+        self.status_label.setText("WCS stage: reprojecting target onto source…")
+        QApplication.processEvents()
+        try:
+            return wcs_reproject_align(
+                self.stellar_target, self.target_wcs, self.source_wcs, (H, W),
+                tile=512,
+                progress_cb=lambda f: (self.status_label.setText(f"WCS stage… {f*100:.0f}%"),
+                                       QApplication.processEvents()),
+                log=print,
+            ).astype(np.float32, copy=False)
+        except Exception as e:
+            QMessageBox.warning(self, "WCS Alignment", f"WCS reprojection failed: {e}")
+            return None
+        
+    def run_alignment_wcs(self):
+        aligned = self._wcs_prealign_target()
+        if aligned is None:
+            # hard fail for WCS-only mode → offer stellar
+            if QMessageBox.question(
+                self, "WCS Alignment",
+                "WCS alignment unavailable. Run stellar alignment instead?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) == QMessageBox.StandardButton.Yes:
+                self.xf_method.setCurrentIndex(0)
+                return self.run_alignment()
+            return
+
+        self.aligned_image = aligned
+        self.stretched_image = None
+        if self.autostretch_enabled:
+            self.apply_autostretch()
+        disp = self.stretched_image if (self.autostretch_enabled and self.stretched_image is not None) else self.aligned_image
+        self.update_preview(self.result_preview_label, disp)
+        self.status_label.setText("WCS alignment complete.")
+        QApplication.processEvents()
+        QMessageBox.information(self, "Alignment Complete", "Alignment completed using full WCS (SIP).")
 
     # ------------------------
     # Preview + stretch
@@ -1255,8 +1604,8 @@ class StellarAlignmentDialog(QDialog):
         Retry astroalign.find_transform() with progressively stricter detection,
         serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
         """
-        tgt32 = np.ascontiguousarray(tgt_gray.astype(np.float32))
-        src32 = np.ascontiguousarray(src_gray.astype(np.float32))
+        tgt32 = _masked(tgt_gray, _zero_ignore_mask(tgt_gray))
+        src32 = _masked(src_gray, _zero_ignore_mask(src_gray))
         try:
             curr = sep.get_extract_pixstack()
             if curr < 1_500_000:
@@ -1287,14 +1636,45 @@ class StellarAlignmentDialog(QDialog):
                 continue
         raise last_exc
 
+    def _accept_wcs_fallback(self, wcs_prealigned, reason: str):
+        """WCS→Stellar refinement failed but the WCS stage produced a good
+        buffer — keep it instead of bailing."""
+        self.aligned_image = np.asarray(wcs_prealigned, np.float32)
+        self.stretched_image = None
+        if self.autostretch_enabled:
+            self.apply_autostretch()
+        disp = (self.stretched_image if (self.autostretch_enabled and self.stretched_image is not None)
+                else self.aligned_image)
+        self.update_preview(self.result_preview_label, disp)
+        self.status_label.setText("Star refinement failed — kept WCS alignment.")
+        QApplication.processEvents()
+        QMessageBox.information(
+            self, "Alignment Complete",
+            f"Star refinement failed ({reason}); kept the WCS (SIP) alignment.")
+
     def run_alignment(self):
-        # Persist dialog choices back to QSettings (safe if the method isn’t present)
         self.status_label.setText("Starting Alignment…")
         QApplication.processEvents()
+
+        method = self._method_key()
         try:
             self._persist_xform_from_dialog()
         except Exception:
             pass
+
+        if method == "wcs":
+            return self.run_alignment_wcs()
+
+        # For pure stellar, target is the raw target. For refinement, we first
+        # WCS-reproject the target onto the source grid, then star-align that.
+        wcs_prealigned = None
+        if method == "wcs_stellar":
+            wcs_prealigned = self._wcs_prealign_target()
+            if wcs_prealigned is None:
+                # couldn't WCS-prealign; _wcs_prealign_target already messaged.
+                # fall through to plain stellar on the original target.
+                self.status_label.setText("WCS prealign unavailable — running stellar only…")
+                QApplication.processEvents()
 
         # Ensure sources are loaded
         if self.source_from_view_radio.isChecked() and self.stellar_source is None:
@@ -1435,7 +1815,7 @@ class StellarAlignmentDialog(QDialog):
 
         # Prepare grayscale for detection
         src = self.stellar_source
-        tgt = self.stellar_target
+        tgt = wcs_prealigned if wcs_prealigned is not None else self.stellar_target
         src_gray = np.mean(src, axis=2) if src.ndim == 3 else src
         tgt_gray = np.mean(tgt, axis=2) if tgt.ndim == 3 else tgt
 
@@ -1455,22 +1835,30 @@ class StellarAlignmentDialog(QDialog):
         #    src_small, tgt_small = src_gray, tgt_gray
         src_small, tgt_small = src_gray, tgt_gray
 
-        self.status_label.setText("Computing alignment with astroalign…")
-        QApplication.processEvents()
-        try:
-            # NOTE: astroalign returns matched points as (src_pts, tgt_pts)
-            #       but we called it with (tgt_small, src_small), so:
-            #       src_pts are in tgt_small coords, tgt_pts in src_small coords
-            transform_obj, (src_pts_s, tgt_pts_s) = self.aa_find_transform_with_backoff(tgt_small, src_small)
-        except Exception as e:
-            QMessageBox.warning(self, "Alignment Error", f"Astroalign failed: {e}")
-            return
+        pairs = None
+        if wcs_prealigned is not None:
+            _minarea = int(_align_prefs(self.settings).get("minarea", 10))
+            pairs = _proximity_match_pairs(
+                tgt_small, src_small,
+                det_sigma=float(self.xf_det_sigma.value()),
+                minarea=_minarea, tol_px=5.0)
 
-        # Convert to float32 arrays
-        src_xy = np.asarray(src_pts_s, dtype=np.float32)
-        tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
+        if pairs is not None:
+            src_xy, tgt_xy = pairs
+            self.status_label.setText(
+                f"Matched {len(src_xy)} stars by proximity (WCS pre-aligned).")
+        else:
+            try:
+                transform_obj, (src_pts_s, tgt_pts_s) = \
+                    self.aa_find_transform_with_backoff(tgt_small, src_small)
+            except Exception as e:
+                if wcs_prealigned is not None:
+                    return self._accept_wcs_fallback(wcs_prealigned, f"astroalign: {e}")
+                QMessageBox.warning(self, "Alignment Error", f"Astroalign failed: {e}")
+                return
+            src_xy = np.asarray(src_pts_s, dtype=np.float32)
+            tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
 
-        # Cap control points
         src_xy, tgt_xy = _cap_points(src_xy, tgt_xy, max_cp)
 
         # If we solved on a downsampled pair, re-fit transform at full resolution for accuracy
@@ -1482,6 +1870,8 @@ class StellarAlignmentDialog(QDialog):
         try:
             kind, X = _estimate_transform_from_pairs(model, src_xy, tgt_xy, h_reproj)
         except Exception as e:
+            if wcs_prealigned is not None:
+                return self._accept_wcs_fallback(wcs_prealigned, f"transform estimation: {e}")
             QMessageBox.warning(self, "Alignment Error", f"Transform estimation failed: {e}")
             return
 
@@ -1506,7 +1896,10 @@ class StellarAlignmentDialog(QDialog):
                     axis=2
                 )
             transform_3x3 = np.eye(3, dtype=np.float32); transform_3x3[:2] = X
-            self.show_transform_info(transform_3x3)
+            _note = ("NOTE: WCS/SIP reprojection was applied first; this matrix is\n"
+                     "only the residual star-refinement on top of that alignment."
+                     if wcs_prealigned is not None else None)
+            self.show_transform_info(transform_3x3, stage_note=_note)
 
         elif kind == "homography":
             if tgt.ndim == 2:
@@ -1525,7 +1918,10 @@ class StellarAlignmentDialog(QDialog):
                 )
             # Optional: show homography info as well
             try:
-                self.show_transform_info(np.array(X, dtype=np.float64, copy=False))
+                _note = ("NOTE: WCS/SIP reprojection was applied first; this matrix is\n"
+                         "only the residual star-refinement on top of that alignment."
+                         if wcs_prealigned is not None else None)
+                self.show_transform_info(np.array(X, dtype=np.float64, copy=False), stage_note=_note)
             except Exception:
                 pass
 
@@ -1544,13 +1940,34 @@ class StellarAlignmentDialog(QDialog):
 
         disp = self.stretched_image if (self.autostretch_enabled and self.stretched_image is not None) else self.aligned_image
         self.update_preview(self.result_preview_label, disp)
-        self.status_label.setText(f"Alignment complete ({model}).")
+
+        if wcs_prealigned is not None:
+            _resid_txt = "a residual correction"   # poly: no single scalar
+            try:
+                if kind == "affine":
+                    A = np.asarray(X, np.float64).reshape(2, 3)
+                    _resid_txt = f"a {float(np.hypot(A[0, 2], A[1, 2])):.1f}px residual correction"
+                elif kind == "homography":
+                    Hm = np.asarray(X, np.float64).reshape(3, 3)
+                    w = Hm[2, 2] if abs(Hm[2, 2]) > 1e-12 else 1.0
+                    _resid_txt = f"a {float(np.hypot(Hm[0, 2] / w, Hm[1, 2] / w)):.1f}px residual correction"
+            except Exception:
+                pass
+            _label = f"WCS/SIP reprojection + {model} refinement"
+            _detail = (f"WCS/SIP reprojection did the primary alignment "
+                       f"(scale, rotation, orientation, field of view); the {model} "
+                       f"star pass then applied {_resid_txt}.")
+        else:
+            _label = model
+            _detail = f"Aligned using {model} star matching."
+
+        self.status_label.setText(f"Alignment complete ({_label}).")
         QApplication.processEvents()
-        QMessageBox.information(self, "Alignment Complete", f"Alignment completed using {model}.")
+        QMessageBox.information(self, "Alignment Complete", _detail)
 
 
 
-    def show_transform_info(self, matrix):
+    def show_transform_info(self, matrix, *, stage_note: str | None = None):
         a, b, tx = matrix[0]
         c, d, ty = matrix[1]
         translation = (tx, ty)
@@ -1571,6 +1988,8 @@ class StellarAlignmentDialog(QDialog):
             f"Rotation: {rotation_deg:.2f}°\n"
             f"Skew (shear): {shear:.3f}\n"
         )
+        if stage_note:
+            info_text += f"\n{stage_note}\n"
 
         info_dialog = QDialog(self)
         info_dialog.setWindowTitle("Transformation Matrix Details")
@@ -3045,6 +3464,42 @@ def _project_to_similarity(T2x3: np.ndarray) -> np.ndarray:
     out[:, 2] = t
     return out
 
+def _proximity_match_pairs(tgt_gray, ref_gray, *, det_sigma=12.0, minarea=10,
+                           tol_px=5.0, max_total=2000,
+                           min_fwhm=1.2, max_ellipticity=0.6):
+    """ICP-style match for two already-near-aligned frames (post-WCS-reproject).
+    Nearest-neighbour in pixel space, like the Gaia plate solver. Returns
+    (src_xy, tgt_xy) in target/reference coords, or None if too few matches."""
+    P_t = _detect_stars_uniform(tgt_gray, det_sigma, minarea, grid=(6, 6),
+                                max_per_cell=60, max_total=max_total,
+                                min_fwhm=min_fwhm, max_ellipticity=max_ellipticity,
+                                mask=_zero_ignore_mask(tgt_gray))
+    P_r = _detect_stars_uniform(ref_gray, det_sigma, minarea, grid=(6, 6),
+                                max_per_cell=60, max_total=max_total,
+                                min_fwhm=min_fwhm, max_ellipticity=max_ellipticity,
+                                mask=_zero_ignore_mask(ref_gray))
+    if len(P_t) < 8 or len(P_r) < 8:
+        return None
+
+    dist, idx = KDTree(P_r).query(P_t, k=1, workers=-1)
+    keep = dist < float(tol_px)
+    if keep.sum() < 8:
+        return None
+
+    # collapse many target stars snapping to one reference star → keep the closest
+    order = np.argsort(dist[keep])
+    t_sel = np.flatnonzero(keep)[order]
+    r_sel = idx[t_sel]
+    seen, s_t, s_r = set(), [], []
+    for ti, ri in zip(t_sel, r_sel):
+        ri = int(ri)
+        if ri in seen:
+            continue
+        seen.add(ri); s_t.append(ti); s_r.append(ri)
+    if len(s_t) < 8:
+        return None
+    return P_t[np.array(s_t)].astype(np.float32), P_r[np.array(s_r)].astype(np.float32)
+
 def _detect_stars_uniform(img32: np.ndarray,
                           det_sigma: float = 12.0,
                           minarea: int = 10,
@@ -3052,19 +3507,17 @@ def _detect_stars_uniform(img32: np.ndarray,
                           max_per_cell: int = 25,
                           max_total: int = 500,
                           min_fwhm: float = 1.2,
-                          max_ellipticity: float = 0.6) -> np.ndarray:
+                          max_ellipticity: float = 0.6, mask=None) -> np.ndarray:
     import numpy as np
     import sep
 
     img32 = np.asarray(img32, np.float32, order="C")
     H, W = img32.shape[:2]
 
-    bkg = sep.Background(img32, bw=64, bh=64)
+    bkg = sep.Background(img32, bw=64, bh=64, mask=mask)                    # <- mask
     thresh = float(det_sigma) * float(bkg.globalrms)
-
-    # Request shape parameters from SEP
     objs = sep.extract(img32 - bkg.back(), thresh, minarea=int(minarea),
-                       segmentation_map=False)
+                       mask=mask, segmentation_map=False)                   # <- mask
     if objs is None or len(objs) == 0:
         return np.empty((0,2), np.float32)
 
