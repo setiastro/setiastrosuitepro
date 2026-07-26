@@ -17031,15 +17031,17 @@ class StackingSuiteDialog(QDialog):
                 # satellite
                 if do_satellite:
                     try:
-                        original_light_data = np.asarray(
-                            light_data, dtype=np.float32, copy=True
-                        )
-                        _, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
+                        cleaned_light_data, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
                             light_data, is_mono=is_mono
                         )
                         sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
                         rejection_mask_2d = _merge_masks(rejection_mask_2d, sat_mask_2d)
-                        light_data = original_light_data
+                        # Keep the satellite-clipped (trail -> 0.0) frame as the calibrated
+                        # output instead of restoring the original bright-trail data. Baking
+                        # the trail into the pixel values makes it resample WITH the image
+                        # during registration warp, so it stays perfectly co-registered; a
+                        # separate boolean mask can drift sub-pixel and leave a bright band.
+                        light_data = np.asarray(cleaned_light_data, dtype=np.float32, copy=False)
                         self.update_status(
                             self.tr(f"Satellite Trail Removal Applied "
                                     f"({int(np.count_nonzero(sat_mask_2d))} px)")
@@ -17747,14 +17749,14 @@ class StackingSuiteDialog(QDialog):
                         _status_queue.put(
                             f"🛰️ Satellite mask: {os.path.basename(fi['light_file'])}…"
                         )
-                        original = np.asarray(light_data, dtype=np.float32, copy=True)
-                        _, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
+                        cleaned_light_data, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
                             light_data, is_mono=is_mono
                         )
                         sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
                         rej_mask    = _merge_masks(rej_mask, sat_mask_2d)
-                        light_data  = original
-                        del original
+                        # Keep the satellite-clipped (trail -> 0.0) frame as the calibrated
+                        # output instead of restoring the original (see CPU path note).
+                        light_data  = np.asarray(cleaned_light_data, dtype=np.float32, copy=False)
                     except Exception as e:
                         _status_queue.put(
                             f"⚠️ Satellite removal skipped for "
