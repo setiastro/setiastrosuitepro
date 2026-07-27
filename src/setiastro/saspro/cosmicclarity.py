@@ -2064,6 +2064,10 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.chk_skip.setChecked(False)
         left.addWidget(self.chk_skip)
 
+        self.chk_delete_original = QCheckBox("Delete Original Image After Saving")
+        self.chk_delete_original.setChecked(False)
+        left.addWidget(self.chk_delete_original)
+
         row_proc = QHBoxLayout()
         self.btn_single = QPushButton("Process Single Image")
         self.btn_single.clicked.connect(self._process_single_image)
@@ -2133,6 +2137,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.sld_sens.setValue(max(1, min(50, sens)))
 
         self.chk_skip.setChecked(s.value("satellite/skip_save", False, type=bool))
+        self.chk_delete_original.setChecked(s.value("satellite/delete_original", False, type=bool))
 
     def _save_satellite_settings(self):
         s = self.settings
@@ -2144,7 +2149,27 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         s.setValue("satellite/clip_trail", self.chk_clip.isChecked())
         s.setValue("satellite/sensitivity", self.sld_sens.value())
         s.setValue("satellite/skip_save", self.chk_skip.isChecked())
+        s.setValue("satellite/delete_original", self.chk_delete_original.isChecked())
         s.sync()
+
+    def _confirm_delete_originals(self) -> bool:
+        """If delete-original is enabled, show ONE warning before a run.
+        Returns True to proceed, False to abort."""
+        if not self.chk_delete_original.isChecked():
+            return True
+        resp = QMessageBox.warning(
+            self,
+            "Delete Originals Enabled",
+            "The 'Delete Original Image After Saving' option is checked.\n\n"
+            "After each image is successfully processed and saved, the ORIGINAL "
+            "file will be permanently deleted. This cannot be undone.\n\n"
+            "If satellite removal produces an unexpected result, the original "
+            "sub will be gone.\n\n"
+            "Do you want to proceed?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return resp == QMessageBox.StandardButton.Yes
 
     # ---------- IO folders ----------
     def _choose_input(self):
@@ -2328,7 +2353,11 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             )
             if not file_path:
                 return  # user cancelled file dialog
+            if not file_path:
+                return  # user cancelled file dialog
 
+            if not self._confirm_delete_originals():
+                return
             try:
                 result = load_image(file_path, return_metadata=True)
                 if result is None or result[0] is None:
@@ -2450,6 +2479,17 @@ class CosmicClaritySatelliteDialogPro(QDialog):
                 file_meta=None,
             )
             QMessageBox.information(self, "Success", f"Processed image saved to:\n{dst}")
+
+            if self.chk_delete_original.isChecked():
+                try:
+                    if os.path.abspath(file_path) != os.path.abspath(dst):
+                        os.remove(file_path)
+                        self._refresh_tree(self.tree_in, self.input_folder)
+                except Exception as ex:
+                    QMessageBox.warning(
+                        self, "Delete Original",
+                        f"Could not delete original:\n{ex}"
+                    )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save result:\n{e}")
 
@@ -2502,7 +2542,8 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         if not self.input_folder or not self.output_folder:
             QMessageBox.warning(self, "Warning", "Please select both input and output folders.")
             return
-
+        if not self._confirm_delete_originals():
+            return
         self._run_engine_thread(monitor=False, title="Satellite – Batch processing")
 
 
@@ -2510,7 +2551,8 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         if not self.input_folder or not self.output_folder:
             QMessageBox.warning(self, "Warning", "Please select both input and output folders.")
             return
-
+        if not self._confirm_delete_originals():
+            return
         self.sld_sens.setEnabled(False)
         self._run_engine_thread(monitor=True, title="Satellite – Live monitoring",
                                 on_finish=lambda: self.sld_sens.setEnabled(True))
@@ -2522,6 +2564,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         sensitivity = float(self.sensitivity)
         skip_save = bool(self.chk_skip.isChecked())
         compatibility_mode = bool(self.chk_gpu_compat.isChecked())
+        delete_original = bool(self.chk_delete_original.isChecked())
         self._wait = WaitDialog(title, self)
         self._wait.show()
 
@@ -2535,6 +2578,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             skip_save=skip_save,
             monitor=monitor,
             compatibility_mode=compatibility_mode,
+            delete_original=delete_original,
         )
         self._sat_thread.log_signal.connect(self._wait.append_output)
         self._sat_thread.progress_signal.connect(self._on_sat_progress)
@@ -2583,10 +2627,11 @@ class SatelliteEngineThread(QThread):
     progress_signal = pyqtSignal(int, int)  # done, total
 
     def __init__(self, *, input_dir: str, output_dir: str,
-                 use_gpu: bool, mode: str, clip_trail: bool,
-                 sensitivity: float, skip_save: bool, monitor: bool,
-                 compatibility_mode: bool,
-                 poll_seconds: float = 1.0):
+                use_gpu: bool, mode: str, clip_trail: bool,
+                sensitivity: float, skip_save: bool, monitor: bool,
+                compatibility_mode: bool,
+                delete_original: bool = False,
+                poll_seconds: float = 1.0):
         super().__init__()
         self.input_dir = input_dir
         self.output_dir = output_dir
@@ -2597,7 +2642,8 @@ class SatelliteEngineThread(QThread):
         self.skip_save = skip_save
         self.monitor = monitor
         self.poll_seconds = poll_seconds
-        self.compatibility_mode = compatibility_mode        
+        self.compatibility_mode = compatibility_mode
+        self.delete_original = delete_original
 
         self._cancel = False
         self._seen = set()
@@ -2677,6 +2723,15 @@ class SatelliteEngineThread(QThread):
                     file_meta=None,
                 )
                 self.log_signal.emit(f"Saved: {os.path.basename(fp_out)}")
+
+                if self.delete_original:
+                    try:
+                        # never delete the file we just wrote
+                        if os.path.abspath(fp_in) != os.path.abspath(fp_out):
+                            os.remove(fp_in)
+                            self.log_signal.emit(f"Deleted original: {os.path.basename(fp_in)}")
+                    except Exception as e:
+                        self.log_signal.emit(f"Could not delete original {os.path.basename(fp_in)}: {e}")
 
             # -------- batch (single pass) OR monitor (loop) --------
             while not self._cancel:
