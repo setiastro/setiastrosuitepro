@@ -438,6 +438,12 @@ class GhsDialogPro(QDialog):
         self._pan_start   = QPointF()
         self._sym_u       = 0.5   # pivot in [0..1]
         self._cached_processed_pix = None
+        self._cached_source01 = None   # last un-stretched processed float image
+        # Display-only auto-stretch. When on, the pixmap shown is stretched for
+        # visibility, but self._preview_img (used by the mouse-over readout and
+        # the double-click / Ctrl-click symmetry pick) stays the REAL linear
+        # image, so all reported values remain the true pixel values.
+        self._display_autostretch = False
 
         # ---------- layout ----------
         main = QHBoxLayout(self)
@@ -583,6 +589,15 @@ class GhsDialogPro(QDialog):
         self.btn_toggle_preview.setChecked(True)
         self.btn_toggle_preview.setFixedWidth(140)
         toggle_row.addWidget(self.btn_toggle_preview)
+
+        self.chk_display_stretch = QCheckBox(self.tr("Auto-stretch (display only)"))
+        self.chk_display_stretch.setChecked(False)
+        self.chk_display_stretch.setToolTip(self.tr(
+            "Stretch the preview for visibility only. Mouse-over readouts and "
+            "the double-click symmetry pick still use the real, unstretched "
+            "image values."))
+        self.chk_display_stretch.toggled.connect(self._on_toggle_display_stretch)
+        toggle_row.addWidget(self.chk_display_stretch)
         toggle_row.addStretch(1)
         left.addLayout(toggle_row)
 
@@ -734,16 +749,64 @@ class GhsDialogPro(QDialog):
                 self._pix = self._cached_processed_pix
                 self._apply_zoom()
         else:
-            # show original
+            # show original (display-stretched for view only; self._preview_img
+            # itself stays linear so readouts read real values)
             if self._preview_img is not None:
-                orig = _float_to_qimage_rgb8(self._preview_img)
+                disp = self._display_stretch_for_view(self._preview_img)
+                orig = _float_to_qimage_rgb8(disp)
                 self._pix = QPixmap.fromImage(orig)
                 self._apply_zoom()
 
+    def _display_stretch_for_view(self, img01):
+        """Return a display-stretched copy of img01 for the pixmap ONLY.
+        Never mutates or replaces self._preview_img — this output is purely
+        what gets rasterized to the screen. Falls back to the input unchanged
+        if the stretch is unavailable so the preview always renders."""
+        if img01 is None or not self._display_autostretch:
+            return img01
+        try:
+            from setiastro.saspro.imageops.stretch import (
+                stretch_color_image, stretch_mono_image)
+            arr = np.asarray(img01, dtype=np.float32)
+            if arr.ndim == 2 or (arr.ndim == 3 and arr.shape[2] == 1):
+                out = stretch_mono_image(arr, target_median=0.25,
+                                         normalize=True, no_black_clip=True)
+            else:
+                out = stretch_color_image(arr, target_median=0.25, linked=False,
+                                          normalize=True, no_black_clip=True)
+            return np.clip(np.asarray(out, dtype=np.float32), 0.0, 1.0)
+        except Exception:
+            # If anything goes wrong, show the un-stretched image rather than
+            # breaking the preview. The readouts are unaffected regardless.
+            return img01
+
+    def _on_toggle_display_stretch(self, checked: bool):
+        self._display_autostretch = bool(checked)
+        # Rebuild whichever pixmap is currently showing (processed or original),
+        # applying or removing the display stretch. self._preview_img is not
+        # touched, so readouts and the symmetry pick keep reading real values.
+        if self._preview_img is None:
+            return
+        preview_on = (getattr(self, "btn_toggle_preview", None) is None
+                      or self.btn_toggle_preview.isChecked())
+        if preview_on and self._cached_source01 is not None:
+            self._update_preview_pix(self._cached_source01)
+        else:
+            base = self._preview_img
+            disp = self._display_stretch_for_view(base)
+            self._pix = QPixmap.fromImage(_float_to_qimage_rgb8(disp))
+            self._apply_zoom()
+
     def _update_preview_pix(self, img01):
         if img01 is None:
-            self.label.clear(); self._pix = None; return
-        qimg = _float_to_qimage_rgb8(img01)
+            self.label.clear(); self._pix = None
+            self._cached_source01 = None
+            return
+        # Keep the un-stretched processed float image so we can rebuild the
+        # pixmap when the display-stretch toggle flips, without reprocessing.
+        self._cached_source01 = img01
+        disp = self._display_stretch_for_view(img01)   # display-only
+        qimg = _float_to_qimage_rgb8(disp)
         pm = QPixmap.fromImage(qimg)
         self._cached_processed_pix = pm
         # only update display if preview is ON

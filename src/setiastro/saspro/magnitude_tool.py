@@ -198,6 +198,25 @@ def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg
 
     raise RuntimeError(_classify_simbad_error(last_err))
 
+def _classify_vizier_error(err) -> str:
+    """Turn a raw VizieR/APASS exception into a short, user-facing reason."""
+    if err is None:
+        return "VizieR query failed (unknown error)."
+    s = str(err)
+    low = s.lower()
+    if "timeout" in low or "timed out" in low:
+        return ("VizieR timed out — the APASS server is slow or down "
+                "(it has had recent outages). Try again later.")
+    if any(t in low for t in ("connection", "refused", "reset", "broken pipe")):
+        return "VizieR connection failed (server down or network issue). Try again later."
+    if any(t in low for t in ("name or service", "getaddrinfo", "dns", "resolve")):
+        return "VizieR connection failed (DNS or network issue). Try again later."
+    if "500" in low or "502" in low or "503" in low or "504" in low:
+        return "VizieR returned a server error (temporary outage). Try again later."
+    if "empty" in low or "index" in low:
+        return "VizieR returned no rows for this field."
+    return f"VizieR query failed: {s.splitlines()[0]}"
+
 def _classify_simbad_error(err) -> str:
     """Turn a raw SIMBAD/pyvo exception into a short, user-facing reason."""
     if err is None:
@@ -338,23 +357,42 @@ def _mu_err_from_flux(flux: float, flux_err: float, zp_err: float) -> Optional[f
     return _mag_err_from_flux(flux, flux_err, zp_err)
 
 
-def _sigma_clip(vals: np.ndarray, sigma: float = 2.5, iters: int = 3) -> np.ndarray:
-    v = np.asarray(vals, dtype=np.float64)
-    v = v[np.isfinite(v)]
+def _sigma_clip(vals: np.ndarray, sigma: float = 2.5, iters: int = 3,
+                return_mask: bool = False):
+    v_all = np.asarray(vals, dtype=np.float64)
+    finite = np.isfinite(v_all)
+    v = v_all[finite]
     if v.size < 3:
+        if return_mask:
+            # everything finite is "kept" when we can't meaningfully clip
+            return v, finite.copy()
         return v
+
+    # Track which of the finite entries survive, in the finite-subset frame.
+    keep_finite = np.ones(v.size, dtype=bool)
+    idx = np.arange(v.size)      # indices into the finite subset that remain
+    cur = v
     for _ in range(max(1, int(iters))):
-        med = np.median(v)
-        sd = np.std(v)
+        med = np.median(cur)
+        sd = np.std(cur)
         if not np.isfinite(sd) or sd <= 0:
             break
-        keep = np.abs(v - med) <= sigma * sd
-        if keep.sum() == v.size:
+        keep = np.abs(cur - med) <= sigma * sd
+        if keep.sum() == cur.size:
             break
-        v = v[keep]
-        if v.size < 3:
+        # map this round's keep back onto the finite-subset mask
+        keep_finite[idx[~keep]] = False
+        idx = idx[keep]
+        cur = cur[keep]
+        if cur.size < 3:
             break
-    return v
+
+    if return_mask:
+        # lift the finite-subset mask back into the full input frame
+        full_mask = np.zeros(v_all.shape, dtype=bool)
+        full_mask[np.where(finite)[0][keep_finite]] = True
+        return cur, full_mask
+    return cur
 
 def _estimate_fwhm_from_sources(sources: np.ndarray, clip_sigma: float = 2.5) -> Optional[float]:
     """
@@ -500,6 +538,37 @@ def _aperture_photometry_rgb(img_f, xs, ys, r_ap, r_in, r_out):
 
     return flux_net, None
 
+def _crowding_fraction(matches: List[dict]) -> Tuple[float, int, int]:
+    """
+    Fraction of matched stars whose background annulus is contaminated by another
+    catalog star. For each star we use the SAME per-star r_out the photometry uses
+    as the annulus radius, and count a star as "crowded" if any OTHER matched star
+    falls within that radius (i.e. sits inside its background annulus).
+
+    Returns (fraction, n_crowded, n_total). In a globular core this runs high,
+    warning the user that annulus background subtraction — and therefore the ZP —
+    may be degraded by neighbor light. On a sparse field it is ~0.
+    """
+    n = len(matches)
+    if n < 2:
+        return 0.0, 0, n
+
+    xs = np.array([float(m["src"]["x"]) for m in matches], dtype=np.float64)
+    ys = np.array([float(m["src"]["y"]) for m in matches], dtype=np.float64)
+    _r_ap, _r_in, r_out = _per_star_radii(matches)
+
+    n_crowded = 0
+    for i in range(n):
+        dx = xs - xs[i]
+        dy = ys - ys[i]
+        d2 = dx * dx + dy * dy
+        d2[i] = np.inf                      # exclude self
+        # crowded if the nearest OTHER star sits inside this star's annulus radius
+        if np.sqrt(np.min(d2)) <= r_out[i]:
+            n_crowded += 1
+
+    return (n_crowded / n), n_crowded, n
+
 def _per_star_radii(
     matches: List[dict],
     r_ap_min: float = 2.0,
@@ -571,7 +640,8 @@ def _compute_zero_points_mono(matches, img_f, band="L", clip_sigma=2.5):
         y.append(float(mag))
         used += 1
 
-    zps = _sigma_clip(np.asarray(zps, dtype=np.float64), sigma=clip_sigma)
+    zps_arr = np.asarray(zps, dtype=np.float64)
+    zps, keep_mono = _sigma_clip(zps_arr, sigma=clip_sigma, return_mask=True)
     out = {
         "ZP": float(np.median(zps)) if zps.size else None,
         "n": int(zps.size),
@@ -582,7 +652,7 @@ def _compute_zero_points_mono(matches, img_f, band="L", clip_sigma=2.5):
         "used_matches": used,
         "plot": {
             "Mono": {
-                "x": x, "y": y,
+                "x": x, "y": y, "kept": keep_mono.tolist(),
                 "zp": float(np.median(zps)) if zps.size else None,
                 "title": f"Mono: {magkey} vs m_inst (y = x + ZP)",
             }
@@ -634,9 +704,12 @@ def _compute_zero_points(matches, img_f, clip_sigma=2.5):
 
         used += 1
 
-    zp_R = _sigma_clip(np.asarray(zp_R, dtype=np.float64), sigma=clip_sigma)
-    zp_G = _sigma_clip(np.asarray(zp_G, dtype=np.float64), sigma=clip_sigma)
-    zp_B = _sigma_clip(np.asarray(zp_B, dtype=np.float64), sigma=clip_sigma)
+    zp_R_arr = np.asarray(zp_R, dtype=np.float64)
+    zp_G_arr = np.asarray(zp_G, dtype=np.float64)
+    zp_B_arr = np.asarray(zp_B, dtype=np.float64)
+    zp_R, keep_R = _sigma_clip(zp_R_arr, sigma=clip_sigma, return_mask=True)
+    zp_G, keep_G = _sigma_clip(zp_G_arr, sigma=clip_sigma, return_mask=True)
+    zp_B, keep_B = _sigma_clip(zp_B_arr, sigma=clip_sigma, return_mask=True)
 
     def summarize(arr):
         if arr.size == 0:
@@ -658,9 +731,12 @@ def _compute_zero_points(matches, img_f, clip_sigma=2.5):
         "sem_R": semR, "sem_G": semG, "sem_B": semB,
         "used_matches": used,
         "plot": {
-            "R": {"x": xR, "y": yR, "zp": ZP_R, "title": "Red channel: Rmag vs m_inst (y = x + ZP_R)"},
-            "G": {"x": xG, "y": yG, "zp": ZP_G, "title": "Green channel: Vmag vs m_inst (y = x + ZP_G)"},
-            "B": {"x": xB, "y": yB, "zp": ZP_B, "title": "Blue channel: Bmag vs m_inst (y = x + ZP_B)"},
+            "R": {"x": xR, "y": yR, "kept": keep_R.tolist(), "zp": ZP_R,
+                  "title": "Red channel: Rmag vs m_inst (y = x + ZP_R)"},
+            "G": {"x": xG, "y": yG, "kept": keep_G.tolist(), "zp": ZP_G,
+                  "title": "Green channel: Vmag vs m_inst (y = x + ZP_G)"},
+            "B": {"x": xB, "y": yB, "kept": keep_B.tolist(), "zp": ZP_B,
+                  "title": "Blue channel: Bmag vs m_inst (y = x + ZP_B)"},
         },
     }
 
@@ -903,10 +979,24 @@ class ZeroPointPlotsDialog(QDialog):
 
             x = payload.get("x", [])
             y = payload.get("y", [])
+            kept = payload.get("kept", None)
             zp = payload.get("zp", None)
             title = payload.get("title", name)
 
-            ax.scatter(x, y, s=16, alpha=0.8)
+            xa = np.asarray(x, dtype=float)
+            ya = np.asarray(y, dtype=float)
+            if kept is not None and len(kept) == len(xa):
+                km = np.asarray(kept, dtype=bool)
+                # rejected first so kept points draw on top
+                ax.scatter(xa[~km], ya[~km], s=16, alpha=0.5, color="red",
+                           label=f"clipped ({int((~km).sum())})", zorder=2)
+                ax.scatter(xa[km], ya[km], s=16, alpha=0.8, color="C0",
+                           label=f"fit ({int(km.sum())})", zorder=3)
+                ax.legend(fontsize=8, loc="upper left")
+            else:
+                # older payloads without a mask — behave as before
+                ax.scatter(xa, ya, s=16, alpha=0.8, color="C0")
+
             ax.set_title(title)
             ax.set_xlabel("Instrumental magnitude  m_inst = -2.5 log10(flux)")
             ax.set_ylabel("Catalog magnitude  m_cat (SIMBAD)")
@@ -2485,43 +2575,82 @@ class MagnitudeToolDialog(QDialog):
         if cached_ok:
             self.star_list = cached
         else:
-            # 1) Try APASS (may legitimately return empty)
+            # 1) Try APASS (may legitimately return empty, or fail if VizieR is down)
             apass = []
+            apass_reason = ""
             try:
                 self.lbl_info.setText("Querying APASS (VizieR)…")
                 QApplication.processEvents()
                 apass = self._fetch_apass_stars_and_cache(img, hdr, doc) or []
-            except Exception:
+                if not apass:
+                    apass_reason = ("VizieR returned an empty table for this field "
+                                    "(no APASS coverage here, or the field is too small).")
+            except Exception as e:
                 apass = []
+                apass_reason = _classify_vizier_error(e)
+
+            # Reasons are defined up front so the popup can never NameError,
+            # regardless of which tier we bailed out on.
+            local_reason = ""
+            simbad_reason = ""
 
             if isinstance(apass, list) and len(apass) > 0:
                 self.star_list = apass
             else:
-                # 2) If APASS is empty, try SIMBAD
+                # 2) SIMBAD (network) — real catalog magnitudes
                 simbad_reason = ""
                 try:
                     self.lbl_info.setText("Querying SIMBAD (subprocess)…")
                     QApplication.processEvents()
                     self.star_list = self._fetch_simbad_stars_and_cache(img, hdr, doc) or []
+                    if not self.star_list:
+                        simbad_reason = "SIMBAD returned no stars for this field."
                 except Exception as e:
                     self.star_list = []
-                    simbad_reason = str(e)  # already a one-line reason from the worker
+                    simbad_reason = str(e)
+
+                # 3) Local Gaia XP — offline fallback (now G-anchored, calibrated)
+                if not self.star_list:
+                    try:
+                        self.lbl_info.setText("Falling back to local Gaia XP library…")
+                        QApplication.processEvents()
+                        self.star_list = self._fetch_local_gaia_stars_and_cache(img, hdr, doc) or []
+                        if not self.star_list:
+                            local_reason = "No local Gaia matches for this field."
+                    except Exception as e:
+                        self.star_list = []
+                        local_reason = str(e)
 
                 if not self.star_list:
-                    detail = (f"\n\nSIMBAD: {simbad_reason}" if simbad_reason else "")
                     self.lbl_info.setText("Catalog unavailable — no stars fetched.")
-                    QMessageBox.information(
-                        self, "Catalog Unavailable",
-                        "No catalog stars could be retrieved:\n"
-                        "• APASS returned no stars (or failed)\n"
-                        "• No cached stars were available\n"
-                        "• SIMBAD could not be reached"
-                        + detail
-                        + "\n\nTry a wider field, verify the WCS solution, or try again later."
-                    )
+                    lines = [
+                        "No catalog stars could be retrieved for this field.",
+                        "",
+                        f"• APASS (VizieR):  {apass_reason or 'failed'}",
+                        f"• Local Gaia XP:  {local_reason or 'not available'}",
+                        f"• SIMBAD:  {simbad_reason or 'failed'}",
+                        "• No cached stars were available for this image.",
+                        "",
+                    ]
+                    all_reasons = (apass_reason + local_reason + simbad_reason).lower()
+                    if any(t in all_reasons for t in ("down", "unreachable", "timed out")):
+                        lines.append(
+                            "The online catalogs (VizieR/APASS, SIMBAD) look like "
+                            "transient outages rather than a problem with your image — "
+                            "VizieR has had recent downtime. Try again in a few minutes.")
+                    else:
+                        lines.append(
+                            "Try a wider field or verify the WCS/plate solution.")
+                    # The durable fix: local Gaia removes the network entirely.
+                    if "not installed" in local_reason.lower() or "no local gaia" in local_reason.lower():
+                        lines.append("")
+                        lines.append(
+                            "Tip: install the Gaia XP library (used by SPCC) to make "
+                            "star fetching work fully offline — it isn't affected by "
+                            "VizieR or SIMBAD outages.")
+                    QMessageBox.information(self, "Catalog Unavailable", "\n".join(lines))
                     return
-
-
+                
         # WCS / pixscale
         self.wcs, self.pixscale = _build_wcs_and_pixscale(hdr)
 
@@ -2618,6 +2747,21 @@ class MagnitudeToolDialog(QDialog):
         QApplication.processEvents()
         stats = _nearest_dist_stats(self.star_list, sources)
         print("nearest dist stats:", stats)
+
+        # Crowding heuristic: how many stars have a neighbor inside their
+        # background annulus? High fractions (dense fields, globular cores) mean
+        # annulus background subtraction is contaminated by neighbor light, which
+        # biases faint-end photometry and can bend the ZP relation.
+        crowd_frac, n_crowded, n_crowd_total = _crowding_fraction(matches)
+        self._last_crowd_note = ""
+        if crowd_frac >= 0.25 and n_crowd_total >= 10:
+            self._last_crowd_note = (
+                f"Dense field: {crowd_frac*100:.0f}% of stars "
+                f"({n_crowded}/{n_crowd_total}) have a neighbor inside their "
+                f"background annulus — ZP and faint-end photometry may be "
+                f"affected by crowding."
+            )
+
         band = self.band_combo.currentText().strip().upper()
 
         if img_f.ndim == 2:
@@ -2630,10 +2774,12 @@ class MagnitudeToolDialog(QDialog):
             self.last_zp = {"mode": "mono", **zp}
             self.btn_zp_plot.setEnabled(bool(self.last_zp.get("plot")))
 
+            _crowd = getattr(self, "_last_crowd_note", "")
             self.lbl_info.setText(
                 "Zero point (mono):\n"
                 f"  Band={zp.get('band')}  (catalog {zp.get('magkey')})\n"
                 f"  ZP={zp.get('ZP')} (n={zp.get('n')}, σ={zp.get('std')})"
+                + (f"\n\n⚠ {_crowd}" if _crowd else "")
             )
         else:
             zp = _compute_zero_points(
@@ -2644,11 +2790,13 @@ class MagnitudeToolDialog(QDialog):
             self.last_zp = {"mode": "rgb", **zp}
             self.btn_zp_plot.setEnabled(bool(self.last_zp.get("plot")))
 
+            _crowd = getattr(self, "_last_crowd_note", "")
             self.lbl_info.setText(
                 "Zero points (median ± SEM):\n"
                 f"  ZP_R={zp['ZP_R']} (n={zp['n_R']}, scatter={zp['std_R']}, sem={zp['sem_R']})\n"
                 f"  ZP_G={zp['ZP_G']} (n={zp['n_G']}, scatter={zp['std_G']}, sem={zp['sem_G']})\n"
                 f"  ZP_B={zp['ZP_B']} (n={zp['n_B']}, scatter={zp['std_B']}, sem={zp['sem_B']})"
+                + (f"\n\n⚠ {_crowd}" if _crowd else "")
             )
 
     def measure_object_region(self):
@@ -2950,6 +3098,148 @@ class MagnitudeToolDialog(QDialog):
         dlg = _ResultsDialog(self, "Magnitude Results", msg)
         dlg.show()
         dlg.raise_()
+
+    @staticmethod
+    def _gaia_g_passband_on_grid(wl_nm: np.ndarray) -> np.ndarray:
+        """Approximate Gaia G passband on the given nm grid, normalized to peak 1.
+        Used only to synthesize a G magnitude for per-star anchoring to the real
+        catalog G — its exact shape is not critical (offset absorbs the rest)."""
+        wl = np.asarray(wl_nm, dtype=np.float64)
+        # Gaia G is very broad (~330–1050 nm), peak near ~600 nm.
+        center, fwhm = 600.0, 440.0
+        sigma = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
+        T = np.exp(-0.5 * ((wl - center) / sigma) ** 2)
+        T *= (wl >= 330) & (wl <= 1050)
+        m = float(np.max(T)) if T.size else 0.0
+        return (T / m) if m > 0 else T
+
+    def _fetch_local_gaia_stars_and_cache(self, img, hdr, doc) -> List[dict]:
+        """
+        Network-free FALLBACK catalog. Matches field positions to the local Gaia
+        XP library and synthesizes Johnson B/V/R by integrating each star's stored
+        XP spectrum through Johnson passbands. Read-only, fully offline.
+
+        CRITICAL: the raw XP integrals are on an arbitrary instrumental scale.
+        To be usable as catalog reference magnitudes (for the ZP fit), each star's
+        synthetic mags are anchored to the star's REAL Gaia G magnitude
+        (phot_g_mean_mag from the library) via a per-star offset. This puts B/V/R
+        on a real magnitude scale and prevents the nonsensical 30–44 mag y-axis.
+        """
+        from setiastro.saspro.gaia_database import get_library
+        from setiastro.saspro.sfcc import (
+            _johnson_bvr_passbands_on_gaia_grid, _integrate_flux_times_T)
+
+        wcs, _ = _build_wcs_and_pixscale(hdr)
+        if wcs is None:
+            raise RuntimeError("Could not build WCS for local Gaia query.")
+        wcs2 = wcs.celestial if hasattr(wcs, "celestial") else wcs
+        H, W = img.shape[:2]
+
+        try:
+            lib = get_library()
+        except Exception as e:
+            raise RuntimeError(f"Local Gaia library unavailable: {e}")
+        if not lib or not lib.installed_bands():
+            raise RuntimeError("No local Gaia XP library is installed.")
+
+        self.lbl_info.setText("Matching field against local Gaia XP library…")
+        QApplication.processEvents()
+
+        step = max(1, int(min(H, W) / 200))
+        ys, xs = np.mgrid[0:H:step, 0:W:step]
+        pix = np.column_stack([xs.ravel(), ys.ravel()]).astype(float)
+        try:
+            sky = wcs2.all_pix2world(pix, 0)
+        except Exception as e:
+            raise RuntimeError(f"WCS conversion failed for local Gaia query: {e}")
+
+        coords = [(float(sky[i, 0]), float(sky[i, 1]))
+                  for i in range(len(sky))
+                  if np.isfinite(sky[i, 0]) and np.isfinite(sky[i, 1])]
+        if not coords:
+            return []
+
+        matched = lib.find_nearest_batch(coords, radius_arcsec=5.0)
+        source_ids = sorted({sid for (sid, _sep) in matched.values()})
+        if not source_ids:
+            return []
+
+        # Passbands on the library grid (nm).
+        probe = None
+        for sid in source_ids:
+            probe = lib.get_spectrum(int(sid))
+            if probe is not None and probe.flux is not None:
+                break
+        if probe is None:
+            return []
+        wl_nm = np.asarray(probe.wavelengths, dtype=np.float64)
+        T_B, T_V, T_R = _johnson_bvr_passbands_on_gaia_grid(wl_nm)
+        T_G = _gaia_g_passband_on_grid(wl_nm)   # for anchoring only
+
+        self.lbl_info.setText(
+            f"Synthesizing calibrated B/V/R from {len(source_ids):,} "
+            f"local Gaia XP spectra…")
+        QApplication.processEvents()
+
+        stars = []
+        for sid in source_ids:
+            spec = lib.get_spectrum(int(sid))
+            if spec is None or spec.flux is None:
+                continue
+            flux = np.asarray(spec.flux, dtype=np.float64)
+
+            S_B = _integrate_flux_times_T(flux, wl_nm, T_B)
+            S_V = _integrate_flux_times_T(flux, wl_nm, T_V)
+            S_R = _integrate_flux_times_T(flux, wl_nm, T_R)
+            S_G = _integrate_flux_times_T(flux, wl_nm, T_G)
+            if min(S_B, S_V, S_R, S_G) <= 0:
+                continue
+
+            # Real Gaia G for this star — the calibration anchor.
+            info = lib.get_source_info(int(sid))
+            if not info:
+                continue
+            G_real = info.get("gmag")
+            ra, dec = info.get("ra"), info.get("dec")
+            if G_real is None or not np.isfinite(G_real) or ra is None or dec is None:
+                continue
+
+            # Per-star offset: synthetic instrumental G → real Gaia G.
+            # Applying the SAME offset to B/V/R puts them on a real mag scale.
+            g_synth = -2.5 * math.log10(S_G)
+            C = float(G_real) - g_synth
+
+            Bmag = -2.5 * math.log10(S_B) + C
+            Vmag = -2.5 * math.log10(S_V) + C
+            Rmag = -2.5 * math.log10(S_R) + C
+
+            try:
+                x, y = wcs2.all_world2pix(float(ra), float(dec), 0)
+            except Exception:
+                continue
+            if not (0 <= x < W and 0 <= y < H):
+                continue
+
+            stars.append({
+                "ra": float(ra), "dec": float(dec),
+                "x": float(x), "y": float(y),
+                "Bmag": float(Bmag), "Vmag": float(Vmag), "Rmag": float(Rmag),
+                "gaia_gmag": float(G_real),
+                "gaia_source_id": int(sid),
+                "sp_clean": None, "pickles_match": None,
+            })
+
+        if not stars:
+            return []
+
+        meta = dict(getattr(doc, "metadata", {}) or {})
+        meta["SFCC_star_list"] = stars
+        meta["SFCC_catalog"] = "GAIA_XP_LOCAL"
+        self.doc_manager.update_active_document(
+            doc.image, metadata=meta,
+            step_name="Magnitude Stars Cached (Local Gaia XP)", doc=doc
+        )
+        return stars
 
     def _fetch_apass_stars_and_cache(self, img, hdr, doc) -> List[dict]:
         wcs, _ = _build_wcs_and_pixscale(hdr)

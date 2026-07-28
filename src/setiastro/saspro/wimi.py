@@ -2304,6 +2304,57 @@ _V_TP  = np.array([0.00,0.01,0.03,0.08,0.18,0.36,0.60,0.83,0.96,1.00,
  
 _WL_GRID = np.arange(3000, 11001, dtype=np.float64)   # 1-Å grid
  
+# Gaia DR3 BP and RP passbands — coarse but adequate nominal transmission
+# curves (EDR3 revised passbands, sampled). Used only to synthesize a BP-RP
+# color from an XP spectrum for the Curtis (2020) Teff relation; the exact
+# shape matters far less than for absolute photometry because BP-RP is a
+# broad color and the zero-point is fixed empirically below.
+_BP_WL = np.array([3300,3500,3700,3900,4100,4300,4500,4700,4900,5100,
+                   5300,5500,5700,5900,6100,6300,6500,6700], dtype=np.float64)
+_BP_TP = np.array([0.00,0.12,0.38,0.60,0.73,0.80,0.83,0.84,0.83,0.80,
+                   0.74,0.65,0.53,0.39,0.25,0.13,0.04,0.00], dtype=np.float64)
+
+_RP_WL = np.array([6200,6400,6600,6800,7000,7300,7600,7900,8200,8500,
+                   8800,9100,9400,9700,10000,10300,10500], dtype=np.float64)
+_RP_TP = np.array([0.00,0.15,0.42,0.66,0.82,0.93,0.98,1.00,0.98,0.93,
+                   0.85,0.74,0.60,0.44,0.28,0.13,0.00], dtype=np.float64)
+
+
+def _synth_bp_rp_from_xp(flux_arr, wl_nm):
+    """
+    Synthesize a Gaia (BP - RP) color from an XP spectrum, in magnitudes.
+    Ratio of passband integrals — the multiplicative zero-point cancels, and
+    a fixed empirical offset anchors the color to the Gaia scale.
+    Returns BP-RP (float) or None on failure.
+    """
+    try:
+        wl_ang = np.asarray(wl_nm, dtype=np.float64) * 10.0
+        flux   = np.asarray(flux_arr, dtype=np.float64)
+        if wl_ang[0] > wl_ang[-1]:
+            wl_ang = wl_ang[::-1]
+            flux   = flux[::-1]
+
+        flux_grid = np.interp(_WL_GRID, wl_ang, flux, left=0.0, right=0.0)
+        flux_grid = np.where(flux_grid > 0, flux_grid, 0.0)
+
+        bp_tp = np.interp(_WL_GRID, _BP_WL, _BP_TP, left=0.0, right=0.0)
+        rp_tp = np.interp(_WL_GRID, _RP_WL, _RP_TP, left=0.0, right=0.0)
+
+        f_BP = float(np.trapz(flux_grid * bp_tp, _WL_GRID))
+        f_RP = float(np.trapz(flux_grid * rp_tp, _WL_GRID))
+        if f_BP <= 0 or f_RP <= 0:
+            return None
+
+        # Zero-point so a Vega-like spectrum lands near BP-RP ≈ 0.03.
+        # Colors are what feed Curtis 2020; a small constant offset keeps the
+        # synthesized color on the Gaia scale. Calibrate ZP_BPRP against a few
+        # known stars in your data if you want to tighten it.
+        ZP_BPRP = 0.05
+        bp_rp = -2.5 * math.log10(f_BP / f_RP) + ZP_BPRP
+        return float(bp_rp)
+    except Exception:
+        return None
+
 def _synth_bv_from_xp(flux_arr, wl_nm):
     """
     Compute synthetic B-V color index from XP spectrum.
@@ -2436,6 +2487,88 @@ def _blackbody_teff_from_xp(flux_arr, wl_nm):
     except Exception:
         return None
  
+# ---------------------------------------------------------------------------
+# Colour → Teff relations
+#
+# Two relations, each clamped to its calibrated domain (outside which they go
+# non-physical and must return None rather than a nonsense temperature):
+#
+#  • Curtis et al. (2020): Gaia (BP-RP)_0 → Teff, 7th-order polynomial.
+#    Valid 0.55 < BP-RP < 3.20  (3070–6470 K), ~50 K precision. This is the
+#    modern, Gaia-native relation — preferred whenever a BP-RP colour exists
+#    (i.e. the XP path). Calibrated on DEREDDENED colour; we feed observed
+#    colour, so for reddened fields the Teff is biased cool. No extinction
+#    handling here yet — flagged for a future pass.
+#
+#  • Ballesteros (2012): Johnson B-V → Teff. Used for catalog-only stars that
+#    have B-V but no BP-RP. Has a pole near B-V ≈ -0.674; clamped to a sane
+#    domain so blueward/negative garbage is rejected.
+# ---------------------------------------------------------------------------
+
+# Curtis 2020 coefficients (Table 1 / Appendix), BP-RP ascending powers 0..7
+_CURTIS2020_COEFFS = (
+    -416.585, 39780.0, -84190.5, 85203.9,
+    -48225.9, 15598.5, -2694.76, 192.865,
+)
+_CURTIS_BPRP_MIN = 0.55
+_CURTIS_BPRP_MAX = 3.20
+
+def _teff_from_bp_rp_curtis(bp_rp):
+    """Gaia (BP-RP)_0 → Teff via Curtis et al. 2020, or None if out of range."""
+    if bp_rp is None:
+        return None
+    try:
+        c = float(bp_rp)
+    except Exception:
+        return None
+    if not math.isfinite(c) or c < _CURTIS_BPRP_MIN or c > _CURTIS_BPRP_MAX:
+        return None
+    T = 0.0
+    for i, coeff in enumerate(_CURTIS2020_COEFFS):
+        T += coeff * (c ** i)
+    if not math.isfinite(T) or T <= 0.0 or T > 60000.0:
+        return None
+    return float(T)
+
+
+# Real dwarf B-V bottoms out near -0.33 (hottest O stars). We allow down to
+# -0.5 so genuine O/B stars with normal photometric scatter still plot; colours
+# bluer than this are unphysical (no star is at B-V = -0.76 or -1.47) and are
+# rejected as bad readings. The Teff ceiling below is the real safeguard against
+# the Ballesteros pole at B-V ≈ -0.674 inflating temperatures near the edge.
+_BV_MIN_VALID = -0.50
+_BV_MAX_VALID =  2.00   # Ballesteros upper validity edge
+
+def _ballesteros_teff(bv):
+    """Johnson B-V → Teff via Ballesteros 2012, or None if out of valid range."""
+    if bv is None:
+        return None
+    try:
+        bv = float(bv)
+    except Exception:
+        return None
+    if not math.isfinite(bv) or bv < _BV_MIN_VALID or bv > _BV_MAX_VALID:
+        return None
+    d1 = 0.92 * bv + 1.7
+    d2 = 0.92 * bv + 0.62
+    if abs(d1) < 1e-6 or abs(d2) < 1e-6:
+        return None
+    T = 4600.0 * (1.0 / d1 + 1.0 / d2)
+    if not math.isfinite(T) or T <= 0.0 or T > 100000.0:
+        return None
+    return float(T)
+
+
+def _teff_from_color(bp_rp=None, bv=None):
+    """Best available colour→Teff. Prefers Gaia BP-RP (Curtis 2020); falls
+    back to B-V (Ballesteros). Returns (Teff, source_str) or (None, None)."""
+    T = _teff_from_bp_rp_curtis(bp_rp)
+    if T is not None:
+        return T, "Curtis2020(BP-RP)"
+    T = _ballesteros_teff(bv)
+    if T is not None:
+        return T, "Ballesteros(B-V)"
+    return None, None 
  
 def _spectral_class_from_teff(T):
     """Return single letter spectral class from Teff."""
@@ -3137,6 +3270,43 @@ def _ra_in_atlas(ra_deg: float, dec_deg: float, atlas_entries: list) -> bool:
  
     return False
 
+# Real dwarf B-V bottoms out near -0.33 (hottest O stars). We allow down to
+# -0.5 so genuine O/B stars with normal photometric scatter still plot; colours
+# bluer than this are unphysical (no star is at B-V = -0.76 or -1.47) and are
+# rejected as bad readings. The Teff ceiling below is the real safeguard against
+# the Ballesteros pole at B-V ≈ -0.674 inflating temperatures near the edge.
+_BV_MIN_VALID = -0.50
+_BV_MAX_VALID =  2.00   # Ballesteros upper validity edge
+
+def _ballesteros_teff(bv):
+    """B-V → Teff (Kelvin) via Ballesteros 2012, or None if out of valid range.
+
+    Returns None for colors outside [-0.35, 2.0] or anywhere the formula is
+    singular/non-physical, so callers can skip the star instead of plotting a
+    nonsense temperature.
+    """
+    if bv is None:
+        return None
+    try:
+        bv = float(bv)
+    except Exception:
+        return None
+    if not math.isfinite(bv):
+        return None
+    if bv < _BV_MIN_VALID or bv > _BV_MAX_VALID:
+        return None
+    d1 = 0.92 * bv + 1.7
+    d2 = 0.92 * bv + 0.62
+    # Guard both denominators against the pole (d2 is the one that bites in
+    # the blue; keep a small margin so we don't return absurd magnitudes near it)
+    if abs(d1) < 1e-6 or abs(d2) < 1e-6:
+        return None
+    T = 4600.0 * (1.0 / d1 + 1.0 / d2)
+    if not math.isfinite(T) or T <= 0.0 or T > 60000.0:
+        # 60,000 K is already hotter than the hottest real O/WR star; anything
+        # above it is the formula misbehaving near the pole.
+        return None
+    return T
 
 class WIMIDialog(QDialog):
     def __init__(self, parent=None, settings=None, doc_manager=None, wimi_path: Optional[str] = None, wrench_path: Optional[str] = None):
@@ -5281,9 +5451,14 @@ class WIMIDialog(QDialog):
                 qr_by_name[nm] = obj
     
         B_list, V_list, Mv_list = [], [], []
+        bv_list = []   # explicit per-star B-V color (real color, never a sentinel)
         names_list, teff_list, spec_list = [], [], []
         is_outlier = []
         used_xp_list = []
+        # Stars rejected for unphysical colour (bluer than the stellar locus /
+        # past the Ballesteros pole). Kept aside so we can list them for the
+        # user to investigate rather than silently dropping them.
+        rejected_color = []   # list of dicts: name, bv, bp_rp
     
         # Pre-build filter arrays on the standard grid (done once)
         _b_tp_grid = np.interp(_WL_GRID, _B_WL, _B_TP, left=0.0, right=0.0)
@@ -5333,6 +5508,8 @@ class WIMIDialog(QDialog):
                 # ── Try XP path ───────────────────────────────────────────────
                 xp_used  = False
                 B = V = Teff = None
+                bv = None       # explicit B-V color (catalog or XP synth)
+                bp_rp = None    # Gaia BP-RP color (XP synth, or catalog G+... if available)
                 outlier = False
     
                 if lib is not None and ra is not None and dec is not None:
@@ -5347,14 +5524,17 @@ class WIMIDialog(QDialog):
                                 if wl_nm[0] > wl_nm[-1]:
                                     wl_nm  = wl_nm[::-1]
                                     fl_arr = fl_arr[::-1]
-    
-                                # Synthetic B, V magnitudes
-                                bv_synth = _synth_bv_from_xp(fl_arr, wl_nm)
+
+                                # Synthetic Gaia BP-RP color (preferred) and B-V.
+                                bp_rp_synth = _synth_bp_rp_from_xp(fl_arr, wl_nm)
+                                bv_synth    = _synth_bv_from_xp(fl_arr, wl_nm)
+                                if bp_rp_synth is not None and math.isfinite(bp_rp_synth):
+                                    bp_rp = float(bp_rp_synth)
                                 if bv_synth is not None and math.isfinite(bv_synth):
-                                    # We have B-V but not absolute B or V separately
-                                    # Store as a sentinel — absolute mag still comes from parallax+Vmag
-                                    B = bv_synth      # repurpose B slot to hold B-V
-                                    V = 0.0           # V=0 so B-V = B-V correctly
+                                    # Carry color explicitly; leave B and V None so the
+                                    # display never shows a fake V=0.000 for an XP star.
+                                    bv = float(bv_synth)
+                                if bp_rp is not None or bv is not None:
                                     xp_used = True
     
                                 # Teff from XP spectrum
@@ -5363,33 +5543,63 @@ class WIMIDialog(QDialog):
     
                                 # Outlier detection: compare B-V-derived Teff with
                                 # blackbody Teff — large divergence = peculiar star
-                                if flag_outliers and B is not None and Teff is not None:
-                                    bv_val = B - V
-                                    T_bv   = 4600.0 * (1/(0.92*bv_val+1.7) + 1/(0.92*bv_val+0.62)) \
-                                            if bv_val > -0.5 else None
+                                if flag_outliers and Teff is not None:
+                                    T_col, _ = _teff_from_color(bp_rp=bp_rp, bv=bv)
                                     if T_bv is not None:
                                         ratio = Teff / T_bv if T_bv > 0 else 1.0
                                         outlier = ratio < 0.5 or ratio > 2.0
                     except Exception:
                         pass  # fall through to catalog
-    
+
                 # ── Catalog fallback ──────────────────────────────────────────
-                if B is None or V is None:
+                # Only if the XP path did not already give us a color.
+                if bv is None:
                     try:
                         B = float(qr.get("Bmag"))
                         V = float(qr.get("Vmag"))
                         if not (math.isfinite(B) and math.isfinite(V)):
                             B = V = None
+                        # Guard against placeholder zeros: a catalog star with
+                        # Bmag or Vmag reported as exactly 0.000 is almost
+                        # certainly a "no value returned" filler, not a real
+                        # magnitude (a true V=0 star like Vega is a once-in-the-
+                        # sky rarity and won't be in a typical field). Reject so
+                        # it isn't plotted with a garbage B-V color.
+                        elif B == 0.0 or V == 0.0:
+                            B = V = None
+                        else:
+                            bv = B - V
                     except Exception:
                         B = V = None
-    
-                if B is None or V is None:
+
+                # Need a color to place the star horizontally.
+                if bv is None:
                     continue
     
-                # ── Teff fallback (Ballesteros) ───────────────────────────────
+                # ── Teff from colour ──────────────────────────────────────────
+                # Prefer the Gaia-native Curtis 2020 BP-RP relation (XP path);
+                # fall back to Ballesteros B-V for catalog-only stars. Both are
+                # domain-clamped, so unphysical/blueward colours and pole cases
+                # return None and the star is dropped rather than plotted with a
+                # million-K or negative temperature.
                 if Teff is None:
-                    bv = B - V
-                    Teff = 4600.0 * (1/(0.92*bv+1.7) + 1/(0.92*bv+0.62))
+                    Teff, _teff_src = _teff_from_color(bp_rp=bp_rp, bv=bv)
+
+                # No usable temperature → the colour is outside every relation's
+                # physical domain (bluer than the stellar locus, past the
+                # Ballesteros pole, etc.). Don't plot it, but record it so the
+                # user can see what was flagged and investigate it themselves.
+                if Teff is None:
+                    # Only log it as "unphysical colour" if we actually had a
+                    # colour to judge — a star with no colour at all was already
+                    # dropped earlier for missing photometry, not for being weird.
+                    if bp_rp is not None or bv is not None:
+                        rejected_color.append({
+                            "name":  name,
+                            "bv":    bv,
+                            "bp_rp": bp_rp,
+                        })
+                    continue
     
                 # ── Absolute magnitude ────────────────────────────────────────
                 # Use catalog Vmag for absolute magnitude — always
@@ -5417,6 +5627,7 @@ class WIMIDialog(QDialog):
                 spec_class = _spectral_class_from_teff(Teff)
     
                 B_list.append(B);  V_list.append(V);  Mv_list.append(absV)
+                bv_list.append(bv)
                 teff_list.append(Teff);  names_list.append(name)
                 spec_list.append(spec_class);  is_outlier.append(outlier)
                 used_xp_list.append(xp_used)
@@ -5430,7 +5641,7 @@ class WIMIDialog(QDialog):
                 "Run a SIMBAD query first, and install the Gaia XP library for best results.")
             return
     
-        bv_arr   = np.array(B_list) - np.array(V_list)
+        bv_arr   = np.array(bv_list, dtype=float)
         Mv_arr   = np.array(Mv_list)
         teff_arr = np.array(teff_list)
         n_xp     = sum(used_xp_list)
@@ -5464,12 +5675,19 @@ class WIMIDialog(QDialog):
     
         # ── Hover text & URLs ─────────────────────────────────────────────────
         hover_texts, urls = [], []
-        for nm, b, v, m, T, sc, xp in zip(names_list, B_list, V_list, Mv_arr,
-                                        teff_arr, spec_list, used_xp_list):
+        for nm, b, v, bvc, m, T, sc, xp in zip(names_list, B_list, V_list, bv_arr,
+                                        Mv_arr, teff_arr, spec_list, used_xp_list):
             src = "Gaia XP" if xp else "catalog"
+            # For XP stars we only have the B-V color (synthesized from the
+            # spectrum), not separate B and V, so show the color alone rather
+            # than a misleading V=0.000. Catalog stars show all three.
+            if b is not None and v is not None:
+                phot_line = f"B: {b:.3f}  V: {v:.3f}  B-V: {bvc:.3f}"
+            else:
+                phot_line = f"B-V: {bvc:.3f}"
             hover_texts.append(
                 f"<b>{nm}</b><br>"
-                f"B: {b:.3f}  V: {v:.3f}  B-V: {b-v:.3f}<br>"
+                f"{phot_line}<br>"
                 f"Abs V: {m:.2f}<br>"
                 f"Teff: {int(T):,} K  ({sc})<br>"
                 f"Source: {src}"
@@ -5601,6 +5819,8 @@ class WIMIDialog(QDialog):
                     f"Hertzsprung–Russell Diagram  ·  {n_total} stars  "
                     f"({'Gaia XP synthetic + catalog' if n_xp > 0 else 'catalog photometry'})"
                     f"  ·  {n_xp} XP / {n_total-n_xp} catalog"
+                    + (f"  ·  {len(rejected_color)} rejected (unphysical colour)"
+                       if rejected_color else "")
                 ),
                 font_color="white",
             ),
@@ -5614,12 +5834,47 @@ class WIMIDialog(QDialog):
             f'<li><a href="{u}" style="color:cyan" target="_blank">{n}</a></li>'
             for n, u in zip(names_list, urls)
         )
+
+        # Rejected-colour section: stars dropped because their colour is
+        # unphysical (bluer than the stellar locus / past the Ballesteros pole).
+        # These are almost always bad photometry, blends, reddening errors, or
+        # peculiar atmospheres — worth a professional's suspicion, not a silent
+        # drop. We list them with their colour and a SIMBAD link so the user can
+        # investigate the source themselves.
+        rejected_html = ""
+        if rejected_color:
+            def _fmt_col(v):
+                return f"{v:+.3f}" if isinstance(v, (int, float)) else "—"
+            rej_items = "".join(
+                f'<li><a href="https://simbad.cds.unistra.fr/simbad/sim-basic'
+                f'?Ident={urllib.parse.quote(r["name"])}&submit=SIMBAD+search" '
+                f'style="color:#ff9a9a" target="_blank">{r["name"]}</a>'
+                f'<span style="color:#888;font-size:11px;">'
+                f'&nbsp;&nbsp;B−V {_fmt_col(r["bv"])}'
+                f'&nbsp;·&nbsp;BP−RP {_fmt_col(r["bp_rp"])}</span></li>'
+                for r in rejected_color
+            )
+            rejected_html = (
+                '<div style="margin-top:14px;padding-top:10px;'
+                'border-top:1px dashed #663333;">'
+                f'<h3 style="color:#ff9a9a;">Unphysical colour '
+                f'({len(rejected_color)})</h3>'
+                '<div style="font-size:11px;color:#aaa;margin-bottom:6px;">'
+                'Dropped from the diagram: colour bluer than any real star '
+                '(past the B−V ≈ −0.67 blackbody limit). Usually bad photometry, '
+                'a blend, reddening error, or a peculiar atmosphere — inspect the '
+                'source before trusting it.</div>'
+                '<ul>' + rej_items + '</ul></div>'
+            )
+
         sidebar = (
             '<div style="padding:10px;font-family:sans-serif;'
             'border-top:1px solid #444;background:black;color:white;">'
             f'<h3>Stars ({n_total})</h3>'
             f'{class_legend_html}'
-            '<ul>' + items + '</ul></div>'
+            '<ul>' + items + '</ul>'
+            + rejected_html +
+            '</div>'
         )
         js = """
         <script>
