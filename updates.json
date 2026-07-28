@@ -1,10 +1,10 @@
 {
-  "version": "1.19.14",
+  "version": "1.19.14.post1",
   "downloads": {
       "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.14/setiastrosuitepro_windows.zip",
       "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.14/SetiAstroSuitePro_macOS_Intel.dmg",
       "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.14/SetiAstroSuitePro_AppleSilicon.dmg",
       "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.14/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.19.14\nUpdates across various tools: WIMI, SSSC, Mosaic Master, Magnitude/Surface Brightness Tool, Hyperbolic Stretch, Cosmic Clarity\n\nV1.19.13\nNew Stellar Alignment Mode: WCS: This will align your two images based on the WCS up to 4th order poly correction terms and can be followed by a stellar based refinement pass. This will allow aligning two vastly different images in image dimension, orientation, mirror parity, etc.\n\nFurther updates to Mosaic Master to pass the full WCS to the final Mosaic\n\nStacking Suite bug fixed that was preventing the satellite mask from being used."
+ "notes": "Seti Astro Suite Pro\n\nV1.19.14\nComplete rewrite of AstroAlign to bring more powerful and robust matching for star alignments.\n\nUpdates across various tools: WIMI, SSSC, Mosaic Master, Magnitude/Surface Brightness Tool, Hyperbolic Stretch, Cosmic Clarity\n\nV1.19.13\nNew Stellar Alignment Mode: WCS: This will align your two images based on the WCS up to 4th order poly correction terms and can be followed by a stellar based refinement pass. This will allow aligning two vastly different images in image dimension, orientation, mirror parity, etc.\n\nFurther updates to Mosaic Master to pass the full WCS to the final Mosaic\n\nStacking Suite bug fixed that was preventing the satellite mask from being used."
 }
