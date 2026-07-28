@@ -1931,6 +1931,21 @@ class SSSCDialog(QDialog):
         self.star_combo.setFixedWidth(140)
         row1.addWidget(self.star_combo)
         row1.addStretch()
+
+        self.sasp_btn = QPushButton("SASP Viewer")
+        self.sasp_btn.setStyleSheet(UTIL_STYLE)
+        self.sasp_btn.setToolTip(
+            "Open the SASP curve viewer (Pickles SEDs + filter/sensor responses)")
+        self.sasp_btn.clicked.connect(self.open_sasp_viewer)
+        row1.addWidget(self.sasp_btn)
+
+        self.add_curve_btn = QPushButton("Add Curve…")
+        self.add_curve_btn.setStyleSheet(UTIL_STYLE)
+        self.add_curve_btn.setToolTip(
+            "Import a custom filter or sensor curve from a 2-column CSV (λ_nm, response)")
+        self.add_curve_btn.clicked.connect(self.add_custom_curve)
+        row1.addWidget(self.add_curve_btn)
+
         self.about_btn = QPushButton("About")
         self.about_btn.setStyleSheet(
             "QPushButton { background: #1a2f4a; color: #88bbee; border: 1px solid #2a5080;"
@@ -2139,6 +2154,128 @@ class SSSCDialog(QDialog):
         self.star_combo.currentIndexChanged.connect(
             lambda _: QSettings().setValue(_SK_SENSOR, self.star_combo.currentText()))
 
+    def _refresh_filter_combos(self):
+        """Repopulate R/G/B/LP filter combos from self.filter_list,
+        preserving the current selection and without firing the
+        persistence signals."""
+        combos = (self.r_filter_combo, self.g_filter_combo, self.b_filter_combo,
+                  self.lp_filter_combo, self.lp_filter_combo2)
+        for cb in combos:
+            prev = cb.currentText()
+            cb.blockSignals(True)
+            cb.clear()
+            cb.addItem("(None)")
+            cb.addItems(self.filter_list)
+            idx = cb.findText(prev)
+            cb.setCurrentIndex(idx if idx >= 0 else 0)
+            cb.blockSignals(False)
+
+    def open_sasp_viewer(self):
+        from setiastro.saspro.sfcc import SaspViewer
+        try:
+            if self.sasp_viewer_window is not None:
+                try:
+                    self.sasp_viewer_window.close()
+                except Exception:
+                    pass
+            self.sasp_viewer_window = SaspViewer(
+                self.sasp_data_path, self.user_custom_path)
+            self.sasp_viewer_window.show()
+            self.sasp_viewer_window.raise_()
+        except Exception as e:
+            QMessageBox.critical(self, "SASP Viewer",
+                f"Could not open SASP viewer:\n{e}")
+
+    def add_custom_curve(self):
+        """Import a 2-column CSV (λ_nm, response) as a FILTER or SENSOR curve
+        into usercustomcurves.fits, then refresh the filter combos."""
+        import pandas as pd
+
+        csv_path, _ = QFileDialog.getOpenFileName(
+            self, "Select 2-column CSV (λ_nm, response)", "",
+            "CSV Files (*.csv);;All Files (*)")
+        if not csv_path:
+            return
+
+        try:
+            df = pd.read_csv(csv_path, comment="#", header=None).iloc[:, :2].dropna()
+            df.columns = ["wavelength_nm", "response"]
+            wl_nm = df["wavelength_nm"].astype(float).to_numpy()
+            tp    = df["response"].astype(float).to_numpy()
+        except ValueError:
+            try:
+                df = pd.read_csv(csv_path, comment="#", header=0).iloc[:, :2].dropna()
+                df.columns = ["wavelength_nm", "response"]
+                wl_nm = df["wavelength_nm"].astype(float).to_numpy()
+                tp    = df["response"].astype(float).to_numpy()
+            except Exception as e2:
+                QMessageBox.critical(self, "CSV Error", f"Could not read CSV:\n{e2}")
+                return
+        except Exception as e:
+            QMessageBox.critical(self, "CSV Error", f"Could not read CSV:\n{e}")
+            return
+
+        if wl_nm.size < 2:
+            QMessageBox.critical(self, "CSV Error", "Need at least two data points.")
+            return
+
+        name, ok = QInputDialog.getText(
+            self, "Curve Name",
+            "EXTNAME for this curve (e.g. 'MyRed', 'IMX533'):")
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+
+        kind, ok = QInputDialog.getItem(
+            self, "Curve Type", "Store as:", ["FILTER", "SENSOR"], 0, False)
+        if not ok:
+            return
+
+        # Duplicate check
+        try:
+            with fits.open(self.user_custom_path, memmap=False) as hd:
+                existing = [h.header.get("EXTNAME", "") for h in hd]
+        except Exception:
+            existing = []
+        if name in existing:
+            if QMessageBox.question(
+                    self, "Overwrite?",
+                    f"A curve named '{name}' already exists in your custom file.\n"
+                    f"Overwrite it?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+                return
+
+        # Store wavelength in Angstrom (loader applies _ensure_angstrom either way)
+        wl_ang = (wl_nm * 10.0).astype(np.float32)
+        tr     = tp.astype(np.float32)
+
+        col_wl = fits.Column(name="WAVELENGTH", format="E", array=wl_ang)
+        col_tp = fits.Column(name="THROUGHPUT", format="E", array=tr)
+        new_hdu = fits.BinTableHDU.from_columns([col_wl, col_tp])
+        new_hdu.header["CTYPE"]   = kind
+        new_hdu.header["EXTNAME"] = name
+
+        try:
+            with fits.open(self.user_custom_path, mode="update", memmap=False) as hd:
+                # remove any existing HDU with this EXTNAME (overwrite path)
+                for i in range(len(hd) - 1, 0, -1):
+                    if hd[i].header.get("EXTNAME", "") == name:
+                        del hd[i]
+                hd.append(new_hdu)
+                hd.flush()
+        except Exception as e:
+            QMessageBox.critical(self, "Write Error",
+                f"Could not write curve to custom file:\n{e}")
+            return
+
+        self._reload_hdu_lists()
+        self._refresh_filter_combos()
+
+        _sfcc_status(self, f"[SSSC] Added {kind} curve '{name}' from "
+                           f"{os.path.basename(csv_path)}")
+        QMessageBox.information(self, "Curve Added",
+            f"'{name}' added as a {kind} curve.")
 
     def load_settings(self):
         s = QSettings()

@@ -1154,6 +1154,28 @@ def _as_hwc(img):
     a = np.asarray(img, dtype=np.float32)
     return a[:, :, None] if a.ndim == 2 else a
 
+def _panel_mad(img, *, mono=None) -> float:
+    """Median absolute deviation of a panel's pixels (robust spread).
+
+    Linear astronomical data is sky-dominated and pathologically tight, so its
+    MAD is tiny (order 1e-3). A display stretch lifts and spreads the midtones,
+    raising the MAD by one to two orders of magnitude. This is the cleanest
+    single-number discriminator between linear and stretched panels.
+
+    Uses a black-point-normalized copy so a pure pedestal offset between panels
+    doesn't affect the spread measurement.
+    """
+    m = mono if mono is not None else (img if img.ndim == 2 else np.mean(img, axis=2))
+    m = np.asarray(m, dtype=np.float32)
+    finite = m[np.isfinite(m)]
+    if finite.size == 0:
+        return 0.0
+    # Black-point normalize (subtract the floor) so MAD reflects spread, not offset.
+    lo = float(np.percentile(finite, 0.5))
+    v = finite - lo
+    med = float(np.median(v))
+    mad = float(np.median(np.abs(v - med)))
+    return mad
 
 def estimate_background_level(img, *, tiles=16, keep_frac=0.15, valid=None,
                               min_tile_valid=0.60, clip_sigma=2.5, clip_iters=3):
@@ -2631,6 +2653,52 @@ class MosaicMasterDialog(QDialog):
         # 5) Background reference — measured once from the first panel
         # ------------------------------------------------------------
         did_normalize = bool(self.normalizeCheckBox.isChecked())
+
+        # --- NEW: detect a mixed linear/stretched panel set ------------------
+        # Affine normalization can only reconcile panels on the same tone scale.
+        # Linear panels have a pathologically low MAD (~1e-3); a display stretch
+        # raises MAD by 1-2 orders of magnitude. We don't use an absolute cutoff
+        # (MAD is scale-dependent) — instead we flag when panels DISAGREE, i.e.
+        # the spread of MADs across panels is large. A consistent set (all linear
+        # or all similarly stretched) has MADs within a small factor of each other.
+        if did_normalize and len(wcs_items) > 1:
+            mads = []
+            for itm in wcs_items:
+                try:
+                    mads.append((self._item_label(itm), _panel_mad(itm["image"])))
+                except Exception:
+                    mads.append((self._item_label(itm), 0.0))
+
+            vals = np.array([mv for _, mv in mads if mv > 0], dtype=np.float64)
+            if vals.size >= 2:
+                mad_ratio = float(np.max(vals) / max(np.min(vals), 1e-9))
+                # Ratio > ~8x means at least one panel is on a very different tone
+                # scale from the others (the caliha1/caliha2 case is ~130x).
+                if mad_ratio > 8.0:
+                    med_mad = float(np.median(vals))
+                    lo_names = [nm for nm, mv in mads if mv > 0 and mv < med_mad / 3.0]
+                    hi_names = [nm for nm, mv in mads if mv > med_mad * 3.0]
+                    detail = "\n".join(f"    {nm}: MAD={mv:.4g}" for nm, mv in mads)
+                    msg = (
+                        "Looks like you've mixed linear and stretched panels.\n\n"
+                        "These panels are on very different tone scales "
+                        f"(pixel spread differs by {mad_ratio:.0f}×), which usually "
+                        "means one was stretched and the others are still linear. "
+                        "Normalization can't blend across that — the seams won't "
+                        "match.\n\n"
+                        "Normally every panel should be either all linear, or all "
+                        "stretched the same way.\n\n"
+                        f"{detail}\n\n"
+                        "Continue anyway?"
+                    )
+                    reply = QMessageBox.warning(
+                        self, "Mixed Panel Scales", msg,
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No,
+                    )
+                    if reply != QMessageBox.StandardButton.Yes:
+                        self.status_label.setText("Cancelled — mixed panel scales.")
+                        return
 
         # Pedestal added before warping so the valid-pixel footprint survives
         # every remap/warp (border fill is 0, real data lands near PED).
