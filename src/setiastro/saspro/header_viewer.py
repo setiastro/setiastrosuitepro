@@ -5,10 +5,11 @@ import csv
 from typing import Optional, Dict, Any
 
 from PyQt6.QtWidgets import (
-    QDockWidget, QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
+    QDockWidget, QWidget, QVBoxLayout, QHBoxLayout, QTreeWidget, QTreeWidgetItem,
     QPushButton, QFileDialog, QMessageBox
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QGuiApplication
 
 from astropy.io import fits
 try:
@@ -40,13 +41,19 @@ class HeaderViewerDock(QDockWidget):
 
         self._save_btn = QPushButton(self.tr("Save Metadata…"))
         self._save_btn.clicked.connect(self._save_metadata)
+        self._copy_btn = QPushButton(self.tr("Copy Metadata"))
+        self._copy_btn.clicked.connect(self._copy_metadata)
         self._dm = None              # <-- NEW: DocManager to query "active"
         self._follow_hover = False   # <-- optional toggle if you ever want hover-follow
         w = QWidget(self)
         lay = QVBoxLayout(w)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.addWidget(self._tree)
-        lay.addWidget(self._save_btn)
+
+        btn_row = QHBoxLayout()
+        btn_row.addWidget(self._copy_btn)
+        btn_row.addWidget(self._save_btn)
+        lay.addLayout(btn_row)
         self.setWidget(w)
 
     def _same_base(self, a, b) -> bool:
@@ -113,6 +120,23 @@ class HeaderViewerDock(QDockWidget):
         """Rebuild only if our bound document == current active base document."""
         active_base = self._active_base_doc()
         if active_base is None:
+            # No active base. Only force-clear when there are genuinely no
+            # documents left (e.g. the last view was just closed); otherwise keep
+            # the current view so a momentary focus gap can't blank the dock.
+            has_docs = False
+            if self._dm is not None:
+                try:
+                    has_docs = bool(self._dm.all_documents())
+                except Exception:
+                    has_docs = False
+            if not has_docs:
+                if self._doc is not None and hasattr(self._doc, "changed"):
+                    try:
+                        self._doc.changed.disconnect(self._on_doc_changed)
+                    except Exception:
+                        pass
+                self._doc = None
+                self._rebuild()
             return
         # If we already show the same base doc, just ignore
         if self._unwrap_base_doc(self._doc) is active_base:
@@ -418,14 +442,8 @@ class HeaderViewerDock(QDockWidget):
         self._tree.expandAll()
 
     # ---- export ----
-    def _save_metadata(self):
-        if not self._doc:
-            return
-        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save Metadata"), "", self.tr("CSV (*.csv)"))
-        if not path:
-            return
-
-        # Flatten the QTreeWidget contents into key/value rows
+    def _metadata_rows(self):
+        """Flatten the tree into [(dotted_key, value), ...] — shared by copy/save."""
         rows = []
         def walk(item: QTreeWidgetItem, prefix: str = ""):
             key = item.text(0)
@@ -435,9 +453,40 @@ class HeaderViewerDock(QDockWidget):
                 rows.append((full, val))
             for i in range(item.childCount()):
                 walk(item.child(i), full)
-
         for i in range(self._tree.topLevelItemCount()):
             walk(self._tree.topLevelItem(i))
+        return rows
+
+    def _copy_metadata(self):
+        if not self._doc:
+            return
+        rows = self._metadata_rows()
+        if not rows:
+            return
+        # Tab-separated: pastes as two columns into a spreadsheet and stays
+        # readable as plain text. Header row matches the CSV export.
+        text = "Key\tValue\n" + "\n".join(f"{k}\t{v}" for k, v in rows)
+        try:
+            QGuiApplication.clipboard().setText(text)
+        except Exception as e:
+            QMessageBox.critical(self, self.tr("Copy Metadata"),
+                                 self.tr("Failed to copy:\n{0}").format(e))
+            return
+        # brief confirmation on the button itself
+        try:
+            self._copy_btn.setText(self.tr("Copied!"))
+            QTimer.singleShot(1200, lambda: self._copy_btn.setText(self.tr("Copy Metadata")))
+        except Exception:
+            pass
+
+    def _save_metadata(self):
+        if not self._doc:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, self.tr("Save Metadata"), "", self.tr("CSV (*.csv)"))
+        if not path:
+            return
+
+        rows = self._metadata_rows()
 
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:

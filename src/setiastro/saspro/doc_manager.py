@@ -3321,10 +3321,26 @@ class DocManager(QObject):
                     doc.close()
                 except Exception as e:
                     print(f"[DocManager] Failed to close document {doc}: {e}")
-                    
+
+            # Drop stale active/focused references to the doc we just removed so
+            # the getters below can't hand a closed document back to any panel.
+            if self._active_doc is doc:
+                self._active_doc = None
+            if self._focused_base_doc is doc:
+                self._focused_base_doc = None
+
             self.documentRemoved.emit(doc)
             self._hard_memory_cleanup()
-            
+
+            # If that was the last document, announce the empty state. Qt does not
+            # reliably deliver subWindowActivated(None) on the final close, so emit
+            # activeBaseChanged(None) here to guarantee panels that follow the
+            # active base (e.g. the Header Viewer) clear instead of holding on to
+            # the last document's header.
+            if not self._docs:
+                self._active_doc = None
+                self._focused_base_doc = None
+                self.activeBaseChanged.emit(None)
     # --- Active-document helpers (NEW) ---------------------------------
     def all_documents(self):
         return list(self._docs)
