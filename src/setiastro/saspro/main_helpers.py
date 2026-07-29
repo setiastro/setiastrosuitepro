@@ -58,57 +58,73 @@ def safe_join_dir_and_name(directory: str, basename: str) -> str:
 
 def normalize_save_path_chosen_filter(path: str, selected_filter: str) -> Tuple[str, str]:
     """
-    Returns (final_path, final_ext_norm). Ensures:
-      - appends extension if missing (from chosen filter)
-      - avoids double extensions (*.png.png)
-      - if user provided a conflicting ext, enforce the chosen filter's default
-      - sanitizes the basename (spaces, illegal chars, trailing dots)
+    Returns (final_path, final_ext). Ensures:
+      - appends an extension if the user typed none (from the chosen filter)
+      - avoids doubled extensions (*.png.png)
+      - keeps the user's extension verbatim when it's a valid alias for the
+        chosen format, so .tiff/.jpeg/.fits are NOT collapsed to .tif/.jpg/.fit
+      - only overrides the extension when it's missing or invalid for the filter
+      - sanitizes the basename (spaces, illegal chars, trailing dots, reserved names)
     """
     raw_path = (path or "").strip().rstrip(".")
 
-    allowed = _exts_from_filter(selected_filter)
-    if not allowed:
-        # Some platforms hand back an empty selected_filter. Trust the extension
-        # the user actually typed rather than forcing PNG onto it — otherwise an
-        # explicit "Save As <format>" can silently change format.
-        typed_ext = _normalize_ext(os.path.splitext(raw_path)[1])
-        allowed = [typed_ext] if typed_ext else ["png"]
+    # Raw extensions offered by the chosen filter, preserved verbatim and in
+    # order, e.g. "TIFF (*.tif *.tiff)" -> ["tif", "tiff"]. We deliberately do
+    # NOT push these through _normalize_ext, whose alias-canonicalization is what
+    # was turning .tiff into .tif.
+    allowed = []
+    for tok in (selected_filter or "").replace("(", " ").replace(")", " ").split():
+        if tok.startswith("*."):
+            e = tok[2:].strip(" ;,").lower()
+            if e.isalnum() and e not in allowed:
+                allowed.append(e)
 
-    default_ext = allowed[0]
-
-    # Split dir + basename (sanitize only the basename)
     directory, base = os.path.split(raw_path)
     if not base:
         base = "untitled"
 
-    # If the user typed something like "name.png" but selected TIFF, fix after sanitization
-    base_stem, base_ext = os.path.splitext(base)
-    typed = _normalize_ext(base_ext) if base_ext else ""
+    stem, dot_ext = os.path.splitext(base)
+    typed = dot_ext[1:].lower() if dot_ext else ""      # raw, unnormalized
 
-    def strip_trailing_allowed(stem: str) -> str:
-        """Remove repeated extension in stem (e.g. 'foo.png' then + '.png')."""
-        lowered = stem.lower()
-        for a in allowed:
-            suf = "." + a
-            if lowered.endswith(suf):
-                return stem[:-len(suf)]
-        return stem
+    if not allowed:
+        # Some platforms return an empty selected_filter (or "All Files (*)").
+        # Trust whatever the user typed instead of forcing a format on them.
+        allowed = [typed] if typed else ["png"]
 
-    base_stem = strip_trailing_allowed(base_stem)
+    default_ext = allowed[0]
 
-    # Choose final extension
+    # Strip a duplicated trailing extension already sitting in the stem
+    # (e.g. "foo.tiff" that would otherwise become "foo.tiff.tiff").
+    low = stem.lower()
+    for a in allowed:
+        if low.endswith("." + a):
+            stem = stem[: -(len(a) + 1)]
+            break
+
+    # The actual fix: keep the typed extension when it's valid for this format;
+    # only fall back to the filter default when it's missing or not valid.
     if not typed:
         final_ext = default_ext
+    elif typed in allowed:
+        final_ext = typed
     else:
-        final_ext = typed if typed in allowed else default_ext
+        final_ext = default_ext
 
-    # Rebuild name with the chosen extension, then sanitize the WHOLE basename
-    basename_target = f"{base_stem}.{final_ext}"
-    basename_safe = _sanitize_filename(basename_target, replace_spaces=REPLACE_SPACES_WITH_UNDERSCORES)
+    # Sanitize only the stem, then re-attach the chosen extension, so the
+    # extension is never rewritten by the sanitizer regardless of its internals.
+    safe_stem = _sanitize_filename(stem or "untitled",
+                                   replace_spaces=REPLACE_SPACES_WITH_UNDERSCORES)
 
-    # Final join (create dir if missing)
-    final_path = safe_join_dir_and_name(directory, basename_safe)
-    return final_path, final_ext
+    # Mirror safe_join_dir_and_name's dir-creation, but skip its second sanitize
+    # pass (which would otherwise re-touch the full "stem.ext").
+    final_dir = directory or ""
+    if final_dir and not os.path.isdir(final_dir):
+        try:
+            os.makedirs(final_dir, exist_ok=True)
+        except Exception:
+            pass
+
+    return os.path.join(final_dir, f"{safe_stem}.{final_ext}"), final_ext
 
 
 def display_name(doc) -> str:

@@ -83,11 +83,59 @@ class ViewMixin:
 
         self._auto_fit_all_subwindows()
 
+    def _order_subwindows_for_tiling(self, subs):
+        """Order subwindows to match the Explorer's current top-to-bottom order.
+
+        subWindowList() returns them in creation (open) order, which rarely
+        matches the alphabetically-sorted Explorer and so looks random. Rank by
+        the Explorer's displayed order; anything not in the Explorer (tables,
+        filtered-out or doc-less views) sorts after, by title — so the result is
+        always deterministic rather than creation-order.
+        """
+        explorer = getattr(self, "explorer", None)
+
+        def _base_for(sw):
+            try:
+                w = sw.widget()
+                doc = getattr(w, "document", None) or getattr(sw, "document", None)
+            except Exception:
+                doc = None
+            if doc is None:
+                return None
+            norm = getattr(self, "_normalize_base_doc", None)
+            try:
+                return norm(doc) if callable(norm) else doc
+            except Exception:
+                return doc
+
+        order_index = {}
+        if explorer is not None:
+            try:
+                rank = 0
+                for i in range(explorer.topLevelItemCount()):
+                    it = explorer.topLevelItem(i)
+                    d = it.data(0, Qt.ItemDataRole.UserRole)
+                    if d is not None and id(d) not in order_index:
+                        order_index[id(d)] = rank
+                        rank += 1
+            except Exception:
+                order_index = {}
+
+        def sort_key(sw):
+            base = _base_for(sw)
+            title = (sw.windowTitle() or "").lower()
+            if base is not None and id(base) in order_index:
+                return (0, order_index[id(base)], title)
+            return (1, 0, title)
+
+        return sorted(subs, key=sort_key)
+
     def _tile_views_grid(self):
         """Arrange subwindows in a near-square grid across the MDI area."""
         subs = self._visible_subwindows()
         if not subs:
             return
+        subs = self._order_subwindows_for_tiling(subs)
         area = self.mdi.viewport().rect()
         off = self.mdi.viewport().mapTo(self.mdi, area.topLeft())
         origin_x, origin_y = off.x(), off.y()

@@ -539,11 +539,29 @@ class GhsDialogPro(QDialog):
         # Shared: γ
         self._row_G, self.sG, self.labG = _mk_row("γ",  1, 500, 100, 100.0)
 
+        # Fine-control sliders (collapsible) for the parameters users most often
+        # want to nudge: alpha/beta (UHS) and D/b (GHS); gamma is shared by both
+        # and gets a single one. A down-arrow toggle on each row reveals a nested
+        # high-resolution slider -- see _make_fine_control / _pval.
+        self._fine_specs = []
+        _fine_after = {
+            id(self._row_A):  self._make_fine_control(self._row_A,  self.sA,  "A",  0.30),
+            id(self._row_B):  self._make_fine_control(self._row_B,  self.sB,  "B",  0.30),
+            id(self._row_D):  self._make_fine_control(self._row_D,  self.sD,  "D",  0.30),
+            id(self._row_Bb): self._make_fine_control(self._row_Bb, self.sBb, "Bb", 0.50),
+            id(self._row_G):  self._make_fine_control(self._row_G,  self.sG,  "G",  0.20),
+        }
+        for _lab in (self.labA, self.labB, self.labD, self.labBb, self.labG):
+            _lab.setFixedWidth(50)
+
         for row in (self._row_A, self._row_B,
                     self._row_D, self._row_Bb,
                     self._row_gLP, self._row_gHP, self._row_BP,
                     self._row_S, self._row_P, self._row_G):
             left.addLayout(row)
+            _fr = _fine_after.get(id(row))
+            if _fr is not None:
+                left.addWidget(_fr)
 
         # LP / HP
         rowLP = QHBoxLayout()
@@ -693,10 +711,14 @@ class GhsDialogPro(QDialog):
             s.sliderPressed.connect(self._on_any_slider_pressed)
             s.sliderReleased.connect(self._on_any_slider_released)
         # non-SP sliders drive rebuild directly
-        for s in (self.sA, self.sB, self.sD, self.sBb,
-                  self.sgLP, self.sgHP, self.sBP,
-                  self.sS, self.sP, self.sG, self.sLP, self.sHP):
+        # sliders WITHOUT a fine control drive the rebuild directly ...
+        for s in (self.sgLP, self.sgHP, self.sBP,
+                  self.sS, self.sP, self.sLP, self.sHP):
             s.valueChanged.connect(self._schedule_rebuild_from_params)
+        # ... while the five fine-enabled ones route through a slot that keeps
+        # the sub-step override (._fine_val) coherent, then rebuilds.
+        for s in (self.sA, self.sB, self.sD, self.sBb, self.sG):
+            s.valueChanged.connect(lambda _v, s=s: self._on_coarse_param_changed(s))
 
         # histogram double-click / Ctrl+click also sets the pivot
         self.editor.pivotPicked.connect(self._on_hist_pivot)
@@ -724,6 +746,7 @@ class GhsDialogPro(QDialog):
         self._rebuild_debounce.timeout.connect(self._rebuild_from_params_now)
 
         self._slider_dragging = False
+        self._fine_syncing = False
 
         # seed image data
         self._load_from_doc()
@@ -857,6 +880,14 @@ class GhsDialogPro(QDialog):
         self.sSP.setEnabled(sp_active)
         self.spSP.setEnabled(sp_active)
 
+        # Fine rows track their parent parameter's visibility (gamma always on).
+        self._fine_mode_visible = {
+            "A": uhs_only, "B": uhs_only,
+            "D": ghs_only, "Bb": ghs_only,
+            "G": True,
+        }
+        self._apply_fine_row_visibility()
+
     # -----------------------------------------------------------------------
     # Histogram support
     # -----------------------------------------------------------------------
@@ -954,18 +985,131 @@ class GhsDialogPro(QDialog):
         self._rebuild_debounce.start()
 
     def _update_labels_fast(self):
-        self.labA.setText(f"{self.sA.value()/50.0:.2f}")
-        self.labB.setText(f"{self.sB.value()/50.0:.2f}")
-        self.labD.setText(f"{self.sD.value()/100.0:.2f}")
-        self.labBb.setText(f"{self.sBb.value()/100.0:.2f}")
+        self.labA.setText(self._fmt_param(self.sA))
+        self.labB.setText(self._fmt_param(self.sB))
+        self.labD.setText(self._fmt_param(self.sD))
+        self.labBb.setText(self._fmt_param(self.sBb))
         self.labgLP.setText(f"{self.sgLP.value()/10000.0:.4f}")
         self.labgHP.setText(f"{self.sgHP.value()/10000.0:.4f}")
         self.labBP.setText(f"{self.sBP.value()/10000.0:.4f}")
         self.labS.setText(f"{self.sS.value()/10.0:.1f}")
         self.labP.setText(f"{self.sP.value()/100.0:.2f}")
-        self.labG.setText(f"{self.sG.value()/100.0:.2f}")
+        self.labG.setText(self._fmt_param(self.sG))
         self.labLP.setText(f"{self.sLP.value()/360.0:.2f}")
         self.labHP.setText(f"{self.sHP.value()/360.0:.2f}")
+
+    # -- Fine-control helpers ------------------------------------------------
+    def _pval(self, s):
+        """Precise value for a parameter slider, honouring a live fine override."""
+        fv = getattr(s, "_fine_val", None)
+        return fv if fv is not None else s.value() / s._divisor
+
+    def _fmt_param(self, s):
+        """Label text: 2 decimals normally, 3 while a sub-step override is live."""
+        dec = 3 if getattr(s, "_fine_val", None) is not None else 2
+        return f"{self._pval(s):.{dec}f}"
+
+    def _make_fine_control(self, coarse_row, coarse_slider, key, hw):
+        """Attach a collapsible fine-adjustment slider to a coarse parameter row.
+
+        A small down-arrow toggle is appended to *coarse_row*; toggling it
+        reveals a nested slider whose full travel spans +/-*hw* (real units)
+        around the coarse slider's current value, giving sub-step precision. The
+        coarse slider stays the visible source of truth; the precise value lives
+        in coarse_slider._fine_val and is read back through _pval().
+        """
+        coarse_slider._fine_val = None
+
+        tgl = QToolButton(self)
+        tgl.setCheckable(True)
+        tgl.setArrowType(Qt.ArrowType.DownArrow)
+        tgl.setAutoRaise(True)
+        tgl.setFixedSize(QSize(18, 18))
+        tgl.setToolTip(self.tr("Fine adjustment"))
+        coarse_row.addWidget(tgl)
+
+        fine_container = QWidget(self)
+        fine_row = QHBoxLayout(fine_container)
+        fine_row.setContentsMargins(0, 0, 0, 0)
+        fine_row.addSpacing(30)
+        fine = QSlider(Qt.Orientation.Horizontal, self)
+        fine.setRange(0, 1000)
+        fine.setValue(500)
+        fine.setToolTip(self.tr("Fine adjustment (relative to current value)"))
+        fine_row.addWidget(fine)
+
+        fine._coarse = coarse_slider
+        fine._hw = float(hw)
+        fine._center = self._pval(coarse_slider)
+        coarse_slider._fine_slider = fine
+
+        fine.sliderPressed.connect(lambda f=fine: self._on_fine_pressed(f))
+        fine.sliderReleased.connect(self._on_any_slider_released)
+        fine.valueChanged.connect(lambda _v, f=fine: self._on_fine_changed(f))
+        tgl.toggled.connect(lambda c, t=tgl: self._on_fine_toggle(t, c))
+
+        self._fine_specs.append({
+            "key": key, "coarse": coarse_slider,
+            "fine": fine, "container": fine_container, "toggle": tgl,
+        })
+        fine_container.setVisible(False)
+        return fine_container
+
+    def _recenter_fine(self, fine):
+        """Centre a fine slider's window on its coarse slider's current value."""
+        fine._center = self._pval(fine._coarse)
+        fine.blockSignals(True)
+        fine.setValue(500)
+        fine.blockSignals(False)
+
+    def _on_fine_pressed(self, fine):
+        self._recenter_fine(fine)
+        self._slider_dragging = True
+
+    def _on_fine_changed(self, fine):
+        s = fine._coarse
+        lo = s.minimum() / s._divisor
+        hi = s.maximum() / s._divisor
+        real = fine._center - fine._hw + (fine.value() / 1000.0) * (2.0 * fine._hw)
+        real = min(max(real, lo), hi)
+        s._fine_val = real
+        self._fine_syncing = True
+        try:
+            s.setValue(int(round(real * s._divisor)))
+        finally:
+            self._fine_syncing = False
+        self._schedule_rebuild_from_params()
+
+    def _on_coarse_param_changed(self, s):
+        """A coarse slider moved. Unless the move came from its own fine slider,
+        drop the sub-step override so the coarse handle wins and let the fine
+        slider follow. Always rebuilds afterwards."""
+        if not getattr(self, "_fine_syncing", False):
+            s._fine_val = None
+            fine = getattr(s, "_fine_slider", None)
+            if fine is not None:
+                self._recenter_fine(fine)
+        self._schedule_rebuild_from_params()
+
+    def _on_fine_toggle(self, tgl, checked):
+        tgl.setArrowType(Qt.ArrowType.UpArrow if checked else Qt.ArrowType.DownArrow)
+        self._apply_fine_row_visibility()
+
+    def _apply_fine_row_visibility(self):
+        """Show a fine row only when its parameter is visible in the current mode
+        AND its toggle is checked; recentre any row being shown."""
+        mode_vis = getattr(self, "_fine_mode_visible", {})
+        for spec in getattr(self, "_fine_specs", []):
+            show = bool(mode_vis.get(spec["key"], True)) and spec["toggle"].isChecked()
+            spec["container"].setVisible(show)
+            if show:
+                self._recenter_fine(spec["fine"])
+
+    def _clear_fine_overrides(self):
+        """Forget every sub-step override (used on reset and after apply)."""
+        for spec in getattr(self, "_fine_specs", []):
+            spec["coarse"]._fine_val = None
+        self._apply_fine_row_visibility()
 
     def _rebuild_from_params(self):
         """Immediate rebuild (for non-slider callers)."""
@@ -1015,20 +1159,20 @@ class GhsDialogPro(QDialog):
     def _build_lut01(self) -> np.ndarray | None:
         """Build a float32 LUT[0..65535] → [0..1] for the active function."""
         mode = self._current_mode()
-        g    = self.sG.value() / 100.0
+        g    = self._pval(self.sG)
         lp   = self.sLP.value() / 360.0
         hp   = self.sHP.value() / 360.0
         SP   = float(self._sym_u)
 
         try:
             if mode == self.MODE_UHS:
-                a = self.sA.value() / 50.0
-                b = self.sB.value() / 50.0
+                a = self._pval(self.sA)
+                b = self._pval(self.sB)
                 return _build_uhs_lut(a, b, g, lp, hp, SP)
             elif mode == self.MODE_GHS:
                 return _build_cranfield_lut(
-                    D_display=self.sD.value() / 100.0,
-                    b=self.sBb.value() / 100.0,
+                    D_display=self._pval(self.sD),
+                    b=self._pval(self.sBb),
                     SP=SP,
                     LP=self.sgLP.value() / 10000.0,
                     HP=self.sgHP.value() / 10000.0,
@@ -1121,18 +1265,18 @@ class GhsDialogPro(QDialog):
         mode = self._current_mode()
         params = {
             "function": mode,
-            "gamma":    self.sG.value() / 100.0,
+            "gamma":    self._pval(self.sG),
             "lp":       self.sLP.value() / 360.0,
             "hp":       self.sHP.value() / 360.0,
             "pivot":    float(self._sym_u),
             "channel":  self.cmb_ch.currentText(),
         }
         if mode == self.MODE_UHS:
-            params["alpha"] = self.sA.value() / 50.0
-            params["beta"]  = self.sB.value() / 50.0
+            params["alpha"] = self._pval(self.sA)
+            params["beta"]  = self._pval(self.sB)
         elif mode == self.MODE_GHS:
-            params["ghs_D"]  = self.sD.value() / 100.0
-            params["ghs_b"]  = self.sBb.value() / 100.0
+            params["ghs_D"]  = self._pval(self.sD)
+            params["ghs_b"]  = self._pval(self.sBb)
             params["ghs_LP"] = self.sgLP.value() / 10000.0
             params["ghs_HP"] = self.sgHP.value() / 10000.0
             params["ghs_BP"] = self.sBP.value() / 10000.0
@@ -1205,6 +1349,7 @@ class GhsDialogPro(QDialog):
             self.sLP.setValue(0);  self.sHP.setValue(0)
             self.sD.setValue(0);   self.sBb.setValue(0)
             self.sgLP.setValue(0); self.sgHP.setValue(10000); self.sBP.setValue(0)
+            self._clear_fine_overrides()
             self._rebuild_from_params()
 
         except Exception as e:
@@ -1467,6 +1612,7 @@ class GhsDialogPro(QDialog):
             for s in self._all_sliders:
                 s.blockSignals(False)
 
+        self._clear_fine_overrides()
         self._set_sym_u(0.5)
         self.editor.clearSymmetryLine()
         self._rebuild_from_params()

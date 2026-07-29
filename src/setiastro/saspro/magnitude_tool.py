@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
     QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout,QComboBox, QGraphicsPathItem, QGraphicsEllipseItem,
     QMessageBox, QApplication, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsItem, QListWidget, QListWidgetItem, QCheckBox, QInputDialog
 )
-from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QPainter, QPainterPath
+from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QPainter, QPainterPath, QPolygonF
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from astroquery.simbad import Simbad
@@ -1060,6 +1060,9 @@ class MagnitudeRegionDialog(QDialog):
         self.target_rect_scene = QRectF()
         self.target_item: QGraphicsRectItem | None = None
         self.bg_item: QGraphicsRectItem | None = None
+        self._auto_ellipse_item = None
+        self._auto_mask = None
+        self._auto_verts = None
         self._drawing = False
         self._origin_scene = QPointF()
 
@@ -1090,8 +1093,31 @@ class MagnitudeRegionDialog(QDialog):
         v.addWidget(self.lbl)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Box", "Ellipse", "Freehand"])
+        self.mode_combo.addItems(["Box", "Ellipse", "Freehand", "Star (auto)"])
         v.insertWidget(1, self.mode_combo)  # under label, above view
+
+        # Auto-star controls (only meaningful in 'Star (auto)' mode)
+        self._auto_ctl = QWidget()
+        _ar = QHBoxLayout(self._auto_ctl); _ar.setContentsMargins(0, 0, 0, 0)
+        _ar.addWidget(QLabel("Capture:"))
+        self.spin_capture = QDoubleSpinBox()
+        self.spin_capture.setRange(90.0, 99.9)
+        self.spin_capture.setSingleStep(0.5)
+        self.spin_capture.setDecimals(1)
+        self.spin_capture.setValue(99.0)
+        self.spin_capture.setSuffix(" %")
+        self.spin_capture.setToolTip(
+            "Fraction of the star's total flux the aperture should enclose.\n"
+            "The half-flux radius (HFR) alone captures only ~50%; this scales the\n"
+            "ellipse out along the measured curve-of-growth so the magnitude\n"
+            "reflects (nearly) the full integrated flux.")
+        _ar.addWidget(self.spin_capture)
+        self.chk_circular = QCheckBox("Circular")
+        self.chk_circular.setToolTip("Ignore the measured eccentricity and use a circular aperture.")
+        _ar.addWidget(self.chk_circular)
+        _ar.addStretch(1)
+        v.insertWidget(2, self._auto_ctl)
+        self._auto_ctl.setVisible(False)
 
         v.addWidget(self.view, 1)
 
@@ -1248,9 +1274,22 @@ class MagnitudeRegionDialog(QDialog):
             pass
 
     def _on_mode_changed(self, _idx):
-        # If the user changes drawing mode, clear any existing selection
-        # so it’s always “exactly one region”.
+        # Changing mode clears any existing selection so it's always exactly
+        # one region.
         self._clear_target_items()
+        mode = self.mode_combo.currentText()
+        is_auto = (mode == "Star (auto)")
+        if hasattr(self, "_auto_ctl"):
+            self._auto_ctl.setVisible(is_auto)
+        if is_auto:
+            self.lbl.setText(
+                "Click a star's core to auto-fit an aperture ellipse "
+                "(centroid + HFR + eccentricity). Set Capture% for the flux "
+                "fraction to enclose, then Use Target.")
+        else:
+            self.lbl.setText(
+                "Draw a Target region (Box/Ellipse/Freehand). Background will "
+                "be auto-selected (gold).")
 
     def _display_rgb01(self, img_rgb01: np.ndarray) -> np.ndarray:
         # preview-only stretch
@@ -1405,6 +1444,9 @@ class MagnitudeRegionDialog(QDialog):
 
         mode = self.mode_combo.currentText()
 
+        if mode == "Star (auto)":
+            return self._auto_mask
+
         # start with empty mask
         mask_img = QImage(W, H, QImage.Format.Format_Grayscale8)
         mask_img.fill(0)
@@ -1431,13 +1473,17 @@ class MagnitudeRegionDialog(QDialog):
 
     # ---------- target drawing ----------
     def _clear_target_items(self):
-        for it in (self.target_item, self._ellipse_item, self._path_item):
+        for it in (self.target_item, self._ellipse_item, self._path_item,
+                   getattr(self, "_auto_ellipse_item", None)):
             if it is not None:
                 try: self.scene.removeItem(it)
                 except Exception: pass
         self.target_item = None
         self._ellipse_item = None
         self._path_item = None
+        self._auto_ellipse_item = None
+        self._auto_mask = None
+        self._auto_verts = None
         self.target_rect_scene = QRectF()
         self._path = QPainterPath()
 
@@ -1446,9 +1492,12 @@ class MagnitudeRegionDialog(QDialog):
             et = event.type()
 
             if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                mode = self.mode_combo.currentText()
+                if mode == "Star (auto)":
+                    self._auto_pick_star(self.view.mapToScene(event.pos()))
+                    return True
                 self._drawing = True
                 self._origin_scene = self.view.mapToScene(event.pos())
-                mode = self.mode_combo.currentText()
 
                 self._clear_target_items()
 
@@ -1538,6 +1587,10 @@ class MagnitudeRegionDialog(QDialog):
 
     def _current_geometry_px(self):
         mode = self.mode_combo.currentText()
+        if mode == "Star (auto)":
+            if self._auto_verts is not None and len(self._auto_verts) >= 3:
+                return {"kind": "ellipse", "verts_px": np.asarray(self._auto_verts, dtype=np.float64)}
+            return None
         if mode == "Box" and not self.target_rect_scene.isNull():
             r = self.target_rect_scene
             corners = [(r.left(), r.top()), (r.right(), r.top()),
@@ -1559,6 +1612,165 @@ class MagnitudeRegionDialog(QDialog):
             if len(verts) >= 3:
                 return {"kind": "freehand", "verts_px": np.asarray(verts, dtype=np.float64)}
         return None
+
+    # ---------- auto star detection ----------
+    def _auto_gray_linear(self) -> np.ndarray:
+        """Single linear grayscale plane for SEP (mean of channels)."""
+        img = self._doc_image_float01()
+        gray = img.mean(axis=2) if img.ndim == 3 else img
+        return np.ascontiguousarray(gray, dtype=np.float32)
+
+    def _flux_radius_one(self, data_sub, x, y, rmax, frac):
+        """Radius enclosing `frac` of the flux within rmax, via SEP curve-of-growth."""
+        try:
+            r, _flag = sep.flux_radius(
+                np.ascontiguousarray(data_sub, dtype=np.float32),
+                np.array([float(x)]), np.array([float(y)]),
+                np.array([float(rmax)]), [float(frac)], subpix=5)
+            rv = float(np.atleast_1d(r).ravel()[0])
+            if np.isfinite(rv) and rv > 0:
+                return rv
+        except Exception:
+            pass
+        return None
+
+    def _rotated_ellipse_mask(self, H, W, cx, cy, A, B, theta) -> np.ndarray:
+        A = max(float(A), 0.5); B = max(float(B), 0.5)
+        R = int(math.ceil(max(A, B))) + 2
+        x0 = max(0, int(math.floor(cx - R))); x1 = min(W, int(math.ceil(cx + R)) + 1)
+        y0 = max(0, int(math.floor(cy - R))); y1 = min(H, int(math.ceil(cy + R)) + 1)
+        mask = np.zeros((H, W), dtype=bool)
+        if x1 <= x0 or y1 <= y0:
+            return mask
+        ys, xs = np.mgrid[y0:y1, x0:x1]
+        dx = xs.astype(np.float64) - cx
+        dy = ys.astype(np.float64) - cy
+        ct = math.cos(theta); st = math.sin(theta)
+        xr =  dx * ct + dy * st
+        yr = -dx * st + dy * ct
+        mask[y0:y1, x0:x1] = (xr / A) ** 2 + (yr / B) ** 2 <= 1.0
+        return mask
+
+    def _rotated_ellipse_verts(self, cx, cy, A, B, theta, n=160) -> np.ndarray:
+        t = np.linspace(0.0, 2.0 * np.pi, int(n), endpoint=False)
+        ex = A * np.cos(t); ey = B * np.sin(t)
+        ct = math.cos(theta); st = math.sin(theta)
+        vx = cx + ex * ct - ey * st
+        vy = cy + ex * st + ey * ct
+        return np.column_stack([vx, vy]).astype(np.float64)
+
+    def _auto_detect_star_at(self, gray, cx, cy, capfrac, circular):
+        """Detect the star nearest (cx, cy) and return an aperture ellipse enclosing
+        ~capfrac of its flux: (Cx, Cy, A, B, theta, hfr, ecc, r_cap) in full-image
+        px, or None."""
+        H, W = gray.shape[:2]
+        win = 64
+        x0 = int(max(0, math.floor(cx) - win)); x1 = int(min(W, math.floor(cx) + win + 1))
+        y0 = int(max(0, math.floor(cy) - win)); y1 = int(min(H, math.floor(cy) + win + 1))
+        cut = np.ascontiguousarray(gray[y0:y1, x0:x1], dtype=np.float32)
+        if cut.size < 25:
+            return None
+
+        try:
+            bkg = sep.Background(cut)
+            data_sub = cut - bkg.back()
+            err = float(bkg.globalrms)
+        except Exception:
+            med = float(np.median(cut))
+            data_sub = cut - med
+            err = float(np.std(cut))
+        if not (err > 0):
+            err = float(np.std(data_sub)) or 1e-6
+
+        sources = None
+        for thr in (5.0, 3.0, 2.0):
+            try:
+                s = sep.extract(data_sub, float(thr), err=err)
+            except Exception:
+                s = None
+            if s is not None and len(s) > 0:
+                sources = s
+                break
+        if sources is None or len(sources) == 0:
+            return None
+
+        lx = cx - x0; ly = cy - y0
+        sxx = np.asarray(sources["x"], dtype=np.float64)
+        syy = np.asarray(sources["y"], dtype=np.float64)
+        j = int(np.argmin((sxx - lx) ** 2 + (syy - ly) ** 2))
+        if math.hypot(sxx[j] - lx, syy[j] - ly) > win:
+            return None
+
+        sx = float(sxx[j]); sy = float(syy[j])
+        a = max(float(sources["a"][j]), 0.5)
+        b = max(min(float(sources["b"][j]), a), 0.3)
+        theta = float(sources["theta"][j])
+        ecc = float(math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))))
+
+        rmax_hfr = float(min(win - 1, max(6.0 * a, 12.0)))
+        hfr = self._flux_radius_one(data_sub, sx, sy, rmax_hfr, 0.5)
+        if hfr is None or not (hfr > 0):
+            hfr = 1.1774 * (2.0 * a)   # HWHM of a Gaussian with sigma~=a
+
+        rmax_cap = float(min(win - 1, max(4.0 * hfr, 8.0)))
+        r_cap = self._flux_radius_one(data_sub, sx, sy, rmax_cap, capfrac)
+        if r_cap is None or not (r_cap > hfr):
+            # Gaussian-equivalent scaling from HFR (fallback when wings are missing)
+            f = min(max(capfrac, 0.5), 0.9999)
+            r_cap = hfr * math.sqrt(math.log(1.0 - f) / math.log(0.5))
+        r_cap = float(min(r_cap, win - 1))
+
+        Cx = x0 + sx; Cy = y0 + sy
+        if circular:
+            A = B = r_cap
+        else:
+            q = max(1e-3, b / a)          # minor/major axis ratio
+            A = r_cap / math.sqrt(q)      # area-preserving: A*B = r_cap^2, A/B = a/b
+            B = r_cap * math.sqrt(q)
+        return (Cx, Cy, A, B, theta, float(hfr), ecc, float(r_cap))
+
+    def _auto_pick_star(self, scene_pt):
+        try:
+            gray = self._auto_gray_linear()
+        except Exception as e:
+            QMessageBox.warning(self, "Auto Star", str(e))
+            return
+        H, W = gray.shape[:2]
+        cx = float(np.clip(scene_pt.x(), 0, W - 1))
+        cy = float(np.clip(scene_pt.y(), 0, H - 1))
+        capfrac = float(self.spin_capture.value()) / 100.0
+        circular = self.chk_circular.isChecked()
+
+        try:
+            res = self._auto_detect_star_at(gray, cx, cy, capfrac, circular)
+        except Exception as e:
+            QMessageBox.warning(self, "Auto Star", f"Detection failed:\n{e}")
+            return
+        if res is None:
+            QMessageBox.information(
+                self, "Auto Star",
+                "No star found near the click. Click closer to the star's core, "
+                "or adjust Capture% and try again.")
+            return
+
+        Cx, Cy, A, B, theta, hfr, ecc, r_cap = res
+        mask = self._rotated_ellipse_mask(H, W, Cx, Cy, A, B, theta)
+        if int(mask.sum()) < 9:
+            QMessageBox.warning(self, "Auto Star", "Detected aperture is too small.")
+            return
+        verts = self._rotated_ellipse_verts(Cx, Cy, A, B, theta, n=160)
+
+        self._clear_target_items()
+        self._auto_mask = mask
+        self._auto_verts = verts
+        poly = QPolygonF([QPointF(float(px), float(py)) for px, py in verts])
+        path = QPainterPath(); path.addPolygon(poly); path.closeSubpath()
+        self._auto_ellipse_item = self.scene.addPath(path, self._pen_final)
+
+        self.lbl.setText(
+            f"Auto star @ ({Cx:.1f}, {Cy:.1f}) - HFR {hfr:.2f}px, ecc {ecc:.2f}, "
+            f"aperture r~={r_cap:.1f}px (~{capfrac*100:.1f}% flux, {int(mask.sum())} px). "
+            f"Re-click or adjust Capture% if needed, then Use Target.")
 
     def _on_use_target(self):
         mask = self._target_mask()

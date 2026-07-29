@@ -1,4 +1,3 @@
-
 import numpy as np
 import math
 from dataclasses import dataclass, field
@@ -1430,19 +1429,50 @@ class AstroSpikeWindow(QDialog):
             self.ctx.log(f"Saved image to {file_path}")
 
     def apply_to_document(self):
-        """Apply the effect to the SETI Astro document and close."""
+        """Apply the effect to the SETI Astro document and close.
+
+        Render the spikes with the SAME QPainter renderer the preview and
+        "Save Image" use (screen compositing), so what lands on the document is
+        exactly what is shown. We render the spike layer over opaque black and
+        then screen-composite it onto the float base. Screen is associative and
+        screen(0, x) == x, so screen(base, spikes-over-black) is identical to
+        screening the spikes directly over the base -- this keeps the document
+        at full float precision instead of falling back to the separate NumPy
+        renderer (render_spikes), which produced different-looking spikes.
+        """
         self.status_label.setText("Applying to document...")
-        
-        # Render to numpy array
-        output = self.image_data_float.copy()
-        render_spikes(output, self.canvas.stars, self.config)
-        output = np.clip(output, 0.0, 1.0)
-        
-        # Apply to document
+
+        base = np.clip(np.asarray(self.image_data_float, dtype=np.float32), 0.0, 1.0)
+        h, w = base.shape[:2]
+
+        # Spike layer via the preview renderer, over opaque black.
+        layer_img = QImage(w, h, self.qimage.format())
+        layer_img.fill(Qt.GlobalColor.black)
+        painter = QPainter(layer_img)
+        self.canvas.renderer.render(painter, w, h, self.canvas.stars, self.config)
+        painter.end()
+
+        layer = self._qimage_to_float_rgb(layer_img)   # HxWx3 float32 in [0,1]
+
+        # Screen composite in float: out = 1 - (1 - base) * (1 - layer)
+        output = np.clip(1.0 - (1.0 - base) * (1.0 - layer), 0.0, 1.0).astype(np.float32)
+
         self.ctx.set_image(output, step_name="AstroSpike Effect")
         self.ctx.log(f"Applied AstroSpike effect with {len(self.canvas.stars)} stars")
-        
+
         self.accept()  # Close dialog
+
+    @staticmethod
+    def _qimage_to_float_rgb(qimg: "QImage") -> np.ndarray:
+        """QImage -> HxWx3 float32 in [0,1], safe against row padding."""
+        img = qimg.convertToFormat(QImage.Format.Format_RGB888)
+        w = img.width(); h = img.height()
+        bpl = img.bytesPerLine()
+        ptr = img.constBits()
+        ptr.setsize(bpl * h)
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape(h, bpl)
+        arr = arr[:, : w * 3].reshape(h, w, 3)
+        return arr.astype(np.float32) / 255.0
 
     def closeEvent(self, event):
         if self.thread and self.thread.isRunning():
