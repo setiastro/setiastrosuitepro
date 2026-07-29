@@ -53,6 +53,22 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 from setiastro.saspro.star_metrics import measure_stars_sep
 
+def _try_raise_fd_limit() -> None:
+    """Silently raise RLIMIT_NOFILE soft limit to the hard cap (Unix only)."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard == resource.RLIM_INFINITY:
+            target = max(soft, 65536)
+        else:
+            target = hard
+        if target > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except Exception:
+        pass
+
+_try_raise_fd_limit()
+
 def _blink_thread_safety_mode() -> str:
     """Return 'safe' or 'fast'. QSettings 'blink/thread_safety' may be:
        'auto' (default) -> safe on macOS, fast elsewhere
