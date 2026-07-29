@@ -159,6 +159,28 @@ from setiastro.saspro.mfdeconv import (
 )
 import hashlib
 
+# ---------------------------------------------------------------------------
+# Raise the per-process open-file-descriptor soft limit to its hard cap.
+# macOS default soft limit is only 256; stacking hundreds of mmap'd FITS
+# frames will hit [Errno 24] Too many open files without this.
+# ---------------------------------------------------------------------------
+def _try_raise_fd_limit() -> None:
+    """Silently raise RLIMIT_NOFILE soft limit to the hard cap (Unix only)."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard == resource.RLIM_INFINITY:
+            target = max(soft, 65536)
+        else:
+            target = hard
+        if target > soft:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except Exception:
+        pass
+
+_try_raise_fd_limit()
+
+
 def _norm_out_name(fp: str, norm_dir: str) -> str:
     base = os.path.basename(fp)
     if base.endswith("_n.fit"):
@@ -25338,6 +25360,20 @@ class StackingSuiteDialog(QDialog):
             for s in sources:
                 try: s.close()
                 except Exception: pass
+            # [Errno 24] EMFILE / [Errno 23] ENFILE — too many open file
+            # descriptors.  Automatically fall back to the seek-based reader
+            # which holds only one handle per worker thread at a time.
+            if isinstance(e, OSError) and e.errno in (errno.EMFILE, errno.ENFILE):
+                log(f"⚠️ Too many open files ({len(file_list)} frames); "
+                    f"falling back to lazy per-tile reads.")
+                return self._normal_integration_low_ram(
+                    group_key=group_key,
+                    file_list=file_list,
+                    frame_weights=frame_weights,
+                    status_cb=status_cb,
+                    algo_override=algo_override,
+                    collect_per_file_rejections=collect_per_file_rejections,
+                )
             log(f"⚠️ Failed to open images (memmap): {e}")
             log(f"💡 If you are stacking a large number of frames, enable "
                 f"'Low RAM Safe Mode' in Stacking Settings to avoid this error.")
