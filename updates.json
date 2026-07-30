@@ -1,10 +1,10 @@
 {
-  "version": "1.19.15",
+  "version": "1.19.16",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.15/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.15/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.15/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.15/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.16/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.16/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.16/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.16/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.19.15\nUpdates to Stacking Suite (increased macOS file limit), Magnitude Tool (automatic star detect for ROI), Hyperbolic Stretch (Fine tune sliders), Header Viewer Panel (bug fix and copy metadata button), Blink (increased macOS file limit), and AstroSpike (render bug fix).\n\nV1.19.14\nComplete rewrite of AstroAlign to bring more powerful and robust matching for star alignments.\n\nUpdates across various tools: WIMI, SSSC, Mosaic Master, Magnitude/Surface Brightness Tool, Hyperbolic Stretch, Cosmic Clarity\n\nV1.19.13\nNew Stellar Alignment Mode: WCS: This will align your two images based on the WCS up to 4th order poly correction terms and can be followed by a stellar based refinement pass. This will allow aligning two vastly different images in image dimension, orientation, mirror parity, etc.\n\nFurther updates to Mosaic Master to pass the full WCS to the final Mosaic\n\nStacking Suite bug fixed that was preventing the satellite mask from being used."
+ "notes": "Seti Astro Suite Pro\n\nV1.19.16\nFine Control Update for Curves.  Updates to Crop Tool.  Pedestal Removal complete overhaul.  Magnitude tool can now identify and submit measurements to AAVSO\n\nV1.19.15\nUpdates to Stacking Suite (increased macOS file limit), Magnitude Tool (automatic star detect for ROI), Hyperbolic Stretch (Fine tune sliders), Header Viewer Panel (bug fix and copy metadata button), Blink (increased macOS file limit), and AstroSpike (render bug fix).\n\nV1.19.14\nComplete rewrite of AstroAlign to bring more powerful and robust matching for star alignments.\n\nUpdates across various tools: WIMI, SSSC, Mosaic Master, Magnitude/Surface Brightness Tool, Hyperbolic Stretch, Cosmic Clarity\n\nV1.19.13\nNew Stellar Alignment Mode: WCS: This will align your two images based on the WCS up to 4th order poly correction terms and can be followed by a stellar based refinement pass. This will allow aligning two vastly different images in image dimension, orientation, mirror parity, etc.\n\nFurther updates to Mosaic Master to pass the full WCS to the final Mosaic\n\nStacking Suite bug fixed that was preventing the satellite mask from being used."
 }
