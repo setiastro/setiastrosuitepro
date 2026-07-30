@@ -12,7 +12,7 @@ from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QToolButton,
     QMessageBox, QGraphicsScene, QGraphicsView, QGraphicsRectItem, QGraphicsEllipseItem,
-    QGraphicsItem, QGraphicsPixmapItem, QSpinBox, QGraphicsPathItem,
+    QGraphicsItem, QGraphicsPixmapItem, QSpinBox, QDoubleSpinBox, QGraphicsPathItem,
     QGroupBox, QCheckBox, QScrollArea, QWidget, QSizePolicy, QFrame,
 )
 
@@ -127,6 +127,7 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
         )
         self.setAcceptHoverEvents(True)
         self._fixed_ar: Optional[float] = None
+        self._rotation_cb = None  
         self._handles: dict[str, QGraphicsEllipseItem] = {}
         self._active: Optional[str] = None
         self._rotating = False
@@ -311,7 +312,12 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
             QGraphicsItem.GraphicsItemChange.ItemTransformHasChanged,
         ):
             self._sync_handles()
-
+        if (change == QGraphicsItem.GraphicsItemChange.ItemRotationHasChanged
+                and callable(getattr(self, "_rotation_cb", None))):
+            try:
+                self._rotation_cb(float(self.rotation()))
+            except Exception:
+                pass
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
             if self._bounds_scene is not None and self._is_unrotated():
                 new_pos = QPointF(value)
@@ -694,6 +700,18 @@ class CropDialogPro(QDialog):
         margins_row.addWidget(QLabel(self.tr("Bottom"))); margins_row.addWidget(self.sb_bottom)
         margins_row.addSpacing(8)
         margins_row.addWidget(QLabel(self.tr("Left")));   margins_row.addWidget(self.sb_left)
+        margins_row.addSpacing(8)
+        margins_row.addWidget(QLabel(self.tr("Angle")))
+        self.sb_angle = QDoubleSpinBox()
+        self.sb_angle.setRange(-180.0, 180.0)
+        self.sb_angle.setDecimals(1)
+        self.sb_angle.setSingleStep(1.0)
+        self.sb_angle.setSuffix("°")
+        self.sb_angle.setWrapping(True)
+        self.sb_angle.setToolTip(self.tr(
+            "Rotation of the crop box (degrees).\n"
+            "Tip: you can also Shift + drag the box to rotate it."))
+        margins_row.addWidget(self.sb_angle)
         margins_row.addStretch(1)
         main.addLayout(margins_row)
 
@@ -704,6 +722,7 @@ class CropDialogPro(QDialog):
             self._apply_margin_inputs()
         for sb in (self.sb_top, self.sb_right, self.sb_bottom, self.sb_left):
             sb.valueChanged.connect(_on_margin_changed)
+        self.sb_angle.valueChanged.connect(self._apply_angle_input)
 
         # graphics view
         self.scene = QGraphicsScene(self)
@@ -1075,10 +1094,12 @@ class CropDialogPro(QDialog):
                     self._rect_item.setBoundsSceneRect(self._bounds_scene_rect())
                     self._rect_item.setFixedAspectRatio(self._current_ar_value())
                     self.scene.addItem(self._rect_item)
+                    self._attach_rect(self._rect_item)  
                     CropDialogPro._prev_rect  = QRectF(r)
                     CropDialogPro._prev_angle = self._rect_item.rotation()
                     CropDialogPro._prev_pos   = self._rect_item.pos()
                     self._update_dim_label_from_rect_item()
+                    self._attach_rect(self._rect_item)  
                     return True
 
             return False
@@ -1148,6 +1169,33 @@ class CropDialogPro(QDialog):
             self._rect_item.setPos(QPointF(0, 0))
             self._rect_item.setRect(r)
         self._rect_item.setTransformOriginPoint(r.center())
+        self._update_dim_label_from_rect_item()
+
+    def _attach_rect(self, item):
+        """Wire live rotation feedback and sync the Angle spin to this rect."""
+        try:
+            item._rotation_cb = self._sync_angle_spin_from_item
+        except Exception:
+            pass
+        self._sync_angle_spin_from_item()
+
+    def _sync_angle_spin_from_item(self, angle=None):
+        """Reflect the crop box's current rotation in the Angle spin box."""
+        if not hasattr(self, "sb_angle") or self._rect_item is None:
+            return
+        ang = self._rect_item.rotation() if angle is None else float(angle)
+        ang = ((ang + 180.0) % 360.0) - 180.0      # normalize to [-180, 180]
+        from PyQt6.QtCore import QSignalBlocker
+        _blk = QSignalBlocker(self.sb_angle)
+        self.sb_angle.setValue(ang)
+
+    def _apply_angle_input(self, value: float):
+        """Rotate the crop box to the typed angle, about its center."""
+        if self._rect_item is None:
+            return
+        r = self._rect_item.rect()
+        self._rect_item.setTransformOriginPoint(r.center())
+        self._rect_item.setRotation(float(value))
         self._update_dim_label_from_rect_item()
 
     def _current_ar_value(self) -> Optional[float]:
@@ -1253,6 +1301,7 @@ class CropDialogPro(QDialog):
         self._rect_item.setPos(pos)
         self._rect_item.setTransformOriginPoint(r.center())
         self.scene.addItem(self._rect_item)
+        self._attach_rect(self._rect_item)  
         self._update_dim_label_from_rect_item()
 
     def _load_previous(self):
@@ -1270,6 +1319,7 @@ class CropDialogPro(QDialog):
         self._rect_item.setPos(CropDialogPro._prev_pos)
         self._rect_item.setTransformOriginPoint(r.center())
         self.scene.addItem(self._rect_item)
+        self._attach_rect(self._rect_item)  
         self._update_dim_label_from_rect_item()
 
     # =========================================================================

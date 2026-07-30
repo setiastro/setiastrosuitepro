@@ -7243,6 +7243,9 @@ class AstroSuiteProMainWindow(
             if cid == "remove_green":
                 from setiastro.saspro.remove_green import open_remove_green_dialog
                 open_remove_green_dialog(self, preset); return
+            if cid == "pedestal":
+                from setiastro.saspro.pedestal import open_remove_pedestal_with_preset
+                open_remove_pedestal_with_preset(self, preset); return            
             if cid == "extract_luminance":
                 self._extract_luminance(doc=None); return
             if cid == "recombine_luminance":
@@ -7458,8 +7461,25 @@ class AstroSuiteProMainWindow(
             return
 
         if cid == "pedestal":
-            from setiastro.saspro.pedestal import remove_pedestal
-            remove_pedestal(self, target_doc=doc)
+            try:
+                from setiastro.saspro.pedestal import remove_pedestal
+                remove_pedestal(self, target_doc=doc, preset=preset or {})
+                try:
+                    self._log(f"Applied Remove Pedestal to '{target_sw.windowTitle()}'")
+                except Exception:
+                    pass
+                try:
+                    self._last_headless_command = {
+                        "command_id": "pedestal",
+                        "preset": dict(preset or {}),
+                    }
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    QMessageBox.warning(self, "Remove Pedestal", f"Apply failed:\n{e}")
+                except Exception:
+                    pass
             return
 
         if cid == "abe":
@@ -8750,17 +8770,10 @@ class AstroSuiteProMainWindow(
             pass
 
     def _on_remove_pedestal(self):
-        from setiastro.saspro.pedestal import remove_pedestal
-
-        # Let remove_pedestal resolve the correct target via DocManager
-        remove_pedestal(self, target_doc=None)
-
-        # remember for replay - no preset payload needed, just the id
-        self._remember_last_headless_command(
-            "pedestal",
-            preset={},                          # no parameters for this one
-            description="Pedestal Removal"
-        )
+        from setiastro.saspro.pedestal import open_remove_pedestal_dialog
+        # Opens the live dialog on the active document (DocManager/MDI-resolved).
+        # Apply + replay bookkeeping now happen inside the dialog.
+        open_remove_pedestal_dialog(self)
 
     def _open_statistical_stretch_with_preset(self, preset: dict):
         """

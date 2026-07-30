@@ -37,11 +37,13 @@ from astropy.io import fits
 from astropy.wcs import WCS
 from astroquery.vizier import Vizier
 
-from PyQt6.QtCore import Qt, QRect, QEvent, QPointF, QRectF, QTimer
+from PyQt6.QtCore import Qt, QRect, QEvent, QPointF, QRectF, QTimer, QSettings
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTabWidget, QWidget,
     QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout,QComboBox, QGraphicsPathItem, QGraphicsEllipseItem,
-    QMessageBox, QApplication, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsItem, QListWidget, QListWidgetItem, QCheckBox, QInputDialog
+    QMessageBox, QApplication, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QGraphicsItem, QListWidget, QListWidgetItem, QCheckBox, QInputDialog,
+    QTableWidget, QTableWidgetItem, QLineEdit, QInputDialog,
+    QFileDialog, QAbstractItemView, QHeaderView,    
 )
 from PyQt6.QtGui import QImage, QPixmap, QPen, QColor, QPainter, QPainterPath, QPolygonF
 from astropy.coordinates import SkyCoord
@@ -65,6 +67,11 @@ import socket
 import multiprocessing as mp
 import queue
 import traceback
+
+from setiastro.saspro import photometry_aavso as aav
+
+import webbrowser
+
 
 def _run_in_subprocess(timeout_s: float, target, *args, **kwargs):
     """
@@ -1022,6 +1029,125 @@ class ZeroPointPlotsDialog(QDialog):
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+
+
+
+class _AavsoBatchDialog(QDialog):
+    """Review accumulated AAVSO rows, delete unwanted ones, and export a valid
+    AAVSO Extended file (observer code persisted; offer to open WebObs)."""
+ 
+    def __init__(self, parent, rows):
+        super().__init__(parent)
+        self.setWindowTitle("AAVSO Submission Batch")
+        self.resize(900, 420)
+        self._rows = rows           # shared list[(AavsoRow, ra, dec)] (mutated in place)
+ 
+        v = QVBoxLayout(self)
+        cols = ["NAME", "DATE (JD)", "MAG", "MERR", "FILT", "KNAME", "KMAG", "AMASS"]
+        self.table = QTableWidget(0, len(cols))
+        self.table.setHorizontalHeaderLabels(cols)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        v.addWidget(self.table, 1)
+        self._reload()
+ 
+        btns = QHBoxLayout()
+        self.btn_del = QPushButton("Delete Selected")
+        self.btn_del.clicked.connect(self._delete_selected)
+        self.btn_clear = QPushButton("Clear Batch")
+        self.btn_clear.clicked.connect(self._clear)
+        self.btn_export = QPushButton("Export AAVSO File…")
+        self.btn_export.clicked.connect(self._export)
+        self.btn_close = QPushButton("Close")
+        self.btn_close.clicked.connect(self.accept)
+        btns.addWidget(self.btn_del)
+        btns.addWidget(self.btn_clear)
+        btns.addStretch(1)
+        btns.addWidget(self.btn_export)
+        btns.addWidget(self.btn_close)
+        v.addLayout(btns)
+ 
+    def _reload(self):
+        self.table.setRowCount(0)
+        for (r, _ra, _dec) in self._rows:
+            i = self.table.rowCount()
+            self.table.insertRow(i)
+            vals = [r.name, f"{r.date_jd:.5f}", f"{r.mag:.3f}",
+                    ("na" if r.merr is None else f"{r.merr:.3f}"), r.filt,
+                    str(r.kname), (f"{float(r.kmag):.3f}" if _num(r.kmag) else str(r.kmag)),
+                    ("na" if r.amass is None else f"{r.amass:.3f}")]
+            for j, val in enumerate(vals):
+                self.table.setItem(i, j, QTableWidgetItem(val))
+ 
+    def _delete_selected(self):
+        idx = sorted({m.row() for m in self.table.selectedIndexes()}, reverse=True)
+        for i in idx:
+            if 0 <= i < len(self._rows):
+                del self._rows[i]
+        self._reload()
+ 
+    def _clear(self):
+        self._rows.clear()
+        self._reload()
+ 
+    def _export(self):
+        if not self._rows:
+            QMessageBox.information(self, "Export", "Batch is empty.")
+            return
+        names = {r.name for (r, _ra, _dec) in self._rows}
+        if len(names) > 1:
+            QMessageBox.warning(
+                self, "Multiple Targets",
+                "This batch mixes STARIDs: " + ", ".join(sorted(names)) +
+                ".\nAAVSO Extended files are per-target. Export one target at a time "
+                "(delete the others first).")
+            return
+ 
+        settings = QSettings()
+        prev = settings.value("AAVSO/observer_code", "", type=str)
+        code, ok = QInputDialog.getText(self, "Observer Code",
+                                        "AAVSO observer code:", text=prev)
+        if not ok or not code.strip():
+            return
+        code = code.strip().upper()
+        settings.setValue("AAVSO/observer_code", code)
+ 
+        _r0, ra, dec = self._rows[0]
+        rows_only = [r for (r, _ra, _dec) in self._rows]
+        try:
+            text = aav.format_aavso_extended(rows_only, obscode=code, ra_deg=ra, dec_deg=dec)
+        except Exception as e:
+            QMessageBox.critical(self, "Export", f"Could not format file:\n{e}")
+            return
+ 
+        path, _ = QFileDialog.getSaveFileName(self, "Save AAVSO File", "",
+                                              "Text files (*.txt *.dat *.csv)")
+        if not path:
+            return
+        try:
+            with open(path, "w") as f:
+                f.write(text)
+        except Exception as e:
+            QMessageBox.critical(self, "Export", f"Failed to write file:\n{e}")
+            return
+ 
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Export AAVSO")
+        msg.setText(f"Wrote {len(rows_only)} row(s) →\n{path}\n\nOpen the AAVSO WebObs upload page now?")
+        yes = msg.addButton("Open WebObs", QMessageBox.ButtonRole.AcceptRole)
+        msg.addButton("Close", QMessageBox.ButtonRole.RejectRole)
+        msg.exec()
+        if msg.clickedButton() == yes:
+            webbrowser.open("https://apps.aavso.org/v2/data/submit/photometry/")
+ 
+ 
+def _num(x):
+    try:
+        float(x); return True
+    except (TypeError, ValueError):
+        return False
+
+
 # ---------------------------- UI dialog (initial) ----------------------------
 class MagnitudeRegionDialog(QDialog):
     """
@@ -1351,6 +1477,16 @@ class MagnitudeRegionDialog(QDialog):
             self.view.resetTransform()
             self.view.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
             self._user_zoomed = False
+        seed = getattr(self.parent(), "_pending_seed_xy", None)
+        if seed is not None:
+            try:
+                self.parent()._pending_seed_xy = None
+                self.mode_combo.setCurrentText("Star (auto)")
+                self._auto_pick_star(QPointF(float(seed[0]), float(seed[1])))
+                # center the view on the star
+                self.view.centerOn(float(seed[0]), float(seed[1]))
+            except Exception:
+                pass
 
         # If you're keeping overlays, DON'T blow away bg/target here.
         # Only auto-find bg if bg doesn't exist.
@@ -2126,6 +2262,10 @@ class MagnitudeToolDialog(QDialog):
         self.background_rect = QRect()
 
         self.last_zp: Dict[str, Any] = {}
+        self._last_measurement = None      # dict from _record_measurement()
+        self._aavso_rows = []              # list[(aav.AavsoRow, ra_deg, dec_deg)]
+        self._target_name = None           # resolved STARID for the current target
+        self._check_star = None            # (kname, kmag) once chosen for this batch
 
         self._build_ui()
         self._update_band_controls()
@@ -2146,6 +2286,16 @@ class MagnitudeToolDialog(QDialog):
         self.btn_pick = QPushButton("Step 3: Pick Target Region…")
         self.btn_pick.clicked.connect(self.open_region_picker)
         v.addWidget(self.btn_pick)
+        name_row = QHBoxLayout()
+        self.txt_find_name = QLineEdit()
+        self.txt_find_name.setPlaceholderText("Find star by name (e.g. IRAS 17382-5308)…")
+        self.txt_find_name.returnPressed.connect(self.find_star_by_name)
+        self.btn_find_name = QPushButton("Go to Star")
+        self.btn_find_name.clicked.connect(self.find_star_by_name)
+        name_row.addWidget(self.txt_find_name, 1)
+        name_row.addWidget(self.btn_find_name)
+        v.addLayout(name_row)
+
         region_row = QHBoxLayout()
         self.btn_save_region = QPushButton("Save Region…")
         self.btn_save_region.clicked.connect(self.save_region_to_library)
@@ -2298,6 +2448,20 @@ class MagnitudeToolDialog(QDialog):
         self.btn_close.clicked.connect(self.reject)
         row2.addWidget(self.btn_close)
         v.addLayout(row2)
+
+        aavso_row = QHBoxLayout()
+        self.btn_identify = QPushButton("Identify Target…")
+        self.btn_identify.clicked.connect(self.identify_target)
+        self.btn_add_batch = QPushButton("Add Measurement → AAVSO Batch")
+        self.btn_add_batch.clicked.connect(self.add_last_measurement_to_batch)
+        self.btn_aavso = QPushButton("AAVSO Batch…")
+        self.btn_aavso.clicked.connect(self.open_aavso_batch)
+        aavso_row.addWidget(self.btn_identify)
+        aavso_row.addWidget(self.btn_add_batch)
+        aavso_row.addWidget(self.btn_aavso)
+        v.addLayout(aavso_row)
+        self._refresh_aavso_button()
+
 
     def _open_full_image_view(self):
         if self.object_mask is None:
@@ -3211,6 +3375,13 @@ class MagnitudeToolDialog(QDialog):
             else:
                 msg += "Surface brightness: N/A (no pixscale from WCS)\n"
             msg += self._background_robustness_text(img_f, obj_mask, hdr, bg_mask)
+            self._record_measurement(
+                mode="mono",
+                mags={"L": m}, merrs={"L": total_sigma(m_stat)},
+                merrs_stat={"L": m_stat},
+                mono_band=band, hdr=hdr,
+            )
+
             dlg = _ResultsDialog(self, "Magnitude Results", msg)
             dlg.show()
             dlg.raise_()
@@ -3307,6 +3478,16 @@ class MagnitudeToolDialog(QDialog):
         else:
             msg += "Surface brightness: N/A (no pixscale from WCS)\n"
         msg += self._background_robustness_text(img_f, obj_mask, hdr, bg_mask)
+        self._record_measurement(
+            mode="rgb",
+            mags={"R": mR, "G": mG, "B": mB},
+            merrs={"R": total_sigma(mR_stat),
+                   "G": total_sigma(mG_stat),
+                   "B": total_sigma(mB_stat)},
+            merrs_stat={"R": mR_stat, "G": mG_stat, "B": mB_stat},
+            hdr=hdr,
+        )
+
         dlg = _ResultsDialog(self, "Magnitude Results", msg)
         dlg.show()
         dlg.raise_()
@@ -3739,6 +3920,334 @@ class MagnitudeToolDialog(QDialog):
         self.doc_manager.update_active_document(doc.image, metadata=meta, step_name="Magnitude Stars Cached (SIMBAD)", doc=doc)
 
         return star_list
+
+    def _wcs_or_build(self):
+        """Return a usable celestial WCS, building one from the header if fetch
+        hasn't run yet."""
+        w = getattr(self, "wcs", None)
+        if w is not None:
+            return w
+        _img, hdr, _doc = self._get_active_image_and_header()
+        w, _ps = _build_wcs_and_pixscale(hdr)   # module-level helper
+        return w
+    
+    
+    def _target_centroid_radec(self):
+        """Flux-weighted centroid of the current object mask → (ra_deg, dec_deg),
+        or None. Falls back to a stored measurement centroid."""
+        img, _hdr, _doc = self._get_active_image_and_header()
+        mask = getattr(self, "object_mask", None)
+        w = self._wcs_or_build()
+        if img is None or mask is None or w is None:
+            # fall back to whatever the last measurement stored
+            lm = getattr(self, "_last_measurement", None)
+            if lm and lm.get("radec"):
+                return lm["radec"]
+            return None
+        cen = aav.flux_weighted_centroid(_to_float_image(img), mask)
+        if cen is None:
+            return None
+        cx, cy = cen
+        try:
+            world = w.pixel_to_world(cx, cy)
+            return float(world.ra.deg), float(world.dec.deg)
+        except Exception:
+            try:
+                ra, dec = w.all_pix2world(cx, cy, 0)
+                return float(ra), float(dec)
+            except Exception:
+                return None
+    
+    
+    def _record_measurement(self, *, mode, mags, merrs, hdr, mono_band=None, merrs_stat=None):
+        """Persist the just-computed photometry so it can be identified/exported.
+        Called at the tail of measure_object_region."""
+        # object coordinates + observation time from the ORIGINAL header (the WCS
+        # header from a plate solve often lacks DATE-OBS/EXPOSURE)
+        _img, wcs_hdr, doc = self._get_active_image_and_header()
+        meta = getattr(doc, "metadata", {}) or {}
+        time_hdr = meta.get("original_header") or hdr
+    
+        radec = self._target_centroid_radec()
+        exptime = aav.exptime_from_header(time_hdr)
+        jd = aav.obs_jd_from_header(time_hdr, exptime_s=exptime, to_midpoint=True)
+        amass = None
+        if radec is not None:
+            amass = aav.airmass_from_header(time_hdr, radec[0], radec[1])
+    
+        # AAVSO filter code from the FITS FILTER card. RGB frames map channels to
+        # TR/TG/TB directly, so this only drives the mono path — but we capture it
+        # for both so a mono sub with a FILTER card needs no prompt.
+        filt_raw = None
+        for k in ("FILTER", "FILTER1", "FILT", "FILTNAME", "INSFLNAM"):
+            val = aav._hget(time_hdr, k)
+            if val not in (None, ""):
+                filt_raw = str(val)
+                break
+        f_code, f_conf, _ = aav.filter_to_aavso(filt_raw)
+    
+        self._last_measurement = {
+            "mode": mode,
+            "mags": dict(mags),
+            "merrs": dict(merrs),
+            "merrs_stat": (dict(merrs_stat) if merrs_stat is not None else dict(merrs)),
+            "mono_band": mono_band,
+            "radec": radec,
+            "jd": jd,
+            "amass": amass,
+            "filter_raw": filt_raw,
+            "filter_aavso": f_code,
+            "filter_conf": f_conf,
+        }
+    
+    
+    def find_star_by_name(self):
+        """Resolve a typed name → sky position → pixel, then open the region picker
+        positioned on it (auto-fitting if the picker supports a seed)."""
+        name = self.txt_find_name.text().strip()
+        if not name:
+            return
+        w = self._wcs_or_build()
+        if w is None:
+            QMessageBox.warning(self, "Find Star",
+                                "Need a WCS. Fetch catalog stars (Step 1) first, or plate-solve the image.")
+            return
+        self.lbl_info.setText(f"Resolving '{name}' via SIMBAD…")
+        QApplication.processEvents()
+        try:
+            radec = aav.resolve_name_to_radec(name)
+        except Exception as e:
+            QMessageBox.critical(self, "Find Star", f"Name resolver failed:\n{e}")
+            return
+        if radec is None:
+            QMessageBox.information(self, "Find Star", f"Could not resolve '{name}'.")
+            return
+    
+        ra, dec = radec
+        img, _hdr, _doc = self._get_active_image_and_header()
+        H, W = np.asarray(img).shape[:2]
+        try:
+            x, y = w.all_world2pix(ra, dec, 0)
+            x, y = float(x), float(y)
+        except Exception as e:
+            QMessageBox.warning(self, "Find Star", f"Could not project to pixels:\n{e}")
+            return
+        if not (0 <= x < W and 0 <= y < H):
+            QMessageBox.information(
+                self, "Find Star",
+                f"'{name}' resolves to RA={ra:.5f}, Dec={dec:.5f}, which is OUTSIDE this image.")
+            return
+    
+        self._target_name = name          # remember the user's chosen designation
+        # Open the region picker seeded at (x, y). See block 5 for the tiny hook in
+        # MagnitudeRegionDialog; if you skip that hook, this still opens the picker
+        # and reports the pixel for a manual click.
+        self._pending_seed_xy = (x, y)
+        self.open_region_picker()
+        self.lbl_info.setText(f"'{name}' → pixel ({x:.0f}, {y:.0f}). Auto-fitting star…")
+    
+    
+    def identify_target(self):
+        """Identify the current target via SIMBAD cone search and resolve a VSX
+        designation. Sets self._target_name for AAVSO export."""
+        radec = self._target_centroid_radec()
+        if radec is None:
+            QMessageBox.warning(self, "Identify Target",
+                                "Pick/measure a target region first (need a target and a WCS).")
+            return
+        ra, dec = radec
+        self.lbl_info.setText("Querying SIMBAD…")
+        QApplication.processEvents()
+        try:
+            info = aav.identify_object(ra, dec, radius_arcsec=5.0)
+        except Exception as e:
+            QMessageBox.critical(self, "SIMBAD Error", f"Could not reach SIMBAD:\n{e}")
+            return
+        if not info or not info.get("main_id"):
+            QMessageBox.information(self, "Identify Target",
+                                f"No SIMBAD object within 5″ of RA={ra:.5f}, Dec={dec:.5f}.")
+            return
+    
+        main_id = info["main_id"]
+        vsx = None
+        try:
+            vsx = aav.resolve_vsx_name(main_id=main_id, ra_deg=ra, dec_deg=dec)
+        except Exception:
+            vsx = None
+    
+        star_id = vsx or main_id
+        self._target_name = star_id
+    
+        off = info.get("offset_arcsec")
+        vmag = info.get("vmag")
+        lines = [
+            f"SIMBAD ID:   {main_id}",
+            f"Object type: {info.get('otype') or 'n/a'}",
+            f"V mag:       {vmag:.3f}" if vmag is not None else "V mag:       n/a",
+            f"Offset:      {off:.2f}″" if off is not None else "Offset:      n/a",
+        ]
+        if vsx:
+            lines.append(f"VSX / AAVSO: {vsx}   ← will be used as STARID")
+        else:
+            lines.append("VSX / AAVSO: not found (SIMBAD ID will be used as STARID)")
+        QMessageBox.information(self, "Identify Target", "\n".join(lines))
+    
+    
+    def _suggest_check_star(self):
+        """Pick a check star: the brightest catalog star with a known V that is not
+        the target, then resolve its SIMBAD name. Returns (kname, kmag) or None."""
+        star_list = getattr(self, "star_list", None) or []
+        tgt = self._target_centroid_radec()
+        best = None
+        for s in star_list:
+            v = s.get("Vmag")
+            if v is None or not np.isfinite(v):
+                continue
+            if tgt is not None:
+                d = SkyCoord(s["ra"] * u.deg, s["dec"] * u.deg).separation(
+                    SkyCoord(tgt[0] * u.deg, tgt[1] * u.deg)).arcsec
+                if d < 10.0:      # that's the target itself
+                    continue
+            if best is None or v < best[0]:
+                best = (v, s)
+        if best is None:
+            return None
+        v, s = best
+        try:
+            kname, _kv = aav.identify_name_and_vmag(s["ra"], s["dec"])
+        except Exception:
+            kname = None
+        return (kname or f"RA{s['ra']:.4f}", float(v))
+    
+    
+    def add_last_measurement_to_batch(self):
+        """Turn the last measurement into AAVSO rows and append to the batch."""
+        lm = getattr(self, "_last_measurement", None)
+        if not lm:
+            QMessageBox.information(self, "AAVSO", "Measure a region first (Step 4).")
+            return
+        if lm.get("radec") is None:
+            QMessageBox.warning(self, "AAVSO", "No target coordinates (need a WCS). Fetch stars / plate-solve first.")
+            return
+        if lm.get("jd") is None:
+            jd, ok = QInputDialog.getDouble(self, "Observation Date",
+                                            "No DATE-OBS in header. Enter Julian Date (mid-exposure):",
+                                            decimals=5)
+            if not ok:
+                return
+            lm["jd"] = float(jd)
+    
+        # STARID: identify if we haven't yet, then confirm — prepopulated with the
+        # identified name so it's visible and editable (this is the field the user
+        # expects to see filled after Identify Target).
+        if not self._target_name:
+            self.identify_target()          # sets self._target_name (VSX / SIMBAD id)
+        star_id, ok = QInputDialog.getText(
+            self, "Target Name (STARID)",
+            "AAVSO STARID for this target:",
+            text=(self._target_name or ""),
+        )
+        if not ok or not star_id.strip():
+            return
+        star_id = star_id.strip()
+        self._target_name = star_id
+    
+        # Check star (once per batch)
+        if self._check_star is None:
+            sug = self._suggest_check_star()
+            kname = kmag = None
+            if sug is not None:
+                kname, kmag = sug
+            kname_in, ok = QInputDialog.getText(
+                self, "Check Star", "Check-star designation (KNAME):",
+                text=(kname or ""))
+            if not ok or not kname_in.strip():
+                return
+            kmag_in, ok = QInputDialog.getDouble(
+                self, "Check Star Magnitude", f"Catalog magnitude for {kname_in.strip()}:",
+                value=float(kmag) if kmag is not None else 0.0, decimals=3)
+            if not ok:
+                return
+            self._check_star = (kname_in.strip(), float(kmag_in))
+        kname, kmag = self._check_star
+    
+        amass = lm.get("amass")
+        if amass is None:
+            amass_in, ok = QInputDialog.getDouble(self, "Airmass",
+                                                "No airmass derivable from header. Enter airmass (or Cancel for na):",
+                                                value=1.0, minValue=1.0, maxValue=40.0, decimals=3)
+            amass = float(amass_in) if ok else None
+    
+        ra, dec = lm["radec"]
+        if lm["mode"] == "rgb":
+            rows = aav.build_rgb_rows(
+                name=star_id, date_jd=lm["jd"],
+                mags=lm["mags"], merrs=lm["merrs_stat"], amass=amass,
+                kname=kname, kmag=kmag,
+            )
+        else:
+            filt = self._resolve_mono_filter(lm)
+            if filt is None:
+                return
+            rows = aav.build_mono_row(
+                name=star_id, date_jd=lm["jd"],
+                mag=lm["mags"]["L"], merr=lm["merrs_stat"]["L"], filt=filt,
+                amass=amass, kname=kname, kmag=kmag,
+            )
+    
+        for r in rows:
+            self._aavso_rows.append((r, ra, dec))
+        self._refresh_aavso_button()
+        QMessageBox.information(self, "AAVSO",
+                            f"Added {len(rows)} row(s) for {star_id}. Batch now has "
+                            f"{len(self._aavso_rows)} row(s).")
+    
+    
+    def _resolve_mono_filter(self, lm):
+        """AAVSO filter code for a mono measurement. Auto-fills from the FITS FILTER
+        card when the mapping is confident; otherwise prompts with a best guess
+        pre-selected. Returns the code, or None if cancelled."""
+        code = lm.get("filter_aavso")
+        conf = lm.get("filter_conf")
+        raw = lm.get("filter_raw")
+    
+        # Confident header mapping (e.g. FILTER='V', 'Astrodon B', "g'") → no prompt.
+        if code and conf == "high":
+            return code
+    
+        choices = ["U", "B", "V", "R", "I", "SG", "SR", "SI", "SZ",
+                "CV", "CR", "TG", "TB", "TR", "J", "H", "K"]
+        default = code if code in choices else "V"
+        if raw:
+            prefix = f"FITS FILTER = {raw!r}\n"
+        else:
+            prefix = "No FILTER card found in the header.\n"
+        if conf == "none" and raw:
+            prefix += ("This looks narrowband or non-standard for AAVSO photometry — "
+                    "choose the closest valid band, or Cancel.\n")
+        filt, ok = QInputDialog.getItem(
+            self, "AAVSO Filter", prefix + "AAVSO filter code:",
+            choices, choices.index(default), True)   # editable
+        if not ok or not filt.strip():
+            return None
+        return filt.strip()
+    
+    
+    def _refresh_aavso_button(self):
+        n = len(getattr(self, "_aavso_rows", []))
+        if hasattr(self, "btn_aavso"):
+            self.btn_aavso.setText(f"AAVSO Batch… ({n})")
+            self.btn_aavso.setEnabled(n > 0)
+    
+    
+    def open_aavso_batch(self):
+        if not self._aavso_rows:
+            QMessageBox.information(self, "AAVSO Batch", "No measurements in the batch yet.")
+            return
+        dlg = _AavsoBatchDialog(self, self._aavso_rows)
+        dlg.exec()
+        self._refresh_aavso_button()
+
 
 def open_magnitude_tool(doc_manager, parent=None) -> MagnitudeToolDialog:
     dlg = MagnitudeToolDialog(doc_manager=doc_manager, parent=parent)
