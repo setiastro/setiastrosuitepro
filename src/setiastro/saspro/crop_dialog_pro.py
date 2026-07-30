@@ -8,16 +8,50 @@ import cv2
 from typing import Optional
 import platform
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer, QSettings, QByteArray
-from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath
+from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath, QPainter, QCursor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QToolButton,
     QMessageBox, QGraphicsScene, QGraphicsView, QGraphicsRectItem, QGraphicsEllipseItem,
-    QGraphicsItem, QGraphicsPixmapItem, QSpinBox, QGraphicsPathItem,
+    QGraphicsItem, QGraphicsPixmapItem, QSpinBox, QDoubleSpinBox, QGraphicsPathItem,
     QGroupBox, QCheckBox, QScrollArea, QWidget, QSizePolicy, QFrame,
 )
 
 from setiastro.saspro.wcs_update import update_wcs_after_crop
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+
+_ROTATION_CURSOR = None
+
+def _rotation_cursor() -> QCursor:
+    """A curved-arrow 'rotate' cursor, built once and cached."""
+    global _ROTATION_CURSOR
+    if _ROTATION_CURSOR is not None:
+        return _ROTATION_CURSOR
+    size = 30
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    cx = cy = size / 2.0
+    R = size * 0.30
+    start_deg, span_deg = 30.0, 300.0          # ~300° arc with a gap
+    a = math.radians(start_deg + span_deg)
+    tip = QPointF(cx + R * math.cos(a), cy - R * math.sin(a))
+    tang = math.atan2(-math.cos(a), -math.sin(a))   # tangent at the open end
+    ah = size * 0.24
+    # dark halo first (so it shows on light images), then white core
+    for col, w in ((QColor(0, 0, 0, 230), 4.2), (QColor(255, 255, 255, 255), 2.0)):
+        pen = QPen(col, w)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawArc(QRectF(cx - R, cy - R, 2 * R, 2 * R), int(start_deg * 16), int(span_deg * 16))
+        for sgn in (+1, -1):
+            b = tang + math.radians(180 - 35 * sgn)
+            p.drawLine(tip, QPointF(tip.x() + ah * math.cos(b), tip.y() + ah * math.sin(b)))
+    p.end()
+    _ROTATION_CURSOR = QCursor(pm, int(round(cx)), int(round(cy)))
+    return _ROTATION_CURSOR
 
 # -------- util: s_-style preview stretch (non-destructive) ----------
 def histogram_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
@@ -127,6 +161,7 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
         )
         self.setAcceptHoverEvents(True)
         self._fixed_ar: Optional[float] = None
+        self._rotation_cb = None  
         self._handles: dict[str, QGraphicsEllipseItem] = {}
         self._active: Optional[str] = None
         self._rotating = False
@@ -253,6 +288,9 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
         self._sync_crosshair()
 
     def hoverMoveEvent(self, e):
+        if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.setCursor(_rotation_cursor())
+            return
         for k, h in self._handles.items():
             if self._handle_hit(h, e.scenePos()):
                 self.setCursor({
@@ -275,6 +313,7 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
     def mousePressEvent(self, e):
         if e.modifiers() == Qt.KeyboardModifier.ShiftModifier:
             self._rotating = True
+            self.setCursor(_rotation_cursor())   
             self._pivot_scene = self.mapToScene(self.rect().center())
             v0 = e.scenePos() - self._pivot_scene
             self._angle_ref = math.degrees(math.atan2(v0.y(), v0.x()))
@@ -292,6 +331,7 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
 
     def mouseMoveEvent(self, e):
         if self._rotating:
+            self.setCursor(_rotation_cursor())
             v = e.scenePos() - self._pivot_scene
             ang = math.degrees(math.atan2(v.y(), v.x()))
             self.setRotation(self._angle0 + (ang - self._angle_ref))
@@ -311,7 +351,12 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
             QGraphicsItem.GraphicsItemChange.ItemTransformHasChanged,
         ):
             self._sync_handles()
-
+        if (change == QGraphicsItem.GraphicsItemChange.ItemRotationHasChanged
+                and callable(getattr(self, "_rotation_cb", None))):
+            try:
+                self._rotation_cb(float(self.rotation()))
+            except Exception:
+                pass
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange:
             if self._bounds_scene is not None and self._is_unrotated():
                 new_pos = QPointF(value)
@@ -694,6 +739,18 @@ class CropDialogPro(QDialog):
         margins_row.addWidget(QLabel(self.tr("Bottom"))); margins_row.addWidget(self.sb_bottom)
         margins_row.addSpacing(8)
         margins_row.addWidget(QLabel(self.tr("Left")));   margins_row.addWidget(self.sb_left)
+        margins_row.addSpacing(8)
+        margins_row.addWidget(QLabel(self.tr("Angle")))
+        self.sb_angle = QDoubleSpinBox()
+        self.sb_angle.setRange(-180.0, 180.0)
+        self.sb_angle.setDecimals(1)
+        self.sb_angle.setSingleStep(1.0)
+        self.sb_angle.setSuffix("°")
+        self.sb_angle.setWrapping(True)
+        self.sb_angle.setToolTip(self.tr(
+            "Rotation of the crop box (degrees).\n"
+            "Tip: you can also Shift + drag the box to rotate it."))
+        margins_row.addWidget(self.sb_angle)
         margins_row.addStretch(1)
         main.addLayout(margins_row)
 
@@ -704,6 +761,7 @@ class CropDialogPro(QDialog):
             self._apply_margin_inputs()
         for sb in (self.sb_top, self.sb_right, self.sb_bottom, self.sb_left):
             sb.valueChanged.connect(_on_margin_changed)
+        self.sb_angle.valueChanged.connect(self._apply_angle_input)
 
         # graphics view
         self.scene = QGraphicsScene(self)
@@ -1075,10 +1133,12 @@ class CropDialogPro(QDialog):
                     self._rect_item.setBoundsSceneRect(self._bounds_scene_rect())
                     self._rect_item.setFixedAspectRatio(self._current_ar_value())
                     self.scene.addItem(self._rect_item)
+                    self._attach_rect(self._rect_item)  
                     CropDialogPro._prev_rect  = QRectF(r)
                     CropDialogPro._prev_angle = self._rect_item.rotation()
                     CropDialogPro._prev_pos   = self._rect_item.pos()
                     self._update_dim_label_from_rect_item()
+                    self._attach_rect(self._rect_item)  
                     return True
 
             return False
@@ -1148,6 +1208,33 @@ class CropDialogPro(QDialog):
             self._rect_item.setPos(QPointF(0, 0))
             self._rect_item.setRect(r)
         self._rect_item.setTransformOriginPoint(r.center())
+        self._update_dim_label_from_rect_item()
+
+    def _attach_rect(self, item):
+        """Wire live rotation feedback and sync the Angle spin to this rect."""
+        try:
+            item._rotation_cb = self._sync_angle_spin_from_item
+        except Exception:
+            pass
+        self._sync_angle_spin_from_item()
+
+    def _sync_angle_spin_from_item(self, angle=None):
+        """Reflect the crop box's current rotation in the Angle spin box."""
+        if not hasattr(self, "sb_angle") or self._rect_item is None:
+            return
+        ang = self._rect_item.rotation() if angle is None else float(angle)
+        ang = ((ang + 180.0) % 360.0) - 180.0      # normalize to [-180, 180]
+        from PyQt6.QtCore import QSignalBlocker
+        _blk = QSignalBlocker(self.sb_angle)
+        self.sb_angle.setValue(ang)
+
+    def _apply_angle_input(self, value: float):
+        """Rotate the crop box to the typed angle, about its center."""
+        if self._rect_item is None:
+            return
+        r = self._rect_item.rect()
+        self._rect_item.setTransformOriginPoint(r.center())
+        self._rect_item.setRotation(float(value))
         self._update_dim_label_from_rect_item()
 
     def _current_ar_value(self) -> Optional[float]:
@@ -1253,6 +1340,7 @@ class CropDialogPro(QDialog):
         self._rect_item.setPos(pos)
         self._rect_item.setTransformOriginPoint(r.center())
         self.scene.addItem(self._rect_item)
+        self._attach_rect(self._rect_item)  
         self._update_dim_label_from_rect_item()
 
     def _load_previous(self):
@@ -1270,6 +1358,7 @@ class CropDialogPro(QDialog):
         self._rect_item.setPos(CropDialogPro._prev_pos)
         self._rect_item.setTransformOriginPoint(r.center())
         self.scene.addItem(self._rect_item)
+        self._attach_rect(self._rect_item)  
         self._update_dim_label_from_rect_item()
 
     # =========================================================================

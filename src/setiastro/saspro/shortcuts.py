@@ -578,7 +578,7 @@ _PRESET_UI_IDS = {
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine","geom_resize_canvas",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
-    "satchroma","fx","unwarp",
+    "satchroma","fx","unwarp","pedestal",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -670,6 +670,9 @@ def _preset_opener_for_command(command_id: str):
     if command_id == "unwarp":
         from setiastro.saspro.unwarp import open_unwarp_with_preset
         return open_unwarp_with_preset
+    if command_id == "pedestal":
+        from setiastro.saspro.pedestal import open_remove_pedestal_with_preset
+        return open_remove_pedestal_with_preset 
     return None                      
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
@@ -703,7 +706,9 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
             "angle_deg": 0.0,
         })
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
-
+    if command_id == "pedestal":
+        dlg = _RemovePedestalPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
     if command_id == "curves":
         dlg = _CurvesPresetDialog(parent, initial=cur or {"shape":"linear","amount":0.5,"mode":"K (Brightness)"})
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
@@ -3287,6 +3292,46 @@ class _SyQonToolsPresetDialog(QDialog):
             "parallax_batch_size":    str(self.cmb_par_batch.currentData() or "Auto"),
         }
 
+class _RemovePedestalPresetDialog(QDialog):
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Remove Pedestal — Preset")
+        init = dict(initial or {})
+
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItem("Image minimum",        userData="min")
+        self.combo_mode.addItem("Low percentile",       userData="percentile")
+        self.combo_mode.addItem("First non-zero value", userData="first_nonzero")
+        i = self.combo_mode.findData(str(init.get("mode", "min")).lower())
+        self.combo_mode.setCurrentIndex(i if i >= 0 else 0)
+
+        self.spin_pct = QDoubleSpinBox()
+        self.spin_pct.setRange(0.0, 50.0); self.spin_pct.setDecimals(3)
+        self.spin_pct.setSingleStep(0.05); self.spin_pct.setSuffix(" %")
+        self.spin_pct.setValue(float(init.get("percentile", init.get("pct", 0.1))))
+
+        self.cb_per_channel = QCheckBox("Per-channel (RGB)")
+        self.cb_per_channel.setChecked(bool(init.get("per_channel", True)))
+
+        form = QFormLayout(self)
+        form.addRow("Subtract:", self.combo_mode)
+        form.addRow("Percentile:", self.spin_pct)
+        form.addRow("", self.cb_per_channel)
+
+        def _sync(*_):
+            self.spin_pct.setEnabled(self.combo_mode.currentData() == "percentile")
+        self.combo_mode.currentIndexChanged.connect(_sync); _sync()
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
+        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def result_dict(self) -> dict:
+        return {
+            "mode": self.combo_mode.currentData() or "min",
+            "percentile": float(self.spin_pct.value()),
+            "per_channel": bool(self.cb_per_channel.isChecked()),
+        }
 
 class _RemoveGreenPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):

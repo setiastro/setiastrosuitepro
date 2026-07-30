@@ -13,7 +13,7 @@ from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QEvent, QPointF, QPoint, QTim
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QLineEdit,
     QWidget, QMessageBox, QRadioButton, QButtonGroup, QToolButton, QInputDialog, QMenu,
-    QSizePolicy, QCheckBox, QScrollBar
+    QSizePolicy, QCheckBox, QScrollBar, QDoubleSpinBox
 )
 from PyQt6.QtGui import (
     QPixmap, QImage, QWheelEvent, QPainter, QPainterPath, QPen, QColor, QBrush,
@@ -93,6 +93,10 @@ class CurveEditor(QWidget):
     """
 
     # ── constants ────────────────────────────────────────────
+    # ── signals ──────────────────────────────────────────────
+    pointSelected    = pyqtSignal(float, float, bool, bool)  # x, y (0..1), is_black, is_white
+    selectionCleared = pyqtSignal()
+
     _PAD   = (38, 12, 12, 28)   # left, top, right, bottom
     _SZ    = 360                 # logical scene size
     _STEPS = 512                 # spline sample count for painting
@@ -114,6 +118,7 @@ class CurveEditor(QWidget):
         self._pts: list[list[float]] = []
         self._drag_idx: int | None   = None
         self._hover_idx: int | None  = None
+        self._sel_idx: int | None    = None
 
         # Spline state
         self.curve_function: PchipInterpolator | None = None
@@ -159,13 +164,104 @@ class CurveEditor(QWidget):
         sy = (px.y() - r.top())  / r.height() * self._SZ
         return float(np.clip(sx, 0, self._SZ)), float(np.clip(sy, 0, self._SZ))
 
-    def _hit_test(self, pos: QPointF) -> int | None:
-        best_d, best_i = self._HIT_R + 1, None
+    def _hit_test(self, pos: QPointF, cycle: bool = False) -> int | None:
+        # Collect every point within the hit radius, nearest first.
+        cands = []
         for i, (sx, sy) in enumerate(self._pts):
             d = (self._to_px(sx, sy) - pos).manhattanLength()
-            if d < best_d:
-                best_d, best_i = d, i
-        return best_i if best_d <= self._HIT_R else None
+            if d <= self._HIT_R:
+                cands.append((d, i))
+        if not cands:
+            return None
+        cands.sort(key=lambda t: t[0])
+        ids = [i for _, i in cands]
+        # Re-clicking a spot where points overlap cycles to the next one, so a
+        # point buried under another (e.g. an endpoint shoved into a corner
+        # underneath the opposite endpoint) is still reachable on a 2nd click.
+        if cycle and len(ids) > 1 and self._sel_idx in ids:
+            return ids[(ids.index(self._sel_idx) + 1) % len(ids)]
+        return ids[0]
+
+    # -- normalized-coordinate helpers (0..1, Y up) -----------
+    def _to_norm(self, sx: float, sy: float) -> tuple[float, float]:
+        return sx / self._SZ, 1.0 - sy / self._SZ
+
+    def _from_norm(self, xn: float, yn: float) -> tuple[float, float]:
+        return float(xn) * self._SZ, (1.0 - float(yn)) * self._SZ
+
+    # -- point selection (drives the dialog's X/Y spin boxes) --
+    def _emit_selection(self):
+        i = self._sel_idx
+        if i is None or not (0 <= i < len(self._pts)):
+            self.selectionCleared.emit()
+            return
+        sx, sy = self._pts[i]
+        xn, yn = self._to_norm(sx, sy)
+        self.pointSelected.emit(xn, yn, i == 0, i == len(self._pts) - 1)
+
+    def _clear_selection(self):
+        self._sel_idx = None
+        self.selectionCleared.emit()
+
+    def selected_index(self):
+        return self._sel_idx
+
+    def _delete_interior(self, idx):
+        """Delete an interior control point (endpoints are never removed)."""
+        if idx is None or not (0 < idx < len(self._pts) - 1):
+            return
+        self._pts.pop(idx)
+        self._hover_idx = None
+        if self._sel_idx is not None:
+            if self._sel_idx == idx:
+                self._sel_idx = None
+            elif self._sel_idx > idx:
+                self._sel_idx -= 1
+        self._rebuild_spline()
+        self.update()
+        if self._sel_idx is None:
+            self.selectionCleared.emit()
+        else:
+            self._emit_selection()
+
+    def set_selected_coord(self, axis: str, value: float):
+        """Move the selected point's X or Y to `value` (normalized 0..1).
+
+        Endpoints are edge-locked: editing one axis pins the other to its
+        endpoint value (black -> 0, white -> 1), so the black point stays on
+        x=0 or y=0 and the white point on x=1 or y=1. Interior points are free
+        in Y and clamped in X between their neighbours."""
+        i = self._sel_idx
+        if i is None or not (0 <= i < len(self._pts)):
+            return
+        v = float(np.clip(value, 0.0, 1.0))
+        n = len(self._pts)
+
+        if i == 0:                                   # black endpoint
+            if axis == "x":                          # slide bottom edge (y=0)
+                nb = (self._pts[1][0] - 0.5) if n > 1 else self._SZ
+                self._pts[0] = [float(np.clip(v * self._SZ, 0.0, max(0.0, nb))), self._SZ]
+            else:                                    # slide left edge (x=0)
+                self._pts[0] = [0.0, float(np.clip((1.0 - v) * self._SZ, 0.0, self._SZ))]
+        elif i == n - 1:                             # white endpoint
+            if axis == "x":                          # slide top edge (y=1)
+                nb = (self._pts[-2][0] + 0.5) if n > 1 else 0.0
+                self._pts[-1] = [float(np.clip(v * self._SZ, min(self._SZ, nb), self._SZ)), 0.0]
+            else:                                    # slide right edge (x=1)
+                self._pts[-1] = [self._SZ, float(np.clip((1.0 - v) * self._SZ, 0.0, self._SZ))]
+        else:                                        # interior control
+            sx, sy = self._pts[i]
+            if axis == "x":
+                xlo = self._pts[i - 1][0] + 0.5
+                xhi = self._pts[i + 1][0] - 0.5
+                sx = float(np.clip(v * self._SZ, xlo, xhi))
+            else:
+                sy = float(np.clip((1.0 - v) * self._SZ, 0.0, self._SZ))
+            self._pts[i] = [sx, sy]
+
+        self._rebuild_spline()
+        self.update()
+        self._emit_selection()
 
     # ── point initialisation ──────────────────────────────────
 
@@ -175,6 +271,7 @@ class CurveEditor(QWidget):
             [self._SZ, 0.0],     # white endpoint  (top-right)
         ]
         self._rebuild_spline()
+        self._clear_selection()
 
     # ── public API (matches old QGraphicsView version exactly) ─
 
@@ -258,6 +355,7 @@ class CurveEditor(QWidget):
         ep0 = self._pts[0]
         ep1 = self._pts[-1]
         self._pts = [ep0] + [[float(x), float(y)] for x, y in handles] + [ep1]
+        self._clear_selection()
         self._rebuild_spline()
         self.update()
 
@@ -319,6 +417,7 @@ class CurveEditor(QWidget):
         ep0 = self._pts[0]
         ep1 = self._pts[-1]
         self._pts = [ep0] + [[float(x), float(y)] for x, y in zip(xs, ys)] + [ep1]
+        self._clear_selection()
         self._rebuild_spline()
         self.update()
 
@@ -555,9 +654,11 @@ class CurveEditor(QWidget):
             return
 
         if event.button() == Qt.MouseButton.LeftButton:
-            idx = self._hit_test(pos)
+            idx = self._hit_test(pos, cycle=True)
             if idx is not None:
                 self._drag_idx = idx
+                self._sel_idx  = idx
+                self._emit_selection()
             else:
                 sx, sy = self._from_px(pos)
                 r = self._plot_rect()
@@ -568,11 +669,8 @@ class CurveEditor(QWidget):
 
         elif event.button() == Qt.MouseButton.RightButton:
             idx = self._hit_test(pos)
-            if idx is not None and 0 < idx < len(self._pts) - 1:
-                self._pts.pop(idx)
-                self._hover_idx = None
-                self._rebuild_spline()
-                self.update()
+            if idx is not None:
+                self._delete_interior(idx)
 
     def mouseMoveEvent(self, event):
         pos = QPointF(event.position())
@@ -596,6 +694,8 @@ class CurveEditor(QWidget):
 
             self._rebuild_spline()
             self.update()
+            self._sel_idx = self._drag_idx
+            self._emit_selection()
         else:
             new_hover = self._hit_test(pos)
             if new_hover != self._hover_idx:
@@ -617,11 +717,8 @@ class CurveEditor(QWidget):
     def mouseDoubleClickEvent(self, event):
         pos = QPointF(event.position())
         idx = self._hit_test(pos)
-        if idx is not None and 0 < idx < len(self._pts) - 1:
-            self._pts.pop(idx)
-            self._hover_idx = None
-            self._rebuild_spline()
-            self.update()
+        if idx is not None:
+            self._delete_interior(idx)
         elif idx is None:
             # double-click on empty space → add point (same as single click,
             # but single already added it; this just prevents a ghost second add)
@@ -629,12 +726,10 @@ class CurveEditor(QWidget):
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Delete:
-            # delete hovered/selected interior point
-            if self._hover_idx is not None and 0 < self._hover_idx < len(self._pts) - 1:
-                self._pts.pop(self._hover_idx)
-                self._hover_idx = None
-                self._rebuild_spline()
-                self.update()
+            # delete hovered (else selected) interior point
+            tgt = self._hover_idx if self._hover_idx is not None else self._sel_idx
+            if tgt is not None:
+                self._delete_interior(tgt)
         super().keyPressEvent(event)
 
     # ── endpoint constrained movement ────────────────────────
@@ -673,7 +768,12 @@ class CurveEditor(QWidget):
         self._pts.insert(ins, [sx, sy])
         if start_drag:
             self._drag_idx = ins
+            self._sel_idx  = ins
+        elif self._sel_idx is not None and self._sel_idx >= ins:
+            self._sel_idx += 1
         self._rebuild_spline()
+        if start_drag:
+            self._emit_selection()
 
     # ── compatibility shims (no-ops or delegating) ────────────
 
@@ -1551,6 +1651,36 @@ class CurvesDialogPro(QDialog):
         left = QVBoxLayout()
         self.editor = CurveEditor(self)
         left.addWidget(self.editor)
+
+        # --- numeric editor for the selected curve point (X/Y in 0..1) ------
+        self._suppress_pt_spin = False
+        pt_row = QHBoxLayout()
+        pt_row.addWidget(QLabel("Point:"))
+        pt_row.addWidget(QLabel("X"))
+        self.pt_x = QDoubleSpinBox()
+        self.pt_x.setRange(0.0, 1.0); self.pt_x.setDecimals(4)
+        self.pt_x.setSingleStep(0.001); self.pt_x.setKeyboardTracking(True)
+        self.pt_x.setEnabled(False)
+        pt_row.addWidget(self.pt_x)
+        pt_row.addWidget(QLabel("Y"))
+        self.pt_y = QDoubleSpinBox()
+        self.pt_y.setRange(0.0, 1.0); self.pt_y.setDecimals(4)
+        self.pt_y.setSingleStep(0.001); self.pt_y.setKeyboardTracking(True)
+        self.pt_y.setEnabled(False)
+        pt_row.addWidget(self.pt_y)
+        self._pt_hint = QLabel("")
+        self._pt_hint.setStyleSheet("color: gray;")
+        pt_row.addWidget(self._pt_hint)
+        pt_row.addStretch(1)
+        left.addLayout(pt_row)
+        self._pt_pending = {}
+        self._pt_debounce = QTimer(self)
+        self._pt_debounce.setSingleShot(True)
+        self._pt_debounce.timeout.connect(self._flush_point_edits)
+        self.pt_x.valueChanged.connect(lambda v: self._on_point_spin_changed("x", v))
+        self.pt_y.valueChanged.connect(lambda v: self._on_point_spin_changed("y", v))
+        self.pt_x.editingFinished.connect(self._on_point_spin_committed)
+        self.pt_y.editingFinished.connect(self._on_point_spin_committed)
         # compact: CurvesDialogPro already reports clipping per channel with
         # counts in lbl_status, so the widget's own readout is redundant.
         self.hist = StretchCurveView(self, compact=True)
@@ -1696,6 +1826,8 @@ class CurvesDialogPro(QDialog):
         self.btn_zoom_fit.clicked.connect(self._fit)
 
         self.editor.setPreviewCallback(self._on_editor_curve_changed)
+        self.editor.pointSelected.connect(self._on_editor_point_selected)
+        self.editor.selectionCleared.connect(self._on_editor_selection_cleared)
         self._load_from_doc()
         QTimer.singleShot(0, self._fit_after_load)
         self.editor.setSymmetryCallback(self._on_symmetry_pick)
@@ -1715,6 +1847,53 @@ class CurvesDialogPro(QDialog):
 
     # ── all methods below are identical to the original ──────────────────────
     # (only the CurveEditor widget changed; dialog logic is untouched)
+
+    def _on_editor_point_selected(self, x, y, is_black, is_white):
+        self._suppress_pt_spin = True
+        try:
+            self.pt_x.setEnabled(True)
+            self.pt_y.setEnabled(True)
+            self.pt_x.setValue(float(x))
+            self.pt_y.setValue(float(y))
+        finally:
+            self._suppress_pt_spin = False
+        if is_black:
+            self._pt_hint.setText("black point (locks to x=0 or y=0)")
+        elif is_white:
+            self._pt_hint.setText("white point (locks to x=1 or y=1)")
+        else:
+            self._pt_hint.setText("")
+
+    def _on_editor_selection_cleared(self):
+        self._suppress_pt_spin = True
+        try:
+            self.pt_x.setEnabled(False)
+            self.pt_y.setEnabled(False)
+            self._pt_hint.setText("")
+        finally:
+            self._suppress_pt_spin = False
+
+    def _on_point_spin_changed(self, axis, value):
+        if getattr(self, "_suppress_pt_spin", False):
+            return
+        # Debounce: apply ~0.5s after typing stops, so you don't have to tab
+        # out to commit. Enter / focus-out still applies immediately below.
+        self._pt_pending.pop(axis, None)
+        self._pt_pending[axis] = float(value)
+        self._pt_debounce.start(500)
+
+    def _flush_point_edits(self):
+        if not self._pt_pending:
+            return
+        pend = self._pt_pending
+        self._pt_pending = {}
+        for axis, value in pend.items():
+            self.editor.set_selected_coord(axis, value)
+
+    def _on_point_spin_committed(self):
+        # Enter / focus-out: apply now instead of waiting for the debounce.
+        self._pt_debounce.stop()
+        self._flush_point_edits()
 
     def _on_editor_curve_changed(self, _lut8=None):
         try:
