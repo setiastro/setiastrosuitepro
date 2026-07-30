@@ -8,7 +8,7 @@ import cv2
 from typing import Optional
 import platform
 from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer, QSettings, QByteArray
-from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath
+from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath, QPainter, QCursor
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QToolButton,
     QMessageBox, QGraphicsScene, QGraphicsView, QGraphicsRectItem, QGraphicsEllipseItem,
@@ -18,6 +18,40 @@ from PyQt6.QtWidgets import (
 
 from setiastro.saspro.wcs_update import update_wcs_after_crop
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+
+_ROTATION_CURSOR = None
+
+def _rotation_cursor() -> QCursor:
+    """A curved-arrow 'rotate' cursor, built once and cached."""
+    global _ROTATION_CURSOR
+    if _ROTATION_CURSOR is not None:
+        return _ROTATION_CURSOR
+    size = 30
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    cx = cy = size / 2.0
+    R = size * 0.30
+    start_deg, span_deg = 30.0, 300.0          # ~300° arc with a gap
+    a = math.radians(start_deg + span_deg)
+    tip = QPointF(cx + R * math.cos(a), cy - R * math.sin(a))
+    tang = math.atan2(-math.cos(a), -math.sin(a))   # tangent at the open end
+    ah = size * 0.24
+    # dark halo first (so it shows on light images), then white core
+    for col, w in ((QColor(0, 0, 0, 230), 4.2), (QColor(255, 255, 255, 255), 2.0)):
+        pen = QPen(col, w)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawArc(QRectF(cx - R, cy - R, 2 * R, 2 * R), int(start_deg * 16), int(span_deg * 16))
+        for sgn in (+1, -1):
+            b = tang + math.radians(180 - 35 * sgn)
+            p.drawLine(tip, QPointF(tip.x() + ah * math.cos(b), tip.y() + ah * math.sin(b)))
+    p.end()
+    _ROTATION_CURSOR = QCursor(pm, int(round(cx)), int(round(cy)))
+    return _ROTATION_CURSOR
 
 # -------- util: s_-style preview stretch (non-destructive) ----------
 def histogram_style_autostretch(image: np.ndarray, sigma: float = 3.0) -> np.ndarray:
@@ -254,6 +288,9 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
         self._sync_crosshair()
 
     def hoverMoveEvent(self, e):
+        if e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            self.setCursor(_rotation_cursor())
+            return
         for k, h in self._handles.items():
             if self._handle_hit(h, e.scenePos()):
                 self.setCursor({
@@ -276,6 +313,7 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
     def mousePressEvent(self, e):
         if e.modifiers() == Qt.KeyboardModifier.ShiftModifier:
             self._rotating = True
+            self.setCursor(_rotation_cursor())   
             self._pivot_scene = self.mapToScene(self.rect().center())
             v0 = e.scenePos() - self._pivot_scene
             self._angle_ref = math.degrees(math.atan2(v0.y(), v0.x()))
@@ -293,6 +331,7 @@ class ResizableRotatableRectItem(QGraphicsRectItem):
 
     def mouseMoveEvent(self, e):
         if self._rotating:
+            self.setCursor(_rotation_cursor())
             v = e.scenePos() - self._pivot_scene
             ang = math.degrees(math.atan2(v.y(), v.x()))
             self.setRotation(self._angle0 + (ang - self._angle_ref))

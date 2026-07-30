@@ -144,6 +144,15 @@ RGB_FILTER_MAP = {
     "B": ("TB", "B"),
 }
 
+def check_star_kmags(star: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    """Per-channel AAVSO KMAG for a catalog star dict: R→Rmag, G→Vmag, B→Bmag."""
+    def _f(v):
+        try:
+            v = float(v)
+            return v if np.isfinite(v) else None
+        except (TypeError, ValueError):
+            return None
+    return {"R": _f(star.get("Rmag")), "G": _f(star.get("Vmag")), "B": _f(star.get("Bmag"))}
 
 def build_rgb_rows(
     *,
@@ -153,12 +162,15 @@ def build_rgb_rows(
     merrs: Dict[str, Optional[float]],
     amass: Optional[float] = None,
     kname: str = "na",
-    kmag: Any = "na",
+    kmag: Any = "na",                 # scalar fallback (used if no per-channel value)
+    kmags: Optional[Dict[str, Any]] = None,   # {"R":.., "G":.., "B":..} per-channel
     notes: Optional[str] = None,
 ) -> List[AavsoRow]:
     """Turn one RGB measurement into up to three AAVSO rows (TR/TG/TB).
 
-    Channels with a non-finite magnitude are skipped.
+    Channels with a non-finite magnitude are skipped. If `kmags` is given, each
+    row uses the check-star magnitude in that channel's catalog band (R→TR,
+    V→TG, B→TB); otherwise the scalar `kmag` is used for all rows.
     """
     out: List[AavsoRow] = []
     for ch in ("B", "G", "R"):        # conventional order B,G,R in reports
@@ -166,9 +178,12 @@ def build_rgb_rows(
         if m is None or not np.isfinite(m):
             continue
         filt, _band = RGB_FILTER_MAP[ch]
+        k_ch = kmag
+        if kmags is not None and kmags.get(ch) is not None and _is_number(kmags.get(ch)):
+            k_ch = kmags[ch]
         row = AavsoRow(
             name=name, date_jd=date_jd, mag=float(m), filt=filt,
-            merr=merrs.get(ch), amass=amass, kname=kname, kmag=kmag,
+            merr=merrs.get(ch), amass=amass, kname=kname, kmag=k_ch,
         )
         if notes:
             row.notes = notes

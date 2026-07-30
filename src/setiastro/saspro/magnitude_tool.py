@@ -2244,58 +2244,81 @@ class MagnitudeToolDialog(QDialog):
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
-            self.setWindowFlag(Qt.WindowType.Tool, True)  
+            self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
-        self.setMinimumSize(520, 320)
+        self.setMinimumSize(780, 580)
+        self.resize(880, 760)
+ 
         self.sys_floor_mag = 0.10  # mag (typical 0.05–0.15)
         self.object_mask = None
         self.object_geometry = None   # {"kind":..., "verts_px": Nx2} from picker/recall
         self.background_mask = None
         self.doc_manager = doc_manager
-
+ 
         self.star_list: List[dict] = []
         self.wcs = None
         self.pixscale = None
-
+ 
         self.object_rect = QRect()
         self.background_rect = QRect()
-
+ 
         self.last_zp: Dict[str, Any] = {}
         self._last_measurement = None      # dict from _record_measurement()
         self._aavso_rows = []              # list[(aav.AavsoRow, ra_deg, dec_deg)]
         self._target_name = None           # resolved STARID for the current target
-        self._check_star = None            # (kname, kmag) once chosen for this batch
-
+        self._check_star = None            # (kname, kmag_V, star_dict) once chosen for this batch
+ 
         self._build_ui()
         self._update_band_controls()
-
+ 
     def _build_ui(self):
-        v = QVBoxLayout(self)
-
-        row = QHBoxLayout()
-        self.btn_fetch = QPushButton("Step 1: Fetch Catalog Stars (needs WCS)")
+        root = QVBoxLayout(self)
+ 
+        # ── two columns ────────────────────────────────────────────────────
+        cols = QHBoxLayout()
+        cols.setSpacing(12)
+        left = QVBoxLayout()
+        right = QVBoxLayout()
+        cols.addLayout(left, 3)
+        cols.addLayout(right, 2)
+        root.addLayout(cols, 1)
+ 
+        # ========================= LEFT COLUMN =============================
+ 
+        # --- Workflow (Steps 1–4, in order, with their inline helpers) ---
+        wf_group = QGroupBox("Workflow")
+        wf = QVBoxLayout(wf_group)
+ 
+        self.btn_fetch = QPushButton("Step 1:  Fetch Catalog Stars  (needs WCS)")
         self.btn_fetch.clicked.connect(self.fetch_stars_from_active_doc)
-        row.addWidget(self.btn_fetch)
-
-        self.btn_zp = QPushButton("Step 2: Compute Zero Points")
+        wf.addWidget(self.btn_fetch)
+ 
+        self.btn_zp = QPushButton("Step 2:  Compute Zero Points")
         self.btn_zp.clicked.connect(self.compute_zero_points)
-        row.addWidget(self.btn_zp)
-        v.addLayout(row)
-
-        self.btn_pick = QPushButton("Step 3: Pick Target Region…")
+        wf.addWidget(self.btn_zp)
+ 
+        self.btn_zp_plot = QPushButton("Show ZP Graphs…")
+        self.btn_zp_plot.clicked.connect(self.show_zp_graphs)
+        self.btn_zp_plot.setEnabled(False)
+        wf.addWidget(self.btn_zp_plot)
+ 
+        wf.addSpacing(8)
+ 
+        self.btn_pick = QPushButton("Step 3:  Pick Target Region…")
         self.btn_pick.clicked.connect(self.open_region_picker)
-        v.addWidget(self.btn_pick)
-        name_row = QHBoxLayout()
+        wf.addWidget(self.btn_pick)
+ 
+        find_row = QHBoxLayout()
         self.txt_find_name = QLineEdit()
-        self.txt_find_name.setPlaceholderText("Find star by name (e.g. IRAS 17382-5308)…")
+        self.txt_find_name.setPlaceholderText("…or find a star by name (e.g. IRAS 17382-5308)")
         self.txt_find_name.returnPressed.connect(self.find_star_by_name)
         self.btn_find_name = QPushButton("Go to Star")
         self.btn_find_name.clicked.connect(self.find_star_by_name)
-        name_row.addWidget(self.txt_find_name, 1)
-        name_row.addWidget(self.btn_find_name)
-        v.addLayout(name_row)
-
+        find_row.addWidget(self.txt_find_name, 1)
+        find_row.addWidget(self.btn_find_name)
+        wf.addLayout(find_row)
+ 
         region_row = QHBoxLayout()
         self.btn_save_region = QPushButton("Save Region…")
         self.btn_save_region.clicked.connect(self.save_region_to_library)
@@ -2303,25 +2326,29 @@ class MagnitudeToolDialog(QDialog):
         self.btn_load_region.clicked.connect(self.load_region_from_library)
         region_row.addWidget(self.btn_save_region)
         region_row.addWidget(self.btn_load_region)
-        v.addLayout(region_row)
-
-        self.btn_zp_plot = QPushButton("Show ZP Graphs…")
-        self.btn_zp_plot.clicked.connect(self.show_zp_graphs)
-        self.btn_zp_plot.setEnabled(False)
-        v.addWidget(self.btn_zp_plot)
-        box = QGroupBox("Photometry settings")
+        wf.addLayout(region_row)
+ 
+        wf.addSpacing(8)
+ 
+        self.btn_measure = QPushButton("Step 4:  Measure Object Region")
+        self.btn_measure.clicked.connect(self.measure_object_region)
+        wf.addWidget(self.btn_measure)
+ 
+        left.addWidget(wf_group)
+ 
+        # --- Photometry settings ---
+        box = QGroupBox("Photometry Settings")
         form = QFormLayout(box)
-
-        # --- Band mapping (mono only) ---
+ 
         self.band_combo = QComboBox()
         self.band_combo.addItems(["L", "R", "G", "B"])
         self.band_combo.setCurrentText("L")
         form.addRow("Mono/L band", self.band_combo)
-
+ 
         self.band_hint = QLabel("Mapping: L→V, R→R, G→V, B→B (SIMBAD provides B/V/R).")
         self.band_hint.setWordWrap(True)
         form.addRow("", self.band_hint)
-
+ 
         self.sep_sigma = QSpinBox()
         self.sep_sigma.setRange(2, 50)
         self.sep_sigma.setValue(5)
@@ -2336,7 +2363,7 @@ class MagnitudeToolDialog(QDialog):
             "noisy data or crowded fields with many false detections; 5 suits most stacks."
         )
         form.addRow("SEP detect σ", self.sep_sigma)
-
+ 
         self.clip_sigma = QDoubleSpinBox()
         self.clip_sigma.setRange(1.0, 10.0)
         self.clip_sigma.setSingleStep(0.5)
@@ -2352,8 +2379,7 @@ class MagnitudeToolDialog(QDialog):
             "crowded or blended fields, raise toward 3.0 if too few stars survive."
         )
         form.addRow("ZP sigma-clip", self.clip_sigma)
-
-        # --- Systematic uncertainty floor (rolled into total; popup reports totals only) ---
+ 
         self.sys_floor_spin = QDoubleSpinBox()
         self.sys_floor_spin.setRange(0.0, 1.0)
         self.sys_floor_spin.setDecimals(3)
@@ -2370,7 +2396,7 @@ class MagnitudeToolDialog(QDialog):
             "if you know your calibration is less certain, lower only with justification."
         )
         form.addRow("Systematic floor (mag)", self.sys_floor_spin)
-
+ 
         self.bg_box_size = QSpinBox()
         self.bg_box_size.setRange(10, 300)
         self.bg_box_size.setSingleStep(5)
@@ -2386,80 +2412,91 @@ class MagnitudeToolDialog(QDialog):
             "fits tight gaps but noisier. 50 px is a good balance for most fields."
         )
         form.addRow("Auto background box (px)", self.bg_box_size)
-
+ 
         hint = QLabel(
-            "Popup reports total 3σ only: sqrt(stat² + sys_floor²). "
-            "sys_floor is a conservative calibration mismatch term."
+            "Popup reports total 3σ: sqrt(stat² + sys_floor²). "
+            "sys_floor is a conservative calibration-mismatch term (surface photometry). "
+            "AAVSO rows export the 1σ statistical error only."
         )
         hint.setWordWrap(True)
         form.addRow("", hint)
+ 
         self.chk_verify_bg = QCheckBox("Verify against 4-quadrant backgrounds")
         self.chk_verify_bg.setChecked(False)
         form.addRow("", self.chk_verify_bg)
-        v.addWidget(box)
-        # --- ROI preview (cropped) ---
-        roi_box = QGroupBox("ROI preview")
-        roi_lay = QHBoxLayout(roi_box)
-
+ 
+        left.addWidget(box)
+        left.addStretch(1)
+ 
+        # ========================= RIGHT COLUMN ============================
+ 
+        # --- ROI preview (fills available vertical space) ---
+        roi_group = QGroupBox("ROI Preview")
+        roi_v = QVBoxLayout(roi_group)
+ 
         self.roi_preview = QLabel("No target selected.")
         self.roi_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.roi_preview.setMinimumSize(220, 220)
+        self.roi_preview.setMinimumSize(240, 240)
         self.roi_preview.setStyleSheet("border: 1px solid #444;")
-        roi_lay.addWidget(self.roi_preview, 1)
-
-        side = QVBoxLayout()
-        roi_lay.addLayout(side)
-
+        roi_v.addWidget(self.roi_preview, 1)
+ 
+        roi_form = QFormLayout()
         self.roi_opacity = QDoubleSpinBox()
         self.roi_opacity.setRange(0.0, 1.0)
         self.roi_opacity.setSingleStep(0.05)
         self.roi_opacity.setDecimals(2)
         self.roi_opacity.setValue(0.25)
         self.roi_opacity.valueChanged.connect(self._update_roi_preview)
-        side.addWidget(QLabel("ROI overlay opacity"))
-        side.addWidget(self.roi_opacity)
-
+        roi_form.addRow("Overlay opacity", self.roi_opacity)
+ 
         self.roi_pad = QSpinBox()
         self.roi_pad.setRange(0, 200)
         self.roi_pad.setSingleStep(5)
         self.roi_pad.setValue(20)
         self.roi_pad.valueChanged.connect(self._update_roi_preview)
-        side.addWidget(QLabel("ROI padding (px)"))
-        side.addWidget(self.roi_pad)
+        roi_form.addRow("ROI padding (px)", self.roi_pad)
+        roi_v.addLayout(roi_form)
+ 
         self.btn_full_view = QPushButton("Full Image View…")
         self.btn_full_view.clicked.connect(self._open_full_image_view)
-        side.addWidget(self.btn_full_view)
-        side.addStretch(1)
-
-        v.addWidget(roi_box)
-
-        self.lbl_info = QLabel("No stars fetched yet.")
-        self.lbl_info.setWordWrap(True)
-        v.addWidget(self.lbl_info)
-
-        row2 = QHBoxLayout()
-        self.btn_measure = QPushButton("Step 4: Measure Object Region")
-        self.btn_measure.clicked.connect(self.measure_object_region)
-        row2.addWidget(self.btn_measure)
-        self.btn_clear_all = QPushButton("Clear All")
-        self.btn_clear_all.clicked.connect(self.clear_all)
-        row2.addWidget(self.btn_clear_all)
-        self.btn_close = QPushButton("Close")
-        self.btn_close.clicked.connect(self.reject)
-        row2.addWidget(self.btn_close)
-        v.addLayout(row2)
-
-        aavso_row = QHBoxLayout()
+        roi_v.addWidget(self.btn_full_view)
+ 
+        right.addWidget(roi_group, 1)
+ 
+        # --- AAVSO submission ---
+        aavso_group = QGroupBox("AAVSO Submission")
+        av = QVBoxLayout(aavso_group)
+ 
         self.btn_identify = QPushButton("Identify Target…")
         self.btn_identify.clicked.connect(self.identify_target)
+        av.addWidget(self.btn_identify)
+ 
         self.btn_add_batch = QPushButton("Add Measurement → AAVSO Batch")
         self.btn_add_batch.clicked.connect(self.add_last_measurement_to_batch)
+        av.addWidget(self.btn_add_batch)
+ 
         self.btn_aavso = QPushButton("AAVSO Batch…")
         self.btn_aavso.clicked.connect(self.open_aavso_batch)
-        aavso_row.addWidget(self.btn_identify)
-        aavso_row.addWidget(self.btn_add_batch)
-        aavso_row.addWidget(self.btn_aavso)
-        v.addLayout(aavso_row)
+        av.addWidget(self.btn_aavso)
+ 
+        right.addWidget(aavso_group)
+ 
+        # ========================= BOTTOM (full width) =====================
+        self.lbl_info = QLabel("No stars fetched yet.")
+        self.lbl_info.setWordWrap(True)
+        self.lbl_info.setStyleSheet("color: #9aa0a6;")
+        root.addWidget(self.lbl_info)
+ 
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        self.btn_clear_all = QPushButton("Clear All")
+        self.btn_clear_all.clicked.connect(self.clear_all)
+        bottom.addWidget(self.btn_clear_all)
+        self.btn_close = QPushButton("Close")
+        self.btn_close.clicked.connect(self.reject)
+        bottom.addWidget(self.btn_close)
+        root.addLayout(bottom)
+ 
         self._refresh_aavso_button()
 
 
@@ -4094,11 +4131,23 @@ class MagnitudeToolDialog(QDialog):
     
     
     def _suggest_check_star(self):
-        """Pick a check star: the brightest catalog star with a known V that is not
-        the target, then resolve its SIMBAD name. Returns (kname, kmag) or None."""
+        """Suggest a check star: a catalog star of *similar brightness* to the
+        target (not the target itself), preferring the brightest within a tight
+        magnitude window for good SNR. Returns (kname, kmag) or None."""
         star_list = getattr(self, "star_list", None) or []
         tgt = self._target_centroid_radec()
-        best = None
+
+        # Target brightness reference: the green (≈V) channel, else mono L.
+        tgt_mag = None
+        lm = getattr(self, "_last_measurement", None)
+        if lm:
+            mags = lm.get("mags") or {}
+            tgt_mag = mags.get("G", mags.get("L"))
+            if tgt_mag is not None and not np.isfinite(tgt_mag):
+                tgt_mag = None
+
+        # Collect valid, non-target candidates with a known V.
+        candidates = []  # (vmag, star)
         for s in star_list:
             v = s.get("Vmag")
             if v is None or not np.isfinite(v):
@@ -4108,17 +4157,30 @@ class MagnitudeToolDialog(QDialog):
                     SkyCoord(tgt[0] * u.deg, tgt[1] * u.deg)).arcsec
                 if d < 10.0:      # that's the target itself
                     continue
-            if best is None or v < best[0]:
-                best = (v, s)
-        if best is None:
+            candidates.append((float(v), s))
+        if not candidates:
             return None
-        v, s = best
+
+        if tgt_mag is not None:
+            # Similar brightness to target; widen the window until something fits,
+            # and within the window favor the brightest (best SNR check).
+            chosen = None
+            for window in (1.0, 2.0, 3.0, None):
+                pool = (candidates if window is None
+                        else [c for c in candidates if abs(c[0] - tgt_mag) <= window])
+                if pool:
+                    chosen = min(pool, key=lambda c: c[0])
+                    break
+            v, s = chosen
+        else:
+            # No target magnitude yet → fall back to the brightest available.
+            v, s = min(candidates, key=lambda c: c[0])
+
         try:
             kname, _kv = aav.identify_name_and_vmag(s["ra"], s["dec"])
         except Exception:
             kname = None
-        return (kname or f"RA{s['ra']:.4f}", float(v))
-    
+        return (kname or f"RA{s['ra']:.4f}", float(v), s)
     
     def add_last_measurement_to_batch(self):
         """Turn the last measurement into AAVSO rows and append to the batch."""
@@ -4156,8 +4218,9 @@ class MagnitudeToolDialog(QDialog):
         if self._check_star is None:
             sug = self._suggest_check_star()
             kname = kmag = None
+            kstar = None
             if sug is not None:
-                kname, kmag = sug
+                kname, kmag, kstar = sug
             kname_in, ok = QInputDialog.getText(
                 self, "Check Star", "Check-star designation (KNAME):",
                 text=(kname or ""))
@@ -4168,8 +4231,8 @@ class MagnitudeToolDialog(QDialog):
                 value=float(kmag) if kmag is not None else 0.0, decimals=3)
             if not ok:
                 return
-            self._check_star = (kname_in.strip(), float(kmag_in))
-        kname, kmag = self._check_star
+            self._check_star = (kname_in.strip(), float(kmag_in), kstar)
+        kname, kmag, kstar = self._check_star
     
         amass = lm.get("amass")
         if amass is None:
@@ -4180,10 +4243,11 @@ class MagnitudeToolDialog(QDialog):
     
         ra, dec = lm["radec"]
         if lm["mode"] == "rgb":
+            kmags = aav.check_star_kmags(kstar) if kstar else None
             rows = aav.build_rgb_rows(
                 name=star_id, date_jd=lm["jd"],
                 mags=lm["mags"], merrs=lm["merrs_stat"], amass=amass,
-                kname=kname, kmag=kmag,
+                kname=kname, kmag=kmag, kmags=kmags,
             )
         else:
             filt = self._resolve_mono_filter(lm)
