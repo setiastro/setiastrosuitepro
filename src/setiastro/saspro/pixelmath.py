@@ -1433,6 +1433,7 @@ class PixelMathDialogPro(QDialog):
             "unsharp": ("unsharp(x, sigma=1.5, amount=1.0)", self.tr("Unsharp mask.")),
             "mtf": ("mtf(x, m)", self.tr("Midtones transfer (existing).")),
             "iff": ("iff(cond, a, b)", self.tr("Conditional (existing).")),
+            "variables": ("A = expr", self.tr("Assign intermediate variables across lines; the final line is returned and must be an expression (e.g. B / A), not an assignment.")),
             "X / Y": ("X, Y", self.tr("Normalized coordinates in [0..1].")),
             "H/W/C": ("H, W, C, shape", self.tr("Image dimensions.")),
         }
@@ -1617,7 +1618,13 @@ class PixelMathDialogPro(QDialog):
             self.tr("  • Sizes: H, W, C, shape."),
             "",
             self.tr("Per-channel indexing: view[0], view[1], view[2]."),
-            self.tr("Multiline: last line is the result."),
+            self.tr("Multiline & variables:"),
+            self.tr("  • Assign intermediate variables across lines, e.g.:"),
+            "      A = med(img)",
+            "      B = avg(img, other)",
+            "      B / A",
+            self.tr("  • The last line is the returned result and must be an"),
+            self.tr("    expression (e.g. B / A), not an assignment (C = B / A)."),
             self.tr("Output: Overwrite active or Create new view."),
             "",
             self.tr("Functions:")

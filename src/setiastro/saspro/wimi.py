@@ -735,7 +735,8 @@ from PyQt6.QtGui import QPainter, QPen, QColor
 
 class MarkerLayer(QGraphicsItem):
     def __init__(self, image_w, image_h, show_names_fn, color_fn, style_fn,
-                 selected_name_fn=lambda: None, radius_px=6, cell=64, parent=None):
+                 selected_name_fn=lambda: None, show_active_name_fn=lambda: False,
+                 radius_px=6, cell=64, parent=None):
         super().__init__(parent)
         self._w, self._h = image_w, image_h
         self._bounds = QRectF(0, 0, self._w, self._h)
@@ -746,6 +747,7 @@ class MarkerLayer(QGraphicsItem):
         self._color = color_fn              # fallback color
         self._style = style_fn
         self._selected_name = selected_name_fn
+        self._show_active_name = show_active_name_fn
         self.setZValue(100)
         self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
@@ -786,6 +788,7 @@ class MarkerLayer(QGraphicsItem):
         show_names = self._show_names()
         style = self._style()
         selected_name = self._selected_name()
+        show_active = self._show_active_name()
 
         # Extract current scene→device scale so we can draw in screen pixels
         t = p.transform()
@@ -813,15 +816,29 @@ class MarkerLayer(QGraphicsItem):
                     if not vr.contains(QPointF(x, y)):
                         continue
 
-                    col = (QColor(0, 255, 0)
-                        if selected_name and pt.get("name") == selected_name
+                    is_sel = bool(selected_name) and pt.get("name") == selected_name
+                    col = (QColor(0, 255, 0) if is_sel
                         else pt.get("color", self._color()))
                     base_pen.setColor(col)
                     p.setPen(base_pen)
 
                     radius_px = pt.get("radius_px")  # scene-space radius, or None
+                    ellipse   = pt.get("ellipse")    # (semi_major_px, semi_minor_px, angle_deg) or None
 
-                    if radius_px is not None and radius_px > 0:
+                    if ellipse is not None:
+                        # Oriented ellipse from catalog major/minor axis + position angle
+                        a_px, b_px, ang_deg = ellipse
+                        min_r = FIXED_SCREEN_R / scene_scale
+                        a_px = max(a_px, min_r)
+                        b_px = max(b_px, min_r)
+                        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+                        p.save()
+                        p.translate(x, y)
+                        p.rotate(ang_deg)
+                        p.drawEllipse(QPointF(0.0, 0.0), a_px, b_px)
+                        p.restore()
+                        p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                    elif radius_px is not None and radius_px > 0:
                         # Draw a circle scaled to the object's actual angular size
                         # radius_px is in scene/image pixels → already correct for QPainter scene coords
                         min_r = FIXED_SCREEN_R / scene_scale  # don't go smaller than fixed size
@@ -842,7 +859,7 @@ class MarkerLayer(QGraphicsItem):
                             p.drawEllipse(QPointF(x, y), r, r)
                             p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
-                    if show_names and pt.get("name"):
+                    if pt.get("name") and (show_names or (show_active and is_sel)):
                         text_pen = QPen(QColor(255, 255, 255))
                         text_pen.setCosmetic(True)
                         p.setPen(text_pen)
@@ -1689,76 +1706,23 @@ class CustomGraphicsView(QGraphicsView):
             }
         ))
 
-    def _set_marker_points_from_results(self):
-        self._ensure_marker_layer()
-        if not _qt_is_alive(self._marker_layer):
-            return
-        pts = []
-        for obj in getattr(self, "results", []):
-            ra, dec = obj.get("ra"), obj.get("dec")
-            xy = self.calculate_pixel_from_ra_dec(ra, dec)
-            if not xy: continue
-            x, y = xy
-            if x is None or y is None: continue
-
-            radius_px = None
-            diam = obj.get("diameter")
-            unit = obj.get("diameter_unit", "arcmin")  # default arcmin for legacy entries
-
-            if diam not in (None, "N/A", "", "--"):
-                try:
-                    diam_val = float(diam)
-                    if diam_val > 0 and self.pixscale and self.pixscale > 0:
-                        # Convert to arcsec
-                        if unit == "arcmin":
-                            diam_arcsec = diam_val * 60.0
-                        elif unit == "arcsec":
-                            diam_arcsec = diam_val
-                        elif unit == "deg":
-                            diam_arcsec = diam_val * 3600.0
-                        else:
-                            diam_arcsec = diam_val * 60.0  # assume arcmin
-
-                        radius_px = (diam_arcsec / self.pixscale) / 2.0
-
-                        # Sanity clamp: don't draw circles larger than the image
-                        # or smaller than 2 scene pixels (those just use fixed size)
-                        if self.main_image:
-                            max_r = max(self.main_image.width(), self.main_image.height()) * 0.5
-                            if radius_px > max_r:
-                                radius_px = None  # too big to be meaningful, use fixed
-                        if radius_px is not None and radius_px < 2.0:
-                            radius_px = None  # too small, use fixed marker
-                except (ValueError, TypeError):
-                    radius_px = None
-
-            pts.append({
-                "x": float(x), "y": float(y),
-                "name": obj.get("name"),
-                "color": obj.get("color", QColor(255, 255, 255)),
-                "radius_px": radius_px,
-            })
-        try:
-            self._marker_layer.set_points(pts)
-        except RuntimeError:
-            self._marker_layer = None
-            self._ensure_marker_layer()
-            if _qt_is_alive(self._marker_layer):
-                self._marker_layer.set_points(pts)
-
-
     def zoom_to_coordinates(self, ra, dec):
         """Zoom to the specified RA/Dec coordinates and center the view on that position."""
         # Calculate the pixel position from RA and Dec
         pixel_x, pixel_y = self.parent.calculate_pixel_from_ra_dec(ra, dec)
         
         if pixel_x is not None and pixel_y is not None:
-            # Center the view on the calculated pixel position
-            self.centerOn(pixel_x, pixel_y)
-            
-            # Reset the zoom level to 1.0 by adjusting the transformation matrix
+            # Reset the zoom to 1:1 FIRST, then center -- centering depends on the
+            # current transform, so it must happen after the transform is set.
             self.resetTransform()
             self.scale(1.0, 1.0)
+            self.parent.zoom_level = 1.0
+
+            # Re-pad the scene for the new zoom so the target can be centered even
+            # when it sits near (or past) the image edge.
+            self.parent._update_scene_margins()
+
+            self.centerOn(pixel_x, pixel_y)
 
             # Optionally, update the mini preview to reflect the new zoom and center
             self.update_mini_preview()
@@ -2992,6 +2956,15 @@ def _mask_safe_float(val):
         return None
     return f
 
+
+def _fmt_mag(v):
+    """Format a magnitude for the tree's Mag column; '' for missing/non-numeric."""
+    try:
+        return f"{float(v):.2f}"
+    except (TypeError, ValueError):
+        return ""
+
+
 class MinorBodyDownloadWorker(QThread):
     """
     Background worker to download/update the minor-body catalog.
@@ -3323,6 +3296,7 @@ class WIMIDialog(QDialog):
         self.circle_center = None
         self.circle_radius = 0    
         self.show_names = False  # Boolean to toggle showing names on the main image
+        self.show_active_name = False  # Show only the active/selected object's name
         self.max_results = 100  # Default maximum number of query results     
         self.current_tool = None  # Track the active annotation tool
         self.header = Header()
@@ -3457,6 +3431,13 @@ class WIMIDialog(QDialog):
 
         # Add this horizontal layout to the left panel layout (or wherever you want it to appear)
         left_panel.addLayout(show_clear_layout)   
+
+        # Show Active Object Name checkbox -- pops up the name of the currently
+        # selected object (clicked in the tree or on the preview) even when
+        # "Show Object Names" is off.
+        self.show_active_name_checkbox = QCheckBox(self.tr("Show Active Object Name"))
+        self.show_active_name_checkbox.stateChanged.connect(self.toggle_active_object_name)
+        left_panel.addWidget(self.show_active_name_checkbox)
 
         # Create a horizontal layout for the two buttons
         button_layout = QHBoxLayout()
@@ -3640,8 +3621,8 @@ class WIMIDialog(QDialog):
         self._mini_preview_timer.setInterval(150)  # ms after scroll stops
         self._mini_preview_timer.timeout.connect(self.main_preview.update_mini_preview)
 
-        self.main_preview.verticalScrollBar().valueChanged.connect(self._mini_preview_timer.start)
-        self.main_preview.horizontalScrollBar().valueChanged.connect(self._mini_preview_timer.start)
+        self.main_preview.verticalScrollBar().valueChanged.connect(lambda *_: self._mini_preview_timer.start())
+        self.main_preview.horizontalScrollBar().valueChanged.connect(lambda *_: self._mini_preview_timer.start())
 
         # Create a horizontal layout for the labels
         label_layout = QHBoxLayout()
@@ -3660,7 +3641,7 @@ class WIMIDialog(QDialog):
         right_panel.addLayout(label_layout)
 
         self.results_tree = QTreeWidget()
-        self.results_tree.setHeaderLabels(["RA", "Dec", "Name", "Diameter", "Type", "Long Type", "Redshift (z)", "Parallax (mas)", "Distance"])
+        self.results_tree.setHeaderLabels(["RA", "Dec", "Name", "Diameter", "Type", "Long Type", "Redshift (z)", "Parallax (mas)", "Distance", "Mag"])
         self.results_tree.setFixedHeight(150)
         self.results_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.results_tree.customContextMenuRequested.connect(self.open_context_menu)
@@ -4241,6 +4222,17 @@ class WIMIDialog(QDialog):
             self.main_scene.invalidate(self.main_scene.sceneRect(), QGraphicsScene.SceneLayer.AllLayers)
             self._marker_layer.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
 
+    def toggle_active_object_name(self, state=None):
+        self.show_active_name = (
+            self.show_active_name_checkbox.isChecked() if state is None else bool(state)
+        )
+        self._ensure_marker_layer()
+        if self._marker_layer:
+            self._marker_layer.setCacheMode(QGraphicsItem.CacheMode.NoCache)
+            self._marker_layer.update(self._marker_layer.boundingRect())
+            self.main_scene.invalidate(self.main_scene.sceneRect(), QGraphicsScene.SceneLayer.AllLayers)
+            self._marker_layer.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
+
     def _set_selected_name(self, name: Optional[str]):
         self._selected_name = name
         if self._marker_layer:
@@ -4264,7 +4256,8 @@ class WIMIDialog(QDialog):
                 show_names_fn=lambda: self.show_names,
                 color_fn=lambda: self.selected_color,
                 style_fn=lambda: self.marker_style,
-                selected_name_fn=lambda: self._selected_name
+                selected_name_fn=lambda: self._selected_name,
+                show_active_name_fn=lambda: self.show_active_name
             )
             self.main_scene.addItem(self._marker_layer)
         else:
@@ -4287,6 +4280,7 @@ class WIMIDialog(QDialog):
 
             # Compute angular size radius in pixels if available
             radius_px = None
+            ellipse = None  # (semi_major_px, semi_minor_px, angle_deg) in scene space, if orientable
             diam = obj.get("diameter")
             if diam not in (None, "N/A", "", "--"):
                 try:
@@ -4294,14 +4288,39 @@ class WIMIDialog(QDialog):
                     if diam_arcmin > 0 and self.pixscale and self.pixscale > 0:
                         diam_arcsec = diam_arcmin * 60.0
                         radius_px = (diam_arcsec / self.pixscale) / 2.0
+
+                        # Upgrade the circle to a true oriented ellipse when the catalog
+                        # gave a minor axis + position angle. PA is a SKY angle (deg,
+                        # North->East); map it into image space with a WCS round-trip so
+                        # rotation / flip / parity are handled automatically. (An ellipse
+                        # is 180-deg symmetric, so the East sign convention is irrelevant.)
+                        minor = obj.get("minor_arcmin")
+                        pa    = obj.get("pa_deg")
+                        if (minor not in (None, "N/A", "", "--")
+                                and pa not in (None, "N/A", "", "--")):
+                            minor_val = float(minor)
+                            pa_val    = float(pa)
+                            if minor_val > 0 and minor_val <= diam_arcmin:
+                                a_arcsec = diam_arcsec / 2.0
+                                dd = (a_arcsec / 3600.0) * math.cos(math.radians(pa_val))
+                                dr = ((a_arcsec / 3600.0) * math.sin(math.radians(pa_val))
+                                      / max(1e-6, math.cos(math.radians(float(dec)))))
+                                tip = self.calculate_pixel_from_ra_dec(float(ra) + dr,
+                                                                       float(dec) + dd)
+                                if tip and tip[0] is not None and tip[1] is not None:
+                                    ang_deg = math.degrees(math.atan2(tip[1] - y, tip[0] - x))
+                                    b_px = radius_px * (minor_val / diam_arcmin)
+                                    ellipse = (radius_px, b_px, ang_deg)
                 except (ValueError, TypeError):
                     radius_px = None
+                    ellipse = None
 
             pts.append({
                 "x": float(x), "y": float(y),
                 "name": obj.get("name"),
                 "color": obj.get("color", QColor(255, 255, 255)),
                 "radius_px": radius_px,  # None = use fixed screen size
+                "ellipse": ellipse,
             })
         try:
             self._marker_layer.set_points(pts)
@@ -4312,7 +4331,32 @@ class WIMIDialog(QDialog):
                 self._marker_layer.set_points(pts)
 
     # ---- drop-in replacements (proxies) that your existing code already calls ----
+    def _filter_results_to_image(self, results):
+        """Drop objects whose pixel position falls outside the loaded image.
+
+        A cone/radius search can return objects that are inside the search
+        radius but outside the actual image frame (the circle spills past the
+        edges). Those should never populate the tree, markers, collage, etc.
+        Requires WCS; if WCS is unavailable we can't test bounds, so we keep
+        everything.
+        """
+        if getattr(self, "wcs", None) is None or self.main_image is None:
+            return list(results)
+        w = int(self.main_image.width())
+        h = int(self.main_image.height())
+        kept = []
+        for obj in results:
+            x, y = self.calculate_pixel_from_ra_dec(obj.get("ra"), obj.get("dec"))
+            if x is None or y is None:
+                continue  # couldn't project onto the image
+            if 0 <= x < w and 0 <= y < h:
+                kept.append(obj)
+        return kept
+
     def _cg_set_query_results_proxy(self, results):
+        # Remove anything not actually inside the image frame before it
+        # populates the tree / markers / any consumer of self.results.
+        results = self._filter_results_to_image(results)
         for obj in results:
             short_type = obj.get("short_type", "")
             category = OTYPE_TO_CATEGORY.get(short_type, "Errors & Artefacts")
@@ -4673,8 +4717,9 @@ class WIMIDialog(QDialog):
 
         # Save current view state before swapping the pixmap
         saved_transform = self.main_preview.transform()
-        saved_h_scroll = self.main_preview.horizontalScrollBar().value()
-        saved_v_scroll = self.main_preview.verticalScrollBar().value()
+        saved_center = self.main_preview.mapToScene(
+            self.main_preview.viewport().rect().center()
+        )
 
         self.main_scene.clear()
         self.main_scene.addPixmap(pixmap)
@@ -4683,10 +4728,12 @@ class WIMIDialog(QDialog):
         self._set_marker_points_from_results()
         self.main_preview.setSceneRect(QRectF(pixmap.rect()))
 
-        # Restore the view exactly as it was, instead of resetting to 1:1 centered
+        # Restore the view exactly as it was, instead of resetting to 1:1 centered.
+        # Pad the scene (after the transform is set) so we can pan past the edges,
+        # then recenter on the saved center so the padding doesn't shift the view.
         self.main_preview.setTransform(saved_transform)
-        self.main_preview.horizontalScrollBar().setValue(saved_h_scroll)
-        self.main_preview.verticalScrollBar().setValue(saved_v_scroll)
+        self._update_scene_margins()
+        self.main_preview.centerOn(saved_center)
 
         self.update_green_box()
 
@@ -6505,6 +6552,7 @@ class WIMIDialog(QDialog):
                 z_cell,
                 plx_cell,
                 dist_cell,
+                str(obj.get('mag_display', '')),
             ])
             self.results_tree.addTopLevelItem(item)
 
@@ -6547,9 +6595,12 @@ class WIMIDialog(QDialog):
         )
 
         if selected_object:
-            # Set the selected object in MainWindow and update views
+            # Update the preview directly. Do NOT call main_preview.select_object()
+            # here: it calls results_tree.setCurrentItem(), which collapses a
+            # Shift/Ctrl multi-selection down to just the row that was clicked.
             self.selected_object = selected_object
-            self.main_preview.select_object(selected_object)
+            self.main_preview.selected_object = selected_object
+            self._set_selected_name(selected_object.get("name"))
             self.main_preview.draw_query_results()
             self.main_preview.update_mini_preview() 
             
@@ -6730,6 +6781,7 @@ class WIMIDialog(QDialog):
         self.main_scene.addPixmap(pm)
         self.main_preview.setSceneRect(QRectF(pm.rect()))
         self.main_preview.resetTransform()
+        self._update_scene_margins()
         self.main_preview.centerOn(self.main_scene.sceneRect().center())
 
 
@@ -7904,7 +7956,12 @@ class WIMIDialog(QDialog):
         prog.setWindowModality(Qt.WindowModality.ApplicationModal)
         prog.setAutoClose(True)
         prog.setAutoReset(True)
-        prog.setMinimumDuration(500)
+        # We show() the dialog ourselves below. Leaving a non-zero minimum
+        # duration makes QProgressDialog keep restarting its internal reveal
+        # timer on every setValue() -- once elapsed passes that duration the
+        # interval goes negative and Qt spams "negative intervals aren't
+        # allowed". 0 makes it consider itself shown on the first update.
+        prog.setMinimumDuration(0)
         prog.show()
 
         worker = MinorBodySearchWorker(
@@ -7926,10 +7983,13 @@ class WIMIDialog(QDialog):
 
         def on_progress(done: int, total: int):
             if total <= 0:
-                prog.setMaximum(0)
-            else:
+                # Indeterminate: leave it busy, don't push values.
+                if prog.maximum() != 0:
+                    prog.setMaximum(0)
+                return
+            if prog.maximum() != total:
                 prog.setMaximum(total)
-                prog.setValue(done)
+            prog.setValue(done)
 
         def on_ok(results: list):
             container["results"] = results
@@ -7990,7 +8050,8 @@ class WIMIDialog(QDialog):
                 "ra": ra,
                 "dec": dec,
                 "name": name,
-                "diameter": mag,
+                "diameter": "N/A",              # minor bodies carry no angular size here
+                "mag_display": _fmt_mag(mag),   # apparent magnitude -> Mag column
                 "short_type": "MP",
                 "long_type": qtype,
                 "redshift": "N/A",          # not meaningful for minor bodies
@@ -8361,18 +8422,33 @@ class WIMIDialog(QDialog):
             # Get the click position in the mini preview
             click_x = event.pos().x()
             click_y = event.pos().y()
-            
-            # Calculate scale factors based on the difference in dimensions between main image and mini preview
-            scale_factor_x = self.main_scene.sceneRect().width() / self.mini_preview.width()
-            scale_factor_y = self.main_scene.sceneRect().height() / self.mini_preview.height()
-            
-            # Scale the click position to the main preview coordinates
-            scaled_x = click_x * scale_factor_x
-            scaled_y = click_y * scale_factor_y
-            
+
+            mini_w = self.mini_preview.width()
+            mini_h = self.mini_preview.height()
+            img_w = self.main_image.width()
+            img_h = self.main_image.height()
+            if mini_w <= 0 or mini_h <= 0 or img_w <= 0 or img_h <= 0:
+                return
+
+            # The mini preview draws the image aspect-fit and centered (letterboxed),
+            # matching update_green_box(). Invert that mapping so a click lands on the
+            # correct image pixel regardless of the (now padded) scene rect.
+            scale = min(mini_w / img_w, mini_h / img_h)
+            scaled_w = img_w * scale
+            scaled_h = img_h * scale
+            x_off = (mini_w - scaled_w) / 2.0
+            y_off = (mini_h - scaled_h) / 2.0
+
+            image_x = (click_x - x_off) / scale
+            image_y = (click_y - y_off) / scale
+
+            # Clamp to the image so clicks in the letterbox margins stay in-bounds
+            image_x = max(0.0, min(float(img_w), image_x))
+            image_y = max(0.0, min(float(img_h), image_y))
+
             # Center the main preview on the calculated position
-            self.main_preview.centerOn(scaled_x, scaled_y)
-            
+            self.main_preview.centerOn(image_x, image_y)
+
             # Update the green box after scrolling
             self.main_preview.update_mini_preview()
 
@@ -8468,18 +8544,50 @@ class WIMIDialog(QDialog):
         self.zoom_level = 1.0
         self.main_preview.resetTransform()
         self.main_preview.setTransform(QTransform().scale(1.0, 1.0))
+        self._update_scene_margins()
         self.main_preview.centerOn(self.main_scene.sceneRect().center())
         self.update_green_box()
+
+    def _update_scene_margins(self):
+        """Pad the scene rect with a margin around the image.
+
+        QGraphicsView clamps the viewport to the scene rect, so with the rect
+        set tight to the image you can't pan past the edges and centerOn() can't
+        center objects near the border. We add a margin (in scene units) of at
+        least half a viewport on each side so any image pixel -- including edge
+        objects -- can be centered, while capping the margin so a zoomed-out
+        view doesn't get runaway overscroll.
+        """
+        view = getattr(self, "main_preview", None)
+        img = getattr(self, "main_image", None)
+        if view is None or img is None:
+            return
+        iw = float(img.width())
+        ih = float(img.height())
+        if iw <= 0 or ih <= 0:
+            return
+        try:
+            scale = float(view.transform().m11())
+        except Exception:
+            scale = 1.0
+        if not scale or scale <= 0:
+            scale = 1.0
+        vp = view.viewport()
+        mx = min(vp.width() / (2.0 * scale), iw)
+        my = min(vp.height() / (2.0 * scale), ih)
+        view.setSceneRect(QRectF(-mx, -my, iw + 2.0 * mx, ih + 2.0 * my))
 
     def zoom_in(self):
         self.zoom_level *= 1.2
         self.main_preview.setTransform(QTransform().scale(self.zoom_level, self.zoom_level))
+        self._update_scene_margins()
         self.update_green_box()
         
 
     def zoom_out(self):
         self.zoom_level /= 1.2
         self.main_preview.setTransform(QTransform().scale(self.zoom_level, self.zoom_level))
+        self._update_scene_margins()
         self.update_green_box()
 
     def fit_to_preview(self):
@@ -8495,11 +8603,13 @@ class WIMIDialog(QDialog):
         self.zoom_level = scale
         self.main_preview.resetTransform()
         self.main_preview.setTransform(QTransform().scale(scale, scale))
+        self._update_scene_margins()
         self.main_preview.centerOn(self.main_scene.sceneRect().center())
         self.update_green_box()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._update_scene_margins()
         self.update_green_box()
         self._resize_crosshair_overlay()
 
@@ -8837,6 +8947,10 @@ class WIMIDialog(QDialog):
             ra, dec = float(row["ra"]), float(row["dec"])
             diam_raw = row.get("galdim_majaxis")  # arcmin, may be masked
             diam_arcmin = _mask_safe_float(diam_raw)
+            # minor axis (arcmin) and major-axis position angle (deg, N->E) --
+            # already selected in the TAP query above, previously discarded.
+            minor_arcmin = _mask_safe_float(row.get("galdim_minaxis"))
+            pa_deg       = _mask_safe_float(row.get("galdim_angle"))
 
             # For nebulae SIMBAD sometimes has nothing in galdim_majaxis.
             # The otype can tell us to expect a size even when it's missing.
@@ -8897,7 +9011,9 @@ class WIMIDialog(QDialog):
 
             query_results.append({
                 'ra': ra, 'dec': dec, 'name': name,
-                'diameter': diam,           # arcmin float or "N/A"
+                'diameter': diam,           # arcmin float or "N/A" (major axis)
+                'minor_arcmin': minor_arcmin,      # arcmin float or None (minor axis)
+                'pa_deg': pa_deg,                  # deg (N->E) or None (major-axis PA)
                 'diameter_display': diam_display,  # human-readable (arcmin/arcsec)
                 'diameter_unit': 'arcmin',  # explicit so downstream code is unambiguous
                 'short_type': short_type,
@@ -8907,6 +9023,7 @@ class WIMIDialog(QDialog):
                 'distance_ly': dist_ly_val,        # canonical light-years for display
                 'source': "Simbad",
                 'Bmag': Bmag, 'Vmag': Vmag,
+                'mag_display': (_fmt_mag(Vmag) or _fmt_mag(Bmag)),  # V (fallback B) -> Mag column
                 'parallax_mas': plx_val,           # mas, or "N/A"
                 'spectral_type': spec,
                 'absolute_mag': absV
