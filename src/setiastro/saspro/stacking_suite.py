@@ -8742,20 +8742,9 @@ class StackingSuiteDialog(QDialog):
             if w is not None and abs(float(w.value()) - v) > 1e-9:
                 w.blockSignals(True); w.setValue(v); w.blockSignals(False)
 
-    def _get_drizzle_scale(self) -> float:
-        # UI combo wins if it exists
-        combo = getattr(self, "drizzle_scale_combo", None)
-        if combo is not None:
-            try:
-                txt = str(combo.currentText()).strip().lower()
-                if txt.endswith("x"):
-                    txt = txt[:-1]
-                return float(txt)
-            except Exception:
-                pass
-
-        # fallback to settings
-        val = self.settings.value("stacking/drizzle_scale", "2x")
+    @staticmethod
+    def _parse_drizzle_scale(val, default: float = 2.0) -> float:
+        """Normalize '2x' / 2 / '2' style values to a float scale factor."""
         if isinstance(val, (int, float)):
             return float(val)
         if isinstance(val, str):
@@ -8765,8 +8754,26 @@ class StackingSuiteDialog(QDialog):
             try:
                 return float(s)
             except (ValueError, TypeError):
-                return 2.0
-        return 2.0
+                return float(default)
+        return float(default)
+
+    def _get_drizzle_scale_from_settings(self) -> float:
+        """Read persisted scale from QSettings (ignores the live combo)."""
+        return self._parse_drizzle_scale(
+            self.settings.value("stacking/drizzle_scale", "2x"),
+            default=2.0,
+        )
+
+    def _get_drizzle_scale(self) -> float:
+        # UI combo wins if it exists (live session truth during integration)
+        combo = getattr(self, "drizzle_scale_combo", None)
+        if combo is not None:
+            try:
+                return self._parse_drizzle_scale(combo.currentText(), default=2.0)
+            except Exception:
+                pass
+
+        return self._get_drizzle_scale_from_settings()
 
 
 
@@ -11514,7 +11521,14 @@ class StackingSuiteDialog(QDialog):
         tab.setLayout(layout)
 
         self.drizzle_checkbox.setChecked(self.settings.value("stacking/drizzle_enabled", False, type=bool))
-        self.drizzle_scale_combo.setCurrentText(f"{int(self._get_drizzle_scale())}x")
+        # Restore scale from QSettings — do NOT use _get_drizzle_scale() here: the
+        # combo already exists and defaults to "1x", so that helper would prefer the
+        # live widget and "restore" 1x every open, ignoring the saved value.
+        _saved_scale = self._get_drizzle_scale_from_settings()
+        _scale_txt = f"{int(_saved_scale)}x"
+        self.drizzle_scale_combo.blockSignals(True)
+        self.drizzle_scale_combo.setCurrentText(_scale_txt)
+        self.drizzle_scale_combo.blockSignals(False)
         self.drizzle_drop_shrink_spin.setValue(self._get_drizzle_pixfrac())
 
         drizzle_on = self.settings.value("stacking/drizzle_enabled", False, type=bool)
@@ -11630,18 +11644,6 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/drizzle_enabled", bool(checked))
         self._update_drizzle_summary_columns()
 
-    def _on_drizzle_param_changed(self, *_):
-        # persist scale from UI
-        if hasattr(self, "drizzle_scale_combo"):
-            self._set_drizzle_scale(self.drizzle_scale_combo.currentText())
-
-        # (optional) persist pixfrac too if you want “global controls are canonical”
-        if hasattr(self, "drizzle_drop_shrink_spin"):
-            self._set_drizzle_pixfrac(float(self.drizzle_drop_shrink_spin.value()))
-
-        self.settings.sync()
-        self._update_drizzle_summary_columns()   # if you show “1x / 0.65” in the tree
-
     def _on_star_trail_toggled(self, enabled: bool):
         """
         When Star-Trail mode is ON, we skip registration/alignment and use max-value stack.
@@ -11740,12 +11742,6 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/cfa_drizzle", bool(checked))
         self._update_drizzle_summary_columns()
 
-
-    def _on_drizzle_param_changed(self, *_):
-        # persist
-        self.settings.setValue("stacking/drizzle_scale", self.drizzle_scale_combo.currentText())
-        self.settings.setValue("stacking/drizzle_drop", float(self.drizzle_drop_shrink_spin.value()))
-        self._update_drizzle_summary_columns()
 
     def _update_drizzle_summary_columns(self):
         desc = "OFF"
@@ -12681,6 +12677,14 @@ class StackingSuiteDialog(QDialog):
             }
 
     def _on_drizzle_param_changed(self, *_):
+        # Persist global scale/pixfrac so they survive reopen (combo defaults to 1x)
+        if hasattr(self, "drizzle_scale_combo"):
+            self._set_drizzle_scale(self.drizzle_scale_combo.currentText())
+        if hasattr(self, "drizzle_drop_shrink_spin"):
+            self._set_drizzle_pixfrac(float(self.drizzle_drop_shrink_spin.value()))
+        self.settings.sync()
+        self._update_drizzle_summary_columns()
+
         enabled = self.drizzle_checkbox.isChecked()
         scale   = float(self.drizzle_scale_combo.currentText().replace("x","",1))
         drop    = self.drizzle_drop_shrink_spin.value()
