@@ -678,6 +678,7 @@ class WhiteBalanceDialog(QDialog):
         self._detection_worker = None
         self._pending_threshold = None
         self._pending_autostretch = None
+        self._closing = False
 
     def _cfg_gain(self, box: QDoubleSpinBox, val: float):
         box.setRange(0.5, 1.5); box.setDecimals(3); box.setSingleStep(0.01); box.setValue(val)
@@ -689,6 +690,7 @@ class WhiteBalanceDialog(QDialog):
         self.btn_apply.clicked.connect(self._on_apply)
         self.thr_slider.valueChanged.connect(self._on_threshold_changed)
         self.chk_autostretch_overlay.toggled.connect(lambda _=None: self._debounce.start())
+        self.finished.connect(lambda *_: self._stop_detection_worker())
 
 
     def _on_threshold_changed(self, v: int):
@@ -711,6 +713,8 @@ class WhiteBalanceDialog(QDialog):
     # ---- preview --------------------------------------------------------
 
     def _update_star_preview(self):
+        if getattr(self, "_closing", False):
+            return
         if self.type_combo.currentText() != "Star-Based":
             return
 
@@ -739,6 +743,9 @@ class WhiteBalanceDialog(QDialog):
         worker.start()
 
     def _on_worker_done(self, overlay: np.ndarray, count: int):
+        if getattr(self, "_closing", False):
+            self._detection_worker = None
+            return
         worker = self._detection_worker
         self._detection_worker = None
 
@@ -764,6 +771,9 @@ class WhiteBalanceDialog(QDialog):
             self.preview.clear()
 
     def _on_worker_failed(self, error: str):
+        if getattr(self, "_closing", False):
+            self._detection_worker = None
+            return
         worker = self._detection_worker
         self._detection_worker = None
         if self._pending_threshold is not None:
@@ -1035,6 +1045,52 @@ class WhiteBalanceDialog(QDialog):
         except Exception:
             self.close()
 
+    def _stop_detection_worker(self):
+        """Cancel + detach any running detection worker so its QThread is never
+        destroyed while the OS thread is still running (that hard-crashes Qt)."""
+        self._closing = True
+        try:
+            self._debounce.stop()
+        except Exception:
+            pass
+        worker = getattr(self, "_detection_worker", None)
+        self._detection_worker = None
+        if worker is None:
+            return
+        # Stop it calling back into this (soon-destroyed) dialog.
+        for _sig in ("finished", "failed"):
+            try:
+                getattr(worker, _sig).disconnect()
+            except Exception:
+                pass
+        try:
+            worker.cancel()
+        except Exception:
+            pass
+        try:
+            running = worker.isRunning()
+        except Exception:
+            running = False
+        if running:
+            # Detach from the dialog and keep it alive at module scope so it can
+            # finish on its own; it removes itself when done. No blocking wait
+            # (SEP can't be interrupted mid-call) and no terminate.
+            try:
+                worker.setParent(None)
+            except Exception:
+                pass
+            _orphaned_workers.append(worker)
+            def _cleanup_orphan(*_a, w=worker):
+                try:
+                    _orphaned_workers.remove(w)
+                except ValueError:
+                    pass
+            try:
+                worker.finished.connect(_cleanup_orphan)
+                worker.failed.connect(_cleanup_orphan)
+            except Exception:
+                pass
+
     def closeEvent(self, ev):
         # Stop debounce so no new workers can start
         try:
@@ -1050,58 +1106,7 @@ class WhiteBalanceDialog(QDialog):
             pass
         self._active_doc_conn = False
 
-        # Cancel the running worker and WAIT for it to actually finish before
-        # allowing the dialog (and its children) to be destroyed.  Without the
-        # wait, Qt destroys the QThread object while the OS thread is still
-        # running, which causes the hard crash.
-        try:
-            worker = getattr(self, "_detection_worker", None)
-            if worker is not None:
-                # Disconnect signals first so _on_worker_done / _on_worker_failed
-                # can't fire into a half-destroyed dialog after we return.
-                try:
-                    worker.finished.disconnect()
-                except Exception:
-                    pass
-                try:
-                    worker.failed.disconnect()
-                except Exception:
-                    pass
-
-                worker.cancel()
-
-                if worker.isRunning():
-                    # Re-parent to None so Qt doesn't destroy it with the dialog,
-                    # then keep a module-level reference until it finishes.
-                    try:
-                        worker.setParent(None)
-                    except Exception:
-                        pass
-                    _orphaned_workers.append(worker)
-
-                    # Connect cleanup — removes from list once thread is done
-                    def _cleanup_orphan(w=worker):
-                        try:
-                            _orphaned_workers.remove(w)
-                        except ValueError:
-                            pass
-
-                    worker.finished.connect(_cleanup_orphan)
-                    worker.failed.connect(_cleanup_orphan)
-
-                    # Wait up to 5 s for the thread to honour the cancel flag.
-                    # This blocks the close briefly but is far better than a crash.
-                    if not worker.wait(5000):
-                        # Still running after 5 s — terminate forcefully as last resort
-                        try:
-                            worker.terminate()
-                            worker.wait(1000)
-                        except Exception:
-                            pass
-
-                self._detection_worker = None
-        except Exception:
-            pass
+        self._stop_detection_worker()
 
         super().closeEvent(ev)
 

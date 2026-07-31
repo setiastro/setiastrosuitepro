@@ -3604,7 +3604,7 @@ class MagnitudeToolDialog(QDialog):
             return []
         wl_nm = np.asarray(probe.wavelengths, dtype=np.float64)
         T_B, T_V, T_R = _johnson_bvr_passbands_on_gaia_grid(wl_nm)
-        T_G = _gaia_g_passband_on_grid(wl_nm)   # for anchoring only
+        T_G = self._gaia_g_passband_on_grid(wl_nm)   # for anchoring only
 
         self.lbl_info.setText(
             f"Synthesizing calibrated B/V/R from {len(source_ids):,} "
@@ -4238,7 +4238,7 @@ class MagnitudeToolDialog(QDialog):
         if amass is None:
             amass_in, ok = QInputDialog.getDouble(self, "Airmass",
                                                 "No airmass derivable from header. Enter airmass (or Cancel for na):",
-                                                value=1.0, minValue=1.0, maxValue=40.0, decimals=3)
+                                                value=1.0, min=1.0, max=40.0, decimals=3)
             amass = float(amass_in) if ok else None
     
         ra, dec = lm["radec"]
