@@ -63,7 +63,8 @@ _LUM_PRESETS = {
 }
 
 def _lum_band_mask(L: np.ndarray, lo: float, hi: float,
-                   smooth: float, invert: bool = False) -> np.ndarray:
+                   smooth: float, invert: bool = False,
+                   soft: bool = False) -> np.ndarray:
     """
     Soft luminance band mask on L in [0..1].
     `smooth` is feather width expressed as a fraction of the 0..1 range (e.g. 0.05).
@@ -75,17 +76,30 @@ def _lum_band_mask(L: np.ndarray, lo: float, hi: float,
 
     s = float(max(smooth, 0.0))
 
-    # Hard band
-    mask = ((L >= lo) & (L <= hi)).astype(np.float32)
+    if soft:
+        # Proportional selection: a smooth bump with soft shoulders straddling
+        # the band edges, so mask strength tracks how close a pixel's luminance
+        # is to the selected range instead of a hard in/out boxcar. Narrow bands
+        # become a smooth bell; wide bands keep a soft-shouldered plateau. This
+        # removes hard iso-luminance contours (blobbiness).
+        sw = s if s > 1e-6 else 0.05          # guarantee a real transition width
+        # Keep an edge that sits at pure black/white fully in (no taper past the
+        # ends), so a Shadows/Highlights band still includes 0.0 / 1.0 at full.
+        rise = _softstep(L, lo - sw, lo + sw) if lo > 1e-6 else np.ones_like(L)
+        fall = (1.0 - _softstep(L, hi - sw, hi + sw)) if hi < 1.0 - 1e-6 else np.ones_like(L)
+        mask = (rise * fall).astype(np.float32)
+    else:
+        # Hard band
+        mask = ((L >= lo) & (L <= hi)).astype(np.float32)
 
-    if s > 1e-6:
-        # Lower feather: fade in just above lo
-        lower = (L >= lo - s) & (L < lo)
-        mask[lower] = np.maximum(mask[lower], (L[lower] - (lo - s)) / s)
+        if s > 1e-6:
+            # Lower feather: fade in just above lo
+            lower = (L >= lo - s) & (L < lo)
+            mask[lower] = np.maximum(mask[lower], (L[lower] - (lo - s)) / s)
 
-        # Upper feather: fade out just above hi
-        upper = (L > hi) & (L <= hi + s)
-        mask[upper] = np.maximum(mask[upper], 1.0 - (L[upper] - hi) / s)
+            # Upper feather: fade out just above hi
+            upper = (L > hi) & (L <= hi + s)
+            mask[upper] = np.maximum(mask[upper], 1.0 - (L[upper] - hi) / s)
 
     if invert:
         mask = 1.0 - mask
@@ -97,9 +111,10 @@ def _build_lum_mask(img01: np.ndarray,
                     lo: float, hi: float,
                     smooth: float,
                     invert: bool,
-                    blur_px: int) -> np.ndarray:
+                    blur_px: int,
+                    soft: bool = False) -> np.ndarray:
     L = _luminance01(img01)
-    mask = _lum_band_mask(L, lo, hi, smooth, invert)
+    mask = _lum_band_mask(L, lo, hi, smooth, invert, soft=soft)
 
     if blur_px > 0 and cv2 is not None:
         mask = cv2.GaussianBlur(mask.astype(np.float32), (0, 0), float(blur_px))
@@ -644,6 +659,18 @@ class SelectiveLuminanceCorrection(QDialog):
         self.cb_use_imported.toggled.connect(self._on_use_imported_mask_toggled)
         gl.addWidget(self.cb_use_imported, 5, 4, 1, 2)
 
+        # Soft (proportional) mask: weight by how close each pixel's luminance is
+        # to the selected range instead of a hard in/out selection -> fewer blobs.
+        self.cb_soft_mask = QCheckBox("Soft (proportional)")
+        self.cb_soft_mask.setChecked(False)
+        self.cb_soft_mask.setToolTip(
+            "Weight the mask by how close a pixel's luminance is to the selected "
+            "range, with smooth shoulders, instead of a hard in/out selection. "
+            "Softens blobby, hard-edged (iso-luminance) corrections."
+        )
+        self.cb_soft_mask.toggled.connect(self._schedule_mask)
+        gl.addWidget(self.cb_soft_mask, 5, 6, 1, 2)
+
         # Row 6: import mask
         self.btn_import_mask = QPushButton("Pick mask from view…")
         self.btn_import_mask.clicked.connect(self._import_mask_from_view)
@@ -1032,28 +1059,28 @@ class SelectiveLuminanceCorrection(QDialog):
         else:
             self.sl_c2.setStyleSheet("")   # restore default theme styling
 
-    def _slider_pair(self, grid, name, row, minv=-1.0, maxv=1.0, step=0.05):
+    def _slider_pair(self, grid, name, row, minv=-0.2, maxv=0.2, step=0.005):
         import math
 
         def _to_slider(v):
-            s = abs(v) * 100.0
+            s = abs(v) * 1000.0
             s = math.floor(s + 0.5)
             return int(-s if v < 0 else s)
 
         grid.addWidget(QLabel(name), row, 0)
         sld = QSlider(Qt.Orientation.Horizontal)
-        sld.setRange(int(minv * 100), int(maxv * 100))
-        sld.setSingleStep(int(step * 100))
-        sld.setPageStep(int(5 * step * 100))
+        sld.setRange(int(minv * 1000), int(maxv * 1000))
+        sld.setSingleStep(int(step * 1000))
+        sld.setPageStep(int(5 * step * 1000))
         sld.setValue(0)
 
         box = QDoubleSpinBox()
         box.setRange(minv, maxv); box.setSingleStep(step)
-        box.setDecimals(2); box.setValue(0.0)
+        box.setDecimals(3); box.setValue(0.0)
         box.setKeyboardTracking(False)
 
         def _s2b(v_int):
-            box.blockSignals(True); box.setValue(v_int / 100.0); box.blockSignals(False)
+            box.blockSignals(True); box.setValue(v_int / 1000.0); box.blockSignals(False)
 
         def _b2s(v_float):
             sld.blockSignals(True); sld.setValue(_to_slider(v_float)); sld.blockSignals(False)
@@ -1071,7 +1098,7 @@ class SelectiveLuminanceCorrection(QDialog):
 
     def _set_pair(self, sld, box, value):
         sld.blockSignals(True); box.blockSignals(True)
-        sld.setValue(int(round(value * 100)))
+        sld.setValue(int(round(value * 1000)))
         box.setValue(float(value))
         sld.blockSignals(False); box.blockSignals(False)
 
@@ -1346,6 +1373,7 @@ class SelectiveLuminanceCorrection(QDialog):
                 smooth=float(self.ds_smooth.value()),
                 invert=self.cb_invert.isChecked(),
                 blur_px=int(self.sb_blur.value()),
+                soft=self.cb_soft_mask.isChecked(),
             )
 
         self._mask = np.clip(mask, 0.0, 1.0)
@@ -1437,6 +1465,7 @@ class SelectiveLuminanceCorrection(QDialog):
             smooth=float(self.ds_smooth.value()),
             invert=self.cb_invert.isChecked(),
             blur_px=int(self.sb_blur.value()),
+            soft=self.cb_soft_mask.isChecked(),
         )
 
         # AND with region mask
@@ -1652,6 +1681,7 @@ class SelectiveLuminanceCorrection(QDialog):
 
         setv(self.ds_smooth, 0.05)
         setv(self.cb_invert, False)
+        setv(self.cb_soft_mask, False)
         setv(self.sb_blur, 0)
         setv(self.cb_show_mask, False)
 

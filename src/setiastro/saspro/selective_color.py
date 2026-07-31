@@ -125,7 +125,8 @@ def _hue_mask(img01: np.ndarray,
               min_light: float,
               max_light: float,
               smooth_deg: float,
-              invert_range: bool = False) -> np.ndarray:
+              invert_range: bool = False,
+              soft: bool = False) -> np.ndarray:
     """
     Return mask in 0..1 for the UNION of hue bands in ranges_deg (degrees).
     Handles wrap-around without recursion. If invert_range=True, selects the
@@ -145,13 +146,29 @@ def _hue_mask(img01: np.ndarray,
         m = 1.0 - m
 
     # chroma/light gating
-    if min_chroma > 0:
+    if soft:
+        # Proportional selection: weight by how strongly the pixel is colored
+        # (chroma) and feather the lightness limits, so the mask fades in/out
+        # continuously instead of snapping. Edge pixels of a colored region are
+        # naturally less saturated, so this softens hard, blobby boundaries.
         chroma = (S * V).astype(np.float32)
-        m *= _softstep(chroma, float(min_chroma)*0.7, float(min_chroma))
-    if min_light > 0:
-        m *= (V >= float(min_light)).astype(np.float32)
-    if max_light < 1:
-        m *= (V <= float(max_light)).astype(np.float32)
+        c_lo = max(0.0, float(min_chroma))
+        c_hi = min(1.0, c_lo + 0.35)   # only vivid color reaches full strength
+        m *= _softstep(chroma, c_lo, c_hi)
+
+        feather_l = 0.10
+        if min_light > 0:
+            m *= _softstep(V, max(0.0, float(min_light) - feather_l), float(min_light))
+        if max_light < 1:
+            m *= (1.0 - _softstep(V, float(max_light), min(1.0, float(max_light) + feather_l)))
+    else:
+        if min_chroma > 0:
+            chroma = (S * V).astype(np.float32)
+            m *= _softstep(chroma, float(min_chroma)*0.7, float(min_chroma))
+        if min_light > 0:
+            m *= (V >= float(min_light)).astype(np.float32)
+        if max_light < 1:
+            m *= (V <= float(max_light)).astype(np.float32)
 
     return np.clip(m, 0.0, 1.0)
 
@@ -667,6 +684,18 @@ class SelectiveColorCorrection(QDialog):
         self.cb_show_mask.toggled.connect(self._update_preview_pixmap)
         gl.addWidget(self.cb_show_mask, 6, 4, 1, 2)
 
+        # Soft (proportional) mask: weight by how strongly each pixel matches the
+        # selected color instead of a hard in/out selection -> fewer blobby edges.
+        self.cb_soft_mask = QCheckBox("Soft (proportional)")
+        self.cb_soft_mask.setChecked(False)
+        self.cb_soft_mask.setToolTip(
+            "Weight the mask by how strongly each pixel matches the color "
+            "(chroma), and feather the lightness limits, instead of a hard "
+            "in/out selection. Softens blobby, hard-edged corrections."
+        )
+        self.cb_soft_mask.toggled.connect(self._recompute_mask_and_preview)
+        gl.addWidget(self.cb_soft_mask, 6, 6, 1, 2)
+
         # Row 7: imported mask
         self.cb_use_imported = QCheckBox("Use imported mask")
         self.cb_use_imported.setChecked(False)
@@ -1098,7 +1127,7 @@ class SelectiveColorCorrection(QDialog):
     def _set_pair(self, sld: QSlider, box: QDoubleSpinBox, value: float):
         # block both sides to avoid ping-pong and callbacks
         sld.blockSignals(True); box.blockSignals(True)
-        sld.setValue(int(round(value * 100)))  # because slider units are *100
+        sld.setValue(int(round(value * 1000)))  # because slider units are *1000
         box.setValue(float(value))
         sld.blockSignals(False); box.blockSignals(False)
 
@@ -1141,6 +1170,7 @@ class SelectiveColorCorrection(QDialog):
         setv(self.ds_maxL, 1.0)
         setv(self.ds_smooth, 10.0)
         setv(self.cb_invert, False)
+        setv(self.cb_soft_mask, False)
 
         # Shadows/Highlights/Balance
         setv(self.ds_sh, 0.0)
@@ -1452,30 +1482,30 @@ class SelectiveColorCorrection(QDialog):
         grid.addWidget(s, row, 1)
         return s
 
-    def _slider_pair(self, grid: QGridLayout, name: str, row: int, minv=-1.0, maxv=1.0, step=0.05):
+    def _slider_pair(self, grid: QGridLayout, name: str, row: int, minv=-0.2, maxv=0.2, step=0.005):
         import math
 
         def _to_slider(v: float) -> int:
             # Symmetric rounding away from zero at half-steps; no banker’s rounding.
-            s = abs(v) * 100.0
+            s = abs(v) * 1000.0
             s = math.floor(s + 0.5)
             return int(-s if v < 0 else s)
 
         def _to_spin(v_int: int) -> float:
-            return float(v_int) / 100.0
+            return float(v_int) / 1000.0
 
         grid.addWidget(QLabel(name), row, 0)
 
         sld = QSlider(Qt.Orientation.Horizontal)
-        sld.setRange(int(minv*100), int(maxv*100))   # e.g., -100..100
-        sld.setSingleStep(int(step*100))             # e.g., 5
-        sld.setPageStep(int(5*step*100))             # e.g., 25
+        sld.setRange(int(minv*1000), int(maxv*1000))   # e.g., -100..100
+        sld.setSingleStep(int(step*1000))             # e.g., 5
+        sld.setPageStep(int(5*step*1000))             # e.g., 25
         sld.setValue(0)
 
         box = QDoubleSpinBox()
         box.setRange(minv, maxv)
         box.setSingleStep(step)
-        box.setDecimals(2)
+        box.setDecimals(3)
         box.setValue(0.0)
         box.setKeyboardTracking(False)  # only fire on committed changes
 
@@ -1582,6 +1612,7 @@ class SelectiveColorCorrection(QDialog):
                 max_light=float(self.ds_maxL.value()),
                 smooth_deg=float(self.ds_smooth.value()),
                 invert_range=self.cb_invert.isChecked(),
+                soft=self.cb_soft_mask.isChecked(),
             )
 
             mask = _weight_shadows_highlights(
@@ -1828,6 +1859,7 @@ class SelectiveColorCorrection(QDialog):
             max_light=float(self.ds_maxL.value()),
             smooth_deg=float(self.ds_smooth.value()),
             invert_range=self.cb_invert.isChecked(),
+            soft=self.cb_soft_mask.isChecked(),
         )
 
         mask = _weight_shadows_highlights(
