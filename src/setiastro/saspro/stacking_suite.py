@@ -14522,6 +14522,19 @@ class StackingSuiteDialog(QDialog):
                 # -------------------------------------------------------------
                 master_header = fits.Header()
                 master_header["IMAGETYP"] = "DARK"
+                # Stamp the source sensor's row order so this master is a faithful
+                # "synthetic raw": load_image() normalizes it to SASpro's internal
+                # top-down exactly as it does for a real raw from this sensor. Without
+                # it the master stays in on-disk (bottom-up) orientation while lights
+                # are flipped to top-down, so dark subtraction runs one vertical flip
+                # out of register with the light.
+                try:
+                    _dk_src_hdr, _ = get_valid_header(file_list[0])
+                    _dark_roworder = str(_dk_src_hdr.get("ROWORDER") or "")
+                except Exception:
+                    _dark_roworder = ""
+                if _dark_roworder:
+                    master_header["ROWORDER"] = _dark_roworder
                 master_header["EXPTIME"]  = (float(exposure_time), "Exposure time (s)")
                 master_header["SESSION"]  = (str(session), "User session tag")
                 master_header["NCOMBINE"] = (int(N), "Number of darks combined")
@@ -14886,8 +14899,14 @@ class StackingSuiteDialog(QDialog):
         bias_path = (getattr(self, "master_files", {}) or {}).get("Bias")
         if bias_path and os.path.exists(bias_path):
             try:
-                master_bias, _, _, bias_is_mono = load_image(bias_path)
+                master_bias, _bias_hdr, _, bias_is_mono = load_image(bias_path)
                 if master_bias is not None:
+                    # Match the raw flats' on-disk (bottom-up) orientation for the
+                    # in-build subtraction: if load_image normalized a carded master
+                    # to top-down, flip it back so it registers with the _MMImage
+                    # (bottom-up) flat tiles it is subtracted from.
+                    if str((_bias_hdr or {}).get("ROWORDER", "")).strip().upper() == "TOP-DOWN":
+                        master_bias = np.ascontiguousarray(np.flipud(master_bias))
                     # ensure 2D for bias (for flats we only use it when the flat group is mono/bayer)
                     if (not bias_is_mono) and master_bias.ndim == 3 and master_bias.shape[-1] == 3:
                         # If someone stored a 3ch bias, collapse to first channel (bias should be mono anyway)
@@ -15311,8 +15330,12 @@ class StackingSuiteDialog(QDialog):
                 N = len(file_list)
                 # Load the chosen dark if any
                 if selected_master_dark:
-                    dark_data, _, _, _ = load_image(selected_master_dark)
+                    dark_data, _dark_hdr, _, _ = load_image(selected_master_dark)
                     if dark_data is not None:
+                        # Match the raw flats' on-disk (bottom-up) orientation for the
+                        # in-build subtraction (see the bias note above).
+                        if str((_dark_hdr or {}).get("ROWORDER", "")).strip().upper() == "TOP-DOWN":
+                            dark_data = np.ascontiguousarray(np.flipud(dark_data))
                         if dark_data.ndim == 3 and dark_data.shape[-1] == 3:
                             # keep HWC
                             dark_data = dark_data.astype(np.float32, copy=False)
@@ -15354,11 +15377,13 @@ class StackingSuiteDialog(QDialog):
                 # Detect Bayer (only meaningful when channels==1)
                 # -----------------------------------------------------------------
                 bayerpat = None
+                flat_roworder = ""   # sensor readout direction of the source flats
                 try:
                     hdr0, _ = get_valid_header(file_list[0])
                     bayerpat = (hdr0.get("BAYERPAT") or hdr0.get("BAYERPATN") or hdr0.get("BAYER") or None)
                     if bayerpat is not None:
                         bayerpat = str(bayerpat).strip().upper()
+                    flat_roworder = str(hdr0.get("ROWORDER") or "")
                 except Exception:
                     bayerpat = None
                 is_bayer_group = (channels == 1) and bool(bayerpat)
@@ -15630,6 +15655,15 @@ class StackingSuiteDialog(QDialog):
                         header["OFFSET"] = (flat_offset_val, "Camera offset of source flats")
                 except Exception:
                     pass
+                # Stamp the source sensor's row order so this master is a faithful
+                # "synthetic raw": load_image() normalizes it to SASpro's internal
+                # top-down exactly as it does for a real raw from this sensor. Without
+                # it the master stays bottom-up while lights are flipped to top-down,
+                # so flat-division runs one vertical flip out of register -> on an
+                # even-height sensor the Bayer phase desyncs and debayers into a colour
+                # maze, and dust/vignetting misaligns.
+                if flat_roworder:
+                    header["ROWORDER"] = flat_roworder
                 save_image(
                     master_flat_data,
                     master_flat_path,
