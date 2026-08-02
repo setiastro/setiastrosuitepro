@@ -239,6 +239,9 @@ def _carry_satmask_sidecar(cal_fits: str, norm_fits: str, log_fn=None) -> bool:
 
     Returns True if a sidecar was carried forward.
     """
+    # satmask-disabled: sidecar masks retired; baked-in 0.0 trail pixels already
+    # exclude satellite trails at integration. Carry nothing.
+    return False
     try:
         src = _satmask_sidecar_for(cal_fits)
         if not os.path.exists(src):
@@ -2922,6 +2925,222 @@ def _match_channels(A: np.ndarray, B: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return A, B
 
 # --- comet-friendly reducers ---
+
+# ---------------------------------------------------------------------------
+# Robust CPU rejection kernels (numpy) — math-identical to torch_rejection.py.
+# These supersede the legacy numba kernels for the sigma/ESD family so the
+# CPU fallback rejects exactly like the GPU path. Convention preserved:
+# 0.0 and non-finite samples are treated as no-data; returns (result, rej_map)
+# with rej_map shaped like the input stack.
+# ---------------------------------------------------------------------------
+def _np_nanmedian_low(x):
+    """Median along axis 0 using the LOWER middle element for even counts —
+    matches torch.nanmedian exactly so CPU and GPU paths stay bit-identical."""
+    xf = np.where(np.isfinite(x), x, np.inf)
+    order = np.sort(xf, axis=0)
+    cnt = np.isfinite(x).sum(axis=0)
+    k = np.maximum((cnt - 1) // 2, 0)
+    med = np.take_along_axis(order, k[None], axis=0)[0]
+    return np.where(cnt > 0, med, np.nan)
+
+
+def _rej_prepare(ts, weights):
+    """Normalize to (F,H,W,C) float32 + validity mask; remember 3D inputs."""
+    ts = np.asarray(ts, dtype=np.float32)
+    was_3d = (ts.ndim == 3)
+    if was_3d:
+        ts = ts[..., None]
+    F = ts.shape[0]
+    w = np.asarray(weights, dtype=np.float32).reshape(F, 1, 1, 1)
+    valid = np.isfinite(ts) & (ts != 0.0)
+    return ts, w, valid, was_3d
+
+
+def _rej_finish(out, rej, was_3d):
+    out = np.nan_to_num(np.asarray(out, dtype=np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    if was_3d:
+        return out[..., 0], rej[..., 0]
+    return out, rej
+
+
+def _np_weighted_mean_or(ts, keep, w, fallback):
+    """Weighted mean of ts over keep; fallback where nothing survives.
+    NaN-safe: rejected/invalid lanes never enter the arithmetic."""
+    w_eff = w * keep.astype(np.float32)
+    num = np.sum(np.where(keep, ts, 0.0) * w_eff, axis=0)
+    den = np.sum(w_eff, axis=0)
+    return np.where(den > 1e-20, num / np.maximum(den, 1e-20), fallback)
+
+
+def _np_winsorized_center_scale(ts, valid, iterations=3, winsor_k=1.5):
+    """
+    Huber-style Winsorized per-pixel center/scale (PixInsight / APP style).
+    Seed with median + 1.4826*MAD, clamp the stack to med +/- winsor_k*sigma,
+    re-measure median/std on the clamped stack with Huber's 1.134 correction
+    (exact for winsor_k = 1.5), iterate. Outliers (satellite trails) cannot
+    inflate sigma, so the rejection bounds track the clean pixel distribution.
+    """
+    x = np.where(valid, ts, np.nan)
+    with np.errstate(all="ignore"):
+        med = _np_nanmedian_low(x)
+        sigma = np.maximum(1.4826 * _np_nanmedian_low(np.abs(x - med[None])), 1e-10)
+        cnt = np.maximum(valid.sum(axis=0), 1).astype(np.float32)
+        for _ in range(max(1, int(iterations))):
+            lo = med - winsor_k * sigma
+            hi = med + winsor_k * sigma
+            xw = np.clip(x, lo[None], hi[None])       # NaN stays NaN
+            med = _np_nanmedian_low(xw)
+            mean_w = np.where(valid, xw, 0.0).sum(axis=0) / cnt
+            var = np.where(valid, (xw - mean_w[None]) ** 2, 0.0).sum(axis=0) / cnt
+            sigma = np.maximum(1.134 * np.sqrt(np.maximum(var, 0.0)), 1e-10)
+    return med, sigma
+
+
+def windsorized_sigma_clip_weighted_np(ts, weights, lower=2.5, upper=2.5, iterations=3):
+    """True Winsorized sigma clipping; average of SURVIVORS only."""
+    ts, w, valid, was_3d = _rej_prepare(ts, weights)
+    with np.errstate(all="ignore"):
+        med, sigma = _np_winsorized_center_scale(ts, valid, iterations=iterations)
+        keep = valid & (ts >= (med - float(lower) * sigma)[None]) \
+                     & (ts <= (med + float(upper) * sigma)[None])
+        fallback = np.nan_to_num(med, nan=0.0)
+        out = _np_weighted_mean_or(ts, keep, w, fallback)
+    return _rej_finish(out, ~keep, was_3d)
+
+
+def kappa_sigma_clip_weighted_np(ts, weights, kappa=2.5, iterations=3):
+    """Classic kappa-sigma: median center, std of the kept sample, monotone
+    shrink (rejected pixels stay rejected), average of survivors."""
+    ts, w, valid, was_3d = _rej_prepare(ts, weights)
+    keep = valid.copy()
+    with np.errstate(all="ignore"):
+        for _ in range(max(1, int(iterations))):
+            x_iter = np.where(keep, ts, np.nan)
+            med = _np_nanmedian_low(x_iter)
+            n = np.maximum(keep.sum(axis=0), 1).astype(np.float32)
+            var = np.where(keep, (ts - med[None]) ** 2, 0.0).sum(axis=0) / n
+            std = np.maximum(np.sqrt(np.maximum(var, 0.0)), 1e-12)
+            keep &= (ts >= (med - float(kappa) * std)[None]) \
+                  & (ts <= (med + float(kappa) * std)[None])
+        x = np.where(valid, ts, np.nan)
+        fallback = np.nan_to_num(_np_nanmedian_low(x), nan=0.0)
+        out = _np_weighted_mean_or(ts, keep, w, fallback)
+    return _rej_finish(out, ~keep, was_3d)
+
+
+def esd_clip_weighted_np(ts, weights, threshold=3.0):
+    """
+    Generalized ESD (Rosner), externally studentized, vectorized per pixel.
+    Sequentially removes the most extreme remaining value and tests it
+    against the leave-one-out mean/std of the remaining sample (defeats
+    masking); no early stop — the outlier count is the largest step whose
+    test passed. Critical values are t-quantiles at df = n-2 mapped from the
+    user's z-style threshold, so 'threshold' keeps its literal 'sigmas'
+    meaning on large stacks and inflates automatically on small ones
+    (controls the false-rejection cascade a fixed cutoff would cause).
+    """
+    ts, w, valid, was_3d = _rej_prepare(ts, weights)
+    F = ts.shape[0]
+    thr = float(threshold)
+    max_out = int(max(1, min(F - 2, round(0.5 * F))))
+
+    crit_by_n = np.full(F + 1, np.inf, dtype=np.float32)
+    try:
+        from scipy import stats as _sstats
+        p_two = float(_sstats.norm.sf(thr))          # one-sided tail
+        for nn in range(3, F + 1):
+            crit_by_n[nn] = float(_sstats.t.ppf(1.0 - p_two, nn - 2))
+    except Exception:
+        for nn in range(3, F + 1):
+            df = nn - 2
+            infl = (df / (df - 2.0)) ** 0.5 if df > 2 else 3.0
+            crit_by_n[nn] = thr * infl
+
+    active = valid.copy()
+    removed_step = np.full(ts.shape, -1, dtype=np.int32)
+    passed = np.zeros((max_out,) + ts.shape[1:], dtype=bool)
+
+    with np.errstate(all="ignore"):
+        for j in range(max_out):
+            n = active.sum(axis=0).astype(np.float32)
+            can = n >= 3.0
+            mean = np.where(active, ts, 0.0).sum(axis=0) / np.maximum(n, 1.0)
+            dv = ts - mean[None]
+            ss_all = np.where(active, dv * dv, 0.0).sum(axis=0)
+
+            zabs = np.where(active, np.abs(dv), -np.inf)
+            idx = np.argmax(zabs, axis=0)
+            dmax = np.take_along_axis(zabs, idx[None], axis=0)[0]
+            dmax = np.where(np.isfinite(dmax), dmax, 0.0)
+
+            # leave-one-out identities (no catastrophic cancellation):
+            #   ss_loo = ss_all - dmax^2 * n/(n-1);  R = dmax * n/(n-1) / s_loo
+            n_loo = np.maximum(n - 1.0, 1.0)
+            ss_loo = np.maximum(ss_all - dmax * dmax * (n / n_loo), 0.0)
+            var_loo = ss_loo / np.maximum(n_loo - 1.0, 1.0)
+            std_loo = np.maximum(np.sqrt(var_loo), 1e-12)
+            R = dmax * (n / n_loo) / std_loo
+
+            lam = crit_by_n[np.clip(active.sum(axis=0), 0, F)]
+            passed[j] = can & (R > lam)
+
+            hit = np.zeros_like(active)
+            np.put_along_axis(hit, idx[None], can[None], axis=0)
+            active &= ~hit
+            removed_step = np.where(hit, j, removed_step)
+
+        steps = np.arange(max_out, dtype=np.int32).reshape((max_out,) + (1,) * (ts.ndim - 1))
+        jstar = np.where(passed, steps, -1).max(axis=0)
+        keep = valid & ((removed_step < 0) | (removed_step > jstar[None]))
+
+        x = np.where(valid, ts, np.nan)
+        fallback = np.nan_to_num(_np_nanmedian_low(x), nan=0.0)
+        out = _np_weighted_mean_or(ts, keep, w, fallback)
+    return _rej_finish(out, ~keep, was_3d)
+
+
+def trimmed_mean_weighted_np(ts, weights, trim_fraction=0.1):
+    ts, w, valid, was_3d = _rej_prepare(ts, weights)
+    with np.errstate(all="ignore"):
+        x = np.where(valid, ts, np.nan)
+        qlo = np.nanquantile(x, float(trim_fraction), axis=0)
+        qhi = np.nanquantile(x, 1.0 - float(trim_fraction), axis=0)
+        keep = valid & (ts >= qlo[None]) & (ts <= qhi[None])
+        fallback = np.nan_to_num(_np_nanmedian_low(x), nan=0.0)
+        out = _np_weighted_mean_or(ts, keep, w, fallback)
+    return _rej_finish(out, ~keep, was_3d)
+
+
+def biweight_location_weighted_np(ts, weights, tuning_constant=6.0):
+    ts, w, valid, was_3d = _rej_prepare(ts, weights)
+    with np.errstate(all="ignore"):
+        x = np.where(valid, ts, np.nan)
+        m = _np_nanmedian_low(x)
+        mad = np.maximum(_np_nanmedian_low(np.abs(x - m[None])), 1e-12)
+        d = np.where(valid, ts - m[None], 0.0)        # NaN-safe residuals
+        u = d / (float(tuning_constant) * mad[None])
+        mask = valid & (np.abs(u) < 1.0)
+        omu2 = np.where(mask, 1.0 - u * u, 0.0)
+        k_w = omu2 * omu2 * w
+        num = (d * k_w).sum(axis=0)
+        den = k_w.sum(axis=0)
+        out = np.where(den > 1e-20, m + num / np.maximum(den, 1e-20), m)
+    return _rej_finish(out, ~mask, was_3d)
+
+
+def modified_zscore_clip_weighted_np(ts, weights, threshold=3.5):
+    ts, w, valid, was_3d = _rej_prepare(ts, weights)
+    with np.errstate(all="ignore"):
+        x = np.where(valid, ts, np.nan)
+        med = _np_nanmedian_low(x)
+        mad = np.maximum(_np_nanmedian_low(np.abs(x - med[None])), 1e-12)
+        mz = np.where(valid, 0.6745 * (ts - med[None]) / mad[None], np.inf)
+        keep = valid & (np.abs(mz) < float(threshold))
+        fallback = np.nan_to_num(med, nan=0.0)
+        out = _np_weighted_mean_or(ts, keep, w, fallback)
+    return _rej_finish(out, ~keep, was_3d)
+
+
 def _lower_trimmed_mean(ts: np.ndarray, trim_hi_frac: float = 0.30) -> np.ndarray:
     """
     Per-pixel lower-trimmed mean: drop the brightest t% (star trails) then mean.
@@ -5688,6 +5907,7 @@ class StackingSuiteDialog(QDialog):
         )
 
         self._cfa_for_this_run = None  # None = follow checkbox; True/False = override for this run
+        self._debayer_method_for_this_run = None  # None = follow the Debayer dropdown / saved setting; else force this token
         self._platesolve_signal.connect(self._platesolve_slot, Qt.ConnectionType.BlockingQueuedConnection)
         # Debounced progress (alignment)
         self._align_prog_timer = QTimer(self)
@@ -7011,6 +7231,16 @@ class StackingSuiteDialog(QDialog):
             cfa = bool(self._cfa_for_this_run)
         #print(f"[DEBUG] Debayering with CFA drizzle = {cfa}")
 
+        # Resolve debayer method (thread-safe): per-run override wins, else the
+        # persisted dropdown value. The combo writes the setting on change, so
+        # QSettings is always current and safe to read from worker threads.
+        if getattr(self, "_debayer_method_for_this_run", None) is not None:
+            dmethod = str(self._debayer_method_for_this_run).lower()
+        else:
+            dmethod = str(self.settings.value("stacking/debayer_method", "vng")).lower()
+        if dmethod not in ("vng", "edge", "bilinear", "strict_cfa"):
+            dmethod = "vng"
+
         ext = file_path.lower()
         is_raw = ext.endswith(('.cr2','.cr3','.nef','.arw','.dng','.raf','.orf','.rw2','.pef'))
 
@@ -7030,7 +7260,7 @@ class StackingSuiteDialog(QDialog):
                                 logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                             try:
                                 from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
-                                return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method="edge")
+                                return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method=dmethod)
                             except Exception:
                                 
                                 return debayer_fits_fast(image, token, cfa_drizzle=cfa)
@@ -7066,7 +7296,7 @@ class StackingSuiteDialog(QDialog):
                             logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
                         try:
                             from setiastro.saspro.legacy.numba_utils import debayer_raw_fast
-                            return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method="edge")
+                            return debayer_raw_fast(image, bayer_pattern=token, cfa_drizzle=cfa, method=dmethod)
                         except Exception:
                             return debayer_fits_fast(image, token, cfa_drizzle=cfa)
 
@@ -7109,7 +7339,7 @@ class StackingSuiteDialog(QDialog):
                     img,
                     pattern=eff_bp,
                     roworder=roworder,
-                    method="edge",
+                    method=dmethod,
                     cfa_drizzle=cfa,
                 )
 
@@ -9960,11 +10190,14 @@ class StackingSuiteDialog(QDialog):
         # ---------- Satellite Trail Masking (post-calibration, for integration) ----------
         sat_layout = QHBoxLayout()
 
-        self.cal_satellite_checkbox = QCheckBox(self.tr("Generate Satellite Trail Masks for Integration"))
+        self.cal_satellite_checkbox = QCheckBox(self.tr("Remove Satellite Trails During Calibration"))
         self.cal_satellite_checkbox.setToolTip(
             self.tr(
-                "Detects satellite trails after calibration and creates binary rejection masks "
-                "so those pixels are ignored during integration. The calibrated light itself is not modified."
+                "Detects satellite trails after calibration and clips the affected pixels "
+                "to zero. Those pixels are then treated as no-data and excluded during "
+                "integration, so trails are rejected cleanly without leaving residual "
+                "bands. Because the trail is baked into the frame, it stays perfectly "
+                "aligned through registration."
             )
         )
         self.cal_satellite_checkbox.setChecked(
@@ -11115,6 +11348,34 @@ class StackingSuiteDialog(QDialog):
         self.cfa_drizzle_cb.toggled.connect(self._on_cfa_drizzle_toggled)
         self.cfa_drizzle_cb.setToolTip(self.tr("Requires 'Enable Drizzle'. Maps R/G/B CFA samples directly into channels (no interpolation)."))
         drizzle_layout.addWidget(self.cfa_drizzle_cb)
+
+        # Debayer method for OSC/Bayer integration (same options as the Debayer dialog).
+        drizzle_layout.addWidget(QLabel(self.tr("Debayer:")))
+        self.debayer_method_combo = QComboBox()
+        for _dm_label, _dm_tok in (
+            ("VNG",        "vng"),
+            ("Edge-aware", "edge"),
+            ("Bilinear",   "bilinear"),
+            ("Strict CFA", "strict_cfa"),
+        ):
+            self.debayer_method_combo.addItem(self.tr(_dm_label), _dm_tok)
+        _saved_dm = str(self.settings.value("stacking/debayer_method", "vng")).lower()
+        _dm_idx = next((
+            i for i in range(self.debayer_method_combo.count())
+            if self.debayer_method_combo.itemData(i) == _saved_dm
+        ), 0)
+        self.debayer_method_combo.setCurrentIndex(_dm_idx)
+        self.debayer_method_combo.setToolTip(self.tr(
+            "Demosaic used when integrating OSC/Bayer frames. VNG = highest quality "
+            "(slower); Edge/Bilinear = faster; Strict CFA = no interpolation. "
+            "Ignored when CFA Drizzle is on."
+        ))
+        self.debayer_method_combo.currentIndexChanged.connect(
+            lambda _i: self.settings.setValue(
+                "stacking/debayer_method", self.debayer_method_combo.currentData()
+            )
+        )
+        drizzle_layout.addWidget(self.debayer_method_combo)
 
         layout.addLayout(drizzle_layout)
 
@@ -16794,8 +17055,12 @@ class StackingSuiteDialog(QDialog):
             try:
                 base_no_ext, _ = os.path.splitext(cal_filename)
                 mask_path = base_no_ext + "_satmask.npy"
-                np.save(mask_path, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
-                return mask_path
+                # TEST: satellite sidecar masks disabled. Trail pixels are already
+                # baked to 0.0 in the calibrated frame, and integration treats 0.0
+                # as no-data, so the sidecar is redundant. Skipping the write to
+                # rule out the mask as the green-channel contamination source.
+                # np.save(mask_path, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
+                return None
             except Exception as e:
                 self.update_status(self.tr(f"⚠️ Could not save rejection mask: {e}"))
                 return None
@@ -17317,8 +17582,9 @@ class StackingSuiteDialog(QDialog):
             try:
                 base_no_ext, _ = os.path.splitext(cal_filename)
                 mask_path = base_no_ext + "_satmask.npy"
-                np.save(mask_path, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
-                return mask_path
+                # TEST: satellite sidecar masks disabled (see note above).
+                # np.save(mask_path, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
+                return None
             except Exception as e:
                 self.update_status(self.tr(f"⚠️ Could not save rejection mask: {e}"))
                 return None
@@ -19786,6 +20052,22 @@ class StackingSuiteDialog(QDialog):
             ref_min = float(np.nanmin(ref_L))
             ref_target_median = float(np.nanmedian(ref_L - ref_min))
             self.update_status(self.tr(f"📊 Reference min={ref_min:.6f}, normalized-median={ref_target_median:.6f}"))
+            # Per-channel targets for OSC frames: lets each of R/G/B be
+            # normalized independently to the reference's matching channel
+            # (same min-subtracted-median semantics as the luma target above).
+            if isinstance(ref_img, np.ndarray) and ref_img.ndim == 3 and ref_img.shape[-1] == 3:
+                ref_target_medians_rgb = []
+                for _c in range(3):
+                    _band = ref_img[..., _c].astype(np.float32, copy=False)
+                    _bmin = float(np.nanmin(_band))
+                    ref_target_medians_rgb.append(float(np.nanmedian(_band - _bmin)))
+                self.update_status(self.tr(
+                    f"📊 Reference per-channel medians: "
+                    f"R={ref_target_medians_rgb[0]:.6f} "
+                    f"G={ref_target_medians_rgb[1]:.6f} "
+                    f"B={ref_target_medians_rgb[2]:.6f}"))
+            else:
+                ref_target_medians_rgb = None
             QApplication.processEvents()
             # Store pixscale from reference frame for Dither Analysis
             # Done here unconditionally — works for single-group and multi-group runs
@@ -20154,21 +20436,47 @@ class StackingSuiteDialog(QDialog):
 
                             # 3) Brightness normalization / scale refine
                             pm = float(preview_medians.get(fp, 0.0))
-                            s, offset = _compute_scale(
-                                ref_target_median,
-                                pm if pm > 0 else 1.0,
-                                img,
-                                refine_stride=8,
-                                refine_if_rel_err=0.10,
-                                return_offset=True,
-                            )
-                            if getattr(self, "_norm_dbg_on", False):
-                                self.update_status(
-                                    f"🔬[04 scale-args] {os.path.basename(fp)} "
-                                    f"ref_target_median={ref_target_median:.6g} pm={pm:.6g} "
-                                    f"→ s={s:.6g} offset={offset:.6g}"
+                            if (ref_target_medians_rgb is not None
+                                    and img.ndim == 3 and img.shape[-1] == 3):
+                                # OSC: normalize each channel independently to
+                                # the reference's matching channel. A single
+                                # luma scale cannot correct color-varying sky
+                                # (LP drift, moonlight, airmass reddening), and
+                                # the leftover per-channel offsets between
+                                # frames weaken per-channel rejection.
+                                _ch_dbg = []
+                                for _c in range(3):
+                                    _s_c, _off_c = _compute_scale(
+                                        ref_target_medians_rgb[_c],
+                                        pm if pm > 0 else 1.0,
+                                        img[..., _c],
+                                        refine_stride=8,
+                                        refine_if_rel_err=0.10,
+                                        return_offset=True,
+                                    )
+                                    img[..., _c] = _apply_scale_inplace(img[..., _c], _s_c, offset=_off_c)
+                                    _ch_dbg.append(f"{'RGB'[_c]}: s={_s_c:.6g} off={_off_c:.6g}")
+                                if getattr(self, "_norm_dbg_on", False):
+                                    self.update_status(
+                                        f"🔬[04 scale-args] {os.path.basename(fp)} per-channel  "
+                                        + "  ".join(_ch_dbg)
+                                    )
+                            else:
+                                s, offset = _compute_scale(
+                                    ref_target_median,
+                                    pm if pm > 0 else 1.0,
+                                    img,
+                                    refine_stride=8,
+                                    refine_if_rel_err=0.10,
+                                    return_offset=True,
                                 )
-                            img = _apply_scale_inplace(img, s, offset=offset)
+                                if getattr(self, "_norm_dbg_on", False):
+                                    self.update_status(
+                                        f"🔬[04 scale-args] {os.path.basename(fp)} "
+                                        f"ref_target_median={ref_target_median:.6g} pm={pm:.6g} "
+                                        f"→ s={s:.6g} offset={offset:.6g}"
+                                    )
+                                img = _apply_scale_inplace(img, s, offset=offset)
                             _ndbg("05 after-scale", img, fp)
 
                             # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
@@ -23642,17 +23950,17 @@ class StackingSuiteDialog(QDialog):
             elif algo == "Simple Average (No Rejection)":
                 return np.average(ts, axis=0, weights=weights_array), np.zeros((len(file_list), th, tw), dtype=bool)
             elif algo == "Weighted Windsorized Sigma Clipping":
-                return windsorized_sigma_clip_weighted(ts, weights_array, lower=self.sigma_low, upper=self.sigma_high)
+                return windsorized_sigma_clip_weighted_np(ts, weights_array, lower=self.sigma_low, upper=self.sigma_high, iterations=self.iterations)
             elif algo == "Kappa-Sigma Clipping":
-                return kappa_sigma_clip_weighted(ts, weights_array, kappa=self.kappa, iterations=self.iterations)
+                return kappa_sigma_clip_weighted_np(ts, weights_array, kappa=self.kappa, iterations=self.iterations)
             elif algo == "Trimmed Mean":
-                return trimmed_mean_weighted(ts, weights_array, trim_fraction=self.trim_fraction)
+                return trimmed_mean_weighted_np(ts, weights_array, trim_fraction=self.trim_fraction)
             elif algo == "Extreme Studentized Deviate (ESD)":
-                return esd_clip_weighted(ts, weights_array, threshold=self.esd_threshold)
+                return esd_clip_weighted_np(ts, weights_array, threshold=self.esd_threshold)
             elif algo == "Biweight Estimator":
-                return biweight_location_weighted(ts, weights_array, tuning_constant=self.biweight_constant)
+                return biweight_location_weighted_np(ts, weights_array, tuning_constant=self.biweight_constant)
             elif algo == "Modified Z-Score Clipping":
-                return modified_zscore_clip_weighted(ts, weights_array, threshold=self.modz_threshold)
+                return modified_zscore_clip_weighted_np(ts, weights_array, threshold=self.modz_threshold)
             elif algo == "Max Value":
                 return max_value_stack(ts, weights_array)
             else:
@@ -24447,19 +24755,47 @@ class StackingSuiteDialog(QDialog):
                 if any((im.shape[0] != min_h or im.shape[1] != min_w) for im in previews):
                     previews = [_center_crop_2d(im, min_h, min_w) for im in previews]
 
-                # Means (vectorized)
-                means = np.array([float(np.mean(ci)) for ci in previews], dtype=np.float32)
+                # Border-aware measurement: aligned frames carry black
+                # borders (zero fill from the warp). Measuring mean/stars over
+                # those zeros makes a bigger border look like darker sky and
+                # inflates the weight — pure alignment-shift artifact. So we
+                # measure on the valid (finite, non-zero) region only.
+                def _valid_region_stats(p):
+                    a = np.asarray(p, dtype=np.float32)
+                    finite = np.isfinite(a)
+                    valid = finite & (a != 0.0)
+                    if not valid.any():
+                        # fully black / unreadable preview → neutral stats,
+                        # no stars so the weight path floors it later
+                        return a, 1.0, 0.0
+                    # Tight bounding box of the valid region drops the zero
+                    # frame so star detection doesn't see a hard edge.
+                    ys, xs = np.where(valid)
+                    y0, y1 = int(ys.min()), int(ys.max()) + 1
+                    x0, x1 = int(xs.min()), int(xs.max()) + 1
+                    core = a[y0:y1, x0:x1]
+                    core_valid = valid[y0:y1, x0:x1]
+                    vals = a[valid]
+                    mean_v = float(vals.mean())
+                    # zero out any residual invalid pixels inside the bbox so
+                    # they don't register as (near-zero) detections
+                    core = np.where(core_valid, core, float(vals.min()))
+                    return core, mean_v, float(np.median(vals))
 
-                # Star count + ecc on small, further-downsampled previews
+                # Means over the valid region (not the zero-filled frame)
+                means = np.array(
+                    [_valid_region_stats(ci)[1] for ci in previews],
+                    dtype=np.float32,
+                )
+
+                # Star count + ecc on the valid core only
                 def _star_job(i_fp):
                     i, fp = i_fp
-                    p = previews[i]
-                    # normalize preview to [0..] by subtracting local min for robustness
-                    pmin = float(np.nanmin(p))
-                    # fast count on tiny image
-                    c, ecc = compute_star_count_fast_preview(p - pmin)
-                    med = float(np.median(p - pmin))
-                    return fp, float(means[i]), med, c, ecc
+                    core, mean_v, _med_full = _valid_region_stats(previews[i])
+                    pmin = float(np.nanmin(core))
+                    c, ecc = compute_star_count_fast_preview(core - pmin)
+                    med = float(np.median(core - pmin))
+                    return fp, float(mean_v), med, c, ecc
 
                 star_workers = min(max_workers, 8)
                 with ThreadPoolExecutor(max_workers=star_workers) as ex:
@@ -25365,6 +25701,8 @@ class StackingSuiteDialog(QDialog):
             return root + "_satmask.npy"
 
         def _load_full_satmask(image_path: str):
+            # satmask-disabled: sidecar masks retired; baked-in 0.0 pixels suffice.
+            return None
             p = _satmask_sidecar_path(image_path)
             if not os.path.exists(p):
                 return None
@@ -25504,7 +25842,7 @@ class StackingSuiteDialog(QDialog):
             "Kappa-Sigma Clipping", "Trimmed Mean", "Extreme Studentized Deviate (ESD)",
             "Biweight Estimator", "Modified Z-Score Clipping",
         }
-        if not use_gpu and algo in _NUMBA_CPU_ALGOS:
+        if False:  # robust numpy reducers replaced the numba kernels; no JIT warmup needed
             try:
                 _dummy3 = np.ones((2, 2, 2), dtype=np.float32)
                 _dummy4 = np.ones((2, 2, 2, 1), dtype=np.float32)
@@ -25580,15 +25918,15 @@ class StackingSuiteDialog(QDialog):
                 return np.where(np.isfinite(result), result, 0.0).astype(np.float32), base_rej
 
             fn_map = {
-                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high),
-                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high),
-                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted(ts_zeroed, weights_array, kappa=self.kappa, iterations=self.iterations),
-                "Trimmed Mean":                        lambda: trimmed_mean_weighted(ts_zeroed, weights_array, trim_fraction=self.trim_fraction),
-                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted(ts_zeroed, weights_array, threshold=self.esd_threshold),
-                "Biweight Estimator":                  lambda: biweight_location_weighted(ts_zeroed, weights_array, tuning_constant=self.biweight_constant),
-                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted(ts_zeroed, weights_array, threshold=self.modz_threshold),
+                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted_np(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high, iterations=self.iterations),
+                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted_np(ts_zeroed, np.ones_like(weights_array), lower=self.sigma_low, upper=self.sigma_high, iterations=self.iterations),
+                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted_np(ts_zeroed, weights_array, kappa=self.kappa, iterations=self.iterations),
+                "Trimmed Mean":                        lambda: trimmed_mean_weighted_np(ts_zeroed, weights_array, trim_fraction=self.trim_fraction),
+                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted_np(ts_zeroed, weights_array, threshold=self.esd_threshold),
+                "Biweight Estimator":                  lambda: biweight_location_weighted_np(ts_zeroed, weights_array, tuning_constant=self.biweight_constant),
+                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted_np(ts_zeroed, weights_array, threshold=self.modz_threshold),
             }
-            fn = fn_map.get(algo, lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high))
+            fn = fn_map.get(algo, lambda: windsorized_sigma_clip_weighted_np(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high, iterations=self.iterations))
             tile_result, tile_rej_map = fn()
             tile_rej_map = np.asarray(tile_rej_map, dtype=bool)
             if tile_rej_map.ndim == 4:
@@ -25785,6 +26123,8 @@ class StackingSuiteDialog(QDialog):
 
         # ── Satellite masks ────────────────────────────────────────────────────
         def _load_full_satmask(image_path: str):
+            # satmask-disabled: sidecar masks retired; baked-in 0.0 pixels suffice.
+            return None
             p = os.path.splitext(image_path)[0] + "_satmask.npy"
             if not os.path.exists(p):
                 return None
@@ -25907,7 +26247,7 @@ class StackingSuiteDialog(QDialog):
             "Extreme Studentized Deviate (ESD)",
             "Biweight Estimator", "Modified Z-Score Clipping",
         }
-        if not use_gpu and algo in _NUMBA_CPU_ALGOS:
+        if False:  # robust numpy reducers replaced the numba kernels; no JIT warmup needed
             try:
                 _d3 = np.ones((2, 2, 2), dtype=np.float32)
                 _d4 = np.ones((2, 2, 2, 1), dtype=np.float32)
@@ -25968,16 +26308,16 @@ class StackingSuiteDialog(QDialog):
                 return np.where(np.isfinite(result), result, 0.0).astype(np.float32), base_rej
 
             fn_map = {
-                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high),
-                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high),
-                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted(ts_zeroed, weights_array, kappa=self.kappa, iterations=self.iterations),
-                "Trimmed Mean":                        lambda: trimmed_mean_weighted(ts_zeroed, weights_array, trim_fraction=self.trim_fraction),
-                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted(ts_zeroed, weights_array, threshold=self.esd_threshold),
-                "Biweight Estimator":                  lambda: biweight_location_weighted(ts_zeroed, weights_array, tuning_constant=self.biweight_constant),
-                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted(ts_zeroed, weights_array, threshold=self.modz_threshold),
+                "Weighted Windsorized Sigma Clipping": lambda: windsorized_sigma_clip_weighted_np(ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high, iterations=self.iterations),
+                "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted_np(ts_zeroed, np.ones_like(weights_array), lower=self.sigma_low, upper=self.sigma_high, iterations=self.iterations),
+                "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted_np(ts_zeroed, weights_array, kappa=self.kappa, iterations=self.iterations),
+                "Trimmed Mean":                        lambda: trimmed_mean_weighted_np(ts_zeroed, weights_array, trim_fraction=self.trim_fraction),
+                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted_np(ts_zeroed, weights_array, threshold=self.esd_threshold),
+                "Biweight Estimator":                  lambda: biweight_location_weighted_np(ts_zeroed, weights_array, tuning_constant=self.biweight_constant),
+                "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted_np(ts_zeroed, weights_array, threshold=self.modz_threshold),
             }
-            fn = fn_map.get(algo, lambda: windsorized_sigma_clip_weighted(
-                ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high
+            fn = fn_map.get(algo, lambda: windsorized_sigma_clip_weighted_np(
+                ts_zeroed, weights_array, lower=self.sigma_low, upper=self.sigma_high, iterations=self.iterations
             ))
             tile_result, tile_rej_map = fn()
             tile_rej_map = np.asarray(tile_rej_map, dtype=bool)

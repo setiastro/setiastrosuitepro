@@ -49,6 +49,7 @@ def _find_raw_sibling(path: Optional[str]) -> Optional[str]:
 
 # -------- helpers ------------------------------------------------------------
 _BAYER_METHODS = [
+    ("VNG (Variable Number of Gradients)", "vng"),
     ("Edge-aware (Numba)",            "edge"),
     ("Bilinear (Numba)",              "bilinear"),
     ("Strict CFA (no interpolation)", "strict_cfa"),
@@ -288,11 +289,11 @@ class _DebayerWorker(QThread):
     failed = pyqtSignal(str)
     finished = pyqtSignal(np.ndarray, str)  # (rgb, used_pattern)
 
-    def __init__(self, mono: np.ndarray, pattern: str, method: str = "edge"):
+    def __init__(self, mono: np.ndarray, pattern: str, method: str = "vng"):
         super().__init__()
         self.mono = mono
         self.pattern = pattern
-        self.method = (method or "edge")
+        self.method = (method or "vng")
 
     def run(self):
         try:
@@ -533,7 +534,7 @@ class DebayerDialog(QDialog):
             QMessageBox.warning(self, "Debayer", "Unknown pattern (auto-detect failed). Choose a pattern explicitly.")
             return
 
-        bayer_method = next((tok for (label, tok) in _BAYER_METHODS if label == method_label), "edge")
+        bayer_method = next((tok for (label, tok) in _BAYER_METHODS if label == method_label), "vng")
         self.status.setText(f"Debayering as {pat} ({bayer_method}) …")
         self.bar.setValue(0)
         self.worker = _DebayerWorker(self._src, pat, method=bayer_method)
@@ -568,7 +569,7 @@ def debayer_array(
     *,
     pattern: str,
     roworder: str = "",
-    method: str = "edge",
+    method: str = "vng",
     cfa_drizzle: bool = False,
 ) -> np.ndarray:
     """
@@ -596,7 +597,7 @@ def debayer_array(
     if flipped:
         m = np.ascontiguousarray(np.flipud(m))
 
-    meth = method if method in ("edge", "bilinear", "strict_cfa") else "edge"
+    meth = method if method in ("edge", "bilinear", "strict_cfa", "vng") else "vng"
     rgb = debayer_fits_fast(m, pat, cfa_drizzle=cfa_drizzle, method=meth)
 
     if flipped:
@@ -607,7 +608,7 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
     """
     preset = {
         "pattern": "auto|RGGB|BGGR|GRBG|GBRG",
-        "method":  "auto|edge|bilinear|AHD|DHT"
+        "method":  "auto|vng|edge|bilinear|strict_cfa|AHD|DHT"
     }
     Returns (used_pattern, rgb_array).
     """
@@ -655,7 +656,7 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
     if pat not in _VALID:
         raise ValueError(f"Unsupported Bayer pattern: {pat}")
 
-    method_tok = (want_method.lower() if want_method.lower() in ("edge", "bilinear") else "edge")
+    method_tok = (want_method.lower() if want_method.lower() in ("edge", "bilinear", "vng", "strict_cfa") else "vng")
 
     if debayer_fits_fast is None:
         raise RuntimeError("Numba debayer kernels not available.")
@@ -675,7 +676,7 @@ def run_debayer_via_preset(main, preset: dict | None = None, *, doc=None):
 
     preset keys:
       - pattern: "auto" | "RGGB" | "BGGR" | "GRBG" | "GBRG"
-      - method:  "auto" | "edge" | "bilinear" | "AHD" | "DHT"
+      - method:  "auto" | "vng" | "edge" | "bilinear" | "strict_cfa" | "AHD" | "DHT"
     """
     p = dict(preset or {})
 

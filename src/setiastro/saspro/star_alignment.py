@@ -3008,12 +3008,10 @@ def _finalize_write_job(args):
         img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
         img = np.ascontiguousarray(img)
 
-        # ---- NEW: load original satellite mask sidecar if present ----
-        satmask_src = _load_satmask_sidecar(orig_path)
-        if satmask_src is None:
-            dbg(f"[satmask] no source sidecar found for {os.path.basename(orig_path)}")
-        else:
-            dbg(f"[satmask] loaded source sidecar for {os.path.basename(orig_path)} ({int(np.count_nonzero(satmask_src))} px)")
+        # Satellite sidecar masks retired: trail pixels are baked to 0.0 at
+        # calibration and treated as no-data through integration, so there is no
+        # sidecar to load, warp, or save here.
+        satmask_src = None
         Href, Wref = ref_shape
 
         # 2) load reference (full-res) via memmap
@@ -3181,18 +3179,6 @@ def _finalize_write_job(args):
         if np.isnan(aligned).any() or np.isinf(aligned).any():
             aligned = np.nan_to_num(aligned, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # ---- NEW: warp satellite mask with the SAME final transform ----
-        satmask_aligned = None
-        if satmask_src is not None:
-            try:
-                satmask_aligned = _warp_satmask_with_kind(
-                    satmask_src, kind, X, (Hh, Ww)
-                )
-                dbg(f"[satmask] propagated {int(np.count_nonzero(satmask_src))} -> {int(np.count_nonzero(satmask_aligned))} px")
-            except Exception as e:
-                dbg(f"[satmask] warp failed: {e}")
-                satmask_aligned = None
-
         # 5) save aligned image
         name, _ = os.path.splitext(base)
         if name.endswith("_n"):
@@ -3211,14 +3197,6 @@ def _finalize_write_job(args):
             original_header=hdr,
             is_mono=is_mono
         )
-
-        # ---- NEW: save aligned satellite sidecar mask if present ----
-        if satmask_aligned is not None:
-            try:
-                saved_p = _save_satmask_sidecar(out_path, satmask_aligned)
-                dbg(f"[satmask] saved aligned sidecar: {os.path.basename(saved_p)} ({int(np.count_nonzero(satmask_aligned))} px)")
-            except Exception as e:
-                dbg(f"[satmask] save failed: {e}")
 
         msg = (
             f"🌀 Distortion Correction on {base}: warp={warp_label}\n"
