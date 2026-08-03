@@ -1,10 +1,10 @@
 {
-  "version": "1.19.17.post1",
+  "version": "1.19.18",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.17/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.17/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.17/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.17/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.18/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.18/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.18/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.19.18/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.19.17\nUpdates to Selective Color and Selective Luma Correction: Turning them from the sledgehammer they were to a finesse tool. Finer resolution on the sliders and a new Soft Mask checkbox to make the mask strength dynamic based on the underlying chroma or luma strengths in your image. Allows MUCH improved control.\n\nUpdates to WIMI: Show Active Object Name, Zoom to Object updated to zoom all the way to the edge, objects drawn as ellipses and rotated for those with semi and major axis catalogued.\n\nBug fixes in Stacking Suite and Magnitude Tool. PixelMath help and glossary updated to include Variable assignment."
+ "notes": "Seti Astro Suite Pro\n\nV1.19.18\nMajor overhaul of all rejection algorithms in Stacking Suite to be much more robust to outlier data (ie satellite trails and hot pixels), refactored how remove satellite trail is done during light calibration, remove satellite trail will clip to black the satellite trails in the calibrated images themselves removing the need for the _sat_mask.py files. Complete redo of how CFA drizzle is handled to have true rejection layer utilized and a refactor of how cfa per channel statistics and noise characteristics are derived.\n\nNew debayer method added: VNG. This will be selectable not only from the Debayer utility but directly in Stacking Suite Image Integration tab for your choice of debayer method: VNG, EDGE, Bilinear, Straight CFA."
 }
