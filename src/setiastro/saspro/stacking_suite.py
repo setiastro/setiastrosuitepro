@@ -84,6 +84,8 @@ from setiastro.saspro.legacy.numba_utils import (
     debayer_raw_fast,
     drizzle_deposit_numba_kernel_mono,
     drizzle_deposit_color_kernel,
+    drizzle_deposit_kernel_mono_proj,
+    drizzle_deposit_color_kernel_proj,
     finalize_drizzle_2d,
     finalize_drizzle_3d,
 )
@@ -7218,6 +7220,17 @@ class StackingSuiteDialog(QDialog):
             QApplication.processEvents()
 
         self.update_status(self.tr("Conversion complete."))
+
+    @staticmethod
+    def _cfa_sibling_path(norm_path: str) -> str:
+        """Sibling filename for the SPARSE CFA-debayered copy of a normalized
+        frame: '..._n.fit' -> '..._n_cfa.fit'. Used so rejection reads the dense
+        _n.fit while drizzle reads the sparse _n_cfa.fit."""
+        import os as _os
+        base, ext = _os.path.splitext(norm_path)
+        if base.endswith("_n"):
+            return base + "_cfa" + ext
+        return base + "_n_cfa" + ext
 
     def debayer_image(self, image, file_path, header):
         """
@@ -19047,7 +19060,7 @@ class StackingSuiteDialog(QDialog):
             scale = float(scale_txt.replace("x", "").strip())
         except Exception:
             scale = 1.0
-        cutoff = {1.0: 32, 2.0: 64, 3.0: 96}.get(scale, 64)
+        cutoff = {1.0: 64, 2.0: 64, 3.0: 96}.get(scale, 64)
 
         if worst >= cutoff:
             self._cfa_for_this_run = True   # keep raw CFA mapping
@@ -20056,11 +20069,26 @@ class StackingSuiteDialog(QDialog):
             # normalized independently to the reference's matching channel
             # (same min-subtracted-median semantics as the luma target above).
             if isinstance(ref_img, np.ndarray) and ref_img.ndim == 3 and ref_img.shape[-1] == 3:
+                # CFA-drizzle reference frames are SPARSE (each channel populated
+                # only at its Bayer sites). Measuring the median across all pixels
+                # gives 0 for R/B (75% structural zeros) and would crush those
+                # channels during per-frame normalization. For sparse references,
+                # measure each channel's target over its POPULATED pixels only
+                # (no min-subtract pedestal — 0.0 is structural no-data, not a
+                # real floor). Non-sparse references keep the original semantics.
+                try:
+                    _ref_sparse = max(float((ref_img[..., _k] == 0.0).mean()) for _k in range(3)) > 0.4
+                except Exception:
+                    _ref_sparse = False
                 ref_target_medians_rgb = []
                 for _c in range(3):
                     _band = ref_img[..., _c].astype(np.float32, copy=False)
-                    _bmin = float(np.nanmin(_band))
-                    ref_target_medians_rgb.append(float(np.nanmedian(_band - _bmin)))
+                    if _ref_sparse:
+                        _nz = _band[_band != 0.0]
+                        ref_target_medians_rgb.append(float(np.median(_nz)) if _nz.size else 0.0)
+                    else:
+                        _bmin = float(np.nanmin(_band))
+                        ref_target_medians_rgb.append(float(np.nanmedian(_band - _bmin)))
                 self.update_status(self.tr(
                     f"📊 Reference per-channel medians: "
                     f"R={ref_target_medians_rgb[0]:.6f} "
@@ -20367,7 +20395,28 @@ class StackingSuiteDialog(QDialog):
 
                             if bayerish and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
                                 self.update_status(self.tr(f"📦 Debayering {os.path.basename(fp)}…"))
-                                img = self.debayer_image(img, fp, hdr)
+                                _cfa_active = (
+                                    bool(self._cfa_for_this_run)
+                                    if getattr(self, "_cfa_for_this_run", None) is not None
+                                    else bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
+                                )
+                                if _cfa_active and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                                    # CFA drizzle: main _n.fit is DENSE (for rejection /
+                                    # per-channel normalization); stash a SPARSE copy for
+                                    # drizzle, written later as _n_cfa.fit.
+                                    _saved_flag = self._cfa_for_this_run
+                                    try:
+                                        self._cfa_for_this_run = True
+                                        _img_sparse = self.debayer_image(img.copy(), fp, dict(hdr) if hasattr(hdr, "keys") else hdr)
+                                        self._cfa_for_this_run = False
+                                        img = self.debayer_image(img, fp, hdr)
+                                    finally:
+                                        self._cfa_for_this_run = _saved_flag
+                                    if not hasattr(self, "_pending_cfa_sparse"):
+                                        self._pending_cfa_sparse = {}
+                                    self._pending_cfa_sparse[os.path.normcase(os.path.normpath(fp))] = _img_sparse
+                                else:
+                                    img = self.debayer_image(img, fp, hdr)
                             else:
                                 if img.ndim == 3 and img.shape[-1] == 1:
                                     img = np.squeeze(img, axis=-1)
@@ -20444,21 +20493,55 @@ class StackingSuiteDialog(QDialog):
                                 # (LP drift, moonlight, airmass reddening), and
                                 # the leftover per-channel offsets between
                                 # frames weaken per-channel rejection.
+                                #
+                                # CFA-drizzle frames are SPARSE: each channel is
+                                # populated only at its Bayer sites (R~25%,
+                                # G~50%, B~25%), the rest are structural zeros.
+                                # Measuring the median across all pixels then
+                                # gives 0 for R/B and crushes those channels, so
+                                # for sparse frames we measure the median over
+                                # POPULATED pixels only and never add a pedestal
+                                # (structural zeros must stay exactly 0).
+                                _cfa_sparse_frame = False
+                                try:
+                                    _zfr = [float((img[..., _k] == 0.0).mean()) for _k in range(3)]
+                                    _cfa_sparse_frame = max(_zfr) > 0.4
+                                except Exception:
+                                    _cfa_sparse_frame = False
+
                                 _ch_dbg = []
                                 for _c in range(3):
-                                    _s_c, _off_c = _compute_scale(
-                                        ref_target_medians_rgb[_c],
-                                        pm if pm > 0 else 1.0,
-                                        img[..., _c],
-                                        refine_stride=8,
-                                        refine_if_rel_err=0.10,
-                                        return_offset=True,
-                                    )
-                                    img[..., _c] = _apply_scale_inplace(img[..., _c], _s_c, offset=_off_c)
+                                    if _cfa_sparse_frame:
+                                        _plane = img[..., _c]
+                                        _nz = _plane[_plane != 0.0]
+                                        if _nz.size == 0:
+                                            _s_c, _off_c = 1.0, 0.0
+                                        else:
+                                            _med = float(np.median(_nz))
+                                            if (not np.isfinite(_med)) or _med <= 1e-30:
+                                                _s_c, _off_c = 1.0, 0.0
+                                            else:
+                                                _s_c = float(ref_target_medians_rgb[_c] / _med)
+                                                _off_c = 0.0
+                                        # apply scale to populated pixels only;
+                                        # structural zeros stay exactly 0
+                                        _m = img[..., _c] != 0.0
+                                        img[..., _c][_m] = img[..., _c][_m] * _s_c
+                                    else:
+                                        _s_c, _off_c = _compute_scale(
+                                            ref_target_medians_rgb[_c],
+                                            pm if pm > 0 else 1.0,
+                                            img[..., _c],
+                                            refine_stride=8,
+                                            refine_if_rel_err=0.10,
+                                            return_offset=True,
+                                        )
+                                        img[..., _c] = _apply_scale_inplace(img[..., _c], _s_c, offset=_off_c)
                                     _ch_dbg.append(f"{'RGB'[_c]}: s={_s_c:.6g} off={_off_c:.6g}")
                                 if getattr(self, "_norm_dbg_on", False):
                                     self.update_status(
-                                        f"🔬[04 scale-args] {os.path.basename(fp)} per-channel  "
+                                        f"🔬[04 scale-args] {os.path.basename(fp)} per-channel"
+                                        + (" [sparse/CFA]" if _cfa_sparse_frame else "") + "  "
                                         + "  ".join(_ch_dbg)
                                     )
                             else:
@@ -20512,6 +20595,19 @@ class StackingSuiteDialog(QDialog):
                                 _ndbg("07 pre-write", img, fp)
                                 fits.PrimaryHDU(data=img.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
                                 normalized_files.append(out_path)
+                                # CFA drizzle: also write the sparse sibling for the
+                                # drizzle deposit (rejection uses the dense out_path).
+                                _cfa_key = os.path.normcase(os.path.normpath(fp))
+                                _cfa_sparse = getattr(self, "_pending_cfa_sparse", {}).pop(_cfa_key, None) if hasattr(self, "_pending_cfa_sparse") else None
+                                if _cfa_sparse is not None:
+                                    try:
+                                        _cfa_out = self._cfa_sibling_path(out_path)
+                                        _ch = fits.Header(orig_header)
+                                        _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
+                                        _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
+                                        fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
+                                    except Exception as _e:
+                                        self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
                                 # Carry the satellite-trail mask sidecar onto the
                                 # normalized frame so registration can find + warp it.
                                 _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
@@ -20564,6 +20660,18 @@ class StackingSuiteDialog(QDialog):
                         self._orig2norm[_key] = _val
                         fits.PrimaryHDU(data=img_out.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
                         normalized_files.append(out_path)
+                        # CFA drizzle: also write the sparse sibling (ABE path).
+                        _cfa_key = os.path.normcase(os.path.normpath(fp))
+                        _cfa_sparse = getattr(self, "_pending_cfa_sparse", {}).pop(_cfa_key, None) if hasattr(self, "_pending_cfa_sparse") else None
+                        if _cfa_sparse is not None:
+                            try:
+                                _cfa_out = self._cfa_sibling_path(out_path)
+                                _ch = fits.Header(orig_header)
+                                _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
+                                _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
+                                fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
+                            except Exception as _e:
+                                self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling (ABE): {_e}"))
                         # Carry the satellite-trail mask sidecar onto the
                         # normalized frame so registration can find + warp it.
                         _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
@@ -21605,10 +21713,31 @@ class StackingSuiteDialog(QDialog):
             )
             if cfa_effective and getattr(self, "valid_matrices", None):
                 fill = self._dither_phase_fill(self.valid_matrices, bins=8)
-                self.update_status(self.tr(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%"))
+                n_cfa_frames = len(self.valid_matrices)
+                self.update_status(self.tr(f"🔎 CFA drizzle sub-pixel phase fill (8×8): {fill*100:.1f}%  ({n_cfa_frames} frames)"))
+                # Warn on low frame count OR low phase fill — either one produces
+                # sparse, patchy CFA coverage. The fill % is the real predictor
+                # (a tight dither of many frames can still fill poorly), so it
+                # goes in the dialog alongside the count.
                 if fill < 0.65:
                     self.update_status(self.tr("💡 For best results with CFA drizzle, aim for >65% fill."))
                     self.update_status(self.tr("   With <~40–55% fill, expect visible patching even with many frames)"))
+                    _proceed = QMessageBox.question(
+                        self,
+                        self.tr("CFA Drizzle: Measured Coverage"),
+                        self.tr(
+                            f"As flagged before registration, this set is thin for CFA drizzle "
+                            f"— and now measured:\n\n"
+                            f"  • Sub-pixel phase fill: {fill*100:.1f}%  (>65% recommended)\n\n"
+                            f"Expect visible patches where coverage is sparse. Proceed with "
+                            f"CFA drizzle anyway?"
+                        ),
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.Yes,
+                    )
+                    if _proceed == QMessageBox.StandardButton.No:
+                        self.update_status(self.tr("🛑 CFA drizzle cancelled at coverage check (user chose No)."))
+                        return
             QApplication.processEvents()
 
             # ----------------------------
@@ -25194,7 +25323,9 @@ class StackingSuiteDialog(QDialog):
         # --- choose depositor ONCE (and log it) ---
         # Always use footprint/kernel drizzle for drizzle output.
         # Point deposit is not valid for 2x/3x drizzle.
-        deposit_func = drizzle_deposit_numba_kernel_mono if is_mono else drizzle_deposit_color_kernel
+        # Projective deposit: full 3x3 transform, no pixel pre-warp (correct
+        # drizzle for affine AND homography; required for CFA sparse planes).
+        deposit_func = drizzle_deposit_kernel_mono_proj if is_mono else drizzle_deposit_color_kernel_proj
         kinf = ["square", "circular", "gaussian"][_kcode]
 
         log(f"Using {kinf} drizzle ({'mono' if is_mono else 'color'}).")
@@ -25319,6 +25450,23 @@ class StackingSuiteDialog(QDialog):
 
         # ---- main loop over ENTRIES ----
         # each entry: {"orig": <original path>, "aligned": <aligned path>, "chan": "R"/"G"/None}
+        def _cfa_pixel_source(orig_path):
+            """For CFA drizzle, deposit the SPARSE sibling (_n_cfa.fit) while the
+            transform is still resolved by the original _n.fit path. Falls back
+            to the original if no sibling exists."""
+            try:
+                _active = (
+                    bool(self._cfa_for_this_run)
+                    if getattr(self, "_cfa_for_this_run", None) is not None
+                    else bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
+                )
+                if _active:
+                    _sib = self._cfa_sibling_path(orig_path)
+                    if os.path.exists(_sib):
+                        return _sib
+            except Exception:
+                pass
+            return orig_path
         for i, ent in enumerate(entries):
             orig_file = os.path.normpath(ent.get("orig", ""))
             aligned_file = os.path.normpath(ent.get("aligned", ""))  # this is what rejections/weights reference
@@ -25352,36 +25500,17 @@ class StackingSuiteDialog(QDialog):
 
             elif kind == "affine" and X is not None:
                 # Use ORIGINAL pixels + affine subpixel mapping
-                pixel_path = orig_file
+                pixel_path = _cfa_pixel_source(orig_file)
                 H_canvas = np.eye(3, dtype=np.float32)
                 H_canvas[:2] = np.asarray(X, np.float32).reshape(2, 3)
 
             elif kind == "homography" and X is not None:
-                # Pre-warp originals -> reference, then identity deposit
-                pixel_path = orig_file
-                raw_img, _, _, _ = load_image(pixel_path)
-                if raw_img is None:
-                    log(f"⚠️ Failed to read {os.path.basename(pixel_path)} – skipping")
-                    continue
-                H = np.asarray(X, np.float32).reshape(3, 3)
-
-                if raw_img.ndim == 2:
-                    img_data = cv2.warpPerspective(
-                        raw_img, H, (ref_W, ref_H),
-                        flags=cv2.INTER_LANCZOS4,
-                        borderMode=cv2.BORDER_CONSTANT, borderValue=0
-                    )
-                else:
-                    img_data = np.stack([
-                        cv2.warpPerspective(
-                            raw_img[..., ch], H, (ref_W, ref_H),
-                            flags=cv2.INTER_LANCZOS4,
-                            borderMode=cv2.BORDER_CONSTANT, borderValue=0
-                        ) for ch in range(raw_img.shape[2])
-                    ], axis=2)
-
-                H_canvas = np.eye(3, dtype=np.float32)
-                pixels_are_registered = True
+                # Use ORIGINAL pixels + full 3x3 projective mapping in the
+                # deposit — NO interpolating pre-warp (that would double-sample
+                # and, for CFA drizzle, destroy the sparse Bayer grid).
+                pixel_path = _cfa_pixel_source(orig_file)
+                H_canvas = np.asarray(X, np.float32).reshape(3, 3)
+                pixels_are_registered = False
 
             else:
                 log(f"⚠️ Unsupported transform '{kind}' – skipping {os.path.basename(orig_file)}")
@@ -25389,6 +25518,8 @@ class StackingSuiteDialog(QDialog):
 
             # read pixels if not produced above
             if img_data is None:
+                if os.path.normpath(pixel_path) != os.path.normpath(orig_file):
+                    log(f"   ↳ depositing pixels from {os.path.basename(pixel_path)}")
                 img_data, _, _, _ = load_image(pixel_path)
                 if img_data is None:
                     log(f"⚠️ Failed to read {os.path.basename(pixel_path)} – skipping")
@@ -25439,9 +25570,9 @@ class StackingSuiteDialog(QDialog):
                 )
 
             else:
-                # kernel mono OR kernel color
+                # kernel mono OR kernel color — projective kernels take a 3x3
                 drizzle_buffer, coverage_buffer = deposit_func(
-                    img_data, A23, drizzle_buffer, coverage_buffer,
+                    img_data, H_canvas, drizzle_buffer, coverage_buffer,
                     scale_factor, drop_shrink, weight, _kcode, float(gauss_sigma)
                 )
 

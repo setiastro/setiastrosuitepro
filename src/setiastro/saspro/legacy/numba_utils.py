@@ -3994,6 +3994,203 @@ def drizzle_deposit_color_kernel(
 
     return drizzle_buffer, coverage_buffer
 
+
+@njit(fastmath=True)
+def _project_3x3(M, x, y):
+    """Apply a full 3x3 projective transform to (x, y) and return the
+    perspective-divided (X, Y). For an affine matrix (bottom row 0,0,1) the
+    divide is by 1.0, so this is exactly the old affine behavior — one kernel
+    correctly handles affine, homography, and any projective model."""
+    wx = M[0, 0] * x + M[0, 1] * y + M[0, 2]
+    wy = M[1, 0] * x + M[1, 1] * y + M[1, 2]
+    ww = M[2, 0] * x + M[2, 1] * y + M[2, 2]
+    if ww == 0.0:
+        ww = 1e-12
+    inv = 1.0 / ww
+    return wx * inv, wy * inv
+
+
+@njit(fastmath=True)
+def drizzle_deposit_kernel_mono_proj(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor, drop_shrink, frame_weight,
+    kernel_code, gaussian_sigma_or_radius
+):
+    """Mono drizzle deposit with a FULL 3x3 projective transform and NO pixel
+    pre-warp. Each sample is projected to output coords and dropped through the
+    drizzle kernel directly. `transform` is 3x3 (affine embeds as [0,0,1])."""
+    H, W = img_data.shape
+    outH, outW = drizzle_buffer.shape
+
+    M = np.zeros((3, 3), dtype=np.float32)
+    for a in range(3):
+        for b in range(3):
+            M[a, b] = transform[a, b]
+
+    radius = 0.5 * drop_shrink * drizzle_factor
+    if kernel_code == 2:
+        sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+    else:
+        sigma_out = max(radius, 1e-6)
+
+    for y in range(H):
+        for x in range(W):
+            val = img_data[y, x]
+            if val == 0.0:
+                continue
+
+            Px, Py = _project_3x3(M, np.float32(x), np.float32(y))
+            Xo = Px * drizzle_factor
+            Yo = Py * drizzle_factor
+
+            if kernel_code == 2:
+                r = int(math.ceil(3.0 * sigma_out))
+            else:
+                r = int(math.ceil(radius))
+
+            if r <= 0:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+
+            min_x = int(math.floor(Xo - r)); max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r)); max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+
+            Ht = max_y - min_y + 1; Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+
+            weights = np.zeros((Ht, Wt), dtype=np.float32)
+            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
+                                                 min_x, max_x, min_y, max_y,
+                                                 sigma_out, weights)
+            if cnt == 0 or sum_w <= 1e-12:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+
+            scale = (val * frame_weight) / sum_w
+            cov_scale = frame_weight / sum_w
+            for j in range(Ht):
+                oy = min_y + j
+                for i in range(Wt):
+                    w = weights[j, i]
+                    if w > 0.0:
+                        ox = min_x + i
+                        drizzle_buffer[oy, ox] += w * scale
+                        coverage_buffer[oy, ox] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
+
+
+@njit(fastmath=True)
+def drizzle_deposit_color_kernel_proj(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor, drop_shrink, frame_weight,
+    kernel_code, gaussian_sigma_or_radius
+):
+    """Color drizzle deposit with a FULL 3x3 projective transform and NO pixel
+    pre-warp. Per-channel coverage is tracked so SPARSE CFA-drizzle planes fill
+    correctly across dithered frames (the sparse grid is never interpolated).
+    `transform` is 3x3 (affine embeds as [0,0,1])."""
+    H, W, C = img_data.shape
+    outH, outW, _ = drizzle_buffer.shape
+
+    M = np.zeros((3, 3), dtype=np.float32)
+    for a in range(3):
+        for b in range(3):
+            M[a, b] = transform[a, b]
+
+    radius = 0.5 * drop_shrink * drizzle_factor
+    if kernel_code == 2:
+        sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+    else:
+        sigma_out = max(radius, 1e-6)
+
+    for y in range(H):
+        for x in range(W):
+            nz = False
+            for cc in range(C):
+                if img_data[y, x, cc] != 0.0:
+                    nz = True; break
+            if not nz:
+                continue
+
+            Px, Py = _project_3x3(M, np.float32(x), np.float32(y))
+            Xo = Px * drizzle_factor
+            Yo = Py * drizzle_factor
+
+            if kernel_code == 2:
+                r = int(math.ceil(3.0 * sigma_out))
+            else:
+                r = int(math.ceil(radius))
+
+            if r <= 0:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        val = img_data[y, x, c]
+                        if val != 0.0:
+                            drizzle_buffer[oy, ox, c] += val * frame_weight
+                            coverage_buffer[oy, ox, c] += frame_weight
+                continue
+
+            min_x = int(math.floor(Xo - r)); max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r)); max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+
+            Ht = max_y - min_y + 1; Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+
+            weights = np.zeros((Ht, Wt), dtype=np.float32)
+            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
+                                                 min_x, max_x, min_y, max_y,
+                                                 sigma_out, weights)
+            if cnt == 0 or sum_w <= 1e-12:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        val = img_data[y, x, c]
+                        if val != 0.0:
+                            drizzle_buffer[oy, ox, c] += val * frame_weight
+                            coverage_buffer[oy, ox, c] += frame_weight
+                continue
+
+            inv_sum = 1.0 / sum_w
+            for c in range(C):
+                val = img_data[y, x, c]
+                if val == 0.0:
+                    continue
+                scale = (val * frame_weight) * inv_sum
+                cov_scale = frame_weight * inv_sum
+                for j in range(Ht):
+                    oy = min_y + j
+                    for i in range(Wt):
+                        w = weights[j, i]
+                        if w > 0.0:
+                            ox = min_x + i
+                            drizzle_buffer[oy, ox, c] += w * scale
+                            coverage_buffer[oy, ox, c] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
+
+
 @njit(parallel=True)
 def finalize_drizzle_2d(drizzle_buffer, coverage_buffer, final_out):
     """
