@@ -710,6 +710,68 @@ def cosmetic_correction_gpu(
     return out
 
 # ---------------------------------------------------------------------------
+# Robust reduction helpers (shared by the rejection branches below)
+# ---------------------------------------------------------------------------
+def _masked_sum(torch, x, mask, dim: int):
+    """Sum of x over `mask`. NaN-safe: masked-out lanes are replaced by 0
+    *before* any arithmetic, so NaN/Inf in invalid lanes can never poison
+    the result (NaN * 0 == NaN, which the old `ts.mul(w_eff)` pattern hit)."""
+    return torch.where(mask, x, torch.zeros_like(x)).sum(dim=dim)
+
+
+def _mad_sigma(torch, x_nan, med, dim: int):
+    """Robust per-pixel scale: 1.4826 * MAD (consistent with Gaussian sigma).
+    Unlike a plain standard deviation, this is immune to satellite trails /
+    plane trails / cosmic rays inflating the scale estimate."""
+    mad = _nanmedian(torch, (x_nan - med.unsqueeze(dim)).abs(), dim=dim)
+    return (1.4826 * mad).clamp_min(1e-10)
+
+
+def _winsorized_center_scale(torch, ts, valid, iterations: int = 3, winsor_k: float = 1.5):
+    """
+    Huber-style Winsorized estimate of per-pixel center and scale — the same
+    scheme PixInsight and APP use for 'Winsorized Sigma Clipping'.
+
+    Why: measuring sigma on the raw stack lets a bright outlier inflate sigma
+    so much that it can never be clipped (a single outlier among N frames is
+    bounded at z = sqrt(N), so with N=8 and kappa=3 a trail is mathematically
+    un-rejectable). Instead we:
+      1. seed with median and 1.4826*MAD (both robust),
+      2. clamp ('winsorize') the stack to med +/- winsor_k * sigma,
+      3. re-measure median and std on the winsorized stack, undoing the
+         winsorization-induced shrinkage with Huber's 1.134 correction
+         (exact for winsor_k = 1.5),
+      4. iterate to convergence.
+    Sigma therefore converges to the sigma of the *uncontaminated* pixel
+    distribution, and the subsequent sigma_low/sigma_high rejection pass
+    behaves like APP/PI at the same settings.
+    """
+    x = ts.masked_fill(~valid, float("nan"))
+    med = _nanmedian(torch, x, dim=0)
+    sigma = _mad_sigma(torch, x, med, dim=0)
+    cnt = valid.sum(dim=0).clamp_min(1).to(ts.dtype)
+    for _ in range(max(1, int(iterations))):
+        lo = (med - winsor_k * sigma).unsqueeze(0)
+        hi = (med + winsor_k * sigma).unsqueeze(0)
+        # torch.minimum/maximum propagate NaN, so invalid lanes stay NaN
+        xw = torch.minimum(torch.maximum(x, lo), hi)
+        med = _nanmedian(torch, xw, dim=0)
+        mean_w = _masked_sum(torch, xw, valid, dim=0) / cnt
+        var = _masked_sum(torch, (xw - mean_w.unsqueeze(0)) ** 2, valid, dim=0) / cnt
+        sigma = (1.134 * var.clamp_min(0.0).sqrt()).clamp_min(1e-10)
+    return med, sigma
+
+
+def _weighted_mean_or(torch, ts, keep, w, fallback):
+    """Weighted mean of `ts` over `keep`; `fallback` where nothing survives.
+    NaN-safe: rejected/invalid lanes never enter the arithmetic."""
+    w_eff = w * keep.to(ts.dtype)
+    num = (torch.where(keep, ts, torch.zeros_like(ts)) * w_eff).sum(dim=0)
+    den = w_eff.sum(dim=0)
+    return torch.where(den > 1e-20, num / den.clamp_min(1e-20), fallback)
+
+
+# ---------------------------------------------------------------------------
 # Public GPU reducer – lazy-loads Torch, never decorates at import time
 # ---------------------------------------------------------------------------
 def torch_reduce_tile(
@@ -886,31 +948,22 @@ def torch_reduce_tile(
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo_name == "Windsorized Sigma Clipping":
-            low = float(sigma_low)
-            high = float(sigma_high)
-            keep = valid.clone()
+            # True Winsorized sigma clipping (APP/PI-parity):
+            # robust winsorized center/scale, one rejection pass, then average
+            # of the SURVIVORS only (rejected pixels are excluded, not
+            # median-substituted, so a partly-rejected trail can't leak back).
+            med, sigma = _winsorized_center_scale(torch, ts, valid, iterations=int(iterations))
+            lo = (med - float(sigma_low) * sigma).unsqueeze(0)
+            hi = (med + float(sigma_high) * sigma).unsqueeze(0)
+            keep = valid & (ts >= lo) & (ts <= hi)
 
-            for _ in range(int(iterations)):
-                x_iter = ts.masked_fill(~keep, float("nan"))
-                med = _nanmedian(torch, x_iter, dim=0)
-                sq_dev = torch.where(keep, (ts - med.unsqueeze(0)) ** 2, torch.zeros_like(ts))
-                n_kept = keep.sum(dim=0).clamp_min(1).to(ts.dtype)
-                std = (sq_dev.sum(dim=0) / n_kept).sqrt().clamp_min(1e-12)
-                lo = med - low * std
-                hi = med + high * std
-                keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
+            ones_w = torch.ones((F, 1, 1, 1), device=dev, dtype=ts.dtype)
+            fallback = torch.nan_to_num(med, nan=0.0)
+            out = _weighted_mean_or(torch, ts, keep, ones_w, fallback)
 
             rej = ~keep
-
-            ts_winsorized = torch.where(valid & keep, ts, torch.where(valid, med.unsqueeze(0), torch.zeros_like(ts)))
-            cnt = valid.sum(dim=0).to(ts.dtype)
-            num = torch.where(valid, ts_winsorized, torch.zeros_like(ts)).sum(dim=0)
-            x_valid = ts.masked_fill(~valid, float("nan"))
-            fallback = _nanmedian(torch, x_valid, dim=0)
-            fallback = torch.nan_to_num(fallback, nan=0.0)
-            out = torch.where(cnt > 0, num / cnt.clamp_min(1), fallback)
-
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+
 
         if algo == "Comet Lower-Trim (30%)":
             x = ts.masked_fill(~valid, float("inf"))
@@ -967,148 +1020,197 @@ def torch_reduce_tile(
 
 
         if algo == "Weighted Windsorized Sigma Clipping":
-            low = float(sigma_low)
-            high = float(sigma_high)
-            keep = valid.clone()
+            # True Winsorized sigma clipping (APP/PI-parity), weighted average.
+            # See _winsorized_center_scale for why sigma must be measured on
+            # the winsorized stack: the old code measured std on raw data, so
+            # a satellite trail inflated sigma and was never rejected.
+            med, sigma = _winsorized_center_scale(torch, ts, valid, iterations=int(iterations))
+            lo = (med - float(sigma_low) * sigma).unsqueeze(0)
+            hi = (med + float(sigma_high) * sigma).unsqueeze(0)
+            keep = valid & (ts >= lo) & (ts <= hi)
 
-            for _ in range(int(iterations)):
-                x_iter = ts.masked_fill(~keep, float("nan"))
-                med = _nanmedian(torch, x_iter, dim=0)
-                sq_dev = torch.where(keep, (ts - med.unsqueeze(0)) ** 2, torch.zeros_like(ts))
-                n_kept = keep.sum(dim=0).clamp_min(1).to(ts.dtype)
-                std = (sq_dev.sum(dim=0) / n_kept).sqrt().clamp_min(1e-12)
-                lo = med - low * std
-                hi = med + high * std
-                keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
-
-            # True Winsorized mean: replace rejected pixels with the converged median
-            # (best estimate of true value), not the boundary — boundary still biases.
-            ts_winsorized = torch.where(valid & keep, ts, torch.where(valid, med.unsqueeze(0), torch.zeros_like(ts)))
-
-            w_valid = torch.where(valid, w, torch.zeros_like(w))
-            num = (ts_winsorized * w_valid).sum(dim=0)
-            den = w_valid.sum(dim=0)
-
-            x_valid = ts.masked_fill(~valid, float("nan"))
-            fallback = _nanmedian(torch, x_valid, dim=0)
-            fallback = torch.nan_to_num(fallback, nan=0.0)
-            out = torch.where(den > 1e-20, num / den.clamp_min(1e-20), fallback)
+            fallback = torch.nan_to_num(med, nan=0.0)
+            out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Extreme Studentized Deviate (ESD)":
+            # Generalized ESD (Rosner) done properly, vectorized per pixel.
+            #
+            # The old implementation was an iterative z-clip whose std was
+            # measured on data still containing the outliers ("masking"):
+            # one strong outlier among N frames is bounded at z = sqrt(N),
+            # so with few frames it could never exceed the threshold.
+            #
+            # Rosner's procedure defeats masking by construction:
+            #   for j = 1..max_out:
+            #     find the single most extreme remaining value,
+            #     test it against the mean/std of the remaining sample
+            #     WITH THAT VALUE EXCLUDED (external studentization),
+            #     record pass/fail, remove it, continue (no early stop).
+            #   The number of outliers is the LARGEST j whose test passed;
+            #   the outliers are exactly the first j values removed.
+            #
+            # External studentization matters: the internally studentized
+            # deviate is capped at (n-1)/sqrt(n) (~2.47 for n=8), so a fixed
+            # user threshold of 3.0 was unreachable on small stacks. Testing
+            # against the leave-one-out sample removes the cap and makes the
+            # threshold mean "sigmas above the clean data", which is what
+            # users expect the setting to do.
+            thr = float(esd_threshold)
+            # Rosner needs an upper bound on the outlier count; test up to
+            # half the stack (and leave at least 2 frames untested).
+            max_out = int(max(1, min(F - 2, round(0.5 * F))))
+
+            # Per-step critical values. A FIXED cutoff cascades on clean
+            # stacks: each removal shrinks the remaining std, inflating the
+            # next R, so later steps pass spuriously. Rosner's remedy is an
+            # n-dependent critical value. The externally studentized deviate
+            # is t-distributed with df = n - 2, so we map the user's z-style
+            # threshold to its two-sided normal tail probability and take the
+            # matching t quantile at each step's df. For large stacks
+            # t -> normal, so 'threshold' keeps its literal 'sigmas' meaning;
+            # for small stacks the cutoff inflates automatically, which is
+            # exactly what controls the false-rejection cascade.
+            crit_by_n = np.full(F + 1, float("inf"), dtype=np.float32)
+            try:
+                from scipy import stats as _sstats
+                p_two = float(_sstats.norm.sf(thr))          # one-sided tail
+                for nn in range(3, F + 1):
+                    crit_by_n[nn] = float(_sstats.t.ppf(1.0 - p_two, nn - 2))
+            except Exception:
+                # scipy-free fallback: inflate by the t-distribution's std,
+                # sqrt(df / (df - 2)), a good first-order approximation.
+                for nn in range(3, F + 1):
+                    df = nn - 2
+                    infl = (df / (df - 2.0)) ** 0.5 if df > 2 else 3.0
+                    crit_by_n[nn] = thr * infl
+            crit_t = torch.from_numpy(crit_by_n).to(dev)
+
+            active = valid.clone()
+            removed_step = torch.full((F, H, W, C), -1, dtype=torch.int32, device=dev)
+            passed = torch.zeros((max_out, H, W, C), dtype=torch.bool, device=dev)
+            neg = torch.full_like(ts, float("-inf"))
+
+            for j in range(max_out):
+                n = active.sum(dim=0).to(ts.dtype)
+                can = n >= 3.0  # need >= 2 samples left after leave-one-out
+                mean = _masked_sum(torch, ts, active, dim=0) / n.clamp_min(1.0)
+                dv = ts - mean.unsqueeze(0)
+                ss_all = _masked_sum(torch, dv * dv, active, dim=0)
+
+                # candidate = most extreme remaining value
+                zabs = torch.where(active, dv.abs(), neg)
+                dmax, idx = zabs.max(dim=0)
+
+                # leave-one-out mean/std via exact identities (no cancellation):
+                #   ss_loo = ss_all - dev_c^2 * n/(n-1)
+                #   R      = |x_c - mean_loo| / s_loo = dev_c * n/(n-1) / s_loo
+                n_loo = (n - 1.0).clamp_min(1.0)
+                ss_loo = (ss_all - dmax * dmax * (n / n_loo)).clamp_min(0.0)
+                var_loo = ss_loo / (n_loo - 1.0).clamp_min(1.0)
+                std_loo = var_loo.sqrt().clamp_min(1e-12)
+                R = dmax * (n / n_loo) / std_loo
+
+                lam = crit_t[active.sum(dim=0).clamp(0, F)]
+                passed[j] = can & (R > lam)
+
+                # remove the single most extreme remaining value (where possible)
+                hit = torch.zeros_like(active)
+                hit.scatter_(0, idx.unsqueeze(0), can.unsqueeze(0))
+                active = active & ~hit
+                removed_step = torch.where(hit, torch.full_like(removed_step, j), removed_step)
+
+            # per pixel: largest step index whose test passed (else -1)
+            steps = torch.arange(max_out, device=dev, dtype=torch.int32).view(max_out, 1, 1, 1)
+            jstar = torch.where(
+                passed,
+                steps.expand(max_out, H, W, C),
+                torch.full((max_out, H, W, C), -1, dtype=torch.int32, device=dev),
+            ).max(dim=0).values
+
+            # reject exactly the removals up to and including step jstar
+            keep = valid & ((removed_step < 0) | (removed_step > jstar.unsqueeze(0)))
+
             x = ts.masked_fill(~valid, float("nan"))
-            keep = valid.clone()
-
-            for _ in range(int(iterations)):
-                x_iter = ts.masked_fill(~keep, float("nan"))
-                med = _nanmedian(torch, x_iter, dim=0)
-                sq_dev = torch.where(keep, (ts - med.unsqueeze(0)) ** 2, torch.zeros_like(ts))
-                n_kept = keep.sum(dim=0).clamp_min(1).to(ts.dtype)
-                std = (sq_dev.sum(dim=0) / n_kept).sqrt().clamp_min(1e-12)
-                z = torch.where(
-                    valid,
-                    (ts - med.unsqueeze(0)).abs() / std.unsqueeze(0),
-                    torch.full_like(ts, float("inf"))
-                )
-                keep = valid & (z < float(esd_threshold))
-
-            # med here is the converged median of kept pixels — the best unbiased
-            # location estimate. Use weighted mean of kept pixels, but where
-            # rejection was heavy (>50% of valid frames rejected), trust the
-            # converged median more than the kept-pixel mean which is a biased tail.
-            w_eff = torch.where(keep, w, torch.zeros_like(w))
-            num = torch.where(keep, ts * w_eff, torch.zeros_like(ts)).sum(dim=0)
-            den = w_eff.sum(dim=0)
-
-            n_valid = valid.sum(dim=0).to(ts.dtype)
-            n_kept_final = keep.sum(dim=0).to(ts.dtype)
-            rej_frac = 1.0 - (n_kept_final / n_valid.clamp_min(1))
-
-            # weighted mean of kept pixels
-            mean_kept = torch.where(den > 1e-20, num / den.clamp_min(1e-20), med)
-            # blend: heavy rejection → trust converged median; light rejection → trust mean
-            # threshold at 30% rejection: above that, blend toward median
-            blend = (rej_frac - 0.30).clamp(0.0, 0.70) / 0.70  # 0 at <30%, 1 at >100% rej
-            out = (1.0 - blend) * mean_kept + blend * med
-
-            fallback = _nanmedian(torch, x, dim=0)
-            fallback = torch.nan_to_num(fallback, nan=0.0)
-            any_valid = n_valid > 0
-            out = torch.where(any_valid, out, fallback)
+            fallback = torch.nan_to_num(_nanmedian(torch, x, dim=0), nan=0.0)
+            out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Kappa-Sigma Clipping":
+            # Classic kappa-sigma: median center, std of the KEPT sample,
+            # monotone shrink (a rejected pixel stays rejected — the old
+            # `keep = valid & bounds` let outliers re-enter after the bounds
+            # re-widened). Average of survivors only; no median blending.
             keep = valid.clone()
-
-            for _ in range(int(iterations)):
+            for _ in range(max(1, int(iterations))):
                 x_iter = ts.masked_fill(~keep, float("nan"))
                 med = _nanmedian(torch, x_iter, dim=0)
-                sq_dev = torch.where(keep, (ts - med.unsqueeze(0)) ** 2, torch.zeros_like(ts))
                 n_kept = keep.sum(dim=0).clamp_min(1).to(ts.dtype)
-                std = (sq_dev.sum(dim=0) / n_kept).sqrt().clamp_min(1e-12)
-                lo = med - float(kappa) * std
-                hi = med + float(kappa) * std
-                keep = valid & (ts >= lo.unsqueeze(0)) & (ts <= hi.unsqueeze(0))
-
-            w_eff = torch.where(keep, w, torch.zeros_like(w))
-            num = torch.where(keep, ts * w_eff, torch.zeros_like(ts)).sum(dim=0)
-            den = w_eff.sum(dim=0)
-
-            n_valid = valid.sum(dim=0).to(ts.dtype)
-            n_kept_final = keep.sum(dim=0).to(ts.dtype)
-            rej_frac = 1.0 - (n_kept_final / n_valid.clamp_min(1))
+                var = _masked_sum(torch, (ts - med.unsqueeze(0)) ** 2, keep, dim=0) / n_kept
+                std = var.clamp_min(0.0).sqrt().clamp_min(1e-12)
+                lo = (med - float(kappa) * std).unsqueeze(0)
+                hi = (med + float(kappa) * std).unsqueeze(0)
+                keep = keep & (ts >= lo) & (ts <= hi)
 
             x_valid = ts.masked_fill(~valid, float("nan"))
-            mean_kept = torch.where(den > 1e-20, num / den.clamp_min(1e-20), med)
-            blend = (rej_frac - 0.30).clamp(0.0, 0.70) / 0.70
-            out = (1.0 - blend) * mean_kept + blend * med
-
-            fallback = _nanmedian(torch, x_valid, dim=0)
-            fallback = torch.nan_to_num(fallback, nan=0.0)
-            any_valid = n_valid > 0
-            out = torch.where(any_valid, out, fallback)
+            fallback = torch.nan_to_num(_nanmedian(torch, x_valid, dim=0), nan=0.0)
+            out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Trimmed Mean":
             x = ts.masked_fill(~valid, float("nan"))
-            qlo = _nanquantile(torch, x, trim_fraction, dim=0)
-            qhi = _nanquantile(torch, x, 1.0 - trim_fraction, dim=0)
+            qlo = _nanquantile(torch, x, float(trim_fraction), dim=0)
+            qhi = _nanquantile(torch, x, 1.0 - float(trim_fraction), dim=0)
             keep = valid & (ts >= qlo.unsqueeze(0)) & (ts <= qhi.unsqueeze(0))
-            w_eff = torch.where(keep, w, torch.zeros_like(w))
-            den = w_eff.sum(dim=0).clamp_min(1e-20)
-            out = (ts.mul(w_eff)).sum(dim=0).div(den)
+
+            fallback = torch.nan_to_num(_nanmedian(torch, x, dim=0), nan=0.0)
+            out = _weighted_mean_or(torch, ts, keep, w, fallback)
+
             rej = ~keep
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Biweight Estimator":
-            x = ts
-            m = _nanmedian(torch, x.masked_fill(~valid, float("nan")), dim=0)
-            mad = _nanmedian(torch, (x - m.unsqueeze(0)).abs().masked_fill(~valid, float("nan")), dim=0) + 1e-12
-            u = (x - m.unsqueeze(0)) / (float(biweight_constant) * mad.unsqueeze(0))
+            x = ts.masked_fill(~valid, float("nan"))
+            m = _nanmedian(torch, x, dim=0)
+            mad = (_nanmedian(torch, (x - m.unsqueeze(0)).abs(), dim=0)).clamp_min(1e-12)
+
+            # NaN-safe residuals: invalid lanes contribute exactly 0
+            d = torch.where(valid, ts - m.unsqueeze(0), torch.zeros_like(ts))
+            u = d / (float(biweight_constant) * mad.unsqueeze(0))
             mask = valid & (u.abs() < 1.0)
-            w_eff = torch.where(mask, w, torch.zeros_like(w))
-            one_minus_u2 = (1 - u**2).clamp_min(0)
-            num = ((x - m.unsqueeze(0)) * (one_minus_u2**2) * w_eff).sum(dim=0)
-            den = ((one_minus_u2**2) * w_eff).sum(dim=0)
-            out = torch.where(den > 0, m + num / den, m)
+
+            omu2 = torch.where(mask, 1.0 - u * u, torch.zeros_like(u))
+            k_w = omu2 * omu2 * w  # broadcasts weights over the stack
+            num = (d * k_w).sum(dim=0)
+            den = k_w.sum(dim=0)
+
+            out = torch.where(den > 1e-20, m + num / den.clamp_min(1e-20), m)
+            out = torch.nan_to_num(out, nan=0.0)
+
             rej = ~mask
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 
         if algo == "Modified Z-Score Clipping":
-            x = ts
-            med = _nanmedian(torch, x.masked_fill(~valid, float("nan")), dim=0)
-            mad = _nanmedian(torch, (x - med.unsqueeze(0)).abs().masked_fill(~valid, float("nan")), dim=0) + 1e-12
-            mz = 0.6745 * (x - med.unsqueeze(0)) / mad.unsqueeze(0)
+            x = ts.masked_fill(~valid, float("nan"))
+            med = _nanmedian(torch, x, dim=0)
+            mad = (_nanmedian(torch, (x - med.unsqueeze(0)).abs(), dim=0)).clamp_min(1e-12)
+
+            mz = torch.where(
+                valid,
+                0.6745 * (ts - med.unsqueeze(0)) / mad.unsqueeze(0),
+                torch.full_like(ts, float("inf")),
+            )
             keep = valid & (mz.abs() < float(modz_threshold))
-            w_eff = torch.where(keep, w, torch.zeros_like(w))
-            den = w_eff.sum(dim=0).clamp_min(1e-20)
-            out = (ts.mul(w_eff)).sum(dim=0).div(den)
+
+            fallback = torch.nan_to_num(med, nan=0.0)
+            out = _weighted_mean_or(torch, ts, keep, w, fallback)
+
             rej = ~keep
             return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
 

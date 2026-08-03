@@ -2718,218 +2718,9 @@ def _solve_delta_job(args):
 
 
 
-def _residual_job_worker(args):
-    """
-    Process-safe worker for non-affine residual measurement.
-    args = (path, ref_npy, model, h_reproj, det_sigma, minarea, limit_stars)
-    Returns: (path, rms_px, err_or_None)
-    """
-    (path, ref_npy, model, h_reproj, det_sigma, minarea, limit_stars) = args
-    try:
-        import numpy as np  # re-imports are OK in spawned workers
-        from astropy.io import fits
-
-        # Load source (gray, float32, finite)
-        with fits.open(path, memmap=True) as hdul:
-            arr = hdul[0].data
-            if arr is None:
-                return (path, float("inf"), "Could not load")
-            g = arr if arr.ndim == 2 else np.mean(arr, axis=2)
-            g = np.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
-
-        # Memmap the shared reference
-        ref_small = np.load(ref_npy, mmap_mode="r").astype(np.float32, copy=False)
-
-        # Use the staticmethod that’s importable by workers
-        _, _, rms, _ = StarRegistrationThread._aa_model_and_residual(
-            g, ref_small, str(model).lower(),
-            float(h_reproj), float(det_sigma), int(minarea),
-            int(limit_stars) if limit_stars is not None else None
-        )
-        return (path, float(rms), None)
-
-    except Exception as e:
-        return (path, float("inf"), str(e))
-
-def _suppress_tiny_islands(img32: np.ndarray, det_sigma: float, minarea: int) -> np.ndarray:
-    import sep
-    import cv2
-
-    img32 = np.asarray(img32, np.float32, order="C")
-
-    # ── Pre-filter: suppress hot pixels before background estimation ──
-    # 3x3 for single-pixel, then replace only pixels that spiked far above
-    # their neighborhood — preserves star cores better than a blind median.
-    try:
-        med3 = cv2.medianBlur(img32, 3)
-        # Only replace pixels where the original is >5σ above the local median
-        # (i.e. genuine isolated spikes, not star wings)
-        bkg_est = sep.Background(img32, bw=64, bh=64)
-        spike_thresh = float(bkg_est.globalrms) * 8.0
-        spike_mask = (img32 - med3) > spike_thresh
-        img32 = np.where(spike_mask, med3, img32)
-    except Exception:
-        try:
-            img32 = cv2.medianBlur(img32, 3)
-        except Exception:
-            pass
-    # ─────────────────────────────────────────────────────────────────
-
-    bkg = sep.Background(img32, bw=64, bh=64)
-    back_img = bkg.back().astype(np.float32, copy=False)
-    thresh = float(det_sigma) * float(bkg.globalrms)
-
-    mask = (img32 > (back_img + thresh)).astype(np.uint8)
-    num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    if num <= 1:
-        return img32
-
-    keep = np.zeros(num, dtype=np.uint8)
-    keep[stats[:, cv2.CC_STAT_AREA] >= int(minarea)] = 1
-    keep[0] = 0
-    pruned = keep[labels]
-
-    out = np.where(((mask == 1) & (pruned == 0)), back_img, img32)
-    return out.astype(np.float32, copy=False)
-
 # ─────────────────────────────────────────────────────────────
 # Final warp+save worker (process-safe)
 # ─────────────────────────────────────────────────────────────
-def _satmask_sidecar_path_for_image(image_path: str) -> str:
-    import os
-    root, _ = os.path.splitext(image_path)
-    return root + "_satmask.npy"
-
-
-def _candidate_satmask_paths_for_image(image_path: str):
-    """
-    Return possible sidecar paths for an image path.
-
-    Examples:
-      Aligned/abc_c_n_r.fit -> Aligned/abc_c_n_r_satmask.npy
-      Normalized/abc_c_n.fit -> Normalized/abc_c_n_satmask.npy, then
-                                ../Calibrated/abc_c_satmask.npy
-    """
-    import os
-
-    image_path = os.path.normpath(image_path)
-    out = []
-
-    # 1) exact sidecar next to the image path
-    out.append(_satmask_sidecar_path_for_image(image_path))
-
-    base = os.path.basename(image_path)
-    dirname = os.path.dirname(image_path)
-    parent = os.path.dirname(dirname)
-
-    # 2) normalized -> calibrated fallback
-    #    e.g. foo_c_n.fit -> Calibrated/foo_c_satmask.npy
-    if base.lower().endswith("_n.fit"):
-        denorm_base = base[:-6] + ".fit"   # strip "_n.fit", restore ".fit"
-        cal_dir = os.path.join(parent, "Calibrated")
-        out.append(_satmask_sidecar_path_for_image(os.path.join(cal_dir, denorm_base)))
-
-    # de-duplicate while preserving order
-    seen = set()
-    uniq = []
-    for p in out:
-        pn = os.path.normcase(os.path.normpath(p))
-        if pn not in seen:
-            seen.add(pn)
-            uniq.append(p)
-    return uniq
-
-
-def _load_satmask_sidecar(image_path: str):
-    import os
-    import numpy as np
-
-    for p in _candidate_satmask_paths_for_image(image_path):
-        if not os.path.exists(p):
-            continue
-        try:
-            m = np.load(p, allow_pickle=False)
-            m = np.asarray(m, dtype=bool)
-            if m.ndim != 2:
-                continue
-            return m
-        except Exception:
-            continue
-    return None
-
-
-def _save_satmask_sidecar(image_path: str, mask2d):
-    import numpy as np
-    p = _satmask_sidecar_path_for_image(image_path)
-    np.save(p, np.asarray(mask2d, dtype=np.uint8), allow_pickle=False)
-    return p
-
-def _warp_satmask_with_kind(mask2d, kind: str, X: object, out_hw: tuple[int, int]):
-    """
-    Warp a 2D boolean rejection mask with the same final registration model.
-    Uses nearest-neighbor everywhere to preserve binary mask semantics.
-    out_hw = (H, W) in reference/aligned space.
-    """
-    import numpy as np
-    import cv2
-
-    Hh, Ww = int(out_hw[0]), int(out_hw[1])
-    src = np.asarray(mask2d, dtype=np.uint8)
-
-    if kind in ("affine", "similarity"):
-        A = np.asarray(X, np.float32).reshape(2, 3)
-        out = cv2.warpAffine(
-            src, A, (Ww, Hh),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0
-        )
-        return out.astype(bool)
-
-    if kind == "homography":
-        Hm = np.asarray(X, np.float32).reshape(3, 3)
-        out = cv2.warpPerspective(
-            src, Hm, (Ww, Hh),
-            flags=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0
-        )
-        return out.astype(bool)
-
-    if kind in ("poly3", "poly4"):
-        map_x, map_y = X
-        out = cv2.remap(
-            src,
-            map_x.astype(np.float32),
-            map_y.astype(np.float32),
-            interpolation=cv2.INTER_NEAREST,
-            borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0
-        )
-        return out.astype(bool)
-
-    # Fallback: no warp
-    hh = min(Hh, src.shape[0])
-    ww = min(Ww, src.shape[1])
-    out = np.zeros((Hh, Ww), dtype=bool)
-    out[:hh, :ww] = src[:hh, :ww].astype(bool)
-    return out
-
-def _suppress_hotpx_fast(img32: np.ndarray) -> np.ndarray:
-    """
-    Fast hot pixel suppression via 3x3 median, no SEP needed.
-    Only replaces pixels that are extreme outliers vs their local neighborhood.
-    Hot pixels typically spike 10-100x above neighbors; real stars have
-    smooth PSFs so their cores survive this filter.
-    """
-    import cv2
-    img32 = np.asarray(img32, np.float32, order="C")
-    med3  = cv2.medianBlur(img32, 3)
-
-    # Replace only pixels > 8x their local median — genuine hot pixels
-    # Real star cores are typically < 3x their immediate neighbors
-    ratio = np.where(med3 > 1e-9, img32 / med3, 1.0)
-    return np.where(ratio > 8.0, med3, img32)
 
 def _finalize_write_job(args):
     """
@@ -3008,12 +2799,10 @@ def _finalize_write_job(args):
         img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
         img = np.ascontiguousarray(img)
 
-        # ---- NEW: load original satellite mask sidecar if present ----
-        satmask_src = _load_satmask_sidecar(orig_path)
-        if satmask_src is None:
-            dbg(f"[satmask] no source sidecar found for {os.path.basename(orig_path)}")
-        else:
-            dbg(f"[satmask] loaded source sidecar for {os.path.basename(orig_path)} ({int(np.count_nonzero(satmask_src))} px)")
+        # Satellite sidecar masks retired: trail pixels are baked to 0.0 at
+        # calibration and treated as no-data through integration, so there is no
+        # sidecar to load, warp, or save here.
+        satmask_src = None
         Href, Wref = ref_shape
 
         # 2) load reference (full-res) via memmap
@@ -3181,18 +2970,6 @@ def _finalize_write_job(args):
         if np.isnan(aligned).any() or np.isinf(aligned).any():
             aligned = np.nan_to_num(aligned, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # ---- NEW: warp satellite mask with the SAME final transform ----
-        satmask_aligned = None
-        if satmask_src is not None:
-            try:
-                satmask_aligned = _warp_satmask_with_kind(
-                    satmask_src, kind, X, (Hh, Ww)
-                )
-                dbg(f"[satmask] propagated {int(np.count_nonzero(satmask_src))} -> {int(np.count_nonzero(satmask_aligned))} px")
-            except Exception as e:
-                dbg(f"[satmask] warp failed: {e}")
-                satmask_aligned = None
-
         # 5) save aligned image
         name, _ = os.path.splitext(base)
         if name.endswith("_n"):
@@ -3211,14 +2988,6 @@ def _finalize_write_job(args):
             original_header=hdr,
             is_mono=is_mono
         )
-
-        # ---- NEW: save aligned satellite sidecar mask if present ----
-        if satmask_aligned is not None:
-            try:
-                saved_p = _save_satmask_sidecar(out_path, satmask_aligned)
-                dbg(f"[satmask] saved aligned sidecar: {os.path.basename(saved_p)} ({int(np.count_nonzero(satmask_aligned))} px)")
-            except Exception as e:
-                dbg(f"[satmask] save failed: {e}")
 
         msg = (
             f"🌀 Distortion Correction on {base}: warp={warp_label}\n"
