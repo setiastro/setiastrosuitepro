@@ -180,6 +180,7 @@ class Icons:
     HISTOGRAM = property(lambda self: _resource_path('histogram.png'))
     HISTOGRAM_TRANSFORM = property(lambda self: _resource_path('histogram_transform.png'))
     MOSAIC = property(lambda self: _resource_path('mosaic.png'))
+    SURFACEMOSAIC = property(lambda self: _resource_path('surfacemosaic.png'))
     PLATE_SOLVE = property(lambda self: _resource_path('platesolve.png'))
     UNWARP = property(lambda self: _resource_path('unwarp.png'))
     PSF = property(lambda self: _resource_path('psf.png'))
@@ -447,6 +448,7 @@ _LEGACY_ICON_MAP = {
     'starregistration_path': 'starregistration.png',
     'stacking_path': 'stacking.png',
     'pedestal_icon_path': 'pedestal.png',
+    'surfacemosaic_path': 'surfacemosaic.png',
     'starspike_path': 'starspike.png',
     'astrospike_path': 'Astro_Spikes.png',
     'aperture_path': 'aperture.png',

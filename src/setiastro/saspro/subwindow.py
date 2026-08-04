@@ -3382,12 +3382,18 @@ class ImageSubWindow(QWidget):
 
 
     # ---------- interaction ----------
-    def _zoom_at_anchor(self, factor: float):
+    def _zoom_to_scale(self, new_scale: float, *, anchor_vp: QPoint | None = None):
+        """Set an absolute scale while keeping the image pixel under *anchor_vp* fixed.
+
+        If *anchor_vp* is None, the viewport centre is used. Scrollbars are clamped
+        when the requested centre cannot be kept (near edges / image smaller than
+        the viewport), which is the only case that may shift toward a corner.
+        """
         if getattr(self, "_qimg_src", None) is None and getattr(self, "_pm_src", None) is None:
             return
 
         old_scale = float(self.scale)
-        new_scale = max(self._min_scale, min(old_scale * float(factor), self._max_scale))
+        new_scale = max(self._min_scale, min(float(new_scale), self._max_scale))
         if abs(new_scale - old_scale) < 1e-8:
             return
 
@@ -3395,12 +3401,7 @@ class ImageSubWindow(QWidget):
         hbar = self.scroll.horizontalScrollBar()
         vbar = self.scroll.verticalScrollBar()
 
-        try:
-            anchor_vp = vp.mapFromGlobal(QCursor.pos())
-        except Exception:
-            anchor_vp = None
-
-        if (anchor_vp is None) or (not vp.rect().contains(anchor_vp)):
+        if anchor_vp is None:
             anchor_vp = QPoint(vp.width() // 2, vp.height() // 2)
 
         x_label_pre = hbar.value() + anchor_vp.x()
@@ -3409,13 +3410,10 @@ class ImageSubWindow(QWidget):
         xi = x_label_pre / max(old_scale, 1e-12)
         yi = y_label_pre / max(old_scale, 1e-12)
 
-        # Apply new scale
         self.scale = new_scale
-
-        # FAST present (no rebuild)
         self._present_scaled(interactive=True)
 
-        # Keep anchor stable
+        # Keep the pre-zoom image pixel under the same viewport point
         x_label_post = xi * new_scale
         y_label_post = yi * new_scale
 
@@ -3428,10 +3426,30 @@ class ImageSubWindow(QWidget):
         hbar.setValue(new_h)
         vbar.setValue(new_v)
 
-        # Defer one final smooth redraw (and WCS overlay) after the burst
         self._update_zoom_label()
+        self._schedule_emit_view_transform()
         if self._smooth_zoom:
             self._request_zoom_redraw()
+
+    def _zoom_at_anchor(self, factor: float):
+        if getattr(self, "_qimg_src", None) is None and getattr(self, "_pm_src", None) is None:
+            return
+
+        old_scale = float(self.scale)
+        new_scale = max(self._min_scale, min(old_scale * float(factor), self._max_scale))
+        if abs(new_scale - old_scale) < 1e-8:
+            return
+
+        vp = self.scroll.viewport()
+        try:
+            anchor_vp = vp.mapFromGlobal(QCursor.pos())
+        except Exception:
+            anchor_vp = None
+
+        if (anchor_vp is None) or (not vp.rect().contains(anchor_vp)):
+            anchor_vp = None  # _zoom_to_scale defaults to viewport centre
+
+        self._zoom_to_scale(new_scale, anchor_vp=anchor_vp)
 
     def _request_zoom_redraw(self):
         if getattr(self, "_zoom_timer", None) is None:
