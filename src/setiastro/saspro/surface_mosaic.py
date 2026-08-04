@@ -443,7 +443,17 @@ def _refine_pair(ti: Tile, tj: Tile, coarse: PairMatch, cfg: SurfaceMosaicConfig
     Sub-pixel refine the coarse pair using phase correlation + FM rotation + SSD
     on the mutual overlap. Falls back to the coarse estimate if the overlap is too
     small to be reliable.
+
+    The overlap here is extracted by translation only, so it is only valid when
+    the pair has little relative rotation. For a genuinely rotated pair the crop
+    would compare rotated-vs-unrotated content and phase correlation would return
+    noise — so above a few degrees we trust the ORB similarity fit (which used the
+    whole overlap, rotation-invariantly) and let the local seam warp clean up any
+    residual at compose time.
     """
+    if abs(coarse.dtheta) > 3.0:
+        return coarse
+
     mi = _to_mono01(ti.image).astype(np.float32, copy=False)
     mj = _to_mono01(tj.image).astype(np.float32, copy=False)
 
@@ -562,20 +572,78 @@ def _solve_translation(tiles: List[Tile], pairs: List[PairMatch], cfg: SurfaceMo
         t.theta = 0.0
 
 
+def _seed_similarity(tiles: List[Tile], pairs: List[PairMatch], cfg: SurfaceMosaicConfig) -> None:
+    """
+    Seed each tile's (theta, tx, ty) by propagating the pairwise (dtheta, d) out
+    from the anchor along a spanning tree of the overlap graph. Composing the
+    transforms as we go — theta_j = theta_i + dtheta, t_j = t_i + R(theta_i)d —
+    gives the nonlinear solver a starting point already near the answer, which is
+    what lets it place a rotated tile instead of getting stuck at all-zeros.
+    """
+    from collections import deque
+    n = len(tiles)
+    anchor = int(np.clip(cfg.anchor_index, 0, n - 1))
+
+    adj: Dict[int, list] = {k: [] for k in range(n)}
+    for p in pairs:
+        adj[p.i].append((p.j, +1, p))   # forward: j relative to i
+        adj[p.j].append((p.i, -1, p))   # reverse: i relative to j
+
+    th = [None] * n; tx = [None] * n; ty = [None] * n
+    th[anchor], tx[anchor], ty[anchor] = 0.0, 0.0, 0.0
+    dq = deque([anchor])
+    while dq:
+        u = dq.popleft()
+        for (v, sign, p) in adj[u]:
+            if th[v] is not None:
+                continue
+            dth = math.radians(p.dtheta)
+            dx, dy = float(p.dx), float(p.dy)
+            if sign > 0:                         # u=i, v=j
+                thv = th[u] + dth
+                cu, su = math.cos(th[u]), math.sin(th[u])
+                tx[v] = tx[u] + (cu * dx - su * dy)
+                ty[v] = ty[u] + (su * dx + cu * dy)
+            else:                                # u=j, v=i  (invert the relation)
+                thv = th[u] - dth
+                cv_, sv_ = math.cos(thv), math.sin(thv)
+                tx[v] = tx[u] - (cv_ * dx - sv_ * dy)
+                ty[v] = ty[u] - (sv_ * dx + cv_ * dy)
+            th[v] = thv
+            dq.append(v)
+
+    for k in range(n):
+        if th[k] is None:                        # tile not connected to anchor
+            th[k], tx[k], ty[k] = 0.0, 0.0, 0.0
+        tiles[k].theta = math.degrees(th[k])
+        tiles[k].tx = float(tx[k])
+        tiles[k].ty = float(ty[k])
+
+
 def _solve_similarity_scipy(tiles: List[Tile], pairs: List[PairMatch], cfg: SurfaceMosaicConfig) -> None:
     """
-    Optional (tx,ty,theta) joint solve via Levenberg-Marquardt. Requires scipy;
-    seeds from the translation solution. This is the small PTGui-style optimizer.
+    Joint (tx, ty, theta) solve. Composes the poses as real 2-D similarity
+    transforms — the pairwise translation is rotated into each tile's own frame
+    via R(theta_i) — seeds from a spanning-tree propagation, and uses a robust
+    loss so a single bad pair can't drag the whole solution. Falls back to the
+    translation-only solve if scipy is unavailable.
     """
     if _scipy_least_squares is None:
-        _solve_translation(tiles, pairs, cfg)
+        # No scipy: the spanning-tree seed already places rotated tiles (it just
+        # can't do the robust loop-closure refine). Still far better than a
+        # translation-only solve, which ignores rotation entirely.
+        _seed_similarity(tiles, pairs, cfg)
         return
-    _solve_translation(tiles, pairs, cfg)  # seed
+
+    _seed_similarity(tiles, pairs, cfg)
 
     n = len(tiles)
     anchor = int(np.clip(cfg.anchor_index, 0, n - 1))
     free = [k for k in range(n) if k != anchor]
     index = {k: p for p, k in enumerate(free)}
+    # scale rotation residuals into pixel-equivalent units (a 1-rad error is ~R px
+    # of edge misalignment) so angles and translations are commensurate in the solve
+    rad_to_px = 0.5 * float(np.mean([math.hypot(t.w, t.h) for t in tiles])) or 1.0
 
     def pack() -> np.ndarray:
         v = np.zeros(3 * len(free))
@@ -590,20 +658,33 @@ def _solve_similarity_scipy(tiles: List[Tile], pairs: List[PairMatch], cfg: Surf
         b = 3 * index[k]
         return float(v[b]), float(v[b + 1]), float(v[b + 2])
 
+    def _wrap(a: float) -> float:
+        return math.atan2(math.sin(a), math.cos(a))
+
     def residuals(v: np.ndarray) -> np.ndarray:
         res = []
         for p in pairs:
             txi, tyi, thi = pose(p.i, v)
             txj, tyj, thj = pose(p.j, v)
             w = math.sqrt(max(1e-6, p.weight))
-            res.append(w * ((txj - txi) - p.dx))
-            res.append(w * ((tyj - tyi) - p.dy))
-            res.append(0.3 * w * (math.degrees(thj - thi) - p.dtheta))
+            ci, si = math.cos(thi), math.sin(thi)
+            # pairwise offset expressed in tile i's rotated frame: t_j - t_i = R(thi) d
+            drx = ci * p.dx - si * p.dy
+            dry = si * p.dx + ci * p.dy
+            res.append(w * ((txj - txi) - drx))
+            res.append(w * ((tyj - tyi) - dry))
+            res.append(w * rad_to_px * _wrap(thj - thi - math.radians(p.dtheta)))
         return np.asarray(res, dtype=np.float64)
 
-    sol = _scipy_least_squares(residuals, pack(), method="lm", max_nfev=200)
+    try:
+        sol = _scipy_least_squares(residuals, pack(), method="trf",
+                                   loss="soft_l1", max_nfev=400)
+        xopt = sol.x
+    except Exception:
+        xopt = pack()   # keep the seed if the optimiser fails
+
     for k in free:
-        txk, tyk, thk = pose(k, sol.x)
+        txk, tyk, thk = pose(k, xopt)
         tiles[k].tx, tiles[k].ty, tiles[k].theta = txk, tyk, math.degrees(thk)
     tiles[anchor].tx = tiles[anchor].ty = tiles[anchor].theta = 0.0
 
@@ -679,15 +760,16 @@ def equalize_photometry(tiles: List[Tile], pairs: List[PairMatch], cfg: SurfaceM
 # Stages 5/6/8 — Compose (warp into canvas, local warp, seam + blend)
 # ===========================================================================
 def _tile_affine(t: Tile, ox: float, oy: float) -> np.ndarray:
-    """2x3 affine mapping tile-local coords -> canvas coords (origin ox,oy)."""
+    """
+    2x3 affine mapping tile-local coords -> canvas coords (origin ox,oy).
+    Pose is R(theta) about the tile's own (0,0), then translate by (tx,ty) — the
+    same origin-rotation composition the global solve uses, so solved poses place
+    correctly. For theta==0 this reduces to a plain translation.
+    """
     th = math.radians(t.theta)
     c, s = math.cos(th), math.sin(th)
-    cx, cy = t.w * 0.5, t.h * 0.5
-    # rotate about tile centre, then place at (tx,ty) minus canvas origin
-    # p_canvas = R*(p - c) + c + (tx - ox, ty - oy)
-    tx = (t.tx - ox) + cx - (c * cx - s * cy)
-    ty = (t.ty - oy) + cy - (s * cx + c * cy)
-    return np.array([[c, -s, tx], [s, c, ty]], dtype=np.float32)
+    return np.array([[c, -s, t.tx - ox],
+                     [s,  c, t.ty - oy]], dtype=np.float32)
 
 
 def _canvas_bounds(tiles: List[Tile]) -> Tuple[float, float, int, int]:
@@ -695,12 +777,9 @@ def _canvas_bounds(tiles: List[Tile]) -> Tuple[float, float, int, int]:
     for t in tiles:
         th = math.radians(t.theta)
         c, s = math.cos(th), math.sin(th)
-        cx, cy = t.w * 0.5, t.h * 0.5
-        corners = [(0, 0), (t.w, 0), (0, t.h), (t.w, t.h)]
-        for (px, py) in corners:
-            rx = c * (px - cx) - s * (py - cy) + cx + t.tx
-            ry = s * (px - cx) + c * (py - cy) + cy + t.ty
-            xs.append(rx); ys.append(ry)
+        for (px, py) in ((0, 0), (t.w, 0), (0, t.h), (t.w, t.h)):
+            xs.append(c * px - s * py + t.tx)   # R(theta)*p + (tx,ty)
+            ys.append(s * px + c * py + t.ty)
     x0, y0 = math.floor(min(xs)), math.floor(min(ys))
     x1, y1 = math.ceil(max(xs)), math.ceil(max(ys))
     return float(x0), float(y0), int(x1 - x0), int(y1 - y0)
@@ -989,12 +1068,9 @@ if _HAVE_QT:
         def _corners_mosaic(t: "Tile"):
             th = math.radians(t.theta)
             c, s = math.cos(th), math.sin(th)
-            cx, cy = t.w * 0.5, t.h * 0.5
             pts = []
             for px, py in ((0, 0), (t.w, 0), (t.w, t.h), (0, t.h)):
-                rx = c * (px - cx) - s * (py - cy) + cx + t.tx
-                ry = s * (px - cx) + c * (py - cy) + cy + t.ty
-                pts.append((rx, ry))
+                pts.append((c * px - s * py + t.tx, s * px + c * py + t.ty))
             return pts
 
         def paintEvent(self, _ev):
@@ -1119,12 +1195,16 @@ if _HAVE_QT:
             self._worker: Optional[SurfaceMosaicWorker] = None
             self._views: List[Tuple[str, Any]] = []
 
-            root = QVBoxLayout(self)
-            root.addWidget(QLabel("Select the open views to mosaic (finished per-panel stacks):"))
+            outer = QVBoxLayout(self)
+            cols = QHBoxLayout()
+
+            # ---- left column: view selection + options + run ----
+            left = QVBoxLayout()
+            left.addWidget(QLabel("Select the open views to mosaic (finished per-panel stacks):"))
 
             self.view_list = QListWidget()
             self.view_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
-            root.addWidget(self.view_list, 1)
+            left.addWidget(self.view_list, 1)
 
             btn_row = QHBoxLayout()
             self.btn_refresh = QPushButton("Refresh views")
@@ -1134,7 +1214,7 @@ if _HAVE_QT:
             self.btn_selectall.clicked.connect(self._toggle_select_all)
             btn_row.addWidget(self.btn_selectall)
             btn_row.addStretch(1)
-            root.addLayout(btn_row)
+            left.addLayout(btn_row)
 
             self.view_list.itemChanged.connect(self._update_selectall_label)
 
@@ -1155,33 +1235,40 @@ if _HAVE_QT:
             self.cmb_blend.addItem("Feather", "feather")
             self.cmb_blend.addItem("MultiBandBlender", "multiband")
             opt_row.addWidget(self.cmb_blend)
-            root.addLayout(opt_row)
+            left.addLayout(opt_row)
 
             self.progress = QProgressBar()
             self.progress.setRange(0, 100)
-            root.addWidget(self.progress)
+            left.addWidget(self.progress)
 
             self.status = QLabel("")
-            root.addWidget(self.status)
-
-            root.addWidget(QLabel("Tile layout:"))
-            self.layout_view = TileLayoutView()
-            root.addWidget(self.layout_view, 1)
+            left.addWidget(self.status)
 
             run_row = QHBoxLayout()
             run_row.addStretch(1)
             self.btn_run = QPushButton("Build Mosaic")
             self.btn_run.clicked.connect(self._on_run)
             run_row.addWidget(self.btn_run)
-            root.addLayout(run_row)
+            left.addLayout(run_row)
 
-            # SetiAstro footer
+            # ---- right column: tile layout overview ----
+            right = QVBoxLayout()
+            right.addWidget(QLabel("Tile layout:"))
+            self.layout_view = TileLayoutView()
+            self.layout_view.setMinimumWidth(320)
+            right.addWidget(self.layout_view, 1)
+
+            cols.addLayout(left, 3)
+            cols.addLayout(right, 4)
+            outer.addLayout(cols, 1)
+
+            # SetiAstro footer (spans both columns)
             footer = QLabel("Franklin Marek — www.setiastro.com")
             footer.setAlignment(Qt.AlignmentFlag.AlignCenter)
             footer.setStyleSheet("color: gray; font-size: 10px;")
-            root.addWidget(footer)
+            outer.addWidget(footer)
 
-            self.resize(580, 780)
+            self.resize(940, 620)
             self.refresh_views()
 
         # ---- views ----
