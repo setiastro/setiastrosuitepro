@@ -1271,9 +1271,15 @@ if _HAVE_QT:
                 "match_msd_layers": _d.match_msd_layers,
                 "match_msd_gains": tuple(_d.match_msd_gains),
                 "orb_features": _d.orb_features,
+                "feature_max_dim": _d.feature_max_dim,
+                "lowe_ratio": _d.lowe_ratio,
                 "min_inliers": _d.min_inliers,
                 "ransac_thresh": _d.ransac_thresh,
+                "min_overlap_px": _d.min_overlap_px,
+                "local_warp_min_shift": _d.local_warp_min_shift,
                 "multiband_bands": _d.multiband_bands,
+                "ap_size": _d.ap_size,
+                "quality_weighted_seam": _d.quality_weighted_seam,
             }
 
             outer = QVBoxLayout(self)
@@ -1451,13 +1457,30 @@ if _HAVE_QT:
             sp_orb = QSpinBox(); sp_orb.setRange(500, 20000); sp_orb.setSingleStep(500)
             sp_orb.setValue(int(self._adv["orb_features"]))
             fr.addRow("ORB features:", sp_orb)
+            sp_fmax = QSpinBox(); sp_fmax.setRange(400, 8000); sp_fmax.setSingleStep(100)
+            sp_fmax.setValue(int(self._adv["feature_max_dim"]))
+            fr.addRow("Feature detect max dim (px):", sp_fmax)
+            sp_lowe = QDoubleSpinBox(); sp_lowe.setRange(0.5, 0.95); sp_lowe.setSingleStep(0.05)
+            sp_lowe.setValue(float(self._adv["lowe_ratio"]))
+            fr.addRow("Lowe ratio (higher = looser):", sp_lowe)
             sp_inl = QSpinBox(); sp_inl.setRange(4, 200)
             sp_inl.setValue(int(self._adv["min_inliers"]))
             fr.addRow("Min inliers:", sp_inl)
             sp_ran = QDoubleSpinBox(); sp_ran.setRange(0.5, 10.0); sp_ran.setSingleStep(0.5)
             sp_ran.setValue(float(self._adv["ransac_thresh"]))
             fr.addRow("RANSAC threshold (px):", sp_ran)
+            sp_ovl = QSpinBox(); sp_ovl.setRange(8, 512); sp_ovl.setSingleStep(8)
+            sp_ovl.setValue(int(self._adv["min_overlap_px"]))
+            fr.addRow("Min overlap for refine (px):", sp_ovl)
             v.addWidget(gb_reg)
+
+            # seam / local warp
+            gb_seam = QGroupBox("Seam / local warp")
+            fs = QFormLayout(gb_seam)
+            sp_lwms = QDoubleSpinBox(); sp_lwms.setRange(0.0, 5.0); sp_lwms.setSingleStep(0.1)
+            sp_lwms.setValue(float(self._adv["local_warp_min_shift"]))
+            fs.addRow("Local-warp min shift (px):", sp_lwms)
+            v.addWidget(gb_seam)
 
             # blending
             gb_bl = QGroupBox("Blending")
@@ -1466,6 +1489,17 @@ if _HAVE_QT:
             sp_bands.setValue(int(self._adv["multiband_bands"]))
             fb.addRow("Multiband bands:", sp_bands)
             v.addWidget(gb_bl)
+
+            # danger zone
+            gb_danger = QGroupBox("Don't touch unless you know what you're doing")
+            fd = QFormLayout(gb_danger)
+            sp_ap = QSpinBox(); sp_ap.setRange(16, 256); sp_ap.setSingleStep(8)
+            sp_ap.setValue(int(self._adv["ap_size"]))
+            fd.addRow("Seam-warp patch size (px):", sp_ap)
+            chk_qseam = QCheckBox("Quality-weighted seam (sharper tile wins)")
+            chk_qseam.setChecked(bool(self._adv["quality_weighted_seam"]))
+            fd.addRow(chk_qseam)
+            v.addWidget(gb_danger)
 
             bb = QDialogButtonBox(
                 QDialogButtonBox.StandardButton.Ok
@@ -1482,9 +1516,15 @@ if _HAVE_QT:
                     sp.setValue(float(dg[i]) if i < len(dg) else 1.0)
                 _update_layer_rows()
                 sp_orb.setValue(d.orb_features)
+                sp_fmax.setValue(d.feature_max_dim)
+                sp_lowe.setValue(d.lowe_ratio)
                 sp_inl.setValue(d.min_inliers)
                 sp_ran.setValue(d.ransac_thresh)
+                sp_ovl.setValue(d.min_overlap_px)
+                sp_lwms.setValue(d.local_warp_min_shift)
                 sp_bands.setValue(d.multiband_bands)
+                sp_ap.setValue(d.ap_size)
+                chk_qseam.setChecked(d.quality_weighted_seam)
 
             bb.accepted.connect(dlg.accept)
             bb.rejected.connect(dlg.reject)
@@ -1497,9 +1537,15 @@ if _HAVE_QT:
                     "match_msd_layers": n,
                     "match_msd_gains": tuple(float(gain_spins[i].value()) for i in range(n)),
                     "orb_features": sp_orb.value(),
+                    "feature_max_dim": sp_fmax.value(),
+                    "lowe_ratio": sp_lowe.value(),
                     "min_inliers": sp_inl.value(),
                     "ransac_thresh": sp_ran.value(),
+                    "min_overlap_px": sp_ovl.value(),
+                    "local_warp_min_shift": sp_lwms.value(),
                     "multiband_bands": sp_bands.value(),
+                    "ap_size": sp_ap.value(),
+                    "quality_weighted_seam": chk_qseam.isChecked(),
                 })
 
         # ---- run ----
