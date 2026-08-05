@@ -56,20 +56,6 @@ from setiastro.saspro.ser_stacker import (
 )
 
 
-def _mono01(img: np.ndarray) -> np.ndarray:
-    """
-    Mono float32 [0..1], safe for (H,W), (H,W,1) and (H,W,3+) inputs.
-
-    The shared _to_mono01 treats any 3-D array as 3-channel and indexes
-    [...,1]/[...,2], which raises on a single-channel (H,W,1) frame — the shape
-    the mono compose path produces. Squeeze a lone channel; otherwise defer to
-    _to_mono01.
-    """
-    if img.ndim == 3 and img.shape[2] == 1:
-        return np.asarray(img[..., 0], dtype=np.float32)
-    return _to_mono01(img)
-
-
 # ===========================================================================
 # Config
 # ===========================================================================
@@ -82,6 +68,15 @@ class SurfaceMosaicConfig:
     ransac_thresh: float = 3.0       # px, in feature-detection scale
     min_inliers: int = 12            # below this, the pair is considered non-overlapping
     min_overlap_px: int = 48         # minimum overlap side length for phase-corr refine
+    # matching-only enhancement so soft/unsharpened stacks still register (never
+    # touches output pixels — the mosaic is always composited from originals).
+    # Reuses SASpro multiscale decomposition: boost a mid-scale detail band that
+    # sits above the per-pixel noise (layer 1 is often pure noise on soft data).
+    enhance_matching: bool = True
+    match_msd_layers: int = 4        # decomposition depth for the match proxy
+    # per-layer boost gains (layer 1 = finest .. layer N). Layers 2 & 3 (~2px/4px
+    # structure) default to 6; layer 1 (noise) and 4 (coarse) left at 1.
+    match_msd_gains: Tuple[float, ...] = (1.0, 6.0, 6.0, 1.0)
 
     # --- pairwise refine ---
     refine_rotation: bool = True     # estimate per-pair rotation via Fourier-Mellin
@@ -131,6 +126,9 @@ class Tile:
     # cached feature detections (filled lazily)
     _kps: Optional[list] = field(default=None, repr=False)
     _des: Optional[np.ndarray] = field(default=None, repr=False)
+    # cached sharpened mono used for ALL alignment measurement (matching, subpixel
+    # refine, local seam warp) — output is always composited from `image`
+    _match: Optional[np.ndarray] = field(default=None, repr=False)
 
     @property
     def h(self) -> int:
@@ -333,19 +331,18 @@ def push_mosaic_to_view(mosaic: np.ndarray, title: str = "Surface Mosaic", doc_m
 # ===========================================================================
 # Stage 2 — Overlap graph (ORB + RANSAC).  NEW work.
 # ===========================================================================
-def _feature_mono_u8(img01: np.ndarray, max_dim: int) -> Tuple[np.ndarray, float]:
+def _feature_mono_u8(mono01: np.ndarray, max_dim: int) -> Tuple[np.ndarray, float]:
     """
-    Contrast-normalised uint8 mono for ORB, downscaled to <= max_dim.
-    Returns (u8_image, scale) where full_res_coord = kp_coord / scale.
+    Contrast-normalised uint8 for ORB from an already-mono (already-sharpened)
+    image, downscaled to <= max_dim. Returns (u8, scale); full_res = kp / scale.
     """
-    m = _to_mono01(img01).astype(np.float32, copy=False)
+    m = np.asarray(mono01, dtype=np.float32)
     H, W = m.shape[:2]
     scale = 1.0
     if max(H, W) > max_dim and cv2 is not None:
         scale = max_dim / float(max(H, W))
         m = cv2.resize(m, (max(2, int(W * scale)), max(2, int(H * scale))),
                        interpolation=cv2.INTER_AREA)
-    # robust min/max stretch so ORB sees consistent contrast across tiles
     lo, hi = np.percentile(m, (1.0, 99.5))
     if hi <= lo:
         hi = lo + 1e-3
@@ -353,10 +350,70 @@ def _feature_mono_u8(img01: np.ndarray, max_dim: int) -> Tuple[np.ndarray, float
     return (u8 * 255.0).astype(np.uint8), scale
 
 
+_MSD_FUNCS = None
+
+
+def _get_msd_funcs():
+    """Lazy import of SASpro's multiscale decomposition (pulls Qt/resources, so
+    only load it when matching enhancement is actually used)."""
+    global _MSD_FUNCS
+    if _MSD_FUNCS is None:
+        try:
+            from setiastro.saspro.multiscale_decomp import (
+                multiscale_decompose, multiscale_reconstruct)
+            _MSD_FUNCS = (multiscale_decompose, multiscale_reconstruct)
+        except Exception:
+            _MSD_FUNCS = (None, None)
+    return _MSD_FUNCS
+
+
+def _enhance_mono_for_features(m01: np.ndarray, cfg: SurfaceMosaicConfig) -> np.ndarray:
+    """
+    Boost a mid-scale detail band of the MATCHING proxy so soft / unsharpened
+    stacks yield ORB features. Reuses SASpro's multiscale decomposition to isolate
+    structure at a chosen scale (layer 3 ~ 4px radius, above the per-pixel noise
+    that dominates layer 1 on soft data) and amplify it, then reconstruct. Unlike
+    a local-contrast stretch, this pulls out structure that isn't already visible
+    as contrast. Matching-only — the mosaic is always composited from the
+    original pixels — so it can be aggressive without affecting output fidelity.
+    """
+    if not getattr(cfg, "enhance_matching", True):
+        return m01
+    decompose, reconstruct = _get_msd_funcs()
+    if decompose is None:
+        return m01
+    layers = max(2, int(cfg.match_msd_layers))
+    gains = list(cfg.match_msd_gains)
+    try:
+        details, residual = decompose(m01.astype(np.float32, copy=False), layers, 1.0)
+        for i in range(len(details)):
+            g = float(gains[i]) if i < len(gains) else 1.0
+            if abs(g - 1.0) > 1e-6:
+                details[i] = details[i] * g
+        out = reconstruct(details, residual)
+        return np.clip(out, 0.0, 1.0).astype(np.float32)
+    except Exception:
+        return m01
+
+
+def _match_mono(tile: Tile, cfg: SurfaceMosaicConfig) -> np.ndarray:
+    """
+    Full-res sharpened mono used for EVERY alignment measurement — coarse ORB,
+    subpixel refine, and the local seam-warp dense field. Computed once and
+    cached. The mosaic is never built from this; output always comes from the
+    original tile.image. With enhance_matching off this is just the plain mono,
+    so behaviour reduces to measuring on the originals.
+    """
+    if tile._match is None:
+        m = _to_mono01(tile.image).astype(np.float32, copy=False)
+        tile._match = _enhance_mono_for_features(m, cfg)
+    return tile._match
+
+
 def _ensure_features(tile: Tile, cfg: SurfaceMosaicConfig) -> None:
     if tile._des is not None or cv2 is None:
         return
-    u8, scale = _feature_mono_u8(tile.image, cfg.feature_max_dim)
+    u8, scale = _feature_mono_u8(_match_mono(tile, cfg), cfg.feature_max_dim)
     orb = cv2.ORB_create(nfeatures=int(cfg.orb_features))
     kps, des = orb.detectAndCompute(u8, None)
     # scale keypoints back to full-res tile coordinates
@@ -454,8 +511,8 @@ def _refine_pair(ti: Tile, tj: Tile, coarse: PairMatch, cfg: SurfaceMosaicConfig
     if abs(coarse.dtheta) > 3.0:
         return coarse
 
-    mi = _to_mono01(ti.image).astype(np.float32, copy=False)
-    mj = _to_mono01(tj.image).astype(np.float32, copy=False)
+    mi = _match_mono(ti, cfg)
+    mj = _match_mono(tj, cfg)
 
     rdx, rdy = int(round(coarse.dx)), int(round(coarse.dy))
     box = _integer_overlap(ti.w, ti.h, tj.w, tj.h, rdx, rdy)
@@ -797,25 +854,28 @@ def _feather_weights(mask: np.ndarray) -> np.ndarray:
     return dt.astype(np.float32)
 
 
-def _apply_local_warp(ref_canvas_mono: np.ndarray, warped_tile: np.ndarray,
-                      valid: np.ndarray, cfg: SurfaceMosaicConfig) -> np.ndarray:
+def _measure_local_field(ref_canvas_mono: np.ndarray, cur_mono: np.ndarray,
+                         valid: np.ndarray, cfg: SurfaceMosaicConfig):
     """
-    Non-rigid seam correction: place APs in the tile's valid region, measure
-    per-AP phase shifts against the already-composited neighbours, and warp the
-    tile by the resulting dense field. Reuses the stacker's AP machinery.
+    Measure the non-rigid seam-correction dense field for a tile against the
+    already-composited neighbours. Runs on the SHARPENED match images (ref and
+    cur are both sharpened monos) so the AP phase correlation can lock onto
+    structure even on soft data; the caller applies the returned field to the
+    ORIGINAL pixels. Returns (dxf, dyf), or (None, None) if no correction is
+    warranted.
     """
     if not cfg.local_warp or cv2 is None:
-        return warped_tile
-    cur_m = _mono01(warped_tile).astype(np.float32, copy=False)
+        return None, None
+    cur_m = np.asarray(cur_mono, dtype=np.float32)
     # only correct where THIS tile and the existing mosaic both have data
     both = (valid > 0) & (ref_canvas_mono > 1e-6)
     if both.mean() < 0.02:
-        return warped_tile
+        return None, None
 
     ap_centers = _autoplace_aps(np.where(both, cur_m, 0.0),
                                 cfg.ap_size, cfg.ap_spacing, cfg.ap_min_mean)
     if ap_centers is None or len(ap_centers) < 4:
-        return warped_tile
+        return None, None
 
     ap_dx, ap_dy, ap_resp = _ap_phase_shifts_per_ap(
         ref_canvas_mono, cur_m, ap_centers=ap_centers,
@@ -823,14 +883,14 @@ def _apply_local_warp(ref_canvas_mono: np.ndarray, warped_tile: np.ndarray,
     )
     keep = _reject_ap_outliers(ap_dx, ap_dy, np.clip(ap_resp, 0.0, 1.0), z=3.5)
     if not np.any(keep):
-        return warped_tile
+        return None, None
 
     # Guard 1 — already well placed: on flat overlap the per-AP shifts are just
     # a broad correlation peak wobbling sub-pixel. If the tile is essentially
     # where it belongs, skip the field entirely instead of baking in that noise.
     mag = np.hypot(ap_dx[keep], ap_dy[keep])
     if float(np.median(mag)) < float(cfg.local_warp_min_shift):
-        return warped_tile
+        return None, None
 
     dxf, dyf = _dense_field_from_ap_shifts(
         cur_m.shape[0], cur_m.shape[1],
@@ -841,15 +901,11 @@ def _apply_local_warp(ref_canvas_mono: np.ndarray, warped_tile: np.ndarray,
 
     # Guard 2 — confine to the overlap: feather the field to zero at the overlap
     # boundary so a tile's non-overlap pixels are never displaced by the dense
-    # field extrapolating outward. Distance transform is 0 at the overlap edge
-    # and ramps to 1 over ~ap_size px inside; it is exactly 0 outside the overlap.
+    # field extrapolating outward.
     falloff = max(1.0, float(cfg.ap_size))
     dt = cv2.distanceTransform(both.astype(np.uint8), cv2.DIST_L2, 3)
     feather = np.clip(dt / falloff, 0.0, 1.0).astype(np.float32)
-    dxf = dxf * feather
-    dyf = dyf * feather
-
-    return _warp_by_dense_field(warped_tile, dxf, dyf)
+    return dxf * feather, dyf * feather
 
 
 def _fill_nodata(img: np.ndarray, valid: np.ndarray, iters: int = 5, sigma: float = 8.0) -> np.ndarray:
@@ -885,7 +941,10 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
     MB_SCALE = 8000.0   # float[0..1] -> int16 range for the blender (keeps headroom)
 
     coverage = np.zeros((ch, cw), dtype=np.float32)
-    running_mono = np.zeros((ch, cw), dtype=np.float32)  # for local-warp reference
+    # local-warp reference is the SHARPENED match canvas — so seam correction
+    # measures against structure the AP phase-corr can lock onto, then the same
+    # field is applied to the original pixels below.
+    running_match = np.zeros((ch, cw), dtype=np.float32)
 
     if use_mb:
         # multiband needs global ownership, so collect tiles and blend after the loop
@@ -915,15 +974,25 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
         ones = np.ones((t.h, t.w), dtype=np.float32)
         valid = cv2.warpAffine(ones, M, (cw, ch), flags=cv2.INTER_NEAREST,
                                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+        # sharpened match copy warped by the SAME pose — used only to measure the
+        # local seam field, never composited into the output
+        match_warped = cv2.warpAffine(_match_mono(t, cfg) * float(t.gain), M, (cw, ch),
+                                      flags=cv2.INTER_LINEAR,
+                                      borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
 
         if warped.ndim == 2:
             warped = warped[:, :, None]
 
-        # local (non-rigid) seam correction against what's already down
+        # local (non-rigid) seam correction: MEASURE on the sharpened match canvas,
+        # APPLY the identical field to the original pixels (no shortcuts — the
+        # originals ride through the exact same geometry as the sharpened ones).
         if step > 0:
-            warped = _apply_local_warp(running_mono, warped, valid, cfg)
-            if warped.ndim == 2:   # cv2.remap squeezes (H,W,1) -> (H,W); restore it
-                warped = warped[:, :, None]
+            dxf, dyf = _measure_local_field(running_match, match_warped, valid, cfg)
+            if dxf is not None:
+                warped = _warp_by_dense_field(warped, dxf, dyf)
+                if warped.ndim == 2:   # cv2.remap squeezes (H,W,1) -> (H,W)
+                    warped = warped[:, :, None]
+                match_warped = _warp_by_dense_field(match_warped, dxf, dyf)
 
         # blend weight: hard for "none", distance-transform feather otherwise,
         # optionally scaled by tile quality so the sharper panel wins the seam.
@@ -943,11 +1012,10 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
             wsum += wtc
 
         coverage += (valid > 0).astype(np.float32)
-        # update running mono reference
-        contrib = _mono01(warped).astype(np.float32, copy=False)
-        running_mono = np.where(valid > 0,
-                                np.maximum(running_mono, contrib),
-                                running_mono)
+        # update the SHARPENED running reference for the next tile's measurement
+        running_match = np.where(valid > 0,
+                                 np.maximum(running_match, match_warped),
+                                 running_match)
 
     if use_mb:
         # Hard ownership: each pixel goes to the single valid tile with the
@@ -1030,6 +1098,7 @@ try:
     from PyQt6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
         QPushButton, QLabel, QProgressBar, QCheckBox, QComboBox, QMessageBox,
+        QDialog, QFormLayout, QSpinBox, QDoubleSpinBox, QDialogButtonBox, QGroupBox,
     )
     _HAVE_QT = True
 except Exception:  # pragma: no cover
@@ -1195,6 +1264,18 @@ if _HAVE_QT:
             self._worker: Optional[SurfaceMosaicWorker] = None
             self._views: List[Tuple[str, Any]] = []
 
+            # advanced params (edited via the Advanced dialog), seeded from defaults
+            _d = SurfaceMosaicConfig()
+            self._adv = {
+                "enhance_matching": _d.enhance_matching,
+                "match_msd_layers": _d.match_msd_layers,
+                "match_msd_gains": tuple(_d.match_msd_gains),
+                "orb_features": _d.orb_features,
+                "min_inliers": _d.min_inliers,
+                "ransac_thresh": _d.ransac_thresh,
+                "multiband_bands": _d.multiband_bands,
+            }
+
             outer = QVBoxLayout(self)
             cols = QHBoxLayout()
 
@@ -1245,6 +1326,9 @@ if _HAVE_QT:
             left.addWidget(self.status)
 
             run_row = QHBoxLayout()
+            self.btn_advanced = QPushButton("Advanced…")
+            self.btn_advanced.clicked.connect(self._open_advanced)
+            run_row.addWidget(self.btn_advanced)
             run_row.addStretch(1)
             self.btn_run = QPushButton("Build Mosaic")
             self.btn_run.clicked.connect(self._on_run)
@@ -1319,7 +1403,104 @@ if _HAVE_QT:
             cfg.photometric = self.chk_photo.isChecked()
             cfg.local_warp = self.chk_localwarp.isChecked()
             cfg.blend = self.cmb_blend.currentData() or "feather"
+            for k, v in self._adv.items():        # advanced overrides
+                setattr(cfg, k, v)
             return cfg
+
+        # ---- advanced parameters ----
+        def _open_advanced(self):
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Advanced — Surface Mosaic")
+            v = QVBoxLayout(dlg)
+
+            # matching enhancement (the soft-data fix)
+            _MAXL = 8
+            gb_match = QGroupBox("Matching enhancement (soft / unsharpened stacks)")
+            fm = QFormLayout(gb_match)
+            chk_enh = QCheckBox("Enable structure boost for matching")
+            chk_enh.setChecked(bool(self._adv["enhance_matching"]))
+            fm.addRow(chk_enh)
+            sp_layers = QSpinBox(); sp_layers.setRange(2, _MAXL)
+            sp_layers.setValue(int(self._adv["match_msd_layers"]))
+            fm.addRow("Decomposition layers:", sp_layers)
+
+            gains0 = list(self._adv["match_msd_gains"])
+            gain_spins = []
+            for i in range(_MAXL):
+                sp = QDoubleSpinBox(); sp.setRange(0.0, 30.0); sp.setSingleStep(0.5)
+                sp.setValue(float(gains0[i]) if i < len(gains0) else 1.0)
+                fm.addRow(f"Layer {i + 1} gain ({2 ** i}px):", sp)
+                gain_spins.append(sp)
+
+            def _update_layer_rows():
+                n = sp_layers.value()
+                for i, sp in enumerate(gain_spins):
+                    vis = (i < n)
+                    sp.setVisible(vis)
+                    lab = fm.labelForField(sp)
+                    if lab is not None:
+                        lab.setVisible(vis)
+
+            sp_layers.valueChanged.connect(lambda _=0: _update_layer_rows())
+            _update_layer_rows()
+            v.addWidget(gb_match)
+
+            # matching robustness
+            gb_reg = QGroupBox("Registration")
+            fr = QFormLayout(gb_reg)
+            sp_orb = QSpinBox(); sp_orb.setRange(500, 20000); sp_orb.setSingleStep(500)
+            sp_orb.setValue(int(self._adv["orb_features"]))
+            fr.addRow("ORB features:", sp_orb)
+            sp_inl = QSpinBox(); sp_inl.setRange(4, 200)
+            sp_inl.setValue(int(self._adv["min_inliers"]))
+            fr.addRow("Min inliers:", sp_inl)
+            sp_ran = QDoubleSpinBox(); sp_ran.setRange(0.5, 10.0); sp_ran.setSingleStep(0.5)
+            sp_ran.setValue(float(self._adv["ransac_thresh"]))
+            fr.addRow("RANSAC threshold (px):", sp_ran)
+            v.addWidget(gb_reg)
+
+            # blending
+            gb_bl = QGroupBox("Blending")
+            fb = QFormLayout(gb_bl)
+            sp_bands = QSpinBox(); sp_bands.setRange(1, 10)
+            sp_bands.setValue(int(self._adv["multiband_bands"]))
+            fb.addRow("Multiband bands:", sp_bands)
+            v.addWidget(gb_bl)
+
+            bb = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok
+                | QDialogButtonBox.StandardButton.RestoreDefaults
+                | QDialogButtonBox.StandardButton.Cancel)
+            v.addWidget(bb)
+
+            def _restore():
+                d = SurfaceMosaicConfig()
+                chk_enh.setChecked(d.enhance_matching)
+                sp_layers.setValue(d.match_msd_layers)
+                dg = list(d.match_msd_gains)
+                for i, sp in enumerate(gain_spins):
+                    sp.setValue(float(dg[i]) if i < len(dg) else 1.0)
+                _update_layer_rows()
+                sp_orb.setValue(d.orb_features)
+                sp_inl.setValue(d.min_inliers)
+                sp_ran.setValue(d.ransac_thresh)
+                sp_bands.setValue(d.multiband_bands)
+
+            bb.accepted.connect(dlg.accept)
+            bb.rejected.connect(dlg.reject)
+            bb.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(_restore)
+
+            if dlg.exec():
+                n = sp_layers.value()
+                self._adv.update({
+                    "enhance_matching": chk_enh.isChecked(),
+                    "match_msd_layers": n,
+                    "match_msd_gains": tuple(float(gain_spins[i].value()) for i in range(n)),
+                    "orb_features": sp_orb.value(),
+                    "min_inliers": sp_inl.value(),
+                    "ransac_thresh": sp_ran.value(),
+                    "multiband_bands": sp_bands.value(),
+                })
 
         # ---- run ----
         def _on_run(self):

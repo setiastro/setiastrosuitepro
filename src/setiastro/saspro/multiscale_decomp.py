@@ -1,4 +1,4 @@
-# pro/multiscale_decomp.py
+# src/setiastro/saspro/multiscale_decomp.py
 from __future__ import annotations
 import numpy as np
 import cv2
