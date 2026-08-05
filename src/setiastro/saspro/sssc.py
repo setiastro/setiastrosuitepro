@@ -1,5 +1,5 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# sssc.py  —  Spectrophotometric Standard Star Calibration
+# src/setiastro/saspro/sssc.py  —  Spectrophotometric Standard Star Calibration
 # SetiAstro Suite Pro  ·  Franklin Marek  ·  www.setiastro.com
 #
 # ┌─────────────────────────────────────────────────────────────────────────┐
@@ -1799,6 +1799,15 @@ class SSSCDialog(QDialog):
     def _build_ui(self):
         # ── Shared style helpers ──────────────────────────────────────────────
         # Step action buttons: large, bold, colored so they read as primary actions
+        PLATESOLVE_STYLE = """
+            QPushButton {
+                background: #1a3a5a; color: #cfe6ff;
+                border: 1px solid #2a6bb0; border-radius: 4px;
+                padding: 5px 14px; font-weight: bold; font-size: 12px;
+            }
+            QPushButton:hover  { background: #1f4a72; border-color: #3a86d0; }
+            QPushButton:pressed { background: #142a42; }
+        """        
         STEP1_STYLE = """
             QPushButton {
                 background: #1a6b5a;
@@ -1911,7 +1920,14 @@ class SSSCDialog(QDialog):
         # ── Row 1: Step 1 + White Reference ──────────────────────────────────
         row1 = QHBoxLayout()
         row1.setSpacing(8)
- 
+        self.solve_btn = QPushButton("🎯  Step 0: Plate Solve")
+        self.solve_btn.setStyleSheet(PLATESOLVE_STYLE)
+        self.solve_btn.setMinimumHeight(30)
+        self.solve_btn.setToolTip(
+            "Plate-solve the active image (writes a WCS) so Step 1 can map stars to sky coordinates.")
+        self.solve_btn.clicked.connect(self.run_plate_solver)
+        row1.addWidget(self.solve_btn)
+        row1.addWidget(vsep())
         self.fetch_btn = QPushButton("⭐  Step 1: Fetch Stars && Spectra")
         self.fetch_btn.setStyleSheet(STEP1_STYLE)
         self.fetch_btn.setMinimumHeight(30)
@@ -2437,6 +2453,37 @@ class SSSCDialog(QDialog):
                                             remove_pedestal=remove_pedestal)
 
     # ── Step 1: Fetch Stars ───────────────────────────────────────────────────
+    def run_plate_solver(self, announce: bool = True) -> bool:
+        """Step 0: plate-solve the active document in place so Step 1 has a WCS."""
+        from setiastro.saspro.plate_solver import plate_solve_doc_inplace
+
+        doc = self.doc_manager.get_active_document()
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.warning(self, "No Image",
+                "Open an image and make it the active view first.")
+            return False
+
+        try:
+            ok, res = plate_solve_doc_inplace(self.main_win or self, doc, QSettings())
+        except Exception as e:
+            QMessageBox.critical(self, "Plate Solve Error", str(e))
+            return False
+
+        if not ok:
+            QMessageBox.critical(self, "Plate Solve Failed", str(res))
+            return False
+
+        # Refresh SSSC's cached image/header/WCS from the freshly-solved doc.
+        img, hdr, _meta = self._get_active_image_and_header()
+        self.current_image  = img
+        self.current_header = hdr
+        self.initialize_wcs_from_header(hdr)
+
+        if announce:
+            QMessageBox.information(self, "Plate Solve",
+                "Solved. You can now run Step 1: Fetch Stars & Spectra.")
+        return True
+
 
     def fetch_stars(self):
         from astropy.coordinates import SkyCoord
@@ -2448,10 +2495,23 @@ class SSSCDialog(QDialog):
         self.current_image  = img
         self.current_header = hdr
 
-        if self.current_header is None or self.current_image is None:
-            QMessageBox.warning(self, "No Plate Solution",
-                "Please plate-solve the active document first.")
+        if self.current_image is None:
+            QMessageBox.warning(self, "No Image",
+                "Open an image and make it the active view first.")
             return
+
+        if self.current_header is None:
+            resp = QMessageBox.question(
+                self, "No Plate Solution",
+                "This image isn't plate-solved yet. Run the plate solver now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if resp != QMessageBox.StandardButton.Yes:
+                return
+            if not self.run_plate_solver(announce=False):
+                return
+            # current_image / current_header refreshed inside run_plate_solver
 
         try:
             self.initialize_wcs_from_header(self.current_header)
