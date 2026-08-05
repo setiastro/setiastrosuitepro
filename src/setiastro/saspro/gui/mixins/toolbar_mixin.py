@@ -30,7 +30,7 @@ from setiastro.saspro.resources import (
     rotate180_path, maskcreate_path, maskapply_path, maskremove_path, histogram_transform_path,
     pixelmath_path, histogram_path, mosaic_path, rescale_path, staralign_path,
     platesolve_path, psf_path, supernova_path, starregistration_path, csv_icon_path, collage_path,
-    stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,gaia_path,
+    stacking_path, pedestal_icon_path, starspike_path, astrospike_path, dithericon_path,gaia_path,surfacemosaic_path,
     signature_icon_path, livestacking_path, convoicon_path, spcc_icon_path, atlas_path,flythrough_path, unwarp_path,
     exoicon_path, peeker_icon, dse_icon_path, isophote_path, statstretch_path,resizecanvas_path,nbextract_icon,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path, narrowbandnormalization_path,
@@ -331,6 +331,7 @@ class ToolbarMixin:
         tb_star.addAction(self.act_star_register)
         tb_star.addAction(self.act_rgb_align)
         tb_star.addAction(self.act_mosaic_master)
+        tb_star.addAction(self.act_surface_mosaic)
         tb_star.addAction(self.act_supernova_hunter)
         tb_star.addAction(self.act_star_spikes)
         tb_star.addAction(self.act_astrospike)
@@ -1428,6 +1429,11 @@ class ToolbarMixin:
         self.act_mosaic_master.setStatusTip(self.tr("Build mosaics from overlapping frames"))
         self.act_mosaic_master.triggered.connect(self._open_mosaic_master)
 
+        self.act_surface_mosaic = QAction(QIcon(surfacemosaic_path), self.tr("Surface Mosaic..."), self)
+        self.act_surface_mosaic.setIconVisibleInMenu(True)
+        self.act_surface_mosaic.setStatusTip(self.tr("Build lunar/solar/planetary surface mosaics from overlapping panels"))
+        self.act_surface_mosaic.triggered.connect(self._open_surface_mosaic)
+
         self.act_supernova_hunter = QAction(QIcon(supernova_path), self.tr("Supernova / Asteroid Hunter..."), self)
         self.act_supernova_hunter.setIconVisibleInMenu(True)
         self.act_supernova_hunter.setStatusTip(self.tr("Find transients/anomalies across frames"))
@@ -1697,6 +1703,7 @@ class ToolbarMixin:
         reg("star_register", self.act_star_register)
         reg("slap", self.act_slap_toolkit)
         reg("mosaic_master", self.act_mosaic_master)
+        reg("surface_mosaic", self.act_surface_mosaic)
         reg("image_peeker", self.act_image_peeker)
         reg("live_stacking", self.act_live_stacking)
         reg("stacking_suite", self.act_stacking_suite)

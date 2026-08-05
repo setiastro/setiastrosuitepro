@@ -264,6 +264,7 @@ class MenuMixin:
         m_star.addAction(self.act_star_spikes)
         m_star.addAction(self.act_stacking_suite)
         m_star.addAction(self.act_supernova_hunter)
+        m_star.addAction(self.act_surface_mosaic)
         m_star.addAction(self.act_unwarp)
 
         m_masks = mb.addMenu(self.tr("&Masks"))

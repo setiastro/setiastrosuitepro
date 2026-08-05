@@ -204,11 +204,36 @@ class ViewMixin:
                 pass
 
     def _zoom_active_1_1(self):
-        """Zoom active view to 100% (1:1 pixel scale)."""
+        """Zoom active view to 100% (1:1), keeping the current viewport centre stable."""
         sw = self.mdi.activeSubWindow()
         if not sw:
             return
         view = sw.widget()
+
+        # Manual zoom -> we are no longer in a "perfect fit" state
+        try:
+            self.act_zoom_fit.setChecked(False)
+        except Exception:
+            pass
+
+        # Prefer centre-anchored absolute zoom so Cmd/Ctrl+1 does not jump to top-left
+        if hasattr(view, "_zoom_to_scale") and callable(view._zoom_to_scale):
+            try:
+                view._zoom_to_scale(1.0)  # defaults to viewport centre
+                return
+            except Exception:
+                pass
+
+        # Fallback: relative zoom at centre via the interactive zoom path
+        if hasattr(view, "_zoom_at_anchor") and callable(view._zoom_at_anchor):
+            try:
+                cur = float(getattr(view, "scale", 1.0))
+                if abs(cur - 1.0) >= 1e-9:
+                    view._zoom_at_anchor(1.0 / max(cur, 1e-12))
+                return
+            except Exception:
+                pass
+
         if hasattr(view, "set_scale") and callable(view.set_scale):
             try:
                 view.set_scale(1.0)
@@ -221,8 +246,17 @@ class ViewMixin:
         if not sw:
             return
         view = sw.widget()
-        self._zoom_active_1_1()
-        
+
+        # Bring the label pixmap to native size first so _infer_image_size
+        # (which prefers the scaled pixmap) reports true image dimensions.
+        # Do not go through _zoom_active_1_1 — that preserves centre and is
+        # the wrong prelude for a subsequent fit-and-recenter.
+        if hasattr(view, "set_scale") and callable(view.set_scale):
+            try:
+                view.set_scale(1.0)
+            except Exception:
+                pass
+
         # Get sizes
         img_w, img_h = self._infer_image_size(view)
         if not img_w or not img_h:

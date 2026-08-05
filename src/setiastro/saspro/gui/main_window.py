@@ -182,7 +182,7 @@ from setiastro.saspro.resources import (
     dse_icon_path, astrobin_filters_csv_path, isophote_path, statstretch_path,
     starstretch_path, curves_path, disk_path, uhs_path, blink_path, ppp_path,gaia_path, unwarp_path,
     nbtorgb_path, freqsep_path, contsub_path, halo_path, cosmic_path,dithericon_path,flythrough_path,
-    satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,
+    satellite_path, imagecombine_path, wrench_path, eye_icon_path,multiscale_decomp_path, nbi_path,surfacemosaic_path,
     disk_icon_path, nuke_path, hubble_path, collage_path, annotated_path, atlas_path, slap_path, satchroma_path, fx_path,
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
@@ -5015,6 +5015,18 @@ class AstroSuiteProMainWindow(
         dlg.setWindowIcon(QIcon(mosaic_path))
         dlg.show()
 
+    def _open_surface_mosaic(self):
+        from setiastro.saspro.surface_mosaic import SurfaceMosaicDialog
+        w = SurfaceMosaicDialog(doc_manager=self.docman, parent=self)
+        w.setWindowFlag(Qt.WindowType.Window, True)
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        w.setWindowTitle("Surface Mosaic")
+        try:
+            w.setWindowIcon(QIcon(surfacemosaic_path))
+        except Exception:
+            pass
+        w.show()
+        
     def _open_live_stacking(self):
         from setiastro.saspro.live_stacking import LiveStackWindow
         dlg = LiveStackWindow(
