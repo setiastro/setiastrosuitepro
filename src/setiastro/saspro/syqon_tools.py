@@ -152,6 +152,25 @@ class SyQonToolsDialog(QDialog):
         self.cmb_family.currentIndexChanged.connect(self._maybe_embed_starless)
         self._sync_page()
         self._maybe_embed_starless()
+
+        # ── follow the active view (same idiom as Statistical Stretch) ─────
+        # Re-point the visible tool at the newly-active document on a view
+        # switch instead of forcing a close/reopen. Released on close so it
+        # never keeps firing after the dialog is gone.
+        self._follow_conn = None
+        _main = self.parent()
+        if _main is not None and hasattr(_main, "currentDocumentChanged"):
+            try:
+                _main.currentDocumentChanged.connect(self._on_active_doc_changed)
+                self._follow_conn = True
+            except Exception:
+                self._follow_conn = None
+        # reject()/accept()/Esc emit finished; the window-X path goes through
+        # closeEvent — both route to the same idempotent release.
+        try:
+            self.finished.connect(lambda *_: self._release_active_view_hook())
+        except Exception:
+            pass
         
     def _maybe_embed_starless(self, *_):
         if self.cmb_family.currentData() != "starless":
@@ -198,7 +217,52 @@ class SyQonToolsDialog(QDialog):
         else:
             self.page_sharpen.process_document(doc, self.parent())
 
+    def _on_active_doc_changed(self, doc=None):
+        # Active view changed — re-point the currently visible tool page.
+        if doc is None or getattr(doc, "image", None) is None:
+            try:
+                doc = self.get_active_doc()
+            except Exception:
+                doc = None
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+
+        current = self.stack.currentWidget()
+
+        # Starless embeds a live dialog bound to a specific doc — rebuild it
+        # against the new doc, but only while it's the visible page, already
+        # embedded, and the doc actually changed (so a spurious re-activation
+        # of the same view doesn't wipe in-progress settings).
+        if current is self.page_starless:
+            emb = getattr(self.page_starless, "_embedded_dlg", None)
+            if emb is not None and getattr(emb, "doc", None) is not doc:
+                try:
+                    self.page_starless.ensure_embedded(self.parent(), doc)
+                except Exception:
+                    pass
+            return
+
+        # Denoise / Sharpen re-fetch the active doc at Process time; nothing to
+        # rebuild, just keep any cached reference current for live preview.
+        if hasattr(current, "doc"):
+            try:
+                current.doc = doc
+            except Exception:
+                pass
+
+    def _release_active_view_hook(self):
+        # Idempotent — safe to call from both `finished` and closeEvent.
+        if getattr(self, "_follow_conn", None):
+            try:
+                _main = self.parent()
+                if _main is not None and hasattr(_main, "currentDocumentChanged"):
+                    _main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+            except Exception:
+                pass
+            self._follow_conn = None
+
     def closeEvent(self, ev):
+        self._release_active_view_hook()
         try:
             page = getattr(self, "page_denoise", None)
             if page is not None:
@@ -1584,10 +1648,36 @@ class _SyQonSharpenHubPage(QWidget):
  
             final = np.clip(final, 0.0, 1.0).astype(np.float32)
  
+            # mask-aware: blend only inside the doc's active mask, exactly like
+            # the Denoise/Prism paths. self.doc.image is still the pre-edit
+            # original here (apply_edit below is the first mutation).
+            orig_for_mask = np.nan_to_num(
+                np.asarray(self.doc.image).astype(np.float32, copy=False),
+                nan=0.0, posinf=0.0, neginf=0.0,
+            )
+            if self._orig_was_mono:
+                if orig_for_mask.ndim == 3:
+                    orig_for_mask = (orig_for_mask[..., 0]
+                                     if orig_for_mask.shape[2] == 1
+                                     else orig_for_mask.mean(axis=2))
+            else:
+                if orig_for_mask.ndim == 2:
+                    orig_for_mask = np.stack([orig_for_mask] * 3, axis=-1)
+                elif orig_for_mask.ndim == 3 and orig_for_mask.shape[2] == 1:
+                    orig_for_mask = np.repeat(orig_for_mask, 3, axis=2)
+                else:
+                    orig_for_mask = orig_for_mask[..., :3]
+            final = _blend_result_with_mask(
+                final, orig_for_mask.astype(np.float32, copy=False), self.doc
+            )
+
             meta = {
                 "step_name": "Parallax",
                 "bit_depth": "32-bit floating point",
                 "is_mono":   bool(self._orig_was_mono),
+                "masked":    bool(getattr(self.doc, "active_mask_id", None)),
+                "mask_id":   getattr(self.doc, "active_mask_id", None) or None,
+                "mask_blend": "m*out+(1-m)*src",
                 "replay_last": {
                     "op": "syqon_parallax",
                     "params": {
@@ -2190,10 +2280,35 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
  
         final = np.clip(final, 0.0, 1.0).astype(np.float32)
  
+        # mask-aware: blend only inside the doc's active mask, matching the
+        # Denoise/Prism paths. `src` is the captured pre-processing original.
+        orig_for_mask = np.nan_to_num(
+            np.asarray(src).astype(np.float32, copy=False),
+            nan=0.0, posinf=0.0, neginf=0.0,
+        )
+        if orig_was_mono:
+            if orig_for_mask.ndim == 3:
+                orig_for_mask = (orig_for_mask[..., 0]
+                                 if orig_for_mask.shape[2] == 1
+                                 else orig_for_mask.mean(axis=2))
+        else:
+            if orig_for_mask.ndim == 2:
+                orig_for_mask = np.stack([orig_for_mask] * 3, axis=-1)
+            elif orig_for_mask.ndim == 3 and orig_for_mask.shape[2] == 1:
+                orig_for_mask = np.repeat(orig_for_mask, 3, axis=2)
+            else:
+                orig_for_mask = orig_for_mask[..., :3]
+        final = _blend_result_with_mask(
+            final, orig_for_mask.astype(np.float32, copy=False), doc
+        )
+
         meta = {
             "step_name": "Parallax",
             "bit_depth": "32-bit floating point",
             "is_mono":   bool(orig_was_mono),
+            "masked":    bool(getattr(doc, "active_mask_id", None)),
+            "mask_id":   getattr(doc, "active_mask_id", None) or None,
+            "mask_blend": "m*out+(1-m)*src",
             "replay_last": {
                 "op": "syqon_parallax",
                 "params": {

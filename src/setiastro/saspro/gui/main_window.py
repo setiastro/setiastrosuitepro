@@ -4315,10 +4315,30 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     self._syqon_tools_dialog = None
 
+            # Resolve the ACTIVE doc live on every call — never freeze the doc
+            # that was active when the dialog opened, or SyQon can't follow a
+            # view switch. ROI-aware, matching _open_statistical_stretch.
+            def _resolve_active_doc():
+                sw2 = self.mdi.activeSubWindow()
+                if not sw2:
+                    return None
+                view2 = sw2.widget() if hasattr(sw2, "widget") else None
+                if view2 is None:
+                    return None
+                mgr = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+                try:
+                    if mgr is not None and hasattr(mgr, "get_document_for_view"):
+                        d = mgr.get_document_for_view(view2)
+                        if d is not None:
+                            return d
+                except Exception:
+                    pass
+                return getattr(view2, "document", None) or getattr(view2, "doc", None)
+
             dlg = SyQonToolsDialog(
                 self,
                 self.docman,
-                get_active_doc_callable=lambda: doc,
+                get_active_doc_callable=_resolve_active_doc,
                 icon=QIcon(syqon_path),
             )
 
