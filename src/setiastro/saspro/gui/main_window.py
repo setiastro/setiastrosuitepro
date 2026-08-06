@@ -8348,7 +8348,24 @@ class AstroSuiteProMainWindow(
             self._open_star_spikes(doc=doc, preset=payload.get("preset") or {},
                                 title_hint=getattr(target_sw, "windowTitle", lambda:"view")())
             return
-
+        if cid == "multiscale_decomp":
+            if doc is None or getattr(doc, "image", None) is None:
+                QMessageBox.information(self, "Multiscale Decomposition", "Target view has no image.")
+                return
+            try:
+                from setiastro.saspro.multiscale_decomp import apply_multiscale_decomp_headless
+                apply_multiscale_decomp_headless(self, preset or {}, doc=doc)
+                try:
+                    self._last_headless_command = {
+                        "command_id": "multiscale_decomp",
+                        "preset": dict(preset or {}),
+                    }
+                except Exception:
+                    pass
+                self._log(f"Applied Multiscale Decomposition to '{target_sw.windowTitle()}'")
+            except Exception as e:
+                QMessageBox.warning(self, "Multiscale Decomposition", f"Apply failed:\n{e}")
+            return
         # ---------- Unknown cid with a doc: try a generic _apply_{cid}_to_doc  ----------
         generic = getattr(self, f"_apply_{cid}_to_doc", None)
         if callable(generic):
