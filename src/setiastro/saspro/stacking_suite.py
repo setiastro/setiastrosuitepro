@@ -17369,9 +17369,10 @@ class StackingSuiteDialog(QDialog):
                 # satellite
                 if do_satellite:
                     try:
-                        cleaned_light_data, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
-                            light_data, is_mono=is_mono
-                        )
+                        with _GPU_LOCK:
+                            cleaned_light_data, sat_mask_2d = self._apply_satellite_removal_to_calibrated_light(
+                                light_data, is_mono=is_mono
+                            )
                         sat_mask_2d = np.asarray(sat_mask_2d, dtype=bool)
                         rejection_mask_2d = _merge_masks(rejection_mask_2d, sat_mask_2d)
                         # Keep the satellite-clipped (trail -> 0.0) frame as the calibrated
@@ -17529,7 +17530,10 @@ class StackingSuiteDialog(QDialog):
         Pipeline — producer thread loads raw lights; GPU thread runs
                     dark sub + flat div + cosmetic correction;
                     consumer thread saves results.
-        Satellite removal runs in the save thread (CPU, mask-only).
+        Satellite removal also runs on the GPU (cuDNN CNN) from the save
+        thread and rewrites the actual calibrated light; it is serialized
+        against the GPU calibration loop via _GPU_LOCK so the two large GPU
+        working sets never coexist.
         """
         from setiastro.saspro.torch_rejection import (
             calibration_pipeline_gpu,
@@ -17537,6 +17541,7 @@ class StackingSuiteDialog(QDialog):
             _upload_calibration_frame,
             _get_torch,
             _device,
+            _GPU_LOCK,
         )
         from concurrent.futures import ThreadPoolExecutor
         from queue import Queue, Empty
@@ -18176,7 +18181,10 @@ class StackingSuiteDialog(QDialog):
                     f"({count}/{total_files})"
                 )
 
-            WRITE_WORKERS = 3
+            # Satellite trail removal is a GPU cuDNN CNN running here in the
+            # save path — more than one at a time multiplies peak VRAM and OOMs
+            # a small card. Serialize saves whenever satellite is enabled.
+            WRITE_WORKERS = 1 if do_satellite else 3
             with ThreadPoolExecutor(max_workers=WRITE_WORKERS) as write_pool:
                 # drain futures in a sliding window — never hold more than
                 # WRITE_WORKERS completed futures at once
@@ -18298,16 +18306,17 @@ class StackingSuiteDialog(QDialog):
                       f"Flat: {os.path.basename(fi['master_flat_path']) if fi['master_flat_path'] else 'None'} | "
                       f"Cosmetic: {fi['apply_cosmetic']}")
                 )
-                light_data = calibration_pipeline_gpu(
-                    light_data,
-                    dark_t=dark_t,
-                    flat_t=flat_t,
-                    pedestal=fi["pedestal_value"],
-                    hot_sigma=hot_sigma,
-                    cold_sigma=cold_sigma,
-                    apply_cosmetic=fi["apply_cosmetic"],
-                    bayer_pattern=fi["bayerpat"],
-                )
+                with _GPU_LOCK:
+                    light_data = calibration_pipeline_gpu(
+                        light_data,
+                        dark_t=dark_t,
+                        flat_t=flat_t,
+                        pedestal=fi["pedestal_value"],
+                        hot_sigma=hot_sigma,
+                        cold_sigma=cold_sigma,
+                        apply_cosmetic=fi["apply_cosmetic"],
+                        bayer_pattern=fi["bayerpat"],
+                    )
 
                 _group_frame_count += 1
                 self.update_status(
