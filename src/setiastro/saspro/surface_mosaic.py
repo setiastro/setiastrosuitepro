@@ -56,20 +56,6 @@ from setiastro.saspro.ser_stacker import (
 )
 
 
-def _mono01(img: np.ndarray) -> np.ndarray:
-    """
-    Mono float32 [0..1], safe for (H,W), (H,W,1) and (H,W,3+) inputs.
-
-    The shared _to_mono01 treats any 3-D array as 3-channel and indexes
-    [...,1]/[...,2], which raises on a single-channel (H,W,1) frame — the shape
-    the mono compose path produces. Squeeze a lone channel; otherwise defer to
-    _to_mono01.
-    """
-    if img.ndim == 3 and img.shape[2] == 1:
-        return np.asarray(img[..., 0], dtype=np.float32)
-    return _to_mono01(img)
-
-
 # ===========================================================================
 # Config
 # ===========================================================================
@@ -82,6 +68,21 @@ class SurfaceMosaicConfig:
     ransac_thresh: float = 3.0       # px, in feature-detection scale
     min_inliers: int = 12            # below this, the pair is considered non-overlapping
     min_overlap_px: int = 48         # minimum overlap side length for phase-corr refine
+    # a candidate pair is only accepted if the actual overlap correlates this well
+    # (rejects "ghost" matches — a confident-but-wrong placement on textureless data)
+    min_overlap_ncc: float = 0.15
+    sift_fallback: bool = True       # if ORB finds nothing, retry with SIFT (blobs, soft texture)
+    phasecorr_fallback: bool = True  # exhaustive correlation search (phase-corr + patch NCC)
+    limb_fallback: bool = True       # disk geometry (translation only): align solar/lunar limbs
+    # matching-only enhancement so soft/unsharpened stacks still register (never
+    # touches output pixels — the mosaic is always composited from originals).
+    # Reuses SASpro multiscale decomposition: boost a mid-scale detail band that
+    # sits above the per-pixel noise (layer 1 is often pure noise on soft data).
+    enhance_matching: bool = True
+    match_msd_layers: int = 4        # decomposition depth for the match proxy
+    # per-layer boost gains (layer 1 = finest .. layer N). Layers 2 & 3 (~2px/4px
+    # structure) default to 6; layer 1 (noise) and 4 (coarse) left at 1.
+    match_msd_gains: Tuple[float, ...] = (1.0, 6.0, 6.0, 1.0)
 
     # --- pairwise refine ---
     refine_rotation: bool = True     # estimate per-pair rotation via Fourier-Mellin
@@ -103,6 +104,10 @@ class SurfaceMosaicConfig:
     photometric: bool = True
     photo_sigma_n: float = 10.0      # intensity error std (in 0..255-ish units)
     photo_sigma_g: float = 0.10      # gain prior std around 1.0
+    radial_model: bool = True        # solar/lunar: equalise gains against a global
+                                     # radial limb-darkening profile when a disk was
+                                     # found (couples rows with zero overlap).
+                                     # GAIN-ONLY: the sky can never be lifted.
 
     # --- compositing ---
     blend: str = "feather"           # "feather" | "multiband" | "none"
@@ -128,9 +133,16 @@ class Tile:
     ty: float = 0.0
     theta: float = 0.0
     gain: float = 1.0
-    # cached feature detections (filled lazily)
-    _kps: Optional[list] = field(default=None, repr=False)
-    _des: Optional[np.ndarray] = field(default=None, repr=False)
+    bias: float = 0.0
+    # cached per-detector features {kind: (kps, des)} (filled lazily)
+    _feat: Optional[dict] = field(default=None, repr=False)
+    # cached small bandpassed proxy for the correlation search: (img, scale)
+    _corr: Optional[tuple] = field(default=None, repr=False)
+    # cached limb-arc extraction + free circle fit: ("ok", xs, ys, fit) or ("none",)
+    _limb: Optional[tuple] = field(default=None, repr=False)
+    # cached sharpened mono used for ALL alignment measurement (matching, subpixel
+    # refine, local seam warp) — output is always composited from `image`
+    _match: Optional[np.ndarray] = field(default=None, repr=False)
 
     @property
     def h(self) -> int:
@@ -164,6 +176,7 @@ class MosaicResult:
     pairs: List[PairMatch]
     origin: Tuple[float, float]       # canvas (x0, y0) in mosaic coords
     anchor: int = 0                   # tile index pinned as the placement gauge
+    unplaced: List[str] = field(default_factory=list)  # tiles that couldn't be matched
 
 
 # ===========================================================================
@@ -333,19 +346,18 @@ def push_mosaic_to_view(mosaic: np.ndarray, title: str = "Surface Mosaic", doc_m
 # ===========================================================================
 # Stage 2 — Overlap graph (ORB + RANSAC).  NEW work.
 # ===========================================================================
-def _feature_mono_u8(img01: np.ndarray, max_dim: int) -> Tuple[np.ndarray, float]:
+def _feature_mono_u8(mono01: np.ndarray, max_dim: int) -> Tuple[np.ndarray, float]:
     """
-    Contrast-normalised uint8 mono for ORB, downscaled to <= max_dim.
-    Returns (u8_image, scale) where full_res_coord = kp_coord / scale.
+    Contrast-normalised uint8 for ORB from an already-mono (already-sharpened)
+    image, downscaled to <= max_dim. Returns (u8, scale); full_res = kp / scale.
     """
-    m = _to_mono01(img01).astype(np.float32, copy=False)
+    m = np.asarray(mono01, dtype=np.float32)
     H, W = m.shape[:2]
     scale = 1.0
     if max(H, W) > max_dim and cv2 is not None:
         scale = max_dim / float(max(H, W))
         m = cv2.resize(m, (max(2, int(W * scale)), max(2, int(H * scale))),
                        interpolation=cv2.INTER_AREA)
-    # robust min/max stretch so ORB sees consistent contrast across tiles
     lo, hi = np.percentile(m, (1.0, 99.5))
     if hi <= lo:
         hi = lo + 1e-3
@@ -353,36 +365,119 @@ def _feature_mono_u8(img01: np.ndarray, max_dim: int) -> Tuple[np.ndarray, float
     return (u8 * 255.0).astype(np.uint8), scale
 
 
-def _ensure_features(tile: Tile, cfg: SurfaceMosaicConfig) -> None:
-    if tile._des is not None or cv2 is None:
-        return
-    u8, scale = _feature_mono_u8(tile.image, cfg.feature_max_dim)
-    orb = cv2.ORB_create(nfeatures=int(cfg.orb_features))
-    kps, des = orb.detectAndCompute(u8, None)
+_MSD_FUNCS = None
+
+
+def _get_msd_funcs():
+    """Lazy import of SASpro's multiscale decomposition (pulls Qt/resources, so
+    only load it when matching enhancement is actually used)."""
+    global _MSD_FUNCS
+    if _MSD_FUNCS is None:
+        try:
+            from setiastro.saspro.multiscale_decomp import (
+                multiscale_decompose, multiscale_reconstruct)
+            _MSD_FUNCS = (multiscale_decompose, multiscale_reconstruct)
+        except Exception:
+            _MSD_FUNCS = (None, None)
+    return _MSD_FUNCS
+
+
+def _enhance_mono_for_features(m01: np.ndarray, cfg: SurfaceMosaicConfig) -> np.ndarray:
+    """
+    Boost a mid-scale detail band of the MATCHING proxy so soft / unsharpened
+    stacks yield ORB features. Reuses SASpro's multiscale decomposition to isolate
+    structure at a chosen scale (layer 3 ~ 4px radius, above the per-pixel noise
+    that dominates layer 1 on soft data) and amplify it, then reconstruct. Unlike
+    a local-contrast stretch, this pulls out structure that isn't already visible
+    as contrast. Matching-only — the mosaic is always composited from the
+    original pixels — so it can be aggressive without affecting output fidelity.
+    """
+    if not getattr(cfg, "enhance_matching", True):
+        return m01
+    decompose, reconstruct = _get_msd_funcs()
+    if decompose is None:
+        return m01
+    layers = max(2, int(cfg.match_msd_layers))
+    gains = list(cfg.match_msd_gains)
+    try:
+        details, residual = decompose(m01.astype(np.float32, copy=False), layers, 1.0)
+        for i in range(len(details)):
+            g = float(gains[i]) if i < len(gains) else 1.0
+            if abs(g - 1.0) > 1e-6:
+                details[i] = details[i] * g
+        out = reconstruct(details, residual)
+        return np.clip(out, 0.0, 1.0).astype(np.float32)
+    except Exception:
+        return m01
+
+
+def _match_mono(tile: Tile, cfg: SurfaceMosaicConfig) -> np.ndarray:
+    """
+    Full-res sharpened mono used for EVERY alignment measurement — coarse ORB,
+    subpixel refine, and the local seam-warp dense field. Computed once and
+    cached. The mosaic is never built from this; output always comes from the
+    original tile.image. With enhance_matching off this is just the plain mono,
+    so behaviour reduces to measuring on the originals.
+    """
+    if tile._match is None:
+        m = _to_mono01(tile.image).astype(np.float32, copy=False)
+        tile._match = _enhance_mono_for_features(m, cfg)
+    return tile._match
+
+
+def _ensure_features(tile: Tile, cfg: SurfaceMosaicConfig, kind: str = "orb"):
+    """
+    Lazily detect+cache features of the given kind on the sharpened proxy.
+    "orb": fast corner features — great on crisp texture (craters, granulation).
+    "sift": DoG blob features — far better on soft, low-contrast mottling where
+    ORB's corner detector finds nothing (this is what makes Photoshop-style
+    auto-align work on mushy data). Returns (kps, des); des is None on failure.
+    """
+    if cv2 is None:
+        return [], None
+    if tile._feat is None:
+        tile._feat = {}
+    if kind in tile._feat:
+        return tile._feat[kind]
+    u8, scale = _feature_mono_u8(_match_mono(tile, cfg), cfg.feature_max_dim)
+    det = None
+    if kind == "orb":
+        det = cv2.ORB_create(nfeatures=int(cfg.orb_features))
+    elif kind == "sift" and hasattr(cv2, "SIFT_create"):
+        det = cv2.SIFT_create(nfeatures=int(cfg.orb_features))
+    if det is None:
+        tile._feat[kind] = ([], None)
+        return tile._feat[kind]
+    try:
+        kps, des = det.detectAndCompute(u8, None)
+    except Exception:
+        kps, des = None, None
     # scale keypoints back to full-res tile coordinates
     if kps and scale != 1.0:
         inv = 1.0 / scale
         for kp in kps:
             kp.pt = (kp.pt[0] * inv, kp.pt[1] * inv)
-    tile._kps = list(kps) if kps else []
-    tile._des = des
+    tile._feat[kind] = (list(kps) if kps else [], des)
+    return tile._feat[kind]
 
 
-def _match_pair_features(ti: Tile, tj: Tile, cfg: SurfaceMosaicConfig) -> Optional[PairMatch]:
+def _match_pair_features(ti: Tile, tj: Tile, cfg: SurfaceMosaicConfig,
+                         kind: str = "orb") -> Optional[PairMatch]:
     """
-    Coarse pairwise similarity (rotation+scale+translation) from ORB matches.
+    Coarse pairwise similarity (rotation+scale+translation) from feature matches.
     Returns j-relative-to-i translation/rotation, or None if the pair doesn't overlap.
     """
     if cv2 is None:
         return None
-    _ensure_features(ti, cfg)
-    _ensure_features(tj, cfg)
-    if ti._des is None or tj._des is None or len(ti._kps) < 4 or len(tj._kps) < 4:
+    kpi, di = _ensure_features(ti, cfg, kind)
+    kpj, dj = _ensure_features(tj, cfg, kind)
+    if di is None or dj is None or len(kpi) < 4 or len(kpj) < 4:
         return None
 
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=False)
+    norm = cv2.NORM_HAMMING if kind == "orb" else cv2.NORM_L2
+    bf = cv2.BFMatcher(norm, crossCheck=False)
     try:
-        knn = bf.knnMatch(tj._des, ti._des, k=2)   # query=j, train=i  -> maps j into i
+        knn = bf.knnMatch(dj, di, k=2)   # query=j, train=i  -> maps j into i
     except Exception:
         return None
 
@@ -396,8 +491,8 @@ def _match_pair_features(ti: Tile, tj: Tile, cfg: SurfaceMosaicConfig) -> Option
     if len(good) < cfg.min_inliers:
         return None
 
-    src = np.float32([tj._kps[m.queryIdx].pt for m in good])  # in j
-    dst = np.float32([ti._kps[m.trainIdx].pt for m in good])  # in i
+    src = np.float32([kpj[m.queryIdx].pt for m in good])  # in j
+    dst = np.float32([kpi[m.trainIdx].pt for m in good])  # in i
 
     M, inliers = cv2.estimateAffinePartial2D(
         src, dst, method=cv2.RANSAC,
@@ -454,8 +549,8 @@ def _refine_pair(ti: Tile, tj: Tile, coarse: PairMatch, cfg: SurfaceMosaicConfig
     if abs(coarse.dtheta) > 3.0:
         return coarse
 
-    mi = _to_mono01(ti.image).astype(np.float32, copy=False)
-    mj = _to_mono01(tj.image).astype(np.float32, copy=False)
+    mi = _match_mono(ti, cfg)
+    mj = _match_mono(tj, cfg)
 
     rdx, rdy = int(round(coarse.dx)), int(round(coarse.dy))
     box = _integer_overlap(ti.w, ti.h, tj.w, tj.h, rdx, rdy)
@@ -502,17 +597,408 @@ def _refine_pair(ti: Tile, tj: Tile, coarse: PairMatch, cfg: SurfaceMosaicConfig
                      conf=conf, weight=weight)
 
 
+def _pair_overlap_ncc(ti: Tile, tj: Tile, pair: PairMatch, cfg: SurfaceMosaicConfig) -> float:
+    """
+    Normalised cross-correlation of the actual overlap after applying `pair`,
+    measured on the sharpened match images. A genuine overlap correlates high; a
+    ghost / wrong placement sits near zero. Returns NCC in [-1, 1], or -1 if the
+    implied overlap is too small to judge.
+    """
+    if cv2 is None:
+        return -1.0
+    mi = _match_mono(ti, cfg).astype(np.float32, copy=False)
+    mj = _match_mono(tj, cfg).astype(np.float32, copy=False)
+    # High-pass both first. Without this, a smooth bright disk (solar/lunar limb)
+    # correlates at almost any offset and would validate a ghost — the true
+    # overlap only stands out in the high-frequency structure. Bandpass the source
+    # content (no Hann window) so the warp's zero border doesn't taint the blur.
+    hi_i = cv2.GaussianBlur(mi, (0, 0), 1.2) - cv2.GaussianBlur(mi, (0, 0), 6.0)
+    hi_j = cv2.GaussianBlur(mj, (0, 0), 1.2) - cv2.GaussianBlur(mj, (0, 0), 6.0)
+    th = math.radians(pair.dtheta)
+    c, s = math.cos(th), math.sin(th)
+    M = np.array([[c, -s, pair.dx], [s, c, pair.dy]], dtype=np.float32)  # j -> i frame
+    jw = cv2.warpAffine(hi_j, M, (ti.w, ti.h), flags=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+    vj = cv2.warpAffine(np.ones((tj.h, tj.w), np.float32), M, (ti.w, ti.h),
+                        flags=cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+    mask = vj > 0.5
+    if int(mask.sum()) < cfg.min_overlap_px * cfg.min_overlap_px:
+        return -1.0
+    a = hi_i[mask].astype(np.float64)
+    b = jw[mask].astype(np.float64)
+    a -= a.mean(); b -= b.mean()
+    denom = float(np.sqrt((a * a).sum()) * np.sqrt((b * b).sum())) + 1e-9
+    return float((a * b).sum() / denom)
+
+
+def _corr_small(tile: Tile, cfg: SurfaceMosaicConfig):
+    """Cached small (<=512px) proxy for the correlation search: light denoise +
+    WIDE high-pass. A narrow bandpass can sit below soft data's structure scale
+    and keep only noise; subtracting a 16-sigma blur removes just the smooth
+    illumination (disk falloff) and keeps structure at every other scale.
+    Returns (img, scale) where full_res = small_coord / scale."""
+    if tile._corr is None:
+        m = _match_mono(tile, cfg)
+        H, W = m.shape[:2]
+        sc = min(1.0, 512.0 / float(max(H, W)))
+        if sc < 1.0:
+            sm = cv2.resize(m, (max(8, int(W * sc)), max(8, int(H * sc))),
+                            interpolation=cv2.INTER_AREA)
+        else:
+            sm = m.astype(np.float32, copy=True)
+        sm = cv2.GaussianBlur(sm, (0, 0), 1.0)              # denoise
+        hp = sm - cv2.GaussianBlur(sm, (0, 0), 16.0)        # remove illumination only
+        hp -= float(hp.mean())
+        hp /= (float(hp.std()) + 1e-6)
+        tile._corr = (hp.astype(np.float32), sc)
+    return tile._corr
+
+
+def _coarse_ncc(bi: np.ndarray, bj: np.ndarray, dx: float, dy: float) -> float:
+    """Quick overlap NCC at the small scale for a candidate translation."""
+    h, w = bi.shape
+    M = np.array([[1, 0, dx], [0, 1, dy]], dtype=np.float32)
+    jw = cv2.warpAffine(bj, M, (w, h), flags=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+    vj = cv2.warpAffine(np.ones_like(bj), M, (w, h), flags=cv2.INTER_NEAREST,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+    m = vj > 0.5
+    if int(m.sum()) < 24 * 24:
+        return -1.0
+    a = bi[m].astype(np.float64); b = jw[m].astype(np.float64)
+    a -= a.mean(); b -= b.mean()
+    den = float(np.sqrt((a * a).sum()) * np.sqrt((b * b).sum())) + 1e-9
+    return float((a * b).sum() / den)
+
+
+def _match_pair_corrsearch(ti: Tile, tj: Tile, cfg: SurfaceMosaicConfig) -> Optional[PairMatch]:
+    """
+    Exhaustive translation search for when no feature detector bites. Full-frame
+    phase correlation alone is weak on mosaic panels (it assumes the two frames
+    are mostly the same image, but panels share only a partial overlap), so this
+    slides a 3x3 grid of patches from tile j over tile i with normalised
+    cross-correlation (cv2.matchTemplate) — partial overlap is handled by
+    construction, whichever edge or corner it lives on. Candidates from the
+    patch search plus a phase-corr attempt are scored by coarse overlap NCC and
+    the best is returned (full validation happens upstream). Translation only.
+    """
+    if cv2 is None:
+        return None
+    bi, si = _corr_small(ti, cfg)
+    bj, sj = _corr_small(tj, cfg)
+    if bi.shape != bj.shape or abs(si - sj) > 1e-9:
+        return None   # mosaic panels from one camera share a size; keep it simple
+
+    cands: List[Tuple[float, float]] = []
+    try:
+        dx, dy, _resp = _phase_corr_shift(bi, bj)
+        cands.append((float(dx), float(dy)))
+    except Exception:
+        pass
+
+    H, W = bj.shape
+    gstd = float(bj.std()) + 1e-6
+    # two patch sizes: coarse for wide overlaps, fine so a patch still fits
+    # entirely inside a thin (~25%) overlap strip; grid reaches every edge
+    for frac in (0.4, 0.22):
+        ph, pw = int(H * frac), int(W * frac)
+        if ph < 12 or pw < 12 or bi.shape[0] <= ph or bi.shape[1] <= pw:
+            continue
+        for fy in (0.0, 0.39, 0.78):
+            for fx in (0.0, 0.39, 0.78):
+                y0 = min(int(fy * H), H - ph)
+                x0 = min(int(fx * W), W - pw)
+                patch = bj[y0:y0 + ph, x0:x0 + pw]
+                if float(patch.std()) < 0.25 * gstd:
+                    continue   # flat patch (sky / featureless) can't localise
+                try:
+                    res = cv2.matchTemplate(bi, patch, cv2.TM_CCOEFF_NORMED)
+                except Exception:
+                    continue
+                _mn, mx, _ml, loc = cv2.minMaxLoc(res)
+                if mx < 0.2:
+                    continue
+                cands.append((float(loc[0] - x0), float(loc[1] - y0)))
+
+    if not cands:
+        return None
+
+    # dedup (3px bins at small scale), then score every candidate by coarse NCC
+    seen, uniq = set(), []
+    for dx, dy in cands:
+        key = (round(dx / 3.0), round(dy / 3.0))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append((dx, dy))
+    best = None
+    for dx, dy in uniq:
+        ncc = _coarse_ncc(bi, bj, dx, dy)
+        if best is None or ncc > best[2]:
+            best = (dx, dy, ncc)
+    if best is None or best[2] < max(0.08, 0.5 * float(cfg.min_overlap_ncc)):
+        return None
+    dx, dy, ncc = best
+    return PairMatch(i=ti.idx, j=tj.idx, dx=float(dx / si), dy=float(dy / si),
+                     dtheta=0.0, conf=float(np.clip(ncc, 0.0, 1.0)),
+                     weight=float(8.0 + 20.0 * max(0.0, ncc)))
+
+
+def _fit_circle(xs: np.ndarray, ys: np.ndarray):
+    """Algebraic (Kasa) least-squares circle fit. Returns (cx, cy, r, rms) or None."""
+    x = xs.astype(np.float64); y = ys.astype(np.float64)
+    if len(x) < 12:
+        return None
+    A = np.column_stack([2.0 * x, 2.0 * y, np.ones_like(x)])
+    b = x * x + y * y
+    try:
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    except np.linalg.LinAlgError:
+        return None
+    cx, cy, c = sol
+    val = c + cx * cx + cy * cy
+    if val <= 0:
+        return None
+    r = float(np.sqrt(val))
+    d = np.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+    rms = float(np.sqrt(np.mean((d - r) ** 2)))
+    return float(cx), float(cy), r, rms
+
+
+def _limb_points(mono: np.ndarray, cfg: SurfaceMosaicConfig):
+    """
+    Extract the limb-arc pixels of a partial disk: the disk/sky boundary that is
+    adjacent to sky, with the frame-cut border excluded. Returns
+    (xs, ys, (disk_cx, disk_cy)) — the disk-mask centroid tells the caller which
+    side of the arc the disk centre physically lies on — or None.
+
+    Thresholding is percentile-based, not Otsu: on a tile that is ~98% disk with
+    a sliver of sky in one corner the histogram is unimodal, and Otsu splits
+    WITHIN the disk instead of disk-vs-sky. The 0.2th percentile still samples
+    the sky whenever it covers >=0.2% of the frame, so even a corner sliver
+    yields a clean split.
+    """
+    if cv2 is None:
+        return None
+    u8 = (np.clip(mono, 0.0, 1.0) * 255.0).astype(np.uint8)
+    lo = float(np.percentile(u8, 0.2))
+    hi = float(np.percentile(u8, 99.5))
+    if hi - lo < 20.0:
+        return None                       # no dark/bright split -> all disk (or all sky)
+    thr = lo + 0.35 * (hi - lo)
+    disk = (u8 > thr).astype(np.uint8)
+    frac = float(disk.mean())
+    if frac < 0.005 or frac > 0.998:      # keep even a ~0.2% sky sliver
+        return None
+    k = np.ones((5, 5), np.uint8)
+    disk = cv2.morphologyEx(disk, cv2.MORPH_OPEN, k)
+    disk = cv2.morphologyEx(disk, cv2.MORPH_CLOSE, k)
+    grad = cv2.morphologyEx(disk, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 0
+    sky_dil = cv2.dilate((disk == 0).astype(np.uint8), k) > 0
+    limb = grad & sky_dil
+    b = 3
+    limb[:b, :] = False; limb[-b:, :] = False; limb[:, :b] = False; limb[:, -b:] = False
+    ys, xs = np.where(limb)
+    if len(xs) < 40:
+        return None
+    dys, dxs = np.where(disk > 0)
+    dc = (float(dxs.mean()), float(dys.mean()))
+    return xs.astype(np.float64), ys.astype(np.float64), dc
+
+
+def _fit_center_fixed_r(xs, ys, R, cx0, cy0):
+    """
+    Gauss-Newton fit of a circle CENTRE with the radius held fixed at R (seeded
+    from cx0,cy0). Fixing the radius pins the centre even from a short, shallow
+    arc that an unconstrained fit would leave unstable. Returns (cx, cy, rms) or
+    None.
+    """
+    cx, cy = float(cx0), float(cy0)
+    for _ in range(30):
+        dx = xs - cx; dy = ys - cy
+        ri = np.sqrt(dx * dx + dy * dy) + 1e-9
+        res = ri - R
+        Jx = -dx / ri; Jy = -dy / ri
+        a11 = float(np.dot(Jx, Jx)); a12 = float(np.dot(Jx, Jy)); a22 = float(np.dot(Jy, Jy))
+        b0 = -float(np.dot(Jx, res)); b1 = -float(np.dot(Jy, res))
+        det = a11 * a22 - a12 * a12
+        if abs(det) < 1e-9:
+            return None
+        ddx = (b0 * a22 - b1 * a12) / det
+        ddy = (a11 * b1 - a12 * b0) / det
+        cx += ddx; cy += ddy
+        if abs(ddx) + abs(ddy) < 1e-3:
+            break
+    ri = np.sqrt((xs - cx) ** 2 + (ys - cy) ** 2)
+    rms = float(np.sqrt(np.mean((ri - R) ** 2)))
+    return cx, cy, rms
+
+
+def _tile_limb(tile: Tile, cfg: SurfaceMosaicConfig):
+    """Cached limb-arc extraction for a tile:
+    ("ok", xs, ys, freefit_or_None, (disk_cx, disk_cy)) or ("none",).
+    freefit may be None for a sliver arc where the unconstrained Kasa fit is
+    degenerate — the tile is still usable via the fixed-radius disk-side seed."""
+    if tile._limb is None:
+        pts = _limb_points(_to_mono01(tile.image), cfg)
+        if pts is None:
+            tile._limb = ("none",)
+        else:
+            xs, ys, dc = pts
+            fit = _fit_circle(xs, ys)
+            tile._limb = ("ok", xs, ys, fit, dc)
+    return tile._limb
+
+
+def _limb_solution(tiles: List[Tile], cfg: SurfaceMosaicConfig):
+    """
+    Fit the shared disk across all limb-bearing tiles: hub (best-conditioned free
+    arc fit) sets the radius R; every limb tile's centre is refit at that fixed
+    radius from a GEOMETRIC seed — a sliver arc is nearly straight, so an
+    unconstrained fit can put the centre on the WRONG side, but the disk-mask
+    centroid tells us which side the disk physically lies on, so we seed at
+    arc_midpoint + R * (towards disk) and Gauss-Newton lands in the right basin.
+    Returns (R, hub_pos, {pos: (cx, cy, rms)}) in TILE coordinates, or None.
+    """
+    info = {}   # pos -> [xs, ys, freefit, dc]
+    for pos, t in enumerate(tiles):
+        lb = _tile_limb(t, cfg)
+        if lb[0] != "ok":
+            continue
+        info[pos] = [lb[1], lb[2], lb[3], lb[4]]
+    if not info:
+        return None
+
+    def _quality(pos):
+        ff = info[pos][2]
+        if ff is None:
+            return -1.0
+        return len(info[pos][0]) / (1.0 + ff[3])
+    hub = max(info, key=_quality)
+    if info[hub][2] is None:
+        return None
+    R = float(info[hub][2][2])
+    span = max(max(t.h, t.w) for t in tiles)
+    if R < 0.2 * min(tiles[hub].h, tiles[hub].w) or R > 200.0 * span:
+        return None
+
+    centres = {}
+    for pos, (xs, ys, freefit, dc) in info.items():
+        pmx, pmy = float(xs.mean()), float(ys.mean())
+        vx, vy = dc[0] - pmx, dc[1] - pmy
+        nrm = math.hypot(vx, vy)
+        if nrm < 1e-6:
+            if freefit is None:
+                continue
+            seed = (freefit[0], freefit[1])
+        else:
+            seed = (pmx + R * vx / nrm, pmy + R * vy / nrm)
+        ref = _fit_center_fixed_r(xs, ys, R, seed[0], seed[1])
+        if ref is None:
+            continue
+        cxf, cyf, rmsf = ref
+        if rmsf > max(3.0, 0.05 * R):
+            continue    # points don't actually lie on a circle of radius R
+        centres[pos] = (cxf, cyf, rmsf)
+    if hub not in centres or not centres:
+        return None
+    return R, hub, centres
+
+
+def _limb_edges(tiles: List[Tile], cfg: SurfaceMosaicConfig,
+                have: set) -> List[PairMatch]:
+    """
+    GLOBAL limb stage. Every tile that shows a limb arc lies on the SAME disk, so
+    the disk centre is a shared reference that links limb tiles even when they
+    don't overlap each other at all. Emits hub->tile edges from the shared-disk
+    solution. Translation only — callers gate on solve_rotation.
+    """
+    sol = _limb_solution(tiles, cfg)
+    if sol is None:
+        return []
+    R, hub, centres = sol
+    if len(centres) < 2:
+        return []
+
+    tight = max(2.5, 0.03 * R)
+    out: List[PairMatch] = []
+    for pos, (cx, cy, rms) in centres.items():
+        if pos == hub:
+            continue
+        key = (hub, pos) if hub < pos else (pos, hub)
+        if key in have:
+            continue    # already connected by a validated texture match
+        hi, hj = tiles[hub], tiles[pos]
+        cand = PairMatch(i=hi.idx, j=hj.idx,
+                         dx=float(centres[hub][0] - cx),
+                         dy=float(centres[hub][1] - cy),
+                         dtheta=0.0, conf=0.45, weight=12.0)
+        refined = _refine_pair(hi, hj, cand, cfg)
+        ncc = _pair_overlap_ncc(hi, hj, refined, cfg)
+        if ncc >= max(0.05, 0.5 * float(cfg.min_overlap_ncc)):
+            # tiles overlap and the overlap agrees — full-strength edge
+            refined.conf = float(np.clip(0.5 * refined.conf + 0.5 * max(0.0, ncc), 0.0, 1.0))
+            refined.weight = float(refined.weight * (0.5 + max(0.0, ncc)))
+            out.append(refined)
+        elif ncc < -0.5 and rms <= tight and centres[hub][2] <= tight:
+            # no mutual overlap to check (NCC sentinel) — accept on geometry
+            # alone, but only when both fixed-R fits are tight
+            out.append(refined)
+    return out
+
+
+def _validated(ti: Tile, tj: Tile, cand: PairMatch,
+               cfg: SurfaceMosaicConfig) -> Optional[PairMatch]:
+    """Refine a candidate and gate it on the ghost-proof overlap NCC."""
+    refined = _refine_pair(ti, tj, cand, cfg)
+    ncc = _pair_overlap_ncc(ti, tj, refined, cfg)
+    if ncc < cfg.min_overlap_ncc:
+        return None
+    refined.conf = float(np.clip(0.5 * refined.conf + 0.5 * max(0.0, ncc), 0.0, 1.0))
+    refined.weight = float(refined.weight * (0.5 + max(0.0, ncc)))
+    return refined
+
+
 def build_overlap_graph(tiles: List[Tile], cfg: SurfaceMosaicConfig,
                         progress_cb: Optional[Callable] = None) -> List[PairMatch]:
+    """
+    Alignment ladder, strongest evidence first. Per pair:
+      1a. ORB corners (fast; crisp texture)
+      1b. SIFT blobs (soft, low-contrast texture where ORB finds nothing)
+      2.  exhaustive correlation search (no features needed; translation only)
+    then one GLOBAL stage:
+      3.  limb geometry — links every limb-bearing tile through the shared disk
+          centre, including tiles that don't overlap each other (rotation off).
+    Every candidate from every tier must clear the overlap-NCC ghost gate (limb
+    edges between non-overlapping tiles clear a geometric-tightness gate instead).
+    """
     pairs: List[PairMatch] = []
+    have: set = set()
     combos = list(combinations(range(len(tiles)), 2))
     for k, (i, j) in enumerate(combos):
         if progress_cb:
             progress_cb(k, len(combos), "Matching tiles")
-        coarse = _match_pair_features(tiles[i], tiles[j], cfg)
-        if coarse is None:
-            continue
-        pairs.append(_refine_pair(tiles[i], tiles[j], coarse, cfg))
+
+        got = None
+        cand = _match_pair_features(tiles[i], tiles[j], cfg, kind="orb")
+        if cand is not None:
+            got = _validated(tiles[i], tiles[j], cand, cfg)
+        if got is None and cfg.sift_fallback:
+            cand = _match_pair_features(tiles[i], tiles[j], cfg, kind="sift")
+            if cand is not None:
+                got = _validated(tiles[i], tiles[j], cand, cfg)
+        if got is None and cfg.phasecorr_fallback:
+            cand = _match_pair_corrsearch(tiles[i], tiles[j], cfg)
+            if cand is not None:
+                got = _validated(tiles[i], tiles[j], cand, cfg)
+
+        if got is not None:
+            pairs.append(got)
+            have.add((i, j))
+
+    if cfg.limb_fallback and not cfg.solve_rotation:
+        pairs.extend(_limb_edges(tiles, cfg, have))
+
     if progress_cb:
         progress_cb(len(combos), len(combos), "Matching tiles")
     return pairs
@@ -689,41 +1175,54 @@ def _solve_similarity_scipy(tiles: List[Tile], pairs: List[PairMatch], cfg: Surf
     tiles[anchor].tx = tiles[anchor].ty = tiles[anchor].theta = 0.0
 
 
-def global_bundle_adjust(tiles: List[Tile], pairs: List[PairMatch], cfg: SurfaceMosaicConfig) -> None:
-    if not pairs:
-        # nothing overlaps — leave tiles at origin (compose will just stack them)
-        return
-    comp = _connected_component(len(tiles), pairs, int(np.clip(cfg.anchor_index, 0, len(tiles) - 1)))
-    if len(comp) < len(tiles):
-        # Tiles outside the anchor's connected component can't be placed reliably.
-        # First draft: solve the whole graph anyway; unmatched tiles land at origin.
-        pass
-    if cfg.solve_rotation:
-        _solve_similarity_scipy(tiles, pairs, cfg)
+def global_bundle_adjust(tiles: List[Tile], pairs: List[PairMatch],
+                         cfg: SurfaceMosaicConfig) -> List[int]:
+    """
+    Solve tile poses and return the indices of any tiles that could NOT be placed
+    (not connected to the anchor through a validated overlap). These are excluded
+    from the mosaic entirely — a tile that didn't match is not composited at all
+    (no side-by-side filler), and the caller fails outright if fewer than two
+    tiles actually merged.
+    """
+    n = len(tiles)
+    anchor = int(np.clip(cfg.anchor_index, 0, n - 1))
+
+    if pairs:
+        if cfg.solve_rotation:
+            _solve_similarity_scipy(tiles, pairs, cfg)
+        else:
+            _solve_translation(tiles, pairs, cfg)
+        comp = _connected_component(n, pairs, anchor)
     else:
-        _solve_translation(tiles, pairs, cfg)
+        comp = {anchor}
+
+    return [k for k in range(n) if k not in comp]
 
 
 # ===========================================================================
-# Stage 7 — Photometric equalisation (Brown-Lowe gain compensation).  NEW work.
+# Stage 7 — Photometric equalisation.  NEW work.
+# gain+bias overlap solve, plus a radial limb-darkening model for disk targets
 # ===========================================================================
-def equalize_photometry(tiles: List[Tile], pairs: List[PairMatch], cfg: SurfaceMosaicConfig) -> None:
+def _equalize_overlap(tiles: List[Tile], pairs: List[PairMatch],
+                      cfg: SurfaceMosaicConfig) -> None:
     """
-    Solve one multiplicative gain per tile so overlap brightness matches.
-    Minimises sum_ij N_ij (g_i*Ii - g_j*Ij)^2 / sN^2 + sum_i (1-g_i)^2 / sg^2.
-    Writes tile.gain in place. (Bias term left as a TODO extension.)
+    Robust GAIN-ONLY equalisation from the BRIGHT overlap content. For every
+    overlapping pair, take the aligned overlap pixels where BOTH tiles are bright
+    (sky excluded entirely, so glint/background can't drag the statistic) and
+    constrain the gain ratio by the median bright level: g_i*med_a = g_j*med_b.
+    Solved jointly in log-gains with a prior toward 1. No bias term anywhere:
+    gains cannot lift the sky (g * 0 = 0), so the background stays black by
+    construction.
     """
-    if not cfg.photometric or not pairs:
+    if not pairs:
         return
     n = len(tiles)
-    sN2 = float(cfg.photo_sigma_n) ** 2
-    sg2 = float(cfg.photo_sigma_g) ** 2
+    slog2 = float(cfg.photo_sigma_g) ** 2
+    mono = [(_to_mono01(t.image).astype(np.float32, copy=False)) for t in tiles]
+    thr = [0.3 * float(np.percentile(m, 95.0)) for m in mono]   # bright = surface
 
     A = np.zeros((n, n), dtype=np.float64)
-    b = np.zeros(n, dtype=np.float64)
-
-    mono = [(_to_mono01(t.image).astype(np.float32, copy=False)) for t in tiles]
-
+    c = np.zeros(n, dtype=np.float64)
     for p in pairs:
         rdx, rdy = int(round(p.dx)), int(round(p.dy))
         box = _integer_overlap(tiles[p.i].w, tiles[p.i].h,
@@ -731,29 +1230,165 @@ def equalize_photometry(tiles: List[Tile], pairs: List[PairMatch], cfg: SurfaceM
         if box is None:
             continue
         xi0, yi0, xj0, yj0, ow, oh = box
-        Ii = float(mono[p.i][yi0:yi0 + oh, xi0:xi0 + ow].mean()) * 255.0
-        Ij = float(mono[p.j][yj0:yj0 + oh, xj0:xj0 + ow].mean()) * 255.0
-        N = float(ow * oh)
-        a = N / sN2
-        A[p.i, p.i] += a * Ii * Ii
-        A[p.j, p.j] += a * Ij * Ij
-        A[p.i, p.j] -= a * Ii * Ij
-        A[p.j, p.i] -= a * Ii * Ij
+        a = mono[p.i][yi0:yi0 + oh, xi0:xi0 + ow]
+        b = mono[p.j][yj0:yj0 + oh, xj0:xj0 + ow]
+        bright = (a > thr[p.i]) & (b > thr[p.j])
+        nb = int(bright.sum())
+        if nb < 256:
+            continue
+        med_a = float(np.median(a[bright]))
+        med_b = float(np.median(b[bright]))
+        if med_a <= 1e-6 or med_b <= 1e-6:
+            continue
+        d = math.log(med_b) - math.log(med_a)    # x_i - x_j = d  (x = log gain)
+        w = float(min(nb, 20000))
+        A[p.i, p.i] += w; A[p.j, p.j] += w
+        A[p.i, p.j] -= w; A[p.j, p.i] -= w
+        c[p.i] += w * d;  c[p.j] -= w * d
 
+    lam = 1.0 / max(1e-6, slog2)
     for i in range(n):
-        A[i, i] += 1.0 / sg2
-        b[i] += 1.0 / sg2
-
+        A[i, i] += lam                            # prior: log-gain -> 0
     try:
-        g = np.linalg.solve(A, b)
+        x = np.linalg.solve(A, c)
     except np.linalg.LinAlgError:
-        g = np.linalg.lstsq(A, b, rcond=None)[0]
-
-    g = np.clip(g, 0.2, 5.0)
-    # normalise so the brightest-weighted tile isn't crushed/blown
-    g = g / float(np.median(g[np.isfinite(g)])) if np.any(np.isfinite(g)) else g
+        x = np.linalg.lstsq(A, c, rcond=None)[0]
+    x = x - float(np.median(x[np.isfinite(x)])) if np.any(np.isfinite(x)) else x
     for k, t in enumerate(tiles):
-        t.gain = float(g[k]) if np.isfinite(g[k]) else 1.0
+        xv = x[k] if np.isfinite(x[k]) else 0.0
+        t.gain = float(np.clip(math.exp(xv), 0.2, 5.0))
+        t.bias = 0.0
+
+
+def _equalize_radial(tiles: List[Tile], cfg: SurfaceMosaicConfig,
+                     exclude: set) -> bool:
+    """
+    Disk-aware equalisation: solar/lunar brightness is dominated by LIMB
+    DARKENING, a radial profile shared by every tile. The limb solution gives the
+    disk centre + radius, so build a global median brightness-vs-r/R profile from
+    all placed tiles and solve each tile's (gain, bias) against that shared MODEL
+    instead of against its neighbours. This decouples equalisation from overlap
+    topology entirely — rows with zero overlap are still constrained because they
+    answer to the same profile. Returns True if applied.
+    """
+    sol = _limb_solution(tiles, cfg)
+    if sol is None:
+        return False
+    R, _hub, centres = sol
+
+    # disk centre in MOSAIC coordinates, averaged over limb tiles (pose-composed)
+    wsum = 0.0; cxm = 0.0; cym = 0.0
+    for pos, (cx, cy, rms) in centres.items():
+        if pos in exclude:
+            continue
+        t = tiles[pos]
+        th = math.radians(t.theta)
+        co, si = math.cos(th), math.sin(th)
+        mx = co * cx - si * cy + t.tx
+        my = si * cx + co * cy + t.ty
+        w = 1.0 / (1.0 + rms)
+        cxm += w * mx; cym += w * my; wsum += w
+    if wsum <= 0:
+        return False
+    cxm /= wsum; cym /= wsum
+
+    use = [pos for pos in range(len(tiles)) if pos not in exclude]
+    if len(use) < 2:
+        return False
+
+    NBINS = 96
+    SMALL = 384
+
+    # per-tile binned medians of brightness vs r/R (computed once, on a downscale)
+    tile_bins = {}   # pos -> (bin_idx array, median array, count array)
+    for pos in use:
+        t = tiles[pos]
+        m = _to_mono01(t.image).astype(np.float32, copy=False)
+        sc = min(1.0, SMALL / float(max(t.h, t.w)))
+        sm = cv2.resize(m, (max(4, int(t.w * sc)), max(4, int(t.h * sc))),
+                        interpolation=cv2.INTER_AREA) if sc < 1.0 else m
+        hh, ww = sm.shape[:2]
+        ys, xs = np.mgrid[0:hh, 0:ww]
+        fx = xs.astype(np.float64) / sc
+        fy = ys.astype(np.float64) / sc
+        th = math.radians(t.theta)
+        co, si = math.cos(th), math.sin(th)
+        mx = co * fx - si * fy + t.tx
+        my = si * fx + co * fy + t.ty
+        rn = np.sqrt((mx - cxm) ** 2 + (my - cym) ** 2) / R
+        vals = sm.astype(np.float64)
+        good = (rn <= 1.0) & (vals > 0.02)     # inside the disk, not sky
+        if int(good.sum()) < 500:
+            continue
+        bidx = np.clip((rn[good] * NBINS).astype(np.int32), 0, NBINS - 1)
+        v = vals[good]
+        bins_i, meds, cnts = [], [], []
+        for bi in np.unique(bidx):
+            sel = v[bidx == bi]
+            if sel.size < 50:
+                continue
+            bins_i.append(int(bi)); meds.append(float(np.median(sel))); cnts.append(int(sel.size))
+        if len(bins_i) < 1:
+            continue
+        tile_bins[pos] = (np.asarray(bins_i), np.asarray(meds), np.asarray(cnts, dtype=np.float64))
+    if len(tile_bins) < 2:
+        return False
+
+    def _wmedian(vals: np.ndarray, wts: np.ndarray) -> float:
+        o = np.argsort(vals)
+        v = vals[o]; w = np.cumsum(wts[o])
+        idx = int(np.searchsorted(w, 0.5 * w[-1]))
+        return float(v[min(idx, len(v) - 1)])
+
+    gains = {pos: 1.0 for pos in tile_bins}
+    for _it in range(2):
+        # global profile: count-weighted mean of gain-corrected tile medians per bin
+        acc = np.zeros(NBINS); wac = np.zeros(NBINS)
+        for pos, (bi, md, ct) in tile_bins.items():
+            np.add.at(acc, bi, ct * gains[pos] * md)
+            np.add.at(wac, bi, ct)
+        prof = np.where(wac > 0, acc / np.maximum(wac, 1e-9), 0.0)
+        # per-tile GAIN-ONLY robust fit: weighted median of per-bin ratios
+        # profile/tile. A median of ratios shrugs off glint-corrupted bins where
+        # a least-squares would chase them; no bias term, so the sky (which never
+        # enters the bins anyway) cannot be lifted.
+        for pos, (bi, md, ct) in tile_bins.items():
+            P = prof[bi]
+            ok = (wac[bi] > 0) & (md > 0.05) & (P > 1e-6)
+            if int(ok.sum()) < 1:
+                continue
+            rho = P[ok] / md[ok]
+            gains[pos] = float(np.clip(_wmedian(rho, ct[ok]), 0.2, 5.0))
+
+    garr = np.array(list(gains.values()))
+    gmed = float(np.median(garr)) if garr.size else 1.0
+    for pos, t in enumerate(tiles):
+        if pos in gains:
+            t.gain = gains[pos] / gmed
+        else:
+            t.gain = 1.0
+        t.bias = 0.0
+    return True
+
+
+def equalize_photometry(tiles: List[Tile], pairs: List[PairMatch],
+                        cfg: SurfaceMosaicConfig, exclude: Optional[set] = None) -> None:
+    """
+    Solve one robust GAIN per tile (no bias — the sky can never be lifted).
+    When a disk was found and cfg.radial_model is on, equalise against the global
+    radial limb-darkening profile (couples tiles regardless of overlap topology);
+    otherwise match the bright overlap content. Writes tile.gain in place.
+    """
+    if not cfg.photometric:
+        return
+    exclude = exclude or set()
+    if cfg.radial_model and not cfg.solve_rotation:
+        try:
+            if _equalize_radial(tiles, cfg, exclude):
+                return
+        except Exception:
+            pass
+    _equalize_overlap(tiles, pairs, cfg)
 
 
 # ===========================================================================
@@ -797,25 +1432,28 @@ def _feather_weights(mask: np.ndarray) -> np.ndarray:
     return dt.astype(np.float32)
 
 
-def _apply_local_warp(ref_canvas_mono: np.ndarray, warped_tile: np.ndarray,
-                      valid: np.ndarray, cfg: SurfaceMosaicConfig) -> np.ndarray:
+def _measure_local_field(ref_canvas_mono: np.ndarray, cur_mono: np.ndarray,
+                         valid: np.ndarray, cfg: SurfaceMosaicConfig):
     """
-    Non-rigid seam correction: place APs in the tile's valid region, measure
-    per-AP phase shifts against the already-composited neighbours, and warp the
-    tile by the resulting dense field. Reuses the stacker's AP machinery.
+    Measure the non-rigid seam-correction dense field for a tile against the
+    already-composited neighbours. Runs on the SHARPENED match images (ref and
+    cur are both sharpened monos) so the AP phase correlation can lock onto
+    structure even on soft data; the caller applies the returned field to the
+    ORIGINAL pixels. Returns (dxf, dyf), or (None, None) if no correction is
+    warranted.
     """
     if not cfg.local_warp or cv2 is None:
-        return warped_tile
-    cur_m = _mono01(warped_tile).astype(np.float32, copy=False)
+        return None, None
+    cur_m = np.asarray(cur_mono, dtype=np.float32)
     # only correct where THIS tile and the existing mosaic both have data
     both = (valid > 0) & (ref_canvas_mono > 1e-6)
     if both.mean() < 0.02:
-        return warped_tile
+        return None, None
 
     ap_centers = _autoplace_aps(np.where(both, cur_m, 0.0),
                                 cfg.ap_size, cfg.ap_spacing, cfg.ap_min_mean)
     if ap_centers is None or len(ap_centers) < 4:
-        return warped_tile
+        return None, None
 
     ap_dx, ap_dy, ap_resp = _ap_phase_shifts_per_ap(
         ref_canvas_mono, cur_m, ap_centers=ap_centers,
@@ -823,14 +1461,14 @@ def _apply_local_warp(ref_canvas_mono: np.ndarray, warped_tile: np.ndarray,
     )
     keep = _reject_ap_outliers(ap_dx, ap_dy, np.clip(ap_resp, 0.0, 1.0), z=3.5)
     if not np.any(keep):
-        return warped_tile
+        return None, None
 
     # Guard 1 — already well placed: on flat overlap the per-AP shifts are just
     # a broad correlation peak wobbling sub-pixel. If the tile is essentially
     # where it belongs, skip the field entirely instead of baking in that noise.
     mag = np.hypot(ap_dx[keep], ap_dy[keep])
     if float(np.median(mag)) < float(cfg.local_warp_min_shift):
-        return warped_tile
+        return None, None
 
     dxf, dyf = _dense_field_from_ap_shifts(
         cur_m.shape[0], cur_m.shape[1],
@@ -841,15 +1479,11 @@ def _apply_local_warp(ref_canvas_mono: np.ndarray, warped_tile: np.ndarray,
 
     # Guard 2 — confine to the overlap: feather the field to zero at the overlap
     # boundary so a tile's non-overlap pixels are never displaced by the dense
-    # field extrapolating outward. Distance transform is 0 at the overlap edge
-    # and ramps to 1 over ~ap_size px inside; it is exactly 0 outside the overlap.
+    # field extrapolating outward.
     falloff = max(1.0, float(cfg.ap_size))
     dt = cv2.distanceTransform(both.astype(np.uint8), cv2.DIST_L2, 3)
     feather = np.clip(dt / falloff, 0.0, 1.0).astype(np.float32)
-    dxf = dxf * feather
-    dyf = dyf * feather
-
-    return _warp_by_dense_field(warped_tile, dxf, dyf)
+    return dxf * feather, dyf * feather
 
 
 def _fill_nodata(img: np.ndarray, valid: np.ndarray, iters: int = 5, sigma: float = 8.0) -> np.ndarray:
@@ -885,7 +1519,10 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
     MB_SCALE = 8000.0   # float[0..1] -> int16 range for the blender (keeps headroom)
 
     coverage = np.zeros((ch, cw), dtype=np.float32)
-    running_mono = np.zeros((ch, cw), dtype=np.float32)  # for local-warp reference
+    # local-warp reference is the SHARPENED match canvas — so seam correction
+    # measures against structure the AP phase-corr can lock onto, then the same
+    # field is applied to the original pixels below.
+    running_match = np.zeros((ch, cw), dtype=np.float32)
 
     if use_mb:
         # multiband needs global ownership, so collect tiles and blend after the loop
@@ -907,7 +1544,8 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
         img = t.image
         if img.ndim == 2 and (is_color or use_mb):
             img = np.repeat(img[:, :, None], 3, axis=2)
-        img = (img.astype(np.float32, copy=False) * float(t.gain))
+        img = np.maximum(img.astype(np.float32, copy=False) * float(t.gain)
+                         + float(t.bias), 0.0)
 
         M = _tile_affine(t, ox, oy)
         warped = cv2.warpAffine(img, M, (cw, ch), flags=cv2.INTER_LINEAR,
@@ -915,15 +1553,25 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
         ones = np.ones((t.h, t.w), dtype=np.float32)
         valid = cv2.warpAffine(ones, M, (cw, ch), flags=cv2.INTER_NEAREST,
                                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+        # sharpened match copy warped by the SAME pose — used only to measure the
+        # local seam field, never composited into the output
+        match_warped = cv2.warpAffine(_match_mono(t, cfg) * float(t.gain), M, (cw, ch),
+                                      flags=cv2.INTER_LINEAR,
+                                      borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
 
         if warped.ndim == 2:
             warped = warped[:, :, None]
 
-        # local (non-rigid) seam correction against what's already down
+        # local (non-rigid) seam correction: MEASURE on the sharpened match canvas,
+        # APPLY the identical field to the original pixels (no shortcuts — the
+        # originals ride through the exact same geometry as the sharpened ones).
         if step > 0:
-            warped = _apply_local_warp(running_mono, warped, valid, cfg)
-            if warped.ndim == 2:   # cv2.remap squeezes (H,W,1) -> (H,W); restore it
-                warped = warped[:, :, None]
+            dxf, dyf = _measure_local_field(running_match, match_warped, valid, cfg)
+            if dxf is not None:
+                warped = _warp_by_dense_field(warped, dxf, dyf)
+                if warped.ndim == 2:   # cv2.remap squeezes (H,W,1) -> (H,W)
+                    warped = warped[:, :, None]
+                match_warped = _warp_by_dense_field(match_warped, dxf, dyf)
 
         # blend weight: hard for "none", distance-transform feather otherwise,
         # optionally scaled by tile quality so the sharper panel wins the seam.
@@ -943,11 +1591,10 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
             wsum += wtc
 
         coverage += (valid > 0).astype(np.float32)
-        # update running mono reference
-        contrib = _mono01(warped).astype(np.float32, copy=False)
-        running_mono = np.where(valid > 0,
-                                np.maximum(running_mono, contrib),
-                                running_mono)
+        # update the SHARPENED running reference for the next tile's measurement
+        running_match = np.where(valid > 0,
+                                 np.maximum(running_match, match_warped),
+                                 running_match)
 
     if use_mb:
         # Hard ownership: each pixel goes to the single valid tile with the
@@ -1005,19 +1652,33 @@ def run_surface_mosaic(tiles: List[Tile], cfg: Optional[SurfaceMosaicConfig] = N
     pairs = build_overlap_graph(tiles, cfg, progress_cb=progress_cb)
 
     _phase(0, 1, "Solving global placement")
-    global_bundle_adjust(tiles, pairs, cfg)
+    unplaced = global_bundle_adjust(tiles, pairs, cfg)
+    unplaced_set = set(unplaced)
+    placed = [t for i, t in enumerate(tiles) if i not in unplaced_set]
+
+    if len(placed) < 2:
+        # nothing merged — a non-solution is not an output
+        raise RuntimeError(
+            "Could not find a reliable overlap between the selected tiles, so no "
+            "mosaic was produced. This usually means too little overlap or too "
+            "little structure (poor seeing). Try more overlap or sharper panels.")
 
     _phase(0, 1, "Equalising brightness")
-    equalize_photometry(tiles, pairs, cfg)
+    # pairs index into the full tile list; unplaced tiles appear in no pair, so
+    # running on `tiles` is correct — but they're excluded from the radial model
+    # since they have no valid pose
+    equalize_photometry(tiles, pairs, cfg, exclude=unplaced_set)
 
     # TODO(sphere_reproject): if cfg.sphere_reproject, reproject each tile onto a
     # common lunar/solar sphere here using _build_lonlat_grids / derotate_stack_lonshift
     # (from setiastro.saspro.derotate) before compositing — needed for full-disk
     # and limb-spanning mosaics. v1 stitches in the image plane.
 
-    result = compose_mosaic(tiles, cfg, progress_cb=progress_cb)
+    result = compose_mosaic(placed, cfg, progress_cb=progress_cb)
     result.pairs = pairs
-    result.anchor = int(np.clip(cfg.anchor_index, 0, len(tiles) - 1))
+    anchor_tile = tiles[int(np.clip(cfg.anchor_index, 0, len(tiles) - 1))]
+    result.anchor = anchor_tile.idx if anchor_tile in placed else placed[0].idx
+    result.unplaced = [tiles[k].name for k in unplaced]
     return result
 
 
@@ -1030,6 +1691,7 @@ try:
     from PyQt6.QtWidgets import (
         QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
         QPushButton, QLabel, QProgressBar, QCheckBox, QComboBox, QMessageBox,
+        QDialog, QFormLayout, QSpinBox, QDoubleSpinBox, QDialogButtonBox, QGroupBox,
     )
     _HAVE_QT = True
 except Exception:  # pragma: no cover
@@ -1114,6 +1776,7 @@ if _HAVE_QT:
             p.drawRect(QRectF(tw((minx, miny)), tw((maxx, maxy))))
 
             anchor = int(getattr(res, "anchor", 0))
+            pos_by_idx = {t.idx: pos for pos, t in enumerate(tiles)}
 
             # translucent tile rectangles (overlaps darken via alpha stacking)
             centres = []
@@ -1122,7 +1785,7 @@ if _HAVE_QT:
                 poly = QPolygonF([tw(pt) for pt in cc])
                 fill = QColor(r, g, b, 70)
                 p.setBrush(QBrush(fill))
-                is_anchor = (i == anchor)
+                is_anchor = (tiles[i].idx == anchor)
                 p.setPen(QPen(QColor(r, g, b), 2.5 if is_anchor else 1.4))
                 p.drawPolygon(poly)
                 cx = sum(pt.x() for pt in poly) / 4.0
@@ -1131,8 +1794,9 @@ if _HAVE_QT:
 
             # match-graph edges between overlapping tiles (thickness by confidence)
             for pr in (getattr(res, "pairs", None) or []):
-                if 0 <= pr.i < len(centres) and 0 <= pr.j < len(centres):
-                    a, b = centres[pr.i], centres[pr.j]
+                pi = pos_by_idx.get(pr.i); pj = pos_by_idx.get(pr.j)
+                if pi is not None and pj is not None:
+                    a, b = centres[pi], centres[pj]
                     lw = 1.0 + 3.0 * float(np.clip(pr.conf, 0.0, 1.0))
                     ec = QColor(txt); ec.setAlpha(190)
                     p.setPen(QPen(ec, lw))
@@ -1148,7 +1812,7 @@ if _HAVE_QT:
                 name = (tiles[i].name or f"tile {i}")
                 if len(name) > 18:
                     name = name[:17] + "…"
-                if i == anchor:
+                if tiles[i].idx == anchor:
                     name += "  ★"
                 p.setPen(txt)
                 p.drawText(QPointF(ctr[0] + 7, ctr[1] - 6), name)
@@ -1194,6 +1858,29 @@ if _HAVE_QT:
             self.doc_manager = doc_manager
             self._worker: Optional[SurfaceMosaicWorker] = None
             self._views: List[Tuple[str, Any]] = []
+
+            # advanced params (edited via the Advanced dialog), seeded from defaults
+            _d = SurfaceMosaicConfig()
+            self._adv = {
+                "enhance_matching": _d.enhance_matching,
+                "match_msd_layers": _d.match_msd_layers,
+                "match_msd_gains": tuple(_d.match_msd_gains),
+                "orb_features": _d.orb_features,
+                "feature_max_dim": _d.feature_max_dim,
+                "lowe_ratio": _d.lowe_ratio,
+                "min_inliers": _d.min_inliers,
+                "ransac_thresh": _d.ransac_thresh,
+                "min_overlap_px": _d.min_overlap_px,
+                "min_overlap_ncc": _d.min_overlap_ncc,
+                "sift_fallback": _d.sift_fallback,
+                "phasecorr_fallback": _d.phasecorr_fallback,
+                "limb_fallback": _d.limb_fallback,
+                "local_warp_min_shift": _d.local_warp_min_shift,
+                "multiband_bands": _d.multiband_bands,
+                "radial_model": _d.radial_model,
+                "ap_size": _d.ap_size,
+                "quality_weighted_seam": _d.quality_weighted_seam,
+            }
 
             outer = QVBoxLayout(self)
             cols = QHBoxLayout()
@@ -1245,6 +1932,9 @@ if _HAVE_QT:
             left.addWidget(self.status)
 
             run_row = QHBoxLayout()
+            self.btn_advanced = QPushButton("Advanced…")
+            self.btn_advanced.clicked.connect(self._open_advanced)
+            run_row.addWidget(self.btn_advanced)
             run_row.addStretch(1)
             self.btn_run = QPushButton("Build Mosaic")
             self.btn_run.clicked.connect(self._on_run)
@@ -1319,7 +2009,169 @@ if _HAVE_QT:
             cfg.photometric = self.chk_photo.isChecked()
             cfg.local_warp = self.chk_localwarp.isChecked()
             cfg.blend = self.cmb_blend.currentData() or "feather"
+            for k, v in self._adv.items():        # advanced overrides
+                setattr(cfg, k, v)
             return cfg
+
+        # ---- advanced parameters ----
+        def _open_advanced(self):
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Advanced — Surface Mosaic")
+            v = QVBoxLayout(dlg)
+
+            # matching enhancement (the soft-data fix)
+            _MAXL = 8
+            gb_match = QGroupBox("Matching enhancement (soft / unsharpened stacks)")
+            fm = QFormLayout(gb_match)
+            chk_enh = QCheckBox("Enable structure boost for matching")
+            chk_enh.setChecked(bool(self._adv["enhance_matching"]))
+            fm.addRow(chk_enh)
+            sp_layers = QSpinBox(); sp_layers.setRange(2, _MAXL)
+            sp_layers.setValue(int(self._adv["match_msd_layers"]))
+            fm.addRow("Decomposition layers:", sp_layers)
+
+            gains0 = list(self._adv["match_msd_gains"])
+            gain_spins = []
+            for i in range(_MAXL):
+                sp = QDoubleSpinBox(); sp.setRange(0.0, 30.0); sp.setSingleStep(0.5)
+                sp.setValue(float(gains0[i]) if i < len(gains0) else 1.0)
+                fm.addRow(f"Layer {i + 1} gain ({2 ** i}px):", sp)
+                gain_spins.append(sp)
+
+            def _update_layer_rows():
+                n = sp_layers.value()
+                for i, sp in enumerate(gain_spins):
+                    vis = (i < n)
+                    sp.setVisible(vis)
+                    lab = fm.labelForField(sp)
+                    if lab is not None:
+                        lab.setVisible(vis)
+
+            sp_layers.valueChanged.connect(lambda _=0: _update_layer_rows())
+            _update_layer_rows()
+            v.addWidget(gb_match)
+
+            # matching robustness
+            gb_reg = QGroupBox("Registration")
+            fr = QFormLayout(gb_reg)
+            sp_orb = QSpinBox(); sp_orb.setRange(500, 20000); sp_orb.setSingleStep(500)
+            sp_orb.setValue(int(self._adv["orb_features"]))
+            fr.addRow("ORB features:", sp_orb)
+            sp_fmax = QSpinBox(); sp_fmax.setRange(400, 8000); sp_fmax.setSingleStep(100)
+            sp_fmax.setValue(int(self._adv["feature_max_dim"]))
+            fr.addRow("Feature detect max dim (px):", sp_fmax)
+            sp_lowe = QDoubleSpinBox(); sp_lowe.setRange(0.5, 0.95); sp_lowe.setSingleStep(0.05)
+            sp_lowe.setValue(float(self._adv["lowe_ratio"]))
+            fr.addRow("Lowe ratio (higher = looser):", sp_lowe)
+            sp_inl = QSpinBox(); sp_inl.setRange(4, 200)
+            sp_inl.setValue(int(self._adv["min_inliers"]))
+            fr.addRow("Min inliers:", sp_inl)
+            sp_ran = QDoubleSpinBox(); sp_ran.setRange(0.5, 10.0); sp_ran.setSingleStep(0.5)
+            sp_ran.setValue(float(self._adv["ransac_thresh"]))
+            fr.addRow("RANSAC threshold (px):", sp_ran)
+            sp_ovl = QSpinBox(); sp_ovl.setRange(8, 512); sp_ovl.setSingleStep(8)
+            sp_ovl.setValue(int(self._adv["min_overlap_px"]))
+            fr.addRow("Min overlap for refine (px):", sp_ovl)
+            sp_ncc = QDoubleSpinBox(); sp_ncc.setRange(0.0, 0.9); sp_ncc.setSingleStep(0.05)
+            sp_ncc.setValue(float(self._adv["min_overlap_ncc"]))
+            fr.addRow("Min overlap NCC (reject ghosts):", sp_ncc)
+            chk_sift = QCheckBox("SIFT feature fallback (soft texture)")
+            chk_sift.setChecked(bool(self._adv["sift_fallback"]))
+            fr.addRow(chk_sift)
+            chk_pc = QCheckBox("Correlation-search fallback (no features)")
+            chk_pc.setChecked(bool(self._adv["phasecorr_fallback"]))
+            fr.addRow(chk_pc)
+            chk_limb = QCheckBox("Limb fallback (align disk edge; rotation off only)")
+            chk_limb.setChecked(bool(self._adv["limb_fallback"]))
+            fr.addRow(chk_limb)
+            v.addWidget(gb_reg)
+
+            # seam / local warp
+            gb_seam = QGroupBox("Seam / local warp")
+            fs = QFormLayout(gb_seam)
+            sp_lwms = QDoubleSpinBox(); sp_lwms.setRange(0.0, 5.0); sp_lwms.setSingleStep(0.1)
+            sp_lwms.setValue(float(self._adv["local_warp_min_shift"]))
+            fs.addRow("Local-warp min shift (px):", sp_lwms)
+            v.addWidget(gb_seam)
+
+            # brightness / blending
+            gb_bl = QGroupBox("Brightness / Blending")
+            fb = QFormLayout(gb_bl)
+            sp_bands = QSpinBox(); sp_bands.setRange(1, 10)
+            sp_bands.setValue(int(self._adv["multiband_bands"]))
+            fb.addRow("Multiband bands:", sp_bands)
+            chk_radial = QCheckBox("Radial disk brightness model (auto when limb found)")
+            chk_radial.setChecked(bool(self._adv["radial_model"]))
+            fb.addRow(chk_radial)
+            v.addWidget(gb_bl)
+
+            # danger zone
+            gb_danger = QGroupBox("Don't touch unless you know what you're doing")
+            fd = QFormLayout(gb_danger)
+            sp_ap = QSpinBox(); sp_ap.setRange(16, 256); sp_ap.setSingleStep(8)
+            sp_ap.setValue(int(self._adv["ap_size"]))
+            fd.addRow("Seam-warp patch size (px):", sp_ap)
+            chk_qseam = QCheckBox("Quality-weighted seam (sharper tile wins)")
+            chk_qseam.setChecked(bool(self._adv["quality_weighted_seam"]))
+            fd.addRow(chk_qseam)
+            v.addWidget(gb_danger)
+
+            bb = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok
+                | QDialogButtonBox.StandardButton.RestoreDefaults
+                | QDialogButtonBox.StandardButton.Cancel)
+            v.addWidget(bb)
+
+            def _restore():
+                d = SurfaceMosaicConfig()
+                chk_enh.setChecked(d.enhance_matching)
+                sp_layers.setValue(d.match_msd_layers)
+                dg = list(d.match_msd_gains)
+                for i, sp in enumerate(gain_spins):
+                    sp.setValue(float(dg[i]) if i < len(dg) else 1.0)
+                _update_layer_rows()
+                sp_orb.setValue(d.orb_features)
+                sp_fmax.setValue(d.feature_max_dim)
+                sp_lowe.setValue(d.lowe_ratio)
+                sp_inl.setValue(d.min_inliers)
+                sp_ran.setValue(d.ransac_thresh)
+                sp_ovl.setValue(d.min_overlap_px)
+                sp_ncc.setValue(d.min_overlap_ncc)
+                chk_sift.setChecked(d.sift_fallback)
+                chk_pc.setChecked(d.phasecorr_fallback)
+                chk_limb.setChecked(d.limb_fallback)
+                sp_lwms.setValue(d.local_warp_min_shift)
+                sp_bands.setValue(d.multiband_bands)
+                chk_radial.setChecked(d.radial_model)
+                sp_ap.setValue(d.ap_size)
+                chk_qseam.setChecked(d.quality_weighted_seam)
+
+            bb.accepted.connect(dlg.accept)
+            bb.rejected.connect(dlg.reject)
+            bb.button(QDialogButtonBox.StandardButton.RestoreDefaults).clicked.connect(_restore)
+
+            if dlg.exec():
+                n = sp_layers.value()
+                self._adv.update({
+                    "enhance_matching": chk_enh.isChecked(),
+                    "match_msd_layers": n,
+                    "match_msd_gains": tuple(float(gain_spins[i].value()) for i in range(n)),
+                    "orb_features": sp_orb.value(),
+                    "feature_max_dim": sp_fmax.value(),
+                    "lowe_ratio": sp_lowe.value(),
+                    "min_inliers": sp_inl.value(),
+                    "ransac_thresh": sp_ran.value(),
+                    "min_overlap_px": sp_ovl.value(),
+                    "min_overlap_ncc": sp_ncc.value(),
+                    "sift_fallback": chk_sift.isChecked(),
+                    "phasecorr_fallback": chk_pc.isChecked(),
+                    "limb_fallback": chk_limb.isChecked(),
+                    "local_warp_min_shift": sp_lwms.value(),
+                    "multiband_bands": sp_bands.value(),
+                    "radial_model": chk_radial.isChecked(),
+                    "ap_size": sp_ap.value(),
+                    "quality_weighted_seam": chk_qseam.isChecked(),
+                })
 
         # ---- run ----
         def _on_run(self):
@@ -1349,10 +2201,22 @@ if _HAVE_QT:
         def _on_done(self, result):
             self.btn_run.setEnabled(True)
             self.layout_view.set_result(result)
+            unplaced = list(getattr(result, "unplaced", []) or [])
             try:
                 push_mosaic_to_view(result.image, title="Surface Mosaic",
                                     doc_manager=self.doc_manager)
-                self.status.setText("Mosaic opened in a new view.")
+                if unplaced:
+                    self.status.setText(f"Mosaic opened — {len(unplaced)} tile(s) excluded (no match).")
+                    names = "\n".join(f"  • {n}" for n in unplaced)
+                    QMessageBox.warning(
+                        self, "Some tiles could not be matched",
+                        "These tiles didn't share a reliable overlap with the rest and were "
+                        "left out of the mosaic:\n\n" + names +
+                        "\n\nThis usually means too little overlap or too little structure "
+                        "(poor seeing). Try more overlap, sharper panels, or the fallback / "
+                        "matching-boost options in Advanced.")
+                else:
+                    self.status.setText("Mosaic opened in a new view.")
             except Exception as e:
                 QMessageBox.critical(self, "Open failed", str(e))
                 self.status.setText("Mosaic built, but couldn't open a view.")

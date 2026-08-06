@@ -1,4 +1,4 @@
-# pro/multiscale_decomp.py
+# src/setiastro/saspro/multiscale_decomp.py
 from __future__ import annotations
 import numpy as np
 import cv2
@@ -15,8 +15,11 @@ from PyQt6.QtWidgets import (
     QProgressDialog, QApplication
 )
 from contextlib import contextmanager
-from setiastro.saspro.resources import get_resources
+from setiastro.saspro.resources import get_resources, multiscale_decomp_path
 from setiastro.saspro.autostretch import autostretch
+# Preset drag grip (shortcuts imports this module lazily, so this top-level
+# import does not create a cycle — same pattern as star_stretch/stat_stretch).
+from setiastro.saspro.shortcuts import PresetDragHandle
 try:
     cv2.setUseOptimized(True)
     cv2.setNumThreads(0)  # 0 = let OpenCV decide
@@ -378,8 +381,11 @@ class LayerCfg:
 # ─────────────────────────────────────────────
 
 class MultiscaleDecompDialog(QDialog):
-    def __init__(self, parent, doc):
+    def __init__(self, parent, doc, headless: bool = False):
         super().__init__(parent)
+        # True when constructed for a headless preset apply (drop-on-image):
+        # skip the modal init progress + initial preview, and don't persist geometry.
+        self._headless = bool(headless)
         self.setWindowTitle("Multiscale Decomposition")
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
@@ -447,29 +453,34 @@ class MultiscaleDecompDialog(QDialog):
         self._build_ui()
         H, W = self._image.shape[:2]
         self.scene.setSceneRect(QRectF(0, 0, W, H))
-        # ───── NEW: initialization busy dialog ─────
-        prog = QProgressDialog("Initializing multiscale decomposition…", "", 0, 0, self)
-        prog.setWindowTitle("Multiscale Decomposition")
-        prog.setWindowModality(Qt.WindowModality.ApplicationModal)
-        prog.setCancelButton(None)          # no cancel button, just a busy indicator
-        prog.setMinimumDuration(0)          # show immediately
-        prog.show()
-        QApplication.processEvents()
 
-        # heavy work (MADs, blurs, etc.)
-        import time
-        _t = time.perf_counter()
-        self._recompute_decomp(force=True)
-        print(f"[DECOMP] total _recompute_decomp: {(time.perf_counter()-_t)*1000:.1f}ms", flush=True)
+        # Headless preset apply drives seed_from_preset()+_commit_to_doc() itself,
+        # both of which recompute the pyramid on demand — so skip the interactive
+        # init compute, the modal progress dialog, and the initial preview/fit.
+        if not self._headless:
+            # ───── NEW: initialization busy dialog ─────
+            prog = QProgressDialog("Initializing multiscale decomposition…", "", 0, 0, self)
+            prog.setWindowTitle("Multiscale Decomposition")
+            prog.setWindowModality(Qt.WindowModality.ApplicationModal)
+            prog.setCancelButton(None)          # no cancel button, just a busy indicator
+            prog.setMinimumDuration(0)          # show immediately
+            prog.show()
+            QApplication.processEvents()
 
-        _t = time.perf_counter()
-        self._rebuild_preview()
-        print(f"[PREVIEW] _rebuild_preview: {(time.perf_counter()-_t)*1000:.1f}ms", flush=True)
+            # heavy work (MADs, blurs, etc.)
+            import time
+            _t = time.perf_counter()
+            self._recompute_decomp(force=True)
+            print(f"[DECOMP] total _recompute_decomp: {(time.perf_counter()-_t)*1000:.1f}ms", flush=True)
 
-        prog.close()
-        # ─────────────── END NEW ───────────────
+            _t = time.perf_counter()
+            self._rebuild_preview()
+            print(f"[PREVIEW] _rebuild_preview: {(time.perf_counter()-_t)*1000:.1f}ms", flush=True)
 
-        QTimer.singleShot(0, self._fit_view)
+            prog.close()
+            # ─────────────── END NEW ───────────────
+
+            QTimer.singleShot(0, self._fit_view)
 
 
     # ---------- UI ----------
@@ -721,6 +732,23 @@ class MultiscaleDecompDialog(QDialog):
         self.btn_split_layers = QPushButton("Split Layers to Documents")
         self.btn_close = QPushButton("Close")
 
+        # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
+        # Captures the live UI via _multiscale_params(). Dropped on empty
+        # canvas → a shortcut carrying these settings; dropped on an image →
+        # runs the tool headlessly with them.
+        self.preset_drag_handle = PresetDragHandle(
+            "multiscale_decomp",
+            self._multiscale_params,
+            icon=QIcon(multiscale_decomp_path),
+            tooltip=(
+                "Drag to the canvas to create a Multiscale Decomposition shortcut\n"
+                "with these exact settings.\n"
+                "Drop directly on an image to apply them headlessly."
+            ),
+            parent=self,
+        )
+        btn_row.addWidget(self.preset_drag_handle)
+
         btn_row.addStretch(1)
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_detail_new)
@@ -759,6 +787,104 @@ class MultiscaleDecompDialog(QDialog):
 
         # Connect viewport scroll changes
         self._connect_viewport_signals()
+
+    # ---------- preset (grip / headless) ----------
+    def _multiscale_params(self) -> dict:
+        """Canonical preset — single source of truth for the drag grip and the
+        headless runner. Schema matches _MultiScaleDecompPresetDialog.result_dict()
+        plus two live-only extras (mode, residual) that the preset editor doesn't
+        expose yet; seed_from_preset() honors them when present.
+        """
+        layers_cfg = []
+        for i in range(self.layers):
+            c = self.cfgs[i] if i < len(self.cfgs) else LayerCfg()
+            layers_cfg.append({
+                "enabled": bool(c.enabled),
+                "gain":    float(c.bias_gain),
+                "thr":     float(c.thr),
+                "amount":  float(c.amount),
+                "denoise": float(c.denoise),
+            })
+        return {
+            "layers":     int(self.layers),
+            "base_sigma": float(self.base_sigma),
+            "linked_rgb": bool(self.cb_linked_rgb.isChecked()),
+            "mode":       self.combo_mode.currentText(),
+            "residual":   bool(self.residual_enabled),
+            "layers_cfg": layers_cfg,
+        }
+
+    def seed_from_preset(self, p: dict | None) -> None:
+        """Public: load a preset dict (same schema as _multiscale_params) into the
+        live controls, so a double-clicked shortcut opens seeded and a headless
+        drop applies these exact settings. Signals are blocked during the push;
+        the table/editor/caches are refreshed explicitly afterward.
+        """
+        if not p:
+            return
+
+        layers = int(p.get("layers", self.layers))
+        layers = max(1, min(10, layers))
+        base_sigma = float(p.get("base_sigma", self.base_sigma))
+
+        # Rebuild per-layer configs from the preset (fill missing with defaults).
+        cfgs_in = p.get("layers_cfg", []) or []
+        new_cfgs: list[LayerCfg] = []
+        for i in range(layers):
+            d = cfgs_in[i] if i < len(cfgs_in) else {}
+            new_cfgs.append(LayerCfg(
+                enabled   = bool(d.get("enabled", True)),
+                bias_gain = float(d.get("gain",    1.0)),
+                thr       = float(d.get("thr",     0.0)),
+                amount    = float(d.get("amount",  0.0)),
+                denoise   = float(d.get("denoise", 0.0)),
+            ))
+
+        self.layers = layers
+        self.base_sigma = base_sigma
+        self.cfgs = new_cfgs
+
+        if "residual" in p:
+            self.residual_enabled = bool(p["residual"])
+
+        seeded_widgets = (self.spin_layers, self.spin_sigma,
+                          self.cb_linked_rgb, self.combo_mode)
+        for w in seeded_widgets:
+            try:
+                w.blockSignals(True)
+            except Exception:
+                pass
+        try:
+            self.spin_layers.setValue(layers)
+            self.spin_sigma.setValue(base_sigma)
+            self.cb_linked_rgb.setChecked(
+                bool(p.get("linked_rgb", self.cb_linked_rgb.isChecked()))
+            )
+            mode = p.get("mode")
+            if mode:
+                idx = self.combo_mode.findText(str(mode))
+                if idx >= 0:
+                    self.combo_mode.setCurrentIndex(idx)
+        finally:
+            for w in seeded_widgets:
+                try:
+                    w.blockSignals(False)
+                except Exception:
+                    pass
+
+        # Rebuild table/combos to the seeded layer count, then refresh the editor.
+        self._sync_cfgs_and_ui()
+        if self.layers > 0:
+            try:
+                self.table.selectRow(0)
+            except Exception:
+                pass
+            self._load_layer_into_editor(0)
+
+        # Seeded params invalidate any cached pyramid; the next compute rebuilds it.
+        self._invalidate_full_decomp_cache()
+        if not self._headless:
+            self._schedule_preview()
 
     def _active_mask_id(self) -> str | None:
         return getattr(self._doc, "active_mask_id", None) or None
@@ -1692,8 +1818,9 @@ class MultiscaleDecompDialog(QDialog):
 
     # ---------- Apply to doc ----------
     def _commit_to_doc(self):
-        try: self._save_window_state()
-        except Exception: pass
+        if not self._headless:
+            try: self._save_window_state()
+            except Exception: pass
         with self._busy_popup("Applying multiscale result to document…"):
             tuned, residual = self._build_tuned_layers()
             if tuned is None or residual is None:
@@ -1764,6 +1891,25 @@ class MultiscaleDecompDialog(QDialog):
                     self.parent()._refresh_active_view()
                 except Exception:
                     pass
+
+            # 🔁 Record as last headless-style command for Replay (best-effort;
+            # supports both spellings used across the suite).
+            try:
+                mw = self.parent()
+                preset = self._multiscale_params()
+                for attr in ("_remember_last_headless_command",
+                             "remember_last_headless_command"):
+                    fn = getattr(mw, attr, None)
+                    if callable(fn):
+                        try:
+                            fn("multiscale_decomp", preset,
+                               description="Multiscale Decomposition")
+                        except TypeError:
+                            fn(command_id="multiscale_decomp", preset=preset,
+                               description="Multiscale Decomposition")
+                        break
+            except Exception:
+                pass
 
             self.accept()
 
@@ -2187,3 +2333,74 @@ def closeEvent(self, ev):
     except Exception:
         pass
     super().closeEvent(ev)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Preset entry points (double-click opener + headless drop runner)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _resolve_active_doc(main_window):
+    """Resolve the active document the same way the tool's toolbar opener does:
+    the active MDI subwindow first (so we seed onto the visible image), then the
+    document manager as a fallback.
+    """
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    return doc
+
+
+def open_multiscale_decomp_with_preset(main_window, preset: dict | None = None):
+    """Open the LIVE Multiscale Decomposition dialog seeded from a preset. Used by
+    the double-click preset-open path (ShortcutManager.trigger_with_preset) and
+    registered in shortcuts._preset_opener_for_command.
+    """
+    doc = _resolve_active_doc(main_window)
+    if doc is None or getattr(doc, "image", None) is None:
+        return
+
+    dlg = MultiscaleDecompDialog(main_window, doc)
+    try:
+        dlg.setWindowIcon(QIcon(multiscale_decomp_path))
+    except Exception:
+        pass
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+
+
+def apply_multiscale_decomp_headless(main_window, preset: dict | None = None, doc=None):
+    """Headless runner: apply a Multiscale Decomposition preset to a document
+    without showing the live dialog (drop-on-image path). Builds the dialog in
+    headless mode so it reuses the exact, tested pipeline
+    (decompose → apply_layer_ops → reconstruct → shape restore → mask blend →
+    apply_edit) rather than re-implementing it, then disposes of it.
+
+    Returns True on success, False if there was no usable document.
+    """
+    if doc is None:
+        doc = _resolve_active_doc(main_window)
+    if doc is None or getattr(doc, "image", None) is None:
+        return False
+
+    dlg = MultiscaleDecompDialog(main_window, doc, headless=True)
+    try:
+        dlg.seed_from_preset(preset or {})
+        dlg._commit_to_doc()
+    finally:
+        try:
+            dlg.deleteLater()
+        except Exception:
+            pass
+    return True

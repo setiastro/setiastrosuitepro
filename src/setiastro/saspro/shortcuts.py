@@ -667,6 +667,9 @@ def _preset_opener_for_command(command_id: str):
     if command_id == "syqontools":
         from setiastro.saspro.syqon_tools import open_syqontools_with_preset
         return open_syqontools_with_preset   
+    if command_id == "multiscale_decomp":
+        from setiastro.saspro.multiscale_decomp import open_multiscale_decomp_with_preset
+        return open_multiscale_decomp_with_preset
     if command_id == "unwarp":
         from setiastro.saspro.unwarp import open_unwarp_with_preset
         return open_unwarp_with_preset

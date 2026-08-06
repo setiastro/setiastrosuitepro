@@ -1,4 +1,4 @@
-# pro/plate_solver.py
+# src/setiastro/saspro/plate_solver.py
 from __future__ import annotations
 
 import os
