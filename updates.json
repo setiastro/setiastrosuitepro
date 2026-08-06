@@ -1,10 +1,10 @@
 {
-  "version": "1.20.0",
+  "version": "1.20.1",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.0/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.0/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.0/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.0/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.1/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.1/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.1/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.1/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.20.0\nNew Tool: Surface Mosaic, found under Star Stuff. This allows you to build a mosaic image from panel shots of the lunar surface, solar surface, or if you have your own satellite in orbit of Mars, planetary surface mosaics. The machinery borrows a lot from the Planetary Stacker surface mode to find similar patch, do coarse matching then subpixel phase correlated matching. There is also the option to solve for rotated frames, perfect for Alt Az mounts where there may be rotation between each panel."
+ "notes": "Seti Astro Suite Pro\n\nV1.20.1\nSurface Mosaic Tool: Added advanced robust fallbacks to align even the toughest of data. Included an Advanced Options button for power users that want to play with the mosaic variables.\n\nMulti-scale Decomposition: added the preset grip and alt+DND headless running ability\n\nSSSC: Added a Step0: Plate Solve button. Specifically for A.Potomus, if you want to join discord and thank him personally for the addition. Be sure to share this link with him too: https://youtu.be/QUkfghsadnc"
 }
