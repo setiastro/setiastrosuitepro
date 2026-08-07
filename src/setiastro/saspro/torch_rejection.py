@@ -1,7 +1,23 @@
 # src/setiastro/saspro/torch_rejection.py
 from __future__ import annotations
 import contextlib
+import os
+import threading
 import numpy as np
+
+# Reduce CUDA caching-allocator fragmentation so VRAM freed by the cosmetic
+# pass can be reused by the satellite-removal CNN. Must be set before the first
+# CUDA allocation — also set it in the launcher env in case Torch initialises
+# CUDA from another module first.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+# One device-wide lock shared by every GPU stage. Calibration cosmetic
+# correction (GPU main loop) and satellite trail removal (save/consumer thread)
+# run from different threads on the same card; serialising them keeps a single
+# large working set resident at a time instead of summing both. Summing both is
+# what OOMs a small card on Linux/CUDA, where — unlike Windows WDDM — GPU memory
+# cannot page to host.
+_GPU_LOCK = threading.RLock()
 
 # Always route through our runtime shim so ALL GPU users share the same backend.
 # Nothing heavy happens at import; we only resolve Torch when needed.
@@ -411,22 +427,28 @@ _CC_BUFFERS: dict = {}
 
 
 def _get_cc_buffers(torch, dev, H, W):
-    """Get or create persistent reusable buffers for cosmetic correction."""
-    key = (str(dev), H, W)
-    if key not in _CC_BUFFERS:
-        _CC_BUFFERS[key] = {
-            "five":         torch.empty((5, H, W), device=dev, dtype=torch.float32),
-            "stacked":      torch.empty((8, H, W), device=dev, dtype=torch.float32),
-            "sorted_s":     torch.empty((8, H, W), device=dev, dtype=torch.float32),
-            "sort_idx":     torch.empty((8, H, W), device=dev, dtype=torch.int64),
-            "m5":           torch.empty((H, W),    device=dev, dtype=torch.float32),
-            "hot_thresh":   torch.empty((H, W),    device=dev, dtype=torch.float32),
-            "cold_thresh":  torch.empty((H, W),    device=dev, dtype=torch.float32),
-            "avg3x3":       torch.empty((H, W),    device=dev, dtype=torch.float32),
-            "replacement":  torch.empty((H, W),    device=dev, dtype=torch.float32),
-            "ones_k":       torch.ones(1, 1, 3, 3, device=dev, dtype=torch.float32),
-        }
-    return _CC_BUFFERS[key]
+    """Allocate per-call cosmetic-correction scratch buffers.
+
+    Intentionally NOT cached module-side. The old persistent cache held
+    ~168 B/px (five/stacked/sorted_s + an int64 sort_idx at 8 B/px, etc.) —
+    ~4.4 GB on a 26 MP frame — resident for the entire calibration run. The
+    satellite trail CNN runs on the same GPU from the save thread and was
+    left with nothing. Returning a fresh dict lets every buffer free by
+    refcount the moment _cosmetic_correction_tensor returns, so the memory
+    is back in the allocator pool before satellite runs.
+    """
+    return {
+        "five":         torch.empty((5, H, W), device=dev, dtype=torch.float32),
+        "stacked":      torch.empty((8, H, W), device=dev, dtype=torch.float32),
+        "sorted_s":     torch.empty((8, H, W), device=dev, dtype=torch.float32),
+        "sort_idx":     torch.empty((8, H, W), device=dev, dtype=torch.int64),
+        "m5":           torch.empty((H, W),    device=dev, dtype=torch.float32),
+        "hot_thresh":   torch.empty((H, W),    device=dev, dtype=torch.float32),
+        "cold_thresh":  torch.empty((H, W),    device=dev, dtype=torch.float32),
+        "avg3x3":       torch.empty((H, W),    device=dev, dtype=torch.float32),
+        "replacement":  torch.empty((H, W),    device=dev, dtype=torch.float32),
+        "ones_k":       torch.ones(1, 1, 3, 3, device=dev, dtype=torch.float32),
+    }
 
 
 def _clear_cc_buffers():
