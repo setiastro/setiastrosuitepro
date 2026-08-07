@@ -1,6 +1,6 @@
 # src/setiastro/saspro/__main__.py
 from __future__ import annotations
-import sys
+import sys, ctypes
 import warnings
 
 # Suppress torch optree version warning — SASpro does not use torch.compile()
@@ -27,18 +27,23 @@ CLI_SUBCOMMANDS = {
 def _minimize_console_if_owned() -> None:
     if sys.platform != "win32":
         return
-    import ctypes
     kernel32 = ctypes.windll.kernel32
+    user32   = ctypes.windll.user32
+    kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.ShowWindow.restype  = ctypes.c_bool
+
     hwnd = kernel32.GetConsoleWindow()
     if not hwnd:
         return  # no console (console=False build) — nothing to do
-    # Only minimize a console we exclusively own — i.e. one PyInstaller
-    # spawned for us. If other PIDs share it (cmd/pwsh/VS Code shell),
-    # leave it alone so we don't hijack or un-hide someone's terminal.
-    buf = (ctypes.c_uint * 4)()
-    count = kernel32.GetConsoleProcessList(buf, 4)
+
+    # Only minimize a console we EXCLUSIVELY own (PyInstaller spawned it for
+    # us on a double-click). If cmd / pwsh / VS Code share it, leave it alone.
+    # Buffer sized generously; we only care about the ==1 case regardless.
+    buf = (ctypes.c_uint * 16)()
+    count = kernel32.GetConsoleProcessList(buf, 16)
     if count == 1:
-        ctypes.windll.user32.ShowWindow(hwnd, 7)  # SW_SHOWMINNOACTIVE
+        user32.ShowWindow(hwnd, 7)  # SW_SHOWMINNOACTIVE
 
 def entry(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
