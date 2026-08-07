@@ -22128,6 +22128,7 @@ class StackingSuiteDialog(QDialog):
         group_integration_data = {}
         summary_lines = []
         autocrop_outputs = []
+        master_files = []
 
         for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
             t_g = perf_counter()
@@ -22232,6 +22233,10 @@ class StackingSuiteDialog(QDialog):
                     is_mono=is_mono_orig
                 )
                 log(f"✅ Saved integrated image (original) for '{group_key}': {out_path_orig}")
+
+            # record the primary integrated master for this group (any save branch above)
+            if out_path_orig and os.path.exists(out_path_orig):
+                master_files.append(out_path_orig)
 
             group_rect = None
             if prepass.get("autocrop_enabled", False):
@@ -22415,9 +22420,19 @@ class StackingSuiteDialog(QDialog):
             for g, p in autocrop_outputs:
                 summary_lines.append(f"  • {g} → {p}")
 
+        # Primary integrated masters + any auto-cropped variants, for the
+        # "Open Saved Masters" button in the completion popup.
+        crop_paths = [p for (_g, p) in autocrop_outputs]
+        seen, master_files_out = set(), []
+        for p in list(master_files) + crop_paths:
+            if p and p not in seen:
+                seen.add(p)
+                master_files_out.append(p)
+
         return {
             "summary_lines": summary_lines,
-            "autocrop_outputs": autocrop_outputs
+            "autocrop_outputs": autocrop_outputs,
+            "master_files": master_files_out,
         }
 
     def launch_mfdeconv_from_prepass(
@@ -22796,6 +22811,83 @@ class StackingSuiteDialog(QDialog):
             self._mf_pd.setRange(0, total_groups * 1000)
             self._mf_pd.setValue(min(val, total_groups * 1000))
 
+    def _saspro_doc_manager(self):
+        """Resolve the app-wide DocManager by walking up to the main window
+        (same idiom as star_alignment._find_main_window_from_child)."""
+        p = self
+        while p is not None and not (hasattr(p, "doc_manager") or hasattr(p, "docman")):
+            p = getattr(p, "parent", lambda: None)()
+        if p is None:
+            return None
+        return getattr(p, "docman", None) or getattr(p, "doc_manager", None)
+
+    def _open_saved_masters(self, paths):
+        """Open each saved master in SASpro via DocManager.open_path.
+        open_path builds the ImageDocument and emits documentAdded, which the
+        MDI area turns into a subwindow — so this both opens and displays."""
+        dm = self._saspro_doc_manager()
+        if dm is None:
+            QMessageBox.warning(
+                self, self.tr("Open Masters"),
+                self.tr("Could not locate the document manager to open the masters.")
+            )
+            return
+        opened = 0
+        for p in paths:
+            try:
+                dm.open_path(p)
+                opened += 1
+            except Exception as e:
+                QMessageBox.warning(
+                    self, self.tr("Open Masters"),
+                    self.tr("Could not open:\n{0}\n\n{1}").format(p, e)
+                )
+        if opened:
+            try:
+                self.update_status(self.tr(f"🖼 Opened {opened} master(s) in SASpro."))
+            except Exception:
+                pass
+
+    def _collect_master_paths(self, payload) -> list[str]:
+        """Best-effort discovery of the integrated master paths for the
+        completion popup. Prefers explicit keys on the finished payload, then a
+        stashed attribute. Returns existing, de-duplicated paths only.
+        NOTE: pin this to the real source once AfterAlignWorker is confirmed."""
+        candidates = []
+
+        if isinstance(payload, dict):
+            for key in ("master_files", "masters", "output_files",
+                        "integrated_files", "stacked_files", "result_files"):
+                v = payload.get(key)
+                if isinstance(v, str):
+                    candidates.append(v)
+                elif isinstance(v, (list, tuple)):
+                    candidates.extend(str(x) for x in v if x)
+                elif isinstance(v, dict):            # {group -> path}
+                    candidates.extend(str(x) for x in v.values() if x)
+
+        for attr in ("_last_master_paths", "last_master_paths", "_master_files"):
+            v = getattr(self, attr, None)
+            if isinstance(v, str):
+                candidates.append(v)
+            elif isinstance(v, (list, tuple)):
+                candidates.extend(str(x) for x in v if x)
+            elif isinstance(v, dict):
+                candidates.extend(str(x) for x in v.values() if x)
+
+        seen, out = set(), []
+        for p in candidates:
+            try:
+                np_ = os.path.normpath(p)
+            except Exception:
+                continue
+            if np_ in seen:
+                continue
+            seen.add(np_)
+            if os.path.exists(np_):
+                out.append(np_)
+        return out
+
     @pyqtSlot(bool, str, object)
     def _on_post_pipeline_finished(self, ok: bool, message: str, payload):
         # ---- close progress dialog ----
@@ -22908,12 +23000,22 @@ class StackingSuiteDialog(QDialog):
             sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
             sasd_exists = os.path.exists(sasd_path)
 
+            master_paths = self._collect_master_paths(payload)
+
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
             msg_box.setText(message)
             msg_box.setIcon(QMessageBox.Icon.Information)
 
             ok_btn = msg_box.addButton(QMessageBox.StandardButton.Ok)
+
+            masters_btn = None
+            if master_paths:
+                masters_btn = msg_box.addButton(
+                    self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
+                    QMessageBox.ButtonRole.ActionRole
+                )
+
             dither_btn = None
             if sasd_exists:
                 dither_btn = msg_box.addButton(
@@ -22922,8 +23024,12 @@ class StackingSuiteDialog(QDialog):
                 )
 
             msg_box.exec()
+            clicked = msg_box.clickedButton()
 
-            if dither_btn is not None and msg_box.clickedButton() == dither_btn:
+            if masters_btn is not None and clicked == masters_btn:
+                self._open_saved_masters(master_paths)
+
+            elif dither_btn is not None and clicked == dither_btn:
                 try:
                     from setiastro.saspro.dither_analysis import DitherAnalysisWindow
                     dlg = DitherAnalysisWindow(parent=self)
@@ -23447,6 +23553,7 @@ class StackingSuiteDialog(QDialog):
         group_integration_data = {}
         summary_lines = []
         autocrop_outputs = []
+        master_files = []
 
         for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
             t_g = perf_counter()
@@ -23547,6 +23654,9 @@ class StackingSuiteDialog(QDialog):
                     is_mono=is_mono_orig
                 )
                 log(f"✅ Saved integrated image (original) for '{group_key}': {out_path_orig}")
+
+            if out_path_orig and os.path.exists(out_path_orig):
+                master_files.append(out_path_orig)
 
             # ---- Decide the group’s fixed crop rect (used for ALL outputs in this group) ----
             group_rect = None
@@ -23802,7 +23912,10 @@ class StackingSuiteDialog(QDialog):
                         original_header=(ref_header_c or ref_header),
                         is_mono=(comet_only.ndim==2)
                     )
+
                     log(f"✅ Saved CometOnly → {comet_path}")
+                    if comet_path and os.path.exists(comet_path):
+                        master_files.append(comet_path)
 
                     # --- Crop CometOnly identically (if requested) ---
                     if autocrop_enabled and (group_rect is not None or global_rect is not None):
@@ -23857,6 +23970,8 @@ class StackingSuiteDialog(QDialog):
                         save_image(blend, blend_path, "fit", "32-bit floating point",
                                 ref_header, is_mono=is_mono_blend)
                         log(f"✅ Saved CometBlend → {blend_path}")
+                        if blend_path and os.path.exists(blend_path):
+                            master_files.append(blend_path)
 
                         # --- Crop CometBlend identically (if requested) ---
                         if autocrop_enabled and (group_rect is not None or global_rect is not None):
@@ -23994,9 +24109,19 @@ class StackingSuiteDialog(QDialog):
             for g, p in autocrop_outputs:
                 summary_lines.append(f"  • {g} → {p}")
 
+        # Primary masters (star + comet-only + comet-blend) plus star autocrop
+        # variants, for the "Open Saved Masters" button in the completion popup.
+        crop_paths = [p for (_g, p) in autocrop_outputs]
+        seen, master_files_out = set(), []
+        for p in list(master_files) + crop_paths:
+            if p and p not in seen:
+                seen.add(p)
+                master_files_out.append(p)
+
         return {
             "summary_lines": summary_lines,
-            "autocrop_outputs": autocrop_outputs
+            "autocrop_outputs": autocrop_outputs,
+            "master_files": master_files_out,
         }
 
     def integrate_comet_aligned(

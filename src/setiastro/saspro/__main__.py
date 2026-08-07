@@ -24,6 +24,22 @@ CLI_SUBCOMMANDS = {
     "report",
 }
 
+def _minimize_console_if_owned() -> None:
+    if sys.platform != "win32":
+        return
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    hwnd = kernel32.GetConsoleWindow()
+    if not hwnd:
+        return  # no console (console=False build) — nothing to do
+    # Only minimize a console we exclusively own — i.e. one PyInstaller
+    # spawned for us. If other PIDs share it (cmd/pwsh/VS Code shell),
+    # leave it alone so we don't hijack or un-hide someone's terminal.
+    buf = (ctypes.c_uint * 4)()
+    count = kernel32.GetConsoleProcessList(buf, 4)
+    if count == 1:
+        ctypes.windll.user32.ShowWindow(hwnd, 7)  # SW_SHOWMINNOACTIVE
+
 def entry(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -40,6 +56,7 @@ def entry(argv: list[str] | None = None) -> int:
         return int(cli_main(argv))
 
     from setiastro.saspro.gui_entry import main as gui_main
+    _minimize_console_if_owned()
     return int(gui_main(argv))
 
 def main(argv: list[str] | None = None) -> int:
