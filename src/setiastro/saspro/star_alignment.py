@@ -512,15 +512,25 @@ def wcs_reproject_align(tgt_img, tgt_wcs, ref_wcs, out_shape,
 
                 if is_color:
                     for c in range(nch):
-                        dst[y0:y1, x0:x1, c] = cv2.remap(
-                            src[..., c], mapx, mapy,
-                            interpolation=cv2.INTER_LANCZOS4,
-                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+                        dst[y0:y1, x0:x1, c] = _warp_antiring(
+                            lambda c=c: cv2.remap(
+                                src[..., c], mapx, mapy,
+                                interpolation=cv2.INTER_LANCZOS4,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0),
+                            lambda c=c: cv2.remap(
+                                src[..., c], mapx, mapy,
+                                interpolation=cv2.INTER_LINEAR,
+                                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0))
                 else:
-                    dst[y0:y1, x0:x1] = cv2.remap(
-                        src, mapx, mapy,
-                        interpolation=cv2.INTER_LANCZOS4,
-                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+                    dst[y0:y1, x0:x1] = _warp_antiring(
+                        lambda: cv2.remap(
+                            src, mapx, mapy,
+                            interpolation=cv2.INTER_LANCZOS4,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0),
+                        lambda: cv2.remap(
+                            src, mapx, mapy,
+                            interpolation=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0))
 
                 done_tiles += 1
                 if progress_cb is not None and (done_tiles % 8) == 0:
@@ -534,30 +544,31 @@ def wcs_reproject_align(tgt_img, tgt_wcs, ref_wcs, out_shape,
 
 def _warp_like_ref(target_img: np.ndarray, M_2x3: np.ndarray, ref_shape_hw: tuple[int,int]) -> np.ndarray:
     H, W = ref_shape_hw
+    def _wa(ch, flags):
+        return cv2.warpAffine(ch, M_2x3, (W, H),
+                              flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
     if target_img.ndim == 2:
         if not target_img.flags['C_CONTIGUOUS']:
             target_img = np.ascontiguousarray(target_img)
-        return cv2.warpAffine(target_img, M_2x3, (W, H),
-                               flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-    
-    # Optimization: If standard RGB/BGR (3 channels) or 4 channels, OpenCV handles it natively.
-    # Note: OpenCV warpAffine support n-channel images, but typically 1, 3, or 4.
+        return _warp_antiring(lambda: _wa(target_img, cv2.INTER_LANCZOS4),
+                              lambda: _wa(target_img, cv2.INTER_LINEAR))
+
+    # RGB/BGR (<=4 ch): warpAffine handles n-channel natively, and cv2 dilate/erode
+    # inside _warp_antiring operate per-channel, so the envelope clamp is correct.
     C = target_img.shape[2]
     if C <= 4:
-         if not target_img.flags['C_CONTIGUOUS']:
-             target_img = np.ascontiguousarray(target_img)
-         return cv2.warpAffine(target_img, M_2x3, (W, H),
-                               flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+        if not target_img.flags['C_CONTIGUOUS']:
+            target_img = np.ascontiguousarray(target_img)
+        return _warp_antiring(lambda: _wa(target_img, cv2.INTER_LANCZOS4),
+                              lambda: _wa(target_img, cv2.INTER_LINEAR))
 
-    # Fallback for >4 channels (e.g. hyperspectral or special stacks)
-    chs = []
-    for i in range(C):
-        ch = target_img[..., i]
-        if not ch.flags['C_CONTIGUOUS']:
-            ch = np.ascontiguousarray(ch)
-        chs.append(cv2.warpAffine(ch, M_2x3, (W, H),
-                           flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0))
-    return np.stack(chs, axis=2)
+    # Fallback for >4 channels (warpAffine can't do them natively) — per-channel.
+    return np.stack([
+        _warp_antiring(lambda c=c: _wa(np.ascontiguousarray(target_img[..., c]), cv2.INTER_LANCZOS4),
+                       lambda c=c: _wa(np.ascontiguousarray(target_img[..., c]), cv2.INTER_LINEAR))
+        for c in range(C)
+    ], axis=2)
 
 def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
     """
@@ -1761,29 +1772,35 @@ class StellarAlignmentDialog(QDialog):
             def _warp_poly_residual(img: np.ndarray, out_hw: tuple[int,int]) -> np.ndarray:
                 Hout, Wout = out_hw
 
-                # Pass A: base warp to reference grid
+                # Pass A: base warp to reference grid (anti-ring clamped)
                 if base_kind == "affine":
+                    def _wa(ch, flags):
+                        return cv2.warpAffine(ch, base_X, (Wout, Hout),
+                                              flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                     if img.ndim == 2:
                         if not img.flags['C_CONTIGUOUS']:
                             img = np.ascontiguousarray(img)
-                        base_img = cv2.warpAffine(img, base_X, (Wout, Hout),
-                                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                        base_img = _warp_antiring(lambda: _wa(img, cv2.INTER_LANCZOS4),
+                                                  lambda: _wa(img, cv2.INTER_LINEAR))
                     else:
-                        # Ensure contiguous channels
-                        base_img = np.stack([cv2.warpAffine(np.ascontiguousarray(img[..., c]), base_X, (Wout, Hout),
-                                                            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                            for c in range(img.shape[2])], axis=2)
+                        base_img = np.stack([
+                            _warp_antiring(lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                                           lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
+                            for c in range(img.shape[2])], axis=2)
                 else:
+                    def _wp(ch, flags):
+                        return cv2.warpPerspective(ch, base_X, (Wout, Hout),
+                                                   flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                     if img.ndim == 2:
                         if not img.flags['C_CONTIGUOUS']:
                             img = np.ascontiguousarray(img)
-                        base_img = cv2.warpPerspective(img, base_X, (Wout, Hout),
-                                                    flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                        base_img = _warp_antiring(lambda: _wp(img, cv2.INTER_LANCZOS4),
+                                                  lambda: _wp(img, cv2.INTER_LINEAR))
                     else:
-                        # Ensure contiguous channels
-                        base_img = np.stack([cv2.warpPerspective(np.ascontiguousarray(img[..., c]), base_X, (Wout, Hout),
-                                                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                            for c in range(img.shape[2])], axis=2)
+                        base_img = np.stack([
+                            _warp_antiring(lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                                           lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
+                            for c in range(img.shape[2])], axis=2)
 
                 # Pass B: polynomial residual via inverse_map (ref->basewarped), with normalization
                 class _InvMap:
@@ -1881,17 +1898,16 @@ class StellarAlignmentDialog(QDialog):
 
         # Apply the transform
         if kind == "affine":
+            def _wa(ch, flags):
+                return cv2.warpAffine(ch, X, (W, H), flags=flags,
+                                      borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             if tgt.ndim == 2:
-                warped_target = cv2.warpAffine(
-                    tgt, X, (W, H),
-                    flags=cv2.INTER_LANCZOS4,
-                    borderMode=cv2.BORDER_CONSTANT, borderValue=0
-                )
+                warped_target = _warp_antiring(lambda: _wa(tgt, cv2.INTER_LANCZOS4),
+                                               lambda: _wa(tgt, cv2.INTER_LINEAR))
             else:
                 warped_target = np.stack(
-                    [cv2.warpAffine(tgt[..., i], X, (W, H),
-                                    flags=cv2.INTER_LANCZOS4,
-                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    [_warp_antiring(lambda i=i: _wa(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LANCZOS4),
+                                    lambda i=i: _wa(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LINEAR))
                     for i in range(tgt.shape[2])],
                     axis=2
                 )
@@ -1902,17 +1918,16 @@ class StellarAlignmentDialog(QDialog):
             self.show_transform_info(transform_3x3, stage_note=_note)
 
         elif kind == "homography":
+            def _wp(ch, flags):
+                return cv2.warpPerspective(ch, X, (W, H), flags=flags,
+                                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             if tgt.ndim == 2:
-                warped_target = cv2.warpPerspective(
-                    tgt, X, (W, H),
-                    flags=cv2.INTER_LANCZOS4,
-                    borderMode=cv2.BORDER_CONSTANT, borderValue=0
-                )
+                warped_target = _warp_antiring(lambda: _wp(tgt, cv2.INTER_LANCZOS4),
+                                               lambda: _wp(tgt, cv2.INTER_LINEAR))
             else:
                 warped_target = np.stack(
-                    [cv2.warpPerspective(tgt[..., i], X, (W, H),
-                                        flags=cv2.INTER_LANCZOS4,
-                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    [_warp_antiring(lambda i=i: _wp(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LANCZOS4),
+                                    lambda i=i: _wp(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LINEAR))
                     for i in range(tgt.shape[2])],
                     axis=2
                 )
@@ -2721,6 +2736,63 @@ def _solve_delta_job(args):
 # ─────────────────────────────────────────────────────────────
 # Final warp+save worker (process-safe)
 # ─────────────────────────────────────────────────────────────
+def _warp_antiring(warp_hi, warp_lo, star_sigma: float = 3.0,
+                   grow_px: int = 6, feather_px: float = 2.0):
+    """
+    Selective anti-ring resampling for HDR point sources (saturated stars).
+
+    Lanczos everywhere EXCEPT a grown, feathered disk around bright stars, where
+    the ring-free bilinear warp is blended in.
+
+    Key point: Lanczos undershoot (the dark ring / black hole) lives in the DIM
+    pixels *around* a bright star, not in the bright pixel itself — so a
+    bright-pixel mask must be grown by ~the Lanczos radius to actually cover the
+    ring. Blending two smooth warps (rather than clipping Lanczos to a min/max
+    envelope) avoids the rosette/"petal" facets an envelope clamp produces by
+    quantizing the kernel's lobes.
+
+    star_sigma : robust threshold in sigmas above background (median + k·MAD)
+    grow_px    : dilate the star mask this many px to cover the ring zone
+    feather_px : Gaussian feather so the Lanczos↔bilinear seam is invisible
+    """
+    import cv2
+    import numpy as np
+
+    hi = warp_hi()   # Lanczos: sharp, rings on bright stars
+    lo = warp_lo()   # bilinear: soft, no ring
+
+    # Luminance proxy for the mask (max over channels catches a star bright in
+    # any one channel). Use the ring-free bilinear warp so the mask isn't
+    # polluted by Lanczos lobes.
+    ref = lo if lo.ndim == 2 else lo.max(axis=2)
+
+    finite = np.isfinite(ref)
+    if finite.any():
+        vals = ref[finite]
+        med = float(np.median(vals))
+        mad = float(np.median(np.abs(vals - med)))
+    else:
+        med = mad = 0.0
+    thr = med + float(star_sigma) * 1.4826 * mad   # 1.4826 = MAD→sigma
+
+    mask = (ref > thr).astype(np.float32)
+    if mask.any():
+        if grow_px > 0:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                          (2 * grow_px + 1, 2 * grow_px + 1))
+            mask = cv2.dilate(mask, k)
+        if feather_px and feather_px > 0:
+            ksz = int(2 * round(feather_px) + 1)
+            mask = cv2.GaussianBlur(mask, (ksz, ksz), float(feather_px))
+        if lo.ndim == 3:
+            mask = mask[..., None]
+        out = hi * (1.0 - mask) + lo * mask
+    else:
+        out = hi
+
+    out = np.asarray(out, np.float32)
+    np.maximum(out, 0.0, out=out)
+    return out
 
 def _finalize_write_job(args):
     """
@@ -2919,18 +2991,24 @@ def _finalize_write_job(args):
             else:
                 kind, X = "affine", A_prev.copy()
 
-        # 4) warp full-res image
+        # 4) warp full-res image  (anti-ring: clamp Lanczos to bilinear envelope)
         Hh, Ww = Href, Wref
+        _LANCZOS = cv2.INTER_LANCZOS4
+        _LINEAR  = cv2.INTER_LINEAR
+        _BMODE, _BVAL = cv2.BORDER_CONSTANT, 0
 
         if kind in ("affine", "similarity"):
             A = np.asarray(X, np.float64).reshape(2, 3)
+            def _wa(ch, flags):
+                return cv2.warpAffine(ch, A, (Ww, Hh), flags=flags,
+                                      borderMode=_BMODE, borderValue=_BVAL)
             if is_mono:
-                aligned = cv2.warpAffine(img, A, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                         borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                aligned = _warp_antiring(lambda: _wa(img, _LANCZOS),
+                                         lambda: _wa(img, _LINEAR))
             else:
                 aligned = np.stack([
-                    cv2.warpAffine(img[..., c], A, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                   borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    _warp_antiring(lambda c=c: _wa(img[..., c], _LANCZOS),
+                                   lambda c=c: _wa(img[..., c], _LINEAR))
                     for c in range(img.shape[2])
                 ], axis=2)
 
@@ -2939,13 +3017,16 @@ def _finalize_write_job(args):
 
         elif kind == "homography":
             Hm = np.asarray(X, np.float64).reshape(3, 3)
+            def _wp(ch, flags):
+                return cv2.warpPerspective(ch, Hm, (Ww, Hh), flags=flags,
+                                           borderMode=_BMODE, borderValue=_BVAL)
             if is_mono:
-                aligned = cv2.warpPerspective(img, Hm, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                aligned = _warp_antiring(lambda: _wp(img, _LANCZOS),
+                                         lambda: _wp(img, _LINEAR))
             else:
                 aligned = np.stack([
-                    cv2.warpPerspective(img[..., c], Hm, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    _warp_antiring(lambda c=c: _wp(img[..., c], _LANCZOS),
+                                   lambda c=c: _wp(img[..., c], _LINEAR))
                     for c in range(img.shape[2])
                 ], axis=2)
 
@@ -2954,13 +3035,16 @@ def _finalize_write_job(args):
 
         elif kind in ("poly3", "poly4"):
             map_x, map_y = X
+            def _wr(ch, flags):
+                return cv2.remap(ch, map_x, map_y, flags,
+                                 borderMode=_BMODE, borderValue=_BVAL)
             if is_mono:
-                aligned = cv2.remap(img, map_x, map_y, cv2.INTER_LANCZOS4,
-                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                aligned = _warp_antiring(lambda: _wr(img, _LANCZOS),
+                                         lambda: _wr(img, _LINEAR))
             else:
                 aligned = np.stack([
-                    cv2.remap(img[..., c], map_x, map_y, cv2.INTER_LANCZOS4,
-                              borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    _warp_antiring(lambda c=c: _wr(img[..., c], _LANCZOS),
+                                   lambda c=c: _wr(img[..., c], _LINEAR))
                     for c in range(img.shape[2])
                 ], axis=2)
 
@@ -3641,23 +3725,31 @@ class StarRegistrationThread(QThread):
 
         def _warp_poly_residual(img: np.ndarray, out_hw: tuple[int,int]) -> np.ndarray:
             Hh, Ww = out_hw
-            # Pass A: base warp
+            # Pass A: base warp (anti-ring clamped)
             if base_kind == "affine":
+                def _wa(ch, flags):
+                    return cv2.warpAffine(ch, base_X, (Ww, Hh),
+                                          flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                 if img.ndim == 2:
-                    img_base = cv2.warpAffine(img, base_X, (Ww, Hh),
-                                            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    img_base = _warp_antiring(lambda: _wa(img, cv2.INTER_LANCZOS4),
+                                              lambda: _wa(img, cv2.INTER_LINEAR))
                 else:
-                    img_base = np.stack([cv2.warpAffine(img[..., c], base_X, (Ww, Hh),
-                                                        flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                        for c in range(img.shape[2])], axis=2)
+                    img_base = np.stack([
+                        _warp_antiring(lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                                       lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
+                        for c in range(img.shape[2])], axis=2)
             else:
+                def _wp(ch, flags):
+                    return cv2.warpPerspective(ch, base_X, (Ww, Hh),
+                                               flags=flags, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
                 if img.ndim == 2:
-                    img_base = cv2.warpPerspective(img, base_X, (Ww, Hh),
-                                                flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+                    img_base = _warp_antiring(lambda: _wp(img, cv2.INTER_LANCZOS4),
+                                              lambda: _wp(img, cv2.INTER_LINEAR))
                 else:
-                    img_base = np.stack([cv2.warpPerspective(img[..., c], base_X, (Ww, Hh),
-                                                            flags=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                                        for c in range(img.shape[2])], axis=2)
+                    img_base = np.stack([
+                        _warp_antiring(lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                                       lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
+                        for c in range(img.shape[2])], axis=2)
 
             class _InvMap:
                 def __call__(self, coords):
@@ -3690,26 +3782,32 @@ class StarRegistrationThread(QThread):
         Hh, Ww = out_hw
         if kind == "affine":
             A = np.asarray(X, np.float64)
+            def _wa(ch, flags):
+                return cv2.warpAffine(ch, A, (Ww, Hh), flags=flags,
+                                      borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             if img.ndim == 2:
-                return cv2.warpAffine(img, A, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-            return np.stack([cv2.warpAffine(img[..., c], A, (Ww, Hh),
-                                            flags=cv2.INTER_LANCZOS4,
-                                            borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                            for c in range(img.shape[2])], axis=2)
+                return _warp_antiring(lambda: _wa(img, cv2.INTER_LANCZOS4),
+                                      lambda: _wa(img, cv2.INTER_LINEAR))
+            return np.stack([
+                _warp_antiring(lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                               lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
+                for c in range(img.shape[2])], axis=2)
 
         if kind.startswith("poly"):
             return X(img, (Hh, Ww))
 
         if kind == "homography":
             H = np.asarray(X, np.float64)
+            def _wp(ch, flags):
+                return cv2.warpPerspective(ch, H, (Ww, Hh), flags=flags,
+                                           borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             if img.ndim == 2:
-                return cv2.warpPerspective(img, H, (Ww, Hh), flags=cv2.INTER_LANCZOS4,
-                                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-            return np.stack([cv2.warpPerspective(img[..., c], H, (Ww, Hh),
-                                                flags=cv2.INTER_LANCZOS4,
-                                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-                            for c in range(img.shape[2])], axis=2)
+                return _warp_antiring(lambda: _wp(img, cv2.INTER_LANCZOS4),
+                                      lambda: _wp(img, cv2.INTER_LINEAR))
+            return np.stack([
+                _warp_antiring(lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                               lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
+                for c in range(img.shape[2])], axis=2)
 
         # TPS: X is a callable(img, out_hw) -> img
         return X(img, (Hh, Ww))
@@ -4073,15 +4171,17 @@ class StarRegistrationThread(QThread):
     def apply_affine_transform_static(image, transform_matrix):
         T = np.array(transform_matrix, dtype=np.float32).reshape(2, 3)
         h, w = image.shape[:2]
+        def _wa(ch, flags):
+            return cv2.warpAffine(ch, T, (w, h), flags=flags,
+                                  borderMode=cv2.BORDER_CONSTANT, borderValue=0)
         if image.ndim == 2:
-            aligned = cv2.warpAffine(image, T, (w, h), flags=cv2.INTER_LANCZOS4,
-                                     borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            aligned = _warp_antiring(lambda: _wa(image, cv2.INTER_LANCZOS4),
+                                     lambda: _wa(image, cv2.INTER_LINEAR))
         else:
-            chans = []
-            for i in range(image.shape[2]):
-                chans.append(cv2.warpAffine(image[:, :, i], T, (w, h), flags=cv2.INTER_LANCZOS4,
-                                            borderMode=cv2.BORDER_CONSTANT, borderValue=0))
-            aligned = np.stack(chans, axis=2)
+            aligned = np.stack([
+                _warp_antiring(lambda i=i: _wa(np.ascontiguousarray(image[:, :, i]), cv2.INTER_LANCZOS4),
+                               lambda i=i: _wa(np.ascontiguousarray(image[:, :, i]), cv2.INTER_LINEAR))
+                for i in range(image.shape[2])], axis=2)
         return aligned
 
     # ─────────────────────────────────────────────────────────────

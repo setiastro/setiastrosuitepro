@@ -17680,6 +17680,11 @@ class StackingSuiteDialog(QDialog):
                         continue
 
                     header, _ = get_valid_header(light_file)
+                    if header is None:
+                        self.update_status(self.tr(
+                            f"⚠️ Skipping (no readable header): {os.path.basename(light_file)}"
+                        ))
+                        continue
                     width      = int(header.get("NAXIS1", 0))
                     height     = int(header.get("NAXIS2", 0))
                     image_size = f"{width}x{height}"
