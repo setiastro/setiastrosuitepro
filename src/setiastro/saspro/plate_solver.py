@@ -1314,6 +1314,73 @@ def _merge_wcs_into_base_header(base_header: Header | None, wcs_header: Header |
         except Exception:
             # Skip weird/invalid keys silently
             pass
+
+    # ── Recompute the true focal length from the solved plate scale ──
+    # scale("/px) = 206.265 · (pixel_size_um · binning) / focal_mm
+    #   ⇒ focal_mm = 206.265 · pixel_size_um_binned / scale("/px)
+    # Scale is read the SAME way as the success popup (proj_plane_pixel_scales),
+    # so it works whether the solver wrote a CD matrix (ASTAP) or PC+CDELT
+    # (astropy/Gaia). Pixel size comes from the acquisition header.
+    _orig_focal = _first_float(out.get("FOCALLEN"))
+    _derived_focal = None
+    try:
+        scale_arcsec = None
+        # 1) preferred: astropy plate scale off the assembled WCS (CD, PC+CDELT, SIP)
+        try:
+            from astropy.wcs.utils import proj_plane_pixel_scales
+            _w = _wcs_from_header_2d(out, relax=True)
+            _sc = proj_plane_pixel_scales(_w)
+            scale_arcsec = float(np.mean(_sc[:2])) * 3600.0
+        except Exception:
+            scale_arcsec = None
+        # 2) fallback: CD determinant
+        if not (scale_arcsec and scale_arcsec > 0):
+            cd11 = _first_float(out.get("CD1_1")); cd12 = _first_float(out.get("CD1_2"))
+            cd21 = _first_float(out.get("CD2_1")); cd22 = _first_float(out.get("CD2_2"))
+            if None not in (cd11, cd12, cd21, cd22):
+                det = abs(cd11 * cd22 - cd12 * cd21)
+                if det > 0:
+                    scale_arcsec = (det ** 0.5) * 3600.0
+        # 3) fallback: CDELT (areal)
+        if not (scale_arcsec and scale_arcsec > 0):
+            c1 = _first_float(out.get("CDELT1")); c2 = _first_float(out.get("CDELT2"))
+            if c1 and c2:
+                scale_arcsec = (abs(c1 * c2)) ** 0.5 * 3600.0
+            elif c1:
+                scale_arcsec = abs(c1) * 3600.0
+            elif c2:
+                scale_arcsec = abs(c2) * 3600.0
+
+        px_um_x = _first_float(out.get("XPIXSZ"))
+        px_um_y = _first_float(out.get("YPIXSZ"))
+        px_um = None
+        if px_um_x and px_um_y:
+            px_um = 0.5 * (px_um_x + px_um_y)
+        elif px_um_x:
+            px_um = px_um_x
+        elif px_um_y:
+            px_um = px_um_y
+
+        if scale_arcsec and scale_arcsec > 0 and px_um and px_um > 0:
+            bx = _first_int(out.get("XBINNING")) or _first_int(out.get("XBIN")) or 1
+            by = _first_int(out.get("YBINNING")) or _first_int(out.get("YBIN")) or 1
+            focal_mm = 206.264806 * (px_um * (bx + by) / 2.0) / scale_arcsec
+            if np.isfinite(focal_mm) and 1.0 <= focal_mm <= 50000.0:
+                _derived_focal = float(focal_mm)
+    except Exception:
+        _derived_focal = None
+
+    if _derived_focal is not None:
+        try:
+            out["FOCALLEN"] = (round(_derived_focal, 3), "focal length from plate solve (mm)")
+            if _orig_focal and abs(_orig_focal - _derived_focal) >= 0.5:
+                out.add_history(
+                    f"FOCALLEN recomputed from plate solve: "
+                    f"{_orig_focal:.1f} -> {_derived_focal:.1f} mm"
+                )
+        except Exception:
+            pass
+
     return out
 
 
@@ -3765,6 +3832,10 @@ def show_solve_summary(parent, hdr: Header, img_w: int, img_h: int,
         fov_w = img_w * scale / 3600.0
         fov_h = img_h * scale / 3600.0
         lines.append(f"<b>Field of view:</b>  {_fmt_fov(fov_w)} \u00d7 {_fmt_fov(fov_h)}")
+
+        _fl = _first_float(hdr.get("FOCALLEN"))
+        if _fl and _fl > 0:
+            lines.append(f"<b>Focal length:</b>  {_fl:.1f} mm  (from solve)")
 
         # Rotation: angle of North from image +y, measured at center
         try:
