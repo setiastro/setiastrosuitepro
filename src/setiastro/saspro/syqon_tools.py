@@ -30,6 +30,47 @@ from setiastro.saspro.remove_stars import (
     _invert_mtf_unlinked_rgb,
 )
 from setiastro.saspro.resources import starnet_path, get_icons
+
+
+class _WorkerCloseGuardMixin:
+    """
+    Shared cancel/wait logic for pages that own a `proc_thr` QThread.
+
+    `_safe_to_close()` returns True if it's safe to tear the widget down,
+    False if the user chose to keep processing. Both the parent dialog's
+    close paths and a page's own closeEvent route through this so a running
+    GPU worker is never destroyed mid-run (which qFatal/aborts the process).
+    """
+    _WORKER_LABEL = "SyQon"
+
+    def _stop_worker_blocking(self):
+        thr = getattr(self, "proc_thr", None)
+        if thr is not None and thr.isRunning():
+            thr.cancel()
+            # One tile of MPS inference can be slow to reach the cancel check.
+            if not thr.wait(15000):
+                thr.terminate()
+                thr.wait(2000)
+        self.proc_thr = None
+
+    def _safe_to_close(self) -> bool:
+        thr = getattr(self, "proc_thr", None)
+        if thr is None or not thr.isRunning():
+            return True
+        reply = QMessageBox.question(
+            self,
+            f"{self._WORKER_LABEL} Running",
+            f"{self._WORKER_LABEL} is still processing.\n\n"
+            "Cancel it and close? (May take a moment to finish the current tile.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return False
+        self._stop_worker_blocking()
+        return True
+
+
 _SYQON_BUY_URL_PRISM_MINI = "https://github.com/setiastro/setiastrosuitepro/releases/download/benchmarkFIT/prism_mini"   # replace with exact URL when you have it
 _SYQON_BUY_URL_PRISM_DEEP = "https://syqon.it/prism"   # replace with exact URL when you have it
 
@@ -261,31 +302,29 @@ class SyQonToolsDialog(QDialog):
                 pass
             self._follow_conn = None
 
+    def _all_pages_safe_to_close(self) -> bool:
+        # Any hub page with a running worker gets a chance to veto the close.
+        for attr in ("page_denoise", "page_sharpen"):
+            page = getattr(self, attr, None)
+            if page is not None and hasattr(page, "_safe_to_close"):
+                if not page._safe_to_close():
+                    return False
+        return True
+
+    def done(self, result):
+        # reject() (Close button / Esc) and accept() both funnel through done()
+        # WITHOUT calling closeEvent — guard here so a running worker isn't
+        # destroyed when the widget tree is torn down.
+        if not self._all_pages_safe_to_close():
+            return
+        super().done(result)
+
     def closeEvent(self, ev):
+        # Window-X path. reject()/accept() go through done() above instead.
+        if not self._all_pages_safe_to_close():
+            ev.ignore()
+            return
         self._release_active_view_hook()
-        try:
-            page = getattr(self, "page_denoise", None)
-            if page is not None:
-                thr = getattr(page, "proc_thr", None)
-                if thr is not None and thr.isRunning():
-                    reply = QMessageBox.question(
-                        self,
-                        "SyQon Prism Running",
-                        "Denoise is still processing.\n\n"
-                        "Cancel it and close? (May take a moment to finish the current tile.)",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.No,
-                    )
-                    if reply != QMessageBox.StandardButton.Yes:
-                        ev.ignore()
-                        return
-                    thr.cancel()
-                    if not thr.wait(10000):
-                        thr.terminate()
-                        thr.wait(2000)
-                    page.proc_thr = None
-        except Exception:
-            pass
         super().closeEvent(ev)
 
 class _SyQonStarlessHubPage(QWidget):
@@ -325,7 +364,9 @@ class _SyQonStarlessHubPage(QWidget):
         self._embedded_dlg = dlg
         self._lay.addWidget(dlg)
         dlg.show()
-class _SyQonDenoiseHubPage(QWidget):
+class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
+    _WORKER_LABEL = "SyQon Prism Denoise"
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -1056,11 +1097,14 @@ class _SyQonDenoiseHubPage(QWidget):
             preview_src_rgb01=(x_for_net if self.chk_live_preview.isChecked() else None),  # ← ADD
             preview_max_dim=900,                                             # ← ADD
             preview_emit_ms=120,                                             # ← ADD
-            parent=self,
+            parent=None,   # NOT parented into the widget tree: deleteChildren()
+                           # must never reach a running QThread (qFatal/abort).
         )
         self.proc_thr.progress.connect(self._on_worker_progress)
         self.proc_thr.preview.connect(self._on_worker_preview)              # ← ADD
         self.proc_thr.finished.connect(self._on_worker_finished)
+        # Delete only AFTER run() has fully unwound (finished fires post-run).
+        self.proc_thr.finished.connect(self.proc_thr.deleteLater)
         self.proc_thr.start()
 
     def _clear_ai_cache(self):
@@ -1091,24 +1135,21 @@ class _SyQonDenoiseHubPage(QWidget):
         )
 
     def closeEvent(self, ev):
-        try:
-            thr = getattr(self, "proc_thr", None)
-            if thr is not None and thr.isRunning():
-                thr.cancel()
-                if not thr.wait(10000):
-                    thr.terminate()
-                    thr.wait(2000)
-                self.proc_thr = None
-        except Exception:
-            pass
+        # Embedded pages rarely receive closeEvent (only top-level windows do),
+        # so the real guard lives in the parent dialog's done()/closeEvent.
+        # Kept here for the standalone case.
+        if not self._safe_to_close():
+            ev.ignore()
+            return
         super().closeEvent(ev)
 
 
 _SYQON_PARALLAX_BUY_URL = "https://syqon.it/parallax"
  
 
-class _SyQonSharpenHubPage(QWidget):
- 
+class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
+    _WORKER_LABEL = "SyQon Parallax"
+
     def __init__(self, parent=None):
         super().__init__(parent)
  
@@ -1796,12 +1837,13 @@ class _SyQonSharpenHubPage(QWidget):
             tile            = int(self.spin_tile.value()),
             overlap         = int(self.spin_overlap.value()),
             pad             = int(self.spin_pad.value()),
-            parent          = self,
+            parent          = None,   # see Prism: keep worker out of widget tree
             mode            = mode,
             batch_size      = batch_size,
         )
         self.proc_thr.progress.connect(self._on_progress)
         self.proc_thr.finished.connect(self._on_finished)
+        self.proc_thr.finished.connect(self.proc_thr.deleteLater)
         self.proc_thr.start()
  
  
