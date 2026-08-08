@@ -517,6 +517,75 @@ def _planet_disk_mask(ch: np.ndarray, grow: float = 1.015) -> np.ndarray | None:
     mask = ((xx - float(cx)) ** 2 + (yy - float(cy)) ** 2) <= (float(r) ** 2)
     return mask
 
+
+def _auto_fit_planet_ellipse(img_rgb: np.ndarray):
+    """
+    WinJUPOS-style automatic disk fit. Segments the largest bright blob and fits
+    an ellipse to its limb, yielding center, radius (semi-major), position angle,
+    and tilt (b/a = ellipticity/oblateness) in ONE pass.
+
+    Returns (cx, cy, r, pa_deg, tilt) in FULL-IMAGE pixel coords, or None.
+    PA/tilt are a best-effort starting estimate — exact for an oblate/elongated
+    disk (Jupiter, galaxy), meaningless-but-harmless for a round one (user tweaks).
+    """
+    if cv2 is None:
+        return None
+
+    a = np.asarray(img_rgb)
+    if a.ndim == 3 and a.shape[2] >= 2:
+        ch = a[..., 1]  # green: good luminance proxy for planets
+    elif a.ndim == 3:
+        ch = a[..., 0]
+    else:
+        ch = a
+    img = ch.astype(np.float32, copy=False)
+
+    p1 = float(np.percentile(img, 1.0))
+    p99 = float(np.percentile(img, 99.5))
+    if p99 <= p1:
+        return None
+
+    scaled = np.clip((img - p1) * (255.0 / (p99 - p1)), 0, 255).astype(np.uint8)
+    scaled = cv2.GaussianBlur(scaled, (0, 0), 1.2)
+    _, bw = cv2.threshold(scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN, k, iterations=1)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, k, iterations=2)
+
+    num, labels, stats, cents = cv2.connectedComponentsWithStats(bw, connectivity=8)
+    if num <= 1:
+        return None
+
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    j = int(np.argmax(areas)) + 1
+    area = float(stats[j, cv2.CC_STAT_AREA])
+    if area < 200:
+        return None
+
+    cx, cy = float(cents[j][0]), float(cents[j][1])
+    r_major = float(np.sqrt(area / np.pi))   # equivalent-area radius (fallback)
+    pa_deg, tilt = 0.0, 1.0
+
+    comp = (labels == j).astype(np.uint8)
+    cnts, _ = cv2.findContours(comp, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    if cnts:
+        c = max(cnts, key=cv2.contourArea)
+        if len(c) >= 5:
+            (ex, ey), (d1, d2), ang = cv2.fitEllipse(c)
+            major, minor = (max(d1, d2), min(d1, d2))
+            if major > 1.0:
+                cx, cy = float(ex), float(ey)
+                r_major = 0.5 * float(major)
+                tilt = float(np.clip(minor / major, 0.05, 1.0))
+                # cv2's angle orients the 'width' (d1) axis; if the major axis is
+                # 'height' (d2), add 90°. Both cv2 and Qt use clockwise/y-down.
+                pa = ang if d1 >= d2 else (ang + 90.0)
+                pa_deg = ((float(pa) + 180.0) % 360.0) - 180.0
+
+    return (cx, cy, r_major, pa_deg, tilt)
+
+
 def _mask_bbox(mask: np.ndarray):
     ys, xs = np.where(mask)
     if xs.size == 0:
@@ -3254,6 +3323,19 @@ class PlanetDiskAdjustDialog(QDialog):
             help_txt += "\nAdjust disk PA / tilt to match the galaxy's projected ellipse."
         self.lbl_help.setText(help_txt)
 
+        # auto-detect row
+        auto_row = QHBoxLayout()
+        self.btn_auto = QPushButton("🎯 Auto-detect disk")
+        self.btn_auto.setToolTip(
+            "Automatically estimate the disk center, radius, and — for galaxy /\n"
+            "planet / Saturn — the ellipse PA and tilt (oblateness) from the image.\n"
+            "Gets you close (WinJUPOS-style); fine-tune from there."
+        )
+        self.btn_auto.clicked.connect(self._auto_detect)
+        auto_row.addWidget(self.btn_auto)
+        auto_row.addStretch(1)
+        outer.addLayout(auto_row)
+
         # radius row
         rad_row = QHBoxLayout()
         self.btn_r_minus = QPushButton("Radius -")
@@ -3654,6 +3736,45 @@ class PlanetDiskAdjustDialog(QDialog):
         self.sld_r.setValue(int(round(self.r)))
         self.spin_r.blockSignals(False)
         self.sld_r.blockSignals(False)
+        self._redraw()
+
+    def _auto_detect(self):
+        """Auto-estimate disk center/radius (+ PA/tilt for ellipse modes) from the image."""
+        res = _auto_fit_planet_ellipse(self.img)
+        if res is None:
+            QMessageBox.information(
+                self, "Auto-detect Disk",
+                "Could not detect a disk automatically.\n"
+                "Adjust the circle manually instead."
+            )
+            return
+
+        cx, cy, r, pa, tilt = res
+        self.cx, self.cy, self.r = float(cx), float(cy), float(r)
+        self._clamp()
+
+        # sync radius widgets
+        self.spin_r.blockSignals(True); self.sld_r.blockSignals(True)
+        self.spin_r.setValue(self.r)
+        self.sld_r.setValue(int(round(self.r)))
+        self.spin_r.blockSignals(False); self.sld_r.blockSignals(False)
+
+        # sync PA / tilt for ellipse overlay modes (galaxy / planet / saturn)
+        if self.overlay_mode in ("saturn", "galaxy", "planet"):
+            self.ring_pa = float(pa)
+            self.ring_tilt = float(tilt)
+            for spn, sld, val in (
+                (getattr(self, "spin_ring_pa", None),   getattr(self, "sld_ring_pa", None),   pa),
+                (getattr(self, "spin_ring_tilt", None), getattr(self, "sld_ring_tilt", None), tilt),
+            ):
+                if spn is not None:
+                    scale = int(round(1.0 / max(1e-9, spn.singleStep())))
+                    spn.blockSignals(True); spn.setValue(float(val)); spn.blockSignals(False)
+                    if sld is not None:
+                        sld.blockSignals(True)
+                        sld.setValue(int(round(float(val) * scale)))
+                        sld.blockSignals(False)
+
         self._redraw()
 
     def _on_radius_spin(self, v: float):

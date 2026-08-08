@@ -1217,6 +1217,20 @@ class SERStackerDialog(QDialog):
         self.chk_derotate.setChecked(False)
         self.btn_set_disk = QPushButton("Set disk…", self)
         self.btn_set_disk.setEnabled(False)
+        self.btn_set_disk.setFlat(False)
+        self.btn_set_disk.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_set_disk.setStyleSheet(
+            "QPushButton {"
+            "  border: 1px solid palette(mid);"
+            "  border-radius: 4px;"
+            "  padding: 4px 14px;"
+            "  background-color: palette(button);"
+            "  color: palette(button-text);"
+            "}"
+            "QPushButton:hover:enabled { background-color: palette(light); }"
+            "QPushButton:pressed:enabled { background-color: palette(dark); }"
+            "QPushButton:disabled { border: 1px solid palette(mid); color: palette(mid); }"
+        )
 
         self.lbl_derot_disk = QLabel("(not set)", self)
         self.lbl_derot_disk.setWordWrap(True)

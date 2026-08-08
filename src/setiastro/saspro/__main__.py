@@ -1,6 +1,6 @@
 # src/setiastro/saspro/__main__.py
 from __future__ import annotations
-import sys
+import sys, ctypes
 import warnings
 
 # Suppress torch optree version warning — SASpro does not use torch.compile()
@@ -24,6 +24,27 @@ CLI_SUBCOMMANDS = {
     "report",
 }
 
+def _minimize_console_if_owned() -> None:
+    if sys.platform != "win32":
+        return
+    kernel32 = ctypes.windll.kernel32
+    user32   = ctypes.windll.user32
+    kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+    user32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.ShowWindow.restype  = ctypes.c_bool
+
+    hwnd = kernel32.GetConsoleWindow()
+    if not hwnd:
+        return  # no console (console=False build) — nothing to do
+
+    # Only minimize a console we EXCLUSIVELY own (PyInstaller spawned it for
+    # us on a double-click). If cmd / pwsh / VS Code share it, leave it alone.
+    # Buffer sized generously; we only care about the ==1 case regardless.
+    buf = (ctypes.c_uint * 16)()
+    count = kernel32.GetConsoleProcessList(buf, 16)
+    if count == 1:
+        user32.ShowWindow(hwnd, 7)  # SW_SHOWMINNOACTIVE
+
 def entry(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -40,6 +61,7 @@ def entry(argv: list[str] | None = None) -> int:
         return int(cli_main(argv))
 
     from setiastro.saspro.gui_entry import main as gui_main
+    _minimize_console_if_owned()
     return int(gui_main(argv))
 
 def main(argv: list[str] | None = None) -> int:

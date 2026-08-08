@@ -8504,6 +8504,29 @@ class StackingSuiteDialog(QDialog):
         algo_row.addWidget(algo_label); algo_row.addWidget(self.rejection_algo_combo, 1)
         rej_layout.addLayout(algo_row)
 
+        # Frame weighting mode (WBPP-style). Shapes how per-frame weights are
+        # computed from the same measured quality terms — see
+        # _weight_mode_exponents / _score_frame_terms.
+        wmode_row = QHBoxLayout()
+        wmode_label = QLabel(self.tr("Frame weighting:"))
+        self.weight_mode_combo = QComboBox()
+        self.weight_mode_combo.addItems([self.tr(m) for m in self.WEIGHT_MODES])
+        self.weight_mode_combo.setToolTip(self.tr(
+            "How subframes are weighted during integration:\n"
+            "• Balanced — star count × roundness × dark sky × sharpness (default).\n"
+            "• PSF-weighted — favors the sharpest subs (best resolution; leans on fewer frames).\n"
+            "• SNR-weighted — favors the cleanest subs by robust MAD noise (best for faint signal).\n"
+            "• Star-count-weighted — favors subs with the most detected stars\n"
+            "  (a robust composite health signal: cloud, dawn, defocus, and bad\n"
+            "  tracking all reduce star count)."
+        ))
+        saved_wmode = self.settings.value("stacking/weight_mode", "Balanced", type=str)
+        widx = self.weight_mode_combo.findText(saved_wmode)
+        if widx >= 0:
+            self.weight_mode_combo.setCurrentIndex(widx)
+        wmode_row.addWidget(wmode_label); wmode_row.addWidget(self.weight_mode_combo, 1)
+        rej_layout.addLayout(wmode_row)
+
         # Param rows as small containers we can show/hide
         def _mini_row(label_text, widget, help_text=None):
             row = QWidget()
@@ -8797,6 +8820,8 @@ class StackingSuiteDialog(QDialog):
         self.sigma_high            = self.sigma_high_spinbox.value()
         self.sigma_low             = self.sigma_low_spinbox.value()
         self.rejection_algorithm   = self.rejection_algo_combo.currentText()
+        if hasattr(self, "weight_mode_combo"):
+            self.weight_mode = self.weight_mode_combo.currentText()
         self.kappa                 = self.kappa_spinbox.value()
         self.iterations            = self.iterations_spinbox.value()
         self.esd_threshold         = self.esd_spinbox.value()
@@ -8814,6 +8839,8 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/sigma_high",           self.sigma_high)
         self.settings.setValue("stacking/sigma_low",            self.sigma_low)
         self.settings.setValue("stacking/rejection_algorithm",  self.rejection_algorithm)
+        if hasattr(self, "weight_mode"):
+            self.settings.setValue("stacking/weight_mode",       self.weight_mode)
         self.settings.setValue("stacking/kappa",                self.kappa)
         self.settings.setValue("stacking/iterations",           self.iterations)
         self.settings.setValue("stacking/esd_threshold",        self.esd_threshold)
@@ -19505,6 +19532,110 @@ class StackingSuiteDialog(QDialog):
         self._cancel_event.set()
         self.update_status(self.tr("🛑 Cancel requested — finishing current tile/frame, then stopping…"))
 
+    # ══════════════════════════════════════════════════════════════════════
+    # Frame-weighting: named scoring modes (WBPP-style) over shared quality
+    # terms. All modes are the SAME multiplicative score with different
+    # per-term exponents — a mode is just an emphasis vector, not a separate
+    # code path. Terms: count, ecc (roundness), bg (dark background),
+    # sharp (inverse-FWHM PSF proxy), snr (MAD-based, star-insensitive).
+    # ══════════════════════════════════════════════════════════════════════
+    WEIGHT_MODES = ("Balanced", "PSF-weighted", "SNR-weighted", "Star-count-weighted")
+
+    @staticmethod
+    def _weight_mode_exponents(mode: str) -> dict:
+        """Return per-term exponents for a named weighting mode.
+
+        Each value is the power its term is raised to before the terms are
+        multiplied. 0.0 disables a term (contributes ×1). Higher = more
+        emphasis. Kept intentionally small/simple so the modes stay legible.
+        """
+        table = {
+            # today's behavior + the sharpness term; no SNR
+            "Balanced":            {"count": 1.0, "ecc": 1.0, "bg": 1.0, "sharp": 1.0, "snr": 0.0},
+            # sharpness dominates — resolution chasing; leans on fewer subs
+            "PSF-weighted":        {"count": 0.5, "ecc": 1.0, "bg": 0.5, "sharp": 2.0, "snr": 0.0},
+            # robust MAD-noise term dominates — faint-signal / luminance
+            "SNR-weighted":        {"count": 0.5, "ecc": 0.5, "bg": 1.0, "sharp": 0.5, "snr": 2.0},
+            # star count dominates (composite health signal); others tiebreak
+            "Star-count-weighted": {"count": 2.0, "ecc": 0.5, "bg": 0.5, "sharp": 0.5, "snr": 0.0},
+        }
+        return table.get(mode, table["Balanced"])
+
+    def _current_weight_mode(self) -> str:
+        mode = self.settings.value("stacking/weight_mode", "Balanced", type=str)
+        return mode if mode in self.WEIGHT_MODES else "Balanced"
+
+    @staticmethod
+    def _score_frame_terms(*, count, ecc, bg, fwhm, noise,
+                           fwhm_ref, noise_ref, exps) -> tuple:
+        """Compute one frame's weight from its measured terms + a mode's exponents.
+
+        count : detected star count (composite health signal)
+        ecc   : mean eccentricity  (0 = round)
+        bg    : background level    (preview median / mean; lower = darker)
+        fwhm  : median star size    (FWHM proxy, relative px; smaller = sharper)
+        noise : MAD noise estimate  (lower = cleaner); may be None
+        fwhm_ref / noise_ref : population medians for scale-free normalization
+        exps  : per-term exponent dict from _weight_mode_exponents
+
+        Returns (weight, debug_dict). weight is 0.0 when no stars.
+        """
+        c = max(float(count), 0.0)
+        if c <= 0:
+            return 0.0, {"sharp": 1.0, "snr": 1.0}
+
+        bg_clamped  = float(min(max(bg, 0.0), 1.0))
+        ecc_clamped = float(min(max(ecc, 0.0), 1.0))
+
+        count_term = c
+        ecc_term   = 1.0 - ecc_clamped
+        bg_term    = (2.0 / (math.sqrt(bg_clamped) + 1.0)) - 1.0
+
+        # sharpness: (median_fwhm / this_fwhm), clamped ±3×, then ** exponent.
+        # sub-median sanity floor: a frame measured far tighter than the
+        # population is almost certainly a mismeasurement (hot pixel / merged
+        # blob), so treat it as median rather than "miraculously sharp".
+        sharp_term = 1.0
+        if fwhm_ref > 1e-6 and fwhm and fwhm > 1e-6:
+            if fwhm < 0.4 * fwhm_ref:
+                ratio = 1.0                      # implausibly tiny → neutral
+            else:
+                ratio = fwhm_ref / fwhm
+                ratio = float(min(max(ratio, 1.0 / 3.0), 3.0))
+            sharp_term = ratio
+
+        # snr: (median_noise / this_noise), clamped ±3×, then ** exponent.
+        # lower noise → term > 1. Same sanity floor against a bogus near-zero
+        # noise reading (e.g. a dead/blank calibrated frame).
+        snr_term = 1.0
+        if noise is not None and noise_ref and noise_ref > 1e-9 and noise > 1e-9:
+            if noise < 0.25 * noise_ref:
+                snr_term = 1.0                   # implausibly clean → neutral
+            else:
+                nratio = noise_ref / noise
+                nratio = float(min(max(nratio, 1.0 / 3.0), 3.0))
+                snr_term = nratio
+
+        w = (
+            (count_term ** exps["count"]) *
+            (ecc_term   ** exps["ecc"])   *
+            (bg_term    ** exps["bg"])    *
+            (sharp_term ** exps["sharp"]) *
+            (snr_term   ** exps["snr"])
+        )
+        return float(w), {"sharp": sharp_term, "snr": snr_term}
+
+    @staticmethod
+    def _mad_noise(arr) -> float:
+        """Robust MAD-based noise estimate, star-insensitive. Plain numpy so it
+        works on any preview dtype without njit compilation concerns."""
+        a = np.asarray(arr, dtype=np.float32).ravel()
+        if a.size == 0:
+            return 0.0
+        med = float(np.median(a))
+        mad = float(np.median(np.abs(a - med)))
+        return mad * 1.4826  # scale to Gaussian-sigma equivalent
+
     def register_images(self):
 
         # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
@@ -19921,14 +20052,21 @@ class StackingSuiteDialog(QDialog):
                     p = chunk_images[i]
                     pmin = float(np.nanmin(p))
                     med = float(np.median(p - pmin))
-                    c, ecc = compute_star_count_fast_preview(p)
-                    return fp, med, c, ecc
+                    # return_size=True adds a median star-size (FWHM proxy, in
+                    # downsampled-preview px; smaller = sharper). Comparable
+                    # across frames because every frame goes through the same
+                    # preview→downsample path.
+                    c, ecc, size = compute_star_count_fast_preview(p, return_size=True)
+                    # robust MAD noise (star-insensitive) for the SNR term
+                    noise = self._mad_noise(p)
+                    return fp, med, c, ecc, size, noise
 
                 star_workers = min(max_workers, 8)
                 with ThreadPoolExecutor(max_workers=star_workers) as ex:
-                    for fp, med, c, ecc in ex.map(_star_job, enumerate(chunk_valid_files)):
+                    for fp, med, c, ecc, size, noise in ex.map(_star_job, enumerate(chunk_valid_files)):
                         preview_medians[fp] = med
-                        star_counts[fp] = {"count": c, "eccentricity": ecc}
+                        star_counts[fp] = {"count": c, "eccentricity": ecc,
+                                           "fwhm": size, "noise": noise}
                         measured_frames.append(fp)
 
                 del chunk_images
@@ -19971,18 +20109,41 @@ class StackingSuiteDialog(QDialog):
                         best_group, best_size = inliers, len(inliers)
                 return best_group if best_group else fps
 
+            # ── weighting mode + population normalization ─────────────────────
+            # A "mode" is an emphasis vector over the shared quality terms
+            # (see _weight_mode_exponents). Sharpness and SNR are normalized
+            # against population medians so they're scale-free — only "better
+            # than the rest of this stack" is meaningful, not absolute px/noise.
+            _wmode = self._current_weight_mode()
+            _wexps = self._weight_mode_exponents(_wmode)
+
+            _fwhm_pos = [float(star_counts.get(fp, {}).get("fwhm", 0.0))
+                         for fp in measured_frames]
+            _fwhm_pos = [v for v in _fwhm_pos if v > 1e-6]
+            _fwhm_ref = float(np.median(_fwhm_pos)) if _fwhm_pos else 0.0
+
+            _noise_pos = [float(star_counts.get(fp, {}).get("noise", 0.0))
+                          for fp in measured_frames]
+            _noise_pos = [v for v in _noise_pos if v > 1e-9]
+            _noise_ref = float(np.median(_noise_pos)) if _noise_pos else 0.0
+
+            self.update_status(self.tr(f"⚖️ Weighting mode: {_wmode}"))
+
             def _fast_ref_score(fp: str) -> float:
                 info = star_counts.get(fp, {"count": 0, "eccentricity": 1.0})
-                star_count = float(info.get("count", 0.0))
                 med = float(preview_medians.get(fp, 0.0))
                 med = max(med, 1e-3)
-                ecc       = float(info.get("eccentricity", 1.0))
-                bg_clamped  = float(min(max(med, 0.0), 1.0))
-                ecc_clamped = float(min(max(ecc, 0.0), 1.0))
-                ecc_term    = 1.0 - ecc_clamped
-                bg_term     = (2.0 / (math.sqrt(bg_clamped) + 1.0)) - 1.0
-                weighted_score = float(star_count) * ecc_term * bg_term if star_count > 0 else 0.0
-                return weighted_score 
+                w, _ = self._score_frame_terms(
+                    count=float(info.get("count", 0.0)),
+                    ecc=float(info.get("eccentricity", 1.0)),
+                    bg=med,
+                    fwhm=float(info.get("fwhm", 0.0)),
+                    noise=float(info.get("noise", 0.0)) or None,
+                    fwhm_ref=_fwhm_ref,
+                    noise_ref=_noise_ref,
+                    exps=_wexps,
+                )
+                return w
 
             user_ref_locked = bool(getattr(self, "_user_ref_locked", False))
             user_ref = getattr(self, "reference_frame", None)
@@ -22128,6 +22289,7 @@ class StackingSuiteDialog(QDialog):
         group_integration_data = {}
         summary_lines = []
         autocrop_outputs = []
+        master_files = []
 
         for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
             t_g = perf_counter()
@@ -22232,6 +22394,10 @@ class StackingSuiteDialog(QDialog):
                     is_mono=is_mono_orig
                 )
                 log(f"✅ Saved integrated image (original) for '{group_key}': {out_path_orig}")
+
+            # record the primary integrated master for this group (any save branch above)
+            if out_path_orig and os.path.exists(out_path_orig):
+                master_files.append(out_path_orig)
 
             group_rect = None
             if prepass.get("autocrop_enabled", False):
@@ -22415,9 +22581,19 @@ class StackingSuiteDialog(QDialog):
             for g, p in autocrop_outputs:
                 summary_lines.append(f"  • {g} → {p}")
 
+        # Primary integrated masters + any auto-cropped variants, for the
+        # "Open Saved Masters" button in the completion popup.
+        crop_paths = [p for (_g, p) in autocrop_outputs]
+        seen, master_files_out = set(), []
+        for p in list(master_files) + crop_paths:
+            if p and p not in seen:
+                seen.add(p)
+                master_files_out.append(p)
+
         return {
             "summary_lines": summary_lines,
-            "autocrop_outputs": autocrop_outputs
+            "autocrop_outputs": autocrop_outputs,
+            "master_files": master_files_out,
         }
 
     def launch_mfdeconv_from_prepass(
@@ -22796,6 +22972,83 @@ class StackingSuiteDialog(QDialog):
             self._mf_pd.setRange(0, total_groups * 1000)
             self._mf_pd.setValue(min(val, total_groups * 1000))
 
+    def _saspro_doc_manager(self):
+        """Resolve the app-wide DocManager by walking up to the main window
+        (same idiom as star_alignment._find_main_window_from_child)."""
+        p = self
+        while p is not None and not (hasattr(p, "doc_manager") or hasattr(p, "docman")):
+            p = getattr(p, "parent", lambda: None)()
+        if p is None:
+            return None
+        return getattr(p, "docman", None) or getattr(p, "doc_manager", None)
+
+    def _open_saved_masters(self, paths):
+        """Open each saved master in SASpro via DocManager.open_path.
+        open_path builds the ImageDocument and emits documentAdded, which the
+        MDI area turns into a subwindow — so this both opens and displays."""
+        dm = self._saspro_doc_manager()
+        if dm is None:
+            QMessageBox.warning(
+                self, self.tr("Open Masters"),
+                self.tr("Could not locate the document manager to open the masters.")
+            )
+            return
+        opened = 0
+        for p in paths:
+            try:
+                dm.open_path(p)
+                opened += 1
+            except Exception as e:
+                QMessageBox.warning(
+                    self, self.tr("Open Masters"),
+                    self.tr("Could not open:\n{0}\n\n{1}").format(p, e)
+                )
+        if opened:
+            try:
+                self.update_status(self.tr(f"🖼 Opened {opened} master(s) in SASpro."))
+            except Exception:
+                pass
+
+    def _collect_master_paths(self, payload) -> list[str]:
+        """Best-effort discovery of the integrated master paths for the
+        completion popup. Prefers explicit keys on the finished payload, then a
+        stashed attribute. Returns existing, de-duplicated paths only.
+        NOTE: pin this to the real source once AfterAlignWorker is confirmed."""
+        candidates = []
+
+        if isinstance(payload, dict):
+            for key in ("master_files", "masters", "output_files",
+                        "integrated_files", "stacked_files", "result_files"):
+                v = payload.get(key)
+                if isinstance(v, str):
+                    candidates.append(v)
+                elif isinstance(v, (list, tuple)):
+                    candidates.extend(str(x) for x in v if x)
+                elif isinstance(v, dict):            # {group -> path}
+                    candidates.extend(str(x) for x in v.values() if x)
+
+        for attr in ("_last_master_paths", "last_master_paths", "_master_files"):
+            v = getattr(self, attr, None)
+            if isinstance(v, str):
+                candidates.append(v)
+            elif isinstance(v, (list, tuple)):
+                candidates.extend(str(x) for x in v if x)
+            elif isinstance(v, dict):
+                candidates.extend(str(x) for x in v.values() if x)
+
+        seen, out = set(), []
+        for p in candidates:
+            try:
+                np_ = os.path.normpath(p)
+            except Exception:
+                continue
+            if np_ in seen:
+                continue
+            seen.add(np_)
+            if os.path.exists(np_):
+                out.append(np_)
+        return out
+
     @pyqtSlot(bool, str, object)
     def _on_post_pipeline_finished(self, ok: bool, message: str, payload):
         # ---- close progress dialog ----
@@ -22908,12 +23161,22 @@ class StackingSuiteDialog(QDialog):
             sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
             sasd_exists = os.path.exists(sasd_path)
 
+            master_paths = self._collect_master_paths(payload)
+
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
             msg_box.setText(message)
             msg_box.setIcon(QMessageBox.Icon.Information)
 
             ok_btn = msg_box.addButton(QMessageBox.StandardButton.Ok)
+
+            masters_btn = None
+            if master_paths:
+                masters_btn = msg_box.addButton(
+                    self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
+                    QMessageBox.ButtonRole.ActionRole
+                )
+
             dither_btn = None
             if sasd_exists:
                 dither_btn = msg_box.addButton(
@@ -22922,8 +23185,12 @@ class StackingSuiteDialog(QDialog):
                 )
 
             msg_box.exec()
+            clicked = msg_box.clickedButton()
 
-            if dither_btn is not None and msg_box.clickedButton() == dither_btn:
+            if masters_btn is not None and clicked == masters_btn:
+                self._open_saved_masters(master_paths)
+
+            elif dither_btn is not None and clicked == dither_btn:
                 try:
                     from setiastro.saspro.dither_analysis import DitherAnalysisWindow
                     dlg = DitherAnalysisWindow(parent=self)
@@ -23447,6 +23714,7 @@ class StackingSuiteDialog(QDialog):
         group_integration_data = {}
         summary_lines = []
         autocrop_outputs = []
+        master_files = []
 
         for gi, (group_key, file_list) in enumerate(grouped_files.items(), 1):
             t_g = perf_counter()
@@ -23547,6 +23815,9 @@ class StackingSuiteDialog(QDialog):
                     is_mono=is_mono_orig
                 )
                 log(f"✅ Saved integrated image (original) for '{group_key}': {out_path_orig}")
+
+            if out_path_orig and os.path.exists(out_path_orig):
+                master_files.append(out_path_orig)
 
             # ---- Decide the group’s fixed crop rect (used for ALL outputs in this group) ----
             group_rect = None
@@ -23802,7 +24073,10 @@ class StackingSuiteDialog(QDialog):
                         original_header=(ref_header_c or ref_header),
                         is_mono=(comet_only.ndim==2)
                     )
+
                     log(f"✅ Saved CometOnly → {comet_path}")
+                    if comet_path and os.path.exists(comet_path):
+                        master_files.append(comet_path)
 
                     # --- Crop CometOnly identically (if requested) ---
                     if autocrop_enabled and (group_rect is not None or global_rect is not None):
@@ -23857,6 +24131,8 @@ class StackingSuiteDialog(QDialog):
                         save_image(blend, blend_path, "fit", "32-bit floating point",
                                 ref_header, is_mono=is_mono_blend)
                         log(f"✅ Saved CometBlend → {blend_path}")
+                        if blend_path and os.path.exists(blend_path):
+                            master_files.append(blend_path)
 
                         # --- Crop CometBlend identically (if requested) ---
                         if autocrop_enabled and (group_rect is not None or global_rect is not None):
@@ -23994,9 +24270,19 @@ class StackingSuiteDialog(QDialog):
             for g, p in autocrop_outputs:
                 summary_lines.append(f"  • {g} → {p}")
 
+        # Primary masters (star + comet-only + comet-blend) plus star autocrop
+        # variants, for the "Open Saved Masters" button in the completion popup.
+        crop_paths = [p for (_g, p) in autocrop_outputs]
+        seen, master_files_out = set(), []
+        for p in list(master_files) + crop_paths:
+            if p and p not in seen:
+                seen.add(p)
+                master_files_out.append(p)
+
         return {
             "summary_lines": summary_lines,
-            "autocrop_outputs": autocrop_outputs
+            "autocrop_outputs": autocrop_outputs,
+            "master_files": master_files_out,
         }
 
     def integrate_comet_aligned(
@@ -24997,15 +25283,23 @@ class StackingSuiteDialog(QDialog):
                     i, fp = i_fp
                     core, mean_v, _med_full = _valid_region_stats(previews[i])
                     pmin = float(np.nanmin(core))
-                    c, ecc = compute_star_count_fast_preview(core - pmin)
+                    c, ecc, size = compute_star_count_fast_preview(
+                        core - pmin, return_size=True
+                    )
                     med = float(np.median(core - pmin))
-                    return fp, float(mean_v), med, c, ecc
+                    noise = self._mad_noise(core)
+                    return fp, float(mean_v), med, c, ecc, size, noise
 
                 star_workers = min(max_workers, 8)
                 with ThreadPoolExecutor(max_workers=star_workers) as ex:
-                    for fp, mean_v, med, c, ecc in ex.map(_star_job, enumerate(paths_ok)):
+                    for fp, mean_v, med, c, ecc, size, noise in ex.map(_star_job, enumerate(paths_ok)):
                         mean_values[fp] = mean_v
-                        star_counts[fp] = {"count": int(c), "eccentricity": float(ecc)}
+                        star_counts[fp] = {
+                            "count": int(c),
+                            "eccentricity": float(ecc),
+                            "fwhm": float(size),
+                            "noise": float(noise),
+                        }
                         measured_frames.append(fp)
 
                 del previews
@@ -25017,26 +25311,45 @@ class StackingSuiteDialog(QDialog):
             self.update_status(self.tr(f"✅ All chunks complete! Measured {len(measured_frames)} frames total."))
             QApplication.processEvents()
 
-            # 3) Weights — keep your current logic (fast & good)
-            # 3) Weights — keep your current logic (fast & good)
-            self.update_status(self.tr("⚖️ Computing frame weights…"))
-            dbg = ["\n📊 **Frame Weights Debug Log:**"]
+            # 3) Weights — unified mode-driven scorer (see _weight_mode_exponents).
+            # This is the weight that's live when pixels are actually combined,
+            # so the chosen mode directly shapes the integrated result.
+            _wmode = self._current_weight_mode()
+            _wexps = self._weight_mode_exponents(_wmode)
+            self.update_status(self.tr(f"⚖️ Computing frame weights… (mode: {_wmode})"))
+            dbg = [f"\n📊 **Frame Weights Debug Log (mode: {_wmode}):**"]
+
+            _fwhm_pos = [float(star_counts.get(fp, {}).get("fwhm", 0.0))
+                         for fp in measured_frames]
+            _fwhm_pos = [v for v in _fwhm_pos if v > 1e-6]
+            _fwhm_ref = float(np.median(_fwhm_pos)) if _fwhm_pos else 0.0
+
+            _noise_pos = [float(star_counts.get(fp, {}).get("noise", 0.0))
+                          for fp in measured_frames]
+            _noise_pos = [v for v in _noise_pos if v > 1e-9]
+            _noise_ref = float(np.median(_noise_pos)) if _noise_pos else 0.0
+
             max_w = 0.0
             for fp in measured_frames:
                 c   = star_counts[fp]["count"]
                 ecc = star_counts[fp]["eccentricity"]
                 m   = mean_values[fp]
+                fwhm  = float(star_counts[fp].get("fwhm", 0.0))
+                noise = float(star_counts[fp].get("noise", 0.0)) or None
 
-                c = max(c, 0)
-                m_clamped   = float(min(max(m, 0.0), 1.0))
-                ecc_clamped = float(min(max(ecc, 0.0), 1.0))
-                ecc_term    = 1.0 - ecc_clamped
-                bg_term     = (2.0 / (math.sqrt(m_clamped) + 1.0)) - 1.0
-                raw_w       = float(c) * ecc_term * bg_term if c > 0 else 0.0
+                raw_w, terms = self._score_frame_terms(
+                    count=c, ecc=ecc, bg=m, fwhm=fwhm, noise=noise,
+                    fwhm_ref=_fwhm_ref, noise_ref=_noise_ref, exps=_wexps,
+                )
 
                 self.frame_weights[fp] = raw_w
                 max_w = max(max_w, raw_w)
-                dbg.append(f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, Mean={m:.4f}, Weight={raw_w:.4f}")
+                dbg.append(
+                    f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, "
+                    f"Mean={m:.4f}, FWHM~{fwhm:.2f}, "
+                    f"Sharp={terms['sharp']:.3f}, SNR={terms['snr']:.3f}, "
+                    f"Weight={raw_w:.4f}"
+                )
 
             if max_w > 0:
                 for k in self.frame_weights:

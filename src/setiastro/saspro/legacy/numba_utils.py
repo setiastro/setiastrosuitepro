@@ -1993,15 +1993,21 @@ def fast_star_count_lite(img: np.ndarray,
     avg_ecc = float(np.mean(ecc_vals)) if ecc_vals else 0.0
     return count, avg_ecc
 
-def compute_star_count_fast_preview(preview_2d: np.ndarray) -> tuple[int, float]:
+def compute_star_count_fast_preview(preview_2d: np.ndarray, *, return_size: bool = False):
     """
     Middle-ground star counter for stacking suite measurement phase.
-    
+
     2× downsample (was 4×+stride-8, giving ~256×192 on 4K) → fast_star_count
     (OpenCV Gaussian subtract + Otsu + ellipse fitting on contours).
-    
+
     Much better quality than fast_star_count_lite while still being fast
     enough for parallel preview measurement across hundreds of frames.
+
+    Returns (count, ecc) by default. With return_size=True returns
+    (count, ecc, median_size), where median_size is a relative FWHM proxy in
+    downsampled-preview pixels (smaller = sharper). Only comparable across
+    frames measured through this same path — good enough for frame weighting,
+    not calibrated to arcsec.
     """
     # 2× downsample — on a 4K image this gives ~2K working resolution,
     # plenty of signal for star detection vs the previous ~256px
@@ -2013,6 +2019,7 @@ def compute_star_count_fast_preview(preview_2d: np.ndarray) -> tuple[int, float]
         p_lo=0.1,
         p_hi=99.8,
         morph_open="auto",
+        return_size=return_size,
     )
 
 def compute_star_count(image):
@@ -2032,9 +2039,20 @@ def fast_star_count(
     p_hi=99.8,
     # morphology behavior
     morph_open="auto",   # "auto" | True | False
+    # opt-in: also return a median star size (FWHM proxy, in *this image's* px)
+    return_size=False,
 ):
     """
-    Returns (star_count, avg_ecc).
+    Returns (star_count, avg_ecc) by default, or
+    (star_count, avg_ecc, median_size) when return_size=True.
+
+    median_size is the median over detected stars of the fitted-ellipse mean
+    diameter (a+b)/2, in pixels *of the image passed in*. It is a relative
+    sharpness / FWHM proxy: smaller = tighter stars = sharper frame. Because
+    it is measured on whatever (possibly downsampled) image is handed in, it is
+    only comparable across frames that went through the identical pre-scaling —
+    which is exactly the case during the stacking measurement phase. It is NOT
+    calibrated to arcseconds. 0.0 means no stars were measured.
 
     stretch=True (default): robust for linear astro images (percentile stretch + gamma)
     stretch=False: simple min/max normalize (legacy behavior)
@@ -2109,6 +2127,7 @@ def fast_star_count(
 
     star_count = 0
     ecc_values = []
+    size_values = []
     for c in contours:
         area = cv2.contourArea(c)
         if area < min_area or area > max_area:
@@ -2120,6 +2139,9 @@ def fast_star_count(
             a, b = b, a
         e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
         ecc_values.append(e)
+        # ellipse mean diameter = FWHM proxy (px of this image). a,b are axis
+        # *lengths* from fitEllipse; (a+b)/2 is the round-equivalent diameter.
+        size_values.append(0.5 * (a + b))
         star_count += 1
 
     # 8) fallback if too few
@@ -2134,6 +2156,7 @@ def fast_star_count(
 
         star_count = 0
         ecc_values = []
+        size_values = []
         for c in contours2:
             area = cv2.contourArea(c)
             if area < 1 or area > max_area:
@@ -2145,9 +2168,14 @@ def fast_star_count(
                 a, b = b, a
             e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
             ecc_values.append(e)
+            size_values.append(0.5 * (a + b))
             star_count += 1
 
     avg_ecc = float(np.mean(ecc_values)) if star_count > 0 else 0.0
+    if return_size:
+        # median is more robust than mean to a few blown-out/merged blobs
+        median_size = float(np.median(size_values)) if size_values else 0.0
+        return star_count, avg_ecc, median_size
     return star_count, avg_ecc
 
 
