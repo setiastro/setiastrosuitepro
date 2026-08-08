@@ -210,6 +210,52 @@ def _cal_out_name(light_file: str, calibrated_dir: str) -> str:
     return os.path.join(calibrated_dir, f"{dir_hash}_{root}_c.fit")
 
 
+def _star_count_ecc_size(preview, **kwargs):
+    """
+    Arity-safe wrapper around compute_star_count_fast_preview.
+
+    Always returns a 3-tuple ``(count, ecc, size)`` even when the underlying
+    numba helper short-circuits on a degenerate preview (empty / all-zero /
+    single-value core) and returns only ``(count, ecc)`` — that 2-vs-3 mismatch
+    is what raised ``ValueError: not enough values to unpack (expected 3, got 2)``
+    from the "Skip Registration and Integrate" path, where black-bordered
+    aligned frames routinely produce a fully-zero measurement core.
+
+    A missing size falls back to 0.0, which the downstream weight code already
+    treats as "no usable FWHM" (it's filtered out of the FWHM reference median
+    and neutralised in the sharpness term), so a degenerate frame is scored
+    conservatively rather than crashing the whole integration.
+    """
+    kwargs.setdefault("return_size", True)
+    try:
+        res = compute_star_count_fast_preview(preview, **kwargs)
+    except Exception:
+        return 0, 0.0, 0.0
+
+    if isinstance(res, (tuple, list)):
+        n = len(res)
+        c    = res[0] if n >= 1 else 0
+        ecc  = res[1] if n >= 2 else 0.0
+        size = res[2] if n >= 3 else 0.0
+    else:
+        # bare scalar count
+        c, ecc, size = res, 0.0, 0.0
+
+    try:
+        c = int(c)
+    except Exception:
+        c = 0
+    try:
+        ecc = float(ecc)
+    except Exception:
+        ecc = 0.0
+    try:
+        size = float(size)
+    except Exception:
+        size = 0.0
+    return c, ecc, size
+
+
 def _satmask_sidecar_for(fits_path: str) -> str:
     """Canonical satellite-mask sidecar path for a given FITS frame."""
     return os.path.splitext(fits_path)[0] + "_satmask.npy"
@@ -20056,7 +20102,7 @@ class StackingSuiteDialog(QDialog):
                     # downsampled-preview px; smaller = sharper). Comparable
                     # across frames because every frame goes through the same
                     # preview→downsample path.
-                    c, ecc, size = compute_star_count_fast_preview(p, return_size=True)
+                    c, ecc, size = _star_count_ecc_size(p)
                     # robust MAD noise (star-insensitive) for the SNR term
                     noise = self._mad_noise(p)
                     return fp, med, c, ecc, size, noise
@@ -25051,6 +25097,226 @@ class StackingSuiteDialog(QDialog):
         )
         self._start_after_align_worker(aligned_light_files)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # "Skip Registration and Integrate" — aligned-counterpart resolution
+    #
+    # PixInsight-style behaviour: the tree usually holds *calibrated* frames
+    # (…_c.fit) sitting in a "Calibrated"/"calibrated_images" folder. When the
+    # matching *registered* frames already exist in a sibling
+    # "Aligned_Images"/"aligned_images" folder, we swap each tree frame for its
+    # registered counterpart and integrate those instead of re-registering.
+    # Any frame with no registered counterpart falls back to the tree frame
+    # as-is, so a mixed/partly-registered tree still integrates cleanly.
+    #
+    # The wrinkle the caller flagged: filename *prefix keys differ* across
+    # pipeline stages. A calibrated frame is  "{hashRaw}_foo_c.fit"; its
+    # registered form is "{hashCal}_{hashRaw}_foo_c_n_r.fit". The calibrated
+    # stem is therefore always a *token-bounded substring* of the aligned stem,
+    # which is what we match on (robust to the extra hash prefix and the
+    # _n / _r suffixes), with a hash-stripped core-key match as a fallback.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Sibling-folder name candidates (matched case-insensitively).
+    _ALIGNED_DIR_NAMES = ("aligned_images", "aligned", "registered", "register")
+    _CALIBRATED_DIR_HINTS = ("calibrated_images", "calibrated", "calibration", "calibrate")
+    _COUNTERPART_EXTS = (".fit", ".fits", ".fz", ".xisf")
+
+    @staticmethod
+    def _pipeline_stem(path: str) -> str:
+        """basename without extension, lower-cased (handles .fits/.fit/.fz/.xisf)."""
+        base = os.path.basename(path)
+        stem, ext = os.path.splitext(base)
+        # peel a second extension for things like .fit.fz if they ever appear
+        if stem.lower().endswith((".fit", ".fits")):
+            stem = os.path.splitext(stem)[0]
+        return stem.lower()
+
+    # leading dir-hash prefixes: one or more "{6 hex}_" groups
+    _HASH_PREFIX_RE = re.compile(r'^(?:[0-9a-f]{6}_)+')
+    # trailing pipeline suffix chain: any combination of the stage tags
+    _PIPE_SUFFIX_RE = re.compile(
+        r'(?:_(?:c|cc|n|r|reg|registered|cal|calibrated|norm|normalized))+$'
+    )
+
+    @classmethod
+    def _pipeline_core_key(cls, path: str) -> str:
+        """
+        Reduce a pipeline filename to the underlying raw stem by stripping the
+        leading dir-hash prefix(es) and the trailing stage-suffix chain.
+        e.g.  "9f1a2b_d6036a_foo_c_n_r"  ->  "foo"
+              "d6036a_foo_c"             ->  "foo"
+        """
+        stem = cls._pipeline_stem(path)
+        stem = cls._HASH_PREFIX_RE.sub("", stem)
+        stem = cls._PIPE_SUFFIX_RE.sub("", stem)
+        return stem
+
+    @staticmethod
+    def _stem_contains(hay: str, needle: str) -> bool:
+        """True if `needle` appears in `hay` on underscore/boundary edges."""
+        if not needle or needle not in hay:
+            return False
+        idx = hay.find(needle)
+        left_ok = (idx == 0) or (hay[idx - 1] == "_")
+        end = idx + len(needle)
+        right_ok = (end == len(hay)) or (hay[end] == "_")
+        return left_ok and right_ok
+
+    def _candidate_aligned_dirs(self, tree_paths):
+        """
+        Collect existing directories that may hold the registered counterparts:
+          1) SASpro's own  <stacking_directory>/Aligned_Images
+          2) Sibling "aligned" folder next to each tree-file directory
+             (name-swap of a calibrated-style folder, plus a sibling scan).
+        Returns a de-duplicated list of normalized dir paths.
+        """
+        cands, seen = [], set()
+
+        def _add(d):
+            if not d:
+                return
+            try:
+                if not os.path.isdir(d):
+                    return
+            except Exception:
+                return
+            key = os.path.normcase(os.path.normpath(d))
+            if key in seen:
+                return
+            seen.add(key)
+            cands.append(os.path.normpath(d))
+
+        # 1) SASpro's own aligned output
+        try:
+            _add(os.path.join(self.stacking_directory, "Aligned_Images"))
+        except Exception:
+            pass
+
+        # 2) sibling folders next to each unique tree-file directory
+        tree_dirs = set()
+        for p in tree_paths:
+            try:
+                tree_dirs.add(os.path.dirname(os.path.abspath(p)))
+            except Exception:
+                pass
+
+        for d in tree_dirs:
+            parent = os.path.dirname(d)
+            leaf_low = os.path.basename(d).lower()
+
+            # a) direct name-swap: .../calibrated_images -> .../aligned_images
+            if any(h in leaf_low for h in self._CALIBRATED_DIR_HINTS):
+                for an in self._ALIGNED_DIR_NAMES:
+                    _add(os.path.join(parent, an))
+                for hint in self._CALIBRATED_DIR_HINTS:
+                    if hint in leaf_low:
+                        for an in self._ALIGNED_DIR_NAMES:
+                            _add(os.path.join(parent, leaf_low.replace(hint, an)))
+
+            # b) scan siblings for any aligned-looking folder (any casing)
+            try:
+                for name in os.listdir(parent):
+                    if name.lower() in self._ALIGNED_DIR_NAMES:
+                        _add(os.path.join(parent, name))
+            except Exception:
+                pass
+
+        return cands
+
+    def _build_aligned_matcher(self, tree_paths):
+        """
+        Build a callable  match(tree_path) -> aligned_path | None  from the
+        registered frames discovered near `tree_paths`. Returns None when no
+        aligned frames can be found at all (caller then integrates as-is).
+        """
+        aligned_dirs = self._candidate_aligned_dirs(tree_paths)
+        if not aligned_dirs:
+            return None
+
+        aligned_files = []
+        for d in aligned_dirs:
+            try:
+                for name in os.listdir(d):
+                    if name.lower().endswith(self._COUNTERPART_EXTS):
+                        aligned_files.append(os.path.normpath(os.path.join(d, name)))
+            except Exception:
+                pass
+
+        if not aligned_files:
+            return None
+
+        # Pre-index: (path, stem) list + core-key -> [paths]
+        al_index = []
+        core_map = {}
+        for ap in aligned_files:
+            al_stem = self._pipeline_stem(ap)
+            al_core = self._pipeline_core_key(ap)
+            al_index.append((ap, al_stem))
+            core_map.setdefault(al_core, []).append(ap)
+
+        def _match(tree_path):
+            t_stem = self._pipeline_stem(tree_path)
+            t_core = self._pipeline_core_key(tree_path)
+
+            # 1) unique hash-stripped core-key match
+            c = core_map.get(t_core)
+            if c and len(c) == 1:
+                return c[0]
+
+            # 2) token-bounded containment: calibrated stem inside aligned stem
+            cont = [ap for (ap, al_stem) in al_index
+                    if self._stem_contains(al_stem, t_stem)]
+            if len(cont) == 1:
+                return cont[0]
+            if len(cont) > 1:
+                # Try to narrow to a single confident winner via core-key.
+                # If it's still ambiguous, DON'T guess — a wrong pairing would
+                # silently integrate the wrong registered frame, so we fall back
+                # to the tree frame as-is (matcher returns None here).
+                narrowed = [ap for ap in cont
+                            if self._pipeline_core_key(ap) == t_core]
+                if len(narrowed) == 1:
+                    return narrowed[0]
+                return None
+
+            # 3) core-key collided (or nothing matched) with no unique
+            # containment → genuinely ambiguous; integrate as-is rather than
+            # risk mispairing.
+            return None
+
+        return _match
+
+    def _resolve_aligned_counterparts(self, light_files):
+        """
+        Swap each tree frame for its registered counterpart where one exists.
+        Returns (new_light_files, matched_count, total_count, matcher_or_None).
+        Unmatched frames are preserved as-is.
+        """
+        all_tree = [p for lst in light_files.values() for p in lst]
+        total = len(all_tree)
+        if total == 0:
+            return light_files, 0, 0, None
+
+        matcher = self._build_aligned_matcher(all_tree)
+        if matcher is None:
+            return light_files, 0, total, None
+
+        new_lf = {}
+        matched = 0
+        for g, lst in light_files.items():
+            out = []
+            for p in lst:
+                ap = matcher(p)
+                if ap and os.path.exists(ap) and \
+                        os.path.normcase(os.path.normpath(ap)) != \
+                        os.path.normcase(os.path.normpath(p)):
+                    out.append(ap)
+                    matched += 1
+                else:
+                    out.append(p)
+            new_lf[g] = out
+        return new_lf, matched, total, matcher
+
     def integrate_registered_images(self):
         """
         Integrate frames that are already aligned (and typically normalized).
@@ -25072,6 +25338,34 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr("⚠️ No registered images found!"))
                 self._set_registration_busy(False)
                 return
+
+            # 1b) PixInsight-style swap: if the tree holds calibrated frames and
+            # their registered counterparts already exist in a sibling
+            # Aligned_Images / aligned_images folder, integrate *those* instead.
+            # Frames with no counterpart fall back to the tree frame as-is.
+            self.light_files, _n_swapped, _n_total, _align_matcher = \
+                self._resolve_aligned_counterparts(self.light_files)
+            if _align_matcher is None:
+                self.update_status(self.tr(
+                    f"ℹ️ No Aligned_Images folder found near the tree — "
+                    f"integrating the {_n_total} tree frame(s) as-is."
+                ))
+            elif _n_swapped:
+                self.update_status(self.tr(
+                    f"🔗 Matched {_n_swapped}/{_n_total} tree frame(s) to registered "
+                    f"counterparts in Aligned_Images — integrating those; "
+                    f"{_n_total - _n_swapped} as-is."
+                ))
+                # Redirect a user-picked reference frame to its registered twin too.
+                if getattr(self, "reference_frame", None):
+                    _ref_swap = _align_matcher(self.reference_frame)
+                    if _ref_swap and os.path.exists(_ref_swap):
+                        self.reference_frame = _ref_swap
+            else:
+                self.update_status(self.tr(
+                    f"ℹ️ Found an Aligned_Images folder but no filename matches "
+                    f"for the {_n_total} tree frame(s) — integrating them as-is."
+                ))
 
             # Flatten
             all_files = [p for lst in self.light_files.values() for p in lst]
@@ -25283,9 +25577,7 @@ class StackingSuiteDialog(QDialog):
                     i, fp = i_fp
                     core, mean_v, _med_full = _valid_region_stats(previews[i])
                     pmin = float(np.nanmin(core))
-                    c, ecc, size = compute_star_count_fast_preview(
-                        core - pmin, return_size=True
-                    )
+                    c, ecc, size = _star_count_ecc_size(core - pmin)
                     med = float(np.median(core - pmin))
                     noise = self._mad_noise(core)
                     return fp, float(mean_v), med, c, ecc, size, noise

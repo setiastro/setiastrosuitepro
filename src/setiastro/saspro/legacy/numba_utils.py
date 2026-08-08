@@ -2086,7 +2086,10 @@ def fast_star_count(
         if not (hi > lo):
             lo, hi = float(img.min()), float(img.max())
             if not (hi > lo):
-                return 0, 0.0
+                # Flat / all-zero core (e.g. a fully black-bordered aligned
+                # preview): no stars to measure. Respect the requested arity so
+                # callers doing `c, ecc, size = ...` don't blow up on unpack.
+                return (0, 0.0, 0.0) if return_size else (0, 0.0)
 
         norm = (img - lo) / max(1e-8, (hi - lo))
         norm = np.clip(norm, 0.0, 1.0)
@@ -2101,7 +2104,9 @@ def fast_star_count(
         if img_max > img_min:
             image_8u = (255.0 * (img - img_min) / (img_max - img_min)).astype(np.uint8)
         else:
-            return 0, 0.0
+            # Flat image with no dynamic range → no measurable stars. Match the
+            # requested return arity (see note in the stretch branch above).
+            return (0, 0.0, 0.0) if return_size else (0, 0.0)
 
     # 4) blur + subtract
     blurred = cv2.GaussianBlur(image_8u, (blur_size, blur_size), 0)
