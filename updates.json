@@ -1,10 +1,10 @@
 {
-  "version": "1.20.2.post1",
+  "version": "1.20.3",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.2/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.2/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.2/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.2/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.3/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.3/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.3/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.3/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.20.2\nNew feature in Blemish Blaster: Line Blaster. Set end points, thickness, even curve the line to match the line defect and blast that line away.\n\nNew weighting system in Stacking Suite. Find the weight option you want in Stacking Suite Settings: Balanced, PSF-Weighted, SNR-Weighted, or Star-Count-Weighted. This will give more weights to the score depending on the options chosen.\n\nUpdate in Planetary Stacker for planetary de-rotation, Auto Disk button to match the rotation disc, similar in feel to what winjupos does.\n\nVarious other bug fixes."
+ "notes": "Seti Astro Suite Pro\n\nV1.20.3\nBig update to Stacking Suite: When you click on Register and Integrate OR Skip Registration and integrate, it will look to see if there are previously aligned files in the stacking directory and ask if you want to reuse them so you dont have to re-register your images and this also means if you click Skip Registration and Integrate, even if the file list is only the calibrated files it will ask, Found all these Registered images, use these instead? Also improved Scoring and Weighting and bug fixes.\n\nUpdate to Surface Mosaic tool to parallize the process, gradient tile matching, and introduce much stronger local warping features under the hood."
 }
