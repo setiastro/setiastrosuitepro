@@ -25830,6 +25830,62 @@ class StackingSuiteDialog(QDialog):
                 pass
             return False
 
+    def _resolve_partial_reference(self, matched_lf, sasd_path):
+        """
+        Resolve the reference to align NEW frames against in a partial run.
+
+        Correctness rule: the new frames must land on the SAME pixel grid as
+        the frames already in the stack. That grid is DEFINED by the aligned
+        (_n_r) outputs — every _n_r frame was warped onto it, so any _n_r frame
+        is a correct anchor. We therefore always align to an aligned twin, never
+        to a raw/normalized (_c_n) frame.
+
+        Why not the SASD REF_PATH directly: REF_PATH records the *original*
+        (pre-warp, _c_n) reference. It only coincides with the stack grid
+        because the reference's own transform is identity — a _c_n frame that
+        is NOT the reference sits on a different grid than its _n_r twin, so
+        pinning a raw _c_n is fragile. It breaks silently if REF_PATH is stale,
+        mis-flagged, or absent (older data). The _n_r twins never have that
+        problem. So we use REF_PATH only to PREFER *which* twin to anchor to
+        (the reference's own twin, a nicety), then fall back to any twin.
+
+        Priority (all land on the same grid — this is about preference, not
+        correctness):
+          1. The aligned twin OF the SASD-recorded reference, when resolvable.
+          2. Any existing aligned twin of the matched frames.
+
+        Returns (twin_path, source) where source is 'sasd-twin' | 'twin' | None.
+        twin_path is a normalised existing _n_r path, or (None, None) if none.
+        """
+        # 1) If the SASD names a reference, resolve it to ITS aligned twin.
+        #    (Same grid as any other twin, but it's the tidiest anchor.)
+        try:
+            if sasd_path and os.path.exists(sasd_path):
+                _h, _w, ref_path = self._sasd_read_header(sasd_path)
+                if ref_path:
+                    rp = os.path.normpath(ref_path)
+                    # If REF_PATH itself already points at an _n_r file, use it.
+                    _stem = os.path.splitext(os.path.basename(rp))[0]
+                    if _stem.endswith("_n_r") and os.path.exists(rp):
+                        return rp, "sasd-twin"
+                    # Otherwise map the recorded reference → its _n_r twin.
+                    try:
+                        matcher = self._build_aligned_matcher([rp])
+                        if matcher is not None:
+                            tw = matcher(rp)
+                            if tw and os.path.exists(tw):
+                                return os.path.normpath(tw), "sasd-twin"
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # 2) Any aligned twin of the matched frames — all share the grid.
+        twin = self._pick_reference_twin_for_partial(matched_lf)
+        if twin:
+            return os.path.normpath(twin), "twin"
+        return None, None
+
     def _pick_reference_twin_for_partial(self, matched_lf):
         """
         Choose an existing aligned twin to use as the *reference* for a partial
@@ -26043,19 +26099,24 @@ class StackingSuiteDialog(QDialog):
         if clicked is not new_btn:
             return "cancel"
 
-        # Pin the reference frame to an existing twin so the fresh outputs
-        # land on the same pixel grid the existing set already shares. We
-        # save the current lock state and restore it in the completion
-        # handler — this is a scoped override, not a persistent preference.
-        twin_ref = self._pick_reference_twin_for_partial(matched_lf)
+        # Resolve the aligned (_n_r) twin the NEW frames will align to. Every
+        # _n_r frame sits on the stack grid by construction, so any twin is a
+        # correct anchor — this is robust even when the SASD reference is
+        # stale, mis-flagged, or absent (older data). We only use the SASD to
+        # PREFER the reference's own twin; a plain twin is equally correct.
+        twin_ref, ref_source = self._resolve_partial_reference(matched_lf, sasd_path)
         if twin_ref is None:
-            # We already confirmed matched frames exist, so this is a
-            # filesystem race (twin deleted between match and pick).
             self.update_status(self.tr(
-                "⚠️ Could not select a reference twin for partial "
-                "registration; falling back to a full re-registration."
+                "⚠️ Could not find any aligned frame to anchor partial "
+                "registration to; falling back to a full re-registration so "
+                "the new frames share the grid."
             ))
             return "register_all"
+
+        self.update_status(self.tr(
+            f"📌 Anchoring new frames to registered frame "
+            f"{os.path.basename(twin_ref)} (shared stack grid)."
+        ))
 
         self._partial_saved_ref = getattr(self, "reference_frame", None)
         self._partial_saved_ref_locked = bool(getattr(self, "_user_ref_locked", False))
