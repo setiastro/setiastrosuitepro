@@ -16,7 +16,9 @@
 from __future__ import annotations
 
 import math
+import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Optional, List, Tuple, Dict, Any, Callable
@@ -99,6 +101,11 @@ class SurfaceMosaicConfig:
     ap_min_mean: float = 0.02
     ap_field_grid: int = 32
     local_warp_min_shift: float = 0.5   # skip the field if median AP shift is below this (px)
+    ap_min_struct: float = 0.5          # drop APs with < this fraction of median local structure
+    ap_min_response: float = 0.30       # drop APs whose phase-corr response is below this
+    seam_confine: bool = True           # confine each seam's warp to a band near it (edges
+                                        # don't fight; unmeasurable edges stay soft, never doubled)
+    seam_band_mult: float = 2.0         # band width = this * ap_size (medium)
 
     # --- photometric equalisation (Brown-Lowe gain compensation) ---
     photometric: bool = True
@@ -108,6 +115,10 @@ class SurfaceMosaicConfig:
                                      # radial limb-darkening profile when a disk was
                                      # found (couples rows with zero overlap).
                                      # GAIN-ONLY: the sky can never be lifted.
+    gradient_fit: bool = True        # per-tile quadratic gain SURFACE so overlaps
+                                     # match across smooth per-panel gradients
+                                     # (etalon/vignette). Multiplicative -> sky stays
+                                     # black; limb-masked so no sky pixel is sampled.
 
     # --- compositing ---
     blend: str = "feather"           # "feather" | "multiband" | "none"
@@ -134,6 +145,9 @@ class Tile:
     theta: float = 0.0
     gain: float = 1.0
     bias: float = 0.0
+    # log-domain quadratic gain surface coeffs [1,u,v,u^2,uv,v^2] in normalised
+    # tile coords u,v in [-1,1]; None = flat (no gradient correction)
+    grad: Optional[tuple] = None
     # cached per-detector features {kind: (kps, des)} (filled lazily)
     _feat: Optional[dict] = field(default=None, repr=False)
     # cached small bandpassed proxy for the correlation search: (img, scale)
@@ -959,6 +973,34 @@ def _validated(ti: Tile, tj: Tile, cand: PairMatch,
     return refined
 
 
+def _precompute_tile_caches(tiles: List[Tile], cfg: SurfaceMosaicConfig,
+                            workers: int) -> None:
+    """
+    Populate every tile's lazy caches (sharpened match mono, ORB/SIFT features,
+    correlation proxy) up front, ONE job per tile so each cache has a single
+    writer. After this the pairwise matching is read-only on tiles and safe to
+    run across threads. Also faster: features are computed once per tile instead
+    of on first-touch during matching.
+    """
+    _get_msd_funcs()   # pre-warm the global lazy import so threads don't race it
+
+    def job(t: Tile):
+        _match_mono(t, cfg)
+        if cv2 is not None:
+            _ensure_features(t, cfg, "orb")
+            if cfg.sift_fallback:
+                _ensure_features(t, cfg, "sift")
+            if cfg.phasecorr_fallback:
+                _corr_small(t, cfg)
+
+    if workers > 1 and len(tiles) > 1:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            list(ex.map(job, tiles))
+    else:
+        for t in tiles:
+            job(t)
+
+
 def build_overlap_graph(tiles: List[Tile], cfg: SurfaceMosaicConfig,
                         progress_cb: Optional[Callable] = None) -> List[PairMatch]:
     """
@@ -971,14 +1013,17 @@ def build_overlap_graph(tiles: List[Tile], cfg: SurfaceMosaicConfig,
           centre, including tiles that don't overlap each other (rotation off).
     Every candidate from every tier must clear the overlap-NCC ghost gate (limb
     edges between non-overlapping tiles clear a geometric-tightness gate instead).
-    """
-    pairs: List[PairMatch] = []
-    have: set = set()
-    combos = list(combinations(range(len(tiles)), 2))
-    for k, (i, j) in enumerate(combos):
-        if progress_cb:
-            progress_cb(k, len(combos), "Matching tiles")
 
+    Pairwise matching is O(n^2) but every pair is independent, so it runs across
+    threads (cv2 calls release the GIL). Caches are pre-computed per tile first to
+    avoid a write race, and results are assembled in combo order so the output is
+    identical to the serial path.
+    """
+    combos = list(combinations(range(len(tiles)), 2))
+    ncpu = os.cpu_count() or 1
+
+    def match_job(item):
+        idx, (i, j) = item
         got = None
         cand = _match_pair_features(tiles[i], tiles[j], cfg, kind="orb")
         if cand is not None:
@@ -991,7 +1036,43 @@ def build_overlap_graph(tiles: List[Tile], cfg: SurfaceMosaicConfig,
             cand = _match_pair_corrsearch(tiles[i], tiles[j], cfg)
             if cand is not None:
                 got = _validated(tiles[i], tiles[j], cand, cfg)
+        return idx, got
 
+    results: List[Optional[PairMatch]] = [None] * len(combos)
+    old_threads = None
+    try:
+        old_threads = cv2.getNumThreads(); cv2.setNumThreads(1)
+    except Exception:
+        old_threads = None
+    try:
+        _precompute_tile_caches(tiles, cfg, max(1, min(len(tiles), ncpu)))
+        workers = max(1, min(len(combos), ncpu))
+        if workers > 1 and len(combos) > 1:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                done = 0
+                for idx, got in ex.map(match_job, list(enumerate(combos))):
+                    results[idx] = got
+                    done += 1
+                    if progress_cb:
+                        progress_cb(done, len(combos), "Matching tiles")
+        else:
+            for item in enumerate(combos):
+                idx, got = match_job(item)
+                results[idx] = got
+                if progress_cb:
+                    progress_cb(idx + 1, len(combos), "Matching tiles")
+    finally:
+        try:
+            if old_threads is not None:
+                cv2.setNumThreads(old_threads)
+        except Exception:
+            pass
+
+    # assemble in deterministic combo order (identical to the serial path)
+    pairs: List[PairMatch] = []
+    have: set = set()
+    for idx, (i, j) in enumerate(combos):
+        got = results[idx]
         if got is not None:
             pairs.append(got)
             have.add((i, j))
@@ -1260,23 +1341,13 @@ def _equalize_overlap(tiles: List[Tile], pairs: List[PairMatch],
         t.bias = 0.0
 
 
-def _equalize_radial(tiles: List[Tile], cfg: SurfaceMosaicConfig,
-                     exclude: set) -> bool:
-    """
-    Disk-aware equalisation: solar/lunar brightness is dominated by LIMB
-    DARKENING, a radial profile shared by every tile. The limb solution gives the
-    disk centre + radius, so build a global median brightness-vs-r/R profile from
-    all placed tiles and solve each tile's (gain, bias) against that shared MODEL
-    instead of against its neighbours. This decouples equalisation from overlap
-    topology entirely — rows with zero overlap are still constrained because they
-    answer to the same profile. Returns True if applied.
-    """
+def _disk_in_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig, exclude: set):
+    """Shared disk in MOSAIC coordinates: (cx, cy, R) from the limb solution with
+    each tile's centre composed through its pose, or None if no disk was found."""
     sol = _limb_solution(tiles, cfg)
     if sol is None:
-        return False
+        return None
     R, _hub, centres = sol
-
-    # disk centre in MOSAIC coordinates, averaged over limb tiles (pose-composed)
     wsum = 0.0; cxm = 0.0; cym = 0.0
     for pos, (cx, cy, rms) in centres.items():
         if pos in exclude:
@@ -1289,8 +1360,25 @@ def _equalize_radial(tiles: List[Tile], cfg: SurfaceMosaicConfig,
         w = 1.0 / (1.0 + rms)
         cxm += w * mx; cym += w * my; wsum += w
     if wsum <= 0:
+        return None
+    return cxm / wsum, cym / wsum, R
+
+
+def _equalize_radial(tiles: List[Tile], cfg: SurfaceMosaicConfig,
+                     exclude: set) -> bool:
+    """
+    Disk-aware equalisation: solar/lunar brightness is dominated by LIMB
+    DARKENING, a radial profile shared by every tile. The limb solution gives the
+    disk centre + radius, so build a global median brightness-vs-r/R profile from
+    all placed tiles and solve each tile's gain against that shared MODEL instead
+    of against its neighbours. This decouples equalisation from overlap topology
+    entirely — rows with zero overlap are still constrained because they answer
+    to the same profile. Returns True if applied.
+    """
+    disk = _disk_in_mosaic(tiles, cfg, exclude)
+    if disk is None:
         return False
-    cxm /= wsum; cym /= wsum
+    cxm, cym, R = disk
 
     use = [pos for pos in range(len(tiles)) if pos not in exclude]
     if len(use) < 2:
@@ -1391,9 +1479,131 @@ def equalize_photometry(tiles: List[Tile], pairs: List[PairMatch],
     _equalize_overlap(tiles, pairs, cfg)
 
 
+def _grad_basis(u: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Quadratic basis columns [1, u, v, u^2, u*v, v^2] for coords in [-1,1]."""
+    return np.stack([np.ones_like(u), u, v, u * u, u * v, v * v], axis=1)
+
+
+def equalize_gradients(tiles: List[Tile], pairs: List[PairMatch],
+                       cfg: SurfaceMosaicConfig, exclude: Optional[set] = None) -> None:
+    """
+    Per-tile smooth gain SURFACE so overlaps match across the gradients each panel
+    carries (etalon sweet-spot, vignetting). Each tile gets a log-domain quadratic
+    poly(u,v) over normalised tile coords; a quadratic (not a plane) because an
+    interior tile must agree with neighbours on all four sides, which a single
+    linear tilt can't do — and it reduces to a plane on linear data (the u^2/v^2
+    terms just solve to ~0).
+
+    At every shared overlap pixel we want s_i*a == s_j*b with s = exp(poly), which
+    in logs is LINEAR:  poly_i(u_i,v_i) - poly_j(u_j,v_j) = log(b/a). Solved jointly
+    for all tiles (6 coeffs each) via 6x6 block normal equations, with a ridge
+    prior toward flat. Multiplicative, so the sky can't be lifted; and samples are
+    limb-masked (r < 0.98R) + bright-in-both so no sky/limb pixel ever enters the
+    fit. Writes tile.grad. Translation overlaps only (gated on rotation off).
+    """
+    if not cfg.gradient_fit or cfg.solve_rotation or not pairs:
+        return
+    exclude = set(exclude or set())
+    n = len(tiles)
+    disk = _disk_in_mosaic(tiles, cfg, exclude)   # (cx, cy, R) or None
+    mono = [(_to_mono01(t.image).astype(np.float32, copy=False)) for t in tiles]
+    thr = [0.3 * float(np.percentile(mono[k], 95.0)) for k in range(n)]
+
+    def norm_uv(x, y, t):
+        return (x - 0.5 * t.w) / (0.5 * t.w), (y - 0.5 * t.h) / (0.5 * t.h)
+
+    NB = 6
+    M = np.zeros((NB * n, NB * n), dtype=np.float64)
+    rhs = np.zeros(NB * n, dtype=np.float64)
+    used = set()
+
+    for p in pairs:
+        if p.i in exclude or p.j in exclude:
+            continue
+        rdx, rdy = int(round(p.dx)), int(round(p.dy))
+        box = _integer_overlap(tiles[p.i].w, tiles[p.i].h,
+                               tiles[p.j].w, tiles[p.j].h, rdx, rdy)
+        if box is None:
+            continue
+        xi0, yi0, xj0, yj0, ow, oh = box
+        # subsample the overlap on a grid (~step so <= ~4k samples)
+        step = max(1, int(math.sqrt(ow * oh / 4000.0)))
+        ys = np.arange(0, oh, step)
+        xs = np.arange(0, ow, step)
+        gx, gy = np.meshgrid(xs, ys)
+        gx = gx.ravel(); gy = gy.ravel()
+        ai = mono[p.i][yi0 + gy, xi0 + gx]
+        bj = mono[p.j][yj0 + gy, xj0 + gx]
+        gi = float(tiles[p.i].gain); gj = float(tiles[p.j].gain)
+        a = ai * gi; b = bj * gj
+        keep = (ai > thr[p.i]) & (bj > thr[p.j]) & (a > 1e-4) & (b > 1e-4)
+        if disk is not None:
+            cxm, cym, R = disk
+            # sample position in mosaic coords (tile i pixel -> canvas)
+            ti = tiles[p.i]
+            th = math.radians(ti.theta); co, si = math.cos(th), math.sin(th)
+            px = xi0 + gx; py = yi0 + gy
+            mx = co * px - si * py + ti.tx
+            my = si * px + co * py + ti.ty
+            rr = np.sqrt((mx - cxm) ** 2 + (my - cym) ** 2)
+            keep &= (rr < 0.98 * R)
+        if int(keep.sum()) < 24:
+            continue
+
+        ui, vi = norm_uv(xi0 + gx[keep], yi0 + gy[keep], tiles[p.i])
+        uj, vj = norm_uv(xj0 + gx[keep], yj0 + gy[keep], tiles[p.j])
+        Bi = _grad_basis(ui, vi)                      # (Ns, 6)
+        Bj = _grad_basis(uj, vj)
+        t = np.log(b[keep]) - np.log(a[keep])         # target = log(b/a)
+
+        bi0, bj0 = NB * p.i, NB * p.j
+        BiTBi = Bi.T @ Bi; BjTBj = Bj.T @ Bj; BiTBj = Bi.T @ Bj
+        M[bi0:bi0 + NB, bi0:bi0 + NB] += BiTBi
+        M[bj0:bj0 + NB, bj0:bj0 + NB] += BjTBj
+        M[bi0:bi0 + NB, bj0:bj0 + NB] -= BiTBj
+        M[bj0:bj0 + NB, bi0:bi0 + NB] -= BiTBj.T
+        rhs[bi0:bi0 + NB] += Bi.T @ t
+        rhs[bj0:bj0 + NB] -= Bj.T @ t
+        used.add(p.i); used.add(p.j)
+
+    if not used:
+        return
+
+    # ridge prior toward flat (0 = correction 1); gentle on the constant, firmer on
+    # curvature so surfaces stay smooth and the gauge (global constant) is pinned
+    ridge = np.array([0.5, 1.0, 1.0, 3.0, 3.0, 3.0], dtype=np.float64)
+    for k in range(n):
+        for c in range(NB):
+            M[NB * k + c, NB * k + c] += ridge[c]
+
+    try:
+        x = np.linalg.solve(M, rhs)
+    except np.linalg.LinAlgError:
+        x = np.linalg.lstsq(M, rhs, rcond=None)[0]
+
+    for k, t in enumerate(tiles):
+        if k in used and np.all(np.isfinite(x[NB * k:NB * k + NB])):
+            t.grad = tuple(float(v) for v in x[NB * k:NB * k + NB])
+        else:
+            t.grad = None
+
+
 # ===========================================================================
 # Stages 5/6/8 — Compose (warp into canvas, local warp, seam + blend)
 # ===========================================================================
+def _grad_surface(t: Tile) -> Optional[np.ndarray]:
+    """Evaluate a tile's log-domain quadratic gain surface -> (H,W) multiplier,
+    clamped to a sane range so a runaway fit can't blow out a tile."""
+    if t.grad is None:
+        return None
+    c0, c1, c2, c3, c4, c5 = t.grad
+    ys, xs = np.mgrid[0:t.h, 0:t.w]
+    u = (xs.astype(np.float32) - 0.5 * t.w) / (0.5 * t.w)
+    v = (ys.astype(np.float32) - 0.5 * t.h) / (0.5 * t.h)
+    poly = c0 + c1 * u + c2 * v + c3 * u * u + c4 * u * v + c5 * v * v
+    return np.exp(np.clip(poly, -0.8, 0.8)).astype(np.float32)
+
+
 def _tile_affine(t: Tile, ox: float, oy: float) -> np.ndarray:
     """
     2x3 affine mapping tile-local coords -> canvas coords (origin ox,oy).
@@ -1432,6 +1642,57 @@ def _feather_weights(mask: np.ndarray) -> np.ndarray:
     return dt.astype(np.float32)
 
 
+def _ap_local_structure(cur_m: np.ndarray, centers: np.ndarray, ap_size: int) -> np.ndarray:
+    """Per-AP high-frequency content on the sharpened proxy — the local std of a
+    high-passed copy inside each AP window. An AP on flat mottling scores near
+    zero, so its (noisy) phase shift can be dropped before it poisons the field."""
+    hp = cur_m - cv2.GaussianBlur(cur_m, (0, 0), max(1.0, ap_size / 8.0))
+    H, W = cur_m.shape[:2]
+    half = int(ap_size // 2)
+    out = np.zeros(len(centers), dtype=np.float64)
+    for i, (cx, cy) in enumerate(centers):
+        x0 = max(0, int(cx) - half); x1 = min(W, int(cx) + half)
+        y0 = max(0, int(cy) - half); y1 = min(H, int(cy) + half)
+        if x1 > x0 and y1 > y0:
+            out[i] = float(hp[y0:y1, x0:x1].std())
+    return out
+
+
+def _confined_field_from_aps(H: int, W: int, centers: np.ndarray,
+                             adx: np.ndarray, ady: np.ndarray, resp: np.ndarray,
+                             band: float, grid: int = 24):
+    """
+    Build a displacement field that is LOCAL: each point's shift is a
+    response-weighted average of only the APs within ~band of it, and a point
+    with no nearby AP support gets exactly ZERO (never an extrapolation from a
+    distant edge's APs). This confines every seam's correction to a band around
+    that seam, so a big pull on one edge cannot reach — and disturb — the other
+    edges of an interior tile, and an edge with no trustworthy APs simply keeps
+    the global placement instead of being warped by its neighbours' shifts.
+    """
+    gy = np.arange(0, H, grid, dtype=np.float64)
+    gx = np.arange(0, W, grid, dtype=np.float64)
+    GY, GX = np.meshgrid(gy, gx, indexing="ij")
+    P = np.stack([GX.ravel(), GY.ravel()], axis=1)          # (nn, 2)
+    C = centers.astype(np.float64)                          # (na, 2)
+    d2 = ((P[:, None, 0] - C[None, :, 0]) ** 2 +
+          (P[:, None, 1] - C[None, :, 1]) ** 2)             # (nn, na)
+    w = resp[None, :] * np.exp(-d2 / (2.0 * band * band))   # (nn, na)
+    wsum = w.sum(axis=1)
+    fx = (w * adx[None, :]).sum(axis=1)
+    fy = (w * ady[None, :]).sum(axis=1)
+    supp = wsum > 0.20 * float(resp.max() if resp.size else 1.0)   # need real nearby support
+    fxn = np.where(supp, fx / np.maximum(wsum, 1e-9), 0.0)
+    fyn = np.where(supp, fy / np.maximum(wsum, 1e-9), 0.0)
+    ny, nx = GY.shape
+    dxf = cv2.resize(fxn.reshape(ny, nx).astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
+    dyf = cv2.resize(fyn.reshape(ny, nx).astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
+    s = max(1.0, band * 0.5)
+    dxf = cv2.GaussianBlur(dxf, (0, 0), s)
+    dyf = cv2.GaussianBlur(dyf, (0, 0), s)
+    return dxf, dyf
+
+
 def _measure_local_field(ref_canvas_mono: np.ndarray, cur_mono: np.ndarray,
                          valid: np.ndarray, cfg: SurfaceMosaicConfig):
     """
@@ -1441,6 +1702,12 @@ def _measure_local_field(ref_canvas_mono: np.ndarray, cur_mono: np.ndarray,
     structure even on soft data; the caller applies the returned field to the
     ORIGINAL pixels. Returns (dxf, dyf), or (None, None) if no correction is
     warranted.
+
+    APs are gated the same way the aligner gates its correlation search: an AP is
+    only trusted if its window holds real high-frequency structure AND its phase
+    correlation returns a strong response. A low-signal seam (thin strip, flat
+    mottling) therefore keeps the global placement instead of getting a confident-
+    but-wrong local warp — the doubling/tripling failure mode.
     """
     if not cfg.local_warp or cv2 is None:
         return None, None
@@ -1454,30 +1721,49 @@ def _measure_local_field(ref_canvas_mono: np.ndarray, cur_mono: np.ndarray,
                                 cfg.ap_size, cfg.ap_spacing, cfg.ap_min_mean)
     if ap_centers is None or len(ap_centers) < 4:
         return None, None
+    ap_centers = np.asarray(ap_centers)
+
+    # Gate 1 — structure: drop APs on flat patches (no signal to localise on)
+    struct = _ap_local_structure(cur_m, ap_centers, cfg.ap_size)
+    gmed = float(np.median(struct[struct > 0])) if np.any(struct > 0) else 0.0
+    if gmed > 0:
+        ap_centers = ap_centers[struct > float(cfg.ap_min_struct) * gmed]
+    if len(ap_centers) < 4:
+        return None, None
 
     ap_dx, ap_dy, ap_resp = _ap_phase_shifts_per_ap(
         ref_canvas_mono, cur_m, ap_centers=ap_centers,
         ap_size=cfg.ap_size, max_dim=cfg.ap_size,
     )
-    keep = _reject_ap_outliers(ap_dx, ap_dy, np.clip(ap_resp, 0.0, 1.0), z=3.5)
-    if not np.any(keep):
+    resp = np.clip(ap_resp, 0.0, 1.0)
+    # Gate 2 — response: keep only APs whose correlation actually locked on
+    keep = _reject_ap_outliers(ap_dx, ap_dy, resp, z=3.5) & (resp >= float(cfg.ap_min_response))
+    if int(np.count_nonzero(keep)) < 4:
         return None, None
 
-    # Guard 1 — already well placed: on flat overlap the per-AP shifts are just
-    # a broad correlation peak wobbling sub-pixel. If the tile is essentially
-    # where it belongs, skip the field entirely instead of baking in that noise.
+    # Guard — already well placed: on flat overlap the per-AP shifts are just a
+    # broad correlation peak wobbling sub-pixel. If the tile is essentially where
+    # it belongs, skip the field entirely instead of baking in that noise.
     mag = np.hypot(ap_dx[keep], ap_dy[keep])
     if float(np.median(mag)) < float(cfg.local_warp_min_shift):
         return None, None
 
-    dxf, dyf = _dense_field_from_ap_shifts(
-        cur_m.shape[0], cur_m.shape[1],
-        ap_centers[keep], ap_dx[keep], ap_dy[keep], np.clip(ap_resp[keep], 0.0, 1.0),
-        grid=cfg.ap_field_grid, power=2.0, conf_floor=0.15,
-        radius=float(cfg.ap_size) * 3.0,
-    )
+    if cfg.seam_confine:
+        dxf, dyf = _confined_field_from_aps(
+            cur_m.shape[0], cur_m.shape[1],
+            ap_centers[keep], ap_dx[keep], ap_dy[keep], resp[keep],
+            band=float(cfg.ap_size) * float(cfg.seam_band_mult),
+            grid=max(8, int(cfg.ap_field_grid)),
+        )
+    else:
+        dxf, dyf = _dense_field_from_ap_shifts(
+            cur_m.shape[0], cur_m.shape[1],
+            ap_centers[keep], ap_dx[keep], ap_dy[keep], resp[keep],
+            grid=cfg.ap_field_grid, power=2.0, conf_floor=0.15,
+            radius=float(cfg.ap_size) * 3.0,
+        )
 
-    # Guard 2 — confine to the overlap: feather the field to zero at the overlap
+    # Guard — confine to the overlap: feather the field to zero at the overlap
     # boundary so a tile's non-overlap pixels are never displaced by the dense
     # field extrapolating outward.
     falloff = max(1.0, float(cfg.ap_size))
@@ -1503,6 +1789,67 @@ def _fill_nodata(img: np.ndarray, valid: np.ndarray, iters: int = 5, sigma: floa
         blur = cv2.GaussianBlur(filled, (0, 0), float(sigma))
         filled = np.where(m3, img, blur)
     return filled
+
+
+def _tile_bbox(t: Tile, ox: float, oy: float, cw: int, ch: int, pad: int = 2):
+    """Canvas-space bounding box (bx, by, bw, bh) of a tile's warped footprint,
+    clipped to the canvas. Warping into the bbox instead of the full canvas keeps
+    per-tile buffers small (memory-safe for big mosaics) and the warp cheap.
+
+    A few pixels of PAD are added on every side: INTER_LINEAR samples against the
+    zero border and darkens the outermost row/column, so without the pad that
+    darkened edge lands exactly on the bbox boundary and prints a thin seam line.
+    The pad pushes the interpolation seam outside the valid mask, where the blend
+    masks it away — same as the old full-canvas warp, which had neighbours
+    covering those edge pixels."""
+    thr = math.radians(t.theta)
+    c, s = math.cos(thr), math.sin(thr)
+    xs = []; ys = []
+    for px, py in ((0, 0), (t.w, 0), (0, t.h), (t.w, t.h)):
+        xs.append(c * px - s * py + t.tx - ox)
+        ys.append(s * px + c * py + t.ty - oy)
+    x0 = max(0, int(math.floor(min(xs))) - pad); y0 = max(0, int(math.floor(min(ys))) - pad)
+    x1 = min(cw, int(math.ceil(max(xs))) + pad); y1 = min(ch, int(math.ceil(max(ys))) + pad)
+    return x0, y0, max(0, x1 - x0), max(0, y1 - y0)
+
+
+def _prewarp_tile(t: Tile, cfg: SurfaceMosaicConfig, ox: float, oy: float,
+                  cw: int, ch: int, want_color: bool):
+    """
+    Independent per-tile work (no shared state): apply gain + gradient surface,
+    then warp the original, the valid mask, and the sharpened match copy into the
+    tile's canvas bounding box. This is the embarrassingly-parallel bulk of
+    compose; the sequential seam/blend phase consumes these buffers. Returns
+    (bx, by, warped, valid, match_warped) or None for an empty footprint.
+    """
+    bx, by, bw, bh = _tile_bbox(t, ox, oy, cw, ch)
+    if bw < 2 or bh < 2:
+        return None
+
+    img = t.image
+    if img.ndim == 2 and want_color:
+        img = np.repeat(img[:, :, None], 3, axis=2)
+    img = np.maximum(img.astype(np.float32, copy=False) * float(t.gain)
+                     + float(t.bias), 0.0)
+    surf = _grad_surface(t) if t.grad is not None else None
+    if surf is not None:
+        img = img * (surf[:, :, None] if img.ndim == 3 else surf)
+
+    M = _tile_affine(t, ox, oy)
+    M = M.copy(); M[0, 2] -= bx; M[1, 2] -= by      # warp into bbox-local coords
+    warped = cv2.warpAffine(img, M, (bw, bh), flags=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=cfg.border_value)
+    ones = np.ones((t.h, t.w), dtype=np.float32)
+    valid = cv2.warpAffine(ones, M, (bw, bh), flags=cv2.INTER_NEAREST,
+                           borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+    mm = _match_mono(t, cfg) * float(t.gain)
+    if surf is not None:
+        mm = mm * surf
+    match_warped = cv2.warpAffine(mm, M, (bw, bh), flags=cv2.INTER_LINEAR,
+                                  borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+    if warped.ndim == 2:
+        warped = warped[:, :, None]
+    return bx, by, warped, valid, match_warped
 
 
 def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
@@ -1536,65 +1883,95 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
     # composite brightest/sharpest-first so the local warp always has a good ref
     order = sorted(range(len(tiles)), key=lambda k: -tiles[k].quality)
 
-    for step, k in enumerate(order):
-        t = tiles[k]
-        if progress_cb:
-            progress_cb(step, len(order), "Compositing")
+    # ---- Phase A: pre-warp every tile in parallel (independent per tile) ----
+    # cv2 ops release the GIL, so threads give real speedup. Keep OpenCV's own
+    # per-op threads modest here so the tile-level pool owns the cores (avoids
+    # oversubscription); the sequential phase below gets the full cv2 thread pool.
+    want_color = bool(is_color or use_mb)
+    ncpu = os.cpu_count() or 1
+    workers = max(1, min(len(order), ncpu))
+    old_threads = None
+    try:
+        old_threads = cv2.getNumThreads()
+        cv2.setNumThreads(1)
+    except Exception:
+        old_threads = None
 
-        img = t.image
-        if img.ndim == 2 and (is_color or use_mb):
-            img = np.repeat(img[:, :, None], 3, axis=2)
-        img = np.maximum(img.astype(np.float32, copy=False) * float(t.gain)
-                         + float(t.bias), 0.0)
-
-        M = _tile_affine(t, ox, oy)
-        warped = cv2.warpAffine(img, M, (cw, ch), flags=cv2.INTER_LINEAR,
-                                borderMode=cv2.BORDER_CONSTANT, borderValue=cfg.border_value)
-        ones = np.ones((t.h, t.w), dtype=np.float32)
-        valid = cv2.warpAffine(ones, M, (cw, ch), flags=cv2.INTER_NEAREST,
-                               borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
-        # sharpened match copy warped by the SAME pose — used only to measure the
-        # local seam field, never composited into the output
-        match_warped = cv2.warpAffine(_match_mono(t, cfg) * float(t.gain), M, (cw, ch),
-                                      flags=cv2.INTER_LINEAR,
-                                      borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
-
-        if warped.ndim == 2:
-            warped = warped[:, :, None]
-
-        # local (non-rigid) seam correction: MEASURE on the sharpened match canvas,
-        # APPLY the identical field to the original pixels (no shortcuts — the
-        # originals ride through the exact same geometry as the sharpened ones).
-        if step > 0:
-            dxf, dyf = _measure_local_field(running_match, match_warped, valid, cfg)
-            if dxf is not None:
-                warped = _warp_by_dense_field(warped, dxf, dyf)
-                if warped.ndim == 2:   # cv2.remap squeezes (H,W,1) -> (H,W)
-                    warped = warped[:, :, None]
-                match_warped = _warp_by_dense_field(match_warped, dxf, dyf)
-
-        # blend weight: hard for "none", distance-transform feather otherwise,
-        # optionally scaled by tile quality so the sharper panel wins the seam.
-        if cfg.blend == "none":
-            wt = (valid > 0).astype(np.float32)
+    prewarped: Dict[int, Any] = {}
+    try:
+        if workers > 1 and len(order) > 1:
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                futs = {ex.submit(_prewarp_tile, tiles[k], cfg, ox, oy, cw, ch, want_color): k
+                        for k in order}
+                done = 0
+                for fut, k in futs.items():
+                    prewarped[k] = fut.result()
+                    done += 1
+                    if progress_cb:
+                        progress_cb(done, len(order), "Warping tiles")
         else:
-            wt = _feather_weights(valid)
-            if cfg.quality_weighted_seam:
-                wt = wt * (0.25 + 0.75 * float(np.clip(t.quality, 0.0, 1.0)))
+            for i, k in enumerate(order):
+                prewarped[k] = _prewarp_tile(tiles[k], cfg, ox, oy, cw, ch, want_color)
+                if progress_cb:
+                    progress_cb(i + 1, len(order), "Warping tiles")
+    finally:
+        try:
+            if old_threads is not None:
+                cv2.setNumThreads(max(1, ncpu))   # sequential phase: full cv2 threading
+        except Exception:
+            pass
 
-        if use_mb:
-            wimg = warped if warped.shape[2] == 3 else np.repeat(warped, 3, axis=2)
-            mb_store.append((wimg, (valid > 0), wt.astype(np.float32, copy=False)))
-        else:
-            wtc = wt[:, :, None]
-            accum += warped * wtc
-            wsum += wtc
+    # ---- Phase B: sequential seam measure + blend (reads running_match) ----
+    placed_any = False
+    try:
+        for step, k in enumerate(order):
+            if progress_cb:
+                progress_cb(step, len(order), "Compositing")
+            pw = prewarped.get(k)
+            prewarped[k] = None
+            if pw is None:
+                continue
+            bx, by, warped, valid, match_warped = pw
+            bh, bw = valid.shape[:2]
+            ref_sub = running_match[by:by + bh, bx:bx + bw]
 
-        coverage += (valid > 0).astype(np.float32)
-        # update the SHARPENED running reference for the next tile's measurement
-        running_match = np.where(valid > 0,
-                                 np.maximum(running_match, match_warped),
-                                 running_match)
+            # local (non-rigid) seam correction: MEASURE on the sharpened match,
+            # APPLY the identical field to the original pixels.
+            if placed_any:
+                dxf, dyf = _measure_local_field(ref_sub, match_warped, valid, cfg)
+                if dxf is not None:
+                    warped = _warp_by_dense_field(warped, dxf, dyf)
+                    if warped.ndim == 2:
+                        warped = warped[:, :, None]
+                    match_warped = _warp_by_dense_field(match_warped, dxf, dyf)
+
+            if cfg.blend == "none":
+                wt = (valid > 0).astype(np.float32)
+            else:
+                wt = _feather_weights(valid)
+                if cfg.quality_weighted_seam:
+                    wt = wt * (0.25 + 0.75 * float(np.clip(tiles[k].quality, 0.0, 1.0)))
+
+            if use_mb:
+                wimg = warped if warped.shape[2] == 3 else np.repeat(warped, 3, axis=2)
+                mb_store.append((bx, by, wimg, (valid > 0), wt.astype(np.float32, copy=False)))
+            else:
+                wtc = wt[:, :, None]
+                accum[by:by + bh, bx:bx + bw] += warped * wtc
+                wsum[by:by + bh, bx:bx + bw] += wtc
+
+            coverage[by:by + bh, bx:bx + bw] += (valid > 0).astype(np.float32)
+            running_match[by:by + bh, bx:bx + bw] = np.where(
+                valid > 0,
+                np.maximum(ref_sub, match_warped),
+                ref_sub)
+            placed_any = True
+    finally:
+        try:
+            if old_threads is not None:
+                cv2.setNumThreads(old_threads)
+        except Exception:
+            pass
 
     if use_mb:
         # Hard ownership: each pixel goes to the single valid tile with the
@@ -1603,20 +1980,25 @@ def compose_mosaic(tiles: List[Tile], cfg: SurfaceMosaicConfig,
         # masks confuse its weight normalisation.
         best = np.full((ch, cw), -1.0, dtype=np.float32)
         owner = np.full((ch, cw), -1, dtype=np.int32)
-        for idx, (_wi, vmask, wt) in enumerate(mb_store):
-            better = (wt > best) & vmask
-            owner = np.where(better, idx, owner)
-            best = np.where(better, wt, best)
+        for idx, (bx, by, _wi, vmask, wt) in enumerate(mb_store):
+            bh, bw = vmask.shape
+            sub_best = best[by:by + bh, bx:bx + bw]
+            better = (wt > sub_best) & vmask
+            owner[by:by + bh, bx:bx + bw] = np.where(
+                better, idx, owner[by:by + bh, bx:bx + bw])
+            best[by:by + bh, bx:bx + bw] = np.where(better, wt, sub_best)
 
         blender = cv2.detail_MultiBandBlender(try_gpu=0, num_bands=int(cfg.multiband_bands))
         blender.prepare((0, 0, cw, ch))
-        for idx, (wi, vmask, _wt) in enumerate(mb_store):
+        for idx, (bx, by, wi, vmask, _wt) in enumerate(mb_store):
+            bh, bw = vmask.shape
             # fill no-data so the Laplacian pyramid doesn't bleed the black cliff
             filled = _fill_nodata(wi, vmask)
             img16 = np.clip(filled * MB_SCALE, -32768.0, 32767.0).astype(np.int16)
-            mask8 = np.where(owner == idx, np.uint8(255), np.uint8(0))
+            mask8 = np.where(owner[by:by + bh, bx:bx + bw] == idx,
+                             np.uint8(255), np.uint8(0))
             blender.feed(np.ascontiguousarray(img16),
-                         np.ascontiguousarray(mask8), (0, 0))
+                         np.ascontiguousarray(mask8), (bx, by))
         res16, _res_mask = blender.blend(None, None)
         mosaic = np.clip(res16.astype(np.float32) / MB_SCALE, 0.0, 1.0)
         if chans == 1:
@@ -1668,6 +2050,7 @@ def run_surface_mosaic(tiles: List[Tile], cfg: Optional[SurfaceMosaicConfig] = N
     # running on `tiles` is correct — but they're excluded from the radial model
     # since they have no valid pose
     equalize_photometry(tiles, pairs, cfg, exclude=unplaced_set)
+    equalize_gradients(tiles, pairs, cfg, exclude=unplaced_set)
 
     # TODO(sphere_reproject): if cfg.sphere_reproject, reproject each tile onto a
     # common lunar/solar sphere here using _build_lonlat_grids / derotate_stack_lonshift
@@ -1878,6 +2261,7 @@ if _HAVE_QT:
                 "local_warp_min_shift": _d.local_warp_min_shift,
                 "multiband_bands": _d.multiband_bands,
                 "radial_model": _d.radial_model,
+                "gradient_fit": _d.gradient_fit,
                 "ap_size": _d.ap_size,
                 "quality_weighted_seam": _d.quality_weighted_seam,
             }
@@ -2103,6 +2487,9 @@ if _HAVE_QT:
             chk_radial = QCheckBox("Radial disk brightness model (auto when limb found)")
             chk_radial.setChecked(bool(self._adv["radial_model"]))
             fb.addRow(chk_radial)
+            chk_grad = QCheckBox("Per-tile gradient surface fit (match panel gradients)")
+            chk_grad.setChecked(bool(self._adv["gradient_fit"]))
+            fb.addRow(chk_grad)
             v.addWidget(gb_bl)
 
             # danger zone
@@ -2143,6 +2530,7 @@ if _HAVE_QT:
                 sp_lwms.setValue(d.local_warp_min_shift)
                 sp_bands.setValue(d.multiband_bands)
                 chk_radial.setChecked(d.radial_model)
+                chk_grad.setChecked(d.gradient_fit)
                 sp_ap.setValue(d.ap_size)
                 chk_qseam.setChecked(d.quality_weighted_seam)
 
@@ -2169,6 +2557,7 @@ if _HAVE_QT:
                     "local_warp_min_shift": sp_lwms.value(),
                     "multiband_bands": sp_bands.value(),
                     "radial_model": chk_radial.isChecked(),
+                    "gradient_fit": chk_grad.isChecked(),
                     "ap_size": sp_ap.value(),
                     "quality_weighted_seam": chk_qseam.isChecked(),
                 })

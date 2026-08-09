@@ -15,6 +15,40 @@ _USE_PROCESS_POOL_FOR_ASSETS = not getattr(sys, "frozen", False)
 from setiastro.saspro.mfdeconv_earlystop import EarlyStopper
 
 import contextlib
+
+@contextlib.contextmanager
+def _limit_blas_threads(limits=1, status_cb=None, _retries=1):
+    """
+    Defensive wrapper around threadpoolctl.threadpool_limits.
+
+    On Windows, threadpool_limits enumerates loaded DLLs via EnumProcessModulesEx
+    + GetModuleFileNameExW. If a module is unloaded between the snapshot and the
+    name lookup (a TOCTOU race that AV/EDR hooks and concurrent CUDA/DirectML DLL
+    loading make likely on some machines), threadpoolctl raises
+    OSError("GetModuleFileNameEx failed"). The thread cap is only an
+    oversubscription guard, so degrade to unthrottled instead of aborting.
+    """
+    cm = None
+    for attempt in range(_retries + 1):
+        try:
+            cm = threadpool_limits(limits=limits)
+            cm.__enter__()
+            break
+        except Exception as e:
+            cm = None
+            if attempt >= _retries and status_cb:
+                try:
+                    status_cb(f"threadpoolctl unavailable ({e}); running without BLAS thread cap")
+                except Exception:
+                    pass
+    try:
+        yield
+    finally:
+        if cm is not None:
+            try:
+                cm.__exit__(None, None, None)
+            except Exception:
+                pass
 try:
     import sep
 except Exception:
@@ -488,7 +522,7 @@ def _compute_one_worker(args):
     """
     (i, path, make_masks_in_worker, make_varmaps, star_mask_cfg, varmap_cfg) = args
     # avoid BLAS/OMP storm inside each process
-    with threadpool_limits(limits=1):
+    with _limit_blas_threads(1):
         arr, hdr = _load_image_array(path)           # FITS or XISF
         arr = np.asarray(arr, dtype=np.float32, order="C")
         if arr.ndim == 3 and arr.shape[-1] == 1:
@@ -615,7 +649,7 @@ def _build_psf_and_assets(
     # --- thread worker: get frame from cache and compute assets ---
     def _compute_one(i: int, path: str):
         # avoid heavy BLAS oversubscription inside each worker
-        with threadpool_limits(limits=1):
+        with _limit_blas_threads(1, status_cb=status_cb):
             # Pull frame from cache honoring color_mode & target (Ht,Wt)
             img_chw = _FRAME_LRU.get(path, Ht, Wt, color_mode)  # (C,H,W) float32
             # For PSF/mask/varmap we operate on a 2D plane (luma/mono)

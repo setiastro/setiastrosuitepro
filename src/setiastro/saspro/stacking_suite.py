@@ -210,6 +210,52 @@ def _cal_out_name(light_file: str, calibrated_dir: str) -> str:
     return os.path.join(calibrated_dir, f"{dir_hash}_{root}_c.fit")
 
 
+def _star_count_ecc_size(preview, **kwargs):
+    """
+    Arity-safe wrapper around compute_star_count_fast_preview.
+
+    Always returns a 3-tuple ``(count, ecc, size)`` even when the underlying
+    numba helper short-circuits on a degenerate preview (empty / all-zero /
+    single-value core) and returns only ``(count, ecc)`` — that 2-vs-3 mismatch
+    is what raised ``ValueError: not enough values to unpack (expected 3, got 2)``
+    from the "Skip Registration and Integrate" path, where black-bordered
+    aligned frames routinely produce a fully-zero measurement core.
+
+    A missing size falls back to 0.0, which the downstream weight code already
+    treats as "no usable FWHM" (it's filtered out of the FWHM reference median
+    and neutralised in the sharpness term), so a degenerate frame is scored
+    conservatively rather than crashing the whole integration.
+    """
+    kwargs.setdefault("return_size", True)
+    try:
+        res = compute_star_count_fast_preview(preview, **kwargs)
+    except Exception:
+        return 0, 0.0, 0.0
+
+    if isinstance(res, (tuple, list)):
+        n = len(res)
+        c    = res[0] if n >= 1 else 0
+        ecc  = res[1] if n >= 2 else 0.0
+        size = res[2] if n >= 3 else 0.0
+    else:
+        # bare scalar count
+        c, ecc, size = res, 0.0, 0.0
+
+    try:
+        c = int(c)
+    except Exception:
+        c = 0
+    try:
+        ecc = float(ecc)
+    except Exception:
+        ecc = 0.0
+    try:
+        size = float(size)
+    except Exception:
+        size = 0.0
+    return c, ecc, size
+
+
 def _satmask_sidecar_for(fits_path: str) -> str:
     """Canonical satellite-mask sidecar path for a given FITS frame."""
     return os.path.splitext(fits_path)[0] + "_satmask.npy"
@@ -5920,6 +5966,10 @@ class StackingSuiteDialog(QDialog):
         self._align_prog_last = None
 
         self.reference_frame = None
+        # Set by the register-only-new shortcut so the completion handler
+        # integrates the full tree (old twins + freshly registered) instead of
+        # only the frames it just aligned.
+        self._integrate_full_after_register = None
         self._comet_seed = None             # {'path': <original file>, 'xy': (x,y)}
         self._orig2norm = {}                # original path -> normalized *_n.fit
         self._comet_ref_xy = None           # comet coordinate in reference frame
@@ -19636,6 +19686,84 @@ class StackingSuiteDialog(QDialog):
         mad = float(np.median(np.abs(a - med)))
         return mad * 1.4826  # scale to Gaussian-sigma equivalent
 
+    @staticmethod
+    def _measure_fwhm_halfres(img2d, *, max_stars: int = 100, stamp: int = 11,
+                              detect_sigma: float = 5.0) -> float:
+        """Median stellar FWHM (in pixels of THIS image) via intensity-weighted
+        second moments on the brightest ~max_stars sources.
+
+        Deliberately measures the *linear* half-res preview directly — no gamma
+        stretch and no extra downsample. The old size proxy (fitEllipse on a
+        stretched, 2×-downsampled, thresholded image) was quantized flat in the
+        1.5–2px star regime where real data lives, so it couldn't tell sharp
+        from soft. Second moments on the un-stretched preview track true FWHM
+        monotonically at a fraction of the cost of native-resolution profiling,
+        and the 2×2 superpixel preview also averages down single-frame noise,
+        stabilising the centroid.
+
+        Both the Register and Skip-Registration measurement paths call this so
+        their FWHM (and therefore the sharpness weight term) are computed the
+        same way. Returns 0.0 when nothing usable is found — downstream that
+        neutralises the sharpness term rather than crashing.
+        """
+        a = np.asarray(img2d, dtype=np.float32)
+        if a.ndim != 2 or a.size == 0:
+            return 0.0
+
+        med = float(np.median(a))
+        mad = float(np.median(np.abs(a - med))) * 1.4826
+        if not (mad > 0):
+            mad = float(a.std()) or 1e-6
+        thr = med + detect_sigma * mad
+
+        bw = (a > thr).astype(np.uint8)
+        if int(bw.sum()) == 0:
+            return 0.0
+        try:
+            n, _lbl, stats, cent = cv2.connectedComponentsWithStats(bw, connectivity=8)
+        except Exception:
+            return 0.0
+        if n <= 1:
+            return 0.0
+
+        H, W = a.shape
+        cands = []
+        for i in range(1, n):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area < 2 or area > 400:        # reject hot pixels & big blobs/galaxies
+                continue
+            cx, cy = cent[i]
+            iy, ix = int(round(cy)), int(round(cx))
+            if 0 <= iy < H and 0 <= ix < W:
+                cands.append((float(a[iy, ix]), cx, cy))
+        if not cands:
+            return 0.0
+        cands.sort(reverse=True)               # brightest first
+        cands = cands[:max_stars]
+
+        half = stamp // 2
+        yy, xx = np.mgrid[0:stamp, 0:stamp]
+        fwhms = []
+        for _peak, cx, cy in cands:
+            ix, iy = int(round(cx)), int(round(cy))
+            if ix - half < 0 or iy - half < 0 or ix + half + 1 > W or iy + half + 1 > H:
+                continue
+            win = a[iy - half:iy + half + 1, ix - half:ix + half + 1].astype(np.float32) - med
+            win[win < 0.0] = 0.0
+            s = float(win.sum())
+            if s <= 0.0:
+                continue
+            xbar = float((win * xx).sum() / s)
+            ybar = float((win * yy).sum() / s)
+            sxx = float((win * (xx - xbar) ** 2).sum() / s)
+            syy = float((win * (yy - ybar) ** 2).sum() / s)
+            sigma = math.sqrt(max(0.0, 0.5 * (sxx + syy)))   # round-equivalent σ
+            if sigma > 0.0 and math.isfinite(sigma):
+                fwhms.append(2.3548 * sigma)
+        if not fwhms:
+            return 0.0
+        return float(np.median(fwhms))
+
     def register_images(self):
 
         # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
@@ -19777,8 +19905,13 @@ class StackingSuiteDialog(QDialog):
 
         #self._set_registration_busy(True)
 
+        _reg_launched = False  # set True once we hand off to the align thread;
+        # controls whether the finally-clause tears down partial-run state.
         try:
             self.update_status(self.tr("🔄 Image Registration Started..."))
+            # Start clean: no stale "integrate full set after register" request
+            # can survive from a previous (e.g. cancelled) run.
+            self._integrate_full_after_register = None
             self.extract_light_files_from_tree(debug=True)
 
             if self.star_trail_mode:
@@ -19834,6 +19967,31 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr("⚠️ No light files to register!"))
                 self._set_registration_busy(False)
                 return
+
+            # ── Already-registered pre-check ────────────────────────────────
+            # If these frames already have fresh registered twins in a sibling
+            # Aligned_Images folder, offer to skip (all matched) or shortcut
+            # (register only the new ones, then integrate the union). Comet mode
+            # needs its own per-frame registration, so it's excluded above.
+            if not comet_mode:
+                try:
+                    _decision = self._precheck_registered_counterparts()
+                except Exception as _e:
+                    self.update_status(self.tr(f"ℹ️ Pre-registration check skipped: {_e}"))
+                    _decision = None
+
+                if _decision == "integrate":
+                    # Everything is already registered → straight to integration.
+                    self._set_registration_busy(False)
+                    self.integrate_registered_images()
+                    return
+                if _decision == "cancel":
+                    self.update_status(self.tr("❌ Registration cancelled."))
+                    self._set_registration_busy(False)
+                    return
+                # "register_new"  → self.light_files pruned to the unmatched set;
+                #                   union integration fires on completion.
+                # "register_all" / None → fall through to normal registration.
 
             # dual-band split unchanged...
             selected_groups = set()
@@ -20047,27 +20205,61 @@ class StackingSuiteDialog(QDialog):
                 means = np.array([float(np.mean(ci)) for ci in chunk_images], dtype=np.float32)
                 mean_values.update({fp: float(means[i]) for i, fp in enumerate(chunk_valid_files)})
 
+                # Isolate per-frame failures — measurement here only feeds
+                # reference selection; a frame we can't measure still gets
+                # aligned, it just becomes a poor candidate for the reference
+                # (0 stars, no size). Without this, one bad chunk item would
+                # abort ex.map's iteration and take down the whole
+                # registration run.
                 def _star_job(i_fp):
                     i, fp = i_fp
-                    p = chunk_images[i]
-                    pmin = float(np.nanmin(p))
-                    med = float(np.median(p - pmin))
-                    # return_size=True adds a median star-size (FWHM proxy, in
-                    # downsampled-preview px; smaller = sharper). Comparable
-                    # across frames because every frame goes through the same
-                    # preview→downsample path.
-                    c, ecc, size = compute_star_count_fast_preview(p, return_size=True)
-                    # robust MAD noise (star-insensitive) for the SNR term
-                    noise = self._mad_noise(p)
-                    return fp, med, c, ecc, size, noise
+                    try:
+                        p = chunk_images[i]
+                        pmin = float(np.nanmin(p))
+                        med = float(np.median(p - pmin))
+                        # Star count + ecc from the fast counter (count/ecc are
+                        # what it's good at). FWHM comes from the dedicated
+                        # half-res second-moment estimator instead of the
+                        # counter's blind size proxy — measured on the same
+                        # linear preview, identically to the Skip-Registration
+                        # path, so the sharpness term is real and comparable.
+                        c, ecc, _blind_size = _star_count_ecc_size(p)
+                        size = self._measure_fwhm_halfres(p)
+                        # robust MAD noise (star-insensitive) for the SNR term
+                        noise = self._mad_noise(p)
+                        return fp, med, c, ecc, size, noise, None
+                    except Exception as _job_e:
+                        return (fp, 0.0, 0, 0.0, 0.0, 0.0,
+                                f"{type(_job_e).__name__}: {_job_e}")
 
+                skipped_measure = []
                 star_workers = min(max_workers, 8)
                 with ThreadPoolExecutor(max_workers=star_workers) as ex:
-                    for fp, med, c, ecc, size, noise in ex.map(_star_job, enumerate(chunk_valid_files)):
+                    for fp, med, c, ecc, size, noise, err in ex.map(_star_job, enumerate(chunk_valid_files)):
+                        if err is not None:
+                            skipped_measure.append((fp, err))
+                            # Neutral fallback so downstream weight/reference
+                            # code still has an entry to look up — 0 stars
+                            # naturally floors the reference score.
                         preview_medians[fp] = med
                         star_counts[fp] = {"count": c, "eccentricity": ecc,
                                            "fwhm": size, "noise": noise}
                         measured_frames.append(fp)
+
+                if skipped_measure:
+                    self.update_status(self.tr(
+                        f"⚠️ Measurement failed on {len(skipped_measure)} "
+                        f"frame(s); they'll still be aligned but won't be "
+                        f"considered as reference candidates:"
+                    ))
+                    for _fp, _err in skipped_measure[:5]:
+                        self.update_status(self.tr(
+                            f"   • {os.path.basename(_fp)} — {_err}"
+                        ))
+                    if len(skipped_measure) > 5:
+                        self.update_status(self.tr(
+                            f"   … and {len(skipped_measure) - 5} more (see saspro.log)"
+                        ))
 
                 del chunk_images
                 gc.collect()  # Free memory after processing each chunk
@@ -20185,9 +20377,35 @@ class StackingSuiteDialog(QDialog):
             # Normalize to mean=1.0 so weighted mean scale is preserved.
             # Floor at 0.1 so even poor frames contribute rather than being
             # fully excluded (rejection algorithms handle actual exclusion).
+            #
+            # Per-frame debug log mirrors the "Skip Registration and Integrate"
+            # path line-for-line (same fields, same order, same precision) so
+            # the two can be diffed directly to confirm identical scoring. The
+            # only intentional metric difference is the measured region:
+            # Register scores borderless raw/calibrated frames (full preview),
+            # while Skip Registration scores the border-stripped valid core of
+            # already-aligned frames. The scoring math applied is identical.
+            dbg = [f"\n📊 **Frame Weights Debug Log (mode: {_wmode}):**"]
             raw_scores = {}
             for fp in measured_frames:
-                raw_scores[fp] = _fast_ref_score(fp)
+                info = star_counts.get(fp, {"count": 0, "eccentricity": 1.0})
+                c    = float(info.get("count", 0.0))
+                ecc  = float(info.get("eccentricity", 1.0))
+                bg   = max(float(preview_medians.get(fp, 0.0)), 1e-3)
+                fwhm = float(info.get("fwhm", 0.0))
+                noise = float(info.get("noise", 0.0)) or None
+
+                raw_w, terms = self._score_frame_terms(
+                    count=c, ecc=ecc, bg=bg, fwhm=fwhm, noise=noise,
+                    fwhm_ref=_fwhm_ref, noise_ref=_noise_ref, exps=_wexps,
+                )
+                raw_scores[fp] = raw_w
+                dbg.append(
+                    f"📂 {os.path.basename(fp)} → StarCount={int(c)}, Ecc={ecc:.4f}, "
+                    f"Bg={bg:.4f}, FWHM~{fwhm:.2f}, "
+                    f"Sharp={terms['sharp']:.3f}, SNR={terms['snr']:.3f}, "
+                    f"Weight={raw_w:.4f}"
+                )
 
             score_vals = [v for v in raw_scores.values() if v > 0]
             if score_vals:
@@ -20196,9 +20414,8 @@ class StackingSuiteDialog(QDialog):
                     s = raw_scores.get(fp, 0.0)
                     self.frame_weights[fp] = max(0.1, s / mean_score) if mean_score > 1e-6 else 1.0
             else:
-                # All scores zero (no stars detected) — uniform weights
-                # All scores zero (no stars detected) — use inverse background mean
-                # darker sky = lower mean = better frame quality
+                # All scores zero (no stars detected) — use inverse background
+                # mean as the quality proxy (darker sky = lower mean = better).
                 self.update_status(self.tr(
                     "ℹ️ No stars detected — using inverse background mean as frame quality proxy."
                 ))
@@ -20208,6 +20425,13 @@ class StackingSuiteDialog(QDialog):
                     m = preview_medians.get(fp, 1.0)
                     m = max(m, 1e-6)
                     self.frame_weights[fp] = min_mean / m
+
+            # Append the final (normalized) weight to each debug line so the log
+            # shows both the raw score and what actually feeds integration.
+            for i, fp in enumerate(measured_frames, start=1):
+                if i < len(dbg):
+                    dbg[i] += f"  →  Normalized={self.frame_weights.get(fp, 0.0):.4f}"
+            self.update_status(self.tr("\n".join(dbg)))
 
             self.update_status(self.tr(
                 f"⚖️ Frame weights computed: "
@@ -21019,8 +21243,16 @@ class StackingSuiteDialog(QDialog):
                 self._on_align_done, Qt.ConnectionType.QueuedConnection
             )
             self.alignment_thread.start()
+            # Handoff done — the completion handler now owns the partial-run
+            # state (SASD merge + reference-lock restore + tree union). Any
+            # early return before this point falls through to the finally
+            # clause below, which rolls that state back so a never-completed
+            # partial run doesn't silently persist a pinned twin as the
+            # user's reference for future runs.
+            _reg_launched = True
 
         except StackCancelled:
+            self._abort_partial_reg_state()
             self._set_registration_busy(False)
             mon = getattr(self, "_exec_monitor", None)
             if mon is not None:
@@ -21029,8 +21261,15 @@ class StackingSuiteDialog(QDialog):
             self.update_status(self.tr("⏹ Registration cancelled by user."))
             return
         except Exception as e:
+            self._abort_partial_reg_state()
             self._set_registration_busy(False)
             raise
+        finally:
+            # Roll back any partial-run state set by the pre-check when we
+            # never made it as far as launching the align thread. When the
+            # thread WAS launched, the completion handler owns teardown.
+            if not _reg_launched:
+                self._abort_partial_reg_state()
 
         
 
@@ -21693,6 +21932,44 @@ class StackingSuiteDialog(QDialog):
             "summary_lines": combined_summary,
         }
 
+    def _abort_partial_reg_state(self):
+        """
+        Roll back per-run state set by the partial-registration pre-check when
+        the actual registration didn't reach the union-integrate diversion
+        (cancel, failure, or missing alignment data). Restores the user's
+        reference-frame lock so a partial run that never completed doesn't
+        silently persist a pinned twin as their reference for future runs.
+        """
+        if hasattr(self, "_partial_saved_ref"):
+            try:
+                self.reference_frame = self._partial_saved_ref
+            except Exception:
+                pass
+        if hasattr(self, "_partial_saved_ref_locked"):
+            try:
+                self._user_ref_locked = bool(self._partial_saved_ref_locked)
+            except Exception:
+                pass
+        _snap = getattr(self, "_partial_sasd_snapshot", None)
+        if _snap:
+            try:
+                if os.path.exists(_snap):
+                    os.remove(_snap)
+            except Exception:
+                pass
+        for _attr in (
+            "_integrate_full_after_register",
+            "_partial_merge_sasd",
+            "_partial_sasd_snapshot",
+            "_partial_saved_ref",
+            "_partial_saved_ref_locked",
+        ):
+            try:
+                if hasattr(self, _attr):
+                    delattr(self, _attr)
+            except Exception:
+                pass
+
     def on_registration_complete(self, success, msg):
         self.update_status(self.tr("📏 Phase: Star alignment complete."))
 
@@ -21700,6 +21977,7 @@ class StackingSuiteDialog(QDialog):
         # launching integration. Alignment itself can't be interrupted mid-flight
         # (it's a black-box thread), but we refuse to start the next phase.
         if self._cancelled():
+            self._abort_partial_reg_state()
             self._set_registration_busy(False)
             self.alignment_thread = None
             mon = getattr(self, "_exec_monitor", None)
@@ -21717,12 +21995,14 @@ class StackingSuiteDialog(QDialog):
             self._align_det_sigma_prev = None       
         self.update_status(self.tr(msg))
         if not success:
+            self._abort_partial_reg_state()
             self._set_registration_busy(False)
             return
 
         alignment_thread = self.alignment_thread
         if alignment_thread is None:
             self.update_status(self.tr("⚠️ Error: No alignment data available."))
+            self._abort_partial_reg_state()
             self._set_registration_busy(False) 
             return
 
@@ -21814,6 +22094,26 @@ class StackingSuiteDialog(QDialog):
         # ✅ Write SASD v2 using model-aware transforms captured by the thread
         try:
             sasd_out = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+
+            # In the partial re-registration flow, snapshot the pre-existing
+            # SASD before the writer overwrites it. The diversion below will
+            # merge these old entries with the freshly-written ones so the
+            # union of old + new drizzle transforms lives in a single file.
+            self._partial_sasd_snapshot = None
+            _partial = getattr(self, "_partial_merge_sasd", None)
+            if _partial and os.path.exists(sasd_out):
+                try:
+                    import shutil as _sh
+                    _snap = sasd_out + ".pre_partial"
+                    _sh.copyfile(sasd_out, _snap)
+                    self._partial_sasd_snapshot = _snap
+                except Exception as _snap_e:
+                    self.update_status(self.tr(
+                        f"⚠️ Could not snapshot existing SASD before overwrite "
+                        f"({_snap_e}); partial-run merge will be skipped."
+                    ))
+                    self._partial_sasd_snapshot = None
+
             # pull over the per-file model-aware xforms and reference info
             self.drizzle_xforms = dict(getattr(alignment_thread, "drizzle_xforms", {}))
             self.ref_shape_for_drizzle = tuple(getattr(alignment_thread, "reference_image_2d", np.zeros((1,1), np.float32)).shape[:2])
@@ -22088,6 +22388,119 @@ class StackingSuiteDialog(QDialog):
                 "Running normal integration / rejection prepass first."
             ))
             QApplication.processEvents()
+
+        # ----------------------------
+        # "Register new → integrate all" shortcut: we only registered the
+        # stragglers this run. They now sit in the same Aligned_Images folder
+        # as the pre-existing twins, sharing the reference grid (we pinned
+        # the reference to an existing twin before running, so geometry is
+        # guaranteed to match). Merge-append the fresh transforms into the
+        # existing SASD (so drizzle sees every frame), restore the full
+        # original tree, and hand off to the integrate path — its matcher
+        # will union old + new twins on its own.
+        # ----------------------------
+        _full_tree = getattr(self, "_integrate_full_after_register", None)
+        if _full_tree:
+            # --- SASD merge-append (guarded on the pre-run snapshot) ---
+            _partial = getattr(self, "_partial_merge_sasd", None)
+            _snapshot = getattr(self, "_partial_sasd_snapshot", None)
+            if _partial and _snapshot and os.path.exists(_snapshot):
+                try:
+                    sasd_out = _partial.get("path") or os.path.join(
+                        self.stacking_directory, "alignment_transforms.sasd"
+                    )
+                    # Peek the snapshot's entry count so we can report a
+                    # meaningful "N preserved + M new" line — the helper
+                    # itself only returns success/failure.
+                    try:
+                        _r1, _r2, _old_xforms_peek = self._load_sasd_v2(_snapshot)
+                        _old_count = len(_old_xforms_peek)
+                    except Exception:
+                        _old_count = 0
+
+                    merged = self._merge_append_sasd_v2(
+                        existing_path=_snapshot,
+                        out_path=sasd_out,
+                        ref_shape=self.ref_shape_for_drizzle,
+                        ref_path=self.ref_path_for_drizzle,
+                        new_drizzle_xforms=self.drizzle_xforms,
+                        new_fallback_affine=self.valid_matrices,
+                    )
+                    if merged:
+                        _new_count = len(self.drizzle_xforms or {})
+                        # The helper's dedup rule is new-wins on collision,
+                        # but collisions shouldn't occur in this flow (new
+                        # frames are, by definition, the ones that weren't
+                        # in the old SASD). Report the additive picture.
+                        self.update_status(self.tr(
+                            f"🔗 Merged {_new_count} new transform(s) into "
+                            f"existing SASD ({_old_count} preserved). "
+                            f"Total drizzle coverage: "
+                            f"~{_old_count + _new_count} frame(s)."
+                        ))
+                    else:
+                        # Only interesting to log when drizzle is on — the
+                        # SASD is unused for a pure integrate. Most likely
+                        # cause: REF_SHAPE drifted between pre-check and
+                        # run (rare). A subsequent full re-registration
+                        # will heal it.
+                        if _partial.get("drizzle_on"):
+                            old_H, old_W, _ = self._sasd_read_header(_snapshot)
+                            new_H, new_W = self.ref_shape_for_drizzle
+                            self.update_status(self.tr(
+                                f"⚠️ Could not merge into existing SASD "
+                                f"(snapshot {old_H}×{old_W} vs this run "
+                                f"{new_H}×{new_W}); keeping only the "
+                                f"newly-registered transforms. Drizzle "
+                                f"will cover the new frames only."
+                            ))
+                except Exception as _merge_e:
+                    self.update_status(self.tr(
+                        f"⚠️ SASD merge-append failed ({_merge_e}); keeping "
+                        f"the newly-written SASD only."
+                    ))
+                finally:
+                    # Best-effort cleanup of the snapshot regardless of outcome
+                    try:
+                        os.remove(_snapshot)
+                    except Exception:
+                        pass
+
+            # --- Restore reference-lock state ---
+            if hasattr(self, "_partial_saved_ref"):
+                try:
+                    self.reference_frame = self._partial_saved_ref
+                except Exception:
+                    pass
+            if hasattr(self, "_partial_saved_ref_locked"):
+                try:
+                    self._user_ref_locked = bool(self._partial_saved_ref_locked)
+                except Exception:
+                    pass
+
+            # --- Clear all partial-run session flags ---
+            for _attr in (
+                "_integrate_full_after_register",
+                "_partial_merge_sasd",
+                "_partial_sasd_snapshot",
+                "_partial_saved_ref",
+                "_partial_saved_ref_locked",
+            ):
+                try:
+                    if hasattr(self, _attr):
+                        delattr(self, _attr)
+                except Exception:
+                    pass
+
+            # --- Restore the full tree and hand off to integrate ---
+            self.light_files = {g: list(lst) for g, lst in _full_tree.items()}
+            self.update_status(self.tr(
+                "🔗 New frames registered. Integrating the full set "
+                "(existing + newly registered)…"
+            ))
+            self._set_registration_busy(False)
+            self.integrate_registered_images()
+            return
 
         # ----------------------------
         # Kick off unified post-alignment worker
@@ -25051,6 +25464,628 @@ class StackingSuiteDialog(QDialog):
         )
         self._start_after_align_worker(aligned_light_files)
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # "Skip Registration and Integrate" — aligned-counterpart resolution
+    #
+    # PixInsight-style behaviour: the tree usually holds *calibrated* frames
+    # (…_c.fit) sitting in a "Calibrated"/"calibrated_images" folder. When the
+    # matching *registered* frames already exist in a sibling
+    # "Aligned_Images"/"aligned_images" folder, we swap each tree frame for its
+    # registered counterpart and integrate those instead of re-registering.
+    # Any frame with no registered counterpart falls back to the tree frame
+    # as-is, so a mixed/partly-registered tree still integrates cleanly.
+    #
+    # The wrinkle the caller flagged: filename *prefix keys differ* across
+    # pipeline stages. A calibrated frame is  "{hashRaw}_foo_c.fit"; its
+    # registered form is "{hashCal}_{hashRaw}_foo_c_n_r.fit". The calibrated
+    # stem is therefore always a *token-bounded substring* of the aligned stem,
+    # which is what we match on (robust to the extra hash prefix and the
+    # _n / _r suffixes), with a hash-stripped core-key match as a fallback.
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # Sibling-folder name candidates (matched case-insensitively).
+    _ALIGNED_DIR_NAMES = ("aligned_images", "aligned", "registered", "register")
+    _CALIBRATED_DIR_HINTS = ("calibrated_images", "calibrated", "calibration", "calibrate")
+    _COUNTERPART_EXTS = (".fit", ".fits", ".fz", ".xisf")
+
+    @staticmethod
+    def _pipeline_stem(path: str) -> str:
+        """basename without extension, lower-cased (handles .fits/.fit/.fz/.xisf)."""
+        base = os.path.basename(path)
+        stem, ext = os.path.splitext(base)
+        # peel a second extension for things like .fit.fz if they ever appear
+        if stem.lower().endswith((".fit", ".fits")):
+            stem = os.path.splitext(stem)[0]
+        return stem.lower()
+
+    # leading dir-hash prefixes: one or more "{6 hex}_" groups
+    _HASH_PREFIX_RE = re.compile(r'^(?:[0-9a-f]{6}_)+')
+    # trailing pipeline suffix chain: any combination of the stage tags
+    _PIPE_SUFFIX_RE = re.compile(
+        r'(?:_(?:c|cc|n|r|reg|registered|cal|calibrated|norm|normalized))+$'
+    )
+
+    @classmethod
+    def _pipeline_core_key(cls, path: str) -> str:
+        """
+        Reduce a pipeline filename to the underlying raw stem by stripping the
+        leading dir-hash prefix(es) and the trailing stage-suffix chain.
+        e.g.  "9f1a2b_d6036a_foo_c_n_r"  ->  "foo"
+              "d6036a_foo_c"             ->  "foo"
+        """
+        stem = cls._pipeline_stem(path)
+        stem = cls._HASH_PREFIX_RE.sub("", stem)
+        stem = cls._PIPE_SUFFIX_RE.sub("", stem)
+        return stem
+
+    @staticmethod
+    def _stem_contains(hay: str, needle: str) -> bool:
+        """True if `needle` appears in `hay` on underscore/boundary edges."""
+        if not needle or needle not in hay:
+            return False
+        idx = hay.find(needle)
+        left_ok = (idx == 0) or (hay[idx - 1] == "_")
+        end = idx + len(needle)
+        right_ok = (end == len(hay)) or (hay[end] == "_")
+        return left_ok and right_ok
+
+    def _candidate_aligned_dirs(self, tree_paths):
+        """
+        Collect existing directories that may hold the registered counterparts:
+          1) SASpro's own  <stacking_directory>/Aligned_Images
+          2) Sibling "aligned" folder next to each tree-file directory
+             (name-swap of a calibrated-style folder, plus a sibling scan).
+        Returns a de-duplicated list of normalized dir paths.
+        """
+        cands, seen = [], set()
+
+        def _add(d):
+            if not d:
+                return
+            try:
+                if not os.path.isdir(d):
+                    return
+            except Exception:
+                return
+            key = os.path.normcase(os.path.normpath(d))
+            if key in seen:
+                return
+            seen.add(key)
+            cands.append(os.path.normpath(d))
+
+        # 1) SASpro's own aligned output
+        try:
+            _add(os.path.join(self.stacking_directory, "Aligned_Images"))
+        except Exception:
+            pass
+
+        # 2) sibling folders next to each unique tree-file directory
+        tree_dirs = set()
+        for p in tree_paths:
+            try:
+                tree_dirs.add(os.path.dirname(os.path.abspath(p)))
+            except Exception:
+                pass
+
+        for d in tree_dirs:
+            parent = os.path.dirname(d)
+            leaf_low = os.path.basename(d).lower()
+
+            # a) direct name-swap: .../calibrated_images -> .../aligned_images
+            if any(h in leaf_low for h in self._CALIBRATED_DIR_HINTS):
+                for an in self._ALIGNED_DIR_NAMES:
+                    _add(os.path.join(parent, an))
+                for hint in self._CALIBRATED_DIR_HINTS:
+                    if hint in leaf_low:
+                        for an in self._ALIGNED_DIR_NAMES:
+                            _add(os.path.join(parent, leaf_low.replace(hint, an)))
+
+            # b) scan siblings for any aligned-looking folder (any casing)
+            try:
+                for name in os.listdir(parent):
+                    if name.lower() in self._ALIGNED_DIR_NAMES:
+                        _add(os.path.join(parent, name))
+            except Exception:
+                pass
+
+        return cands
+
+    def _build_aligned_matcher(self, tree_paths):
+        """
+        Build a callable  match(tree_path) -> aligned_path | None  from the
+        registered frames discovered near `tree_paths`. Returns None when no
+        aligned frames can be found at all (caller then integrates as-is).
+        """
+        aligned_dirs = self._candidate_aligned_dirs(tree_paths)
+        if not aligned_dirs:
+            return None
+
+        aligned_files = []
+        for d in aligned_dirs:
+            try:
+                for name in os.listdir(d):
+                    if name.lower().endswith(self._COUNTERPART_EXTS):
+                        aligned_files.append(os.path.normpath(os.path.join(d, name)))
+            except Exception:
+                pass
+
+        if not aligned_files:
+            return None
+
+        # Pre-index: (path, stem) list + core-key -> [paths]
+        al_index = []
+        core_map = {}
+        for ap in aligned_files:
+            al_stem = self._pipeline_stem(ap)
+            al_core = self._pipeline_core_key(ap)
+            al_index.append((ap, al_stem))
+            core_map.setdefault(al_core, []).append(ap)
+
+        def _match(tree_path):
+            t_stem = self._pipeline_stem(tree_path)
+            t_core = self._pipeline_core_key(tree_path)
+
+            # 1) unique hash-stripped core-key match
+            c = core_map.get(t_core)
+            if c and len(c) == 1:
+                return c[0]
+
+            # 2) token-bounded containment: calibrated stem inside aligned stem
+            cont = [ap for (ap, al_stem) in al_index
+                    if self._stem_contains(al_stem, t_stem)]
+            if len(cont) == 1:
+                return cont[0]
+            if len(cont) > 1:
+                # Try to narrow to a single confident winner via core-key.
+                # If it's still ambiguous, DON'T guess — a wrong pairing would
+                # silently integrate the wrong registered frame, so we fall back
+                # to the tree frame as-is (matcher returns None here).
+                narrowed = [ap for ap in cont
+                            if self._pipeline_core_key(ap) == t_core]
+                if len(narrowed) == 1:
+                    return narrowed[0]
+                return None
+
+            # 3) core-key collided (or nothing matched) with no unique
+            # containment → genuinely ambiguous; integrate as-is rather than
+            # risk mispairing.
+            return None
+
+        return _match
+
+    def _resolve_aligned_counterparts(self, light_files):
+        """
+        Swap each tree frame for its registered counterpart where one exists.
+        Returns (new_light_files, matched_count, total_count, matcher_or_None).
+        Unmatched frames are preserved as-is.
+        """
+        all_tree = [p for lst in light_files.values() for p in lst]
+        total = len(all_tree)
+        if total == 0:
+            return light_files, 0, 0, None
+
+        matcher = self._build_aligned_matcher(all_tree)
+        if matcher is None:
+            return light_files, 0, total, None
+
+        new_lf = {}
+        matched = 0
+        for g, lst in light_files.items():
+            out = []
+            for p in lst:
+                ap = matcher(p)
+                if ap and os.path.exists(ap) and \
+                        os.path.normcase(os.path.normpath(ap)) != \
+                        os.path.normcase(os.path.normpath(p)):
+                    out.append(ap)
+                    matched += 1
+                else:
+                    out.append(p)
+            new_lf[g] = out
+        return new_lf, matched, total, matcher
+
+    @staticmethod
+    def _twin_is_fresh(tree_path: str, twin_path: str) -> bool:
+        """
+        A registered twin only counts if it's at least as new as the tree frame
+        it was derived from. Guards the re-calibrate-and-forget case: new flats
+        rewrite the calibrated file but leave the old aligned twin in place, so
+        a name match alone would silently reuse stale registration.
+        """
+        try:
+            return os.path.getmtime(twin_path) >= os.path.getmtime(tree_path) - 1.0
+        except Exception:
+            # If we can't stat either side, be conservative and treat as stale.
+            return False
+
+    # ── SASD v2 merge-append helpers (partial re-registration path) ─────────
+    def _sasd_read_header(self, sasd_path: str):
+        """
+        Cheap header sniff for an existing SASD v2 file. Returns
+        ``(ref_H, ref_W, ref_path_str)`` where ``ref_path_str`` may be empty.
+        Returns ``(0, 0, "")`` if the file is missing or unreadable — treat
+        that as "no compatible SASD" and fall back to full re-registration.
+        """
+        try:
+            if not os.path.exists(sasd_path):
+                return 0, 0, ""
+            ref_h = ref_w = 0
+            ref_path = ""
+            with open(sasd_path, "r", encoding="utf-8") as f:
+                for raw in f:
+                    line = raw.strip()
+                    if not line:
+                        # header stops at the first blank line before entries
+                        if ref_h and ref_w:
+                            break
+                        continue
+                    if line.startswith("REF_SHAPE:"):
+                        parts = line.split(":", 1)[1].split(",")
+                        if len(parts) >= 2:
+                            try:
+                                ref_h = int(float(parts[0].strip()))
+                                ref_w = int(float(parts[1].strip()))
+                            except Exception:
+                                return 0, 0, ""
+                        continue
+                    if line.startswith("REF_PATH:"):
+                        ref_path = line.split(":", 1)[1].strip()
+                        continue
+                    if line.startswith("FILE:"):
+                        # entered the per-file section
+                        break
+            return int(ref_h), int(ref_w), ref_path
+        except Exception:
+            return 0, 0, ""
+
+    def _merge_append_sasd_v2(
+        self,
+        *,
+        existing_path: str,
+        ref_shape: tuple[int, int],
+        ref_path: str,
+        new_drizzle_xforms: dict,
+        new_fallback_affine: dict,
+        out_path: str | None = None,
+    ) -> bool:
+        """
+        Guarded merge of freshly-computed transforms into an existing SASD v2.
+
+        Refuses to write and returns False when the existing file's REF_SHAPE
+        disagrees with this run's — that's the only case where drizzle would
+        silently smear across coordinate systems, so we hard-stop instead of
+        guessing. On success, returns True and the file at ``out_path`` (or
+        ``existing_path`` when ``out_path`` is omitted) contains the union of
+        old entries and new entries (new-wins on any original-path key
+        collision, as a defensive tie-breaker even though collisions shouldn't
+        occur in the partial-registration flow).
+
+        The write goes through a temp-then-rename so a mid-write crash never
+        leaves a half-written SASD in place. Delegates the actual formatting
+        to ``_save_alignment_transforms_sasd_v2`` so entries stay bit-identical
+        to a full-run SASD.
+
+        The typical partial-run call reads from a pre-write snapshot and
+        writes back to the real SASD path::
+
+            self._merge_append_sasd_v2(
+                existing_path=snapshot,          # read old entries here
+                out_path=real_sasd_path,         # write merged result here
+                ref_shape=self.ref_shape_for_drizzle,
+                ref_path=self.ref_path_for_drizzle,
+                new_drizzle_xforms=self.drizzle_xforms,
+                new_fallback_affine=self.valid_matrices,
+            )
+        """
+        try:
+            new_H = int(ref_shape[0]); new_W = int(ref_shape[1])
+        except Exception:
+            return False
+        if new_H <= 0 or new_W <= 0:
+            return False
+
+        old_H, old_W, _old_ref_path = self._sasd_read_header(existing_path)
+        if (old_H, old_W) != (new_H, new_W):
+            # Geometry mismatch → refuse. Caller falls back to a fresh full
+            # SASD (which the normal writer will produce next).
+            return False
+
+        # Pull the existing entries as (kind, matrix) — this is exactly the
+        # shape the v2 writer expects for drizzle_xforms.
+        try:
+            _rH, _rW, old_xforms = self._load_sasd_v2(existing_path)
+        except Exception:
+            return False
+
+        # Merge (new-wins). All keys are already normpath-normalised by both
+        # the loader and the writer, so no extra normalisation is needed.
+        merged_dx = dict(old_xforms)
+        for k, v in (new_drizzle_xforms or {}).items():
+            merged_dx[os.path.normpath(k)] = v
+
+        merged_fa = {
+            os.path.normpath(k): v
+            for k, v in (new_fallback_affine or {}).items()
+        }
+
+        # Write to a sibling temp then rename over — cheap atomicity so we
+        # never leave a half-written SASD if this is interrupted.
+        final_path = out_path or existing_path
+        tmp_path = final_path + ".tmp"
+        try:
+            self._save_alignment_transforms_sasd_v2(
+                out_path=tmp_path,
+                ref_shape=(new_H, new_W),
+                ref_path=ref_path,
+                drizzle_xforms=merged_dx,
+                fallback_affine=merged_fa,
+            )
+            os.replace(tmp_path, final_path)
+            return True
+        except Exception:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+            return False
+
+    def _pick_reference_twin_for_partial(self, matched_lf):
+        """
+        Choose an existing aligned twin to use as the *reference* for a partial
+        re-registration run. Any twin works (they all share the reference grid
+        by definition), but we prefer the one closest to the historical picker
+        — high star count on a quick preview — so a stray bad twin doesn't
+        become an alignment target.
+
+        Returns a normalised path, or None if nothing usable was found.
+        """
+        twins = []
+        for _g, lst in (matched_lf or {}).items():
+            for _p in lst:
+                # matched_lf keys are the tree frames; we want their twins,
+                # so re-run the matcher over just this set.
+                pass
+        # matched_lf as passed here is the *tree* frames whose twins exist,
+        # not the twins themselves. Re-resolve to twins:
+        all_tree = [p for lst in (matched_lf or {}).values() for p in lst]
+        if not all_tree:
+            return None
+        matcher = self._build_aligned_matcher(all_tree)
+        if matcher is None:
+            return None
+        twin_paths = []
+        for p in all_tree:
+            t = matcher(p)
+            if t and os.path.exists(t):
+                twin_paths.append(os.path.normpath(t))
+        if not twin_paths:
+            return None
+        # Cheap heuristic: prefer the largest file (proxy for the borderless-
+        # est / most-signal frame — the reference-adjacent ones tend to be
+        # the largest since they were warped least). This is a soft
+        # preference; correctness only requires that we pick *some* twin.
+        try:
+            twin_paths.sort(key=lambda p: os.path.getsize(p), reverse=True)
+        except Exception:
+            pass
+        return twin_paths[0]
+
+    def _precheck_registered_counterparts(self):
+        """
+        Run at the top of register_images (skipped in comet / star-trail modes).
+
+        Detects whether the current tree frames already have *fresh* registered
+        twins in a sibling Aligned_Images / aligned_images folder and, if so,
+        offers to skip or shortcut registration. Every aligned frame already
+        shares the reference's pixel grid, so newly-registered stragglers land
+        in that same grid and the union integrates cleanly.
+
+        Returns one of:
+          "integrate"     – caller should call integrate_registered_images()
+                            over the full tree and stop.
+          "register_new"  – self.light_files has been pruned to the unmatched
+                            frames; caller registers normally and the full-set
+                            union integration fires automatically on completion
+                            (self._integrate_full_after_register is set).
+          "register_all"  – proceed with a normal full registration (no change).
+          None            – nothing usable found / dialog unavailable; caller
+                            proceeds normally.
+        """
+        # Clear any stale flag from a previous run.
+        self._integrate_full_after_register = None
+
+        light_files = getattr(self, "light_files", None)
+        if not light_files:
+            return None
+
+        matcher = self._build_aligned_matcher(
+            [p for lst in light_files.values() for p in lst]
+        )
+        if matcher is None:
+            return None  # no Aligned_Images folder near these frames
+
+        # Partition each group into matched (fresh twin) vs unmatched.
+        matched_lf, unmatched_lf = {}, {}
+        n_matched = n_unmatched = 0
+        for g, lst in light_files.items():
+            mkeep, ukeep = [], []
+            for p in lst:
+                twin = matcher(p)
+                if twin and os.path.exists(twin) and self._twin_is_fresh(p, twin):
+                    mkeep.append(p); n_matched += 1
+                else:
+                    ukeep.append(p); n_unmatched += 1
+            if mkeep:
+                matched_lf[g] = mkeep
+            if ukeep:
+                unmatched_lf[g] = ukeep
+
+        n_total = n_matched + n_unmatched
+        if n_matched == 0:
+            return None  # nothing already registered → nothing to offer
+
+        drizzle_on = False
+        try:
+            drizzle_on = self._get_drizzle_enabled()
+        except Exception:
+            pass
+
+        # ── Case 1: everything already registered ───────────────────────────
+        if n_unmatched == 0:
+            msg = self.tr(
+                f"Found already-registered versions for all {n_total} frame(s) "
+                f"in Aligned_Images.\n\nSkip registration and integrate them now?"
+            )
+            if drizzle_on:
+                msg += self.tr(
+                    "\n\nNote: integrating pre-registered frames does not apply "
+                    "drizzle. Choose “Register” if you want a drizzle integration."
+                )
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(self.tr("Already Registered"))
+            box.setText(msg)
+            skip_btn = box.addButton(self.tr("Skip → Integrate"),
+                                     QMessageBox.ButtonRole.AcceptRole)
+            reg_btn  = box.addButton(self.tr("Register Anyway"),
+                                     QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(skip_btn)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is skip_btn:
+                return "integrate"
+            if clicked is reg_btn:
+                return "register_all"
+            return "cancel"
+
+        # ── Case 2: some registered, some not ───────────────────────────────
+        # Any aligned twin sits on the same reference grid as the rest of the
+        # existing set, so we can pin the partial run's reference to a twin
+        # and the new outputs will land in that same grid. That's what makes
+        # a partial re-registration correct — not just for pure integrate,
+        # but for drizzle too, provided we merge-append the fresh transforms
+        # into the existing .sasd rather than overwriting it. If drizzle is
+        # on but there's no compatible existing .sasd to append to, we fall
+        # back to a full re-registration so drizzle isn't silently degraded.
+
+        sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+
+        # For drizzle: verify the on-disk .sasd is present and its REF_SHAPE
+        # matches the twin we'd pin. Any twin has the reference geometry, so
+        # the shape check is straightforward.
+        can_merge_append = False
+        merge_ref_shape = None
+        if drizzle_on:
+            twin = self._pick_reference_twin_for_partial(matched_lf)
+            if twin:
+                try:
+                    _img, _hdr = self._load_image_any(twin)
+                    if _img is not None:
+                        _h, _w = _img.shape[:2]
+                        old_H, old_W, _ = self._sasd_read_header(sasd_path)
+                        if (old_H, old_W) == (_h, _w) and old_H > 0:
+                            can_merge_append = True
+                            merge_ref_shape = (_h, _w)
+                except Exception:
+                    can_merge_append = False
+
+        if drizzle_on and not can_merge_append:
+            # Drizzle wants uniform coverage. Without a mergeable .sasd we'd
+            # end up with per-frame transforms only for the newly-registered
+            # stragglers, so tell the user honestly and offer full re-reg.
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle(self.tr("Partially Registered"))
+            box.setText(self.tr(
+                f"{n_matched} of {n_total} frame(s) are already registered, "
+                f"but Drizzle is enabled and no compatible transform file "
+                f"(alignment_transforms.sasd) was found next to the existing "
+                f"aligned frames.\n\nWithout it, only the new frames would "
+                f"have drizzle transforms, so all {n_total} will be "
+                f"re-registered instead."
+            ))
+            box.addButton(self.tr("Register All"), QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            role = box.buttonRole(box.clickedButton())
+            return "register_all" if role == QMessageBox.ButtonRole.AcceptRole else "cancel"
+
+        # Drizzle-off partial, or drizzle-on with a mergeable .sasd → offer
+        # the real time-saver: register only the stragglers, then integrate
+        # (and, if drizzle is on, merge-append into the existing .sasd first).
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.tr("Partially Registered"))
+        _dz_note = ""
+        if drizzle_on and can_merge_append:
+            _dz_note = self.tr(
+                "\n\nDrizzle is enabled: the new transforms will be merged "
+                "into the existing alignment_transforms.sasd so all frames "
+                "are drizzled uniformly."
+            )
+        box.setText(self.tr(
+            f"{n_matched} of {n_total} frame(s) already have registered "
+            f"versions in Aligned_Images.\n\nRegister only the {n_unmatched} "
+            f"new frame(s) and then integrate all {n_total} together?"
+        ) + _dz_note)
+        new_btn = box.addButton(self.tr(f"Register {n_unmatched} New → Integrate All"),
+                                QMessageBox.ButtonRole.AcceptRole)
+        all_btn = box.addButton(self.tr("Register All"),
+                                QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(new_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is all_btn:
+            return "register_all"
+        if clicked is not new_btn:
+            return "cancel"
+
+        # Pin the reference frame to an existing twin so the fresh outputs
+        # land on the same pixel grid the existing set already shares. We
+        # save the current lock state and restore it in the completion
+        # handler — this is a scoped override, not a persistent preference.
+        twin_ref = self._pick_reference_twin_for_partial(matched_lf)
+        if twin_ref is None:
+            # We already confirmed matched frames exist, so this is a
+            # filesystem race (twin deleted between match and pick).
+            self.update_status(self.tr(
+                "⚠️ Could not select a reference twin for partial "
+                "registration; falling back to a full re-registration."
+            ))
+            return "register_all"
+
+        self._partial_saved_ref = getattr(self, "reference_frame", None)
+        self._partial_saved_ref_locked = bool(getattr(self, "_user_ref_locked", False))
+        self.reference_frame = os.path.normpath(twin_ref)
+        self._user_ref_locked = True
+
+        # Prune the tree to the unmatched frames for this registration run,
+        # and remember the full original tree so the completion handler can
+        # union old + new aligned frames back together.
+        self._integrate_full_after_register = {g: list(lst) for g, lst in light_files.items()}
+        self.light_files = unmatched_lf
+
+        # Signal the completion handler to also merge-append the fresh drizzle
+        # transforms into the existing .sasd (only meaningful when drizzle is
+        # on, but we set it uniformly so a later drizzle-on re-run inherits a
+        # consistent .sasd).
+        self._partial_merge_sasd = {
+            "path": sasd_path,
+            "expected_ref_shape": merge_ref_shape,  # None when drizzle was off
+            "ref_path": self.reference_frame,
+            "drizzle_on": bool(drizzle_on),
+        }
+
+        self.update_status(self.tr(
+            f"🔗 Registering {n_unmatched} new frame(s) against existing "
+            f"reference {os.path.basename(self.reference_frame)}; will "
+            f"integrate all {n_total} once complete."
+        ))
+        return "register_new"
+
     def integrate_registered_images(self):
         """
         Integrate frames that are already aligned (and typically normalized).
@@ -25072,6 +26107,34 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr("⚠️ No registered images found!"))
                 self._set_registration_busy(False)
                 return
+
+            # 1b) PixInsight-style swap: if the tree holds calibrated frames and
+            # their registered counterparts already exist in a sibling
+            # Aligned_Images / aligned_images folder, integrate *those* instead.
+            # Frames with no counterpart fall back to the tree frame as-is.
+            self.light_files, _n_swapped, _n_total, _align_matcher = \
+                self._resolve_aligned_counterparts(self.light_files)
+            if _align_matcher is None:
+                self.update_status(self.tr(
+                    f"ℹ️ No Aligned_Images folder found near the tree — "
+                    f"integrating the {_n_total} tree frame(s) as-is."
+                ))
+            elif _n_swapped:
+                self.update_status(self.tr(
+                    f"🔗 Matched {_n_swapped}/{_n_total} tree frame(s) to registered "
+                    f"counterparts in Aligned_Images — integrating those; "
+                    f"{_n_total - _n_swapped} as-is."
+                ))
+                # Redirect a user-picked reference frame to its registered twin too.
+                if getattr(self, "reference_frame", None):
+                    _ref_swap = _align_matcher(self.reference_frame)
+                    if _ref_swap and os.path.exists(_ref_swap):
+                        self.reference_frame = _ref_swap
+            else:
+                self.update_status(self.tr(
+                    f"ℹ️ Found an Aligned_Images folder but no filename matches "
+                    f"for the {_n_total} tree frame(s) — integrating them as-is."
+                ))
 
             # Flatten
             all_files = [p for lst in self.light_files.values() for p in lst]
@@ -25192,6 +26255,17 @@ class StackingSuiteDialog(QDialog):
             mean_values = {}
             star_counts = {}
             measured_frames = []
+            # Per-frame valid-pixel coverage (finite & non-zero fraction).
+            # The registration reference is the one frame with no black border
+            # (identity warp → coverage ≈ 1.0); every warped frame loses some
+            # edge to zero-fill. Used to recover the reference when we're handed
+            # a folder of already-aligned frames with no other marker.
+            frame_coverage = {}
+
+            # Baseline-subtracted median per frame — the SAME background
+            # statistic the Register-and-Integrate path scores on. Stored so
+            # the scorer below is fed identical inputs in both paths.
+            preview_medians = {}
 
             max_workers = os.cpu_count() or 4
             chunk_size = max_workers
@@ -25278,29 +26352,85 @@ class StackingSuiteDialog(QDialog):
                     dtype=np.float32,
                 )
 
-                # Star count + ecc on the valid core only
+                # Star count + ecc on the valid core only.
+                # A worker failure returns a sentinel with an error string
+                # instead of raising, so one bad frame doesn't take down
+                # `ex.map`'s whole iteration (and the entire Skip Registration
+                # run with it). The consumer collects skipped frames, logs
+                # them, and removes them from integration — a frame we
+                # couldn't measure can't be weighted, and integrating with a
+                # placeholder weight would silently poison the stack.
                 def _star_job(i_fp):
                     i, fp = i_fp
-                    core, mean_v, _med_full = _valid_region_stats(previews[i])
-                    pmin = float(np.nanmin(core))
-                    c, ecc, size = compute_star_count_fast_preview(
-                        core - pmin, return_size=True
-                    )
-                    med = float(np.median(core - pmin))
-                    noise = self._mad_noise(core)
-                    return fp, float(mean_v), med, c, ecc, size, noise
+                    try:
+                        prev = previews[i]
+                        core, mean_v, _med_full = _valid_region_stats(prev)
+                        pmin = float(np.nanmin(core))
+                        c, ecc, _blind_size = _star_count_ecc_size(core - pmin)
+                        # FWHM via the shared half-res second-moment estimator,
+                        # measured on the border-stripped valid core so black
+                        # zero-fill edges don't inject false detections. Same
+                        # method the Register path uses → directly comparable.
+                        size = self._measure_fwhm_halfres(core)
+                        med = float(np.median(core - pmin))
+                        noise = self._mad_noise(core)
+                        # coverage = fraction of finite, non-zero pixels over
+                        # the whole (pre-crop) preview → 1.0 for a
+                        # borderless reference
+                        _a = np.asarray(prev, dtype=np.float32)
+                        _valid = np.isfinite(_a) & (_a != 0.0)
+                        cov = float(_valid.mean()) if _a.size else 0.0
+                        return fp, float(mean_v), med, c, ecc, size, noise, cov, None
+                    except Exception as _job_e:
+                        return (fp, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0,
+                                f"{type(_job_e).__name__}: {_job_e}")
 
+                skipped_frames = []
                 star_workers = min(max_workers, 8)
                 with ThreadPoolExecutor(max_workers=star_workers) as ex:
-                    for fp, mean_v, med, c, ecc, size, noise in ex.map(_star_job, enumerate(paths_ok)):
+                    for fp, mean_v, med, c, ecc, size, noise, cov, err in ex.map(_star_job, enumerate(paths_ok)):
+                        if err is not None:
+                            skipped_frames.append((fp, err))
+                            continue
                         mean_values[fp] = mean_v
+                        preview_medians[fp] = med
                         star_counts[fp] = {
                             "count": int(c),
                             "eccentricity": float(ecc),
                             "fwhm": float(size),
                             "noise": float(noise),
                         }
+                        frame_coverage[fp] = cov
                         measured_frames.append(fp)
+
+                # Report and prune any per-frame measurement failures. We only
+                # log the first few to avoid swamping the status pane on a
+                # cascade failure, but the counts are always visible.
+                if skipped_frames:
+                    self.update_status(self.tr(
+                        f"⚠️ Skipped {len(skipped_frames)} frame(s) whose "
+                        f"measurement failed; they'll be excluded from this "
+                        f"integration:"
+                    ))
+                    for _fp, _err in skipped_frames[:5]:
+                        self.update_status(self.tr(
+                            f"   • {os.path.basename(_fp)} — {_err}"
+                        ))
+                    if len(skipped_frames) > 5:
+                        self.update_status(self.tr(
+                            f"   … and {len(skipped_frames) - 5} more (see saspro.log)"
+                        ))
+                    # Drop skipped frames from the light-file groups so they
+                    # don't get handed to the integrator without weights.
+                    _skipped_set = {os.path.normpath(fp)
+                                    for fp, _ in skipped_frames}
+                    for _g in list(self.light_files.keys()):
+                        self.light_files[_g] = [
+                            _p for _p in self.light_files[_g]
+                            if os.path.normpath(_p) not in _skipped_set
+                        ]
+                        if not self.light_files[_g]:
+                            del self.light_files[_g]
 
                 del previews
 
@@ -25329,55 +26459,116 @@ class StackingSuiteDialog(QDialog):
             _noise_pos = [v for v in _noise_pos if v > 1e-9]
             _noise_ref = float(np.median(_noise_pos)) if _noise_pos else 0.0
 
-            max_w = 0.0
             for fp in measured_frames:
                 c   = star_counts[fp]["count"]
                 ecc = star_counts[fp]["eccentricity"]
-                m   = mean_values[fp]
+                # Background term MUST match the Register path: it scores on the
+                # baseline-subtracted median (preview_medians), floored at 1e-3,
+                # NOT the raw valid-region mean. Feeding the mean here made the
+                # two paths disagree frame-to-frame. mean_values is still kept
+                # for the no-stars fallback and the debug log.
+                bg  = max(float(preview_medians.get(fp, 0.0)), 1e-3)
                 fwhm  = float(star_counts[fp].get("fwhm", 0.0))
                 noise = float(star_counts[fp].get("noise", 0.0)) or None
 
                 raw_w, terms = self._score_frame_terms(
-                    count=c, ecc=ecc, bg=m, fwhm=fwhm, noise=noise,
+                    count=c, ecc=ecc, bg=bg, fwhm=fwhm, noise=noise,
                     fwhm_ref=_fwhm_ref, noise_ref=_noise_ref, exps=_wexps,
                 )
 
                 self.frame_weights[fp] = raw_w
-                max_w = max(max_w, raw_w)
                 dbg.append(
                     f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, "
-                    f"Mean={m:.4f}, FWHM~{fwhm:.2f}, "
+                    f"Bg={bg:.4f}, FWHM~{fwhm:.2f}, "
                     f"Sharp={terms['sharp']:.3f}, SNR={terms['snr']:.3f}, "
                     f"Weight={raw_w:.4f}"
                 )
 
-            if max_w > 0:
-                for k in self.frame_weights:
-                    self.frame_weights[k] /= max_w
+            # Normalize weights the same way the Register-and-Integrate path
+            # does: divide by the MEAN score (not the max) and floor at 0.1.
+            # Mean-normalization centers weights near 1.0 so the weighted-mean
+            # scale is preserved, and the floor lets a marginal frame still
+            # contribute rather than being driven toward zero (actual
+            # exclusion is the rejection algorithms' job, not the weight's).
+            # Keeping the two paths identical means "Skip Registration and
+            # Integrate" produces the same relative frame weighting the full
+            # registration path would for the same frames.
+            score_vals = [w for w in self.frame_weights.values() if w > 0]
+            if score_vals:
+                mean_score = float(np.mean(score_vals))
+                if mean_score > 1e-6:
+                    for k in list(self.frame_weights.keys()):
+                        self.frame_weights[k] = max(0.1, self.frame_weights[k] / mean_score)
+                else:
+                    for k in list(self.frame_weights.keys()):
+                        self.frame_weights[k] = 1.0
             else:
-                # No stars detected — use inverse mean as proxy (darker sky = better frame)
+                # No stars detected on any frame — use inverse background mean
+                # as the quality proxy (darker sky = better frame).
                 self.update_status(self.tr(
                     "ℹ️ No stars detected — using inverse background mean as frame quality proxy."
                 ))
                 means_list = [mean_values.get(fp, 1.0) for fp in measured_frames]
-                min_mean = min(m for m in means_list if m > 1e-6) or 1e-6
+                min_mean = min((m for m in means_list if m > 1e-6), default=1e-6)
                 for fp in measured_frames:
-                    m = mean_values.get(fp, 1.0)
-                    m = max(m, 1e-6)
+                    m = max(mean_values.get(fp, 1.0), 1e-6)
                     # darker frame (lower mean) gets higher weight
                     self.frame_weights[fp] = min_mean / m
 
+            # Append the final (normalized) weight to each debug line so the
+            # log shows both the raw score and what actually feeds integration
+            # — identical field layout to the Register-and-Integrate path.
+            for i, fp in enumerate(measured_frames, start=1):
+                if i < len(dbg):
+                    dbg[i] += f"  →  Normalized={self.frame_weights.get(fp, 0.0):.4f}"
             self.update_status(self.tr("\n".join(dbg)))
 
             self.update_status(self.tr("✅ Frame weights computed!"))
             QApplication.processEvents()
 
-            # 4) Choose reference (optional for visual/log purposes)
+            # 4) Choose reference (used for MFDeconv masks, autocrop base,
+            #    display, and logging). Priority:
+            #      a) a reference the user explicitly locked
+            #      b) a frame stamped SAS_REF=True (SASpro's own reference)
+            #      c) the borderless frame — highest valid-pixel coverage; the
+            #         registration reference is the only one with ~no black
+            #         border, so this recovers it even for PixInsight imports
+            #      d) fall back to the highest-weighted frame
             if getattr(self, "reference_frame", None):
                 self.update_status(self.tr(f"📌 Using user-specified reference: {self.reference_frame}"))
             else:
-                self.reference_frame = max(self.frame_weights, key=self.frame_weights.get)
-                self.update_status(self.tr(f"📌 Auto-selected reference: {self.reference_frame}"))
+                ref_pick = None
+
+                # (b) explicit SAS_REF stamp
+                for fp in measured_frames:
+                    try:
+                        hdr = _get_header_fast(fp)
+                        if hdr and bool(hdr.get("SAS_REF", False)):
+                            ref_pick = fp
+                            self.update_status(self.tr(
+                                f"📌 Reference from SAS_REF stamp: {os.path.basename(fp)}"
+                            ))
+                            break
+                    except Exception:
+                        pass
+
+                # (c) borderless frame (max coverage), if meaningfully full
+                if ref_pick is None and frame_coverage:
+                    best_fp = max(frame_coverage, key=frame_coverage.get)
+                    if frame_coverage.get(best_fp, 0.0) >= 0.999:
+                        ref_pick = best_fp
+                        self.update_status(self.tr(
+                            f"📌 Reference = borderless frame "
+                            f"(coverage {frame_coverage[best_fp]*100:.2f}%): "
+                            f"{os.path.basename(best_fp)}"
+                        ))
+
+                # (d) weight fallback
+                if ref_pick is None:
+                    ref_pick = max(self.frame_weights, key=self.frame_weights.get)
+                    self.update_status(self.tr(f"📌 Auto-selected reference: {ref_pick}"))
+
+                self.reference_frame = ref_pick
 
             # 5) Clear transforms; not needed for already aligned frames
             self.valid_transforms = {}

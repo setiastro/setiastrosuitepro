@@ -2086,7 +2086,10 @@ def fast_star_count(
         if not (hi > lo):
             lo, hi = float(img.min()), float(img.max())
             if not (hi > lo):
-                return 0, 0.0
+                # Flat / all-zero core (e.g. a fully black-bordered aligned
+                # preview): no stars to measure. Respect the requested arity so
+                # callers doing `c, ecc, size = ...` don't blow up on unpack.
+                return (0, 0.0, 0.0) if return_size else (0, 0.0)
 
         norm = (img - lo) / max(1e-8, (hi - lo))
         norm = np.clip(norm, 0.0, 1.0)
@@ -2101,7 +2104,9 @@ def fast_star_count(
         if img_max > img_min:
             image_8u = (255.0 * (img - img_min) / (img_max - img_min)).astype(np.uint8)
         else:
-            return 0, 0.0
+            # Flat image with no dynamic range → no measurable stars. Match the
+            # requested return arity (see note in the stretch branch above).
+            return (0, 0.0, 0.0) if return_size else (0, 0.0)
 
     # 4) blur + subtract
     blurred = cv2.GaussianBlur(image_8u, (blur_size, blur_size), 0)
@@ -2135,6 +2140,13 @@ def fast_star_count(
         if len(c) < 5:
             continue
         (_, _), (a, b), _ = cv2.fitEllipse(c)
+        # fitEllipse can return nan/inf axis lengths for near-degenerate
+        # contours (collinear points that still pass len>=5). Skip them so a
+        # single bad fit doesn't poison the median size with nan — this is
+        # what produced "FWHM~nan" on high-star-count frames (thousands of
+        # contours → far more chances to hit one degenerate fit).
+        if not (math.isfinite(a) and math.isfinite(b)) or a <= 0.0 or b <= 0.0:
+            continue
         if b > a:
             a, b = b, a
         e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
@@ -2164,6 +2176,8 @@ def fast_star_count(
             if len(c) < 5:
                 continue
             (_, _), (a, b), _ = cv2.fitEllipse(c)
+            if not (math.isfinite(a) and math.isfinite(b)) or a <= 0.0 or b <= 0.0:
+                continue
             if b > a:
                 a, b = b, a
             e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
@@ -2173,8 +2187,12 @@ def fast_star_count(
 
     avg_ecc = float(np.mean(ecc_values)) if star_count > 0 else 0.0
     if return_size:
-        # median is more robust than mean to a few blown-out/merged blobs
-        median_size = float(np.median(size_values)) if size_values else 0.0
+        # median is more robust than mean to a few blown-out/merged blobs.
+        # Filter any non-finite entries defensively so the size proxy can
+        # never come back nan (which would silently neutralise the sharpness
+        # term downstream and, worse, print as "FWHM~nan").
+        _finite_sizes = [s for s in size_values if math.isfinite(s) and s > 0.0]
+        median_size = float(np.median(_finite_sizes)) if _finite_sizes else 0.0
         return star_count, avg_ecc, median_size
     return star_count, avg_ecc
 
