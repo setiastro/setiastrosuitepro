@@ -17,6 +17,40 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, ProcessPoolExec
 _USE_PROCESS_POOL_FOR_ASSETS = not getattr(sys, "frozen", False)
 import numpy.fft as _fft
 import contextlib
+
+@contextlib.contextmanager
+def _limit_blas_threads(limits=1, status_cb=None, _retries=1):
+    """
+    Defensive wrapper around threadpoolctl.threadpool_limits.
+
+    On Windows, threadpool_limits enumerates loaded DLLs via EnumProcessModulesEx
+    + GetModuleFileNameExW. If a module is unloaded between the snapshot and the
+    name lookup (a TOCTOU race that AV/EDR hooks and concurrent CUDA/DirectML DLL
+    loading make likely on some machines), threadpoolctl raises
+    OSError("GetModuleFileNameEx failed"). The thread cap is only an
+    oversubscription guard, so degrade to unthrottled instead of aborting.
+    """
+    cm = None
+    for attempt in range(_retries + 1):
+        try:
+            cm = threadpool_limits(limits=limits)
+            cm.__enter__()
+            break
+        except Exception as e:
+            cm = None
+            if attempt >= _retries and status_cb:
+                try:
+                    status_cb(f"threadpoolctl unavailable ({e}); running without BLAS thread cap")
+                except Exception:
+                    pass
+    try:
+        yield
+    finally:
+        if cm is not None:
+            try:
+                cm.__exit__(None, None, None)
+            except Exception:
+                pass
 from setiastro.saspro.mfdeconv_earlystop import EarlyStopper
 
 import gc
@@ -736,7 +770,7 @@ def _build_psf_and_assets(
 
     # --- worker thunk (thread mode hits shared cache; process mode has its own worker fn) ---
     def _compute_one(i: int, path: str):
-        with threadpool_limits(limits=1):
+        with _limit_blas_threads(1):
             img_chw = _FRAME_LRU.get(path, Ht, Wt, color_mode)  # (C,H,W) float32
             arr2d = img_chw[0] if (img_chw.ndim == 3) else img_chw  # (H,W) float32
             try:
