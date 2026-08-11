@@ -33,6 +33,13 @@ from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     get_satellite_models,
     satellite_remove_image,
 )
+from setiastro.saspro.cosmicclarity_headless import (
+    resolve_overlap_px,
+    parse_overlap_pct,
+    nearest_overlap_pct,
+    OVERLAP_PCT_CHOICES,
+    DEFAULT_OVERLAP_PCT,
+)
 # Import centralized preview dialog
 from setiastro.saspro.widgets.preview_dialogs import ImagePreviewDialog
 
@@ -357,7 +364,7 @@ class CosmicClarityEngineWorker(QThread):
                         temp_stretch=temp_stretch,
                         target_median=target_median,
                         chunk_size=int(p.get("chunk_size", 256)),
-                        overlap=int(p.get("overlap", 64)),
+                        overlap=resolve_overlap_px(p),
                         execution_mode=sharpen_execution_mode,
                         batch_size_override=sharpen_batch_override,
                         stellar_correct_mode=str(p.get("stellar_correct_mode", "sharpen_only")),
@@ -380,7 +387,7 @@ class CosmicClarityEngineWorker(QThread):
                         separate_channels=bool(self._preset.get("separate_channels", False)),
                         color_denoise_strength=float(self._preset.get("denoise_color", 0.5)),
                         chunk_size=int(self._preset.get("chunk_size", 256)),
-                        overlap=int(self._preset.get("overlap", 64)),
+                        overlap=resolve_overlap_px(self._preset),
                         use_gpu=bool(self._preset.get("gpu", True)),
                         lite=bool(self._preset.get("denoise_lite", False)),
                         walking=bool(self._preset.get("denoise_walking", False)),  # ← new
@@ -771,10 +778,16 @@ class CosmicClarityDialogPro(QDialog):
         adv.addWidget(self.lbl_chunk, 3, 0)
         adv.addWidget(self.cmb_chunk, 3, 1)
  
-        self.lbl_ov = QLabel("Overlap:")
+        self.lbl_ov = QLabel("Overlap (% of tile):")
         self.cmb_ov = QComboBox()
-        self.cmb_ov.addItems(["16", "32", "48", "64", "80", "96", "128", "192", "256", "320", "384", "512"])
-        self.cmb_ov.setCurrentText("64")
+        self.cmb_ov.addItems([f"{c}%" for c in OVERLAP_PCT_CHOICES])
+        self.cmb_ov.setCurrentText(f"{int(DEFAULT_OVERLAP_PCT)}%")
+        self.cmb_ov.setToolTip(
+            "Tile overlap as a percentage of the chunk size.\n"
+            "Higher overlap reduces edge seams but is slower — runtime climbs\n"
+            "steeply as overlap grows, so it is capped at 50% of the tile.\n"
+            "25% is a good default."
+        )
         adv.addWidget(self.lbl_ov, 4, 0)
         adv.addWidget(self.cmb_ov, 4, 1)
  
@@ -833,11 +846,11 @@ class CosmicClarityDialogPro(QDialog):
         # ------------------------------------------------------------------
         self._load_chunk_overlap_settings()
  
-        # chunk/overlap have their own save keys — wire those now
+        # chunk/overlap have their own save keys — wire those now.
+        # (Overlap is a % of the tile capped at 50%, so it is always valid
+        #  relative to chunk size — no cross-enforcement needed.)
         self.cmb_chunk.currentTextChanged.connect(self._save_chunk_overlap_settings)
         self.cmb_ov.currentTextChanged.connect(self._save_chunk_overlap_settings)
-        self.cmb_chunk.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
-        self.cmb_ov.currentTextChanged.connect(self._enforce_overlap_vs_chunk)
  
         # ------------------------------------------------------------------
         # Step 2: load all other settings with ALL signals blocked
@@ -1194,56 +1207,32 @@ class CosmicClarityDialogPro(QDialog):
             self.cmb_dn_mode.setToolTip("")
 
 
+    def _set_overlap_pct(self, pct):
+        """Select the overlap combo item nearest to the given percentage."""
+        self.cmb_ov.setCurrentText(f"{nearest_overlap_pct(pct)}%")
+
     def _load_chunk_overlap_settings(self):
         s = QSettings()
-        # pick stable keys (your call on naming)
         chunk = s.value("cc/chunk_size", "256")
-        ov    = s.value("cc/overlap", "64")
-
-        # only apply if present in the dropdown lists
         if self.cmb_chunk.findText(str(chunk)) >= 0:
             self.cmb_chunk.setCurrentText(str(chunk))
-        if self.cmb_ov.findText(str(ov)) >= 0:
-            self.cmb_ov.setCurrentText(str(ov))
 
-        self._enforce_overlap_vs_chunk()
+        # Overlap is now stored as a percentage of the tile (0-50).
+        pct = s.value("cc/overlap_pct", None)
+        if pct is None:
+            # Migrate a legacy pixel overlap -> percentage using the saved chunk.
+            try:
+                legacy_px = float(s.value("cc/overlap", 64))
+                ck = int(self.cmb_chunk.currentText())
+                pct = round(100.0 * legacy_px / max(1, ck))
+            except Exception:
+                pct = DEFAULT_OVERLAP_PCT
+        self._set_overlap_pct(pct)
 
     def _save_chunk_overlap_settings(self):
         s = QSettings()
         s.setValue("cc/chunk_size", self.cmb_chunk.currentText())
-        s.setValue("cc/overlap", self.cmb_ov.currentText())
-
-    def _enforce_overlap_vs_chunk(self):
-        """Ensure overlap < chunk_size. If not, snap overlap down to the largest valid option."""
-        try:
-            chunk = int(self.cmb_chunk.currentText())
-            ov    = int(self.cmb_ov.currentText())
-        except Exception:
-            return
-
-        max_ov = max(0, chunk - 1)
-        if ov <= max_ov:
-            return
-
-        # choose the largest overlap option <= max_ov
-        best = None
-        for i in range(self.cmb_ov.count()):
-            try:
-                v = int(self.cmb_ov.itemText(i))
-            except Exception:
-                continue
-            if v <= max_ov:
-                best = v
-
-        if best is None:
-            best = 0
-
-        # only set if it exists in the list
-        if self.cmb_ov.findText(str(best)) >= 0:
-            self.cmb_ov.setCurrentText(str(best))
-        else:
-            # fallback: if list doesn't include it, pick first item
-            self.cmb_ov.setCurrentIndex(0)
+        s.setValue("cc/overlap_pct", int(parse_overlap_pct(self.cmb_ov.currentText())))
 
 
     def _ensure_models_installed_or_bail(self) -> bool:
@@ -1704,8 +1693,15 @@ class CosmicClarityDialogPro(QDialog):
             self.cmb_correct_ver.setCurrentIndex(idx)
         if "chunk_size" in p:
             self.cmb_chunk.setCurrentText(str(int(p["chunk_size"])))
-        if "overlap" in p:
-            self.cmb_ov.setCurrentText(str(int(p["overlap"])))
+        if p.get("overlap_pct") is not None:
+            self._set_overlap_pct(p["overlap_pct"])
+        elif "overlap" in p:
+            # Legacy pixel overlap -> percentage of this preset's chunk size.
+            try:
+                ck = int(p.get("chunk_size", self.cmb_chunk.currentText()))
+                self._set_overlap_pct(round(100.0 * float(p["overlap"]) / max(1, ck)))
+            except Exception:
+                self._set_overlap_pct(DEFAULT_OVERLAP_PCT)
         # Denoise
         self.sld_dn_lum.setValue(int(max(0, min(100, round(float(p.get("denoise_luma",0.5))*100)))))
         self.sld_dn_col.setValue(int(max(0, min(100, round(float(p.get("denoise_color",0.5))*100)))))
@@ -1768,7 +1764,7 @@ class CosmicClarityDialogPro(QDialog):
                 "correct_model_version": self.cmb_correct_ver.currentText(),
                 "correct_conservative": self.chk_correct_conservative.isChecked(),
                 "chunk_size": int(self.cmb_chunk.currentText()),
-                "overlap": int(self.cmb_ov.currentText()),
+                "overlap_pct": parse_overlap_pct(self.cmb_ov.currentText()),
                 "temp_stretch": self.chk_temp_stretch.isChecked(),
                 "target_median": self.sld_target_median.value() / 100.0,
                 "stellar_correct_mode": (
