@@ -104,8 +104,12 @@ class CurveEditor(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        # Resizable: the painter and hit-testing map scene->pixels through
+        # _plot_rect() (derived from width()/height()), so the canvas scales
+        # cleanly. Keep a sane floor; let it grow to fill whatever room it's
+        # given — especially when the panel is popped out into its own window.
         self.setMinimumSize(380, 425)
-        self.setFixedSize(380, 425)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
 
@@ -1596,6 +1600,32 @@ class CommaToDotLineEdit(QLineEdit):
         super().keyPressEvent(event)
 
 
+class _DetachedCurvePanel(QWidget):
+    """Top-level window that hosts the curves editing panel when popped out.
+
+    Closing it (via the window controls) is routed back to the owning dialog
+    through ``closed`` so the panel is re-docked rather than destroyed.
+    """
+    closed = pyqtSignal()
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        self.setWindowTitle(title)
+        self._v = QVBoxLayout(self)
+        self._v.setContentsMargins(6, 6, 6, 6)
+        self._v.setSpacing(4)
+
+    def set_panel(self, w: QWidget):
+        self._v.addWidget(w)
+
+    def closeEvent(self, ev):
+        # The owner's slot reparents the panel out synchronously, then
+        # deletes this (now-empty) window.
+        self.closed.emit()
+        super().closeEvent(ev)
+
+
 class CurvesDialogPro(QDialog):
     def __init__(self, parent, document):
         super().__init__(parent)
@@ -1643,14 +1673,33 @@ class CurvesDialogPro(QDialog):
         self._clip_scale       = 1.0
         self._cdf_total_full   = 0
         self._cdf_total_preview = 0
+        self._popout_win = None   # detached curve-panel window, when popped out
 
         # --- UI ---
         main = QVBoxLayout(self)
         top  = QHBoxLayout()
 
-        left = QVBoxLayout()
+        # The whole left column lives in a container widget so it can be
+        # detached into a resizable pop-out window and re-attached later.
+        self.curve_panel = QWidget(self)
+        left = QVBoxLayout(self.curve_panel)
+        left.setContentsMargins(0, 0, 0, 0)
+
+        # Header: detach / re-attach the curve-editing panel.
+        popout_row = QHBoxLayout()
+        popout_row.setContentsMargins(0, 0, 0, 0)
+        self.btn_popout = QToolButton(self)
+        self.btn_popout.setText(self.tr("⤢  Pop Out"))
+        self.btn_popout.setToolTip(self.tr(
+            "Detach the curve editor into its own resizable window.\n"
+            "Its size and position are remembered between sessions."))
+        self.btn_popout.clicked.connect(self._toggle_popout)
+        popout_row.addStretch(1)
+        popout_row.addWidget(self.btn_popout)
+        left.addLayout(popout_row)
+
         self.editor = CurveEditor(self)
-        left.addWidget(self.editor)
+        left.addWidget(self.editor, 1)   # stretch: the grid absorbs extra room
 
         # --- numeric editor for the selected curve point (X/Y in 0..1) ------
         self._suppress_pt_spin = False
@@ -1744,7 +1793,6 @@ class CurvesDialogPro(QDialog):
         rowb.addWidget(self.btn_apply)
         rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
-        left.addStretch(1)
 
         # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
         # After the stretch → pins to the lower-left corner.
@@ -1773,7 +1821,24 @@ class CurvesDialogPro(QDialog):
         drag_row.addStretch(1)
         left.addLayout(drag_row)
 
-        top.addLayout(left, 0)
+        self._top_row = top
+        top.addWidget(self.curve_panel, 0)
+
+        # Shown in the dialog's left slot while the panel is detached, so the
+        # window isn't confusingly empty and there's a way to re-attach from here.
+        self._popout_placeholder = QWidget(self)
+        _ph = QVBoxLayout(self._popout_placeholder)
+        _ph.setContentsMargins(12, 12, 12, 12)
+        _ph.addStretch(1)
+        _ph_lbl = QLabel(self.tr("Curve editor is in a separate window."))
+        _ph_lbl.setStyleSheet("color: gray;")
+        _ph_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._btn_popin_here = QPushButton(self.tr("⤡  Pop editor back in"))
+        self._btn_popin_here.clicked.connect(self._pop_in_panel)
+        _ph.addWidget(_ph_lbl)
+        _ph.addWidget(self._btn_popin_here, 0, Qt.AlignmentFlag.AlignCenter)
+        _ph.addStretch(1)
+        self._popout_placeholder.setVisible(False)
 
         right = QVBoxLayout()
         zoombar = QHBoxLayout()
@@ -1965,6 +2030,91 @@ class CurvesDialogPro(QDialog):
             pts_scene = _points_norm_to_scene(ptsN)
             overlays[key] = pts_scene
         self.editor.setOverlayCurves(overlays, self._current_mode_key)
+
+    # ── Detachable curve panel (pop-out / pop-in) ────────────────────
+    _POPOUT_GEOM_KEY  = "ui/curves_dialog/popout_geometry"
+    _POPOUT_STATE_KEY = "ui/curves_dialog/popout_active"
+
+    def _toggle_popout(self):
+        if getattr(self, "_popout_win", None) is None:
+            self._pop_out_panel()
+        else:
+            self._pop_in_panel()
+
+    def _pop_out_panel(self, *, restore_geometry: bool = True):
+        if getattr(self, "_popout_win", None) is not None:
+            self._popout_win.raise_(); self._popout_win.activateWindow()
+            return
+
+        win = _DetachedCurvePanel(self.tr("Curves — Editor"), self)
+        win.closed.connect(self._pop_in_panel)
+
+        # Swap the panel out of the dialog; drop the placeholder into its slot.
+        self._top_row.removeWidget(self.curve_panel)
+        self._top_row.insertWidget(0, self._popout_placeholder)
+        self._popout_placeholder.setVisible(True)
+
+        win.set_panel(self.curve_panel)      # reparents the panel into the window
+        self.curve_panel.setVisible(True)
+        self._popout_win = win
+
+        if not (restore_geometry and self._restore_popout_geometry(win)):
+            win.resize(860, 780)
+        self._set_popout_active(True)
+        self._sync_popout_buttons()
+
+        win.show(); win.raise_(); win.activateWindow()
+
+    def _pop_in_panel(self):
+        win = getattr(self, "_popout_win", None)
+        if win is None:
+            return
+        self._popout_win = None
+        try: win.closed.disconnect(self._pop_in_panel)
+        except Exception: pass
+
+        self._save_popout_geometry(win)
+        self._set_popout_active(False)
+
+        # Reattach the panel where it lives in the dialog.
+        self._top_row.removeWidget(self._popout_placeholder)
+        self._popout_placeholder.setVisible(False)
+        self._top_row.insertWidget(0, self.curve_panel)   # reparents back to dialog
+        self.curve_panel.setVisible(True)
+
+        self._sync_popout_buttons()
+
+        win.hide()
+        win.deleteLater()
+
+    def _sync_popout_buttons(self):
+        out = getattr(self, "_popout_win", None) is not None
+        try:
+            self.btn_popout.setText(self.tr("⤡  Pop In") if out else self.tr("⤢  Pop Out"))
+        except Exception:
+            pass
+
+    def _restore_popout_geometry(self, win) -> bool:
+        try:
+            g = QSettings().value(self._POPOUT_GEOM_KEY, None, type=QByteArray)
+            if g and isinstance(g, QByteArray) and not g.isEmpty():
+                return bool(win.restoreGeometry(g))
+        except Exception:
+            pass
+        return False
+
+    def _save_popout_geometry(self, win):
+        try:
+            if win is not None:
+                QSettings().setValue(self._POPOUT_GEOM_KEY, win.saveGeometry())
+        except Exception:
+            pass
+
+    def _set_popout_active(self, active: bool):
+        try:
+            QSettings().setValue(self._POPOUT_STATE_KEY, bool(active))
+        except Exception:
+            pass
 
     _GEOM_KEY = "ui/curves_dialog/geometry"
 
@@ -2196,6 +2346,13 @@ class CurvesDialogPro(QDialog):
             def _after():
                 self._restore_window_geometry()
                 self._fit()
+                # Reopen detached if that's how the user left it last time.
+                try:
+                    want = QSettings().value(self._POPOUT_STATE_KEY, False, type=bool)
+                except Exception:
+                    want = False
+                if want and getattr(self, "_popout_win", None) is None:
+                    self._pop_out_panel(restore_geometry=True)
             QTimer.singleShot(0, _after)
             return
         QTimer.singleShot(0, self._fit_after_load)
@@ -2649,6 +2806,16 @@ class CurvesDialogPro(QDialog):
 
     def closeEvent(self, ev):
         try: self._save_window_geometry()
+        except Exception: pass
+        # If detached, remember the pop-out geometry (and leave the "active"
+        # flag set so it reopens detached) but don't let its close signal try
+        # to re-dock into a dialog that's being destroyed.
+        try:
+            win = getattr(self, "_popout_win", None)
+            if win is not None:
+                try: win.closed.disconnect(self._pop_in_panel)
+                except Exception: pass
+                self._save_popout_geometry(win)
         except Exception: pass
         self._cleanup_connections()
         super().closeEvent(ev)
