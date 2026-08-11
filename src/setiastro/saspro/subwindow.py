@@ -535,6 +535,10 @@ class ImageSubWindow(QWidget):
     autostretchChanged = pyqtSignal(bool)
     requestDuplicate = pyqtSignal(object)  # document
     layers_changed = pyqtSignal() 
+    # Emitted when a source/mask document feeding this view's layers changes
+    # (i.e. an edit to one of the views a layer references). Lets external
+    # consumers such as the Layers dock preview recomposite on the spot.
+    layer_sources_changed = pyqtSignal()
 
     viewTitleChanged = pyqtSignal(object, str)
 
@@ -1789,11 +1793,23 @@ class ImageSubWindow(QWidget):
         return super().sizeHint()
 
     def _on_layer_source_changed(self):
-        # Any source/mask doc changed → recomposite current stack
+        # A source/mask doc feeding one of this view's layers changed.
+        #
+        # Layers are previewed in the Layers dock's preview window ONLY — the
+        # base view must stay pristine (its committed pixels) until an explicit
+        # merge/push. So we do NOT composite into this view; we only clear any
+        # stale layer-preview display override that may be showing, then notify
+        # the dock so it can refresh its own preview.
         try:
-            self.apply_layer_stack(self._layers)
+            if getattr(self, "_display_override", None) is not None:
+                self._display_override = None
+                self._render(rebuild=True)
         except Exception as e:
             print("[ImageSubWindow] _on_layer_source_changed error:", e)
+        try:
+            self.layer_sources_changed.emit()
+        except Exception:
+            pass
 
     def _collect_layer_docs(self):
         """

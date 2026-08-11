@@ -778,14 +778,10 @@ class LayersDock(QDockWidget):
         self._composite_timer.setInterval(350)  # ms — full-res after drag settles
         self._composite_timer.timeout.connect(self._run_composite_threaded)
 
-        # Source-liveness poll: while the preview is open, watch for a layer's
-        # source view (or the base) being replaced by an edit elsewhere, and
-        # recomposite automatically. Fingerprints identity/shape/dtype only —
-        # no pixel scan — so polling is effectively free.
-        self._last_source_sig = None
-        self._source_poll_timer = QTimer(self)
-        self._source_poll_timer.setInterval(300)  # ms
-        self._source_poll_timer.timeout.connect(self._poll_sources)
+        # Event-driven auto-refresh: while the preview is open we listen to the
+        # current view's document.changed (base edits) and layer_sources_changed
+        # (any layer's source/mask view edited) and recomposite on the spot.
+        self._watched_view = None
 
         # ── UI ────────────────────────────────────────────────
         w = QWidget()
@@ -861,64 +857,89 @@ class LayersDock(QDockWidget):
     def _force_refresh_preview(self):
         """Re-pull source pixels and recomposite.
 
-        composite_stack() reads each layer's src_doc.image live, so simply
-        recompositing picks up any edits made to a source view since the last
-        render. We also drop the base-image identity cache so an in-place edit
-        to the base document itself is reflected too.
+        composite_stack() reads each layer's src_doc.image live, so recompositing
+        picks up any edit made to a source view. We also drop the base-image
+        identity cache so an in-place edit to the base document is reflected too.
+
+        Fully debounced via _schedule_composite() (fast preview ~80 ms, full-res
+        ~350 ms) so a burst of document.changed signals coalesces into one pass.
         """
         self._cached_before_img_id = 0
         self._cached_composite = None
         if self._preview_win is not None and self._preview_win.isVisible():
             self._preview_win.lbl_info.setText("Refreshing from source views…")
-        self._run_fast_preview()      # instant feedback if the window is open
-        self._schedule_composite()    # full-resolution pass
+        self._schedule_composite()
 
-    @staticmethod
-    def _img_token(img):
-        """Cheap per-image fingerprint — identity + shape + dtype, no pixels."""
-        if img is None:
-            return None
-        try:
-            return (id(img), getattr(img, "shape", None), str(getattr(img, "dtype", "")))
-        except Exception:
-            return (id(img),)
-
-    def _source_signature(self, vw):
-        """Fingerprint every pixel source feeding the composite (base + each
-        layer's source document). Changes whenever any source array is replaced,
-        which is what an edit elsewhere (Curves, Cosmic Clarity, …) produces."""
-        sig = []
-        base_doc = getattr(vw, "document", None)
-        sig.append(self._img_token(getattr(base_doc, "image", None) if base_doc is not None else None))
-        for lyr in getattr(vw, "_layers", []) or []:
-            sd = getattr(lyr, "src_doc", None)
-            sig.append(self._img_token(getattr(sd, "image", None) if sd is not None else None))
-        return tuple(sig)
-
-    def _poll_sources(self):
-        """Auto-refresh: recomposite when a source view is edited under us."""
-        if self._preview_win is None or not self._preview_win.isVisible():
-            return
-        vw = self.current_view()
+    def _connect_source_watch(self, vw):
+        """Listen to the given view for base or layer-source edits and
+        auto-recomposite the preview. Idempotent — drops any prior watch first."""
+        self._disconnect_source_watch()
         if vw is None:
             return
-        sig = self._source_signature(vw)
-        if self._last_source_sig is None:
-            self._last_source_sig = sig
+        # Ensure the subwindow's own source/mask watchers are live so its
+        # layer_sources_changed signal actually fires for the current stack.
+        try:
+            if hasattr(vw, "_reinstall_layer_watchers"):
+                vw._reinstall_layer_watchers()
+        except Exception:
+            pass
+        # Base document edits.
+        try:
+            doc = getattr(vw, "document", None)
+            if doc is not None and hasattr(doc, "changed"):
+                doc.changed.connect(self._force_refresh_preview)
+        except Exception:
+            pass
+        # Layer source/mask document edits (relayed by the subwindow).
+        try:
+            if hasattr(vw, "layer_sources_changed"):
+                vw.layer_sources_changed.connect(self._force_refresh_preview)
+        except Exception:
+            pass
+        self._watched_view = vw
+
+    def _disconnect_source_watch(self):
+        vw = getattr(self, "_watched_view", None)
+        self._watched_view = None
+        if vw is None:
             return
-        if sig != self._last_source_sig:
-            self._last_source_sig = sig   # set first so the refresh doesn't re-trigger
-            self._force_refresh_preview()
+        try:
+            doc = getattr(vw, "document", None)
+            if doc is not None and hasattr(doc, "changed"):
+                doc.changed.disconnect(self._force_refresh_preview)
+        except Exception:
+            pass
+        try:
+            if hasattr(vw, "layer_sources_changed"):
+                vw.layer_sources_changed.disconnect(self._force_refresh_preview)
+        except Exception:
+            pass
+        # Leaving the preview: make sure the base view is showing its real
+        # pixels, not a leftover layer-preview override.
+        self._restore_base_view(vw)
+
+    def _restore_base_view(self, vw):
+        """Drop any layer-preview display override so the base subwindow shows
+        its true committed pixels. No-op if nothing was overridden.
+
+        The base view is never edited by the layers workflow — layers live only
+        in the preview window until an explicit merge — so this only clears a
+        transient display state (including any left by older builds)."""
+        if vw is None:
+            return
+        try:
+            if getattr(vw, "_display_override", None) is not None:
+                vw._display_override = None
+                vw._render(rebuild=True)
+        except Exception:
+            pass
 
     def _on_preview_toggled(self, on: bool):
         if on:
             pw = self._ensure_preview_win()
             pw.show(); pw.raise_(); pw.activateWindow()
-            # Seed the source fingerprint so the first poll only reacts to
-            # genuine changes, then start watching for edits to source views.
-            vw = self.current_view()
-            self._last_source_sig = self._source_signature(vw) if vw is not None else None
-            self._source_poll_timer.start()
+            # Start watching the current view for edits to its base or layers.
+            self._connect_source_watch(self.current_view())
             # Immediately push whatever we have cached
             if self._cached_before is not None or self._cached_composite is not None:
                 pw.update_composite(self._cached_before, self._cached_composite)
@@ -926,19 +947,19 @@ class LayersDock(QDockWidget):
                 # Trigger a fresh composite
                 self._schedule_composite()
         else:
-            self._source_poll_timer.stop()
+            self._disconnect_source_watch()
             if self._preview_win is not None:
                 self._preview_win.hide()
 
     def _on_preview_win_closed(self, *_):
-        self._source_poll_timer.stop()
+        self._disconnect_source_watch()
         self.btn_preview.blockSignals(True)
         self.btn_preview.setChecked(False)
         self.btn_preview.blockSignals(False)
 
     def _on_dock_visibility_changed(self, visible: bool):
         if not visible and self._preview_win is not None:
-            self._source_poll_timer.stop()
+            self._disconnect_source_watch()
             self._preview_win.hide()
             self._on_preview_win_closed()
 
@@ -1153,6 +1174,11 @@ class LayersDock(QDockWidget):
         self._wire_title_change_listeners(subs)
         self._rebuild_list()
 
+        # The current view may have changed (e.g. a view was closed); keep the
+        # auto-refresh watchers pointed at whatever's active now.
+        if self._preview_win is not None and self._preview_win.isVisible():
+            self._connect_source_watch(self.current_view())
+
     def _wire_title_change_listeners(self, subs):
         for sw in subs:
             if sw in self._wired_title_sources:
@@ -1198,10 +1224,9 @@ class LayersDock(QDockWidget):
 
     def _on_pick_view(self, _i):
         self._rebuild_list()
-        # New view = new source set; reseed so the poll doesn't treat the
-        # switch itself as an external edit and recomposite twice.
-        vw = self.current_view()
-        self._last_source_sig = self._source_signature(vw) if vw is not None else None
+        # Re-point the auto-refresh watchers at the newly selected view.
+        if self._preview_win is not None and self._preview_win.isVisible():
+            self._connect_source_watch(self.current_view())
         self._schedule_composite()
 
     # ─────────────────────────────────────────────────────────
@@ -1439,6 +1464,11 @@ class LayersDock(QDockWidget):
         if idx < 0 or idx >= self._layer_count(): return
         vw._layers.pop(idx)
         self.list.takeItem(idx)
+        if hasattr(vw, "_reinstall_layer_watchers"):
+            vw._reinstall_layer_watchers()
+        if not getattr(vw, "_layers", None):
+            # Stack is empty — make sure the base view isn't left overridden.
+            self._restore_base_view(vw)
         self._schedule_composite()
 
     def _move_row(self, roww: _LayerRow, delta: int):
@@ -1633,6 +1663,8 @@ class LayersDock(QDockWidget):
             vw._reinstall_layer_watchers()
         self._cached_composite = None
         self._rebuild_list()
+        # Restore the base view to its true pixels (drop any preview override).
+        self._restore_base_view(vw)
         try: vw._render(rebuild=True)
         except Exception: pass
 

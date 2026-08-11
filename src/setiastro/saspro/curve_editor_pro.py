@@ -108,7 +108,7 @@ class CurveEditor(QWidget):
         # _plot_rect() (derived from width()/height()), so the canvas scales
         # cleanly. Keep a sane floor; let it grow to fill whatever room it's
         # given — especially when the panel is popped out into its own window.
-        self.setMinimumSize(380, 425)
+        self.setMinimumSize(380, 380)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
@@ -1684,6 +1684,7 @@ class CurvesDialogPro(QDialog):
         self.curve_panel = QWidget(self)
         left = QVBoxLayout(self.curve_panel)
         left.setContentsMargins(0, 0, 0, 0)
+        self._panel_layout = left
 
         # Header: detach / re-attach the curve-editing panel.
         popout_row = QHBoxLayout()
@@ -1699,7 +1700,11 @@ class CurvesDialogPro(QDialog):
         left.addLayout(popout_row)
 
         self.editor = CurveEditor(self)
-        left.addWidget(self.editor, 1)   # stretch: the grid absorbs extra room
+        # Docked: no stretch — the grid stays at its natural ~square size and
+        # the trailing spacer (added after the buttons) absorbs slack. Popped
+        # out: _apply_panel_expand() flips the stretch so the grid fills the
+        # window. See _apply_panel_expand().
+        left.addWidget(self.editor, 0)
 
         # --- numeric editor for the selected curve point (X/Y in 0..1) ------
         self._suppress_pt_spin = False
@@ -1793,6 +1798,12 @@ class CurvesDialogPro(QDialog):
         rowb.addWidget(self.btn_apply)
         rowb.addWidget(self.btn_reset)
         left.addLayout(rowb)
+
+        # Trailing slack: when docked this absorbs leftover vertical space so
+        # the grid stays square and the controls hug it. When popped out we
+        # zero this and stretch the editor instead (see _apply_panel_expand).
+        self._panel_slack_index = left.count()
+        left.addStretch(1)
 
         # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
         # After the stretch → pins to the lower-left corner.
@@ -2035,6 +2046,31 @@ class CurvesDialogPro(QDialog):
     _POPOUT_GEOM_KEY  = "ui/curves_dialog/popout_geometry"
     _POPOUT_STATE_KEY = "ui/curves_dialog/popout_active"
 
+    def _apply_panel_expand(self, expand: bool):
+        """Toggle whether the curve grid fills its container.
+
+        Popped out (expand=True): the editor takes the slack so the grid grows
+        with the window. Docked (expand=False): the editor stays at its natural
+        ~square size and the trailing spacer takes the slack instead.
+        """
+        lay = getattr(self, "_panel_layout", None)
+        if lay is None:
+            return
+        try:
+            lay.setStretchFactor(self.editor, 1 if expand else 0)
+        except Exception:
+            pass
+        try:
+            idx = getattr(self, "_panel_slack_index", None)
+            if idx is not None:
+                lay.setStretch(idx, 0 if expand else 1)
+        except Exception:
+            pass
+        try:
+            lay.activate()
+        except Exception:
+            pass
+
     def _toggle_popout(self):
         if getattr(self, "_popout_win", None) is None:
             self._pop_out_panel()
@@ -2057,6 +2093,7 @@ class CurvesDialogPro(QDialog):
         win.set_panel(self.curve_panel)      # reparents the panel into the window
         self.curve_panel.setVisible(True)
         self._popout_win = win
+        self._apply_panel_expand(True)       # let the grid fill the window
 
         if not (restore_geometry and self._restore_popout_geometry(win)):
             win.resize(860, 780)
@@ -2081,6 +2118,7 @@ class CurvesDialogPro(QDialog):
         self._popout_placeholder.setVisible(False)
         self._top_row.insertWidget(0, self.curve_panel)   # reparents back to dialog
         self.curve_panel.setVisible(True)
+        self._apply_panel_expand(False)   # back to natural ~square size
 
         self._sync_popout_buttons()
 
