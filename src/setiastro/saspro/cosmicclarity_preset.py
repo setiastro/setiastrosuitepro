@@ -19,6 +19,12 @@ from setiastro.saspro.legacy.image_manager import load_image, save_image
 
 from .remove_stars import _ProcThread, _ProcDialog
 from .cosmicclarity import CosmicClarityDialogPro
+from .cosmicclarity_headless import (
+    parse_overlap_pct,
+    nearest_overlap_pct,
+    OVERLAP_PCT_CHOICES,
+    DEFAULT_OVERLAP_PCT,
+)
 
 # pull tiny helpers from the main CC module (or re-declare)
 def _platform_exe_names(mode: str) -> str:
@@ -473,9 +479,24 @@ class _CosmicClarityPresetDialog(QDialog):
         f.addRow(self._chunk_label, self.chunk)
 
         self.overlap = QComboBox()
-        self.overlap.addItems(["16", "32", "48", "64", "80", "96", "128", "192", "256", "320", "384", "512"])
-        self.overlap.setCurrentText(str(int(p.get("overlap", 64))))
-        self._overlap_label = QLabel("Overlap:")
+        self.overlap.addItems([f"{c}%" for c in OVERLAP_PCT_CHOICES])
+        self.overlap.setToolTip(
+            "Tile overlap as a percentage of the chunk size (capped at 50%).\n"
+            "Higher overlap reduces seams but is slower. 25% is a good default."
+        )
+        # Seed from overlap_pct if present, else migrate a legacy pixel overlap.
+        if p.get("overlap_pct") is not None:
+            _init_pct = p["overlap_pct"]
+        elif "overlap" in p:
+            try:
+                _ck = int(p.get("chunk_size", 256))
+                _init_pct = round(100.0 * float(p["overlap"]) / max(1, _ck))
+            except Exception:
+                _init_pct = DEFAULT_OVERLAP_PCT
+        else:
+            _init_pct = DEFAULT_OVERLAP_PCT
+        self.overlap.setCurrentText(f"{nearest_overlap_pct(_init_pct)}%")
+        self._overlap_label = QLabel("Overlap (% of tile):")
         f.addRow(self._overlap_label, self.overlap)
         # Track sharpen sub-widgets for visibility toggling
         self._sharpen_sub_widgets = [
@@ -615,7 +636,7 @@ class _CosmicClarityPresetDialog(QDialog):
                 "correct_conservative": bool(self.correct_conservative.isChecked()),
                 "correct_model_version": self.correct_ver.currentText(),
                 "chunk_size": int(self.chunk.currentText()),
-                "overlap": int(self.overlap.currentText()),
+                "overlap_pct": parse_overlap_pct(self.overlap.currentText()),
                 "temp_stretch": bool(self.temp_stretch.isChecked()),
                 "target_median": float(self.target_median.value()),
 

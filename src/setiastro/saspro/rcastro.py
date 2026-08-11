@@ -381,11 +381,13 @@ class _SXTPanel(QWidget):
         form.addRow("", note)
 
     def build_args(self) -> list[str]:
+        # --stars / --unscreen are deliberately NOT emitted anymore.
+        # RC-Astro CLI 2.x renamed the stars output to a difference image
+        # (<input>-sxt-difference[-unscreened].tif), which broke our old
+        # <input>-sxt-stars.tif lookup. We now build the stars-only image
+        # ourselves from (original, starless) in _compute_stars(); the
+        # chk_stars / chk_unscreen checkboxes drive THAT, not the CLI.
         args: list[str] = []
-        if self.chk_stars.isChecked():
-            args.append("--stars")
-            if self.chk_unscreen.isChecked():
-                args.append("--unscreen")
         overlap = self.sld_overlap.value() / 100.0
         if abs(overlap - 0.2) > 0.005:
             args += ["--overlap", f"{overlap:.2f}"]
@@ -1180,11 +1182,13 @@ class RCAstroDialog(QDialog):
             "nxt": self.nxt_panel.build_args,
         }[product]()
 
-        also_stars = (product == "sxt" and self.sxt_panel.chk_stars.isChecked())
-        self._run_product(exe, doc, product, panel_args, also_stars)
+        make_stars = (product == "sxt" and self.sxt_panel.chk_stars.isChecked())
+        unscreen   = (product == "sxt" and self.sxt_panel.chk_unscreen.isChecked())
+        self._run_product(exe, doc, product, panel_args, make_stars, unscreen)
 
     def _run_product(self, exe: str, doc, product: str,
-                     panel_args: list[str], also_stars: bool):
+                     panel_args: list[str], make_stars: bool = False,
+                     unscreen: bool = False):
         from setiastro.saspro.legacy.image_manager import save_image, load_image
 
         label = PRODUCT_LABELS[product]
@@ -1268,6 +1272,7 @@ class RCAstroDialog(QDialog):
                 self, doc, rc, dlg,
                 input_path, output_path, stars_path,
                 product, is_mono, work_dir, self._main,
+                make_stars, unscreen,
             )
 
         worker.output_signal.connect(_on_out)
@@ -1287,9 +1292,33 @@ class RCAstroDialog(QDialog):
 # Post-processing
 # ---------------------------------------------------------------------------
 
+def _compute_stars(original: np.ndarray, starless: np.ndarray,
+                   unscreen: bool) -> np.ndarray:
+    """
+    Derive a stars-only image from the SXT inputs.
+
+        subtraction : stars = O - S
+        unscreen    : stars = (O - S) / (1 - S)
+
+    Unscreen inverts the screen recombination SXT uses
+    (O = 1 - (1-S)(1-T)  =>  T = (O - S)/(1 - S)), recovering true star
+    intensity where stars overlap signal. Both clip to [0, 1]; the
+    unscreen denominator is floored to avoid divide-by-zero on saturated
+    starless pixels.
+    """
+    o = np.clip(np.asarray(original, dtype=np.float32), 0.0, 1.0)
+    s = np.clip(np.asarray(starless, dtype=np.float32), 0.0, 1.0)
+    diff = o - s
+    if unscreen:
+        stars = diff / np.maximum(1.0 - s, 1e-6)
+    else:
+        stars = diff
+    return np.clip(stars, 0.0, 1.0)
+
 def _on_finished(main_dlg, doc, return_code, dlg,
                   input_path, output_path, stars_path,
-                  product, is_mono, work_dir, main_window):
+                  product, is_mono, work_dir, main_window,
+                  make_stars=False, unscreen=False):
     from setiastro.saspro.legacy.image_manager import load_image
 
     label = PRODUCT_LABELS[product]
@@ -1327,7 +1356,27 @@ def _on_finished(main_dlg, doc, return_code, dlg,
 
     result = np.clip(result.astype(np.float32, copy=False), 0.0, 1.0)
 
-    # Collapse to mono if source was mono
+    # ── Build stars-only ourselves, while result is still RGB ──────────────
+    if product == "sxt" and make_stars:
+        try:
+            from setiastro.saspro.legacy.image_manager import save_image
+            original_rgb, _, _, _ = load_image(input_path)
+            if original_rgb is None:
+                raise RuntimeError("could not reload original input TIFF")
+            stars_img = _compute_stars(original_rgb, result, unscreen)
+            if is_mono and stars_img.ndim == 3:
+                stars_img = stars_img.mean(axis=2).astype(np.float32)
+            save_image(
+                np.clip(stars_img, 0.0, 1.0), stars_path,
+                "tif", "32-bit floating point", None, False,
+                image_meta=None, file_meta=None,
+            )
+            dlg.append("Built stars-only image "
+                       f"({'unscreen' if unscreen else 'subtraction'}).\n")
+        except Exception as e:
+            dlg.append(f"[warn] could not build stars-only image: {e}\n")
+
+    # Collapse starless to mono if source was mono
     if is_mono and result.ndim == 3:
         result = result.mean(axis=2).astype(np.float32)
 
@@ -1350,22 +1399,8 @@ def _on_finished(main_dlg, doc, return_code, dlg,
         dlg.mark_done()
         return
 
-    # SXT stars-only — open via docman.open_path, subwindow spawns automatically
-    if product == "sxt" and os.path.exists(stars_path):
-        # If the source was mono, collapse the RGB stars output back to mono so it
-        # matches the original (otherwise it can't be combined/subtracted with it).
-        # Mirrors the mono-collapse applied to the main starless result above.
-        if is_mono:
-            try:
-                from setiastro.saspro.legacy.image_manager import save_image
-                s_img, _, _, _ = load_image(stars_path)
-                if s_img is not None and s_img.ndim == 3:
-                    s_img = s_img.mean(axis=2).astype(np.float32)
-                    save_image(np.clip(s_img, 0.0, 1.0), stars_path,
-                               "tif", "32-bit floating point", None, False,
-                               image_meta=None, file_meta=None)
-            except Exception as e:
-                dlg.append(f"[warn] could not collapse stars to mono: {e}\n")        
+    # Push the derived stars-only image as a new document
+    if product == "sxt" and make_stars and os.path.exists(stars_path):
         dlg.append(f"Loading stars-only: {os.path.basename(stars_path)}\n")
         _push_new_doc(main_window, stars_path, source_doc=doc)
         dlg.append("Stars-only image pushed as new document.\n")
@@ -1626,6 +1661,15 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
     engine  = str(p.get("engine",  "auto"))
     args    = list(p.get("args", []))
 
+    # Stars-only is derived by SASpro now; capture intent, then strip the
+    # CLI flags so RC-Astro doesn't also emit its (renamed) difference image.
+    make_stars = False
+    unscreen   = False
+    if product == "sxt":
+        make_stars = bool(p.get("stars", "--stars" in args))
+        unscreen   = bool(p.get("unscreen", "--unscreen" in args))
+    args = [a for a in args if a not in ("--stars", "--unscreen")]
+
     # Re-build args from stored human-readable params if args list is empty
     if not args:
         tmp_s = QSettings()
@@ -1712,6 +1756,7 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
             dlg, doc, rc, dlg,
             input_path, output_path, stars_path,
             product, is_mono, work_dir, main,
+            make_stars, unscreen,
         )
 
     worker.output_signal.connect(_on_out)

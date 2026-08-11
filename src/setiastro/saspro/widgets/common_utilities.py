@@ -20,12 +20,15 @@ import threading
 import traceback
 import logging
 import atexit
+import html
 from typing import TYPE_CHECKING, Optional, List, Any
 
-from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt, QCoreApplication
+from PyQt6.QtCore import QThread, pyqtSignal, QTimer, Qt, QCoreApplication, QSettings, QDate
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                             QMessageBox, QPushButton, QPlainTextEdit)
+                             QMessageBox, QPushButton, QPlainTextEdit,
+                             QFormLayout, QLineEdit, QDateEdit, QDialogButtonBox,
+                             QCheckBox)
 
 if TYPE_CHECKING:
     from PyQt6.QtWidgets import QApplication, QMdiArea
@@ -55,6 +58,13 @@ def get_build_timestamp() -> str:
         # No generated build_info → running from local source checkout
         return "Running locally from source code"
     return BUILD_TIMESTAMP
+
+def supporter_title_suffix() -> str:
+    """'  ♥ Name' for the window title, or '' if no credit / hidden."""
+    sup = get_supporter()
+    if not sup or sup["hidden"]:
+        return ""
+    return f"  \u2665 {sup['name']}"
 
 # ---------------------------------------------------------------------------
 # Licensing
@@ -138,6 +148,110 @@ class LicenseViewer(QDialog):
         lay.addLayout(row)
 
 # ---------------------------------------------------------------------------
+# Supporter recognition (donationware — recognition only, nothing is gated)
+# ---------------------------------------------------------------------------
+
+# Case-insensitive and steal-proof by design: it's freeware, the word is right
+# here in the source. Add more entries to hand out different words in different
+# donation emails — they all work.
+SUPPORTER_CODES = {"firstlight"}
+
+
+def get_supporter() -> Optional[dict]:
+    """Current supporter info from QSettings, or None if nothing was entered.
+
+    Returns the dict even when hidden, so the editor can pre-fill it; the
+    About line checks the 'hidden' flag itself before rendering. Keys are
+    version-independent so an app update never wipes someone's credit.
+    """
+    s = QSettings()
+    name = str(s.value("supporter/name", "") or "").strip()
+    if not name:
+        return None
+    d0 = QDate.fromString(str(s.value("supporter/since", "")), "yyyy-MM-dd")
+    days = d0.daysTo(QDate.currentDate()) if d0.isValid() else None
+    hidden = bool(s.value("supporter/hidden", False, type=bool))
+    return {"name": name, "since": d0, "days": days, "hidden": hidden}
+
+
+class SupporterDialog(QDialog):
+    """Enter, edit, hide, or show the About-box supporter credit.
+
+    Pure recognition — nothing is unlocked, gated, or expired. Pre-fills from
+    QSettings so the same dialog also fixes a typo'd name / wrong date and
+    toggles visibility.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Support Seti Astro Suite"))
+
+        existing = get_supporter()
+        self._editing = existing is not None
+
+        f = QFormLayout(self)
+
+        self.ed_code = QLineEdit()
+        self.ed_code.setPlaceholderText(
+            self.tr("(already verified — leave blank)") if self._editing
+            else self.tr("code from your donation email"))
+
+        self.ed_name = QLineEdit()
+        self.ed_name.setPlaceholderText(self.tr("name or handle to credit"))
+
+        self.dt_since = QDateEdit(QDate.currentDate())
+        self.dt_since.setCalendarPopup(True)
+        self.dt_since.setDisplayFormat("yyyy-MM-dd")
+        self.dt_since.setMaximumDate(QDate.currentDate())
+
+        self.chk_hide = QCheckBox(self.tr("Hide this credit in the About box"))
+
+        if existing:
+            self.ed_name.setText(existing["name"])
+            if existing["since"].isValid():
+                self.dt_since.setDate(existing["since"])
+            self.chk_hide.setChecked(existing["hidden"])
+
+        f.addRow(self.tr("Donation code:"),      self.ed_code)
+        f.addRow(self.tr("Your name / handle:"), self.ed_name)
+        f.addRow(self.tr("First donated:"),      self.dt_since)
+        f.addRow("",                             self.chk_hide)
+
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                              QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(self._accept)
+        bb.rejected.connect(self.reject)
+        f.addRow(bb)
+
+    def _accept(self):
+        code = self.ed_code.text().strip().lower()
+        # New supporters must supply a valid code. When editing, a blank code
+        # keeps the existing (already-verified) credit; a non-blank one is still
+        # checked so a typo there doesn't silently pass.
+        if self._editing:
+            if code and code not in SUPPORTER_CODES:
+                QMessageBox.information(self, self.tr("Support"),
+                    self.tr("That code doesn't look right — leave it blank to keep your credit."))
+                return
+        elif code not in SUPPORTER_CODES:
+            QMessageBox.information(self, self.tr("Support"),
+                self.tr("That code doesn't look right — check your donation email."))
+            return
+
+        name = self.ed_name.text().strip()
+        if not name:
+            QMessageBox.information(self, self.tr("Support"),
+                self.tr("Please enter a name to be credited."))
+            return
+
+        s = QSettings()
+        s.setValue("supporter/name",   name)
+        s.setValue("supporter/since",  self.dt_since.date().toString("yyyy-MM-dd"))
+        s.setValue("supporter/hidden", self.chk_hide.isChecked())
+        self.accept()
+
+
+# ---------------------------------------------------------------------------
 # About Dialog
 # ---------------------------------------------------------------------------
 
@@ -164,7 +278,61 @@ class AboutDialog(QDialog):
 
         layout = QVBoxLayout()
 
-        # Build about text with optional build timestamp
+        # Stash for _build_about_html() so the supporter credit can be
+        # re-rendered in place after the About box is already open.
+        self._version = version
+        self._build_timestamp = build_timestamp
+
+        label = QLabel(self._build_about_html())
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        label.setOpenExternalLinks(True)
+        label.setWordWrap(True)
+        self._about_label = label
+
+        layout.addWidget(label)
+
+        # Buttons for the licence files that shipped with this build. Shown only
+        # when the file is actually present, so a source checkout or an install
+        # that missed them doesn't offer a dead button.
+        btn_row = QHBoxLayout()
+
+        _lic = find_license_file("LICENSE")
+        if _lic:
+            b_lic = QPushButton(self.tr("License"))
+            b_lic.setToolTip(self.tr("GNU General Public License v3"))
+            b_lic.clicked.connect(
+                lambda _checked=False, p=_lic: LicenseViewer(
+                    self, self.tr("License"), p).exec())
+            btn_row.addWidget(b_lic)
+
+        _third = find_license_file("license.txt")
+        if _third:
+            b_third = QPushButton(self.tr("Third-Party Licenses"))
+            b_third.setToolTip(self.tr("Licences for the bundled libraries"))
+            b_third.clicked.connect(
+                lambda _checked=False, p=_third: LicenseViewer(
+                    self, self.tr("Third-Party Licenses"), p).exec())
+            btn_row.addWidget(b_third)
+
+        # Supporter recognition — button label reflects current state.
+        self._btn_support = QPushButton()
+        self._btn_support.clicked.connect(self._on_support_clicked)
+        self._refresh_support_button()
+        btn_row.addWidget(self._btn_support)
+
+        btn_row.addStretch(1)
+        b_close = QPushButton(self.tr("Close"))
+        b_close.clicked.connect(self.accept)
+        btn_row.addWidget(b_close)
+
+        layout.addLayout(btn_row)
+        self.setLayout(layout)
+
+    def _build_about_html(self) -> str:
+        version = getattr(self, "_version", "") or get_version()
+        build_timestamp = getattr(self, "_build_timestamp", "") or ""
+
         about_lines = [
             f"<h2>Seti Astro's Suite Pro {version}</h2>",
             f"<p>{self.tr('By Franklin Marek')}</p>",
@@ -173,6 +341,22 @@ class AboutDialog(QDialog):
 
         if build_timestamp and build_timestamp != "Unknown":
             about_lines.append(f"<p><b>{self.tr('Build:')}</b> {build_timestamp}</p>")
+
+        # Supporter recognition line — additive and opt-in, shown only when a
+        # code has been entered and not hidden. Name is HTML-escaped because
+        # this label renders as RichText.
+        sup = get_supporter()
+        if sup and not sup["hidden"]:
+            nm = html.escape(sup["name"])
+            since = sup["since"].toString("MMMM yyyy") if sup["since"].isValid() else ""
+            if since and sup["days"] is not None:
+                tail = f" — {self.tr('supporter since')} {since} ({sup['days']} {self.tr('days')})"
+            else:
+                tail = ""
+            about_lines.append(
+                "<p style='color:#d4af37;'>&#9829; "
+                f"{self.tr('This build is supported directly by')} <b>{nm}</b>{tail}</p>"
+            )
 
         about_lines.extend([
             f"<p>{self.tr('Website:')} <a href='https://www.setiastro.com'>www.setiastro.com</a></p>",
@@ -202,46 +386,26 @@ class AboutDialog(QDialog):
             f"<p style='font-size:11px;'><a href='{GPL_URL}'>{gpl_link_text}</a></p>",
         ])
 
-        about_text = "".join(about_lines)
+        return "".join(about_lines)
 
-        label = QLabel(about_text)
-        label.setTextFormat(Qt.TextFormat.RichText)
-        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
-        label.setOpenExternalLinks(True)
-        label.setWordWrap(True)
+    def _refresh_support_button(self):
+        sup = get_supporter()
+        if sup is None:
+            self._btn_support.setText(self.tr("Enter Donation Code…"))
+            self._btn_support.setToolTip(
+                self.tr("Entered a donation code? Add your name to this build."))
+        elif sup["hidden"]:
+            self._btn_support.setText(self.tr("Supporter (hidden)…"))
+            self._btn_support.setToolTip(
+                self.tr("Your credit is hidden — click to edit it or show it again."))
+        else:
+            self._btn_support.setText(self.tr("♥ Supporter…"))
+            self._btn_support.setToolTip(self.tr("Edit or hide your supporter credit."))
 
-        layout.addWidget(label)
-
-        # Buttons for the licence files that shipped with this build. Shown only
-        # when the file is actually present, so a source checkout or an install
-        # that missed them doesn't offer a dead button.
-        btn_row = QHBoxLayout()
-
-        _lic = find_license_file("LICENSE")
-        if _lic:
-            b_lic = QPushButton(self.tr("License"))
-            b_lic.setToolTip(self.tr("GNU General Public License v3"))
-            b_lic.clicked.connect(
-                lambda _checked=False, p=_lic: LicenseViewer(
-                    self, self.tr("License"), p).exec())
-            btn_row.addWidget(b_lic)
-
-        _third = find_license_file("license.txt")
-        if _third:
-            b_third = QPushButton(self.tr("Third-Party Licenses"))
-            b_third.setToolTip(self.tr("Licences for the bundled libraries"))
-            b_third.clicked.connect(
-                lambda _checked=False, p=_third: LicenseViewer(
-                    self, self.tr("Third-Party Licenses"), p).exec())
-            btn_row.addWidget(b_third)
-
-        btn_row.addStretch(1)
-        b_close = QPushButton(self.tr("Close"))
-        b_close.clicked.connect(self.accept)
-        btn_row.addWidget(b_close)
-
-        layout.addLayout(btn_row)
-        self.setLayout(layout)
+    def _on_support_clicked(self):
+        if SupporterDialog(self).exec():
+            self._about_label.setText(self._build_about_html())
+            self._refresh_support_button()
 
 
 
@@ -464,6 +628,8 @@ def install_crash_handlers(app: 'QApplication') -> None:
 
 __all__ = [
     'AboutDialog',
+    'SupporterDialog',
+    'get_supporter',
     'LicenseViewer',
     'find_license_file',
     'SOURCE_URL',

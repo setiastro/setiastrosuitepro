@@ -36,6 +36,72 @@ def _get_darkstar():
 ProgressCB = Optional[Callable[[int, int], bool]]  # (done,total)->continue?
 
 
+# ---------------------------------------------------------------------------
+# Overlap is authored as a PERCENTAGE of the tile/chunk (0-50%).
+#
+# Capping at 50% guarantees overlap < chunk_size, which permanently rules out
+# the pathological "overlap almost equals the tile" case where per-tile work
+# (and therefore total runtime) grows hyperbolically and a run looks hung.
+# The tiling engines still consume raw pixels, so we convert at the boundary.
+# ---------------------------------------------------------------------------
+OVERLAP_PCT_CHOICES = [0, 5, 10, 15, 20, 25, 30, 40, 50]
+OVERLAP_PCT_MAX = 50.0
+DEFAULT_OVERLAP_PCT = 25.0  # 25% of 256 == 64px, the historic default
+
+
+def clamp_overlap_pct(value) -> float:
+    """Coerce a value to a valid overlap percentage in [0, 50]."""
+    try:
+        pct = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_OVERLAP_PCT
+    if pct < 0.0:
+        return 0.0
+    if pct > OVERLAP_PCT_MAX:
+        return OVERLAP_PCT_MAX
+    return pct
+
+
+def parse_overlap_pct(text) -> float:
+    """Parse combo/spin text like '25%' or '25' into a clamped percentage."""
+    s = str(text).strip().rstrip("%").strip()
+    return clamp_overlap_pct(s)
+
+
+def nearest_overlap_pct(value) -> int:
+    """Snap a percentage to the nearest UI choice in OVERLAP_PCT_CHOICES."""
+    pct = clamp_overlap_pct(value)
+    return min(OVERLAP_PCT_CHOICES, key=lambda c: abs(c - pct))
+
+
+def resolve_overlap_px(preset: dict, chunk_size: Optional[int] = None) -> int:
+    """
+    Resolve the pixel overlap to hand to the tiling engines from a preset.
+
+    Prefers the new percentage key ``overlap_pct`` (0-50). For backward
+    compatibility with presets/settings saved before this change, a raw pixel
+    ``overlap`` key is still honored when no percentage is present. In every
+    case the result is clamped to [0, chunk_size // 2], so overlap can never
+    reach the tile size regardless of what an old preset asked for.
+    """
+    if chunk_size is None:
+        chunk_size = int(preset.get("chunk_size", 256))
+    chunk_size = max(64, int(chunk_size))
+
+    if preset.get("overlap_pct") is not None:
+        pct = clamp_overlap_pct(preset.get("overlap_pct"))
+        px = int(round(chunk_size * pct / 100.0))
+    else:
+        # Legacy: raw pixel overlap authored before the %-overlap change.
+        try:
+            px = int(preset.get("overlap", 64))
+        except (TypeError, ValueError):
+            px = 64
+
+    # Hard guarantee: overlap stays strictly below the tile (<= 50%).
+    return max(0, min(px, chunk_size // 2))
+
+
 def _to_rgb01(img: np.ndarray) -> tuple[np.ndarray, bool]:
     """
     Returns (rgb01_float32, was_mono).
@@ -84,14 +150,12 @@ def run_cosmicclarity_on_array(
     use_gpu = bool(preset.get("gpu", True))
 
     chunk_size = int(preset.get("chunk_size", 256))
-    overlap = int(preset.get("overlap", 64))
-
     if chunk_size < 64:
         chunk_size = 64
-    if overlap < 0:
-        overlap = 0
-    if overlap >= chunk_size:
-        overlap = max(0, chunk_size // 4)
+
+    # Overlap is authored as a % of the tile; resolve_overlap_px converts and
+    # clamps to <= 50%, so overlap can never approach chunk_size.
+    overlap = resolve_overlap_px(preset, chunk_size)
 
     rgb01, was_mono = _to_rgb01(img)
     out = rgb01

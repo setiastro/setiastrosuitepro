@@ -114,6 +114,30 @@ def _to_rgb01(arr: np.ndarray) -> np.ndarray:
     return np.clip(a, 0.0, 1.0)
 
 
+def _downsampled_rgb01(img: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
+    """
+    Like _to_rgb01 but resamples straight to *target_hw* (H, W) so the caller
+    never materialises a full-resolution float RGB copy per layer. Mono images
+    are resized as a single channel and expanded to 3 afterwards. INTER_AREA is
+    the correct kernel for the downscale this is always used for.
+    """
+    a = np.asarray(img)
+    if a.dtype.kind in "ui":
+        a = a.astype(np.float32) / float(np.iinfo(a.dtype).max)
+    else:
+        a = a.astype(np.float32, copy=False)
+    if a.ndim == 3 and a.shape[2] == 1:
+        a = a[..., 0]
+    elif a.ndim == 3 and a.shape[2] > 3:
+        a = a[..., :3]
+    Hd, Wd = int(target_hw[0]), int(target_hw[1])
+    if a.shape[:2] != (Hd, Wd):
+        a = cv2.resize(np.ascontiguousarray(a), (Wd, Hd), interpolation=cv2.INTER_AREA)
+    if a.ndim == 2:
+        a = np.stack([a, a, a], axis=-1)
+    return np.clip(a, 0.0, 1.0).astype(np.float32, copy=False)
+
+
 def _blend_images(layers: list[np.ndarray], mode: str) -> np.ndarray:
     """
     Blend a list of HxWx3 float32 [0,1] arrays using the chosen mode.
@@ -433,6 +457,12 @@ class OverlapPanel(QWidget):
         self._composite_mode = False   # True = composite preview active
         self._colorize = False         # True = tint each layer before blending
 
+        # Preview composites are built downsampled (long edge capped here) and
+        # cached per (doc, autostretch, target) so re-blends are cheap. The crop
+        # math is resolution-independent, so this is purely a preview shortcut.
+        self._preview_max_dim = 1600
+        self._layer_cache: dict = {}
+
         root = QVBoxLayout(self)
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
@@ -509,6 +539,8 @@ class OverlapPanel(QWidget):
         Populate the checkbox list.  Pass a list of document objects,
         or call with no args to re-fetch from the parent CropDialogPro.
         """
+        # Any change to the doc set invalidates cached downsampled layers.
+        self._layer_cache.clear()
         if all_docs is not None:
             self._docs = list(all_docs)
         else:
@@ -536,28 +568,41 @@ class OverlapPanel(QWidget):
         autostretch: bool,
     ) -> np.ndarray | None:
         """
-        Build and return the blended HxWx3 float32 array at *target_shape* (H, W).
-        Returns None if fewer than 2 images are checked.
+        Build the blended HxWx3 float32 preview and return it DOWNSAMPLED (long
+        edge capped at self._preview_max_dim). This is a coverage/overlap preview,
+        not the final crop, so full resolution buys nothing — the caller upsamples
+        the result to the primary image size for display, and the crop itself is
+        always recomputed from the originals. Returns None if <2 images checked.
+
+        Per-layer downsampled (and optionally stretched) arrays are cached keyed
+        by (doc, autostretch, target), so blend-mode / colorize / checkbox changes
+        re-blend without re-reading and re-scaling every source image.
         """
         docs = self.checked_docs()
         if len(docs) < 2:
             return None
 
-        H, W = target_shape
+        H, W = int(target_shape[0]), int(target_shape[1])
+        cap = int(self._preview_max_dim) if self._preview_max_dim else 0
+        scale = (cap / float(max(H, W))) if (cap and max(H, W) > cap) else 1.0
+        Hd = max(1, int(round(H * scale)))
+        Wd = max(1, int(round(W * scale)))
+
         colorize = self._colorize
         layers = []
         for idx, d in enumerate(docs):
-            raw = _to_rgb01(np.asarray(d.image))
-            # resize to match the primary image canvas
-            dh, dw = raw.shape[:2]
-            if (dh, dw) != (H, W):
-                raw = cv2.resize(raw, (W, H), interpolation=cv2.INTER_AREA)
-            if autostretch:
-                raw = histogram_style_autostretch(raw)
+            key = (id(d), bool(autostretch), (Hd, Wd))
+            base = self._layer_cache.get(key)
+            if base is None:
+                base = _downsampled_rgb01(d.image, (Hd, Wd))
+                if autostretch:
+                    base = histogram_style_autostretch(base)
+                self._layer_cache[key] = base
+            raw = base
             if colorize:
                 color = _OVERLAP_COLORS[idx % len(_OVERLAP_COLORS)]
-                raw = _colorize_layer(raw, color)
-            layers.append(raw.astype(np.float32))
+                raw = _colorize_layer(raw, color)   # returns a new array; cache stays clean
+            layers.append(raw)
 
         return _blend_images(layers, self.blend_mode())
 
@@ -896,6 +941,15 @@ class CropDialogPro(QDialog):
             self.tr("Composite preview: {0} images · {1} blend").format(n, mode)
         )
         self._lbl_composite_status.setVisible(True)
+
+        # build_composite returns a downsampled array; upsample back to the
+        # primary image size so the crop rectangle's scene coordinates line up
+        # with the single-image view (they share the pixmap coordinate space).
+        if composite.shape[:2] != (self._orig_h, self._orig_w):
+            composite = cv2.resize(
+                composite, (self._orig_w, self._orig_h),
+                interpolation=cv2.INTER_LINEAR,
+            )
 
         saved = self._snapshot_rect_state()
         self._set_preview_pixmap(composite)
