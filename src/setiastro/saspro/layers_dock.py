@@ -286,6 +286,8 @@ class LayersPreviewWindow(QDialog):
     Never touches the base document — read-only display only.
     """
 
+    refreshRequested = pyqtSignal()   # user asked to re-pull source data & recomposite
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Layers Preview")
@@ -317,11 +319,19 @@ class LayersPreviewWindow(QDialog):
         self.btn_fit.setToolTip("Reset zoom/pan to fit  (double-click preview also does this)")
         self.btn_fit.clicked.connect(self.canvas.reset_view if False else lambda: self.canvas.reset_view())
 
+        self.btn_refresh = QPushButton("⟳  Refresh")
+        self.btn_refresh.setToolTip(
+            "Recompute the composite from the current source views.\n"
+            "Use this after editing a view that feeds one of the layers\n"
+            "(e.g. running Curves on it) to pull in the latest pixels.")
+        self.btn_refresh.clicked.connect(self.refreshRequested.emit)
+
         self.lbl_info = QLabel("Ready.")
         self.lbl_info.setStyleSheet("color: #888; font-size: 10px;")
 
         bar.addWidget(self.btn_split)
         bar.addWidget(self.btn_fit)
+        bar.addWidget(self.btn_refresh)
         bar.addStretch(1)
         bar.addWidget(self.lbl_info)
         root.addLayout(bar)
@@ -768,6 +778,15 @@ class LayersDock(QDockWidget):
         self._composite_timer.setInterval(350)  # ms — full-res after drag settles
         self._composite_timer.timeout.connect(self._run_composite_threaded)
 
+        # Source-liveness poll: while the preview is open, watch for a layer's
+        # source view (or the base) being replaced by an edit elsewhere, and
+        # recomposite automatically. Fingerprints identity/shape/dtype only —
+        # no pixel scan — so polling is effectively free.
+        self._last_source_sig = None
+        self._source_poll_timer = QTimer(self)
+        self._source_poll_timer.setInterval(300)  # ms
+        self._source_poll_timer.timeout.connect(self._poll_sources)
+
         # ── UI ────────────────────────────────────────────────
         w = QWidget()
         v = QVBoxLayout(w); v.setContentsMargins(8, 8, 8, 8)
@@ -836,12 +855,70 @@ class LayersDock(QDockWidget):
         if self._preview_win is None:
             self._preview_win = LayersPreviewWindow(parent=self.mw)
             self._preview_win.finished.connect(self._on_preview_win_closed)
+            self._preview_win.refreshRequested.connect(self._force_refresh_preview)
         return self._preview_win
+
+    def _force_refresh_preview(self):
+        """Re-pull source pixels and recomposite.
+
+        composite_stack() reads each layer's src_doc.image live, so simply
+        recompositing picks up any edits made to a source view since the last
+        render. We also drop the base-image identity cache so an in-place edit
+        to the base document itself is reflected too.
+        """
+        self._cached_before_img_id = 0
+        self._cached_composite = None
+        if self._preview_win is not None and self._preview_win.isVisible():
+            self._preview_win.lbl_info.setText("Refreshing from source views…")
+        self._run_fast_preview()      # instant feedback if the window is open
+        self._schedule_composite()    # full-resolution pass
+
+    @staticmethod
+    def _img_token(img):
+        """Cheap per-image fingerprint — identity + shape + dtype, no pixels."""
+        if img is None:
+            return None
+        try:
+            return (id(img), getattr(img, "shape", None), str(getattr(img, "dtype", "")))
+        except Exception:
+            return (id(img),)
+
+    def _source_signature(self, vw):
+        """Fingerprint every pixel source feeding the composite (base + each
+        layer's source document). Changes whenever any source array is replaced,
+        which is what an edit elsewhere (Curves, Cosmic Clarity, …) produces."""
+        sig = []
+        base_doc = getattr(vw, "document", None)
+        sig.append(self._img_token(getattr(base_doc, "image", None) if base_doc is not None else None))
+        for lyr in getattr(vw, "_layers", []) or []:
+            sd = getattr(lyr, "src_doc", None)
+            sig.append(self._img_token(getattr(sd, "image", None) if sd is not None else None))
+        return tuple(sig)
+
+    def _poll_sources(self):
+        """Auto-refresh: recomposite when a source view is edited under us."""
+        if self._preview_win is None or not self._preview_win.isVisible():
+            return
+        vw = self.current_view()
+        if vw is None:
+            return
+        sig = self._source_signature(vw)
+        if self._last_source_sig is None:
+            self._last_source_sig = sig
+            return
+        if sig != self._last_source_sig:
+            self._last_source_sig = sig   # set first so the refresh doesn't re-trigger
+            self._force_refresh_preview()
 
     def _on_preview_toggled(self, on: bool):
         if on:
             pw = self._ensure_preview_win()
             pw.show(); pw.raise_(); pw.activateWindow()
+            # Seed the source fingerprint so the first poll only reacts to
+            # genuine changes, then start watching for edits to source views.
+            vw = self.current_view()
+            self._last_source_sig = self._source_signature(vw) if vw is not None else None
+            self._source_poll_timer.start()
             # Immediately push whatever we have cached
             if self._cached_before is not None or self._cached_composite is not None:
                 pw.update_composite(self._cached_before, self._cached_composite)
@@ -849,16 +926,19 @@ class LayersDock(QDockWidget):
                 # Trigger a fresh composite
                 self._schedule_composite()
         else:
+            self._source_poll_timer.stop()
             if self._preview_win is not None:
                 self._preview_win.hide()
 
     def _on_preview_win_closed(self, *_):
+        self._source_poll_timer.stop()
         self.btn_preview.blockSignals(True)
         self.btn_preview.setChecked(False)
         self.btn_preview.blockSignals(False)
 
     def _on_dock_visibility_changed(self, visible: bool):
         if not visible and self._preview_win is not None:
+            self._source_poll_timer.stop()
             self._preview_win.hide()
             self._on_preview_win_closed()
 
@@ -1118,6 +1198,10 @@ class LayersDock(QDockWidget):
 
     def _on_pick_view(self, _i):
         self._rebuild_list()
+        # New view = new source set; reseed so the poll doesn't treat the
+        # switch itself as an external edit and recomposite twice.
+        vw = self.current_view()
+        self._last_source_sig = self._source_signature(vw) if vw is not None else None
         self._schedule_composite()
 
     # ─────────────────────────────────────────────────────────
