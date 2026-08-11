@@ -1124,6 +1124,61 @@ class LayersDock(QDockWidget):
     # List building
     # ─────────────────────────────────────────────────────────
 
+    def _title_for_doc(self, doc):
+        """Best-effort human-readable title for a document.
+
+        Prefers the live subwindow's effective title (so a renamed view is
+        reflected immediately), matching by uid *or* object identity so a
+        reloaded / re-wrapped document still resolves. Falls back to the
+        document's own display name or source file name when no subwindow
+        is currently open for it.
+        """
+        if doc is None:
+            return None
+
+        target_uid = getattr(doc, "uid", None)
+        for sw in self._all_subwindows():
+            sw_doc = getattr(sw, "document", None)
+            if sw_doc is doc or (
+                target_uid is not None
+                and getattr(sw_doc, "uid", None) == target_uid
+            ):
+                t = getattr(sw, "_effective_title", None)
+                t = t() if callable(t) else t
+                if t:
+                    return t
+
+        # No live subwindow — use the document's own name fields.
+        dn = getattr(doc, "display_name", None)
+        dn = dn() if callable(dn) else dn
+        if dn:
+            return dn
+
+        meta = getattr(doc, "metadata", None) or {}
+        fp = (meta.get("file_path") or "").strip()
+        if fp:
+            import os
+            return os.path.splitext(os.path.basename(fp))[0]
+
+        nm = getattr(doc, "name", None)
+        return nm or None
+
+    def _resolve_layer_title(self, lyr) -> str:
+        """Resolve the label shown for a layer row.
+
+        A layer that references a source view shows that view's live title,
+        so you always know what you're looking at. Layers with no resolvable
+        source (e.g. a merged raster) keep their stored name.
+        """
+        try:
+            title = self._title_for_doc(getattr(lyr, "src_doc", None))
+            if title:
+                return title
+        except Exception:
+            pass
+        nm = str(getattr(lyr, "name", "") or "").strip()
+        return nm or "Layer"
+
     def _rebuild_list(self):
         self.list.clear()
         vw = self.current_view()
@@ -1134,20 +1189,7 @@ class LayersDock(QDockWidget):
         docs    = [d for _, d in choices]
 
         for lyr in getattr(vw, "_layers", []):
-            name = str(getattr(lyr, "name", "Layer"))
-            try:
-                src_doc = getattr(lyr, "src_doc", None)
-                if src_doc is not None:
-                    for sw in self._all_subwindows():
-                        if getattr(sw, "document", None) is src_doc:
-                            t = getattr(sw, "_effective_title", None)
-                            if callable(t):
-                                t = t()
-                            if t:
-                                name = t
-                            break
-            except Exception:
-                pass
+            name = self._resolve_layer_title(lyr)
 
             roww = _LayerRow(
                 name,
@@ -1534,12 +1576,7 @@ class LayersDock(QDockWidget):
                 src_doc = self._resolve_doc_from_state(st)
                 if src_doc is None:
                     raise RuntimeError("Source doc gone")
-                layer_name = "Layer"
-                for sw in self._all_subwindows():
-                    if getattr(sw, "document", None) is src_doc:
-                        t = getattr(sw, "_effective_title", None)
-                        layer_name = (t() if callable(t) else t) or "Layer"
-                        break
+                layer_name = self._title_for_doc(src_doc) or "Layer"
                 new_layer = ImageLayer(
                     name=layer_name, src_doc=src_doc,
                     visible=True, opacity=1.0, mode="Normal",
