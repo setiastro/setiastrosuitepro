@@ -507,7 +507,12 @@ class AstroSuiteProMainWindow(
         from setiastro.saspro.ops.scripts import ScriptManager
         self._version = version
         self._build_timestamp = build_timestamp
-        self.setWindowTitle(f"Seti Astro Suite Pro v{self._version}")
+        try:
+            from setiastro.saspro.widgets.common_utilities import supporter_title_suffix
+            _sup_suffix = supporter_title_suffix()
+        except Exception:
+            _sup_suffix = ""
+        self.setWindowTitle(f"Seti Astro Suite Pro v{self._version}{_sup_suffix}")
         self.resize(1400, 900)
         self._ensure_network_manager()
         app = QApplication.instance()

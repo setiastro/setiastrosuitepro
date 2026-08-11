@@ -421,6 +421,12 @@ def _init_splash():
             self.subtitle_font = QFont("Segoe UI", 11)
             self.message_font = QFont("Segoe UI", 9)
             self.copyright_font = QFont("Segoe UI", 8)
+            self.supporter_font = QFont("Segoe UI", 9)
+
+            # Opt-in supporter credit (recognition only). Read straight from
+            # QSettings so the splash carries no dependency on the heavy
+            # common_utilities import, which hasn't happened this early.
+            self._supporter_line = self._compute_supporter_line()
 
         def _load_logo(self, path: str) -> QPixmap:
             """Load splash logo. Prefer PNG path passed in; fallback robustly."""
@@ -493,9 +499,30 @@ def _init_splash():
             if _app:
                 _app.processEvents()
 
+        def _compute_supporter_line(self) -> str:
+            """Supporter credit for the splash subtitle, or '' if none/hidden.
+
+            Keys mirror common_utilities.get_supporter(); read via QSettings
+            directly because common_utilities isn't imported at splash time.
+            """
+            try:
+                from PyQt6.QtCore import QSettings
+                s = QSettings()
+                name = str(s.value("supporter/name", "") or "").strip()
+                if not name:
+                    return ""
+                if bool(s.value("supporter/hidden", False, type=bool)):
+                    return ""
+                return QCoreApplication.translate(
+                    "Splash", "\u2665 Supported by {0}").format(name)
+            except Exception:
+                return ""
+
         def setBuildInfo(self, version: str, build: str):
             self._version = version or _EARLY_VERSION
             self._build = build
+            # Recompute in case the credit was entered/changed this session.
+            self._supporter_line = self._compute_supporter_line()
             self.repaint()
 
         def paintEvent(self, event):
@@ -563,6 +590,12 @@ def _init_splash():
                 else:
                     subtitle_text += QCoreApplication.translate("Splash", "  •  Build {0}").format(self._build)
             painter.drawText(QRect(0, 270, w, 25), Qt.AlignmentFlag.AlignCenter, subtitle_text)
+
+            if self._supporter_line:
+                painter.setFont(self.supporter_font)
+                painter.setPen(QColor(212, 175, 55))   # gold, matches the About heart
+                painter.drawText(QRect(0, 296, w, 18),
+                                 Qt.AlignmentFlag.AlignCenter, self._supporter_line)
 
             bar_margin = 50
             bar_height = 4
