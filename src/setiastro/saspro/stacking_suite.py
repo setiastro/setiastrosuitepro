@@ -20157,112 +20157,161 @@ class StackingSuiteDialog(QDialog):
             star_counts = {}
             measured_frames = []
             preview_medians = {}
-            self.update_status(self.tr("📏 Phase: Measurements starting…"))
-            max_workers = os.cpu_count() or 4
-            chunk_size = max_workers
-            chunks = list(chunk_list(all_files, chunk_size))
-            total_chunks = len(chunks)
+            skipped_measure = []
+            no_preview = []
+            self.update_status(self.tr("\U0001F4CF Phase: Measurements starting\u2026"))
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from concurrent.futures import (ThreadPoolExecutor, ProcessPoolExecutor,
+                                            as_completed)
 
-            for idx, chunk in enumerate(chunks, 1):
-                if self._cancelled():
-                    raise StackCancelled()
-                self.update_status(self.tr(f"📦 Measuring chunk {idx}/{total_chunks} ({len(chunk)} frames)"))
-                chunk_images = []
-                chunk_valid_files = []
+            cpu = os.cpu_count() or 4
+            # Per-frame measurement (preview load + OpenCV star/FWHM + numpy) is
+            # CPU/GIL-bound: on an NVMe the disk sits idle and the work serializes
+            # onto one core no matter how many *threads* we use. To actually use
+            # every core we hand each frame to a separate PROCESS, which sidesteps
+            # the GIL. The measure path is pure OpenCV/NumPy/astropy (no numba
+            # call) so worker processes pay no JIT cost.
+            #
+            # If the process pool can't start (import / spawn / pickle trouble on
+            # some setups, or a worker crash) we fall back to the fused THREAD
+            # pipeline below \u2014 SAME per-frame functions, so results are identical
+            # either way; only core utilisation differs. Set
+            # stacking/measure_use_processes = false to force the thread path.
+            proc_workers = max(2, cpu)
+            io_workers   = max(4, min(32, cpu * 2))
+            try:
+                use_processes = bool(self.settings.value(
+                    "stacking/measure_use_processes", True, type=bool))
+            except Exception:
+                use_processes = True
 
-                self.update_status(self.tr(f"🌍 Loading {len(chunk)} previews in parallel (up to {max_workers} threads)..."))
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futs = {executor.submit(self._quick_preview_any, fp, target_xbin, target_ybin): fp
-                            for fp in chunk}
-                    for fut in as_completed(futs):
-                        if self._cancelled():
-                            raise StackCancelled()
-                        fp = futs[fut]
-                        try:
-                            preview = fut.result()
-                            if preview is None:
-                                continue
-                            chunk_images.append(preview)
-                            chunk_valid_files.append(fp)
-                        except Exception as e:
-                            self.update_status(self.tr(f"⚠️ Error previewing {fp}: {e}"))
-                        QApplication.processEvents()
+            total = len(all_files)
+            done = 0
+            report_every = max(1, total // 100)
 
-                if not chunk_images:
-                    self.update_status(self.tr("⚠️ No valid previews in this chunk (couldn’t find image data in any HDU)."))
-                    continue
-
-                # size align (crop) before stats
-                min_h = min(im.shape[0] for im in chunk_images)
-                min_w = min(im.shape[1] for im in chunk_images)
-                if any((im.shape[0] != min_h or im.shape[1] != min_w) for im in chunk_images):
-                    chunk_images = [_center_crop_2d(im, min_h, min_w) for im in chunk_images]
-
-                self.update_status(self.tr("🌍 Measuring global means in parallel..."))
-                QApplication.processEvents()
-                means = np.array([float(np.mean(ci)) for ci in chunk_images], dtype=np.float32)
-                mean_values.update({fp: float(means[i]) for i, fp in enumerate(chunk_valid_files)})
-
-                # Isolate per-frame failures — measurement here only feeds
-                # reference selection; a frame we can't measure still gets
-                # aligned, it just becomes a poor candidate for the reference
-                # (0 stars, no size). Without this, one bad chunk item would
-                # abort ex.map's iteration and take down the whole
-                # registration run.
-                def _star_job(i_fp):
-                    i, fp = i_fp
-                    try:
-                        p = chunk_images[i]
-                        pmin = float(np.nanmin(p))
-                        med = float(np.median(p - pmin))
-                        # Star count + ecc from the fast counter (count/ecc are
-                        # what it's good at). FWHM comes from the dedicated
-                        # half-res second-moment estimator instead of the
-                        # counter's blind size proxy — measured on the same
-                        # linear preview, identically to the Skip-Registration
-                        # path, so the sharpness term is real and comparable.
-                        c, ecc, _blind_size = _star_count_ecc_size(p)
-                        size = self._measure_fwhm_halfres(p)
-                        # robust MAD noise (star-insensitive) for the SNR term
-                        noise = self._mad_noise(p)
-                        return fp, med, c, ecc, size, noise, None
-                    except Exception as _job_e:
-                        return (fp, 0.0, 0, 0.0, 0.0, 0.0,
-                                f"{type(_job_e).__name__}: {_job_e}")
-
-                skipped_measure = []
-                star_workers = min(max_workers, 8)
-                with ThreadPoolExecutor(max_workers=star_workers) as ex:
-                    for fp, med, c, ecc, size, noise, err in ex.map(_star_job, enumerate(chunk_valid_files)):
-                        if err is not None:
-                            skipped_measure.append((fp, err))
-                            # Neutral fallback so downstream weight/reference
-                            # code still has an entry to look up — 0 stars
-                            # naturally floors the reference score.
-                        preview_medians[fp] = med
-                        star_counts[fp] = {"count": c, "eccentricity": ecc,
+            def _ingest(status, fp, payload):
+                # Shared result consumer for both the process and thread paths.
+                nonlocal done
+                done += 1
+                if status == "ok":
+                    mean, med, c, ecc, size, noise = payload
+                    mean_values[fp]     = mean
+                    preview_medians[fp] = med
+                    star_counts[fp]     = {"count": c, "eccentricity": ecc,
                                            "fwhm": size, "noise": noise}
-                        measured_frames.append(fp)
+                    measured_frames.append(fp)
+                elif status == "err":
+                    # Preview loaded but measurement failed \u2014 keep the frame with a
+                    # neutral fallback (0 stars floors its reference score).
+                    skipped_measure.append((fp, payload))
+                    mean_values[fp]     = 0.0
+                    preview_medians[fp] = 0.0
+                    star_counts[fp]     = {"count": 0, "eccentricity": 0.0,
+                                           "fwhm": 0.0, "noise": 0.0}
+                    measured_frames.append(fp)
+                else:  # "noprev" \u2014 no usable image data; skip entirely
+                    no_preview.append((fp, payload))
+                if done == 1 or done == total or (done % report_every == 0):
+                    self.update_status(self.tr(f"\U0001F4E6 Measured {done}/{total} frames"))
+                    QApplication.processEvents()
 
-                if skipped_measure:
+            def _reset_measure_state():
+                nonlocal done
+                mean_values.clear(); preview_medians.clear(); star_counts.clear()
+                measured_frames.clear(); skipped_measure.clear(); no_preview.clear()
+                done = 0
+
+            # In-process (thread) worker \u2014 also the fallback path. Byte-identical
+            # to stacking_measure_worker.measure_file (which is the copy that runs
+            # in the child processes).
+            def _measure_one(fp):
+                try:
+                    preview = self._quick_preview_any(fp, target_xbin, target_ybin)
+                except Exception as e:
+                    return ("noprev", fp, f"{type(e).__name__}: {e}")
+                if preview is None:
+                    return ("noprev", fp, None)
+                try:
+                    mean  = float(np.mean(preview))
+                    pmin  = float(np.nanmin(preview))
+                    med   = float(np.median(preview - pmin))
+                    c, ecc, _blind = _star_count_ecc_size(preview)
+                    size  = self._measure_fwhm_halfres(preview)
+                    noise = self._mad_noise(preview)
+                    return ("ok", fp, (mean, med, c, ecc, size, noise))
+                except Exception as e:
+                    return ("err", fp, f"{type(e).__name__}: {e}")
+
+            measured_ok = False
+            if use_processes:
+                try:
+                    import multiprocessing as _mp
+                    from setiastro.saspro.stacking_measure_worker import measure_file
+                    ctx = _mp.get_context("spawn")  # safe with Qt on every OS
                     self.update_status(self.tr(
-                        f"⚠️ Measurement failed on {len(skipped_measure)} "
-                        f"frame(s); they'll still be aligned but won't be "
-                        f"considered as reference candidates:"
-                    ))
-                    for _fp, _err in skipped_measure[:5]:
-                        self.update_status(self.tr(
-                            f"   • {os.path.basename(_fp)} — {_err}"
-                        ))
-                    if len(skipped_measure) > 5:
-                        self.update_status(self.tr(
-                            f"   … and {len(skipped_measure) - 5} more (see saspro.log)"
-                        ))
+                        f"\U0001F30D Measuring {total} frames across {proc_workers} "
+                        f"processes (all cores)\u2026"))
+                    with ProcessPoolExecutor(max_workers=proc_workers,
+                                             mp_context=ctx) as executor:
+                        futs = {executor.submit(measure_file, fp,
+                                                target_xbin, target_ybin): fp
+                                for fp in all_files}
+                        for fut in as_completed(futs):
+                            if self._cancelled():
+                                executor.shutdown(wait=False, cancel_futures=True)
+                                raise StackCancelled()
+                            status, fp, payload = fut.result()
+                            _ingest(status, fp, payload)
+                    measured_ok = True
+                except StackCancelled:
+                    raise
+                except Exception as e:
+                    # Any process-pool trouble \u2014 fall back to threads. Same
+                    # functions, so the measurement result is unchanged.
+                    self.update_status(self.tr(
+                        f"\u26A0\uFE0F Multi-process measurement unavailable "
+                        f"({type(e).__name__}: {e}); using threads instead."))
+                    _reset_measure_state()
+                    measured_ok = False
 
-                del chunk_images
-                gc.collect()  # Free memory after processing each chunk
+            if not measured_ok:
+                self.update_status(self.tr(
+                    f"\U0001F30D Loading + measuring {total} frames in parallel "
+                    f"(up to {io_workers} threads)\u2026"))
+                with ThreadPoolExecutor(max_workers=io_workers) as executor:
+                    futs = {executor.submit(_measure_one, fp): fp for fp in all_files}
+                    try:
+                        for fut in as_completed(futs):
+                            if self._cancelled():
+                                for f in futs:
+                                    f.cancel()
+                                raise StackCancelled()
+                            status, fp, payload = fut.result()
+                            _ingest(status, fp, payload)
+                    except StackCancelled:
+                        for f in futs:
+                            f.cancel()
+                        raise
+
+            gc.collect()
+
+            for fp, err in no_preview:
+                if err:
+                    self.update_status(self.tr(
+                        f"\u26A0\uFE0F Error previewing {os.path.basename(fp)}: {err}"))
+            if no_preview:
+                self.update_status(self.tr(
+                    f"\u26A0\uFE0F {len(no_preview)} frame(s) had no usable image data and were skipped."))
+
+            if skipped_measure:
+                self.update_status(self.tr(
+                    f"\u26A0\uFE0F Measurement failed on {len(skipped_measure)} frame(s); "
+                    f"they'll still be aligned but won't be considered as reference candidates:"))
+                for _fp, _err in skipped_measure[:5]:
+                    self.update_status(self.tr(f"   \u2022 {os.path.basename(_fp)} \u2014 {_err}"))
+                if len(skipped_measure) > 5:
+                    self.update_status(self.tr(
+                        f"   \u2026 and {len(skipped_measure) - 5} more (see saspro.log)"))
 
             if not measured_frames:
                 self.update_status(self.tr("⚠️ No frames could be measured!"))
@@ -20797,6 +20846,10 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(f"🔬[{tag}] stats failed: {_e}")
 
             normalized_files = []
+            # (Measurement no longer defines chunk_size; the normalization stage
+            #  chunks independently.) One cpu-sized chunk keeps peak RAM bounded
+            #  while still loading each chunk's frames in parallel below.
+            chunk_size = os.cpu_count() or 8
             chunks = list(chunk_list(measured_frames, chunk_size))
             total_chunks = len(chunks)
 

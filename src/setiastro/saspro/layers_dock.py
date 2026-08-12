@@ -286,6 +286,8 @@ class LayersPreviewWindow(QDialog):
     Never touches the base document — read-only display only.
     """
 
+    refreshRequested = pyqtSignal()   # user asked to re-pull source data & recomposite
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Layers Preview")
@@ -317,11 +319,19 @@ class LayersPreviewWindow(QDialog):
         self.btn_fit.setToolTip("Reset zoom/pan to fit  (double-click preview also does this)")
         self.btn_fit.clicked.connect(self.canvas.reset_view if False else lambda: self.canvas.reset_view())
 
+        self.btn_refresh = QPushButton("⟳  Refresh")
+        self.btn_refresh.setToolTip(
+            "Recompute the composite from the current source views.\n"
+            "Use this after editing a view that feeds one of the layers\n"
+            "(e.g. running Curves on it) to pull in the latest pixels.")
+        self.btn_refresh.clicked.connect(self.refreshRequested.emit)
+
         self.lbl_info = QLabel("Ready.")
         self.lbl_info.setStyleSheet("color: #888; font-size: 10px;")
 
         bar.addWidget(self.btn_split)
         bar.addWidget(self.btn_fit)
+        bar.addWidget(self.btn_refresh)
         bar.addStretch(1)
         bar.addWidget(self.lbl_info)
         root.addLayout(bar)
@@ -768,6 +778,11 @@ class LayersDock(QDockWidget):
         self._composite_timer.setInterval(350)  # ms — full-res after drag settles
         self._composite_timer.timeout.connect(self._run_composite_threaded)
 
+        # Event-driven auto-refresh: while the preview is open we listen to the
+        # current view's document.changed (base edits) and layer_sources_changed
+        # (any layer's source/mask view edited) and recomposite on the spot.
+        self._watched_view = None
+
         # ── UI ────────────────────────────────────────────────
         w = QWidget()
         v = QVBoxLayout(w); v.setContentsMargins(8, 8, 8, 8)
@@ -836,12 +851,95 @@ class LayersDock(QDockWidget):
         if self._preview_win is None:
             self._preview_win = LayersPreviewWindow(parent=self.mw)
             self._preview_win.finished.connect(self._on_preview_win_closed)
+            self._preview_win.refreshRequested.connect(self._force_refresh_preview)
         return self._preview_win
+
+    def _force_refresh_preview(self):
+        """Re-pull source pixels and recomposite.
+
+        composite_stack() reads each layer's src_doc.image live, so recompositing
+        picks up any edit made to a source view. We also drop the base-image
+        identity cache so an in-place edit to the base document is reflected too.
+
+        Fully debounced via _schedule_composite() (fast preview ~80 ms, full-res
+        ~350 ms) so a burst of document.changed signals coalesces into one pass.
+        """
+        self._cached_before_img_id = 0
+        self._cached_composite = None
+        if self._preview_win is not None and self._preview_win.isVisible():
+            self._preview_win.lbl_info.setText("Refreshing from source views…")
+        self._schedule_composite()
+
+    def _connect_source_watch(self, vw):
+        """Listen to the given view for base or layer-source edits and
+        auto-recomposite the preview. Idempotent — drops any prior watch first."""
+        self._disconnect_source_watch()
+        if vw is None:
+            return
+        # Ensure the subwindow's own source/mask watchers are live so its
+        # layer_sources_changed signal actually fires for the current stack.
+        try:
+            if hasattr(vw, "_reinstall_layer_watchers"):
+                vw._reinstall_layer_watchers()
+        except Exception:
+            pass
+        # Base document edits.
+        try:
+            doc = getattr(vw, "document", None)
+            if doc is not None and hasattr(doc, "changed"):
+                doc.changed.connect(self._force_refresh_preview)
+        except Exception:
+            pass
+        # Layer source/mask document edits (relayed by the subwindow).
+        try:
+            if hasattr(vw, "layer_sources_changed"):
+                vw.layer_sources_changed.connect(self._force_refresh_preview)
+        except Exception:
+            pass
+        self._watched_view = vw
+
+    def _disconnect_source_watch(self):
+        vw = getattr(self, "_watched_view", None)
+        self._watched_view = None
+        if vw is None:
+            return
+        try:
+            doc = getattr(vw, "document", None)
+            if doc is not None and hasattr(doc, "changed"):
+                doc.changed.disconnect(self._force_refresh_preview)
+        except Exception:
+            pass
+        try:
+            if hasattr(vw, "layer_sources_changed"):
+                vw.layer_sources_changed.disconnect(self._force_refresh_preview)
+        except Exception:
+            pass
+        # Leaving the preview: make sure the base view is showing its real
+        # pixels, not a leftover layer-preview override.
+        self._restore_base_view(vw)
+
+    def _restore_base_view(self, vw):
+        """Drop any layer-preview display override so the base subwindow shows
+        its true committed pixels. No-op if nothing was overridden.
+
+        The base view is never edited by the layers workflow — layers live only
+        in the preview window until an explicit merge — so this only clears a
+        transient display state (including any left by older builds)."""
+        if vw is None:
+            return
+        try:
+            if getattr(vw, "_display_override", None) is not None:
+                vw._display_override = None
+                vw._render(rebuild=True)
+        except Exception:
+            pass
 
     def _on_preview_toggled(self, on: bool):
         if on:
             pw = self._ensure_preview_win()
             pw.show(); pw.raise_(); pw.activateWindow()
+            # Start watching the current view for edits to its base or layers.
+            self._connect_source_watch(self.current_view())
             # Immediately push whatever we have cached
             if self._cached_before is not None or self._cached_composite is not None:
                 pw.update_composite(self._cached_before, self._cached_composite)
@@ -849,16 +947,19 @@ class LayersDock(QDockWidget):
                 # Trigger a fresh composite
                 self._schedule_composite()
         else:
+            self._disconnect_source_watch()
             if self._preview_win is not None:
                 self._preview_win.hide()
 
     def _on_preview_win_closed(self, *_):
+        self._disconnect_source_watch()
         self.btn_preview.blockSignals(True)
         self.btn_preview.setChecked(False)
         self.btn_preview.blockSignals(False)
 
     def _on_dock_visibility_changed(self, visible: bool):
         if not visible and self._preview_win is not None:
+            self._disconnect_source_watch()
             self._preview_win.hide()
             self._on_preview_win_closed()
 
@@ -1073,6 +1174,11 @@ class LayersDock(QDockWidget):
         self._wire_title_change_listeners(subs)
         self._rebuild_list()
 
+        # The current view may have changed (e.g. a view was closed); keep the
+        # auto-refresh watchers pointed at whatever's active now.
+        if self._preview_win is not None and self._preview_win.isVisible():
+            self._connect_source_watch(self.current_view())
+
     def _wire_title_change_listeners(self, subs):
         for sw in subs:
             if sw in self._wired_title_sources:
@@ -1118,11 +1224,69 @@ class LayersDock(QDockWidget):
 
     def _on_pick_view(self, _i):
         self._rebuild_list()
+        # Re-point the auto-refresh watchers at the newly selected view.
+        if self._preview_win is not None and self._preview_win.isVisible():
+            self._connect_source_watch(self.current_view())
         self._schedule_composite()
 
     # ─────────────────────────────────────────────────────────
     # List building
     # ─────────────────────────────────────────────────────────
+
+    def _title_for_doc(self, doc):
+        """Best-effort human-readable title for a document.
+
+        Prefers the live subwindow's effective title (so a renamed view is
+        reflected immediately), matching by uid *or* object identity so a
+        reloaded / re-wrapped document still resolves. Falls back to the
+        document's own display name or source file name when no subwindow
+        is currently open for it.
+        """
+        if doc is None:
+            return None
+
+        target_uid = getattr(doc, "uid", None)
+        for sw in self._all_subwindows():
+            sw_doc = getattr(sw, "document", None)
+            if sw_doc is doc or (
+                target_uid is not None
+                and getattr(sw_doc, "uid", None) == target_uid
+            ):
+                t = getattr(sw, "_effective_title", None)
+                t = t() if callable(t) else t
+                if t:
+                    return t
+
+        # No live subwindow — use the document's own name fields.
+        dn = getattr(doc, "display_name", None)
+        dn = dn() if callable(dn) else dn
+        if dn:
+            return dn
+
+        meta = getattr(doc, "metadata", None) or {}
+        fp = (meta.get("file_path") or "").strip()
+        if fp:
+            import os
+            return os.path.splitext(os.path.basename(fp))[0]
+
+        nm = getattr(doc, "name", None)
+        return nm or None
+
+    def _resolve_layer_title(self, lyr) -> str:
+        """Resolve the label shown for a layer row.
+
+        A layer that references a source view shows that view's live title,
+        so you always know what you're looking at. Layers with no resolvable
+        source (e.g. a merged raster) keep their stored name.
+        """
+        try:
+            title = self._title_for_doc(getattr(lyr, "src_doc", None))
+            if title:
+                return title
+        except Exception:
+            pass
+        nm = str(getattr(lyr, "name", "") or "").strip()
+        return nm or "Layer"
 
     def _rebuild_list(self):
         self.list.clear()
@@ -1134,20 +1298,7 @@ class LayersDock(QDockWidget):
         docs    = [d for _, d in choices]
 
         for lyr in getattr(vw, "_layers", []):
-            name = str(getattr(lyr, "name", "Layer"))
-            try:
-                src_doc = getattr(lyr, "src_doc", None)
-                if src_doc is not None:
-                    for sw in self._all_subwindows():
-                        if getattr(sw, "document", None) is src_doc:
-                            t = getattr(sw, "_effective_title", None)
-                            if callable(t):
-                                t = t()
-                            if t:
-                                name = t
-                            break
-            except Exception:
-                pass
+            name = self._resolve_layer_title(lyr)
 
             roww = _LayerRow(
                 name,
@@ -1313,6 +1464,11 @@ class LayersDock(QDockWidget):
         if idx < 0 or idx >= self._layer_count(): return
         vw._layers.pop(idx)
         self.list.takeItem(idx)
+        if hasattr(vw, "_reinstall_layer_watchers"):
+            vw._reinstall_layer_watchers()
+        if not getattr(vw, "_layers", None):
+            # Stack is empty — make sure the base view isn't left overridden.
+            self._restore_base_view(vw)
         self._schedule_composite()
 
     def _move_row(self, roww: _LayerRow, delta: int):
@@ -1507,6 +1663,8 @@ class LayersDock(QDockWidget):
             vw._reinstall_layer_watchers()
         self._cached_composite = None
         self._rebuild_list()
+        # Restore the base view to its true pixels (drop any preview override).
+        self._restore_base_view(vw)
         try: vw._render(rebuild=True)
         except Exception: pass
 
@@ -1534,12 +1692,7 @@ class LayersDock(QDockWidget):
                 src_doc = self._resolve_doc_from_state(st)
                 if src_doc is None:
                     raise RuntimeError("Source doc gone")
-                layer_name = "Layer"
-                for sw in self._all_subwindows():
-                    if getattr(sw, "document", None) is src_doc:
-                        t = getattr(sw, "_effective_title", None)
-                        layer_name = (t() if callable(t) else t) or "Layer"
-                        break
+                layer_name = self._title_for_doc(src_doc) or "Layer"
                 new_layer = ImageLayer(
                     name=layer_name, src_doc=src_doc,
                     visible=True, opacity=1.0, mode="Normal",
