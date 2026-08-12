@@ -115,6 +115,7 @@ class StatisticalStretchDialog(QDialog):
         self._follow_conn = None
         self._job_running = False
         self._job_mode = ""
+        self._job_doc = None   # document a running job is pinned to (see _target_doc)
 
         # (fast preview removed — single debounced full-res pipeline only)
 
@@ -1089,8 +1090,20 @@ class StatisticalStretchDialog(QDialog):
 
     # ── Source image ──────────────────────────────────────────────────────────
 
+    def _target_doc(self):
+        """The document this operation is bound to.
+
+        A stretch job is pinned to whatever document was active when it started
+        (``_job_doc``), so that switching the active view — or a bundle applying
+        the same shortcut to many documents in sequence — can't retarget the
+        in-flight read or the resulting write. Outside a job this is just the
+        live document.
+        """
+        jd = getattr(self, "_job_doc", None)
+        return jd if jd is not None else self.doc
+
     def _get_source_float(self) -> np.ndarray | None:
-        src = np.asarray(self.doc.image)
+        src = np.asarray(self._target_doc().image)
         if src is None or src.size == 0:
             return None
         if np.issubdtype(src.dtype, np.integer):
@@ -1288,6 +1301,10 @@ class StatisticalStretchDialog(QDialog):
 
         self._job_running = True
         self._job_mode = mode
+        # Pin this job to the current target document. Any active-doc change or
+        # bundle sweep after this point can't retarget the read below or the
+        # write in _apply_out_to_doc — both go through _target_doc()/_job_doc.
+        self._job_doc = self.doc
 
         self._set_controls_enabled(False)
         self._show_busy(
@@ -1365,10 +1382,11 @@ class StatisticalStretchDialog(QDialog):
 
     def _active_mask_array(self) -> np.ndarray | None:
         try:
-            mid = getattr(self.doc, "active_mask_id", None)
+            doc = self._target_doc()
+            mid = getattr(doc, "active_mask_id", None)
             if not mid:
                 return None
-            layer = getattr(self.doc, "masks", {}).get(mid)
+            layer = getattr(doc, "masks", {}).get(mid)
             if layer is None:
                 return None
             m = np.asarray(getattr(layer, "data", None))
@@ -1384,7 +1402,7 @@ class StatisticalStretchDialog(QDialog):
             else:
                 m = orig.astype(np.float32, copy=False)
             m = np.clip(m, 0.0, 1.0)
-            th, tw = self.doc.image.shape[:2]
+            th, tw = doc.image.shape[:2]
             sh, sw = m.shape[:2]
             if (sh, sw) != (th, tw):
                 yi = (np.linspace(0, sh-1, th)).astype(np.int32)
@@ -1426,6 +1444,13 @@ class StatisticalStretchDialog(QDialog):
         self._start_stretch_job("apply")
 
     def _on_active_doc_changed(self, doc):
+        # A headless apply (a dropped preset / a bundle sweep) is pinned to the
+        # target document it was created for. It must NOT re-point itself at
+        # whatever view happens to be active — otherwise the async stretch job
+        # reads/writes the wrong image (e.g. every bundle frame gets overwritten
+        # with the stretch of the currently-active view).
+        if getattr(self, "_headless", False):
+            return
         if doc is None or getattr(doc, "image", None) is None:
             return
         self.doc = doc
@@ -1467,7 +1492,8 @@ class StatisticalStretchDialog(QDialog):
         self._apply_current_zoom()
 
     def _apply_out_to_doc(self, out: np.ndarray):
-        if out.ndim == 3 and out.shape[2] == 3 and (self.doc.image.ndim == 2 or self.doc.image.shape[-1] == 1):
+        doc = self._target_doc()
+        if out.ndim == 3 and out.shape[2] == 3 and (doc.image.ndim == 2 or doc.image.shape[-1] == 1):
             out = out[..., 0]
 
         p = self._stretch_params()
@@ -1502,7 +1528,7 @@ class StatisticalStretchDialog(QDialog):
             parts.append("no_black_clip")
 
         step_name = f"Statistical Stretch ({', '.join(parts)})"
-        self.doc.apply_edit(out.astype(np.float32, copy=False), step_name=step_name)
+        doc.apply_edit(out.astype(np.float32, copy=False), step_name=step_name)
 
         mw = self.parent()
         if hasattr(mw, "mdi") and mw.mdi.activeSubWindow():
@@ -1552,23 +1578,27 @@ class StatisticalStretchDialog(QDialog):
         self._set_controls_enabled(True)
         self._job_running = False
 
-        if err:
-            QMessageBox.warning(self, "Stretch failed", err)
-            return
+        try:
+            if err:
+                QMessageBox.warning(self, "Stretch failed", err)
+                return
 
-        if out is None:
-            QMessageBox.information(self, "No image", "No image is loaded in the active document.")
-            return
+            if out is None:
+                QMessageBox.information(self, "No image", "No image is loaded in the active document.")
+                return
 
-        if getattr(self, "_job_mode", "") == "preview":
-            self._set_preview_pixmap(out)
-            return
+            if getattr(self, "_job_mode", "") == "preview":
+                self._set_preview_pixmap(out)
+                return
 
-        self._apply_out_to_doc(out)
+            self._apply_out_to_doc(out)
 
-        if getattr(self, "_pending_close", False):
-            self._pending_close = False
-            self.close()
+            if getattr(self, "_pending_close", False):
+                self._pending_close = False
+                self.close()
+        finally:
+            # Release the pin so later interactive edits use the live document.
+            self._job_doc = None
 
     def closeEvent(self, ev):
         if getattr(self, "_job_running", False):
