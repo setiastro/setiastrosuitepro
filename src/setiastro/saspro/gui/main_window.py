@@ -8870,22 +8870,18 @@ class AstroSuiteProMainWindow(
 
 
     def _apply_stat_stretch_preset_to_doc(self, doc, preset: dict):
-        """
-        Headless apply of Statistical Stretch using the dialog's own apply path.
-        We instantiate the dialog, set controls from the preset, and call its Apply.
-        """
-
-        # --- Re-entry guard: prevent double-apply per event ---
+        """Headless apply of Statistical Stretch to a SPECIFIC doc — synchronous
+        and pinned to `doc` (no async job, no following the active view, no
+        dialog/thread left hanging around)."""
         if getattr(self, "_stat_stretch_apply_in_progress", False):
-            print("[Replay] _apply_stat_stretch_preset_to_doc: re-entry suppressed")
             return
         self._stat_stretch_apply_in_progress = True
+        dlg = None
         try:
-            from setiastro.saspro.stat_stretch import StatisticalStretchDialog  # adjust import if needed
-
+            from setiastro.saspro.stat_stretch import StatisticalStretchDialog
             dlg = StatisticalStretchDialog(self, doc)
+            dlg._headless = True   # don't follow active doc, don't save geometry
 
-            # fill controls
             try:
                 if "target_median" in preset:
                     dlg.spin_target.setValue(float(preset["target_median"]))
@@ -8900,14 +8896,19 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
 
-            # directly run the dialog's apply slot (reuses your edit/undo naming, etc.)
-            dlg._do_apply()
-            try:
-                dlg.close()
-            except Exception:
-                pass
+            # Compute + commit synchronously, bound to `doc`. No QThread means
+            # nothing can change the active document out from under us.
+            out = dlg._run_stretch()
+            if out is not None:
+                dlg._apply_out_to_doc(out)
         finally:
             self._stat_stretch_apply_in_progress = False
+            try:
+                if dlg is not None:
+                    dlg.close()
+                    dlg.deleteLater()
+            except Exception:
+                pass
 
 
 
