@@ -1,4 +1,4 @@
-# ops.settings.py
+# src.setiastro.saspro.ops.settings.py
 from PyQt6.QtWidgets import (
 QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApplication, QMenu, QScrollArea, QSizePolicy,
     QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog, QSlider)
@@ -256,6 +256,47 @@ class SettingsDialog(QDialog):
         self.sp_icon_size.setSuffix(" px")
         self.sp_icon_size.setToolTip(self.tr("Toolbar icon size in pixels (default: 24)"))
         left_col.addRow(self.tr("Toolbar Icon Size:"), self.sp_icon_size)
+
+        # ---- Pixel Readout (Loupe) ----
+        left_col.addRow(QLabel(self.tr("<b>Pixel Readout (Loupe)</b>")))
+
+        self.chk_loupe_info = QCheckBox(self.tr("Show RGB / coordinates in zoom preview"))
+        self.chk_loupe_info.setToolTip(self.tr(
+            "Show the probed RGB (or K) value and, when a WCS is present,\n"
+            "the celestial coordinates inside the Space+click zoom preview."))
+        left_col.addRow(self.chk_loupe_info)
+
+        self.sp_loupe_size = QSpinBox()
+        self.sp_loupe_size.setRange(121, 601)
+        self.sp_loupe_size.setSingleStep(20)
+        self.sp_loupe_size.setSuffix(" px")
+        self.sp_loupe_size.setToolTip(self.tr(
+            "Size of the zoom preview window (default: 161).\n"
+            "Bump this up on 4K / 8K displays. Rounded to an odd number."))
+        left_col.addRow(self.tr("Zoom Preview Size:"), self.sp_loupe_size)
+
+        self.sp_loupe_patch = QSpinBox()
+        self.sp_loupe_patch.setRange(9, 41)
+        self.sp_loupe_patch.setSingleStep(2)
+        self.sp_loupe_patch.setSuffix(" px")
+        self.sp_loupe_patch.setToolTip(self.tr(
+            "How many source pixels the preview samples across (default: 17).\n"
+            "Smaller = more magnified; larger = wider field. Odd numbers only."))
+        left_col.addRow(self.tr("Zoom Sample Window:"), self.sp_loupe_patch)
+
+        self.sp_loupe_font = QSpinBox()
+        self.sp_loupe_font.setRange(7, 24)
+        self.sp_loupe_font.setSingleStep(1)
+        self.sp_loupe_font.setSuffix(" pt")
+        self.sp_loupe_font.setToolTip(self.tr(
+            "Maximum font size for the readout text (default: 10).\n"
+            "Text auto-shrinks to fit the preview width."))
+        left_col.addRow(self.tr("Readout Font Size:"), self.sp_loupe_font)
+
+        left_col.addRow(
+            "",
+            QLabel(self.tr("Changes apply to image views opened afterward."))
+        )
         # ---- Acceleration ----
         left_col.addRow(QLabel(self.tr("<b>Acceleration</b>")))
 
@@ -1315,6 +1356,12 @@ class SettingsDialog(QDialog):
         self._initial_bg_opacity = int(current_opacity) # For cancel/revert
 
         self.sp_icon_size.setValue(self.settings.value("toolbar/icon_size", 24, type=int))
+
+        # Pixel readout (loupe)
+        self.chk_loupe_info.setChecked(self.settings.value("loupe/show_info", True, type=bool))
+        self.sp_loupe_size.setValue(int(self.settings.value("loupe/size", 161, type=int)))
+        self.sp_loupe_patch.setValue(int(self.settings.value("loupe/patch", 17, type=int)))
+        self.sp_loupe_font.setValue(int(self.settings.value("loupe/info_font_pt", 10, type=int)))
         
         # Custom background
         self._initial_bg_path = self.settings.value("ui/custom_background", "", type=str) or ""
@@ -1498,6 +1545,18 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
         self.settings.setValue("display/autostretch_24bit", self.chk_autostretch_24bit.isChecked())
         self.settings.setValue("display/smooth_zoom_settle", self.chk_smooth_zoom_settle.isChecked())
+
+        # Pixel readout (loupe) — force odd size/patch for a symmetric crosshair
+        self.settings.setValue("loupe/show_info", self.chk_loupe_info.isChecked())
+        _lsz = int(self.sp_loupe_size.value())
+        if _lsz % 2 == 0:
+            _lsz += 1
+        self.settings.setValue("loupe/size", _lsz)
+        _lpatch = int(self.sp_loupe_patch.value())
+        if _lpatch % 2 == 0:
+            _lpatch += 1
+        self.settings.setValue("loupe/patch", _lpatch)
+        self.settings.setValue("loupe/info_font_pt", int(self.sp_loupe_font.value()))
 
         # accel preference (dynamic)
         pref_idx = int(self.cb_accel_pref.currentIndex())
