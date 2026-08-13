@@ -285,8 +285,9 @@ class SettingsDialog(QDialog):
             "",
             QLabel(self.tr("Changes apply to image views opened afterward."))
         )
+
         # ---- Acceleration ----
-        left_col.addRow(QLabel(self.tr("<b>Acceleration</b>")))
+        right_col.addRow(QLabel(self.tr("<b>Acceleration</b>")))
 
         # Backend/deps/pref/install split into multi-line compact box (much better on small widths)
         self.backend_label = QLabel(self.tr("Backend: {0}").format(current_backend()))
@@ -362,7 +363,7 @@ class SettingsDialog(QDialog):
 
         w_accel = QWidget()
         w_accel.setLayout(accel_box)
-        left_col.addRow(w_accel)
+        right_col.addRow(w_accel)
 
         # ---- Right column: AI Models ----
         right_col.addRow(QLabel(self.tr("<b>AI Models</b>")))
