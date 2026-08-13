@@ -8878,11 +8878,22 @@ class WIMIDialog(QDialog):
                     return
 
         if result is None or len(result) == 0:
-            QMessageBox.information(
-                self,
-                "No Results",
-                "No objects found in the specified area."
-            )
+            # SIMBAD found nothing here — but don't stop if the Gaia augment is
+            # on: local Gaia DR3 stars in this region should still be returned.
+            # Only a truly empty result (SIMBAD *and* Gaia) means "nothing here".
+            self.results_tree.clear()
+            query_results = self._augment_results_with_local_gaia(
+                [], ra_center, dec_center, radius_deg)
+            if not query_results:
+                QMessageBox.information(
+                    self,
+                    "No Results",
+                    "No objects found in the specified area."
+                )
+            self.main_preview.set_query_results(query_results)
+            self.query_results = query_results
+            self.update_results_tree()
+            self.update_object_count()
             return
 
         # ——— 3a) list of all “star” & binary/variable OTYPE codes ———
