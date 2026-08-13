@@ -1670,6 +1670,19 @@ class CurvesDialogPro(QDialog):
         self._curve_debounce.setSingleShot(True)
         self._curve_debounce.timeout.connect(self._rebuild_preview_from_curve_debounced)
         self._curve_gen        = 0
+        # ---- lazy background full-resolution cache ----
+        # _full_cache holds the post-mask-blend full-res result for the
+        # state described by _full_cache_sig; _apply() serves it instantly
+        # when the current signature matches. At most one worker runs at a
+        # time; the newest requested signature is kept in _pending_sig.
+        self._full_cache      = None
+        self._full_cache_sig  = None
+        self._bg_worker       = None
+        self._bg_worker_sig   = None
+        self._pending_sig     = None
+        self._pending_luts    = None
+        self._status_base     = ""   # main status text
+        self._status_bg       = ""   # live background/full-res indicator
         self._clip_scale       = 1.0
         self._cdf_total_full   = 0
         self._cdf_total_preview = 0
@@ -1983,6 +1996,8 @@ class CurvesDialogPro(QDialog):
     def _rebuild_preview_from_curve_debounced(self):
         if self._preview_orig is None and self._preview_img is None:
             return
+        # warm the full-res cache regardless of the on-canvas preview toggle
+        self._schedule_full_bg()
         if not getattr(self, "btn_preview", None) or not self.btn_preview.isChecked():
             return
         self._quick_preview()
@@ -2592,6 +2607,36 @@ class CurvesDialogPro(QDialog):
         self._build_preview_luma_cdf()
         self._build_preview_rgb_cdfs()
 
+    def _adopt_committed_image(self, new_full):
+        """Fast post-Apply refresh. Adopt the already-computed full-res result
+        (new_full, float32 in 0..1) as the working image instead of re-reading
+        it from the document and re-deriving everything. Skips the doc round-trip,
+        the full-res normalize scan, and the full-res downsample."""
+        self._full_img = new_full
+        # The processed preview we were already showing is exactly the new image
+        # previewed (identity curves after Apply), so reuse it and skip a fresh
+        # full-res downsample. Fall back to a downsample only if it's missing or
+        # the wrong size.
+        h, w = new_full.shape[:2]
+        exp_w = w if w <= 1200 else 1200
+        prev = self._preview_proc
+        if not (isinstance(prev, np.ndarray) and prev.ndim >= 2 and prev.shape[1] == exp_w):
+            prev = _downsample_for_preview(new_full, 1200)
+        self._preview_img  = prev
+        self._preview_orig = prev.copy()
+        self._preview_proc = None
+        max_hist_dim = 1400
+        if max(h, w) > max_hist_dim:
+            step = max(1, int(np.ceil(max(h, w) / max_hist_dim)))
+            self._hist_base = new_full[::step, ::step, ...]
+        else:
+            self._hist_base = new_full
+        self.hist.set_reference_image(self._hist_base)
+        self.hist.set_channel(self._current_mode())
+        self._show_proc = True
+        self._build_preview_luma_cdf()
+        self._build_preview_rgb_cdfs()
+
     def _build_lut01(self):
         f = getattr(self.editor, "getCurveFunction", lambda: None)()
         return build_curve_lut(f, size=65536) if f is not None else None
@@ -2618,6 +2663,8 @@ class CurvesDialogPro(QDialog):
         proc = self._apply_all_curves_once(self._preview_img, luts)
         proc = self._blend_with_mask(proc)
         self._preview_proc = proc
+        # warm the full-res result in the background so Apply is instant
+        self._schedule_full_bg(luts)
         if self._show_proc:
             self._update_preview_pix(self._preview_proc)
         try:
@@ -2646,15 +2693,101 @@ class CurvesDialogPro(QDialog):
         except Exception:
             pass
 
-    def _run_preview(self):
+    def _flush_active_into_store(self):
+        """Push the live editor's active-channel points into _curves_store so
+        the signature and the built LUTs reflect the very latest edit."""
+        try:
+            self._curves_store[self._current_mode_key] = self._editor_points_norm()
+        except Exception:
+            pass
+
+    def _full_result_signature(self):
+        """A cheap, exact key for the current full-res output: every channel's
+        control points (rounded) plus the active mask id. Same signature ->
+        identical output, so a cached result under it is safe to commit."""
+        try:
+            store_sig = tuple(sorted(
+                (str(k), tuple((round(float(x), 6), round(float(y), 6))
+                               for (x, y) in (pts or [])))
+                for k, pts in self._curves_store.items()
+            ))
+        except Exception:
+            store_sig = None
+        return (store_sig, getattr(self.doc, "active_mask_id", None))
+
+    def _schedule_full_bg(self, luts=None):
+        """Warm the full-res cache in the background for the current state.
+        No-op if already cached/in-flight for this signature. Coalesces churn:
+        only one worker runs at a time; the latest request wins."""
         if self._full_img is None:
             return
-        luts = self._build_all_active_luts()
-        self.btn_apply.setEnabled(False)
-        self._thr = _CurvesWorker(self._full_img, luts, self)
-        self._thr.done.connect(self._on_preview_ready)
-        self._thr.finished.connect(lambda: self.btn_apply.setEnabled(True))
-        self._thr.start()
+        self._flush_active_into_store()
+        sig = self._full_result_signature()
+        # already have the exact result cached
+        if self._full_cache is not None and self._full_cache_sig == sig:
+            self._pending_sig = None
+            self._refresh_bg_status()
+            return
+        # already computing this exact signature
+        if (self._bg_worker is not None and self._bg_worker.isRunning()
+                and self._bg_worker_sig == sig):
+            self._refresh_bg_status()
+            return
+        self._pending_sig = sig
+        self._pending_luts = luts if luts is not None else self._build_all_active_luts()
+        self._maybe_start_pending()
+        self._refresh_bg_status()
+
+    def _maybe_start_pending(self):
+        if self._pending_sig is None or self._full_img is None:
+            return
+        # one worker at a time; we'll re-check when the current one finishes
+        if self._bg_worker is not None and self._bg_worker.isRunning():
+            return
+        sig = self._pending_sig
+        luts = self._pending_luts
+        self._pending_sig = None
+        self._pending_luts = None
+        try:
+            w = _CurvesWorker(self._full_img, luts, self)
+        except Exception:
+            self._bg_worker = None
+            return
+        self._bg_worker = w
+        self._bg_worker_sig = sig
+        w.done.connect(lambda out, sg=sig: self._on_full_bg_ready(out, sg))
+        w.finished.connect(self._on_bg_finished)
+        w.start()
+        self._refresh_bg_status()
+
+    def _on_bg_finished(self):
+        # the current worker is done; kick off the newest pending request, if any
+        self._maybe_start_pending()
+        self._refresh_bg_status()
+
+    def _on_full_bg_ready(self, out01, sig):
+        # Only cache if the result still matches the current state; otherwise it
+        # was superseded by a later edit while computing -> discard it.
+        try:
+            current = self._full_result_signature()
+        except Exception:
+            current = None
+        if current is None or sig != current:
+            return
+        try:
+            blended = self._blend_with_mask(out01)
+        except Exception:
+            return
+        self._full_cache = blended
+        self._full_cache_sig = sig
+        self._last_preview = blended  # legacy mirror
+
+    def _run_preview(self):
+        # The manual Preview control now just warms the same background cache
+        # through the safe (signature-checked) pipeline.
+        if self._full_img is None:
+            return
+        self._schedule_full_bg()
 
     def _on_preview_ready(self, out01):
         self._last_preview = self._blend_with_mask(out01)
@@ -2742,12 +2875,34 @@ class CurvesDialogPro(QDialog):
                                          "blend":"m*out+(1-m)*src"}}
 
     def _apply(self):
-        if not hasattr(self,"_last_preview"):
-            luts  = self._build_all_active_luts()
-            out01 = self._apply_all_curves_once(self._full_img, luts)
-            out01 = self._blend_with_mask(out01)
-            self._last_preview = out01
-        self._commit(self._last_preview)
+        # If the image was already committed/cleared, fall back to any cache.
+        if self._full_img is None:
+            cached = self._full_cache if self._full_cache is not None else \
+                     getattr(self, "_last_preview", None)
+            if cached is not None:
+                self._commit(cached)
+            return
+
+        self._flush_active_into_store()
+        sig = self._full_result_signature()
+
+        # Instant path: the background already produced the exact current result.
+        if self._full_cache is not None and self._full_cache_sig == sig:
+            self._commit(self._full_cache)
+            return
+
+        # Not warm yet (applied faster than the worker finished, or a state the
+        # background hasn't reached). Compute synchronously as a fallback.
+        self._set_bg_status("")
+        self._set_status(self.tr("Applying at full resolution\u2026"))
+        try:
+            self.lbl_status.repaint()   # paint the message before we block
+        except Exception:
+            pass
+        luts  = self._build_all_active_luts()
+        out01 = self._apply_all_curves_once(self._full_img, luts)
+        out01 = self._blend_with_mask(out01)
+        self._commit(out01)
 
     def _commit(self, out01):
         try:
@@ -2771,8 +2926,12 @@ class CurvesDialogPro(QDialog):
             except Exception:
                 pass
             self.__dict__.pop("_last_preview", None)
-            self._full_img = None; self._preview_img = None
-            self._load_from_doc()
+            # release the ~full-res cache; the reloaded image warms a fresh one
+            self._full_cache = None
+            self._full_cache_sig = None
+            self._status_bg = ""
+            # adopt the result we already computed; no doc round-trip / reload
+            self._adopt_committed_image(out01)
             if hasattr(self.editor, "clearSymmetryLine"):
                 self.editor.clearSymmetryLine()
             self.editor.initCurve()
@@ -2791,7 +2950,40 @@ class CurvesDialogPro(QDialog):
         return "K (Brightness)"
 
     def _set_status(self, s):
-        self.lbl_status.setText(s)
+        self._status_base = s or ""
+        self._render_status()
+
+    def _set_bg_status(self, s):
+        """Live indicator for background/full-res work, shown next to the
+        main status without clobbering it."""
+        self._status_bg = s or ""
+        self._render_status()
+
+    def _render_status(self):
+        base = getattr(self, "_status_base", "") or ""
+        bg   = getattr(self, "_status_bg", "") or ""
+        if base and bg:
+            self.lbl_status.setText(f"{base}    \u2022    {bg}")
+        else:
+            self.lbl_status.setText(bg or base)
+
+    def _refresh_bg_status(self):
+        """Set the background indicator from current state: calculating while
+        a worker runs or a job is pending, 'ready' once the cache matches the
+        live curve, otherwise blank."""
+        try:
+            running = (self._bg_worker is not None and self._bg_worker.isRunning())
+        except Exception:
+            running = False
+        if running or self._pending_sig is not None:
+            self._set_bg_status(self.tr("Full resolution calculating in background\u2026"))
+            return
+        try:
+            fresh = (self._full_cache is not None
+                     and self._full_cache_sig == self._full_result_signature())
+        except Exception:
+            fresh = False
+        self._set_bg_status(self.tr("Full resolution ready") if fresh else "")
 
     def _update_preview_pix(self, img01, preserve_view=True):
         if img01 is None:
@@ -2875,6 +3067,21 @@ class CurvesDialogPro(QDialog):
             pass
         try: self._thr = None
         except Exception: pass
+        # stop the background full-res worker and cancel any pending job
+        try:
+            self._pending_sig = None
+            self._pending_luts = None
+            w = getattr(self, "_bg_worker", None)
+            if w is not None:
+                try: w.done.disconnect()
+                except Exception: pass
+                try: w.finished.disconnect()
+                except Exception: pass
+                if w.isRunning():
+                    w.wait(3000)
+            self._bg_worker = None
+        except Exception:
+            pass
 
     def _apply_zoom(self):
         if self._pix is None: return

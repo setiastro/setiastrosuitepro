@@ -709,14 +709,21 @@ Simbad.TIMEOUT = 300  # Increase timeout for long queries
 ASTROMETRY_API_URL = "http://nova.astrometry.net/api/"
 ASTROMETRY_API_KEY_FILE = "astrometry_api_key.txt"
 
-settings = QSettings("Seti Astro", "Seti Astro Suite")
-
 def save_api_key(api_key):
-    settings.setValue("astrometry_api_key", api_key)  # Save to QSettings
+    # Bare QSettings() -> app-default store (inherits org/app set at startup).
+    QSettings().setValue("astrometry_api_key", api_key)
     print("API key saved.")
 
 def load_api_key():
-    api_key = settings.value("astrometry_api_key", "")  # Load from QSettings
+    s = QSettings()
+    api_key = s.value("astrometry_api_key", "")
+    if not api_key:
+        # One-time migration from the old hard-coded store, if a key was
+        # saved there by a previous build. Harmless if the stores coincide.
+        legacy = QSettings("Seti Astro", "Seti Astro Suite").value("astrometry_api_key", "")
+        if legacy:
+            s.setValue("astrometry_api_key", legacy)
+            api_key = legacy
     if api_key:
         print("API key loaded.")
     return api_key

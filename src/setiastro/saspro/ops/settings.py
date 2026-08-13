@@ -4,7 +4,6 @@ QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApp
     QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog, QSlider)
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtGui import QAction, QGuiApplication
-import pytz  # for timezone list
 from setiastro.saspro.accel_installer import current_backend
 import sys, platform
 from PyQt6.QtWidgets import QToolButton, QProgressDialog
@@ -100,17 +99,6 @@ class SettingsDialog(QDialog):
 
         self.le_astrometry = QLineEdit()
         self.le_astrometry.setEchoMode(QLineEdit.EchoMode.Password)
-
-        # ---- WIMS defaults ----
-        self.sp_lat = QDoubleSpinBox();  self.sp_lat.setRange(-90.0, 90.0);       self.sp_lat.setDecimals(6)
-        self.sp_lon = QDoubleSpinBox();  self.sp_lon.setRange(-180.0, 180.0);     self.sp_lon.setDecimals(6)
-        self.le_date = QLineEdit()   # YYYY-MM-DD
-        self.le_time = QLineEdit()   # HH:MM
-        self.cb_tz   = QComboBox();  self.cb_tz.addItems(pytz.all_timezones)
-        self.cb_tz.setEditable(True)
-        self.cb_tz.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)        
-        self.sp_min_alt = QDoubleSpinBox(); self.sp_min_alt.setRange(0.0, 90.0);  self.sp_min_alt.setDecimals(1)
-        self.sp_obj_limit = QSpinBox(); self.sp_obj_limit.setRange(1, 1000)
 
         self.chk_autostretch_24bit = QCheckBox(self.tr("High-quality autostretch (24-bit; slower)"))
         self.chk_autostretch_24bit.setToolTip(self.tr("Compute autostretch on a 24-bit histogram (smoother gradients)."))
@@ -432,15 +420,6 @@ class SettingsDialog(QDialog):
         self.btn_gaia_open.setToolTip(self.tr("Manage installed Gaia XP spectral library groups"))
         self.btn_gaia_open.clicked.connect(self._open_gaia_database_clicked)
         right_col.addRow(self.btn_gaia_open)
-        # ---- WIMS + RA/Dec + Updates ----
-        right_col.addRow(QLabel(self.tr("<b>What's In My Sky — Defaults</b>")))
-        right_col.addRow(self.tr("Latitude (°):"), self.sp_lat)
-        right_col.addRow(self.tr("Longitude (°):"), self.sp_lon)
-        right_col.addRow(self.tr("Date (YYYY-MM-DD):"), self.le_date)
-        right_col.addRow(self.tr("Time (HH:MM):"), self.le_time)
-        right_col.addRow(self.tr("Time Zone:"), self.cb_tz)
-        right_col.addRow(self.tr("Min Altitude (°):"), self.sp_min_alt)
-        right_col.addRow(self.tr("Object Limit:"), self.sp_obj_limit)
 
         # ---- RA/Dec Overlay ----
         right_col.addRow(QLabel(self.tr("<b>RA/Dec Overlay</b>")))
@@ -1330,17 +1309,6 @@ class SettingsDialog(QDialog):
         self.le_astap.setText(self.settings.value("paths/astap", "", type=str))
         self.le_astrometry.setText(self.settings.value("api/astrometry_key", "", type=str))
 
-        # WIMS
-        self.sp_lat.setValue(self.settings.value("latitude", 0.0, type=float))
-        self.sp_lon.setValue(self.settings.value("longitude", 0.0, type=float))
-        self.le_date.setText(self.settings.value("date", "", type=str) or "")
-        self.le_time.setText(self.settings.value("time", "", type=str) or "")
-        tz_val = self.settings.value("timezone", "UTC", type=str) or "UTC"
-        idx = max(0, self.cb_tz.findText(tz_val))
-        self.cb_tz.setCurrentIndex(idx)
-        self.sp_min_alt.setValue(self.settings.value("min_altitude", 0.0, type=float))
-        self.sp_obj_limit.setValue(self.settings.value("object_limit", 100, type=int))
-        
         # Display
         self.chk_autostretch_24bit.setChecked(
             self.settings.value("display/autostretch_24bit", True, type=bool)
@@ -1523,15 +1491,6 @@ class SettingsDialog(QDialog):
         self.settings.setValue("paths/astap", self.le_astap.text().strip())
         self.settings.setValue("shortcuts/save_on_exit", self.chk_save_shortcuts.isChecked())
         self.settings.setValue("api/astrometry_key", self.le_astrometry.text().strip())
-
-        # WIMS defaults
-        self.settings.setValue("latitude", float(self.sp_lat.value()))
-        self.settings.setValue("longitude", float(self.sp_lon.value()))
-        self.settings.setValue("date", self.le_date.text().strip())
-        self.settings.setValue("time", self.le_time.text().strip())
-        self.settings.setValue("timezone", self.cb_tz.currentText())
-        self.settings.setValue("min_altitude", float(self.sp_min_alt.value()))
-        self.settings.setValue("object_limit", int(self.sp_obj_limit.value()))
 
         # RA/Dec Overlay
         self.settings.setValue("wcs_grid/enabled", self.chk_wcs_enabled.isChecked())
