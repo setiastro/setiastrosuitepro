@@ -577,36 +577,192 @@ def _cp_tag(venv_python: Path) -> str | None:
 def _is_compiled_torch_dir(d: Path) -> bool:
     return any(d.glob("_C.*.pyd")) or any(d.glob("_C.*.so")) or any(d.glob("_C.cpython*"))
 
+def _read_venv_home(vp: Path) -> Path | None:
+    """Base Python dir a venv was created from (pyvenv.cfg 'home=').
+
+    On Windows this is where python3XX.dll and the VC-runtime the wheel was
+    built against live — the venv's own Scripts folder often doesn't copy them.
+    """
+    try:
+        cfg = vp.parent.parent / "pyvenv.cfg"   # <venv>/pyvenv.cfg
+        if not cfg.exists():
+            return None
+        for line in cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.strip().lower().startswith("home"):
+                _, _, val = line.partition("=")
+                p = Path(val.strip())
+                return p if p.is_dir() else None
+    except Exception:
+        return None
+    return None
+
+
+_DLL_PRELOAD_DONE = False
+
+def _preload_torch_dlls(site: Path, status_cb=print) -> None:
+    """Force-load torch's own DLLs by absolute path before importing torch.
+
+    Loading each torch/lib DLL with its full path resolves its siblings from
+    torch/lib (LOAD_WITH_ALTERED_SEARCH_PATH), so the correct copies become
+    resident regardless of the frozen process's DLL search quirks. This covers
+    the case where add_dll_directory alone doesn't get _C.pyd's dependency
+    chain loaded in the bundled context. Fully tolerant: never raises, and a
+    DLL that legitimately can't preload (e.g. torch_cuda.dll without a GPU
+    runtime) is just skipped — torch loads those lazily anyway.
+    """
+    global _DLL_PRELOAD_DONE
+    if _DLL_PRELOAD_DONE or platform.system() != "Windows":
+        return
+    try:
+        import ctypes
+    except Exception:
+        return
+
+    # MSVC runtime shipped in the bundle root by the .spec. Preload the pieces
+    # Python/Qt startup doesn't already pull in (vcruntime140_1.dll, msvcp140.dll)
+    # so torch's C++ DLLs resolve them even without the VC++ redistributable.
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei:
+        for _vc in ("vcruntime140_1.dll", "msvcp140.dll", "vcruntime140.dll"):
+            _p = Path(mei) / _vc
+            if _p.exists():
+                try:
+                    ctypes.WinDLL(str(_p))
+                except Exception:
+                    pass
+
+    torch_lib = site / "torch" / "lib"
+    if not torch_lib.is_dir():
+        return
+
+    # rough dependency order: VC-runtime + low-level libs first, torch_python last
+    priority = [
+        "vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll",
+        "libiomp5md.dll", "uv.dll", "asmjit.dll", "fbgemm.dll",
+        "c10.dll", "c10_cuda.dll", "torch_cpu.dll", "torch_cuda.dll",
+        "shm.dll", "torch.dll", "torch_python.dll",
+    ]
+    ordered, seen = [], set()
+    for n in priority:
+        p = torch_lib / n
+        if p.exists() and n.lower() not in seen:
+            ordered.append(p); seen.add(n.lower())
+    for p in sorted(torch_lib.glob("*.dll")):
+        if p.name.lower() not in seen:
+            ordered.append(p); seen.add(p.name.lower())
+
+    loaded = 0
+    pending = list(ordered)
+    for _ in range(3):                     # a few passes to resolve inter-deps
+        still = []
+        for p in pending:
+            try:
+                ctypes.WinDLL(str(p))
+                loaded += 1
+            except Exception:
+                still.append(p)
+        pending = still
+        if not pending:
+            break
+
+    if not pending:
+        _DLL_PRELOAD_DONE = True
+    if loaded:
+        status_cb(f"[RT] Preloaded {loaded} torch DLLs from {torch_lib}")
+    if pending:
+        names = ", ".join(p.name for p in pending[:8]) + (" …" if len(pending) > 8 else "")
+        status_cb(f"[RT] Could not preload (may be fine if lazy/GPU-only): {names}")
+
+
+def _diagnose_win_torch_dlls(site: Path) -> str:
+    """Pinpoint why the in-process torch import failed on Windows: report the
+    first core torch DLL that won't load, and whether the VC++ runtime the
+    wheels need is present. Returns a short human-readable block (or '')."""
+    if platform.system() != "Windows":
+        return ""
+    try:
+        import ctypes
+    except Exception:
+        return ""
+    lines = []
+    # The torch C++ libs need the VS2015-2022 x64 runtime. vcruntime140_1.dll in
+    # particular is NOT pulled in by Python/Qt startup, so a machine missing the
+    # redistributable imports torch fine via a full Python install but fails in a
+    # bundled app — this matches the "worked once I'd installed 3.12" reports.
+    for vc in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+        try:
+            ctypes.WinDLL(vc)  # bare name -> system search path
+            lines.append(f"  {vc}: present")
+        except Exception:
+            lines.append(f"  {vc}: NOT FOUND — install the Microsoft Visual C++ "
+                         f"2015–2022 x64 Redistributable")
+    torch_lib = site / "torch" / "lib"
+    if torch_lib.is_dir():
+        for n in ("c10.dll", "torch_cpu.dll", "torch_python.dll"):
+            p = torch_lib / n
+            if not p.exists():
+                lines.append(f"  {n}: MISSING from torch/lib (broken/partial wheel)")
+                continue
+            try:
+                ctypes.WinDLL(str(p))
+                lines.append(f"  {n}: loads OK")
+            except OSError as e:
+                lines.append(f"  {n}: FAILS TO LOAD -> {e}")
+                break
+    else:
+        lines.append(f"  torch/lib not found under {site}")
+    return "Windows DLL diagnostic:\n" + "\n".join(lines) if lines else ""
+
+
 def _register_dll_dirs_for_frozen(site: Path, vp: Path, status_cb=print) -> None:
     """
     PyInstaller-frozen builds don't get the normal DLL search behavior that a
     standalone venv python.exe gets just by living inside the venv folder.
     torch's _C.pyd depends on DLLs under torch/lib (torch_cpu.dll, c10.dll,
-    fbgemm.dll, etc.), and sometimes the venv's own Scripts/DLLs folders.
-    Without registering those directories explicitly, an in-process import
-    inside the frozen exe can fail with "Failed to load PyTorch C extensions"
-    even though a subprocess probe using the venv's own python.exe imports
-    torch fine (this is exactly the venv-probe-ok/in-process-fails mismatch
-    reported by users).
+    fbgemm.dll, etc.), the venv's own Scripts/DLLs folders, the base Python
+    install (python3XX.dll + VC-runtime), and — for CUDA wheels — the nvidia
+    library bins. Without registering those directories explicitly (and
+    preloading the torch DLLs by absolute path), an in-process import inside
+    the frozen exe can fail with WinError 126 / "Failed to load PyTorch C
+    extensions" even though a subprocess probe using the venv's own python.exe
+    imports torch fine — exactly the venv-probe-ok/in-process-fails mismatch.
     """
     if platform.system() != "Windows" or not getattr(sys, "frozen", False):
         return
     candidates = [
         site / "torch" / "lib",
+        site / "torch" / "bin",
         vp.parent,                   # venv\Scripts
         vp.parent / "DLLs",
         vp.parent.parent / "DLLs",   # venv\DLLs, if present
+        site,                        # site-packages root
     ]
+    # Base Python the venv was built from: python3XX.dll + matching VC-runtime.
+    base = _read_venv_home(vp)
+    if base is not None:
+        candidates += [base, base / "DLLs"]
+    # CUDA wheels ship their runtime under site-packages\nvidia\*\bin (Windows).
+    nvidia = site / "nvidia"
+    if nvidia.is_dir():
+        candidates += sorted(nvidia.glob("*/bin"))
+    # frozen bundle root (sys._MEIPASS): where the .spec ships the MSVC runtime.
+    mei = getattr(sys, "_MEIPASS", None)
+    if mei:
+        candidates.append(Path(mei))
+
     registered = []
     for d in candidates:
         try:
-            if d.is_dir():
+            if d and d.is_dir():
                 os.add_dll_directory(str(d))
                 registered.append(str(d))
         except Exception:
             pass
     if registered:
         status_cb(f"[RT] Registered DLL search dirs for frozen import: {registered}")
+
+    # Force the correct torch DLLs resident before _C.pyd resolves dependencies.
+    _preload_torch_dlls(site, status_cb=status_cb)
 
 def _looks_like_source_tree_torch(d: Path) -> bool:
     # A real source tree has _C/__init__.py AND setup.py or CMakeLists.txt
@@ -1953,6 +2109,10 @@ def import_torch(
 
         ok_all_final, info_final = _venv_has_torch_stack(vp, status_cb=status_cb, require_torchaudio=require_torchaudio)
         msg = "\n".join([f"{k}: ok={ok} :: {out}" for k, (ok, out) in info_final.items()])
+        try:
+            win_diag = _diagnose_win_torch_dlls(site)
+        except Exception:
+            win_diag = ""
         raise RuntimeError(
             "Runtime venv probe says torch stack exists, but in-process import failed.\n"
             "This typically indicates a frozen-stdlib / PyInstaller packaging issue, "
@@ -1960,6 +2120,7 @@ def import_torch(
             f"Original error: {type(e).__name__}: {e}\n\n"
             f"Probe ok_all={ok_all_final}\n"
             "Runtime venv probe:\n" + msg
+            + (("\n\n" + win_diag) if win_diag else "")
         ) from e
 
 
