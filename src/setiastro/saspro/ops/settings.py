@@ -1,10 +1,9 @@
-# ops.settings.py
+# src.setiastro.saspro.ops.settings.py
 from PyQt6.QtWidgets import (
 QLineEdit, QDialogButtonBox, QFileDialog, QDialog, QPushButton, QFormLayout,QApplication, QMenu, QScrollArea, QSizePolicy,
     QHBoxLayout, QVBoxLayout, QWidget, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QLabel, QColorDialog, QFontDialog, QSlider)
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtGui import QAction, QGuiApplication
-import pytz  # for timezone list
 from setiastro.saspro.accel_installer import current_backend
 import sys, platform
 from PyQt6.QtWidgets import QToolButton, QProgressDialog
@@ -100,17 +99,6 @@ class SettingsDialog(QDialog):
 
         self.le_astrometry = QLineEdit()
         self.le_astrometry.setEchoMode(QLineEdit.EchoMode.Password)
-
-        # ---- WIMS defaults ----
-        self.sp_lat = QDoubleSpinBox();  self.sp_lat.setRange(-90.0, 90.0);       self.sp_lat.setDecimals(6)
-        self.sp_lon = QDoubleSpinBox();  self.sp_lon.setRange(-180.0, 180.0);     self.sp_lon.setDecimals(6)
-        self.le_date = QLineEdit()   # YYYY-MM-DD
-        self.le_time = QLineEdit()   # HH:MM
-        self.cb_tz   = QComboBox();  self.cb_tz.addItems(pytz.all_timezones)
-        self.cb_tz.setEditable(True)
-        self.cb_tz.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)        
-        self.sp_min_alt = QDoubleSpinBox(); self.sp_min_alt.setRange(0.0, 90.0);  self.sp_min_alt.setDecimals(1)
-        self.sp_obj_limit = QSpinBox(); self.sp_obj_limit.setRange(1, 1000)
 
         self.chk_autostretch_24bit = QCheckBox(self.tr("High-quality autostretch (24-bit; slower)"))
         self.chk_autostretch_24bit.setToolTip(self.tr("Compute autostretch on a 24-bit histogram (smoother gradients)."))
@@ -256,8 +244,50 @@ class SettingsDialog(QDialog):
         self.sp_icon_size.setSuffix(" px")
         self.sp_icon_size.setToolTip(self.tr("Toolbar icon size in pixels (default: 24)"))
         left_col.addRow(self.tr("Toolbar Icon Size:"), self.sp_icon_size)
+
+        # ---- Pixel Readout (Loupe) ----
+        left_col.addRow(QLabel(self.tr("<b>Pixel Readout (Loupe)</b>")))
+
+        self.chk_loupe_info = QCheckBox(self.tr("Show RGB / coordinates in zoom preview"))
+        self.chk_loupe_info.setToolTip(self.tr(
+            "Show the probed RGB (or K) value and, when a WCS is present,\n"
+            "the celestial coordinates inside the Space+click zoom preview."))
+        left_col.addRow(self.chk_loupe_info)
+
+        self.sp_loupe_size = QSpinBox()
+        self.sp_loupe_size.setRange(121, 601)
+        self.sp_loupe_size.setSingleStep(20)
+        self.sp_loupe_size.setSuffix(" px")
+        self.sp_loupe_size.setToolTip(self.tr(
+            "Size of the zoom preview window (default: 161).\n"
+            "Bump this up on 4K / 8K displays. Rounded to an odd number."))
+        left_col.addRow(self.tr("Zoom Preview Size:"), self.sp_loupe_size)
+
+        self.sp_loupe_patch = QSpinBox()
+        self.sp_loupe_patch.setRange(9, 41)
+        self.sp_loupe_patch.setSingleStep(2)
+        self.sp_loupe_patch.setSuffix(" px")
+        self.sp_loupe_patch.setToolTip(self.tr(
+            "How many source pixels the preview samples across (default: 17).\n"
+            "Smaller = more magnified; larger = wider field. Odd numbers only."))
+        left_col.addRow(self.tr("Zoom Sample Window:"), self.sp_loupe_patch)
+
+        self.sp_loupe_font = QSpinBox()
+        self.sp_loupe_font.setRange(7, 24)
+        self.sp_loupe_font.setSingleStep(1)
+        self.sp_loupe_font.setSuffix(" pt")
+        self.sp_loupe_font.setToolTip(self.tr(
+            "Maximum font size for the readout text (default: 10).\n"
+            "Text auto-shrinks to fit the preview width."))
+        left_col.addRow(self.tr("Readout Font Size:"), self.sp_loupe_font)
+
+        left_col.addRow(
+            "",
+            QLabel(self.tr("Changes apply to image views opened afterward."))
+        )
+
         # ---- Acceleration ----
-        left_col.addRow(QLabel(self.tr("<b>Acceleration</b>")))
+        right_col.addRow(QLabel(self.tr("<b>Acceleration</b>")))
 
         # Backend/deps/pref/install split into multi-line compact box (much better on small widths)
         self.backend_label = QLabel(self.tr("Backend: {0}").format(current_backend()))
@@ -333,7 +363,7 @@ class SettingsDialog(QDialog):
 
         w_accel = QWidget()
         w_accel.setLayout(accel_box)
-        left_col.addRow(w_accel)
+        right_col.addRow(w_accel)
 
         # ---- Right column: AI Models ----
         right_col.addRow(QLabel(self.tr("<b>AI Models</b>")))
@@ -391,15 +421,6 @@ class SettingsDialog(QDialog):
         self.btn_gaia_open.setToolTip(self.tr("Manage installed Gaia XP spectral library groups"))
         self.btn_gaia_open.clicked.connect(self._open_gaia_database_clicked)
         right_col.addRow(self.btn_gaia_open)
-        # ---- WIMS + RA/Dec + Updates ----
-        right_col.addRow(QLabel(self.tr("<b>What's In My Sky — Defaults</b>")))
-        right_col.addRow(self.tr("Latitude (°):"), self.sp_lat)
-        right_col.addRow(self.tr("Longitude (°):"), self.sp_lon)
-        right_col.addRow(self.tr("Date (YYYY-MM-DD):"), self.le_date)
-        right_col.addRow(self.tr("Time (HH:MM):"), self.le_time)
-        right_col.addRow(self.tr("Time Zone:"), self.cb_tz)
-        right_col.addRow(self.tr("Min Altitude (°):"), self.sp_min_alt)
-        right_col.addRow(self.tr("Object Limit:"), self.sp_obj_limit)
 
         # ---- RA/Dec Overlay ----
         right_col.addRow(QLabel(self.tr("<b>RA/Dec Overlay</b>")))
@@ -1289,17 +1310,6 @@ class SettingsDialog(QDialog):
         self.le_astap.setText(self.settings.value("paths/astap", "", type=str))
         self.le_astrometry.setText(self.settings.value("api/astrometry_key", "", type=str))
 
-        # WIMS
-        self.sp_lat.setValue(self.settings.value("latitude", 0.0, type=float))
-        self.sp_lon.setValue(self.settings.value("longitude", 0.0, type=float))
-        self.le_date.setText(self.settings.value("date", "", type=str) or "")
-        self.le_time.setText(self.settings.value("time", "", type=str) or "")
-        tz_val = self.settings.value("timezone", "UTC", type=str) or "UTC"
-        idx = max(0, self.cb_tz.findText(tz_val))
-        self.cb_tz.setCurrentIndex(idx)
-        self.sp_min_alt.setValue(self.settings.value("min_altitude", 0.0, type=float))
-        self.sp_obj_limit.setValue(self.settings.value("object_limit", 100, type=int))
-        
         # Display
         self.chk_autostretch_24bit.setChecked(
             self.settings.value("display/autostretch_24bit", True, type=bool)
@@ -1315,6 +1325,12 @@ class SettingsDialog(QDialog):
         self._initial_bg_opacity = int(current_opacity) # For cancel/revert
 
         self.sp_icon_size.setValue(self.settings.value("toolbar/icon_size", 24, type=int))
+
+        # Pixel readout (loupe)
+        self.chk_loupe_info.setChecked(self.settings.value("loupe/show_info", True, type=bool))
+        self.sp_loupe_size.setValue(int(self.settings.value("loupe/size", 161, type=int)))
+        self.sp_loupe_patch.setValue(int(self.settings.value("loupe/patch", 17, type=int)))
+        self.sp_loupe_font.setValue(int(self.settings.value("loupe/info_font_pt", 10, type=int)))
         
         # Custom background
         self._initial_bg_path = self.settings.value("ui/custom_background", "", type=str) or ""
@@ -1477,15 +1493,6 @@ class SettingsDialog(QDialog):
         self.settings.setValue("shortcuts/save_on_exit", self.chk_save_shortcuts.isChecked())
         self.settings.setValue("api/astrometry_key", self.le_astrometry.text().strip())
 
-        # WIMS defaults
-        self.settings.setValue("latitude", float(self.sp_lat.value()))
-        self.settings.setValue("longitude", float(self.sp_lon.value()))
-        self.settings.setValue("date", self.le_date.text().strip())
-        self.settings.setValue("time", self.le_time.text().strip())
-        self.settings.setValue("timezone", self.cb_tz.currentText())
-        self.settings.setValue("min_altitude", float(self.sp_min_alt.value()))
-        self.settings.setValue("object_limit", int(self.sp_obj_limit.value()))
-
         # RA/Dec Overlay
         self.settings.setValue("wcs_grid/enabled", self.chk_wcs_enabled.isChecked())
         self.settings.setValue("wcs_grid/mode", "auto" if self.cb_wcs_mode.currentIndex() == 0 else "fixed")
@@ -1498,6 +1505,18 @@ class SettingsDialog(QDialog):
         self.settings.setValue("updates/url", self.le_updates_url.text().strip())
         self.settings.setValue("display/autostretch_24bit", self.chk_autostretch_24bit.isChecked())
         self.settings.setValue("display/smooth_zoom_settle", self.chk_smooth_zoom_settle.isChecked())
+
+        # Pixel readout (loupe) — force odd size/patch for a symmetric crosshair
+        self.settings.setValue("loupe/show_info", self.chk_loupe_info.isChecked())
+        _lsz = int(self.sp_loupe_size.value())
+        if _lsz % 2 == 0:
+            _lsz += 1
+        self.settings.setValue("loupe/size", _lsz)
+        _lpatch = int(self.sp_loupe_patch.value())
+        if _lpatch % 2 == 0:
+            _lpatch += 1
+        self.settings.setValue("loupe/patch", _lpatch)
+        self.settings.setValue("loupe/info_font_pt", int(self.sp_loupe_font.value()))
 
         # accel preference (dynamic)
         pref_idx = int(self.cb_accel_pref.currentIndex())

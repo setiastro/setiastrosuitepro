@@ -429,13 +429,31 @@ class _LoupeWindow(QWidget):
     patch of the image around the cursor during Space+drag readout.
     Follows the mouse, offset so it doesn't obscure the cursor.
     """
-    SIZE    = 161          # window size in pixels (square)
+    SIZE    = 161          # zoom-area size in pixels (square)
     PATCH   = 17           # source image pixels to sample (16×16)
     OFFSET  = (20, 20)     # px offset from cursor so it doesn't cover the probe point
+    INFO_PAD   = 5         # inner padding of the readout strip (px)
+    INFO_MAXPT = 10        # starting / maximum readout font point size
+    INFO_MINPT = 7         # smallest we'll shrink the readout font to
 
-    def __init__(self, parent=None):
-        assert self.PATCH % 2 == 1, "PATCH must be odd for unambiguous center pixel"
-        assert self.SIZE  % 2 == 1, "SIZE must be odd so crosshair bisects center pixel block"        
+    def __init__(self, parent=None, size=None, patch=None,
+                 info_max_pt=None, show_info=True):
+        # Resolve per-instance config (usually from QSettings). SIZE and PATCH
+        # must be ODD so the crosshair bisects the centre pixel block, so we
+        # coerce rather than assert — a stray even value shouldn't crash a probe.
+        sz = int(size) if size else self.SIZE
+        pt = int(patch) if patch else self.PATCH
+        if sz % 2 == 0:
+            sz += 1
+        if pt % 2 == 0:
+            pt += 1
+        # instance attributes shadow the class defaults; all internal refs use self.*
+        self.SIZE = max(41, sz)
+        self.PATCH = max(3, pt)
+        if info_max_pt:
+            self.INFO_MAXPT = max(self.INFO_MINPT, int(info_max_pt))
+        self._show_info = bool(show_info)
+
         super().__init__(parent, 
             Qt.WindowType.Tool |
             Qt.WindowType.FramelessWindowHint |
@@ -444,8 +462,12 @@ class _LoupeWindow(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setFixedSize(self.SIZE, self.SIZE)
         self._pixmap: QPixmap | None = None
+        # optional compact readout strip (RGB / K + alpha,delta) beneath the zoom
+        self._info_lines: list[str] = []
+        self._info_h: int = 0
+        self._info_font_cached = None
+        self.setFixedSize(self.SIZE, self.SIZE)
 
     def set_patch(self, arr: np.ndarray):
         """
@@ -486,8 +508,48 @@ class _LoupeWindow(QWidget):
         )
         self.update()
 
+    def set_readout(self, lines):
+        """Set the compact info lines shown beneath the zoom (RGB/K + alpha,delta).
+
+        Pass an empty list / None to hide the strip. The window grows
+        downward to fit the text so the zoomed pixels are never covered.
+        """
+        self._info_lines = [str(x) for x in (lines or []) if str(x).strip()]
+        self._recompute_info()
+        self.setFixedSize(self.SIZE, self.SIZE + self._info_h)
+        self.update()
+
+    def _info_font(self):
+        """Pick a monospace font, shrinking until the widest line fits."""
+        from PyQt6.QtGui import QFont, QFontMetrics, QFontDatabase
+        avail = self.SIZE - 2 * self.INFO_PAD
+        # platform's native fixed-pitch font (Consolas/Menlo/DejaVu Sans Mono/...)
+        f = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        f.setStyleHint(QFont.StyleHint.Monospace)
+        f.setFixedPitch(True)
+        for pt in range(self.INFO_MAXPT, self.INFO_MINPT - 1, -1):
+            f.setPointSize(pt)
+            fm = QFontMetrics(f)
+            widest = max((fm.horizontalAdvance(t) for t in self._info_lines), default=0)
+            if widest <= avail:
+                break
+        return f
+
+    def _recompute_info(self):
+        if not self._info_lines:
+            self._info_h = 0
+            self._info_font_cached = None
+            return
+        from PyQt6.QtGui import QFontMetrics
+        f = self._info_font()
+        self._info_font_cached = f
+        fm = QFontMetrics(f)
+        self._info_h = 2 * self.INFO_PAD + fm.height() * len(self._info_lines)
+
     def move_to_cursor(self, global_pos: QPoint):
         ox, oy = self.OFFSET
+        w = self.width()
+        h = self.height()
         x = global_pos.x() + ox
         y = global_pos.y() + oy
 
@@ -495,15 +557,15 @@ class _LoupeWindow(QWidget):
         screen = QApplication.screenAt(global_pos)
         if screen is not None:
             sg = screen.geometry()
-            if x + self.SIZE > sg.right():
-                x = global_pos.x() - self.SIZE - ox
-            if y + self.SIZE > sg.bottom():
-                y = global_pos.y() - self.SIZE - oy
+            if x + w > sg.right():
+                x = global_pos.x() - w - ox
+            if y + h > sg.bottom():
+                y = global_pos.y() - h - oy
 
         self.move(x, y)
 
     def paintEvent(self, ev):
-        from PyQt6.QtGui import QPainter, QPen, QColor
+        from PyQt6.QtGui import QPainter, QPen, QColor, QFontMetrics
 
         # Guard: don't attempt to paint if the widget isn't ready
         if self.width() <= 0 or self.height() <= 0:
@@ -513,20 +575,35 @@ class _LoupeWindow(QWidget):
         if not p.isActive():          # paint device returned engine==0
             return
 
+        # ---- zoom area (top SIZE x SIZE) ----
         if self._pixmap is None:
-            p.fillRect(self.rect(), QColor(20, 20, 30))
-            p.end()
-            return
+            p.fillRect(QRect(0, 0, self.SIZE, self.SIZE), QColor(20, 20, 30))
+        else:
+            p.drawPixmap(0, 0, self._pixmap)
 
-        p.drawPixmap(0, 0, self._pixmap)
+            cx = cy = self.SIZE // 2
+            p.setPen(QPen(QColor(255, 0, 0, 200), 1))
+            p.drawLine(cx, 0, cx, self.SIZE)
+            p.drawLine(0, cy, self.SIZE, cy)
 
-        cx = cy = self.SIZE // 2
-        p.setPen(QPen(QColor(255, 0, 0, 200), 1))
-        p.drawLine(cx, 0, cx, self.SIZE)
-        p.drawLine(0, cy, self.SIZE, cy)
+        # ---- info strip (RGB / K + alpha,delta), below the zoom ----
+        if self._info_lines and self._info_h > 0:
+            strip = QRect(0, self.SIZE, self.width(), self._info_h)
+            p.fillRect(strip, QColor(0, 0, 0, 205))
 
+            f = self._info_font_cached or self._info_font()
+            p.setFont(f)
+            fm = QFontMetrics(f)
+            lh = fm.height()
+            ty = self.SIZE + self.INFO_PAD + fm.ascent()
+            p.setPen(QPen(QColor(235, 235, 235)))
+            for line in self._info_lines:
+                p.drawText(self.INFO_PAD, ty, line)
+                ty += lh
+
+        # ---- outer border around the whole window ----
         p.setPen(QPen(QColor(255, 255, 255, 120), 1))
-        p.drawRect(0, 0, self.SIZE - 1, self.SIZE - 1)
+        p.drawRect(0, 0, self.width() - 1, self.height() - 1)
 
         p.end()
 
@@ -1644,9 +1721,21 @@ class ImageSubWindow(QWidget):
             return
         super().keyReleaseEvent(ev)
 
-    def _update_loupe(self, xi: int, yi: int, vp_pos: QPoint):
+    def _update_loupe(self, xi: int, yi: int, vp_pos: QPoint, sample=None):
         if self._loupe is None:
-            self._loupe = _LoupeWindow()
+            # Loupe geometry/behaviour is user-configurable (Preferences ->
+            # Pixel Readout). Read once at creation; changing the settings
+            # applies to views opened afterward, not live to this one.
+            try:
+                s = QSettings()
+                self._loupe = _LoupeWindow(
+                    size=s.value("loupe/size", 161, type=int),
+                    patch=s.value("loupe/patch", 17, type=int),
+                    info_max_pt=s.value("loupe/info_font_pt", 10, type=int),
+                    show_info=s.value("loupe/show_info", True, type=bool),
+                )
+            except Exception:
+                self._loupe = _LoupeWindow()
 
         doc = getattr(self, "document", None)
         if doc is None or doc.image is None:
@@ -1665,8 +1754,8 @@ class ImageSubWindow(QWidget):
         else:
             return
 
-        ph = _LoupeWindow.PATCH
-        pw = _LoupeWindow.PATCH
+        ph = self._loupe.PATCH
+        pw = self._loupe.PATCH
         half = ph // 2
 
         # clamp the crop window to image bounds
@@ -1703,7 +1792,15 @@ class ImageSubWindow(QWidget):
             patch = padded
 
         global_pos = self.scroll.viewport().mapToGlobal(vp_pos)
-        self._loupe.set_patch(patch)        
+        self._loupe.set_patch(patch)
+        # compact RGB + alpha/delta readout inside the loupe (if enabled)
+        show_info = getattr(self._loupe, "_show_info", True)
+        try:
+            lines = (self._loupe_info_lines(xi, yi, sample)
+                     if (sample is not None and show_info) else [])
+        except Exception:
+            lines = []
+        self._loupe.set_readout(lines)
         self._loupe.move_to_cursor(global_pos)
         if not self._loupe.isVisible():                       # show only once patch is ready
             self._loupe.show()
@@ -3627,7 +3724,7 @@ class ImageSubWindow(QWidget):
                 if res is not None:
                     xi, yi, sample = res
                     self._show_readout(xi, yi, sample)
-                    self._update_loupe(xi, yi, vp_pos)
+                    self._update_loupe(xi, yi, vp_pos, sample)
                 self._readout_dragging = True
                 return True
             return False
@@ -3640,7 +3737,7 @@ class ImageSubWindow(QWidget):
                 if res is not None:
                     xi, yi, sample = res
                     self._show_readout(xi, yi, sample)
-                    self._update_loupe(xi, yi, vp_pos)
+                    self._update_loupe(xi, yi, vp_pos, sample)
                 return True
             return False
 
@@ -3784,7 +3881,7 @@ class ImageSubWindow(QWidget):
                 if res is not None:
                     xi, yi, sample = res
                     self._show_readout(xi, yi, sample)
-                    self._update_loupe(xi, yi, vp_pos)
+                    self._update_loupe(xi, yi, vp_pos, sample)
                 self._readout_dragging = True
                 return
 
@@ -3799,39 +3896,32 @@ class ImageSubWindow(QWidget):
 
         super().mousePressEvent(e)
 
-    def _show_readout(self, xi, yi, sample):
-        mw = self._find_main_window()
-        if mw is None:
-            return
+    def _parse_probe_sample(self, sample):
+        """Extract raw (r,g,b) or mono k from a probe `sample` value.
 
-        # We want raw float prints, never 16-bit normalized
-        r = g = b = None
-        k = None
-
+        Mirrors the historical status-bar logic exactly so the loupe and the
+        toolbar always report identical pixel values. Returns (r, g, b, k)
+        where the unused ones are None.
+        """
+        r = g = b = k = None
         if isinstance(sample, dict):
-            # 1) the clean mono path
             if "mono" in sample:
                 try:
                     k = float(sample["mono"])
                 except Exception:
                     k = sample["mono"]
-            # 2) the clean RGB path
             elif all(ch in sample for ch in ("r", "g", "b")):
                 try:
-                    r = float(sample["r"])
-                    g = float(sample["g"])
-                    b = float(sample["b"])
+                    r = float(sample["r"]); g = float(sample["g"]); b = float(sample["b"])
                 except Exception:
                     r = sample["r"]; g = sample["g"]; b = sample["b"]
             else:
-                # 3) weird dict → just take the first numeric-looking value
                 for v in sample.values():
                     try:
                         k = float(v)
                         break
                     except Exception:
                         continue
-
         elif isinstance(sample, (list, tuple)):
             if len(sample) == 1:
                 try:
@@ -3843,30 +3933,118 @@ class ImageSubWindow(QWidget):
                     r = float(sample[0]); g = float(sample[1]); b = float(sample[2])
                 except Exception:
                     r, g, b = sample[0], sample[1], sample[2]
-
-        else:
-            # numpy scalar / plain number
+        elif sample is not None:
             try:
                 k = float(sample)
             except Exception:
                 k = sample
+        return r, g, b, k
+
+    def _probe_radec(self, xi, yi):
+        """Return (ra_deg, dec_deg) at pixel (xi, yi), or (None, None)."""
+        wcs2 = self._get_celestial_wcs()
+        if wcs2 is None:
+            return None, None
+        try:
+            ra_deg, dec_deg = map(float, wcs2.pixel_to_world_values(float(xi), float(yi)))
+            return ra_deg, dec_deg
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _fmt_ra_hms(ra_deg, sec_prec=1):
+        """Compact RA as HH:MM:SS(.s), with a rounding-carry guard."""
+        ra_h = (float(ra_deg) / 15.0) % 24.0
+        hh = int(ra_h)
+        rem = (ra_h - hh) * 60.0
+        mm = int(rem)
+        ss = (rem - mm) * 60.0
+        q = 10 ** sec_prec
+        if round(ss * q) >= 60 * q:
+            ss = 0.0; mm += 1
+            if mm >= 60:
+                mm = 0; hh = (hh + 1) % 24
+        width = 2 + (sec_prec + 1 if sec_prec else 0)
+        return f"{hh:02d}:{mm:02d}:{ss:0{width}.{sec_prec}f}"
+
+    @staticmethod
+    def _fmt_dec_dms(dec_deg, sec_prec=0):
+        """Compact Dec as +DD:MM:SS(.s), with a rounding-carry guard."""
+        dec_deg = float(dec_deg)
+        sign = "+" if dec_deg >= 0 else "-"
+        d = abs(dec_deg)
+        dd = int(d)
+        rem = (d - dd) * 60.0
+        mm = int(rem)
+        ss = (rem - mm) * 60.0
+        q = 10 ** sec_prec
+        if round(ss * q) >= 60 * q:
+            ss = 0.0; mm += 1
+            if mm >= 60:
+                mm = 0; dd += 1
+        width = 2 + (sec_prec + 1 if sec_prec else 0)
+        return f"{sign}{dd:02d}:{mm:02d}:{ss:0{width}.{sec_prec}f}"
+
+    def _loupe_info_lines(self, xi, yi, sample):
+        """Build the compact lines shown inside the loupe: RGB/K then a,d."""
+        r, g, b, k = self._parse_probe_sample(sample)
+        lines = []
+
+        if r is not None and g is not None and b is not None:
+            try:
+                lines.append(f"R {float(r):.4f}  G {float(g):.4f}  B {float(b):.4f}")
+            except Exception:
+                lines.append(f"R {r}  G {g}  B {b}")
+        elif k is not None:
+            doc = getattr(self, "document", None)
+            meta = getattr(doc, "metadata", {}) or {}
+            if meta.get("is_count_layer"):
+                try:
+                    cnt = int(round(float(k) * float(meta.get("count_max", 1.0))))
+                    lines.append(f"N {cnt}")
+                except Exception:
+                    lines.append(f"K {k}")
+            else:
+                try:
+                    lines.append(f"K {float(k):.4f}")
+                except Exception:
+                    lines.append(f"K {k}")
+
+        ra_deg, dec_deg = self._probe_radec(xi, yi)
+        if ra_deg is not None and dec_deg is not None:
+            # Greek alpha (RA) / delta (Dec), PixInsight-style, to save room
+            lines.append(f"\u03b1 {self._fmt_ra_hms(ra_deg, 1)}")
+            lines.append(f"\u03b4 {self._fmt_dec_dms(dec_deg, 0)}")
+        return lines
+
+    def _show_readout(self, xi, yi, sample):
+        mw = self._find_main_window()
+        if mw is None:
+            return
+
+        # We want raw float prints, never 16-bit normalized
+        r, g, b, k = self._parse_probe_sample(sample)
 
         msg = f"x={xi}  y={yi}"
 
         if r is not None and g is not None and b is not None:
-            msg += f"   R={r:.6f}  G={g:.6f}  B={b:.6f}"
+            try:
+                msg += f"   R={float(r):.6f}  G={float(g):.6f}  B={float(b):.6f}"
+            except Exception:
+                msg += f"   R={r}  G={g}  B={b}"
         elif k is not None:
-            msg += f"   K={k:.6f}"
+            try:
+                msg += f"   K={float(k):.6f}"
+            except Exception:
+                msg += f"   K={k}"
         else:
             # final fallback if everything was weird
             msg += "   K=?"
 
         # ---- WCS ----
-        wcs2 = self._get_celestial_wcs()
-        if wcs2 is not None:
+        ra_deg, dec_deg = self._probe_radec(xi, yi)
+        if ra_deg is not None and dec_deg is not None:
             try:
-                ra_deg, dec_deg = map(float, wcs2.pixel_to_world_values(float(xi), float(yi)))
-
                 # RA
                 ra_h = ra_deg / 15.0
                 ra_hh = int(ra_h)
@@ -4119,7 +4297,7 @@ class ImageSubWindow(QWidget):
             if res is not None:
                 xi, yi, sample = res
                 self._show_readout(xi, yi, sample)
-                self._update_loupe(xi, yi, vp_pos)
+                self._update_loupe(xi, yi, vp_pos, sample)
             return
 
         if self._dragging:

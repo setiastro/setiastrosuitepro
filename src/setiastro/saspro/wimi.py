@@ -709,14 +709,21 @@ Simbad.TIMEOUT = 300  # Increase timeout for long queries
 ASTROMETRY_API_URL = "http://nova.astrometry.net/api/"
 ASTROMETRY_API_KEY_FILE = "astrometry_api_key.txt"
 
-settings = QSettings("Seti Astro", "Seti Astro Suite")
-
 def save_api_key(api_key):
-    settings.setValue("astrometry_api_key", api_key)  # Save to QSettings
+    # Bare QSettings() -> app-default store (inherits org/app set at startup).
+    QSettings().setValue("astrometry_api_key", api_key)
     print("API key saved.")
 
 def load_api_key():
-    api_key = settings.value("astrometry_api_key", "")  # Load from QSettings
+    s = QSettings()
+    api_key = s.value("astrometry_api_key", "")
+    if not api_key:
+        # One-time migration from the old hard-coded store, if a key was
+        # saved there by a previous build. Harmless if the stores coincide.
+        legacy = QSettings("Seti Astro", "Seti Astro Suite").value("astrometry_api_key", "")
+        if legacy:
+            s.setValue("astrometry_api_key", legacy)
+            api_key = legacy
     if api_key:
         print("API key loaded.")
     return api_key
@@ -8871,11 +8878,22 @@ class WIMIDialog(QDialog):
                     return
 
         if result is None or len(result) == 0:
-            QMessageBox.information(
-                self,
-                "No Results",
-                "No objects found in the specified area."
-            )
+            # SIMBAD found nothing here — but don't stop if the Gaia augment is
+            # on: local Gaia DR3 stars in this region should still be returned.
+            # Only a truly empty result (SIMBAD *and* Gaia) means "nothing here".
+            self.results_tree.clear()
+            query_results = self._augment_results_with_local_gaia(
+                [], ra_center, dec_center, radius_deg)
+            if not query_results:
+                QMessageBox.information(
+                    self,
+                    "No Results",
+                    "No objects found in the specified area."
+                )
+            self.main_preview.set_query_results(query_results)
+            self.query_results = query_results
+            self.update_results_tree()
+            self.update_object_count()
             return
 
         # ——— 3a) list of all “star” & binary/variable OTYPE codes ———
