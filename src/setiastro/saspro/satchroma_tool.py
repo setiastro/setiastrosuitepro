@@ -785,13 +785,13 @@ class SatChromaTool(QDialog):
         self.chk_live.setChecked(True)
         self.chk_live.toggled.connect(self._on_live_toggled)
 
-        btn_prev = QPushButton("Preview")
-        btn_prev.clicked.connect(self._update_preview)
+        self.btn_prev = QPushButton("Preview")
+        self.btn_prev.clicked.connect(self._update_preview)
 
         opt_row.addWidget(self.chk_mask)
         opt_row.addStretch(1)
         opt_row.addWidget(self.chk_live)
-        opt_row.addWidget(btn_prev)
+        opt_row.addWidget(self.btn_prev)
         left_lay.addLayout(opt_row)
 
         self.lbl_status = QLabel("Ready.", self)
@@ -927,6 +927,10 @@ class SatChromaTool(QDialog):
     def _update_preview(self):
         if self._preview_src is None or self._before_px is None:
             return
+        if getattr(self, "_preview_busy", False):
+            return                       # a run is already in progress
+        self._preview_busy = True
+        self.btn_prev.setEnabled(False)
         try:
             self.lbl_status.setText("Updating preview…")
             out   = self._process(self._preview_src)
@@ -936,6 +940,9 @@ class SatChromaTool(QDialog):
             self.lbl_status.setText("Preview updated.")
         except Exception as e:
             self.lbl_status.setText(f"Preview error: {e}")
+        finally:
+            self._preview_busy = False
+            self.btn_prev.setEnabled(True)
 
     def _fit_preview_view(self):
         self.preview.reset_view()
@@ -962,6 +969,9 @@ class SatChromaTool(QDialog):
         self.combo_mode.setEnabled(enabled)
         self.spin_strength.setEnabled(enabled)
         self.sld_strength.setEnabled(enabled)
+        self.btn_prev.setEnabled(enabled)
+        self.chk_live.setEnabled(enabled)
+        self.chk_mask.setEnabled(enabled)
 
     def _apply(self):
         if self.document is None or self._source is None:

@@ -1661,10 +1661,14 @@ class SyQonStarlessDialog(QDialog):
                 tile=tile,
                 overlap=overlap,
                 device=device,
-                parent=self,
+                parent=None,   # not parented into the widget tree: a dialog
+                               # teardown must never reach a running QThread
+                               # (deleteChildren -> 'destroyed while running' -> abort)
             )
             self.proc_thr.progress.connect(self._on_worker_progress)
             self.proc_thr.finished.connect(self._on_worker_finished)
+            # delete the thread only AFTER run() has fully unwound
+            self.proc_thr.finished.connect(self.proc_thr.deleteLater)
             self.proc_thr.start()
             return
 
@@ -1726,11 +1730,13 @@ class SyQonStarlessDialog(QDialog):
             preview_src_rgb01=(preview_src if live_preview else None),
             preview_max_dim=900,
             preview_emit_ms=120,
-            parent=self,
+            parent=None,   # see standalone: keep the worker out of the widget tree
         )
         self.proc_thr.progress.connect(self._on_worker_progress)
         self.proc_thr.preview.connect(self._on_worker_preview)
         self.proc_thr.finished.connect(self._on_worker_finished)
+        # delete the thread only AFTER run() has fully unwound
+        self.proc_thr.finished.connect(self.proc_thr.deleteLater)
         self.proc_thr.start()
 
     def closeEvent(self, ev):

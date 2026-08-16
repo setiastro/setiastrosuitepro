@@ -1189,25 +1189,48 @@ def _header_from_text_block(s: str) -> Header:
 def _coerce_wcs_numbers(d: dict[str, Any]) -> dict[str, Any]:
     """
     Convert values for common WCS/SIP keys to int/float where appropriate.
-    Mirrors SASv2 logic.
+
+    ASTAP output and header round-trips sometimes store these as strings,
+    which makes astropy raise "'<' not supported between instances of 'str'
+    and 'int'" while parsing. Widened from the SASv2 logic to also cover the
+    PC/PV matrices, the pole keywords, and the axis-count keywords so no stray
+    string value can trip a comparison deeper inside astropy.
     """
-    numeric_keys = {
+    int_keys = {
+        "WCSAXES", "NAXIS", "NAXIS1", "NAXIS2", "NAXIS3",
+        "A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER",
+    }
+    float_keys = {
         "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2", "CDELT1", "CDELT2",
         "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CROTA1", "CROTA2",
-        "EQUINOX", "WCSAXES", "A_ORDER", "B_ORDER", "AP_ORDER", "BP_ORDER",
+        "EQUINOX", "LONPOLE", "LATPOLE",
     }
+    float_re = re.compile(r"^(?:PC\d+_\d+|PV\d+_\d+|(?:A|B|AP|BP)_\d+_\d+)$")
+
+    def _tok(v):
+        m = re.search(r"[+-]?\d*\.?\d+(?:[eE][+-]?\d+)?", str(v))
+        return m.group(0) if m else None
 
     out = {}
     for k, v in d.items():
         key = k.upper()
         try:
-            if key in numeric_keys or re.match(r"^(A|B|AP|BP)_\d+_\d+$", key):
-                if isinstance(v, str):
-                    val = float(v.strip())
-                    if val.is_integer(): val = int(val)
+            if key in int_keys:
+                if isinstance(v, bool):
+                    out[key] = v
+                elif isinstance(v, str):
+                    t = _tok(v)
+                    out[key] = int(float(t)) if t is not None else v
+                elif isinstance(v, float):
+                    out[key] = int(round(v))
                 else:
-                    val = v
-                out[key] = val
+                    out[key] = v
+            elif key in float_keys or float_re.match(key):
+                if isinstance(v, str):
+                    t = _tok(v)
+                    out[key] = float(t) if t is not None else v
+                else:
+                    out[key] = v
             else:
                 out[key] = v
         except Exception:
@@ -3421,7 +3444,7 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         if isinstance(acq_base, Header) and isinstance(hdr, Header):
             hdr_final = _merge_wcs_into_base_header(acq_base, hdr)
         else:
-            hdr_final = hdr if isinstance(hdr, Header) else Header()
+            hdr_final = _sanitized_header_for_wcs(hdr) if isinstance(hdr, Header) else Header()
 
         _debug_dump_header("FINAL MERGED HEADER (hdr_final)", hdr_final)
         # 🔹 NEW: stash pre-solve header ONCE so we never lose it
@@ -3499,12 +3522,52 @@ def plate_solve_doc_inplace(parent, doc, settings) -> Tuple[bool, Header | str]:
         if not ok_solve:
             _status_popup_close()
 
+def _sanitized_header_for_wcs(hdr: Header) -> Header:
+    """
+    Return a copy of *hdr* that is safe to hand to astropy's WCS().
+
+    ASTAP output and header round-trips sometimes leave numeric WCS/SIP
+    keywords stored as *strings* (e.g. A_ORDER='2', CRPIX1='1024.0').
+    astropy then compares such a string against an int while parsing and
+    raises "'<' not supported between instances of 'str' and 'int'".
+    Coercing everything to real int/float first prevents that — this is the
+    same coercion _wcs_only_from_header already relies on, extended to a few
+    extra keywords so no stray string value can trip a comparison deeper in.
+    """
+    hdr = _strip_nonfits_meta_keys_from_header(hdr)
+    d = _ensure_ctypes(_coerce_wcs_numbers(dict(hdr)))
+
+    extra_int   = re.compile(r"^(?:NAXIS\d*|WCSAXES)$")
+    extra_float = re.compile(r"^(?:PC\d+_\d+|PV\d+_\d+|LONPOLE|LATPOLE|"
+                             r"CRPIX\d+|CRVAL\d+|CDELT\d+|CD\d+_\d+|CROTA\d+)$")
+    for k in list(d.keys()):
+        ku = str(k).upper()
+        v  = d[k]
+        if not isinstance(v, str):
+            continue
+        try:
+            if extra_int.match(ku):
+                d[k] = int(float(v.strip().split()[0]))
+            elif extra_float.match(ku):
+                d[k] = float(v.strip().split()[0])
+        except Exception:
+            pass
+
+    out = Header()
+    for k, v in d.items():
+        try:
+            out[k] = v
+        except Exception:
+            pass
+    return out
+
+
 def _wcs_from_header_2d(hdr: Header, *, relax: bool = True) -> WCS:
     """
     Build a 2-D celestial WCS even if the FITS header advertises NAXIS=3 (RGB cube).
     This avoids WCSLIB SIP/distortion errors with 3D core WCS.
     """
-    hdr = _strip_nonfits_meta_keys_from_header(hdr)
+    hdr = _sanitized_header_for_wcs(hdr)
     return WCS(hdr, naxis=2, relax=relax)
 
 
@@ -3749,6 +3812,11 @@ def _post_solve_metadata_cleanup(meta: dict, hdr_final: Header) -> None:
     Make solved WCS canonical in metadata and eliminate stale/legacy WCS sources.
     Mutates meta in place.
     """
+    # Numerically sanitize once so original_header, the WCS object, and the
+    # WCS-only header below are all built from clean int/float keywords.
+    if isinstance(hdr_final, Header):
+        hdr_final = _sanitized_header_for_wcs(hdr_final)
+
     # Canonical current header
     meta["original_header"] = hdr_final
 
@@ -4435,7 +4503,7 @@ class PlateSolverDialog(QDialog):
         if isinstance(acq_base, Header) and isinstance(solver_hdr, Header):
             hdr_final = _merge_wcs_into_base_header(acq_base, solver_hdr)
         else:
-            hdr_final = solver_hdr if isinstance(solver_hdr, Header) else Header()
+            hdr_final = _sanitized_header_for_wcs(solver_hdr) if isinstance(solver_hdr, Header) else Header()
 
         # Save-as using legacy.save_image() with ORIGINAL pixels (not normalized)
         save_path, _ = QFileDialog.getSaveFileName(
@@ -4531,7 +4599,7 @@ class PlateSolverDialog(QDialog):
                 if isinstance(acq_base, Header) and isinstance(hdr, Header):
                     hdr_final = _merge_wcs_into_base_header(acq_base, hdr)
                 else:
-                    hdr_final = hdr if isinstance(hdr, Header) else Header()
+                    hdr_final = _sanitized_header_for_wcs(hdr) if isinstance(hdr, Header) else Header()
 
                 # Build header to save (and strip FILE_PATH)
                 h2 = Header()

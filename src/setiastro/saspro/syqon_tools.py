@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import numpy as np
-from PyQt6.QtCore import Qt, QSettings, QUrl, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QSettings, QUrl, QThread, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox,
     QStackedWidget, QWidget, QFormLayout, QGroupBox, QMessageBox,
@@ -277,10 +277,14 @@ class SyQonToolsDialog(QDialog):
         if current is self.page_starless:
             emb = getattr(self.page_starless, "_embedded_dlg", None)
             if emb is not None and getattr(emb, "doc", None) is not doc:
-                try:
-                    self.page_starless.ensure_embedded(self.parent(), doc)
-                except Exception:
-                    pass
+                # Defer the rebuild. currentDocumentChanged can be emitted
+                # synchronously from INSIDE the embedded dialog's own finished
+                # handler (the Starless CLI import pushes its result as a new
+                # document). Rebuilding here would setParent(None)/deleteLater
+                # that very dialog while its callback is still on the stack ->
+                # use-after-free / qFatal. Deferring lets the handler unwind,
+                # and the rebuild is skipped if a worker is still running.
+                self.page_starless.schedule_rebuild(self.parent(), doc)
             return
 
         # Denoise / Sharpen re-fetch the active doc at Process time; nothing to
@@ -331,6 +335,7 @@ class _SyQonStarlessHubPage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._embedded_dlg = None
+        self._pending_rebuild = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self._lay = lay
@@ -364,6 +369,43 @@ class _SyQonStarlessHubPage(QWidget):
         self._embedded_dlg = dlg
         self._lay.addWidget(dlg)
         dlg.show()
+
+    def schedule_rebuild(self, main, doc):
+        """Defer + coalesce a rebuild of the embedded Starless dialog.
+
+        Never rebuild synchronously from a doc-changed signal: that signal
+        can fire from inside the embedded dialog's own finished handler (the
+        standalone CLI import pushing its result as a new document), and
+        tearing the dialog down mid-callback aborts the process.
+        """
+        self._pending_rebuild = (main, doc)
+        QTimer.singleShot(0, self._do_pending_rebuild)
+
+    def _do_pending_rebuild(self):
+        pending = getattr(self, "_pending_rebuild", None)
+        self._pending_rebuild = None
+        if not pending:
+            return
+        main, doc = pending
+        emb = self._embedded_dlg
+        if emb is None:
+            return
+        # Don't rip the dialog out from under a running worker (also a qFatal).
+        thr = getattr(emb, "proc_thr", None)
+        try:
+            if thr is not None and thr.isRunning():
+                return
+        except Exception:
+            pass
+        # The active doc may have changed again while we waited; only rebuild
+        # if the embedded dialog is still pointed at a different doc.
+        if getattr(emb, "doc", None) is doc:
+            return
+        try:
+            self.ensure_embedded(main, doc)
+        except Exception:
+            pass
+
 class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
     _WORKER_LABEL = "SyQon Prism Denoise"
 
