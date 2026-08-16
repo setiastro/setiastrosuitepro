@@ -383,6 +383,9 @@ def load_sharpen_models(use_gpu: bool, status_cb=print) -> SharpenModels:
 
     if use_gpu and is_windows and not _dml_disabled() and not _prefer_ort_dml():
         try:
+            from setiastro.saspro.runtime_torch import directml_probe_ok
+            if not directml_probe_ok(status_cb):
+                raise RuntimeError("torch-directml unavailable (subprocess probe failed)")
             import torch_directml
             cache_key = (backend_tag, "dml_torch")
             if cache_key in _MODELS_CACHE:

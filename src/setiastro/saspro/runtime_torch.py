@@ -293,12 +293,58 @@ def mps_is_usable(torch=None) -> bool:
         return False
 
 
+_DML_PROBE_CACHE = None   # None=unknown, else cached bool for this process
+
+def directml_probe_ok(status_cb=lambda *_: None, timeout=60, force=False) -> bool:
+    """True iff `import torch_directml` + a trivial device op succeed in a
+    THROWAWAY subprocess.
+
+    A broken torch / torch-directml pair fails with a NATIVE fatal exception
+    (Windows 0xc0000139 / STATUS_ENTRYPOINT_NOT_FOUND) that a Python `except`
+    CANNOT catch — it terminates the whole process. Importing torch_directml
+    in-process 'to see if it works' therefore crashes the app. Probing in a
+    subprocess turns that crash into a survivable non-zero exit, so callers can
+    skip the in-process import and fall back to CPU. Result cached per process
+    (pass force=True to re-probe after an install/uninstall).
+    """
+    global _DML_PROBE_CACHE
+    if platform.system() != "Windows":
+        return False
+    if _DML_PROBE_CACHE is not None and not force:
+        return _DML_PROBE_CACHE
+    ok = False
+    try:
+        rt = _user_runtime_dir(status_cb=lambda *_: None)
+        vpy = _venv_paths(rt)["python"]
+        if Path(vpy).exists():
+            code = ("import torch, torch_directml; d=torch_directml.device(); "
+                    "print(int((torch.tensor([1]).to(d)+torch.tensor([2]).to(d)).item()))")
+            r = subprocess.run(
+                [str(vpy), "-c", code],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                env=_clean_subprocess_env(), timeout=timeout,
+            )
+            ok = (r.returncode == 0 and "3" in (r.stdout or ""))
+            if not ok:
+                status_cb(
+                    f"[RT] torch-directml probe failed (rc={r.returncode}); treating "
+                    "DirectML as unavailable. This is usually a torch / torch-directml "
+                    "version mismatch \u2014 delete the runtime folder and reinstall "
+                    "hardware acceleration."
+                )
+    except Exception as e:
+        status_cb(f"[RT] torch-directml probe error: {e}")
+        ok = False
+    _DML_PROBE_CACHE = ok
+    return ok
+
+
 def best_device(torch, *, prefer_cuda=True, prefer_dml=False, prefer_xpu=False):
     if prefer_cuda and getattr(torch, "cuda", None) and torch.cuda.is_available():
         return torch.device("cuda")
     if prefer_xpu and hasattr(torch, "xpu") and torch.xpu.is_available():
         return torch.device("xpu")
-    if prefer_dml and platform.system() == "Windows":
+    if prefer_dml and platform.system() == "Windows" and directml_probe_ok():
         try:
             import torch_directml
             d = torch_directml.device()

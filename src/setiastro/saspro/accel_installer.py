@@ -9,7 +9,7 @@ from typing import Callable, Optional
 from setiastro.saspro.runtime_torch import (
     import_torch, add_runtime_to_sys_path,
     _user_runtime_dir, _venv_paths, _SUPPORTED_PY_MINORS,
-    mps_is_usable,
+    mps_is_usable, directml_probe_ok,
 )
 
 LogCB = Callable[[str], None]
@@ -185,14 +185,21 @@ def ensure_torch_installed(
                 log_cb("Intel XPU available.")
             return True, None
 
-        # No CUDA/XPU/ROCm — evaluate DML on Windows non-NVIDIA
+        # No CUDA/XPU/ROCm — evaluate DML on Windows non-NVIDIA.
+        # Probe torch_directml in a subprocess FIRST: a torch/torch-directml
+        # mismatch crashes the process with an uncatchable 0xc0000139 if imported
+        # in-process, so we never import it here unless the probe survived.
         if is_windows and (not has_nv):
-            try:
-                import importlib
-                importlib.invalidate_caches()
-                import torch_directml  # noqa
-                log_cb("DirectML detected (already installed).")
-            except Exception:
+            _dml_ready = directml_probe_ok(log_cb)
+            if _dml_ready:
+                try:
+                    import importlib
+                    importlib.invalidate_caches()
+                    import torch_directml  # noqa
+                    log_cb("DirectML detected (already installed).")
+                except Exception:
+                    _dml_ready = False
+            if not _dml_ready:
                 rt = _user_runtime_dir()
                 vpy = _venv_paths(rt)["python"]
                 log_cb("Installing torch-directml (Windows fallback)…")
@@ -201,13 +208,16 @@ def ensure_torch_installed(
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                 )
                 if r.returncode == 0:
-                    try:
-                        import importlib
-                        importlib.invalidate_caches()
-                        import torch_directml  # noqa
-                        log_cb("DirectML backend available.")
-                    except Exception:
-                        log_cb("DirectML import failed after install; staying on CPU.")
+                    if directml_probe_ok(log_cb, force=True):   # re-probe after install
+                        try:
+                            import importlib
+                            importlib.invalidate_caches()
+                            import torch_directml  # noqa
+                            log_cb("DirectML backend available.")
+                        except Exception:
+                            log_cb("DirectML import failed after install; staying on CPU.")
+                    else:
+                        log_cb("DirectML unusable after install (probe failed); staying on CPU.")
                 else:
                     log_cb("DirectML install failed; staying on CPU.")
 
@@ -280,7 +290,7 @@ def current_backend() -> str:
         if mps_is_usable(torch):
             return "Apple MPS"
 
-        if _plat.system() == "Windows" and not has_nv:
+        if _plat.system() == "Windows" and not has_nv and directml_probe_ok():
             try:
                 import torch_directml  # noqa
                 return "DirectML"
