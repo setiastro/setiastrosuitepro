@@ -116,6 +116,14 @@ from setiastro.saspro.torch_rejection import (
     _safe_inference_ctx as _safe_inference_ctx_impl,
 )
 
+# Darks are session/date-agnostic. Master darks bucket only by exposure,
+# image size, temperature, gain and offset — never by capture date/session.
+# We stamp every master dark with this single constant session token so that
+# (a) darks from all nights combine, and (b) the existing MasterDark filename
+# parser (which expects a session field) keeps working.
+_DARK_SESSION = "All"
+
+
 def _safe_torch_inference_ctx():
     """Wrapper that resolves torch then returns a proper context manager instance."""
     try:
@@ -9536,10 +9544,37 @@ class StackingSuiteDialog(QDialog):
         self.add_dark_files_btn = QPushButton(self.tr("Add Dark Files"))
         self.add_dark_files_btn.clicked.connect(self.add_dark_files)
         self.add_dark_dir_btn = QPushButton(self.tr("Add Dark Directory"))
+        self.add_dark_dir_btn.setToolTip(self._add_directory_tooltip())
         self.add_dark_dir_btn.clicked.connect(self.add_dark_directory)
         btn_layout.addWidget(self.add_dark_files_btn)
         btn_layout.addWidget(self.add_dark_dir_btn)
         dark_frames_layout.addLayout(btn_layout)
+
+        # Options row (parity with Flats/Lights): recurse + shared auto-session toggle.
+        dark_opts_row = QHBoxLayout()
+        self.dark_recurse_cb = QCheckBox(self.tr("Recurse subfolders"))
+        self._bind_shared_setting_checkbox("stacking/recurse_dirs", self.dark_recurse_cb, default=True)
+        self.dark_auto_session_cb = QCheckBox(self.tr("Auto-detect session"))
+        self._bind_shared_setting_checkbox("stacking/auto_session", self.dark_auto_session_cb, default=True)
+        self.dark_auto_session_cb.setToolTip(self.tr(
+            "Shared session-detection toggle (also affects Lights and Flats).\n"
+            "Darks themselves are session/date-agnostic: master darks always group\n"
+            "only by exposure, image size, temperature, gain and offset — never by\n"
+            "capture date — so this setting does not change how darks are combined."
+        ))
+        dark_opts_row.addWidget(self.dark_recurse_cb)
+        dark_opts_row.addWidget(self.dark_auto_session_cb)
+        dark_opts_row.addStretch(1)
+        dark_frames_layout.addLayout(dark_opts_row)
+
+        dark_dir_hint = QLabel(self.tr(
+            "Add Dark Directory scans the folder (and subfolders if enabled) and sorts "
+            "frames by IMAGETYP: darks stay here, flats go to the Flats tab, lights go to "
+            "the Lights tab."
+        ))
+        dark_dir_hint.setWordWrap(True)
+        dark_dir_hint.setStyleSheet("color: #888; font-style: italic; font-size: 11px; margin-left: 4px;")
+        dark_frames_layout.addWidget(dark_dir_hint)
 
         self.clear_dark_selection_btn = QPushButton(self.tr("Clear Selection"))
         self.clear_dark_selection_btn.clicked.connect(lambda: self.clear_tree_selection_dark(self.dark_tree, self.dark_files))
@@ -9813,6 +9848,7 @@ class StackingSuiteDialog(QDialog):
         self.add_flat_files_btn = QPushButton(self.tr("Add Flat Files"))
         self.add_flat_files_btn.clicked.connect(self.add_flat_files)
         self.add_flat_dir_btn = QPushButton(self.tr("Add Flat Directory"))
+        self.add_flat_dir_btn.setToolTip(self._add_directory_tooltip())
         self.add_flat_dir_btn.clicked.connect(self.add_flat_directory)
         btn_layout.addWidget(self.add_flat_files_btn)
         btn_layout.addWidget(self.add_flat_dir_btn)
@@ -10125,6 +10161,7 @@ class StackingSuiteDialog(QDialog):
         self.add_light_files_btn = QPushButton(self.tr("Add Light Files"))
         self.add_light_files_btn.clicked.connect(self.add_light_files)
         self.add_light_dir_btn = QPushButton(self.tr("Add Light Directory"))
+        self.add_light_dir_btn.setToolTip(self._add_directory_tooltip())
         self.add_light_dir_btn.clicked.connect(self.add_light_directory)
         btn_layout.addWidget(self.add_light_files_btn)
         btn_layout.addWidget(self.add_light_dir_btn)
@@ -13510,6 +13547,20 @@ class StackingSuiteDialog(QDialog):
         self.sessionNameButton.setEnabled(not checked)    # any “set session” button
 
 
+    def _add_directory_tooltip(self) -> str:
+        """Shared tooltip for every 'Add ... Directory' button, so it's obvious
+        that a directory add scans and sorts frames into the correct tab."""
+        return self.tr(
+            "Scans the selected folder (and subfolders when 'Recurse subfolders' is on) "
+            "and sorts each frame into the right tab by its IMAGETYP:\n"
+            "  • Darks  → Darks tab\n"
+            "  • Flats  → Flats tab\n"
+            "  • Lights → Lights tab\n"
+            "Frames whose type doesn't match this tab are offered to the correct tab "
+            "(with an 'apply to all' option), so you can point any of the three "
+            "Add Directory buttons at a mixed capture folder."
+        )
+
     def add_directory(self, tree, title, expected_type):
         last_dir = (
             self.settings.value("stacking/dir", "", type=str)
@@ -14244,16 +14295,19 @@ class StackingSuiteDialog(QDialog):
                     temp_item.addChild(go_item)
                     self._dark_go_item[go_key] = go_item
 
-                # composite key now includes gain_val and offset_val
-                composite_key = (base_key, session_tag, temp_bucket, gain_val, offset_val)
+                # Darks are session/date-agnostic: key ONLY by exposure/size,
+                # temperature, gain and offset. Using a constant session bucket
+                # keeps darks from all nights in the same group so they combine.
+                composite_key = (base_key, _DARK_SESSION, temp_bucket, gain_val, offset_val)
                 self.dark_files.setdefault(composite_key, []).append(path)
 
+                # Note: no "Session:" shown for darks — sessions don't apply to them.
                 meta_text_dark = (
-                    f"Size: {image_size} | Session: {session_tag} | {temp_label} | {go_label}"
+                    f"Size: {image_size} | {temp_label} | {go_label}"
                 )
                 leaf = QTreeWidgetItem([os.path.basename(path), meta_text_dark])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, path)
-                leaf.setData(0, Qt.ItemDataRole.UserRole + 1, session_tag)
+                leaf.setData(0, Qt.ItemDataRole.UserRole + 1, _DARK_SESSION)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 2, temp_bucket)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 3, gain_val)
                 leaf.setData(0, Qt.ItemDataRole.UserRole + 4, offset_val)
@@ -14476,18 +14530,24 @@ class StackingSuiteDialog(QDialog):
                 offset = _get_key_float(hdr, "BLKLEVEL")
             return gain, offset
 
+        # Darks are session/date-agnostic: they bucket ONLY by exposure, image
+        # size, temperature, gain and offset. We deliberately ignore whatever
+        # session tag (e.g. a capture date) is stored on the key so darks from
+        # any/all nights combine into a single master per (exp, size, temp, gain,
+        # offset). See _DARK_SESSION.
         for key, file_list in (self.dark_files or {}).items():
             if isinstance(key, tuple) and len(key) >= 2:
                 exposure_key = str(key[0])
-                session      = str(key[1]) if str(key[1]).strip() else "Default"
-                # key may already carry gain/offset from new ingest (len>=5)
-                stored_gain   = key[4] if len(key) >= 5 else None
-                stored_offset = key[5] if len(key) >= 6 else None
+                # Ingest key layout: (base_key, session, temp_bucket, gain, offset)
+                stored_gain   = key[3] if len(key) >= 4 else None
+                stored_offset = key[4] if len(key) >= 5 else None
             else:
                 exposure_key  = str(key)
-                session       = "Default"
                 stored_gain   = None
                 stored_offset = None
+
+            # Force a single, constant session bucket for all darks.
+            session = _DARK_SESSION
 
             try:
                 exposure_time_str, image_size = exposure_key.split(" (", 1)
@@ -14640,7 +14700,7 @@ class StackingSuiteDialog(QDialog):
             for (exposure_time, image_size, session, temp_bucket, gain, offset), file_list in dark_files_by_group.items():
                 if len(file_list) < 2:
                     self.update_status(self.tr(
-                        f"⚠️ Skipping {exposure_time:g}s ({image_size}) [{session}] - Not enough frames to stack."
+                        f"⚠️ Skipping {exposure_time:g}s ({image_size}) - Not enough frames to stack."
                     ))
                     QApplication.processEvents()
                     continue
@@ -14887,7 +14947,7 @@ class StackingSuiteDialog(QDialog):
                 if _dark_roworder:
                     master_header["ROWORDER"] = _dark_roworder
                 master_header["EXPTIME"]  = (float(exposure_time), "Exposure time (s)")
-                master_header["SESSION"]  = (str(session), "User session tag")
+                master_header["SESSION"]  = (str(session), "Session-agnostic dark (applies to all)")
                 master_header["NCOMBINE"] = (int(N), "Number of darks combined")
                 master_header["NSTACK"]   = (int(N), "Alias of NCOMBINE (SetiAstro)")
                 if gain is not None:
@@ -14934,7 +14994,8 @@ class StackingSuiteDialog(QDialog):
                 )
 
                 # Tree label includes temp for visibility
-                tree_label = f"{exposure_time:g}s ({image_size}) [{session}]"
+                # Darks are session-agnostic — no session bracket in the label.
+                tree_label = f"{exposure_time:g}s ({image_size})"
                 if temp_info.get("ccd_med") is not None:
                     tree_label += f" [CCD {float(temp_info['ccd_med']):+.1f}C]"
                 elif temp_info.get("set_med") is not None:
@@ -16340,8 +16401,10 @@ class StackingSuiteDialog(QDialog):
                                 continue
 
                             exp_diff = abs(float(md_exp) - float(exposure_time))
-                            md_sess = (md.get("session") or "Default").strip()
-                            sess_mismatch = 0 if md_sess == session_name else 1
+                            # Darks are session/date-agnostic — never let the capture
+                            # session influence which master dark is chosen. Selection
+                            # is purely exposure / gain / offset / temperature based.
+                            sess_mismatch = 0
 
                             md_temp = md.get("temp")
                             if (l_temp is not None) and (md_temp is not None):

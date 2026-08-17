@@ -1939,12 +1939,36 @@ class ExoPlanetWindow(QDialog):
         # --- drop stars with too many flagged frames ---
         good_counts = np.sum(flags == 0, axis=1)
         keep        = good_counts >= (0.75 * n_frames)
-        xs, ys      = xs[keep], ys[keep]
-        rel_flux    = rel_flux[keep, :]
-        flags       = flags[keep, :]
+
+        # Remap ensemble_map from OLD (pre-filter) star indices to NEW
+        # (post-filter) indices, dropping any member that was itself filtered
+        # out. Without this, everything keyed by star index after a drop -- the
+        # auto-selected check star, its catalog mag, and the per-frame errors --
+        # points at the wrong row.
+        old_to_new = -np.ones(n_stars, dtype=int)
+        old_to_new[np.where(keep)[0]] = np.arange(int(np.count_nonzero(keep)))
+        remapped = {}
+        for old_i in range(n_stars):
+            new_i = int(old_to_new[old_i])
+            if new_i < 0:
+                continue
+            remapped[new_i] = [int(old_to_new[j])
+                               for j in self.ensemble_map.get(old_i, [])
+                               if 0 <= j < n_stars and old_to_new[j] >= 0]
+        self.ensemble_map = remapped
+
+        xs, ys       = xs[keep], ys[keep]
+        rel_flux     = rel_flux[keep, :]
+        rel_err      = rel_err[keep, :]
+        raw_flux     = raw_flux[keep, :]
+        raw_flux_err = raw_flux_err[keep, :]
+        flags        = flags[keep, :]
 
         self.star_positions = list(zip(xs, ys))
         self.fluxes         = rel_flux.copy()
+        self.flux_errors    = rel_err.copy()
+        self.raw_flux       = raw_flux.copy()       # background-subtracted instrumental flux
+        self.raw_flux_err   = raw_flux_err.copy()   # its 1-sigma error -- needed for calibrated mags
         self.flags          = flags
 
         # list uses median rel flux, not the first frame
@@ -2907,6 +2931,106 @@ class ExoPlanetWindow(QDialog):
         alt_rad = np.deg2rad(np.clip(alt_deg, 0.1, 90.0))
         return 1.0 / np.sin(alt_rad)
 
+    def _catalog_vmags_for_members(self, members, wcs):
+        """Return {member_index: (Vmag, source)} for as many ensemble members as
+        we can attach a Johnson V catalog magnitude to. Tries, in order:
+          1) the Magnitude tool's cached catalog on the active doc
+             (metadata["SFCC_star_list"]) -- real/anchored Johnson V
+             (APASS / SIMBAD / Gaia-XP), so no network call when it's present;
+          2) APASS DR9 (VizieR II/336/apass9) -- Johnson V directly;
+          3) UCAC4 (VizieR I/322A/out) -- APASS-derived Johnson V.
+        Matching is done in SKY coordinates, so it is valid even though the two
+        tools may sit on different pixel grids. Never raises: on any failure a
+        member is simply left unresolved and the caller falls back to the
+        single check-star calibration.
+        """
+        import numpy as _np
+        out = {}
+        members = [int(m) for m in members if 0 <= int(m) < len(self.star_positions)]
+        if not members:
+            return out
+
+        try:
+            from astropy.coordinates import SkyCoord
+            import astropy.units as u
+        except Exception:
+            return out
+
+        # member sky coords (respect the detection bin factor, as elsewhere)
+        bf = getattr(self, "_wcs_bin_factor", 1)
+        mras, mdecs, mkeys = [], [], []
+        for m in members:
+            try:
+                x, y = self.star_positions[m]
+                sky = wcs.pixel_to_world(x * bf, y * bf)
+                mras.append(float(sky.ra.deg)); mdecs.append(float(sky.dec.deg)); mkeys.append(m)
+            except Exception:
+                continue
+        if not mkeys:
+            return out
+        member_sc = SkyCoord(_np.asarray(mras) * u.deg, _np.asarray(mdecs) * u.deg)
+        TOL = 3.0 * u.arcsec
+
+        def _to_float_nan(arr):
+            try:
+                mm = _np.ma.masked_invalid(_np.ma.asarray(arr, dtype=float))
+                return _np.ma.filled(mm, _np.nan)
+            except Exception:
+                return _np.array([_np.nan if v is None else float(v) for v in arr], dtype=float)
+
+        def _apply_catalog(cat_ra, cat_dec, cat_v, source):
+            cra = _to_float_nan(cat_ra); cde = _to_float_nan(cat_dec); cvm = _to_float_nan(cat_v)
+            good = _np.isfinite(cra) & _np.isfinite(cde) & _np.isfinite(cvm)
+            if not _np.any(good):
+                return
+            cat_sc = SkyCoord(cra[good] * u.deg, cde[good] * u.deg)
+            cvm = cvm[good]
+            todo = [i for i, m in enumerate(mkeys) if m not in out]
+            if not todo:
+                return
+            try:
+                idx_cat, sep2d, _ = member_sc[todo].match_to_catalog_sky(cat_sc)
+            except Exception:
+                return
+            for t, ic, sp in zip(todo, _np.atleast_1d(idx_cat), _np.atleast_1d(sep2d)):
+                if sp <= TOL:
+                    out[mkeys[t]] = (float(cvm[int(ic)]), source)
+
+        # 1) Magnitude tool's cached catalog (no network)
+        try:
+            from setiastro.saspro.plate_solver import _active_doc_from_parent
+            doc = _active_doc_from_parent(self.parent())
+            meta = getattr(doc, "metadata", {}) or {}
+            cat = meta.get("SFCC_star_list") or []
+            if cat:
+                _apply_catalog([c.get("ra") for c in cat],
+                               [c.get("dec") for c in cat],
+                               [c.get("Vmag") for c in cat], "MagTool")
+        except Exception:
+            pass
+
+        def _cone():
+            c0 = SkyCoord(_np.mean(mras) * u.deg, _np.mean(mdecs) * u.deg)
+            rad = c0.separation(member_sc).max() * 1.15 + 30 * u.arcsec
+            return c0, rad
+
+        # 2) APASS DR9  then  3) UCAC4  -- only for members still unresolved
+        for cat_id, source in (("II/336/apass9", "APASS9"), ("I/322A/out", "UCAC4")):
+            if not any(m not in out for m in mkeys):
+                break
+            try:
+                from astroquery.vizier import Vizier
+                c0, rad = _cone()
+                vz = Vizier(columns=["RAJ2000", "DEJ2000", "Vmag"], row_limit=50000)
+                res = vz.query_region(c0, radius=rad, catalog=cat_id)
+                if res:
+                    tbl = res[0]
+                    _apply_catalog(tbl["RAJ2000"], tbl["DEJ2000"], tbl["Vmag"], source)
+            except Exception:
+                pass
+
+        return out
+
     def export_to_aavso(self):
         if getattr(self, "fluxes", None) is None or getattr(self, "times", None) is None:
             QMessageBox.warning(self, "Export AAVSO", "No photometry available. Run Measure & Photometry first.")
@@ -2955,7 +3079,7 @@ class ExoPlanetWindow(QDialog):
 
         raw_members = self.ensemble_map.get(idx, [])
         members     = [m for m in raw_members if 0 <= m < len(self.star_positions)]
-        kname = None; kmag  = None
+        kname = None; kmag = None; k_idx = None
         for m in members:
             x, y = self.star_positions[m]
             bin_factor = getattr(self, "_wcs_bin_factor", 1)
@@ -2963,7 +3087,7 @@ class ExoPlanetWindow(QDialog):
 
             name, v = self._query_simbad_name_and_vmag(sky.ra.deg, sky.dec.deg)
             if name and (v is not None) and np.isfinite(v):
-                kname, kmag = name, v
+                kname, kmag, k_idx = name, v, m
                 break
         if kname is None:
             kname, ok = QInputDialog.getText(self, "Check Star Name", "Could not auto-identify a check star. Enter check-star ID:")
@@ -2971,6 +3095,16 @@ class ExoPlanetWindow(QDialog):
             kname = kname.strip()
             kmag, ok = QInputDialog.getDouble(self, "Check Star Magnitude", f"Enter catalog magnitude for {kname}:", decimals=3)
             if not ok: return
+
+        # Calibration needs the check star's MEASURED flux row. If it wasn't
+        # auto-identified above, ask which list entry it is.
+        if k_idx is None:
+            k_idx, ok = QInputDialog.getInt(
+                self, "Check Star",
+                "Enter the list index (#) of the check star used for calibration:",
+                0, 0, max(0, len(self.star_positions) - 1))
+            if not ok:
+                return
 
         filt_choices = ["V","TG","TB","TR"]
         filt, ok = QInputDialog.getItem(self, "Filter", "Select filter code for this dataset:", filt_choices, 0, False)
@@ -2999,23 +3133,94 @@ class ExoPlanetWindow(QDialog):
         header_lines.append("#NAME,DATE,MAG,MERR,FILT,TRANS,MTYPE,CNAME,CMAG,KNAME,KMAG,AMASS,GROUP,CHART,NOTES")
 
         jd = self.times.utc.jd
-        rel_flux = self.fluxes[idx, :]
-        with np.errstate(divide="ignore"):
-            mags = kmag - 2.5 * np.log10(rel_flux)
-        if hasattr(self, "flux_errors"):
-            rel_err = self.flux_errors[idx, :]
-            merr = (2.5/np.log(10)) * (rel_err / rel_flux)
+
+        # -- Calibrated magnitudes --------------------------------------------
+        # Build a real PER-FRAME photometric zero point from the target's
+        # ensemble comparison stars that carry catalog V magnitudes, exactly
+        # like the Magnitude/Surface-Brightness tool:
+        #     ZP(t)  = median_i( Vcat_i + 2.5*log10 F_i(t) )
+        #     m_T(t) = -2.5*log10 F_T(t) + ZP(t)
+        # Computing ZP per frame keeps it differential (transparency/airmass
+        # cancel frame-to-frame), anchors it to Johnson V, and yields an honest
+        # per-frame SEM. If too few comparison stars have catalog mags, fall
+        # back to a single-comparison calibration against the check star.
+        #
+        # NOTE: untransformed V (no color term) -- each comp's ZP absorbs its
+        # own color, so the star-to-star scatter (hence SEM) reflects real
+        # calibration spread, which is why we sigma-clip the comp set and keep a
+        # systematic floor in quadrature rather than trusting SEM alone.
+        comp_members = [m for m in members if m != k_idx]
+        vmap = self._catalog_vmags_for_members(comp_members, wcs)   # {idx: (V, source)}
+        comp_idx = np.array([m for m in comp_members if m in vmap], dtype=int)
+        comp_mag = np.array([vmap[m][0] for m in comp_idx], dtype=float)
+
+        LOGC   = 2.5 / np.log(10.0)
+        floor  = float(getattr(self, "sys_floor_mag", 0.10) or 0.0)
+        F_T    = np.asarray(self.raw_flux[idx, :],     dtype=np.float64)
+        Ferr_T = np.asarray(self.raw_flux_err[idx, :], dtype=np.float64)
+
+        if comp_idx.size >= 3:
+            Fi  = np.asarray(self.raw_flux[comp_idx, :], dtype=np.float64)   # (Ncomp, Nframe)
+            okF = np.isfinite(Fi) & (Fi > 0)
+            zi  = np.where(okF, comp_mag[:, None] + 2.5 * np.log10(np.where(okF, Fi, 1.0)), np.nan)
+
+            # choose a stable comparison set ONCE (sigma-clip on each star's run-median ZP)
+            z_star = np.nanmedian(zi, axis=1)
+            keepC  = np.isfinite(z_star)
+            for _ in range(3):
+                if not np.any(keepC):
+                    break
+                med = np.nanmedian(z_star[keepC]); sd = np.nanstd(z_star[keepC])
+                if not np.isfinite(sd) or sd == 0:
+                    break
+                keepC &= np.abs(z_star - med) <= 3.0 * sd
+            zi = zi[keepC, :]
+
+            ZP_t  = np.nanmedian(zi, axis=0)
+            n_t   = np.sum(np.isfinite(zi), axis=0)
+            madz  = np.nanmedian(np.abs(zi - ZP_t[None, :]), axis=0)
+            SEM_t = np.where(n_t > 1, 1.4826 * madz / np.sqrt(np.maximum(n_t, 1)), np.nan)
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                mags = -2.5 * np.log10(F_T) + ZP_t
+                merr = np.sqrt((LOGC * Ferr_T / F_T) ** 2
+                               + np.nan_to_num(SEM_t) ** 2 + floor ** 2)
+            bad = ~np.isfinite(mags) | (F_T <= 0) | (n_t < 1)
+
+            n_ens       = int(np.count_nonzero(keepC))
+            cname_field = "ENSEMBLE"
+            cmag_field  = "na"
+            kname_field = kname
+            kmag_field  = f"{kmag:.3f}"
+            note_field  = f"ensemble ZP=median(Vcat+2.5log10 F) N={n_ens}; err incl SEM+{floor:.2f}floor"
         else:
-            merr = np.full_like(mags, np.nan)
+            # Fallback: single-comparison vs the check star, raw-flux ratio.
+            F_C    = np.asarray(self.raw_flux[k_idx, :],     dtype=np.float64)
+            Ferr_C = np.asarray(self.raw_flux_err[k_idx, :], dtype=np.float64)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                mags  = kmag - 2.5 * np.log10(F_T / F_C)
+                frac2 = (Ferr_T / F_T) ** 2 + (Ferr_C / F_C) ** 2
+                merr  = np.sqrt((LOGC ** 2) * frac2 + floor ** 2)
+            bad = ~np.isfinite(mags) | (F_T <= 0) | (F_C <= 0)
+
+            cname_field = kname
+            cmag_field  = f"{kmag:.3f}"
+            kname_field = "na"
+            kmag_field  = "na"
+            note_field  = f"single-comparison vs {kname}; err incl {floor:.2f} floor"
+
+        mags = np.where(bad, np.nan, mags)
+        merr = np.where(bad | ~np.isfinite(merr), np.nan, merr)
 
         try:
             with open(path, "w") as f:
-                for L in header_lines: f.write(L + "\n")
-                f.write("\n")
+                for L in header_lines:
+                    f.write(L + "\n")
                 for j, t in enumerate(jd):
-                    m   = mags[j]; me  = merr[j]
+                    m = mags[j]; me = merr[j]
+                    if not np.isfinite(m):
+                        continue  # no valid calibrated magnitude for this frame
                     me_str = f"{me:.3f}" if np.isfinite(me) else "na"
-                    note = "MAG calc via ensemble: m=-2.5 log10(F/Fe)+K"
                     am = float(np.clip(self.airmasses[j] if j < len(self.airmasses) else 1.0, 1.0, 40.0))
                     fields = [
                         star_id,
@@ -3025,14 +3230,14 @@ class ExoPlanetWindow(QDialog):
                         filt,
                         "NO",
                         "STD",
-                        "ENSEMBLE",
-                        "na",
-                        kname,
-                        f"{kmag:.3f}",
+                        cname_field,
+                        cmag_field,
+                        kname_field,
+                        kmag_field,
                         f"{am:.1f}",
                         "na",
                         "na",
-                        note
+                        note_field,
                     ]
                     f.write(",".join(fields) + "\n")
         except Exception as e:
@@ -3160,4 +3365,3 @@ class ExoPlanetWindow(QDialog):
 
         sky = self._wcs.pixel_to_world(xw, yw)
         return sky.ra.degree, sky.dec.degree
-
