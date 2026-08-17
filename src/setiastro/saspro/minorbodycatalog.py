@@ -50,7 +50,10 @@ MANIFEST_URL = (
     "https://raw.githubusercontent.com/setiastro/"
     "saspro-minorbody-data/main/saspro_minor_bodies_manifest.json"
 )
-
+# Human-friendly page users can open in a browser to grab the DB manually
+# (works around macOS Python SSL: CERTIFICATE_VERIFY_FAILED issues).
+REPO_URL          = "https://github.com/setiastro/saspro-minorbody-data"
+RELEASES_PAGE_URL = "https://github.com/setiastro/saspro-minorbody-data/releases/latest"
 # Default filenames (as defined by the manifest you showed)
 DEFAULT_DB_BASENAME = "saspro_minor_bodies.sqlite"
 DEFAULT_MANIFEST_BASENAME = "saspro_minor_bodies_manifest.json"
@@ -260,6 +263,108 @@ def ensure_minor_body_db(
 
     return db_path, manifest
 
+def install_local_db_file(
+    src_path: Path,
+    data_dir: Path,
+    manifest_url: str = MANIFEST_URL,
+) -> Tuple[Path, MinorBodyManifest]:
+    """
+    Install a user-provided minor-body SQLite DB into ``data_dir``.
+
+    Intended as an escape hatch when the automatic downloader can't
+    reach GitHub — most commonly the macOS Python
+    ``SSL: CERTIFICATE_VERIFY_FAILED`` error. The user downloads
+    ``saspro_minor_bodies.sqlite`` from the releases page in a browser
+    (which uses the system trust store), then points us at the file.
+
+    We validate that the file really is a SQLite DB with the expected
+    ``asteroids`` and ``comets`` tables, copy it into ``data_dir``,
+    and write a local manifest. If the remote manifest is reachable we
+    use its version/counts; otherwise we synthesize a minimal one from
+    the DB itself so the UI still has something sensible to show.
+
+    Returns ``(db_path, manifest)``, matching ``ensure_minor_body_db``.
+    """
+    import shutil
+
+    src = Path(src_path).resolve()
+    if not src.is_file():
+        raise FileNotFoundError(f"Source file does not exist: {src}")
+
+    # ---- Validate: readable SQLite with expected tables ----
+    try:
+        uri = f"file:{src.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name IN ('asteroids','comets')"
+            )
+            tables = {row[0] for row in cur.fetchall()}
+            missing = {"asteroids", "comets"} - tables
+            if missing:
+                raise RuntimeError(
+                    "Selected file does not look like a minor-body database "
+                    f"(missing table(s): {', '.join(sorted(missing))})."
+                )
+            cur.execute("SELECT COUNT(*) FROM asteroids")
+            n_ast = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM comets")
+            n_com = int(cur.fetchone()[0])
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"Not a valid SQLite database: {exc}") from exc
+
+    # ---- Best-effort remote manifest (may fail with the same SSL error;
+    #      that's fine, we'll synthesize one below) ----
+    remote_manifest: Optional[MinorBodyManifest] = None
+    try:
+        remote_manifest = fetch_remote_manifest(manifest_url)
+    except Exception:
+        remote_manifest = None
+
+    dest_name = (
+        remote_manifest.download_filename
+        if (remote_manifest and remote_manifest.download_filename)
+        else DEFAULT_DB_BASENAME
+    )
+
+    data_dir = data_dir.resolve()
+    data_dir.mkdir(parents=True, exist_ok=True)
+    db_path = data_dir / dest_name
+
+    # ---- Copy into place atomically ----
+    tmp = db_path.with_suffix(db_path.suffix + ".part")
+    shutil.copyfile(src, tmp)
+    tmp.replace(db_path)
+
+    # ---- Save (or synthesize) the local manifest ----
+    local_manifest_path = data_dir / DEFAULT_MANIFEST_BASENAME
+    if remote_manifest is not None:
+        save_local_manifest(local_manifest_path, remote_manifest)
+        return db_path, remote_manifest
+
+    synthesized_raw = {
+        "schema_version": 1,
+        "version": "manual-install",
+        "generated_utc": "",
+        "download": {"url": "", "filename": dest_name},
+        "counts": {"asteroids": n_ast, "comets": n_com},
+    }
+    manifest = MinorBodyManifest(
+        schema_version=1,
+        version="manual-install",
+        generated_utc="",
+        download_url="",
+        download_filename=dest_name,
+        counts_asteroids=n_ast,
+        counts_comets=n_com,
+        raw=synthesized_raw,
+    )
+    save_local_manifest(local_manifest_path, manifest)
+    return db_path, manifest
 
 # ---------------------------------------------------------------------------
 # Catalog class

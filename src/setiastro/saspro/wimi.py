@@ -3821,8 +3821,34 @@ class WIMIDialog(QDialog):
         self.minor_db_label = QLabel(self.tr("Database: not downloaded"))
         self.minor_db_label.setStyleSheet("font-size: 10px; color: gray;")
 
-        self.btn_minor_download = QPushButton(self.tr("Download Catalog"))
+        # Main action: automatic download. The little arrow opens a menu with
+        # a manual-install path for users hit by macOS SSL cert errors, etc.
+        self.btn_minor_download = QToolButton()
+        self.btn_minor_download.setText(self.tr("Download Catalog"))
+        self.btn_minor_download.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.btn_minor_download.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         self.btn_minor_download.clicked.connect(self.download_minor_body_catalog)
+
+        _dl_menu = QMenu(self.btn_minor_download)
+        _dl_menu.addAction(
+            self.tr("Force Re-download…"),
+            lambda: self.download_minor_body_catalog(force=True),
+        )
+        _dl_menu.addSeparator()
+        _dl_menu.addAction(
+            self.tr("Install from Local File…"),
+            self.install_minor_body_catalog_from_file,
+        )
+        _dl_menu.addAction(
+            self.tr("Open Download Page in Browser…"),
+            self.open_minor_body_download_page,
+        )
+        self.btn_minor_download.setMenu(_dl_menu)
+        self.btn_minor_download.setToolTip(self.tr(
+            "Download the minor-body catalog.\n"
+            "Use the ▾ arrow if the automatic download fails "
+            "(e.g. macOS SSL certificate errors)."
+        ))
 
         self.btn_minor_search = QPushButton(self.tr("Search Minor Bodies"))
         self.btn_minor_search.clicked.connect(self.perform_minor_body_search)
@@ -7421,6 +7447,79 @@ class WIMIDialog(QDialog):
         self.settings.sync()
         self.minor_db_path = path
         self._load_minor_db_path()   # reuse logic to update label
+
+    def install_minor_body_catalog_from_file(self) -> None:
+        """
+        Install a user-provided minor-body SQLite DB. Workaround for
+        environments where the automatic download fails — most commonly
+        macOS Python hitting SSL: CERTIFICATE_VERIFY_FAILED because it
+        can't find a CA bundle.
+
+        Users download the .sqlite in a browser (which uses the system
+        trust store) and then point us at it here.
+        """
+        from pathlib import Path
+        from setiastro.saspro import minorbodycatalog as mbc
+
+        src_path, _ = QFileDialog.getOpenFileName(
+            self,
+            self.tr("Select minor-body SQLite file"),
+            "",
+            self.tr("SQLite databases (*.sqlite *.db);;All files (*)"),
+        )
+        if not src_path:
+            return
+
+        data_dir = self._minorbody_data_dir()
+
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        self.status_label.setText("Status: Installing minor-body catalog…")
+        try:
+            db_path, manifest = mbc.install_local_db_file(
+                src_path=Path(src_path),
+                data_dir=data_dir,
+            )
+        except Exception as exc:
+            QApplication.restoreOverrideCursor()
+            self.status_label.setText("Status: Minor-body catalog install failed.")
+            QMessageBox.critical(
+                self,
+                self.tr("Minor-Body Catalog Error"),
+                self.tr("Failed to install minor-body catalog:\n{err}").format(err=exc),
+            )
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        self._save_minor_db_path(str(db_path))
+
+        ast = f"{manifest.counts_asteroids:,}"
+        com = f"{manifest.counts_comets:,}"
+        self.status_label.setText("Status: Minor-body catalog ready.")
+        QMessageBox.information(
+            self,
+            self.tr("Minor-Body Catalog"),
+            self.tr(
+                "Minor-body catalog installed from local file.\n"
+                "Version: {ver}\n"
+                "Asteroids: {ast}\n"
+                "Comets: {com}"
+            ).format(ver=manifest.version, ast=ast, com=com),
+        )
+
+    def open_minor_body_download_page(self) -> None:
+        """Open the GitHub releases page so the user can download the .sqlite manually."""
+        from setiastro.saspro import minorbodycatalog as mbc
+        QMessageBox.information(
+            self,
+            self.tr("Manual Download"),
+            self.tr(
+                "Your browser will open the SASpro minor-body releases page.\n\n"
+                "Download the '{name}' asset from the latest release, then use\n"
+                "'Install from Local File…' from the ▾ menu next to Download Catalog."
+            ).format(name=mbc.DEFAULT_DB_BASENAME),
+        )
+        webbrowser.open(mbc.RELEASES_PAGE_URL)
 
     def download_minor_body_catalog(self, force: bool = False) -> None:
         """
