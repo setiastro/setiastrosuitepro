@@ -1482,10 +1482,29 @@ _kappa  = 24389.0/27.0
 _eps    = 216.0/24389.0
 
 def _np_rgb_to_xyz(rgb01):
-    return (rgb01.reshape(-1,3) @ _M_rgb2xyz.T).reshape(rgb01.shape)
+    # Explicit element-wise formulation instead of `@` / BLAS matmul.
+    # BLAS matmul is NOT reliably thread-safe on Windows with the MKL
+    # backends numpy ships with — concurrent calls from the main thread
+    # (preview / histogram) and the background worker (full-res) can
+    # corrupt MKL's thread-local state and crash with an access violation.
+    # This form uses only element-wise ops which are safe under any
+    # BLAS backend and are essentially the same speed for a 3x3 matrix.
+    R = rgb01[..., 0]; G = rgb01[..., 1]; B = rgb01[..., 2]
+    M = _M_rgb2xyz
+    X = M[0,0]*R + M[0,1]*G + M[0,2]*B
+    Y = M[1,0]*R + M[1,1]*G + M[1,2]*B
+    Z = M[2,0]*R + M[2,1]*G + M[2,2]*B
+    return np.stack([X, Y, Z], axis=-1).astype(np.float32, copy=False)
 
 def _np_xyz_to_rgb(xyz):
-    return np.clip((xyz.reshape(-1,3) @ _M_xyz2rgb.T).reshape(xyz.shape), 0.0, 1.0)
+    # See _np_rgb_to_xyz for why this avoids `@` / BLAS matmul.
+    X = xyz[..., 0]; Y = xyz[..., 1]; Z = xyz[..., 2]
+    M = _M_xyz2rgb
+    R = M[0,0]*X + M[0,1]*Y + M[0,2]*Z
+    G = M[1,0]*X + M[1,1]*Y + M[1,2]*Z
+    B = M[2,0]*X + M[2,1]*Y + M[2,2]*Z
+    out = np.stack([R, G, B], axis=-1).astype(np.float32, copy=False)
+    return np.clip(out, 0.0, 1.0)
 
 def _f_lab_np(t):
     return np.where(t > _delta3, np.cbrt(t), (t / (3*_delta*_delta)) + (4.0/29.0))
@@ -2251,10 +2270,31 @@ class CurvesDialogPro(QDialog):
     def _apply_all_curves_once(self, img01, luts):
         out = img01
         if out.ndim == 2:
+            # Mono image: pixel value is intensity. K applies directly.
+            # L* is meaningful too — treat the mono value as Y and run it
+            # through the Lab lightness nonlinearity, curve, then invert.
+            # R/G/B/a*/b*/Chroma/Saturation don't apply to mono and are
+            # silently skipped.
             lutK = luts.get("K")
             if lutK is not None:
                 out = _np_apply_lut_channel(out, lutK)
+            lutL = luts.get("L*")
+            if lutL is not None:
+                # Y is the mono pixel value (already in [0,1]); Yn = 1 here,
+                # so Y/Yn == Y. Convert to L*, curve on L*/100, invert.
+                Y = np.clip(out.astype(np.float32, copy=False), 0.0, 1.0)
+                fy = _f_lab_np(Y / _Yn)
+                Ln = np.clip((116.0 * fy - 16.0) / 100.0, 0.0, 1.0)
+                Ln = _np_apply_lut_channel(Ln, lutL)
+                fy_new = ((Ln * 100.0) + 16.0) / 116.0
+                out = np.clip(_Yn * _f_lab_inv_np(fy_new), 0.0, 1.0)
             return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+        # Mono-as-3D: shape (H, W, 1) — treat as mono. Route through the 2D
+        # path (which now handles K and L*) and re-expand to (H, W, 1).
+        if out.ndim == 3 and out.shape[2] == 1:
+            mono_out = self._apply_all_curves_once(out[..., 0], luts)
+            return mono_out[..., None].astype(np.float32, copy=False)
 
         def _compose(a, b):
             if a is None: return b
