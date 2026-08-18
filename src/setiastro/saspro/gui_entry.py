@@ -12,6 +12,15 @@ import platform
 import sys
 import os
 from pathlib import Path
+
+# ── Numba threading-layer bootstrap ──────────────────────────────────────────
+# MUST run before ANY `import numba` in this process. astroalign and
+# numba_warmup both import numba, and numba locks its threading layer at first
+# import — so this side-effect import has to come first. On Windows + CPython
+# 3.14 the TBB layer aborts with an UNCATCHABLE native access violation during
+# the first parallel JIT compile (the warmup_jit crash); this demotes TBB so
+# numba resolves to omp/workqueue instead. No-op on unaffected Python/OS combos.
+from setiastro.saspro import numba_bootstrap  # noqa: E402,F401  (import for side effect)
 # -*- coding: utf-8 -*-
 """
 Seti Astro Suite Pro - Main Entry Point Module

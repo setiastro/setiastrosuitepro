@@ -721,43 +721,119 @@ def _preload_torch_dlls(site: Path, status_cb=print) -> None:
 
 
 def _diagnose_win_torch_dlls(site: Path) -> str:
-    """Pinpoint why the in-process torch import failed on Windows: report the
-    first core torch DLL that won't load, and whether the VC++ runtime the
-    wheels need is present. Returns a short human-readable block (or '')."""
+    """Pinpoint why the in-process torch import failed on Windows.
+
+    The previous version loaded c10/torch_cpu/torch_python by ABSOLUTE path,
+    which resolves their siblings straight out of torch\\lib and so reports
+    "loads OK" even when the real import fails — the "present and loadable but
+    import fails" paradox users report. That masks the actual cause. This
+    version instead:
+
+      1. Loads the actual extension the import binds — torch\\_C*.pyd — so it
+         hits the SAME dependency resolution `import torch` does, and reports
+         the NUMERIC WinError. The code disambiguates the whole problem:
+             126 (ERROR_MOD_NOT_FOUND) -> a dependency DLL is genuinely MISSING
+             127 (ERROR_PROC_NOT_FOUND) -> an ENTRYPOINT is missing: a wrong/old
+                  copy of some DLL is shadowing the one torch was built against
+                  (the 0xC0000139 STATUS_ENTRYPOINT_NOT_FOUND class)
+      2. For the runtime DLLs most likely to shadow (msvcp140 / vcruntime140_1 /
+         libiomp5md), reports which copy is ALREADY RESIDENT in this process and
+         from what path — a resident copy under _internal or system32 that isn't
+         torch\\lib's is the smoking gun for an entrypoint mismatch in a frozen
+         app that already loaded Qt/Python/VC-runtime before torch.
+
+    Returns a human-readable block (or '').
+    """
     if platform.system() != "Windows":
         return ""
     try:
         import ctypes
+        from ctypes import wintypes
     except Exception:
         return ""
+
     lines = []
-    # The torch C++ libs need the VS2015-2022 x64 runtime. vcruntime140_1.dll in
-    # particular is NOT pulled in by Python/Qt startup, so a machine missing the
-    # redistributable imports torch fine via a full Python install but fails in a
-    # bundled app — this matches the "worked once I'd installed 3.12" reports.
-    for vc in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"):
+
+    def _resident_path(name: str):
+        """Full path of `name` if it is already loaded in THIS process, else None."""
         try:
-            ctypes.WinDLL(vc)  # bare name -> system search path
-            lines.append(f"  {vc}: present")
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            k32.GetModuleHandleW.restype = wintypes.HMODULE
+            k32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+            h = k32.GetModuleHandleW(name)
+            if not h:
+                return None
+            k32.GetModuleFileNameW.restype = wintypes.DWORD
+            k32.GetModuleFileNameW.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+            buf = ctypes.create_unicode_buffer(2048)
+            if k32.GetModuleFileNameW(h, buf, 2048):
+                return buf.value
         except Exception:
-            lines.append(f"  {vc}: NOT FOUND — install the Microsoft Visual C++ "
-                         f"2015–2022 x64 Redistributable")
+            pass
+        return None
+
+    # 1) Runtime / OpenMP DLLs: is one already resident, and from WHERE?
+    #    A resident copy whose path isn't torch\lib is the shadow suspect.
     torch_lib = site / "torch" / "lib"
-    if torch_lib.is_dir():
-        for n in ("c10.dll", "torch_cpu.dll", "torch_python.dll"):
-            p = torch_lib / n
-            if not p.exists():
-                lines.append(f"  {n}: MISSING from torch/lib (broken/partial wheel)")
-                continue
+    for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "libiomp5md.dll"):
+        resident = _resident_path(name)
+        if resident:
+            in_torch = torch_lib.is_dir() and Path(resident).parent == torch_lib
+            tag = " (torch\\lib — expected)" if in_torch else " (NOT torch\\lib — possible shadow)"
+            lines.append(f"  {name}: RESIDENT <- {resident}{tag}")
+        else:
             try:
-                ctypes.WinDLL(str(p))
-                lines.append(f"  {n}: loads OK")
-            except OSError as e:
-                lines.append(f"  {n}: FAILS TO LOAD -> {e}")
-                break
+                ctypes.WinDLL(name)  # bare name -> current search path
+                lines.append(f"  {name}: loadable (not yet resident)")
+            except Exception:
+                extra = ("  — install the Microsoft Visual C++ 2015–2022 x64 Redistributable"
+                         if name.startswith(("vcruntime", "msvcp")) else "")
+                lines.append(f"  {name}: NOT FOUND{extra}")
+
+    # 2) Load the real extension the import binds and capture the exact WinError.
+    torch_dir = site / "torch"
+    pyd = None
+    if torch_dir.is_dir():
+        cands = sorted(torch_dir.glob("_C*.pyd")) or sorted(torch_dir.rglob("_C*.pyd"))[:1]
+        pyd = cands[0] if cands else None
+
+    if pyd is None:
+        lines.append(f"  torch\\_C*.pyd: NOT FOUND under {torch_dir} (broken/partial wheel)")
+        # fall back to the old sibling probe so we still say something
+        if torch_lib.is_dir():
+            for n in ("c10.dll", "torch_cpu.dll", "torch_python.dll"):
+                p = torch_lib / n
+                if not p.exists():
+                    lines.append(f"  {n}: MISSING from torch\\lib")
+                    continue
+                try:
+                    ctypes.WinDLL(str(p))
+                    lines.append(f"  {n}: loads OK in isolation")
+                except OSError as e:
+                    lines.append(f"  {n}: FAILS -> WinError {getattr(e, 'winerror', '?')}: {e}")
+                    break
     else:
-        lines.append(f"  torch/lib not found under {site}")
-    return "Windows DLL diagnostic:\n" + "\n".join(lines) if lines else ""
+        try:
+            ctypes.WinDLL(str(pyd))
+            lines.append(
+                f"  {pyd.name}: loads OK in isolation — if `import torch` still "
+                f"fails, the conflict is a module ALREADY RESIDENT in the frozen "
+                f"process (see the RESIDENT lines above), not a missing file."
+            )
+        except OSError as e:
+            code = getattr(e, "winerror", None)
+            meaning = {
+                126: "ERROR_MOD_NOT_FOUND — a dependency DLL is MISSING from the search path.",
+                127: "ERROR_PROC_NOT_FOUND — an expected ENTRYPOINT is missing: a wrong/old "
+                     "DLL version is shadowing the one torch needs (fix the RESIDENT shadow above).",
+                182: "ERROR_INVALID_DLL — a DLL version is incompatible.",
+                1114: "DLL initialization routine failed.",
+            }.get(code, "")
+            lines.append(f"  {pyd.name}: FAILS TO LOAD -> WinError {code}: {e}")
+            if meaning:
+                lines.append(f"      => {meaning}")
+
+    return "Windows DLL diagnostic (hardened):\n" + "\n".join(lines) if lines else ""
 
 
 def _register_dll_dirs_for_frozen(site: Path, vp: Path, status_cb=print) -> None:

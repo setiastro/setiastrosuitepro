@@ -3431,7 +3431,11 @@ class AstroSuiteProMainWindow(
     def _extract_luminance(self, doc=None, preset: dict | None = None):
         from PyQt6.QtWidgets import QMessageBox
         from PyQt6.QtGui import QIcon
-        from setiastro.saspro.luminancerecombine import compute_luminance, resolve_luma_profile_weights
+        from setiastro.saspro.luminancerecombine import (
+            compute_luminance,
+            resolve_luma_profile_weights,
+            canonicalize_luma_key,
+        )
 
 
         sw = None
@@ -3476,7 +3480,12 @@ class AstroSuiteProMainWindow(
             "source": "ExtractLuminance",
             "is_mono": True,
             "bit_depth": "32f",
-            "luma_method": resolved_method,
+            # Store canonical profile key (e.g. "sensor:Sony IMX571 (ASI2600/QHY268)")
+            # rather than internal dispatch method — preserves sensor identity for
+            # round-tripping into Recombine Luminance.
+            "luma_method": canonicalize_luma_key(mode),
+            # Also keep the internal dispatch method for tools that need it directly.
+            "luma_compute_method": resolved_method,
         }
         if w is not None:
             meta["luma_weights"] = np.asarray(w, dtype=np.float32).tolist()
@@ -3598,6 +3607,111 @@ class AstroSuiteProMainWindow(
 
         lay.addSpacing(8)
 
+        # ── Luminance weighting profile ───────────────────────────────────────
+        from setiastro.saspro.luminancerecombine import (
+            iter_luma_profiles_by_category,
+            guess_profile_from_metadata,
+            find_sensor_profile_key_by_display_name,
+        )
+
+        lay.addWidget(QLabel(
+            "Luminance weighting profile:\n"
+            "Controls how R, G, B are weighted when computing/replacing Y.\n"
+            "For sensor data, pick the matching sensor; Rec.709 is a safe default."
+        ))
+        profile_combo = QComboBox()
+        # Populate grouped by category, using disabled header rows as separators.
+        _current_category: list[str] = []
+        for category_path, key, description, info in iter_luma_profiles_by_category():
+            if category_path != _current_category:
+                if profile_combo.count() > 0:
+                    profile_combo.insertSeparator(profile_combo.count())
+                cat_label = " / ".join(category_path) if category_path else ""
+                header_idx = profile_combo.count()
+                profile_combo.addItem(f"— {cat_label} —")
+                _model = profile_combo.model()
+                _item = _model.item(header_idx) if hasattr(_model, "item") else None
+                if _item is not None:
+                    _item.setEnabled(False)
+                _current_category = list(category_path)
+            profile_combo.addItem(description, userData=key)
+            if info:
+                profile_combo.setItemData(
+                    profile_combo.count() - 1, info, Qt.ItemDataRole.ToolTipRole
+                )
+
+        # Helpers scoped to this dialog ------------------------------------------------
+        def _profile_key_exists(key: str) -> bool:
+            if not key:
+                return False
+            for i in range(profile_combo.count()):
+                if profile_combo.itemData(i) == key:
+                    return True
+            return False
+
+        def _select_profile_key(key: str) -> bool:
+            for i in range(profile_combo.count()):
+                if profile_combo.itemData(i) == key:
+                    profile_combo.setCurrentIndex(i)
+                    return True
+            return False
+
+        def _pick_default_for_source(src_doc_obj) -> str:
+            """
+            Priority:
+              1. Source doc's luma_method metadata (L was extracted with a known method).
+              2. Legacy recovery: source doc's luma_profile display name (for older
+                 extracted-L docs where luma_method was collapsed to 'rec709' but
+                 the sensor name survived in luma_profile).
+              3. Target doc metadata auto-detect (INSTRUME etc.).
+              4. Global self.luma_method (persisted).
+              5. rec709.
+            """
+            src_meta = dict(getattr(src_doc_obj, "metadata", {}) or {})
+
+            src_method = src_meta.get("luma_method")
+            if src_method and _profile_key_exists(str(src_method)):
+                return str(src_method)
+
+            # Legacy recovery for older extracted-L docs
+            legacy_key = find_sensor_profile_key_by_display_name(src_meta.get("luma_profile"))
+            if legacy_key and _profile_key_exists(legacy_key):
+                return legacy_key
+
+            auto_key = guess_profile_from_metadata(getattr(target_doc, "metadata", {}) or {})
+            if auto_key and _profile_key_exists(auto_key):
+                return auto_key
+
+            global_key = getattr(self, "luma_method", None)
+            if global_key and _profile_key_exists(str(global_key)):
+                return str(global_key)
+
+            return "rec709"
+
+        # Track whether the user has manually overridden the auto-selection; once
+        # they do, we stop clobbering their choice when the source combo changes.
+        _user_override = {"value": False}
+
+        def _on_profile_user_changed(_idx):
+            _user_override["value"] = True
+        profile_combo.activated.connect(_on_profile_user_changed)  # activated = user-only
+
+        def _on_source_changed(idx):
+            if _user_override["value"]:
+                return
+            if 0 <= idx < len(candidates):
+                _, new_src_doc = candidates[idx]
+                _select_profile_key(_pick_default_for_source(new_src_doc))
+        src_combo.currentIndexChanged.connect(_on_source_changed)
+
+        # Initial selection based on the source that's currently chosen
+        _initial_src_doc = candidates[src_combo.currentIndex()][1]
+        _select_profile_key(_pick_default_for_source(_initial_src_doc))
+
+        lay.addWidget(profile_combo)
+
+        lay.addSpacing(8)
+
         # ── Blend ─────────────────────────────────────────────────────────────
         lay.addWidget(QLabel("Blend strength  (1.0 = full L replacement):"))
 
@@ -3703,6 +3817,11 @@ class AstroSuiteProMainWindow(
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
+        # Persist the chosen profile as the new global default
+        _chosen_key = profile_combo.currentData()
+        if _chosen_key:
+            self.luma_method = _chosen_key
+
         idx               = src_combo.currentIndex()
         sel_title, src_doc = candidates[idx]
         blend             = float(blend_spin.value())
@@ -3716,31 +3835,21 @@ class AstroSuiteProMainWindow(
             from setiastro.saspro.luminancerecombine import (
                 apply_recombine_to_doc,
                 _to_float01_strict,
-                _LUMA_REC601,
-                _LUMA_REC2020,
             )
 
             src_img = _to_float01_strict(np.asarray(src_doc.image))
 
-            meta   = dict(getattr(src_doc, "metadata", {}) or {})
-            method = meta.get("luma_method", getattr(self, "luma_method", "rec709"))
-            weights = None
-
-            if "luma_weights" in meta:
-                lw = np.asarray(meta["luma_weights"], dtype=np.float32)
-                if lw.size == 3:
-                    weights = lw
-            else:
-                if method == "rec601":
-                    weights = _LUMA_REC601
-                elif method == "rec2020":
-                    weights = _LUMA_REC2020
+            # Dropdown selection is authoritative. apply_recombine_to_doc
+            # calls resolve_luma_profile_weights internally, which handles
+            # sensor:xxx keys → per-sensor weight vectors automatically.
+            method        = profile_combo.currentData() or "rec709"
+            profile_label = profile_combo.currentText()
 
             apply_recombine_to_doc(
                 target_doc,
                 luminance_source_img=src_img,
                 method=method,
-                weights=weights,
+                weights=None,
                 noise_sigma=None,
                 blend=blend,
                 soft_knee=soft_knee,
@@ -3752,7 +3861,7 @@ class AstroSuiteProMainWindow(
             try:
                 self._log(
                     f"Recombine Luminance: '{sel_title}' → '{target_doc.display_name()}'"
-                    f" [{method}] blend={blend:.2f}  pedestal={pedestal:.3f}"
+                    f" [{profile_label}] blend={blend:.2f}  pedestal={pedestal:.3f}"
                     f"  knee={soft_knee:.2f}  sat={saturation_boost:.2f}"
                     f"  cnr={chrominance_nr:.1f}px"
                 )
@@ -3761,6 +3870,7 @@ class AstroSuiteProMainWindow(
 
         except Exception as e:
             QMessageBox.critical(self, "Recombine Luminance", f"Failed: {e}")
+
     def _rgb_extract_active(self):
         sw = self.mdi.activeSubWindow()
         if not sw:
