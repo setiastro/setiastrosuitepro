@@ -193,6 +193,144 @@ def resolve_luma_profile_weights(mode: str | None):
     return (key, w, None)
 
 
+def canonicalize_luma_key(mode: str | None) -> str:
+    """
+    Return the canonical LUMA_PROFILES key for `mode`, resolving common
+    aliases (e.g. 'rec.709' -> 'rec709'). Returns 'rec709' if mode is
+    unknown.
+
+    Preserves 'sensor:' keys as-is, so the result is suitable for storing
+    in metadata as the durable profile identity — later re-resolution via
+    resolve_luma_profile_weights() will recover the correct weights.
+    """
+    if mode is None:
+        return "rec709"
+    key = str(mode).strip()
+    alias = {
+        "rec.709": "rec709", "rec-709": "rec709", "rgb": "rec709", "k": "rec709",
+        "rec.601": "rec601", "rec-601": "rec601",
+        "rec.2020": "rec2020", "rec-2020": "rec2020",
+        "nb_max": "max", "narrowband": "max",
+        "snr_unequal": "snr", "unequal_noise": "snr",
+    }
+    key = alias.get(key.lower(), key)
+    if key in LUMA_PROFILES:
+        return key
+    return "rec709"
+
+
+def find_sensor_profile_key_by_display_name(name: str | None) -> str | None:
+    """
+    Reverse-lookup for legacy metadata: given a sensor profile display name
+    (as stored in doc metadata under 'luma_profile'), return the matching
+    LUMA_PROFILES key, or None if no match.
+
+    Used to recover the correct sensor identity from older extracted-L docs
+    that stored 'rec709' in luma_method alongside the real profile name in
+    luma_profile — a bug from before luma_method held the canonical key.
+    """
+    if not name:
+        return None
+    target = str(name).strip().lower()
+    for key, prof in LUMA_PROFILES.items():
+        if not key.startswith("sensor:"):
+            continue
+        # The display name stored in metadata is the portion after "sensor:"
+        disp = key.split("sensor:", 1)[1].strip().lower()
+        if disp == target:
+            return key
+        # Fallback: description field
+        desc = str(prof.get("description", "")).strip().lower()
+        if desc and desc == target:
+            return key
+    return None
+
+
+def iter_luma_profiles_by_category():
+    """
+    Yield (category_path, key, description, info) tuples for menu building.
+
+    - category_path is a list of nested category names, parsed from the
+      profile's 'category' field using '/' as separator.
+    - Sensor profiles are forced under a top-level "Sensors" node so that
+      menu structure is consistent even when profile data isn't.
+    - Yields in dict insertion order (matches LUMA_PROFILES ordering),
+      so menu order reflects the order profiles are declared.
+    """
+    for key, prof in LUMA_PROFILES.items():
+        cat = str(prof.get("category", "Standard")).strip()
+        category_path = [c.strip() for c in cat.split("/") if c.strip()]
+        # Normalize: sensor profiles always live under "Sensors"
+        if key.startswith("sensor:") and (not category_path or category_path[0].lower() != "sensors"):
+            category_path = ["Sensors"] + category_path
+        description = str(prof.get("description", key))
+        info = str(prof.get("info", ""))
+        yield category_path, key, description, info
+
+
+# Substring → profile-key matchers for metadata auto-detection.
+# Ordered: more specific matches first when needed.
+_SENSOR_METADATA_MATCHERS = (
+    ("asi2600",       "sensor:Sony IMX571 (ASI2600/QHY268)"),
+    ("qhy268",        "sensor:Sony IMX571 (ASI2600/QHY268)"),
+    ("imx571",        "sensor:Sony IMX571 (ASI2600/QHY268)"),
+    ("asi533",        "sensor:Sony IMX533 (ASI533)"),
+    ("imx533",        "sensor:Sony IMX533 (ASI533)"),
+    ("asi6200",       "sensor:Sony IMX455 (ASI6200/QHY600)"),
+    ("qhy600",        "sensor:Sony IMX455 (ASI6200/QHY600)"),
+    ("imx455",        "sensor:Sony IMX455 (ASI6200/QHY600)"),
+    ("asi294",        "sensor:Sony IMX294 (ASI294)"),
+    ("imx294",        "sensor:Sony IMX294 (ASI294)"),
+    ("asi183",        "sensor:Sony IMX183 (ASI183)"),
+    ("imx183",        "sensor:Sony IMX183 (ASI183)"),
+    ("asi178",        "sensor:Sony IMX178 (ASI178)"),
+    ("imx178",        "sensor:Sony IMX178 (ASI178)"),
+    ("asi224",        "sensor:Sony IMX224 (ASI224)"),
+    ("imx224",        "sensor:Sony IMX224 (ASI224)"),
+    ("asi585",        "sensor:Sony IMX585 (ASI585) - STARVIS 2"),
+    ("imx585",        "sensor:Sony IMX585 (ASI585) - STARVIS 2"),
+    ("asi662",        "sensor:Sony IMX662 (ASI662) - STARVIS 2"),
+    ("imx662",        "sensor:Sony IMX662 (ASI662) - STARVIS 2"),
+    ("imx678",        "sensor:Sony IMX678/715 - STARVIS 2"),
+    ("imx715",        "sensor:Sony IMX678/715 - STARVIS 2"),
+    ("asi1600",       "sensor:Panasonic MN34230 (ASI1600/QHY163)"),
+    ("qhy163",        "sensor:Panasonic MN34230 (ASI1600/QHY163)"),
+    ("mn34230",       "sensor:Panasonic MN34230 (ASI1600/QHY163)"),
+    ("seestar s50",   "sensor:ZWO Seestar S50"),
+    ("seestar s30",   "sensor:ZWO Seestar S30"),
+)
+
+
+def guess_profile_from_metadata(metadata: dict | None) -> str | None:
+    """
+    Try to match a LUMA_PROFILES key from image metadata.
+
+    Checks common FITS/XISF keywords (INSTRUME, CAMERA, CAMNAME) for a
+    substring match against known sensor identifiers. Returns None if
+    no confident match — the caller should fall back to a manual pick
+    or Rec.709.
+
+    Canon/Nikon aren't auto-detected here because "modern vs legacy"
+    depends on the specific model, not the make.
+    """
+    if not metadata:
+        return None
+
+    candidates = []
+    for kw in ("INSTRUME", "CAMERA", "CAMNAME", "instrument", "camera"):
+        v = metadata.get(kw)
+        if v:
+            candidates.append(str(v).lower().strip())
+    if not candidates:
+        return None
+
+    for cand in candidates:
+        for needle, profile_key in _SENSOR_METADATA_MATCHERS:
+            if needle in cand:
+                return profile_key
+    return None
+
+
 def _estimate_noise_sigma_per_channel(img01: np.ndarray) -> np.ndarray:
     # unchanged (but call with strict input)
     a = img01
