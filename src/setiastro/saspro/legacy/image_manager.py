@@ -1163,11 +1163,38 @@ def _apply_roworder_flip(image, header):
     SASpro works internally top-down (row 0 = top of frame). FITS tagged
     ROWORDER='BOTTOM-UP' (e.g. Siril output) store row 0 at the bottom, so flip
     them to top-down and update the WCS to match. Absent/TOP-DOWN => unchanged.
+
+    Fallback when ROWORDER is missing: infer BOTTOM-UP from the writer stamp
+    (PROGRAM / CREATOR / SWCREATE). Siril always stores in FITS-native
+    bottom-up order regardless of what its input was, but downstream tools
+    (e.g. SyQon Parallax/Prism, some solvers) sometimes strip the ROWORDER
+    card when they re-save. Without this fallback such files load upside-down
+    relative to Siril's display. Extend the _BOTTOM_UP_WRITERS tuple below as
+    other FITS-native-bottom-up tools come up.
     """
+    if header is None:
+        return image, header
     try:
-        roworder = str(header.get("ROWORDER", "")).strip().upper() if header is not None else ""
+        roworder = str(header.get("ROWORDER", "")).strip().upper()
     except Exception:
         roworder = ""
+
+    if not roworder:
+        _BOTTOM_UP_WRITERS = ("SIRIL", "IRIS")   # prefix match, case-insensitive
+        try:
+            for k in ("PROGRAM", "CREATOR", "SWCREATE"):
+                v = header.get(k, "")
+                if v is None:
+                    continue
+                s = str(v).strip().upper()
+                if any(s.startswith(w) for w in _BOTTOM_UP_WRITERS):
+                    roworder = "BOTTOM-UP"
+                    print(f"[ImageManager] ROWORDER absent; inferred BOTTOM-UP "
+                          f"from {k}={v!r}")
+                    break
+        except Exception:
+            pass
+
     if roworder != "BOTTOM-UP":
         return image, header
 
