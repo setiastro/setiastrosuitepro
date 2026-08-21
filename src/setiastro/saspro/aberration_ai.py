@@ -784,18 +784,10 @@ def run_aberration_ai_on_array(
         resolved_providers = ["CPUExecutionProvider"]
 
     avail_providers = ort.get_available_providers()
-    has_nvidia = _has_nvidia_gpu()
 
     if log_cb:
         log_cb(f"🔍 Available ONNX providers: {', '.join(avail_providers)}")
         log_cb(f"🔍 Attempting providers: {', '.join(resolved_providers)}")
-
-    if has_nvidia and "CUDAExecutionProvider" not in avail_providers:
-        msg = ("⚠️ GPU NVIDIA détecté mais CUDAExecutionProvider n'est pas disponible.\n"
-               "   Vous devez installer 'onnxruntime-gpu' au lieu de 'onnxruntime'.\n"
-               "   Commande: pip uninstall onnxruntime && pip install onnxruntime-gpu")
-        if log_cb:
-            log_cb(msg)
 
     # Match model-required patch if fixed
     req = _model_required_patch(model_path)
@@ -818,9 +810,6 @@ def run_aberration_ai_on_array(
         if log_cb:
             if used_provider != "CPUExecutionProvider" and gpu_providers:
                 log_cb(f"✅ Aberration AI: Using GPU provider {used_provider}")
-            elif has_nvidia and used_provider == "CPUExecutionProvider":
-                log_cb("⚠️ GPU NVIDIA détecté mais utilisation du CPU.\n"
-                       "   Installez 'onnxruntime-gpu' pour utiliser le GPU.")
             else:
                 log_cb(f"✅ Aberration AI using provider: {used_provider}")
 
@@ -831,13 +820,6 @@ def run_aberration_ai_on_array(
             log_cb(f"⚠️ Aberration AI: GPU provider failed: {error_msg}")
             log_cb(f"Available providers: {', '.join(avail_providers)}")
             log_cb(f"Attempted providers: {', '.join(resolved_providers)}")
-
-            if "CUDAExecutionProvider" in resolved_providers and "CUDAExecutionProvider" not in avail_providers:
-                if has_nvidia:
-                    log_cb("❌ CUDAExecutionProvider non disponible alors qu'un GPU NVIDIA est présent.\n"
-                           "   Installez 'onnxruntime-gpu': pip uninstall onnxruntime && pip install onnxruntime-gpu")
-                else:
-                    log_cb("⚠️ CUDAExecutionProvider not available. You may need to install onnxruntime-gpu instead of onnxruntime.")
 
         try:
             sess = _open_session_with_topk_fix(model_path, ["CPUExecutionProvider"], log_cb=log_cb)
