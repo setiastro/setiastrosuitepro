@@ -65,109 +65,262 @@ except Exception:
 #  first successful patch, subsequent launches load without the try/except
 #  triggering.
 # =============================================================================
-def _patch_topk_k_shape(model_path: str, log_cb=None) -> bool:
+def _patch_topk_k_shape(model_path: str, log_cb=None):
     """
     Rewrite scalar TopK K inputs to shape [1] and save back to `model_path`.
-    Returns True if any nodes were patched, False if nothing to fix or the
-    patch couldn't be applied (missing onnx package, read-only file, etc.).
+
+    Returns a tuple ``(ok: bool, message: str)`` where `message` is a short
+    human-readable summary. Callers include the message in any raised error
+    so the user's log/error dialog shows what the auto-patch tried and why
+    it did / didn't work (crucial when the log_cb isn't reaching a visible
+    surface).
+
+    Handles every ONNX-legal form of a scalar TopK K:
+      - initializer tensor (0-D)
+      - Constant node with ``value``       (0-D TensorProto)
+      - Constant node with ``value_int``   (implicit scalar int64)
+      - Constant node with ``value_ints``  (only when length == 0, treated
+                                            as scalar; length == 1 is fine)
+      - Constant node with ``value_float`` (implicit scalar float; cast to int64)
+      - ConstantOfShape / Cast chains feeding K are NOT rewritten -- those
+        require graph surgery and are reported so we can add them if seen.
+
+    After saving, re-loads the file and verifies that every K-input tensor
+    now has rank 1 / size 1. If not, returns ok=False with a diagnostic.
     """
     try:
         import onnx
-        from onnx import numpy_helper
+        from onnx import numpy_helper, helper, TensorProto
     except ImportError:
-        if log_cb:
-            log_cb("⚠️ Cannot patch ONNX model: 'onnx' package not installed. "
-                   "Install with: pip install onnx")
-        return False
+        msg = ("'onnx' Python package is not installed — cannot auto-patch "
+               "the model. Install with: pip install onnx")
+        if log_cb: log_cb(f"⚠️ {msg}")
+        return False, msg
 
     try:
         model = onnx.load(model_path)
     except Exception as e:
-        if log_cb:
-            log_cb(f"⚠️ Cannot read model for patching: {e}")
-        return False
+        msg = f"cannot read model for patching: {e}"
+        if log_cb: log_cb(f"⚠️ {msg}")
+        return False, msg
 
-    # Every input name that feeds a TopK node's second argument (K)
     topk_k_names = {
         n.input[1] for n in model.graph.node
         if n.op_type == "TopK" and len(n.input) >= 2
     }
     if not topk_k_names:
-        return False
+        msg = "no TopK nodes with a K input found — nothing to patch."
+        if log_cb: log_cb(f"⚠️ {msg}")
+        return False, msg
 
     fixed = 0
+    skipped: list[str] = []   # reasons we couldn't rewrite a particular K
 
-    # Case A: K comes from an initializer (weights table)
+    # ---- Case A: initializer ----
+    for init in model.graph.initializer:
+        if init.name not in topk_k_names:
+            continue
+        arr = numpy_helper.to_array(init)
+        if arr.ndim == 0:
+            new_arr = np.array([int(arr)], dtype=np.int64)
+            init.CopyFrom(numpy_helper.from_array(new_arr, name=init.name))
+            fixed += 1
+
+    # ---- Case B: Constant node in the graph ----
+    for node in model.graph.node:
+        if node.op_type != "Constant":
+            continue
+        if not node.output or node.output[0] not in topk_k_names:
+            continue
+
+        # A Constant node has exactly one value-bearing attribute. Find it.
+        attrs = {a.name: a for a in node.attribute}
+        target_int_scalar: int | None = None
+        origin_attr = None
+
+        if "value" in attrs:
+            arr = numpy_helper.to_array(attrs["value"].t)
+            if arr.ndim == 0:
+                target_int_scalar = int(arr)
+                origin_attr = "value"
+            elif arr.ndim == 1 and arr.size == 1:
+                pass  # already fine
+            else:
+                skipped.append(f"{node.name or '<TopK/K Constant>'}: "
+                               f"value tensor shape {list(arr.shape)} (not scalar)")
+
+        elif "value_int" in attrs:
+            target_int_scalar = int(attrs["value_int"].i)
+            origin_attr = "value_int"
+
+        elif "value_ints" in attrs:
+            vals = list(attrs["value_ints"].ints)
+            if len(vals) == 0:
+                target_int_scalar = 0
+                origin_attr = "value_ints"
+            elif len(vals) == 1:
+                # Legal shape [1] already, but stored as attribute — re-emit
+                # as a tensor so ORT is definitely happy with the shape.
+                target_int_scalar = int(vals[0])
+                origin_attr = "value_ints"
+            else:
+                skipped.append(f"{node.name or '<TopK/K Constant>'}: "
+                               f"value_ints has {len(vals)} elements (unexpected for K)")
+
+        elif "value_float" in attrs:
+            target_int_scalar = int(attrs["value_float"].f)
+            origin_attr = "value_float"
+
+        else:
+            skipped.append(
+                f"{node.name or '<TopK/K Constant>'}: Constant uses "
+                f"unhandled attribute(s) {list(attrs.keys())}"
+            )
+
+        if target_int_scalar is not None:
+            # Rewrite this Constant node to a canonical shape-[1] int64 tensor.
+            new_tensor = numpy_helper.from_array(
+                np.array([target_int_scalar], dtype=np.int64)
+            )
+            # Wipe existing attributes and install a single 'value' tensor attr.
+            del node.attribute[:]
+            node.attribute.append(helper.make_attribute("value", new_tensor))
+            fixed += 1
+
+    # ---- Report if there are TopK K inputs we couldn't touch ----
+    handled_names: set[str] = set()
     for init in model.graph.initializer:
         if init.name in topk_k_names:
-            arr = numpy_helper.to_array(init)
-            if arr.ndim == 0:
-                new_arr = np.array([int(arr)], dtype=np.int64)
-                init.CopyFrom(numpy_helper.from_array(new_arr, name=init.name))
-                fixed += 1
-
-    # Case B: K comes from a Constant node in the graph
+            handled_names.add(init.name)
     for node in model.graph.node:
         if node.op_type == "Constant" and node.output and node.output[0] in topk_k_names:
-            for attr in node.attribute:
-                if attr.name == "value":
-                    arr = numpy_helper.to_array(attr.t)
-                    if arr.ndim == 0:
-                        new_arr = np.array([int(arr)], dtype=np.int64)
-                        attr.t.CopyFrom(numpy_helper.from_array(new_arr))
-                        fixed += 1
+            handled_names.add(node.output[0])
+    unhandled = topk_k_names - handled_names
+    if unhandled:
+        skipped.append(
+            f"K inputs not produced by an initializer or Constant "
+            f"(likely runtime-computed via a Shape/Cast chain): "
+            f"{sorted(unhandled)}"
+        )
 
     if fixed == 0:
-        return False
+        msg = "found TopK node(s) but nothing to rewrite"
+        if skipped:
+            msg += "; " + " | ".join(skipped)
+        if log_cb: log_cb(f"⚠️ Auto-patch: {msg}")
+        return False, msg
 
+    # ---- Save ----
     try:
         onnx.save(model, model_path)
     except Exception as e:
-        if log_cb:
-            log_cb(f"⚠️ Patched model in memory but couldn't save "
-                   f"({e}). Check file permissions on {model_path}.")
-        return False
+        msg = (f"patched {fixed} K input(s) in memory but couldn't save: {e} "
+               f"(check write permissions on {model_path})")
+        if log_cb: log_cb(f"⚠️ {msg}")
+        return False, msg
 
-    if log_cb:
-        log_cb(f"✅ Patched {fixed} TopK K input(s) in "
-               f"{os.path.basename(model_path)} (scalar → shape [1]).")
-    return True
+    # ---- Verify the patch actually landed on disk ----
+    try:
+        verify_model = onnx.load(model_path)
+        bad: list[str] = []
+        v_topk_k = {
+            n.input[1] for n in verify_model.graph.node
+            if n.op_type == "TopK" and len(n.input) >= 2
+        }
+        # Check initializers
+        for init in verify_model.graph.initializer:
+            if init.name in v_topk_k:
+                dims = list(init.dims)
+                if dims != [1]:
+                    bad.append(f"initializer {init.name} dims={dims}")
+        # Check Constant nodes
+        for node in verify_model.graph.node:
+            if node.op_type == "Constant" and node.output and node.output[0] in v_topk_k:
+                for attr in node.attribute:
+                    if attr.name == "value":
+                        dims = list(attr.t.dims)
+                        if dims != [1]:
+                            bad.append(f"Constant {node.output[0]} dims={dims}")
+        if bad:
+            msg = (f"patched {fixed} K input(s) and saved, but verification "
+                   f"still shows non-[1] shapes: " + "; ".join(bad))
+            if log_cb: log_cb(f"⚠️ {msg}")
+            return False, msg
+    except Exception as e:
+        # Verification failed but the write happened — trust and continue.
+        if log_cb: log_cb(f"(note) post-patch verify failed to load: {e}")
+
+    tail = ""
+    if skipped:
+        tail = " (some K inputs left as-is: " + " | ".join(skipped) + ")"
+    msg = f"patched {fixed} TopK K input(s) in {os.path.basename(model_path)}{tail}"
+    if log_cb: log_cb(f"✅ {msg}")
+    return True, msg
 
 
 def _is_topk_k_shape_error(err: BaseException) -> bool:
-    """Recognise the specific ORT load-time error that this patch fixes."""
+    """
+    Recognise the ORT load-time error that this patch fixes. Different ORT
+    versions phrase it slightly differently, so match on the common pieces
+    rather than an exact substring.
+    """
     msg = str(err)
-    return ("TopK" in msg) and ("one-dimensional" in msg or "K input" in msg)
+    if "TopK" not in msg:
+        return False
+    return any(needle in msg for needle in (
+        "one-dimensional",     # current wording
+        "K input",             # partial match on common phrasing
+        "ShapeInferenceError", # generic bucket the check reports through
+    ))
 
 
 def _open_session_with_topk_fix(model_path: str, providers, log_cb=None,
                                 sess_options=None):
     """
     Drop-in wrapper for ort.InferenceSession that self-heals models tripped
-    up by the opset-11 TopK K-shape tightening. Try to open; on the specific
-    error, patch the file in place, then retry once. Any other error
-    propagates unchanged.
+    up by the opset-11 TopK K-shape tightening.
+
+    On the specific error, we call _patch_topk_k_shape and retry ONCE. On
+    any failure (patch didn't apply, verification failed, etc.) we raise a
+    new RuntimeError that includes both the original ORT error and the
+    patch attempt's diagnostic message -- that way the user's error dialog
+    shows exactly what we tried, not just the raw ORT text (which by itself
+    gives no hint that an auto-patch was attempted).
     """
     if ort is None:
         raise RuntimeError("onnxruntime is not installed.")
-    try:
+
+    def _open():
         if sess_options is None:
             return ort.InferenceSession(model_path, providers=providers)
         return ort.InferenceSession(model_path, sess_options=sess_options,
                                     providers=providers)
+
+    try:
+        return _open()
     except Exception as e:
         if not _is_topk_k_shape_error(e):
             raise
         if log_cb:
-            log_cb("Detected stale TopK K shape in model — patching in place…")
-        if not _patch_topk_k_shape(model_path, log_cb=log_cb):
-            # Patch didn't apply (nothing to fix, or write failed); surface original.
-            raise
-        # Retry once. If it still fails, let that error stand.
-        if sess_options is None:
-            return ort.InferenceSession(model_path, providers=providers)
-        return ort.InferenceSession(model_path, sess_options=sess_options,
-                                    providers=providers)
+            log_cb("Detected stale TopK K shape in ONNX model — "
+                   "attempting automatic patch…")
+        ok, patch_msg = _patch_topk_k_shape(model_path, log_cb=log_cb)
+        if not ok:
+            raise RuntimeError(
+                f"ONNX model has a stale TopK K shape (scalar, needs [1]).\n"
+                f"Automatic patch could not fix it: {patch_msg}\n"
+                f"Original ORT error:\n{e}"
+            ) from e
+        try:
+            return _open()
+        except Exception as e2:
+            # We patched successfully but ORT still refuses. Surface both
+            # pieces so the user's dialog has all the info at once.
+            raise RuntimeError(
+                f"Auto-patched ONNX model ({patch_msg}) but ORT still "
+                f"failed to load it.\nOriginal error:\n{e}\n"
+                f"Post-patch error:\n{e2}"
+            ) from e2
 
 
 # ---------- GitHub model fetching ----------
