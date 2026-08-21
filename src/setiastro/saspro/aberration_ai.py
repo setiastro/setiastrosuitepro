@@ -187,7 +187,7 @@ def _patch_topk_k_shape(model_path: str, log_cb=None):
             node.attribute.append(helper.make_attribute("value", new_tensor))
             fixed += 1
 
-    # ---- Report if there are TopK K inputs we couldn't touch ----
+    # ---- Report if there are TopK K inputs we couldn't touch by scalar-fix ----
     handled_names: set[str] = set()
     for init in model.graph.initializer:
         if init.name in topk_k_names:
@@ -196,12 +196,52 @@ def _patch_topk_k_shape(model_path: str, log_cb=None):
         if node.op_type == "Constant" and node.output and node.output[0] in topk_k_names:
             handled_names.add(node.output[0])
     unhandled = topk_k_names - handled_names
+
+    # ---- Graph surgery for runtime-computed K ------------------------------
+    # Common PyTorch->ONNX pattern: K comes from Shape/Gather chain (e.g.
+    #   torch.topk(x, k=x.size(1)//N)  =>
+    #   Shape(x) -> Gather(indices=<scalar>) -> scalar -> TopK
+    # We can't rewrite the Gather (it's doing real work) but we can insert
+    # a Reshape([1]) between the runtime producer and the TopK's K input so
+    # K arrives as a shape-[1] tensor. Safe no-op if the input was already
+    # shape [1]; a real fix if it was rank-0.
     if unhandled:
-        skipped.append(
-            f"K inputs not produced by an initializer or Constant "
-            f"(likely runtime-computed via a Shape/Cast chain): "
-            f"{sorted(unhandled)}"
-        )
+        # Ensure a shared int64 [1] initializer exists for Reshape's shape arg.
+        SHAPE_INIT = "_saspro_topk_k_reshape_shape_"
+        has_shape_init = any(i.name == SHAPE_INIT for i in model.graph.initializer)
+        if not has_shape_init:
+            model.graph.initializer.append(
+                numpy_helper.from_array(np.array([1], dtype=np.int64),
+                                        name=SHAPE_INIT)
+            )
+
+        # Walk nodes; when we hit an affected TopK, insert a Reshape just
+        # before it and rewire its K input to the Reshape's output.
+        new_nodes = []
+        surgery = 0
+        for i, node in enumerate(model.graph.node):
+            if (node.op_type == "TopK"
+                    and len(node.input) >= 2
+                    and node.input[1] in unhandled):
+                k_name = node.input[1]
+                # Unique per-node output name so multiple TopKs don't collide.
+                reshaped = f"{k_name}__saspro_as_1d_{i}"
+                reshape_node = helper.make_node(
+                    "Reshape",
+                    inputs=[k_name, SHAPE_INIT],
+                    outputs=[reshaped],
+                    name=f"{node.name or f'TopK_{i}'}_K_to_1d",
+                )
+                new_nodes.append(reshape_node)
+                node.input[1] = reshaped
+                surgery += 1
+            new_nodes.append(node)
+
+        if surgery > 0:
+            del model.graph.node[:]
+            model.graph.node.extend(new_nodes)
+            fixed += surgery
+            skipped = []   # unhandled list was resolved by surgery; clear the warning
 
     if fixed == 0:
         msg = "found TopK node(s) but nothing to rewrite"
