@@ -5267,6 +5267,90 @@ def _maybe_normalize_16bit_float(a: np.ndarray, *, name: str = "") -> np.ndarray
 
     return a
 
+def _sxt_starless_from_array_via_rcastro(rgb01: np.ndarray, settings, log=None) -> np.ndarray:
+    """
+    Run Russ Croman's StarXTerminator (sxt product from the rc-astro CLI)
+    on an RGB float32 [0..1] array and return the starless RGB array.
+
+    Reads:
+      - rcastro/exe_path         (required) : path to the rc-astro executable
+      - rcastro/engine           (auto)     : device pick ('auto', 'gpu', 'cpu', ...)
+      - rcastro/uses_device_flag (True)     : True => '--device', False => '--engine'
+                                              (pre-0.9.7 CLI used '--engine')
+      - rcastro/schema_version   (0)        : if >= 6, appends '--host SASPro-<ver>'
+                                              for support attribution
+    Raises RuntimeError with a user-facing message on any failure so the
+    caller's try/except log path in the comet pipeline surfaces it cleanly.
+    """
+    import subprocess
+
+    exe = str(settings.value("rcastro/exe_path", "", type=str) or "").strip()
+    if not exe or not os.path.exists(exe):
+        raise RuntimeError(
+            "StarXTerminator selected for comet star removal, but the RC-Astro CLI "
+            "executable is not configured. Set it via the RC-Astro dialog "
+            "(Tools menu) and make sure SXT is activated."
+        )
+
+    engine      = str(settings.value("rcastro/engine", "auto", type=str) or "auto").strip() or "auto"
+    uses_device = bool(settings.value("rcastro/uses_device_flag", True, type=bool))
+    device_flag = "--device" if uses_device else "--engine"
+    schema_v    = int(settings.value("rcastro/schema_version", 0, type=int))
+
+    # Prepare RGB float32 [0..1] TIFF the CLI can ingest.
+    arr = np.asarray(rgb01, dtype=np.float32)
+    if arr.ndim == 2:
+        arr = np.stack([arr, arr, arr], axis=-1)
+    elif arr.ndim == 3 and arr.shape[2] == 1:
+        arr = np.repeat(arr, 3, axis=2)
+    arr = np.clip(arr[..., :3], 0.0, 1.0).astype(np.float32, copy=False)
+
+    tmp = tempfile.mkdtemp(prefix="sas_comet_sxt_")
+    try:
+        inp = os.path.join(tmp, "input.tif")
+        out = os.path.join(tmp, "input-sxt.tif")   # rc-astro's naming: <stem>-<product>.tif
+
+        tiff.imwrite(inp, arr, photometric="rgb", dtype=np.float32)
+
+        cmd = [exe, "--no-banner", "sxt", inp,
+               device_flag, engine,
+               "--depth", "32F", "--overwrite"]
+        if schema_v >= 6:
+            try:
+                from setiastro.saspro._generated.build_info import APP_VERSION as _v  # type: ignore
+                cmd += ["--host", f"SASPro-{str(_v).strip() or 'unknown'}"]
+            except Exception:
+                cmd += ["--host", "SASPro"]
+
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True,
+                cwd=tmp, timeout=900,   # generous per-frame ceiling for CPU-only setups
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("StarXTerminator timed out (>15 min for a single frame).")
+
+        if proc.returncode != 0:
+            tail = ((proc.stderr or "") + (proc.stdout or "")).strip().splitlines()
+            tail_txt = "\n".join(tail[-6:]) if tail else "(no output)"
+            raise RuntimeError(f"StarXTerminator exited with code {proc.returncode}:\n{tail_txt}")
+
+        if not os.path.exists(out):
+            raise RuntimeError(f"StarXTerminator finished but produced no output file: {out}")
+
+        starless = tiff.imread(out)
+        if starless.ndim == 2:
+            starless = np.stack([starless, starless, starless], axis=-1)
+        elif starless.ndim == 3 and starless.shape[2] == 1:
+            starless = np.repeat(starless, 3, axis=2)
+        starless = np.clip(starless[..., :3].astype(np.float32, copy=False), 0.0, 1.0)
+        return starless
+    finally:
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            pass
+
 def _resolve_syqon_ckpt_for_comet(settings) -> str:
     """
     Resolve SyQon NAFNet checkpoint path with fallbacks:
@@ -8795,6 +8879,7 @@ class StackingSuiteDialog(QDialog):
             ("starnet", "StarNet"),
             ("darkstar", "CosmicClarityDarkStar"),
             ("syqonnafnet", "SyQon"),
+            ("starxterminator", "StarXTerminator"),
         ]
         for key, label in CSR_TOOLS:
             self.csr_tool.addItem(label, key)
@@ -8811,6 +8896,8 @@ class StackingSuiteDialog(QDialog):
             "cosmicclaritydarkstar": "darkstar",
             "darkstar": "darkstar",
             "syqonnafnet": "syqonnafnet",
+            "starxterminator": "starxterminator",
+            "sxt":             "starxterminator",   # tolerate short form
         }
         norm = legacy_map.get(norm, norm)
 
@@ -25001,6 +25088,8 @@ class StackingSuiteDialog(QDialog):
             "darkstar":              "darkstar",
             "syqonnafnet":           "syqonnafnet",
             "starnet":               "starnet",
+            "starxterminator":       "starxterminator",
+            "sxt":                   "starxterminator",
         }
         csr_tool = _csr_tool_norm.get(
             (csr_tool or "starnet").strip().lower().replace(" ", ""),
@@ -25064,6 +25153,12 @@ class StackingSuiteDialog(QDialog):
                         elif csr_tool == "darkstar":
                             log("  ◦ DarkStar comet star removal…")
                             starless = CS.darkstar_starless_from_array(warped, self.settings)
+                            m3 = _expand_mask_for(warped, core_mask)
+                            protected = np.clip(starless * (1.0 - m3) + warped * m3, 0.0, 1.0).astype(np.float32)
+
+                        elif csr_tool == "starxterminator":
+                            log("  ◦ StarXTerminator (rc-astro sxt) comet star removal…")
+                            starless = _sxt_starless_from_array_via_rcastro(warped, self.settings, log=log)
                             m3 = _expand_mask_for(warped, core_mask)
                             protected = np.clip(starless * (1.0 - m3) + warped * m3, 0.0, 1.0).astype(np.float32)
 
