@@ -49,6 +49,127 @@ except Exception:
     ort = None
 
 
+# =============================================================================
+#  ONNX model self-heal: TopK opset-10 scalar K -> opset-11+ shape [1]
+#
+#  Third-party aberration_ai models (model_v2_0_0.onnx and friends) were
+#  exported when TopK's `K` input was still allowed as a 0-D scalar
+#  (opset 10 spec, or an exporter bug under opset 11+). onnxruntime >= 1.14
+#  tightened its shape validator to enforce the current spec:
+#      "K input must be a one-dimensional tensor of size 1"
+#  and refuses to load the model at all -- fails identically on GPU and CPU
+#  because the check runs during graph validation, before any provider is
+#  actually engaged. Since we don't own the model, we can't just re-export
+#  it, so we patch the K initializer (and any Constant node feeding K) in
+#  place the first time we hit the error. The fix is durable: after the
+#  first successful patch, subsequent launches load without the try/except
+#  triggering.
+# =============================================================================
+def _patch_topk_k_shape(model_path: str, log_cb=None) -> bool:
+    """
+    Rewrite scalar TopK K inputs to shape [1] and save back to `model_path`.
+    Returns True if any nodes were patched, False if nothing to fix or the
+    patch couldn't be applied (missing onnx package, read-only file, etc.).
+    """
+    try:
+        import onnx
+        from onnx import numpy_helper
+    except ImportError:
+        if log_cb:
+            log_cb("⚠️ Cannot patch ONNX model: 'onnx' package not installed. "
+                   "Install with: pip install onnx")
+        return False
+
+    try:
+        model = onnx.load(model_path)
+    except Exception as e:
+        if log_cb:
+            log_cb(f"⚠️ Cannot read model for patching: {e}")
+        return False
+
+    # Every input name that feeds a TopK node's second argument (K)
+    topk_k_names = {
+        n.input[1] for n in model.graph.node
+        if n.op_type == "TopK" and len(n.input) >= 2
+    }
+    if not topk_k_names:
+        return False
+
+    fixed = 0
+
+    # Case A: K comes from an initializer (weights table)
+    for init in model.graph.initializer:
+        if init.name in topk_k_names:
+            arr = numpy_helper.to_array(init)
+            if arr.ndim == 0:
+                new_arr = np.array([int(arr)], dtype=np.int64)
+                init.CopyFrom(numpy_helper.from_array(new_arr, name=init.name))
+                fixed += 1
+
+    # Case B: K comes from a Constant node in the graph
+    for node in model.graph.node:
+        if node.op_type == "Constant" and node.output and node.output[0] in topk_k_names:
+            for attr in node.attribute:
+                if attr.name == "value":
+                    arr = numpy_helper.to_array(attr.t)
+                    if arr.ndim == 0:
+                        new_arr = np.array([int(arr)], dtype=np.int64)
+                        attr.t.CopyFrom(numpy_helper.from_array(new_arr))
+                        fixed += 1
+
+    if fixed == 0:
+        return False
+
+    try:
+        onnx.save(model, model_path)
+    except Exception as e:
+        if log_cb:
+            log_cb(f"⚠️ Patched model in memory but couldn't save "
+                   f"({e}). Check file permissions on {model_path}.")
+        return False
+
+    if log_cb:
+        log_cb(f"✅ Patched {fixed} TopK K input(s) in "
+               f"{os.path.basename(model_path)} (scalar → shape [1]).")
+    return True
+
+
+def _is_topk_k_shape_error(err: BaseException) -> bool:
+    """Recognise the specific ORT load-time error that this patch fixes."""
+    msg = str(err)
+    return ("TopK" in msg) and ("one-dimensional" in msg or "K input" in msg)
+
+
+def _open_session_with_topk_fix(model_path: str, providers, log_cb=None,
+                                sess_options=None):
+    """
+    Drop-in wrapper for ort.InferenceSession that self-heals models tripped
+    up by the opset-11 TopK K-shape tightening. Try to open; on the specific
+    error, patch the file in place, then retry once. Any other error
+    propagates unchanged.
+    """
+    if ort is None:
+        raise RuntimeError("onnxruntime is not installed.")
+    try:
+        if sess_options is None:
+            return ort.InferenceSession(model_path, providers=providers)
+        return ort.InferenceSession(model_path, sess_options=sess_options,
+                                    providers=providers)
+    except Exception as e:
+        if not _is_topk_k_shape_error(e):
+            raise
+        if log_cb:
+            log_cb("Detected stale TopK K shape in model — patching in place…")
+        if not _patch_topk_k_shape(model_path, log_cb=log_cb):
+            # Patch didn't apply (nothing to fix, or write failed); surface original.
+            raise
+        # Retry once. If it still fails, let that error stand.
+        if sess_options is None:
+            return ort.InferenceSession(model_path, providers=providers)
+        return ort.InferenceSession(model_path, sess_options=sess_options,
+                                    providers=providers)
+
+
 # ---------- GitHub model fetching ----------
 GITHUB_REPO = Config.GITHUB_ABERRATION_REPO
 LATEST_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -60,7 +181,7 @@ def _model_required_patch(model_path: str) -> int | None:
     if ort is None or not os.path.isfile(model_path):
         return None
     try:
-        sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        sess = _open_session_with_topk_fix(model_path, ["CPUExecutionProvider"])
         shp = sess.get_inputs()[0].shape  # e.g. [1, 1, 512, 512] or ['N','C',512,512]
         h = shp[-2]; w = shp[-1]
         if isinstance(h, int) and isinstance(w, int) and h == w:
@@ -498,7 +619,7 @@ def run_aberration_ai_on_array(
 
     # Init session, fallback to CPU if needed
     try:
-        sess = ort.InferenceSession(model_path, providers=resolved_providers)
+        sess = _open_session_with_topk_fix(model_path, resolved_providers, log_cb=log_cb)
         used_provider = (sess.get_providers()[0] if sess.get_providers() else "CPUExecutionProvider")
 
         if log_cb:
@@ -526,7 +647,7 @@ def run_aberration_ai_on_array(
                     log_cb("⚠️ CUDAExecutionProvider not available. You may need to install onnxruntime-gpu instead of onnxruntime.")
 
         try:
-            sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            sess = _open_session_with_topk_fix(model_path, ["CPUExecutionProvider"], log_cb=log_cb)
             used_provider = "CPUExecutionProvider"
             if log_cb:
                 log_cb(f"⚠️ Aberration AI: Falling back to CPU (GPU initialization failed: {error_msg})")
@@ -559,7 +680,7 @@ def run_aberration_ai_on_array(
         if str(e).startswith("CUDA_FALLBACK:"):
             if log_cb:
                 log_cb(f"CUDA kernel mismatch detected — falling back to CPU...")
-            sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+            sess = _open_session_with_topk_fix(model_path, ["CPUExecutionProvider"], log_cb=log_cb)
             used_provider = "CPUExecutionProvider"
             out = run_onnx_tiled(
                 sess,
@@ -1505,4 +1626,4 @@ def open_aberration_ai_with_preset(main_window, preset: dict | None = None):
     except Exception:
         pass
     dlg.show(); dlg.raise_(); dlg.activateWindow()
-    return dlg                            
+    return dlg
