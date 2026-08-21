@@ -1,4 +1,4 @@
-# pro/psf_viewer.py
+# saspro/psf_viewer.py
 from __future__ import annotations
 
 import math
@@ -7,17 +7,19 @@ import sep
 sep.set_extract_pixstack(20000000)
 from astropy.table import Table
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt6.QtCore import Qt, QTimer, QRectF, QPointF, QSettings
 from PyQt6.QtGui import QPainter, QPen, QFont, QPixmap, QColor, QBrush, QImage
 from PyQt6.QtWidgets import (
     QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QScrollArea,
     QSlider, QTableWidget, QTableWidgetItem, QApplication,
-    QSizePolicy,
+    QSizePolicy, QCheckBox,
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import QWidget
+
+from .psf_utils import detect_stars_waterfall
 
 
 # ---------------------------------------------------------------------------
@@ -213,10 +215,13 @@ class _PSFWorker(QObject):
     finished = pyqtSignal(object, str)
     failed   = pyqtSignal(str)
 
-    def __init__(self, image: np.ndarray, threshold_sigma: float):
+    def __init__(self, image: np.ndarray, threshold_sigma: float,
+                 auto_mode: bool = True, target_stars: int = 1000):
         super().__init__()
         self.image = image
         self.threshold_sigma = float(threshold_sigma)
+        self.auto_mode       = bool(auto_mode)
+        self.target_stars    = int(target_stars)
 
     def run(self):
         try:
@@ -228,32 +233,54 @@ class _PSFWorker(QObject):
                 image_gray = np.mean(self.image, axis=2)
             else:
                 image_gray = self.image
-            data = image_gray.astype(np.float32, copy=False)
+            gray = image_gray.astype(np.float32, copy=False)
 
-            bkg = sep.Background(data)
-            data_sub = data - bkg.back()
-            try:
-                err_val = bkg.globalrms
-            except Exception:
-                err_val = float(np.median(bkg.rms()))
+            if self.auto_mode:
+                # Waterfall: descend from sigma=100 to sigma=3, stop as soon
+                # as target_stars quality-filtered detections are in hand.
+                cat = detect_stars_waterfall(
+                    gray,
+                    sigma_ladder=(100.0, 50.0, 25.0, 12.0, 6.0, 3.0),
+                    target_count=self.target_stars,
+                    quality_filter=True,
+                )
+                if cat is None or cat['n'] == 0:
+                    self.finished.emit(None, "Status: Extraction completed — 0 stars.")
+                    return
+                sig_used = cat['sigma_stopped']
+                raw_at   = cat['total_at_stop']
+                status = (f"Status: Auto — {cat['n']} stars at σ={sig_used:g} "
+                          f"(kept {cat['n']}/{raw_at} at that threshold).")
+            else:
+                # Manual: single-shot at the user's exact sigma. Still filter
+                # so medians aren't polluted by saturated / blended detections.
+                cat = detect_stars_waterfall(
+                    gray,
+                    sigma_ladder=(self.threshold_sigma,),
+                    target_count=10**9,          # never trigger early stop
+                    quality_filter=True,
+                )
+                if cat is None or cat['n'] == 0:
+                    self.finished.emit(None, f"Status: Extraction completed — 0 stars at σ={self.threshold_sigma:g}.")
+                    return
+                raw_at = cat['total_at_stop']
+                status = (f"Status: Manual — {cat['n']} stars at σ={self.threshold_sigma:g} "
+                          f"(kept {cat['n']}/{raw_at} after quality filter).")
 
-            sources = sep.extract(data_sub, self.threshold_sigma, err=err_val)
-            if sources is None or len(sources) == 0:
-                self.finished.emit(None, "Status: Extraction completed — 0 sources.")
-                return
+            a_arr = cat['a'].astype(np.float32, copy=False)
+            b_arr = cat['b'].astype(np.float32, copy=False)
 
-            a_arr = np.array(sources["a"], dtype=np.float32)
             tbl = Table()
-            tbl["xcentroid"] = sources["x"]
-            tbl["ycentroid"] = sources["y"]
-            tbl["flux"]      = sources["flux"]
+            tbl["xcentroid"] = cat['x']
+            tbl["ycentroid"] = cat['y']
+            tbl["flux"]      = cat['flux']
             tbl["HFR"]       = 2.0 * a_arr
             tbl["FWHM"]      = 2.3548 * a_arr
             tbl["a"]         = a_arr
-            tbl["b"]         = sources["b"]
-            tbl["theta"]     = sources["theta"]
+            tbl["b"]         = b_arr
+            tbl["theta"]     = cat['theta']
 
-            self.finished.emit(tbl, f"Status: Extraction completed — {len(sources)} sources.")
+            self.finished.emit(tbl, status)
         except Exception as e:
             self.failed.emit(f"Extraction failed: {e}")
 
@@ -278,6 +305,16 @@ class PSFViewer(QDialog):
         self.star_list = None
         self.histogram_mode = "PSF"
         self.detection_threshold = 15
+
+        # Auto-detect (waterfall) vs manual (single-shot at slider sigma).
+        # Auto is the sane default: descends the sigma ladder until ~1000
+        # quality-filtered stars are in hand, so a 53k-source frame doesn't
+        # spend seconds fitting shape moments we would just throw away.
+        self._settings = QSettings()
+        self.auto_detect = bool(self._settings.value(
+            "psf_viewer/auto_detect", True, type=bool))
+        self._target_stars = int(self._settings.value(
+            "psf_viewer/target_stars", 1000, type=int))
 
         self.threshold_timer = QTimer(self)
         self.threshold_timer.setSingleShot(True)
@@ -412,6 +449,22 @@ class PSFViewer(QDialog):
         thresh_layout.addWidget(self.threshold_slider)
         self.threshold_value_label = QLabel(str(self.detection_threshold), self)
         thresh_layout.addWidget(self.threshold_value_label)
+
+        self.chk_auto = QCheckBox("Auto (waterfall → ~1000 stars)", self)
+        self.chk_auto.setToolTip(
+            "When checked, descend through σ = 100, 50, 25, 12, 6, 3 and stop "
+            "as soon as ~1000 quality stars are detected. Fast on rich fields "
+            "and gives a more representative PSF median than dropping the "
+            "slider low. Uncheck to use the slider value literally."
+        )
+        self.chk_auto.setChecked(self.auto_detect)
+        self.chk_auto.toggled.connect(self._on_auto_toggled)
+        thresh_layout.addWidget(self.chk_auto)
+
+        # Slider is meaningless while auto-detect is on.
+        self.threshold_slider.setEnabled(not self.auto_detect)
+        self.threshold_value_label.setEnabled(not self.auto_detect)
+
         main_layout.addLayout(thresh_layout)
 
         # ── Close ───────────────────────────────────────────────────────
@@ -426,6 +479,21 @@ class PSFViewer(QDialog):
     def onThresholdChange(self, value: int):
         self.detection_threshold = int(value)
         self.threshold_value_label.setText(str(value))
+        if self.threshold_timer.isActive():
+            self.threshold_timer.stop()
+        self.threshold_timer.start()
+
+    def _on_auto_toggled(self, checked: bool):
+        self.auto_detect = bool(checked)
+        try:
+            self._settings.setValue("psf_viewer/auto_detect", self.auto_detect)
+        except Exception:
+            pass
+        self.threshold_slider.setEnabled(not self.auto_detect)
+        self.threshold_value_label.setEnabled(not self.auto_detect)
+        # Re-run detection immediately -- toggling mode IS the "give me a
+        # different result" signal. Route through the debounce so we don't
+        # start work if the user is rapid-toggling.
         if self.threshold_timer.isActive():
             self.threshold_timer.stop()
         self.threshold_timer.start()
@@ -468,7 +536,12 @@ class PSFViewer(QDialog):
         self._stop_psf_worker()
 
         self._psf_thread = QThread(self)
-        self._psf_worker = _PSFWorker(self.image, self.detection_threshold)
+        self._psf_worker = _PSFWorker(
+            self.image,
+            self.detection_threshold,
+            auto_mode=self.auto_detect,
+            target_stars=self._target_stars,
+        )
         self._psf_worker.moveToThread(self._psf_thread)
         self._psf_thread.started.connect(self._psf_worker.run)
         self._psf_worker.finished.connect(self._on_psf_done)
