@@ -11,7 +11,7 @@ from typing import Optional, Tuple, List
 from PyQt6.QtGui import (
     QIcon, QColor, QPixmap, QPainter, QPen, QImage, QPainterPath, QFont, QGuiApplication
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QEvent, QPointF, QCoreApplication, QSettings, QByteArray
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPoint, QEvent, QPointF, QCoreApplication, QSettings, QByteArray, QThread
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout, QGroupBox, QLabel, QSlider,
     QPushButton, QComboBox, QSizePolicy, QMessageBox, QColorDialog, QWidget,
@@ -27,6 +27,7 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from astropy.io import fits
 from astropy.stats import sigma_clipped_stats
 from scipy.interpolate import griddata
+from scipy.ndimage import zoom as _ndzoom
 
 import sep
 sep.set_extract_pixstack(20000000)
@@ -321,6 +322,406 @@ class PreviewPane(QWidget):
         qimg = self.numpy_to_qimage(arr)
         self.load_qimage(qimg, source_float=np.asarray(arr, dtype=np.float32))
 
+# =============================================================================
+#  Shared helpers for star-based focal-plane / tilt analyses
+#
+#  - _detect_stars: single SEP pass with quality cuts (flag==0, min area, valid
+#    a >= b > 0). Returns a filtered catalogue used by every downstream metric,
+#    so Focal Plane Analysis no longer runs SEP three separate times.
+#  - _eval_poly_upsampled: evaluates a fitted 2D polynomial on a small coarse
+#    grid (default 128x128) and bilinearly upsamples to full resolution. The
+#    fitted surface is smooth by construction, so this is visually identical
+#    to full-res evaluation and ~1000x faster on multi-megapixel canvases.
+#  - _fit_and_render_surface: end-to-end (fit_2d_poly + upsample) with a
+#    graceful degree fallback when there are too few detections.
+# =============================================================================
+_FWHM_FACTOR = 2.0 * math.sqrt(2.0 * math.log(2.0))  # ~= 2.3548200450309493
+
+
+def _to_gray32(img: np.ndarray) -> np.ndarray:
+    """Luma-weighted grayscale (Rec.709). Passes through already-2D input."""
+    if img.ndim == 3 and img.shape[2] >= 3:
+        return (0.2126 * img[..., 0]
+                + 0.7152 * img[..., 1]
+                + 0.0722 * img[..., 2]).astype(np.float32, copy=False)
+    return img.astype(np.float32, copy=False)
+
+
+def _detect_stars(gray: np.ndarray,
+                  thresh_sigma: float = 5.0,
+                  min_area: int = 5) -> Optional[dict]:
+    """
+    Run SEP once on `gray` and return a quality-filtered star catalogue.
+
+    Cuts applied:
+      - flag == 0                   (no saturation, no blending, no truncation)
+      - npix >= min_area            (rejects hot pixels / single-pixel spikes)
+      - a > 0, b > 0, b <= a        (well-formed shape ellipse)
+
+    Returns None when nothing survives. Otherwise a dict of float64 arrays:
+      x, y, a, b, theta, flux, and n (int, surviving count).
+    """
+    data = np.ascontiguousarray(gray, dtype=np.float32)
+    bkg = sep.Background(data)
+    try:
+        stars = sep.extract(data - bkg.back(),
+                            thresh=thresh_sigma,
+                            err=bkg.globalrms)
+    except Exception:
+        return None
+    if stars is None or len(stars) == 0:
+        return None
+
+    names = stars.dtype.names
+    flag = stars['flag'] if 'flag' in names else np.zeros(len(stars), dtype=int)
+    npix = stars['npix'] if 'npix' in names else np.full(len(stars), min_area + 1, dtype=int)
+    a = stars['a']; b = stars['b']
+
+    good = (flag == 0) & (npix >= min_area) & (a > 0) & (b > 0) & (b <= a)
+    if not np.any(good):
+        return None
+
+    return {
+        'x':     stars['x'][good].astype(np.float64, copy=False),
+        'y':     stars['y'][good].astype(np.float64, copy=False),
+        'a':     a[good].astype(np.float64, copy=False),
+        'b':     b[good].astype(np.float64, copy=False),
+        'theta': stars['theta'][good].astype(np.float64, copy=False),
+        'flux':  (stars['flux'] if 'flux' in names
+                  else np.zeros(int(good.sum())))[good].astype(np.float64, copy=False),
+        'n':     int(good.sum()),
+    }
+
+
+def _detect_stars_waterfall(gray: np.ndarray,
+                            sigma_ladder: Tuple[float, ...] = (100.0, 50.0, 25.0, 12.0, 6.0, 3.0),
+                            target_count: int = 1000,
+                            min_area: int = 5) -> Optional[dict]:
+    """
+    Descending-threshold star detection. Runs SEP background estimation ONCE
+    (the expensive part) and then re-extracts with progressively lower SNR
+    thresholds until the quality-filtered catalogue has >= target_count
+    stars, or the ladder is exhausted.
+
+    Motivation: on a rich star field, sep.extract at low sigma (say 3-5)
+    can find 30k+ detections whose per-star shape measurements are noisy
+    and get filtered out anyway. That's minutes of wasted work when a few
+    hundred high-SNR stars are already enough to constrain a smooth
+    focal-plane surface. Starting high and descending only if needed usually
+    converges after 2-3 extract calls on a well-populated frame.
+
+    The quality filter (flag==0, npix>=min_area, well-formed shape ellipse)
+    is applied at each rung; the returned catalogue is what came out of the
+    LAST rung run -- either the first rung to reach target_count, or the
+    final rung at the bottom of the ladder if we never got there.
+    Returns None if even sigma_ladder[-1] produced no usable stars.
+    """
+    data = np.ascontiguousarray(gray, dtype=np.float32)
+    try:
+        bkg = sep.Background(data)
+    except Exception:
+        return None
+    sub = data - bkg.back()
+    rms = bkg.globalrms
+
+    best: Optional[dict] = None
+    for sig in sigma_ladder:
+        try:
+            stars = sep.extract(sub, thresh=float(sig), err=rms)
+        except Exception:
+            # Pixstack overflow at very low sigma on a huge field will land
+            # here; keep the best catalogue we had and stop descending.
+            break
+        if stars is None or len(stars) == 0:
+            continue
+
+        names = stars.dtype.names
+        flag  = stars['flag'] if 'flag' in names else np.zeros(len(stars), dtype=int)
+        npix  = stars['npix'] if 'npix' in names else np.full(len(stars), min_area + 1, dtype=int)
+        a = stars['a']; b = stars['b']
+
+        good = (flag == 0) & (npix >= min_area) & (a > 0) & (b > 0) & (b <= a)
+        n_good = int(good.sum())
+        if n_good == 0:
+            continue
+
+        best = {
+            'x':     stars['x'][good].astype(np.float64, copy=False),
+            'y':     stars['y'][good].astype(np.float64, copy=False),
+            'a':     a[good].astype(np.float64, copy=False),
+            'b':     b[good].astype(np.float64, copy=False),
+            'theta': stars['theta'][good].astype(np.float64, copy=False),
+            'flux':  (stars['flux'] if 'flux' in names
+                      else np.zeros(n_good))[good].astype(np.float64, copy=False),
+            'n':     n_good,
+            'sigma': float(sig),
+        }
+        if n_good >= target_count:
+            break
+
+    return best
+
+
+def _eval_poly_upsampled(sol: np.ndarray,
+                         exps: list,
+                         H: int, W: int,
+                         coarse: int = 128) -> np.ndarray:
+    """
+    Evaluate a low-degree 2D polynomial on a coarse grid then bilinearly
+    upsample to (H, W). Vastly faster than per-pixel evaluation on full-res.
+    """
+    ch = max(2, min(int(coarse), H))
+    cw = max(2, min(int(coarse), W))
+    yv = np.linspace(0.0, float(H - 1), ch, dtype=np.float64)
+    xv = np.linspace(0.0, float(W - 1), cw, dtype=np.float64)
+    Xc, Yc = np.meshgrid(xv, yv)
+
+    # Cache x**i and y**j to avoid recomputing powers per term.
+    max_i = max((i for (i, _) in exps), default=0)
+    max_j = max((j for (_, j) in exps), default=0)
+    Xpow = [np.ones_like(Xc)] + [None] * max_i
+    for i in range(1, max_i + 1):
+        Xpow[i] = Xpow[i - 1] * Xc
+    Ypow = [np.ones_like(Yc)] + [None] * max_j
+    for j in range(1, max_j + 1):
+        Ypow[j] = Ypow[j - 1] * Yc
+
+    Z = np.zeros_like(Xc, dtype=np.float64)
+    for c, (i, j) in zip(sol, exps):
+        Z += float(c) * Xpow[i] * Ypow[j]
+
+    return _ndzoom(Z, (H / ch, W / cw), order=1, mode='nearest').astype(np.float32, copy=False)
+
+
+def _fit_and_render_surface(x: np.ndarray, y: np.ndarray, values: np.ndarray,
+                            H: int, W: int,
+                            deg: int = 3,
+                            coarse: int = 128,
+                            sigma_clip: float = 3.0):
+    """
+    Fit a 2D polynomial of degree `deg` to scattered (x, y, values), then
+    render on a full (H, W) grid via coarse eval + bilinear upsample.
+
+    Automatically lowers `deg` if there aren't enough samples to constrain
+    the requested order (need (deg+1)(deg+2)/2 samples for a unique fit).
+
+    Returns (surface_HxW_float32, (raw_min, raw_max)).
+    """
+    n = int(values.size)
+    while deg > 1 and n < (deg + 1) * (deg + 2) // 2:
+        deg -= 1
+    sol, exps = fit_2d_poly(x, y, values, deg=deg, sigma_clip=sigma_clip)
+    surf = _eval_poly_upsampled(sol, exps, H, W, coarse=coarse)
+    return surf, (float(np.min(values)), float(np.max(values)))
+
+
+def _fit_tilt_paraboloid(x: np.ndarray, y: np.ndarray, fwhm_um: np.ndarray,
+                         f_number: float,
+                         sigma_clip: float = 2.5,
+                         max_iter: int = 5) -> Optional[dict]:
+    """
+    Fit the physical tilt model FWHM^2 = FWHM0^2 + (p*x + q*y + r)^2 / N^2
+    as a general 2D quadratic in (x, y):
+
+        FWHM^2 = c00 + c10 x + c01 y + c20 x^2 + c11 x y + c02 y^2
+
+    and recover the signed defocus plane dz(x,y) = p*x + q*y + r plus the
+    baseline (seeing + optics) FWHM0. This replaces the older
+        dz = plane fit of |dz|/N
+    approach, which lost sign information -- a tilted sensor has both sides
+    of the field defocused with opposite sign but the same |blur|, so fitting
+    a plane to blur underestimates real tilt whenever the focus ridge crosses
+    the sensor.
+
+    The (p, q, r) -> (-p, -q, -r) sign flip is intrinsically ambiguous from a
+    single image (physically indistinguishable), so we fix r >= 0 by
+    convention. Corner-to-corner tilt magnitudes are unambiguous.
+
+    Returns None when there aren't enough stars for a 6-parameter fit, or a
+    dict with:
+        p, q         : defocus slopes in um / pixel
+        r            : defocus offset at origin in um
+        fwhm_baseline: sqrt(FWHM0^2) in um (0 if the fit implies negative)
+        rms_residual : RMS residual of the FWHM^2 fit (um^2)
+        n_used       : star count in the final (sigma-clipped) fit
+        well_defined : True if the paraboloid model is physically sensible;
+                       False when we fell back to a linear FWHM-vs-position
+                       fit because the quadratic term was ill-behaved
+    """
+    n = int(x.size)
+    if n < 8:                                # 6 params + a little slack
+        return None
+
+    z = (fwhm_um * fwhm_um).astype(np.float64, copy=False)
+    A = np.vstack([
+        np.ones_like(x, dtype=np.float64),
+        x.astype(np.float64, copy=False),
+        y.astype(np.float64, copy=False),
+        (x * x).astype(np.float64, copy=False),
+        (x * y).astype(np.float64, copy=False),
+        (y * y).astype(np.float64, copy=False),
+    ]).T                                     # shape (N, 6)
+
+    mask = np.ones_like(z, dtype=bool)
+    sol = None
+    for _ in range(max_iter):
+        n_before = int(mask.sum())
+        if n_before < 8:
+            break
+        sol, *_ = np.linalg.lstsq(A[mask], z[mask], rcond=None)
+        resid = z - A.dot(sol)
+        sd = float(np.std(resid[mask]))
+        if sd <= 0.0:
+            break
+        newm = np.abs(resid) < sigma_clip * sd
+        if int(newm.sum()) == n_before:
+            break
+        mask = newm
+
+    if sol is None:
+        return None
+
+    c00, c10, c01, c20, c11, c02 = [float(v) for v in sol]
+    N = float(f_number)
+    k2 = 1.0 / (N * N)
+
+    # Well-defined paraboloid: both quadratic-axis coefficients must be
+    # positive (FWHM^2 is bounded below and grows away from best focus).
+    # Small negative values from noise are treated as zero.
+    c20_pos = max(c20, 0.0)
+    c02_pos = max(c02, 0.0)
+    well_defined = (c20 > 0.0) and (c02 > 0.0)
+
+    if not well_defined:
+        # Fall back to the old plane-fit shape so the UI still has something
+        # to display, but flag it so the user knows it isn't a paraboloid fit.
+        Ap = np.vstack([x, y, np.ones_like(x)]).T.astype(np.float64, copy=False)
+        solp, *_ = np.linalg.lstsq(Ap[mask], fwhm_um[mask], rcond=None)
+        # slope of FWHM per pixel times N ~= slope of |dz| per pixel
+        p_fb = float(solp[0]) * N
+        q_fb = float(solp[1]) * N
+        r_fb = float(solp[2]) * N
+        rms_fb = float(np.sqrt(np.mean((Ap.dot(solp) - fwhm_um)[mask] ** 2)))
+        return {
+            'p': p_fb, 'q': q_fb, 'r': max(r_fb, 0.0),
+            'fwhm_baseline': float(np.median(fwhm_um[mask])),
+            'rms_residual': rms_fb,
+            'n_used': int(mask.sum()),
+            'well_defined': False,
+        }
+
+    p = math.sqrt(c20_pos) * N
+    q = math.sqrt(c02_pos) * N
+    # sign(p*q) from cross term
+    if c11 < 0.0:
+        q = -q
+    # sign(p*r) or sign(q*r) from linear terms
+    if abs(p) > 1e-12:
+        r = c10 / (2.0 * k2 * p)
+    elif abs(q) > 1e-12:
+        r = c01 / (2.0 * k2 * q)
+    else:
+        r = 0.0
+    # Convention: pin r >= 0 (overall sign flip is physically ambiguous).
+    if r < 0.0:
+        p, q, r = -p, -q, -r
+
+    A_baseline = c00 - k2 * r * r
+    fwhm_baseline = math.sqrt(A_baseline) if A_baseline > 0.0 else 0.0
+    rms = float(np.sqrt(np.mean((A.dot(sol) - z)[mask] ** 2)))
+
+    return {
+        'p': float(p),
+        'q': float(q),
+        'r': float(r),
+        'fwhm_baseline': float(fwhm_baseline),
+        'rms_residual': rms,
+        'n_used': int(mask.sum()),
+        'well_defined': True,
+    }
+
+
+def analyze_focal_plane(img: np.ndarray,
+                        pixel_scale: float,
+                        thresh_sigma: float = 5.0,
+                        deg: int = 3,
+                        coarse: int = 128,
+                        min_stars: int = 12,
+                        target_stars: int = 1000) -> Optional[dict]:
+    """
+    Single-pass focal-plane analysis. Runs a descending-threshold SEP
+    detection ONCE (background estimate + repeated extract) and fits three
+    smooth surfaces from the shared catalogue:
+
+      - FWHM (um)      -- proper Gaussian conversion: 2.3548 * sqrt(a*b) * ps
+      - Ellipticity    -- 1 - b/a (matches PixInsight / SExtractor convention)
+      - Orientation    -- circular fit on (sin 2th, cos 2th), recovered via atan2
+
+    Detection uses the waterfall (100, 50, 25, 12, 6, 3 sigma) and stops as
+    soon as `target_stars` well-formed stars have survived quality filtering.
+    `thresh_sigma` is retained for API compatibility but is only used as the
+    floor of the ladder when it exceeds 3.
+
+    Each surface is returned already normalised to [0, 1] for display along
+    with its raw (min, max) range in physical units.
+    """
+    gray = _to_gray32(img)
+    H, W = gray.shape
+
+    # Build the descending ladder; ensure thresh_sigma acts as a floor.
+    ladder = tuple(s for s in (100.0, 50.0, 25.0, 12.0, 6.0, 3.0)
+                   if s >= float(thresh_sigma))
+    if not ladder:
+        ladder = (float(thresh_sigma),)
+    cat = _detect_stars_waterfall(gray, sigma_ladder=ladder, target_count=target_stars)
+    if cat is None or cat['n'] < min_stars:
+        return None
+
+    x, y = cat['x'], cat['y']
+    a, b = cat['a'], cat['b']
+    theta = cat['theta']
+
+    # ----- FWHM (geometric-mean axis FWHM, correct Gaussian conversion) -----
+    fwhm_um = _FWHM_FACTOR * np.sqrt(a * b) * float(pixel_scale)
+    fwhm_surf, fwhm_range = _fit_and_render_surface(x, y, fwhm_um, H, W,
+                                                    deg=deg, coarse=coarse)
+
+    # ----- Ellipticity (canonical: 1 - b/a in [0, 1)) -----------------------
+    ell = 1.0 - (b / a)
+    ell_surf, ell_range = _fit_and_render_surface(x, y, ell, H, W,
+                                                  deg=deg, coarse=coarse)
+
+    # ----- Orientation via circular fit -------------------------------------
+    # Fit sin(2th) and cos(2th) as independent smooth surfaces, then recover
+    # th_fit = 0.5 * atan2(surf_s, surf_c). Uses lower degree because pure
+    # sensor tilt / decentre produces a slowly-varying orientation field.
+    ori_deg = max(1, min(deg, 2))
+    s = np.sin(2.0 * theta)
+    c = np.cos(2.0 * theta)
+    surf_s, _ = _fit_and_render_surface(x, y, s, H, W, deg=ori_deg, coarse=coarse)
+    surf_c, _ = _fit_and_render_surface(x, y, c, H, W, deg=ori_deg, coarse=coarse)
+    theta_surf = 0.5 * np.arctan2(surf_s, surf_c)   # in [-pi/2, pi/2]
+
+    # Normalise each surface to [0, 1] for the SurfaceDialog display.
+    def _norm(z: np.ndarray) -> np.ndarray:
+        zmn = float(z.min()); zmx = float(z.max())
+        rng = zmx - zmn
+        return (z - zmn) / (rng if rng > 1e-9 else 1.0)
+
+    return {
+        'n_stars':        cat['n'],
+        'fwhm_norm':      _norm(fwhm_surf),
+        'fwhm_range_um':  fwhm_range,
+        'ell_norm':       _norm(ell_surf),
+        'ell_range':      ell_range,
+        'theta_norm':     (theta_surf + np.pi / 2.0) / np.pi,   # [0, 1] hue
+        'theta_range_rad': (float(theta.min()), float(theta.max())),
+        # Raw per-star metrics kept for potential overlay drawing.
+        'stars': cat,
+    }
+
+
+# =============================================================================
 def field_curvature_analysis(
     img: np.ndarray,
     grid: int,
@@ -406,72 +807,81 @@ def tilt_analysis(
     pixel_size_um: float,
     focal_length_mm: float,
     aperture_mm: float,
-    sigma_clip: float = 2.0,
+    sigma_clip: float = 2.5,
     thresh_sigma: float = 5.0,
-) -> Tuple[np.ndarray, Tuple[float,float,float], Tuple[int,int]]:
+    target_stars: int = 1000,
+) -> Tuple[np.ndarray, Tuple[float,float,float], Tuple[int,int], Optional[dict]]:
     """
-    Robust sensor‐tilt measurement via direct plane fit, with a thin‐lens defocus model.
+    Sensor tilt measurement via a physical FWHM^2 paraboloid fit.
 
-    1) Convert to 2-D luminance if needed.
-    2) Detect stars & measure half-light radius via SEP → rad (pixels).
-    3) Compute blur diameter d_um = 2*a_px * pixel_size_um.
-    4) Convert blur → defocus via thin‐lens: Δz_um = d_um * (focal_length_mm / aperture_mm).
-    5) Fit plane Δz = a x + b y + c to all stars (sigma‐clipped).
-    6) Return that best‐fit plane evaluated over every pixel, normalized 0–1 for display.
+    Old pipeline (broken for weak/moderate tilt): fit a plane to blur diameter
+    treated as signed defocus. Because blur ~= |dz|/N, one side of a tilted
+    sensor has positive dz and the other negative but both show positive
+    blur -- so the fitted plane collapses toward zero whenever the focus
+    ridge crosses the sensor. The old pipeline only recovered tilt correctly
+    for severe cases where the whole field was defocused with the same sign.
+
+    New pipeline:
+      1) Grayscale + descending-threshold SEP detection (shared with focal
+         plane; stops once target_stars well-formed detections are in hand,
+         so rich fields don't waste time on 30k faint noisy stars).
+      2) Compute FWHM(x,y) properly from the ellipse: 2.3548 * sqrt(a*b) * ps.
+      3) Fit FWHM^2 = FWHM0^2 + (p*x + q*y + r)^2 / N^2 as a general 2D
+         quadratic, extract signed (p, q, r) plus baseline FWHM0.
+      4) Rasterise the signed defocus plane over the frame for display.
+
+    Returns
+    -------
+    plane_norm : (H, W) float32 in [0, 1]
+        Signed defocus plane normalised for the display colour ramp.
+    (p, q, r)  : plane coefficients in um and um / pixel; the same tuple
+                 shape the old code returned so TiltDialog corner-delta
+                 arithmetic is unchanged.
+    (H, W)     : image shape.
+    fit_info   : dict with diagnostics (fwhm_baseline_um, rms_residual,
+                 n_used, well_defined, f_number) -- or None if the fit failed.
+                 New in this version; TiltDialog uses it if provided.
     """
-    # 0) grayscale float32
-    if img.ndim == 3 and img.shape[2] == 3:
-        gray = (0.2126*img[...,0] + 0.7152*img[...,1] + 0.0722*img[...,2]).astype(np.float32)
-    else:
-        gray = img.astype(np.float32)
+    gray = _to_gray32(img)
     H, W = gray.shape
 
-    # 1) SEP star detection
-    data = np.ascontiguousarray(gray, dtype=np.float32)
-    bkg  = sep.Background(data)
-    stars = sep.extract(data - bkg.back(),
-                        thresh=thresh_sigma,
-                        err=bkg.globalrms)
-    if stars is None or len(stars) < 10:
-        return np.zeros((H,W), dtype=float), (0.0,0.0,0.0), (H,W)
+    ladder = tuple(s for s in (100.0, 50.0, 25.0, 12.0, 6.0, 3.0)
+                   if s >= float(thresh_sigma))
+    if not ladder:
+        ladder = (float(thresh_sigma),)
+    cat = _detect_stars_waterfall(gray, sigma_ladder=ladder, target_count=target_stars)
+    if cat is None or cat['n'] < 15:      # paraboloid needs 6+; 15 for stability
+        return np.zeros((H, W), dtype=np.float32), (0.0, 0.0, 0.0), (H, W), None
 
-    x     = stars['x']
-    y     = stars['y']
-    a_pix = stars['a']   # semi-major axis
-    flags = stars['flag'] if 'flag' in stars.dtype.names else np.zeros_like(a_pix, dtype=int)
+    x = cat['x']; y = cat['y']
+    a_pix = cat['a']; b_pix = cat['b']
 
-    # 2) map to defocus distance (µm) via thin-lens:
-    #    blur diameter ≈ 2*a_pix * px_size_um
-    #    Δz_um = blur_um * (focal_length_mm / aperture_mm)
-    blur_um     = 2.0 * a_pix * pixel_size_um
-    f_number    = focal_length_mm / aperture_mm
-    defocus_um  = blur_um * f_number
+    # FWHM (um) via proper Gaussian second-moment conversion
+    fwhm_um = _FWHM_FACTOR * np.sqrt(a_pix * b_pix) * float(pixel_size_um)
 
-    # 3) initial least‐squares plane fit
-    A     = np.vstack([x, y, np.ones_like(x)]).T  # (N,3)
-    sol, *_ = np.linalg.lstsq(A, defocus_um, rcond=None)
-    a, b, c = sol
+    f_number = float(focal_length_mm) / float(aperture_mm)
+    fit = _fit_tilt_paraboloid(x, y, fwhm_um, f_number,
+                               sigma_clip=sigma_clip, max_iter=5)
+    if fit is None:
+        return np.zeros((H, W), dtype=np.float32), (0.0, 0.0, 0.0), (H, W), None
 
-    # 4) sigma‐clip outliers and re-fit
-    z_pred = A.dot(sol)
-    resid  = defocus_um - z_pred
-    mask   = np.abs(resid) < sigma_clip * np.std(resid)
-    if mask.sum() > 10:
-        sol, *_ = np.linalg.lstsq(A[mask], defocus_um[mask], rcond=None)
-        a, b, c = sol
+    p, q, r = fit['p'], fit['q'], fit['r']
 
-    # 5) build full‐frame plane
-    Y, X      = np.mgrid[0:H, 0:W]
-    plane_full = a*X + b*Y + c
-
-    # 6) normalize to [0..1] for display
-    pmin, pmax = plane_full.min(), plane_full.max()
+    # Rasterise the (linear) signed defocus plane. Uses shared coarse-grid
+    # upsampler for consistency, though a plane could be evaluated directly.
+    plane_norm = _eval_poly_upsampled(
+        np.array([p, q, r]),
+        [(1, 0), (0, 1), (0, 0)],
+        H, W, coarse=64,
+    )
+    pmin, pmax = float(plane_norm.min()), float(plane_norm.max())
     if pmax > pmin:
-        norm_plane = (plane_full - pmin) / (pmax - pmin)
+        plane_norm = (plane_norm - pmin) / (pmax - pmin)
     else:
-        norm_plane = np.zeros_like(plane_full)
+        plane_norm = np.zeros_like(plane_norm)
 
-    return norm_plane, (a, b, c), (H, W)
+    fit['f_number'] = f_number
+    return plane_norm, (p, q, r), (H, W), fit
 
 def focal_plane_curvature_overlay(img: np.ndarray, grid: int, panel: int):
     """
@@ -596,62 +1006,106 @@ class TiltDialog(QDialog):
                  img_shape: Optional[Tuple[int,int]]    = None,
                  pixel_size_um: float                   = 1.0,
                  overlays: Optional[List[Tuple]]        = None,
+                 fit_info: Optional[dict]               = None,
                  parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.pixel_size_um = pixel_size_um
 
-        # ––––– Create the view and load the image –––––
+        # ----- image / overlays -------------------------------------------------
         self.view = PreviewPane()
         self.view.load_numpy(img)
         if overlays:
             self.view.set_overlay(overlays)
 
-        # ––––– Corner tilt table –––––
+        # ----- corner tilt table + diagnostics ---------------------------------
+        range_label = None
         table = None
+        diag_label = None
+        note_label = None
+
         if plane and img_shape:
             a, b, c = plane
             H, W = img_shape
-            cx, cy = W/2, H/2
-            corners = {
-                "Top Left":    (0,   0),
-                "Top Right":   (W,   0),
-                "Bottom Left": (0,   H),
-                "Bottom Right":(W,   H),
-            }
+            cx, cy = W / 2.0, H / 2.0
+            corners = [
+                ("Top Left",     0, 0),
+                ("Top Right",    W, 0),
+                ("Bottom Left",  0, H),
+                ("Bottom Right", W, H),
+            ]
             rows = []
             corner_deltas = []
-            for name,(x,y) in corners.items():
-                delta = a*(x - cx) + b*(y - cy)
+            for name, x, y in corners:
+                delta = a * (x - cx) + b * (y - cy)   # relative to centre plane
                 corner_deltas.append(delta)
+                rows.append((name, f"{delta:.1f}"))
 
             min_d, max_d = min(corner_deltas), max(corner_deltas)
-
-            # 2) now build a more meaningful label:
-            range_label = QLabel(self.tr("Tilt span: {0:.1f} µm … {1:.1f} µm").format(min_d, max_d))            
-            for name, (x, y) in corners.items():
-                # how far above/below the center plane
-                delta = a*(x - cx) + b*(y - cy)
-                rows.append((name, f"{delta:.1f}"))
+            span = max_d - min_d
+            range_label = QLabel(self.tr(
+                "Tilt span (corner Δ vs centre): {0:.1f} µm … {1:.1f} µm   "
+                "|  peak-to-peak {2:.1f} µm"
+            ).format(min_d, max_d, span))
 
             table = QTableWidget(len(rows), 2, self)
             table.setHorizontalHeaderLabels([self.tr("Corner"), self.tr("Δ µm")])
-            # hide the vertical header
             table.verticalHeader().setVisible(False)
             for i, (name, val) in enumerate(rows):
                 table.setItem(i, 0, QTableWidgetItem(name))
                 table.setItem(i, 1, QTableWidgetItem(val))
             table.resizeColumnsToContents()
 
-        # ––––– Layout everything –––––
+            # ----- fit diagnostics (paraboloid FWHM^2 model) -----------------
+            if fit_info:
+                diag_bits = []
+                if fit_info.get("fwhm_baseline") is not None:
+                    diag_bits.append(self.tr("Baseline FWHM: {0:.2f} µm")
+                                     .format(float(fit_info["fwhm_baseline"])))
+                if fit_info.get("n_used") is not None:
+                    diag_bits.append(self.tr("Stars used: {0}")
+                                     .format(int(fit_info["n_used"])))
+                if fit_info.get("f_number") is not None:
+                    diag_bits.append(self.tr("f/{0:.1f}")
+                                     .format(float(fit_info["f_number"])))
+                if fit_info.get("rms_residual") is not None:
+                    diag_bits.append(self.tr("RMS residual: {0:.2f} µm²")
+                                     .format(float(fit_info["rms_residual"])))
+                if diag_bits:
+                    diag_label = QLabel("   |   ".join(diag_bits))
+
+                if not fit_info.get("well_defined", True):
+                    note_label = QLabel(self.tr(
+                        "⚠  Paraboloid model is ill-conditioned for this frame — "
+                        "showing linear FWHM-vs-position fallback. Tilt magnitudes "
+                        "may be less reliable; consider a longer sub with more stars."
+                    ))
+                    note_label.setStyleSheet("color:#c07000; font-style:italic;")
+                    note_label.setWordWrap(True)
+                else:
+                    note_label = QLabel(self.tr(
+                        "Note: the sign of tilt (which corner sits high vs low) "
+                        "is not recoverable from a single image — only the "
+                        "magnitude is. Through-focus data is required to break "
+                        "the ambiguity."
+                    ))
+                    note_label.setStyleSheet("color:#555; font-style:italic;")
+                    note_label.setWordWrap(True)
+
+        # ----- layout ---------------------------------------------------------
         layout = QVBoxLayout(self)
-        layout.addWidget(self.view,        1)  # stretch = 1
-        layout.addWidget(range_label,     0)  # stretch = 0
-        if table:
-            layout.addWidget(table,       0)
+        layout.addWidget(self.view, 1)
+        if range_label is not None:
+            layout.addWidget(range_label, 0)
+        if diag_label is not None:
+            layout.addWidget(diag_label, 0)
+        if table is not None:
+            layout.addWidget(table, 0)
+        if note_label is not None:
+            layout.addWidget(note_label, 0)
         close_btn = QPushButton(self.tr("Close"), self)
         close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn,       0)
+        layout.addWidget(close_btn, 0)
 
         self.view.fit_to_view()
 
@@ -729,29 +1183,21 @@ def eval_2d_poly(sol, exps, X, Y):
     return Z
 
 def compute_fwhm_surface(img, pixel_scale, thresh_sigma=5.0, deg=3):
-    # grayscale
-    gray = img.mean(axis=2).astype(np.float32) if img.ndim==3 else img.astype(np.float32)
+    """
+    FWHM (um) heatmap. Uses proper Gaussian conversion 2.3548 * sqrt(a*b) * ps
+    rather than the historical 2*a underestimate.
+    """
+    gray = _to_gray32(img)
     H, W = gray.shape
-    data = np.ascontiguousarray(gray, np.float32)
-    bkg  = sep.Background(data)
-    stars = sep.extract(data - bkg.back(), thresh=thresh_sigma, err=bkg.globalrms)
-    if stars is None or len(stars)<10:
-        return np.zeros((H,W), float)
+    cat = _detect_stars(gray, thresh_sigma=thresh_sigma)
+    if cat is None or cat['n'] < 10:
+        return np.zeros((H, W), dtype=np.float32), (0.0, 0.0)
 
-    x = stars['x']; y = stars['y']
-    fwhm_um = 2.0 * stars['a'] * pixel_scale
-
-    # 1) fit
-    sol, exps = fit_2d_poly(x, y, fwhm_um, deg=deg)
-
-    # 2) evaluate
-    Y, X     = np.mgrid[0:H, 0:W]
-    surf     = eval_2d_poly(sol, exps, X, Y)
-
-    # 3) normalize
-    mn, mx = surf.min(), surf.max()
-    heat = (surf - mn)/max(mx-mn,1e-9)
-    return heat, (mn, mx)
+    fwhm_um = _FWHM_FACTOR * np.sqrt(cat['a'] * cat['b']) * float(pixel_scale)
+    surf, raw = _fit_and_render_surface(cat['x'], cat['y'], fwhm_um, H, W, deg=deg)
+    mn, mx = float(surf.min()), float(surf.max())
+    heat = (surf - mn) / max(mx - mn, 1e-9)
+    return heat.astype(np.float32, copy=False), raw
 
 
 def compute_eccentricity_surface(
@@ -761,32 +1207,21 @@ def compute_eccentricity_surface(
     deg: int = 3
 ) -> Tuple[np.ndarray, Tuple[float,float]]:
     """
-    1) SEP → x,y,a,b
-    2) e = clip(1 - b/a)
-    3) Fit e(x,y) with a 2D poly of degree 'deg' + sigma-clip
-    4) Evaluate on full H×W grid, normalize to [0..1]
+    Ellipticity heatmap. Canonical astro convention: 1 - b/a, in [0, 1).
+    (Reserving the name 'eccentricity' since that's what the rest of the code
+    uses, but the value is ellipticity to match PixInsight / SExtractor.)
     """
-    gray = img.mean(axis=2).astype(np.float32) if img.ndim==3 else img.astype(np.float32)
+    gray = _to_gray32(img)
     H, W = gray.shape
-    data = np.ascontiguousarray(gray, np.float32)
-    bkg  = sep.Background(data)
-    stars = sep.extract(data - bkg.back(), thresh=thresh_sigma, err=bkg.globalrms)
-    if stars is None or len(stars)<6:
-        return np.zeros((H,W),dtype=float), (0.0, 0.0)
+    cat = _detect_stars(gray, thresh_sigma=thresh_sigma)
+    if cat is None or cat['n'] < 6:
+        return np.zeros((H, W), dtype=np.float32), (0.0, 0.0)
 
-    x = stars['x']; y = stars['y']
-    a = stars['a']; b = stars['b']
-    e = np.clip(1.0 - b/a, 0.0, 1.0)
-    e_min, e_max = float(e.min()), float(e.max())
-
-    # fit polynomial
-    sol, exps = fit_2d_poly(x, y, e, deg=deg)
-    Y, X = np.mgrid[0:H,0:W]
-    surf = eval_2d_poly(sol, exps, X, Y)
-
-    mn, mx = surf.min(), surf.max()
-    norm = (surf - mn)/max(mx-mn,1e-9)
-    return norm, (e_min, e_max)
+    ell = 1.0 - (cat['b'] / cat['a'])
+    surf, raw = _fit_and_render_surface(cat['x'], cat['y'], ell, H, W, deg=deg)
+    mn, mx = float(surf.min()), float(surf.max())
+    heat = (surf - mn) / max(mx - mn, 1e-9)
+    return heat.astype(np.float32, copy=False), raw
 
 
 def compute_orientation_surface(
@@ -797,68 +1232,27 @@ def compute_orientation_surface(
     max_iter: int = 3
 ) -> Tuple[np.ndarray, Tuple[float,float]]:
     """
-    Fits a smooth orientation surface θ(x,y) via circular least squares.
-
-    Returns
-    -------
-    norm_hue : H×W array
-      Hue = (θ_fit + π/2)/π in [0..1], ready for display.
-    (h_min, h_max) :
-      min/max of the raw hue samples at star positions.
+    Fits a smooth orientation surface theta(x,y) via a circular fit on the
+    double-angle representation (sin 2th, cos 2th) so that theta and theta+pi
+    are treated identically. Returns hue in [0, 1] and the raw theta range
+    (radians) at the detection sites for the legend.
     """
-    # → 1) make a 2D grayscale
-    gray = img.mean(axis=2).astype(np.float32) if img.ndim==3 else img.astype(np.float32)
+    gray = _to_gray32(img)
     H, W = gray.shape
+    cat = _detect_stars(gray, thresh_sigma=thresh_sigma)
+    if cat is None or cat['n'] < 6:
+        return np.zeros((H, W), dtype=np.float32), (0.0, 0.0)
 
-    # → 2) SEP detect
-    data = np.ascontiguousarray(gray, np.float32)
-    bkg  = sep.Background(data)
-    stars = sep.extract(data - bkg.back(), thresh=thresh_sigma, err=bkg.globalrms)
-    if stars is None or len(stars) < 6:
-        return np.zeros((H, W), dtype=float), (0.0, 0.0)
-
-    x     = stars['x']
-    y     = stars['y']
-    theta = stars['theta']  # in radians
-
-    # → 3) form double‐angle sine/cosine
-    s = np.sin(2*theta)
-    c = np.cos(2*theta)
-
-    # compute raw hue range for legend
-    # compute **actual** θ range for legend (in radians)
-    theta_min, theta_max = float(theta.min()), float(theta.max())
-
-    # → 4) build design matrix for deg‐th 2D poly
-    exps = [(i,j) for total in range(deg+1)
-                  for i in range(total+1)
-                  for j in [total-i]]
-    A    = np.vstack([ (x**i)*(y**j) for (i,j) in exps ]).T  # shape (N, M)
-
-    # → 5) sigma‐clip loops on residual length
-    mask = np.ones_like(s, bool)
-    for _ in range(max_iter):
-        sol_s, *_ = np.linalg.lstsq(A[mask], s[mask], rcond=None)
-        sol_c, *_ = np.linalg.lstsq(A[mask], c[mask], rcond=None)
-        fit_s = A.dot(sol_s)
-        fit_c = A.dot(sol_c)
-        resid = np.hypot(s - fit_s, c - fit_c)
-        std   = np.std(resid[mask])
-        newm  = resid < sigma_clip*std
-        if newm.sum() == mask.sum():
-            break
-        mask = newm
-
-    # → 6) evaluate both polys on the full image grid
-    Y, X = np.mgrid[0:H, 0:W]
-    surf_s = sum(coeff*(X**i)*(Y**j) for coeff,(i,j) in zip(sol_s, exps))
-    surf_c = sum(coeff*(X**i)*(Y**j) for coeff,(i,j) in zip(sol_c, exps))
-
-    # → 7) recover the smooth θ_fit and map to hue [0..1]
-    theta_fit = 0.5 * np.arctan2(surf_s, surf_c)       # in [−π/2..π/2]
-    hue       = (theta_fit + np.pi/2) / np.pi          # now [0..1]
-
-    return hue, (theta_min, theta_max)
+    theta = cat['theta']
+    s = np.sin(2.0 * theta)
+    c = np.cos(2.0 * theta)
+    surf_s, _ = _fit_and_render_surface(cat['x'], cat['y'], s, H, W,
+                                        deg=max(1, deg), sigma_clip=sigma_clip)
+    surf_c, _ = _fit_and_render_surface(cat['x'], cat['y'], c, H, W,
+                                        deg=max(1, deg), sigma_clip=sigma_clip)
+    theta_fit = 0.5 * np.arctan2(surf_s, surf_c)          # [-pi/2, pi/2]
+    hue = (theta_fit + np.pi / 2.0) / np.pi               # [0, 1]
+    return hue.astype(np.float32, copy=False), (float(theta.min()), float(theta.max()))
 
 class SurfaceDialog(QDialog):
     def __init__(self, title, heatmap, vmin, vmax, units:str="", cmap="gray", parent=None):
@@ -1410,6 +1804,68 @@ def _arcsec_per_pix_from_header(hdr: fits.Header, fallback_px_um: float|None=Non
     except Exception:
         pass
 
+# =============================================================================
+#  Background worker for SEP-based analyses
+#
+#  The Focal Plane and Tilt analyses used to run on the GUI thread (the old
+#  QTimer.singleShot(0, ...) trick just posts back to the same event loop, so
+#  the app would freeze for the entire pipeline on multi-megapixel frames).
+#  This QThread runs everything off-thread and posts the result back via a
+#  signal for the dialog to consume.
+# =============================================================================
+class _AnalysisWorker(QThread):
+    progress_signal = pyqtSignal(str)             # human-readable status
+    finished_signal = pyqtSignal(str, object)     # (mode, result_or_None)
+    error_signal    = pyqtSignal(str, str)        # (mode, message)
+
+    def __init__(self, mode: str, arr: np.ndarray, params: dict, parent=None):
+        super().__init__(parent)
+        self._mode   = mode
+        self._arr    = arr
+        self._params = params
+
+    def run(self):
+        mode = self._mode
+        p = self._params
+        try:
+            if mode == "Focal Plane Analysis":
+                self.progress_signal.emit(self.tr("Detecting stars..."))
+                res = analyze_focal_plane(
+                    self._arr,
+                    pixel_scale  = float(p["pixel_size_um"]),
+                    thresh_sigma = float(p.get("snr_threshold", 3.0)),
+                    deg          = int(p.get("deg", 3)),
+                    coarse       = int(p.get("coarse", 128)),
+                    target_stars = int(p.get("target_stars", 1000)),
+                )
+                self.finished_signal.emit(mode, res)
+
+            elif mode == "Tilt Analysis":
+                self.progress_signal.emit(self.tr("Detecting stars..."))
+                norm_plane, plane_coefs, hw, fit_info = tilt_analysis(
+                    self._arr,
+                    pixel_size_um   = float(p["pixel_size_um"]),
+                    focal_length_mm = float(p["focal_length_mm"]),
+                    aperture_mm     = float(p["aperture_mm"]),
+                    sigma_clip      = float(p.get("sigma_clip", 2.5)),
+                    thresh_sigma    = float(p.get("snr_threshold", 3.0)),
+                    target_stars    = int(p.get("target_stars", 1000)),
+                )
+                self.finished_signal.emit(mode, {
+                    "plane_norm":  norm_plane,
+                    "plane_coefs": plane_coefs,
+                    "shape":       hw,
+                    "fit_info":    fit_info,
+                })
+
+            else:
+                self.finished_signal.emit(mode, None)
+
+        except Exception as e:
+            self.error_signal.emit(mode, str(e))
+            self.finished_signal.emit(mode, None)
+
+
 class ImagePeekerDialogPro(QDialog):
     def __init__(self, parent, document, settings):
         super().__init__(parent)
@@ -1431,7 +1887,8 @@ class ImagePeekerDialogPro(QDialog):
         self.settings = settings
         self._persist_prefix = "image_peeker"
         self._geom_restored = False
-        self._restoring_ui = True  # block saves during restore        
+        self._restoring_ui = True  # block saves during restore
+        self._analysis_worker: Optional[_AnalysisWorker] = None
         # status / progress line
         self.status_lbl = QLabel("")
         self.status_lbl.setStyleSheet("color:#bbb;")
@@ -1512,15 +1969,6 @@ class ImagePeekerDialogPro(QDialog):
         self.focal_length_input.editingFinished.connect(_save_after_change)
         self.aperture_input.editingFinished.connect(_save_after_change)
         QTimer.singleShot(0, self._refresh_mosaic)
-
-    def _run_analysis(self, *_):
-        mode_key = self.analysis_combo.currentData()
-        mode_disp = self.analysis_combo.currentText()
-        if mode_key == "None":
-            QMessageBox.information(self, self.tr("Analysis"), self.tr("Select an analysis type first."))
-            return
-        self._set_busy(True, self.tr("Running {0}…").format(mode_disp))
-        QTimer.singleShot(0, lambda: self._run_analysis_dispatch(mode_key))
 
     def _k(self, key: str) -> str:
         return f"{self._persist_prefix}/{key}"
@@ -1612,6 +2060,16 @@ class ImagePeekerDialogPro(QDialog):
             self._save_ui_state()
         except Exception:
             pass
+        # If a worker is still running, ask it to finish (or drop the handle if
+        # it never will). We don't wait forever -- SEP + a plane fit is at most
+        # a few seconds even on a large frame.
+        worker = getattr(self, "_analysis_worker", None)
+        if worker is not None:
+            try:
+                worker.wait(3000)   # ms
+            except Exception:
+                pass
+            self._analysis_worker = None
         super().closeEvent(ev)
 
     def _set_busy(self, on: bool, text: str = ""):
@@ -1644,35 +2102,57 @@ class ImagePeekerDialogPro(QDialog):
             self._set_busy(False, "")
             self._refresh_mosaic()
             return
+        # Guard against re-entrancy while a worker is running.
+        if getattr(self, "_analysis_worker", None) is not None:
+            return
         self._set_busy(True, self.tr("Running {0}…").format(mode_disp))
+        # Give the busy cursor a chance to render before we spin up the worker.
         QTimer.singleShot(0, lambda: self._run_analysis_dispatch(mode_key))
 
     def _run_analysis_dispatch(self, mode: str):
+        """
+        Route analysis modes. SEP-based analyses (Focal Plane, Tilt) run in a
+        background QThread so the GUI stays responsive; the plate-solve /
+        distortion path stays synchronous because it involves modal solver
+        dialogs and metadata mutation on the doc.
+        """
+        arr, meta = self._arr_and_meta()
+        if arr is None or arr.size == 0:
+            self._set_busy(False, "")
+            return
+
+        ps_um  = float(meta.get("pixel_size_um",   self.pixel_size_input.value()))
+        fl_mm  = float(meta.get("focal_length_mm", self.focal_length_input.value()))
+        ap_mm  = float(meta.get("aperture_mm",     self.aperture_input.value()))
+        snr_th = float(meta.get("snr_threshold",   3.0))
+        n_tgt  = int(meta.get("target_stars",      1000))
+
+        if mode in ("Tilt Analysis", "Focal Plane Analysis"):
+            params = {
+                "pixel_size_um":   ps_um,
+                "focal_length_mm": fl_mm,
+                "aperture_mm":     ap_mm,
+                "snr_threshold":   snr_th,
+                "target_stars":    n_tgt,
+                "deg":             3,
+                "coarse":          128,
+                "sigma_clip":      2.5,
+            }
+            # np.ascontiguousarray so the worker's SEP call doesn't hit a
+            # non-contiguous view; float32 keeps SEP happy without a copy.
+            arr_c = np.ascontiguousarray(arr, dtype=np.float32)
+            worker = _AnalysisWorker(mode, arr_c, params, parent=self)
+            self._analysis_worker = worker
+            worker.progress_signal.connect(
+                lambda t, m=mode: self._set_busy(True, f"{m}: {t}"))
+            worker.error_signal.connect(self._on_analysis_error)
+            worker.finished_signal.connect(self._on_analysis_finished)
+            worker.start()
+            return
+
+        # ---- Synchronous path: Astrometric Distortion Analysis --------------
         try:
-            arr, meta = self._arr_and_meta()
-            if arr is None or arr.size == 0:
-                return
-            ps_um = float(meta.get("pixel_size_um", self.pixel_size_input.value()))
-            fl_mm = float(meta.get("focal_length_mm", self.focal_length_input.value()))
-            ap_mm = float(meta.get("aperture_mm", self.aperture_input.value()))
-            snr_th = float(meta.get("snr_threshold", 5.0))
-
-            if mode == "Tilt Analysis":
-                norm_plane, (a,b,c), (H,W) = tilt_analysis(
-                    arr, pixel_size_um=ps_um, focal_length_mm=fl_mm, aperture_mm=ap_mm,
-                    sigma_clip=2.5, thresh_sigma=snr_th
-                )
-                TiltDialog(self.tr("Sensor Tilt (µm)"), norm_plane, (a,b,c), (H,W), ps_um, parent=self).show()
-
-            elif mode == "Focal Plane Analysis":
-                fwhm_heat, (mn_f, mx_f) = compute_fwhm_surface(arr, ps_um, thresh_sigma=snr_th, deg=3)
-                SurfaceDialog(self.tr("FWHM Heatmap"), fwhm_heat, mn_f, mx_f, "µm", "viridis", parent=self).show()
-                ecc_heat, (mn_e, mx_e) = compute_eccentricity_surface(arr, ps_um, thresh_sigma=snr_th, deg=3)
-                SurfaceDialog(self.tr("Eccentricity Map"), ecc_heat, mn_e, mx_e, "e = 1−b/a", "magma", parent=self).show()
-                ori_heat, (mn_o, mx_o) = compute_orientation_surface(arr, thresh_sigma=snr_th, deg=3)
-                SurfaceDialog(self.tr("Orientation Map"), ori_heat, mn_o, mx_o, "rad", "hsv", parent=self).show()
-
-            elif mode == "Astrometric Distortion Analysis":
+            if mode == "Astrometric Distortion Analysis":
                 hdr = _header_from_meta(meta)
 
                 # If we truly have no WCS, plate-solve
@@ -1681,10 +2161,10 @@ class ImagePeekerDialogPro(QDialog):
                         parent=self, doc=self._coerce_doc(self.document), settings=self.settings
                     )
                     if not ok:
-                        QMessageBox.warning(self, self.tr("Plate Solve"), self.tr("ASTAP/Astrometry failed:\n{0}").format(hdr_or_err))
+                        QMessageBox.warning(self, self.tr("Plate Solve"),
+                                            self.tr("ASTAP/Astrometry failed:\n{0}").format(hdr_or_err))
                         return
 
-                    # IMPORTANT: if solver returned a Header, store it
                     if isinstance(hdr_or_err, fits.Header):
                         doc = self._coerce_doc(self.document)
                         if doc and isinstance(getattr(doc, "metadata", None), dict):
@@ -1698,24 +2178,26 @@ class ImagePeekerDialogPro(QDialog):
                     arr, meta = self._arr_and_meta()
                     hdr = _header_from_meta(meta)
 
-                # Now WCS exists, but do we have SIP?
                 if hdr is None:
-                    QMessageBox.critical(self, self.tr("WCS Error"), self.tr("Plate solve did not produce a readable WCS header."))
+                    QMessageBox.critical(self, self.tr("WCS Error"),
+                                         self.tr("Plate solve did not produce a readable WCS header."))
                     return
 
-                has_sip = any(k.startswith("A_") for k in hdr.keys()) and any(k.startswith("B_") for k in hdr.keys())
+                has_sip = (any(k.startswith("A_") for k in hdr.keys())
+                           and any(k.startswith("B_") for k in hdr.keys()))
                 if not has_sip:
                     QMessageBox.warning(
                         self, self.tr("No Distortion Model"),
                         self.tr("This image has a valid WCS, but no SIP distortion terms (A_*, B_*).\n"
-                        "Astrometric distortion analysis requires a SIP-enabled solve.\n\n"
-                        "Re-solve with distortion fitting enabled in ASTAP.")
+                                "Astrometric distortion analysis requires a SIP-enabled solve.\n\n"
+                                "Re-solve with distortion fitting enabled in ASTAP.")
                     )
                     return
 
                 asp = _arcsec_per_pix_from_header(hdr, fallback_px_um=ps_um, fallback_fl_mm=fl_mm)
                 if asp is None:
-                    QMessageBox.critical(self, self.tr("WCS Error"), self.tr("Cannot determine pixel scale."))
+                    QMessageBox.critical(self, self.tr("WCS Error"),
+                                         self.tr("Cannot determine pixel scale."))
                     return
 
                 DistortionGridDialog(
@@ -1726,11 +2208,67 @@ class ImagePeekerDialogPro(QDialog):
                     parent=self
                 ).show()
 
-
             else:
                 self._refresh_mosaic()
         finally:
             self._set_busy(False, "")
+
+    def _on_analysis_finished(self, mode: str, res):
+        """Handles a worker's finished_signal on the GUI thread."""
+        try:
+            if res is None:
+                if mode == "Focal Plane Analysis":
+                    QMessageBox.warning(
+                        self, self.tr("Focal Plane Analysis"),
+                        self.tr("Not enough well-shaped stars for a reliable "
+                                "focal-plane fit. Try lowering the SNR threshold "
+                                "or using a longer sub with more detections."))
+                elif mode == "Tilt Analysis":
+                    QMessageBox.warning(
+                        self, self.tr("Tilt Analysis"),
+                        self.tr("Not enough stars for a reliable tilt fit."))
+                return
+
+            if mode == "Focal Plane Analysis":
+                mn_f, mx_f = res["fwhm_range_um"]
+                mn_e, mx_e = res["ell_range"]
+                mn_o, mx_o = res["theta_range_rad"]
+                SurfaceDialog(
+                    self.tr("FWHM Heatmap ({0} stars)").format(res["n_stars"]),
+                    res["fwhm_norm"], mn_f, mx_f, "µm", "viridis", parent=self
+                ).show()
+                SurfaceDialog(
+                    self.tr("Ellipticity Map (1 − b/a)"),
+                    res["ell_norm"], mn_e, mx_e, "", "magma", parent=self
+                ).show()
+                SurfaceDialog(
+                    self.tr("Orientation Map"),
+                    res["theta_norm"], mn_o, mx_o, "rad", "hsv", parent=self
+                ).show()
+
+            elif mode == "Tilt Analysis":
+                a, b, c = res["plane_coefs"]
+                H, W = res["shape"]
+                TiltDialog(self.tr("Sensor Tilt (µm)"),
+                           res["plane_norm"], (a, b, c), (H, W),
+                           float(self.pixel_size_input.value()),
+                           fit_info=res.get("fit_info"),
+                           parent=self).show()
+        finally:
+            self._set_busy(False, "")
+            worker = getattr(self, "_analysis_worker", None)
+            if worker is not None:
+                worker.deleteLater()
+                self._analysis_worker = None
+
+    def _on_analysis_error(self, mode: str, message: str):
+        self._set_busy(False, "")
+        worker = getattr(self, "_analysis_worker", None)
+        if worker is not None:
+            worker.deleteLater()
+            self._analysis_worker = None
+        QMessageBox.critical(self, mode,
+                             self.tr("Analysis failed:\n{0}").format(message))
 
     def _coerce_doc(self, obj):
         """Return a document object that has .image and .metadata, or None."""
@@ -1836,4 +2374,3 @@ class ImagePeekerDialogPro(QDialog):
         elif arr8.ndim == 3 and arr8.shape[2] == 3:
             return QImage(buf, w, h, 3*w, QImage.Format.Format_RGB888)
         raise ValueError(f"Unsupported array shape {arr.shape}")
-
