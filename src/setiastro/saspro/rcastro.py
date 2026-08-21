@@ -62,6 +62,82 @@ def _prefer_high_perf_gpu(exe_path: str) -> None:
     except Exception:
         pass
 
+# ---------------------------------------------------------------------------
+# --host support (rc-astro CLI schemaVersion >= 6)
+#
+# Russ Croman's rc-astro CLI 2.6.2 (schemaVersion 6) adds an optional --host
+# flag so support can see which integration a machine is running. We discover
+# the schemaVersion via a bare `rc-astro --no-banner --json` on startup /
+# executable-path change, cache it in QSettings under rcastro/schema_version,
+# and gate --host on version >= 6. Older CLIs reject --host as unknown.
+# ---------------------------------------------------------------------------
+def _saspro_host_tag() -> str:
+    """
+    Returns the short 'SASPro-<version>' tag passed via --host. Falls back to
+    plain 'SASPro' if the version can't be resolved. Sanitization on the CLI
+    side is documented as: printable ASCII only, ',', '(', ')' dropped,
+    whitespace collapsed, length-capped -- so we don't need to be clever here.
+    """
+    try:
+        from setiastro.saspro._generated.build_info import APP_VERSION as _v  # type: ignore
+        v = str(_v).strip()
+        if v:
+            return f"SASPro-{v}"
+    except Exception:
+        pass
+    return "SASPro"
+
+
+def _probe_schema_version(exe: str):
+    """
+    Runs `rc-astro --no-banner --json` and returns the top-level schemaVersion
+    as an int, or None if it can't be determined (older CLI, parse error, no
+    exe, timeout, etc.). Cheap: no product, no work.
+    """
+    if not exe or not os.path.exists(exe):
+        return None
+    import subprocess, json
+    try:
+        r = subprocess.run(
+            [exe, "--no-banner", "--json"],
+            capture_output=True, text=True, timeout=8,
+        )
+        out = (r.stdout or "").strip()
+        if not out:
+            return None
+        # rc-astro emits a single JSON document. Be defensive: locate the
+        # first '{' in case any preamble slips through.
+        i = out.find("{")
+        if i < 0:
+            return None
+        data = json.loads(out[i:])
+        sv = data.get("schemaVersion")
+        if isinstance(sv, bool):  # bool is a subclass of int; reject
+            return None
+        if isinstance(sv, int):
+            return sv
+        if isinstance(sv, str) and sv.strip().isdigit():
+            return int(sv.strip())
+    except Exception:
+        return None
+    return None
+
+
+def _host_args() -> list[str]:
+    """
+    Returns ['--host', '<tag>'] when the cached rc-astro schemaVersion is
+    >= 6, else []. Appended to the end of every rc-astro invocation.
+    """
+    try:
+        s = QSettings()
+        sv = s.value("rcastro/schema_version", 0, type=int)
+        if isinstance(sv, int) and sv >= 6:
+            return ["--host", _saspro_host_tag()]
+    except Exception:
+        pass
+    return []
+
+
 def _detect_cli_uses_device_flag(exe: str) -> bool:
     """
     Returns True if this rc-astro binary uses --device (0.9.7+),
@@ -675,7 +751,7 @@ class _LicensePanel(QWidget):
         self.lbl_status.setText(stage)
         QApplication.processEvents()
         try:
-            cmd = [exe, "--no-banner", self._product] + extra_args
+            cmd = [exe, "--no-banner", self._product] + extra_args + _host_args()
             r   = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             out = ((r.stdout or "") + (r.stderr or "")).strip()
             # strip ASCII-art banner lines
@@ -911,7 +987,7 @@ class RCAstroDialog(QDialog):
         QApplication.processEvents()
         try:
             r = subprocess.run(
-                [exe, "--no-banner", "--device"],
+                [exe, "--no-banner", "--device"] + _host_args(),
                 capture_output=True, text=True, timeout=10
             )
             out = ((r.stdout or "") + (r.stderr or "")).strip()
@@ -943,7 +1019,7 @@ class RCAstroDialog(QDialog):
             return
         dlg = _ProgressDialog(self, "Upgrade RC-Astro CLI")
         dlg.set_stage("Connecting…")
-        cmd = [exe, "update", "--install"]
+        cmd = [exe, "update", "--install"] + _host_args()
         worker = _RCAstroWorker(cmd, os.path.dirname(exe) or os.getcwd())
         dlg.set_cancel_fn(worker.cancel)
         worker.output_signal.connect(dlg.append)
@@ -978,9 +1054,17 @@ class RCAstroDialog(QDialog):
 
     def _probe_version(self, exe: str):
         import subprocess
+        # Refresh cached rc-astro schemaVersion first so subsequent invocations
+        # (including the --help probe below, if we ever want to attach --host
+        # to it) can gate on it. Value is 0 when unknown / older CLI.
+        try:
+            sv = _probe_schema_version(exe)
+            QSettings().setValue("rcastro/schema_version", int(sv) if isinstance(sv, int) else 0)
+        except Exception:
+            QSettings().setValue("rcastro/schema_version", 0)
         try:
             r = subprocess.run(
-                [exe, "--no-banner", "--help"],
+                [exe, "--no-banner", "--help"] + _host_args(),
                 capture_output=True, text=True, timeout=8)
             out = (r.stdout or "") + (r.stderr or "")
             # Update device-flag detection while we have the help output
@@ -1017,7 +1101,7 @@ class RCAstroDialog(QDialog):
             return
         dlg = _ProgressDialog(self, "Download Models")
         dlg.set_stage("Connecting…")
-        cmd = [exe, "--no-banner", "download-models"]
+        cmd = [exe, "--no-banner", "download-models"] + _host_args()
         worker = _RCAstroWorker(cmd, os.path.dirname(exe) or os.getcwd())
         dlg.set_cancel_fn(worker.cancel)
         worker.output_signal.connect(dlg.append)
@@ -1236,6 +1320,7 @@ class RCAstroDialog(QDialog):
             cmd.append("--overwrite")
         if self.cmb_engine.currentText() != "cpu" and self.chk_high_perf_gpu.isChecked():
             _prefer_high_perf_gpu(exe)
+        cmd += _host_args()
         # ── Progress dialog ───────────────────────────────────────────────────
         dlg = _ProgressDialog(self, f"{label} — Processing")
         dlg.set_stage(f"Launching {label}…")
@@ -1720,6 +1805,7 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
     cmd = [exe, "--no-banner", product, input_path]
     cmd += args
     cmd += [device_flag, engine, "--depth", "32F", "--overwrite"]
+    cmd += _host_args()
     if engine != "cpu" and bool(s.value("rcastro/high_perf_gpu", True, type=bool)):
         _prefer_high_perf_gpu(exe)
     label = PRODUCT_LABELS.get(product, product.upper())
