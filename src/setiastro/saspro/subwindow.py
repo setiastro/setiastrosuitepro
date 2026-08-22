@@ -3255,8 +3255,11 @@ class ImageSubWindow(QWidget):
         # Invalidate any cached "WCS baked" pixmap on rebuild
         self._pm_src_wcs = None
 
-        # Present final-quality after rebuild
-        self._present_scaled(interactive=False)
+        # Present final-quality after rebuild — but only if the user wants smoothing
+        # on the final settle. Otherwise stay on the fast (nearest-neighbour) present
+        # so undo/redo, process-applied, and doc-region updates keep the real pixels
+        # visible without needing a zoom/resize nudge.
+        self._present_scaled(interactive=not getattr(self, "_smooth_zoom", True))
 
         rebuild = False  # done
 
@@ -3280,7 +3283,12 @@ class ImageSubWindow(QWidget):
         sw = max(1, int(pm_base.width() * self.scale))
         sh = max(1, int(pm_base.height() * self.scale))
 
-        mode = Qt.TransformationMode.FastTransformation if interactive else Qt.TransformationMode.SmoothTransformation
+        # Honour the "smooth on final redraw" setting globally. If the user has
+        # disabled it, we never smooth — even on non-interactive presents.
+        if interactive or not getattr(self, "_smooth_zoom", True):
+            mode = Qt.TransformationMode.FastTransformation
+        else:
+            mode = Qt.TransformationMode.SmoothTransformation
         pm_scaled = pm_base.scaled(sw, sh, Qt.AspectRatioMode.KeepAspectRatio, mode)
 
         # If interactive, skip WCS overlay entirely (this is the biggest speed win)
