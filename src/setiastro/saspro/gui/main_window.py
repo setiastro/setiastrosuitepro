@@ -329,7 +329,7 @@ def float01_to_qimage(img: np.ndarray) -> QImage:
     qimg = qimg.copy()
     try:
         from setiastro.saspro.color_space_manager import tag_qimage_with_working_color_space
-        tag_qimage_with_working_color_space(qimg)
+        qimg = tag_qimage_with_working_color_space(qimg)
     except Exception:
         pass
     return qimg

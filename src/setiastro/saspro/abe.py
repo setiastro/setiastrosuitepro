@@ -1381,7 +1381,7 @@ class ABEDialog(QDialog):
             self._preview_qimg = QImage(buf8.data, w, h, buf8.strides[0],
                                         QImage.Format.Format_RGB888)
 
-        tag_qimage_with_working_color_space(self._preview_qimg)
+        self._preview_qimg = tag_qimage_with_working_color_space(self._preview_qimg)
 
         self._update_preview_scaled()
         self._redraw_overlay()
@@ -1651,7 +1651,7 @@ class ABEDialog(QDialog):
             self._last_preview = buf8
             qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
 
-        tag_qimage_with_working_color_space(qimg)
+        qimg = tag_qimage_with_working_color_space(qimg)
         self._preview_qimg = qimg
         self._update_preview_scaled()
         self._redraw_overlay()
@@ -2060,7 +2060,7 @@ class ABEDialog(QDialog):
             h, w, _ = buf8.shape
             qimg = QImage(buf8.data, w, h, buf8.strides[0], QImage.Format.Format_RGB888)
 
-        tag_qimage_with_working_color_space(qimg)
+        qimg = tag_qimage_with_working_color_space(qimg)
         self._preview_qimg = qimg
         self._update_preview_scaled()
         self._redraw_overlay()
@@ -2179,7 +2179,7 @@ class ABEDialog(QDialog):
                 QImage.Format.Format_RGB888
             )
 
-        tag_qimage_with_working_color_space(self._preview_qimg)
+        self._preview_qimg = tag_qimage_with_working_color_space(self._preview_qimg)
         self._update_preview_scaled()
         self._redraw_overlay()
 

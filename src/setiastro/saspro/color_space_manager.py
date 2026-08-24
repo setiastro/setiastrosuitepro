@@ -414,6 +414,11 @@ def prepare_qimage_for_viewport(img: QImage, settings: Optional[QSettings] = Non
     if viewport_mode == VIEWPORT_MODE_UNMANAGED:
         return img
 
+    try:
+        img = img.copy()
+    except Exception:
+        pass
+
     source_key = get_working_color_space_from_settings(settings)
     source_space = get_color_space_from_key(source_key)
     if source_space is None:

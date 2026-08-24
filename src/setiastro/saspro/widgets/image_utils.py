@@ -69,7 +69,7 @@ def numpy_to_qimage(arr: np.ndarray, normalize: bool = True) -> QImage:
         h, w = arr.shape
         img = QImage(arr.data, w, h, w, QImage.Format.Format_Grayscale8)
         img._buf = arr # Keep alive
-        tag_qimage_with_working_color_space(img)
+        img = tag_qimage_with_working_color_space(img)
         return img
     
     elif arr.ndim == 3:
@@ -80,7 +80,7 @@ def numpy_to_qimage(arr: np.ndarray, normalize: bool = True) -> QImage:
             arr = arr.squeeze()
             img = QImage(arr.data, w, h, w, QImage.Format.Format_Grayscale8)
             img._buf = arr
-            tag_qimage_with_working_color_space(img)
+            img = tag_qimage_with_working_color_space(img)
             return img
         
         elif c == 3:
@@ -88,7 +88,7 @@ def numpy_to_qimage(arr: np.ndarray, normalize: bool = True) -> QImage:
             bytes_per_line = 3 * w
             img = QImage(arr.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
             img._buf = arr
-            tag_qimage_with_working_color_space(img)
+            img = tag_qimage_with_working_color_space(img)
             return img
         
         elif c == 4:
@@ -96,7 +96,7 @@ def numpy_to_qimage(arr: np.ndarray, normalize: bool = True) -> QImage:
             bytes_per_line = 4 * w
             img = QImage(arr.data, w, h, bytes_per_line, QImage.Format.Format_RGBA8888)
             img._buf = arr
-            tag_qimage_with_working_color_space(img)
+            img = tag_qimage_with_working_color_space(img)
             return img
         
         else:
@@ -149,7 +149,7 @@ def float_to_qimage_rgb8(arr: np.ndarray) -> QImage:
     img = QImage(buf8.data, w, h, 3 * w, QImage.Format.Format_RGB888)
     # Keep reference so bytes stay alive
     img._buf = buf8
-    tag_qimage_with_working_color_space(img)
+    img = tag_qimage_with_working_color_space(img)
     return img
 
 
