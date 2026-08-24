@@ -110,6 +110,17 @@ def _do_warmup():
             #print(f"[numba] layer probe skipped: {_e!r}")
             logging.info("Numba threading-layer probe skipped: %r", _e)
         
+        # serialized-warmup: astroalign folded into _do_warmup
+        # Run the astroalign JIT warmup in THIS thread, sequentially.
+        # Triggering the first parallel=True compile from two threads at
+        # once can access-violate in numba's compiler_lock on some
+        # Windows/TBB configs, so we do it single-threaded here.
+        try:
+            from setiastro.saspro.astroalign import warmup_jit as _aa_warmup_jit
+            _aa_warmup_jit()
+        except Exception:
+            pass
+        
     except Exception as e:
         import traceback
         #print(f"[numba] warmup failed: {e!r}")
