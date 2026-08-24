@@ -841,50 +841,43 @@ def _register_dll_dirs_for_frozen(site: Path, vp: Path, status_cb=print) -> None
     PyInstaller-frozen builds don't get the normal DLL search behavior that a
     standalone venv python.exe gets just by living inside the venv folder.
     torch's _C.pyd depends on DLLs under torch/lib (torch_cpu.dll, c10.dll,
-    fbgemm.dll, etc.), the venv's own Scripts/DLLs folders, the base Python
-    install (python3XX.dll + VC-runtime), and — for CUDA wheels — the nvidia
-    library bins. Without registering those directories explicitly (and
-    preloading the torch DLLs by absolute path), an in-process import inside
-    the frozen exe can fail with WinError 126 / "Failed to load PyTorch C
-    extensions" even though a subprocess probe using the venv's own python.exe
-    imports torch fine — exactly the venv-probe-ok/in-process-fails mismatch.
+    fbgemm.dll, etc.), and sometimes the venv's own Scripts/DLLs folders.
+    Without registering those directories explicitly, an in-process import
+    inside the frozen exe can fail with "Failed to load PyTorch C extensions"
+    even though a subprocess probe using the venv's own python.exe imports
+    torch fine (this is exactly the venv-probe-ok/in-process-fails mismatch
+    reported by users).
+
+    HISTORY: 1.20.6 briefly expanded this candidate list to also include
+      site (site-packages root), the base Python dir + its DLLs, nvidia/*/bin,
+      and sys._MEIPASS (the frozen bundle root), and added a
+      _preload_torch_dlls(site, ...) call at the end. That combination -- plus
+      the .spec change that shipped vcruntime140.dll / vcruntime140_1.dll /
+      msvcp140.dll into _internal/ -- caused numba first-compile access
+      violations on user boxes where the shipped MSVC runtime shadowed the
+      system copy numba/llvmlite were built against. Reverted to the 1.20.5
+      short list. _preload_torch_dlls and _diagnose_win_torch_dlls remain
+      DEFINED for use from the torch-import failure diagnostic path, but are
+      no longer invoked from the frozen-DLL registration path.
     """
     if platform.system() != "Windows" or not getattr(sys, "frozen", False):
         return
     candidates = [
         site / "torch" / "lib",
-        site / "torch" / "bin",
         vp.parent,                   # venv\Scripts
         vp.parent / "DLLs",
         vp.parent.parent / "DLLs",   # venv\DLLs, if present
-        site,                        # site-packages root
     ]
-    # Base Python the venv was built from: python3XX.dll + matching VC-runtime.
-    base = _read_venv_home(vp)
-    if base is not None:
-        candidates += [base, base / "DLLs"]
-    # CUDA wheels ship their runtime under site-packages\nvidia\*\bin (Windows).
-    nvidia = site / "nvidia"
-    if nvidia.is_dir():
-        candidates += sorted(nvidia.glob("*/bin"))
-    # frozen bundle root (sys._MEIPASS): where the .spec ships the MSVC runtime.
-    mei = getattr(sys, "_MEIPASS", None)
-    if mei:
-        candidates.append(Path(mei))
-
     registered = []
     for d in candidates:
         try:
-            if d and d.is_dir():
+            if d.is_dir():
                 os.add_dll_directory(str(d))
                 registered.append(str(d))
         except Exception:
             pass
     if registered:
         status_cb(f"[RT] Registered DLL search dirs for frozen import: {registered}")
-
-    # Force the correct torch DLLs resident before _C.pyd resolves dependencies.
-    _preload_torch_dlls(site, status_cb=status_cb)
 
 def _looks_like_source_tree_torch(d: Path) -> bool:
     # A real source tree has _C/__init__.py AND setup.py or CMakeLists.txt
