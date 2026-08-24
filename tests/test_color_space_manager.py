@@ -12,14 +12,18 @@ from PyQt6.QtWidgets import QApplication
 from setiastro.saspro.color_space_manager import (
     COLOR_SPACES,
     DEFAULT_COLOR_SPACE,
+    VIEWPORT_MODE_UNMANAGED,
     get_icc_key_from_color_space_key,
     get_icc_profile_bytes,
     get_key_from_icc_key,
     get_qimage_color_space,
+    get_viewport_color_mode_from_settings,
     get_working_color_space_from_settings,
     normalize_color_space_key,
+    set_viewport_color_mode_to_settings,
     set_working_color_space_to_settings,
     tag_qimage_with_color_space,
+    tag_qimage_with_working_color_space,
 )
 
 
@@ -71,6 +75,29 @@ def test_qimage_can_be_tagged_with_srgb(qapp):
 
     assert tag_qimage_with_color_space(img, "sRGB") is True
     assert get_qimage_color_space(img) == "sRGB"
+
+
+def test_viewport_mode_defaults_to_unmanaged_and_can_convert_when_target_enabled(qapp):
+    settings = QSettings("SetiAstroTest", "SASproViewportModeTest")
+    settings.clear()
+
+    assert get_viewport_color_mode_from_settings(settings) == VIEWPORT_MODE_UNMANAGED
+
+    img = QImage(8, 8, QImage.Format.Format_RGB888)
+    img.fill(Qt.GlobalColor.red)
+    tag_qimage_with_working_color_space(img, settings)
+    assert not img.colorSpace().isValid()
+
+    assert set_working_color_space_to_settings("DisplayP3", settings) is True
+    assert set_viewport_color_mode_to_settings("AdobeRGB", settings) is True
+    assert get_viewport_color_mode_from_settings(settings) == "AdobeRGB"
+
+    tagged_img = QImage(8, 8, QImage.Format.Format_RGB888)
+    tagged_img.fill(Qt.GlobalColor.red)
+    tag_qimage_with_working_color_space(tagged_img, settings)
+    assert tagged_img.colorSpace().isValid()
+
+    settings.clear()
 
 
 def test_export_dialog_defaults_to_working_color_space(qapp):

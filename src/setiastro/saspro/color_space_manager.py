@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 
 SETTINGS_KEY = "color_management/working_space"
 DEFAULT_COLOR_SPACE = "DisplayP3"
+VIEWPORT_MODE_SETTINGS_KEY = "color_management/viewport_mode"
+VIEWPORT_MODE_UNMANAGED = "unmanaged"
+VIEWPORT_MODE_TAGGED = "tagged"
+DEFAULT_VIEWPORT_MODE = VIEWPORT_MODE_UNMANAGED
+VIEWPORT_COLOR_MODES = (VIEWPORT_MODE_UNMANAGED, VIEWPORT_MODE_TAGGED)
 
 
 @dataclass(frozen=True)
@@ -360,6 +365,83 @@ def set_working_color_space_to_settings(key: object, settings: Optional[QSetting
     return True
 
 
+def normalize_viewport_color_mode(mode: object) -> str:
+    raw_value = _clean_key(mode)
+    if raw_value in COLOR_SPACES:
+        return raw_value
+    collapsed = raw_value.strip().lower().replace("-", "_").replace(" ", "_")
+    if collapsed in ("legacy", "unmanaged", "unmanaged_legacy", "unmanaged_(legacy)"):
+        return VIEWPORT_MODE_UNMANAGED
+    normalized_color_key = normalize_color_space_key(raw_value)
+    if normalized_color_key in COLOR_SPACES and raw_value:
+        return normalized_color_key
+    if collapsed in ("tagged", "working", "working_profile", "qt", "qt_tagged"):
+        return VIEWPORT_MODE_TAGGED
+    return DEFAULT_VIEWPORT_MODE
+
+
+def get_viewport_color_mode_from_settings(settings: Optional[QSettings] = None) -> str:
+    value = _settings_or_default(settings).value(
+        VIEWPORT_MODE_SETTINGS_KEY,
+        DEFAULT_VIEWPORT_MODE,
+        type=str,
+    )
+    return normalize_viewport_color_mode(value)
+
+
+def set_viewport_color_mode_to_settings(mode: object, settings: Optional[QSettings] = None) -> bool:
+    canonical = normalize_viewport_color_mode(mode)
+    target = _settings_or_default(settings)
+    target.setValue(VIEWPORT_MODE_SETTINGS_KEY, canonical)
+    target.sync()
+    return True
+
+
+def qimage_should_be_tagged_for_viewport(settings: Optional[QSettings] = None) -> bool:
+    return get_viewport_color_mode_from_settings(settings) != VIEWPORT_MODE_UNMANAGED
+
+
+def prepare_qimage_for_viewport(img: QImage, settings: Optional[QSettings] = None) -> QImage:
+    if img is None:
+        return img
+    try:
+        if img.isNull():
+            return img
+    except Exception:
+        return img
+
+    viewport_mode = get_viewport_color_mode_from_settings(settings)
+    if viewport_mode == VIEWPORT_MODE_UNMANAGED:
+        return img
+
+    source_key = get_working_color_space_from_settings(settings)
+    source_space = get_color_space_from_key(source_key)
+    if source_space is None:
+        return img
+
+    try:
+        img.setColorSpace(source_space)
+    except Exception as exc:
+        logger.warning("Failed to set source color space on viewport QImage: %s", exc)
+        return img
+
+    if viewport_mode == VIEWPORT_MODE_TAGGED:
+        return img
+
+    target_space = get_color_space_from_key(viewport_mode)
+    if target_space is None:
+        return img
+
+    try:
+        if source_space != target_space:
+            img.convertToColorSpace(target_space)
+        else:
+            img.setColorSpace(target_space)
+    except Exception as exc:
+        logger.warning("Failed to convert viewport QImage color space: %s", exc)
+    return img
+
+
 def tag_qimage_with_color_space(img: QImage, color_space_key: object) -> bool:
     if img is None:
         return False
@@ -381,8 +463,7 @@ def tag_qimage_with_color_space(img: QImage, color_space_key: object) -> bool:
 
 
 def tag_qimage_with_working_color_space(img: QImage, settings: Optional[QSettings] = None) -> QImage:
-    tag_qimage_with_color_space(img, get_working_color_space_from_settings(settings))
-    return img
+    return prepare_qimage_for_viewport(img, settings)
 
 
 def get_qimage_color_space(img: QImage) -> Optional[str]:
@@ -423,6 +504,12 @@ class ColorSpaceManager:
 
     def set_working_space_key(self, key: object) -> bool:
         return set_working_color_space_to_settings(key, self._settings)
+
+    def get_viewport_color_mode(self) -> str:
+        return get_viewport_color_mode_from_settings(self._settings)
+
+    def set_viewport_color_mode(self, mode: object) -> bool:
+        return set_viewport_color_mode_to_settings(mode, self._settings)
 
     def get_working_space_qcolor_space(self) -> Optional[QColorSpace]:
         return get_color_space_from_key(self.get_working_space_key())

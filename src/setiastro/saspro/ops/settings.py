@@ -13,10 +13,14 @@ from setiastro.saspro.i18n import get_available_languages, get_saved_language, s
 from setiastro.saspro.color_space_manager import (
     COLOR_SPACES,
     DEFAULT_COLOR_SPACE,
+    DEFAULT_VIEWPORT_MODE,
+    VIEWPORT_MODE_UNMANAGED,
     get_color_space_options,
     get_profile_search_directories,
+    get_viewport_color_mode_from_settings,
     get_working_color_space_from_settings,
     is_profile_available,
+    set_viewport_color_mode_to_settings,
     set_working_color_space_to_settings,
 )
 import importlib.util
@@ -265,6 +269,22 @@ class SettingsDialog(QDialog):
             "Working color space for image display and default export tagging."
         ))
         left_col.addRow(self.tr("Working Color Space:"), self.cb_color_space)
+
+        self.cb_viewport_color_mode = QComboBox()
+        viewport_mode_keys = [VIEWPORT_MODE_UNMANAGED]
+        viewport_mode_keys.extend(info.key for info in get_color_space_options())
+        for key in viewport_mode_keys:
+            self.cb_viewport_color_mode.addItem(self._viewport_color_mode_label(key), key)
+            idx = self.cb_viewport_color_mode.count() - 1
+            self.cb_viewport_color_mode.setItemData(
+                idx,
+                self._viewport_color_mode_description(key),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        self.cb_viewport_color_mode.setToolTip(self.tr(
+            "How image viewports apply color profile information before display."
+        ))
+        left_col.addRow(self.tr("Viewport Color Management:"), self.cb_viewport_color_mode)
 
         # ---- Pixel Readout (Loupe) ----
         left_col.addRow(QLabel(self.tr("<b>Pixel Readout (Loupe)</b>")))
@@ -633,6 +653,22 @@ class SettingsDialog(QDialog):
             return self.tr("Very wide-gamut color space for professional color workflows.")
         if key == "sRGB":
             return self.tr("Standard RGB color space for web sharing and broad compatibility.")
+        return str(key)
+
+    def _viewport_color_mode_label(self, key: str) -> str:
+        if key == VIEWPORT_MODE_UNMANAGED:
+            return self.tr("Unmanaged (Legacy)")
+        if key in COLOR_SPACES:
+            return self._color_space_label(key)
+        return str(key)
+
+    def _viewport_color_mode_description(self, key: str) -> str:
+        if key == VIEWPORT_MODE_UNMANAGED:
+            return self.tr("Legacy viewport rendering. RGB values are sent to Qt without color profile tagging or conversion.")
+        if key in COLOR_SPACES:
+            return self.tr(
+                "Convert temporary viewport images from the working color space to {target} before display."
+            ).format(target=self._color_space_label(key))
         return str(key)
 
     def _missing_profile_message(self, key: str) -> str:
@@ -1387,6 +1423,13 @@ class SettingsDialog(QDialog):
         if cs_idx >= 0:
             self.cb_color_space.setCurrentIndex(cs_idx)
 
+        current_viewport_mode = get_viewport_color_mode_from_settings(self.settings)
+        viewport_idx = self.cb_viewport_color_mode.findData(current_viewport_mode)
+        if viewport_idx < 0:
+            viewport_idx = self.cb_viewport_color_mode.findData(DEFAULT_VIEWPORT_MODE)
+        if viewport_idx >= 0:
+            self.cb_viewport_color_mode.setCurrentIndex(viewport_idx)
+
         # Pixel readout (loupe)
         self.chk_loupe_info.setChecked(self.settings.value("loupe/show_info", True, type=bool))
         self.sp_loupe_size.setValue(int(self.settings.value("loupe/size", 161, type=int)))
@@ -1601,7 +1644,10 @@ class SettingsDialog(QDialog):
         old_color_space = get_working_color_space_from_settings(self.settings)
         new_color_space = self.cb_color_space.currentData() or DEFAULT_COLOR_SPACE
         set_working_color_space_to_settings(new_color_space, self.settings)
-        color_space_changed = new_color_space != old_color_space
+        old_viewport_mode = get_viewport_color_mode_from_settings(self.settings)
+        new_viewport_mode = self.cb_viewport_color_mode.currentData() or DEFAULT_VIEWPORT_MODE
+        set_viewport_color_mode_to_settings(new_viewport_mode, self.settings)
+        color_space_changed = new_color_space != old_color_space or new_viewport_mode != old_viewport_mode
         if new_color_space != "sRGB" and not is_profile_available(new_color_space):
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(
