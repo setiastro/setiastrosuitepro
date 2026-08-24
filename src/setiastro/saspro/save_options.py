@@ -8,7 +8,16 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton,
     QSpinBox, QDoubleSpinBox, QGroupBox, QFormLayout, QCheckBox,
-    QRadioButton, QButtonGroup, QWidget
+    QRadioButton, QButtonGroup, QWidget, QMessageBox
+)
+from setiastro.saspro.color_space_manager import (
+    COLOR_SPACES,
+    get_color_space_options,
+    get_profile_search_directories,
+    get_icc_key_from_color_space_key,
+    get_key_from_icc_key,
+    get_working_color_space_from_settings,
+    is_profile_available,
 )
 
 # Allowed bit depths per output format (what your saver actually supports)
@@ -100,17 +109,24 @@ class ExportDialog(QDialog):
         self.chk_embed_icc.setChecked(True)
         core_form.addRow(self.tr("Color"), self.chk_embed_icc)
 
-        # Colour space to tag on export. SASpro renders in Display P3, so P3
-        # reproduces the on-screen look in colour-managed viewers; sRGB is the
-        # safe, universal choice for web/sharing.
+        # Colour space to tag on export. Default to the working display space,
+        # while still allowing per-format overrides below.
         self.combo_color_space = QComboBox(self)
-        self.combo_color_space.addItem(self.tr("Display P3 (match SASpro)"), "P3")
-        self.combo_color_space.addItem(self.tr("sRGB (universal)"), "sRGB")
+        for info in get_color_space_options():
+            self.combo_color_space.addItem(self._color_space_label(info.key), info.icc_key)
+            idx = self.combo_color_space.count() - 1
+            self.combo_color_space.setItemData(idx, self._color_space_description(info.key), Qt.ItemDataRole.ToolTipRole)
         self.combo_color_space.setToolTip(self.tr(
-            "Display P3 matches the vivid colours shown in SASpro on wide-gamut "
-            "screens. sRGB is safest for the web and older viewers."))
+            "Select the ICC profile used to tag exported images. The default "
+            "matches the working color space selected in Preferences."))
         self.chk_embed_icc.toggled.connect(self.combo_color_space.setEnabled)
         core_form.addRow(self.tr("Colour space"), self.combo_color_space)
+
+        default_key = get_working_color_space_from_settings(self._settings)
+        default_icc = get_icc_key_from_color_space_key(default_key)
+        default_idx = self.combo_color_space.findData(default_icc)
+        if default_idx >= 0:
+            self.combo_color_space.setCurrentIndex(default_idx)
 
         lay.addWidget(core_box)
 
@@ -241,7 +257,47 @@ class ExportDialog(QDialog):
         self.resize_percent_spin.setEnabled(mode == 1)
         self.resize_long_edge_spin.setEnabled(mode == 2)
 
+    def _color_space_label(self, key: str) -> str:
+        if key == "DisplayP3":
+            return self.tr("Display P3")
+        if key == "AdobeRGB":
+            return self.tr("Adobe RGB (1998)")
+        if key == "ProPhotoRGB":
+            return self.tr("ProPhoto RGB")
+        if key == "sRGB":
+            return self.tr("sRGB")
+        return str(key)
+
+    def _color_space_description(self, key: str) -> str:
+        if key == "DisplayP3":
+            return self.tr("Wide-gamut color space with D65 white point and P3 primaries.")
+        if key == "AdobeRGB":
+            return self.tr("Wide-gamut photography color space using Adobe RGB (1998) primaries.")
+        if key == "ProPhotoRGB":
+            return self.tr("Very wide-gamut color space for professional color workflows.")
+        if key == "sRGB":
+            return self.tr("Standard RGB color space for web sharing and broad compatibility.")
+        return str(key)
+
+    def _missing_profile_message(self, key: str) -> str:
+        color_key = get_key_from_icc_key(key)
+        info = COLOR_SPACES.get(color_key)
+        names = ", ".join(info.profile_names[:4]) if info is not None else str(key)
+        dirs = "\n".join(f"- {path}" for path in get_profile_search_directories())
+        return self.tr(
+            "{profile} ICC profile was not found.\n\n"
+            "Expected names include: {names}\n\n"
+            "SASpro checks these locations:\n{dirs}\n\n"
+            "Display and export tagging will fall back to sRGB until the profile is installed."
+        ).format(profile=self._color_space_label(color_key), names=names, dirs=dirs)
+
     def _on_accept(self):
+        if self.chk_embed_icc.isChecked() and not is_profile_available(self.combo_color_space.currentData()):
+            QMessageBox.warning(
+                self,
+                self.tr("Color profile not found"),
+                self._missing_profile_message(self.combo_color_space.currentData()),
+            )
         # persist settings if present
         self._save_settings()
         self.accept()
@@ -267,7 +323,12 @@ class ExportDialog(QDialog):
             embed = s.value(self._k("embed_icc"), True, type=bool)
             self.chk_embed_icc.setChecked(bool(embed))
 
-            cs = s.value(self._k("icc_color_space"), "P3", type=str) or "P3"
+            cs = s.value(
+                self._k("icc_color_space"),
+                get_icc_key_from_color_space_key(get_working_color_space_from_settings(s)),
+                type=str,
+            ) or "P3"
+            cs = get_icc_key_from_color_space_key(get_key_from_icc_key(cs))
             _cs_idx = self.combo_color_space.findData(cs)
             if _cs_idx >= 0:
                 self.combo_color_space.setCurrentIndex(_cs_idx)

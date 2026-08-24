@@ -3100,63 +3100,21 @@ def save_fits_bundle(
 # ──────────────────────────────────────────────────────────────────────────
 # ICC profile handling for export
 # ──────────────────────────────────────────────────────────────────────────
-import functools
-
-# Where to find a Display P3 ICC profile, in priority order. Ship a copy with
-# the app (first entry) so wide-gamut tagging works on EVERY platform — the
-# macOS system path only exists on Macs, which is why the old Darwin-only code
-# left Windows/Linux exports untagged (and therefore flat).
-_P3_PROFILE_CANDIDATES = (
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "resources", "DisplayP3.icc"),
-    "/System/Library/ColorSync/Profiles/Display P3.icc",
+from setiastro.saspro.color_space_manager import (
+    COLOR_SPACES,
+    get_icc_profile_bytes,
+    is_profile_available,
 )
-
-
-@functools.lru_cache(maxsize=8)
-def _read_profile_bytes(path: str):
-    try:
-        if path and os.path.exists(path):
-            with open(path, "rb") as f:
-                return f.read()
-    except Exception:
-        pass
-    return None
-
-
-@functools.lru_cache(maxsize=1)
-def _srgb_profile_bytes():
-    try:
-        from PIL import ImageCms
-        return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
-    except Exception as e:
-        print(f"[save_image] Could not build sRGB ICC profile: {e}")
-        return None
 
 
 def _export_icc_profile_bytes(color_space: str = "P3"):
     """
     Return ICC profile bytes to embed on save, chosen by the colour space the
-    pixel data represents — NOT the OS doing the writing.
-
-    SASpro renders its viewport in a wide-gamut (Display P3) space, so an
-    untagged export is interpreted as sRGB by colour-managed viewers and looks
-    flat/desaturated compared to SASpro. Embedding the matching profile lets
-    those viewers reproduce the on-screen colour.
-
-      "P3"   -> Display P3; falls back to sRGB only if no P3 profile file is
-                available on this machine.
-      "sRGB" -> sRGB.
+    pixel data represents. Missing non-sRGB profiles fall back to sRGB.
     """
-    cs = (color_space or "P3").strip().lower()
-    if cs in ("p3", "display p3", "display-p3", "displayp3"):
-        for cand in _P3_PROFILE_CANDIDATES:
-            b = _read_profile_bytes(cand)
-            if b is not None:
-                return b
-        print("[save_image] No Display P3 profile found on this machine; "
-              "tagging sRGB instead. Drop a DisplayP3.icc into the app "
-              "'resources' folder so wide-gamut exports match SASpro everywhere.")
-    return _srgb_profile_bytes()
+    if not is_profile_available(color_space):
+        print(f"[save_image] ICC profile for {color_space!r} was not found; tagging sRGB instead.")
+    return get_icc_profile_bytes(color_space, fallback_to_srgb=True)
 
 
 def save_image(img_array,

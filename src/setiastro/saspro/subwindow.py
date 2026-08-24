@@ -14,6 +14,7 @@ import csv
 
 import numpy as np
 from PyQt6 import sip
+from setiastro.saspro.color_space_manager import tag_qimage_with_working_color_space
 from PyQt6.QtCore import (
     QAbstractTableModel,
     QByteArray,
@@ -1664,6 +1665,7 @@ class ImageSubWindow(QWidget):
         _tb = _pt.perf_counter()
         try:
             qimg = QImage(buf8.tobytes(), w, h, 3 * w, QImage.Format.Format_RGB888)
+            tag_qimage_with_working_color_space(qimg)
             pm_small = QPixmap.fromImage(qimg)
             _tc = _pt.perf_counter()
             # Scale straight from the small preview to the on-screen display size
@@ -3247,6 +3249,7 @@ class ImageSubWindow(QWidget):
             self.label.clear()
             return
 
+        tag_qimage_with_working_color_space(qimg)
         self._qimg_src = qimg
 
         # Cache unscaled pixmap ONCE per rebuild

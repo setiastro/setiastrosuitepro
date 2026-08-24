@@ -41,6 +41,30 @@ Imaging & File I/O
 - ExifRead: BSD 2-Clause License
 
 ========================================================
+Color Profiles
+========================================================
+- Adobe ICC color profiles, including Adobe RGB (1998), if bundled or
+  distributed with this software: Adobe Systems Incorporated Color Profile
+  Bundling Agreement.
+  Official agreement:
+  https://www.adobe.com/support/downloads/iccprofiles/icc_eula_win_dist.html
+
+  Summary notice: Adobe grants a royalty-free, non-exclusive, nontransferable
+  license to use, reproduce, publicly display, and distribute the covered ICC
+  profiles only as permitted by the Adobe Systems Incorporated Color Profile
+  Bundling Agreement. The profiles must not be modified. Individual profiles
+  must be referenced by their ICC Profile description string. Adobe provides
+  the profiles on an "AS IS" basis, disclaims warranties, limits liability as
+  stated in the agreement, and retains all intellectual property rights. Adobe,
+  the Adobe logo, and Adobe RGB (1998) are trademarks or registered trademarks
+  of Adobe in the United States and/or other countries.
+
+- Display P3, ProPhoto RGB, and sRGB ICC profiles, if supplied by the operating
+  system or installed separately by the user, remain subject to the license
+  terms supplied with those profiles. SASpro may reference those profiles for
+  color tagging but does not change their license terms.
+
+========================================================
 Visualization & Plotting
 ========================================================
 - Plotly: MIT License
