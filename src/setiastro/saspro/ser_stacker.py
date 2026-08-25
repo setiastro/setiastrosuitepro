@@ -18,6 +18,8 @@ from setiastro.saspro.ser_stack_config import SERStackConfig
 from setiastro.saspro.ser_tracking import PlanetaryTracker, SurfaceTracker, _to_mono01
 from setiastro.saspro.imageops.serloader import open_planetary_source, PlanetaryFrameSource
 from setiastro.saspro.derotate import derotate_stack_lonshift, _build_lonlat_grids
+# === SASpro flat calibration wiring (v1) ===
+from setiastro.saspro.ser_calibration import load_flat_for_run as _load_flat_for_run
 
 
 _BAYER_TO_CV2 = {
@@ -104,6 +106,72 @@ def _get_frame(src, idx: int, *, roi, debayer: bool, to_float01: bool, force_rgb
             force_rgb=force_rgb,
         )
 
+
+# ---------------------------------------------------------------------------
+class _CalibratedSource:
+    """
+    Wraps a PlanetaryFrameSource so every frame returned by get_frame() is
+    already flat-corrected (frame / flat, clipped to [0,1]).
+
+    The flat is prepared ONCE at full sensor size by load_flat_for_run();
+    per-call ROI cropping happens here via view-slicing (no copy).  The
+    wrapper delegates every other attribute to the inner source so callers
+    that reach for .meta, .close, cache handles, etc. keep working.
+    """
+    __slots__ = ("_inner", "_flat")
+
+    def __init__(self, inner, flat):
+        self._inner = inner
+        self._flat = flat  # np.ndarray or None
+
+    @property
+    def meta(self):
+        return self._inner.meta
+
+    def get_frame(self, idx, *, roi=None, debayer=True, to_float01=True,
+                  force_rgb=False, bayer_pattern=None):
+        try:
+            img = self._inner.get_frame(
+                int(idx), roi=roi, debayer=debayer, to_float01=to_float01,
+                force_rgb=force_rgb, bayer_pattern=bayer_pattern,
+            )
+        except TypeError:
+            img = self._inner.get_frame(
+                int(idx), roi=roi, debayer=debayer, to_float01=to_float01,
+                force_rgb=force_rgb,
+            )
+        if self._flat is None:
+            return img
+        # Inline the divide (avoids the setiastro.ser_calibration import
+        # cost per frame; apply_flat semantics duplicated here on purpose).
+        import numpy as _np
+        f = _np.asarray(img, dtype=_np.float32)
+        if roi is not None:
+            x, y, w, h = int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3])
+            fl = self._flat[y:y + h, x:x + w]
+        else:
+            fl = self._flat
+        if f.ndim == 3 and fl.ndim == 2:
+            fl = fl[..., None]
+        if fl.shape[:2] != f.shape[:2]:
+            # Fall through to no-op rather than corrupt a frame; the caller
+            # will still get a valid image and the run continues.
+            return f
+        out = f / fl
+        _np.clip(out, 0.0, 1.0, out=out)
+        return out
+
+    def close(self):
+        try:
+            self._inner.close()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        # Delegate anything not overridden (cache handles, private helpers)
+        return getattr(self._inner, name)
+# ---------------------------------------------------------------------------
+
 @dataclass
 class AnalyzeResult:
     frames_total: int
@@ -133,6 +201,10 @@ class AnalyzeResult:
     # aligns to the G-channel centroid.  G column is always 0.
     disp_dx: Optional[np.ndarray] = None   # (n, 3) float32
     disp_dy: Optional[np.ndarray] = None   # (n, 3) float32
+    # Full-sensor normalised flat (per-channel mean=1.0). When present,
+    # every _ensure_source() call that receives it returns frames
+    # already divided by the flat.
+    flat: Optional[np.ndarray] = None
 
 @dataclass
 class FrameEval:
@@ -596,6 +668,7 @@ def _coarse_surface_ref_locked(
     # ✅ NEW: parallel coarse
     workers: int | None = None,
     stride: int = 16,
+    flat=None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Surface coarse tracking that DOES NOT DRIFT:
@@ -647,7 +720,7 @@ def _coarse_surface_ref_locked(
     # ---------------------------
     # Prep ref/template once
     # ---------------------------
-    src0, owns0 = _ensure_source(source_obj, cache_items=2)
+    src0, owns0 = _ensure_source(source_obj, cache_items=2, flat=flat)
     try:
         img0 = _get_frame(src0, 0, roi=roi, debayer=debayer, to_float01=True, force_rgb=bool(to_rgb), bayer_pattern=bayer_pattern)
 
@@ -738,7 +811,7 @@ def _coarse_surface_ref_locked(
     # We use a slightly larger radius for boundary frames to be extra safe
     r_key = int(max(16, int(search_radius) * 2))
 
-    srck, ownsk = _ensure_source(source_obj, cache_items=2)
+    srck, ownsk = _ensure_source(source_obj, cache_items=2, flat=flat)
     try:
         pred_x, pred_y = float(rx0), float(ry0)
         for b in boundaries[1:]:
@@ -776,7 +849,7 @@ def _coarse_surface_ref_locked(
     r = int(max(16, search_radius))
 
     def _run_chunk(b: int, e: int) -> int:
-        src, owns = _ensure_source(source_obj, cache_items=0)
+        src, owns = _ensure_source(source_obj, cache_items=0, flat=flat)
         try:
             pred_x, pred_y = start_pred.get(b, (float(rx0), float(ry0)))
             # if boundary already computed above, keep it; start after b
@@ -818,7 +891,7 @@ def _coarse_surface_ref_locked(
 
     if workers <= 1 or n <= stride * 2:
         # small job: just do sequential scan exactly like before
-        src, owns = _ensure_source(source_obj, cache_items=2)
+        src, owns = _ensure_source(source_obj, cache_items=2, flat=flat)
         try:
             pred_x, pred_y = float(rx0), float(ry0)
             for i in range(1, n):
@@ -1245,7 +1318,7 @@ def _find_best_rotation_ssd(
 
     return float(best_ang_f), float(conf)
 
-def _ensure_source(source, cache_items: int = 10) -> tuple[PlanetaryFrameSource, bool]:
+def _ensure_source(source, cache_items: int = 10, *, flat=None) -> tuple[PlanetaryFrameSource, bool]:
     """
     Returns (src, owns_src)
 
@@ -1253,9 +1326,18 @@ def _ensure_source(source, cache_items: int = 10) -> tuple[PlanetaryFrameSource,
       - PlanetaryFrameSource-like object (duck typed: get_frame/meta/close)
       - path string
       - list/tuple of paths
+
+    When ``flat`` is provided (numpy array), the returned source is
+    wrapped in _CalibratedSource so every get_frame() call yields a
+    flat-corrected frame.  The wrapper owns the same lifecycle as the
+    inner source (owns_src flag applies to the wrapped object).
     """
     # Already an opened source-like object
     if source is not None and hasattr(source, "get_frame") and hasattr(source, "meta") and hasattr(source, "close"):
+        # Don't double-wrap: if caller handed us a source that is already
+        # a _CalibratedSource, honor its existing flat.
+        if flat is not None and not isinstance(source, _CalibratedSource):
+            return _CalibratedSource(source, flat), False
         return source, False
 
     # allow tuple -> list
@@ -1263,6 +1345,8 @@ def _ensure_source(source, cache_items: int = 10) -> tuple[PlanetaryFrameSource,
         source = list(source)
 
     src = open_planetary_source(source, cache_items=cache_items)
+    if flat is not None:
+        src = _CalibratedSource(src, flat)
     return src, True
 
 def stack_ser(
@@ -1316,6 +1400,7 @@ def stack_ser(
 
     ref_img = analysis.ref_image.astype(np.float32, copy=False)
     planet_derotate = bool(getattr(analysis, "planet_derotate", False))
+    flat = getattr(analysis, "flat", None)
 
     # ---- Planetary derotation params ----
     if planet_pole_pa_deg is None:
@@ -1344,7 +1429,7 @@ def stack_ser(
     drizzle_sigma = float(drizzle_sigma)
 
     # ---- Open once to get meta + first frame shape ----
-    src0, owns0 = _ensure_source(source_obj, cache_items=cache_items)
+    src0, owns0 = _ensure_source(source_obj, cache_items=cache_items, flat=flat)
     try:
         n = int(src0.meta.frames)
         keep_percent = max(0.1, min(100.0, float(keep_percent)))
@@ -1458,7 +1543,7 @@ def stack_ser(
         
     # ---- Worker: aligns + warps, returns list of (warped, frac_dx, frac_dy) ----
     def _warp_chunk(chunk: list[int]) -> list[tuple[np.ndarray, float, float]]:
-        src, owns = _ensure_source(source_obj, cache_items=0)
+        src, owns = _ensure_source(source_obj, cache_items=0, flat=flat)
         results: list[tuple[np.ndarray, float, float]] = []
         try:
             for i in chunk:
@@ -1733,6 +1818,60 @@ def _build_reference(
     ref = acc / float(k)
     return np.clip(ref, 0.0, 1.0).astype(np.float32, copy=False)
 
+
+def _load_flat_from_cfg(cfg, source_obj, *, debayer, to_rgb, bayer_pattern,
+                        log_cb=None, progress_cb=None):
+    """
+    Returns a normalised flat (np.ndarray) if cfg has flat calibration
+    enabled AND a valid flat_path, else None.
+
+    Reads the following optional attrs off cfg (all via getattr so old cfgs
+    still work):
+        flat_enabled : bool
+        flat_path    : str
+        flat_stack_method : "median" | "mean"  (SER video flats only)
+    """
+    if not bool(getattr(cfg, "flat_enabled", False)):
+        return None
+    flat_path = getattr(cfg, "flat_path", None)
+    if not flat_path:
+        return None
+
+    # Probe the source at full frame so the flat matches what get_frame
+    # (roi=None) will return in this run.  flat=None here on purpose — we're
+    # loading the flat, not applying one.
+    src_p, owns_p = _ensure_source(source_obj, cache_items=1, flat=None)
+    try:
+        first = _get_frame(
+            src_p, 0, roi=None, debayer=bool(debayer),
+            to_float01=True, force_rgb=bool(to_rgb),
+            bayer_pattern=bayer_pattern,
+        )
+        frame_shape = tuple(first.shape)
+    finally:
+        if owns_p:
+            try:
+                src_p.close()
+            except Exception:
+                pass
+
+    method = str(getattr(cfg, "flat_stack_method", "median")).lower() or "median"
+
+    if log_cb:
+        log_cb(f"Flat: loading {os.path.basename(str(flat_path))} "
+               f"(method={method}, target={frame_shape})")
+    return _load_flat_for_run(
+        str(flat_path),
+        frame_shape=frame_shape,
+        debayer=bool(debayer),
+        force_rgb=bool(to_rgb),
+        bayer_pattern=bayer_pattern,
+        ser_stack_method=method,
+        progress_cb=progress_cb,
+        log_cb=log_cb,
+    )
+
+
 def _cfg_get_source(cfg) -> Any:
     """
     Back-compat: prefer cfg.source (new), else cfg.ser_path (old).
@@ -1857,7 +1996,12 @@ def analyze_ser(
     if not source_obj:
         raise ValueError("SERStackConfig.source/ser_path is empty")
 
-    src0, owns0 = _ensure_source(source_obj, cache_items=2)
+    # === SASpro flat hotfix v1: pre-initialize flat ===
+    flat = None  # populated below by _load_flat_from_cfg; declared here
+                 # so the metadata probe and early-return paths never hit
+                 # an UnboundLocalError on flat=flat.
+
+    src0, owns0 = _ensure_source(source_obj, cache_items=2, flat=flat)
     try:
         meta = src0.meta
         base_roi = cfg.roi
@@ -1874,6 +2018,18 @@ def analyze_ser(
                 src0.close()
             except Exception:
                 pass
+
+    # ---- Flat-field calibration (optional; noop if cfg.flat_enabled is False)
+    try:
+        flat = _load_flat_from_cfg(
+            cfg, source_obj,
+            debayer=debayer, to_rgb=to_rgb, bayer_pattern=bpat,
+            log_cb=log_cb, progress_cb=progress_cb,
+        )
+    except Exception as _flat_err:
+        if log_cb:
+            log_cb(f"Flat: FAILED to load — proceeding uncalibrated ({_flat_err})")
+        flat = None
 
     if workers is None:
         cpu = os.cpu_count() or 4
@@ -1912,7 +2068,7 @@ def analyze_ser(
     def _q_chunk(chunk: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         out_i: list[int] = []
         out_q: list[float] = []
-        src, owns = _ensure_source(source_obj, cache_items=0)
+        src, owns = _ensure_source(source_obj, cache_items=0, flat=flat)
         try:
             for i in chunk.tolist():
                 img = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
@@ -1957,7 +2113,7 @@ def analyze_ser(
     ref_count = int(max(1, min(int(ref_count), n)))
     ref_mode = "best_stack" if ref_mode == "best_stack" else "best_frame"
 
-    src_ref, owns_ref = _ensure_source(source_obj, cache_items=2)
+    src_ref, owns_ref = _ensure_source(source_obj, cache_items=2, flat=flat)
     if progress_cb:
         progress_cb(0, n, f"Building reference ({ref_mode}, N={ref_count})…")
     try:
@@ -2010,6 +2166,7 @@ def analyze_ser(
             ap_centers=ap_centers, ap_size=ap_size,
             ap_multiscale=bool(getattr(cfg, "ap_multiscale", False)),
             coarse_conf=None,
+            flat=flat,
         )
 
     ref_m_full = _to_mono01(ref_img).astype(np.float32, copy=False)
@@ -2030,6 +2187,7 @@ def analyze_ser(
             progress_cb=progress_cb, progress_every=25,
             down=2, template_size=256, search_radius=96, bandpass=True,
             workers=min(workers, 8), stride=16,
+            flat=flat,
         )
         dx[:] = dx_chain
         dy[:] = dy_chain
@@ -2070,7 +2228,7 @@ def analyze_ser(
             out_ang: list[float] = []
             out_acf: list[float] = []
 
-            src, owns = _ensure_source(source_obj, cache_items=0)
+            src, owns = _ensure_source(source_obj, cache_items=0, flat=flat)
             try:
                 for i in chunk.tolist():
                     img = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
@@ -2198,7 +2356,7 @@ def analyze_ser(
             out_cdx: list[np.ndarray] = []
             out_cdy: list[np.ndarray] = []
 
-            src, owns = _ensure_source(source_obj, cache_items=0)
+            src, owns = _ensure_source(source_obj, cache_items=0, flat=flat)
             try:
                 for i in chunk.tolist():
                     img = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
@@ -2326,7 +2484,7 @@ def analyze_ser(
         surface_anchor_rot_cy=surface_anchor_rot_cy,
         disp_dx=disp_dx if correct_disp else None,
         disp_dy=disp_dy if correct_disp else None,
-
+        flat=flat,
     )
 
 def realign_ser(
@@ -2375,6 +2533,8 @@ def realign_ser(
     source_obj = _cfg_get_source(cfg)
     if not source_obj:
         raise ValueError("SERStackConfig.source/ser_path is empty")
+
+    flat = getattr(analysis, "flat", None)
 
     n          = int(analysis.frames_total)
     roi_used   = analysis.roi_used
@@ -2448,7 +2608,7 @@ def realign_ser(
             out_dy: list[float] = []
             out_cf: list[float] = []
 
-            src, owns = _ensure_source(source_obj, cache_items=0)
+            src, owns = _ensure_source(source_obj, cache_items=0, flat=flat)
             try:
                 for i in chunk.tolist():
                     img   = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
@@ -2558,7 +2718,7 @@ def realign_ser(
             out_dy: list[float] = []
             out_cf: list[float] = []
 
-            src, owns = _ensure_source(source_obj, cache_items=0)
+            src, owns = _ensure_source(source_obj, cache_items=0, flat=flat)
             try:
                 for i in chunk.tolist():
                     img   = _get_frame(src, int(i), roi=roi_used, debayer=debayer,
@@ -2955,6 +3115,8 @@ def export_aligned_ser(
     if analysis is None or analysis.ref_image is None:
         raise ValueError("export_aligned_ser requires a completed AnalyzeResult.")
 
+    flat = getattr(analysis, "flat", None)
+
     if getattr(analysis, "ang", None) is None:
         analysis.ang = np.zeros((int(analysis.frames_total),), dtype=np.float32)
 
@@ -3010,7 +3172,7 @@ def export_aligned_ser(
         raise ValueError("No frames to export.")
 
     # ---- Probe first frame for shape ----
-    src0, owns0 = _ensure_source(source_obj, cache_items=2)
+    src0, owns0 = _ensure_source(source_obj, cache_items=2, flat=flat)
     try:
         first = _get_frame(
             src0, indices[0],
@@ -3157,7 +3319,7 @@ def export_aligned_ser(
     chunk_results: dict[int, list[np.ndarray]] = {}
 
     def _warp_chunk(chunk_start: int, chunk: list[int]) -> tuple[int, list[np.ndarray]]:
-        src, owns = _ensure_source(source_obj, cache_items=0)
+        src, owns = _ensure_source(source_obj, cache_items=0, flat=flat)
         results = []
         try:
             for i in chunk:

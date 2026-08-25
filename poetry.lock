@@ -3023,6 +3023,19 @@ files = [
 ]
 
 [[package]]
+name = "nvidia-ml-py"
+version = "13.610.43"
+description = "Python Bindings for the NVIDIA Management Library"
+optional = false
+python-versions = "*"
+groups = ["main"]
+markers = "sys_platform != \"darwin\""
+files = [
+    {file = "nvidia_ml_py-13.610.43-py3-none-any.whl", hash = "sha256:f13c72698edef492f985cc225f14faafe68ae065a2e407f45bdf6f4b9b43fde8"},
+    {file = "nvidia_ml_py-13.610.43.tar.gz", hash = "sha256:65437eb73d68d0c62c931ca4d45038472faff03bd0b8729abba4b899f70d60f2"},
+]
+
+[[package]]
 name = "oktopus"
 version = "0.1.2"
 description = "soft-bodied, eight-armed package for beautiful inference"
@@ -5883,4 +5896,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "7e6ca4b28d2f4c810a63029fcb2e23a734b7fb6e8c67353c543c3d195f637fd9"
+content-hash = "854cf89b1b2ebbcb1c7e2ac16140c600646157d1cb2994a127e38071d2627b2e"
