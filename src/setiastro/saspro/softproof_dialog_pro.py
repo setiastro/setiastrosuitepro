@@ -5,7 +5,7 @@ import platform
 from pathlib import Path
 
 import numpy as np
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtGui import QColorSpace, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -185,6 +185,14 @@ class SoftProofDialog(QDialog):
         for widget in (self.chk_softproof, self.chk_display_gamut, self.chk_proof_gamut, self.chk_bpc):
             widget.toggled.connect(self._render)
 
+        self._render()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self._render)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
         self._render()
 
     def _color_space_label(self, key: str) -> str:
