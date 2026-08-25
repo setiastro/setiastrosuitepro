@@ -3102,7 +3102,10 @@ def save_fits_bundle(
 # ──────────────────────────────────────────────────────────────────────────
 from setiastro.saspro.color_space_manager import (
     COLOR_SPACES,
+    convert_float_rgb_with_lcms,
     get_icc_profile_bytes,
+    get_key_from_icc_key,
+    get_working_color_space_from_settings,
     is_profile_available,
 )
 
@@ -3115,6 +3118,33 @@ def _export_icc_profile_bytes(color_space: str = "P3"):
     if not is_profile_available(color_space):
         print(f"[save_image] ICC profile for {color_space!r} was not found; tagging sRGB instead.")
     return get_icc_profile_bytes(color_space, fallback_to_srgb=True)
+
+
+def _maybe_convert_export_profile(img_array, export_opts: dict, *, bit_depth: str | None = None):
+    source_key = get_working_color_space_from_settings()
+    target_key = get_key_from_icc_key(export_opts.get("icc_color_space", source_key))
+    if source_key == target_key:
+        return img_array
+
+    if bit_depth not in (None, "8-bit"):
+        print(
+            f"[save_image] Skipping ICC pixel conversion for {bit_depth}; "
+            f"embedding {target_key} profile only."
+        )
+        return img_array
+
+    try:
+        converted = convert_float_rgb_with_lcms(
+            img_array,
+            source_key,
+            target_key,
+            rendering_intent=export_opts.get("rendering_intent"),
+            black_point_compensation=bool(export_opts.get("black_point_compensation", True)),
+        )
+        return converted.astype(np.float32, copy=False)
+    except Exception as exc:
+        print(f"[save_image] ICC pixel conversion failed; exporting original pixels ({exc}).")
+        return img_array
 
 
 def save_image(img_array,
@@ -3199,6 +3229,7 @@ def save_image(img_array,
         # PNG/JPG — always write 8-bit preview-style data
         # ---------------------------------------------------------------------
         if fmt == "png":
+            img_array = _maybe_convert_export_profile(img_array, export_opts, bit_depth="8-bit")
             img = Image.fromarray((np.clip(img_array, 0, 1) * 255).astype(np.uint8))
             _png_kwargs = {}
             if export_opts.get("embed_icc", True):
@@ -3210,6 +3241,7 @@ def save_image(img_array,
             return
 
         if fmt == "jpg":
+            img_array = _maybe_convert_export_profile(img_array, export_opts, bit_depth="8-bit")
             img = Image.fromarray((np.clip(img_array, 0, 1) * 255).astype(np.uint8))
 
             q = 95 if jpeg_quality is None else int(jpeg_quality)
@@ -3247,6 +3279,8 @@ def save_image(img_array,
         if fmt == "webp":
             from setiastro.saspro.imageops.webp_io import save_webp
 
+            img_array = _maybe_convert_export_profile(img_array, export_opts, bit_depth="8-bit")
+
             lossless = bool(export_opts.get("webp_lossless", True))
 
             q = export_opts.get("webp_quality")
@@ -3273,6 +3307,7 @@ def save_image(img_array,
         # ---------------------------------------------------------------------
         if fmt in ("tif",):
             bd = bit_depth or "32-bit floating point"
+            img_array = _maybe_convert_export_profile(img_array, export_opts, bit_depth=bd)
 
             # --- DPI / resolution metadata ---
             dpi = export_opts.get("dpi")

@@ -12,14 +12,21 @@ from PyQt6.QtWidgets import QApplication
 from setiastro.saspro.color_space_manager import (
     COLOR_SPACES,
     DEFAULT_COLOR_SPACE,
+    RENDERING_INTENT_PERCEPTUAL,
+    RENDERING_INTENT_RELATIVE,
     VIEWPORT_MODE_UNMANAGED,
     get_icc_key_from_color_space_key,
     get_icc_profile_bytes,
     get_key_from_icc_key,
     get_qimage_color_space,
+    get_softproof_black_point_compensation_from_settings,
+    get_softproof_rendering_intent_from_settings,
     get_viewport_color_mode_from_settings,
     get_working_color_space_from_settings,
+    normalize_rendering_intent,
     normalize_color_space_key,
+    set_softproof_black_point_compensation_to_settings,
+    set_softproof_rendering_intent_to_settings,
     set_viewport_color_mode_to_settings,
     set_working_color_space_to_settings,
     tag_qimage_with_color_space,
@@ -65,6 +72,20 @@ def test_settings_round_trip_uses_canonical_key():
     assert get_working_color_space_from_settings(settings) == DEFAULT_COLOR_SPACE
     assert set_working_color_space_to_settings("ProPhoto", settings) is True
     assert get_working_color_space_from_settings(settings) == "ProPhotoRGB"
+
+    settings.clear()
+
+
+def test_rendering_intent_and_bpc_settings_round_trip():
+    settings = QSettings("SetiAstroTest", "SASproIntentTest")
+    settings.clear()
+
+    assert normalize_rendering_intent("Perceptual") == RENDERING_INTENT_PERCEPTUAL
+    assert normalize_rendering_intent("Relative Colorimetric") == RENDERING_INTENT_RELATIVE
+    assert set_softproof_rendering_intent_to_settings("Perceptual", settings) is True
+    assert get_softproof_rendering_intent_from_settings(settings) == RENDERING_INTENT_PERCEPTUAL
+    assert set_softproof_black_point_compensation_to_settings(False, settings) is True
+    assert get_softproof_black_point_compensation_from_settings(settings) is False
 
     settings.clear()
 

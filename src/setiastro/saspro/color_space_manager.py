@@ -6,9 +6,11 @@ import functools
 import logging
 import os
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from PyQt6.QtCore import QSettings
 from PyQt6.QtGui import QColorSpace, QImage
 
@@ -22,6 +24,11 @@ VIEWPORT_MODE_UNMANAGED = "unmanaged"
 VIEWPORT_MODE_TAGGED = "tagged"
 DEFAULT_VIEWPORT_MODE = VIEWPORT_MODE_UNMANAGED
 VIEWPORT_COLOR_MODES = (VIEWPORT_MODE_UNMANAGED, VIEWPORT_MODE_TAGGED)
+RENDERING_INTENT_RELATIVE = "relative_colorimetric"
+RENDERING_INTENT_PERCEPTUAL = "perceptual"
+DEFAULT_RENDERING_INTENT = RENDERING_INTENT_RELATIVE
+SOFTPROOF_INTENT_SETTINGS_KEY = "color_management/softproof_rendering_intent"
+SOFTPROOF_BPC_SETTINGS_KEY = "color_management/softproof_black_point_compensation"
 
 
 @dataclass(frozen=True)
@@ -397,6 +404,43 @@ def set_viewport_color_mode_to_settings(mode: object, settings: Optional[QSettin
     return True
 
 
+def normalize_rendering_intent(intent: object) -> str:
+    raw = str(intent or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in ("perceptual", "perceptive"):
+        return RENDERING_INTENT_PERCEPTUAL
+    if raw in ("relative", "relative_colorimetric", "relative_colourimetric", "colorimetric", "colourimetric"):
+        return RENDERING_INTENT_RELATIVE
+    return DEFAULT_RENDERING_INTENT
+
+
+def get_softproof_rendering_intent_from_settings(settings: Optional[QSettings] = None) -> str:
+    value = _settings_or_default(settings).value(
+        SOFTPROOF_INTENT_SETTINGS_KEY,
+        DEFAULT_RENDERING_INTENT,
+        type=str,
+    )
+    return normalize_rendering_intent(value)
+
+
+def set_softproof_rendering_intent_to_settings(intent: object, settings: Optional[QSettings] = None) -> bool:
+    canonical = normalize_rendering_intent(intent)
+    target = _settings_or_default(settings)
+    target.setValue(SOFTPROOF_INTENT_SETTINGS_KEY, canonical)
+    target.sync()
+    return True
+
+
+def get_softproof_black_point_compensation_from_settings(settings: Optional[QSettings] = None) -> bool:
+    return _settings_or_default(settings).value(SOFTPROOF_BPC_SETTINGS_KEY, True, type=bool)
+
+
+def set_softproof_black_point_compensation_to_settings(enabled: bool, settings: Optional[QSettings] = None) -> bool:
+    target = _settings_or_default(settings)
+    target.setValue(SOFTPROOF_BPC_SETTINGS_KEY, bool(enabled))
+    target.sync()
+    return True
+
+
 def qimage_should_be_tagged_for_viewport(settings: Optional[QSettings] = None) -> bool:
     return get_viewport_color_mode_from_settings(settings) != VIEWPORT_MODE_UNMANAGED
 
@@ -445,6 +489,148 @@ def prepare_qimage_for_viewport(img: QImage, settings: Optional[QSettings] = Non
     except Exception as exc:
         logger.warning("Failed to convert viewport QImage color space: %s", exc)
     return img
+
+
+def _qimage_to_rgb_array(img: QImage) -> np.ndarray:
+    converted = img.convertToFormat(QImage.Format.Format_RGB888)
+    w, h = converted.width(), converted.height()
+    ptr = converted.bits()
+    ptr.setsize(h * converted.bytesPerLine())
+    raw = np.frombuffer(ptr, dtype=np.uint8).reshape((h, converted.bytesPerLine()))
+    return raw[:, : w * 3].reshape((h, w, 3)).copy()
+
+
+def _rgb_array_to_qimage(rgb: np.ndarray) -> QImage:
+    arr = np.ascontiguousarray(np.clip(rgb, 0, 255).astype(np.uint8))
+    h, w = arr.shape[:2]
+    return QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+
+
+def _imagecms_intent(intent: object):
+    from PIL import ImageCms
+
+    canonical = normalize_rendering_intent(intent)
+    enum = getattr(ImageCms, "Intent", None)
+    if enum is not None:
+        if canonical == RENDERING_INTENT_PERCEPTUAL:
+            return enum.PERCEPTUAL
+        return enum.RELATIVE_COLORIMETRIC
+    if canonical == RENDERING_INTENT_PERCEPTUAL:
+        return getattr(ImageCms, "INTENT_PERCEPTUAL", 0)
+    return getattr(ImageCms, "INTENT_RELATIVE_COLORIMETRIC", 1)
+
+
+def _imagecms_flags(black_point_compensation: bool):
+    if not black_point_compensation:
+        return 0
+    from PIL import ImageCms
+
+    flags = getattr(ImageCms, "Flags", None)
+    if flags is not None:
+        return flags.BLACKPOINTCOMPENSATION
+    return getattr(ImageCms, "FLAGS_BLACKPOINTCOMPENSATION", 0)
+
+
+def _imagecms_profile_from_key(key: object):
+    from PIL import ImageCms
+
+    data = get_icc_profile_bytes(key, fallback_to_srgb=True)
+    if data:
+        return ImageCms.ImageCmsProfile(BytesIO(data))
+    if normalize_color_space_key(key) == "sRGB":
+        return ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB"))
+    return None
+
+
+def _imagecms_profile_from_qcolorspace(color_space: QColorSpace | None):
+    from PIL import ImageCms
+
+    if color_space is None or not color_space.isValid():
+        return None
+    try:
+        data = bytes(color_space.iccProfile())
+    except Exception:
+        data = b""
+    if not data:
+        return None
+    try:
+        return ImageCms.ImageCmsProfile(BytesIO(data))
+    except Exception:
+        return None
+
+
+def convert_qimage_with_lcms(
+    img: QImage,
+    source_key: object,
+    target_profile,
+    *,
+    rendering_intent: object = DEFAULT_RENDERING_INTENT,
+    black_point_compensation: bool = True,
+) -> QImage:
+    if img is None:
+        return img
+    try:
+        if img.isNull():
+            return img
+    except Exception:
+        return img
+
+    try:
+        from PIL import Image, ImageCms
+
+        if isinstance(source_key, QColorSpace):
+            source_profile = _imagecms_profile_from_qcolorspace(source_key)
+        else:
+            source_profile = _imagecms_profile_from_key(source_key)
+        if source_profile is None:
+            return img.copy()
+        if isinstance(target_profile, QColorSpace):
+            target = _imagecms_profile_from_qcolorspace(target_profile)
+        elif isinstance(target_profile, (str, Path)) and Path(str(target_profile)).exists():
+            target = ImageCms.ImageCmsProfile(str(target_profile))
+        else:
+            target = _imagecms_profile_from_key(target_profile)
+        if target is None:
+            return img.copy()
+
+        rgb = _qimage_to_rgb_array(img)
+        pil_img = Image.fromarray(rgb, "RGB")
+        converted = ImageCms.profileToProfile(
+            pil_img,
+            source_profile,
+            target,
+            outputMode="RGB",
+            renderingIntent=_imagecms_intent(rendering_intent),
+            flags=_imagecms_flags(black_point_compensation),
+        )
+        qimg = _rgb_array_to_qimage(np.asarray(converted, dtype=np.uint8))
+        qtarget = get_color_space_from_key(target_profile) if not isinstance(target_profile, QColorSpace) else target_profile
+        if qtarget is not None and qtarget.isValid():
+            qimg.setColorSpace(qtarget)
+        return qimg
+    except Exception as exc:
+        logger.warning("LittleCMS QImage conversion failed: %s", exc)
+        return img.copy()
+
+
+def convert_float_rgb_with_lcms(
+    arr: np.ndarray,
+    source_key: object,
+    target_key: object,
+    *,
+    rendering_intent: object = DEFAULT_RENDERING_INTENT,
+    black_point_compensation: bool = True,
+) -> np.ndarray:
+    rgb8 = np.ascontiguousarray((np.clip(np.asarray(arr, dtype=np.float32), 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
+    img = _rgb_array_to_qimage(rgb8)
+    converted = convert_qimage_with_lcms(
+        img,
+        source_key,
+        target_key,
+        rendering_intent=rendering_intent,
+        black_point_compensation=black_point_compensation,
+    )
+    return _qimage_to_rgb_array(converted).astype(np.float32) / 255.0
 
 
 def tag_qimage_with_color_space(img: QImage, color_space_key: object) -> bool:

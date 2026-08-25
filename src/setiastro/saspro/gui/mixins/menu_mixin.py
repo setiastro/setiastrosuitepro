@@ -330,6 +330,11 @@ class MenuMixin:
         m_view.addAction(self.act_tile_grid)        
         m_view.addSeparator()
 
+        act_softproof = QAction(self.tr("Soft Proof…"), self)
+        act_softproof.triggered.connect(self._open_softproof)
+        m_view.addAction(act_softproof)
+        m_view.addSeparator()
+
         # NEW: Minimize All Views
         self.act_minimize_all_views = QAction(self.tr("Minimize All Views"), self)
         self.act_minimize_all_views.setShortcut(QKeySequence("Ctrl+Shift+M"))

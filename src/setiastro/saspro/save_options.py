@@ -12,6 +12,11 @@ from PyQt6.QtWidgets import (
 )
 from setiastro.saspro.color_space_manager import (
     COLOR_SPACES,
+    DEFAULT_RENDERING_INTENT,
+    RENDERING_INTENT_PERCEPTUAL,
+    RENDERING_INTENT_RELATIVE,
+    get_softproof_black_point_compensation_from_settings,
+    get_softproof_rendering_intent_from_settings,
     get_color_space_options,
     get_profile_search_directories,
     get_icc_key_from_color_space_key,
@@ -121,6 +126,20 @@ class ExportDialog(QDialog):
             "matches the working color space selected in Preferences."))
         self.chk_embed_icc.toggled.connect(self.combo_color_space.setEnabled)
         core_form.addRow(self.tr("Colour space"), self.combo_color_space)
+
+        self.combo_rendering_intent = QComboBox(self)
+        self.combo_rendering_intent.addItem(self.tr("Relative Colorimetric"), RENDERING_INTENT_RELATIVE)
+        self.combo_rendering_intent.addItem(self.tr("Perceptual"), RENDERING_INTENT_PERCEPTUAL)
+        intent_idx = self.combo_rendering_intent.findData(get_softproof_rendering_intent_from_settings(self._settings))
+        if intent_idx < 0:
+            intent_idx = self.combo_rendering_intent.findData(DEFAULT_RENDERING_INTENT)
+        if intent_idx >= 0:
+            self.combo_rendering_intent.setCurrentIndex(intent_idx)
+        core_form.addRow(self.tr("Rendering intent"), self.combo_rendering_intent)
+
+        self.chk_black_point_compensation = QCheckBox(self.tr("Black-point compensation"))
+        self.chk_black_point_compensation.setChecked(get_softproof_black_point_compensation_from_settings(self._settings))
+        core_form.addRow("", self.chk_black_point_compensation)
 
         default_key = get_working_color_space_from_settings(self._settings)
         default_icc = get_icc_key_from_color_space_key(default_key)
@@ -334,6 +353,14 @@ class ExportDialog(QDialog):
                 self.combo_color_space.setCurrentIndex(_cs_idx)
             self.combo_color_space.setEnabled(self.chk_embed_icc.isChecked())
 
+            intent = s.value(self._k("rendering_intent"), get_softproof_rendering_intent_from_settings(s), type=str)
+            intent_idx = self.combo_rendering_intent.findData(intent)
+            if intent_idx >= 0:
+                self.combo_rendering_intent.setCurrentIndex(intent_idx)
+
+            bpc = s.value(self._k("black_point_compensation"), get_softproof_black_point_compensation_from_settings(s), type=bool)
+            self.chk_black_point_compensation.setChecked(bool(bpc))
+
             if self._ext == "jpg":
                 q = s.value(self._k("jpeg_quality"), 95, type=int)
                 self.jpeg_quality_spin.setValue(max(1, min(100, int(q))))
@@ -371,6 +398,8 @@ class ExportDialog(QDialog):
             s.setValue(self._k("bit_depth"), self.combo_depth.currentText())
             s.setValue(self._k("embed_icc"), bool(self.chk_embed_icc.isChecked()))
             s.setValue(self._k("icc_color_space"), self.combo_color_space.currentData())
+            s.setValue(self._k("rendering_intent"), self.combo_rendering_intent.currentData())
+            s.setValue(self._k("black_point_compensation"), bool(self.chk_black_point_compensation.isChecked()))
 
             if self._ext == "jpg":
                 s.setValue(self._k("jpeg_quality"), int(self.jpeg_quality_spin.value()))
@@ -413,6 +442,8 @@ class ExportDialog(QDialog):
         # common
         opts["embed_icc"] = bool(self.chk_embed_icc.isChecked())
         opts["icc_color_space"] = self.combo_color_space.currentData() or "P3"
+        opts["rendering_intent"] = self.combo_rendering_intent.currentData() or DEFAULT_RENDERING_INTENT
+        opts["black_point_compensation"] = bool(self.chk_black_point_compensation.isChecked())
 
         # TIFF
         if self._ext == "tif":

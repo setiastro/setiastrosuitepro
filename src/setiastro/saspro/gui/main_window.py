@@ -2132,6 +2132,23 @@ class AstroSuiteProMainWindow(
         vw._render(rebuild=True)
         self._refresh_mask_action_states()
 
+    def _open_softproof(self):
+        doc = self._active_doc()
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, self.tr("Soft Proof"), self.tr("No active image."))
+            return
+        try:
+            from setiastro.saspro.softproof_dialog_pro import SoftProofDialog
+            dlg = SoftProofDialog(np.asarray(doc.image).copy(), parent=self)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            dlg.show()
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                self.tr("Soft Proof"),
+                self.tr("Could not open soft proof preview:\n\n{error}").format(error=exc),
+            )
+
     def _invert_mask(self):
         import numpy as np
         doc = self._active_doc()
