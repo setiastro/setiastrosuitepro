@@ -9,11 +9,13 @@ from typing import Optional, Union, Sequence
 SourceSpec = Union[str, Sequence[str]]
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QRectF, QEvent, QTimer
+# === SASpro flat calibration dialog wiring (v1) ===
 from PyQt6.QtWidgets import (
     QWidget, QSpinBox, QMessageBox,
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QGroupBox,
     QFormLayout, QComboBox, QDoubleSpinBox, QCheckBox, QTextEdit, QProgressBar,
-    QScrollArea, QSlider, QToolButton, QSizePolicy, QFrame
+    QScrollArea, QSlider, QToolButton, QSizePolicy, QFrame,
+    QLineEdit, QFileDialog
 )
 
 from PyQt6.QtGui import QPainter, QPen, QColor, QImage, QPixmap
@@ -1291,6 +1293,160 @@ class SERStackerDialog(QDialog):
 
         left.addWidget(gbFR, 0)
 
+        # --- Calibration (collapsible, default collapsed) ---
+        gbC = CollapsibleGroup("Calibration", self, collapsed=True)
+        fC = gbC.content_layout()
+
+        self.chk_flat_enabled = QCheckBox("Apply master flat", self)
+        self.chk_flat_enabled.setChecked(False)
+        self.chk_flat_enabled.setToolTip(
+            "Divide every raw frame by a normalised master flat to remove\n"
+            "vignetting, dust motes, and Newton's rings before stacking.\n"
+            "Analogous to AutoStakkert's flat-frame slot."
+        )
+
+        # File row: label + line-edit + browse button
+        self.ln_flat_path = QLineEdit(self)
+        self.ln_flat_path.setReadOnly(True)
+        self.ln_flat_path.setPlaceholderText("(no flat selected)")
+        self.ln_flat_path.setToolTip(
+            "Path to a flat file. Accepted formats:\n"
+            "  .ser  — flat video, will be median/mean-stacked\n"
+            "  .tif / .tiff — single averaged flat\n"
+            "  .fit / .fits / .fits.gz / .fz — single averaged flat"
+        )
+        self.btn_flat_browse = QPushButton("Browse…", self)
+        self.btn_flat_browse.setFlat(False)
+        self.btn_flat_browse.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        flat_row = QHBoxLayout()
+        flat_row.setContentsMargins(0, 0, 0, 0)
+        flat_row.addWidget(self.ln_flat_path, 1)
+        flat_row.addWidget(self.btn_flat_browse, 0)
+        flat_row_w = QWidget(self)
+        flat_row_w.setLayout(flat_row)
+
+        # Combine method (for .ser flats)
+        self.cmb_flat_method = QComboBox(self)
+        self.cmb_flat_method.addItems(["Median", "Mean"])
+        self.cmb_flat_method.setCurrentText("Median")
+        self.cmb_flat_method.setToolTip(
+            "How to combine frames when the flat is a .ser video.\n"
+            "Median rejects outliers (cosmic rays, satellite streaks) and is\n"
+            "safe to leave as default. Mean is marginally smoother for very\n"
+            "clean flat runs. Ignored for single-frame .tif/.fits inputs."
+        )
+
+        # Info + status row
+        self.btn_flat_info = QToolButton(self)
+        self.btn_flat_info.setText("?")
+        self.btn_flat_info.setFixedSize(22, 22)
+        self.btn_flat_info.setToolTip("What is a flat, and when do I need one?")
+
+        self.lbl_flat_status = QLabel("(disabled)", self)
+        self.lbl_flat_status.setWordWrap(True)
+        self.lbl_flat_status.setStyleSheet("color:#888;")
+
+        info_row = QHBoxLayout()
+        info_row.setContentsMargins(0, 0, 0, 0)
+        info_row.addWidget(self.lbl_flat_status, 1)
+        info_row.addWidget(self.btn_flat_info, 0)
+        info_row_w = QWidget(self)
+        info_row_w.setLayout(info_row)
+
+        fC.addRow("", self.chk_flat_enabled)
+        fC.addRow("Flat file", flat_row_w)
+        fC.addRow("Combine (SER only)", self.cmb_flat_method)
+        fC.addRow("Status", info_row_w)
+
+        left.addWidget(gbC, 0)
+
+        # Dialog-scoped state
+        self._flat_path = None
+        self._flat_enabled = False
+        self._flat_method = "median"
+
+        # --- Wire calibration handlers ---
+        def _sync_flat_ui():
+            en = bool(self.chk_flat_enabled.isChecked())
+            self._flat_enabled = en
+            self.ln_flat_path.setEnabled(en)
+            self.btn_flat_browse.setEnabled(en)
+            self.cmb_flat_method.setEnabled(en)
+            if not en:
+                self.lbl_flat_status.setText("(disabled)")
+                self.lbl_flat_status.setStyleSheet("color:#888;")
+                return
+            if not self._flat_path:
+                self.lbl_flat_status.setText("⚠️  No flat selected — pick a .ser / .tif / .fit file")
+                self.lbl_flat_status.setStyleSheet("color:#c66;")
+            else:
+                base = os.path.basename(self._flat_path)
+                try:
+                    sz = os.path.getsize(self._flat_path)
+                except OSError:
+                    sz = 0
+                mb = sz / (1024.0 * 1024.0)
+                self.lbl_flat_status.setText(f"✅ {base}  ({mb:.1f} MB)")
+                self.lbl_flat_status.setStyleSheet("color:#4a4;")
+
+        def _on_flat_browse():
+            start_dir = ""
+            if self._flat_path and os.path.isfile(self._flat_path):
+                start_dir = os.path.dirname(self._flat_path)
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select master flat",
+                start_dir,
+                "Flat files (*.ser *.tif *.tiff *.fit *.fits *.fits.gz *.fz);;"
+                "SER videos (*.ser);;"
+                "TIFF images (*.tif *.tiff);;"
+                "FITS images (*.fit *.fits *.fits.gz *.fz);;"
+                "All files (*)",
+            )
+            if not path:
+                return
+            self._flat_path = path
+            self.ln_flat_path.setText(path)
+            # Auto-enable when a file is chosen, so the user doesn't have
+            # to remember to tick the box
+            if not self.chk_flat_enabled.isChecked():
+                self.chk_flat_enabled.setChecked(True)
+            _sync_flat_ui()
+
+        def _on_flat_method_changed(_txt=None):
+            self._flat_method = self.cmb_flat_method.currentText().lower()
+
+        def _show_flat_info():
+            QMessageBox.information(
+                self, "Master flat calibration",
+                "A master flat is an image of a uniformly-lit field (twilight sky,\n"
+                "T-shirt over the scope, or ASI/LED flat panel) captured with the\n"
+                "same optical train as your lights. Dividing every raw frame by\n"
+                "the normalised flat removes:\n"
+                "\n"
+                "  • vignetting (dim corners)\n"
+                "  • dust motes and doughnuts\n"
+                "  • Newton's rings from IR/UV filters\n"
+                "  • per-pixel gain / sensor QE non-uniformity\n"
+                "\n"
+                "This is the same slot AutoStakkert offers for flats. Whether\n"
+                "you supply a .ser flat video (multiple frames, median-stacked\n"
+                "here) or a pre-averaged single .tif / .fit doesn't matter —\n"
+                "both go through the same normalisation.\n"
+                "\n"
+                "The flat must be captured at the SAME sensor resolution,\n"
+                "binning, and ROI setting as your lights. The dialog will\n"
+                "abort with a clear error otherwise."
+            )
+
+        self.chk_flat_enabled.stateChanged.connect(lambda _=None: _sync_flat_ui())
+        self.btn_flat_browse.clicked.connect(_on_flat_browse)
+        self.cmb_flat_method.currentIndexChanged.connect(_on_flat_method_changed)
+        self.btn_flat_info.clicked.connect(_show_flat_info)
+        _sync_flat_ui()
+
+
         # --- Analyze ---
         gbA = QGroupBox("Analyze", self)
         fA = QFormLayout(gbA)
@@ -1862,7 +2018,7 @@ class SERStackerDialog(QDialog):
 
         drizzle_kernel = "gaussian"
 
-        return SERStackConfig(
+        cfg = SERStackConfig(
             source=self._source,
             roi=self._roi,
             track_mode=self._track_mode_value(),
@@ -1922,6 +2078,15 @@ class SERStackerDialog(QDialog):
             drizzle_kernel=str(drizzle_kernel),
             drizzle_sigma=float(self.spin_sigma.value()),
         )
+        # ---- Flat calibration: attach via attribute so old SERStackConfig
+        # dataclasses (without these fields) still work ------------------
+        try:
+            cfg.flat_enabled = bool(getattr(self, "_flat_enabled", False))
+            cfg.flat_path = getattr(self, "_flat_path", None)
+            cfg.flat_stack_method = str(getattr(self, "_flat_method", "median")).lower()
+        except Exception:
+            pass
+        return cfg
 
     def _on_keep_changed(self, _v):
         self._keep_mask = None

@@ -23779,34 +23779,11 @@ class StackingSuiteDialog(QDialog):
 
             master_paths = self._collect_master_paths(payload)
 
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
-            msg_box.setText(message)
-            msg_box.setIcon(QMessageBox.Icon.Information)
-
-            ok_btn = msg_box.addButton(QMessageBox.StandardButton.Ok)
-
-            masters_btn = None
-            if master_paths:
-                masters_btn = msg_box.addButton(
-                    self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
-                    QMessageBox.ButtonRole.ActionRole
-                )
-
-            dither_btn = None
-            if sasd_exists:
-                dither_btn = msg_box.addButton(
-                    self.tr("📊 Open Dither Analysis"), 
-                    QMessageBox.ButtonRole.ActionRole
-                )
-
-            msg_box.exec()
-            clicked = msg_box.clickedButton()
-
-            if masters_btn is not None and clicked == masters_btn:
+            # --- helpers so a single button can trigger one action, or "Both" can trigger both ---
+            def _open_masters():
                 self._open_saved_masters(master_paths)
 
-            elif dither_btn is not None and clicked == dither_btn:
+            def _open_dither():
                 try:
                     from setiastro.saspro.dither_analysis import DitherAnalysisWindow
                     dlg = DitherAnalysisWindow(parent=self)
@@ -23824,6 +23801,47 @@ class StackingSuiteDialog(QDialog):
                         self, "Dither Analysis",
                         f"Could not open Dither Analysis:\n{e}"
                     )
+
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
+            msg_box.setText(message)
+            msg_box.setIcon(QMessageBox.Icon.Information)
+
+            ok_btn = msg_box.addButton(QMessageBox.StandardButton.Ok)
+
+            masters_btn = None
+            if master_paths:
+                masters_btn = msg_box.addButton(
+                    self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
+                    QMessageBox.ButtonRole.ActionRole
+                )
+
+            dither_btn = None
+            if sasd_exists:
+                dither_btn = msg_box.addButton(
+                    self.tr("📊 Open Dither Analysis"),
+                    QMessageBox.ButtonRole.ActionRole
+                )
+
+            both_btn = None
+            if master_paths and sasd_exists:
+                both_btn = msg_box.addButton(
+                    self.tr("🖼 📊 Open Both"),
+                    QMessageBox.ButtonRole.ActionRole
+                )
+
+            msg_box.exec()
+            clicked = msg_box.clickedButton()
+
+            # Order matters: check `both_btn` first so it doesn't fall through to
+            # one of the singles by accident.
+            if both_btn is not None and clicked == both_btn:
+                _open_masters()
+                _open_dither()
+            elif masters_btn is not None and clicked == masters_btn:
+                _open_masters()
+            elif dither_btn is not None and clicked == dither_btn:
+                _open_dither()
 
             if sasd_exists:
                 try:
