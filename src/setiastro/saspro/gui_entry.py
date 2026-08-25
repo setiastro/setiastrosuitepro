@@ -13,6 +13,42 @@ import sys
 import os
 from pathlib import Path
 
+# ── Windows: check for Microsoft Visual C++ Redistributable ─────────────────
+# MUST run before ANY C-extension imports (PyQt6, numpy, torch, numba, ...).
+# Python 3.13 / 3.14 do NOT bundle msvcp140.dll or vcruntime140_1.dll with
+# their Windows installer (3.12 bundled some of it), so a clean install of
+# those Pythons on a machine without the VC++ 2015-2022 x64 Redistributable
+# fails to load torch_python.dll (WinError 126) and can access-violate on
+# numba's first compile. Detecting this ourselves lets us tell the user
+# exactly what to install instead of surfacing a WinError 126 wall of text
+# from mid-app or crashing to the faulthandler log. Uses a native MessageBox
+# via ctypes so it works even if PyQt6 can't import for the same reason.
+if sys.platform.startswith("win"):
+    import ctypes
+    _missing_vcrt = []
+    for _dll in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
+        try:
+            ctypes.WinDLL(_dll)   # bare name -> normal OS DLL search path
+        except OSError:
+            _missing_vcrt.append(_dll)
+    if _missing_vcrt:
+        _msg = (
+            "Seti Astro Suite Pro requires the Microsoft Visual C++ "
+            "2015-2022 Redistributable (x64).\r\n\r\n"
+            "Missing on this system: " + ", ".join(_missing_vcrt) + "\r\n\r\n"
+            "Download and install the redistributable from Microsoft:\r\n"
+            "https://aka.ms/vs/17/release/vc_redist.x64.exe\r\n\r\n"
+            "Then relaunch Seti Astro Suite Pro."
+        )
+        # MB_ICONERROR (0x10) | MB_SETFOREGROUND (0x10000) | MB_TOPMOST (0x40000)
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0, _msg, "Seti Astro Suite Pro - Missing Prerequisite", 0x50010
+            )
+        except Exception:
+            print(_msg)
+        sys.exit(1)
+
 # ── Numba threading-layer bootstrap ──────────────────────────────────────────
 # MUST run before ANY `import numba` in this process. astroalign and
 # numba_warmup both import numba, and numba locks its threading layer at first
@@ -1477,12 +1513,7 @@ def main(argv: list[str] | None = None) -> int:
             start_background_warmup()
         except Exception:
             pass  # Non-critical if warmup fails
-        try:
-            import threading
-            from setiastro.saspro.astroalign import warmup_jit
-            threading.Thread(target=warmup_jit, daemon=True, name="aa-jit-warmup").start()
-        except Exception:
-            pass
+        # (astroalign warmup now runs sequentially inside start_background_warmup)
         if _splash:
             _splash.setMessage(QCoreApplication.translate("Splash", "Ready!"))
             _splash.setProgress(100)

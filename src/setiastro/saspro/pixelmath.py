@@ -49,7 +49,14 @@ class PixelImage:
     def __getitem__(self, ch):
         a = self.array
         if a.ndim < 3:
-            raise ValueError("This image has no channel dimension to index.")
+            # Mono image: any channel index returns the mono plane itself.
+            # Matches natural LRGB semantics ("mono is the same on all channels")
+            # so expressions like normalize01(L[2]) or iff(mask, rgb[0], L[0])
+            # work regardless of whether L is mono or RGB.
+            return PixelImage(a)
+        if a.shape[2] == 1:
+            # Single-channel-3D (H, W, 1): same story, treat as mono.
+            return PixelImage(a[..., 0])
         if not (0 <= ch < a.shape[2]):
             raise IndexError(f"Channel index {ch} out of range for shape {a.shape}")
         return PixelImage(a[..., ch])
@@ -298,6 +305,12 @@ class _Evaluator:
             "med": self._med, "mean": self._mean, "min": self._min, "max": self._max,
             "std": self._std, "mad": self._mad, "log": self._log, "iff": self._iff, "mtf": self._mtf,
             "avg": self._avg,
+            "iif": self._iff,  # alias — nobody remembers which spelling
+            # # === SASpro PixelMath cleanup v1 ===: element-wise min/max explicit names
+            "minimum": self._minimum, "maximum": self._maximum,
+            # # === SASpro PixelMath cleanup v1 ===: more log & hyperbolic
+            "log10": self._log10, "log2": self._log2, "ln": self._log,
+            "asinh": self._asinh, "sinh": self._sinh, "cosh": self._cosh, "tanh": self._tanh,
             # new math helpers:
             "clamp": self._clamp,
             "rescale": self._rescale,
@@ -306,6 +319,8 @@ class _Evaluator:
             "absf": self._absf,
             "expf": self._expf,
             "sqrtf": self._sqrtf,
+            # # === SASpro PixelMath cleanup v1 ===: natural-name aliases for the *f variants
+            "abs": self._absf, "exp": self._expf, "sqrt": self._sqrtf,
             "arcsin": self._arcsin,
             "sigmoid": self._sigmoid,
             "smoothstep": self._smoothstep,
@@ -318,6 +333,7 @@ class _Evaluator:
             "ch": self._ch,
             "luma": self._luma,
             "compose": self._compose,
+            "lumarecom": self._lumarecom,  # === SASpro PixelMath lumarecom v1 ===
             # mask helpers:
             "mask": self._mask_fn,
             "apply_mask": self._apply_mask_fn,
@@ -385,45 +401,74 @@ class _Evaluator:
         return out
 
     # -------- functions
+    # # === SASpro PixelMath cleanup v1 ===
+    # Reducers return the smallest broadcastable representation:
+    #   mono (H,W)  -> scalar float
+    #   RGB (H,W,C) -> shape (1,1,C) ndarray
+    # Downstream arithmetic broadcasts identically to the old
+    # full-size tiled output, but a 4000x6000 RGB reducer result
+    # drops from ~288 MB to 12 bytes.
+    @staticmethod
+    def _reduce_result(x, is_pix, v):
+        # v is a Python float or a 1-D per-channel ndarray of shape (C,)
+        if np.ndim(v) == 0:
+            out = float(v)
+        else:
+            out = np.asarray(v, dtype=np.float32).reshape(1, 1, -1)
+        # Wrapping a scalar in PixelImage would produce a 0-d PixelImage;
+        # arithmetic works but callers that call .array expect an ndarray.
+        # For mono results, return a plain float (broadcasts fine with
+        # PixelImage via _coerce anyway).
+        if is_pix and not np.isscalar(out):
+            return PixelImage(out)
+        return out
+
     def _med(self, x):
         a = x.array if isinstance(x, PixelImage) else np.asarray(x)
-        if a.ndim == 2:
-            v = np.median(a); out = np.full_like(a, v)
-        else:
-            v = np.median(a, axis=(0, 1)); out = np.tile(v, (*a.shape[:2], 1))
-        return PixelImage(out) if isinstance(x, PixelImage) else out
+        v = np.median(a) if a.ndim == 2 else np.median(a, axis=(0, 1))
+        return self._reduce_result(x, isinstance(x, PixelImage), v)
 
     def _mean(self, x):
         a = x.array if isinstance(x, PixelImage) else np.asarray(x)
-        if a.ndim == 2:
-            v = np.mean(a); out = np.full_like(a, v)
-        else:
-            v = np.mean(a, axis=(0, 1)); out = np.tile(v, (*a.shape[:2], 1))
-        return PixelImage(out) if isinstance(x, PixelImage) else out
+        v = np.mean(a) if a.ndim == 2 else np.mean(a, axis=(0, 1))
+        return self._reduce_result(x, isinstance(x, PixelImage), v)
 
-    def _min(self, x):
+    def _min(self, x, y=None):
+        """min(x) reduces; min(a, b) is element-wise (new)."""
+        if y is not None:
+            av = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+            bv = y.array if isinstance(y, PixelImage) else np.asarray(y, dtype=np.float32)
+            av, bv = PixelImage._coerce(av, bv)
+            out = np.minimum(av, bv)
+            return PixelImage(out) if (isinstance(x, PixelImage) or isinstance(y, PixelImage)) else out
         a = x.array if isinstance(x, PixelImage) else np.asarray(x)
-        if a.ndim == 2:
-            v = np.min(a); out = np.full_like(a, v)
-        else:
-            v = np.min(a, axis=(0, 1)); out = np.tile(v, (*a.shape[:2], 1))
-        return PixelImage(out) if isinstance(x, PixelImage) else out
+        v = np.min(a) if a.ndim == 2 else np.min(a, axis=(0, 1))
+        return self._reduce_result(x, isinstance(x, PixelImage), v)
 
-    def _max(self, x):
+    def _max(self, x, y=None):
+        """max(x) reduces; max(a, b) is element-wise (new)."""
+        if y is not None:
+            av = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+            bv = y.array if isinstance(y, PixelImage) else np.asarray(y, dtype=np.float32)
+            av, bv = PixelImage._coerce(av, bv)
+            out = np.maximum(av, bv)
+            return PixelImage(out) if (isinstance(x, PixelImage) or isinstance(y, PixelImage)) else out
         a = x.array if isinstance(x, PixelImage) else np.asarray(x)
-        if a.ndim == 2:
-            v = np.max(a); out = np.full_like(a, v)
-        else:
-            v = np.max(a, axis=(0, 1)); out = np.tile(v, (*a.shape[:2], 1))
-        return PixelImage(out) if isinstance(x, PixelImage) else out
+        v = np.max(a) if a.ndim == 2 else np.max(a, axis=(0, 1))
+        return self._reduce_result(x, isinstance(x, PixelImage), v)
+
+    def _minimum(self, a, b):
+        """Explicit element-wise minimum."""
+        return self._min(a, b)
+
+    def _maximum(self, a, b):
+        """Explicit element-wise maximum."""
+        return self._max(a, b)
 
     def _std(self, x):
         a = x.array if isinstance(x, PixelImage) else np.asarray(x)
-        if a.ndim == 2:
-            v = np.std(a); out = np.full_like(a, v)
-        else:
-            v = np.std(a, axis=(0, 1)); out = np.tile(v, (*a.shape[:2], 1))
-        return PixelImage(out) if isinstance(x, PixelImage) else out
+        v = np.std(a) if a.ndim == 2 else np.std(a, axis=(0, 1))
+        return self._reduce_result(x, isinstance(x, PixelImage), v)
 
     def _mad(self, x):
         a = x.array if isinstance(x, PixelImage) else np.asarray(x)
@@ -431,18 +476,16 @@ class _Evaluator:
             if _fast_mad is not None:
                 v = float(_fast_mad(a))
             else:
-                m = np.median(a); v = np.median(np.abs(a - m))
-            out = np.full_like(a, v)
+                m = np.median(a); v = float(np.median(np.abs(a - m)))
         else:
-            out = np.empty_like(a)
+            v = np.empty(a.shape[2], dtype=np.float32)
             for c in range(a.shape[2]):
                 ch = a[..., c]
                 if _fast_mad is not None:
-                    v = float(_fast_mad(ch))
+                    v[c] = float(_fast_mad(ch))
                 else:
-                    m = np.median(ch); v = np.median(np.abs(ch - m))
-                out[..., c] = v
-        return PixelImage(out) if isinstance(x, PixelImage) else out
+                    m = np.median(ch); v[c] = float(np.median(np.abs(ch - m)))
+        return self._reduce_result(x, isinstance(x, PixelImage), v)
 
     def _avg(self, *args):
         """avg(a, b, ...) — element-wise mean of any number of images or scalars."""
@@ -458,8 +501,11 @@ class _Evaluator:
             stacked = np.stack(arrays, axis=0)
             result = stacked.mean(axis=0)
         except ValueError:
-            # shapes differ — fall back to pairwise addition with broadcasting
-            result = arrays[0].copy()
+            # # === SASpro PixelMath cleanup v1 ===: coerce (H,W) to (H,W,1) when mixing mono and RGB
+            max_ndim = max(a.ndim for a in arrays)
+            if max_ndim == 3:
+                arrays = [(a[..., None] if a.ndim == 2 else a) for a in arrays]
+            result = arrays[0].astype(np.float32, copy=True)
             for a in arrays[1:]:
                 result = result + a
             result = result / len(arrays)
@@ -471,10 +517,50 @@ class _Evaluator:
             y = np.log(np.clip(a, 1e-12, None))
         return PixelImage(y) if isinstance(x, PixelImage) else y
 
+    # # === SASpro PixelMath cleanup v1 ===: additional log/hyperbolic helpers
+    def _log10(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            y = np.log10(np.clip(a, 1e-12, None))
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _log2(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            y = np.log2(np.clip(a, 1e-12, None))
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _asinh(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.arcsinh(a)
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _sinh(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.sinh(a)
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _cosh(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.cosh(a)
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
+    def _tanh(self, x):
+        a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
+        y = np.tanh(a)
+        return PixelImage(y) if isinstance(x, PixelImage) else y
+
     def _iff(self, cond, a, b):
-        c = cond.array if isinstance(cond, PixelImage) else cond
-        av = a.array if isinstance(a, PixelImage) else a
-        bv = b.array if isinstance(b, PixelImage) else b
+        # # === SASpro PixelMath cleanup v1 ===: broadcast (H,W) condition/branches against (H,W,3)
+        c = cond.array if isinstance(cond, PixelImage) else np.asarray(cond)
+        av = a.array if isinstance(a, PixelImage) else np.asarray(a, dtype=np.float32)
+        bv = b.array if isinstance(b, PixelImage) else np.asarray(b, dtype=np.float32)
+        # If any of the three is 3-D, promote the others' trailing axis
+        max_ndim = max(getattr(c, "ndim", 0), getattr(av, "ndim", 0), getattr(bv, "ndim", 0))
+        if max_ndim == 3:
+            if c.ndim == 2:  c = c[..., None]
+            if av.ndim == 2: av = av[..., None]
+            if bv.ndim == 2: bv = bv[..., None]
         r = np.where(c, av, bv)
         return PixelImage(r) if any(isinstance(z, PixelImage) for z in (cond, a, b)) else r
 
@@ -492,14 +578,15 @@ class _Evaluator:
         return PixelImage(y) if isinstance(x, PixelImage) else y
 
     def _rescale(self, x, a, b, lo=0.0, hi=1.0):
-        a = np.asarray(x.array if isinstance(x, PixelImage) else x, dtype=np.float32)
-        src_lo, src_hi = float(a.min()), float(a.max())
-        if np.isfinite(a).any():
-            src_lo, src_hi = float(a), float(b)
-        # avoid div-by-zero
+        # # === SASpro PixelMath cleanup v1 ===: fixed parameter shadowing bug.
+        # Maps values in the source range [a..b] to the output range
+        # [lo..hi]. Values outside [a..b] are extrapolated (no clip);
+        # wrap in clamp() if you want hard limits.
+        arr = np.asarray(x.array if isinstance(x, PixelImage) else x, dtype=np.float32)
+        src_lo, src_hi = float(a), float(b)
         denom = max(src_hi - src_lo, 1e-12)
-        y = (a - src_lo) / denom
-        y = y * (hi - lo) + lo
+        y = (arr - src_lo) / denom
+        y = y * (float(hi) - float(lo)) + float(lo)
         return PixelImage(y) if isinstance(x, PixelImage) else y
 
     def _gamma(self, x, g):
@@ -593,16 +680,20 @@ class _Evaluator:
 
     # ---- channels & color ----
     def _ch(self, x, i):
+        # # === SASpro PixelMath cleanup v1 ===: preserve PixelImage wrapping
         a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
         if a.ndim != 3: raise ValueError("ch(x,i) expects RGB image")
-        return a[..., int(i)]
+        y = a[..., int(i)]
+        return PixelImage(y) if isinstance(x, PixelImage) else y
 
     def _luma(self, x):
+        # # === SASpro PixelMath cleanup v1 ===: preserve PixelImage wrapping
         a = x.array if isinstance(x, PixelImage) else np.asarray(x, dtype=np.float32)
         if a.ndim == 2:
-            return a
-        y = 0.2126*a[...,0] + 0.7152*a[...,1] + 0.0722*a[...,2]
-        return y
+            y = a
+        else:
+            y = 0.2126*a[...,0] + 0.7152*a[...,1] + 0.0722*a[...,2]
+        return PixelImage(y) if isinstance(x, PixelImage) else y
 
     def _compose(self, r, g, b):
         R = r.array if isinstance(r, PixelImage) else np.asarray(r, dtype=np.float32)
@@ -611,6 +702,85 @@ class _Evaluator:
         if R.ndim != 2 or G.ndim != 2 or B.ndim != 2:
             raise ValueError("compose(r,g,b) expects three 2-D planes")
         return np.stack([R, G, B], axis=2)
+
+    # === SASpro PixelMath lumarecom v1 ===
+    def _lumarecom(self, rgb, L, clip=True):
+        """Rec.709 luminance recombination.
+
+        Rescale each RGB channel so the output's Rec.709 luminance
+        equals L, preserving R/G and B/G ratios (hue).  Equivalent
+        to `rgb * (L / (luma(rgb) + EPS))` per-channel, but with
+        input-shape handling and optional highlight clipping baked
+        in.
+
+        Parameters
+        ----------
+        rgb : image
+            RGB (or RGBA) image whose colours to preserve.  Mono
+            input is accepted and broadcast to 3 channels.
+        L : image
+            New luminance to graft in.  Mono (2-D) is expected;
+            RGB (3-D) is folded to luma via Rec.709 weights first.
+        clip : bool, default True
+            If True, clip the output to [0, 1].  Multiplicative
+            LRGB can push bright pixels above 1; disable if you
+            want to keep the excess for further processing.
+
+        Returns
+        -------
+        ndarray, float32, shape (H, W, 3) or (H, W, 4) if alpha
+            was present.
+        """
+        A = rgb.array if isinstance(rgb, PixelImage) else np.asarray(rgb, dtype=np.float32)
+        Ln = L.array if isinstance(L, PixelImage) else np.asarray(L, dtype=np.float32)
+        A = A.astype(np.float32, copy=False)
+        Ln = Ln.astype(np.float32, copy=False)
+
+        # Broadcast mono rgb up to 3 channels
+        if A.ndim == 2:
+            A = np.stack([A, A, A], axis=-1)
+        elif A.ndim == 3 and A.shape[2] == 1:
+            A = np.repeat(A, 3, axis=2)
+        elif A.ndim != 3 or A.shape[2] not in (3, 4):
+            raise ValueError(
+                "lumarecom: first arg must be a mono or RGB(A) image, "
+                f"got shape {A.shape}"
+            )
+
+        # If someone hands us RGB as the luminance, fold to Rec.709 luma
+        if Ln.ndim == 3 and Ln.shape[2] >= 3:
+            Ln = 0.2126 * Ln[..., 0] + 0.7152 * Ln[..., 1] + 0.0722 * Ln[..., 2]
+        elif Ln.ndim == 3 and Ln.shape[2] == 1:
+            Ln = Ln[..., 0]
+        elif Ln.ndim != 2:
+            raise ValueError(
+                "lumarecom: second arg (L) must be mono or RGB, "
+                f"got shape {Ln.shape}"
+            )
+
+        # Split alpha out so it rides through untouched
+        has_alpha = (A.shape[2] == 4)
+        RGB = A[..., :3]
+        alpha = A[..., 3:4] if has_alpha else None
+
+        if RGB.shape[:2] != Ln.shape[:2]:
+            raise ValueError(
+                "lumarecom: rgb and L must be the same H x W, got "
+                f"{RGB.shape[:2]} vs {Ln.shape[:2]}"
+            )
+
+        # Rec.709 luma of the current RGB, with EPS floor so pixels
+        # near black don't produce NaN/Inf in the ratio.
+        Y = 0.2126 * RGB[..., 0] + 0.7152 * RGB[..., 1] + 0.0722 * RGB[..., 2]
+        scale = Ln / (Y + 1e-6)
+
+        out = RGB * scale[..., None]
+        if bool(clip):
+            np.clip(out, 0.0, 1.0, out=out)
+
+        if has_alpha:
+            out = np.concatenate([out, alpha], axis=2)
+        return out.astype(np.float32, copy=False)
 
     # ---- mask helpers exposed to the user ----
     def _mask_fn(self):
@@ -750,8 +920,16 @@ class _Evaluator:
 
         else:
             # RGB source — original behavior
-            r = _as_rgb(r.astype(np.float32, copy=False))
+            # # === SASpro PixelMath cleanup v1 ===: broadcast under-shaped results (e.g. from
+            # top-level `min(img)`) up to full image size so the output
+            # image isn't silently truncated to (1,1,C).
             ref = _as_rgb(src)
+            r = _as_rgb(r.astype(np.float32, copy=False))
+            if r.shape != ref.shape:
+                try:
+                    r = np.broadcast_to(r, ref.shape).astype(np.float32, copy=True)
+                except ValueError:
+                    pass  # let downstream give a clearer error if truly incompatible
             m = _mask_for_ref(self.doc, ref)
             if m is not None:
                 r = _blend_masked(ref, r, m)
@@ -788,6 +966,16 @@ class _Evaluator:
             # At this point expect 2-D plane
             if v.ndim != 2:
                 raise ValueError("Per-channel mode expects a 2-D result (or an RGB where the tab's channel can be taken).")
+            # # === SASpro PixelMath cleanup v1 ===: broadcast under-shaped 2-D results
+            # (e.g. from a top-level reducer) to (H, W).
+            if v.shape != (H, W):
+                try:
+                    v = np.broadcast_to(v, (H, W)).astype(np.float32, copy=True)
+                except ValueError:
+                    raise ValueError(
+                        f"Per-channel result shape {v.shape} is not broadcast-compatible "
+                        f"with the target image size ({H}, {W})."
+                    )
             return v
 
         R = one(er, default_channels[0])
@@ -1394,6 +1582,8 @@ class PixelMathDialogPro(QDialog):
 
             # --- view matching / calibration ---
             (self.tr("Match medians of A to B"), "single", f"{a} * (med({b}) / med({a}))"),
+            # # === SASpro PixelMath cleanup v1 ===
+            (self.tr("Safe divide (guard against zero)"), "single", f"{a} / maximum({b}, 1e-6)"),
 
             # --- small filters ---
             (self.tr("Gaussian blur σ=2"), "single", f"gauss({a}, sigma=2.0)"),
@@ -1403,18 +1593,31 @@ class PixelMathDialogPro(QDialog):
             (self.tr("Per-channel: luma to all channels"), "rgb", (f"luma({a})", f"luma({a})", f"luma({a})")),
             (self.tr("Per-channel: A’s R, B’s G, C’s B (normed)"), "rgb",
             (f"normalize01({a}[0])", f"normalize01({b}[1])", f"normalize01({c}[2])")),
+
+            # # === SASpro PixelMath lumarecom v1 ===
+            (self.tr("LRGB recombine (Rec.709): rgb + L → coloured L"), "single",
+                f"lumarecom({a}, {b})"),
         ]
 
     def _function_glossary(self):
         # name -> (signature / template, short description)
         return {
             "clamp": ("clamp(x, lo=0, hi=1)", self.tr("Limit values to [lo..hi].")),
-            "rescale": ("rescale(x, a, b, lo=0, hi=1)", self.tr("Map range [a..b] to [lo..hi].")),
+            "rescale": ("rescale(x, a, b, lo=0, hi=1)", self.tr("Map range [a..b] to [lo..hi] (extrapolates outside).")),
             "gamma": ("gamma(x, g)", self.tr("Apply gamma curve.")),
             "pow_safe": ("pow_safe(x, p)", self.tr("Power with EPS floor.")),
-            "absf": ("absf(x)", self.tr("Absolute value.")),
-            "expf": ("expf(x)", self.tr("Exponential.")),
-            "sqrtf": ("sqrtf(x)", self.tr("Square root (clamped to ≥0).")),
+            "abs / absf": ("abs(x)", self.tr("Absolute value.")),
+            "exp / expf": ("exp(x)", self.tr("Exponential.")),
+            "sqrt / sqrtf": ("sqrt(x)", self.tr("Square root (clamped to ≥0).")),
+            "min": ("min(x)  or  min(a, b)", self.tr("1-arg: reduce to scalar/per-channel. 2-arg: element-wise minimum.")),
+            "max": ("max(x)  or  max(a, b)", self.tr("1-arg: reduce to scalar/per-channel. 2-arg: element-wise maximum.")),
+            "minimum": ("minimum(a, b)", self.tr("Element-wise minimum (explicit name).")),
+            "maximum": ("maximum(a, b)", self.tr("Element-wise maximum (explicit name).")),
+            "log10": ("log10(x)", self.tr("Base-10 log with EPS floor.")),
+            "log / ln": ("log(x)", self.tr("Natural log (base e), with EPS floor. Use log10 or log2 for other bases.")),
+            "log2": ("log2(x)", self.tr("Base-2 log with EPS floor.")),
+            "asinh": ("asinh(x)", self.tr("Inverse hyperbolic sine. Useful for astro stretches.")),
+            "sinh / cosh / tanh": ("tanh(x)", self.tr("Hyperbolic functions.")),
             "arcsin": ("arcsin(x)", self.tr("Inverse sine (radians), input clipped to [-1,1].")),
             "sigmoid": ("sigmoid(x, k=10, mid=0.5)", self.tr("S-shaped tone curve.")),
             "smoothstep": ("smoothstep(e0, e1, x)", self.tr("Cubic smooth ramp.")),
@@ -1425,6 +1628,8 @@ class PixelMathDialogPro(QDialog):
             "ch": ("ch(x, i)", self.tr("Extract channel i (0/1/2) as 2-D.")),
             "luma": ("luma(x)", self.tr("Rec.709 luminance as 2-D.")),
             "compose": ("compose(R, G, B)", self.tr("Stack three planes to RGB.")),
+            "lumarecom": ("lumarecom(rgb, L, clip=True)",
+                self.tr("Rec.709 LRGB recombination: rescale rgb so its luma equals L. Preserves hue.")),
             "mask": ("m = mask()", self.tr("Active mask (2-D, [0..1]).")),
             "apply_mask": ("apply_mask(base, out, m)", self.tr("Blend by mask.")),
             "boxblur": ("boxblur(x, k=3)", self.tr("Box blur (cv2 if available).")),
@@ -1432,7 +1637,7 @@ class PixelMathDialogPro(QDialog):
             "median": ("median(x, k=3)", self.tr("Median filter (cv2 if avail).")),
             "unsharp": ("unsharp(x, sigma=1.5, amount=1.0)", self.tr("Unsharp mask.")),
             "mtf": ("mtf(x, m)", self.tr("Midtones transfer (existing).")),
-            "iff": ("iff(cond, a, b)", self.tr("Conditional (existing).")),
+            "iff": ("iff(cond, a, b)  /  iif(cond, a, b)", self.tr("Conditional (either spelling works).")),
             "variables": ("A = expr", self.tr("Assign intermediate variables across lines; the final line is returned and must be an expression (e.g. B / A), not an assignment.")),
             "X / Y": ("X, Y", self.tr("Normalized coordinates in [0..1].")),
             "H/W/C": ("H, W, C, shape", self.tr("Image dimensions.")),

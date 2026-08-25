@@ -1,7 +1,23 @@
+// src/setiastro/qml/ResourceMonitor.qml
+//
+// System resource HUD — CPU / RAM / GPU gauges hosted inside
+// SystemMonitorWidget (a QQuickWidget). Values come from the
+// injected `backend` context property (setiastro.saspro.widgets.
+// resource_monitor.ResourceBackend).
+//
+// Design notes:
+//   * Gauges are drawn with QtQuick.Shapes (scene-graph, GPU-accelerated)
+//     rather than the old Canvas (CPU-side rasterization).
+//   * `Behavior on value` smooths the arc between polls so the widget
+//     feels alive even though we sample at 2 Hz.
+//   * HoverHandler + attached ToolTip give rich per-gauge detail on
+//     hover WITHOUT capturing click events (so the Python side can still
+//     see mouse presses for window dragging).
+
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
-import QtQuick.Window 2.15   // ✅ gives us access to the attached Window handle
+import QtQuick.Shapes 1.15
 
 Rectangle {
     id: root
@@ -12,79 +28,102 @@ Rectangle {
     border.color: "#555"
     border.width: 1
 
-    // Bind directly to the injected Python object (context property "backend")
-    property double cpuUsage: backend ? backend.cpuUsage : 0.0
-    property double ramUsage: backend ? backend.ramUsage : 0.0
-    property double gpuUsage: backend ? backend.gpuUsage : 0.0
-    property string appRamString: backend ? backend.appRamString : "0 MB"
+    // ─── Bindings to the Python backend ─────────────────────────────────────
+    property double cpuUsage:      backend ? backend.cpuUsage      : 0.0
+    property double ramUsage:      backend ? backend.ramUsage      : 0.0
+    property double gpuUsage:      backend ? backend.gpuUsage      : 0.0
+    property string appRamString:  backend ? backend.appRamString  : "0 MB"
+    property string ramString:     backend ? backend.ramString     : ""
+    property string gpuName:       backend ? backend.gpuName       : "GPU"
+    property string gpuMemString:  backend ? backend.gpuMemString  : ""
 
-    // ─── Wayland-friendly drag (works if we have a real QQuickWindow) ───
-    MouseArea {
-        anchors.fill: parent
-        hoverEnabled: true
-        cursorShape: Qt.OpenHandCursor
-
-        onPressed: {
-            // Window-attached handle: root.Window.window is the QQuickWindow
-            var w = root.Window ? root.Window.window : null;
-            if (w && w.startSystemMove) {
-                // Wayland: this is the correct, compositor-approved move
-                w.startSystemMove();
-            } else {
-                // Fallback (Windows embed, or platforms where startSystemMove isn't exposed)
-                // Do nothing; your existing Windows behavior remains unchanged.
-            }
-        }
-    }
-
+    // ─── Reusable circular gauge ────────────────────────────────────────────
+    //
+    // A ring gauge with:
+    //   - a dim background ring
+    //   - a colored value arc (0..100% -> 0..360° starting at 12 o'clock)
+    //   - centered "%" label
+    //   - hover tooltip with rich detail
+    //
+    // Value transitions animate with an ease-out curve so the arc glides
+    // between samples instead of stepping.
     component MiniGauge: Item {
+        id: gauge
         Layout.preferredWidth: 40
         Layout.preferredHeight: 40
-        property string label: ""
-        property color barColor: "#0f0"
-        property double value: 0
 
-        onValueChanged: if (gaugeCanvas) gaugeCanvas.requestPaint()
+        property color  barColor:    "#0f0"
+        property double value:       0
+        property string tooltipText: ""
 
-        Canvas {
-            id: gaugeCanvas
+        Behavior on value {
+            NumberAnimation { duration: 400; easing.type: Easing.OutQuad }
+        }
+
+        Shape {
+            id: shape
             anchors.fill: parent
+            smooth: true
             antialiasing: true
-            onPaint: {
-                var ctx = getContext("2d");
-                var cx = width / 2;
-                var cy = height / 2;
-                var r = (width / 2) - 3;
 
-                ctx.reset();
+            // Background ring
+            ShapePath {
+                strokeWidth: 4
+                strokeColor: "#444"
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+                PathAngleArc {
+                    centerX: shape.width / 2
+                    centerY: shape.height / 2
+                    radiusX: (Math.min(shape.width, shape.height) / 2) - 3
+                    radiusY: (Math.min(shape.width, shape.height) / 2) - 3
+                    startAngle: 0
+                    sweepAngle: 360
+                }
+            }
 
-                ctx.beginPath();
-                ctx.arc(cx, cy, r, 0, 2*Math.PI);
-                ctx.lineWidth = 4;
-                ctx.strokeStyle = "#444";
-                ctx.stroke();
-
-                var start = -Math.PI/2;
-                var end = start + (value/100 * 2*Math.PI);
-
-                ctx.beginPath();
-                ctx.arc(cx, cy, r, start, end);
-                ctx.lineWidth = 4;
-                ctx.lineCap = "round";
-                ctx.strokeStyle = barColor;
-                ctx.stroke();
+            // Value arc (only drawn when there's something to show, so a
+            // 0% gauge doesn't render a stray RoundCap dot at 12 o'clock)
+            ShapePath {
+                strokeWidth: 4
+                strokeColor: gauge.barColor
+                fillColor: "transparent"
+                capStyle: ShapePath.RoundCap
+                PathAngleArc {
+                    centerX: shape.width / 2
+                    centerY: shape.height / 2
+                    radiusX: (Math.min(shape.width, shape.height) / 2) - 3
+                    radiusY: (Math.min(shape.width, shape.height) / 2) - 3
+                    startAngle: -90
+                    // Clamp to a minimum visible sweep once value crosses ~0.5%
+                    // (below that the arc is invisible and RoundCap would
+                    // render a dot — hide it entirely instead).
+                    sweepAngle: gauge.value > 0.5 ? gauge.value * 3.6 : 0
+                }
             }
         }
 
         Text {
             anchors.centerIn: parent
-            text: Math.round(value) + "%"
+            text: Math.round(gauge.value) + "%"
             font.pixelSize: 10
             font.bold: true
             color: "#fff"
         }
+
+        // HoverHandler = hover detection that does NOT capture click events.
+        // This is the key to letting drag work: the Python side sees the
+        // mouse presses; the gauge just shows a tooltip on hover.
+        HoverHandler {
+            id: hoverHandler
+        }
+
+        ToolTip.visible: hoverHandler.hovered && gauge.tooltipText !== ""
+        ToolTip.text:    gauge.tooltipText
+        ToolTip.delay:   500
     }
 
+    // ─── Layout ─────────────────────────────────────────────────────────────
     RowLayout {
         anchors.centerIn: parent
         spacing: 15
@@ -93,34 +132,52 @@ Rectangle {
             spacing: 2
             MiniGauge {
                 value: root.cpuUsage
-                barColor: root.cpuUsage > 80 ? "#ff4444" : (root.cpuUsage > 50 ? "#ffbb33" : "#00C851")
+                barColor: root.cpuUsage > 80 ? "#ff4444"
+                        : (root.cpuUsage > 50 ? "#ffbb33" : "#00C851")
+                tooltipText: "CPU: " + Math.round(root.cpuUsage) + "%"
             }
             Text {
                 Layout.alignment: Qt.AlignHCenter
                 text: "CPU"
-                color: "#aaaaaa"
+                color: "#aaa"
                 font.pixelSize: 9
             }
         }
 
         ColumnLayout {
             spacing: 2
-            MiniGauge { value: root.ramUsage; barColor: "#33b5e5" }
+            MiniGauge {
+                value: root.ramUsage
+                barColor: "#33b5e5"
+                tooltipText: root.ramString !== ""
+                    ? "RAM: " + root.ramString
+                      + "  (this app: " + root.appRamString + ")"
+                    : "RAM: " + Math.round(root.ramUsage) + "%"
+            }
             Text {
                 Layout.alignment: Qt.AlignHCenter
                 text: "RAM"
-                color: "#aaaaaa"
+                color: "#aaa"
                 font.pixelSize: 9
             }
         }
 
         ColumnLayout {
             spacing: 2
-            MiniGauge { value: root.gpuUsage; barColor: "#aa66cc" }
+            MiniGauge {
+                value: root.gpuUsage
+                barColor: "#aa66cc"
+                tooltipText: {
+                    var t = root.gpuName + ": " + Math.round(root.gpuUsage) + "%"
+                    if (root.gpuMemString !== "")
+                        t += "\nVRAM: " + root.gpuMemString
+                    return t
+                }
+            }
             Text {
                 Layout.alignment: Qt.AlignHCenter
                 text: "GPU"
-                color: "#aaaaaa"
+                color: "#aaa"
                 font.pixelSize: 9
             }
         }
