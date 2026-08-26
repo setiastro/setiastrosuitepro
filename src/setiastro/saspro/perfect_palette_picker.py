@@ -721,8 +721,10 @@ class PerfectPalettePicker(QWidget):
         and draw the palette name directly on each thumbnail. Names turn green when selected.
         """
         ha, oo, si = self._prepared_channels(for_thumbs=True)
-        if oo is None or (ha is None and si is None):
-            QMessageBox.warning(self, "Need Channels", "Load at least OIII + (Ha or SII).")
+        has_narrowband = sum(x is not None for x in (ha, oo, si))
+        if has_narrowband < 2:
+            QMessageBox.warning(self, "Need Channels",
+                "Load any two of Ha / OIII / SII, or one OSC image.")
             return
 
         built = 0
@@ -865,7 +867,8 @@ class PerfectPalettePicker(QWidget):
 
     def _generate_for_palette(self, pal: str):
         ha, oo, si = self._prepared_channels()
-        if oo is None or (ha is None and si is None):
+        has_narrowband = sum(x is not None for x in (ha, oo, si))
+        if has_narrowband < 2:
             return
 
         r,g,b = self._map_channels_or_special(pal, ha, oo, si)
@@ -988,9 +991,13 @@ class PerfectPalettePicker(QWidget):
         has_real_si = si is not None
         has_real_ha = ha is not None
 
-        # substitution
+        # substitution — fill the missing channel from the other two (or clone
+        # the one available).  Any two of {Ha, OIII, SII} are enough.
         if ha is None and si is not None: ha = si
         if si is None and ha is not None: si = ha
+        if oo is None:
+            if ha is not None: oo = ha
+            elif si is not None: oo = si
 
         basic = {
             "SHO": (si, ha, oo),
@@ -1094,8 +1101,10 @@ class PerfectPalettePicker(QWidget):
 
         # Use the SAME prepared channels the palette was built with
         ha_prep, oo_prep, si_prep = self._prepared_channels()
-        if oo_prep is None or (ha_prep is None and si_prep is None):
-            QMessageBox.warning(self, "Need Channels", "Load at least OIII + (Ha or SII).")
+        has_narrowband = sum(x is not None for x in (ha_prep, oo_prep, si_prep))
+        if has_narrowband < 2:
+            QMessageBox.warning(self, "Need Channels",
+                "Load any two of Ha / OIII / SII, or one OSC image.")
             return
 
         dlg = PaletteAdjustDialog(

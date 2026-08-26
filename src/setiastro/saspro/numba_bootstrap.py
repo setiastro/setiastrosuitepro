@@ -62,7 +62,7 @@ def _tbb_is_fragile() -> bool:
     """
     maj, minor = sys.version_info.major, sys.version_info.minor
     is_windows = platform.system() == "Windows"
-    return is_windows and maj == 3 and minor >= 14
+    return is_windows
 
 
 def configure() -> str | None:
