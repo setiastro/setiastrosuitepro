@@ -124,6 +124,19 @@ class DraggableToolBar(QToolBar):
         self._settings_key: str | None = None
         self.setAcceptDrops(True)
 
+    def window(self):
+        """Always return the main window, even when this toolbar is floating.
+
+        QToolBar.window() returns self when floating (because a floating
+        toolbar is its own top-level widget).  Every method that calls
+        self.window() expecting the main window — settings, hide/unhide,
+        shortcut creation, toolbar reset — silently breaks or crashes
+        in that state.  parent() always points to the main window
+        regardless of dock/float state.
+        """
+        p = self.parent()
+        return p if p is not None else super().window()
+
     def _mods_ok(self, mods: Qt.KeyboardModifiers) -> bool:
         return bool(mods & (
             Qt.KeyboardModifier.AltModifier |
@@ -499,7 +512,7 @@ class DraggableToolBar(QToolBar):
         cid = self._action_id(act)
         if cid:
             m.addSeparator()
-            m.addAction(self.tr("Hide this icon"), lambda: self.window()._hide_action_to_hidden_toolbar(act))
+            m.addAction(self.tr("Hide this icon"), lambda: self.parent()._hide_action_to_hidden_toolbar(act))
 
 
         # (Optional) teach users about Alt+Drag:
