@@ -10,6 +10,19 @@ from PyQt6.QtWidgets import QToolButton, QProgressDialog
 from PyQt6.QtCore import QThread
 # i18n support
 from setiastro.saspro.i18n import get_available_languages, get_saved_language, save_language
+from setiastro.saspro.color_space_manager import (
+    COLOR_SPACES,
+    DEFAULT_COLOR_SPACE,
+    DEFAULT_VIEWPORT_MODE,
+    VIEWPORT_MODE_UNMANAGED,
+    get_color_space_options,
+    get_profile_search_directories,
+    get_viewport_color_mode_from_settings,
+    get_working_color_space_from_settings,
+    is_profile_available,
+    set_viewport_color_mode_to_settings,
+    set_working_color_space_to_settings,
+)
 import importlib.util
 import importlib.metadata
 import webbrowser
@@ -244,6 +257,34 @@ class SettingsDialog(QDialog):
         self.sp_icon_size.setSuffix(" px")
         self.sp_icon_size.setToolTip(self.tr("Toolbar icon size in pixels (default: 24)"))
         left_col.addRow(self.tr("Toolbar Icon Size:"), self.sp_icon_size)
+
+        self.cb_color_space = QComboBox()
+        self._color_space_keys = []
+        for info in get_color_space_options():
+            self._color_space_keys.append(info.key)
+            self.cb_color_space.addItem(self._color_space_label(info.key), info.key)
+            idx = self.cb_color_space.count() - 1
+            self.cb_color_space.setItemData(idx, self._color_space_description(info.key), Qt.ItemDataRole.ToolTipRole)
+        self.cb_color_space.setToolTip(self.tr(
+            "Working color space for image display and default export tagging."
+        ))
+        left_col.addRow(self.tr("Working Color Space:"), self.cb_color_space)
+
+        self.cb_viewport_color_mode = QComboBox()
+        viewport_mode_keys = [VIEWPORT_MODE_UNMANAGED]
+        viewport_mode_keys.extend(info.key for info in get_color_space_options())
+        for key in viewport_mode_keys:
+            self.cb_viewport_color_mode.addItem(self._viewport_color_mode_label(key), key)
+            idx = self.cb_viewport_color_mode.count() - 1
+            self.cb_viewport_color_mode.setItemData(
+                idx,
+                self._viewport_color_mode_description(key),
+                Qt.ItemDataRole.ToolTipRole,
+            )
+        self.cb_viewport_color_mode.setToolTip(self.tr(
+            "How image viewports apply color profile information before display."
+        ))
+        left_col.addRow(self.tr("Viewport Color Management:"), self.cb_viewport_color_mode)
 
         # ---- Pixel Readout (Loupe) ----
         left_col.addRow(QLabel(self.tr("<b>Pixel Readout (Loupe)</b>")))
@@ -591,6 +632,55 @@ class SettingsDialog(QDialog):
             self._cols_layout.addWidget(self._left_col_widget, 1)
             self._cols_layout.addSpacing(16)
             self._cols_layout.addWidget(self._right_col_widget, 1)
+
+    def _color_space_label(self, key: str) -> str:
+        if key == "DisplayP3":
+            return self.tr("Display P3")
+        if key == "AdobeRGB":
+            return self.tr("Adobe RGB (1998)")
+        if key == "ProPhotoRGB":
+            return self.tr("ProPhoto RGB")
+        if key == "sRGB":
+            return self.tr("sRGB")
+        return str(key)
+
+    def _color_space_description(self, key: str) -> str:
+        if key == "DisplayP3":
+            return self.tr("Wide-gamut color space with D65 white point and P3 primaries.")
+        if key == "AdobeRGB":
+            return self.tr("Wide-gamut photography color space using Adobe RGB (1998) primaries.")
+        if key == "ProPhotoRGB":
+            return self.tr("Very wide-gamut color space for professional color workflows.")
+        if key == "sRGB":
+            return self.tr("Standard RGB color space for web sharing and broad compatibility.")
+        return str(key)
+
+    def _viewport_color_mode_label(self, key: str) -> str:
+        if key == VIEWPORT_MODE_UNMANAGED:
+            return self.tr("Unmanaged (Legacy)")
+        if key in COLOR_SPACES:
+            return self._color_space_label(key)
+        return str(key)
+
+    def _viewport_color_mode_description(self, key: str) -> str:
+        if key == VIEWPORT_MODE_UNMANAGED:
+            return self.tr("Legacy viewport rendering. RGB values are sent to Qt without color profile tagging or conversion.")
+        if key in COLOR_SPACES:
+            return self.tr(
+                "Convert temporary viewport images from the working color space to {target} before display."
+            ).format(target=self._color_space_label(key))
+        return str(key)
+
+    def _missing_profile_message(self, key: str) -> str:
+        info = COLOR_SPACES.get(key)
+        names = ", ".join(info.profile_names[:4]) if info is not None else str(key)
+        dirs = "\n".join(f"- {path}" for path in get_profile_search_directories())
+        return self.tr(
+            "{profile} ICC profile was not found.\n\n"
+            "Expected names include: {names}\n\n"
+            "SASpro checks these locations:\n{dirs}\n\n"
+            "Display and export tagging will fall back to sRGB until the profile is installed."
+        ).format(profile=self._color_space_label(key), names=names, dirs=dirs)
 
     def _models_open_drive_clicked(self):
         PRIMARY_FOLDER = "https://drive.google.com/drive/folders/1-fktZb3I9l-mQimJX2fZAmJCBj_t0yAF?usp=drive_link"
@@ -1326,6 +1416,20 @@ class SettingsDialog(QDialog):
 
         self.sp_icon_size.setValue(self.settings.value("toolbar/icon_size", 24, type=int))
 
+        current_color_space = get_working_color_space_from_settings(self.settings)
+        cs_idx = self.cb_color_space.findData(current_color_space)
+        if cs_idx < 0:
+            cs_idx = self.cb_color_space.findData(DEFAULT_COLOR_SPACE)
+        if cs_idx >= 0:
+            self.cb_color_space.setCurrentIndex(cs_idx)
+
+        current_viewport_mode = get_viewport_color_mode_from_settings(self.settings)
+        viewport_idx = self.cb_viewport_color_mode.findData(current_viewport_mode)
+        if viewport_idx < 0:
+            viewport_idx = self.cb_viewport_color_mode.findData(DEFAULT_VIEWPORT_MODE)
+        if viewport_idx >= 0:
+            self.cb_viewport_color_mode.setCurrentIndex(viewport_idx)
+
         # Pixel readout (loupe)
         self.chk_loupe_info.setChecked(self.settings.value("loupe/show_info", True, type=bool))
         self.sp_loupe_size.setValue(int(self.settings.value("loupe/size", 161, type=int)))
@@ -1537,6 +1641,21 @@ class SettingsDialog(QDialog):
 
         # bg_opacity is already saved in real-time by _on_opacity_changed()
 
+        old_color_space = get_working_color_space_from_settings(self.settings)
+        new_color_space = self.cb_color_space.currentData() or DEFAULT_COLOR_SPACE
+        set_working_color_space_to_settings(new_color_space, self.settings)
+        old_viewport_mode = get_viewport_color_mode_from_settings(self.settings)
+        new_viewport_mode = self.cb_viewport_color_mode.currentData() or DEFAULT_VIEWPORT_MODE
+        set_viewport_color_mode_to_settings(new_viewport_mode, self.settings)
+        color_space_changed = new_color_space != old_color_space or new_viewport_mode != old_viewport_mode
+        if new_color_space != "sRGB" and not is_profile_available(new_color_space):
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self,
+                self.tr("Color profile not found"),
+                self._missing_profile_message(new_color_space),
+            )
+
         # Theme
         idx = max(0, self.cb_theme.currentIndex())
         if idx == 0:
@@ -1580,7 +1699,7 @@ class SettingsDialog(QDialog):
                 p.mdi.viewport().update()
         if p and hasattr(p, "apply_display_settings_to_open_views"):
             try:
-                p.apply_display_settings_to_open_views()
+                p.apply_display_settings_to_open_views(force_rebuild=color_space_changed)
             except Exception:
                 pass
         try:

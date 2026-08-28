@@ -1,10 +1,10 @@
 {
-  "version": "1.20.7.post1",
+  "version": "1.20.8.post1",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.7/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.7/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.7/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.7/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.8/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.8/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.8/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.20.8/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.20.7\nUpdates to Exoplanet Detector for more precise magnitude calculations and ensemble measurements, Luminance Recombination to expose L methods, Stacking Suite for dark handling with session tags, WIMI and Minor Body Catalog for manual downloading and installing of the minor body catalog, additional hardening for python 3.13 and python 3.14 use for bugs users encountered."
+ "notes": "Seti Astro Suite Pro\n\nV1.20.8\nUpdates to RC-Astro tool for alignment to latest release, major under the hood updates to PSF Viewer and Image Peeker. Stacking Suite updated to include SXT as a star removal option for Comet Stacking. Update during image loading from fits files saved by Siril for vertical orientation."
 }

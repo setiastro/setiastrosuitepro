@@ -16,6 +16,10 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
 packages = [{include = "setiastro", from = "src"}]
+include = [
+    {path = "src/setiastro/saspro/legacy/resources/*.icc", format = ["sdist", "wheel"]},
+    {path = "src/setiastro/saspro/icc_profiles/*", format = ["sdist", "wheel"]},
+]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.15"
