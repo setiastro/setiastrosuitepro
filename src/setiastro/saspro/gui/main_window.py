@@ -326,7 +326,13 @@ def float01_to_qimage(img: np.ndarray) -> QImage:
     bytes_per_line = 3 * w
     qimg = QImage(rgb8.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
     # Important: detach from numpy buffer (copy) so clipboard stays valid
-    return qimg.copy()
+    qimg = qimg.copy()
+    try:
+        from setiastro.saspro.color_space_manager import tag_qimage_with_working_color_space
+        qimg = tag_qimage_with_working_color_space(qimg)
+    except Exception:
+        pass
+    return qimg
 
 
 class UiStallDetector(QObject):
@@ -2126,6 +2132,23 @@ class AstroSuiteProMainWindow(
         vw._render(rebuild=True)
         self._refresh_mask_action_states()
 
+    def _open_softproof(self):
+        doc = self._active_doc()
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.information(self, self.tr("Soft Proof"), self.tr("No active image."))
+            return
+        try:
+            from setiastro.saspro.softproof_dialog_pro import SoftProofDialog
+            dlg = SoftProofDialog(np.asarray(doc.image).copy(), parent=self)
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            dlg.show()
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                self.tr("Soft Proof"),
+                self.tr("Could not open soft proof preview:\n\n{error}").format(error=exc),
+            )
+
     def _invert_mask(self):
         import numpy as np
         doc = self._active_doc()
@@ -2187,12 +2210,18 @@ class AstroSuiteProMainWindow(
         dlg.raise_()
         dlg.activateWindow()
 
-    def apply_display_settings_to_open_views(self):
+    def apply_display_settings_to_open_views(self, force_rebuild: bool = False):
         try:
             from setiastro.saspro.subwindow import ImageSubWindow
             for sw in list(ImageSubWindow._registry.values()):
                 try:
+                    if force_rebuild:
+                        for attr in ("_qimg_src", "_pm_src", "_pm_src_wcs", "_pm_src_wcs_key"):
+                            if hasattr(sw, attr):
+                                setattr(sw, attr, None)
                     sw.reload_display_settings()
+                    if force_rebuild and hasattr(sw, "refresh_from_docman"):
+                        sw.refresh_from_docman()
                 except Exception:
                     pass
         except Exception:
