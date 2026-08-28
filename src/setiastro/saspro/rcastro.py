@@ -88,15 +88,16 @@ def _saspro_host_tag() -> str:
     return "SASPro"
 
 
-def _probe_schema_version(exe: str):
-    """
-    Runs `rc-astro --no-banner --json` and returns the top-level schemaVersion
-    as an int, or None if it can't be determined (older CLI, parse error, no
-    exe, timeout, etc.). Cheap: no product, no work.
+# # === SASpro rcastro v5/lp v1 ===
+def _probe_rcastro_json(exe: str) -> dict | None:
+    """Runs `rc-astro --no-banner --json` and returns the parsed JSON as a
+    dict, or None if it can't be obtained (older CLI, no exe, timeout,
+    parse error). Called by _probe_schema_version and _probe_version so
+    we only pay the subprocess cost once per probe cycle.
     """
     if not exe or not os.path.exists(exe):
         return None
-    import subprocess, json
+    import subprocess, json as _json
     try:
         r = subprocess.run(
             [exe, "--no-banner", "--json"],
@@ -105,21 +106,56 @@ def _probe_schema_version(exe: str):
         out = (r.stdout or "").strip()
         if not out:
             return None
-        # rc-astro emits a single JSON document. Be defensive: locate the
-        # first '{' in case any preamble slips through.
         i = out.find("{")
         if i < 0:
             return None
-        data = json.loads(out[i:])
-        sv = data.get("schemaVersion")
-        if isinstance(sv, bool):  # bool is a subclass of int; reject
-            return None
-        if isinstance(sv, int):
-            return sv
-        if isinstance(sv, str) and sv.strip().isdigit():
-            return int(sv.strip())
+        return _json.loads(out[i:])
     except Exception:
         return None
+
+
+def _ml_versions_for(products_json: list | None, key: str) -> list[str]:
+    """Extract mlVersions for a given product key from the --json products
+    list, formatted as printable strings that preserve floats (3.1 stays
+    "3.1", 5 becomes "5"). Returns [] if not present.
+    """
+    if not products_json:
+        return []
+    for p in products_json:
+        if not isinstance(p, dict):
+            continue
+        if p.get("key") == key:
+            versions = p.get("mlVersions") or []
+            out: list[str] = []
+            for v in versions:
+                if isinstance(v, bool):
+                    continue
+                if isinstance(v, (int, float)):
+                    # Preserve floats; drop trailing .0 on whole numbers.
+                    s = f"{v:g}"
+                    out.append(s)
+                elif isinstance(v, str) and v.strip():
+                    out.append(v.strip())
+            return out
+    return []
+
+
+def _probe_schema_version(exe: str):
+    """
+    Runs `rc-astro --no-banner --json` and returns the top-level schemaVersion
+    as an int, or None if it can't be determined (older CLI, parse error, no
+    exe, timeout, etc.). Cheap: no product, no work.
+    """
+    data = _probe_rcastro_json(exe)
+    if not data:
+        return None
+    sv = data.get("schemaVersion")
+    if isinstance(sv, bool):  # bool is a subclass of int; reject
+        return None
+    if isinstance(sv, int):
+        return sv
+    if isinstance(sv, str) and sv.strip().isdigit():
+        return int(sv.strip())
     return None
 
 
@@ -304,16 +340,37 @@ class _BXTPanel(QWidget):
         form.addRow("", self.chk_correct_only)
 
         self.cmb_model = QComboBox()
+        # # === SASpro rcastro v5/lp v1 ===: starts with legacy 2-item list; rebuilt by
+        # set_ml_versions() once the --json probe has run.
         self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
         self.cmb_model.setToolTip(
             "BXT ML model version.\n"
             "Latest — current default model (recommended).\n"
-            "AI2 (legacy) — older model, passes --ml-version 2.\n"
+            "Other entries pass --ml-version <N>.\n"
             "Requires RC-Astro CLI 0.9.8 or later.")
         form.addRow("Model:", self.cmb_model)
         self._model_form   = form
         self._ml_supported = False
+        self._ml_versions: list[str] = []   # populated by set_ml_versions
         self.set_ml_version_supported(False)
+
+        # # === SASpro rcastro v5/lp v1 ===: lunar / planetary mode (--lp flag, BXT only).
+        # Hidden by default; the parent dialog un-hides it once it has
+        # confirmed the CLI supports --lp (via a --help grep).
+        self.chk_lunar_planetary = QCheckBox("Lunar / planetary mode")
+        self.chk_lunar_planetary.setChecked(False)
+        self.chk_lunar_planetary.setToolTip(
+            "Passes --lp to BXT for lunar and planetary imagery.\n"
+            "Uses a different processing path tuned for high-contrast\n"
+            "surface detail rather than deep-sky stars + faint structure.\n"
+            "Requires RC-Astro CLI 2.6.6 or later.")
+        form.addRow("", self.chk_lunar_planetary)
+        self._lp_supported = False
+        self.chk_lunar_planetary.setVisible(False)
+        # Grey out star-related controls when LP is on (they're pinned to 0
+        # by the CLI; leaving them enabled would confuse users who moved
+        # the sliders and wondered why nothing changed).
+        self.chk_lunar_planetary.toggled.connect(self._on_lp_toggled)
 
         self.sld_ss  = _form_slider(form, "Sharpen Stars (0 – 0.7):",
                                     0.0, 0.7, 0.0, decimals=2, scale=100)
@@ -357,6 +414,20 @@ class _BXTPanel(QWidget):
         self.sld_ash.setEnabled(not checked)
         self.sld_sn.setEnabled(not checked)
 
+    def _on_lp_toggled(self, checked: bool):
+        # LP mode: no stars, so star sharpening + halo adjust + auto-PSF
+        # are all invalid.  Nonstellar sharpening still applies (surface
+        # detail is the whole point).
+        self.sld_ss.setEnabled(not checked)
+        self.sld_ash.setEnabled(not checked)
+        self.chk_auto_nsr.setEnabled(not checked)
+        # Nonstellar PSF slider becomes always-enabled in LP (auto is off);
+        # outside LP it follows the auto-detect checkbox as before.
+        if checked:
+            self.sld_nsr.setEnabled(True)
+        else:
+            self.sld_nsr.setEnabled(not self.chk_auto_nsr.isChecked())
+
     def build_args(self) -> list[str]:
         # CLI ≥ 1.0.0 renamed:
         #   --no-auto-nonstellar-radius → --no-auto-nonstellar-psf
@@ -367,6 +438,7 @@ class _BXTPanel(QWidget):
         nsr_value_flag = "--nonstellar-diameter" if uses_psf_flag else "--nonstellar-radius"
 
         args: list[str] = []
+        lp_on = self._lp_supported and self.chk_lunar_planetary.isChecked()
 
         if self.chk_correct_only.isChecked():
             # --correct-only pins ansp=true, ash/nsd/sn/ss=0 on the CLI side.
@@ -374,16 +446,29 @@ class _BXTPanel(QWidget):
             # so emit the single flag and nothing else.
             args.append("--correct-only")
         else:
-            ss = self.sld_ss.value() / 100.0
-            if ss > 0:
-                args += ["--sharpen-stars", f"{ss:.2f}"]
+            # LP mode pins star-related flags to zero (no stars on the moon)
+            # AND auto-PSF is meaningless (it estimates from stars).  Skip
+            # all three; the nonstellar sharpening still applies to surface
+            # detail and is the whole point of LP mode.
+            if not lp_on:
+                ss = self.sld_ss.value() / 100.0
+                if ss > 0:
+                    args += ["--sharpen-stars", f"{ss:.2f}"]
 
-            ash = self.sld_ash.value() / 100.0
-            if abs(ash) > 0:
-                args += ["--adjust-star-halos", f"{ash:.2f}"]
+                ash = self.sld_ash.value() / 100.0
+                if abs(ash) > 0:
+                    args += ["--adjust-star-halos", f"{ash:.2f}"]
 
-            if not self.chk_auto_nsr.isChecked():
+                if not self.chk_auto_nsr.isChecked():
+                    nsr = self.sld_nsr.value() / 10.0
+                    args += [no_auto_flag,
+                             nsr_value_flag, f"{nsr:.1f}"]
+            else:
+                # In LP mode always use manual nonstellar PSF (auto needs stars).
+                # Fall back to a sensible default if the user hasn't picked one.
                 nsr = self.sld_nsr.value() / 10.0
+                if nsr <= 0.0:
+                    nsr = 2.0  # reasonable starting point for planetary
                 args += [no_auto_flag,
                          nsr_value_flag, f"{nsr:.1f}"]
 
@@ -391,10 +476,71 @@ class _BXTPanel(QWidget):
             if sn > 0:
                 args += ["--sharpen-nonstellar", f"{sn:.2f}"]
 
-        if self._ml_supported and self.cmb_model.currentIndex() == 1:
-            args += ["--ml-version", "2"]
+        # # === SASpro rcastro v5/lp v1 ===: dynamic ml-version + --lp
+        if self._ml_supported:
+            ver = self._selected_ml_version()
+            if ver:
+                args += ["--ml-version", ver]
+
+        if self._lp_supported and self.chk_lunar_planetary.isChecked():
+            args.append("--lp")
 
         return args
+
+    # # === SASpro rcastro v5/lp v1 ===
+    def _selected_ml_version(self) -> str | None:
+        """Return the ML-version string to pass to --ml-version, or None
+        for the 'Latest' entry (which passes nothing so the CLI picks
+        its own default). Handles both the legacy hardcoded combo and
+        the dynamically-populated one."""
+        idx = self.cmb_model.currentIndex()
+        # New-style dynamic list: ["Latest (MLN)", "MLN", "MLM", ...]
+        if self._ml_versions:
+            if idx <= 0:
+                return None  # "Latest"
+            j = idx - 1  # skip the "Latest" row
+            if 0 <= j < len(self._ml_versions):
+                return self._ml_versions[j]
+            return None
+        # Legacy hardcoded list: ["Latest", "AI2 (legacy)"]
+        return "2" if idx == 1 else None
+
+    # # === SASpro rcastro v5/lp v1 ===
+    def set_ml_versions(self, versions: list[str]):
+        """Rebuild the model combo from a list like ["5", "4", "2"].
+        Empty list falls back to the legacy hardcoded combo so nothing
+        regresses when the CLI's --json doesn't yield anything usable."""
+        self._ml_versions = list(versions or [])
+        # Remember the current pick so we can restore it if possible
+        prev = self._selected_ml_version()
+        self.cmb_model.blockSignals(True)
+        self.cmb_model.clear()
+        if self._ml_versions:
+            latest = self._ml_versions[0]
+            self.cmb_model.addItem(f"Latest (ML{latest})")
+            for v in self._ml_versions:
+                self.cmb_model.addItem(f"ML{v}")
+            # Restore selection: match the version string if we can
+            if prev is None:
+                self.cmb_model.setCurrentIndex(0)
+            else:
+                try:
+                    j = self._ml_versions.index(prev)
+                    self.cmb_model.setCurrentIndex(j + 1)
+                except ValueError:
+                    self.cmb_model.setCurrentIndex(0)
+        else:
+            self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
+            self.cmb_model.setCurrentIndex(1 if prev == "2" else 0)
+        self.cmb_model.blockSignals(False)
+
+    # # === SASpro rcastro v5/lp v1 ===
+    def set_lp_supported(self, supported: bool):
+        """Show/hide the lunar/planetary checkbox based on CLI capability."""
+        self._lp_supported = bool(supported)
+        self.chk_lunar_planetary.setVisible(self._lp_supported)
+        if not self._lp_supported:
+            self.chk_lunar_planetary.setChecked(False)
 
     def save_settings(self, s: QSettings):
         s.setValue("rcastro/bxt_correct_only", self.chk_correct_only.isChecked())
@@ -403,7 +549,11 @@ class _BXTPanel(QWidget):
         s.setValue("rcastro/bxt_auto", self.chk_auto_nsr.isChecked())
         s.setValue("rcastro/bxt_nsr",  self.sld_nsr.value())
         s.setValue("rcastro/bxt_sn",   self.sld_sn.value())
-        s.setValue("rcastro/bxt_ml_version", self.cmb_model.currentIndex())
+        # # === SASpro rcastro v5/lp v1 ===
+        s.setValue("rcastro/bxt_ml_version", self.cmb_model.currentIndex())  # legacy
+        _v = self._selected_ml_version()
+        s.setValue("rcastro/bxt_ml_version_num", "" if _v is None else _v)
+        s.setValue("rcastro/bxt_lunar_planetary", self.chk_lunar_planetary.isChecked())
 
     def load_settings(self, s: QSettings):
         self.chk_correct_only.setChecked(
@@ -413,7 +563,22 @@ class _BXTPanel(QWidget):
         self.chk_auto_nsr.setChecked( bool( s.value("rcastro/bxt_auto", True, type=bool)))
         self.sld_nsr.setValue(         int( s.value("rcastro/bxt_nsr",  0)))
         self.sld_sn.setValue(          int( s.value("rcastro/bxt_sn",   0)))
-        self.cmb_model.setCurrentIndex(int(s.value("rcastro/bxt_ml_version", 0)))
+        # # === SASpro rcastro v5/lp v1 ===
+        # Prefer new versioned key; fall back to old index-based key for
+        # existing installs.
+        _saved_ver = str(s.value("rcastro/bxt_ml_version_num", "") or "")
+        if _saved_ver and self._ml_versions:
+            try:
+                j = self._ml_versions.index(_saved_ver)
+                self.cmb_model.setCurrentIndex(j + 1)
+            except ValueError:
+                self.cmb_model.setCurrentIndex(0)
+        elif _saved_ver == "2" and not self._ml_versions:
+            self.cmb_model.setCurrentIndex(1)
+        else:
+            self.cmb_model.setCurrentIndex(int(s.value("rcastro/bxt_ml_version", 0)))
+        self.chk_lunar_planetary.setChecked(
+            bool(s.value("rcastro/bxt_lunar_planetary", False, type=bool)))
         # Sync enabled state after load
         self._on_correct_only_toggled(self.chk_correct_only.isChecked())
 
@@ -505,12 +670,15 @@ class _NXTPanel(QWidget):
         model_h.setContentsMargins(0, 0, 0, 0)
         self.lbl_model = QLabel("Model:")
         self.cmb_model = QComboBox()
+        # # === SASpro rcastro v5/lp v1 ===: starts with legacy 2-item list; rebuilt by
+        # set_ml_versions() once the --json probe has run.
         self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
         self.cmb_model.setToolTip(
             "NXT ML model version.\n"
             "Latest — current default model (recommended).\n"
-            "AI2 (legacy) — older model, passes --ml-version 2.\n"
+            "Other entries pass --ml-version <N>.\n"
             "Requires RC-Astro CLI 0.9.8 or later.")
+        self._ml_versions: list[str] = []
         model_h.addWidget(self.lbl_model)
         model_h.addWidget(self.cmb_model)
         model_h.addStretch(1)
@@ -593,6 +761,42 @@ class _NXTPanel(QWidget):
         if not supported:
             self.cmb_model.setCurrentIndex(0)
 
+    # # === SASpro rcastro v5/lp v1 ===
+    def _selected_ml_version(self) -> str | None:
+        idx = self.cmb_model.currentIndex()
+        if self._ml_versions:
+            if idx <= 0:
+                return None
+            j = idx - 1
+            if 0 <= j < len(self._ml_versions):
+                return self._ml_versions[j]
+            return None
+        return "2" if idx == 1 else None
+
+    # # === SASpro rcastro v5/lp v1 ===
+    def set_ml_versions(self, versions: list[str]):
+        self._ml_versions = list(versions or [])
+        prev = self._selected_ml_version()
+        self.cmb_model.blockSignals(True)
+        self.cmb_model.clear()
+        if self._ml_versions:
+            latest = self._ml_versions[0]
+            self.cmb_model.addItem(f"Latest (ML{latest})")
+            for v in self._ml_versions:
+                self.cmb_model.addItem(f"ML{v}")
+            if prev is None:
+                self.cmb_model.setCurrentIndex(0)
+            else:
+                try:
+                    j = self._ml_versions.index(prev)
+                    self.cmb_model.setCurrentIndex(j + 1)
+                except ValueError:
+                    self.cmb_model.setCurrentIndex(0)
+        else:
+            self.cmb_model.addItems(["Latest", "AI2 (legacy)"])
+            self.cmb_model.setCurrentIndex(1 if prev == "2" else 0)
+        self.cmb_model.blockSignals(False)
+
     def _update_mode(self):
         simple = self.rb_simple.isChecked()
         ic     = self.rb_ic.isChecked()
@@ -640,8 +844,11 @@ class _NXTPanel(QWidget):
         if abs(it - 2.0) > 0.05:
             args += ["--iterations", f"{it:.1f}"]
 
-        if self._ml_supported and self.cmb_model.currentIndex() == 1:
-            args += ["--ml-version", "2"]
+        if self._ml_supported:
+            # # === SASpro rcastro v5/lp v1 ===: dynamic ml-version selection
+            ver = self._selected_ml_version()
+            if ver:
+                args += ["--ml-version", ver]
 
         return args
 
@@ -657,7 +864,10 @@ class _NXTPanel(QWidget):
         ]:
             s.setValue(key, getattr(self, attr).value())
         s.setValue("rcastro/nxt_iter", self.sp_iter.value())
-        s.setValue("rcastro/nxt_ml_version", self.cmb_model.currentIndex())
+        # # === SASpro rcastro v5/lp v1 ===
+        s.setValue("rcastro/nxt_ml_version", self.cmb_model.currentIndex())  # legacy
+        _v = self._selected_ml_version()
+        s.setValue("rcastro/nxt_ml_version_num", "" if _v is None else _v)
 
     def load_settings(self, s: QSettings):
         mode = str(s.value("rcastro/nxt_mode", "simple"))
@@ -677,7 +887,18 @@ class _NXTPanel(QWidget):
         ]:
             getattr(self, attr).setValue(int(s.value(key, default)))
         self.sp_iter.setValue(float(s.value("rcastro/nxt_iter", 2.0)))
-        self.cmb_model.setCurrentIndex(int(s.value("rcastro/nxt_ml_version", 0)))
+        # # === SASpro rcastro v5/lp v1 ===
+        _saved_ver = str(s.value("rcastro/nxt_ml_version_num", "") or "")
+        if _saved_ver and self._ml_versions:
+            try:
+                j = self._ml_versions.index(_saved_ver)
+                self.cmb_model.setCurrentIndex(j + 1)
+            except ValueError:
+                self.cmb_model.setCurrentIndex(0)
+        elif _saved_ver == "2" and not self._ml_versions:
+            self.cmb_model.setCurrentIndex(1)
+        else:
+            self.cmb_model.setCurrentIndex(int(s.value("rcastro/nxt_ml_version", 0)))
         self._update_mode()
 
 # ---------------------------------------------------------------------------
@@ -1080,6 +1301,35 @@ class RCAstroDialog(QDialog):
             # CLI ≥ 1.0.0 renamed --no-auto-nonstellar-radius to --no-auto-nonstellar-psf
             uses_nonstellar_psf = bool(ver and ver >= (1, 0, 0))
             s.setValue("rcastro/uses_nonstellar_psf_flag", uses_nonstellar_psf)
+
+            # # === SASpro rcastro v5/lp v1 ===: pull mlVersions per product from --json and
+            # rebuild the model combos.  Falls back gracefully if --json is
+            # absent (older CLI): both panels keep their legacy 2-item combo.
+            try:
+                data = _probe_rcastro_json(exe)
+                products = (data or {}).get("products") if isinstance(data, dict) else None
+                bxt_versions = _ml_versions_for(products, "bxt")
+                nxt_versions = _ml_versions_for(products, "nxt")
+                self.bxt_panel.set_ml_versions(bxt_versions)
+                self.nxt_panel.set_ml_versions(nxt_versions)
+                # Re-apply saved selections now that combos have their real items
+                self.bxt_panel.load_settings(s)
+                self.nxt_panel.load_settings(s)
+            except Exception:
+                pass
+
+            # # === SASpro rcastro v5/lp v1 ===: --lp is a BXT-only flag added in
+            # CLI 2.6.6. Per-command help is what `rc-astro bxt` (no args) prints —
+            # NOT `rc-astro --help`, which only lists the top-level commands.
+            try:
+                import subprocess as _sp
+                _r = _sp.run([exe, "--no-banner", "bxt"] + _host_args(),
+                             capture_output=True, text=True, timeout=8)
+                _bxt_help = (_r.stdout or "") + (_r.stderr or "")
+                self.bxt_panel.set_lp_supported(
+                    "--lp" in _bxt_help or "--lunar-planetary" in _bxt_help)
+            except Exception:
+                self.bxt_panel.set_lp_supported(False)
 
             for line in out.splitlines():
                 line = line.strip()
