@@ -28,6 +28,12 @@ def _do_warmup():
     """
     try:
         #print("[numba] warmup thread started")
+        # Guard against TBB access violation on Windows — must be set
+        # BEFORE the first numba import.  setdefault respects any
+        # explicit override the user (or the bootstrap) already set.
+        import os as _os
+        _os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
+
         # Import numba functions - expanded set
         from setiastro.saspro.legacy.numba_utils import (
             # Blending operations (7)
