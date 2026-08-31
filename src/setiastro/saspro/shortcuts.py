@@ -591,7 +591,7 @@ _PRESET_UI_IDS = {
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine","geom_resize_canvas",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
-    "satchroma","fx","unwarp","pedestal",
+    "satchroma","fx","unwarp","pedestal","cosmetic_correction",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -689,6 +689,9 @@ def _preset_opener_for_command(command_id: str):
     if command_id == "pedestal":
         from setiastro.saspro.pedestal import open_remove_pedestal_with_preset
         return open_remove_pedestal_with_preset 
+    if command_id == "cosmetic_correction":
+        from setiastro.saspro.cosmetic_correction import open_cosmetic_correction_with_preset
+        return open_cosmetic_correction_with_preset    
     return None                      
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
@@ -876,6 +879,10 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
 
     if command_id == "pixel_math":
         dlg = _PixelMathPresetDialog(parent, initial=cur)
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+
+    if command_id == "cosmetic_correction":
+        dlg = _CosmeticCorrectionPresetDialog(parent, initial=cur)
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
 
     if command_id == "rgb_align":
@@ -2973,6 +2980,84 @@ class _StarStretchPresetDialog(QDialog):
             "stretch_factor": float(self.spin_amount.value()),   # 0..8
             "color_boost":    float(self.spin_sat.value()),      # 0..2
             "scnr_green":     bool(self.chk_scnr.isChecked()),
+        }
+
+class _CosmeticCorrectionPresetDialog(QDialog):
+    """
+    Preset editor for headless replay: command_id="cosmetic_correction"
+
+    Keys supported:
+      hot_sigma:     float 0.5..10.0  (default 3.0)
+      cold_sigma:    float 0.5..10.0  (default 3.0)
+      correct_hot:   bool             (default True)
+      correct_cold:  bool             (default True)
+      bayer_pattern: str              ("" = auto-detect, "__none__" = force off,
+                                       or "RGGB"/"BGGR"/"GRBG"/"GBRG")
+    """
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Cosmetic Correction — Preset")
+        init = dict(initial or {})
+
+        self.spin_hot = QDoubleSpinBox()
+        self.spin_hot.setRange(0.5, 10.0)
+        self.spin_hot.setDecimals(2)
+        self.spin_hot.setSingleStep(0.1)
+        self.spin_hot.setValue(float(init.get("hot_sigma", 3.0)))
+
+        self.spin_cold = QDoubleSpinBox()
+        self.spin_cold.setRange(0.5, 10.0)
+        self.spin_cold.setDecimals(2)
+        self.spin_cold.setSingleStep(0.1)
+        self.spin_cold.setValue(float(init.get("cold_sigma", 3.0)))
+
+        self.chk_hot = QCheckBox("Correct hot pixels")
+        self.chk_hot.setChecked(bool(init.get("correct_hot", True)))
+        self.spin_hot.setEnabled(self.chk_hot.isChecked())
+        self.chk_hot.toggled.connect(self.spin_hot.setEnabled)
+
+        self.chk_cold = QCheckBox("Correct cold pixels")
+        self.chk_cold.setChecked(bool(init.get("correct_cold", True)))
+        self.spin_cold.setEnabled(self.chk_cold.isChecked())
+        self.chk_cold.toggled.connect(self.spin_cold.setEnabled)
+
+        self.cmb_bayer = QComboBox()
+        self.cmb_bayer.addItem("Auto-detect", userData="")
+        self.cmb_bayer.addItem("None (mono / debayered)", userData="__none__")
+        for pat in ("RGGB", "BGGR", "GRBG", "GBRG"):
+            self.cmb_bayer.addItem(pat, userData=pat)
+        bp = str(init.get("bayer_pattern", "") or "")
+        if bp == "__none__":
+            idx = 1
+        elif bp.upper() in ("RGGB", "BGGR", "GRBG", "GBRG"):
+            idx = self.cmb_bayer.findData(bp.upper())
+            if idx < 0: idx = 0
+        else:
+            idx = 0
+        self.cmb_bayer.setCurrentIndex(idx)
+
+        form = QFormLayout(self)
+        form.addRow("Hot pixels σ (0.5–10):", self.spin_hot)
+        form.addRow("Cold pixels σ (0.5–10):", self.spin_cold)
+        form.addRow("", self.chk_hot)
+        form.addRow("", self.chk_cold)
+        form.addRow("Bayer pattern:", self.cmb_bayer)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def result_dict(self) -> dict:
+        return {
+            "hot_sigma": float(self.spin_hot.value()),
+            "cold_sigma": float(self.spin_cold.value()),
+            "correct_hot": bool(self.chk_hot.isChecked()),
+            "correct_cold": bool(self.chk_cold.isChecked()),
+            "bayer_pattern": str(self.cmb_bayer.currentData() or ""),
         }
 
 class _TextureClarityPresetDialog(QDialog):

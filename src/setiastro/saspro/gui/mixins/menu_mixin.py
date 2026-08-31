@@ -166,6 +166,7 @@ class MenuMixin:
         m_fn.addAction(self.act_clahe)
         m_fn.addAction(self.act_clone_stamp) 
         m_fn.addAction(self.act_convo)
+        m_fn.addAction(self.act_cosmetic_correction)
         m_fn.addAction(self.act_crop)
         m_fn.addAction(self.act_curves)
         m_fn.addAction(self.act_extract_luma)
@@ -321,6 +322,7 @@ class MenuMixin:
         m_short.addSeparator()
         # m_short.addAction(act_save_sc)   # optional: keep
         m_short.addAction(act_clear_sc)
+        m_short.addAction(self.act_icon_table)
 
         m_view = mb.addMenu(self.tr("&View"))
         m_view.addAction(self.act_cascade)

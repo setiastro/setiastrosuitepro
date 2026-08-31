@@ -118,6 +118,7 @@ class Icons:
     STAR_SPIKE = property(lambda self: _resource_path('starspike.png'))
     ASTRO_SPIKE = property(lambda self: _resource_path('Astro_Spikes.png'))
     STAR_STRETCH = property(lambda self: _resource_path('starstretch.png'))
+    COSMETIC_CORRECTION = property(lambda self: _resource_path('cosmeticcorrection.png'))
     
     # Luminance
     L_EXTRACT = property(lambda self: _resource_path('LExtract.png'))
@@ -449,6 +450,7 @@ _LEGACY_ICON_MAP = {
     'stacking_path': 'stacking.png',
     'pedestal_icon_path': 'pedestal.png',
     'surfacemosaic_path': 'surfacemosaic.png',
+    'cosmeticcorrection_path': 'cosmeticcorrection.png',
     'starspike_path': 'starspike.png',
     'astrospike_path': 'Astro_Spikes.png',
     'aperture_path': 'aperture.png',
