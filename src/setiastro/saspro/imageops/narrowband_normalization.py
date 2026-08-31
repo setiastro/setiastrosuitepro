@@ -16,17 +16,33 @@ ProgressCB = Optional[Callable[[int, str], None]]
 class NBNParams:
     scenario: str            # "HOO"/"SHO"/"HSO"/"HOS"
     mode: int                # 0 linear, 1 non-linear
-    lightness: int           # HOO: 0..3, others: 0..4
-    blackpoint: float        # 0..1
-    hlrecover: float         # >= 0.25
-    hlreduct: float          # >= 0.25
-    brightness: float        # >= 0.25
-    blendmode: int = 0       # HOO only: 0/1/2
-    hablend: float = 0.6     # HOO only: 0..1
-    oiiiboost: float = 1.0   # HOO OIII boost
-    siiboost: float = 1.0    # SHO/HSO/HOS
-    oiiiboost2: float = 1.0  # SHO/HSO/HOS
-    scnr: bool = False       # SHO/HSO/HOS
+    lightness: int           # HOO: 0..3, others: 0..4  (V1 legacy)
+    blackpoint: float        # 0..1  (V1 legacy)
+    hlrecover: float         # >= 0.25  (V1 legacy)
+    hlreduct: float          # >= 0.25  (V1 legacy)
+    brightness: float        # >= 0.25  (V1 legacy)
+    blendmode: int = 0       # HOO only: 0/1/2  (V1 legacy)
+    hablend: float = 0.6     # HOO only: 0..1  (V1 legacy)
+    oiiiboost: float = 1.0   # HOO OIII boost  (V1 legacy)
+    siiboost: float = 1.0    # SHO/HSO/HOS  (V1 legacy)
+    oiiiboost2: float = 1.0  # SHO/HSO/HOS  (V1 legacy)
+    scnr: bool = False       # SHO/HSO/HOS  (V1 legacy)
+
+    # # === SASpro Narrowband Normalization V2 (Bill Blanshan) ===
+    # V2 (Bill Blanshan v2.23) fields.  use_v2=True routes to the new
+    # algorithm; existing callers get V2 with these defaults which match
+    # Bill's script defaults on a linear stretched image.
+    use_v2: bool = True
+    bgn: bool = True                     # background neutralisation
+    background_noise: float = 1.0        # MAD units above sky
+    red_boost: float = 0.5               # boost midtone; 0.5 = neutral
+    green_boost: float = 0.5
+    blue_boost: float = 0.5
+    v2_blend_mode: str = "Mode 1"        # OSC HOO synthetic green blend
+    v2_blend_amount: float = 0.5
+    luminance_hold: str = "Off"          # "Off"|"Preserve"|"Red"|"Green"|"Blue"
+    osc_hoo: bool = False                # HOO only: use synthetic green
+    show_background: bool = False        # diagnostic: paint sky as white
 
 
 class MissingChannelsError(ValueError):
@@ -750,6 +766,242 @@ def _normalize_hos(ha: np.ndarray, oiii: np.ndarray, sii: np.ndarray, params: NB
     return out
 
 
+# # === SASpro Narrowband Normalization V2 (Bill Blanshan) ===
+# ---------------------------------------------------------------------------
+# V2 core.  Ported from Bill Blanshan's NarrowbandNormalizationV2 v2.23
+# (lib/Methods.js, 2026, GPLv3).  All credit for the algorithm to Bill.
+# ---------------------------------------------------------------------------
+
+# Rec.709 luma coefficients (Bill uses these in shared/lib/Luminance.js)
+_V2_LUMA_R, _V2_LUMA_G, _V2_LUMA_B = 0.2126, 0.7152, 0.0722
+
+# The fillet that removes the hard edge at the sky.  See Bill's Methods.js.
+_V2_NBN_FILLET = 0.50
+_V2_NBN_FILLET_SHIFT = 0.23
+
+
+def _v2_mtf(m: float, x: np.ndarray) -> np.ndarray:
+    """Element-wise MTF.  mtf(m, m) = 0.5, mtf(0.5, x) = x."""
+    if m == 0.5:
+        return x
+    num = (m - 1.0) * x
+    den = (2.0 * m - 1.0) * x - m
+    return (num / den).astype(np.float32, copy=False)
+
+
+def _v2_channel_stats(ch: np.ndarray) -> dict:
+    """Per-channel: mean, median, MAD, avg-abs-dev, 5th-percentile."""
+    a = np.asarray(ch, dtype=np.float32).ravel()
+    if a.size == 0:
+        return dict(mean=0.0, median=0.0, mad=0.0, adev=0.0, background=0.0)
+    mean = float(a.mean())
+    median = float(np.median(a))
+    dev = np.abs(a - median)
+    return dict(
+        mean=mean,
+        median=median,
+        mad=float(np.median(dev)),
+        adev=float(dev.mean()),
+        background=float(np.percentile(a, 5.0)),
+    )
+
+
+def _v2_hold_luminance(rgb_stacked: np.ndarray,
+                       L_new: np.ndarray) -> np.ndarray:
+    """Scale RGB per-pixel so Rec.709 luma equals L_new.  Preserves hue,
+    desaturates instead of clipping on overshoot."""
+    R = rgb_stacked[..., 0]; G = rgb_stacked[..., 1]; B = rgb_stacked[..., 2]
+    L_old = _V2_LUMA_R * R + _V2_LUMA_G * G + _V2_LUMA_B * B
+    k = np.where(L_old > 1e-6, L_new / (L_old + 1e-12), 1.0).astype(np.float32)
+    out = rgb_stacked * k[..., None]
+    mx = out.max(axis=-1)
+    over = np.maximum(mx - 1.0, 0.0)
+    denom = np.maximum(1.0 - over, 1e-6)
+    out = np.where(over[..., None] > 0,
+                   (out - over[..., None]) / denom[..., None],
+                   out)
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+
+def _v2_pack_rgb(scenario: str,
+                 ha: np.ndarray | None,
+                 oiii: np.ndarray | None,
+                 sii: np.ndarray | None) -> np.ndarray:
+    """Pack Ha/OIII/SII into an (H,W,3) RGB stack per the palette."""
+    scen = (scenario or "").split()[0].strip().upper()
+    if scen == "HOO":
+        if ha is None or oiii is None:
+            raise MissingChannelsError("HOO requires Ha and OIII.")
+        return np.stack([ha, oiii, oiii], axis=-1).astype(np.float32,
+                                                          copy=False)
+    if scen not in ("SHO", "HSO", "HOS"):
+        raise ValueError(f"Unknown palette scenario: {scenario!r}")
+    missing = []
+    if ha is None: missing.append("Ha")
+    if oiii is None: missing.append("OIII")
+    if sii is None: missing.append("SII")
+    if missing:
+        raise MissingChannelsError(
+            f"{scen} requires " + ", ".join(missing) + ".")
+    if scen == "SHO":
+        return np.stack([sii, ha, oiii], axis=-1).astype(np.float32,
+                                                         copy=False)
+    if scen == "HSO":
+        return np.stack([ha, sii, oiii], axis=-1).astype(np.float32,
+                                                         copy=False)
+    return np.stack([ha, oiii, sii], axis=-1).astype(np.float32,
+                                                     copy=False)  # HOS
+
+
+def _normalize_v2(rgb: np.ndarray, params: NBNParams,
+                  progress_cb: ProgressCB) -> np.ndarray:
+    """Bill Blanshan's V2 (v2.23) algorithm on an RGB stack."""
+    def cb(p: int, msg: str = ""):
+        if progress_cb:
+            progress_cb(int(max(0, min(100, p))), msg)
+
+    cb(10, "V2: measuring channel statistics")
+
+    linear = (int(params.mode) == 0)  # SASpro's mode: 0=linear, 1=nonlinear
+    osc = bool(params.osc_hoo)
+    bgn = bool(params.bgn)
+    show_background = bool(params.show_background)
+
+    st = [_v2_channel_stats(rgb[..., c]) for c in range(3)]
+
+    M = np.array([st[c]["background"] for c in range(3)], dtype=np.float32)
+    M0 = float(M.mean())
+    M3 = np.array([params.background_noise * st[c]["mad"] for c in range(3)],
+                  dtype=np.float32)
+
+    # N0 = (adev/1.2533 + mean - M) / (1 - M),  N1 = max(N0)
+    N0 = np.zeros(3, dtype=np.float32)
+    for c in range(3):
+        denom = 1.0 - M[c]
+        if denom > 1e-10:
+            N0[c] = (st[c]["adev"] / 1.2533 + st[c]["mean"] - M[c]) / denom
+    N1 = float(N0.max())
+
+    # Inner midtones + linear gain
+    innerM = np.zeros(3, dtype=np.float32)
+    gain = np.ones(3, dtype=np.float32)
+    for c in range(3):
+        innerM[c] = _v2_mtf(N1, N0[c])
+        if N0[c] > 1e-10:
+            gain[c] = N1 / N0[c]
+
+    # Fillet radius per channel
+    filletK = np.zeros(3, dtype=np.float32)
+    for c in range(3):
+        m = float(innerM[c])
+        if m > 1e-6:
+            filletK[c] = max(0.0, _V2_NBN_FILLET * (1.0 - 2.0 * m) / m)
+
+    # base / lo / fillet width
+    base = np.zeros(3, dtype=np.float32)
+    lo = np.zeros(3, dtype=np.float32)
+    fillet = np.zeros(3, dtype=np.float32)
+    for c in range(3):
+        base[c] = M0 if bgn else M[c]
+        lo[c] = (base[c] + (params.background_noise
+                            - _V2_NBN_FILLET_SHIFT * filletK[c])
+                 * st[c]["mad"])
+        span = 1.0 - lo[c]
+        if filletK[c] > 0 and span > 1e-10:
+            fillet[c] = filletK[c] * st[c]["mad"] / span
+
+    boost_vals = np.array([params.red_boost, params.green_boost,
+                           params.blue_boost], dtype=np.float32).clip(
+                               0.001, 0.999)
+    boostM = 1.0 - boost_vals
+    boostDiv = boostM * 2.0
+
+    bgnFactor = np.ones(3, dtype=np.float32)
+    if bgn:
+        for c in range(3):
+            d = 1.0 - M[c]
+            if d > 1e-10:
+                bgnFactor[c] = (1.0 - M0) / d
+
+    # show_background diagnostic
+    if show_background:
+        eps = 1e-6
+        out = np.zeros_like(rgb)
+        for c in range(3):
+            out[..., c] = np.where(rgb[..., c] <= lo[c] + eps, 1.0, 0.0)
+        cb(100, "V2: background map")
+        return out.astype(np.float32, copy=False)
+
+    cb(40, "V2: applying normalization")
+
+    out = np.zeros_like(rgb)
+    for c in range(3):
+        src = rgb[..., c]
+        M2 = 1.0 - bgnFactor[c] * (1.0 - src) if bgn else src
+        pedestal = base[c] + M3[c]
+        M4 = np.minimum(M2, pedestal)
+
+        span = 1.0 - lo[c]
+        if span > 1e-10:
+            N2 = np.clip((M2 - lo[c]) / span, 0.0, 1.0)
+        else:
+            N2 = np.zeros_like(M2)
+        if fillet[c] > 0:
+            N2 = N2 * (1.0 - np.exp(-N2 / fillet[c]))
+
+        if linear:
+            N3 = gain[c] * N2
+        else:
+            N3 = _v2_mtf(float(innerM[c]), N2)
+
+        if linear:
+            v = N3 / boostDiv[c] + M4
+        else:
+            v = 1.0 - (1.0 - _v2_mtf(float(boostM[c]), N3)) * (1.0 - M4)
+
+        out[..., c] = np.maximum(v, M2)
+
+    # OSC HOO synthetic green
+    if osc:
+        M2_G = (1.0 - bgnFactor[1] * (1.0 - rgb[..., 1])) if bgn else rgb[..., 1]
+        bm = str(params.v2_blend_mode)
+        if bm == "Mode 1":
+            first, second = out[..., 0], out[..., 1]
+        elif bm == "Mode 2":
+            first, second = out[..., 0], M2_G
+        else:  # Mode 3
+            first, second = out[..., 1], M2_G
+        ba = float(np.clip(params.v2_blend_amount, 0.0, 1.0))
+        out[..., 1] = first * ba + second * (1.0 - ba)
+
+    # Luminance hold
+    lm = str(params.luminance_hold)
+    if lm != "Off":
+        if lm == "Preserve":
+            if bgn:
+                M2_all = np.stack(
+                    [1.0 - bgnFactor[c] * (1.0 - rgb[..., c])
+                     for c in range(3)], axis=-1)
+            else:
+                M2_all = rgb
+            L_new = (_V2_LUMA_R * M2_all[..., 0]
+                     + _V2_LUMA_G * M2_all[..., 1]
+                     + _V2_LUMA_B * M2_all[..., 2])
+        elif lm == "Red":
+            L_new = out[..., 0]
+        elif lm == "Green":
+            L_new = out[..., 1]
+        elif lm == "Blue":
+            L_new = out[..., 2]
+        else:
+            L_new = None
+        if L_new is not None:
+            out = _v2_hold_luminance(out, L_new)
+
+    cb(95, "V2: finalizing")
+    return np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+
 def normalize_narrowband(
     ha: np.ndarray | None,
     oiii: np.ndarray | None,
@@ -770,6 +1022,14 @@ def normalize_narrowband(
     def cb(p: int, msg: str = ""):
         if progress_cb:
             progress_cb(int(max(0, min(100, p))), msg)
+
+    # # === SASpro Narrowband Normalization V2 (Bill Blanshan) ===: route to V2 by default
+    if getattr(params, "use_v2", True):
+        cb(0, f"V2 {scen}")
+        rgb = _v2_pack_rgb(scen, ha, oiii, sii)
+        out = _normalize_v2(rgb, params, cb)
+        cb(100, "Done")
+        return out
 
     cb(0, f"Starting {scen}")
 

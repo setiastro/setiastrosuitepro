@@ -187,7 +187,7 @@ from setiastro.saspro.resources import (
     colorwheel_path, font_path, csv_icon_path, spinner_path, wims_path, narrowbandnormalization_path,
     wimi_path, linearfit_path, debayer_path, aberration_path, acv_icon_path, snr_path,nbextract_icon,sssc_path,
     functionbundles_path, viewbundles_path, selectivecolor_path, selectivelum_path, rgbalign_path, planetarystacker_path,syqon_path,rcastro_path,
-    background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path,
+    background_path, script_icon_path, planetprojection_path,clonestampicon_path, finderchart_path,magnitude_path, cosmeticcorrection_path,
 )
 
 import faulthandler
@@ -505,6 +505,7 @@ class AstroSuiteProMainWindow(
         self._stats_timer.timeout.connect(self._update_usage_stats)
         self._stats_timer.start(60000)  # Update every minute
         self._shutting_down = False
+        self._icon_table = None
         self.dock_host = None
         
         from setiastro.saspro.doc_manager import DocManager
@@ -2359,6 +2360,30 @@ class AstroSuiteProMainWindow(
     def starnet_path(self) -> str:
         return self.settings.value("paths/starnet", "", type=str)
 
+    def _open_icon_table(self):
+        from setiastro.saspro.icon_table import IconTablePanel
+        if self._icon_table is None:
+            self._icon_table = IconTablePanel(self, self.shortcuts, parent=self)
+            self._icon_table.restore_window_state()
+        self._icon_table.show()
+        self._icon_table.raise_()
+        self._icon_table.activateWindow()
+
+    def _restore_icon_table_if_needed(self):
+        """Called on startup if the icon table was open at last shutdown."""
+        try:
+            from setiastro.saspro.icon_table import open_icon_table
+            # open_icon_table constructs the panel; its restore_window_state()
+            # picks up saved geometry before we show it.
+            if self._icon_table is None:
+                from setiastro.saspro.icon_table import IconTablePanel
+                self._icon_table = IconTablePanel(self, self.shortcuts, parent=self)
+                self._icon_table.restore_window_state()
+            self._icon_table.show()
+            self._icon_table.raise_()
+        except Exception:
+            pass
+
     def _unwrap_history_doc(self, d):
         """
         Return the *real* document that owns the history stack for `d`.
@@ -2950,6 +2975,29 @@ class AstroSuiteProMainWindow(
                 return
 
         add_stars(self)
+
+    def _open_cosmetic_correction(self):
+        from setiastro.saspro.cosmetic_correction import (
+            open_cosmetic_correction_dialog,
+            open_cosmetic_correction_batch,
+        )
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            # No active image → jump straight into batch mode.
+            open_cosmetic_correction_batch(self)
+            self._log("Functions: opened Cosmetic Correction (batch, no active image).")
+            return
+
+        view = sw.widget()
+        # ROI-aware: always resolve via DocManager for THIS view
+        doc = self.doc_manager.get_document_for_view(view)
+        if doc is None or getattr(doc, "image", None) is None:
+            open_cosmetic_correction_batch(self)
+            self._log("Functions: opened Cosmetic Correction (batch, no image loaded).")
+            return
+
+        open_cosmetic_correction_dialog(self, doc=doc)
+        self._log("Functions: opened Cosmetic Correction.")
 
     def _open_graxpert(self):
         from setiastro.saspro.graxpert import remove_gradient_with_graxpert
@@ -6386,7 +6434,39 @@ class AstroSuiteProMainWindow(
                 except Exception:
                     print("Replay-on-base Curves failed:", e)
             return
+        if cid == "cosmetic_correction":
+            try:
+                from setiastro.saspro.cosmetic_correction import apply_cosmetic_correction_preset_to_doc
+                preset_dict = preset if isinstance(preset, dict) else {}
 
+                # Re-run Cosmetic Correction on the *base* document
+                apply_cosmetic_correction_preset_to_doc(self, base_doc, preset_dict)
+
+                try:
+                    hs = float(preset_dict.get("hot_sigma", 3.0))
+                    cs = float(preset_dict.get("cold_sigma", 3.0))
+                    ch = bool(preset_dict.get("correct_hot", True))
+                    cc = bool(preset_dict.get("correct_cold", True))
+                    bp = str(preset_dict.get("bayer_pattern", "") or "").strip() or "auto"
+                    self._log(
+                        f"[Replay] Applied Cosmetic Correction to base of "
+                        f"'{target_sw.windowTitle()}' "
+                        f"(hot σ={hs:.2f} {'on' if ch else 'off'}, "
+                        f"cold σ={cs:.2f} {'on' if cc else 'off'}, bayer={bp})"
+                    )
+                except Exception:
+                    pass
+
+            except Exception as e:
+                try:
+                    QMessageBox.warning(
+                        self,
+                        "Cosmetic Correction",
+                        f"Replay-on-base failed:\n{e}",
+                    )
+                except Exception:
+                    print("Cosmetic Correction replay-on-base failed:", e)
+            return
         if cid == "satchroma":
             try:
                 from setiastro.saspro.satchroma_preset import apply_satchroma_via_preset
@@ -8044,7 +8124,21 @@ class AstroSuiteProMainWindow(
             dlg.show()
             return
 
+        if cid == "cosmetic_correction":
+            try:
+                from setiastro.saspro.cosmetic_correction import apply_cosmetic_correction_preset_to_doc
+                apply_cosmetic_correction_preset_to_doc(self, doc, preset or {})
+                self._log(f"Applied Cosmetic Correction preset to '{target_sw.windowTitle()}'")
 
+                # remember last headless command for replay
+                try:
+                    self._last_headless_command = {"command_id": "cosmetic_correction", "preset": dict(preset or {})}
+                except Exception:
+                    pass
+
+            except Exception as e:
+                QMessageBox.warning(self, "Preset apply failed", str(e))
+            return
 
         if cid == "wavescale_hdr":
             # (unchanged block)
@@ -10638,6 +10732,15 @@ class AstroSuiteProMainWindow(
     def on_fade_in_complete(self):
         """Called when main window fade-in is finished."""
         self._fade_in_complete = True
+        # If the icon table was open at last shutdown, re-open it in place.
+        try:
+            from PyQt6.QtCore import QSettings
+            if QSettings().value("icon_table/visible", False, type=bool):
+                # Slight delay so fade + monitor come up first — same pattern
+                # you use for the resource monitor above.
+                QTimer.singleShot(500, self._restore_icon_table_if_needed)
+        except Exception:
+            pass        
         # Sync Monitor Visibility
         if hasattr(self, "resource_monitor") and self.resource_monitor:
             if not self.isMinimized() and self.settings.value("ui/resource_monitor_visible", True, type=bool):
@@ -10736,7 +10839,15 @@ class AstroSuiteProMainWindow(
             self.save_dock_host_state()
         except Exception:
             pass
-
+        # Persist icon-table geometry + visibility so it re-opens
+        # where the user last left it.
+        try:
+            if getattr(self, "_icon_table", None) is not None:
+                # Use runtime isVisible(); if the widget's been closed the
+                # value is already False.
+                self._icon_table.save_window_state()
+        except Exception:
+            pass
         s.sync()
 
     def restore_main_window_state(self):

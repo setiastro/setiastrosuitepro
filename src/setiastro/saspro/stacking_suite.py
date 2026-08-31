@@ -6628,7 +6628,7 @@ class StackingSuiteDialog(QDialog):
 
         root.addLayout(bottom_row)
 
-        cleanup_btn = QPushButton(self.tr("🗑️ Clean Up Temp Files"))
+        cleanup_btn = QPushButton(self.tr("🗑️ Clean Up Intermediate Files"))
         cleanup_btn.setStyleSheet("""
             QPushButton {
                 background-color: #3a3a3a;
@@ -10400,7 +10400,20 @@ class StackingSuiteDialog(QDialog):
         correction_layout.addWidget(self.pedestal_checkbox)
         correction_layout.addWidget(self.bias_checkbox)
 
-        layout.addLayout(correction_layout)        
+        layout.addLayout(correction_layout)     
+        # Interactive cosmetic-correction tuning button
+        tune_row = QHBoxLayout()
+        self.tune_cosmetic_btn = QPushButton(self.tr("🔬 Tune Cosmetic Correction σ…"))
+        self.tune_cosmetic_btn.setToolTip(self.tr(
+            "Opens the Cosmetic Correction dialog on the FIRST light frame in your list.\n"
+            "Adjust Hot σ and Cold σ with the live preview until you're happy with how it\n"
+            "handles hot pixels without eating star cores.  Clicking “Save σ Settings”\n"
+            "writes the values back to Stacking Suite so calibration uses them."
+        ))
+        self.tune_cosmetic_btn.clicked.connect(self._open_tune_cosmetic_dialog)
+        tune_row.addWidget(self.tune_cosmetic_btn)
+        tune_row.addStretch(1)
+        layout.addLayout(tune_row)           
         # ---------- Satellite Trail Masking (post-calibration, for integration) ----------
         sat_layout = QHBoxLayout()
 
@@ -10487,6 +10500,61 @@ class StackingSuiteDialog(QDialog):
 
         return tab
     
+    def _first_light_path(self) -> str | None:
+        """Return the path of the first usable light frame in the tree.
+
+        Falls back to self.light_files if the tree hasn't been populated
+        yet.  Returns None if there's genuinely nothing to load.
+        """
+        import os
+        try:
+            for i in range(self.light_tree.topLevelItemCount()):
+                top = self.light_tree.topLevelItem(i)
+                for j in range(top.childCount()):
+                    mid = top.child(j)
+                    for k in range(mid.childCount()):
+                        leaf = mid.child(k)
+                        path = leaf.data(0, Qt.ItemDataRole.UserRole)
+                        if path and os.path.isfile(path):
+                            return path
+        except Exception:
+            pass
+        # Fallback: any light in the flat dict
+        try:
+            for paths in (self.light_files or {}).values():
+                for p in paths:
+                    if p and os.path.isfile(p):
+                        return p
+        except Exception:
+            pass
+        return None
+
+    def _open_tune_cosmetic_dialog(self):
+        """Open Cosmetic Correction in tuning mode on the first light."""
+        path = self._first_light_path()
+        if not path:
+            QMessageBox.information(
+                self, self.tr("Tune Cosmetic Correction"),
+                self.tr("Add at least one light frame to the list first.")
+            )
+            return
+        try:
+            from setiastro.saspro.cosmetic_correction import open_cosmetic_correction_tune
+        except Exception as e:
+            QMessageBox.critical(
+                self, self.tr("Tune Cosmetic Correction"),
+                self.tr(f"Could not open the tuning dialog:\n{e}")
+            )
+            return
+        # Log which sample is being used so the user isn't confused later
+        try:
+            self.update_status(
+                self.tr("🔬 Tuning cosmetic σ on: {0}").format(os.path.basename(path))
+            )
+        except Exception:
+            pass
+        open_cosmetic_correction_tune(self, path)
+
     def _manual_session_keyword(self) -> str:
         try:
             s = (self.session_keyword_edit.text() or "").strip()

@@ -37,7 +37,7 @@ from setiastro.saspro.resources import (
     nbtorgb_path, freqsep_path, multiscale_decomp_path, contsub_path, halo_path, cosmic_path, nbi_path, slap_path,satchroma_path, fx_path,
     satellite_path, imagecombine_path, wims_path, wimi_path, linearfit_path, snr_path,
     debayer_path, aberration_path, functionbundles_path, viewbundles_path, planetarystacker_path,syqon_path,rcastro_path,sssc_path,
-    selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path,
+    selectivecolor_path, selectivelum_path, rgbalign_path, planetprojection_path, clonestampicon_path, finderchart_path,magnitude_path, cosmeticcorrection_path,
 )
 
 # Import shortcuts module
@@ -214,6 +214,7 @@ class ToolbarMixin:
         tb_fn.addAction(self.act_satchroma)
         tb_fn.addAction(self.act_abe)
         tb_fn.addAction(self.act_graxpert)
+        tb_fn.addAction(self.act_cosmetic_correction)
         tb_fn.addAction(self.act_remove_stars)
         tb_fn.addAction(self.act_add_stars)
         tb_fn.addAction(self.act_background_neutral)
@@ -788,6 +789,10 @@ class ToolbarMixin:
         self.act_exit.setMenuRole(QAction.MenuRole.QuitRole)
         self.act_exit.triggered.connect(self._on_exit)
 
+        self.act_icon_table = QAction(self.tr("Function Icon Table"), self)
+        self.act_icon_table.setStatusTip(self.tr("Open the categorised process icon panel"))
+        self.act_icon_table.triggered.connect(self._open_icon_table)
+
         self.act_open_panel_host = QAction(self.tr("Open Secondary Panel Window"), self)
         self.act_open_panel_host.setStatusTip(self.tr("Open the secondary dock host window"))
         self.act_open_panel_host.triggered.connect(self._show_dock_host)
@@ -1159,6 +1164,11 @@ class ToolbarMixin:
         self.act_clone_stamp.setIconVisibleInMenu(True)
         self.act_clone_stamp.setStatusTip(self.tr("Interactive clone stamp on the active view"))
         self.act_clone_stamp.triggered.connect(self._open_clone_stamp)
+
+        self.act_cosmetic_correction = QAction(QIcon(cosmeticcorrection_path), self.tr("Cosmetic Correction..."), self)
+        self.act_cosmetic_correction.setStatusTip(self.tr("Detect and repair hot / cold pixels (standalone tool)"))
+        self.act_cosmetic_correction.setIconVisibleInMenu(True)
+        self.act_cosmetic_correction.triggered.connect(self._open_cosmetic_correction)
 
         self.act_wavescale_hdr = QAction(QIcon(hdr_path), self.tr("WaveScale HDR..."), self)
         self.act_wavescale_hdr.setStatusTip(self.tr("Wave-scale HDR with luminance-masked starlet"))
@@ -1696,6 +1706,7 @@ class ToolbarMixin:
         reg("fx", self.act_fx)
         reg("dither_analysis", self.act_dither_analysis)
         reg("plate_solve", self.act_plate_solve)
+        reg("cosmetic_correction", self.act_cosmetic_correction)
         reg("unwarp", self.act_unwarp)
         reg("magnitude_tool", self.act_magnitude)
         reg("snr_tool", self.act_snr)

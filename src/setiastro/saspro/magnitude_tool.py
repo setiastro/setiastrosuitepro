@@ -109,6 +109,56 @@ def _run_in_subprocess(timeout_s: float, target, *args, **kwargs):
     raise RuntimeError(err_msg)
 
 
+class _EmptyCatalogResult(Exception):
+    """Signal that a catalog query returned zero rows.
+
+    Raised inside the retry-wrapped inner function so an empty payload is
+    treated the same as a network error for retry purposes. The call site
+    catches this after the final attempt to distinguish "genuinely empty
+    field" (accept + cache) from "transient blip" (retry)."""
+    pass
+
+
+def _retry_with_backoff(fn, sleeps=(2, 4, 8, 12), sleep_fn=None, on_retry=None):
+    """Call fn() with exponential-backoff retries on ANY exception.
+
+    Between failed attempts, wait the next value in `sleeps` (seconds).
+    After the last sleep is used, one final attempt is made and its
+    exception (if any) propagates.
+
+    Total attempts = len(sleeps) + 1. For the default sleeps=(2, 4, 8, 12)
+    the schedule is:
+        attempt 1 → sleep 2s → attempt 2 → sleep 4s → attempt 3
+                 → sleep 8s → attempt 4 → sleep 12s → attempt 5 (last)
+
+    `sleep_fn` defaults to time.sleep; pass a non-blocking Qt sleep to
+    keep the UI responsive between attempts. `on_retry(attempt, wait_s,
+    err)` is invoked BEFORE each sleep — use it to update UI status.
+    Any exception in on_retry itself is swallowed so it never masks the
+    real error.
+    """
+    if sleep_fn is None:
+        sleep_fn = time.sleep
+    n_attempts = len(sleeps) + 1
+    last_err = None
+    for attempt in range(1, n_attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_err = e
+            if attempt >= n_attempts:
+                raise
+            wait_s = float(sleeps[attempt - 1])
+            if on_retry is not None:
+                try:
+                    on_retry(attempt, wait_s, e)
+                except Exception:
+                    pass
+            sleep_fn(wait_s)
+    # Unreachable: the loop always returns or raises.
+    raise last_err  # type: ignore[misc]
+
+
 def _row_get(tab_row, colname: str):
     try:
         return tab_row[colname]
@@ -184,6 +234,10 @@ def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg
             if simbad_conf is not None:
                 try:
                     simbad_conf.server = server
+                    # Clear the cached TAP client so the new server actually
+                    # takes effect (astroquery caches the TapPlus endpoint
+                    # on first use and won't rebind otherwise).
+                    _reset_simbad_tap_cache()
                 except Exception:
                     pass
 
@@ -204,6 +258,209 @@ def _simbad_query_worker(center_ra_deg: float, center_dec_deg: float, radius_deg
             continue
 
     raise RuntimeError(_classify_simbad_error(last_err))
+
+def _simbad_query_direct(center_ra_deg: float, center_dec_deg: float, radius_deg: float,
+                         servers: list, hard_timeout_s: float, row_limit: int):
+    """In-process SIMBAD region query. Same signature and payload shape as
+    the old _simbad_query_worker (see below) but runs in the parent process
+    directly — no subprocess, no re-import of magnitude_tool.py on every
+    attempt. Astroquery's Simbad.TIMEOUT is the timeout of record; the
+    subprocess wrapper wasn't buying anything that couldn't handle.
+
+    Rotates through `servers` in order, doing a fast TCP reachability probe
+    before each attempt to skip DNS-broken mirrors in ~3s instead of
+    waiting for a stalled TLS handshake.
+
+    Returns a dict {"colnames": [...], "rows": [{col: value, ...}, ...]}
+    on success. Raises RuntimeError(_classify_simbad_error(last_err)) on
+    total failure — the caller's retry loop handles retry timing.
+    """
+    from astroquery.simbad import Simbad
+    import astropy.units as u
+    from astropy.coordinates import SkyCoord
+
+    # astroquery/astropy config validators require an INT timeout; a float
+    # like 20.0 raises VdtTypeError. Coerce once, reuse everywhere.
+    _timeout_i = int(round(float(hard_timeout_s)))
+
+    try:
+        from astroquery import conf as aq_conf
+        aq_conf.timeout = _timeout_i
+    except Exception:
+        pass
+
+    try:
+        from astroquery.simbad import conf as simbad_conf
+    except Exception:
+        simbad_conf = None
+
+    try:
+        Simbad.TIMEOUT = _timeout_i
+    except Exception:
+        pass
+
+    center = SkyCoord(center_ra_deg * u.deg, center_dec_deg * u.deg, frame="icrs")
+
+    def _host_of(server: str) -> str:
+        s = str(server).replace("https://", "").replace("http://", "")
+        return s.split("/")[0]
+
+    def _configure_fields():
+        # This can make a TAP capabilities network call in modern astroquery,
+        # which is the exact call that fails when the endpoint is down.
+        # Doing it per-mirror means a dead endpoint on one mirror is
+        # recoverable via the next mirror.
+        Simbad.reset_votable_fields()
+        try:
+            Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec")
+        except Exception:
+            # legacy field names (older astroquery)
+            Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)", "ra(d)", "dec(d)")
+
+    last_err = None
+    for server in (servers or []):
+        host = _host_of(server)
+
+        # Fast reachability probe: skip a dead/DNS-broken mirror in ~3s
+        # instead of waiting for a stalled TLS handshake to time out.
+        if not _tcp_reachable(host, 443, timeout_s=3.0):
+            last_err = RuntimeError(f"{host}: not reachable (DNS/connect failed)")
+            continue
+
+        try:
+            if simbad_conf is not None:
+                try:
+                    simbad_conf.server = server
+                    # Clear the cached TAP client so the new server actually
+                    # takes effect (astroquery caches the TapPlus endpoint
+                    # on first use and won't rebind otherwise).
+                    _reset_simbad_tap_cache()
+                except Exception:
+                    pass
+
+            Simbad.ROW_LIMIT = int(row_limit)
+            _configure_fields()
+
+            tab = Simbad.query_region(center, radius=radius_deg * u.deg)
+            if tab is None:
+                last_err = RuntimeError(f"{host}: query returned no table")
+                continue
+
+            return {
+                "colnames": list(tab.colnames),
+                "rows": [{c: tab[i][c] for c in tab.colnames} for i in range(len(tab))],
+            }
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise RuntimeError(_classify_simbad_error(last_err))
+
+
+def _simbad_via_vizier(center_ra_deg: float, center_dec_deg: float, radius_deg: float,
+                       hard_timeout_s: float, row_limit: int):
+    """Fallback: query VizieR's SIMBAD mirror (catalog I/345/simbad) when
+    the primary SIMBAD path is unreachable. VizieR is separate CDS
+    infrastructure — different DNS records, different servers — so a bad
+    hour on simbad.cds.unistra.fr doesn't necessarily take this path down.
+
+    Returns the same payload shape as _simbad_query_direct:
+        {"colnames": [...], "rows": [{col: value, ...}, ...]}
+    ...with column names normalized to SIMBAD's schema so the existing
+    _fetch_simbad_stars_and_cache row parser works unchanged.
+
+    Never wedges the GUI — astroquery's timeout is set explicitly.
+    """
+    from astroquery.vizier import Vizier
+    from astropy.coordinates import SkyCoord
+    import astropy.units as u
+
+    _timeout_i = int(round(float(hard_timeout_s)))
+
+    center = SkyCoord(center_ra_deg * u.deg, center_dec_deg * u.deg, frame="icrs")
+
+    v = Vizier(
+        columns=["Main_ID", "RAJ2000", "DEJ2000", "OTypes", "SpType",
+                 "Umag", "Bmag", "Vmag", "Rmag", "Imag"],
+        row_limit=int(row_limit),
+        timeout=_timeout_i,
+    )
+
+    try:
+        result = v.query_region(center, radius=radius_deg * u.deg,
+                                catalog="I/345/simbad")
+    except Exception as e:
+        raise RuntimeError(f"VizieR SIMBAD mirror unreachable: {e}")
+
+    if not result or len(result) == 0 or len(result[0]) == 0:
+        return {"colnames": [], "rows": []}
+
+    tab = result[0]
+
+    # Map VizieR schema → SIMBAD schema so _fetch_simbad_stars_and_cache's
+    # existing _pick_col aliases (ra/dec/b/v/r/sp/main_id/otype) match.
+    _colmap = {
+        "Main_ID": "main_id",
+        "MAIN_ID": "main_id",
+        "RAJ2000": "ra",
+        "DEJ2000": "dec",
+        "OTypes":  "otype",
+        "OTYPE":   "otype",
+        "SpType":  "sp",
+        "Bmag":    "B",
+        "Vmag":    "V",
+        "Rmag":    "R",
+        "Umag":    "U",
+        "Imag":    "I",
+    }
+
+    rows = []
+    for i in range(len(tab)):
+        row = {}
+        for c in tab.colnames:
+            key = _colmap.get(c, c)
+            row[key] = tab[i][c]
+        rows.append(row)
+
+    colnames = list(rows[0].keys()) if rows else []
+    return {"colnames": colnames, "rows": rows}
+
+
+def _reset_simbad_tap_cache():
+    """Clear astroquery's cached SIMBAD TAP client so a subsequent
+    `conf.server = new_host` assignment actually takes effect.
+
+    Astroquery caches its PyVO TapPlus client on first `query_region` /
+    `query_object` call and reuses that client for the lifetime of the
+    process; the cache is not invalidated by changing `conf.server`.  This
+    walks the known cache locations across astroquery versions and clears
+    each one that exists.  Cheap and side-effect-free if there is nothing
+    cached yet.  Never raises.
+    """
+    try:
+        from astroquery.simbad import Simbad
+        # Class-level caches used across 0.4.7..0.4.11
+        for attr in ("_tap", "_TAP", "_tap_service", "_tap_handler", "_client"):
+            if hasattr(Simbad, attr):
+                try:
+                    setattr(Simbad, attr, None)
+                except Exception:
+                    pass
+        # Some versions stash it on a private module singleton.
+        try:
+            import astroquery.simbad.core as _sc
+            for attr in ("_tap", "_TAP", "_tap_service"):
+                if hasattr(_sc, attr):
+                    try:
+                        setattr(_sc, attr, None)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    except Exception:
+        # Astroquery not importable in this context — nothing to reset.
+        pass
+
 
 def _classify_vizier_error(err) -> str:
     """Turn a raw VizieR/APASS exception into a short, user-facing reason."""
@@ -2988,81 +3245,121 @@ class MagnitudeToolDialog(QDialog):
         if cached_ok:
             self.star_list = cached
         else:
-            # 1) Try APASS (may legitimately return empty, or fail if VizieR is down)
-            apass = []
-            apass_reason = ""
-            try:
-                self.lbl_info.setText("Querying APASS (VizieR)…")
-                QApplication.processEvents()
-                apass = self._fetch_apass_stars_and_cache(img, hdr, doc) or []
-                if not apass:
-                    apass_reason = ("VizieR returned an empty table for this field "
-                                    "(no APASS coverage here, or the field is too small).")
-            except Exception as e:
-                apass = []
-                apass_reason = _classify_vizier_error(e)
 
-            # Reasons are defined up front so the popup can never NameError,
-            # regardless of which tier we bailed out on.
-            local_reason = ""
+
+            # Always augment with SIMBAD (retry-wrapped upstream), even
+            # when XP already covered the field — SIMBAD picks up bright
+            # saturated stars XP misses and adds identifiers.
+            simbad_stars = []
             simbad_reason = ""
+            try:
+                self.lbl_info.setText("Augmenting with SIMBAD (subprocess)…")
+                QApplication.processEvents()
+                simbad_stars = self._fetch_simbad_stars_and_cache(img, hdr, doc) or []
+                if not simbad_stars:
+                    simbad_reason = "SIMBAD returned no stars for this field."
+            except Exception as e:
+                simbad_stars = []
+                simbad_reason = str(e)
 
-            if isinstance(apass, list) and len(apass) > 0:
-                self.star_list = apass
+
+            # XP-first tier order: dense-primary + augment. See patcher notes
+            # in mag_xp_first.py for the design rationale.
+            xp_stars = []
+            xp_reason = ""
+            try:
+                self.lbl_info.setText("Loading local Gaia XP library…")
+                QApplication.processEvents()
+                xp_stars = self._fetch_local_gaia_stars_and_cache(img, hdr, doc) or []
+                if not xp_stars:
+                    xp_reason = "No local Gaia matches for this field."
+            except Exception as e:
+                xp_stars = []
+                xp_reason = str(e)
+
+
+
+            # Union with 2″ cross-match: XP wins on position/mags, SIMBAD
+            # lifts identifiers/sp_type onto XP matches and contributes
+            # its own SIMBAD-only stars.
+            merged = self._merge_gaia_xp_and_simbad_stars(xp_stars, simbad_stars)
+            self.star_list = merged
+
+            # Catalog label reflects what actually contributed.
+            if xp_stars and simbad_stars:
+                cat_label = "GAIA_XP + SIMBAD"
+            elif xp_stars:
+                cat_label = "GAIA_XP_LOCAL"
+            elif simbad_stars:
+                cat_label = "SIMBAD"
             else:
-                # 2) SIMBAD (network) — real catalog magnitudes
-                simbad_reason = ""
+                cat_label = ""
+
+            # Last-resort APASS when the XP+SIMBAD union is too thin for
+            # a reliable ensemble ZP. In practice XP alone easily clears
+            # this bar; we only get here on a small FOV with no XP library
+            # AND SIMBAD failing / empty.
+            apass_stars = []
+            apass_reason = ""
+            if len(merged) < 20:
                 try:
-                    self.lbl_info.setText("Querying SIMBAD (subprocess)…")
+                    self.lbl_info.setText("Last-resort APASS (VizieR)…")
                     QApplication.processEvents()
-                    self.star_list = self._fetch_simbad_stars_and_cache(img, hdr, doc) or []
-                    if not self.star_list:
-                        simbad_reason = "SIMBAD returned no stars for this field."
+                    apass_stars = self._fetch_apass_stars_and_cache(img, hdr, doc) or []
+                    if not apass_stars:
+                        apass_reason = ("VizieR returned an empty table for this field "
+                                        "(no APASS coverage here, or the field is too small).")
                 except Exception as e:
-                    self.star_list = []
-                    simbad_reason = str(e)
+                    apass_stars = []
+                    apass_reason = _classify_vizier_error(e)
 
-                # 3) Local Gaia XP — offline fallback (now G-anchored, calibrated)
-                if not self.star_list:
-                    try:
-                        self.lbl_info.setText("Falling back to local Gaia XP library…")
-                        QApplication.processEvents()
-                        self.star_list = self._fetch_local_gaia_stars_and_cache(img, hdr, doc) or []
-                        if not self.star_list:
-                            local_reason = "No local Gaia matches for this field."
-                    except Exception as e:
-                        self.star_list = []
-                        local_reason = str(e)
+                if apass_stars:
+                    merged = self._merge_gaia_xp_and_simbad_stars(merged, apass_stars)
+                    self.star_list = merged
+                    cat_label = (cat_label + " + APASS_DR9") if cat_label else "APASS_DR9"
 
-                if not self.star_list:
-                    self.lbl_info.setText("Catalog unavailable — no stars fetched.")
-                    lines = [
-                        "No catalog stars could be retrieved for this field.",
-                        "",
-                        f"• APASS (VizieR):  {apass_reason or 'failed'}",
-                        f"• Local Gaia XP:  {local_reason or 'not available'}",
-                        f"• SIMBAD:  {simbad_reason or 'failed'}",
-                        "• No cached stars were available for this image.",
-                        "",
-                    ]
-                    all_reasons = (apass_reason + local_reason + simbad_reason).lower()
-                    if any(t in all_reasons for t in ("down", "unreachable", "timed out")):
-                        lines.append(
-                            "The online catalogs (VizieR/APASS, SIMBAD) look like "
-                            "transient outages rather than a problem with your image — "
-                            "VizieR has had recent downtime. Try again in a few minutes.")
-                    else:
-                        lines.append(
-                            "Try a wider field or verify the WCS/plate solution.")
-                    # The durable fix: local Gaia removes the network entirely.
-                    if "not installed" in local_reason.lower() or "no local gaia" in local_reason.lower():
-                        lines.append("")
-                        lines.append(
-                            "Tip: install the Gaia XP library (used by SPCC) to make "
-                            "star fetching work fully offline — it isn't affected by "
-                            "VizieR or SIMBAD outages.")
-                    QMessageBox.information(self, "Catalog Unavailable", "\n".join(lines))
-                    return
+            # Re-write the cache with the merged result. Both per-fetcher
+            # writes already happened as side effects; this final write
+            # is authoritative and reflects the union.
+            if self.star_list:
+                try:
+                    meta = dict(getattr(doc, "metadata", {}) or {})
+                    meta["SFCC_star_list"] = self.star_list
+                    meta["SFCC_catalog"] = cat_label or "Unknown"
+                    self.doc_manager.update_active_document(
+                        doc.image, metadata=meta,
+                        step_name="Magnitude Stars Cached (Merged)", doc=doc,
+                    )
+                except Exception:
+                    pass
+            else:
+                # Same failure popup as before, updated to reflect the new
+                # tier order (XP primary, SIMBAD augment, APASS last-resort).
+                self.lbl_info.setText("Catalog unavailable — no stars fetched.")
+                lines = [
+                    "No catalog stars could be retrieved for this field.",
+                    "",
+                    f"• Local Gaia XP (primary):  {xp_reason or 'not available'}",
+                    f"• SIMBAD (augment):  {simbad_reason or 'failed'}",
+                    f"• APASS (last-resort):  {apass_reason or 'not attempted'}",
+                    "• No cached stars were available for this image.",
+                    "",
+                ]
+                all_reasons = (xp_reason + simbad_reason + apass_reason).lower()
+                if any(t in all_reasons for t in ("down", "unreachable", "timed out")):
+                    lines.append(
+                        "Online catalogs look like transient outages rather than "
+                        "a problem with your image. Try again in a few minutes.")
+                else:
+                    lines.append("Try a wider field or verify the WCS/plate solution.")
+                if "not installed" in xp_reason.lower() or "no local gaia" in xp_reason.lower():
+                    lines.append("")
+                    lines.append(
+                        "Tip: install the Gaia XP library — it's now the primary "
+                        "catalog source and works fully offline, unaffected by "
+                        "VizieR or SIMBAD outages.")
+                QMessageBox.information(self, "Catalog Unavailable", "\n".join(lines))
+                return
                 
         # WCS / pixscale
         self.wcs, self.pixscale = _build_wcs_and_pixscale(hdr)
@@ -3543,11 +3840,96 @@ class MagnitudeToolDialog(QDialog):
         m = float(np.max(T)) if T.size else 0.0
         return (T / m) if m > 0 else T
 
+    def _merge_gaia_xp_and_simbad_stars(self, primary_stars, augment_stars,
+                                        match_arcsec: float = 2.0) -> List[dict]:
+        """Union two star lists by spatial cross-match.
+
+        Merge policy:
+          * `primary_stars` (typically Gaia XP) is authoritative on
+            position and magnitudes — uniform calibration across the
+            ensemble matters more for the ZP fit than picking up
+            individual measured mags from a different pipeline.
+          * `augment_stars` (typically SIMBAD) contributes:
+              - its own entries when nothing in `primary` is within
+                `match_arcsec` of them (the augment purpose — bright
+                saturated stars XP has no source for, well-catalogued
+                objects, etc.), and
+              - identifier / spectral type / Pickles match values lifted
+                onto matched primary entries that lacked them.
+
+        Returns a new list (shallow copies of primary + fresh copies of
+        augment-only entries). Never raises — on any error, falls back
+        to `primary_stars + augment_stars` concatenation.
+        """
+        primary_stars = list(primary_stars or [])
+        augment_stars = list(augment_stars or [])
+        if not primary_stars:
+            return list(augment_stars)
+        if not augment_stars:
+            return list(primary_stars)
+
+        try:
+            p_ra  = np.asarray([s.get("ra")  for s in primary_stars], dtype=float)
+            p_dec = np.asarray([s.get("dec") for s in primary_stars], dtype=float)
+            a_ra  = np.asarray([s.get("ra")  for s in augment_stars], dtype=float)
+            a_dec = np.asarray([s.get("dec") for s in augment_stars], dtype=float)
+
+            good_p = np.isfinite(p_ra) & np.isfinite(p_dec)
+            good_a = np.isfinite(a_ra) & np.isfinite(a_dec)
+            if not np.any(good_p):
+                return list(augment_stars)
+            if not np.any(good_a):
+                return list(primary_stars)
+
+            p_sc = SkyCoord(p_ra[good_p] * u.deg, p_dec[good_p] * u.deg, frame="icrs")
+            a_sc = SkyCoord(a_ra[good_a] * u.deg, a_dec[good_a] * u.deg, frame="icrs")
+            TOL  = float(match_arcsec) * u.arcsec
+
+            # For each augment star, find the nearest primary star.
+            idx_p, sep2d, _ = a_sc.match_to_catalog_sky(p_sc)
+            idx_p_arr  = np.atleast_1d(idx_p).ravel()
+            sep2d_arr  = np.atleast_1d(sep2d).ravel()
+
+            good_p_idx = np.where(good_p)[0]
+            good_a_idx = np.where(good_a)[0]
+
+            # Start from a shallow-copy of primary_stars so we can lift
+            # augment fields onto matched entries without mutating the
+            # caller's list.
+            merged = [dict(s) for s in primary_stars]
+
+            for k, (i_p_local, sp) in enumerate(zip(idx_p_arr, sep2d_arr)):
+                a_star = augment_stars[int(good_a_idx[k])]
+                if sp <= TOL:
+                    p_i = int(good_p_idx[int(i_p_local)])
+                    p_entry = merged[p_i]
+                    for key in ("main_id", "otype", "sp_clean", "pickles_match"):
+                        v = a_star.get(key)
+                        if v and not p_entry.get(key):
+                            p_entry[key] = v
+                else:
+                    # Augment-only — the whole point of augmenting.
+                    merged.append(dict(a_star))
+
+            return merged
+        except Exception as e:
+            # Never let a merge failure block Fetch Stars — degrade to
+            # simple concatenation (may produce near-duplicates but
+            # downstream de-dup will still work).
+            try:
+                print(f"[DEBUG] star-list merge failed, concatenating: {e}")
+            except Exception:
+                pass
+            return list(primary_stars) + list(augment_stars)
+
     def _fetch_local_gaia_stars_and_cache(self, img, hdr, doc) -> List[dict]:
         """
-        Network-free FALLBACK catalog. Matches field positions to the local Gaia
+        Network-free PRIMARY catalog. Matches field positions to the local Gaia
         XP library and synthesizes Johnson B/V/R by integrating each star's stored
-        XP spectrum through Johnson passbands. Read-only, fully offline.
+        XP spectrum through Johnson passbands. Read-only, fully offline. Preferred
+        over online catalogs because of density (~220M Gaia DR3 sources vs SIMBAD's
+        much smaller subset with real photometry). SIMBAD augments this by union
+        (see _merge_gaia_xp_and_simbad_stars).
 
         CRITICAL: the raw XP integrals are on an arbitrary instrumental scale.
         To be usable as catalog reference magnitudes (for the ZP fit), each star's
@@ -3797,31 +4179,109 @@ class MagnitudeToolDialog(QDialog):
         # ---- mirror list (use yours or keep static) ----
         # unistra is the current primary; u-strasbg redirects to it; harvard is
         # the independent US mirror. Order = try-first order.
-        servers = ["simbad.cds.unistra.fr", "simbad.u-strasbg.fr", "simbad.harvard.edu"]
+        # Only one working SIMBAD mirror for TAP queries at the moment:
+        #   - simbad.u-strasbg.fr  → permanent DNS failure (CDS retired the
+        #                            hostname; live SIMBAD is at
+        #                            simbad.cds.unistra.fr).
+        #   - simbad.harvard.edu   → responds on :443 but /simbad/sim-tap/
+        #                            capabilities returns a 500 with HTML
+        #                            garbage from vizier.cfa.harvard.edu.
+        #                            query_region always fails.
+        # Retries + backoff (see _do_simbad_query) cover transient blips on
+        # unistra.  Add mirrors back only after end-to-end probing them.
+        servers = ["simbad.cds.unistra.fr"]
         HARD_TIMEOUT_S = 15.0
         ROW_LIMIT = 10000
 
-        # Whole-run cap. Worst case ≈ n_mirrors × (reachability 3s + query 15s).
-        # This is the hard backstop for a mirror that accepts the connection but
-        # never responds — the case the reachability probe can't catch.
-        SUBPROC_TIMEOUT_S = 55.0
+        # First-attempt subprocess cap. Kept generous enough for one full
+        # 3-mirror rotation with a healthy-but-slow query on the first
+        # mirror. Retries shrink this to SUBPROC_TIMEOUT_RETRY_S (see the
+        # _do_simbad_query closure below) so the total wait for a genuine
+        # outage stays around 90s instead of 5 minutes.
+        SUBPROC_TIMEOUT_S       = 25.0
+        SUBPROC_TIMEOUT_RETRY_S = 10.0
 
         # status text (safe; no astroquery here)
         try:
-            self.lbl_info.setText("Querying SIMBAD (subprocess)…")
+            self.lbl_info.setText("Querying SIMBAD (in-process)…")
             QApplication.processEvents()
         except Exception:
             pass
 
-        # ---- run astroquery in subprocess ----
-        payload = _run_in_subprocess(
-            SUBPROC_TIMEOUT_S,
-            _simbad_query_worker,
-            center_ra, center_dec, radius_deg,
-            servers,
-            HARD_TIMEOUT_S,
-            ROW_LIMIT,
-        )
+        # ---- run astroquery in subprocess, with outer retries ----
+        # Server rotation still happens inside every attempt (see
+        # _simbad_query_worker). This outer loop covers the case where the
+        # whole rotation fails together — the classic transient-DNS-blip
+        # symptom that used to kill the run after ~9s. Empty results are
+        # treated as retry-worthy too (Frank: "empty or bad query should
+        # try again anyway"); if all attempts still return empty, we
+        # accept that honestly rather than raising.
+        # ---- SIMBAD with VizieR mirror fallback ----
+        # Try the SIMBAD TAP endpoint first (fast, canonical). If it
+        # fails or returns empty, try VizieR's SIMBAD mirror (catalog
+        # I/345/simbad) which runs on separate CDS infrastructure. Both
+        # inside a single "attempt" of the outer retry loop so
+        # transient blips on EITHER path get retry backoff.
+        def _do_simbad_query():
+            _simbad_err = None
+            _payload = None
+            # 1) primary: SIMBAD TAP endpoint (in-process astroquery)
+            try:
+                _payload = _simbad_query_direct(
+                    center_ra, center_dec, radius_deg,
+                    servers,
+                    HARD_TIMEOUT_S,
+                    ROW_LIMIT,
+                )
+                if list(_payload.get("rows", []) or []):
+                    return _payload
+            except Exception as e:
+                _simbad_err = e
+
+            # 2) fallback: VizieR's SIMBAD mirror (separate infrastructure)
+            try:
+                _payload = _simbad_via_vizier(
+                    center_ra, center_dec, radius_deg,
+                    HARD_TIMEOUT_S,
+                    ROW_LIMIT,
+                )
+                if list(_payload.get("rows", []) or []):
+                    return _payload
+            except Exception as e:
+                # Fall through — the outer retry loop gets the primary error
+                # if any (more diagnostic), or an empty-result sentinel.
+                if _simbad_err is None:
+                    _simbad_err = e
+
+            # Both paths failed or returned empty
+            if _simbad_err is not None:
+                raise _simbad_err
+            raise _EmptyCatalogResult(
+                "SIMBAD and VizieR SIMBAD mirror both returned no rows"
+            )
+
+        def _on_simbad_retry(attempt, wait_s, err):
+            try:
+                first_line = str(err).splitlines()[0] if str(err) else type(err).__name__
+                self.lbl_info.setText(
+                    f"SIMBAD attempt {attempt}/5 failed "
+                    f"({first_line}) — retrying in {int(wait_s)}s…"
+                )
+                QApplication.processEvents()
+            except Exception:
+                pass
+
+        try:
+            payload = _retry_with_backoff(
+                _do_simbad_query,
+                sleeps=(2, 4, 8, 12),
+                sleep_fn=non_blocking_sleep,
+                on_retry=_on_simbad_retry,
+            )
+        except _EmptyCatalogResult:
+            # All attempts returned empty — treat as an honest empty result
+            # so the "no stars in field" case still caches cleanly below.
+            payload = {"colnames": [], "rows": []}
 
         # payload: {"colnames":[...], "rows":[{col: value, ...}, ...]}
         colnames = list(payload.get("colnames", []) or [])
