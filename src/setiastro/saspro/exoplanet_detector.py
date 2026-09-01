@@ -3573,14 +3573,28 @@ class ExoPlanetWindow(QDialog):
 
         # Per-channel KMAGs: use catalog for check star, then fill missing.
         kmags = aav.check_star_kmags(kstar_catalog)   # {"R":..,"G":..,"B":..}
+        # Prompt default = V-mag when we have it. Better than 0 (which
+        # gives MAG=0-ish outputs if the user hits OK without editing —
+        # David saw exactly this on TB/TR for V336 Aps). For most stars
+        # V is within a magnitude or so of B and R, so if the user
+        # doesn't know the exact value, V is a defensible fallback.
         for ch, prompt_label in (("B", "B"), ("G", "V (green anchor)"), ("R", "R")):
             if kmags.get(ch) is None:
+                _v_default = float(kmags.get("G") or 0.0)
+                _has_v_hint = kmags.get("G") is not None
+                _hint = (
+                    f"\n\nDefaulted to V-mag ({_v_default:.3f}) as a plausible"
+                    f"\nfallback. Edit for accuracy or Cancel to skip this band."
+                    if _has_v_hint else
+                    "\n\nCancel to skip this band."
+                )
                 val, ok = QInputDialog.getDouble(
                     self, f"Check-Star {prompt_label} Magnitude",
                     f"Catalog {prompt_label} magnitude for {kname}\n"
-                    f"(needed to calibrate the {aav.RGB_FILTER_MAP[ch][0]} channel;\n"
-                    " Cancel to skip this band):",
-                    decimals=3
+                    f"(needed to calibrate the {aav.RGB_FILTER_MAP[ch][0]} channel)."
+                    f"{_hint}",
+                    value=(kmags.get("G") if kmags.get("G") is not None else 0.0),
+                    min=-5.0, max=30.0, decimals=3
                 )
                 if ok:
                     kmags[ch] = float(val)
@@ -3659,8 +3673,38 @@ class ExoPlanetWindow(QDialog):
                         f"; err incl SEM+{floor:.2f}floor")
                 if ch == "R" and r_note_extra:
                     note += r_note_extra
+            elif comp_idx_all.size >= 1:
+                # tier 2: single-comparison vs a comp-member with catalog mag
+                # in this band. Prefer the brightest (highest median flux) —
+                # best SNR, most stable ZP anchor. This tier exists because
+                # the previous code fell straight through to the check star,
+                # which is the wrong role for photometric anchoring AND is
+                # empty in the ensemble=1 case where the sole ensemble
+                # member is also the check star.
+                _c_meds = np.array(
+                    [np.nanmedian(self.raw_flux_rgb[ci, int(mm), :])
+                     for mm in comp_idx_all], dtype=float
+                )
+                _c_local = int(np.argmax(np.nan_to_num(_c_meds, nan=-np.inf)))
+                c_idx = int(comp_idx_all[_c_local])
+                c_mag = float(comp_mag[_c_local])
+                F_C    = self.raw_flux_rgb[ci, c_idx, :].astype(np.float64)
+                Ferr_C = self.raw_flux_err_rgb[ci, c_idx, :].astype(np.float64)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    mags  = c_mag - 2.5 * np.log10(F_T / F_C)
+                    frac2 = (Ferr_T / F_T) ** 2 + (Ferr_C / F_C) ** 2
+                    merr  = np.sqrt((LOGC ** 2) * frac2 + floor ** 2)
+                bad = ~np.isfinite(mags) | (F_T <= 0) | (F_C <= 0)
+                note = (f"{filt}: single-comparison vs member #{c_idx} "
+                        f"({band_key}={c_mag:.3f}); err incl {floor:.2f}floor")
+                if ch == "R" and r_note_extra:
+                    note += r_note_extra
             elif kmags.get(ch) is not None:
-                # Fallback: single-comparison vs the check star in this band.
+                # tier 3 (last resort): calibrate against the CHECK STAR
+                # itself. Only lands here when zero comp-members have a
+                # catalog mag in this band. Not ideal (the check star is
+                # meant for verification, not anchoring) but better than
+                # skipping the band entirely.
                 F_C    = self.raw_flux_rgb[ci, k_idx, :].astype(np.float64)
                 Ferr_C = self.raw_flux_err_rgb[ci, k_idx, :].astype(np.float64)
                 with np.errstate(divide="ignore", invalid="ignore"):
@@ -3668,7 +3712,7 @@ class ExoPlanetWindow(QDialog):
                     frac2 = (Ferr_T / F_T) ** 2 + (Ferr_C / F_C) ** 2
                     merr  = np.sqrt((LOGC ** 2) * frac2 + floor ** 2)
                 bad = ~np.isfinite(mags) | (F_T <= 0) | (F_C <= 0)
-                note = (f"{filt}: single-comparison vs {kname}"
+                note = (f"{filt}: check-star fallback vs {kname}"
                         f"; err incl {floor:.2f}floor")
             else:
                 # Nothing to calibrate this channel — skip it.
@@ -3688,18 +3732,32 @@ class ExoPlanetWindow(QDialog):
             return
 
         # -- Assemble AavsoRow list frame-by-frame -------------------------
+        # Track per-band skip reasons so the summary popup can tell the
+        # user *why* certain bands didn't make it into the file. AAVSO
+        # Extended Format requires MERR ≤ 1.0 — a single over-limit row
+        # gets the whole file rejected at upload, so we drop them here.
         rows = []
+        _skipped_by_filt = {}
+        _skip_reasons = set()
+        _MERR_MAX = 1.0
         for j, t in enumerate(jd):
             frame_mags = {}; frame_merrs = {}
             for ch in ("B", "G", "R"):
                 pc = per_ch.get(ch)
                 if pc is None:
                     continue
+                filt_lbl = aav.RGB_FILTER_MAP[ch][0]
                 m = float(pc[0][j]); e = float(pc[1][j])
                 if not np.isfinite(m):
+                    _skipped_by_filt[filt_lbl] = _skipped_by_filt.get(filt_lbl, 0) + 1
+                    _skip_reasons.add("non-finite MAG")
+                    continue
+                if not np.isfinite(e) or e > _MERR_MAX:
+                    _skipped_by_filt[filt_lbl] = _skipped_by_filt.get(filt_lbl, 0) + 1
+                    _skip_reasons.add(f"MERR > {_MERR_MAX:.1f} (AAVSO limit)")
                     continue
                 frame_mags[ch]  = m
-                frame_merrs[ch] = e if np.isfinite(e) else None
+                frame_merrs[ch] = e
             if not frame_mags:
                 continue
             am = float(np.clip(self.airmasses[j] if j < len(self.airmasses) else 1.0, 1.0, 40.0))
@@ -3744,13 +3802,24 @@ class ExoPlanetWindow(QDialog):
         for r in rows:
             n_by_filt[r.filt] = n_by_filt.get(r.filt, 0) + 1
         breakdown = ", ".join(f"{k}:{v}" for k, v in sorted(n_by_filt.items()))
+
+        # summary of skipped-per-band, MERR-limit or NaN
+        _skip_lines = []
+        if _skipped_by_filt:
+            _skip_breakdown = ", ".join(
+                f"{k}:{v}" for k, v in sorted(_skipped_by_filt.items())
+            )
+            _reason_txt = "; ".join(sorted(_skip_reasons)) if _skip_reasons else "invalid"
+            _skip_lines.append(f"Skipped: {_skip_breakdown}  ({_reason_txt})")
+
+        _body = f"Wrote {len(rows)} row(s) → {path}\n\nBy filter: {breakdown}"
+        for _ln in _skip_lines:
+            _body += f"\n{_ln}"
+        _body += "\n\nOpen AAVSO WebObs upload page now?"
+
         msg = QMessageBox(self)
         msg.setWindowTitle("Export AAVSO")
-        msg.setText(
-            f"Wrote {len(rows)} row(s) → {path}\n\n"
-            f"By filter: {breakdown}\n\n"
-            "Open AAVSO WebObs upload page now?"
-        )
+        msg.setText(_body)
         yes = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
         msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
         msg.exec()
