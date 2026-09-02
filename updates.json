@@ -1,10 +1,10 @@
 {
-  "version": "1.21.0",
+  "version": "1.21.1",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.0/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.0/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.0/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.0/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.1/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.1/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.1/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.1/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.21.0\nNew Shortcut Icon Tray found under the shortcuts menu. This allows your to create a custom tray of processing icons instead of having them on the canvas and allows you to move the tray to even another monitor to minimize clutter on the canvas. You can save and load different trays as well.\n\nNew Function: Cosmetic Correction. This used to be buried and ran only during Calibrate Lights in Stacking Suite. Having it as a standalone function allows you to use it on a View to dial in settings or to just run it on a single image, there is also options to then push those settings to Stacking Suite or Batch run it on file. From Stacking Suite on the Light tab there is also a button to launch the tool for an interactive tweak of your settings.\n\nMany updates to the Exoplanet Tool and Magnitude Tool for better identification, detection, and submission into AAVSO.\n\nOther various minor bug fixes."
+ "notes": "Seti Astro Suite Pro\n\nV1.21.0\nUpdates to Metric in Blink Comparator to display Temp, ADU/s; Exoplanet Detector for additional AAVSO logic; Icon Tray; and rc astro presets."
 }
