@@ -120,9 +120,9 @@ class MetricsPanel(QWidget):
 
         # caching slots
         self._orig_images = None       # last list passed
-        self.metrics_data = None       # list of 4 numpy arrays
+        self.metrics_data = None       # list of 7 numpy arrays
         self.flags = None              # list of bools
-        self._threshold_initialized = [False]*5
+        self._threshold_initialized = [False]*7
         self._last_group_id = None
         self._open_previews = []
         self._show_guides = True  # default on (or False if you prefer)
@@ -138,18 +138,22 @@ class MetricsPanel(QWidget):
             self.tr("Background"),
             self.tr("Star Count"),
             self.tr("Weighted Score"),
+            self.tr("Sensor Temp (°C)"),
+            self.tr("Bg Rate (ADU/s)"),
         ]
 
-        # Layout: 3 cols × 2 rows
-        # Col 0: FWHM (row 0), Background (row 1)
-        # Col 1: Eccentricity (row 0), Star Count (row 1)
-        # Col 2: Weighted Score (rows 0-1, rowspan 2)
+        # Layout: 3 cols × 3 rows
+        # Col 0: FWHM (row 0), Background (row 1), Sensor Temp (row 2)
+        # Col 1: Eccentricity (row 0), Star Count (row 1), Bg Rate (row 2)
+        # Col 2: Weighted Score (rows 0-2, rowspan 3)
         grid_positions = [
             (0, 0),   # FWHM
             (0, 1),   # Eccentricity
             (1, 0),   # Background
             (1, 1),   # Star Count
-            (0, 2),   # Weighted Score — will use rowspan=2
+            (0, 2),   # Weighted Score — will use rowspan=3
+            (2, 0),   # Sensor Temp (°C)
+            (2, 1),   # Bg Rate (ADU/s)
         ]
 
         for idx, (title, (grow, gcol)) in enumerate(zip(titles, grid_positions)):
@@ -214,9 +218,9 @@ class MetricsPanel(QWidget):
             self.median_lines.append(median_ln)
 
 
-            # Weighted Score spans both rows in col 2
+            # Weighted Score spans all rows in col 2
             if idx == 4:
-                grid.addWidget(pw, grow, gcol, 2, 1)
+                grid.addWidget(pw, grow, gcol, 3, 1)
             else:
                 grid.addWidget(pw, grow, gcol)
 
@@ -313,10 +317,86 @@ class MetricsPanel(QWidget):
         BAD_FWHM = 30.0
         BAD_ECC  = 1.0
 
+        # QA metrics for the extended MetricsPanel. Sensor temp and
+        # OFFSET-corrected bg rate. Both from header only; nothing
+        # derived from light-frame content itself. Amp glow was
+        # removed in v3 because on light frames it's indistinguishable
+        # from LP gradient, moon glow, nebulosity, and vignette
+        # residual -- corner-vs-corner picks all of them up as one
+        # blended number.
+        _hdr = entry.get("header", {}) or {}
+        _bd  = entry.get("bit_depth", None)
+        _orig_bg = entry.get("orig_background", np.nan)
+
+        def _hget(*keys):
+            for _k in keys:
+                if _k in _hdr:
+                    _v = _hdr[_k]
+                    try:
+                        _f = float(_v)
+                    except (TypeError, ValueError):
+                        continue
+                    if np.isfinite(_f):
+                        return _f
+            return float("nan")
+
+        _temp_c  = _hget("CCD-TEMP", "CCDTEMP", "SET-TEMP", "SENSOR-TEMP")
+        _exptime = _hget("EXPTIME", "EXPOSURE")
+        _offset  = _hget("OFFSET", "BIAS")
+        # Many acquisition tools (SGP with default templates observed;
+        # some ASCOM drivers) don't write OFFSET or BIAS to the FITS
+        # header. Fall back to 0 rather than reporting NaN: the
+        # missing pedestal is a per-SESSION constant, so within-
+        # session RELATIVE ordering of frames by Bg Rate is preserved
+        # (which is what blink uses for culling). Only the absolute
+        # ADU/s value is inflated by OFFSET_adu / exptime.
+        if not np.isfinite(_offset):
+            _offset = 0.0
+
+        # OFFSET-corrected bg rate (ADU/s). orig_background is
+        # normalized [0,1] on pre-stretch data; scale by
+        # (2**bit_depth - 1) to ADU, subtract the OFFSET pedestal
+        # (0 when not in header -- see fallback above), divide by
+        # exposure. Note the header name is often "BIAS" but on CMOS
+        # there is no true bias frame -- CDS eliminates any sensor
+        # reset pedestal -- so this is really OFFSET subtraction.
+        # bit_depth from load_image can be an int (16), a numpy int,
+        # a float, or a human-readable string like "16-bit" / "16 bit"
+        # depending on which loader path the file went through. Extract
+        # the leading integer so all forms work; the plain int(_bd)
+        # that shipped in v1 raised ValueError on "16-bit" and left
+        # every frame's bg_rate NaN silently (caught by the outer
+        # except).
+        _bd_bits = None
+        if _bd is not None:
+            try:
+                _bd_bits = int(_bd)
+            except (TypeError, ValueError):
+                try:
+                    import re as _re_bd
+                    _m_bd = _re_bd.match(r"\s*(\d+)", str(_bd))
+                    if _m_bd:
+                        _bd_bits = int(_m_bd.group(1))
+                except Exception:
+                    _bd_bits = None
+
+        _bg_rate = float("nan")
+        try:
+            if (_bd_bits is not None and np.isfinite(_orig_bg) and _orig_bg > 0
+                    and np.isfinite(_exptime) and _exptime > 0):
+                _depth_scale = float((1 << _bd_bits) - 1)
+                if _depth_scale > 0:
+                    _bg_adu  = float(_orig_bg) * _depth_scale
+                    _bg_corr = _bg_adu - float(_offset)
+                    if _bg_corr > 0:
+                        _bg_rate = _bg_corr / float(_exptime)
+        except Exception:
+            _bg_rate = float("nan")
+
         try:
             if img is None:
                 orig_back = entry.get("orig_background", np.nan)
-                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
+                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0, _temp_c, _bg_rate
 
             data = np.asarray(img)
             h0, w0 = data.shape[:2]
@@ -374,7 +454,7 @@ class MetricsPanel(QWidget):
 
             if cat is None or len(cat) == 0:
                 orig_back = entry.get("orig_background", np.nan)
-                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
+                return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0, _temp_c, _bg_rate
 
             a = np.maximum(cat["a"].astype(np.float32, copy=False), 1e-12)
             b = np.maximum(cat["b"].astype(np.float32, copy=False), 0.0)
@@ -397,11 +477,11 @@ class MetricsPanel(QWidget):
             bg_term     = (2.0 / (math.sqrt(bg_clamped) + 1.0)) - 1.0
             weighted_score = float(star_cnt) * ecc_term * bg_term if star_cnt > 0 else 0.0
 
-            return idx, fwhm, ecc, orig_back, star_cnt, weighted_score
+            return idx, fwhm, ecc, orig_back, star_cnt, weighted_score, _temp_c, _bg_rate
 
         except Exception:
             orig_back = entry.get("orig_background", np.nan)
-            return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0
+            return idx, BAD_FWHM, BAD_ECC, orig_back, 0, 0.0, _temp_c, _bg_rate
 
 
 
@@ -421,9 +501,9 @@ class MetricsPanel(QWidget):
         n = len(loaded_images)
         if n == 0:
             self._orig_images = []
-            self.metrics_data = [np.array([])] * 5
+            self.metrics_data = [np.array([])] * 7
             self.flags = []
-            self._threshold_initialized = [False] * 5
+            self._threshold_initialized = [False] * 7
             return True
 
         # ----------------------------
@@ -434,6 +514,8 @@ class MetricsPanel(QWidget):
         m2 = np.full(n, np.nan, dtype=np.float32)  # Background (cached)
         m3 = np.full(n, np.nan, dtype=np.float32)  # Star count
         m4 = np.full(n, np.nan, dtype=np.float32)  # Weighted score        
+        m5 = np.full(n, np.nan, dtype=np.float32)  # Sensor temp (°C, header)
+        m6 = np.full(n, np.nan, dtype=np.float32)  # Bg rate (ADU/s, OFFSET-corrected)
         flags = [e.get("flagged", False) for e in loaded_images]
 
         # ----------------------------
@@ -482,10 +564,11 @@ class MetricsPanel(QWidget):
                         break
 
                     try:
-                        idx, fwhm, ecc, orig_back, star_cnt, weighted_score = fut.result()
+                        idx, fwhm, ecc, orig_back, star_cnt, weighted_score, temp_c, bg_rate = fut.result()
                     except Exception:
                         idx = futures.get(fut, 0)
                         fwhm, ecc, orig_back, star_cnt, weighted_score = np.nan, np.nan, np.nan, 0, 0.0
+                        temp_c, bg_rate = np.nan, np.nan
 
                     if 0 <= idx < n:
                         m0[idx] = fwhm
@@ -493,6 +576,8 @@ class MetricsPanel(QWidget):
                         m2[idx] = orig_back
                         m3[idx] = float(star_cnt)
                         m4[idx] = float(weighted_score)
+                        m5[idx] = float(temp_c)
+                        m6[idx] = float(bg_rate)
 
                     done += 1
                     prog.setValue(done)
@@ -508,9 +593,9 @@ class MetricsPanel(QWidget):
         # 4) Stash results
         # ----------------------------
         self._orig_images = loaded_images
-        self.metrics_data = [m0, m1, m2, m3, m4]
+        self.metrics_data = [m0, m1, m2, m3, m4, m5, m6]
         self.flags = flags
-        self._threshold_initialized = [False] * 5
+        self._threshold_initialized = [False] * 7
         return True
 
     def plot(self, loaded_images, indices=None):
@@ -611,9 +696,24 @@ class MetricsPanel(QWidget):
             # initialize threshold line once
             # initialize threshold line if this is a new group and no saved threshold
             if not self._threshold_initialized[m]:
-                mx, mn = np.nanmax(y), np.nanmin(y)
-                span   = mx-mn if mx!=mn else 1.0
-                line.setPos((mx+0.05*span) if m in (0, 1, 2) else 0)
+                # NaN guard: any of the new metrics (Sensor Temp, Amp
+                # Glow, Bg Rate) can be all-NaN for a group when the
+                # underlying header field is missing on every frame.
+                # np.nanmax on all-NaN returns NaN with a warning and
+                # pyqtgraph then crashes in transformAngle rounding
+                # NaN to int. Force finite; park the line at 0 and let
+                # the user drag it once real data is present.
+                with np.errstate(all="ignore"):
+                    mx = np.nanmax(y) if len(y) else np.nan
+                    mn = np.nanmin(y) if len(y) else np.nan
+                if not (np.isfinite(mx) and np.isfinite(mn)):
+                    line.setPos(0.0)
+                else:
+                    span = (mx - mn) if mx != mn else 1.0
+                    # Higher = worse for FWHM/Ecc/Bg/BgRate (m in 0,1,2,6);
+                    # Sensor Temp (m=5) starts at 0 since "worse" is
+                    # context-dependent.
+                    line.setPos((mx + 0.05 * span) if m in (0, 1, 2, 6) else 0)
                 self._threshold_initialized[m] = True
 
     def _refresh_scatter_colors(self):
@@ -695,7 +795,7 @@ class MetricsWindow(QWidget):
         super().__init__(parent, Qt.WindowType.Window)
         self._thresholds_per_group: dict[str, List[float|None]] = {}
         self.setWindowTitle(self.tr("Frame Metrics"))
-        self.resize(800, 600)
+        self.resize(900, 780)
 
         vbox = QVBoxLayout(self)
 
@@ -761,7 +861,7 @@ class MetricsWindow(QWidget):
             ]
 
         # Reset so plot() will auto-init lines for this group's data range
-        self.metrics_panel._threshold_initialized = [False] * 5
+        self.metrics_panel._threshold_initialized = [False] * 7
 
         # Restore saved thresholds for this group (overrides auto-init if saved)
         self._apply_thresholds(gid)
@@ -940,13 +1040,13 @@ class MetricsWindow(QWidget):
 
     def _on_panel_threshold_change(self, metric_idx: int, new_val: float):
         grp = self._current_group_id()
-        thr_list = self._thresholds_per_group.setdefault(grp, [None] * 5)
-        while len(thr_list) < 5:
+        thr_list = self._thresholds_per_group.setdefault(grp, [None] * 7)
+        while len(thr_list) < 7:
             thr_list.append(None)
         thr_list[metric_idx] = new_val
 
     def _apply_thresholds(self, group_id: str):
-        saved = self._thresholds_per_group.get(group_id, [None] * 5)
+        saved = self._thresholds_per_group.get(group_id, [None] * 7)
         for idx, line in enumerate(self.metrics_panel.lines):
             if idx < len(saved) and saved[idx] is not None:
                 line.setPos(saved[idx])
@@ -1496,8 +1596,8 @@ class BlinkTab(QWidget):
         left_layout.addLayout(filter_row)
         # Tree view for file names
         self.fileTree = QTreeWidget(self)
-        self.fileTree.setColumnCount(6)
-        self.fileTree.setColumnCount(6)
+        self.fileTree.setColumnCount(9)
+        self.fileTree.setColumnCount(9)
         self.fileTree.setHeaderLabels([
             self.tr("Image Files"),
             self.tr("Sat"),
@@ -1505,9 +1605,12 @@ class BlinkTab(QWidget):
             self.tr("FWHM"),
             self.tr("Ecc"),
             self.tr("BG"),
+            self.tr("Score"),
+            self.tr("Temp"),
+            self.tr("BG/s"),
         ])
 
-        for c in (1, 2, 3, 4, 5):
+        for c in (1, 2, 3, 4, 5, 6, 7, 8):
             self.fileTree.headerItem().setTextAlignment(c, Qt.AlignmentFlag.AlignCenter)
 
         self.fileTree.setColumnWidth(0, 450)
@@ -1516,6 +1619,9 @@ class BlinkTab(QWidget):
         self.fileTree.setColumnWidth(3, 55)
         self.fileTree.setColumnWidth(4, 55)
         self.fileTree.setColumnWidth(5, 55)
+        self.fileTree.setColumnWidth(6, 60)   # Score (Weighted Score)
+        self.fileTree.setColumnWidth(7, 50)   # Temp (°C from header)
+        self.fileTree.setColumnWidth(8, 65)   # BG/s (ADU/s, OFFSET-corrected)
         self.fileTree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)  # Allow multiple selections
         #self.fileTree.itemClicked.connect(self.on_item_clicked)
         self.fileTree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1959,7 +2065,7 @@ class BlinkTab(QWidget):
         try:
             s = QSettings()
             hdr = self.fileTree.header()
-            state = s.value("blink/tree_header_state", None)
+            state = s.value("blink/tree_header_state_v2", None)
             if state is not None:
                 hdr.restoreState(state)
         except Exception:
@@ -1969,7 +2075,7 @@ class BlinkTab(QWidget):
         try:
             s = QSettings()
             hdr = self.fileTree.header()
-            s.setValue("blink/tree_header_state", hdr.saveState())
+            s.setValue("blink/tree_header_state_v2", hdr.saveState())
         except Exception:
             pass
 
@@ -2440,7 +2546,11 @@ class BlinkTab(QWidget):
 
         metrics = panel.metrics_data
         m0, m1, m2, m3 = metrics[0], metrics[1], metrics[2], metrics[3]
-        n = min(len(self.loaded_images), len(m0), len(m1), len(m2), len(m3))
+        m4 = metrics[4]  # Weighted Score
+        m5 = metrics[5]  # Sensor Temp (°C from header)
+        m6 = metrics[6]  # Bg Rate (ADU/s, OFFSET-corrected)
+        n = min(len(self.loaded_images), len(m0), len(m1), len(m2), len(m3),
+                len(m4), len(m5), len(m6))
 
         def fmt_f(x):
             return "" if (x is None or not np.isfinite(x)) else f"{float(x):.2f}"
@@ -2469,13 +2579,16 @@ class BlinkTab(QWidget):
                     item.setForeground(1, QBrush(QColor(100, 200, 100)))
                     item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
 
-            # Stars (2), FWHM (3), Ecc (4), BG (5)
+            # Stars (2), FWHM (3), Ecc (4), BG (5), Score (6), Temp (7), BG/s (8)
             item.setText(2, fmt_i(m3[idx]))
             item.setText(3, fmt_f(m0[idx]))
             item.setText(4, fmt_f(m1[idx]))
             item.setText(5, fmt_f(m2[idx]))
+            item.setText(6, fmt_f(m4[idx]))
+            item.setText(7, fmt_f(m5[idx]))
+            item.setText(8, fmt_f(m6[idx]))
 
-            for c in (2, 3, 4, 5):
+            for c in (2, 3, 4, 5, 6, 7, 8):
                 item.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     # inside BlinkTab
     def _sync_metrics_flags(self):
@@ -3133,7 +3246,7 @@ class BlinkTab(QWidget):
                 mp = self.metrics_window.metrics_panel
                 # clear out old data & reset flags / thresholds
                 mp.metrics_data = None
-                mp._threshold_initialized = [False]*4
+                mp._threshold_initialized = [False]*7
                 for scat in mp.scats:
                     scat.clear()
                 for line in mp.lines:
@@ -4887,3 +5000,9 @@ BlinkComparatorPro = BlinkTab
 class BlinkComparatorPro(BlinkTab):
     """Alias class so the main app can import a SASpro-named tool."""
     pass
+# --- blink QA metrics patch v1 applied ---
+# --- blink QA metrics patch v2 applied ---
+# --- blink QA metrics patch v3 applied ---
+# --- blink QA metrics patch v4 applied ---
+# --- blink QA metrics patch v5 applied ---
+# --- blink QA metrics patch v6 applied ---

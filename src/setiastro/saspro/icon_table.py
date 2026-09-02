@@ -266,7 +266,12 @@ class _TableIcon(QToolButton):
 
     # ---- interactions -------------------------------------------------
     def mouseDoubleClickEvent(self, ev: QMouseEvent):
-        self._run()
+        # Single-click activation runs from mouseReleaseEvent below.
+        # QAbstractButton's default double-click routes back through
+        # mousePressEvent, which would re-capture _press_pos and trigger
+        # a SECOND _run() on the trailing release. Accept the event here
+        # to swallow it cleanly — the first release of a double-click
+        # sequence already ran the tool once, that's enough.
         ev.accept()
 
     def mousePressEvent(self, ev: QMouseEvent):
@@ -284,6 +289,17 @@ class _TableIcon(QToolButton):
         self._press_pos = None
 
     def mouseReleaseEvent(self, ev: QMouseEvent):
+        # Left-click without a drag → single-click activates the tool.
+        # `_press_pos` was captured in mousePressEvent and cleared by
+        # mouseMoveEvent the moment a drag actually started, so a
+        # non-None value on release means the press-release cycle never
+        # crossed the drag-start threshold. That's a genuine click.
+        if (ev.button() == Qt.MouseButton.LeftButton
+                and self._press_pos is not None):
+            self._press_pos = None
+            self._run()
+            ev.accept()
+            return
         self._press_pos = None
         super().mouseReleaseEvent(ev)
 
@@ -552,7 +568,10 @@ class _CategoryBody(QFrame):
             ev.acceptProposedAction()
 
     def dropEvent(self, ev: QDropEvent):
-        self._panel._handle_drop_on_category(self._cat, ev)
+        # Pass the drop position so the handler can compute an insertion
+        # index for intra-table reorders. Widget-local coords — icon
+        # geometries live in the same frame.
+        self._panel._handle_drop_on_category(self._cat, ev, at_pos=ev.position().toPoint())
 
 
 # =========================================================================
@@ -1263,10 +1282,29 @@ class IconTablePanel(QDialog):
         if cur is None or target is None:
             return
         if cur is target:
-            # Same category — treat as reorder
+            # Reorder within the same category — actually move the icon
+            # this time. `index` is what the caller derived from the drop
+            # position (see _compute_insert_index). None still means "no
+            # positional info was provided", which for a same-category
+            # drag would be a no-op anyway.
             if index is None:
                 return
+            try:
+                cur_idx = cur._icons.index(icon)
+            except ValueError:
+                return
+            # Two no-op cases: dropping exactly at your own position, or
+            # at the adjacent slot that would leave you exactly where you
+            # started after the remove-then-insert dance. Skip the layout
+            # rebuild and the save in those cases.
+            if index == cur_idx or index == cur_idx + 1:
+                return
             cur._icons.remove(icon)
+            # Removing shifts positions ABOVE the source down by one, so
+            # a requested target past the source needs to compensate to
+            # land where the user visually dropped.
+            if index > cur_idx:
+                index -= 1
             cur.insert_icon(icon, index)
         else:
             cur.remove_icon(icon)
@@ -1275,6 +1313,35 @@ class IconTablePanel(QDialog):
             else:
                 target.insert_icon(icon, index)
         self.save()
+
+    def _compute_insert_index(self, cat: _Category, pos) -> int:
+        """Return the index at which to insert an icon dropped at `pos`
+        (in the category body's local coordinates).
+
+        Finds the icon whose geometric centre is closest to `pos`, then
+        decides before/after based on which side of the icon's horizontal
+        midpoint the drop landed on. Handles the flow layout's multiple
+        rows implicitly — closest-by-Euclidean-distance naturally picks
+        the icon on the same row when there is one, and falls to the
+        nearest icon on an adjacent row when the drop is between rows.
+
+        Returns 0 for an empty category, or len(icons) if the drop is
+        past the last icon."""
+        icons = cat._icons
+        if not icons:
+            return 0
+        best_i = 0
+        best_d = None
+        for i, ic in enumerate(icons):
+            r = ic.geometry()
+            cx = r.center().x()
+            cy = r.center().y()
+            d = (pos.x() - cx) ** 2 + (pos.y() - cy) ** 2
+            if best_d is None or d < best_d:
+                best_d = d
+                best_i = i
+        r = icons[best_i].geometry()
+        return best_i if pos.x() < r.center().x() else best_i + 1
 
     # -----------------------------------------------------------------
     # Panel-level drop (external drops go to the last category)
@@ -1291,15 +1358,22 @@ class IconTablePanel(QDialog):
             self._rebuild()
         self._handle_drop_on_category(self._categories[-1], ev)
 
-    def _handle_drop_on_category(self, cat: _Category, ev: QDropEvent):
+    def _handle_drop_on_category(self, cat: _Category, ev: QDropEvent, at_pos=None):
         md = ev.mimeData()
 
-        # 1) Intra-table drag (reorder or move between categories)
+        # 1) Intra-table drag (reorder or move between categories).
+        # If a drop position was passed (body drop), turn it into an
+        # insertion index — that's what actually enables drag-reorder
+        # within a group. Header drops and panel-empty-space drops pass
+        # at_pos=None and keep the old append-to-category behaviour.
         if md.hasFormat(_INTRA_TABLE_MIME):
             uid = bytes(md.data(_INTRA_TABLE_MIME)).decode("utf-8", "ignore")
             src_icon = self._uid_map.get(uid)
             if src_icon is not None:
-                self.move_icon(src_icon, cat)
+                insert_index = None
+                if at_pos is not None:
+                    insert_index = self._compute_insert_index(cat, at_pos)
+                self.move_icon(src_icon, cat, index=insert_index)
                 ev.acceptProposedAction()
                 return
 

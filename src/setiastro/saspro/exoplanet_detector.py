@@ -3610,8 +3610,17 @@ class ExoPlanetWindow(QDialog):
             return
 
         # -- Per-channel ensemble ZP or single-comparison fallback ---------
-        # Catalog mags for all ensemble members (excluding the check star).
-        comp_members = [m for m in members if m != k_idx]
+        # Broadened comp pool: every detected star EXCEPT the target,
+        # the check star, and anything flagged as variable / dip. This
+        # is David0944's msg-6 suggestion — the tight ensemble_map[idx]
+        # (nearest-flux neighbors, K≈8) is too small to reliably clear
+        # the ≥3-catalog-mag bar for the ensemble tier. A bigger pool
+        # gets us more comps with catalog mags; MAD clipping downstream
+        # still removes outliers.
+        _all_indices = list(range(len(self.star_positions)))
+        _flagged     = getattr(self, "flagged_stars", None) or set()
+        comp_members = [m for m in _all_indices
+                        if m != idx and m != k_idx and m not in _flagged]
         cmap = self._catalog_bvr_mags_for_members(comp_members, wcs)
 
         LOGC = 2.5 / np.log(10.0)
@@ -3648,16 +3657,26 @@ class ExoPlanetWindow(QDialog):
                 zi  = np.where(okF,
                                comp_mag[:, None] + 2.5 * np.log10(np.where(okF, Fi, 1.0)),
                                np.nan)
-                # sigma-clip stars on run-median ZP
+                # robust MAD-based sigma-clip stars on run-median ZP.
+                # std is inflated by the outliers we're trying to catch;
+                # MAD isn't, so a comp star with a wrong catalog mag now
+                # actually gets clipped instead of masquerading as normal
+                # scatter. Floor sigma at 0.05 mag so tight ensembles
+                # don't over-clip themselves down to one star.
                 z_star = np.nanmedian(zi, axis=1)
                 keepC  = np.isfinite(z_star)
                 for _ in range(3):
                     if not np.any(keepC):
                         break
-                    med = np.nanmedian(z_star[keepC]); sd = np.nanstd(z_star[keepC])
-                    if not np.isfinite(sd) or sd == 0:
+                    med  = np.nanmedian(z_star[keepC])
+                    mad  = np.nanmedian(np.abs(z_star[keepC] - med))
+                    sd_r = max(1.4826 * float(mad), 0.05)
+                    if not np.isfinite(sd_r) or sd_r == 0:
                         break
-                    keepC &= np.abs(z_star - med) <= 3.0 * sd
+                    prev_keep = keepC.copy()
+                    keepC &= np.abs(z_star - med) <= 3.0 * sd_r
+                    if np.array_equal(keepC, prev_keep):
+                        break  # converged; no point re-computing MAD
                 zi = zi[keepC, :]
                 ZP_t  = np.nanmedian(zi, axis=0)
                 n_t   = np.sum(np.isfinite(zi), axis=0)
@@ -3738,6 +3757,7 @@ class ExoPlanetWindow(QDialog):
         # gets the whole file rejected at upload, so we drop them here.
         rows = []
         _skipped_by_filt = {}
+        _na_by_filt      = {}
         _skip_reasons = set()
         _MERR_MAX = 1.0
         for j, t in enumerate(jd):
@@ -3749,12 +3769,17 @@ class ExoPlanetWindow(QDialog):
                 filt_lbl = aav.RGB_FILTER_MAP[ch][0]
                 m = float(pc[0][j]); e = float(pc[1][j])
                 if not np.isfinite(m):
+                    # No MAG to report — drop the row entirely.
                     _skipped_by_filt[filt_lbl] = _skipped_by_filt.get(filt_lbl, 0) + 1
                     _skip_reasons.add("non-finite MAG")
                     continue
                 if not np.isfinite(e) or e > _MERR_MAX:
-                    _skipped_by_filt[filt_lbl] = _skipped_by_filt.get(filt_lbl, 0) + 1
-                    _skip_reasons.add(f"MERR > {_MERR_MAX:.1f} (AAVSO limit)")
+                    # MAG is real but MERR is out of AAVSO range; emit
+                    # the row with MERR=na (David msg-6 request) rather
+                    # than dropping the observation.
+                    _na_by_filt[filt_lbl] = _na_by_filt.get(filt_lbl, 0) + 1
+                    frame_mags[ch]  = m
+                    frame_merrs[ch] = None
                     continue
                 frame_mags[ch]  = m
                 frame_merrs[ch] = e
@@ -3803,7 +3828,8 @@ class ExoPlanetWindow(QDialog):
             n_by_filt[r.filt] = n_by_filt.get(r.filt, 0) + 1
         breakdown = ", ".join(f"{k}:{v}" for k, v in sorted(n_by_filt.items()))
 
-        # summary of skipped-per-band, MERR-limit or NaN
+        # summary of skipped-per-band (row dropped entirely — non-finite MAG)
+        # and emitted-with-MERR=na (per David msg 6 — MAG kept, error unknown)
         _skip_lines = []
         if _skipped_by_filt:
             _skip_breakdown = ", ".join(
@@ -3811,6 +3837,15 @@ class ExoPlanetWindow(QDialog):
             )
             _reason_txt = "; ".join(sorted(_skip_reasons)) if _skip_reasons else "invalid"
             _skip_lines.append(f"Skipped: {_skip_breakdown}  ({_reason_txt})")
+
+        # summary of emitted-with-MERR=na (per David msg 6)
+        if _na_by_filt:
+            _na_breakdown = ", ".join(
+                f"{k}:{v}" for k, v in sorted(_na_by_filt.items())
+            )
+            _skip_lines.append(
+                f"MERR=na: {_na_breakdown}  (row kept but MERR exceeded {_MERR_MAX:.1f})"
+            )
 
         _body = f"Wrote {len(rows)} row(s) → {path}\n\nBy filter: {breakdown}"
         for _ln in _skip_lines:
@@ -4085,7 +4120,15 @@ class ExoPlanetWindow(QDialog):
         # own color, so the star-to-star scatter (hence SEM) reflects real
         # calibration spread, which is why we sigma-clip the comp set and keep a
         # systematic floor in quadrature rather than trusting SEM alone.
-        comp_members = [m for m in members if m != k_idx]
+        # Broadened comp pool (single-band): every detected star EXCEPT
+        # the target, the check star, and anything flagged as variable.
+        # See exo_v336_features.py for rationale — bigger pool → more
+        # catalog-mag comps → higher chance of clearing the ≥3 bar for
+        # ensemble ZP.
+        _all_indices = list(range(len(self.star_positions)))
+        _flagged     = getattr(self, "flagged_stars", None) or set()
+        comp_members = [m for m in _all_indices
+                        if m != idx and m != k_idx and m not in _flagged]
         vmap = self._catalog_vmags_for_members(comp_members, wcs)   # {idx: (V, source)}
         comp_idx = np.array([m for m in comp_members if m in vmap], dtype=int)
         comp_mag = np.array([vmap[m][0] for m in comp_idx], dtype=float)
@@ -4100,16 +4143,27 @@ class ExoPlanetWindow(QDialog):
             okF = np.isfinite(Fi) & (Fi > 0)
             zi  = np.where(okF, comp_mag[:, None] + 2.5 * np.log10(np.where(okF, Fi, 1.0)), np.nan)
 
-            # choose a stable comparison set ONCE (sigma-clip on each star's run-median ZP)
+            # choose a stable comparison set ONCE — robust MAD-based
+            # sigma-clip on each star's run-median ZP. std is inflated by
+            # the outliers we're trying to catch; MAD isn't, so a comp
+            # star with a wrong catalog mag now actually gets clipped
+            # instead of masquerading as normal scatter. Floor sigma at
+            # 0.05 mag so tight ensembles don't over-clip themselves down
+            # to one star.
             z_star = np.nanmedian(zi, axis=1)
             keepC  = np.isfinite(z_star)
             for _ in range(3):
                 if not np.any(keepC):
                     break
-                med = np.nanmedian(z_star[keepC]); sd = np.nanstd(z_star[keepC])
-                if not np.isfinite(sd) or sd == 0:
+                med  = np.nanmedian(z_star[keepC])
+                mad  = np.nanmedian(np.abs(z_star[keepC] - med))
+                sd_r = max(1.4826 * float(mad), 0.05)
+                if not np.isfinite(sd_r) or sd_r == 0:
                     break
-                keepC &= np.abs(z_star - med) <= 3.0 * sd
+                prev_keep = keepC.copy()
+                keepC &= np.abs(z_star - med) <= 3.0 * sd_r
+                if np.array_equal(keepC, prev_keep):
+                    break  # converged; no point re-computing MAD
             zi = zi[keepC, :]
 
             ZP_t  = np.nanmedian(zi, axis=0)
@@ -4148,6 +4202,9 @@ class ExoPlanetWindow(QDialog):
         mags = np.where(bad, np.nan, mags)
         merr = np.where(bad | ~np.isfinite(merr), np.nan, merr)
 
+        _MERR_MAX = 1.0
+        _rows_written = 0
+        _na_count     = 0
         try:
             with open(path, "w") as f:
                 for L in header_lines:
@@ -4156,7 +4213,15 @@ class ExoPlanetWindow(QDialog):
                     m = mags[j]; me = merr[j]
                     if not np.isfinite(m):
                         continue  # no valid calibrated magnitude for this frame
-                    me_str = f"{me:.3f}" if np.isfinite(me) else "na"
+                    # AAVSO Extended requires MERR ≤ 1.0 or the literal
+                    # "na". Downgrade out-of-range values to "na" (David
+                    # msg-6 request) rather than let WebObs reject the
+                    # whole file at upload.
+                    if np.isfinite(me) and me <= _MERR_MAX:
+                        me_str = f"{me:.3f}"
+                    else:
+                        me_str = "na"
+                        _na_count += 1  # single-band MERR-out-of-range → emit na
                     am = float(np.clip(self.airmasses[j] if j < len(self.airmasses) else 1.0, 1.0, 40.0))
                     fields = [
                         star_id,
@@ -4176,13 +4241,20 @@ class ExoPlanetWindow(QDialog):
                         note_field,
                     ]
                     f.write(",".join(fields) + "\n")
+                    _rows_written += 1
         except Exception as e:
             QMessageBox.critical(self, "Export AAVSO", f"Failed to write file:\n{e}")
             return
 
+        _body = f"Wrote {fmt} ({_rows_written} row(s)) →\n{path}"
+        if _na_count > 0:
+            _body += (f"\n\nMERR=na for {_na_count} row(s) "
+                      f"(computed error > {_MERR_MAX:.1f}).")
+        _body += "\n\nOpen AAVSO WebObs upload page now?"
+
         msg = QMessageBox(self)
         msg.setWindowTitle("Export AAVSO")
-        msg.setText(f"Wrote {fmt} →\n{path}\n\nOpen AAVSO WebObs upload page now?")
+        msg.setText(_body)
         yes = msg.addButton("Yes", QMessageBox.ButtonRole.AcceptRole)
         msg.addButton("No", QMessageBox.ButtonRole.RejectRole)
         msg.exec()
