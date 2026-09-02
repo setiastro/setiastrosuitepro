@@ -1315,6 +1315,14 @@ class RCAstroDialog(QDialog):
                 # Re-apply saved selections now that combos have their real items
                 self.bxt_panel.load_settings(s)
                 self.nxt_panel.load_settings(s)
+                # Cache probe results for RCAstroPresetDialog to read (avoids
+                # a second round of subprocess probes when opening the preset
+                # editor — those probes can add several seconds of lag).
+                import json as _json
+                s.setValue("rcastro/bxt_ml_versions",
+                           _json.dumps(list(bxt_versions or [])))
+                s.setValue("rcastro/nxt_ml_versions",
+                           _json.dumps(list(nxt_versions or [])))
             except Exception:
                 pass
 
@@ -1326,10 +1334,13 @@ class RCAstroDialog(QDialog):
                 _r = _sp.run([exe, "--no-banner", "bxt"] + _host_args(),
                              capture_output=True, text=True, timeout=8)
                 _bxt_help = (_r.stdout or "") + (_r.stderr or "")
-                self.bxt_panel.set_lp_supported(
-                    "--lp" in _bxt_help or "--lunar-planetary" in _bxt_help)
+                _lp_supported = ("--lp" in _bxt_help
+                                 or "--lunar-planetary" in _bxt_help)
+                self.bxt_panel.set_lp_supported(_lp_supported)
+                s.setValue("rcastro/bxt_lp_supported", bool(_lp_supported))
             except Exception:
                 self.bxt_panel.set_lp_supported(False)
+                s.setValue("rcastro/bxt_lp_supported", False)
 
             for line in out.splitlines():
                 line = line.strip()
@@ -1806,6 +1817,12 @@ class RCAstroPresetDialog(QDialog):
         self._nxt = _NXTPanel(); self._nxt.load_settings(QSettings())
         self._bxt.set_ml_version_supported(True)
         self._nxt.set_ml_version_supported(True)
+        # Pull CLI-probe results (dynamic ML versions + --lp support) from
+        # the QSettings cache the main dialog populates on open. If the
+        # cache is empty (user never opened the main dialog), panels stay
+        # on their legacy 2-item combo + hidden LP checkbox — same
+        # behaviour as before this patch.
+        self._setup_cli_features()
         # Apply initial preset values to the panels
         if p.get("product") == "bxt":
             _apply_bxt_preset(self._bxt, p)
@@ -1837,6 +1854,34 @@ class RCAstroPresetDialog(QDialog):
         self._product_changed(self.cmb_product.currentText())
         self.setMinimumWidth(480)
 
+    def _setup_cli_features(self) -> None:
+        """Apply CLI-probed features (dynamic ML versions + LP support)
+        from the QSettings cache written by the main dialog's
+        _probe_version. Read-only w.r.t. the CLI — no subprocess calls
+        here, so opening the preset dialog stays snappy."""
+        s = QSettings()
+        # Dynamic ML versions per product (JSON-encoded list of strings)
+        try:
+            import json as _json
+            bxt_versions = _json.loads(str(s.value("rcastro/bxt_ml_versions", "[]") or "[]"))
+            nxt_versions = _json.loads(str(s.value("rcastro/nxt_ml_versions", "[]") or "[]"))
+        except Exception:
+            bxt_versions = []
+            nxt_versions = []
+        if bxt_versions:
+            self._bxt.set_ml_versions(bxt_versions)
+        if nxt_versions:
+            self._nxt.set_ml_versions(nxt_versions)
+        # After set_ml_versions the combo is rebuilt with real items;
+        # re-load settings so the previously saved version is restored.
+        if bxt_versions:
+            self._bxt.load_settings(s)
+        if nxt_versions:
+            self._nxt.load_settings(s)
+        # BXT lunar/planetary support (CLI 2.6.6+)
+        lp_supported = bool(s.value("rcastro/bxt_lp_supported", False, type=bool))
+        self._bxt.set_lp_supported(lp_supported)
+
     def _product_changed(self, product: str):
         self._bxt.setVisible(product == "bxt")
         self._sxt.setVisible(product == "sxt")
@@ -1860,7 +1905,16 @@ class RCAstroPresetDialog(QDialog):
             out["auto_nsr"]            = self._bxt.chk_auto_nsr.isChecked()
             out["nonstellar_radius"]   = self._bxt.sld_nsr.value() / 10.0
             out["sharpen_nonstellar"]  = self._bxt.sld_sn.value()  / 100.0
-            out["ml_version"] = 2 if self._bxt.cmb_model.currentIndex() == 1 else None
+            # ml_version: string version ("5", "4", "2", …) from the
+            # dynamic combo, or None for "Latest". Legacy panels return
+            # "2" or None from the same call, so downstream code that
+            # accepts either shape keeps working.
+            out["ml_version"]          = self._bxt._selected_ml_version()
+            # lunar_planetary is a BXT-only flag from _BXTPanel (--lp,
+            # CLI 2.6.6+). Emit unconditionally — build_args gates it
+            # on _lp_supported anyway, so a stored True on an old CLI
+            # is a harmless no-op.
+            out["lunar_planetary"]     = self._bxt.chk_lunar_planetary.isChecked()
         elif product == "sxt":
             out["stars"]    = self._sxt.chk_stars.isChecked()
             out["unscreen"] = self._sxt.chk_unscreen.isChecked()
@@ -1878,7 +1932,8 @@ class RCAstroPresetDialog(QDialog):
             out["freq_clf"]      = self._nxt.sld_clf.value() / 100.0
             out["freq_scale"]    = self._nxt.sld_fs.value()  / 10.0
             out["iterations"]    = float(self._nxt.sp_iter.value())
-            out["ml_version"] = 2 if self._nxt.cmb_model.currentIndex() == 1 else None
+            # Same as BXT — dynamic string, backward-compatible with int
+            out["ml_version"]          = self._nxt._selected_ml_version()
         return out
 
 
@@ -1895,8 +1950,24 @@ def _apply_bxt_preset(panel: _BXTPanel, p: dict):
         panel.sld_nsr.setValue(int(float(p["nonstellar_radius"]) * 10))
     if "sharpen_nonstellar" in p:
         panel.sld_sn.setValue(int(float(p["sharpen_nonstellar"]) * 100))
+    # Lunar/planetary mode (only meaningful if CLI supports --lp)
+    if "lunar_planetary" in p:
+        panel.chk_lunar_planetary.setChecked(bool(p["lunar_planetary"]))
     if "ml_version" in p:
-        panel.cmb_model.setCurrentIndex(1 if p["ml_version"] == 2 else 0)
+        _v = p["ml_version"]
+        if _v is None or _v == 0:
+            panel.cmb_model.setCurrentIndex(0)
+        else:
+            _vs = str(_v)
+            if panel._ml_versions:
+                try:
+                    j = panel._ml_versions.index(_vs)
+                    panel.cmb_model.setCurrentIndex(j + 1)
+                except ValueError:
+                    panel.cmb_model.setCurrentIndex(0)
+            else:
+                # Legacy 2-item combo — accepts both int 2 and str "2"
+                panel.cmb_model.setCurrentIndex(1 if _vs == "2" else 0)
 
 def _apply_sxt_preset(panel: _SXTPanel, p: dict):
     if "stars" in p:
@@ -1940,8 +2011,21 @@ def _apply_nxt_preset(panel: _NXTPanel, p: dict):
         panel.sld_fs.setValue(int(float(p["freq_scale"]) * 10))
     if "iterations" in p:
         panel.sp_iter.setValue(float(p["iterations"]))
+    # ml_version — accept dynamic list versions (str) or legacy int 2
     if "ml_version" in p:
-        panel.cmb_model.setCurrentIndex(1 if p["ml_version"] == 2 else 0)
+        _v = p["ml_version"]
+        if _v is None or _v == 0:
+            panel.cmb_model.setCurrentIndex(0)
+        else:
+            _vs = str(_v)
+            if panel._ml_versions:
+                try:
+                    j = panel._ml_versions.index(_vs)
+                    panel.cmb_model.setCurrentIndex(j + 1)
+                except ValueError:
+                    panel.cmb_model.setCurrentIndex(0)
+            else:
+                panel.cmb_model.setCurrentIndex(1 if _vs == "2" else 0)
     panel._update_mode()   # sync enabled-state after mode + sliders set
 
 
