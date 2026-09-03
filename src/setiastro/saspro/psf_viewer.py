@@ -57,7 +57,10 @@ class _StarWidget(QWidget):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(150, 150)
-        self._cached_pm: QPixmap | None = None
+        self._cached_smooth_pm: QPixmap | None = None
+        self._cached_pixel_pm:  QPixmap | None = None
+        self._stamp: np.ndarray | None = None      # 2D float, real median star sampled at native pixel resolution
+        self._pixel_mode = False
         self._a     = 2.0
         self._b     = 1.8
         self._theta = 0.0
@@ -65,8 +68,12 @@ class _StarWidget(QWidget):
         self._hfr   = 4.0
         self._ecc   = 0.0
         self._valid = False
+        # Click to toggle smooth ↔ true-pixel view
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click to toggle: smooth ↔ true pixels")
 
-    def set_star(self, a: float, b: float, theta: float, fwhm: float, hfr: float, ecc: float):
+    def set_star(self, a: float, b: float, theta: float, fwhm: float, hfr: float, ecc: float,
+                 pixel_stamp: np.ndarray | None = None):
         self._a     = max(float(a),    0.1)
         self._b     = max(float(b),    0.1)
         self._theta = float(theta)
@@ -74,17 +81,36 @@ class _StarWidget(QWidget):
         self._hfr   = max(float(hfr),  0.5)
         self._ecc   = float(ecc)
         self._valid = True
-        self._rebuild_cache()
+        self._stamp = pixel_stamp if pixel_stamp is not None else None
+        self._rebuild_smooth_cache()
+        self._rebuild_pixel_cache()
+        # If we lost the pixel stamp (e.g. star near edges), fall back to smooth.
+        if self._pixel_mode and self._cached_pixel_pm is None:
+            self._pixel_mode = False
         self.update()
 
     def clear(self):
         self._valid = False
-        self._cached_pm = None
+        self._cached_smooth_pm = None
+        self._cached_pixel_pm = None
+        self._stamp = None
+        self._pixel_mode = False
         self.update()
 
+    def mousePressEvent(self, e):
+        # Toggle between smooth Gaussian view and real-pixel median stamp.
+        # Only meaningful if we actually have a pixel stamp to show.
+        if (e.button() == Qt.MouseButton.LeftButton
+                and self._valid
+                and self._cached_pixel_pm is not None):
+            self._pixel_mode = not self._pixel_mode
+            self.update()
+        super().mousePressEvent(e)
+
     # ------------------------------------------------------------------
-    def _rebuild_cache(self):
-        """Render the star at _RENDER_SIZE into a QPixmap. Called once per new star data."""
+    def _rebuild_smooth_cache(self):
+        """Render the smooth (analytic Gaussian) star at _RENDER_SIZE into a QPixmap.
+        Called once per new star data — resize just scales the cached pixmap."""
         N = self._RENDER_SIZE
         cx = cy = N / 2.0
 
@@ -180,11 +206,138 @@ class _StarWidget(QWidget):
         p.setPen(QColor(200, 200, 200))
         p.drawText(8, N - 8, f"ecc: {self._ecc:.3f}")
 
+        # Mode hint bottom-right
+        p.setFont(QFont("Segoe UI", 8))
+        p.setPen(QColor(150, 150, 165))
+        p.drawText(N - 130, N - 8, "click → true pixels")
+
         p.end()
-        self._cached_pm = pm
+        self._cached_smooth_pm = pm
+
+    # ------------------------------------------------------------------
+    def _rebuild_pixel_cache(self):
+        """Render the median star stamp at *native pixel resolution*, scaled up
+        with nearest-neighbor into _RENDER_SIZE so each image pixel is a big
+        crisp square. Same FWHM/HFR overlays as the smooth view so it's clear
+        this is the same star, just sampled honestly."""
+        if self._stamp is None:
+            self._cached_pixel_pm = None
+            return
+
+        stamp = np.asarray(self._stamp, dtype=np.float32)
+        if stamp.ndim != 2 or stamp.size == 0:
+            self._cached_pixel_pm = None
+            return
+
+        H, W = stamp.shape
+        N = self._RENDER_SIZE
+
+        # Normalize 0..1 for display; the stamp fed in is already peak≈1
+        # but background can dip slightly negative after median-of-edges sub.
+        s = stamp - float(stamp.min())
+        m = float(s.max())
+        if m > 0:
+            s = s / m
+        img8 = (np.clip(s, 0.0, 1.0) * 255.0).astype(np.uint8)
+        rgb  = np.ascontiguousarray(np.stack([img8, img8, img8], axis=2))
+        qi   = QImage(rgb.data, W, H, W * 3, QImage.Format.Format_RGB888)
+        base_pm = QPixmap.fromImage(qi)     # copies buffer internally
+
+        # Fit stamp into the render area with an *integer* pixel size, so
+        # every image pixel is exactly the same number of screen pixels.
+        margin = 10
+        avail  = N - 2 * margin
+        pix_size = max(1, avail // max(W, H))
+        draw_w   = pix_size * W
+        draw_h   = pix_size * H
+        ox = (N - draw_w) // 2
+        oy = (N - draw_h) // 2
+
+        pm = QPixmap(N, N)
+        pm.fill(QColor(30, 30, 40))
+        p  = QPainter(pm)
+        # NB: NO antialiasing hint here — we want crisp square pixels.
+
+        scaled = base_pm.scaled(
+            draw_w, draw_h,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.FastTransformation,   # nearest neighbor
+        )
+        p.drawPixmap(ox, oy, scaled)
+
+        # Faint grid between pixels
+        p.setPen(QPen(QColor(70, 70, 85), 1))
+        for i in range(W + 1):
+            x = ox + i * pix_size
+            p.drawLine(x, oy, x, oy + draw_h)
+        for j in range(H + 1):
+            y = oy + j * pix_size
+            p.drawLine(ox, y, ox + draw_w, y)
+
+        # Ellipses & axes — same overlays as smooth view, but in screen-pixel
+        # units where 1 image pixel == pix_size screen pixels. That means the
+        # FWHM ellipse literally measures the FWHM against the grid.
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)   # for the overlays only
+        cx = ox + (W / 2.0) * pix_size
+        cy = oy + (H / 2.0) * pix_size
+        scale = float(pix_size)
+
+        cos_t = math.cos(self._theta)
+        sin_t = math.sin(self._theta)
+
+        # HFR ellipse (orange)
+        hfr_a = (self._hfr / 2.0) * scale
+        hfr_b = hfr_a * (self._b / max(self._a, 1e-9))
+        p.save(); p.translate(cx, cy); p.rotate(math.degrees(self._theta))
+        p.setPen(QPen(QColor(255, 140, 0), 1.6))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QRectF(-hfr_a, -hfr_b, hfr_a * 2, hfr_b * 2))
+        p.restore()
+
+        # FWHM ellipse (green)
+        fwhm_a = (self._fwhm / 2.0) * scale
+        fwhm_b = fwhm_a * (self._b / max(self._a, 1e-9))
+        p.save(); p.translate(cx, cy); p.rotate(math.degrees(self._theta))
+        p.setPen(QPen(QColor(80, 200, 80), 1.6))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QRectF(-fwhm_a, -fwhm_b, fwhm_a * 2, fwhm_b * 2))
+        p.restore()
+
+        # Crosshair (cyan, subtle) — clipped to the stamp
+        p.setPen(QPen(QColor(0, 200, 220, 160), 1.0))
+        p.drawLine(QPointF(ox, cy), QPointF(ox + draw_w, cy))
+        p.drawLine(QPointF(cx, oy), QPointF(cx, oy + draw_h))
+
+        # Major / minor PSF axes (red / blue)
+        arm_a = self._a * scale * 2.0
+        p.setPen(QPen(QColor(220, 60, 60), 1.8))
+        p.drawLine(QPointF(cx - arm_a * cos_t, cy - arm_a * sin_t),
+                   QPointF(cx + arm_a * cos_t, cy + arm_a * sin_t))
+        arm_b = self._b * scale * 2.0
+        p.setPen(QPen(QColor(80, 120, 220), 1.8))
+        p.drawLine(QPointF(cx + arm_b * sin_t, cy - arm_b * cos_t),
+                   QPointF(cx - arm_b * sin_t, cy + arm_b * cos_t))
+
+        # Header — stamp dimensions in image pixels + scale factor
+        p.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        p.setPen(QColor(230, 230, 230))
+        p.drawText(8, 16, f"True Pixels  {W}×{H} px  ·  1 px → {pix_size}px")
+
+        # FWHM readout bottom-left
+        p.setFont(QFont("Segoe UI", 8))
+        p.setPen(QColor(200, 200, 200))
+        p.drawText(8, N - 8, f"FWHM: {self._fwhm:.2f} px")
+
+        # Mode hint bottom-right
+        p.setPen(QColor(150, 150, 165))
+        p.drawText(N - 120, N - 8, "click → smooth")
+
+        p.end()
+        self._cached_pixel_pm = pm
 
     def paintEvent(self, event):
-        if self._cached_pm is None:
+        pm = self._cached_pixel_pm if self._pixel_mode else self._cached_smooth_pm
+        if pm is None:
             # No data — draw placeholder
             p = QPainter(self)
             p.fillRect(self.rect(), QColor(30, 30, 40))
@@ -194,14 +347,17 @@ class _StarWidget(QWidget):
             p.end()
             return
 
-        # Scale cached pixmap to widget size (fast — no computation)
-        scaled = self._cached_pm.scaled(
+        # For pixel mode use nearest-neighbor so the squares stay crisp when
+        # the widget size doesn't evenly divide _RENDER_SIZE. For smooth mode
+        # keep bilinear — it's a continuous Gaussian.
+        tmode = (Qt.TransformationMode.FastTransformation if self._pixel_mode
+                 else Qt.TransformationMode.SmoothTransformation)
+        scaled = pm.scaled(
             self.width(), self.height(),
             Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
+            tmode,
         )
         p = QPainter(self)
-        # Center in widget
         ox = (self.width()  - scaled.width())  // 2
         oy = (self.height() - scaled.height()) // 2
         p.drawPixmap(ox, oy, scaled)
@@ -607,9 +763,62 @@ class PSFViewer(QDialog):
             if MAIN_VIEW_IS_YUP:
                 theta = -theta
 
-            self._star_widget.set_star(a, b, theta, fwhm, hfr, ecc)
+            stamp = self._compute_median_stamp(fwhm)
+            self._star_widget.set_star(a, b, theta, fwhm, hfr, ecc, pixel_stamp=stamp)
         except Exception:
             self._star_widget.clear()
+
+    def _compute_median_stamp(self, fwhm: float, max_stars: int = 500) -> np.ndarray | None:
+        """Median-stack small real-image cutouts around detected stars, so the
+        pixel view of the star widget shows what an actual star in this image
+        looks like at native pixel resolution — noise, sampling and all.
+
+        Each cutout is background-subtracted (edge median) and peak-normalized
+        before stacking so bright stars don't dominate the median."""
+        if self.image is None or self.star_list is None or len(self.star_list) == 0:
+            return None
+
+        img = self.image
+        if img.ndim == 3:
+            img = np.mean(img, axis=2)
+        img = np.ascontiguousarray(img, dtype=np.float32)
+        H, W = img.shape
+
+        # ~±2.5 FWHM on each side gives you core + wings without being huge.
+        # Clamp so the stamp always shows something (very small FWHM) but never
+        # dominates on wide seeing.
+        half = int(np.clip(np.ceil(2.5 * max(fwhm, 1.0)), 5, 25))
+
+        xs = np.asarray(self.star_list["xcentroid"], dtype=float)
+        ys = np.asarray(self.star_list["ycentroid"], dtype=float)
+        if xs.size == 0:
+            return None
+
+        # Cap for speed — 500 stamps is plenty to nail a median.
+        if xs.size > max_stars:
+            idx = np.linspace(0, xs.size - 1, max_stars).astype(int)
+            xs = xs[idx]; ys = ys[idx]
+
+        stamps = []
+        side = 2 * half + 1
+        for xi, yi in zip(xs, ys):
+            cx = int(round(xi)); cy = int(round(yi))
+            x0 = cx - half; x1 = cx + half + 1
+            y0 = cy - half; y1 = cy + half + 1
+            if x0 < 0 or y0 < 0 or x1 > W or y1 > H:
+                continue
+            s = img[y0:y1, x0:x1]
+            # Background from the 1-pixel edge of the stamp
+            border = np.concatenate([s[0], s[-1], s[1:-1, 0], s[1:-1, -1]])
+            bg = float(np.median(border))
+            s  = s - bg
+            pk = float(s.max())
+            if pk > 0.0:
+                stamps.append(s / pk)
+
+        if not stamps:
+            return None
+        return np.median(np.stack(stamps, axis=0), axis=0).astype(np.float32)
 
     def updateImage(self, new_image):
         self.image = np.asarray(new_image) if new_image is not None else None
