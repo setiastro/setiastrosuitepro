@@ -648,7 +648,7 @@ class AstroSuiteProMainWindow(
         self._init_console_dock()
         self._init_header_viewer_dock()
         self._init_layers_dock()
-        self._init_resource_monitor_overlay()
+        self._init_resource_monitor_dock()
         self._shutting_down = False
         self._init_status_log_dock()
         self._init_log_dock()
@@ -10668,37 +10668,26 @@ class AstroSuiteProMainWindow(
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # Update floating resource monitor position if it exists (from DockMixin)
-        if hasattr(self, "_update_monitor_position"):
-            self._update_monitor_position()
 
     def moveEvent(self, event):
         super().moveEvent(event)
-        # Update floating resource monitor position if it exists (from DockMixin)
-        if hasattr(self, "_update_monitor_position"):
-            self._update_monitor_position()
 
     def changeEvent(self, event):
         super().changeEvent(event)
         # 1. Existing logic for dock sync (re-instated from showEvent logic if needed, but usually changeEvent is enough)
         # (The snippet viewed previously showed showEvent firing a oneshot to call changeEvent)
         
-        # 2. Resource Monitor Sync
+        # 2. Resource Monitor Sync — it's a docked panel now, so pause its
+        # polling while the window is minimized and resume when restored,
+        # instead of showing/hiding a floating overlay.
         if event.type() == QEvent.Type.WindowStateChange:
-            if self.windowState() & Qt.WindowState.WindowMinimized:
-                # App minimized -> hide overlay
-                if hasattr(self, "resource_monitor") and self.resource_monitor:
-                    self.resource_monitor.hide()
-            elif not (self.windowState() & Qt.WindowState.WindowMinimized):
-                # Only auto-show if the initial fade-in is done
-                if getattr(self, "_fade_in_complete", False):
-                    # App restored -> show overlay if enabled in settings
-                    if hasattr(self, "resource_monitor") and self.resource_monitor:
-                        if self.settings.value("ui/resource_monitor_visible", True, type=bool):
-                            self.resource_monitor.show()
-                            # Ensure position is correct upon restore
-                            if hasattr(self, "_update_monitor_position"):
-                                self._update_monitor_position()
+            rmd = getattr(self, "resource_monitor_dock", None)
+            if rmd is not None:
+                try:
+                    minimized = bool(self.windowState() & Qt.WindowState.WindowMinimized)
+                    rmd.backend.set_active(not minimized)
+                except Exception:
+                    pass
 
     def save_ui_state(self):
         """Save window geometry, state, and shortcuts to settings."""
@@ -10741,13 +10730,8 @@ class AstroSuiteProMainWindow(
                 QTimer.singleShot(500, self._restore_icon_table_if_needed)
         except Exception:
             pass        
-        # Sync Monitor Visibility
-        if hasattr(self, "resource_monitor") and self.resource_monitor:
-            if not self.isMinimized() and self.settings.value("ui/resource_monitor_visible", True, type=bool):
-                # Delay show to ensure visually pleasing sequence (monitor appears AFTER app)
-                QTimer.singleShot(500, self.resource_monitor.show)
-                # Ensure position
-                QTimer.singleShot(600, self._update_monitor_position)
+        # (The resource monitor is a docked panel now; it appears with the rest
+        # of the layout via restoreState — no deferred overlay show needed.)
 
     def keyPressEvent(self, event):
         """Handle key press events for secret shortcuts."""
@@ -10948,15 +10932,13 @@ class AstroSuiteProMainWindow(
         e.ignore() # Defer close until animation completes
         self.setEnabled(False) # Prevent further interaction
         
-        # Hide monitor immediately before shutdown/fade
-        if hasattr(self, "resource_monitor") and self.resource_monitor:
+        # Stop the resource monitor's background polling before shutdown/fade.
+        rmd = getattr(self, "resource_monitor_dock", None)
+        if rmd is not None:
             try:
-                if hasattr(self.resource_monitor, "backend"):
-                    self.resource_monitor.backend.stop()
+                rmd.backend.stop()
             except Exception:
                 pass
-            self.resource_monitor.hide()
-            self.resource_monitor.close()
         try:
             host = getattr(self, "dock_host", None)
             if host is not None:

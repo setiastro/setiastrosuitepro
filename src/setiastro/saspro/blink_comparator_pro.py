@@ -710,10 +710,13 @@ class MetricsPanel(QWidget):
                     line.setPos(0.0)
                 else:
                     span = (mx - mn) if mx != mn else 1.0
-                    # Higher = worse for FWHM/Ecc/Bg/BgRate (m in 0,1,2,6);
-                    # Sensor Temp (m=5) starts at 0 since "worse" is
-                    # context-dependent.
-                    line.setPos((mx + 0.05 * span) if m in (0, 1, 2, 6) else 0)
+                    # Higher = worse for FWHM/Ecc/Bg/SensorTemp/BgRate
+                    # (m in 0,1,2,5,6): a warmer sensor means more dark
+                    # current / thermal noise, so treat it like the other
+                    # higher-is-worse metrics. Park the line just above the
+                    # data so nothing flags on open; drag DOWN to flag.
+                    # Lower = worse for Star Count / Weighted Score (m in 3,4).
+                    line.setPos((mx + 0.05 * span) if m in (0, 1, 2, 5, 6) else 0)
                 self._threshold_initialized[m] = True
 
     def _refresh_scatter_colors(self):
@@ -912,10 +915,10 @@ class MetricsWindow(QWidget):
 
         # ─── reset & seed per-group thresholds ────────────────────
         self._thresholds_per_group.clear()
-        self._thresholds_per_group["__ALL__"] = [None]*5
+        self._thresholds_per_group["__ALL__"] = [None]*7
         for entry in loaded_images:
             filt = (entry.get('header', {}) or {}).get('FILTER', 'Unknown')
-            self._thresholds_per_group.setdefault(filt, [None]*5)
+            self._thresholds_per_group.setdefault(filt, [None]*7)
 
 
         # ─── compute & cache all metrics once ────────────────────
@@ -2995,8 +2998,8 @@ class BlinkTab(QWidget):
         group_id = self.metrics_window._current_group_id()
 
         # Save into MetricsWindow's dict — single source of truth
-        thr_list = self.metrics_window._thresholds_per_group.setdefault(group_id, [None] * 5)
-        while len(thr_list) < 5:
+        thr_list = self.metrics_window._thresholds_per_group.setdefault(group_id, [None] * 7)
+        while len(thr_list) < 7:
             thr_list.append(None)
         thr_list[metric_idx] = threshold
 
@@ -3026,7 +3029,7 @@ class BlinkTab(QWidget):
                     val = panel.metrics_data[m][i]
                     if np.isnan(val):
                         continue
-                    if (m in (0, 1, 2) and val > thr) or (m in (3, 4) and val < thr):
+                    if (m in (0, 1, 2, 5, 6) and val > thr) or (m in (3, 4) and val < thr):
                         self.loaded_images[i]['flagged'] = True
                         break
 

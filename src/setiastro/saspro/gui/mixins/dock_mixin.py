@@ -117,6 +117,7 @@ class DockMixin:
             "log_dock",
             "system_log_dock",   # ← add this
             "window_shelf",
+            "resource_monitor_dock",
         ):
             d = getattr(self, name, None)
             if isinstance(d, QDockWidget):
@@ -296,85 +297,51 @@ class DockMixin:
         except Exception:
             pass
 
-    def _init_resource_monitor_overlay(self):
-        """Initialize the QML System Resource Monitor as a floating overlay."""
+    def _init_resource_monitor_dock(self):
+        """Initialize the System Resource Monitor as a standard utility dock."""
         try:
-            from setiastro.saspro.widgets.resource_monitor import SystemMonitorWidget
-            
-            # Create as a child of the central widget or self to sit on top
-            # Using self (QMainWindow) allows it to float over everything including status bar if we want,
-            # but usually we want it over MDI area. Let's try self first for "floating" feel.
-            self.resource_monitor = SystemMonitorWidget(self)
-            self.resource_monitor.setObjectName("ResourceMonitorOverlay")
-            
-            # Make it a proper independent window to allow true transparency (translucent background)
-            # without black artifacts from parent composition.
-            # Fixed: Removed WindowStaysOnTopHint to allow it to be obscured by other apps (Alt-Tab support)
-            self.resource_monitor.setWindowFlags(
-                Qt.WindowType.Window |
-                Qt.WindowType.FramelessWindowHint |
-                Qt.WindowType.Tool
-            )
-            
-            # Sizing and Transparency
-            self.resource_monitor.setFixedSize(200, 60)
-            # self.resource_monitor.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True) # Optional: if we want click-through
-            
-            
-            # Initial placement (will be updated by resizeEvent)
-            self._update_monitor_position()
-            
-            # Defer visibility to MainWindow.showEvent to prevent appearing before main window
-            # visible = self.settings.value("ui/resource_monitor_visible", True, type=bool)
-            # if visible:
-            #    self.resource_monitor.show()
-            # else:
-            #    self.resource_monitor.hide()
+            from setiastro.saspro.widgets.resource_monitor import ResourceMonitorDock
         except Exception as e:
-            print(f"WARNING: Could not initialize System Monitor overlay: {e}")
+            print(f"WARNING: Could not initialize System Monitor dock: {e}")
+            self.resource_monitor_dock = None
             self.resource_monitor = None
+            return
+
+        self.resource_monitor_dock = ResourceMonitorDock(self)
+        self.resource_monitor_dock.setObjectName("ResourceMonitorDock")
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,
+                           self.resource_monitor_dock)
+
+        # Tab it alongside the existing right-side stack if present, so it
+        # doesn't force a tall new column on first run. restoreState() will
+        # override this with the user's saved layout when there is one.
+        try:
+            anchor = getattr(self, "header_dock", None) or getattr(self, "layers_dock", None)
+            if anchor is not None:
+                self.tabifyDockWidget(anchor, self.resource_monitor_dock)
+        except Exception:
+            pass
+
+        # Legacy alias: the floating-overlay attribute is gone. Keep the name
+        # defined (None) so any lingering `self.resource_monitor` truthiness
+        # checks elsewhere just skip cleanly instead of raising.
+        self.resource_monitor = None
+
+    # Back-compat: older call sites (e.g. MainWindow setup) may still invoke
+    # the previous overlay entry point. It now builds the dock.
+    _init_resource_monitor_overlay = _init_resource_monitor_dock
 
     def _toggle_resource_monitor(self, checked: bool):
-        """Toggle floating monitor visibility."""
-        if hasattr(self, 'resource_monitor') and self.resource_monitor:
-            if checked:
-                self.resource_monitor.show()
-                self._update_monitor_position()
-            else:
-                self.resource_monitor.hide()
-            self.settings.setValue("ui/resource_monitor_visible", checked)
+        """Show/hide the resource-monitor dock. Kept for any legacy menu wiring;
+        the dock's own toggleViewAction now drives it from View -> Panels."""
+        dock = getattr(self, "resource_monitor_dock", None)
+        if dock is not None:
+            dock.setVisible(bool(checked))
 
     def _update_monitor_position(self):
-        """Snap monitor to bottom-right corner or restore saved position."""
-        if hasattr(self, 'resource_monitor') and self.resource_monitor:
-            from PyQt6.QtCore import QPoint
-            
-            # Check for saved position first
-            saved_x = self.settings.value("ui/resource_monitor_pos_x", type=int)
-            saved_y = self.settings.value("ui/resource_monitor_pos_y", type=int)
-            
-            if saved_x != 0 and saved_y != 0: # Basic validity check (0,0 is unlikely to be desired but also default if missing)
-                 # Actually 0,0 is valid but type=int returns 0 if missing. 
-                 # Let's check string existence to be safer or just accept 0 if set.
-                 # Checking existence via `contains` is better but value() logic is ok for now.
-                 if self.settings.contains("ui/resource_monitor_pos_x"):
-                     self.resource_monitor.move(saved_x, saved_y)
-                     self.resource_monitor.raise_()
-                     return
-
-            m = 5  # margin
-
-            screen = self.screen()
-            geom = screen.availableGeometry()
-
-            mw = self.resource_monitor.width()
-            mh = self.resource_monitor.height()
-
-            x = geom.x() + geom.width()  - mw - m
-            y = geom.y() + geom.height() - mh - m
-
-            self.resource_monitor.move(x, y)
-            self.resource_monitor.raise_()
+        """No-op. The monitor is a docked panel now, not a floating overlay;
+        retained so any resizeEvent hook that still calls it won't crash."""
+        return
 
     # We need to hook resizeEvent to call _update_monitor_position.
     # Since this is a mixin, we can't easily override resizeEvent of the MainWindow without being careful.
@@ -423,6 +390,7 @@ class DockMixin:
             "log_dock",
             "system_log_dock",   # ← add this
             "window_shelf",
+            "resource_monitor_dock",
         ):
             d = getattr(self, name, None)
             if isinstance(d, QDockWidget):
@@ -452,25 +420,17 @@ class DockMixin:
             self.tr("Header Viewer"): 30,
             self.tr("Layers"): 40,
             self.tr("Window Shelf"): 50,
+            self.tr("System Monitor"): 55,
             self.tr("Command Search"): 60,
             self.tr("System Log"): 70,     # ← add this
             self.tr("Stacking Log"): 80,   # ← and this for status_log_dock
         }
         
-        # Add special action for overlay monitor
-        mon_act = QAction(self.tr("System Monitor"), self)
-        mon_act.setCheckable(True)
-        mon_act.setChecked(self.settings.value("ui/resource_monitor_visible", True, type=bool))
-        mon_act.triggered.connect(self._toggle_resource_monitor)
-        
-        # We need to insert it into the logic that populates the menu.
-        # But 'dock_mixin' automates menu from self.findChildren(QDockWidget).
-        # So we have to manually inject this action into the "Panels" menu if possible
-        # or expose it such that main_window can add it.
-        # 
-        # Easier: allow main_window to add it, or ...
-        # If I can't easily see where menu is built, I'll bind it to self.act_toggle_monitor = mon_act
-        self.act_toggle_monitor = mon_act
+        # The resource monitor is a normal utility dock now, so it is registered
+        # through the standard dock loop below (it's listed in _all_known_docks).
+        # Keep act_toggle_monitor pointing at its toggle for any legacy callers.
+        rmd = getattr(self, "resource_monitor_dock", None)
+        self.act_toggle_monitor = rmd.toggleViewAction() if rmd is not None else None
 
         def key_fn(d: QDockWidget):
             t = d.windowTitle()
@@ -478,10 +438,7 @@ class DockMixin:
 
         for dock in sorted(docks, key=key_fn):
             self._register_dock_in_view_menu(dock)
-            
-        if hasattr(self, "act_toggle_monitor"):
-             menu.addSeparator()
-             menu.addAction(self.act_toggle_monitor)
+        # System Monitor is included in the loop above, like every other dock.
 
     def _add_doc_to_explorer(self, doc):
         base = self._normalize_base_doc(doc)
@@ -758,6 +715,7 @@ class DockMixin:
             (getattr(self, "console_dock", None), Qt.DockWidgetArea.BottomDockWidgetArea),
             (getattr(self, "status_log_dock", None), Qt.DockWidgetArea.BottomDockWidgetArea),
             (getattr(self, "log_dock", None), Qt.DockWidgetArea.BottomDockWidgetArea),
+            (getattr(self, "resource_monitor_dock", None), Qt.DockWidgetArea.RightDockWidgetArea),
         ]
 
         for dock, area in mapping:
@@ -857,6 +815,7 @@ class DockMixin:
             "LayersDock": Qt.DockWidgetArea.RightDockWidgetArea,
             "HeaderViewerDock": Qt.DockWidgetArea.RightDockWidgetArea,
             "LogDock": Qt.DockWidgetArea.BottomDockWidgetArea,
+            "ResourceMonitorDock": Qt.DockWidgetArea.RightDockWidgetArea,
         }
 
         for dock in self._all_known_docks():
