@@ -30,13 +30,17 @@ from typing import Optional
 import psutil
 
 from PyQt6.QtCore import (
-    Qt, QUrl, QTimer, QObject, QSettings,
+    Qt, QTimer, QObject, QSettings, QSize, QRectF,
+    QVariantAnimation, QEasingCurve,
     pyqtProperty, pyqtSignal, QThread,
 )
-from PyQt6.QtQuickWidgets import QQuickWidget
+from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+from PyQt6.QtWidgets import (
+    QWidget, QDockWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QSizePolicy, QApplication,
+)
 
 from setiastro.saspro.memory_utils import get_memory_usage_mb
-from setiastro.saspro.resources import _get_base_path
 
 
 # ─── GPU data model ────────────────────────────────────────────────────────────
@@ -439,6 +443,7 @@ class GPUWorker(QThread):
         self._backends = backends
         self._last_emit = 0.0
         self._last_util: Optional[float] = None
+        self._active = True
 
     def _combine(self) -> GPUSample:
         util_vals: list[float] = []
@@ -476,6 +481,10 @@ class GPUWorker(QThread):
         # noisy but the gauge still animates smoothly with the QML Behavior.
         while not self.isInterruptionRequested():
             try:
+                if not self._active:
+                    # Paused (panel hidden): don't spawn GPU probes off-screen.
+                    self.msleep(200)
+                    continue
                 sample = self._combine()
                 now = time.monotonic()
                 if (self._last_util is None
@@ -487,6 +496,11 @@ class GPUWorker(QThread):
                 self.msleep(500)
             except Exception:
                 self.msleep(1000)
+
+    def set_active(self, active: bool):
+        """Pause/resume sampling without tearing the thread down (used when the
+        panel is hidden, so we stop spawning GPU subprocesses off-screen)."""
+        self._active = bool(active)
 
     def close_backends(self):
         for b in self._backends:
@@ -673,6 +687,24 @@ class ResourceBackend(QObject):
 
     # ─── lifecycle ────────────────────────────────────────────────────────────
 
+    def set_active(self, active: bool):
+        """Pause or resume polling when the panel is hidden/shown. Unlike
+        stop(), this is reversible and keeps the GPU worker thread alive."""
+        active = bool(active)
+        try:
+            if hasattr(self, "_timer"):
+                if active and not self._timer.isActive():
+                    self._timer.start()
+                elif not active and self._timer.isActive():
+                    self._timer.stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "_gpu_worker"):
+                self._gpu_worker.set_active(active)
+        except Exception:
+            pass
+
     def stop(self):
         """Explicitly stop background threads. Called from the widget's
         closeEvent — do NOT rely on __del__ (which fires during interpreter
@@ -693,68 +725,236 @@ class ResourceBackend(QObject):
                 pass
 
 
-# ─── The widget ───────────────────────────────────────────────────────────────
+# ─── Native gauges (replaces the former QML overlay) ───────────────────────────
+#
+# The monitor now renders with QPainter inside a normal utility dock, matching
+# the rest of SASpro instead of a floating QML HUD. Track/label colours follow
+# the widget palette so it reads in both light and dark themes; the per-gauge
+# accents (CPU green/amber/red, RAM blue, GPU purple) are carried over from the
+# old design. Displayed values ease toward each new sample so the arcs glide
+# between polls (the old QML `Behavior on value`, done here with QVariantAnimation).
 
-class SystemMonitorWidget(QQuickWidget):
-    """Draggable resource-monitor HUD, hosting the QML gauges."""
+_TRACK_ALPHA = 90   # translucent grey ring track, theme-independent
+
+
+class MiniGauge(QWidget):
+    """A ring gauge: dim full-circle track + coloured value arc from 12 o'clock,
+    clockwise, with a centred percentage label. Pure view — the owner pushes
+    values in via setValue()."""
+
+    def __init__(self, accent="#00C851", parent=None):
+        super().__init__(parent)
+        self._accent = QColor(accent)
+        self._value = 0.0     # currently displayed (animated) value
+        self._target = 0.0
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        self._anim = QVariantAnimation(self)
+        self._anim.setDuration(400)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self._anim.valueChanged.connect(self._on_anim)
+
+    def sizeHint(self) -> QSize:
+        return QSize(46, 46)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(40, 40)
+
+    def setAccent(self, color) -> None:
+        c = QColor(color)
+        if c != self._accent:
+            self._accent = c
+            self.update()
+
+    def setValue(self, v: float) -> None:
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return
+        v = max(0.0, min(100.0, v))
+        if abs(v - self._target) < 0.05:
+            return
+        self._target = v
+        self._anim.stop()
+        self._anim.setStartValue(float(self._value))
+        self._anim.setEndValue(v)
+        self._anim.start()
+
+    def _on_anim(self, val) -> None:
+        try:
+            self._value = float(val)
+        except (TypeError, ValueError):
+            return
+        self.update()
+
+    def paintEvent(self, _e) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        side = min(self.width(), self.height())
+        pen_w = max(3.0, side * 0.09)
+        margin = pen_w / 2.0 + 1.0
+        rect = QRectF(
+            (self.width() - side) / 2.0 + margin,
+            (self.height() - side) / 2.0 + margin,
+            side - 2.0 * margin,
+            side - 2.0 * margin,
+        )
+
+        pen = QPen(QColor(128, 128, 128, _TRACK_ALPHA), pen_w)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(rect, 0, 360 * 16)   # background track (full circle)
+
+        # Value arc — start at 12 o'clock (90°), sweep clockwise (negative span).
+        # Hidden below ~0.5% so the round cap doesn't leave a stray dot at zero.
+        if self._value > 0.5:
+            pen.setColor(self._accent)
+            p.setPen(pen)
+            p.drawArc(rect, 90 * 16, int(-self._value / 100.0 * 360.0 * 16))
+
+        p.setPen(self.palette().color(self.foregroundRole()))
+        f = QFont(self.font())
+        f.setBold(True)
+        f.setPixelSize(max(9, int(side * 0.26)))
+        p.setFont(f)
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter,
+                   f"{int(round(self._value))}%")
+        p.end()
+
+
+class _GaugeColumn(QWidget):
+    """A gauge with a dim caption underneath (the old CPU/RAM/GPU stacks)."""
+
+    def __init__(self, caption: str, accent: str, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+
+        self.gauge = MiniGauge(accent, self)
+        lay.addWidget(self.gauge, 0, Qt.AlignmentFlag.AlignHCenter)
+
+        self.caption = QLabel(caption, self)
+        self.caption.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        cf = QFont(self.caption.font())
+        cf.setPixelSize(9)
+        self.caption.setFont(cf)
+        self.caption.setEnabled(False)   # dim, theme-aware (was "#aaa")
+        lay.addWidget(self.caption)
+
+
+class ResourceMonitorPanel(QWidget):
+    """CPU / RAM / GPU gauges backed by ResourceBackend. Owns the backend and
+    pauses its polling while the panel is hidden."""
+
+    ACCENT_CPU = "#00C851"
+    ACCENT_RAM = "#33b5e5"
+    ACCENT_GPU = "#aa66cc"
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("ResourceMonitorPanel")
 
-        self.setResizeMode(QQuickWidget.ResizeMode.SizeRootObjectToView)
-        self.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, False)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setClearColor(Qt.GlobalColor.transparent)
+        self._backend = ResourceBackend(self)
 
-        self.backend = ResourceBackend(self)
-        self.rootContext().setContextProperty("backend", self.backend)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(10, 8, 10, 8)
+        row.setSpacing(16)
+        row.addStretch(1)
+        self._cpu = _GaugeColumn(self.tr("CPU"), self.ACCENT_CPU, self)
+        self._ram = _GaugeColumn(self.tr("RAM"), self.ACCENT_RAM, self)
+        self._gpu = _GaugeColumn(self.tr("GPU"), self.ACCENT_GPU, self)
+        for col in (self._cpu, self._ram, self._gpu):
+            row.addWidget(col)
+        row.addStretch(1)
 
-        qml_path = os.path.join(_get_base_path(), "qml", "ResourceMonitor.qml")
-        self.setSource(QUrl.fromLocalFile(qml_path))
+        b = self._backend
+        b.cpuChanged.connect(self._refresh_cpu)
+        b.ramChanged.connect(self._refresh_ram)
+        b.appRamChanged.connect(self._refresh_ram)    # app-RAM feeds RAM tooltip
+        b.gpuChanged.connect(self._refresh_gpu)
+        b.gpuInfoChanged.connect(self._refresh_gpu)   # name/VRAM tooltip
+
+        # Stop cleanly on app teardown even if no closeEvent reaches the dock.
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                app.aboutToQuit.connect(self._backend.stop)
+        except Exception:
+            pass
+
+        # Prime from whatever the backend already holds.
+        self._refresh_cpu()
+        self._refresh_ram()
+        self._refresh_gpu()
+
+    # ── signal handlers ───────────────────────────────────────────────────────
+    def _refresh_cpu(self) -> None:
+        v = float(self._backend.cpuUsage)
+        self._cpu.gauge.setValue(v)
+        self._cpu.gauge.setAccent(
+            "#ff4444" if v > 80 else ("#ffbb33" if v > 50 else self.ACCENT_CPU))
+        self._cpu.gauge.setToolTip(f"CPU: {int(round(v))}%")
+
+    def _refresh_ram(self) -> None:
+        v = float(self._backend.ramUsage)
+        self._ram.gauge.setValue(v)
+        rs = self._backend.ramString
+        if rs:
+            self._ram.gauge.setToolTip(
+                f"RAM: {rs}  (this app: {self._backend.appRamString})")
+        else:
+            self._ram.gauge.setToolTip(f"RAM: {int(round(v))}%")
+
+    def _refresh_gpu(self) -> None:
+        v = float(self._backend.gpuUsage)
+        self._gpu.gauge.setValue(v)
+        tip = f"{self._backend.gpuName}: {int(round(v))}%"
+        mem = self._backend.gpuMemString
+        if mem:
+            tip += f"\nVRAM: {mem}"
+        self._gpu.gauge.setToolTip(tip)
+
+    # ── lifecycle ──────────────────────────────────────────────────────────────
+    def showEvent(self, e):
+        self._backend.set_active(True)
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        self._backend.set_active(False)
+        super().hideEvent(e)
+
+    def stop(self) -> None:
+        try:
+            self._backend.stop()
+        except Exception:
+            pass
+
+    @property
+    def backend(self) -> "ResourceBackend":
+        return self._backend
+
+
+class ResourceMonitorDock(QDockWidget):
+    """System resource monitor as a standard SASpro utility panel."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("System Monitor"))
+        self.setObjectName("ResourceMonitorDock")
+        self.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+
+        self.panel = ResourceMonitorPanel(self)
+        self.setWidget(self.panel)
 
     def closeEvent(self, e):
         try:
-            if self.backend is not None:
-                self.backend.stop()
+            self.panel.stop()
         except Exception:
             pass
         super().closeEvent(e)
 
-    # ─── drag support ─────────────────────────────────────────────────────────
-    # Drag is handled entirely on the Python side. The previous QML MouseArea
-    # attempted startSystemMove() on `root.Window.window`, which in an embedded
-    # QQuickWidget is the PARENT app window — so it would either be a no-op or
-    # move the wrong window. Removed there; kept here.
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            wh = self.windowHandle()
-            if wh is not None:
-                try:
-                    wh.startSystemMove()
-                    event.accept()
-                    return
-                except Exception:
-                    pass
-            self._drag_start_pos = (
-                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            )
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.MouseButton.LeftButton and hasattr(self, "_drag_start_pos"):
-            self.move(event.globalPosition().toPoint() - self._drag_start_pos)
-            event.accept()
-        else:
-            super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MouseButton.LeftButton:
-            settings = QSettings("SetiAstro", "SetiAstroSuitePro")
-            pos = self.pos()
-            settings.setValue("ui/resource_monitor_pos_x", pos.x())
-            settings.setValue("ui/resource_monitor_pos_y", pos.y())
-            event.accept()
-        super().mouseReleaseEvent(event)
+    @property
+    def backend(self) -> "ResourceBackend":
+        return self.panel.backend

@@ -529,17 +529,13 @@ _LEGACY_DATA_MAP = {
 }
 
 def __getattr__(name: str):
-    # --- legacy paths (lazy) ---
     if name in _LEGACY_ICON_MAP:
         return get_icon_path(_LEGACY_ICON_MAP[name])
     if name in _LEGACY_DATA_MAP:
         return get_data_path(_LEGACY_DATA_MAP[name])
 
-    # --- special exports ---
     if name == 'background_startup_path':
         return _resource_path('Background_startup.jpg')
-    if name == 'resource_monitor_qml':
-        return _resource_path(os.path.join("qml", "ResourceMonitor.qml"))
 
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
@@ -663,14 +659,10 @@ def optional_model_path(filename: str) -> str | None:
     _assert_not_internal_models_path(str(p))
     return str(p)
 
-# QML helper
-resource_monitor_qml = _resource_path(os.path.join("qml", "ResourceMonitor.qml"))
-
 # Export list for `from setiastro.saspro.resources import *`
 __all__ = [
     'Icons', 'Resources',
     'get_icons', 'get_resources',
     'get_icon_path', 'get_data_path',
-    'resource_monitor_qml',
     'background_startup_path',
 ] + list(_LEGACY_ICON_MAP.keys()) + list(_LEGACY_DATA_MAP.keys())
