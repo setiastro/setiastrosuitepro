@@ -116,6 +116,56 @@ from setiastro.saspro.torch_rejection import (
     _safe_inference_ctx as _safe_inference_ctx_impl,
 )
 
+# --- Rejection-backend correctness gate -----------------------------------
+# Rejection statistics need exact nan-reductions and NaN-preserving device
+# round-trips. CUDA/MPS are reliable; torch-directml is not — its nan reducers
+# and NaN device copies can return wrong-but-nonempty results, which the
+# numel()==0 guard in torch_rejection cannot catch. When that happens a lone
+# satellite trail is mathematically un-rejectable on short stacks and survives
+# into the master. So we probe the REAL reducer against the numpy reference
+# once per session and demote rejection to the (math-identical) CPU kernels on
+# any disagreement. Cached; set _REJ_GPU_VERIFIED = None to force a re-probe.
+_REJ_GPU_VERIFIED = None
+
+def _rejection_gpu_ok(status_cb=None) -> bool:
+    global _REJ_GPU_VERIFIED
+    if _REJ_GPU_VERIFIED is not None:
+        return _REJ_GPU_VERIFIED
+    ok = False
+    try:
+        ts = np.array([100., 101., 99., 100., 5000.], np.float32).reshape(5, 1, 1, 1)
+        w  = np.ones(5, np.float32)
+        out, rej = _torch_reduce_tile(
+            ts, w, algo_name="Weighted Windsorized Sigma Clipping",
+            sigma_low=2.5, sigma_high=2.5, iterations=3,
+        )
+        if hasattr(out, "detach"): out = out.detach().cpu().numpy()
+        if hasattr(rej, "detach"): rej = rej.detach().cpu().numpy()
+        out = np.asarray(out, np.float32).reshape(-1)
+        rej = np.asarray(rej, bool).reshape(5)
+        ref, _ = windsorized_sigma_clip_weighted_np(
+            ts, w, lower=2.5, upper=2.5, iterations=3)
+        ref = np.asarray(ref, np.float32).reshape(-1)
+        # clean survivors -> ~100 (NOT ~1080), and the 5000 MUST be rejected
+        ok = bool(np.isfinite(out).all() and abs(out[0] - ref[0]) < 1.0 and rej[4])
+    except Exception:
+        ok = False
+    _REJ_GPU_VERIFIED = ok
+    if status_cb is not None:
+        try:
+            if ok:
+                status_cb("🧪 Rejection GPU backend passed self-test.")
+            else:
+                be = ""
+                try: be = f" ({current_backend()})"
+                except Exception: pass
+                status_cb(f"⚠️ Rejection GPU backend failed self-test{be} — using CPU "
+                          f"rejection kernels so satellite trails clip correctly.")
+        except Exception:
+            pass
+    return ok
+# --------------------------------------------------------------------------
+
 # Darks are session/date-agnostic. Master darks bucket only by exposure,
 # image size, temperature, gain and offset — never by capture date/session.
 # We stamp every master dark with this single constant session token so that
@@ -2450,6 +2500,65 @@ def compute_safe_chunk_low_ram(height, width, N, channels, dtype, pref_h, pref_w
             f"Not enough RAM for even a 1×1 tile (N={N}, C={channels})"
         )
     return ch, cw
+
+# ──────────────────────────────────────────────────────────────────────────
+# Disk-space estimation helpers (pre-flight checks for calibration / register /
+# integrate so the user is warned before a run is likely to fill the drive).
+# ──────────────────────────────────────────────────────────────────────────
+
+# Padding added per output file to cover the FITS header + 2880-byte block
+# rounding + any small sidecars. Negligible per frame, but keeps the estimate
+# from being systematically low on large frame counts.
+_FITS_HEADER_PAD_BYTES = 16 * 1024
+
+
+def _human_bytes(n) -> str:
+    """Human-readable base-1024 byte count, e.g. 1536 -> '1.50 KB'."""
+    try:
+        n = float(n)
+    except Exception:
+        return "?"
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if n < 1024.0 or unit == "PB":
+            if unit == "B":
+                return f"{sign}{int(n)} {unit}"
+            return f"{sign}{n:.2f} {unit}"
+        n /= 1024.0
+    return f"{sign}{n:.2f} PB"
+
+
+def _disk_free_bytes(path):
+    """
+    Free bytes on the volume that will hold `path`.
+
+    Walks up to the nearest existing directory so it works even when the
+    output subfolder hasn't been created yet. Returns None if it can't be
+    determined (never raises).
+    """
+    try:
+        p = os.path.abspath(path or ".")
+        while p and not os.path.isdir(p):
+            parent = os.path.dirname(p)
+            if parent == p:
+                break
+            p = parent
+        if not p or not os.path.isdir(p):
+            return None
+        return int(shutil.disk_usage(p).free)
+    except Exception:
+        return None
+
+
+def _frame_out_bytes(h, w, channels, itemsize=4) -> int:
+    """Estimated on-disk size of one float32 FITS frame of the given geometry."""
+    try:
+        px = max(0, int(round(h))) * max(0, int(round(w))) * max(1, int(channels))
+        return px * int(itemsize) + _FITS_HEADER_PAD_BYTES
+    except Exception:
+        return 0
+
 
 _DIM_RE = re.compile(r"\s*\(\d+\s*x\s*\d+\)\s*")
 
@@ -14894,7 +15003,8 @@ class StackingSuiteDialog(QDialog):
                 N = len(file_list)
 
                 algo_name, params, cpu_label = _select_reducer("dark", N)
-                use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
+                use_gpu = (bool(self._hw_accel_enabled()) and _torch_ok()
+                           and _gpu_algo_supported(algo_name) and _rejection_gpu_ok())
                 algo_brief = ("GPU" if use_gpu else "CPU") + " " + algo_name
                 self.update_status(self.tr(f"⚙️ {algo_brief} selected for {N} frames (channels={channels})"))
                 QApplication.processEvents()
@@ -15965,7 +16075,8 @@ class StackingSuiteDialog(QDialog):
                 # Reducer selection & per-frame normalization scales
                 # -----------------------------------------------------------------
                 algo_name, params, cpu_label = _select_reducer("flat", N)
-                use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo_name)
+                use_gpu = (bool(self._hw_accel_enabled()) and _torch_ok()
+                           and _gpu_algo_supported(algo_name) and _rejection_gpu_ok())
 
                 # For flat scaling estimation: subtract dark if present, else subtract bias if we have one (mono case)
                 scale_subtractor = dark_data
@@ -17816,6 +17927,186 @@ class StackingSuiteDialog(QDialog):
         except Exception as e:
             self.update_status(self.tr(f"⚠️ Auto register/integrate failed: {e}"))
 
+    def _frame_geometry(self, path):
+        """
+        Header-only geometry for a FITS/XISF frame.
+
+        Returns (H, W, naxis3_or_None, bayerpat_str) or None on failure.
+        Uses get_valid_header(), which is header-only (no pixel decode) and
+        already normalises NAXIS1/2/3 for both FITS and XISF.
+        """
+        try:
+            hdr, ok = get_valid_header(path)
+            if not ok or hdr is None:
+                return None
+            w = int(hdr.get("NAXIS1", 0) or 0)
+            h = int(hdr.get("NAXIS2", 0) or 0)
+            if w <= 0 or h <= 0:
+                return None
+            try:
+                n3 = hdr.get("NAXIS3", None)
+                n3 = int(n3) if n3 is not None else None
+            except Exception:
+                n3 = None
+            bayer = str(hdr.get("BAYERPAT", "") or "").strip()
+            return h, w, n3, bayer
+        except Exception:
+            return None
+
+    def _estimate_frames_bytes(self, paths, *, mode):
+        """
+        Sum estimated float32-FITS output bytes over `paths`.
+
+        mode = "as_is"   → channels = 3 only if the frame is already 3-plane,
+                           else 1. Used for calibration, which keeps CFA/mono
+                           data 2-D, and for already-debayered registered frames.
+        mode = "debayer" → channels = 3 if the frame is CFA (has BAYERPAT) or is
+                           already 3-plane, else 1. Used for registration output,
+                           which debayers CFA lights to RGB.
+
+        Frames whose geometry can't be read fall back to ~2× their source file
+        size (16-bit int → 32-bit float ≈ 2×) so the estimate is never silently
+        too small.
+
+        Returns (total_bytes, n_counted, n_fallback).
+        """
+        total = 0
+        n_counted = 0
+        n_fallback = 0
+        for p in paths:
+            geo = self._frame_geometry(p)
+            if geo is None:
+                try:
+                    total += int(os.path.getsize(p) * 2)
+                    n_fallback += 1
+                except Exception:
+                    pass
+                continue
+            h, w, n3, bayer = geo
+            already_color = (n3 == 3)
+            if mode == "debayer":
+                channels = 3 if (already_color or bayer) else 1
+            else:  # "as_is"
+                channels = 3 if already_color else 1
+            total += _frame_out_bytes(h, w, channels)
+            n_counted += 1
+        return total, n_counted, n_fallback
+
+    def _confirm_disk_budget(self, target_dir, plan, *, title):
+        """
+        Compare an estimated write budget against free space on target_dir's
+        volume and, if things look tight, ask the user whether to proceed.
+
+        `plan` is a list of (label, bytes) tuples describing each output
+        category. All categories are assumed to land on the same volume as
+        target_dir (true for the stacking-suite subfolders, which all live
+        under the stacking directory).
+
+        Returns True to proceed, False to abort. Never raises — an estimator
+        failure must not block the pipeline, so on any internal error it logs
+        and returns True.
+        """
+        try:
+            plan = [(lbl, int(max(0, b))) for lbl, b in plan]
+            total = int(sum(b for _, b in plan))
+        except Exception:
+            return True
+
+        free = _disk_free_bytes(target_dir)
+
+        # Surface the budget on the execution monitor's persistent readout so the
+        # user can watch free-vs-estimated live during the run, not just in the
+        # one-shot warning dialog below.
+        try:
+            mon = getattr(self, "_exec_monitor", None)
+            if mon is not None:
+                step = str(title or "").split("—")[0].strip() or self.tr("This step")
+                mon.set_disk_budget(target_dir, total, step_label=step)
+        except Exception:
+            pass
+
+        # Log the estimate + breakdown regardless of outcome.
+        self.update_status(self.tr(
+            f"💽 Estimated disk for this step: ~{_human_bytes(total)}"
+        ))
+        for lbl, b in plan:
+            if b:
+                self.update_status(self.tr(f"     – {lbl}: ~{_human_bytes(b)}"))
+
+        if free is None:
+            self.update_status(self.tr(
+                "⚠️ Could not read free disk space — skipping the space check."
+            ))
+            return True
+
+        self.update_status(self.tr(
+            f"💽 Free on target drive: {_human_bytes(free)}"
+        ))
+
+        # Headroom reserve so we never plan to fill the volume to zero (the OS,
+        # temp files, logs and FITS block padding all need a little slack):
+        # 2 GB or 5% of the free space, whichever is larger.
+        reserve = max(2 * 1024 ** 3, int(free * 0.05))
+
+        over = (total + reserve) > free
+        tight = (not over) and ((total + reserve) > free * 0.85)
+
+        if not over and not tight:
+            return True  # plenty of room — no dialog
+
+        drive_txt = (
+            os.path.splitdrive(os.path.abspath(target_dir))[0]
+            or os.path.abspath(target_dir)
+        )
+        breakdown = "\n".join(f"  • {lbl}: ~{_human_bytes(b)}"
+                              for lbl, b in plan if b)
+
+        if over:
+            icon = QMessageBox.Icon.Critical
+            headline = self.tr("⚠️ Not enough free disk space for this step")
+            detail = self.tr(
+                f"This step is estimated to write about {_human_bytes(total)}, "
+                f"but only {_human_bytes(free)} is free on {drive_txt}.\n\n"
+                f"Running out of space partway through will abort the job and can "
+                f"leave partial or corrupt files behind."
+            )
+        else:
+            icon = QMessageBox.Icon.Warning
+            headline = self.tr("⚠️ Disk space is going to be tight")
+            detail = self.tr(
+                f"This step is estimated to write about {_human_bytes(total)}, "
+                f"and only {_human_bytes(free)} is free on {drive_txt}.\n\n"
+                f"That leaves very little headroom. Consider freeing space or "
+                f"pointing the stacking directory at a larger drive."
+            )
+
+        try:
+            box = QMessageBox(self)
+            box.setIcon(icon)
+            box.setWindowTitle(title)
+            box.setText(headline)
+            box.setInformativeText(
+                detail + "\n\nEstimated breakdown:\n" + breakdown +
+                self.tr("\n\n(These are estimates based on frame geometry and "
+                        "32-bit float output; actual sizes vary a little.)")
+            )
+            proceed_btn = box.addButton(self.tr("Proceed anyway"),
+                                        QMessageBox.ButtonRole.AcceptRole)
+            cancel_btn = box.addButton(self.tr("Cancel"),
+                                       QMessageBox.ButtonRole.RejectRole)
+            box.setDefaultButton(cancel_btn if over else proceed_btn)
+            box.exec()
+            if box.clickedButton() is proceed_btn:
+                self.update_status(self.tr(
+                    "▶️ Proceeding despite low disk space (user confirmed)."
+                ))
+                return True
+            self.update_status(self.tr("🛑 Cancelled due to disk-space warning."))
+            return False
+        except Exception:
+            # If the dialog itself fails for any reason, don't hard-block.
+            return True
+
     def calibrate_lights(self):
         """
         Pipelined calibration:
@@ -18084,6 +18375,25 @@ class StackingSuiteDialog(QDialog):
         if not frame_infos:
             self.update_status(self.tr("⚠️ No light files to calibrate."))
             return
+
+        # ── disk-space pre-flight ─────────────────────────────────────────
+        # Each light produces one 32-bit calibrated frame in its native layout
+        # (CFA/mono stay single-plane; already-colour frames stay 3-plane), so
+        # "as_is" channel accounting matches what actually gets written.
+        try:
+            cal_bytes, _nc, _nf = self._estimate_frames_bytes(
+                [fi["light_file"] for fi in frame_infos], mode="as_is"
+            )
+            if not self._confirm_disk_budget(
+                calibrated_dir,
+                [(f"Calibrated frames (× {len(frame_infos)}, 32-bit)", cal_bytes)],
+                title=self.tr("Calibrate Lights — disk space"),
+            ):
+                self.update_status(self.tr("🛑 Calibration cancelled."))
+                return
+        except Exception as _dse:
+            self.update_status(self.tr(f"⚠️ Disk-space check skipped: {_dse}"))
+
         # ── hardware acceleration check ───────────────────────────────────
         use_hw_accel = self.settings.value("stacking/use_hardware_accel", True, type=bool)
         if not use_hw_accel:
@@ -20228,6 +20538,30 @@ class StackingSuiteDialog(QDialog):
 
             all_files = [f for lst in self.light_files.values() for f in lst]
             self.update_status(self.tr(f"📊 Found {len(all_files)} total frames. Now measuring in parallel batches..."))
+
+            # ── disk-space pre-flight ─────────────────────────────────
+            # Registration writes a Normalized_Images copy AND an Aligned_Images
+            # copy of every frame, each debayered to RGB for CFA/OSC data — so
+            # the budget is 2 × the per-frame debayered size across all frames.
+            # This is by far the biggest disk consumer in the whole pipeline.
+            try:
+                per_set_bytes, _nc, _nf = self._estimate_frames_bytes(
+                    all_files, mode="debayer"
+                )
+                n = len(all_files)
+                if not self._confirm_disk_budget(
+                    self.stacking_directory,
+                    [
+                        (f"Normalized frames (× {n}, 32-bit)", per_set_bytes),
+                        (f"Registered frames (× {n}, 32-bit)", per_set_bytes),
+                    ],
+                    title=self.tr("Register Images — disk space"),
+                ):
+                    self.update_status(self.tr("🛑 Registration cancelled."))
+                    self._set_registration_busy(False)
+                    return
+            except Exception as _dse:
+                self.update_status(self.tr(f"⚠️ Disk-space check skipped: {_dse}"))
 
             # ── binning (FITS/XISF aware) ─────────────────────────────
             bin_map = {}
@@ -25124,7 +25458,10 @@ class StackingSuiteDialog(QDialog):
 
         # --- Determine algo and GPU availability ONCE before tile loop ---
         algo = (algo_override or self.rejection_algorithm)
-        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+        use_gpu = (
+            bool(self._hw_accel_enabled()) and _torch_ok()
+            and _gpu_algo_supported(algo) and _rejection_gpu_ok(status_cb=log)
+        )
         log(f"📊 Comet integration: algo={algo}  GPU={'yes' if use_gpu else 'no'}")
 
         # --- CPU fallback reducer (comet-aware) ---
@@ -26527,6 +26864,76 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status(self.tr(f"📊 Found {len(cand)} aligned/normalized frames. Measuring in parallel previews…"))
 
+            # ── disk-space pre-flight ─────────────────────────────────────
+            # Integration writes one master light per group (plus optional
+            # rejection layers, drizzle upscaling, and an auto-cropped copy),
+            # and converts any XISF inputs to float32 FITS first. Masters are
+            # small next to the registered set, but drizzle at high scale over
+            # several groups can still be sizeable — so we estimate it too.
+            try:
+                rep_geo = None
+                for _p in cand[:16]:
+                    rep_geo = self._frame_geometry(_p)
+                    if rep_geo:
+                        break
+
+                plan = []
+                if rep_geo:
+                    _h, _w, _n3, _bayer = rep_geo
+                    _ch = 3 if _n3 == 3 else 1  # registered frames are already debayered
+                    n_groups = max(1, len([g for g, l in self.light_files.items() if l]))
+
+                    drizzle_on = bool(self.settings.value(
+                        "stacking/drizzle_enabled", False, type=bool))
+                    try:
+                        scale = float(self._get_drizzle_scale()) if drizzle_on else 1.0
+                    except Exception:
+                        scale = 1.0
+                    if scale <= 0:
+                        scale = 1.0
+
+                    per_master = _frame_out_bytes(_h * scale, _w * scale, _ch)
+
+                    # Rejection layers add REJ_COMB (uint8) + REJ_FRAC (f32) +
+                    # REJ_CNT (u32) = ~9 bytes/pixel on top of each master.
+                    save_rej = bool(self.settings.value(
+                        "stacking/save_rejection_layers", True, type=bool))
+                    if save_rej:
+                        per_master += int(round(_h * scale)) * int(round(_w * scale)) * (1 + 4 + 4)
+
+                    # Auto-crop writes a second (slightly smaller) copy per group.
+                    autocrop_on = bool(self.settings.value(
+                        "stacking/autocrop_enabled", False, type=bool))
+                    copies = 2 if autocrop_on else 1
+
+                    label = f"Master light(s) (× {n_groups}"
+                    if drizzle_on:
+                        label += f", {scale:g}× drizzle"
+                    if save_rej:
+                        label += ", +rejection layers"
+                    if autocrop_on:
+                        label += ", +auto-crop"
+                    label += ")"
+                    plan.append((label, per_master * n_groups * copies))
+
+                # XISF → FITS prep copies written up-front, before integration.
+                xisf_paths = [p for p in cand if str(p).lower().endswith(".xisf")]
+                if xisf_paths:
+                    prep_bytes, _, _ = self._estimate_frames_bytes(xisf_paths, mode="as_is")
+                    plan.append(
+                        (f"Prepared FITS from XISF (× {len(xisf_paths)})", prep_bytes)
+                    )
+
+                if plan and not self._confirm_disk_budget(
+                    self.stacking_directory, plan,
+                    title=self.tr("Integrate — disk space"),
+                ):
+                    self.update_status(self.tr("🛑 Integration cancelled."))
+                    self._set_registration_busy(False)
+                    return
+            except Exception as _dse:
+                self.update_status(self.tr(f"⚠️ Disk-space check skipped: {_dse}"))
+
             # ─────────────────────────────────────────────────────────────────────
             # XISF safety: convert any .xisf to float32 FITS once up-front so the
             # downstream integration pipeline is guaranteed to be FITS-based.
@@ -27746,7 +28153,10 @@ class StackingSuiteDialog(QDialog):
 
         algo = (algo_override or self.rejection_algorithm)
 
-        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+        use_gpu = (
+            bool(self._hw_accel_enabled()) and _torch_ok()
+            and _gpu_algo_supported(algo) and _rejection_gpu_ok(status_cb=log)
+        )
         log(f"📊 Stacking group '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
 
         # ── Low RAM Safe Mode gate ─────────────────────────────────────────────
@@ -28186,7 +28596,10 @@ class StackingSuiteDialog(QDialog):
         del ref_data
 
         algo = (algo_override or self.rejection_algorithm)
-        use_gpu = bool(self._hw_accel_enabled()) and _torch_ok() and _gpu_algo_supported(algo)
+        use_gpu = (
+            bool(self._hw_accel_enabled()) and _torch_ok()
+            and _gpu_algo_supported(algo) and _rejection_gpu_ok(status_cb=log)
+        )
         log(f"📊 [LowRAM] Stacking '{group_key}' with {algo}{' [GPU]' if use_gpu else ''}")
 
         # ── Satellite masks ────────────────────────────────────────────────────
