@@ -489,12 +489,39 @@ def _extract_undo_entries(doc):
 
 class HistoryListWidget(QListWidget):
     """
-    QListWidget that supports Alt+drag of replayable steps.
-    Alt+drag starts a MIME_CMD drag with (command_id, preset).
+    QListWidget that drags replayable steps onto a view.
+
+    Selection → drag behaviour (native Qt, file-manager style):
+      • Ctrl/Shift-click to select multiple rows, then drag any selected row →
+        a single MIME_CMD carrying a function_bundle payload (all steps, in
+        row order). Dropped on a view, the whole recipe runs on that image.
+      • Drag a single selected row → a MIME_CMD for that one command.
+      • Press on an unselected row / empty space → normal selection (rubber
+        band, Ctrl/Shift extend). No modifier key required to drag.
     """
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._press_pos = None
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
+
+    def startDrag(self, supportedActions):
+        # Qt calls this once the press-on-selection passes the drag threshold,
+        # with the current selection intact — no manual tracking needed.
+        steps = self.selected_replay_steps()          # ROLE_IS_OP rows, row order
+        if len(steps) >= 2:
+            self._start_bundle_drag(steps)
+            return
+        if len(steps) == 1:
+            self._start_drag(steps[0])
+            return
+        # Nothing replayable selected (e.g. only the "Current Image" row):
+        # fall back to the row under the cursor if it's single-draggable.
+        it = self.currentItem()
+        if it is not None:
+            p = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(p, dict) and p.get("command_id"):
+                self._start_drag(p)
 
     def mousePressEvent(self, e: QMouseEvent):
         if e.button() == Qt.MouseButton.LeftButton:
@@ -607,9 +634,10 @@ class HistoryExplorerDialog(QDialog):
         layout.addWidget(self.history_list)
         self.history_instructions = QLabel(
             "Double-click any row to view the image at that step  •  "
-            "Alt+drag a step onto the canvas to create a function shortcut  •  "
+            "Drag a step/steps onto the canvas to create a function shortcut(s)  •  "
             "Select multiple (or all) steps and use Create Function Bundle to "
-            "bundle them into a replayable function"
+            "bundle them into a replayable function  •  "
+            "Drag a step/steps onto the Workflow Assistant to create a Workflow  •  "
         )
         self.history_instructions.setWordWrap(True)
         layout.addWidget(self.history_instructions)

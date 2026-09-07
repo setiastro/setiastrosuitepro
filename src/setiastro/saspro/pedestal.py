@@ -861,6 +861,8 @@ def remove_pedestal(main, target_doc=None, preset: dict | None = None):
         out, vals, _clip = remove_pedestal_array(src, mode=mode, pct=pct, per_channel=per_channel)
         meta = {
             "step_name": "Pedestal Removal",
+            "command_id": "pedestal",
+            "preset": {"mode": mode, "percentile": pct, "per_channel": per_channel},
             "bit_depth": "32-bit floating point",
             "is_mono": (out.ndim == 2),
             "pedestal": {

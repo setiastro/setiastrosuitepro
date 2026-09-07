@@ -45,13 +45,12 @@ def apply_levels_via_preset(ctx, doc, preset: dict):
     out = apply_histogram_transform_channel(img, black, mid, white, channel)
     out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
-    # Apply to doc (follow your doc API conventions)
-    if hasattr(doc, "apply_edit"):
-        doc.apply_edit(out, metadata={"step_name": step_name}, step_name=step_name)
-    elif hasattr(doc, "set_image"):
-        doc.set_image(out, step_name=step_name)
-    else:
-        doc.image = out
+    _meta = {
+        "step_name": step_name,
+        "command_id": "levels",
+        "preset": {"black": black, "mid": mid, "white": white, "channel": channel},
+    }
+    doc.apply_edit(out, metadata=_meta, step_name=step_name)
 
     # ✅ Track replay payload (matches your system)
     try:

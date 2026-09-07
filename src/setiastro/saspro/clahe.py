@@ -117,10 +117,17 @@ def apply_clahe_to_doc(doc, preset: dict | None):
 
     # Commit
     out = out.astype(np.float32, copy=False)
-    if hasattr(doc, "set_image"):
-        doc.set_image(out, step_name="CLAHE")
-    else:
-        doc.image = out
+    _meta = {
+        "step_name": "CLAHE",
+        "command_id": "clahe",
+        "preset": {
+            "clip_limit": float(clip),
+            **({"tile_px": int(p.get("tile_px", 128))} if "tile_px" in p
+               else {"tile": int(p.get("tile", 8))}),
+            "blend": float(blend),
+        },
+    }
+    doc.set_image(out, metadata=_meta, step_name="CLAHE")
 
 
 # ----------------------- Dialog -----------------------

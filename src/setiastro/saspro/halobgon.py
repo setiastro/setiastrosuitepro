@@ -195,10 +195,14 @@ def apply_halo_b_gon_to_doc(parent, doc, preset: dict | None):
 
     out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
 
-    if hasattr(doc, "set_image"):
-        doc.set_image(out, step_name="Halo-B-Gon")
-    else:
-        doc.image = out
+    out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+
+    _meta = {
+        "step_name": "Halo-B-Gon",
+        "command_id": "halo_b_gon",
+        "preset": {"reduction": int(lvl), "linear": bool(lin)},
+    }
+    doc.set_image(out, metadata=_meta, step_name="Halo-B-Gon")
 
 # =============================================================================
 # UI: dialog with preview, zoom/pan, fit, overwrite/new view

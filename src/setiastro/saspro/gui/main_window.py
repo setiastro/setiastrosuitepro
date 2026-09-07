@@ -9214,6 +9214,12 @@ class AstroSuiteProMainWindow(
 
         meta = {
             "step_name": "Star Stretch",
+            "command_id": "star_stretch",
+            "preset": {
+                "stretch_factor": amount,
+                "color_boost": sat,
+                "scnr_green": scnr,
+            },
             "star_stretch": {
                 "stretch_factor": amount,
                 "color_boost": sat,
