@@ -544,7 +544,13 @@ def apply_linear_fit_via_preset(parent, doc_manager, active_doc, preset: dict | 
         names = ["R","G","B"]
         target = {0:"highest median", 1:"lowest median", 2:"Red", 3:"Green", 4:"Blue"}.get(rgb_idx, "highest median")
         step = f"Linear Fit (RGB → {names[ref_idx]} / {target})"
-        doc_manager.apply_edit_to_active(out, step_name=step)
+        doc_manager.apply_edit_to_active(
+            out, step_name=step,
+            metadata={"step_name": step, "command_id": "linear_fit",
+                      "preset": {"mode": "rgb",
+                                 "rgb_mode_idx": rgb_idx,
+                                 "rescale_mode_idx": rescale_idx}},
+        )
         return
 
     # MONO → prompt for reference
@@ -579,7 +585,11 @@ def apply_linear_fit_via_preset(parent, doc_manager, active_doc, preset: dict | 
 
     out, _, _ = linear_fit_mono_to_ref(img, ref, rescale_idx)
     step = f"Linear Fit (mono → {others[cb.currentIndex()].display_name()})"
-    doc_manager.apply_edit_to_active(out, step_name=step)
+    doc_manager.apply_edit_to_active(
+        out, step_name=step,
+        metadata={"step_name": step, "command_id": "linear_fit",
+                  "preset": {"mode": "mono", "rescale_mode_idx": rescale_idx}},
+    )
 
 def apply_linear_fit_to_doc(parent, target_doc, preset: dict | None) -> None:
     """

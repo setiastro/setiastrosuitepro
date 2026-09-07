@@ -416,6 +416,7 @@ def apply_curves_via_preset(main_window, doc, preset: Dict):
 
         meta = {
             "step_name": "Curves",
+            "command_id": "curves",
             "mode": _MODE_KEY_TO_LABEL.get(str(core.get("active") or "K"), "K (Brightness)"),
             "preset": dict(core),
         }
@@ -428,6 +429,7 @@ def apply_curves_via_preset(main_window, doc, preset: Dict):
 
     meta = {
         "step_name": "Curves",
+        "command_id": "curves",
         "mode": mode,
         "preset": dict(core),
     }
@@ -574,4 +576,3 @@ def _scene_points_from_preset(preset: Dict) -> List[Tuple[float, float]]:
         pts_norm = _shape_points_norm(shape, amount)
 
     return _points_norm_to_scene(pts_norm)
-

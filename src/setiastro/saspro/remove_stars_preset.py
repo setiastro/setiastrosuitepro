@@ -243,7 +243,8 @@ def _finish_starnet(main, doc, rc, dlg, in_path, out_path, did_stretch):
 
     final_starless = _mask_blend_with_doc_mask(doc, starless_rgb, original_rgb)
     try:
-        meta = {"step_name": "Stars Removed", "bit_depth": "32-bit floating point", "is_mono": False}
+        meta = {"step_name": "Stars Removed", "bit_depth": "32-bit floating point", "is_mono": False,
+                "command_id": "remove_stars", "preset": {"tool": "starnet", "linear": bool(did_stretch)}}
         doc.apply_edit(final_starless.astype(np.float32, copy=False), metadata=meta, step_name="Stars Removed")
         if hasattr(main, "_log"): main._log("Stars Removed (StarNet, headless)")
     except Exception as e:
@@ -345,7 +346,10 @@ def _run_darkstar_headless(main, doc, p):
         final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
 
         try:
-            meta = {"step_name": "Stars Removed", "bit_depth": "32-bit floating point", "is_mono": bool(orig_was_mono)}
+            meta = {"step_name": "Stars Removed", "bit_depth": "32-bit floating point", "is_mono": bool(orig_was_mono),
+                    "command_id": "remove_stars",
+                    "preset": {"tool": "darkstar", "mode": mode, "stride": stride,
+                               "disable_gpu": disable_gpu, "show_extracted_stars": show}}
             doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
             if hasattr(main, "_log"):
                 main._log("Stars Removed (DarkStar, headless/integrated)")
@@ -820,6 +824,8 @@ def _run_syqon_headless(main, doc, p):
                 }
             }
         }
+        meta["command_id"] = "remove_stars"
+        meta["preset"] = dict(meta["replay_last"]["params"])
 
         try:
             doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
@@ -969,6 +975,8 @@ def _run_syqon_standalone_cli_headless(main, doc, p):
                 }
             }
         }
+        meta["command_id"] = "remove_stars"
+        meta["preset"] = dict(meta["replay_last"]["params"])
 
         try:
             doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
@@ -1032,4 +1040,4 @@ def open_remove_stars_with_preset(main_window, preset: dict | None = None):
 
     # StarNet (or unknown): no settings surface -> run headless with the seeded preset.
     run_remove_stars_via_preset(main_window, p, target_doc=doc)
-    return None        
+    return None

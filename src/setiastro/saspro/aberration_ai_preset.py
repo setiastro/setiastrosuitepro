@@ -123,7 +123,24 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
         except Exception:
             out2 = out
 
+        # Build the canonical replay preset up front so it can be stamped onto
+        # BOTH the committed edit's metadata (the replay marker) and
+        # _last_headless_command (replay-last). Same schema as the dialog's
+        # get_preset(): {model, patch, overlap, border_px, auto_gpu, provider?}.
+        auto_flag = bool(auto_gpu)
+        replay_preset = {
+            "model": model,
+            "patch": int(patch),
+            "overlap": int(overlap),
+            "border_px": int(border_px),
+            "auto_gpu": auto_flag,
+        }
+        if not auto_flag:
+            replay_preset["provider"] = provider_label
+
         meta = {
+            "command_id": "aberrationai",
+            "preset": dict(replay_preset),
             "is_mono": (out2.ndim == 2),
             "processing_parameters": {
                 "AberrationAI": {
@@ -148,22 +165,10 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
 
             # ---- Register as last_headless_command for Replay ----
             try:
-                auto_flag = bool(auto_gpu)
-                replay_preset = {
-                    "model": model,
-                    "patch": int(patch),
-                    "overlap": int(overlap),
-                    "border_px": int(border_px),
-                    "auto_gpu": auto_flag,
-                }
-                if not auto_flag:
-                    replay_preset["provider"] = provider_label
-
-                payload = {
+                setattr(main, "_last_headless_command", {
                     "command_id": "aberrationai",
-                    "preset": replay_preset,
-                }
-                setattr(main, "_last_headless_command", payload)
+                    "preset": dict(replay_preset),
+                })
             except Exception:
                 pass
             # -------------------------------------------------------

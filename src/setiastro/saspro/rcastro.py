@@ -2065,14 +2065,21 @@ def run_rcastro_via_preset(main, preset: dict | None = None, *, doc=None):
 
     p = dict(preset or {})
 
-    # Record for Replay Last
+    # Record for Replay Last (menu-label bookkeeping), THEN always stamp the
+    # canonical marker shape onto _last_headless_command so the async commit in
+    # _on_finished recovers the full preset. remember_last_headless_command may
+    # store a different shape that _on_finished's strict check rejects — that was
+    # the EMPTY-PRESET-on-drop bug (it fell back to {"product": product}). The
+    # dialog _run writes this exact shape directly, so it is known-good.
     try:
         remember = getattr(main, "remember_last_headless_command", None) or \
                    getattr(main, "_remember_last_headless_command", None)
         if callable(remember):
             remember("rcastro", p, description="RC-Astro")
-        else:
-            main._last_headless_command = {"command_id": "rcastro", "preset": dict(p)}
+    except Exception:
+        pass
+    try:
+        main._last_headless_command = {"command_id": "rcastro", "preset": dict(p)}
     except Exception:
         pass
 

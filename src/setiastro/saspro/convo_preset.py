@@ -459,17 +459,20 @@ def apply_convo_via_preset(main_window, doc, preset: dict):
 
     meta = dict(getattr(doc, "metadata", {}) or {})
     meta["source"] = "ConvoDeconvo"
+    meta["command_id"] = "convo"
+    meta["preset"] = dict(p)
+    # scrub any stale routing keys inherited from the copied doc metadata
+    meta.pop("cid", None)
+    meta.pop("preset_dict", None)
 
     try:
         if hasattr(doc, "apply_edit"):
-            # Let Document handle full vs ROI, history, etc.
             doc.apply_edit(
                 out.astype(np.float32, copy=False),
                 metadata=meta,
                 step_name="Convo/Deconvo (preset)",
             )
         else:
-            # Fallback for legacy paths
             if hasattr(dm, "set_active_document"):
                 dm.set_active_document(doc)
             dm.update_active_document(
@@ -478,7 +481,6 @@ def apply_convo_via_preset(main_window, doc, preset: dict):
                 step_name="Convo/Deconvo (preset)",
             )
     except Exception:
-        # Re-raise so replay_last_action_on_base can show the warning
         raise
 
 def run_convo_via_preset(main, doc_or_preset=None, preset: dict | None = None, *, target_doc=None):

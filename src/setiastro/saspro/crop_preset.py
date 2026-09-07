@@ -143,6 +143,14 @@ def apply_crop_via_preset(mw, doc, preset: dict) -> np.ndarray:
     except Exception:
         pass
 
+    # Replay marker — stamp explicitly so it overrides any stale command_id
+    # copied in from doc.metadata (the convo-style leak), and carries the
+    # exact preset this call consumed.
+    meta["command_id"] = "crop"
+    meta["preset"] = dict(pr)
+    meta.pop("cid", None)
+    meta.pop("preset_dict", None)
+
     # Apply to document or open new
     if create_new:
         dm = getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)

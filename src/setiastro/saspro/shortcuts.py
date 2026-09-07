@@ -1846,13 +1846,25 @@ class ShortcutManager:
 
     def add_shortcut_from_payload(self, payload: dict, pos: QPoint):
         """
-        Create a desktop shortcut from a full command payload
-        (e.g. drag from History Explorer with command_id + preset).
+        Create desktop shortcut(s) from a command payload dropped on the canvas.
+
+        - Normal payload {command_id, preset} → one shortcut.
+        - Bundle payload {command_id:"function_bundle", steps:[...]} (a multi-row
+          drag from History Explorer) → one shortcut PER step, cascaded from the
+          drop point so they don't stack. Order = step order.
         """
         if not isinstance(payload, dict):
             return
 
         cid = payload.get("command_id") or payload.get("cid")
+
+        # Multi: explode a function_bundle into one shortcut per step
+        if cid == "function_bundle":
+            steps = payload.get("steps")
+            if isinstance(steps, list) and steps:
+                self._add_shortcuts_from_steps(steps, pos)
+            return
+
         if not isinstance(cid, str) or not cid:
             return
 
@@ -1863,12 +1875,11 @@ class ShortcutManager:
             except Exception:
                 preset = {}
 
-        # Normal shortcut creation
+        # Normal single-shortcut creation
         sid = uuid.uuid4().hex
         label = self._default_label_for(cid)
         self.add_shortcut(cid, pos, label=label, shortcut_id=sid)
 
-        # Attach preset at instance-level (same mechanism as context menu)
         w = self.widgets.get(sid)
         if w and not _is_dead(w):
             try:
@@ -1876,8 +1887,45 @@ class ShortcutManager:
             except Exception:
                 pass
 
-        # Persist layout + presets
         self.save_shortcuts()
+
+    def _add_shortcuts_from_steps(self, steps: list[dict], pos: QPoint):
+        """One shortcut per bundle step, cascaded diagonally from the drop point."""
+        dx = dy = 28  # cascade offset per shortcut, in px
+        made = 0
+        for st in steps:
+            if not isinstance(st, dict):
+                continue
+            scid = st.get("command_id") or st.get("cid")
+            # skip empties and a nested bundle (shouldn't happen, but be safe)
+            if not isinstance(scid, str) or not scid or scid == "function_bundle":
+                continue
+            # only create if the command actually exists in the registry
+            if self.registry.get(scid) is None:
+                continue
+
+            spreset = st.get("preset") or {}
+            if not isinstance(spreset, dict):
+                try:
+                    spreset = dict(spreset)
+                except Exception:
+                    spreset = {}
+
+            sid = uuid.uuid4().hex
+            label = self._default_label_for(scid)
+            step_pos = QPoint(pos.x() + dx * made, pos.y() + dy * made)
+            self.add_shortcut(scid, step_pos, label=label, shortcut_id=sid)
+
+            w = self.widgets.get(sid)
+            if w and not _is_dead(w):
+                try:
+                    w._save_preset(spreset)
+                except Exception:
+                    pass
+            made += 1
+
+        if made:
+            self.save_shortcuts()
 
 
     def update_label(self, shortcut_id: str, new_label: str):

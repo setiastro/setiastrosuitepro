@@ -168,6 +168,9 @@ def run_graxpert_via_preset(main_window, preset: dict | None = None, target_doc=
             output_basename,
             workdir,
             target_doc=doc,
+            op_label=op_label,
+            meta_extras=meta_extras,
+            replay_preset=preset_for_replay,
         )
     finally:
         def _clear_flags():
