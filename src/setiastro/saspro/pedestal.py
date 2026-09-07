@@ -466,6 +466,8 @@ class RemovePedestalDialog(QDialog):
             )
             meta = {
                 "step_name": "Pedestal Removal",
+                "command_id": "pedestal",
+                "preset": self._pedestal_params(),
                 "bit_depth": "32-bit floating point",
                 "is_mono": (self._preview.ndim == 2),
                 "pedestal": {

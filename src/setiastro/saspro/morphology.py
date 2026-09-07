@@ -76,8 +76,9 @@ def apply_morphology_to_doc(doc, preset: dict | None):
             base = np.clip(base, 0.0, 1.0)
         out = _blend_with_mask(base, out, m).astype(np.float32, copy=False)
 
-    if hasattr(doc, "set_image"): doc.set_image(out, step_name="Morphology")
-    elif hasattr(doc, "apply_numpy"): doc.apply_numpy(out, step_name="Morphology")
+    _meta = {"step_name": "Morphology", "command_id": "morphology",
+             "preset": {"operation": str(op), "kernel": int(ker), "iterations": int(it)}}
+    if hasattr(doc, "set_image"): doc.set_image(out, metadata=_meta, step_name="Morphology")
     else: doc.image = out
 
 # Note: _get_active_mask_resized and _blend_with_mask imported from setiastro.saspro.widgets.image_utils
@@ -293,10 +294,10 @@ class MorphologyDialogPro(QDialog):
                 out = _blend_with_mask(base, out, m).astype(np.float32, copy=False)
 
             # Commit to document
+            _meta = {"step_name": "Morphology", "command_id": "morphology",
+                     "preset": {"operation": op, "kernel": int(k), "iterations": int(it)}}
             if hasattr(self.doc, "set_image"):
-                self.doc.set_image(out, step_name="Morphology")
-            elif hasattr(self.doc, "apply_numpy"):
-                self.doc.apply_numpy(out, step_name="Morphology")
+                self.doc.set_image(out, metadata=_meta, step_name="Morphology")
             else:
                 self.doc.image = out
 

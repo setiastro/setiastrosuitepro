@@ -119,8 +119,6 @@ def apply_clahe_to_doc(doc, preset: dict | None):
     out = out.astype(np.float32, copy=False)
     if hasattr(doc, "set_image"):
         doc.set_image(out, step_name="CLAHE")
-    elif hasattr(doc, "apply_numpy"):
-        doc.apply_numpy(out, step_name="CLAHE")
     else:
         doc.image = out
 
@@ -357,10 +355,11 @@ class CLAHEDialogPro(QDialog):
             out = out.astype(np.float32, copy=False)
 
             # --- Commit to document ---
+            _meta = {"step_name": "CLAHE",
+                     "command_id": "clahe",
+                     "preset": {"clip_limit": float(clip), "tile_px": int(tile_px)}}
             if hasattr(self.doc, "set_image"):
-                self.doc.set_image(out, step_name="CLAHE")
-            elif hasattr(self.doc, "apply_numpy"):
-                self.doc.apply_numpy(out, step_name="CLAHE")
+                self.doc.set_image(out, metadata=_meta, step_name="CLAHE")
             else:
                 self.doc.image = out
 

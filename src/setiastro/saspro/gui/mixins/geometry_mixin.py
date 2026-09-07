@@ -509,7 +509,9 @@ class GeometryMixin:
 
     def _apply_geom_with_wcs(self, doc, out_image: np.ndarray,
                             M_src_to_dst: np.ndarray | None,
-                            step_name: str):
+                            step_name: str,
+                            command_id: str | None = None,
+                            preset: dict | None = None):
         out_h, out_w = out_image.shape[:2]
         meta = dict(getattr(doc, "metadata", {}) or {})
 
@@ -546,11 +548,11 @@ class GeometryMixin:
 
         # Push the image + updated metadata back into the document
         if hasattr(doc, "apply_edit"):
-            doc.apply_edit(
-                out_image,
-                metadata={**meta, "step_name": step_name},
-                step_name=step_name,
-            )
+            _md = {**meta, "step_name": step_name}
+            if command_id:
+                _md["command_id"] = command_id
+                _md["preset"] = dict(preset or {})
+            doc.apply_edit(out_image, metadata=_md, step_name=step_name)
         else:
             doc.image = out_image
             try:
@@ -837,6 +839,8 @@ class GeometryMixin:
 
         meta = {
             "step_name": "Invert",
+            "command_id": "geom_invert",
+            "preset": {},
             "masked": bool(mid),
             "mask_id": mid,
             "mask_blend": "m*out+(1-m)*src",
@@ -858,7 +862,8 @@ class GeometryMixin:
             [0.0, 0.0, 1.0],
         ], dtype=float)
 
-        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Flip Horizontal")
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Flip Horizontal",
+                                  command_id="geom_flip_horizontal")
 
     def _apply_geom_flip_v_to_doc(self, doc):
         """Apply vertical flip to document with WCS update."""
@@ -872,7 +877,8 @@ class GeometryMixin:
             [0.0, 0.0, 1.0],
         ], dtype=float)
 
-        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Flip Vertical")
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Flip Vertical",
+                                  command_id="geom_flip_vertical")
 
     def _apply_geom_rot_cw_to_doc(self, doc):
         """Apply 90° clockwise rotation to document with WCS update."""
@@ -886,7 +892,8 @@ class GeometryMixin:
             [0.0, 0.0, 1.0],
         ], dtype=float)
 
-        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 90° Clockwise")
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 90° Clockwise",
+                                  command_id="geom_rotate_clockwise")
 
     def _apply_geom_rot_ccw_to_doc(self, doc):
         """Apply 90° counterclockwise rotation to document with WCS update."""
@@ -900,7 +907,8 @@ class GeometryMixin:
             [0.0, 0.0, 1.0],
         ], dtype=float)
 
-        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 90° Counterclockwise")
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 90° Counterclockwise",
+                                  command_id="geom_rotate_counterclockwise")
 
     def _apply_geom_rot_180_to_doc(self, doc):
         """Apply 180° rotation to document with WCS update."""
@@ -916,7 +924,8 @@ class GeometryMixin:
             [0.0, 0.0, 1.0],
         ], dtype=float)
 
-        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 180°")
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name="Rotate 180°",
+                                  command_id="geom_rotate_180")
 
     def _apply_geom_rot_any_to_doc(self, doc, *, angle_deg: float):
         if cv2 is None:
@@ -979,7 +988,9 @@ class GeometryMixin:
             # warpPerspective works on multi-channel too
             out = cv2.warpPerspective(src, M, (out_w, out_h), flags=flags)
 
-        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name=f"Rotate ({angle_deg:g}°)")
+        self._apply_geom_with_wcs(doc, out, M_src_to_dst=M, step_name=f"Rotate ({angle_deg:g}°)",
+                                  command_id="geom_rotate_any",
+                                  preset={"angle_deg": float(angle_deg)})
 
 
     def _apply_geom_rescale_to_doc(self, doc, *, factor: float, method: str = "bilinear"):
@@ -1019,7 +1030,9 @@ class GeometryMixin:
         ], dtype=float)
 
         self._apply_geom_with_wcs(doc, out, M_src_to_dst=M,
-                                  step_name=f"Rescale ({method}, {factor:g}×)")
+                                  step_name=f"Rescale ({method}, {factor:g}×)",
+                                  command_id="geom_rescale",
+                                  preset={"factor": float(factor), "method": str(method)})
 
     def _apply_geom_resize_canvas_to_doc(
         self,
@@ -1077,10 +1090,11 @@ class GeometryMixin:
             ], dtype=float)
 
         self._apply_geom_with_wcs(
-            doc,
-            out,
-            M_src_to_dst=M,
-            step_name=f"Resize Canvas ({old_w}×{old_h} → {new_w}×{new_h})"
+            doc, out, M_src_to_dst=M,
+            step_name=f"Resize Canvas ({old_w}×{old_h} → {new_w}×{new_h})",
+            command_id="geom_resize_canvas",
+            preset={"width": int(new_w), "height": int(new_h), "anchor": str(anchor),
+                    "fill_value": float(fill_value), "update_wcs": bool(update_wcs)},
         )
 
     def _apply_geom_resize_canvas_preset_to_doc(self, doc, preset):
@@ -1162,7 +1176,5 @@ class GeometryMixin:
 
         if hasattr(doc, "set_image"):
             doc.set_image(out, step_name=f"Rescale ×{factor:.2f}")
-        elif hasattr(doc, "apply_numpy"):
-            doc.apply_numpy(out, step_name=f"Rescale ×{factor:.2f}")
         else:
             doc.image = out

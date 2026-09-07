@@ -1033,6 +1033,8 @@ class SatChromaTool(QDialog):
 
             meta = {
                 "step_name": f"SatChroma — {mode_name}",
+                "command_id": "satchroma",
+                "preset":    self.get_preset(),
                 "mode":      self.combo_mode.currentText(),
                 "strength":  self.spin_strength.value(),
                 "points":    self.canvas.get_points(),

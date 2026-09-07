@@ -459,7 +459,14 @@ class LinearFitDialog(QDialog):
 
         # 1) Apply result via DocManager (ROI/full handled there)
         try:
-            self.dm.apply_edit_to_active(out_img, step_name=step_name)
+            _preset = self._linear_fit_params()
+            self.dm.apply_edit_to_active(
+                out_img,
+                step_name=step_name,
+                metadata={"step_name": step_name,
+                          "command_id": "linear_fit",
+                          "preset": _preset},
+            )
         except Exception as e:
             QMessageBox.warning(self, "Linear Fit", f"Applied, but could not update document:\n{e}")
 

@@ -1339,6 +1339,9 @@ class SyQonStarlessDialog(QDialog):
             }
         }
 
+        meta["command_id"] = "remove_stars"
+        meta["preset"] = self.get_preset()
+
         self.doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
         if hasattr(self.main, "_log"):
             self.main._log("Stars Removed (SyQon)")
@@ -2511,6 +2514,15 @@ def _on_starnet_finished(main, doc, return_code, dialog, input_path, output_path
         except Exception:
             pass
 
+        _last = getattr(main, "_last_headless_command", None)
+        if isinstance(_last, dict) and _last.get("command_id") == "remove_stars" \
+                and isinstance(_last.get("preset"), dict):
+            meta["command_id"] = "remove_stars"
+            meta["preset"] = dict(_last["preset"])
+        else:
+            meta["command_id"] = "remove_stars"
+            meta["preset"] = {"tool": "starnet", "linear": bool(did_stretch)}
+
         doc.apply_edit(
             final_to_apply,
             metadata=meta,
@@ -2748,6 +2760,15 @@ def _darkstar_run_from_dialog(main, doc, cfg):
                     delattr(main, "_last_remove_stars_params")
             except Exception:
                 pass
+
+            _last = getattr(main, "_last_headless_command", None)
+            if isinstance(_last, dict) and _last.get("command_id") == "remove_stars" \
+                    and isinstance(_last.get("preset"), dict):
+                meta["command_id"] = "remove_stars"
+                meta["preset"] = dict(_last["preset"])
+            else:
+                meta["command_id"] = "remove_stars"
+                meta["preset"] = {"tool": "darkstar"}
 
             doc.apply_edit(final_to_apply, metadata=meta, step_name="Stars Removed")
             if hasattr(main, "_log"):

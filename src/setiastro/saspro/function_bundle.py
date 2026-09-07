@@ -1538,6 +1538,35 @@ class FunctionBundleManager:
     def list_bundles(self) -> list[dict]:
         return self._load_all()
 
+    def add_bundle(self, name: str, steps: list[dict]) -> str:
+        """Append a new bundle, de-duplicating the display name. Returns the
+        final name actually stored."""
+        bundles = self._load_all()
+
+        base = (name or "Function Bundle").strip() or "Function Bundle"
+        existing = {(b.get("name") or "").strip().lower() for b in bundles}
+        final = base
+        i = 2
+        while final.strip().lower() in existing:
+            final = f"{base} ({i})"
+            i += 1
+
+        clean = []
+        for st in steps or []:
+            if isinstance(st, dict) and st.get("command_id"):
+                entry = {"command_id": st["command_id"]}
+                p = st.get("preset")
+                entry["preset"] = dict(p) if isinstance(p, dict) else {}
+                clean.append(entry)
+
+        bundles.append({"name": final, "steps": clean})
+        try:
+            self._settings.setValue(self.SETTINGS_KEY, json.dumps(bundles, ensure_ascii=False))
+            self._settings.sync()
+        except Exception:
+            pass
+        return final
+
     def get_bundle(self, name: str) -> dict | None:
         if not name:
             return None
@@ -1563,6 +1592,20 @@ def get_bundle_manager(app=None) -> FunctionBundleManager:
     if _bundle_mgr is None:
         _bundle_mgr = FunctionBundleManager(app)
     return _bundle_mgr
+
+def add_function_bundle(name: str, steps: list[dict], parent=None) -> str:
+    """Persist a new Function Bundle and refresh an open dialog so it won't
+    clobber the new bundle on its next save. Returns the stored name."""
+    mgr = get_bundle_manager()
+    final = mgr.add_bundle(name, steps)
+
+    global _dialog_singleton
+    try:
+        if _dialog_singleton is not None:
+            _dialog_singleton.reload_from_settings_after_import()
+    except Exception:
+        pass
+    return final
 
 # ---------- script / command entry point ----------
 def _normalize_steps_for_hcd(steps: list[Any]) -> list[Dict[str, Any]]:

@@ -1550,6 +1550,8 @@ class AberrationAIDialog(QDialog):
         # 2) Metadata for this step (stored on the document)
         meta = {
             "is_mono": (out.ndim == 2),
+            "command_id": "aberrationai",
+            "preset": self.get_preset(),
             "processing_parameters": {
                 **(getattr(doc, "metadata", {}) or {}).get("processing_parameters", {}),
                 "AberrationAI": {
@@ -1562,7 +1564,7 @@ class AberrationAIDialog(QDialog):
             },
             "masked": bool(self._active_mask_id(doc)),
             "mask_id": self._active_mask_id(doc),
-            "mask_blend": "m*out+(1-m)*src",            
+            "mask_blend": "m*out+(1-m)*src",
         }
 
         # 3) Apply through history-aware API (either path is fine)

@@ -1005,11 +1005,13 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
 
         meta = {
             "step_name": "Denoised",
+            "command_id": "syqontools",
+            "preset": self.get_preset(),
             "bit_depth": "32-bit floating point",
             "is_mono": bool(orig_was_mono),
             "masked": bool(getattr(self.doc, "active_mask_id", None)),
             "mask_id": getattr(self.doc, "active_mask_id", None) or None,
-            "mask_blend": "m*out+(1-m)*src",            
+            "mask_blend": "m*out+(1-m)*src",
             "replay_last": {
                 "op": "syqon_prism",
                 "params": {
@@ -1031,18 +1033,8 @@ class _SyQonDenoiseHubPage(_WorkerCloseGuardMixin, QWidget):
 
         try:
             self.main._last_headless_command = {
-                "command_id": "syqon_prism",
-                "preset": {
-                    "model_kind": self.model_kind(),
-                    "tile_size": int(self.spin_tile.value()),
-                    "overlap": int(self.spin_overlap.value()),
-                    "pad": int(self.spin_pad.value()),
-                    "strength": float(self.spin_strength.value()),
-                    "model_path": str(self._model_dst_path()),
-                    "use_mtf": bool(do_mtf),
-                    "mtf_target_median": float(self.spin_mtf_median.value()),
-                    "use_amp": bool(self.chk_amp.isChecked()),
-                },
+                "command_id": "syqontools",
+                "preset": self.get_preset(),
             }
         except Exception:
             pass
@@ -1756,6 +1748,8 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
 
             meta = {
                 "step_name": "Parallax",
+                "command_id": "syqontools",
+                "preset": self.get_preset(),
                 "bit_depth": "32-bit floating point",
                 "is_mono":   bool(self._orig_was_mono),
                 "masked":    bool(getattr(self.doc, "active_mask_id", None)),
@@ -2388,6 +2382,8 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
 
         meta = {
             "step_name": "Parallax",
+            "command_id": "syqontools",
+            "preset": dict(preset or {}),
             "bit_depth": "32-bit floating point",
             "is_mono":   bool(orig_was_mono),
             "masked":    bool(getattr(doc, "active_mask_id", None)),
@@ -2550,6 +2546,8 @@ def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
 
         meta = {
             "step_name": "Denoised",
+            "command_id": "syqontools",
+            "preset": dict(preset or {}),
             "bit_depth": "32-bit floating point",
             "is_mono": bool(orig_was_mono),
             "masked": bool(getattr(doc, "active_mask_id", None)),

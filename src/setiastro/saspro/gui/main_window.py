@@ -5363,59 +5363,74 @@ class AstroSuiteProMainWindow(
             except Exception:
                 pass
 
-    def _convert_rgb_to_mono_active(self):
-        """
-        Convert active RGB document to mono in-place (undoable) using the
-        currently selected luminance method — same math as Extract Luminance
-        but overwrites the current view instead of spawning a new one.
-        """
+    # ============================================================
+    # RGB / Mono / channel-order tools (replayable + bundle-able)
+    # ============================================================
+
+    def _resolve_active_doc(self):
+        dm = getattr(self, "docman", None)
+        if dm is None:
+            return None
+        try:
+            return dm.get_active_document()
+        except Exception:
+            return None
+
+    def _doc_name(self, doc) -> str:
+        try:
+            return getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
+        except Exception:
+            return "Active"
+
+    # ---- RGB → Mono -------------------------------------------------------
+
+    def _rgb_to_mono_on_doc(self, doc, preset=None) -> bool:
+        """Convert an RGB doc to mono (undoable) using a luminance method.
+        Records a replay marker so it can be replayed / bundled. Works on any doc."""
         from setiastro.saspro.luminancerecombine import (
-            compute_luminance,
-            resolve_luma_profile_weights,
+            compute_luminance, resolve_luma_profile_weights,
         )
         import numpy as np
 
         dm = getattr(self, "docman", None)
-        if dm is None:
-            return
-        try:
-            doc = dm.get_active_document()
-        except Exception:
-            doc = None
-        if doc is None:
-            return
-
+        if dm is None or doc is None:
+            return False
         img = getattr(doc, "image", None)
         if img is None:
-            return
+            return False
 
         x = np.asarray(img)
+        name = self._doc_name(doc)
 
-        # Already mono?
         if x.ndim == 2 or (x.ndim == 3 and x.shape[-1] == 1):
-            try:
-                name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
-            except Exception:
-                name = "Active"
             if hasattr(self, "_log"):
                 self._log(f"RGB → Mono: '{name}' is already mono (shape={x.shape}).")
-            return
-
-        # Must be RGB
+            return False
         if not (x.ndim == 3 and x.shape[-1] >= 3):
             if hasattr(self, "_log"):
                 self._log(f"RGB → Mono: unsupported shape {x.shape}.")
-            return
+            return False
 
-        method = getattr(self, "luma_method", "rec709")
+        preset = dict(preset or {})
+        method = preset.get("luma_method") or getattr(self, "luma_method", "rec709")
         resolved_method, w, profile_name = resolve_luma_profile_weights(method)
+
+        # Faithful replay of custom profiles: explicit weights in the preset win.
+        pw = preset.get("luma_weights")
+        if pw:
+            try:
+                w = np.asarray(pw, dtype=np.float32)
+            except Exception:
+                pass
+
         L = compute_luminance(x, method=resolved_method, weights=w).astype(np.float32)
 
-        try:
-            md = dict(getattr(doc, "metadata", None) or {})
-        except Exception:
-            md = {}
+        # Canonical replay preset (what _apply_rgb_to_mono_to_doc consumes).
+        rp = {"luma_method": resolved_method}
+        if w is not None:
+            rp["luma_weights"] = np.asarray(w, dtype=np.float32).tolist()
 
+        md = dict(getattr(doc, "metadata", None) or {})
         md["is_mono"] = True
         md["color_model"] = "Mono"
         md["channels"] = 1
@@ -5424,6 +5439,8 @@ class AstroSuiteProMainWindow(
             md["luma_weights"] = np.asarray(w, dtype=np.float32).tolist()
         if profile_name:
             md["luma_profile"] = str(profile_name)
+        md["command_id"] = "rgb_to_mono"     # → stamped into the replay marker
+        md["preset"] = dict(rp)
         md["__op_params__"] = {
             "op": "rgb_to_mono",
             "luma_method": resolved_method,
@@ -5431,25 +5448,9 @@ class AstroSuiteProMainWindow(
             "to_shape": tuple(L.shape),
         }
 
-        try:
-            name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
-        except Exception:
-            name = "Active"
-
         suffix = profile_name or resolved_method
-
         try:
-            dm.update_active_document(
-                L,
-                metadata=md,
-                step_name=f"RGB → Mono ({suffix})",
-                doc=doc,
-            )
-            if hasattr(self, "_log"):
-                self._log(
-                    f"RGB → Mono: '{name}' converted using {suffix} "
-                    f"(shape {x.shape} → {L.shape})."
-                )
+            dm.update_active_document(L, metadata=md, step_name=f"RGB → Mono ({suffix})", doc=doc)
         except Exception:
             import traceback
             try:
@@ -5457,77 +5458,64 @@ class AstroSuiteProMainWindow(
                 QMessageBox.critical(self, "RGB → Mono", traceback.format_exc())
             except Exception:
                 pass
-
-    def _convert_mono_to_rgb_active(self):
-        """
-        Convert active mono document to RGB by duplicating the channel.
-        Updates the active document in-place (undoable).
-        """
-        dm = getattr(self, "docman", None)
-        if dm is None:
-            return
+            return False
 
         try:
-            doc = dm.get_active_document()
+            self._last_headless_command = {"command_id": "rgb_to_mono", "preset": dict(rp)}
         except Exception:
-            doc = None
-        if doc is None:
-            return
+            pass
+        if hasattr(self, "_log"):
+            self._log(f"RGB → Mono: '{name}' converted using {suffix} (shape {x.shape} → {L.shape}).")
+        return True
 
-        img = getattr(doc, "image", None)
-        if img is None:
-            return
+    def _convert_rgb_to_mono_active(self):
+        self._rgb_to_mono_on_doc(self._resolve_active_doc(), preset=None)
 
+    def _apply_rgb_to_mono_to_doc(self, doc, preset=None):
+        return self._rgb_to_mono_on_doc(doc, preset)
+
+    # ---- Mono → RGB -------------------------------------------------------
+
+    def _mono_to_rgb_on_doc(self, doc, preset=None) -> bool:
+        """Convert a mono doc to RGB by triplicating the channel (undoable)."""
         import numpy as np
 
-        x = np.asarray(img)
+        dm = getattr(self, "docman", None)
+        if dm is None or doc is None:
+            return False
+        img = getattr(doc, "image", None)
+        if img is None:
+            return False
 
-        # Already RGB?
+        x = np.asarray(img)
+        name = self._doc_name(doc)
+
         if x.ndim == 3 and x.shape[-1] == 3:
-            try:
-                name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
-            except Exception:
-                name = "Active"
             if hasattr(self, "_log"):
                 self._log(f"Mono → RGB: '{name}' is already RGB (shape={getattr(x,'shape',None)}).")
-            return
+            return False
 
-        # Determine what we're converting FROM
-        src_desc = "unknown"
         if x.ndim == 2:
-            mono = x
-            src_desc = "mono (H×W)"
+            mono = x; src_desc = "mono (H×W)"
         elif x.ndim == 3 and x.shape[-1] == 1:
-            mono = x[..., 0]
-            src_desc = "mono (H×W×1)"
+            mono = x[..., 0]; src_desc = "mono (H×W×1)"
         else:
-            # Unknown format (e.g., multi-channel >3)
-            try:
-                name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
-            except Exception:
-                name = "Active"
             if hasattr(self, "_log"):
                 self._log(f"Mono → RGB: '{name}' not convertible (shape={getattr(x,'shape',None)}).")
-            return
+            return False
 
-        before_shape = getattr(x, "shape", None)
-        before_dtype = getattr(x, "dtype", None)
-
+        before_shape, before_dtype = getattr(x, "shape", None), getattr(x, "dtype", None)
         mono = mono.astype(np.float32, copy=False)
         rgb = np.stack([mono, mono, mono], axis=-1)
 
-        # metadata: preserve existing, but force "not mono"
-        try:
-            md = dict(getattr(doc, "metadata", None) or {})
-        except Exception:
-            md = {}
-
+        rp = {"mode": "triplicate"}
+        md = dict(getattr(doc, "metadata", None) or {})
         md["is_mono"] = False
         md["color_model"] = "RGB"
         md["channels"] = 3
         md["source"] = (md.get("source") or "Edit")
-
-        # If you track op params for history explorer
+        md["command_id"] = "mono_to_rgb"
+        md["preset"] = dict(rp)
         md["__op_params__"] = {
             "op": "mono_to_rgb",
             "mode": "triplicate",
@@ -5536,27 +5524,8 @@ class AstroSuiteProMainWindow(
             "to_shape": tuple(rgb.shape),
         }
 
-        # name for logging
         try:
-            name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
-        except Exception:
-            name = "Active"
-
-        try:
-            dm.update_active_document(
-                rgb,
-                metadata=md,
-                step_name="Mono → RGB",
-                doc=doc,  # explicit is safer
-            )
-
-            if hasattr(self, "_log"):
-                self._log(
-                    f"Mono → RGB: '{name}' converted {src_desc} "
-                    f"(shape={before_shape}, dtype={before_dtype}) → "
-                    f"RGB (shape={rgb.shape}, dtype={rgb.dtype})."
-                )
-
+            dm.update_active_document(rgb, metadata=md, step_name="Mono → RGB", doc=doc)
         except Exception:
             import traceback
             try:
@@ -5564,61 +5533,54 @@ class AstroSuiteProMainWindow(
                 QMessageBox.critical(self, "Mono → RGB", traceback.format_exc())
             except Exception:
                 pass
-
-    def _swap_rb_active(self):
-        """
-        Swap R and B channels in the active RGB document (undoable).
-        Intended for debayer/channel-order mismatches.
-        """
-        dm = getattr(self, "docman", None)
-        if dm is None:
-            return
+            return False
 
         try:
-            doc = dm.get_active_document()
+            self._last_headless_command = {"command_id": "mono_to_rgb", "preset": dict(rp)}
         except Exception:
-            doc = None
-        if doc is None:
-            return
+            pass
+        if hasattr(self, "_log"):
+            self._log(f"Mono → RGB: '{name}' converted {src_desc} "
+                    f"(shape={before_shape}, dtype={before_dtype}) → RGB (shape={rgb.shape}).")
+        return True
 
+    def _convert_mono_to_rgb_active(self):
+        self._mono_to_rgb_on_doc(self._resolve_active_doc(), preset=None)
+
+    def _apply_mono_to_rgb_to_doc(self, doc, preset=None):
+        return self._mono_to_rgb_on_doc(doc, preset)
+
+    # ---- Swap R ↔ B (bonus; same pattern) ---------------------------------
+
+    def _swap_rb_on_doc(self, doc, preset=None) -> bool:
+        import numpy as np
+
+        dm = getattr(self, "docman", None)
+        if dm is None or doc is None:
+            return False
         img = getattr(doc, "image", None)
         if img is None:
-            return
+            return False
 
-        import numpy as np
         x = np.asarray(img)
-
-        # Must be RGB
+        name = self._doc_name(doc)
         if not (x.ndim == 3 and x.shape[-1] == 3):
-            try:
-                name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
-            except Exception:
-                name = "Active"
-
             if hasattr(self, "_log"):
                 self._log(f"Swap R/B: '{name}' is not RGB (shape={getattr(x,'shape',None)}).")
-            return
+            return False
 
-        before_shape = x.shape
-        before_dtype = x.dtype
-
-        # swap channels without changing dtype
-        # (copy is safest so we don't mutate shared views)
+        before_shape, before_dtype = x.shape, x.dtype
         out = x.copy()
         out[..., 0], out[..., 2] = x[..., 2], x[..., 0]
 
-        # metadata: preserve existing, but annotate operation
-        try:
-            md = dict(getattr(doc, "metadata", None) or {})
-        except Exception:
-            md = {}
-
+        rp = {}
+        md = dict(getattr(doc, "metadata", None) or {})
         md["color_model"] = md.get("color_model", "RGB")
         md["channels"] = 3
         md["is_mono"] = False
         md["source"] = (md.get("source") or "Edit")
-
-        # If you track op params for history explorer
+        md["command_id"] = "swap_rb"
+        md["preset"] = dict(rp)
         md["__op_params__"] = {
             "op": "swap_rb",
             "from_shape": tuple(before_shape),
@@ -5627,24 +5589,7 @@ class AstroSuiteProMainWindow(
         }
 
         try:
-            name = getattr(doc, "display_name", lambda: None)() or getattr(doc, "name", "") or "Active"
-        except Exception:
-            name = "Active"
-
-        try:
-            dm.update_active_document(
-                out,
-                metadata=md,
-                step_name="Swap R ↔ B",
-                doc=doc,
-            )
-
-            if hasattr(self, "_log"):
-                self._log(
-                    f"Swap R/B: '{name}' swapped channels "
-                    f"(shape={before_shape}, dtype={before_dtype})."
-                )
-
+            dm.update_active_document(out, metadata=md, step_name="Swap R ↔ B", doc=doc)
         except Exception:
             import traceback
             try:
@@ -5652,6 +5597,21 @@ class AstroSuiteProMainWindow(
                 QMessageBox.critical(self, "Swap R/B", traceback.format_exc())
             except Exception:
                 pass
+            return False
+
+        try:
+            self._last_headless_command = {"command_id": "swap_rb", "preset": {}}
+        except Exception:
+            pass
+        if hasattr(self, "_log"):
+            self._log(f"Swap R/B: '{name}' swapped channels (shape={before_shape}, dtype={before_dtype}).")
+        return True
+
+    def _swap_rb_active(self):
+        self._swap_rb_on_doc(self._resolve_active_doc(), preset=None)
+
+    def _apply_swap_rb_to_doc(self, doc, preset=None):
+        return self._swap_rb_on_doc(doc, preset)
 
 
     def _on_stackingsuite_relaunch(self, old_dir: str, new_dir: str):
@@ -6909,8 +6869,6 @@ class AstroSuiteProMainWindow(
 
                     if hasattr(base_doc, "set_image"):
                         base_doc.set_image(out, step_name="WaveScale Dark Enhancer")
-                    elif hasattr(base_doc, "apply_numpy"):
-                        base_doc.apply_numpy(out, step_name="WaveScale Dark Enhancer")
                     else:
                         base_doc.image = out
 
@@ -8172,7 +8130,6 @@ class AstroSuiteProMainWindow(
 
                 out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
                 if hasattr(doc, "set_image"): doc.set_image(out, step_name="WaveScale HDR")
-                elif hasattr(doc, "apply_numpy"): doc.apply_numpy(out, step_name="WaveScale HDR")
                 else: doc.image = out
 
                 self._log(f"WaveScale HDR applied to '{target_sw.windowTitle()}' (n_scales={n_scales}, comp={compression_factor}, gamma={mask_gamma})")
@@ -8205,7 +8162,6 @@ class AstroSuiteProMainWindow(
                     )
                     out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
                     if hasattr(doc, "set_image"): doc.set_image(out, step_name="WaveScale Dark Enhance")
-                    elif hasattr(doc, "apply_numpy"): doc.apply_numpy(out, step_name="WaveScale Dark Enhance")
                     else: doc.image = out
                 self._log(f"WaveScale Dark Enhancer applied to '{target_sw.windowTitle()}' (n_scales={n_scales}, boost={boost_factor}, gamma={mask_gamma}, iter={iterations})")
             except Exception as e:
@@ -8264,7 +8220,6 @@ class AstroSuiteProMainWindow(
                 from setiastro.saspro.signature_insert import apply_signature_preset_to_doc
                 out = apply_signature_preset_to_doc(doc, preset)
                 if hasattr(doc, "set_image"): doc.set_image(out, step_name="Signature / Insert")
-                elif hasattr(doc, "apply_numpy"): doc.apply_numpy(out, step_name="Signature / Insert")
                 else: doc.image = out
                 fp = preset.get("file_path", "<file>"); pos = preset.get("position", "bottom_right")
                 self._log(f"Signature preset applied to '{target_sw.windowTitle()}' (file={fp}, pos={pos}, scale={preset.get('scale',100)}%, rot={preset.get('rotation',0)}Â deg, op={preset.get('opacity',100)}%)")

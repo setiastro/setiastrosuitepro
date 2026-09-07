@@ -284,8 +284,6 @@ def apply_pixel_math_to_doc(parent, doc, preset: dict | None):
     out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
     if hasattr(doc, "set_image"):
         doc.set_image(out, step_name="Pixel Math")
-    elif hasattr(doc, "apply_numpy"):
-        doc.apply_numpy(out, step_name="Pixel Math")
     else:
         doc.image = out
 
@@ -1878,8 +1876,6 @@ class PixelMathDialogPro(QDialog):
             else:
                 if hasattr(self.doc, "set_image"):
                     self.doc.set_image(out, step_name="Pixel Math")
-                elif hasattr(self.doc, "apply_numpy"):
-                    self.doc.apply_numpy(out, step_name="Pixel Math")
                 else:
                     self.doc.image = out
 
