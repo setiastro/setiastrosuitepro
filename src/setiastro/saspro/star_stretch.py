@@ -388,6 +388,8 @@ class StarStretchDialog(QDialog):
             _marr, mid, mname = self._active_mask_layer()
             meta = {
                 "step_name": "Star Stretch",
+                "command_id": "star_stretch",
+                "preset": self._star_stretch_params(),
                 "star_stretch": {
                     "stretch_factor": self.sld_st.value()/100.0,
                     "color_boost": self.sld_sat.value()/100.0,

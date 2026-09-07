@@ -1529,7 +1529,16 @@ class RCAstroDialog(QDialog):
 
         make_stars = (product == "sxt" and self.sxt_panel.chk_stars.isChecked())
         unscreen   = (product == "sxt" and self.sxt_panel.chk_unscreen.isChecked())
-        self._run_product(exe, doc, product, panel_args, make_stars, unscreen)
+        # Stash canonical preset so the async post-process commit can mark the edit.
+        try:
+            if getattr(self, "_main", None) is not None:
+                self._main._last_headless_command = {
+                    "command_id": "rcastro",
+                    "preset": self.get_preset(),
+                }
+        except Exception:
+            pass
+        self._run_product(exe, doc, product, panel_args, make_stars, unscreen)        
 
     def _run_product(self, exe: str, doc, product: str,
                      panel_args: list[str], make_stars: bool = False,
@@ -1728,10 +1737,19 @@ def _on_finished(main_dlg, doc, return_code, dlg,
 
     # Apply to current document
     try:
+        _last = getattr(main_window, "_last_headless_command", None)
+        if isinstance(_last, dict) and _last.get("command_id") == "rcastro" \
+                and isinstance(_last.get("preset"), dict) \
+                and str(_last["preset"].get("product", product)) == product:
+            _preset = dict(_last["preset"])
+        else:
+            _preset = {"product": product}
         doc.apply_edit(
             result,
             metadata={
                 "step_name": label,
+                "command_id": "rcastro",
+                "preset": _preset,
                 "bit_depth": "32-bit floating point",
                 "is_mono": bool(is_mono),
             },

@@ -1208,16 +1208,30 @@ class HistogramTransformDialogPro(QDialog):
             return
 
         try:
+            _preset = self._levels_params()
+            _meta = {"step_name": "Levels", "command_id": "levels", "preset": dict(_preset)}
             if hasattr(self.document, "apply_edit"):
                 self.document.apply_edit(
                     result.astype(np.float32, copy=False),
-                    metadata={"step_name": "Levels"},
-                    step_name="Levels"
+                    metadata=_meta,
+                    step_name="Levels",
                 )
             elif hasattr(self.document, "set_image"):
-                self.document.set_image(result, step_name="Levels")
+                self.document.set_image(result, metadata=_meta, step_name="Levels")
             else:
                 self.document.image = result
+
+            # Keep "Replay last / on base" consistent with the drop path.
+            try:
+                mw = self.parent()
+                _seen = 0
+                while mw is not None and not hasattr(mw, "_handle_command_drop") and _seen < 8:
+                    mw = mw.parent() if callable(getattr(mw, "parent", None)) else None
+                    _seen += 1
+                if mw is not None:
+                    mw._last_headless_command = {"command_id": "levels", "preset": dict(_preset)}
+            except Exception:
+                pass
         except Exception as e:
             self.btn_apply.setEnabled(True)
             self.btn_new.setEnabled(True)

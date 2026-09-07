@@ -297,8 +297,6 @@ def run_star_alignment_via_preset(app, preset: dict, target_doc) -> None:
     if overwrite:
         if hasattr(target_doc, "set_image"):
             target_doc.set_image(aligned, step_name=f"Star Alignment → {ref_name}")
-        elif hasattr(target_doc, "apply_numpy"):
-            target_doc.apply_numpy(aligned, step_name=f"Star Alignment → {ref_name}")
         else:
             target_doc.image = aligned
         try:

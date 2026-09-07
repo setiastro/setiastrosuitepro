@@ -1528,7 +1528,13 @@ class StatisticalStretchDialog(QDialog):
             parts.append("no_black_clip")
 
         step_name = f"Statistical Stretch ({', '.join(parts)})"
-        doc.apply_edit(out.astype(np.float32, copy=False), step_name=step_name)
+        doc.apply_edit(
+            out.astype(np.float32, copy=False),
+            metadata={"step_name": step_name,
+                      "command_id": "stat_stretch",
+                      "preset": dict(p)},
+            step_name=step_name,
+        )
 
         mw = self.parent()
         if hasattr(mw, "mdi") and mw.mdi.activeSubWindow():

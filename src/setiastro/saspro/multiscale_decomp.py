@@ -1868,6 +1868,8 @@ class MultiscaleDecompDialog(QDialog):
             mid = self._active_mask_id()
             meta = {
                 "step_name": "Multiscale Decomposition",
+                "command_id": "multiscale_decomp",
+                "preset": dict(self._multiscale_params()),
                 "masked": bool(mid),
                 "mask_id": mid,
                 "mask_blend": "m*out+(1-m)*src",
@@ -1878,8 +1880,6 @@ class MultiscaleDecompDialog(QDialog):
                     self._doc.apply_edit(out_final, meta, step_name="Multiscale Decomposition")
                 elif hasattr(self._doc, "set_image"):
                     self._doc.set_image(out_final, step_name="Multiscale Decomposition")
-                elif hasattr(self._doc, "apply_numpy"):
-                    self._doc.apply_numpy(out_final, step_name="Multiscale Decomposition")
                 else:
                     self._doc.image = out_final
             except Exception as e:

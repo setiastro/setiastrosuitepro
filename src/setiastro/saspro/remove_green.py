@@ -185,6 +185,13 @@ def remove_green_headless(
     step_label = f"SCNR (Remove {_CHANNEL_LABELS[ch]})"
     meta = {
         "step_name": step_label,
+        "command_id": "remove_green",
+        "preset": {
+            "amount": amt,
+            "mode": mode,
+            "preserve_lightness": bool(preserve_lightness),
+            "channel": ch,
+        },
         "remove_green": {
             "amount": amt,
             "mode": mode,

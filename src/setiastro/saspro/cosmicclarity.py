@@ -1629,8 +1629,6 @@ class CosmicClarityDialogPro(QDialog):
             self.doc.apply_edit(arr, meta, step_name=step_title)
         elif hasattr(self.doc, "set_image"):
             self.doc.set_image(arr, step_name=step_title)
-        elif hasattr(self.doc, "apply_numpy"):
-            self.doc.apply_numpy(arr, step_name=step_title)
         else:
             self.doc.image = arr
 
@@ -2451,8 +2449,6 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         if use_view:
             if hasattr(chosen_doc, "set_image"):
                 chosen_doc.set_image(out, step_name="Cosmic Clarity – Satellite Removal")
-            elif hasattr(chosen_doc, "apply_numpy"):
-                chosen_doc.apply_numpy(out, step_name="Cosmic Clarity – Satellite Removal")
             else:
                 chosen_doc.image = out
             return

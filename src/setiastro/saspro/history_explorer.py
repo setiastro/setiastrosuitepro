@@ -2,7 +2,8 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QSize, QPointF, QEvent, QMimeData
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton, QLabel,
-    QScrollArea, QWidget, QMessageBox, QSlider, QListWidgetItem, QApplication
+    QScrollArea, QWidget, QMessageBox, QSlider, QListWidgetItem, QApplication,
+    QInputDialog, QAbstractItemView, QMenu
 )
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QMouseEvent, QDrag
 from PyQt6 import sip
@@ -40,10 +41,14 @@ _NAME_TO_COMMAND_ID = {
     "curves": "curves",
     "ghs": "ghs",
     "generalized hyperbolic stretch": "ghs",
+    "levels": "levels",
+    "histogram transform": "levels",
+    "histogram transformation": "levels",
 
     # Background/gradient
     "abe": "abe",
     "automatic background extraction": "abe",
+    "adbe": "abe",
     "graxpert": "graxpert",
 
     # Star / color tools
@@ -72,6 +77,12 @@ _NAME_TO_COMMAND_ID = {
     "halo b gon": "halo_b_gon",
     "aberration ai": "aberrationai",
     "cosmic clarity": "cosmic_clarity",
+    "rgb → mono": "rgb_to_mono",
+    "rgb to mono": "rgb_to_mono",
+    "mono → rgb": "mono_to_rgb",
+    "mono to rgb": "mono_to_rgb",
+    "swap r ↔ b": "swap_rb",
+    "swap r/b": "swap_rb",    
 }
 
 
@@ -99,7 +110,20 @@ def _extract_cmd_payload_from_meta(meta: dict | None) -> dict | None:
     """
     if not isinstance(meta, dict):
         return None
-
+    # --- 0) Doc-local replay marker (most reliable; authoritative) ---
+    rp = meta.get("_replay")
+    if isinstance(rp, dict):
+        cid = _reconcile_cid(
+            rp.get("command_id"),
+            rp.get("step_name") or meta.get("step_name"),
+            bool(rp.get("cid_explicit")),
+        )
+        if cid:
+            return {"command_id": str(cid), "preset": _norm_preset(rp.get("preset"))}
+        # Marker exists but unresolved → this step just isn't replayable.
+        # Do NOT fall through to loose/leaked keys.
+        return None
+        # else fall through to the legacy heuristics below
     # --- 1) Embedded payload dicts ----------------------------
     for key in ("headless_payload", "replay_payload", "cmd_payload"):
         p = meta.get(key)
@@ -111,14 +135,26 @@ def _extract_cmd_payload_from_meta(meta: dict | None) -> dict | None:
                     "preset": _norm_preset(p.get("preset")),
                 }
 
-    # --- 2) Direct command_id + preset on metadata ------------
+    # --- 2) Direct command_id + preset on metadata (leak-guarded) ----
     cid = meta.get("command_id") or meta.get("cid")
     if cid:
-        preset = meta.get("preset") or meta.get("preset_dict") or {}
-        return {
-            "command_id": str(cid),
-            "preset": _norm_preset(preset),
-        }
+        cid_l = str(cid).strip().lower()
+        name_cid = _command_id_for_step_label(
+            meta.get("step_name") or meta.get("name") or ""
+        )
+        if name_cid == cid_l:
+            # Row's own name confirms the loose id → trust it and its preset.
+            preset = meta.get("preset") or meta.get("preset_dict") or {}
+            return {"command_id": cid_l, "preset": _norm_preset(preset)}
+        if name_cid:
+            # Name disagrees → the loose id leaked from a neighbouring op
+            # (self-identifying tools leave command_id/preset in metadata,
+            # which the next op inherits). Trust the row's name; the loose
+            # preset belonged to the other op.
+            return {"command_id": str(name_cid), "preset": {}}
+        # No name mapping to confirm the loose id → unreliable leftover.
+        # Never trust it (that's exactly how SCNR/GHS became phantom 'curves').
+        return None
 
     # --- 3) Heuristics for tools that only store preset + step_name ----
     preset = _norm_preset(meta.get("preset"))
@@ -262,23 +298,93 @@ def _norm_step_label(label: str) -> str:
     return " ".join(s.split())
 
 
+_KNOWN_CIDS_CACHE = None
+
+def _known_cids() -> set:
+    """Canonical cids from the local table plus the shared alias table."""
+    global _KNOWN_CIDS_CACHE
+    if _KNOWN_CIDS_CACHE is None:
+        s = set(_CANONICAL_CIDS)
+        try:
+            from setiastro.saspro.command_ids import COMMAND_ID_ALIASES
+            s |= set(COMMAND_ID_ALIASES.values())
+        except Exception:
+            pass
+        _KNOWN_CIDS_CACHE = s
+    return _KNOWN_CIDS_CACHE
+
+
 def _command_id_for_step_label(label: str) -> str | None:
-    """Map a history step label to a canonical command_id."""
-    base = _norm_step_label(label)
-    if not base:
+    """Map a history step label to a canonical command_id.
+
+    Order:
+      1) local table, exact on the pre-decoration base and the full label
+      2) command_ids.normalize_command_id() on base / full / any '(...)' text
+         — the shared alias table is richer (e.g. 'scnr (remove green)',
+         'hyperbolic stretch') and is the single source of truth
+      3) fuzzy: longest known display-name that appears in the full label
+    """
+    raw = str(label or "").strip().lower()
+    if not raw:
         return None
+    full = " ".join(raw.split())
+    base = _norm_step_label(label)
 
-    # Exact match
-    cid = _NAME_TO_COMMAND_ID.get(base)
-    if cid:
-        return cid
+    # 1) local table, exact
+    for cand in (base, full):
+        if cand and cand in _NAME_TO_COMMAND_ID:
+            return _NAME_TO_COMMAND_ID[cand]
 
-    # Fuzzy: allow 'statistical stretch (target=...)'
-    for key, val in _NAME_TO_COMMAND_ID.items():
-        if key in base:
-            return val
+    # 2) shared alias table — the meaningful name is often inside '(...)'
+    try:
+        from setiastro.saspro.command_ids import normalize_command_id
+    except Exception:
+        normalize_command_id = None
+
+    if normalize_command_id is not None:
+        import re as _re
+        cands = [base, full]
+        m = _re.search(r"\(([^)]+)\)", raw)      # e.g. 'scnr (remove green)' → 'remove green'
+        if m:
+            cands.append(" ".join(m.group(1).split()))
+        known = _known_cids()
+        for cand in cands:
+            if not cand:
+                continue
+            norm = normalize_command_id(cand)
+            if norm in known:
+                return norm
+
+    # 3) fuzzy substring, longest first; skip tiny keys to avoid false hits
+    for key in sorted(_NAME_TO_COMMAND_ID, key=len, reverse=True):
+        if len(key) >= 3 and key in full:
+            return _NAME_TO_COMMAND_ID[key]
     return None
 
+ROLE_IS_OP = Qt.ItemDataRole.UserRole + 1   # marks true operation rows (not "Current Image")
+
+_CANONICAL_CIDS = set(_NAME_TO_COMMAND_ID.values())
+
+
+def _pack_bundle_payload(steps) -> bytes:
+    return json.dumps(
+        {"command_id": "function_bundle", "steps": list(steps or [])}
+    ).encode("utf-8")
+
+
+def _reconcile_cid(cid_guess, step_name, explicit: bool = False):
+    """Return a canonical command_id or None.
+
+    Trust an explicit (tool-supplied) cid outright. For a name-derived guess,
+    accept it only if it's a known canonical id (or a script/geom id),
+    otherwise map the human step label through the display-name table.
+    """
+    cid_guess = str(cid_guess or "").strip().lower()
+    if explicit and cid_guess:
+        return cid_guess
+    if cid_guess in _CANONICAL_CIDS or cid_guess.startswith(("script:", "geom_")):
+        return cid_guess
+    return _command_id_for_step_label(step_name or cid_guess)
 
 def _payloads_from_headless_history(main_window, undo_entries):
     """
@@ -401,6 +507,18 @@ class HistoryListWidget(QListWidget):
             if delta.manhattanLength() >= QApplication.startDragDistance():
                 mods = QApplication.keyboardModifiers()
                 if mods & Qt.KeyboardModifier.AltModifier:
+                    sel = self.selected_replay_steps()
+                    if len(sel) >= 2:
+                        self._start_bundle_drag(sel)
+                        self._press_pos = None
+                        return
+                    item = self.itemAt(self._press_pos)
+                    if item is not None:
+                        payload = item.data(Qt.ItemDataRole.UserRole)
+                        if isinstance(payload, dict) and payload.get("command_id"):
+                            self._start_drag(payload)
+                            self._press_pos = None
+                            return
                     item = self.itemAt(self._press_pos)
                     if item is not None:
                         payload = item.data(Qt.ItemDataRole.UserRole)
@@ -431,6 +549,41 @@ class HistoryListWidget(QListWidget):
         drag.setHotSpot(pm.rect().center())
         drag.exec(Qt.DropAction.CopyAction)
 
+    def _iter_selected_op_payloads(self):
+        for row in range(self.count()):
+            it = self.item(row)
+            if not it.isSelected():
+                continue
+            if it.data(ROLE_IS_OP) is not True:
+                continue
+            p = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(p, dict) and p.get("command_id"):
+                yield {"command_id": p["command_id"], "preset": dict(p.get("preset") or {})}
+
+    def selected_replay_steps(self) -> list[dict]:
+        return list(self._iter_selected_op_payloads())
+
+    def all_replay_steps(self) -> list[dict]:
+        out = []
+        for row in range(self.count()):
+            it = self.item(row)
+            if it.data(ROLE_IS_OP) is not True:
+                continue
+            p = it.data(Qt.ItemDataRole.UserRole)
+            if isinstance(p, dict) and p.get("command_id"):
+                out.append({"command_id": p["command_id"], "preset": dict(p.get("preset") or {})})
+        return out
+
+    def _start_bundle_drag(self, steps: list[dict]):
+        md = QMimeData()
+        md.setData(MIME_CMD, _pack_bundle_payload(steps))
+        drag = QDrag(self)
+        drag.setMimeData(md)
+        pm = QPixmap(40, 40)
+        pm.fill(Qt.GlobalColor.darkCyan)
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        drag.exec(Qt.DropAction.CopyAction)
 
 class HistoryExplorerDialog(QDialog):
     def __init__(self, document, parent=None):
@@ -448,8 +601,18 @@ class HistoryExplorerDialog(QDialog):
         layout = QVBoxLayout(self)
 
         self.history_list = HistoryListWidget(self)
+        self.history_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )        
         layout.addWidget(self.history_list)
-
+        self.history_instructions = QLabel(
+            "Double-click any row to view the image at that step  •  "
+            "Alt+drag a step onto the canvas to create a function shortcut  •  "
+            "Select multiple (or all) steps and use Create Function Bundle to "
+            "bundle them into a replayable function"
+        )
+        self.history_instructions.setWordWrap(True)
+        layout.addWidget(self.history_instructions)
         # ---- Fetch undo stack ----
         self.undo_entries = _extract_undo_entries(self.doc)  # list[(sid_or_img, meta, name)]
         self.items: list[tuple[object, dict, str]] = []
@@ -539,13 +702,15 @@ class HistoryExplorerDialog(QDialog):
                 src = getattr(self.doc, "image", None)
                 meta = getattr(self.doc, "metadata", {}) or {}
 
-            # 1) Prefer preset from headless history
-            payload = None
-            if 0 <= op_idx < len(self._history_payloads):
+            # 1) Prefer the doc-local replay marker on THIS op's own undo tuple
+            op_meta = self.undo_entries[op_idx][1] or {}
+            payload = _extract_cmd_payload_from_meta(op_meta)
+
+            # 2) Fallback: aligned headless-history preset
+            if payload is None and 0 <= op_idx < len(self._history_payloads):
                 payload = self._history_payloads[op_idx]
 
-            # 2) Fallback: infer from metadata for tools that don't yet
-            #    record into headless history (BN/WB, etc.)
+            # 3) Last resort: infer from the after-state metadata (legacy)
             if payload is None:
                 payload = _extract_cmd_payload_from_meta(meta)
 
@@ -558,6 +723,7 @@ class HistoryExplorerDialog(QDialog):
             item = QListWidgetItem(label)
             if is_replayable:
                 item.setData(Qt.ItemDataRole.UserRole, payload)
+                item.setData(ROLE_IS_OP, True)                
                 item.setToolTip("Replayable step. Alt+Drag to drop onto a view or desktop.")
             self.history_list.addItem(item)
 
@@ -569,13 +735,15 @@ class HistoryExplorerDialog(QDialog):
         cur_img = getattr(self.doc, "image", None)
         cur_meta = getattr(self.doc, "metadata", {}) or {}
 
-        # Prefer the most recent headless history payload, if any
+        # Prefer the replay marker on the last op's undo tuple
         cur_payload = None
-        for p in reversed(self._history_payloads):
-            if p:
-                cur_payload = p
-                break
-
+        if self.undo_entries:
+            cur_payload = _extract_cmd_payload_from_meta(self.undo_entries[-1][1] or {})
+        if cur_payload is None:
+            for p in reversed(self._history_payloads):
+                if p:
+                    cur_payload = p
+                    break
         if cur_payload is None:
             cur_payload = _extract_cmd_payload_from_meta(cur_meta)
 
@@ -595,8 +763,22 @@ class HistoryExplorerDialog(QDialog):
         self.history_list.itemDoubleClicked.connect(self._open_preview)
 
         row = QHBoxLayout()
+        self.btn_make_bundle = QPushButton("Create Function Bundle")
+        self.btn_make_bundle.setToolTip(
+            "Turn the selected replayable steps (or all of them) into a Function "
+            "Bundle you can drop on any other image.\n"
+            "Tip: Alt+Drag a multi-selection straight onto a view to run the recipe there."
+        )
+        self.btn_make_bundle.clicked.connect(self._create_bundle_from_selection)
+
+        self.btn_open_bundles = QPushButton("Open Function Bundles…")
+        self.btn_open_bundles.clicked.connect(self._open_function_bundles)
+
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.close)
+
+        row.addWidget(self.btn_make_bundle)
+        row.addWidget(self.btn_open_bundles)
         row.addStretch(1)
         row.addWidget(btn_close)
         layout.addLayout(row)
@@ -616,6 +798,59 @@ class HistoryExplorerDialog(QDialog):
                 mw._log(f"History: preview opened → {item.text()}")
         else:
             QMessageBox.warning(self, "Preview", "Invalid selection.")
+
+    def _create_bundle_from_selection(self):
+        steps = self.history_list.selected_replay_steps()
+        used_selection = bool(steps)
+        if not steps:
+            steps = self.history_list.all_replay_steps()
+        if not steps:
+            QMessageBox.information(
+                self, "Function Bundle",
+                "No replayable steps were found in this history."
+            )
+            return
+
+        try:
+            base_name = self.doc.display_name()
+        except Exception:
+            base_name = "History"
+        default_name = f"Recipe from {base_name}"
+
+        name, ok = QInputDialog.getText(
+            self, "Create Function Bundle",
+            f"Create a bundle from {len(steps)} "
+            f"{'selected ' if used_selection else ''}step(s).\n\nBundle name:",
+            text=default_name,
+        )
+        if not ok:
+            return
+
+        try:
+            from setiastro.saspro.function_bundle import add_function_bundle
+            final = add_function_bundle(name or default_name, steps, parent=self)
+        except Exception as e:
+            QMessageBox.critical(self, "Function Bundle", f"Could not create bundle:\n{e}")
+            return
+
+        mw = self._find_main_window()
+        if mw and hasattr(mw, "_log"):
+            mw._log(f"History: created Function Bundle '{final}' with {len(steps)} step(s).")
+
+        if QMessageBox.question(
+            self, "Function Bundle",
+            f"Created '{final}' with {len(steps)} step(s).\n\nOpen Function Bundles now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes:
+            self._open_function_bundles(focus_name=final)
+
+    def _open_function_bundles(self, focus_name: str | None = None):
+        try:
+            from setiastro.saspro.function_bundle import show_function_bundles
+            show_function_bundles(self._find_main_window() or self, focus_name=focus_name)
+        except Exception as e:
+            QMessageBox.critical(self, "Function Bundles", f"Could not open:\n{e}")
 
     def _find_main_window(self):
         p = self.parent()

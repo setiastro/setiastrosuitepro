@@ -1648,6 +1648,13 @@ class ConvoDeconvoDialog(QDialog):
         new_meta = dict(meta)
         new_meta["source"] = "ConvoDeconvo"
 
+        _cv_preset = self._build_replay_preset()
+        if _cv_preset:
+            new_meta["command_id"] = "convo"
+            new_meta["preset"] = dict(_cv_preset)
+        # else: no replayable op on the current tab — leave the marker off;
+        # the extractor still labels it 'convo' by step_name, just preset-less.
+
         try:
             if hasattr(doc, "apply_edit"):
                 # ⭐ Preferred: update this exact Document (ROI or full) so all views update

@@ -163,6 +163,137 @@ def _normalize_image_01(arr: np.ndarray) -> np.ndarray:
 
     return a
 
+# ---- Replay-capture audit (opt-in) ----------------------------------
+# Finds tools that don't yet self-identify for the replay/bundle system.
+#
+# Flip _REPLAY_AUDIT_MODE to turn it on WITHOUT an env var:
+#     ""    -> off
+#     "1"   -> log only problem captures (missing / empty preset)
+#     "all" -> also log OK captures
+# An env var, if set, overrides the constant (handy in an IDE run config).
+# Optional: set a log file path in _REPLAY_AUDIT_FILE (or the env var).
+# ---- Replay-capture audit (opt-in) ----------------------------------
+# Flip this to True, run SASpro, click Apply once in each tool, read console.
+REPLAY_AUDIT = True   # <-- set False when done
+
+_REPLAY_AUDIT_SEEN: set = set()
+
+def _replay_audit(step_name, marker) -> None:
+    if not REPLAY_AUDIT:
+        return
+    try:
+        label = str(step_name or "").strip() or "<no step_name>"
+        if marker is None:
+            verdict, cid, detail = "NO-MARKER", "-", "no command_id and no preset recovered"
+        else:
+            cid = marker.get("command_id") or "-"
+            if marker.get("preset"):
+                verdict, detail = "OK", "captured with preset"
+            elif marker.get("cid_explicit"):
+                verdict, detail = "EMPTY-PRESET", "explicit command_id, empty preset (fine if parameterless)"
+            else:
+                verdict, detail = "NAME-ONLY", "resolved by name only, NO preset captured"
+
+        key = (label.lower(), verdict)
+        if key in _REPLAY_AUDIT_SEEN:
+            return
+        _REPLAY_AUDIT_SEEN.add(key)
+
+        print(f"[REPLAY-AUDIT] {verdict:12} cid={str(cid):22} step={label!r}  ({detail})", flush=True)
+    except Exception:
+        pass
+
+
+def dump_replay_audit() -> None:
+    """Print every distinct (step, verdict) seen so far this session."""
+    for label, verdict in sorted(_REPLAY_AUDIT_SEEN):
+        print(f"[REPLAY-AUDIT] {verdict:12} {label}", flush=True)
+
+_REPLAY_ROUTING_KEYS = ("command_id", "cid", "preset", "preset_dict")
+
+def _strip_replay_keys(md):
+    """Return a shallow copy of md without replay-routing keys.
+
+    These are captured into the undo tuple's _replay marker at apply time and
+    must NOT persist in live metadata — otherwise the NEXT tool (geometry,
+    convo, …), which builds its edit metadata by copying doc.metadata,
+    inherits a stale command_id/preset and gets mislabelled as that tool.
+    """
+    if not md or not any(k in md for k in _REPLAY_ROUTING_KEYS):
+        return md
+    clean = dict(md)
+    for k in _REPLAY_ROUTING_KEYS:
+        clean.pop(k, None)
+    return clean
+
+def _make_replay_marker(metadata: dict | None, step_name: str) -> dict | None:
+    """
+    Build a compact 'replay marker' for a just-applied edit so History Explorer
+    can rebuild an exact command payload later (and so Function Bundles can be
+    created from a document's history).
+
+    Returns {"step_name", "command_id", "preset", "cid_explicit"} or None.
+
+    Mirrors _RoiViewDocument._preview_commands capture:
+      1. Prefer an explicit command_id + preset carried in the edit metadata.
+      2. Otherwise recover the preset from the app's _last_headless_command,
+         matching on normalized command_id (set by _handle_command_drop at the
+         moment the op runs).
+
+    The *preset* is the valuable, otherwise-unrecoverable payload we rescue.
+    The command_id is best-effort; History Explorer canonicalizes it against
+    its display-name table when this marker was only name-derived
+    (cid_explicit=False).
+    """
+    try:
+        from setiastro.saspro.command_ids import normalize_command_id
+    except Exception:
+        def normalize_command_id(s):
+            return (s or "").strip().lower().replace(" ", "_")
+
+    md = dict(metadata or {})
+
+    explicit_cid = md.get("command_id") or md.get("cid")
+    raw_cid = explicit_cid or md.get("step_name") or step_name or ""
+    raw_cid = str(raw_cid).strip()
+    if not raw_cid:
+        return None
+
+    cid = normalize_command_id(raw_cid)
+
+    preset = md.get("preset") or md.get("preset_dict") or {}
+    try:
+        preset = dict(preset)
+    except Exception:
+        preset = {}
+
+    if not preset:
+        try:
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                for widget in app.topLevelWidgets():
+                    last = getattr(widget, "_last_headless_command", None)
+                    if not isinstance(last, dict):
+                        continue
+                    last_cid = normalize_command_id(str(last.get("command_id") or ""))
+                    if last_cid and last_cid == cid:
+                        preset = dict(last.get("preset") or {})
+                        break
+        except Exception:
+            pass
+    # Only record a marker when we captured real signal: an explicit command
+    # id, or a recovered preset. Otherwise leave the snapshot unmarked so the
+    # legacy heuristics can still run.
+    if not explicit_cid and not preset:
+        return None
+    return {
+        "step_name": str(step_name or raw_cid),
+        "command_id": cid,
+        "preset": preset,
+        "cid_explicit": bool(explicit_cid),
+    }
+
 _ALLOWED_DEPTHS = {
     "png":  {"8-bit"},
     "jpg":  {"8-bit"},
@@ -519,14 +650,21 @@ class ImageDocument(QObject):
 
                 # push onto the PARENT’s history
                 if metadata:
-                    parent.metadata = _merge_meta(parent.metadata, metadata, step_name)
+                    parent.metadata = _merge_meta(parent.metadata, _strip_replay_keys(metadata), step_name)
                 else:
                     parent.metadata.setdefault("step_name", step_name)
 
                 sm = get_swap_manager()
                 sid = sm.save_state(parent.image)
                 if sid:
-                    parent._undo.append((sid, parent.metadata.copy(), step_name))
+                    _meta_snap = parent.metadata.copy()
+                    _rp = _make_replay_marker(metadata, step_name)
+                    _replay_audit(step_name, _rp)
+                    if _rp is not None:
+                        _meta_snap["_replay"] = _rp
+                    else:
+                        _meta_snap.pop("_replay", None)
+                    parent._undo.append((sid, _meta_snap, step_name))
                     sm.pin_state(sid)
                     parent._pin_last_undos(keep=5)
 
@@ -575,7 +713,14 @@ class ImageDocument(QObject):
                     swap_id=sid
                 )
                 if sid:
-                    self._undo.append((sid, self.metadata.copy(), step_name))
+                    _meta_snap = self.metadata.copy()
+                    _rp = _make_replay_marker(metadata, step_name)
+                    _replay_audit(step_name, _rp)
+                    if _rp is not None:
+                        _meta_snap["_replay"] = _rp
+                    else:
+                        _meta_snap.pop("_replay", None)
+                    self._undo.append((sid, _meta_snap, step_name))
                     sm.pin_state(sid)
                     self._pin_last_undos(keep=5)
             except Exception as e:
@@ -590,7 +735,7 @@ class ImageDocument(QObject):
 
         # --- header-safe metadata merge ---
         if metadata:
-            self.metadata = _merge_meta(self.metadata, metadata, step_name)
+            self.metadata = _merge_meta(self.metadata, _strip_replay_keys(metadata), step_name)
         else:
             self.metadata.setdefault("step_name", step_name)
 
@@ -1379,9 +1524,16 @@ class _RoiViewDocument(ImageDocument):
             raise ValueError(f"Commit shape {img.shape[:2]} does not match ROI {(h, w)}")
 
         # push undo on parent and paste
-        parent._undo.append((base.copy(), parent.metadata.copy(), step_name))
+        _meta_snap = parent.metadata.copy()
+        _rp = _make_replay_marker(metadata, step_name)
+        _replay_audit(step_name, _rp)
+        if _rp is not None:
+            _meta_snap["_replay"] = _rp
+        else:
+            _meta_snap.pop("_replay", None)
+        parent._undo.append((base.copy(), _meta_snap, step_name))
         parent._redo.clear()
-        if metadata: parent.metadata.update(metadata)
+        if metadata: parent.metadata.update(_strip_replay_keys(metadata))
         parent.metadata.setdefault("step_name", step_name)
 
         new_full = base.copy()
@@ -1486,7 +1638,7 @@ class _RoiViewDocument(ImageDocument):
         )
 
         if metadata:
-            self.metadata.update(metadata)
+            self.metadata.update(_strip_replay_keys(metadata))
         self.metadata.setdefault("step_name", step_name)
 
         # 1) notify ROI listeners (e.g. the main window via _on_roi_changed)

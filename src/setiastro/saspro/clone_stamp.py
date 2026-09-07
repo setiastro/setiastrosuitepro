@@ -808,9 +808,6 @@ class CloneStampDialogPro(QDialog):
             if hasattr(self._doc, "set_image"):
                 self._doc.set_image(out, step_name="Clone Stamp")
                 applied = True
-            elif hasattr(self._doc, "apply_numpy"):
-                self._doc.apply_numpy(out, step_name="Clone Stamp")
-                applied = True
             elif hasattr(self._doc, "image"):
                 self._doc.image = out
                 applied = True

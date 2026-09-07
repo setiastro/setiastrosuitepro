@@ -2478,8 +2478,6 @@ class SignatureInsertDialogPro(QDialog):
 
         if hasattr(self.doc, "set_image"):
             self.doc.set_image(arr, step_name="Signature / Insert")
-        elif hasattr(self.doc, "apply_numpy"):
-            self.doc.apply_numpy(arr, step_name="Signature / Insert")
         else:
             self.doc.image = arr
 

@@ -3631,6 +3631,7 @@ class ExoPlanetWindow(QDialog):
         # For each channel produce (mags[n_frames], merr[n_frames], notes).
         # RGB_FILTER_MAP: R→("TR","R"), G→("TG","V"), B→("TB","B")
         per_ch = {}
+        used_comps = set()   # comp indices that actually formed the ensemble/comparison
         r_note_extra = ""
         # Detect if any comp's R is Sloan-derived; a single flag on the note
         # is honest enough for AAVSO's NOTES field.
@@ -3692,6 +3693,20 @@ class ExoPlanetWindow(QDialog):
                         f"; err incl SEM+{floor:.2f}floor")
                 if ch == "R" and r_note_extra:
                     note += r_note_extra
+                # AAVSO ENSEMBLE requires a check star, and for ensemble the
+                # KMAG field is that star's magnitude standardised through the
+                # SAME ensemble ZP (not its catalog value, not a raw
+                # instrumental mag). Compute K exactly like the target so a data
+                # user can diff it against the catalog value as a quality check.
+                used_comps.update(int(m) for m in comp_idx_all[keepC])
+                F_K = self.raw_flux_rgb[ci, k_idx, :].astype(np.float64)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    _K = -2.5 * np.log10(F_K) + ZP_t
+                _K = _K[np.isfinite(_K)]
+                cname_ch = "ENSEMBLE"
+                cmag_ch  = "na"
+                kname_ch = kname
+                kmag_ch  = float(np.median(_K)) if _K.size else "na"
             elif comp_idx_all.size >= 1:
                 # tier 2: single-comparison vs a comp-member with catalog mag
                 # in this band. Prefer the brightest (highest median flux) —
@@ -3718,6 +3733,18 @@ class ExoPlanetWindow(QDialog):
                         f"({band_key}={c_mag:.3f}); err incl {floor:.2f}floor")
                 if ch == "R" and r_note_extra:
                     note += r_note_extra
+                # NOT an ensemble: classic differential photometry, so CNAME is
+                # the comparison and CMAG/KMAG are raw INSTRUMENTAL mags (target
+                # standardised to the comp's catalog mag). Keep the independent
+                # check star in KNAME/KMAG.
+                used_comps.add(int(c_idx))
+                F_K = self.raw_flux_rgb[ci, k_idx, :].astype(np.float64)
+                _fc = float(np.nanmedian(F_C[F_C > 0])) if np.any(F_C > 0) else np.nan
+                _fk = float(np.nanmedian(F_K[F_K > 0])) if np.any(F_K > 0) else np.nan
+                cname_ch = f"C{int(c_idx)}"
+                cmag_ch  = float(-2.5 * np.log10(_fc)) if np.isfinite(_fc) else "na"
+                kname_ch = kname
+                kmag_ch  = float(-2.5 * np.log10(_fk)) if np.isfinite(_fk) else "na"
             elif kmags.get(ch) is not None:
                 # tier 3 (last resort): calibrate against the CHECK STAR
                 # itself. Only lands here when zero comp-members have a
@@ -3733,6 +3760,14 @@ class ExoPlanetWindow(QDialog):
                 bad = ~np.isfinite(mags) | (F_T <= 0) | (F_C <= 0)
                 note = (f"{filt}: check-star fallback vs {kname}"
                         f"; err incl {floor:.2f}floor")
+                # Degenerate: the check star is doubling as the comparison, so
+                # it can't also be an independent check — CNAME=check with its
+                # instrumental CMAG, and KNAME/KMAG left as na.
+                _fc = float(np.nanmedian(F_C[F_C > 0])) if np.any(F_C > 0) else np.nan
+                cname_ch = str(kname)
+                cmag_ch  = float(-2.5 * np.log10(_fc)) if np.isfinite(_fc) else "na"
+                kname_ch = "na"
+                kmag_ch  = "na"
             else:
                 # Nothing to calibrate this channel — skip it.
                 per_ch[ch] = None
@@ -3740,7 +3775,7 @@ class ExoPlanetWindow(QDialog):
 
             mags = np.where(bad, np.nan, mags)
             merr = np.where(bad | ~np.isfinite(merr), np.nan, merr)
-            per_ch[ch] = (mags, merr, note)
+            per_ch[ch] = (mags, merr, note, cname_ch, cmag_ch, kname_ch, kmag_ch)
 
         if not any(v is not None for v in per_ch.values()):
             QMessageBox.warning(
@@ -3749,6 +3784,28 @@ class ExoPlanetWindow(QDialog):
                 "comparison stars and no check-star magnitude for any band."
             )
             return
+
+        # AAVSO asks that the comps forming an ensemble be identified in NOTES.
+        # We have no AUIDs for arbitrary field stars, so list their RA/Dec (ICRS
+        # deg) — enough for a data user to recover which stars set the zero
+        # point. Capped so a large ensemble doesn't blow past NOTES length.
+        def _radec_label(mi):
+            try:
+                x, y = self.star_positions[int(mi)]
+                bf = getattr(self, "_wcs_bin_factor", 1)
+                sky = wcs.pixel_to_world(x * bf, y * bf)
+                return f"{sky.ra.deg:.4f}{sky.dec.deg:+.4f}"
+            except Exception:
+                return None
+        _ids = [s for s in (_radec_label(m) for m in sorted(used_comps)) if s]
+        _MAX_IDS = 10
+        if not _ids:
+            comps_note = ""
+        elif len(_ids) > _MAX_IDS:
+            comps_note = ("comps[RA/Dec]: " + ", ".join(_ids[:_MAX_IDS])
+                          + f", +{len(_ids) - _MAX_IDS} more")
+        else:
+            comps_note = "comps[RA/Dec]: " + ", ".join(_ids)
 
         # -- Assemble AavsoRow list frame-by-frame -------------------------
         # Track per-band skip reasons so the summary popup can tell the
@@ -3762,6 +3819,8 @@ class ExoPlanetWindow(QDialog):
         _MERR_MAX = 1.0
         for j, t in enumerate(jd):
             frame_mags = {}; frame_merrs = {}
+            frame_cnames = {}; frame_cmags = {}
+            frame_knames = {}; frame_kmags = {}
             for ch in ("B", "G", "R"):
                 pc = per_ch.get(ch)
                 if pc is None:
@@ -3773,6 +3832,11 @@ class ExoPlanetWindow(QDialog):
                     _skipped_by_filt[filt_lbl] = _skipped_by_filt.get(filt_lbl, 0) + 1
                     _skip_reasons.add("non-finite MAG")
                     continue
+                # Per-band comparison identity (tier-dependent: ENSEMBLE vs single).
+                frame_cnames[ch] = pc[3]
+                frame_cmags[ch]  = pc[4]
+                frame_knames[ch] = pc[5]
+                frame_kmags[ch]  = pc[6]
                 if not np.isfinite(e) or e > _MERR_MAX:
                     # MAG is real but MERR is out of AAVSO range; emit
                     # the row with MERR=na (David msg-6 request) rather
@@ -3787,15 +3851,17 @@ class ExoPlanetWindow(QDialog):
                 continue
             am = float(np.clip(self.airmasses[j] if j < len(self.airmasses) else 1.0, 1.0, 40.0))
             # Per-frame notes: combine per-channel notes for the bands that
-            # actually landed this frame (concise; AAVSO NOTES has a length
-            # limit but our text stays well within it).
+            # actually landed this frame, then append the comp identifiers once.
             note_bits = [per_ch[ch][2] for ch in ("B", "G", "R")
                          if per_ch.get(ch) is not None and ch in frame_mags]
             frame_note = " | ".join(note_bits)
+            if comps_note:
+                frame_note = f"{frame_note} || {comps_note}" if frame_note else comps_note
             new_rows = aav.build_rgb_rows(
                 name=star_id, date_jd=float(t),
-                mags=frame_mags, merrs=frame_merrs,
-                amass=am, kname=kname, kmags=kmags,
+                mags=frame_mags, merrs=frame_merrs, amass=am,
+                cnames=frame_cnames, cmags=frame_cmags,
+                knames=frame_knames, kmags=frame_kmags,
                 notes=frame_note,
             )
             rows.extend(new_rows)
@@ -4138,6 +4204,24 @@ class ExoPlanetWindow(QDialog):
         F_T    = np.asarray(self.raw_flux[idx, :],     dtype=np.float64)
         Ferr_T = np.asarray(self.raw_flux_err[idx, :], dtype=np.float64)
 
+        def _comp_radec_labels(members, maxn=10):
+            """RA/Dec (ICRS deg) labels for the comps that set the ZP, for NOTES."""
+            w = self._wcs
+            bf = getattr(self, "_wcs_bin_factor", 1)
+            out = []
+            for mi in members:
+                try:
+                    x, y = self.star_positions[int(mi)]
+                    sky = w.pixel_to_world(x * bf, y * bf)
+                    out.append(f"{sky.ra.deg:.4f}{sky.dec.deg:+.4f}")
+                except Exception:
+                    pass
+            if not out:
+                return ""
+            if len(out) > maxn:
+                return ", ".join(out[:maxn]) + f", +{len(out) - maxn} more"
+            return ", ".join(out)
+
         if comp_idx.size >= 3:
             Fi  = np.asarray(self.raw_flux[comp_idx, :], dtype=np.float64)   # (Ncomp, Nframe)
             okF = np.isfinite(Fi) & (Fi > 0)
@@ -4178,11 +4262,23 @@ class ExoPlanetWindow(QDialog):
             bad = ~np.isfinite(mags) | (F_T <= 0) | (n_t < 1)
 
             n_ens       = int(np.count_nonzero(keepC))
+            # AAVSO ENSEMBLE: KMAG is the check star standardised through the
+            # SAME ensemble ZP (not its catalog mag), so (K - catalog) is a real
+            # quality check. Compute K exactly like the target.
+            F_K = np.asarray(self.raw_flux[k_idx, :], dtype=np.float64)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                _K = -2.5 * np.log10(F_K) + ZP_t
+            _K = _K[np.isfinite(_K)]
+            _used = [int(m) for m in comp_idx[keepC]]
             cname_field = "ENSEMBLE"
             cmag_field  = "na"
             kname_field = kname
-            kmag_field  = f"{kmag:.3f}"
-            note_field  = f"ensemble ZP=median(Vcat+2.5log10 F) N={n_ens}; err incl SEM+{floor:.2f}floor"
+            kmag_field  = f"{float(np.median(_K)):.3f}" if _K.size else "na"
+            note_field  = (f"ensemble ZP=median(Vcat+2.5log10 F) N={n_ens}; "
+                           f"err incl SEM+{floor:.2f}floor")
+            _cn = _comp_radec_labels(_used)
+            if _cn:
+                note_field += f"; comps[RA/Dec]: {_cn}"
         else:
             # Fallback: single-comparison vs the check star, raw-flux ratio.
             F_C    = np.asarray(self.raw_flux[k_idx, :],     dtype=np.float64)
@@ -4193,8 +4289,12 @@ class ExoPlanetWindow(QDialog):
                 merr  = np.sqrt((LOGC ** 2) * frac2 + floor ** 2)
             bad = ~np.isfinite(mags) | (F_T <= 0) | (F_C <= 0)
 
-            cname_field = kname
-            cmag_field  = f"{kmag:.3f}"
+            # Check star doubling as the comparison → CMAG is its INSTRUMENTAL
+            # mag (classic differential); no independent check remains.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                _fc = float(np.nanmedian(F_C[F_C > 0])) if np.any(F_C > 0) else np.nan
+            cname_field = str(kname)
+            cmag_field  = f"{-2.5 * np.log10(_fc):.3f}" if np.isfinite(_fc) else "na"
             kname_field = "na"
             kmag_field  = "na"
             note_field  = f"single-comparison vs {kname}; err incl {floor:.2f} floor"

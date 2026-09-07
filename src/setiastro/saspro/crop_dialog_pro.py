@@ -1418,7 +1418,14 @@ class CropDialogPro(QDialog):
     # =========================================================================
     # Apply
     # =========================================================================
-
+    def _crop_preset(self, *, x0, y0, x1, y1, angle=0.0, out_w=None, out_h=None):
+        return {
+            "x0": int(x0), "y0": int(y0), "x1": int(x1), "y1": int(y1),
+            "angle": float(angle),
+            "out_w": int(out_w) if out_w is not None else int(x1 - x0),
+            "out_h": int(out_h) if out_h is not None else int(y1 - y0),
+        }
+    
     def _corners_scene(self):
         rl = self._rect_item.rect()
         loc = [rl.topLeft(), rl.topRight(), rl.bottomRight(), rl.bottomLeft()]
@@ -1480,7 +1487,20 @@ class CropDialogPro(QDialog):
         CropDialogPro._prev_pos   = QPointF(self._rect_item.pos())
 
         try:
-            self.doc.apply_edit(out.copy(), metadata={**new_meta, "step_name": "Crop"}, step_name="Crop")
+            # Replay preset — quad_norm captures BOTH axis-aligned and rotated
+            # crops exactly, using the same corners we just cropped with.
+            _preset = {
+                "mode": "quad_norm",
+                "quad": (src / np.array([float(W_img), float(H_img)],
+                                        dtype=np.float32)).tolist(),
+                "create_new_view": False,
+            }
+            self.doc.apply_edit(
+                out.copy(),
+                metadata={**new_meta, "step_name": "Crop",
+                          "command_id": "crop", "preset": _preset},
+                step_name="Crop",
+            )
             self._maybe_notify_wcs_update(new_meta)
             self.crop_applied.emit(out)
             self.close()
@@ -1577,7 +1597,17 @@ class CropDialogPro(QDialog):
             except Exception:
                 pass
             try:
-                d.apply_edit(cropped.copy(), metadata={**meta_this, "step_name": "Crop"}, step_name="Crop")
+                _preset = {
+                    "mode": "quad_norm",
+                    "quad": np.asarray(norm, dtype=np.float32).tolist(),
+                    "create_new_view": False,
+                }
+                d.apply_edit(
+                    cropped.copy(),
+                    metadata={**meta_this, "step_name": "Crop",
+                              "command_id": "crop", "preset": _preset},
+                    step_name="Crop",
+                )
                 last_cropped = cropped
             except Exception:
                 pass

@@ -170,8 +170,6 @@ def run_wavescalede_via_preset(main, preset: dict | None = None, target_doc=None
             doc.apply_edit(result, step_name="WaveScale Dark Enhance", metadata=meta)
         elif hasattr(doc, "set_image"):
             doc.set_image(result, step_name="WaveScale Dark Enhance")
-        elif hasattr(doc, "apply_numpy"):
-            doc.apply_numpy(result, step_name="WaveScale Dark Enhance")
         else:
             doc.image = result
     except Exception as e:

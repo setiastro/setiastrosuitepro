@@ -147,6 +147,7 @@ def cosmetic_correction_headless(
     correct_hot: bool = True,
     correct_cold: bool = True,
     use_hw_accel: bool = True,   # informational; corrector picks internally
+    preset: dict | None = None,  # NEW: canonical preset for the replay marker
 ):
     """Run cosmetic correction on doc.image and push as an undoable edit.
 
@@ -204,8 +205,21 @@ def cosmetic_correction_headless(
     passes = []
     if correct_hot:  passes.append("hot")
     if correct_cold: passes.append("cold")
+    if isinstance(preset, dict) and preset:
+        _replay_preset = dict(preset)
+    else:
+        _replay_preset = {
+            "hot_sigma": float(hot_sigma),
+            "cold_sigma": float(cold_sigma),
+            "correct_hot": bool(correct_hot),
+            "correct_cold": bool(correct_cold),
+            "bayer_pattern": (bayer_pattern or ""),
+        }
+
     meta = {
         "step_name": step_label,
+        "command_id": "cosmetic_correction",
+        "preset": _replay_preset,
         "cosmetic_correction": {
             "hot_sigma": float(hot_sigma),
             "cold_sigma": float(cold_sigma),
@@ -1118,6 +1132,7 @@ class CosmeticCorrectionDialog(QDialog):
                 hot_sigma=hs, cold_sigma=cs,
                 bayer_pattern=(None if bp == "__none__" else bp),
                 correct_hot=ch, correct_cold=cc,
+                preset=self.get_preset(),
             )
         except Exception as e:
             QMessageBox.critical(self, self.tr("Cosmetic Correction"),
@@ -1885,6 +1900,7 @@ def apply_cosmetic_correction_preset_to_doc(main, doc, preset: dict):
         hot_sigma=hs, cold_sigma=cs,
         bayer_pattern=bp,
         correct_hot=ch, correct_cold=cc,
+        preset=preset,
     )
     if hasattr(main, "_log"):
         try:

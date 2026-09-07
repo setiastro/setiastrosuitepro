@@ -10,7 +10,9 @@
 # ============================================================
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import time
 from typing import Optional
 
@@ -49,6 +51,40 @@ _ST_OK      = "success"
 _ST_WARN    = "warning"
 _ST_FAIL    = "failed"
 _ST_INFO    = "info"
+
+
+# ── Disk helpers (self-contained; no cross-module import) ─────────────────
+def _human_bytes(n) -> str:
+    """Human-readable base-1024 byte count, e.g. 1536 -> '1.50 KB'."""
+    try:
+        n = float(n)
+    except Exception:
+        return "?"
+    sign = "-" if n < 0 else ""
+    n = abs(n)
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if n < 1024.0 or unit == "PB":
+            if unit == "B":
+                return f"{sign}{int(n)} {unit}"
+            return f"{sign}{n:.2f} {unit}"
+        n /= 1024.0
+    return f"{sign}{n:.2f} PB"
+
+
+def _disk_free_bytes(path):
+    """Free bytes on the volume holding `path` (walks up to an existing dir)."""
+    try:
+        p = os.path.abspath(path or ".")
+        while p and not os.path.isdir(p):
+            parent = os.path.dirname(p)
+            if parent == p:
+                break
+            p = parent
+        if not p or not os.path.isdir(p):
+            return None
+        return int(shutil.disk_usage(p).free)
+    except Exception:
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -307,6 +343,12 @@ class StackingMonitorDialog(QDialog):
         self._run_start: Optional[float] = None
         self._log_bus   = None
 
+        # ── disk-budget state (persistent label; live-polled on tick) ──
+        self._disk_dir: Optional[str] = None   # volume to poll for free space
+        self._disk_est: int = 0                # estimated bytes for current step
+        self._disk_step: str = ""              # short step label ("Register", …)
+        self._disk_tick: int = 0               # throttles the free-space poll
+
         self._build_ui()
         self._restore_geometry()
         self._connect_bus()
@@ -373,6 +415,9 @@ class StackingMonitorDialog(QDialog):
                 color: #bbbbbb;
                 font-size: 11px;
             }
+            QLabel#disk_label {
+                font-size: 11px;
+            }
         """)
 
         # header row
@@ -381,6 +426,19 @@ class StackingMonitorDialog(QDialog):
         title.setObjectName("monitor_title")
         hdr_row.addWidget(title)
         hdr_row.addStretch(1)
+
+        # Persistent disk-space readout (right side of the header). Shows the
+        # current free space on the target volume versus the estimated output
+        # for the running step, and updates live as frames are written.
+        self._disk_label = QLabel("")
+        self._disk_label.setObjectName("disk_label")
+        self._disk_label.setTextFormat(Qt.TextFormat.RichText)
+        self._disk_label.setToolTip(
+            "Free space on the stacking volume vs. the estimated output size "
+            "for the current step. Updates as files are written."
+        )
+        self._disk_label.setVisible(False)
+        hdr_row.addWidget(self._disk_label)
         root.addLayout(hdr_row)
 
         # table
@@ -450,6 +508,85 @@ class StackingMonitorDialog(QDialog):
                 item = self._table.item(idx, _COL_ELAPSED)
                 if item is not None:
                     item.setText(self._rows[idx].elapsed_str())
+
+        # Refresh the free-space figure every ~3 s so the readout tracks the
+        # disk filling up during a long write phase without polling too often.
+        if self._disk_dir:
+            self._disk_tick += 1
+            if self._disk_tick % 3 == 0:
+                self._refresh_disk_label()
+
+    # ------------------------------------------------------- disk budget API
+    def set_disk_budget(self, target_dir, est_bytes, *, step_label: str = ""):
+        """
+        Show the free-space-vs-estimate readout for the step about to run.
+
+        target_dir : any path on the volume that will receive the output.
+        est_bytes  : estimated bytes this step will write.
+        step_label : short label for the step, e.g. "Register", "Integrate".
+        Safe to call from the GUI thread; never raises.
+        """
+        try:
+            self._disk_dir = str(target_dir) if target_dir else None
+            self._disk_est = int(max(0, est_bytes))
+            self._disk_step = str(step_label or "")
+            self._disk_tick = 0
+            self._refresh_disk_label()
+        except Exception:
+            pass
+
+    def clear_disk_budget(self):
+        """Hide the disk readout (e.g. when no step is queued)."""
+        self._disk_dir = None
+        self._disk_est = 0
+        self._disk_step = ""
+        try:
+            self._disk_label.setVisible(False)
+            self._disk_label.setText("")
+        except Exception:
+            pass
+
+    def _refresh_disk_label(self):
+        """Recompute free space and repaint the header disk readout."""
+        try:
+            if not self._disk_dir:
+                self._disk_label.setVisible(False)
+                return
+
+            free = _disk_free_bytes(self._disk_dir)
+            est = int(self._disk_est or 0)
+            step = f"{self._disk_step} · " if self._disk_step else ""
+
+            if free is None:
+                self._disk_label.setText(
+                    f"<span style='color:{_DIM};'>💽 {step}"
+                    f"est. {_human_bytes(est)} · free space unknown</span>"
+                )
+                self._disk_label.setVisible(True)
+                return
+
+            # Colour by how much of the *current* free space the estimate uses.
+            # Green: comfortable. Yellow: tight (>75%). Red: won't fit (>100%).
+            ratio = (est / free) if free > 0 else float("inf")
+            if ratio >= 1.0:
+                colour = _RED
+            elif ratio >= 0.75:
+                colour = _ORANGE
+            else:
+                colour = _GREEN
+
+            pct = f"{ratio * 100:.0f}%" if free > 0 else "—"
+            self._disk_label.setText(
+                f"💽 {step}"
+                f"<span style='color:{_FG};'>free </span>"
+                f"<span style='color:{colour};font-weight:bold;'>{_human_bytes(free)}</span>"
+                f"<span style='color:{_DIM};'>  /  est. </span>"
+                f"<span style='color:{_FG};'>{_human_bytes(est)}</span>"
+                f"<span style='color:{colour};'> ({pct})</span>"
+            )
+            self._disk_label.setVisible(True)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- bus
     def _connect_bus(self):
@@ -579,6 +716,7 @@ class StackingMonitorDialog(QDialog):
         self._run_start = None
         self._lbl_total.setText("Ready.")
         self._lbl_total.setStyleSheet(f"color:{_DIM};font-size:10px;")
+        self.clear_disk_budget()
 
     # ---------------------------------------------------- message handler
     @pyqtSlot(str)

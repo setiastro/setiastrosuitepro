@@ -655,13 +655,14 @@ class WaveScaleHDRDialogPro(QDialog):
             out = mono
 
         out = np.clip(out, 0.0, 1.0).astype(np.float32, copy=False)
+        _meta = {"step_name": "WaveScale HDR",
+                 "command_id": "wavescale_hdr",
+                 "preset": dict(self.get_preset())}
         try:
-            if hasattr(self._doc, "set_image"):
-                self._doc.set_image(out, step_name="WaveScale HDR")
-            elif hasattr(self._doc, "apply_numpy"):
-                self._doc.apply_numpy(out, step_name="WaveScale HDR")
-            else:
-                self._doc.image = out
+            self._doc.set_image(out, metadata=_meta, step_name="WaveScale HDR")
+        except Exception as e:
+            QMessageBox.critical(self, self.tr("WaveScale HDR"), self.tr("Failed to write to document:\n{0}").format(e))
+            return
         except Exception as e:
             QMessageBox.critical(self, self.tr("WaveScale HDR"), self.tr("Failed to write to document:\n{0}").format(e))
             return

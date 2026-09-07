@@ -161,29 +161,46 @@ def build_rgb_rows(
     mags: Dict[str, float],           # {"R":.., "G":.., "B":..}
     merrs: Dict[str, Optional[float]],
     amass: Optional[float] = None,
+    cname: str = "ENSEMBLE",          # scalar default for CNAME (all rows)
+    cmag: Any = "na",                 # scalar default for CMAG
+    cnames: Optional[Dict[str, Any]] = None,   # per-channel CNAME override
+    cmags: Optional[Dict[str, Any]] = None,    # per-channel CMAG override
     kname: str = "na",
     kmag: Any = "na",                 # scalar fallback (used if no per-channel value)
-    kmags: Optional[Dict[str, Any]] = None,   # {"R":.., "G":.., "B":..} per-channel
+    knames: Optional[Dict[str, Any]] = None,   # per-channel KNAME override
+    kmags: Optional[Dict[str, Any]] = None,    # {"R":.., "G":.., "B":..} per-channel
     notes: Optional[str] = None,
 ) -> List[AavsoRow]:
     """Turn one RGB measurement into up to three AAVSO rows (TR/TG/TB).
 
-    Channels with a non-finite magnitude are skipped. If `kmags` is given, each
-    row uses the check-star magnitude in that channel's catalog band (R→TR,
-    V→TG, B→TB); otherwise the scalar `kmag` is used for all rows.
+    Channels with a non-finite magnitude are skipped. The per-channel dicts
+    (cnames/cmags/knames/kmags) override the scalar cname/cmag/kname/kmag for
+    that band when present, so a mixed export can carry the correct comparison
+    identity per band — e.g. an ENSEMBLE row in one filter and a single-
+    comparison row in another. Defaults reproduce the previous behaviour
+    (CNAME=ENSEMBLE, CMAG=na) when no overrides are given.
     """
+    def _pick(per_ch_map, scalar, ch):
+        if per_ch_map is not None and per_ch_map.get(ch) is not None:
+            return per_ch_map.get(ch)
+        return scalar
+
     out: List[AavsoRow] = []
     for ch in ("B", "G", "R"):        # conventional order B,G,R in reports
         m = mags.get(ch)
         if m is None or not np.isfinite(m):
             continue
         filt, _band = RGB_FILTER_MAP[ch]
+        c_name = _pick(cnames, cname, ch)
+        c_mag  = _pick(cmags,  cmag,  ch)
+        k_name = _pick(knames, kname, ch)
         k_ch = kmag
         if kmags is not None and kmags.get(ch) is not None and _is_number(kmags.get(ch)):
             k_ch = kmags[ch]
         row = AavsoRow(
             name=name, date_jd=date_jd, mag=float(m), filt=filt,
-            merr=merrs.get(ch), amass=amass, kname=kname, kmag=k_ch,
+            merr=merrs.get(ch), amass=amass,
+            cname=c_name, cmag=c_mag, kname=k_name, kmag=k_ch,
         )
         if notes:
             row.notes = notes

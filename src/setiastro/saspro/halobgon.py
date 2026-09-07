@@ -197,8 +197,6 @@ def apply_halo_b_gon_to_doc(parent, doc, preset: dict | None):
 
     if hasattr(doc, "set_image"):
         doc.set_image(out, step_name="Halo-B-Gon")
-    elif hasattr(doc, "apply_numpy"):
-        doc.apply_numpy(out, step_name="Halo-B-Gon")
     else:
         doc.image = out
 
@@ -416,8 +414,6 @@ class HaloBGonDialogPro(QDialog):
     def _apply_overwrite(self, out: np.ndarray):
         if hasattr(self.doc, "set_image"):
             self.doc.set_image(out, step_name="Halo-B-Gon")
-        elif hasattr(self.doc, "apply_numpy"):
-            self.doc.apply_numpy(out, step_name="Halo-B-Gon")
         else:
             self.doc.image = out
 

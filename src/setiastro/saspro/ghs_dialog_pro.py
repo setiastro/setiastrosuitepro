@@ -1299,7 +1299,9 @@ class GhsDialogPro(QDialog):
 
             _marr, mid, mname = self._active_mask_layer()
             meta = {
-                "step_name": step,
+                "step_name":  step,
+                "command_id": "ghs",
+                "preset":     dict(ghs_params),
                 "ghs":        ghs_params,
                 "masked":     bool(mid),
                 "mask_id":    mid,
