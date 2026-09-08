@@ -64,6 +64,7 @@ def _run_cosmetic(
     hot_sigma: float,
     cold_sigma: float,
     bayer_pattern: str | None = None,
+    protect_sigma: float = 5.0,
 ) -> np.ndarray:
     """Route to the GPU/CPU cosmetic corrector.  Accepts:
        - (H, W) mono
@@ -79,6 +80,7 @@ def _run_cosmetic(
         return cosmetic_correction_gpu(
             arr, hot_sigma=float(hot_sigma), cold_sigma=float(cold_sigma),
             bayer_pattern=(bayer_pattern or None),
+            protect_sigma=float(protect_sigma),
         )
 
     if arr.ndim == 3:
@@ -89,12 +91,14 @@ def _run_cosmetic(
             return cosmetic_correction_gpu(
                 arr, hot_sigma=float(hot_sigma),
                 cold_sigma=float(cold_sigma), bayer_pattern=bp,
+                protect_sigma=float(protect_sigma),
             )
         # extra channels (e.g. RGBA) — process the first 3, pass rest through
         out = arr.copy()
         out[..., :3] = cosmetic_correction_gpu(
             arr[..., :3], hot_sigma=float(hot_sigma),
             cold_sigma=float(cold_sigma), bayer_pattern=bp,
+            protect_sigma=float(protect_sigma),
         )
         return out
 
@@ -143,6 +147,7 @@ def cosmetic_correction_headless(
     *,
     hot_sigma: float = 3.0,
     cold_sigma: float = 3.0,
+    protect_sigma: float = 5.0,
     bayer_pattern: str | None = None,
     correct_hot: bool = True,
     correct_cold: bool = True,
@@ -173,6 +178,7 @@ def cosmetic_correction_headless(
 
     processed = _run_cosmetic(
         src_f, hot_sigma=hs, cold_sigma=cs, bayer_pattern=bp,
+        protect_sigma=float(protect_sigma),
     )
 
     # Preserve alpha / extra channels if the source had them
@@ -211,6 +217,7 @@ def cosmetic_correction_headless(
         _replay_preset = {
             "hot_sigma": float(hot_sigma),
             "cold_sigma": float(cold_sigma),
+            "protect_sigma": float(protect_sigma),
             "correct_hot": bool(correct_hot),
             "correct_cold": bool(correct_cold),
             "bayer_pattern": (bayer_pattern or ""),
@@ -223,6 +230,7 @@ def cosmetic_correction_headless(
         "cosmetic_correction": {
             "hot_sigma": float(hot_sigma),
             "cold_sigma": float(cold_sigma),
+            "protect_sigma": float(protect_sigma),
             "correct_hot": bool(correct_hot),
             "correct_cold": bool(correct_cold),
             "bayer_pattern": bp,
@@ -249,12 +257,14 @@ class _CosmeticPreviewWorker(QThread):
         hot_sigma: float,
         cold_sigma: float,
         bayer_pattern: str | None,
+        protect_sigma: float = 5.0,
         parent=None,
     ):
         super().__init__(parent)
         self._tile = tile.astype(np.float32, copy=True)
         self._hot = float(hot_sigma)
         self._cold = float(cold_sigma)
+        self._protect = float(protect_sigma)
         self._bp = bayer_pattern
 
     def run(self):
@@ -264,6 +274,7 @@ class _CosmeticPreviewWorker(QThread):
                 hot_sigma=self._hot,
                 cold_sigma=self._cold,
                 bayer_pattern=self._bp,
+                protect_sigma=self._protect,
             )
             self.finished_ok.emit(out)
         except Exception as e:
@@ -541,7 +552,8 @@ class CosmeticCorrectionDialog(QDialog):
     _PREVIEW_MAX_LONG_SIDE = 1024
 
     def __init__(self, main, doc, parent=None, *, tuning_mode: bool = False,
-                 sample_source_label: str | None = None):
+                 sample_source_label: str | None = None,
+                 tune_paths: list[str] | None = None, tune_index: int = 0):
         """Interactive cosmetic-correction dialog.
 
         Normal mode: Apply modifies the active document (undoable).
@@ -594,7 +606,117 @@ class CosmeticCorrectionDialog(QDialog):
         if self._preview_region not in self._PREVIEW_REGIONS:
             self._preview_region = "MC"
 
+        # Tuning-mode sample set (for the ◀ / picker / ▶ navigation bar).
+        self._tune_paths = list(tune_paths or [])
+        self._tune_index = (int(tune_index)
+                            if 0 <= int(tune_index) < len(self._tune_paths) else 0)
+
         self._build_ui()
+
+        # Add the sample-navigation bar when tuning on a multi-frame list.
+        if self._tuning_mode and len(self._tune_paths) > 1:
+            try:
+                self.layout().insertLayout(0, self._build_tune_nav_bar())
+                self._update_tune_nav_state()
+            except Exception:
+                pass
+
+        self._grab_preview_tile()
+        self._render_before_preview()
+        self._request_preview_refresh()
+
+    # ------------------------------------------------------------------
+    # Tuning-mode sample navigation (◀ / picker / ▶)
+    # ------------------------------------------------------------------
+    def _build_tune_nav_bar(self):
+        """Row letting the user bounce between light frames while tuning."""
+        import os
+        from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QComboBox, QToolButton)
+        row = QHBoxLayout()
+        row.addWidget(QLabel(self.tr("Sample:")))
+
+        self.btn_tune_prev = QToolButton(); self.btn_tune_prev.setText("◀")
+        self.btn_tune_prev.setToolTip(self.tr("Previous light frame"))
+        self.btn_tune_prev.clicked.connect(
+            lambda: self._load_tune_sample(self._tune_index - 1))
+        row.addWidget(self.btn_tune_prev)
+
+        self.cmb_tune_file = QComboBox()
+        self.cmb_tune_file.setMinimumWidth(260)
+        for p in self._tune_paths:
+            self.cmb_tune_file.addItem(os.path.basename(p), userData=p)
+        self.cmb_tune_file.setCurrentIndex(self._tune_index)
+        self.cmb_tune_file.setToolTip(self.tr("Jump to any light frame in your list"))
+        self.cmb_tune_file.currentIndexChanged.connect(self._load_tune_sample)
+        row.addWidget(self.cmb_tune_file, 1)
+
+        self.btn_tune_next = QToolButton(); self.btn_tune_next.setText("▶")
+        self.btn_tune_next.setToolTip(self.tr("Next light frame"))
+        self.btn_tune_next.clicked.connect(
+            lambda: self._load_tune_sample(self._tune_index + 1))
+        row.addWidget(self.btn_tune_next)
+        return row
+
+    def _update_tune_nav_state(self):
+        try:
+            n = len(self._tune_paths)
+            self.btn_tune_prev.setEnabled(self._tune_index > 0)
+            self.btn_tune_next.setEnabled(self._tune_index < n - 1)
+        except Exception:
+            pass
+
+    def _load_tune_sample(self, index: int):
+        """Swap the preview source to another light frame and refresh."""
+        import os
+        if not self._tune_paths:
+            return
+        index = max(0, min(int(index), len(self._tune_paths) - 1))
+        path = self._tune_paths[index]
+        try:
+            from setiastro.saspro.legacy.image_manager import load_image
+            image, header, _bd, _mono = load_image(path)
+        except Exception as e:
+            QMessageBox.warning(self, self.tr("Cosmetic Correction"),
+                                self.tr("Failed to load:\n{0}\n\n{1}").format(path, e))
+            return
+        if image is None:
+            QMessageBox.warning(self, self.tr("Cosmetic Correction"),
+                                self.tr("Load returned no image:\n{0}").format(path))
+            return
+
+        self._tune_index = index
+        self.doc = _SampleFrameDoc(
+            image=np.asarray(image, dtype=np.float32),
+            header=header,
+            display_name=os.path.basename(path),
+        )
+        self._sample_source_label = os.path.basename(path)
+
+        # Re-detect Bayer / mono for the new frame
+        self._auto_bayer = _bayer_from_doc(self.doc)
+        try:
+            _src = np.asarray(self.doc.image)
+            self._orig_mono = (_src.ndim == 2) or (_src.ndim == 3 and _src.shape[2] == 1)
+        except Exception:
+            self._orig_mono = False
+        try:
+            self.cmb_bayer.setItemText(
+                0, self.tr(f"Auto-detect  ({self._auto_bayer})") if self._auto_bayer
+                   else self.tr("Auto-detect"))
+        except Exception:
+            pass
+
+        # Keep the picker + prev/next in sync without re-triggering the signal
+        try:
+            self.cmb_tune_file.blockSignals(True)
+            self.cmb_tune_file.setCurrentIndex(index)
+            self.cmb_tune_file.blockSignals(False)
+        except Exception:
+            pass
+        self._update_tune_nav_state()
+
+        # Rebuild the preview from the new frame
+        self._preview_tile_src = None
         self._grab_preview_tile()
         self._render_before_preview()
         self._request_preview_refresh()
@@ -616,10 +738,25 @@ class CosmeticCorrectionDialog(QDialog):
         self.sp_hot.setToolTip(self.tr(
             "Sigma threshold for hot-pixel detection.  Lower = more aggressive.\n"
             "Bright pixels flagged as hot are replaced by the median of their\n"
-            "un-flagged neighbours.  A 3x3 star guard prevents star cores from\n"
-            "being clipped."
+            "un-flagged neighbours.  The structure gate (below) keeps star and\n"
+            "nebula cores from being clipped."
         ))
         form.addRow(self.tr("Hot pixels σ:"), self.sp_hot)
+
+        self.sp_protect = QDoubleSpinBox()
+        self.sp_protect.setRange(2.0, 50.0)
+        self.sp_protect.setSingleStep(0.5); self.sp_protect.setDecimals(1)
+        self.sp_protect.setValue(5.0)
+        self.sp_protect.setToolTip(self.tr(
+            "Structure-protection threshold (σ above background).\n"
+            "Any patch whose LOCAL MEDIAN sits this many σ above the global\n"
+            "background is treated as real signal (star / nebula core) and is\n"
+            "left untouched by the hot pass.  A lone hot pixel can't move a\n"
+            "median, so it is still corrected.\n"
+            "Lower = protect more (safer for tight stars); higher = correct\n"
+            "more aggressively.  Set very high to disable protection."
+        ))
+        form.addRow(self.tr("Protect structure σ:"), self.sp_protect)
 
         self.sp_cold = QDoubleSpinBox()
         self.sp_cold.setRange(0.5, 10.0)
@@ -827,6 +964,7 @@ class CosmeticCorrectionDialog(QDialog):
         return {
             "hot_sigma": float(self.sp_hot.value()),
             "cold_sigma": float(self.sp_cold.value()),
+            "protect_sigma": float(self.sp_protect.value()),
             "correct_hot": bool(self.cb_hot.isChecked()),
             "correct_cold": bool(self.cb_cold.isChecked()),
             "bayer_pattern": self._selected_bayer_for_preset(),
@@ -848,6 +986,9 @@ class CosmeticCorrectionDialog(QDialog):
             except Exception: pass
         if "cold_sigma" in p:
             try: self.sp_cold.setValue(float(p["cold_sigma"]))
+            except Exception: pass
+        if "protect_sigma" in p:
+            try: self.sp_protect.setValue(float(p["protect_sigma"]))
             except Exception: pass
         if "correct_hot" in p:
             self.cb_hot.setChecked(bool(p["correct_hot"]))
@@ -997,6 +1138,7 @@ class CosmeticCorrectionDialog(QDialog):
             s = QSettings()
             s.setValue("stacking/cosmetic/hot_sigma", hs)
             s.setValue("stacking/cosmetic/cold_sigma", cs)
+            s.setValue("stacking/cosmetic/protect_sigma", float(self.sp_protect.value()))
             s.sync()
         except Exception as e:
             QMessageBox.warning(self, self.tr("Push to Stacking Suite"),
@@ -1040,6 +1182,7 @@ class CosmeticCorrectionDialog(QDialog):
         self._preview_worker = _CosmeticPreviewWorker(
             self._preview_tile_src,
             hot_sigma=hs, cold_sigma=cs, bayer_pattern=bp,
+            protect_sigma=float(self.sp_protect.value()),
             parent=self,
         )
         self._preview_worker.finished_ok.connect(self._on_preview_ok)
@@ -1074,6 +1217,7 @@ class CosmeticCorrectionDialog(QDialog):
 
         hs = float(self.sp_hot.value())
         cs = float(self.sp_cold.value())
+        ps = float(self.sp_protect.value())
         ch = bool(self.cb_hot.isChecked())
         cc = bool(self.cb_cold.isChecked())
         if not (ch or cc):
@@ -1121,7 +1265,7 @@ class CosmeticCorrectionDialog(QDialog):
             bp = bp_raw
 
         preset = {
-            "hot_sigma": hs, "cold_sigma": cs,
+            "hot_sigma": hs, "cold_sigma": cs, "protect_sigma": ps,
             "correct_hot": ch, "correct_cold": cc,
             "bayer_pattern": bp_raw,
         }
@@ -1129,7 +1273,7 @@ class CosmeticCorrectionDialog(QDialog):
         try:
             cosmetic_correction_headless(
                 self.doc,
-                hot_sigma=hs, cold_sigma=cs,
+                hot_sigma=hs, cold_sigma=cs, protect_sigma=ps,
                 bayer_pattern=(None if bp == "__none__" else bp),
                 correct_hot=ch, correct_cold=cc,
                 preset=self.get_preset(),
@@ -1236,12 +1380,14 @@ class _CosmeticBatchWorker(QThread):
         out_mode: str,          # "overwrite" | "suffix" | "dir"
         out_dir: str = "",
         suffix: str = "_cc",
+        protect_sigma: float = 5.0,
         parent=None,
     ):
         super().__init__(parent)
         self._paths = list(paths)
         self._hot = float(hot_sigma) if bool(correct_hot) else 1e9
         self._cold = float(cold_sigma) if bool(correct_cold) else 1e9
+        self._protect = float(protect_sigma)
         self._bp = bayer_pattern
         self._out_mode = out_mode
         self._out_dir = out_dir or ""
@@ -1319,7 +1465,7 @@ class _CosmeticBatchWorker(QThread):
 
                 corrected = _run_cosmetic(
                     arr, hot_sigma=self._hot, cold_sigma=self._cold,
-                    bayer_pattern=bp,
+                    bayer_pattern=bp, protect_sigma=self._protect,
                 )
 
                 # Determine format from source extension
@@ -1455,6 +1601,17 @@ class CosmeticCorrectionBatchDialog(QDialog):
         self.sp_cold.setDecimals(2)
         self.sp_cold.setValue(float(preset.get("cold_sigma", 3.0)))
         det_form.addRow(self.tr("Cold pixels σ:"), self.sp_cold)
+
+        self.sp_protect = QDoubleSpinBox()
+        self.sp_protect.setRange(2.0, 50.0); self.sp_protect.setSingleStep(0.5)
+        self.sp_protect.setDecimals(1)
+        self.sp_protect.setValue(float(preset.get("protect_sigma", 5.0)))
+        self.sp_protect.setToolTip(self.tr(
+            "Structure-protection threshold (σ above background). Patches whose\n"
+            "local median exceeds this are treated as real signal and left\n"
+            "untouched. Lower = protect more; higher = correct more aggressively."
+        ))
+        det_form.addRow(self.tr("Protect structure σ:"), self.sp_protect)
 
         self.cb_hot = QCheckBox(self.tr("Correct hot pixels"))
         self.cb_hot.setChecked(bool(preset.get("correct_hot", True)))
@@ -1758,6 +1915,7 @@ class CosmeticCorrectionBatchDialog(QDialog):
             correct_hot=ch, correct_cold=cc,
             bayer_pattern=bp_raw,
             out_mode=out_mode, out_dir=out_dir, suffix=suffix,
+            protect_sigma=float(self.sp_protect.value()),
             parent=self,
         )
         self._worker.file_started.connect(self._on_file_started)
@@ -1885,6 +2043,7 @@ def apply_cosmetic_correction_preset_to_doc(main, doc, preset: dict):
     """Headless-apply from a preset (grip drop onto image, replay, etc.)."""
     hs = float(preset.get("hot_sigma", 3.0))
     cs = float(preset.get("cold_sigma", 3.0))
+    ps = float(preset.get("protect_sigma", 5.0))
     ch = bool(preset.get("correct_hot", True))
     cc = bool(preset.get("correct_cold", True))
     bp_raw = str(preset.get("bayer_pattern", "") or "").strip()
@@ -1897,7 +2056,7 @@ def apply_cosmetic_correction_preset_to_doc(main, doc, preset: dict):
 
     cosmetic_correction_headless(
         doc,
-        hot_sigma=hs, cold_sigma=cs,
+        hot_sigma=hs, cold_sigma=cs, protect_sigma=ps,
         bayer_pattern=bp,
         correct_hot=ch, correct_cold=cc,
         preset=preset,
@@ -1999,7 +2158,8 @@ class _SampleFrameDoc:
 
 
 def open_cosmetic_correction_tune(main, sample_light_path: str,
-                                  preset: dict | None = None):
+                                  preset: dict | None = None,
+                                  all_paths: list[str] | None = None):
     """Open Cosmetic Correction in Stacking-Suite tuning mode.
 
     Loads `sample_light_path` as the preview source, seeds the sigma
@@ -2053,6 +2213,7 @@ def open_cosmetic_correction_tune(main, sample_light_path: str,
             preset = {
                 "hot_sigma": float(s.value("stacking/cosmetic/hot_sigma", 3.0, type=float)),
                 "cold_sigma": float(s.value("stacking/cosmetic/cold_sigma", 3.0, type=float)),
+                "protect_sigma": float(s.value("stacking/cosmetic/protect_sigma", 5.0, type=float)),
                 "correct_hot": True,
                 "correct_cold": True,
                 "bayer_pattern": "",
@@ -2060,10 +2221,19 @@ def open_cosmetic_correction_tune(main, sample_light_path: str,
         except Exception:
             preset = {}
 
+    # Ordered frame list for the in-dialog ◀ / picker / ▶ navigation.
+    _tune_paths = list(all_paths) if all_paths else [sample_light_path]
+    try:
+        _tune_index = _tune_paths.index(sample_light_path)
+    except ValueError:
+        _tune_index = 0
+
     dlg = CosmeticCorrectionDialog(
         main, stub, parent=main,
         tuning_mode=True,
         sample_source_label=os.path.basename(sample_light_path),
+        tune_paths=_tune_paths,
+        tune_index=_tune_index,
     )
     try:
         from setiastro.saspro.resources import cosmeticcorrection_path

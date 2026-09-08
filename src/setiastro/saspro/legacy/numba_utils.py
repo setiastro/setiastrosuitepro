@@ -3289,44 +3289,17 @@ def bulk_cosmetic_correction_numba(image,
                                    cold_sigma=3.0,
                                    star_mean_ratio=0.22,
                                    star_max_ratio=0.55,
-                                   sat_quantile=0.9995):
+                                   sat_quantile=0.9995,
+                                   protect_sigma=5.0):
     """
     Orchestrator: try GPU first, fall back to Numba CPU.
     """
     from setiastro.saspro.torch_rejection import (cosmetic_correction_gpu, torch_available as _torch_ok) 
     
-    return cosmetic_correction_gpu(image, hot_sigma=hot_sigma, cold_sigma=cold_sigma)
+    return cosmetic_correction_gpu(image, hot_sigma=hot_sigma, cold_sigma=cold_sigma,
+                                   protect_sigma=protect_sigma)
 
-    # ── Numba CPU fallback ────────────────────────────────────────────
-    img = image.astype(np.float32, copy=False)
-    was_gray = (img.ndim == 2)
-    if was_gray:
-        src = img[:, :, None]
-    else:
-        src = img
 
-    H, W, C = src.shape
-    dst = src.copy()
-
-    for ci in range(C):
-        plane = src[:, :, ci]
-        med = float(np.median(plane))
-        avg_dev = float(np.mean(np.abs(plane - med)))
-
-        hot_map, cold_map = _detect_hot_cold_pixels(
-            plane, H, W,
-            float(hot_sigma), float(cold_sigma),
-            avg_dev
-        )
-        _correct_hot_cold_pixels(
-            plane, dst[:, :, ci],
-            hot_map, cold_map,
-            H, W
-        )
-
-    if was_gray:
-        return dst[:, :, 0]
-    return dst
 
 def bulk_cosmetic_correction_bayer(image,
                                    hot_sigma=5.5,
@@ -3334,7 +3307,8 @@ def bulk_cosmetic_correction_bayer(image,
                                    star_mean_ratio=0.22,
                                    star_max_ratio=0.55,
                                    sat_quantile=0.9995,
-                                   pattern="RGGB"):
+                                   pattern="RGGB",
+                                   protect_sigma=5.0):
     """
     Bayer-safe cosmetic correction. Work on same-color sub-planes (2-px stride),
     then write results back. Defaults assume normalized or 16/32f data.
@@ -3375,7 +3349,8 @@ def bulk_cosmetic_correction_bayer(image,
             cold_sigma=cold_sigma,
             star_mean_ratio=star_mean_ratio,
             star_max_ratio=star_max_ratio,
-            sat_quantile=sat_quantile
+            sat_quantile=sat_quantile,
+            protect_sigma=protect_sigma,
         )
 
     # Red

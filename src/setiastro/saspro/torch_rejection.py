@@ -351,6 +351,7 @@ def calibration_pipeline_gpu(
     cold_sigma: float = 3.0,
     apply_cosmetic: bool = True,
     bayer_pattern: str | None = None,
+    protect_sigma: float = 5.0,
 ) -> np.ndarray:
     """
     Full per-frame calibration pipeline on GPU:
@@ -411,6 +412,7 @@ def calibration_pipeline_gpu(
                 hot_sigma=hot_sigma,
                 cold_sigma=cold_sigma,
                 bayer_pattern=bayer_pattern,
+                protect_sigma=protect_sigma,
             )
 
     # ── back to CPU, restore original layout ─────────────────────────
@@ -445,9 +447,7 @@ def _get_cc_buffers(torch, dev, H, W):
         "m5":           torch.empty((H, W),    device=dev, dtype=torch.float32),
         "hot_thresh":   torch.empty((H, W),    device=dev, dtype=torch.float32),
         "cold_thresh":  torch.empty((H, W),    device=dev, dtype=torch.float32),
-        "avg3x3":       torch.empty((H, W),    device=dev, dtype=torch.float32),
         "replacement":  torch.empty((H, W),    device=dev, dtype=torch.float32),
-        "ones_k":       torch.ones(1, 1, 3, 3, device=dev, dtype=torch.float32),
     }
 
 
@@ -456,7 +456,8 @@ def _clear_cc_buffers():
     _CC_BUFFERS.clear()
 
 
-def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma, bayer_pattern=None):
+def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
+                                bayer_pattern=None, protect_sigma=5.0):
     """
     Two-pass cosmetic correction on a (C,H,W) tensor already on device.
     Uses pre-allocated persistent buffers to avoid per-frame cudaMalloc overhead.
@@ -481,6 +482,8 @@ def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma, bayer_patt
         med_val = sample.median()
         avg_dev = (sample - med_val).abs().mean()
         avg_dev_f = float(avg_dev)
+        robust_sig = max(1.4826 * float((sample - med_val).abs().median()), 1e-8)
+        med_f      = float(med_val)
         del sample
 
         # ── pad plane once — reused for both m5 and neighbor lookups ──
@@ -509,19 +512,15 @@ def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma, bayer_patt
         hot_candidates = plane > buf["hot_thresh"]
         cold_map       = plane < buf["cold_thresh"]
 
-        # ── star guard: 3x3 neighbor average (stride-1 always) ───────
-        plane_4d  = plane.unsqueeze(0).unsqueeze(0)
-        plane_pad1 = F.pad(plane_4d, (1, 1, 1, 1), mode='reflect')
-        box3x3 = F.conv2d(plane_pad1, buf["ones_k"]).squeeze(0).squeeze(0)
-        torch.sub(box3x3, plane, out=buf["avg3x3"])
-        buf["avg3x3"].div_(8.0)
-        del box3x3, plane_pad1, plane_4d
+        # ── structure gate: protect resolved signal (stars / nebula) ──
+        # See cosmetic_correction_gpu for the rationale. m5 is stride-s so
+        # this is same-colour-safe for Bayer.
+        protect_thr = med_f + float(protect_sigma) * robust_sig
+        structure   = buf["m5"] > protect_thr
+        hot_map     = hot_candidates & (~structure)
+        flagged     = hot_map | cold_map
 
-        star_guard = buf["avg3x3"] < (m5 + avg_dev_f * 0.5)
-        hot_map    = hot_candidates & star_guard
-        flagged    = hot_map | cold_map
-
-        del hot_candidates, cold_map, star_guard, hot_map
+        del hot_candidates, cold_map, hot_map
 
         # ── pad flagged mask using same pad_amt ───────────────────────
         fp = F.pad(
@@ -616,6 +615,7 @@ def cosmetic_correction_gpu(
     hot_sigma: float = 3.0,
     cold_sigma: float = 3.0,
     bayer_pattern: str | None = None,
+    protect_sigma: float = 5.0,
 ) -> np.ndarray:
     """
     Two-pass cosmetic correction on GPU.
@@ -644,6 +644,13 @@ def cosmetic_correction_gpu(
 
             med_val = plane.median()
             avg_dev = (plane - med_val).abs().mean()
+            # robust background sigma for the structure gate (sampled — a
+            # full MAD on 40M+ px is wasteful; 1% is plenty for a threshold)
+            _gs = max(1, min(H, W) // 100)
+            robust_sigma = torch.clamp(
+                1.4826 * (plane[::_gs, ::_gs] - med_val).abs().median(),
+                min=1e-8,
+            )
 
             # pad by stride amount so border pixels are handled cleanly
             p = torch.nn.functional.pad(
@@ -668,15 +675,19 @@ def cosmetic_correction_gpu(
             hot_candidates = plane > hot_thresh
             cold_map       = plane < cold_thresh
 
-            # star guard: 3x3 (or 5x5 for Bayer to cover same stride) neighbor average
-            guard_pad = s * 2 if bayer_pattern else 1
-            ones_k = torch.ones(1, 1, 3, 3, device=dev, dtype=torch.float32)
-            plane_4d  = plane.unsqueeze(0).unsqueeze(0)
-            plane_pad = torch.nn.functional.pad(plane_4d, (1, 1, 1, 1), mode='reflect')
-            box3x3    = torch.nn.functional.conv2d(plane_pad, ones_k).squeeze(0).squeeze(0)
-            avg3x3_neighbors = (box3x3 - plane) / 8.0
-            star_guard = avg3x3_neighbors < (m5 + avg_dev * 0.5)
-            hot_map    = hot_candidates & star_guard
+            # ── structure gate: protect resolved signal (stars / nebula) ──
+            # A hot pixel is a lone spike and cannot move a local median; a
+            # star or nebula core has spatial extent, so its local median is
+            # genuinely elevated. Gate the hot pass on m5 (the 5-px cross
+            # median, already robust to an isolated hot centre) vs a global
+            # robust background: patches whose median clears protect_sigma
+            # sigmas above background are real signal and are left untouched.
+            # NB: m5 uses stride-s neighbours, so this stays same-colour for
+            # Bayer automatically — unlike the old stride-1 3x3 mean, which
+            # averaged across CFA colours.
+            protect_thr = med_val + float(protect_sigma) * robust_sigma
+            structure   = m5 > protect_thr
+            hot_map     = hot_candidates & (~structure)
 
             flagged = hot_map | cold_map
 

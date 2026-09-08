@@ -1002,6 +1002,19 @@ def _fill_hdr_from_raw_metadata(raw, hdr: fits.Header | None = None) -> fits.Hea
 
 from astropy.wcs import WCS
 
+# Silence astropy's benign "Keyword name '…' is greater than 8 characters" chatter.
+# It fires whenever a FITS header carries a non-standard long keyword (on both load
+# and save), and astropy just auto-creates a HIERARCH card. Scoped to that exact
+# message so other VerifyWarnings — e.g. value truncation on write — still surface.
+# Installed once, process-wide.
+import warnings as _warnings
+from astropy.io.fits.verify import VerifyWarning as _VerifyWarning
+_warnings.filterwarnings(
+    "ignore",
+    message=r"Keyword name .* is greater than 8 characters",
+    category=_VerifyWarning,
+)
+
 import ast
 
 def _coerce_fits_value(v):
@@ -1238,16 +1251,21 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
         if not all(k in fhdr for k in core_keys):
             return meta
 
-        # --- Attempt 1: basic WCS ---
-        try:
-            w = WCS(fhdr, relax=True)
-        except Exception as e1:
-            print(f"⚠️ WCS(fhdr, relax=True) failed: {e1}")
-            print("⚠️ Retrying WCS with naxis=2 (ignore extra axis).")
+        # --- Build the celestial (2D) WCS directly ---
+        # Astro FITS always carries the RA/DEC solution on axes 1 & 2; a 3rd axis
+        # is only ever the colour/plane axis. Building the full WCS on an RGB
+        # (NAXIS=3) frame makes astropy warn about the extra axis, and we'd just
+        # fall back to naxis=2 anyway — so ask for naxis=2 up front and skip the noise.
+        # The catch_warnings block also silences astropy's FITSFixedWarning chatter
+        # (obsolete RADESYS/EQUINOX fixups, datfix, etc.) so loads stay quiet.
+        import warnings
+        from astropy.wcs import FITSFixedWarning
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FITSFixedWarning)
             try:
                 w = WCS(fhdr, relax=True, naxis=2)
-            except Exception as e2:
-                print(f"⚠️ WCS(..., naxis=2) failed: {e2}")
+            except Exception as e1:
+                print(f"⚠️ WCS(fhdr, relax=True, naxis=2) failed: {e1}")
                 print("⚠️ Retrying WCS with naxis=2 after stripping SIP terms.")
                 try:
                     fhdr2 = fhdr.copy()
@@ -1255,8 +1273,8 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
                         if k.startswith(("A_", "B_", "AP_", "BP_", "A_ORDER", "B_ORDER")):
                             del fhdr2[k]
                     w = WCS(fhdr2, relax=True, naxis=2)
-                except Exception as e3:
-                    print(f"⚠️ WCS(..., naxis=2) after SIP-strip failed: {e3}")
+                except Exception as e2:
+                    print(f"⚠️ WCS(..., naxis=2) after SIP-strip failed: {e2}")
                     raise e1  # re-raise original
 
         if getattr(w, "has_celestial", False):
