@@ -1,4 +1,4 @@
-# nbextract.py
+# src/setiastro/saspro/nbextract.py
 # SetiAstro Suite Pro — Narrowband Channel Extractor
 #
 #   ███╗   ██╗██████╗ ███████╗██╗  ██╗████████╗██████╗  █████╗  ██████╗████████╗
@@ -127,6 +127,12 @@ _SK_BW2     = "NBExtract/BW_Line2"
 _SK_CENTER1 = "NBExtract/Center_Line1"
 _SK_CENTER2 = "NBExtract/Center_Line2"
 _SK_MAX_CAL = "NBExtract/MaxCalStars"
+
+
+class NBExtractError(RuntimeError):
+    """Raised by the headless NBExtract entry point instead of popping a modal
+    dialog.  run_command('nbextract', ...) surfaces this as a CommandError so
+    user scripts can catch and report it cleanly."""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Core maths
@@ -539,6 +545,11 @@ class NBExtractDialog(SFCCDialog):
         self._A_matrix: Optional[np.ndarray] = None
         self._nb_star_records: List[Dict] = []
         self._fallback_mode: bool = False
+
+        # Headless-run state (set by run_headless / run_nbextract_via_preset)
+        self._headless: bool = False
+        self._allow_fallback: bool = False
+        self._last_output_docs: List = []
 
         self._inject_nb_ui()
         self._load_nb_settings()
@@ -1030,21 +1041,22 @@ class NBExtractDialog(SFCCDialog):
     # ── Step 2: calibrate mixing matrix ──────────────────────────────────────
     def _calibrate_mixing_matrix(self):
         if not getattr(self, "star_list", None):
-            QMessageBox.warning(
-                self, "No Stars",
+            self._nb_abort(
+                "No Stars",
                 "Please run Step 1: Fetch Stars first.\n"
-                "The image must be plate-solved."
+                "The image must be plate-solved.",
+                level="warning",
             )
             return
 
         doc = self.doc_manager.get_active_document()
         if doc is None or doc.image is None:
-            QMessageBox.critical(self, "Error", "No active document.")
+            self._nb_abort("Error", "No active document.")
             return
 
         img = doc.image
         if img.ndim != 3 or img.shape[2] != 3:
-            QMessageBox.critical(self, "Error", "Active document must be RGB (3 channels).")
+            self._nb_abort("Error", "Active document must be RGB (3 channels).")
             return
 
         center1_nm  = float(self.nb_center1_spin.value())
@@ -1077,7 +1089,7 @@ class NBExtractDialog(SFCCDialog):
 
         sources = sep.extract(data_sub, sep_sigma, err=err)
         if sources.size == 0:
-            QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
+            self._nb_abort("SEP Error", "SEP found no sources.")
             return
 
         r_fluxrad, _ = sep.flux_radius(
@@ -1088,8 +1100,8 @@ class NBExtractDialog(SFCCDialog):
         mask    = (r_fluxrad > 0.2) & (r_fluxrad <= 10)
         sources = sources[mask]
         if sources.size == 0:
-            QMessageBox.critical(self, "SEP Error",
-                                 "All SEP detections rejected by radius filter.")
+            self._nb_abort("SEP Error",
+                           "All SEP detections rejected by radius filter.")
             return
 
         _sfcc_status(self,
@@ -1108,7 +1120,7 @@ class NBExtractDialog(SFCCDialog):
             lib = None
 
         if lib is None:
-            QMessageBox.critical(self, "No Gaia Library",
+            self._nb_abort("No Gaia Library",
                 "Gaia XP spectral library is required for NBExtract calibration.\n"
                 "Please install at least the Ultra-Bright or Bright group.")
             return
@@ -1144,9 +1156,10 @@ class NBExtractDialog(SFCCDialog):
         QApplication.processEvents()
 
         if n_matched == 0:
-            QMessageBox.warning(self, "No XP Stars Detected",
+            self._nb_abort("No XP Stars Detected",
                 "No Gaia XP stars were re-detected by SEP at the current threshold.\n\n"
-                "Try lowering the Star detect σ, or install more Gaia XP library groups.")
+                "Try lowering the Star detect σ, or install more Gaia XP library groups.",
+                level="warning")
             return
 
         # Sort brightest first, cap at 300
@@ -1232,18 +1245,15 @@ class NBExtractDialog(SFCCDialog):
         QApplication.processEvents()
 
         if n_used < 6:
-            reply = QMessageBox.question(
-                self, "Too Few Stars — Use Fallback?",
+            if not self._nb_confirm_fallback(
+                "Too Few Stars — Use Fallback?",
                 f"Only {n_used} Gaia XP calibration stars found (need ≥ 6 for NNLS).\n\n"
                 f"  {n_matched:,} XP stars re-detected by SEP\n"
                 f"  {n_xp_used} XP spectra successfully integrated\n"
                 f"  {n_no_spectrum} spectra missing from local library\n\n"
                 "Try installing more Gaia XP library groups, or lower the\n"
                 "Star detect σ to detect more stars, or use the fallback.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
+            ):
                 return
             self._run_wb_fallback(doc, img_float, l1_key, l2_key)
             return
@@ -1256,17 +1266,14 @@ class NBExtractDialog(SFCCDialog):
 
         A, n_clipped_used = fit_mixing_matrix(star_records)
         if A is None:
-            reply = QMessageBox.question(
-                self, "Matrix Fit Failed — Use Fallback?",
+            if not self._nb_confirm_fallback(
+                "Matrix Fit Failed — Use Fallback?",
                 "Could not fit the NNLS mixing matrix.\n\n"
                 "Common causes:\n"
                 "  • Image is a synthetic palette (e.g. HOO where G=B=OIII exactly)\n"
                 "  • Too few spectrally diverse stars survived sigma clipping.\n\n"
                 "Use the stellar flux mixing fallback instead?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
+            ):
                 return
             self._run_wb_fallback(doc, img_float, l1_key, l2_key)
             return
@@ -1284,7 +1291,8 @@ class NBExtractDialog(SFCCDialog):
         QApplication.processEvents()
 
         self._set_auto_q(A)
-        self._plot_calibration_diagnostics(star_records, A, l1_key, l2_key)
+        if not self._headless:
+            self._plot_calibration_diagnostics(star_records, A, l1_key, l2_key)
 
         warn_text, warn_severity = condition_number_warning(A)
 
@@ -1311,17 +1319,14 @@ class NBExtractDialog(SFCCDialog):
         self.nb_matrix_label.setText("\n".join(matrix_lines))
 
         if warn_severity == "severe":
-            reply = QMessageBox.question(
-                self, "Poor Channel Separation — Use Fallback?",
+            if self._nb_confirm_fallback(
+                "Poor Channel Separation — Use Fallback?",
                 f"Condition number is {k:.1f} — noise would be amplified "
                 f"~{k**2:.0f}× by the NNLS inversion.\n\n"
                 f"At this level the extracted channels will be dominated by amplified "
                 f"noise rather than real emission signal.\n\n"
                 f"Switch to the stellar flux color mixing fallback instead?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes,
-            )
-            if reply == QMessageBox.StandardButton.Yes:
+            ):
                 self.nb_extract_btn.setEnabled(False)
                 self._run_wb_fallback(doc, img_float, l1_key, l2_key)
                 return
@@ -1343,7 +1348,8 @@ class NBExtractDialog(SFCCDialog):
             f"Auto Q₁ = {q1_val:.2f}  Q₂ = {q2_val:.2f}\n\n"
         )
         summary += warn_text if warn_text else "Matrix looks well-conditioned ✓"
-        QMessageBox.information(self, "Calibration Complete", summary)
+        if not self._headless:
+            QMessageBox.information(self, "Calibration Complete", summary)
 
     def _plot_calibration_diagnostics(
         self,
@@ -1558,8 +1564,9 @@ class NBExtractDialog(SFCCDialog):
                  "NBExtract_bw_nm": float(self.nb_bw2_spin.value()),
                  "NBExtract_method": "wb_fallback", "NBExtract_wb_stars": int(star_count)}
 
-        self._push_new_document(line1_img, meta1, f"{l1_key} (NBExtract)")
-        self._push_new_document(line2_img, meta2, f"{l2_key} (NBExtract)")
+        d1 = self._push_new_document(line1_img, meta1, f"{l1_key} (NBExtract)")
+        d2 = self._push_new_document(line2_img, meta2, f"{l2_key} (NBExtract)")
+        self._last_output_docs = [d for d in (d1, d2) if d is not None]
 
         self.nb_matrix_label.setText(
             f"Method: Stellar flux color mixing fallback\n"
@@ -1573,30 +1580,174 @@ class NBExtractDialog(SFCCDialog):
             f"NBExtract color mixing fallback complete — '{l1_key}' and '{l2_key}' "
             f"created from {star_count} stars.")
 
-        QMessageBox.information(
-            self, "Color Mixing Fallback Complete",
-            f"Created two new documents using stellar flux color mixing:\n"
-            f"  •  {l1_key} (NBExtract) — color-corrected R channel\n"
-            f"  •  {l2_key} (NBExtract) — color-corrected G channel\n\n"
-            f"3×3 color mixing matrix fitted from {star_count} stellar flux measurements.\n"
+        if not self._headless:
+            QMessageBox.information(
+                self, "Color Mixing Fallback Complete",
+                f"Created two new documents using stellar flux color mixing:\n"
+                f"  •  {l1_key} (NBExtract) — color-corrected R channel\n"
+                f"  •  {l2_key} (NBExtract) — color-corrected G channel\n\n"
+                f"3×3 color mixing matrix fitted from {star_count} stellar flux measurements.\n"
+            )
+        return list(self._last_output_docs)
+
+    # ── Headless entry / preset plumbing ──────────────────────────
+
+    def _nb_abort(self, title: str, text: str, level: str = "critical"):
+        """Headless → raise NBExtractError; interactive → show a message box."""
+        if self._headless:
+            raise NBExtractError(text)
+        if level == "warning":
+            QMessageBox.warning(self, title, text)
+        else:
+            QMessageBox.critical(self, title, text)
+
+    def _nb_confirm_fallback(self, title: str, text: str) -> bool:
+        """Whether to run the stellar-flux WB fallback.
+
+        Interactive: modal Yes/No prompt (Yes default, matching the old flow).
+        Headless: no prompt — obey self._allow_fallback.
+        """
+        if self._headless:
+            return bool(self._allow_fallback)
+        reply = QMessageBox.question(
+            self, title, text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
         )
+        return reply == QMessageBox.StandardButton.Yes
+
+    def _apply_preset(self, preset: dict):
+        """Push a preset dict onto the dialog widgets (used by headless runs)."""
+        name = preset.get("preset", preset.get("filter"))
+        if name:
+            idx = self.nb_preset_combo.findText(str(name))
+            if idx < 0:
+                raise NBExtractError(
+                    f"Unknown filter preset {name!r}. "
+                    f"Options: {list(FILTER_PRESETS.keys())}"
+                )
+            self.nb_preset_combo.setCurrentIndex(idx)
+        # Force a consistent widget state for the (possibly unchanged) selection.
+        self._on_preset_changed()
+
+        if self.nb_preset_combo.currentText() == FILTER_PRESET_CUSTOM:
+            if preset.get("line1_name"):
+                self.nb_line1_name.setText(str(preset["line1_name"]))
+            if preset.get("line2_name"):
+                self.nb_line2_name.setText(str(preset["line2_name"]))
+            for key, spin in (
+                ("center1_nm", self.nb_center1_spin),
+                ("center2_nm", self.nb_center2_spin),
+                ("bw1_nm",     self.nb_bw1_spin),
+                ("bw2_nm",     self.nb_bw2_spin),
+            ):
+                if preset.get(key) is not None:
+                    spin.setValue(float(preset[key]))
+
+        if preset.get("max_cal_stars") is not None and hasattr(self, "nb_max_cal_spin"):
+            self.nb_max_cal_spin.setValue(int(preset["max_cal_stars"]))
+        if preset.get("sep_sigma") is not None and hasattr(self, "sep_thr_spin"):
+            self.sep_thr_spin.setValue(float(preset["sep_sigma"]))
+        if preset.get("stretch") is not None and hasattr(self, "nb_stretch_chk"):
+            self.nb_stretch_chk.setChecked(bool(preset["stretch"]))
+
+    def run_headless(self, *, doc=None, preset: Optional[dict] = None):
+        """
+        Run the full NBExtract pipeline (Fetch → Calibrate → Extract) with no
+        user interaction, on the active document.  Returns the list of newly
+        created ImageDocuments (line1, line2).
+
+        Raises NBExtractError on any condition that would normally pop a modal
+        dialog (no stars, too few calibration stars, ill-conditioned matrix,
+        wrong image type, …).
+
+        Recognised preset keys:
+            preset / filter   : "Ha / OIII" | "SII / OIII" | "SII / Hβ" | "Custom"
+            line1_name/line2_name, center1_nm/center2_nm, bw1_nm/bw2_nm  (Custom)
+            max_cal_stars     : int   (default 300)
+            sep_sigma         : float (SEP detection threshold, default 5.0)
+            stretch           : bool  (match output median to source, default True)
+            q1 / q2           : float in [0,1] — override the auto-derived Q blend
+            allow_fallback    : bool  — permit the stellar-flux WB fallback when
+                                the XP calibration cannot be fitted (default False)
+        """
+        preset = dict(preset or {})
+        self._headless = True
+        self._allow_fallback = bool(preset.get("allow_fallback", False))
+        self._last_output_docs = []
+        try:
+            dm = self.doc_manager
+            active = dm.get_active_document() if dm is not None else None
+            if doc is not None and active is not None and doc is not active:
+                same_img = getattr(doc, "image", None) is getattr(active, "image", None)
+                if not same_img:
+                    raise NBExtractError(
+                        "NBExtract (headless) operates on the active document, but a "
+                        "different target document was supplied. Focus the intended "
+                        "RGB document first, then run."
+                    )
+            target = doc if doc is not None else active
+            if target is None or getattr(target, "image", None) is None:
+                raise NBExtractError("No active document to run NBExtract on.")
+            img = target.image
+            if img.ndim != 3 or img.shape[2] != 3:
+                raise NBExtractError("NBExtract requires an RGB (3-channel) image.")
+
+            self._apply_preset(preset)
+
+            # Step 1 — fetch stars (image must be plate-solved).
+            if not getattr(self, "star_list", None):
+                self.fetch_stars()
+            if not getattr(self, "star_list", None):
+                raise NBExtractError(
+                    "Star fetch returned no stars. The image must be plate-solved "
+                    "(valid WCS) and lie within Gaia/SIMBAD catalog coverage."
+                )
+
+            # Step 2 — calibrate mixing matrix (may run WB fallback if allowed).
+            self._calibrate_mixing_matrix()
+
+            # Fallback path already produced the two output documents.
+            if self._last_output_docs:
+                return list(self._last_output_docs)
+
+            if self._A_matrix is None:
+                raise NBExtractError(
+                    "Calibration produced no mixing matrix: too few Gaia XP "
+                    "calibration stars, or the NNLS fit failed. Install more Gaia "
+                    "XP library groups, lower 'sep_sigma', or pass allow_fallback=True."
+                )
+
+            # Optional Q overrides — applied AFTER calibration, because the
+            # calibration step auto-derives Q from the condition number.
+            if preset.get("q1") is not None:
+                self.nb_q1_spin.setValue(float(preset["q1"]))
+            if preset.get("q2") is not None:
+                self.nb_q2_spin.setValue(float(preset["q2"]))
+
+            # Step 3 — extract.
+            self._extract_channels()
+            return list(self._last_output_docs)
+        finally:
+            self._headless = False
 
     # ── Step 3: extract channels ──────────────────────────────────────────────
 
     def _extract_channels(self):
         if self._A_matrix is None:
-            QMessageBox.warning(self, "Not Calibrated",
-                                "Please run Step 2: Calibrate Mixing Matrix first.")
+            self._nb_abort("Not Calibrated",
+                           "Please run Step 2: Calibrate Mixing Matrix first.",
+                           level="warning")
             return
 
         doc = self.doc_manager.get_active_document()
         if doc is None or doc.image is None:
-            QMessageBox.critical(self, "Error", "No active document.")
+            self._nb_abort("Error", "No active document.")
             return
 
         img = doc.image
         if img.ndim != 3 or img.shape[2] != 3:
-            QMessageBox.critical(self, "Error", "Active document must be RGB (3 channels).")
+            self._nb_abort("Error", "Active document must be RGB (3 channels).")
             return
 
         preset_name = self.nb_preset_combo.currentText()
@@ -1681,25 +1832,28 @@ class NBExtractDialog(SFCCDialog):
                  "NBExtract_n_cal_stars": n_cal, "NBExtract_A_matrix": A_list,
                  "NBExtract_Q2": q2}
 
-        self._push_new_document(line1_img, meta1, f"{l1_key} (NBExtract)")
-        self._push_new_document(line2_img, meta2, f"{l2_key} (NBExtract)")
+        d1 = self._push_new_document(line1_img, meta1, f"{l1_key} (NBExtract)")
+        d2 = self._push_new_document(line2_img, meta2, f"{l2_key} (NBExtract)")
+        self._last_output_docs = [d for d in (d1, d2) if d is not None]
 
         k = float(np.linalg.cond(self._A_matrix))
         _sfcc_status(self,
             f"NBExtract complete — '{l1_key}' and '{l2_key}' channels created "
             f"from {n_cal} stars  (Q₁={q1:.2f}  Q₂={q2:.2f}).")
 
-        QMessageBox.information(
-            self, "Extraction Complete",
-            f"Two new documents created:\n"
-            f"  •  {l1_key}  (NBExtract)\n"
-            f"  •  {l2_key}  (NBExtract)\n\n"
-            f"Calibrated from {n_cal} stars.\n"
-            f"Condition number: {k:.2f}\n"
-            f"Q₁ = {q1:.2f}   Q₂ = {q2:.2f}  (auto-derived from condition number)\n\n"
-            f"Tip: if you see over-subtraction (dark halos/holes), open Advanced\n"
-            f"and reduce Q. If under-subtraction (residual bleed), increase Q."
-        )
+        if not self._headless:
+            QMessageBox.information(
+                self, "Extraction Complete",
+                f"Two new documents created:\n"
+                f"  •  {l1_key}  (NBExtract)\n"
+                f"  •  {l2_key}  (NBExtract)\n\n"
+                f"Calibrated from {n_cal} stars.\n"
+                f"Condition number: {k:.2f}\n"
+                f"Q₁ = {q1:.2f}   Q₂ = {q2:.2f}  (auto-derived from condition number)\n\n"
+                f"Tip: if you see over-subtraction (dark halos/holes), open Advanced\n"
+                f"and reduce Q. If under-subtraction (residual bleed), increase Q."
+            )
+        return list(self._last_output_docs)
 
     # ── Document / window helpers ─────────────────────────────────────────────
 
@@ -1728,17 +1882,21 @@ class NBExtractDialog(SFCCDialog):
         mw = self._main_window()
 
         if dm is None or mw is None or not hasattr(mw, "_spawn_subwindow_for"):
-            QMessageBox.critical(self, "NBExtract",
+            self._nb_abort("NBExtract",
                 f"Cannot create document '{title}':\nDocManager or MainWindow not available.")
-            return
+            return None
 
         meta = {**metadata, "display_name": title, "file_path": title,
                 "bit_depth": "32-bit floating point", "is_mono": True}
         try:
             doc = dm.create_document(img_mono, metadata=meta, name=title)
             mw._spawn_subwindow_for(doc)
+            return doc
         except Exception as e:
+            if self._headless:
+                raise NBExtractError(f"Failed to create document '{title}': {e}")
             QMessageBox.critical(self, "NBExtract", f"Failed to create document '{title}':\n{e}")
+            return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1753,6 +1911,10 @@ def open_nbextract(doc_manager, sasp_data_path: str, parent=None) -> NBExtractDi
         self._nb_dlg = open_nbextract(
             self.doc_manager, self._sasp_data_path, parent=self
         )
+
+    For a non-interactive run from a user script, prefer the command
+    registry: ctx.run_command('nbextract', {...}), which dispatches to
+    run_nbextract_via_preset() below.
     """
     dlg = NBExtractDialog(
         doc_manager=doc_manager,
@@ -1761,3 +1923,36 @@ def open_nbextract(doc_manager, sasp_data_path: str, parent=None) -> NBExtractDi
     )
     dlg.show()
     return dlg
+
+
+def run_nbextract_via_preset(app=None, doc=None, preset: Optional[dict] = None):
+    """
+    Headless NBExtract entry point used by the command registry
+    (ctx.run_command('nbextract', preset)).
+
+    Builds a hidden NBExtractDialog — so the SFCC star-fetch / photometry /
+    WCS machinery is reused verbatim, nothing is duplicated — runs the
+    Fetch → Calibrate → Extract pipeline via NBExtractDialog.run_headless(),
+    then disposes of the dialog.  Returns the list of created ImageDocuments
+    (line1, line2).  Raises NBExtractError (surfaced as CommandError by the
+    runner) on any failure that would otherwise be a modal dialog.
+    """
+    if app is None:
+        raise NBExtractError("run_nbextract_via_preset: no application window provided.")
+
+    dm = getattr(app, "doc_manager", None)
+    if dm is None:
+        raise NBExtractError("run_nbextract_via_preset: app has no doc_manager.")
+
+    data_path = (getattr(app, "_sasp_data_path", None)
+                 or getattr(app, "sasp_data_path", None))
+
+    dlg = NBExtractDialog(dm, data_path, parent=app)
+    try:
+        return dlg.run_headless(doc=doc, preset=preset)
+    finally:
+        try:
+            dlg.close()
+            dlg.deleteLater()
+        except Exception:
+            pass

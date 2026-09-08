@@ -182,6 +182,14 @@ ALIASES: Dict[str, str] = {
     "convolution": "convo",
     "deconvolution": "convo",
     "convo_deconvo": "convo",
+
+    # Narrowband channel extractor
+    "nbextract": "nbextract",
+    "nb_extract": "nbextract",
+    "narrowband_extract": "nbextract",
+    "narrowband_channel_extractor": "nbextract",
+    "extract_narrowband": "nbextract",
+    "nbx": "nbextract",
 }
 
 
@@ -1712,6 +1720,73 @@ register(CommandSpec(
 
 
 
-# -----------------------------------------------------------------------------
-# End of file
-# -----------------------------------------------------------------------------
+register(CommandSpec(
+    id="nbextract",
+    name="Narrowband Channel Extractor (NBExtract)",
+    group="Narrowband",
+    import_path="setiastro.saspro.nbextract",
+    callable_name="run_nbextract_via_preset",
+    # ui_method intentionally omitted: the interactive dialog is opened via
+    # nbextract.open_nbextract(doc_manager, sasp_data_path, parent). Point this
+    # at a main-window opener if you want palette drops to launch the UI.
+    notes=(
+        "Empirically-calibrated dual-band narrowband channel extraction "
+        "(headless). Runs the full pipeline on the ACTIVE RGB document: fetch "
+        "stars (image must be plate-solved), fit the per-channel mixing matrix "
+        "from Gaia XP spectra integrated over each filter window, then solve "
+        "per-pixel via NNLS and emit two new mono documents (line1, line2). "
+        "Requires a valid WCS and a local Gaia XP spectral library "
+        "(Ultra-Bright/Bright group or better). Q values are auto-derived from "
+        "the matrix condition number unless you override q1/q2. By default the "
+        "run raises instead of falling back; pass allow_fallback=True to permit "
+        "the stellar-flux color-mixing fallback when the XP fit can't be made. "
+        "Returns the two created documents."
+    ),
+    presets=[
+        PresetSpec("preset", "enum", default="Ha / OIII",
+                   enum=["Ha / OIII", "SII / OIII", "SII / Hβ", "Custom"],
+                   desc="Dual-band filter preset. 'Custom' uses the line "
+                        "name/center/bandwidth keys below."),
+        PresetSpec("line1_name", "str", default="Line1",
+                   desc="Custom only: label for the red-side line."),
+        PresetSpec("line2_name", "str", default="Line2",
+                   desc="Custom only: label for the blue-side line."),
+        PresetSpec("center1_nm", "float", min=350.0, max=1000.0,
+                   desc="Custom only: line-1 center wavelength (nm)."),
+        PresetSpec("center2_nm", "float", min=350.0, max=1000.0,
+                   desc="Custom only: line-2 center wavelength (nm)."),
+        PresetSpec("bw1_nm", "float", min=0.1, max=60.0,
+                   desc="Custom only: line-1 filter bandwidth FWHM (nm)."),
+        PresetSpec("bw2_nm", "float", min=0.1, max=60.0,
+                   desc="Custom only: line-2 filter bandwidth FWHM (nm)."),
+        PresetSpec("max_cal_stars", "int", default=300, min=6, max=2000,
+                   desc="Cap on Gaia XP calibration stars (brightest first)."),
+        PresetSpec("sep_sigma", "float", default=5.0, min=0.5, max=50.0,
+                   desc="SEP detection threshold (sigma) for re-detecting stars."),
+        PresetSpec("stretch", "bool", default=True,
+                   desc="Match each output channel's median to its source channel."),
+        PresetSpec("q1", "float", min=0.0, max=1.0,
+                   desc="Override line-1 NNLS/raw blend (0=raw, 1=full NNLS). "
+                        "Omit to use the auto value."),
+        PresetSpec("q2", "float", min=0.0, max=1.0,
+                   desc="Override line-2 NNLS/raw blend. Omit for auto."),
+        PresetSpec("allow_fallback", "bool", default=False,
+                   desc="Permit the stellar-flux WB fallback when the XP mixing "
+                        "matrix cannot be fitted."),
+    ],
+    aliases=[
+        "nb_extract", "narrowband_extract",
+        "narrowband_channel_extractor", "extract_narrowband", "nbx",
+    ],
+    examples=[
+        "ctx.run_command('nbextract', {'preset': 'Ha / OIII'})",
+        "ctx.run_command('nbextract', {'preset': 'SII / OIII', 'max_cal_stars': 500, 'sep_sigma': 4.0})",
+        "ctx.run_command('nbextract', {'preset': 'Custom', 'line1_name': 'Ha', 'line2_name': 'OIII', 'center1_nm': 656.28, 'bw1_nm': 3.0, 'center2_nm': 500.7, 'bw2_nm': 3.0})",
+        "ctx.run_command('nbextract', {'preset': 'Ha / OIII', 'q1': 0.7, 'q2': 0.6})",
+        "ctx.run_command('nbextract', {'preset': 'Ha / OIII', 'allow_fallback': True})",
+    ],
+    supports_mono=False,
+    supports_rgb=True,
+    supports_linear=True,
+    supports_nonlinear=True,
+))
