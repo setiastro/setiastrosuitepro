@@ -1185,42 +1185,53 @@ class SettingsDialog(QDialog):
 
     def _gate_python_for_accel_install(self) -> bool:
         """
-        Verify that a supported Python version (3.12, 3.13, or 3.14) is available
-        before attempting a hardware acceleration install.
- 
-        Returns True if a supported Python is found; shows a warning and returns
-        False otherwise.
+        Torch is imported in-process, so the runtime venv must be built with a
+        Python whose major.minor matches THIS process. In a frozen build that is
+        the embedded interpreter and cannot change, so a matching *system* Python
+        is required to build the venv (the frozen exe can't).
         """
         from PyQt6.QtWidgets import QMessageBox
         from setiastro.saspro.runtime_torch import _SUPPORTED_PY_MINORS
- 
-        # Current interpreter is supported — no further check needed.
-        if sys.version_info[:2][0] == 3 and sys.version_info[:2][1] in _SUPPORTED_PY_MINORS:
+
+        host = sys.version_info
+        running = f"{host.major}.{host.minor}"
+        frozen = bool(getattr(sys, "frozen", False))
+
+        # Is the embedded/host minor one we ship wheels for at all?
+        if host.major != 3 or host.minor not in _SUPPORTED_PY_MINORS:
+            supported = ", ".join(f"3.{m}" for m in sorted(_SUPPORTED_PY_MINORS))
+            QMessageBox.warning(
+                self, self.tr("Unsupported Python Version"),
+                self.tr(
+                    "This build embeds Python {running}, which the GPU runtime does "
+                    "not support. Supported: {supported}."
+                ).format(running=running, supported=supported),
+            )
+            return False
+
+        # Source run: the running interpreter builds AND imports the venv -> matches.
+        if not frozen:
             return True
- 
-        # Search for any supported Python on the system.
-        for minor in _SUPPORTED_PY_MINORS:
-            cmd, info = self._find_python_cmd_for_minor(minor)
-            if cmd is not None:
-                return True
- 
-        # None found — show a clear message and block.
-        v = sys.version_info
-        running = f"{v.major}.{v.minor}"
-        supported = ", ".join(f"3.{m}" for m in _SUPPORTED_PY_MINORS)
- 
+
+        # Frozen: need a SYSTEM Python 3.{host.minor} to build the venv. It must
+        # match exactly — 3.13/3.14 wheels can never load into a 3.12 process.
+        cmd, info = self._find_python_cmd_for_minor(host.minor)
+        if cmd is not None:
+            return True
+
         QMessageBox.warning(
             self,
-            self.tr("Unsupported Python Version"),
+            self.tr("Python {0} required for GPU acceleration").format(running),
             self.tr(
-                "Hardware acceleration requires Python {supported}.\n\n"
-                "SAS Pro is currently running on Python {running} and could not "
-                "find a supported Python version on this system.\n\n"
-                "Please install Python 3.12, 3.13, or 3.14 and relaunch SAS Pro.\n\n"
-                "Windows:  python.org → install 3.12 or 3.13, ensure 'py -3.12' works\n"
-                "macOS:    brew install python@3.12\n"
-                "Linux:    sudo apt install python3.12"
-            ).format(supported=supported, running=running),
+                "SAS Pro's bundled interpreter is Python {running}. The GPU runtime "
+                "loads inside this same interpreter, so it must be built with a "
+                "matching Python {running}. Packages built for other versions "
+                "(3.13, 3.14, …) cannot load into a {running} process.\n\n"
+                "No Python {running} was found on this system. Install it and relaunch:\n\n"
+                "Windows:  py install {running}   (then check 'py -{running}' works)\n"
+                "macOS:    brew install python@{running}\n"
+                "Linux:    install python{running} from your package manager"
+            ).format(running=running),
         )
         return False
 

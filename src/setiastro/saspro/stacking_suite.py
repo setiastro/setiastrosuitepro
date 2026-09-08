@@ -116,6 +116,43 @@ from setiastro.saspro.torch_rejection import (
     _safe_inference_ctx as _safe_inference_ctx_impl,
 )
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+class _FramePrefetcher:
+    """Bounded look-ahead loader. Reads the next `lookahead` frames on background
+    threads so disk I/O overlaps the deposit running on the main thread."""
+    def __init__(self, paths, loader, lookahead=3, workers=4):
+        self._loader = loader
+        self._paths = list(paths)
+        self._lookahead = max(1, int(lookahead))
+        self._ex = ThreadPoolExecutor(max_workers=max(1, int(workers)))
+        self._futs = {}
+        self._lock = threading.Lock()
+        self._next = 0
+        for _ in range(self._lookahead):
+            self._submit_next()
+
+    def _submit_next(self):
+        with self._lock:
+            i = self._next
+            if i >= len(self._paths):
+                return
+            self._next += 1
+            p = self._paths[i]
+        if p is not None and p not in self._futs:
+            self._futs[p] = self._ex.submit(self._loader, p)
+
+    def get(self, path):
+        self._submit_next()            # keep the window full
+        if path is None:
+            return None
+        fut = self._futs.pop(path, None)
+        return fut.result() if fut is not None else self._loader(path)
+
+    def close(self):
+        self._ex.shutdown(wait=False, cancel_futures=True)
+
 # --- Rejection-backend correctness gate -----------------------------------
 # Rejection statistics need exact nan-reductions and NaN-preserving device
 # round-trips. CUDA/MPS are reliable; torch-directml is not — its nan reducers
@@ -27886,6 +27923,26 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
             return orig_path
+        def _pixel_path_for_entry(ent):
+            orig = os.path.normpath(ent.get("orig", ""))
+            aligned = os.path.normpath(ent.get("aligned", ""))
+            kind, X = xforms.get(orig, (None, None))
+            if kind is None:
+                return None
+            if isinstance(kind, str) and (kind.startswith("poly") or kind in ("tps", "thin_plate_spline")):
+                return aligned or None
+            if kind in ("affine", "homography") and X is not None:
+                return _cfa_pixel_source(orig)
+            return None
+
+        _prefetch_paths = [_pixel_path_for_entry(e) for e in entries]
+        _prefetch = _FramePrefetcher(
+            _prefetch_paths,
+            loader=lambda p: load_image(p)[0],   # pixels only; header/meta re-read where needed
+            lookahead=3,
+            workers=min(4, (os.cpu_count() or 4)),
+        )
+
         for i, ent in enumerate(entries):
             orig_file = os.path.normpath(ent.get("orig", ""))
             aligned_file = os.path.normpath(ent.get("aligned", ""))  # this is what rejections/weights reference
@@ -27939,11 +27996,10 @@ class StackingSuiteDialog(QDialog):
             if img_data is None:
                 if os.path.normpath(pixel_path) != os.path.normpath(orig_file):
                     log(f"   ↳ depositing pixels from {os.path.basename(pixel_path)}")
-                img_data, _, _, _ = load_image(pixel_path)
+                img_data = _prefetch.get(pixel_path)      # was: load_image(pixel_path)[0-ish]
                 if img_data is None:
                     log(f"⚠️ Failed to read {os.path.basename(pixel_path)} – skipping")
                     continue
-
             # If this is a split dual-band entry, extract channel from the pixel source
             if chan in ("R", "G", "B"):
                 if img_data.ndim == 3 and img_data.shape[2] >= 3:

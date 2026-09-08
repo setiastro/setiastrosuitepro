@@ -1,6 +1,6 @@
 #src.setiastro.saspro.legacy.numba_utils.py
 import numpy as np
-from numba import njit, prange
+from numba import njit, prange, get_num_threads
 from numba.typed import List
 import cv2 
 import math
@@ -3775,32 +3775,50 @@ def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
     """
     Fill `weights_out` with unnormalized kernel weights centered at (Xo,Yo).
     Returns (sum_w, count_used).
+
+    kernel_code 0 = square  -> TRUE drizzle drop: fractional overlap area between
+                              the drop square [Xo±rad, Yo±rad] (rad = sigma_out,
+                              the pixfrac-shrunken input pixel mapped to output
+                              space) and each output cell [ox,ox+1]x[oy,oy+1].
+                              Sub-pixel-position aware; normalized weights conserve
+                              flux (sum over full drop = (2*rad)^2).
+    kernel_code 1 = circle  -> hard disk (uniform inside radius).
+    kernel_code 2 = gaussian.
     """
     H = max_y - min_y + 1
     W = max_x - min_x + 1
     r2_limit = sigma_out * sigma_out  # for circle, sigma_out := radius
 
+    # square-drop edges in output-pixel coords (rad == sigma_out for the box)
+    rad = sigma_out
+    drop_lx = Xo - rad
+    drop_hx = Xo + rad
+    drop_ly = Yo - rad
+    drop_hy = Yo + rad
+
     sum_w = 0.0
     cnt = 0
     for j in range(H):
         oy = min_y + j
-        cy = (oy + 0.5) - Yo  # pixel-center distance
+        cy = (oy + 0.5) - Yo  # pixel-center distance (circle/gaussian)
+        # vertical overlap of this cell row with the drop (square kernel)
+        ovy = min(oy + 1.0, drop_hy) - max(float(oy), drop_ly)
         for i in range(W):
             ox = min_x + i
             cx = (ox + 0.5) - Xo
             w = 0.0
 
             if kernel_code == 0:
-                # square = uniform weight in the bounding box
-                w = 1.0
+                # true fractional-area overlap
+                ovx = min(ox + 1.0, drop_hx) - max(float(ox), drop_lx)
+                if ovx > 0.0 and ovy > 0.0:
+                    w = ovx * ovy
             elif kernel_code == 1:
                 # circle = uniform weight if inside radius
                 if (cx*cx + cy*cy) <= r2_limit:
                     w = 1.0
             else:  # gaussian
-                # gaussian centered at (Xo,Yo) with sigma_out
                 z = (cx*cx + cy*cy) / (2.0 * sigma_out * sigma_out)
-                # drop tiny far-away contributions to keep perf ok
                 if z <= 9.0:  # ~3σ
                     w = math.exp(-z)
 
@@ -4031,19 +4049,19 @@ def _project_3x3(M, x, y):
     return wx * inv, wy * inv
 
 
-@njit(fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def drizzle_deposit_kernel_mono_proj(
     img_data, transform, drizzle_buffer, coverage_buffer,
     drizzle_factor, drop_shrink, frame_weight,
     kernel_code, gaussian_sigma_or_radius
 ):
-    """Mono drizzle deposit with a FULL 3x3 projective transform and NO pixel
-    pre-warp. Each sample is projected to output coords and dropped through the
-    drizzle kernel directly. `transform` is 3x3 (affine embeds as [0,0,1])."""
+    """Mono projective drizzle deposit, parallelized by output-row bands.
+    Each band is written by exactly one thread → race-free, no extra memory.
+    Bit-identical to the serial version."""
     H, W = img_data.shape
     outH, outW = drizzle_buffer.shape
 
-    M = np.zeros((3, 3), dtype=np.float32)
+    M = np.empty((3, 3), dtype=np.float32)
     for a in range(3):
         for b in range(3):
             M[a, b] = transform[a, b]
@@ -4051,83 +4069,107 @@ def drizzle_deposit_kernel_mono_proj(
     radius = 0.5 * drop_shrink * drizzle_factor
     if kernel_code == 2:
         sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+        rmax = int(math.ceil(3.0 * sigma_out))
     else:
         sigma_out = max(radius, 1e-6)
+        rmax = int(math.ceil(radius))
+    if rmax < 0:
+        rmax = 0
+    tile_side = 2 * rmax + 2
 
-    for y in range(H):
-        for x in range(W):
-            val = img_data[y, x]
-            if val == 0.0:
-                continue
+    n_bands = get_num_threads()
+    rows_per_band = (outH + n_bands - 1) // n_bands
 
-            Px, Py = _project_3x3(M, np.float32(x), np.float32(y))
-            Xo = Px * drizzle_factor
-            Yo = Py * drizzle_factor
+    for t in prange(n_bands):
+        yb0 = t * rows_per_band
+        yb1 = yb0 + rows_per_band
+        if yb1 > outH:
+            yb1 = outH
+        if yb0 >= yb1:
+            continue
 
-            if kernel_code == 2:
-                r = int(math.ceil(3.0 * sigma_out))
-            else:
-                r = int(math.ceil(radius))
+        # one scratch tile per band (not per pixel)
+        scratch = np.empty((tile_side, tile_side), dtype=np.float32)
 
-            if r <= 0:
-                ox = int(Xo); oy = int(Yo)
-                if 0 <= ox < outW and 0 <= oy < outH:
-                    drizzle_buffer[oy, ox] += val * frame_weight
-                    coverage_buffer[oy, ox] += frame_weight
-                continue
+        for y in range(H):
+            for x in range(W):
+                val = img_data[y, x]
+                if val == 0.0:
+                    continue
 
-            min_x = int(math.floor(Xo - r)); max_x = int(math.floor(Xo + r))
-            min_y = int(math.floor(Yo - r)); max_y = int(math.floor(Yo + r))
-            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
-                continue
-            if min_x < 0: min_x = 0
-            if min_y < 0: min_y = 0
-            if max_x >= outW: max_x = outW - 1
-            if max_y >= outH: max_y = outH - 1
+                Px, Py = _project_3x3(M, np.float32(x), np.float32(y))
+                Xo = Px * drizzle_factor
+                Yo = Py * drizzle_factor
 
-            Ht = max_y - min_y + 1; Wt = max_x - min_x + 1
-            if Ht <= 0 or Wt <= 0:
-                continue
+                if rmax <= 0:
+                    ox = int(Xo); oy = int(Yo)
+                    if yb0 <= oy < yb1 and 0 <= ox < outW:
+                        drizzle_buffer[oy, ox] += val * frame_weight
+                        coverage_buffer[oy, ox] += frame_weight
+                    continue
 
-            weights = np.zeros((Ht, Wt), dtype=np.float32)
-            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
-                                                 min_x, max_x, min_y, max_y,
-                                                 sigma_out, weights)
-            if cnt == 0 or sum_w <= 1e-12:
-                ox = int(Xo); oy = int(Yo)
-                if 0 <= ox < outW and 0 <= oy < outH:
-                    drizzle_buffer[oy, ox] += val * frame_weight
-                    coverage_buffer[oy, ox] += frame_weight
-                continue
+                min_x = int(math.floor(Xo - rmax)); max_x = int(math.floor(Xo + rmax))
+                min_y = int(math.floor(Yo - rmax)); max_y = int(math.floor(Yo + rmax))
+                if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                    continue
+                if min_x < 0: min_x = 0
+                if min_y < 0: min_y = 0
+                if max_x >= outW: max_x = outW - 1
+                if max_y >= outH: max_y = outH - 1
 
-            scale = (val * frame_weight) / sum_w
-            cov_scale = frame_weight / sum_w
-            for j in range(Ht):
-                oy = min_y + j
-                for i in range(Wt):
-                    w = weights[j, i]
-                    if w > 0.0:
-                        ox = min_x + i
-                        drizzle_buffer[oy, ox] += w * scale
-                        coverage_buffer[oy, ox] += w * cov_scale
+                # skip footprints that don't touch this band at all
+                if max_y < yb0 or min_y >= yb1:
+                    continue
+
+                Ht = max_y - min_y + 1; Wt = max_x - min_x + 1
+                if Ht <= 0 or Wt <= 0:
+                    continue
+
+                tile = scratch[:Ht, :Wt]
+                sum_w, cnt = _drizzle_kernel_weights_preallocated(
+                    kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
+                )
+                if cnt == 0 or sum_w <= 1e-12:
+                    ox = int(Xo); oy = int(Yo)
+                    if yb0 <= oy < yb1 and 0 <= ox < outW:
+                        drizzle_buffer[oy, ox] += val * frame_weight
+                        coverage_buffer[oy, ox] += frame_weight
+                    continue
+
+                scale = (val * frame_weight) / sum_w
+                cov_scale = frame_weight / sum_w
+
+                # deposit only the footprint rows that fall in this band
+                j_start = 0
+                if min_y < yb0:
+                    j_start = yb0 - min_y
+                j_end = Ht
+                if (max_y + 1) > yb1:
+                    j_end = yb1 - min_y
+
+                for j in range(j_start, j_end):
+                    oy = min_y + j
+                    for i in range(Wt):
+                        w = tile[j, i]
+                        if w > 0.0:
+                            ox = min_x + i
+                            drizzle_buffer[oy, ox] += w * scale
+                            coverage_buffer[oy, ox] += w * cov_scale
 
     return drizzle_buffer, coverage_buffer
 
-
-@njit(fastmath=True)
+@njit(parallel=True, fastmath=True, cache=True)
 def drizzle_deposit_color_kernel_proj(
     img_data, transform, drizzle_buffer, coverage_buffer,
     drizzle_factor, drop_shrink, frame_weight,
     kernel_code, gaussian_sigma_or_radius
 ):
-    """Color drizzle deposit with a FULL 3x3 projective transform and NO pixel
-    pre-warp. Per-channel coverage is tracked so SPARSE CFA-drizzle planes fill
-    correctly across dithered frames (the sparse grid is never interpolated).
-    `transform` is 3x3 (affine embeds as [0,0,1])."""
+    """Color projective drizzle deposit, parallelized by output-row bands.
+    Per-channel coverage preserved for sparse CFA-drizzle planes."""
     H, W, C = img_data.shape
     outH, outW, _ = drizzle_buffer.shape
 
-    M = np.zeros((3, 3), dtype=np.float32)
+    M = np.empty((3, 3), dtype=np.float32)
     for a in range(3):
         for b in range(3):
             M[a, b] = transform[a, b]
@@ -4135,82 +4177,105 @@ def drizzle_deposit_color_kernel_proj(
     radius = 0.5 * drop_shrink * drizzle_factor
     if kernel_code == 2:
         sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+        rmax = int(math.ceil(3.0 * sigma_out))
     else:
         sigma_out = max(radius, 1e-6)
+        rmax = int(math.ceil(radius))
+    if rmax < 0:
+        rmax = 0
+    tile_side = 2 * rmax + 2
 
-    for y in range(H):
-        for x in range(W):
-            nz = False
-            for cc in range(C):
-                if img_data[y, x, cc] != 0.0:
-                    nz = True; break
-            if not nz:
-                continue
+    n_bands = get_num_threads()
+    rows_per_band = (outH + n_bands - 1) // n_bands
 
-            Px, Py = _project_3x3(M, np.float32(x), np.float32(y))
-            Xo = Px * drizzle_factor
-            Yo = Py * drizzle_factor
+    for t in prange(n_bands):
+        yb0 = t * rows_per_band
+        yb1 = yb0 + rows_per_band
+        if yb1 > outH:
+            yb1 = outH
+        if yb0 >= yb1:
+            continue
 
-            if kernel_code == 2:
-                r = int(math.ceil(3.0 * sigma_out))
-            else:
-                r = int(math.ceil(radius))
+        scratch = np.empty((tile_side, tile_side), dtype=np.float32)
 
-            if r <= 0:
-                ox = int(Xo); oy = int(Yo)
-                if 0 <= ox < outW and 0 <= oy < outH:
-                    for c in range(C):
-                        val = img_data[y, x, c]
-                        if val != 0.0:
-                            drizzle_buffer[oy, ox, c] += val * frame_weight
-                            coverage_buffer[oy, ox, c] += frame_weight
-                continue
-
-            min_x = int(math.floor(Xo - r)); max_x = int(math.floor(Xo + r))
-            min_y = int(math.floor(Yo - r)); max_y = int(math.floor(Yo + r))
-            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
-                continue
-            if min_x < 0: min_x = 0
-            if min_y < 0: min_y = 0
-            if max_x >= outW: max_x = outW - 1
-            if max_y >= outH: max_y = outH - 1
-
-            Ht = max_y - min_y + 1; Wt = max_x - min_x + 1
-            if Ht <= 0 or Wt <= 0:
-                continue
-
-            weights = np.zeros((Ht, Wt), dtype=np.float32)
-            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
-                                                 min_x, max_x, min_y, max_y,
-                                                 sigma_out, weights)
-            if cnt == 0 or sum_w <= 1e-12:
-                ox = int(Xo); oy = int(Yo)
-                if 0 <= ox < outW and 0 <= oy < outH:
-                    for c in range(C):
-                        val = img_data[y, x, c]
-                        if val != 0.0:
-                            drizzle_buffer[oy, ox, c] += val * frame_weight
-                            coverage_buffer[oy, ox, c] += frame_weight
-                continue
-
-            inv_sum = 1.0 / sum_w
-            for c in range(C):
-                val = img_data[y, x, c]
-                if val == 0.0:
+        for y in range(H):
+            for x in range(W):
+                nz = False
+                for cc in range(C):
+                    if img_data[y, x, cc] != 0.0:
+                        nz = True; break
+                if not nz:
                     continue
-                scale = (val * frame_weight) * inv_sum
-                cov_scale = frame_weight * inv_sum
-                for j in range(Ht):
-                    oy = min_y + j
-                    for i in range(Wt):
-                        w = weights[j, i]
-                        if w > 0.0:
-                            ox = min_x + i
-                            drizzle_buffer[oy, ox, c] += w * scale
-                            coverage_buffer[oy, ox, c] += w * cov_scale
+
+                Px, Py = _project_3x3(M, np.float32(x), np.float32(y))
+                Xo = Px * drizzle_factor
+                Yo = Py * drizzle_factor
+
+                if rmax <= 0:
+                    ox = int(Xo); oy = int(Yo)
+                    if yb0 <= oy < yb1 and 0 <= ox < outW:
+                        for c in range(C):
+                            val = img_data[y, x, c]
+                            if val != 0.0:
+                                drizzle_buffer[oy, ox, c] += val * frame_weight
+                                coverage_buffer[oy, ox, c] += frame_weight
+                    continue
+
+                min_x = int(math.floor(Xo - rmax)); max_x = int(math.floor(Xo + rmax))
+                min_y = int(math.floor(Yo - rmax)); max_y = int(math.floor(Yo + rmax))
+                if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                    continue
+                if min_x < 0: min_x = 0
+                if min_y < 0: min_y = 0
+                if max_x >= outW: max_x = outW - 1
+                if max_y >= outH: max_y = outH - 1
+
+                if max_y < yb0 or min_y >= yb1:
+                    continue
+
+                Ht = max_y - min_y + 1; Wt = max_x - min_x + 1
+                if Ht <= 0 or Wt <= 0:
+                    continue
+
+                tile = scratch[:Ht, :Wt]
+                sum_w, cnt = _drizzle_kernel_weights_preallocated(
+                    kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
+                )
+                if cnt == 0 or sum_w <= 1e-12:
+                    ox = int(Xo); oy = int(Yo)
+                    if yb0 <= oy < yb1 and 0 <= ox < outW:
+                        for c in range(C):
+                            val = img_data[y, x, c]
+                            if val != 0.0:
+                                drizzle_buffer[oy, ox, c] += val * frame_weight
+                                coverage_buffer[oy, ox, c] += frame_weight
+                    continue
+
+                inv_sum = 1.0 / sum_w
+
+                j_start = 0
+                if min_y < yb0:
+                    j_start = yb0 - min_y
+                j_end = Ht
+                if (max_y + 1) > yb1:
+                    j_end = yb1 - min_y
+
+                for c in range(C):
+                    val = img_data[y, x, c]
+                    if val == 0.0:
+                        continue
+                    scale = (val * frame_weight) * inv_sum
+                    cov_scale = frame_weight * inv_sum
+                    for j in range(j_start, j_end):
+                        oy = min_y + j
+                        for i in range(Wt):
+                            w = tile[j, i]
+                            if w > 0.0:
+                                ox = min_x + i
+                                drizzle_buffer[oy, ox, c] += w * scale
+                                coverage_buffer[oy, ox, c] += w * cov_scale
 
     return drizzle_buffer, coverage_buffer
-
 
 @njit(parallel=True)
 def finalize_drizzle_2d(drizzle_buffer, coverage_buffer, final_out):
@@ -4366,14 +4431,14 @@ def drizzle_deposit_color_footprint(
     return drizzle_buffer, coverage_buffer
 
 
-@njit(cache=True)
+@njit(parallel=True, cache=True)
 def finalize_drizzle_3d(drizzle_buffer, coverage_buffer, final_out):
     """
     final_out[y,x,c] = drizzle_buffer[y,x,c] / coverage_buffer[y,x,c]
     if coverage < 1e-8 => 0
     """
     outH, outW, channels = drizzle_buffer.shape
-    for y in range(outH):
+    for y in prange(outH):
         for x in range(outW):
             for cidx in range(channels):
                 cov = coverage_buffer[y, x, cidx]
@@ -4390,21 +4455,32 @@ def _drizzle_kernel_weights_preallocated(
     sigma_out: float,
     weights_out,   # caller-allocated (Ht, Wt) tile — we just fill it
 ):
+    """See _drizzle_kernel_weights. kernel_code 0 = true fractional-overlap square
+    drop (sub-pixel aware, flux-conserving); 1 = hard disk; 2 = gaussian."""
     H = max_y - min_y + 1
     W = max_x - min_x + 1
     r2_limit = sigma_out * sigma_out
- 
+
+    rad = sigma_out
+    drop_lx = Xo - rad
+    drop_hx = Xo + rad
+    drop_ly = Yo - rad
+    drop_hy = Yo + rad
+
     sum_w = 0.0
     cnt = 0
     for j in range(H):
         oy = min_y + j
         cy = (oy + 0.5) - Yo
+        ovy = min(oy + 1.0, drop_hy) - max(float(oy), drop_ly)
         for i in range(W):
             ox = min_x + i
             cx = (ox + 0.5) - Xo
             w = 0.0
             if kernel_code == 0:
-                w = 1.0
+                ovx = min(ox + 1.0, drop_hx) - max(float(ox), drop_lx)
+                if ovx > 0.0 and ovy > 0.0:
+                    w = ovx * ovy
             elif kernel_code == 1:
                 if (cx*cx + cy*cy) <= r2_limit:
                     w = 1.0
@@ -4417,7 +4493,7 @@ def _drizzle_kernel_weights_preallocated(
             if w > 0.0:
                 cnt += 1
     return sum_w, cnt
- 
+
  
 @njit(fastmath=True)
 def drizzle_deposit_kernel_mono_fast(
