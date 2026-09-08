@@ -2378,7 +2378,9 @@ class SSSCDialog(QDialog):
             self, missing, dl, batch_size=batch_size)
 
     def initialize_wcs_from_header(self, header):
+        self._wcs_fail_reason = None
         if header is None:
+            self._wcs_fail_reason = "No FITS header available for the active image."
             self.wcs = None
             return
         try:
@@ -2407,9 +2409,15 @@ class SSSCDialog(QDialog):
             # Catch it here and fall through to the existing "no WCS" path instead.
             _wcs_check = self.wcs.celestial if hasattr(self.wcs, "celestial") else self.wcs
             if _wcs_check.naxis < 2:
-                print("[SSSC] WCS has no celestial axes (naxis < 2) — "
-                      "header is missing valid CTYPE1/CTYPE2 RA/DEC. "
-                      "Treating as no WCS.")
+                ct1 = str(hdr.get("CTYPE1", "")).strip() or "(missing)"
+                ct2 = str(hdr.get("CTYPE2", "")).strip() or "(missing)"
+                self._wcs_fail_reason = (
+                    "Header has no celestial axes — it doesn't contain a valid "
+                    "RA/DEC plate solution.\n\n"
+                    f"CTYPE1 = {ct1}\nCTYPE2 = {ct2}\n\n"
+                    "The image is most likely not plate-solved yet."
+                )
+                print("[SSSC] " + self._wcs_fail_reason.replace("\n", " "))
                 self.wcs = None
                 return
 
@@ -2440,6 +2448,10 @@ class SSSCDialog(QDialog):
                 except Exception:
                     self.orientation = None
         except Exception as e:
+            self._wcs_fail_reason = (
+                "astropy could not parse the WCS keywords in this header "
+                f"(likely malformed CD matrix, SIP, or CRVAL/CRPIX):\n\n{e}"
+            )
             print(f"[SSSC] WCS initialization error: {e}")
             self.wcs = None
 
@@ -2515,14 +2527,17 @@ class SSSCDialog(QDialog):
 
         try:
             self.initialize_wcs_from_header(self.current_header)
-        except Exception:
+        except Exception as e:
             QMessageBox.critical(self, "WCS Error",
-                "Could not build a 2D WCS from header.")
+                "Could not build a 2D WCS from header.\n\n"
+                f"{getattr(self, '_wcs_fail_reason', None) or e}")
             return
 
         if not getattr(self, "wcs", None):
             QMessageBox.critical(self, "WCS Error",
-                "Could not build a 2D WCS from header.")
+                "Could not build a 2D WCS from header.\n\n"
+                + (getattr(self, "_wcs_fail_reason", None)
+                   or "The header did not yield a usable 2D celestial WCS."))
             return
 
         wcs2 = self.wcs.celestial if hasattr(self.wcs, "celestial") else self.wcs
