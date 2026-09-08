@@ -8919,6 +8919,22 @@ class StackingSuiteDialog(QDialog):
         row_sig_h.addWidget(QLabel(self.tr("Cold σ:"))); row_sig_h.addWidget(self.cosm_cold_sigma)
         fl_cosm.addRow(self.tr("Sigma thresholds:"), row_sig)
 
+        # Structure-protection threshold — applies to the GPU cosmetic pass
+        # regardless of the advanced toggle (it's the star/nebula-core guard).
+        self.cosm_protect_sigma = _mk_fspin(2.0, 50.0, 0.5, 1,
+            "stacking/cosmetic/protect_sigma", 5.0)
+        self.cosm_protect_sigma.setToolTip(self.tr(
+            "Patches whose local median sits this many σ above background are\n"
+            "treated as real signal (star / nebula cores) and left untouched by\n"
+            "the hot pass. A lone hot pixel can't move a median, so it is still\n"
+            "corrected. Lower = protect more (safer for tight stars); higher =\n"
+            "correct more aggressively. Set very high to disable protection."
+        ))
+        row_prot = QWidget(); row_prot_h = QHBoxLayout(row_prot); row_prot_h.setContentsMargins(0,0,0,0)
+        row_prot_h.addWidget(QLabel(self.tr("Protect σ:"))); row_prot_h.addWidget(self.cosm_protect_sigma)
+        row_prot_h.addStretch(1)
+        fl_cosm.addRow(self.tr("Structure protection:"), row_prot)
+
         # Legacy profile compatibility: read-but-don't-show star guard / sat quantile values
         # so old profiles don't error on load. These are never written back.
         self.cosm_star_mean_ratio = _mk_fspin(0.05, 0.60, 0.01, 3,
@@ -8935,6 +8951,7 @@ class StackingSuiteDialog(QDialog):
         def _restore_defaults():
             self.cosm_hot_sigma.setValue(5.0)
             self.cosm_cold_sigma.setValue(5.0)
+            self.cosm_protect_sigma.setValue(5.0)
         btn_defaults.clicked.connect(_restore_defaults)
         fl_cosm.addRow(btn_defaults)
 
@@ -9161,6 +9178,7 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/cosmetic/custom_enable",  self.cosm_enable_cb.isChecked())
         self.settings.setValue("stacking/cosmetic/hot_sigma",      float(self.cosm_hot_sigma.value()))
         self.settings.setValue("stacking/cosmetic/cold_sigma",     float(self.cosm_cold_sigma.value()))
+        self.settings.setValue("stacking/cosmetic/protect_sigma",  float(self.cosm_protect_sigma.value()))
         self.settings.setValue("stacking/cosmetic/star_mean_ratio",float(self.cosm_star_mean_ratio.value()))
         self.settings.setValue("stacking/cosmetic/star_max_ratio", float(self.cosm_star_max_ratio.value()))
         self.settings.setValue("stacking/cosmetic/sat_quantile",   float(self.cosm_sat_quantile.value()))
@@ -10514,7 +10532,9 @@ class StackingSuiteDialog(QDialog):
         tune_row = QHBoxLayout()
         self.tune_cosmetic_btn = QPushButton(self.tr("🔬 Tune Cosmetic Correction σ…"))
         self.tune_cosmetic_btn.setToolTip(self.tr(
-            "Opens the Cosmetic Correction dialog on the FIRST light frame in your list.\n"
+            "Opens the Cosmetic Correction dialog on the light frame selected in your\n"
+            "list (or the first one if nothing is selected).  Use the ◀ / picker / ▶ bar\n"
+            "at the top of the dialog to bounce between frames.\n"
             "Adjust Hot σ and Cold σ with the live preview until you're happy with how it\n"
             "handles hot pixels without eating star cores.  Clicking “Save σ Settings”\n"
             "writes the values back to Stacking Suite so calibration uses them."
@@ -10638,9 +10658,59 @@ class StackingSuiteDialog(QDialog):
             pass
         return None
 
+    def _selected_light_path(self) -> str | None:
+        """Path of the light frame currently selected in the tree.
+
+        If a group node is selected, use the first light beneath it.
+        Falls back to the first light overall.
+        """
+        import os
+        try:
+            sel = self.light_tree.selectedItems()
+            if sel:
+                queue = [sel[0]]
+                while queue:
+                    node = queue.pop(0)
+                    p = node.data(0, Qt.ItemDataRole.UserRole)
+                    if p and os.path.isfile(p):
+                        return p
+                    queue.extend(node.child(c) for c in range(node.childCount()))
+        except Exception:
+            pass
+        return self._first_light_path()
+
+    def _all_light_paths(self) -> list[str]:
+        """Ordered, de-duplicated list of every light-frame path in the tree
+        (used by the tuning dialog's Prev/Next navigation)."""
+        import os
+        out, seen = [], set()
+        try:
+            for i in range(self.light_tree.topLevelItemCount()):
+                top = self.light_tree.topLevelItem(i)
+                for j in range(top.childCount()):
+                    mid = top.child(j)
+                    for k in range(mid.childCount()):
+                        leaf = mid.child(k)
+                        p = leaf.data(0, Qt.ItemDataRole.UserRole)
+                        if p and os.path.isfile(p) and p not in seen:
+                            seen.add(p); out.append(p)
+        except Exception:
+            pass
+        if not out:
+            try:
+                for paths in (self.light_files or {}).values():
+                    for p in paths:
+                        if p and os.path.isfile(p) and p not in seen:
+                            seen.add(p); out.append(p)
+            except Exception:
+                pass
+        return out
+
     def _open_tune_cosmetic_dialog(self):
-        """Open Cosmetic Correction in tuning mode on the first light."""
-        path = self._first_light_path()
+        """Open Cosmetic Correction in tuning mode on the selected light
+        (falls back to the first), with Prev/Next to check other frames."""
+        all_paths = self._all_light_paths()
+        path = self._selected_light_path() or (all_paths[0] if all_paths else None)
         if not path:
             QMessageBox.information(
                 self, self.tr("Tune Cosmetic Correction"),
@@ -10662,7 +10732,7 @@ class StackingSuiteDialog(QDialog):
             )
         except Exception:
             pass
-        open_cosmetic_correction_tune(self, path)
+        open_cosmetic_correction_tune(self, path, all_paths=all_paths)
 
     def _manual_session_keyword(self) -> str:
         try:
@@ -17444,7 +17514,7 @@ class StackingSuiteDialog(QDialog):
 
     def _calibrate_lights_cpu(self, frame_infos, calibrated_dir, total_files,
                                master_bias_np, interactive_flat, do_satellite,
-                               hot_sigma, cold_sigma):
+                               hot_sigma, cold_sigma, protect_sigma=5.0):
         """
         CPU fallback calibration path — used when hardware acceleration is disabled.
         Sequential single-threaded processing, no GPU involvement.
@@ -17763,11 +17833,13 @@ class StackingSuiteDialog(QDialog):
 
                     if use_bayer_cosmetic:
                         light_data = bulk_cosmetic_correction_bayer(
-                            light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma
+                            light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma,
+                            protect_sigma=protect_sigma,
                         )
                     else:
                         light_data = bulk_cosmetic_correction_numba(
-                            light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma
+                            light_data, hot_sigma=hot_sigma, cold_sigma=cold_sigma,
+                            protect_sigma=protect_sigma,
                         )
                     self.update_status(self.tr("Cosmetic Correction Applied"))
                     QApplication.processEvents()
@@ -18166,6 +18238,7 @@ class StackingSuiteDialog(QDialog):
 
         hot_sigma       = self.settings.value("stacking/cosmetic/hot_sigma",       3.0,    type=float)
         cold_sigma      = self.settings.value("stacking/cosmetic/cold_sigma",       3.0,    type=float)
+        protect_sigma   = self.settings.value("stacking/cosmetic/protect_sigma",    5.0,    type=float)
         star_mean_ratio = self.settings.value("stacking/cosmetic/star_mean_ratio",  0.22,   type=float)
         star_max_ratio  = self.settings.value("stacking/cosmetic/star_max_ratio",   0.55,   type=float)
         sat_quantile    = self.settings.value("stacking/cosmetic/sat_quantile",     0.9995, type=float)
@@ -18406,6 +18479,7 @@ class StackingSuiteDialog(QDialog):
                 do_satellite=do_satellite,
                 hot_sigma=self.settings.value("stacking/cosmetic/hot_sigma", 3.0, type=float),
                 cold_sigma=self.settings.value("stacking/cosmetic/cold_sigma", 3.0, type=float),
+                protect_sigma=self.settings.value("stacking/cosmetic/protect_sigma", 5.0, type=float),
             )
             return
         # ════════════════════════════════════════════════════════════════
@@ -18911,6 +18985,7 @@ class StackingSuiteDialog(QDialog):
                     pedestal=fi["pedestal_value"],
                     hot_sigma=hot_sigma,
                     cold_sigma=cold_sigma,
+                    protect_sigma=protect_sigma,
                     apply_cosmetic=fi["apply_cosmetic"],
                     bayer_pattern=fi["bayerpat"],
                 )
