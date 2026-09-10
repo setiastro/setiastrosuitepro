@@ -427,6 +427,11 @@ def calibration_pipeline_gpu(
 # Module-level buffer cache — keyed by (device_str, H, W)
 _CC_BUFFERS: dict = {}
 
+def _clear_cc_buffers():
+    """No-op — retained for callers from the persistent-buffer era.
+    The tiled cosmetic pass allocates scratch locally and frees it by
+    refcount per frame, so there is nothing to clear."""
+    pass
 
 def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
                                 bayer_pattern=None, protect_sigma=5.0):

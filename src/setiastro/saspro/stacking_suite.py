@@ -19084,8 +19084,6 @@ class StackingSuiteDialog(QDialog):
         #    card — this is the whole point of the split. frame_infos is
         #    kept until AFTER Phase 2 (it rebuilds the calibrated paths).
         import gc
-        from setiastro.saspro.torch_rejection import _clear_cc_buffers
-        _clear_cc_buffers()
 
         dark_tensors.clear()
         group_flat_tensors.clear()
