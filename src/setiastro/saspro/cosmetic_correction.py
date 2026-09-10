@@ -897,6 +897,19 @@ class CosmeticCorrectionDialog(QDialog):
             ))
             self.btn_batch.clicked.connect(self._open_batch)
             row.addWidget(self.btn_batch)
+
+            self.btn_pixelmap = QPushButton(self.tr("Pixel map →"))
+            self.btn_pixelmap.setToolTip(self.tr(
+                "Run cosmetic correction with the current settings and open a\n"
+                "diagnostic map as a new view (the current image is not touched):\n"
+                "  • red   = hot pixel (pulled down)\n"
+                "  • blue  = cold pixel (pushed up)\n"
+                "  • black = untouched\n"
+                "Handy for dialing in σ / protect σ — you can see exactly what\n"
+                "gets flagged and how many."
+            ))
+            self.btn_pixelmap.clicked.connect(self._make_pixel_map)
+            row.addWidget(self.btn_pixelmap)
         else:
             self.btn_batch = None
             # In tuning mode the "Push σ to Stacking Suite" button is
@@ -1114,6 +1127,141 @@ class CosmeticCorrectionDialog(QDialog):
                 return self._auto_bayer
             return None
         return str(data)
+
+    # ------------------------------------------------------------------
+    # Diagnostic hot/cold pixel map  (toolbar dialog only)
+    # ------------------------------------------------------------------
+    def _full_frame_bayer(self) -> str | None:
+        """Bayer resolution for a full-image run — mirrors
+        cosmetic_correction_headless (auto-detect only for a 2-D mosaic)."""
+        raw = self._selected_bayer_for_preset()
+        if raw == "__none__":
+            return None
+        if raw and raw.upper() in ("RGGB", "BGGR", "GRBG", "GBRG"):
+            return raw.upper()
+        try:
+            src = np.asarray(self.doc.image)
+        except Exception:
+            return None
+        return _bayer_from_doc(self.doc) if src.ndim == 2 else None
+
+    def _make_pixel_map(self):
+        """Correct the current image (current settings) and open a red/blue
+        hot/cold detection map as a new view. Source is left untouched."""
+        if self.doc is None or getattr(self.doc, "image", None) is None:
+            QMessageBox.warning(self, self.tr("Cosmetic Correction"),
+                                self.tr("No image."))
+            return
+
+        ch = bool(self.cb_hot.isChecked())
+        cc = bool(self.cb_cold.isChecked())
+        if not (ch or cc):
+            QMessageBox.information(self, self.tr("Cosmetic Correction"),
+                self.tr("Nothing to map — enable at least one of Hot / Cold."))
+            return
+
+        # Same threshold semantics as Apply: a disabled pass is pushed out
+        # of reach so it contributes no pixels of that colour.
+        hs = float(self.sp_hot.value())  if ch else 1e9
+        cs = float(self.sp_cold.value()) if cc else 1e9
+        ps = float(self.sp_protect.value())
+        bp = self._full_frame_bayer()
+
+        try:
+            src_f = _to_float01(np.asarray(self.doc.image)).astype(np.float32, copy=False)
+            corrected = _run_cosmetic(
+                src_f, hot_sigma=hs, cold_sigma=cs,
+                protect_sigma=ps, bayer_pattern=bp,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, self.tr("Cosmetic Correction"),
+                                 self.tr(f"Pixel map failed:\n{e}"))
+            return
+
+        # diff > 0 → original brighter → hot  → red
+        # diff < 0 → corrected brighter → cold → blue
+        # (unchanged pixels come back bit-identical, so > 0 / < 0 is exact)
+        d = src_f.astype(np.float32, copy=False) - np.asarray(corrected, np.float32)
+        if d.ndim == 3:                       # OSC/RGB: any channel touched
+            hot  = np.any(d > 0, axis=2)
+            cold = np.any(d < 0, axis=2)
+        else:
+            hot  = d > 0
+            cold = d < 0
+
+        # Honour an active mask exactly as Apply does: pixels outside the
+        # mask are never modified, so they must read black. Painting them
+        # red/blue would claim a change Apply never makes — the same false
+        # signal as showing a protected star core.
+        m = _active_mask_array_from_doc(self.doc)
+        if m is not None:
+            hh, ww = hot.shape
+            if m.shape != (hh, ww):
+                if cv2 is not None:
+                    m = cv2.resize(m, (ww, hh), interpolation=cv2.INTER_NEAREST)
+                else:
+                    yi = np.linspace(0, m.shape[0] - 1, hh).astype(np.int32)
+                    xi = np.linspace(0, m.shape[1] - 1, ww).astype(np.int32)
+                    m = m[yi][:, xi]
+            inside = m > 0
+            hot  &= inside
+            cold &= inside
+
+        h, w = hot.shape
+        pixmap = np.zeros((h, w, 3), dtype=np.float32)
+        pixmap[..., 0] = hot.astype(np.float32)    # R = hot
+        pixmap[..., 2] = cold.astype(np.float32)   # B = cold
+
+        n_hot, n_cold = int(hot.sum()), int(cold.sum())
+
+        new_doc = self._spawn_new_view(pixmap, self.tr("CC pixel map"))
+        if new_doc is None:
+            QMessageBox.warning(self, self.tr("Cosmetic Correction"),
+                self.tr("Could not locate the document manager to open the map."))
+            return
+
+        self.status_label.setStyleSheet("color: #4caf50; font-weight: bold;")
+        self.status_label.setText(
+            self.tr(f"✓ Pixel map created — {n_hot} hot, {n_cold} cold"))
+        if hasattr(self.main, "_log"):
+            try:
+                self.main._log(
+                    f"CC pixel map: {n_hot} hot / {n_cold} cold  "
+                    f"(hot σ={self.sp_hot.value():.2f} {'on' if ch else 'off'}, "
+                    f"cold σ={self.sp_cold.value():.2f} {'on' if cc else 'off'}, "
+                    f"protect σ={ps:.1f})"
+                )
+            except Exception:
+                pass
+
+    def _spawn_new_view(self, image: np.ndarray, label: str):
+        """Open `image` as a new document + subwindow
+        (idiom from pixelmath._deliver_new_view)."""
+        parent = self.main
+        dm = getattr(parent, "doc_manager", None) or getattr(parent, "docman", None)
+        if dm is None or not hasattr(dm, "open_array"):
+            return None
+        base = (self.doc.display_name()
+                if callable(getattr(self.doc, "display_name", None))
+                else getattr(self.doc, "display_name", "Untitled"))
+        base = base if isinstance(base, str) and base else "Untitled"
+        meta = dict(getattr(self.doc, "metadata", {}) or {})
+        meta["step_name"]  = label
+        meta["is_mono"]    = False
+        meta["bit_depth"]  = "32-bit floating point"
+        try:
+            new_doc = dm.open_array(
+                np.asarray(image, dtype=np.float32),
+                metadata=meta, title=f"{base} — {label}",
+            )
+        except Exception:
+            return None
+        if hasattr(parent, "_spawn_subwindow_for"):
+            try:
+                parent._spawn_subwindow_for(new_doc)
+            except Exception:
+                pass
+        return new_doc
 
     def _on_params_changed(self):
         try:
