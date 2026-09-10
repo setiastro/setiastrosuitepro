@@ -207,6 +207,16 @@ def cosmetic_correction_headless(
 
     out = np.clip(out.astype(np.float32, copy=False), 0.0, 1.0)
 
+    # Count what actually changed (post-gate, post-mask) so callers can
+    # report it. Unchanged pixels are bit-identical, so the compare is exact.
+    _d = np.asarray(src_f, np.float32) - out
+    if _d.ndim == 3:
+        _hot_n  = int(np.any(_d > 0, axis=2).sum())
+        _cold_n = int(np.any(_d < 0, axis=2).sum())
+    else:
+        _hot_n  = int((_d > 0).sum())
+        _cold_n = int((_d < 0).sum())
+
     step_label = "Cosmetic Correction"
     passes = []
     if correct_hot:  passes.append("hot")
@@ -240,6 +250,7 @@ def cosmetic_correction_headless(
         "is_mono": (out.ndim == 2),
     }
     doc.apply_edit(out, metadata=meta, step_name=step_label)
+    return {"hot": _hot_n, "cold": _cold_n}
 
 
 # =====================================================================
@@ -1419,7 +1430,7 @@ class CosmeticCorrectionDialog(QDialog):
         }
 
         try:
-            cosmetic_correction_headless(
+            _counts = cosmetic_correction_headless(
                 self.doc,
                 hot_sigma=hs, cold_sigma=cs, protect_sigma=ps,
                 bayer_pattern=(None if bp == "__none__" else bp),
@@ -1444,7 +1455,10 @@ class CosmeticCorrectionDialog(QDialog):
             if hasattr(self.main, "_log"):
                 self.main._log(
                     f"Cosmetic Correction applied — hot σ={hs:.2f} ({'on' if ch else 'off'}), "
-                    f"cold σ={cs:.2f} ({'on' if cc else 'off'}), bayer={bp_raw or 'auto'}"
+                    f"cold σ={cs:.2f} ({'on' if cc else 'off'}), protect σ={ps:.1f}, "
+                    f"bayer={bp_raw or 'auto'} — "
+                    f"corrected {int(_counts.get('hot', 0)) if isinstance(_counts, dict) else 0} hot, "
+                    f"{int(_counts.get('cold', 0)) if isinstance(_counts, dict) else 0} cold"
                 )
             self.main._last_headless_command = {
                 "command_id": "cosmetic_correction",
@@ -1458,8 +1472,11 @@ class CosmeticCorrectionDialog(QDialog):
             name = self.doc.display_name() if hasattr(self.doc, "display_name") else ""
         except Exception:
             name = ""
+        n_hot  = int(_counts.get("hot", 0))  if isinstance(_counts, dict) else 0
+        n_cold = int(_counts.get("cold", 0)) if isinstance(_counts, dict) else 0
+        target = f"“{name}”" if name else self.tr("image")
         self.status_label.setText(
-            self.tr(f"✓ Applied to “{name}”") if name else self.tr("✓ Applied")
+            self.tr(f"✓ Applied to {target} — corrected {n_hot} hot, {n_cold} cold pixel(s)")
         )
         self._refresh_document_from_active()
 
