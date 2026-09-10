@@ -428,153 +428,130 @@ def calibration_pipeline_gpu(
 _CC_BUFFERS: dict = {}
 
 
-def _get_cc_buffers(torch, dev, H, W):
-    """Allocate per-call cosmetic-correction scratch buffers.
-
-    Intentionally NOT cached module-side. The old persistent cache held
-    ~168 B/px (five/stacked/sorted_s + an int64 sort_idx at 8 B/px, etc.) —
-    ~4.4 GB on a 26 MP frame — resident for the entire calibration run. The
-    satellite trail CNN runs on the same GPU from the save thread and was
-    left with nothing. Returning a fresh dict lets every buffer free by
-    refcount the moment _cosmetic_correction_tensor returns, so the memory
-    is back in the allocator pool before satellite runs.
-    """
-    return {
-        "five":         torch.empty((5, H, W), device=dev, dtype=torch.float32),
-        "stacked":      torch.empty((8, H, W), device=dev, dtype=torch.float32),
-        "sorted_s":     torch.empty((8, H, W), device=dev, dtype=torch.float32),
-        "sort_idx":     torch.empty((8, H, W), device=dev, dtype=torch.int64),
-        "m5":           torch.empty((H, W),    device=dev, dtype=torch.float32),
-        "hot_thresh":   torch.empty((H, W),    device=dev, dtype=torch.float32),
-        "cold_thresh":  torch.empty((H, W),    device=dev, dtype=torch.float32),
-        "replacement":  torch.empty((H, W),    device=dev, dtype=torch.float32),
-    }
-
-
-def _clear_cc_buffers():
-    """Free all cached cosmetic correction buffers. Call after calibration run."""
-    _CC_BUFFERS.clear()
-
-
 def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
                                 bayer_pattern=None, protect_sigma=5.0):
     """
     Two-pass cosmetic correction on a (C,H,W) tensor already on device.
-    Uses pre-allocated persistent buffers to avoid per-frame cudaMalloc overhead.
-    Stride = 2 for Bayer (same-color neighbors), 1 otherwise.
+    Detection is whole-frame; the neighbour-median sort is tiled over row
+    strips so peak VRAM tracks strip size, not frame size (a 61 MP frame
+    otherwise needs ~15-20 GB of transient scratch for the sort alone).
+    Stride = 2 for Bayer (same-colour neighbours), 1 otherwise.
     """
     import torch.nn.functional as F
 
     s = 2 if bayer_pattern else 1
+    pad_amt = s
     C, H, W = t.shape
-    buf = _get_cc_buffers(torch, dev, H, W)
     result = torch.empty_like(t)
 
-    # strided sample for fast avgDev — full median on 46M pixels is slow
-    # 1% sample is accurate enough for thresholding
-    _stride = max(1, min(H, W) // 100)
+    _stride = max(1, min(H, W) // 100)   # 1% sample for background stats
+
+    # ── pick a row-strip height that bounds the sort scratch ──────────
+    # the strip's neighbour trio dominates: stacked(f32) + sorted(f32) +
+    # a transient int64 sort index = 8*(4+4+8) = 128 B/px; add slack for
+    # the int64 gather temporaries → budget at ~200 B/px.
+    bytes_per_row = W * 200
+    if dev.type == "cuda":
+        free_b, _tot = torch.cuda.mem_get_info()
+        budget = min(int(free_b * 0.4), 2 * 1024**3)
+    else:
+        budget = 768 * 1024**2
+    strip_h = int(max(64, min(H, budget // max(bytes_per_row, 1))))
+
+    # strip-sized neighbour buffers, reused across strips (last strip
+    # slices a [:sh] view). NOTE: no int64 sort_idx buffer — torch.sort's
+    # index is taken functionally and freed immediately each strip.
+    stacked  = torch.empty((8, strip_h, W), device=dev, dtype=torch.float32)
+    sorted_s = torch.empty((8, strip_h, W), device=dev, dtype=torch.float32)
+
+    offsets = [
+        (-s, -s), (-s,  0), (-s, +s),
+        ( 0, -s),           ( 0, +s),
+        (+s, -s), (+s,  0), (+s, +s),
+    ]
 
     for ci in range(C):
-        plane = t[ci]  # (H, W)
+        plane = t[ci]
 
-        # ── fast avgDev via strided sample ────────────────────────────
-        sample  = plane[::_stride, ::_stride]
-        med_val = sample.median()
-        avg_dev = (sample - med_val).abs().mean()
-        avg_dev_f = float(avg_dev)
+        # ── background stats (strided sample) ─────────────────────────
+        sample     = plane[::_stride, ::_stride]
+        med_val    = sample.median()
+        avg_dev_f  = float((sample - med_val).abs().mean())
         robust_sig = max(1.4826 * float((sample - med_val).abs().median()), 1e-8)
         med_f      = float(med_val)
         del sample
 
-        # ── pad plane once — reused for both m5 and neighbor lookups ──
-        pad_amt = s
-        p = F.pad(
-            plane.unsqueeze(0).unsqueeze(0),
-            (pad_amt, pad_amt, pad_amt, pad_amt),
-            mode='reflect'
-        ).squeeze(0).squeeze(0)
-        # p: (H + 2s, W + 2s)
+        # ── reflect-pad the plane once (whole frame) ──────────────────
+        p = F.pad(plane.unsqueeze(0).unsqueeze(0),
+                  (pad_amt, pad_amt, pad_amt, pad_amt),
+                  mode="reflect").squeeze(0).squeeze(0)          # (H+2s, W+2s)
 
-        # ── m5: median of {N, S, E, W, center} ───────────────────────
-        buf["five"][0].copy_(p[0:H,                 pad_amt:W+pad_amt])        # N
-        buf["five"][1].copy_(p[2*pad_amt:H+2*pad_amt, pad_amt:W+pad_amt])      # S
-        buf["five"][2].copy_(p[pad_amt:H+pad_amt,   0:W])                      # W
-        buf["five"][3].copy_(p[pad_amt:H+pad_amt,   2*pad_amt:W+2*pad_amt])    # E
-        buf["five"][4].copy_(plane)                                             # center
-        buf["m5"].copy_(buf["five"].median(dim=0).values)
-        m5 = buf["m5"]
+        # ── m5: cross-median of {N,S,E,W,center} (whole frame) ────────
+        five = torch.stack((
+            p[0:H,                   pad_amt:W+pad_amt],          # N
+            p[2*pad_amt:H+2*pad_amt, pad_amt:W+pad_amt],          # S
+            p[pad_amt:H+pad_amt,     0:W],                        # W
+            p[pad_amt:H+pad_amt,     2*pad_amt:W+2*pad_amt],      # E
+            plane,                                                # center
+        ), dim=0)
+        m5 = five.median(dim=0).values
+        del five
 
-        # ── detection thresholds ──────────────────────────────────────
-        scale_f = max(avg_dev_f * float(hot_sigma), avg_dev_f)
-        torch.add(m5, scale_f, out=buf["hot_thresh"])
-        torch.sub(m5, avg_dev_f * float(cold_sigma), out=buf["cold_thresh"])
+        # ── detection + structure gate (whole frame) ──────────────────
+        scale_f     = max(avg_dev_f * float(hot_sigma), avg_dev_f)
+        hot_thresh  = m5 + scale_f
+        cold_thresh = m5 - avg_dev_f * float(cold_sigma)
 
-        hot_candidates = plane > buf["hot_thresh"]
-        cold_map       = plane < buf["cold_thresh"]
-
-        # ── structure gate: protect resolved signal (stars / nebula) ──
-        # See cosmetic_correction_gpu for the rationale. m5 is stride-s so
-        # this is same-colour-safe for Bayer.
+        hot_candidates = plane > hot_thresh
+        cold_map       = plane < cold_thresh
+        # protect resolved signal: a lone hot pixel can't move m5, a star
+        # core can. m5 is stride-s so this stays same-colour for Bayer.
         protect_thr = med_f + float(protect_sigma) * robust_sig
-        structure   = buf["m5"] > protect_thr
-        hot_map     = hot_candidates & (~structure)
-        flagged     = hot_map | cold_map
+        structure   = m5 > protect_thr
+        flagged     = (hot_candidates & (~structure)) | cold_map
+        del hot_candidates, cold_map, structure, hot_thresh, cold_thresh
 
-        del hot_candidates, cold_map, hot_map
+        # padded flagged mask for neighbour lookups (whole frame)
+        fp = F.pad(flagged.float().unsqueeze(0).unsqueeze(0),
+                   (pad_amt, pad_amt, pad_amt, pad_amt),
+                   mode="reflect").squeeze(0).squeeze(0)
 
-        # ── pad flagged mask using same pad_amt ───────────────────────
-        fp = F.pad(
-            flagged.float().unsqueeze(0).unsqueeze(0),
-            (pad_amt, pad_amt, pad_amt, pad_amt),
-            mode='reflect'
-        ).squeeze(0).squeeze(0)
+        # ── replacement, tiled over row strips ────────────────────────
+        for y0 in range(0, H, strip_h):
+            y1 = min(H, y0 + strip_h)
+            sh = y1 - y0
+            st = stacked[:, :sh]          # views (contiguous last strip is short)
+            so = sorted_s[:, :sh]
 
-        # ── build 8-neighbor stack directly into pre-allocated buffer ─
-        # flagged neighbors → inf so they sort to the end
-        offsets = [
-            (-s, -s), (-s,  0), (-s, +s),
-            ( 0, -s),           ( 0, +s),
-            (+s, -s), (+s,  0), (+s, +s),
-        ]
+            p_strip  = p[y0 : y1 + 2 * pad_amt]     # (sh+2s, W+2s)
+            fp_strip = fp[y0 : y1 + 2 * pad_amt]
 
-        for i, (dy, dx) in enumerate(offsets):
-            ny0, ny1 = dy + pad_amt, dy + pad_amt + H
-            nx0, nx1 = dx + pad_amt, dx + pad_amt + W
-            nbr_vals    = p[ny0:ny1, nx0:nx1]
-            nbr_flagged = fp[ny0:ny1, nx0:nx1] > 0.5
-            torch.where(nbr_flagged, nbr_vals.new_full((), float('inf')),
-                        nbr_vals, out=buf["stacked"][i])
+            for i, (dy, dx) in enumerate(offsets):
+                r0, c0 = dy + pad_amt, dx + pad_amt
+                nbr_vals    = p_strip[r0:r0 + sh, c0:c0 + W]
+                nbr_flagged = fp_strip[r0:r0 + sh, c0:c0 + W] > 0.5
+                torch.where(nbr_flagged,
+                            nbr_vals.new_full((), float("inf")),
+                            nbr_vals, out=st[i])
 
-        del fp, p
+            # flagged neighbours are +inf and sort to the top; index is
+            # transient and freed here (strip-sized, not frame-sized)
+            so.copy_(torch.sort(st, dim=0).values)
 
-        # ── sort to find median of clean neighbors ────────────────────
-        torch.sort(buf["stacked"], dim=0, out=(buf["sorted_s"], buf["sort_idx"]))
+            raw_count = (st < float("inf")).sum(dim=0)   # clean neighbours
+            vc        = raw_count.clamp(min=1)
+            mid_lo    = ((vc - 1) // 2).unsqueeze(0)
+            mid_hi    = (vc // 2).unsqueeze(0)
+            rep = 0.5 * (so.gather(0, mid_lo).squeeze(0) +
+                         so.gather(0, mid_hi).squeeze(0))
+            # all 8 neighbours flagged → fall back to the cross median
+            rep = torch.where(raw_count == 0, m5[y0:y1], rep)
 
-        # count clean (non-inf) neighbors per pixel
-        valid_count = (buf["stacked"] < float('inf')).sum(dim=0).clamp(min=1)
+            torch.where(flagged[y0:y1], rep, plane[y0:y1], out=result[ci][y0:y1])
 
-        mid_lo = ((valid_count - 1) // 2).long()
-        mid_hi = (valid_count       // 2).long()
-
-        rep_lo = buf["sorted_s"].gather(0, mid_lo.unsqueeze(0)).squeeze(0)
-        rep_hi = buf["sorted_s"].gather(0, mid_hi.unsqueeze(0)).squeeze(0)
-
-        torch.add(rep_lo, rep_hi, out=buf["replacement"])
-        buf["replacement"].mul_(0.5)
-
-        # fallback to m5 where all 8 neighbors were also flagged
-        all_flagged = valid_count == 0
-        torch.where(all_flagged, m5, buf["replacement"], out=buf["replacement"])
-
-        del valid_count, mid_lo, mid_hi, rep_lo, rep_hi, all_flagged
-
-        # ── apply correction only to flagged pixels ───────────────────
-        torch.where(flagged, buf["replacement"], plane, out=result[ci])
-
-        del flagged
+        del p, fp, m5, flagged
 
     return result
-
 
 def prepare_calibration_frame(
     arr: np.ndarray,
