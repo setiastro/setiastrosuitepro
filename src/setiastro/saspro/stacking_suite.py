@@ -108,6 +108,14 @@ from setiastro.saspro.accel_installer import current_backend
 from setiastro.saspro.accel_workers import AccelInstallWorker
 from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
 from setiastro.saspro.free_torch_memory import _free_torch_memory
+from setiastro.saspro.stacking_gpu_mem import (
+    gpu_flat_cache_key,
+    is_cuda_oom,
+    is_master_flat_key,
+    reap_completed,
+    session_from_manual_keyword,
+    submit_bounded,
+)
 from setiastro.saspro.torch_rejection import (
     torch_available as _torch_ok,
     gpu_algo_supported as _gpu_algo_supported,
@@ -10929,27 +10937,10 @@ class StackingSuiteDialog(QDialog):
         When auto-session is OFF, build a session tag from the folder names
         using a user-provided keyword.
         Example: keyword='NIGHT' and path contains .../NIGHT2/... => session 'NIGHT2'
+        The filename is ignored: a keyword like 'Panel' must not match
+        'NGC 7822 Panel 1_….fits' or every light becomes its own session.
         """
-        kw = (keyword or "").strip()
-        if not kw or kw.lower() == "default":
-            return "Default"
-
-        parts = os.path.normpath(path).split(os.sep)
-
-        # Prefer folders like NIGHT1 / NIGHT_2 / NIGHT-3 etc.
-        pat = re.compile(rf"^{re.escape(kw)}\s*[_-]?\s*\d+$", re.IGNORECASE)
-        for part in reversed(parts):
-            if pat.match(part):
-                return part
-
-        # Fallback: any folder containing the keyword
-        kw_low = kw.lower()
-        for part in reversed(parts):
-            if kw_low in part.lower():
-                return part
-
-        # Last resort: just use the keyword
-        return kw
+        return session_from_manual_keyword(path, keyword)
 
     def prompt_set_session(self, item, frame_type):
         text, ok = QInputDialog.getText(
@@ -14461,7 +14452,7 @@ class StackingSuiteDialog(QDialog):
 
         candidates = []
         for key, path in self.master_files.items():
-            if (ftoken in key) and (f"({image_size})" in key):
+            if is_master_flat_key(key, filter_name=ftoken, image_size=image_size):
                 candidates.append((key, path))
         if not candidates:
             return None
@@ -18714,6 +18705,36 @@ class StackingSuiteDialog(QDialog):
                 protect_sigma=self.settings.value("stacking/cosmetic/protect_sigma", 5.0, type=float),
             )
             return
+
+        dark_tensors = {}          # path -> (C,H,W) tensor on GPU
+        group_flat_tensors = {}    # group_key -> tensor on GPU or None
+        _flat_gpu_by_key = {}      # gpu_flat_cache_key -> shared tensor
+
+        def _fallback_calibrate_cpu(reason: str) -> None:
+            self.update_status(self.tr(
+                "⚠️ GPU out of memory while preparing calibration. "
+                "Falling back to CPU."
+            ))
+            self.update_status(self.tr(f"   {reason}"))
+            try:
+                dark_tensors.clear()
+                group_flat_tensors.clear()
+                _flat_gpu_by_key.clear()
+            except Exception:
+                pass
+            _free_torch_memory()
+            self._calibrate_lights_cpu(
+                frame_infos=frame_infos,
+                calibrated_dir=calibrated_dir,
+                total_files=total_files,
+                master_bias_np=master_bias_np,
+                interactive_flat=interactive_flat,
+                do_satellite=do_satellite,
+                hot_sigma=hot_sigma,
+                cold_sigma=cold_sigma,
+                protect_sigma=protect_sigma,
+            )
+
         # ════════════════════════════════════════════════════════════════
         # PHASE 0C — load master darks + flats to GPU once per unique path
         # ════════════════════════════════════════════════════════════════
@@ -18726,9 +18747,6 @@ class StackingSuiteDialog(QDialog):
         dev    = _device() or (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
-
-        dark_tensors = {}   # path -> (C,H,W) tensor on GPU
-        flat_tensors = {}   # path -> (C,H,W) tensor on GPU (normalised)
 
         # collect unique paths
         unique_darks = {fi["master_dark_path"] for fi in frame_infos
@@ -18754,6 +18772,9 @@ class StackingSuiteDialog(QDialog):
                         self.tr(f"  ✓ Dark loaded: {os.path.basename(dark_path)}")
                     )
             except Exception as e:
+                if is_cuda_oom(e):
+                    _fallback_calibrate_cpu(str(e))
+                    return
                 self.update_status(
                     self.tr(f"  ⚠️ Could not load dark {os.path.basename(dark_path)}: {e}")
                 )
@@ -18905,8 +18926,9 @@ class StackingSuiteDialog(QDialog):
             # if interactive, we need per-group tensors; otherwise one per path
             pass  # handled below per-frame using group_key
 
-        # build group-keyed flat tensors (respects interactive adjustments)
-        group_flat_tensors = {}   # group_key -> tensor on GPU or None
+        # build group-keyed flat tensors (respects interactive adjustments).
+        # Share one GPU tensor per unique master path so a bad session tag
+        # cannot copy the same 234 MiB flat once per light.
         for fi in frame_infos:
             gk        = fi["group_key"]
             flat_path = fi["master_flat_path"]
@@ -18915,6 +18937,13 @@ class StackingSuiteDialog(QDialog):
 
             if flat_path is None:
                 group_flat_tensors[gk] = None
+                continue
+
+            cache_key = gpu_flat_cache_key(
+                gk, flat_path, interactive=interactive_flat
+            )
+            if cache_key is not None and cache_key in _flat_gpu_by_key:
+                group_flat_tensors[gk] = _flat_gpu_by_key[cache_key]
                 continue
 
             if interactive_flat:
@@ -18938,9 +18967,18 @@ class StackingSuiteDialog(QDialog):
                     flat_raws[flat_path], "flat"
                 )
 
-            group_flat_tensors[gk] = torch.from_numpy(
-                flat_prepared
-            ).to(dev, dtype=torch.float32, non_blocking=True)
+            try:
+                flat_t = torch.from_numpy(flat_prepared).to(
+                    dev, dtype=torch.float32, non_blocking=True
+                )
+            except Exception as e:
+                if is_cuda_oom(e):
+                    _fallback_calibrate_cpu(str(e))
+                    return
+                raise
+            if cache_key is not None:
+                _flat_gpu_by_key[cache_key] = flat_t
+            group_flat_tensors[gk] = flat_t
 
         # free raw flat numpy — no longer needed
         flat_raws.clear()
@@ -19089,9 +19127,13 @@ class StackingSuiteDialog(QDialog):
             # Phase 1 is pure calibration + disk save now (satellite deferred to
             # Phase 2), so parallel writers are safe again.
             WRITE_WORKERS = 3
+            def _on_write_error(e):
+                _status_queue.put(f"⚠️ Write error: {e}")
+
             with ThreadPoolExecutor(max_workers=WRITE_WORKERS) as write_pool:
-                # drain futures in a sliding window — never hold more than
-                # WRITE_WORKERS completed futures at once
+                # Bound in-flight saves. ThreadPoolExecutor queues unlimited
+                # submit() args — each calibrated frame is ~200–700 MiB, so
+                # 1000 lights would pin hundreds of GB of RAM.
                 pending = []
                 while True:
                     item = result_queue.get()
@@ -19099,33 +19141,24 @@ class StackingSuiteDialog(QDialog):
                         result_queue.task_done()
                         break
                     try:
-                        pending.append(write_pool.submit(_save_one, item))
+                        pending = submit_bounded(
+                            write_pool, pending, _save_one, item,
+                            max_pending=WRITE_WORKERS,
+                            on_error=_on_write_error,
+                        )
                         del item
                     except Exception as e:
                         _status_queue.put(f"⚠️ Could not submit save task: {e}")
                         del item
                     finally:
                         result_queue.task_done()
+                    pending = reap_completed(pending, on_error=_on_write_error)
 
-                    # drain completed futures immediately — don't let them accumulate
-                    still_pending = []
-                    for f in pending:
-                        if f.done():
-                            try:
-                                f.result()
-                            except Exception as e:
-                                _status_queue.put(f"⚠️ Write error: {e}")
-                            # future is done and result collected — drop it
-                        else:
-                            still_pending.append(f)
-                    pending = still_pending
-
-                # drain any remaining
                 for f in pending:
                     try:
                         f.result()
                     except Exception as e:
-                        _status_queue.put(f"⚠️ Write error: {e}")
+                        _on_write_error(e)
                 pending.clear()
                 del pending
 
@@ -19210,17 +19243,33 @@ class StackingSuiteDialog(QDialog):
                       f"Flat: {os.path.basename(fi['master_flat_path']) if fi['master_flat_path'] else 'None'} | "
                       f"Cosmetic: {fi['apply_cosmetic']}")
                 )
-                light_data = calibration_pipeline_gpu(
-                    light_data,
-                    dark_t=dark_t,
-                    flat_t=flat_t,
-                    pedestal=fi["pedestal_value"],
-                    hot_sigma=hot_sigma,
-                    cold_sigma=cold_sigma,
-                    protect_sigma=protect_sigma,
-                    apply_cosmetic=fi["apply_cosmetic"],
-                    bayer_pattern=fi["bayerpat"],
-                )
+                try:
+                    light_data = calibration_pipeline_gpu(
+                        light_data,
+                        dark_t=dark_t,
+                        flat_t=flat_t,
+                        pedestal=fi["pedestal_value"],
+                        hot_sigma=hot_sigma,
+                        cold_sigma=cold_sigma,
+                        protect_sigma=protect_sigma,
+                        apply_cosmetic=fi["apply_cosmetic"],
+                        bayer_pattern=fi["bayerpat"],
+                    )
+                except Exception as _gpu_e:
+                    if not is_cuda_oom(_gpu_e):
+                        raise
+                    _free_torch_memory()
+                    light_data = calibration_pipeline_gpu(
+                        light_data,
+                        dark_t=dark_t,
+                        flat_t=flat_t,
+                        pedestal=fi["pedestal_value"],
+                        hot_sigma=hot_sigma,
+                        cold_sigma=cold_sigma,
+                        protect_sigma=protect_sigma,
+                        apply_cosmetic=fi["apply_cosmetic"],
+                        bayer_pattern=fi["bayerpat"],
+                    )
 
                 _group_frame_count += 1
                 self.update_status(
@@ -19282,15 +19331,11 @@ class StackingSuiteDialog(QDialog):
 
         dark_tensors.clear()
         group_flat_tensors.clear()
+        _flat_gpu_by_key.clear()
         del dark_tensors
         del group_flat_tensors
-
-        try:
-            import torch as _torch
-            if _torch.cuda.is_available():
-                _torch.cuda.empty_cache()
-        except Exception:
-            pass
+        del _flat_gpu_by_key
+        _free_torch_memory()
         gc.collect()
 
         # Phase 1 (pure calibration) is fully done here. When a Phase-2
