@@ -38,7 +38,7 @@ from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleV
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,QRadioButton,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
-                             QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox, QFrame, QSplitter)
+                             QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox, QFrame, QSplitter, QInputDialog)
 
 
 
@@ -6202,7 +6202,16 @@ class StackingSuiteDialog(QDialog):
         self._align_prog_pending = None      # tuple[int, int] (done, total)
         self._align_prog_in_slot = False
         self._align_prog_last = None
-
+        # Registration Sets — orthogonal partition above filter/exp grouping.
+        # Each mosaic panel / distinct target becomes its own set with its own reference.
+        self.reg_sets: dict[str, dict] = {}          # set_name -> {"reference": str|None, "locked": bool}
+        self.frame_set_of: dict[str, str] = {}       # normcase(abspath) -> set_name  (unassigned => "Default")
+        self._active_set_name = "Default"
+        # Registration-set run queue (multi-panel / multi-target)
+        self._reg_queue = None            # None => no multi-set run in flight
+        self._reg_queue_pos = 0
+        self._reg_current_set = None
+        self._reg_current_set_slug = None
         self.reference_frame = None
         # Set by the register-only-new shortcut so the completion handler
         # integrates the full tree (old twins + freshly registered) instead of
@@ -11657,6 +11666,7 @@ class StackingSuiteDialog(QDialog):
 
         for i in range(tree.topLevelItemCount()):
             _summarize_item(tree.topLevelItem(i))
+        self._refresh_set_column()           
 
     def _find_or_make_exposure_group_key(self, grouped: dict, filt: str, exp: float, size: str,
                                           gain: float | None = None) -> str:
@@ -11695,6 +11705,129 @@ class StackingSuiteDialog(QDialog):
         gain_suffix = f" [G{int(gain)}]" if gain is not None else ""
         return f"{filt} - {float(exp):.1f}s ({size}){gain_suffix}"
 
+    def _set_key(self, path: str) -> str:
+        return os.path.normcase(os.path.abspath(path))
+
+    def _set_of_frame(self, path: str) -> str:
+        return self.frame_set_of.get(self._set_key(path), "Default")
+
+    def _ensure_default_set(self):
+        if "Default" not in self.reg_sets:
+            # Default set inherits the existing global reference/lock so current behavior is unchanged.
+            self.reg_sets["Default"] = {
+                "reference": (self.reference_frame if getattr(self, "_user_ref_locked", False) else None),
+                "locked": bool(getattr(self, "_user_ref_locked", False)),
+            }
+
+    def _rebuild_set_combo(self):
+        self._ensure_default_set()
+        cur = self._active_set_name
+        self.reg_set_combo.blockSignals(True)
+        self.reg_set_combo.clear()
+        self.reg_set_combo.addItems(list(self.reg_sets.keys()))
+        if cur in self.reg_sets:
+            self.reg_set_combo.setCurrentText(cur)
+        self.reg_set_combo.blockSignals(False)
+        self._refresh_active_set_ref_label()
+
+    def _on_active_set_changed(self, name: str):
+        if name:
+            self._active_set_name = name
+            self._refresh_active_set_ref_label()
+
+    def _new_reg_set(self):
+        name, ok = QInputDialog.getText(self, self.tr("New Registration Set"),
+                                        self.tr("Set name (e.g. Panel 1, M31, OIII-mosaic):"))
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        if name in self.reg_sets:
+            QMessageBox.information(self, self.tr("Set exists"),
+                                    self.tr("A set named '{0}' already exists.").format(name))
+        else:
+            self.reg_sets[name] = {"reference": None, "locked": False}
+        self._active_set_name = name
+        self._rebuild_set_combo()
+        # If frames are selected, assign them immediately — the common case.
+        if self.reg_tree.selectedItems():
+            self._assign_selected_to_set()
+
+    def _selected_leaf_paths(self) -> list[str]:
+        """All frame paths under the current selection (selecting a group == selecting its leaves)."""
+        paths, seen = [], set()
+        for it in self.reg_tree.selectedItems():
+            leaves = [it] if it.childCount() == 0 else [it.child(j) for j in range(it.childCount())]
+            for leaf in leaves:
+                fp = leaf.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(fp, str) and fp and fp not in seen:
+                    seen.add(fp); paths.append(fp)
+        return paths
+
+    def _assign_selected_to_set(self, target: str | None = None):
+        target = target or self._active_set_name
+        self._ensure_default_set()
+        if target not in self.reg_sets:
+            self.reg_sets[target] = {"reference": None, "locked": False}
+        paths = self._selected_leaf_paths()
+        if not paths:
+            self.update_status(self.tr("ℹ️ Select frames or a group first, then assign to a set."))
+            return
+        for fp in paths:
+            if target == "Default":
+                self.frame_set_of.pop(self._set_key(fp), None)
+            else:
+                self.frame_set_of[self._set_key(fp)] = target
+        self.update_status(self.tr("🧩 Assigned {0} frame(s) → set '{1}'.").format(len(paths), target))
+        self._refresh_set_column()
+
+    def _set_reference_for_active_set(self, auto: bool = False):
+        name = self._active_set_name
+        self._ensure_default_set()
+        self.reg_sets.setdefault(name, {"reference": None, "locked": False})
+        if auto:
+            self.reg_sets[name]["reference"] = None
+            self.reg_sets[name]["locked"] = False
+        else:
+            start = self.stacking_directory or ""
+            fp, _ = QFileDialog.getOpenFileName(
+                self, self.tr("Select Reference for set '{0}'").format(name), start,
+                self.tr("Images (*.fit *.fits *.xisf *.tif *.tiff *.png);;All files (*)"))
+            if not fp:
+                return
+            # Enforce set membership: a reference must belong to the set it anchors.
+            if name != "Default" and self._set_of_frame(fp) != name:
+                self.frame_set_of[self._set_key(fp)] = name
+                self.update_status(self.tr("🧩 Reference added to set '{0}'.").format(name))
+            self.reg_sets[name]["reference"] = os.path.normpath(fp)
+            self.reg_sets[name]["locked"] = True
+        # Keep the Default set wired to the existing global reference machinery.
+        if name == "Default":
+            if auto:
+                self.reset_reference_to_auto()
+            else:
+                self._set_user_reference(self.reg_sets[name]["reference"])
+        self._refresh_active_set_ref_label()
+        self._refresh_set_column()
+
+    def _refresh_active_set_ref_label(self):
+        cfg = self.reg_sets.get(self._active_set_name, {})
+        ref = cfg.get("reference")
+        self.set_ref_label.setText(os.path.basename(ref) if ref else self.tr("Auto (best in set)"))
+
+    def _refresh_set_column(self):
+        """Paint each leaf's set name in column 3 and summarize sets on each group header."""
+        for i in range(self.reg_tree.topLevelItemCount()):
+            top = self.reg_tree.topLevelItem(i)
+            sets_here = set()
+            for j in range(top.childCount()):
+                leaf = top.child(j)
+                fp = leaf.data(0, Qt.ItemDataRole.UserRole)
+                s = self._set_of_frame(fp) if isinstance(fp, str) else "Default"
+                leaf.setText(3, "" if s == "Default" else s)
+                sets_here.add(s)
+            top.setText(3, self.tr("mixed") if len(sets_here) > 1 else
+                            ("" if sets_here == {"Default"} else next(iter(sets_here))))
+
     def create_image_registration_tab(self):
         """
         Image Registration tab with:
@@ -11714,17 +11847,19 @@ class StackingSuiteDialog(QDialog):
         # 1) QTreeWidget
         # ─────────────────────────────────────────
         self.reg_tree = QTreeWidget()
-        self.reg_tree.setColumnCount(3)
+        self.reg_tree.setColumnCount(4)
         self.reg_tree.setHeaderLabels([
             self.tr("Filter - Exposure - Size"),
             self.tr("Metadata"),
-            self.tr("Drizzle")
+            self.tr("Drizzle"),
+            self.tr("Set"),
         ])
         self.reg_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         header = self.reg_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
 
         layout.addWidget(QLabel(self.tr("Calibrated Light Frames")))
         layout.addWidget(self.reg_tree)
@@ -11906,7 +12041,60 @@ class StackingSuiteDialog(QDialog):
         # Disable Select button when auto-accept is on
         self.auto_accept_ref_cb.toggled.connect(self.select_ref_frame_btn.setDisabled)
         self.select_ref_frame_btn.setDisabled(self.auto_accept_ref_cb.isChecked())
+        # ─────────────────────────────────────────
+        # 5b) Registration Sets (mosaic panels / multiple targets)
+        # ─────────────────────────────────────────
+        self._ensure_default_set()
+        set_box = QGroupBox(self.tr("Registration Sets — per-panel / per-target references"))
+        set_box.setToolTip(self.tr(
+            "Assign frames to independent sets. Each set registers to its own reference and "
+            "integrates separately — use this for mosaic panels or completely different targets "
+            "loaded in one run. Unassigned frames use the 'Default' set and the global reference above."
+        ))
+        set_v = QVBoxLayout(set_box)
 
+        set_row = QHBoxLayout()
+        set_row.addWidget(QLabel(self.tr("Active set:")))
+        self.reg_set_combo = QComboBox()
+        self.reg_set_combo.setEditable(False)
+        self.reg_set_combo.setMinimumWidth(160)
+        self.reg_set_combo.currentTextChanged.connect(self._on_active_set_changed)
+        set_row.addWidget(self.reg_set_combo)
+
+        self.new_set_btn = QPushButton(self.tr("New Set…"))
+        self.new_set_btn.clicked.connect(self._new_reg_set)
+        set_row.addWidget(self.new_set_btn)
+
+        self.assign_set_btn = QPushButton(self.tr("Assign Selected → Set"))
+        self.assign_set_btn.setToolTip(self.tr("Move the selected frames (or whole groups) into the active set."))
+        self.assign_set_btn.clicked.connect(self._assign_selected_to_set)
+        set_row.addWidget(self.assign_set_btn)
+
+        self.unassign_set_btn = QPushButton(self.tr("Reset Selected → Default"))
+        self.unassign_set_btn.clicked.connect(lambda: self._assign_selected_to_set(target="Default"))
+        set_row.addWidget(self.unassign_set_btn)
+        set_row.addStretch(1)
+        set_v.addLayout(set_row)
+
+        ref_set_row = QHBoxLayout()
+        ref_set_row.addWidget(QLabel(self.tr("Reference for active set:")))
+        self.set_ref_label = QLabel(self.tr("Auto (best in set)"))
+        self.set_ref_label.setWordWrap(True)
+        ref_set_row.addWidget(self.set_ref_label, 1)
+
+        self.set_ref_pick_btn = QPushButton(self.tr("Pick…"))
+        self.set_ref_pick_btn.clicked.connect(self._set_reference_for_active_set)
+        ref_set_row.addWidget(self.set_ref_pick_btn)
+
+        self.set_ref_auto_btn = QPushButton(self.tr("Auto"))
+        self.set_ref_auto_btn.setToolTip(self.tr("Let the best-scoring frame in this set be the reference."))
+        self.set_ref_auto_btn.clicked.connect(lambda: self._set_reference_for_active_set(auto=True))
+        ref_set_row.addWidget(self.set_ref_auto_btn)
+        ref_set_row.addStretch(1)
+        set_v.addLayout(ref_set_row)
+
+        layout.addWidget(set_box)
+        self._rebuild_set_combo()
         # ─────────────────────────────────────────
         # 6) MFDeconv (title cleaned; no “beta”)
         # ─────────────────────────────────────────
@@ -13216,10 +13404,10 @@ class StackingSuiteDialog(QDialog):
             return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}" if enabled else "Drizzle: False")
 
         self.reg_tree.clear()
-        self.reg_tree.setColumnCount(3)
-        self.reg_tree.setHeaderLabels(["Filter - Exposure - Size", "Metadata", "Drizzle"])
+        self.reg_tree.setColumnCount(4)
+        self.reg_tree.setHeaderLabels(["Filter - Exposure - Size", "Metadata", "Drizzle", "Set"])
         hdr = self.reg_tree.header()
-        for col in (0, 1, 2):
+        for col in (0, 1, 2, 3):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
 
         # only allow real image/light formats
@@ -13353,6 +13541,7 @@ class StackingSuiteDialog(QDialog):
             top.setExpanded(True)
 
         self._refresh_quick_stack_summary_later()
+        self._refresh_set_column()
 
     def _iter_group_items(self):
         for i in range(self.reg_tree.topLevelItemCount()):
@@ -19356,8 +19545,17 @@ class StackingSuiteDialog(QDialog):
 
                 return {"filter": filt, "exp": exp, "gain": gain, "dims": dims}
 
+            def _set_of_key(k: str) -> str:
+                # A group's set = the unique set of all its frames; mixed => a
+                # sentinel that never matches, so mixed groups never merge.
+                s = {self._set_of_frame(p) for p in light_files.get(k, [])}
+                return next(iter(s)) if len(s) == 1 else "__mixed__"
+
             def _can_merge(a: str, b: str) -> bool:
-                """True if two group keys are tolerance-compatible."""
+                """True if two group keys are tolerance-compatible AND same set."""
+                # Never merge across registration sets (mosaic panels / targets).
+                if _set_of_key(a) != _set_of_key(b):
+                    return False
                 pa = _parse_key(a)
                 pb = _parse_key(b)
 
@@ -20402,6 +20600,63 @@ class StackingSuiteDialog(QDialog):
             return 0.0
         return float(np.median(fwhms))
 
+    def _slugify_set(self, name):
+        import re
+        s = re.sub(r'[^A-Za-z0-9._-]+', '_', str(name or "")).strip('_')
+        return s or "set"
+
+    def _partition_light_files_by_set(self, light_files):
+        """Split {group_key:[paths]} into an ordered list of
+        (set_name, {group_key:[paths]}) — one entry per registration set that
+        actually has frames. Group keys are preserved (NOT prefixed) so drizzle
+        settings and tree lookups keep matching; per-set disambiguation of
+        outputs is handled by the Aligned_Images subfolder and the master tag."""
+        from collections import OrderedDict
+        order = list(self.reg_sets.keys())
+        if "Default" not in order:
+            order = ["Default"] + order
+        buckets = OrderedDict((s, OrderedDict()) for s in order)
+        for group_key, paths in light_files.items():
+            for p in paths:
+                sname = self._set_of_frame(p)
+                b = buckets.setdefault(sname, OrderedDict())
+                b.setdefault(group_key, []).append(p)
+        return [(s, dict(g)) for s, g in buckets.items() if g]
+
+    def _reg_queue_advance(self):
+        """Advance to the next registration set, or tear the queue down when the
+        last set is done. Returns True if a further set was launched."""
+        if not getattr(self, "_reg_queue", None):
+            return False
+        self._reg_queue_pos += 1
+        if self._reg_queue_pos >= len(self._reg_queue):
+            n = len(self._reg_queue)
+            self._reg_queue = None
+            self._reg_queue_pos = 0
+            self._reg_current_set = None
+            self._reg_current_set_slug = None
+            if n > 1:
+                self.update_status(self.tr(f"🎉 All {n} registration sets complete."))
+            return False
+        nxt = self._reg_queue[self._reg_queue_pos][0]
+        self.update_status(self.tr(
+            f"➡️ Next set {self._reg_queue_pos + 1}/{len(self._reg_queue)}: '{nxt}'"
+        ))
+        # Busy flag is already cleared by the time a set finishes; re-enter the
+        # normal path, which narrows to the new position without rebuilding.
+        QTimer.singleShot(0, self.register_images)
+        return True
+
+    def _reg_queue_abort(self, reason: str = ""):
+        """Stop a multi-set run without launching further sets."""
+        if getattr(self, "_reg_queue", None):
+            self._reg_queue = None
+            self._reg_queue_pos = 0
+            self._reg_current_set = None
+            self._reg_current_set_slug = None
+            if reason:
+                self.update_status(self.tr(f"⏹ Multi-set run halted: {reason}"))
+
     def register_images(self):
 
         # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
@@ -20585,6 +20840,42 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr(f"🚫 Excluding {len(dead)} removed frame(s) from registration/stacking."))
                 QApplication.processEvents()
 
+            # ── Registration Sets: build the run queue once, then narrow this
+            #    pass to the current set's frames + reference. A classic run with
+            #    no assignments is just a 1-element "Default" queue == old behavior.
+            self._ensure_default_set()
+            if getattr(self, "_reg_queue", None) is None:
+                self._reg_queue = self._partition_light_files_by_set(self.light_files)
+                self._reg_queue_pos = 0
+                if len(self._reg_queue) > 1:
+                    self.update_status(self.tr(
+                        f"🧩 {len(self._reg_queue)} registration sets queued: "
+                        + ", ".join(s for s, _ in self._reg_queue)
+                    ))
+            if not self._reg_queue or self._reg_queue_pos >= len(self._reg_queue):
+                self._reg_queue = None
+                self.update_status(self.tr("⚠️ No frames to register."))
+                self._set_registration_busy(False)
+                return
+            _set_name, _set_groups = self._reg_queue[self._reg_queue_pos]
+            self._reg_current_set = _set_name
+            self._reg_current_set_slug = self._slugify_set(_set_name)
+            self.light_files = {g: list(p) for g, p in _set_groups.items()}
+            _cfg = self.reg_sets.get(_set_name, {"reference": None, "locked": False})
+            if _cfg.get("locked") and _cfg.get("reference"):
+                self.reference_frame = os.path.normpath(_cfg["reference"])
+                self._user_ref_locked = True
+                self.update_status(self.tr(
+                    f"📌 Set '{_set_name}': locked reference {os.path.basename(self.reference_frame)}"
+                ))
+            else:
+                self._user_ref_locked = False   # auto-pick the best frame *within this set*
+            if len(self._reg_queue) > 1:
+                _nfr = sum(len(v) for v in self.light_files.values())
+                self.update_status(self.tr(
+                    f"🎬 Set {self._reg_queue_pos + 1}/{len(self._reg_queue)}: "
+                    f"'{_set_name}' — {_nfr} frame(s)"
+                ))
 
             comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
             if comet_mode:
@@ -21896,7 +22187,11 @@ class StackingSuiteDialog(QDialog):
             # ─────────────────────────────────────────────────────────────────────
             # Start alignment on the normalized files
             # ─────────────────────────────────────────────────────────────────────
-            align_dir = os.path.join(self.stacking_directory, "Aligned_Images")
+            if getattr(self, "_reg_current_set", "Default") and self._reg_current_set != "Default":
+                align_dir = os.path.join(self.stacking_directory, "Aligned_Images",
+                                         self._reg_current_set_slug or self._slugify_set(self._reg_current_set))
+            else:
+                align_dir = os.path.join(self.stacking_directory, "Aligned_Images")
             os.makedirs(align_dir, exist_ok=True)
 
             passes = self.settings.value("stacking/refinement_passes", 3, type=int)
@@ -23475,7 +23770,10 @@ class StackingSuiteDialog(QDialog):
 
             H, W = integrated_image.shape[:2]
             display_group = self._label_with_dims(group_key, W, H)
-            base = f"MasterLight_{display_group}_{n_frames_group}stacked"
+            _set_pref = (f"{self._reg_current_set_slug}_"
+                         if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                         else "")
+            base = f"MasterLight_{_set_pref}{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
             out_path_orig = self._dedupe_out_path(out_path_orig)
@@ -23591,7 +23889,10 @@ class StackingSuiteDialog(QDialog):
                 )
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
-                base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
+                _set_pref = (f"{self._reg_current_set_slug}_"
+                             if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                             else "")
+                base_crop = f"MasterLight_{_set_pref}{display_group_crop}_{n_frames_group}stacked_autocrop"
                 base_crop = self._normalize_master_stem(base_crop)
                 out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
                 out_path_crop = self._dedupe_out_path(out_path_crop)
@@ -23843,6 +24144,12 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
             self._set_registration_busy(False)
+            # Registration-set queue: advance once this set's MF phase is done.
+            if getattr(self, "_reg_queue", None):
+                if getattr(self, "_mf_cancelled", False) or getattr(self, "_mf_failures", None):
+                    self._reg_queue_abort("MFDeconv did not complete for a set")
+                else:
+                    self._reg_queue_advance()
 
         def _start_next_mf_job():
             if self._mf_cancelled or not self._mf_queue:
@@ -24233,6 +24540,7 @@ class StackingSuiteDialog(QDialog):
         if was_cancelled:
             self._cfa_for_this_run = None
             self.update_status(self.tr("⏹ Stacking stopped by user."))
+            self._reg_queue_abort()
             try:
                 QMessageBox.information(self, self.tr("Stopped"),
                                         self.tr("Stacking was cancelled. Any partial master was discarded."))
@@ -24250,6 +24558,7 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
                 self.update_status(self.tr("⏹ Stopped before MFDeconv (cancel requested)."))
+                self._reg_queue_abort()
                 self._cfa_for_this_run = None
                 return
             try:
@@ -24371,6 +24680,15 @@ class StackingSuiteDialog(QDialog):
 
         self._cfa_for_this_run = None
         QApplication.processEvents()
+
+        # Registration-set queue: advance to the next set, or finish. When
+        # MFDeconv is enabled this point isn't reached (that path returns after
+        # launching MF); the chain fires from _finish_mf_phase_and_exit instead.
+        if getattr(self, "_reg_queue", None):
+            if ok:
+                self._reg_queue_advance()
+            else:
+                self._reg_queue_abort("a set failed during integration")
 
 
     def save_rejection_map_sasr(self, rejection_map: dict, out_path: str):
@@ -24912,7 +25230,10 @@ class StackingSuiteDialog(QDialog):
             n_frames_group = len(file_list)
             H, W = integrated_image.shape[:2]
             display_group = self._label_with_dims(group_key, W, H)
-            base = f"MasterLight_{display_group}_{n_frames_group}stacked"
+            _set_pref = (f"{self._reg_current_set_slug}_"
+                         if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                         else "")
+            base = f"MasterLight_{_set_pref}{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
             out_path_orig = self._dedupe_out_path(out_path_orig)
@@ -25033,7 +25354,10 @@ class StackingSuiteDialog(QDialog):
                 is_mono_crop = (cropped_img.ndim == 2)
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
-                base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
+                _set_pref = (f"{self._reg_current_set_slug}_"
+                             if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                             else "")
+                base_crop = f"MasterLight_{_set_pref}{display_group_crop}_{n_frames_group}stacked_autocrop"
                 base_crop = self._normalize_master_stem(base_crop)
                 out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
                 out_path_crop = self._dedupe_out_path(out_path_crop)
@@ -28056,7 +28380,10 @@ class StackingSuiteDialog(QDialog):
         # ---- save (single-HDU; no rejection layers here) ----
         Hd, Wd = final_drizzle.shape[:2] if final_drizzle.ndim >= 2 else (0, 0)
         display_group_driz = self._label_with_dims(group_key, Wd, Hd)
-        base_stem = f"MasterLight_{display_group_driz}_{len(file_list)}stacked_drizzle"
+        _set_pref = (f"{self._reg_current_set_slug}_"
+                     if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                     else "")
+        base_stem = f"MasterLight_{_set_pref}{display_group_driz}_{len(file_list)}stacked_drizzle"
         base_stem = self._normalize_master_stem(base_stem)
         out_path_orig = self._build_out(self._master_light_dir(), base_stem, "fit")
         out_path_orig = self._dedupe_out_path(out_path_orig)
@@ -28113,7 +28440,10 @@ class StackingSuiteDialog(QDialog):
 
             is_mono_crop = (cropped_drizzle.ndim == 2)
             display_group_driz_crop = self._label_with_dims(group_key, cropped_drizzle.shape[1], cropped_drizzle.shape[0])
-            base_crop = f"MasterLight_{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
+            _set_pref = (f"{self._reg_current_set_slug}_"
+                         if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                         else "")
+            base_crop = f"MasterLight_{_set_pref}{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
             base_crop = self._normalize_master_stem(base_crop)
             out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
             out_path_crop = self._dedupe_out_path(out_path_crop)
