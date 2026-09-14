@@ -10937,8 +10937,8 @@ class StackingSuiteDialog(QDialog):
         When auto-session is OFF, build a session tag from the folder names
         using a user-provided keyword.
         Example: keyword='NIGHT' and path contains .../NIGHT2/... => session 'NIGHT2'
-        The filename is ignored: a keyword like 'Panel' must not match
-        'NGC 7822 Panel 1_….fits' or every light becomes its own session.
+        The filename is ignored so a keyword that also appears in light names
+        does not create one session per file.
         """
         return session_from_manual_keyword(path, keyword)
 
@@ -18927,8 +18927,7 @@ class StackingSuiteDialog(QDialog):
             pass  # handled below per-frame using group_key
 
         # build group-keyed flat tensors (respects interactive adjustments).
-        # Share one GPU tensor per unique master path so a bad session tag
-        # cannot copy the same 234 MiB flat once per light.
+        # Share one GPU tensor per unique master path across groups.
         for fi in frame_infos:
             gk        = fi["group_key"]
             flat_path = fi["master_flat_path"]
@@ -19132,8 +19131,7 @@ class StackingSuiteDialog(QDialog):
 
             with ThreadPoolExecutor(max_workers=WRITE_WORKERS) as write_pool:
                 # Bound in-flight saves. ThreadPoolExecutor queues unlimited
-                # submit() args — each calibrated frame is ~200–700 MiB, so
-                # 1000 lights would pin hundreds of GB of RAM.
+                # submit() args, and each queued job retains its frame.
                 pending = []
                 while True:
                     item = result_queue.get()

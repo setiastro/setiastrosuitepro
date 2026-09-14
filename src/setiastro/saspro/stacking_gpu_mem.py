@@ -14,9 +14,8 @@ from concurrent.futures import FIRST_COMPLETED, wait
 def session_from_manual_keyword(path: str, keyword: str) -> str:
     """Build a session tag from *directory* names using a user keyword.
 
-    Only folder components are searched — never the filename. Otherwise a
-    keyword like ``Panel`` matches ``NGC 7822 Panel 1_B_….fits`` and every
-    light becomes its own session (which then duplicates master flats in VRAM).
+    Only folder components are searched — never the filename. A keyword that
+    also appears in light names would otherwise create one session per file.
     """
     kw = (keyword or "").strip()
     if not kw or kw.lower() == "default":
@@ -25,7 +24,7 @@ def session_from_manual_keyword(path: str, keyword: str) -> str:
     dirpath = os.path.dirname(os.path.normpath(path))
     parts = [p for p in dirpath.split(os.sep) if p]
 
-    # Prefer folders like NIGHT1 / NIGHT_2 / NIGHT-3 / panel-01 / panel1.
+    # Prefer folders like NIGHT1 / NIGHT_2 / NIGHT-3.
     pat = re.compile(rf"^{re.escape(kw)}\s*[_-]?\s*\d+$", re.IGNORECASE)
     for part in reversed(parts):
         if pat.match(part):
@@ -42,9 +41,8 @@ def session_from_manual_keyword(path: str, keyword: str) -> str:
 def is_master_flat_key(key: str, *, filter_name: str, image_size: str) -> bool:
     """True if *key* is a master-flat dict key for this filter and size.
 
-    Keys look like ``G (9576x6388) [Default] [G0]``. Matching must not treat
-    the letter G as a substring — that hits gain tags ``[G0]`` / ``[G100]``
-    on darks and on every other filter's flats.
+    Keys look like ``G (WxH) [session] [G0]``. Matching must not treat the
+    letter G as a substring, or it also hits gain tags ``[G0]`` / ``[G100]``.
     """
     prefix = f"{filter_name} ({image_size})"
     k = str(key or "")
@@ -97,8 +95,8 @@ def submit_bounded(executor, pending, fn, arg, *, max_pending, on_error=None):
     """Submit ``fn(arg)`` without letting more than *max_pending* futures sit queued.
 
     ``ThreadPoolExecutor`` accepts unlimited ``submit()`` calls. Each queued
-    job keeps its arguments alive — for calibrated lights that's a ~200+ MiB
-    float32 array per frame, which OOMs a 1000-frame run.
+    job keeps its arguments alive, so an unbounded queue of calibrated frames
+    can exhaust RAM.
     """
     limit = max(1, int(max_pending))
     pending = list(pending)
