@@ -868,10 +868,20 @@ def _apply_clip_trail_logic(
     trail_mask_2d = np.any(mask3 > 0.5, axis=-1)
     return final, trail_mask_2d
 
+def trail_mask_requires_rewrite(sat_mask) -> bool:
+    """True if the satellite pass clipped pixels and the calibrated FITS must be rewritten."""
+    if sat_mask is None:
+        return False
+    return bool(np.any(sat_mask))
+
+
 def _resize_tile_for_detect(tile_rgb01: np.ndarray) -> np.ndarray:
+    tile = np.asarray(tile_rgb01, dtype=np.float32)
+    if tile.ndim == 3 and tile.shape[0] == 256 and tile.shape[1] == 256 and tile.shape[2] == 3:
+        return tile
     if _sk_resize is None:
         raise RuntimeError("skimage.transform.resize is required for satellite detection.")
-    r = _sk_resize(tile_rgb01, (256, 256, 3), mode="reflect", anti_aliasing=True).astype(np.float32)
+    r = _sk_resize(tile, (256, 256, 3), mode="reflect", anti_aliasing=True).astype(np.float32)
     return r
 
 def _pad_tile_to_shape_rgb(tile: np.ndarray, out_h: int, out_w: int) -> tuple[np.ndarray, int, int]:

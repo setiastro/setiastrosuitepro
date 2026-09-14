@@ -17545,7 +17545,9 @@ class StackingSuiteDialog(QDialog):
         # No dedup — every leaf is a distinct file, even if basenames collide
         return paths
 
-    def _apply_satellite_removal_to_calibrated_light(self, light_data, *, is_mono: bool):
+    def _apply_satellite_removal_to_calibrated_light(
+        self, light_data, *, is_mono: bool, models=None
+    ):
         """
         Run SASpro satellite trail removal on an already-calibrated light frame.
 
@@ -17564,6 +17566,8 @@ class StackingSuiteDialog(QDialog):
         - The satellite engine now handles normalization/denormalization internally.
         - The returned sat_mask_2d is authoritative and should be saved/propagated
         instead of inferring rejection from pixel values.
+        - Pass a preloaded `models` bundle to avoid re-resolving the backend
+          on every frame.
         """
         import numpy as np
         from setiastro.saspro.resources import get_resources
@@ -17605,8 +17609,11 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
-        resources = get_resources()
-        models = get_satellite_models(resources=resources, use_gpu=bool(use_gpu), status_cb=_status)
+        if models is None:
+            resources = get_resources()
+            models = get_satellite_models(
+                resources=resources, use_gpu=bool(use_gpu), status_cb=_status
+            )
 
         out_img, detected, sat_mask_2d = satellite_remove_image(
             image=arr_in,
@@ -19321,6 +19328,12 @@ class StackingSuiteDialog(QDialog):
         _drain_status()
         QApplication.processEvents()
 
+        # Close the last Calibration monitor row before Phase 2 so satellite
+        # trail time is not billed to the last filter group.
+        if do_satellite and not cancelled:
+            self.update_status(self.tr("📷 All light groups calibrated"))
+            QApplication.processEvents()
+
         # ── Phase 1 done: every frame calibrated + saved. Free the GPU
         #    COMPLETELY before the satellite pass so the CNN gets a clean
         #    card — this is the whole point of the split. frame_infos is
@@ -19360,57 +19373,88 @@ class StackingSuiteDialog(QDialog):
                 f"🛰️ Satellite trail removal — {n_sat} frame(s) on a clean GPU…"
             ))
             QApplication.processEvents()
-            for s_idx, cal_path in enumerate(sat_files, 1):
-                if self._cancelled():
-                    self.update_status(self.tr("⏹ Satellite pass cancelled."))
-                    break
+
+            from setiastro.saspro.resources import get_resources
+            from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+                get_satellite_models,
+                trail_mask_requires_rewrite,
+            )
+
+            def _sat_status(msg):
                 try:
-                    if not os.path.exists(cal_path):
-                        continue
-                    sd, shdr, _sbits, s_mono = load_image(cal_path)
-                    if sd is None:
-                        continue
-                    cleaned, _sat_mask = self._apply_satellite_removal_to_calibrated_light(
-                        sd, is_mono=s_mono
-                    )
-                    cleaned = np.asarray(cleaned, dtype=np.float32)
-                    if (not s_mono) and cleaned.ndim == 3 and cleaned.shape[0] == 3:
-                        cleaned = cleaned.transpose(1, 2, 0)
-                    cleaned = np.nan_to_num(
-                        cleaned.astype(np.float32, copy=False),
-                        nan=0.0, posinf=0.0, neginf=0.0,
-                    )
+                    self.update_status(self.tr(str(msg)))
+                except Exception:
+                    pass
+
+            sat_models = None
+            try:
+                sat_models = get_satellite_models(
+                    resources=get_resources(),
+                    use_gpu=bool(self.settings.value(
+                        "stacking/calibration_satellite_gpu", True, type=bool
+                    )),
+                    status_cb=_sat_status,
+                )
+            except Exception as e:
+                self.update_status(self.tr(
+                    f"⚠️ Satellite models failed to load: {e}"
+                ))
+
+            n_rewritten = 0
+            n_unchanged = 0
+            if sat_models is not None:
+                for s_idx, cal_path in enumerate(sat_files, 1):
+                    if self._cancelled():
+                        self.update_status(self.tr("⏹ Satellite pass cancelled."))
+                        break
                     try:
-                        if hasattr(shdr, "add_history"):
-                            shdr.add_history("Satellite trails removed (clipped to 0.0)")
-                        else:
-                            shdr["HISTORY"] = "Satellite trails removed (clipped to 0.0)"
-                    except Exception:
-                        pass
-                    save_image(
-                        img_array=cleaned,
-                        filename=cal_path,
-                        original_format="fit",
-                        bit_depth="32-bit floating point",
-                        original_header=shdr,
-                        is_mono=s_mono,
-                    )
-                    self.update_status(self.tr(
-                        f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
-                    ))
-                except Exception as e:
-                    self.update_status(self.tr(
-                        f"⚠️ Satellite pass failed on "
-                        f"{os.path.basename(cal_path)}: {e}"
-                    ))
-                finally:
-                    try:
-                        import torch as _torch_sat
-                        if _torch_sat.cuda.is_available():
-                            _torch_sat.cuda.empty_cache()
-                    except Exception:
-                        pass
-                QApplication.processEvents()
+                        if not os.path.exists(cal_path):
+                            continue
+                        sd, shdr, _sbits, s_mono = load_image(cal_path)
+                        if sd is None:
+                            continue
+                        cleaned, sat_mask = self._apply_satellite_removal_to_calibrated_light(
+                            sd, is_mono=s_mono, models=sat_models
+                        )
+                        if not trail_mask_requires_rewrite(sat_mask):
+                            n_unchanged += 1
+                            self.update_status(self.tr(
+                                f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
+                            ))
+                            QApplication.processEvents()
+                            continue
+                        cleaned = np.asarray(cleaned, dtype=np.float32)
+                        if (not s_mono) and cleaned.ndim == 3 and cleaned.shape[0] == 3:
+                            cleaned = cleaned.transpose(1, 2, 0)
+                        cleaned = np.nan_to_num(
+                            cleaned.astype(np.float32, copy=False),
+                            nan=0.0, posinf=0.0, neginf=0.0,
+                        )
+                        try:
+                            if hasattr(shdr, "add_history"):
+                                shdr.add_history("Satellite trails removed (clipped to 0.0)")
+                            else:
+                                shdr["HISTORY"] = "Satellite trails removed (clipped to 0.0)"
+                        except Exception:
+                            pass
+                        save_image(
+                            img_array=cleaned,
+                            filename=cal_path,
+                            original_format="fit",
+                            bit_depth="32-bit floating point",
+                            original_header=shdr,
+                            is_mono=s_mono,
+                        )
+                        n_rewritten += 1
+                        self.update_status(self.tr(
+                            f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
+                        ))
+                    except Exception as e:
+                        self.update_status(self.tr(
+                            f"⚠️ Satellite pass failed on "
+                            f"{os.path.basename(cal_path)}: {e}"
+                        ))
+                    QApplication.processEvents()
             # honor a cancel that arrived during the satellite pass
             cancelled = cancelled or self._cancelled()
             # Give the monitor an explicit terminal signal so the dedicated
@@ -19418,9 +19462,11 @@ class StackingSuiteDialog(QDialog):
             # "running" until the end-of-run sweep.
             if not cancelled:
                 self.update_status(self.tr(
-                    f"✅ Satellite trail removal complete — {n_sat} frame(s)."
+                    f"✅ Satellite trail removal complete "
+                    f"({n_rewritten} clipped, {n_unchanged} unchanged)"
                 ))
                 QApplication.processEvents()
+            _free_torch_memory()
 
         # frame_infos no longer needed
         frame_infos.clear()
