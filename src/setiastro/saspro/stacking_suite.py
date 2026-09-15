@@ -6212,6 +6212,7 @@ class StackingSuiteDialog(QDialog):
         self._reg_queue_pos = 0
         self._reg_current_set = None
         self._reg_current_set_slug = None
+        self._reg_summary_buffer = []     # per-set results, flushed as one summary at run end
         self.reference_frame = None
         # Set by the register-only-new shortcut so the completion handler
         # integrates the full tree (old twins + freshly registered) instead of
@@ -20623,6 +20624,113 @@ class StackingSuiteDialog(QDialog):
                 b.setdefault(group_key, []).append(p)
         return [(s, dict(g)) for s, g in buckets.items() if g]
 
+    def _buffer_set_summary(self, master_paths, sasd_path, sasd_exists):
+        """Stash one set's integration results for a single end-of-run summary
+        (used during multi-set / mosaic runs instead of prompting per set).
+        Each set's .sasd is copied to a per-set name so it survives the next
+        set overwriting alignment_transforms.sasd."""
+        preserved_sasd = None
+        if sasd_exists:
+            try:
+                import shutil
+                slug = self._reg_current_set_slug or self._slugify_set(self._reg_current_set)
+                preserved_sasd = os.path.join(self.stacking_directory,
+                                              f"alignment_transforms_{slug}.sasd")
+                shutil.copy2(sasd_path, preserved_sasd)
+                from setiastro.saspro.dither_analysis import _save_pixscale_for_sasd
+                ps = getattr(self, "_ref_pixscale_arcsec", None)
+                if ps:
+                    _save_pixscale_for_sasd(QSettings("SetiAstro", "SASpro"), preserved_sasd, ps)
+            except Exception:
+                preserved_sasd = sasd_path
+        if getattr(self, "_reg_summary_buffer", None) is None:
+            self._reg_summary_buffer = []
+        self._reg_summary_buffer.append({
+            "set": self._reg_current_set,
+            "masters": list(master_paths or []),
+            "sasd": preserved_sasd,
+        })
+        self.update_status(self.tr(
+            f"🧩 Set '{self._reg_current_set}' integrated — summary deferred to end of run."
+        ))
+
+    def _show_multiset_summary(self):
+        """One prompt after all registration sets finish: open all masters,
+        every per-set dither analysis, or both. No-op if nothing was buffered."""
+        buf = getattr(self, "_reg_summary_buffer", None)
+        if not buf:
+            return
+        self._reg_summary_buffer = []
+
+        all_masters = []
+        for e in buf:
+            for m in e.get("masters", []):
+                if m not in all_masters:
+                    all_masters.append(m)
+        sasd_list = [e["sasd"] for e in buf
+                     if e.get("sasd") and os.path.exists(e["sasd"])]
+
+        lines = [self.tr(f"All {len(buf)} registration sets complete."), ""]
+        for e in buf:
+            lines.append(f"• {e['set']}: {len(e.get('masters', []))} master(s)")
+        text = "\n".join(lines)
+
+        def _open_all_masters():
+            self._open_saved_masters(all_masters)
+
+        def _open_all_dither():
+            from setiastro.saspro.dither_analysis import DitherAnalysisWindow
+            if not hasattr(self, "_dither_windows"):
+                self._dither_windows = []
+            for sp in sasd_list:
+                try:
+                    dlg = DitherAnalysisWindow(parent=self)
+                    dlg.setWindowFlag(Qt.WindowType.Window, True)
+                    dlg.load_sasd(sp)
+                    dlg.show()
+                    dlg.raise_()
+                    dlg.activateWindow()
+                    self._dither_windows.append(dlg)
+                except Exception as ex:
+                    QMessageBox.warning(
+                        self, "Dither Analysis",
+                        f"Could not open Dither Analysis for {os.path.basename(sp)}:\n{ex}"
+                    )
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(self.tr("All Sets Complete"))
+        msg_box.setText(text)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.addButton(QMessageBox.StandardButton.Ok)
+
+        masters_btn = None
+        if all_masters:
+            masters_btn = msg_box.addButton(
+                self.tr("🖼 Open All Masters ({0})").format(len(all_masters)),
+                QMessageBox.ButtonRole.ActionRole
+            )
+        dither_btn = None
+        if sasd_list:
+            dither_btn = msg_box.addButton(
+                self.tr("📊 Open All Dither ({0})").format(len(sasd_list)),
+                QMessageBox.ButtonRole.ActionRole
+            )
+        both_btn = None
+        if all_masters and sasd_list:
+            both_btn = msg_box.addButton(
+                self.tr("🖼 📊 Open Both"), QMessageBox.ButtonRole.ActionRole
+            )
+
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+        if both_btn is not None and clicked == both_btn:
+            _open_all_masters()
+            _open_all_dither()
+        elif masters_btn is not None and clicked == masters_btn:
+            _open_all_masters()
+        elif dither_btn is not None and clicked == dither_btn:
+            _open_all_dither()
+
     def _reg_queue_advance(self):
         """Advance to the next registration set, or tear the queue down when the
         last set is done. Returns True if a further set was launched."""
@@ -20637,6 +20745,7 @@ class StackingSuiteDialog(QDialog):
             self._reg_current_set_slug = None
             if n > 1:
                 self.update_status(self.tr(f"🎉 All {n} registration sets complete."))
+            self._show_multiset_summary()
             return False
         nxt = self._reg_queue[self._reg_queue_pos][0]
         self.update_status(self.tr(
@@ -24600,80 +24709,85 @@ class StackingSuiteDialog(QDialog):
 
             master_paths = self._collect_master_paths(payload)
 
-            # --- helpers so a single button can trigger one action, or "Both" can trigger both ---
-            def _open_masters():
-                self._open_saved_masters(master_paths)
+            # Multi-set (mosaic) run: buffer this set's results and defer the
+            # summary until every set is done — one prompt at the very end.
+            if getattr(self, "_reg_queue", None) and len(self._reg_queue) > 1:
+                self._buffer_set_summary(master_paths, sasd_path, sasd_exists)
+            else:
+                # --- helpers so a single button can trigger one action, or "Both" can trigger both ---
+                def _open_masters():
+                    self._open_saved_masters(master_paths)
 
-            def _open_dither():
-                try:
-                    from setiastro.saspro.dither_analysis import DitherAnalysisWindow
-                    dlg = DitherAnalysisWindow(parent=self)
-                    dlg.setWindowFlag(Qt.WindowType.Window, True)
-                    dlg.load_sasd(sasd_path)
-                    dlg.show()
-                    dlg.raise_()
-                    dlg.activateWindow()
-                    # keep a reference so it doesn't get garbage collected
-                    if not hasattr(self, "_dither_windows"):
-                        self._dither_windows = []
-                    self._dither_windows.append(dlg)
-                except Exception as e:
-                    QMessageBox.warning(
-                        self, "Dither Analysis",
-                        f"Could not open Dither Analysis:\n{e}"
+                def _open_dither():
+                    try:
+                        from setiastro.saspro.dither_analysis import DitherAnalysisWindow
+                        dlg = DitherAnalysisWindow(parent=self)
+                        dlg.setWindowFlag(Qt.WindowType.Window, True)
+                        dlg.load_sasd(sasd_path)
+                        dlg.show()
+                        dlg.raise_()
+                        dlg.activateWindow()
+                        # keep a reference so it doesn't get garbage collected
+                        if not hasattr(self, "_dither_windows"):
+                            self._dither_windows = []
+                        self._dither_windows.append(dlg)
+                    except Exception as e:
+                        QMessageBox.warning(
+                            self, "Dither Analysis",
+                            f"Could not open Dither Analysis:\n{e}"
+                        )
+
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
+                msg_box.setText(message)
+                msg_box.setIcon(QMessageBox.Icon.Information)
+
+                ok_btn = msg_box.addButton(QMessageBox.StandardButton.Ok)
+
+                masters_btn = None
+                if master_paths:
+                    masters_btn = msg_box.addButton(
+                        self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
+                        QMessageBox.ButtonRole.ActionRole
                     )
 
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
-            msg_box.setText(message)
-            msg_box.setIcon(QMessageBox.Icon.Information)
+                dither_btn = None
+                if sasd_exists:
+                    dither_btn = msg_box.addButton(
+                        self.tr("📊 Open Dither Analysis"),
+                        QMessageBox.ButtonRole.ActionRole
+                    )
 
-            ok_btn = msg_box.addButton(QMessageBox.StandardButton.Ok)
+                both_btn = None
+                if master_paths and sasd_exists:
+                    both_btn = msg_box.addButton(
+                        self.tr("🖼 📊 Open Both"),
+                        QMessageBox.ButtonRole.ActionRole
+                    )
 
-            masters_btn = None
-            if master_paths:
-                masters_btn = msg_box.addButton(
-                    self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
-                    QMessageBox.ButtonRole.ActionRole
-                )
+                msg_box.exec()
+                clicked = msg_box.clickedButton()
 
-            dither_btn = None
-            if sasd_exists:
-                dither_btn = msg_box.addButton(
-                    self.tr("📊 Open Dither Analysis"),
-                    QMessageBox.ButtonRole.ActionRole
-                )
+                # Order matters: check `both_btn` first so it doesn't fall through to
+                # one of the singles by accident.
+                if both_btn is not None and clicked == both_btn:
+                    _open_masters()
+                    _open_dither()
+                elif masters_btn is not None and clicked == masters_btn:
+                    _open_masters()
+                elif dither_btn is not None and clicked == dither_btn:
+                    _open_dither()
 
-            both_btn = None
-            if master_paths and sasd_exists:
-                both_btn = msg_box.addButton(
-                    self.tr("🖼 📊 Open Both"),
-                    QMessageBox.ButtonRole.ActionRole
-                )
-
-            msg_box.exec()
-            clicked = msg_box.clickedButton()
-
-            # Order matters: check `both_btn` first so it doesn't fall through to
-            # one of the singles by accident.
-            if both_btn is not None and clicked == both_btn:
-                _open_masters()
-                _open_dither()
-            elif masters_btn is not None and clicked == masters_btn:
-                _open_masters()
-            elif dither_btn is not None and clicked == dither_btn:
-                _open_dither()
-
-            if sasd_exists:
-                try:
-                    from setiastro.saspro.dither_analysis import _save_pixscale_for_sasd
-                    ps = getattr(self, "_ref_pixscale_arcsec", None)
-                    if ps:
-                        _save_pixscale_for_sasd(
-                            QSettings("SetiAstro", "SASpro"), sasd_path, ps
-                        )
-                except Exception:
-                    pass
+                if sasd_exists:
+                    try:
+                        from setiastro.saspro.dither_analysis import _save_pixscale_for_sasd
+                        ps = getattr(self, "_ref_pixscale_arcsec", None)
+                        if ps:
+                            _save_pixscale_for_sasd(
+                                QSettings("SetiAstro", "SASpro"), sasd_path, ps
+                            )
+                    except Exception:
+                        pass
 
         else:
             QMessageBox.critical(self, self.tr("Post-Alignment Failed"), message)
