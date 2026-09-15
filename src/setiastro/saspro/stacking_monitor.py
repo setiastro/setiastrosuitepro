@@ -116,6 +116,7 @@ _r(r"🎚️ Interactive flat",                          "Calibration",       _S
 _r(r"🔧 Calibration frames ready",                  "Calibration",       _ST_INFO)
 _r(r"📷 Calibrating group: (.+)",                   "Calibration",       _ST_RUNNING, 1)
 _r(r"📷 Progress: .+ — \d+/\d+ frames",             "Calibration",       _ST_RUNNING)
+_r(r"📷 Calibration pipeline complete",             "Calibration",       _ST_OK)
 _r(r"✅ Calibration Complete",                      "Calibration",       _ST_OK)
 _r(r"❌ (?:ERROR|CALIBRATION ERROR)",               "Calibration",       _ST_FAIL)
 
@@ -160,8 +161,14 @@ _r(r"⚡ Running max-value projection",                   "Star Trail: Stack",  
 _r(r"✅ Star-Trail image saved",                          "Star Trail: Stack",     _ST_OK)
 
 # ── Autocrop ──────────────────────────────────────────────────────────────
-_r(r"✂️.*[Cc]rop",                                  "Autocrop",          _ST_RUNNING)
+# Terminal rule FIRST — the greedy running rule below also matches the word
+# "auto-cropped" (…crop…); with it first it swallowed every "Saved auto-
+# cropped" message, so the Autocrop row never left the running state. The
+# negative lookahead on "saved" also keeps the running rule from grabbing the
+# MF / comet / drizzle "Saved … (auto-cropped)" messages, which have their
+# own terminal rules further down this list.
 _r(r"✂️ Saved auto-cropped",                         "Autocrop",          _ST_OK)
+_r(r"✂️(?!.*[Ss]aved).*[Cc]rop",                    "Autocrop",          _ST_RUNNING)
 
 # ── Astrometric solution ──────────────────────────────────────────────────
 _r(r"Transform file saved.*\.sasd \(v2\)",          "Alignment Transforms", _ST_OK)
@@ -195,6 +202,19 @@ _r(r"⚠️ Comet star removal pre-process aborted",   "Comet StarRemoval", _ST_
 # ── Comet blend ───────────────────────────────────────────────────────────
 _r(r"🟡 Blending Stars\+Comet",                    "Comet Blend",       _ST_RUNNING)
 _r(r"✅ Saved CometBlend",                          "Comet Blend",       _ST_OK)
+
+# ── Satellite trail removal (calibration Phase 2) ─────────────────────────
+# calibrate_lights defers satellite removal to a dedicated pass that runs
+# AFTER calibration finishes. Without these rules those messages are
+# unrecognised (suppressed), so the last calibration row stays "running" and
+# silently accrues the entire satellite-pass duration. Give the pass its own
+# row. A per-frame failure keeps the row RUNNING (updates the note) instead
+# of terminating the whole pass on a single bad frame.
+_r(r"🛰️ Satellite trail removal",                   "Satellite Removal", _ST_RUNNING)
+_r(r"🛰️ \d+/\d+:",                                   "Satellite Removal", _ST_RUNNING)
+_r(r"✅ Satellite trail removal complete",            "Satellite Removal", _ST_OK)
+_r(r"⏹ Satellite pass cancelled",                    "Satellite Removal", _ST_WARN)
+_r(r"⚠️ Satellite pass failed on",                    "Satellite Removal", _ST_RUNNING)
 
 # ── Generic catch-alls — MUST be last ─────────────────────────────────────
 _r(r"^✅",   "Complete",  _ST_OK)

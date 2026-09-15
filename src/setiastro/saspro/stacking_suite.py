@@ -19293,6 +19293,15 @@ class StackingSuiteDialog(QDialog):
             pass
         gc.collect()
 
+        # Phase 1 (pure calibration) is fully done here. When a Phase-2
+        # satellite pass follows, close the per-group Calibration row now so
+        # the final filter stops accruing time while the (separate) satellite
+        # pass runs. Without a Phase-2 pass, the "✅ Calibration Complete!"
+        # emitted below already closes it at the right moment.
+        if do_satellite and not cancelled:
+            self.update_status(self.tr("📷 Calibration pipeline complete."))
+            QApplication.processEvents()
+
         # ════════════════════════════════════════════════════════════════
         # PHASE 2 — satellite trail removal on a CLEAN GPU
         # Strictly after calibration; masters + cosmetic buffers are gone,
@@ -19361,6 +19370,14 @@ class StackingSuiteDialog(QDialog):
                 QApplication.processEvents()
             # honor a cancel that arrived during the satellite pass
             cancelled = cancelled or self._cancelled()
+            # Give the monitor an explicit terminal signal so the dedicated
+            # "Satellite Removal" row finishes here instead of lingering as
+            # "running" until the end-of-run sweep.
+            if not cancelled:
+                self.update_status(self.tr(
+                    f"✅ Satellite trail removal complete — {n_sat} frame(s)."
+                ))
+                QApplication.processEvents()
 
         # frame_infos no longer needed
         frame_infos.clear()
@@ -19378,7 +19395,11 @@ class StackingSuiteDialog(QDialog):
             self._refresh_quick_stack_summary_later()
             return   # skip auto-register-after-cal on cancel
 
-        self.update_status(self.tr("✅ Calibration Complete!"))
+        # In the satellite path, Phase-1 completion was already signalled by
+        # "📷 Calibration pipeline complete." before Phase 2; re-emitting here
+        # would spawn a duplicate (empty-group) row in the monitor.
+        if not do_satellite:
+            self.update_status(self.tr("✅ Calibration Complete!"))
         QApplication.processEvents()
 
         if not self.settings.value("stacking/auto_register_after_cal", False, type=bool):
