@@ -6213,6 +6213,11 @@ class StackingSuiteDialog(QDialog):
         self._reg_current_set = None
         self._reg_current_set_slug = None
         self._reg_summary_buffer = []     # per-set results, flushed as one summary at run end
+        # Already-registered pre-check decision, reused across every set in a
+        # single multi-set run so the user is only prompted once. Canonical
+        # values: "reuse" (skip/short-circuit existing registrations),
+        # "register_all" (re-register everything), "cancel". None => ask.
+        self._reg_precheck_choice = None
         self.reference_frame = None
         # Set by the register-only-new shortcut so the completion handler
         # integrates the full tree (old twins + freshly registered) instead of
@@ -20743,6 +20748,7 @@ class StackingSuiteDialog(QDialog):
             self._reg_queue_pos = 0
             self._reg_current_set = None
             self._reg_current_set_slug = None
+            self._reg_precheck_choice = None
             if n > 1:
                 self.update_status(self.tr(f"🎉 All {n} registration sets complete."))
             self._show_multiset_summary()
@@ -20763,6 +20769,7 @@ class StackingSuiteDialog(QDialog):
             self._reg_queue_pos = 0
             self._reg_current_set = None
             self._reg_current_set_slug = None
+            self._reg_precheck_choice = None
             if reason:
                 self.update_status(self.tr(f"⏹ Multi-set run halted: {reason}"))
 
@@ -20956,6 +20963,9 @@ class StackingSuiteDialog(QDialog):
             if getattr(self, "_reg_queue", None) is None:
                 self._reg_queue = self._partition_light_files_by_set(self.light_files)
                 self._reg_queue_pos = 0
+                # Fresh run → forget any pre-check choice from a previous run so
+                # the first set that finds registered twins prompts again.
+                self._reg_precheck_choice = None
                 if len(self._reg_queue) > 1:
                     self.update_status(self.tr(
                         f"🧩 {len(self._reg_queue)} registration sets queued: "
@@ -21024,6 +21034,9 @@ class StackingSuiteDialog(QDialog):
                     self.integrate_registered_images()
                     return
                 if _decision == "cancel":
+                    # Cancel stops the whole run, not just this set — tear the
+                    # multi-set queue down so no further sets launch.
+                    self._reg_queue_abort()
                     self.update_status(self.tr("❌ Registration cancelled."))
                     self._set_registration_busy(False)
                     return
@@ -27171,6 +27184,16 @@ class StackingSuiteDialog(QDialog):
 
         # ── Case 1: everything already registered ───────────────────────────
         if n_unmatched == 0:
+            # Reuse the first set's decision on later sets instead of asking
+            # again. "reuse" here means "everything's registered → integrate".
+            cached = getattr(self, "_reg_precheck_choice", None)
+            if cached is not None:
+                if cached == "register_all":
+                    return "register_all"
+                if cached == "cancel":
+                    return "cancel"
+                return "integrate"  # cached == "reuse"
+
             msg = self.tr(
                 f"Found already-registered versions for all {n_total} frame(s) "
                 f"in Aligned_Images.\n\nSkip registration and integrate them now?"
@@ -27193,9 +27216,12 @@ class StackingSuiteDialog(QDialog):
             box.exec()
             clicked = box.clickedButton()
             if clicked is skip_btn:
+                self._reg_precheck_choice = "reuse"
                 return "integrate"
             if clicked is reg_btn:
+                self._reg_precheck_choice = "register_all"
                 return "register_all"
+            self._reg_precheck_choice = "cancel"
             return "cancel"
 
         # ── Case 2: some registered, some not ───────────────────────────────
@@ -27230,6 +27256,14 @@ class StackingSuiteDialog(QDialog):
                     can_merge_append = False
 
         if drizzle_on and not can_merge_append:
+            # Only Register-All or Cancel are meaningful here. On a later set,
+            # honor the cached choice: a prior "cancel" cancels; anything else
+            # (including a "reuse" intent that can't be satisfied under drizzle
+            # without a mergeable .sasd) falls back to a full re-registration.
+            cached = getattr(self, "_reg_precheck_choice", None)
+            if cached is not None:
+                return "cancel" if cached == "cancel" else "register_all"
+
             # Drizzle wants uniform coverage. Without a mergeable .sasd we'd
             # end up with per-frame transforms only for the newly-registered
             # stragglers, so tell the user honestly and offer full re-reg.
@@ -27248,38 +27282,55 @@ class StackingSuiteDialog(QDialog):
             box.addButton(QMessageBox.StandardButton.Cancel)
             box.exec()
             role = box.buttonRole(box.clickedButton())
-            return "register_all" if role == QMessageBox.ButtonRole.AcceptRole else "cancel"
+            if role == QMessageBox.ButtonRole.AcceptRole:
+                self._reg_precheck_choice = "register_all"
+                return "register_all"
+            self._reg_precheck_choice = "cancel"
+            return "cancel"
 
         # Drizzle-off partial, or drizzle-on with a mergeable .sasd → offer
         # the real time-saver: register only the stragglers, then integrate
         # (and, if drizzle is on, merge-append into the existing .sasd first).
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle(self.tr("Partially Registered"))
-        _dz_note = ""
-        if drizzle_on and can_merge_append:
-            _dz_note = self.tr(
-                "\n\nDrizzle is enabled: the new transforms will be merged "
-                "into the existing alignment_transforms.sasd so all frames "
-                "are drizzled uniformly."
-            )
-        box.setText(self.tr(
-            f"{n_matched} of {n_total} frame(s) already have registered "
-            f"versions in Aligned_Images.\n\nRegister only the {n_unmatched} "
-            f"new frame(s) and then integrate all {n_total} together?"
-        ) + _dz_note)
-        new_btn = box.addButton(self.tr(f"Register {n_unmatched} New → Integrate All"),
-                                QMessageBox.ButtonRole.AcceptRole)
-        all_btn = box.addButton(self.tr("Register All"),
-                                QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(new_btn)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is all_btn:
-            return "register_all"
-        if clicked is not new_btn:
-            return "cancel"
+        # On a later set, reuse the first set's decision: "reuse" falls through
+        # to the register-new setup below, the others return immediately.
+        cached = getattr(self, "_reg_precheck_choice", None)
+        if cached is not None:
+            if cached == "register_all":
+                return "register_all"
+            if cached == "cancel":
+                return "cancel"
+            # cached == "reuse" → fall through to the register-new setup.
+        else:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(self.tr("Partially Registered"))
+            _dz_note = ""
+            if drizzle_on and can_merge_append:
+                _dz_note = self.tr(
+                    "\n\nDrizzle is enabled: the new transforms will be merged "
+                    "into the existing alignment_transforms.sasd so all frames "
+                    "are drizzled uniformly."
+                )
+            box.setText(self.tr(
+                f"{n_matched} of {n_total} frame(s) already have registered "
+                f"versions in Aligned_Images.\n\nRegister only the {n_unmatched} "
+                f"new frame(s) and then integrate all {n_total} together?"
+            ) + _dz_note)
+            new_btn = box.addButton(self.tr(f"Register {n_unmatched} New → Integrate All"),
+                                    QMessageBox.ButtonRole.AcceptRole)
+            all_btn = box.addButton(self.tr("Register All"),
+                                    QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(new_btn)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is all_btn:
+                self._reg_precheck_choice = "register_all"
+                return "register_all"
+            if clicked is not new_btn:
+                self._reg_precheck_choice = "cancel"
+                return "cancel"
+            self._reg_precheck_choice = "reuse"
 
         # Resolve the aligned (_n_r) twin the NEW frames will align to. Every
         # _n_r frame sits on the stack grid by construction, so any twin is a
