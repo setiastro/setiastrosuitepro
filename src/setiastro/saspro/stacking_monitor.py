@@ -152,7 +152,11 @@ _r(r"📊 Stacking group '(.+?)' with (.+)",           "Integration",       _ST_
 _r(r"Post-align finalize from prepass",             "Integration",       _ST_RUNNING)
 _r(r"🔹 .* Finalizing '(.+?)' from prepass",         "Integration",       _ST_RUNNING, 1)
 _r(r"✅ Saved integrated image.*for '(.+?)'",        "Integration",       _ST_OK,   1)
+_r(r"Integration complete for group '([^']+)'",     "Integration",       _ST_OK,   1)
+_r(r"✅ \[LowRAM\] Integration complete",            "Integration",       _ST_OK)
 _r(r"📐 Drizzle for '(.+?)'",                        "Integration",       _ST_RUNNING, 1)
+_r(r"✅ Drizzle .*saved",                            "Integration",       _ST_OK)
+_r(r"⚠️ Drizzle failed for '([^']+)'",               "Integration",       _ST_FAIL, 1)
 
 # ── Star Trail ────────────────────────────────────────────────────────────
 _r(r"🌠 Star-Trail Mode enabled",                        "Star Trail",            _ST_INFO)
@@ -830,6 +834,19 @@ class StackingMonitorDialog(QDialog):
             and "Calibration" in self._open
         ):
             idx = self._open.pop("Calibration")
+            self._rows[idx].finish(_ST_OK)
+            self._refresh_row(idx)
+
+        # A later mosaic set starts measuring / aligning after the previous
+        # set's drizzle already finished. Without a terminal Integration rule
+        # (or if that message was missed), the old Integration row would stay
+        # "running" next to Registration.
+        if (
+            status == _ST_RUNNING
+            and op in ("Measurements", "Normalization", "Registration")
+            and "Integration" in self._open
+        ):
+            idx = self._open.pop("Integration")
             self._rows[idx].finish(_ST_OK)
             self._refresh_row(idx)
 
