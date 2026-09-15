@@ -8,6 +8,7 @@ from setiastro.saspro.stacking_gpu_mem import (
     is_master_flat_key,
     reap_completed,
     session_from_manual_keyword,
+    set_name_from_filename_keyword,
     submit_bounded,
 )
 
@@ -45,6 +46,48 @@ class SessionFromManualKeywordTests(unittest.TestCase):
     def test_missing_falls_back_to_keyword(self):
         path = "/data/lights/frame_001.fits"
         self.assertEqual(session_from_manual_keyword(path, "Panel"), "Panel")
+
+
+class SetNameFromFilenameKeywordTests(unittest.TestCase):
+    """Registration-set names come from the filename, not the folder."""
+
+    SCREENSHOT = (
+        "b3bfd1_NGC 7822 Panel 1_S_2026-03-19_04-39-12_-10.00_600.00s_"
+        "gain-100_offset-50_0050_c.fit"
+    )
+
+    def test_space_then_number_before_underscore(self):
+        self.assertEqual(
+            set_name_from_filename_keyword(self.SCREENSHOT, "Panel"),
+            "Panel 1",
+        )
+
+    def test_underscore_and_hyphen_separators(self):
+        self.assertEqual(
+            set_name_from_filename_keyword("NGC7822_Panel_2_Ha.fit", "Panel"),
+            "Panel 2",
+        )
+        self.assertEqual(
+            set_name_from_filename_keyword("NGC7822-Panel-3-OIII.fit", "Panel"),
+            "Panel 3",
+        )
+
+    def test_requires_separator_after_keyword(self):
+        self.assertIsNone(
+            set_name_from_filename_keyword("NGC7822_Panel1_S.fit", "Panel")
+        )
+
+    def test_ignores_directory_names(self):
+        path = "/data/raws/panel-01/" + self.SCREENSHOT
+        self.assertEqual(set_name_from_filename_keyword(path, "Panel"), "Panel 1")
+        self.assertIsNone(
+            set_name_from_filename_keyword("/data/raws/panel-04/lights_001.fit", "Panel")
+        )
+
+    def test_empty_keyword_is_unmatched(self):
+        self.assertIsNone(set_name_from_filename_keyword(self.SCREENSHOT, ""))
+        self.assertIsNone(set_name_from_filename_keyword(self.SCREENSHOT, "  "))
+        self.assertIsNone(set_name_from_filename_keyword(self.SCREENSHOT, "Default"))
 
 
 class MasterFlatKeyMatchTests(unittest.TestCase):

@@ -38,6 +38,38 @@ def session_from_manual_keyword(path: str, keyword: str) -> str:
     return kw
 
 
+_FILENAME_SET_SEP = r"[\s_\-\.]+"
+
+
+def set_name_from_filename_keyword(path: str, keyword: str) -> str | None:
+    """Build a registration-set name from the *filename* using a user keyword.
+
+    Matches ``Keyword<sep><tag>`` in the file stem only (directories are
+    ignored). ``sep`` is one or more spaces, underscores, hyphens, or dots.
+    ``tag`` is the following alphanumeric token (``1``, ``01``, ``A``, …).
+
+    Returns ``None`` when the keyword is empty or no match is found so the
+    caller can leave the frame in Default.
+    """
+    kw = (keyword or "").strip()
+    if not kw or kw.lower() == "default":
+        return None
+
+    stem = os.path.splitext(os.path.basename(path or ""))[0]
+    if not stem:
+        return None
+
+    pat = re.compile(
+        rf"(?:^|{_FILENAME_SET_SEP}){re.escape(kw)}{_FILENAME_SET_SEP}"
+        rf"([A-Za-z0-9]+)(?={_FILENAME_SET_SEP}|$)",
+        re.IGNORECASE,
+    )
+    m = pat.search(stem)
+    if not m:
+        return None
+    return f"{kw} {m.group(1)}"
+
+
 def is_master_flat_key(key: str, *, filter_name: str, image_size: str) -> bool:
     """True if *key* is a master-flat dict key for this filter and size.
 
