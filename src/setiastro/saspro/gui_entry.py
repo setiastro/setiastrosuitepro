@@ -1293,6 +1293,17 @@ def main(argv: list[str] | None = None) -> int:
     - Direct import and call
     - When running as a module: python -m setiastro.saspro
     """
+    # Catch multiprocessing spawn children FIRST — before the splash, OpenGL
+    # init, or any heavy work. In a frozen build every process-pool worker
+    # re-execs this EXE and runs main(); freeze_support() takes the child over
+    # here and never returns, so it can no longer flash the splash on its way
+    # to being a worker. (The later multiprocessing block is now a no-op.)
+    import multiprocessing as _mp
+    _mp.freeze_support()
+    try:
+        _mp.set_start_method("spawn", force=True)
+    except RuntimeError:
+        pass
     _init_opengl_before_qapp()
     global _splash, _app, _splash_initialized
     from PyQt6.QtCore import QTimer
