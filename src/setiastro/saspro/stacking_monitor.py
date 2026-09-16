@@ -660,6 +660,19 @@ class StackingMonitorDialog(QDialog):
         self.activateWindow()
 
 
+    def _phase_label(self) -> str:
+        # Name the phase from the operations that actually ran, so a
+        # calibration-only run doesn't report as "Integration". Later phases
+        # win when several are present (a full run ends on Integration).
+        ops = {(r.operation or "").lower() for r in self._rows}
+        if any("integration" in o for o in ops):
+            return "Integration phase done"
+        if any("registration" in o for o in ops):
+            return "Registration phase done"
+        if any("calibration" in o for o in ops):
+            return "Calibration phase complete"
+        return "Phase complete"
+
     def finish_run(self, ok: bool, summary: str = ""):
         # Close any rows that are still marked running
         for op, idx in list(self._open.items()):
@@ -685,7 +698,7 @@ class StackingMonitorDialog(QDialog):
         # Show as "integration complete" rather than fully done,
         # since drizzle/MFD may still follow
         if ok:
-            self._lbl_total.setText(f"Integration phase done ({total_s})")
+            self._lbl_total.setText(f"{self._phase_label()} ({total_s})")
             self._lbl_total.setStyleSheet(
                 "color:#f0c040; font-size:11px; font-weight:bold;"
             )
