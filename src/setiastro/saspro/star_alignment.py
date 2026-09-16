@@ -110,7 +110,7 @@ _IS_FROZEN = bool(getattr(sys, "frozen", False))
 # Frozen builds re-exec the EXE per worker; only enable process pools there
 # after a test build confirms multiprocessing.freeze_support() (in __main__)
 # catches the children instead of launching extra SASpro windows.
-_ALIGN_USE_PROCS_FROZEN = False
+_ALIGN_USE_PROCS_FROZEN = True   # frozen spawn children are caught by freeze_support() at the top of gui_entry.main() (no splash, no GUI)
 
 def _make_executor(max_workers: int):
     """
