@@ -117,8 +117,15 @@ _r(r"🔧 Calibration frames ready",                  "Calibration",       _ST_I
 _r(r"📷 Calibrating group: (.+)",                   "Calibration",       _ST_RUNNING, 1)
 _r(r"📷 Progress: .+ — \d+/\d+ frames",             "Calibration",       _ST_RUNNING)
 _r(r"📷 Calibration pipeline complete",             "Calibration",       _ST_OK)
+_r(r"📷 All light groups calibrated",               "Calibration",       _ST_OK)
 _r(r"✅ Calibration Complete",                      "Calibration",       _ST_OK)
 _r(r"❌ (?:ERROR|CALIBRATION ERROR)",               "Calibration",       _ST_FAIL)
+
+# ── Satellite trail removal (post-calibration phase 2) ───────────────────
+_r(r"✅ Satellite trail removal complete",          "Satellite Trails",  _ST_OK)
+_r(r"⏹ Satellite pass cancelled",                   "Satellite Trails",  _ST_WARN)
+_r(r"🛰️ Satellite trail removal — (\d+ frame\(s\))", "Satellite Trails", _ST_RUNNING, 1)
+_r(r"🛰️ \d+/\d+:",                                  "Satellite Trails",  _ST_RUNNING)
 
 # ── Measurements ─────────────────────────────────────────────────────────
 _r(r"📏 Phase: Measurements starting",              "Measurements",      _ST_RUNNING)
@@ -145,7 +152,11 @@ _r(r"📊 Stacking group '(.+?)' with (.+)",           "Integration",       _ST_
 _r(r"Post-align finalize from prepass",             "Integration",       _ST_RUNNING)
 _r(r"🔹 .* Finalizing '(.+?)' from prepass",         "Integration",       _ST_RUNNING, 1)
 _r(r"✅ Saved integrated image.*for '(.+?)'",        "Integration",       _ST_OK,   1)
+_r(r"Integration complete for group '([^']+)'",     "Integration",       _ST_OK,   1)
+_r(r"✅ \[LowRAM\] Integration complete",            "Integration",       _ST_OK)
 _r(r"📐 Drizzle for '(.+?)'",                        "Integration",       _ST_RUNNING, 1)
+_r(r"✅ Drizzle .*saved",                            "Integration",       _ST_OK)
+_r(r"⚠️ Drizzle failed for '([^']+)'",               "Integration",       _ST_FAIL, 1)
 
 # ── Star Trail ────────────────────────────────────────────────────────────
 _r(r"🌠 Star-Trail Mode enabled",                        "Star Trail",            _ST_INFO)
@@ -498,6 +509,7 @@ class StackingMonitorDialog(QDialog):
         self.btn_stop.setFixedHeight(26)
         self.btn_stop.setToolTip("Request a graceful stop after the current tile/frame")
         self.btn_stop.clicked.connect(self._on_stop_clicked)
+        self.btn_stop.setEnabled(False)
         bot.addWidget(self.btn_stop)
 
         btn_clear = QPushButton("Clear")
@@ -627,14 +639,21 @@ class StackingMonitorDialog(QDialog):
             self._log_bus = None
 
     # ----------------------------------------------------------- public API
+    def _set_stop_available(self, enabled: bool, *, stopping: bool = False):
+        try:
+            if stopping:
+                self.btn_stop.setText("Stopping…")
+                self.btn_stop.setEnabled(False)
+            else:
+                self.btn_stop.setText("■ Stop")
+                self.btn_stop.setEnabled(bool(enabled))
+        except Exception:
+            pass
+
     def start_run(self):
         self.clear()
         self._run_start = time.monotonic()
-        try:
-            self.btn_stop.setEnabled(True)
-            self.btn_stop.setText("■ Stop")
-        except Exception:
-            pass
+        self._set_stop_available(True)
         self._tick_timer.start()
         self.show()
         self.raise_()
@@ -675,6 +694,7 @@ class StackingMonitorDialog(QDialog):
             self._lbl_total.setStyleSheet(
                 "color:#ff4d4f; font-size:12px; font-weight:bold;"
             )
+        self._set_stop_available(False)
 
     def finish_all(self, ok: bool, summary: str = ""):
         """Call this when the entire pipeline is done including drizzle/MFD."""
@@ -702,13 +722,10 @@ class StackingMonitorDialog(QDialog):
             self._lbl_total.setStyleSheet(
                 "color:#ff4d4f; font-size:12px; font-weight:bold;"
             )
+        self._set_stop_available(False)
 
     def _on_stop_clicked(self):
-        try:
-            self.btn_stop.setEnabled(False)
-            self.btn_stop.setText("Stopping…")
-        except Exception:
-            pass
+        self._set_stop_available(False, stopping=True)
         print("[CANCEL] _on_stop_clicked: emitting cancel_requested")
         self.cancel_requested.emit()
         print("[CANCEL] _on_stop_clicked: emit returned")
@@ -728,6 +745,7 @@ class StackingMonitorDialog(QDialog):
             total_s = f"{m:02d}:{s:02d}"
         self._lbl_total.setText(f"⏹ Stopped by user ({total_s})")
         self._lbl_total.setStyleSheet("color:#ffa726; font-size:12px; font-weight:bold;")
+        self._set_stop_available(False)
 
     def clear(self):
         self._table.setRowCount(0)
@@ -737,6 +755,7 @@ class StackingMonitorDialog(QDialog):
         self._lbl_total.setText("Ready.")
         self._lbl_total.setStyleSheet(f"color:{_DIM};font-size:10px;")
         self.clear_disk_budget()
+        self._set_stop_available(False)
 
     # ---------------------------------------------------- message handler
     @pyqtSlot(str)
@@ -756,17 +775,33 @@ class StackingMonitorDialog(QDialog):
 
         # ── If a new RUNNING op arrives after the run was marked complete,
         #    resume the timer — drizzle/MFD start after integration finishes
-        if status == _ST_RUNNING and not self._tick_timer.isActive():
-            self._tick_timer.start()
-            # Clear the "Complete" label so it doesn't show as done while work continues
-            self._lbl_total.setText("Running (post-integration phase)…")
-            self._lbl_total.setStyleSheet(f"color:{_YELLOW};font-size:11px;")
+        if status == _ST_RUNNING:
+            if self.btn_stop.text() != "Stopping…":
+                self._set_stop_available(True)
+            if not self._tick_timer.isActive():
+                self._tick_timer.start()
+                # Clear the "Complete" label so it doesn't show as done while work continues
+                self._lbl_total.setText("Running (post-integration phase)…")
+                self._lbl_total.setStyleSheet(f"color:{_YELLOW};font-size:11px;")
 
         # ── finishing transitions ─────────────────────────────────────────
         if status in (_ST_OK, _ST_FAIL, _ST_WARN) and op in self._open:
             idx = self._open.pop(op)
-            self._rows[idx].finish(status, note)
+            row = self._rows[idx]
+            # Keep the last filter's own note; summary messages like
+            # "All light groups calibrated" would otherwise overwrite it.
+            finish_note = "" if (op == "Calibration" and row.group and status == _ST_OK) else note
+            row.finish(status, finish_note)
             self._refresh_row(idx)
+            return
+
+        # "✅ Calibration Complete" after a dedicated satellite pass would
+        # otherwise spawn an empty extra Calibration success row.
+        if (
+            status in (_ST_OK, _ST_FAIL, _ST_WARN)
+            and op == "Calibration"
+            and op not in self._open
+        ):
             return
 
         # ── continuing a running row ──────────────────────────────────────
@@ -790,6 +825,31 @@ class StackingMonitorDialog(QDialog):
                 row.note = note
                 self._refresh_row(idx)
                 return
+
+        # Satellite trail removal is a distinct phase after all groups.
+        # Close the last Calibration row so its elapsed time stops there.
+        if (
+            status == _ST_RUNNING
+            and op == "Satellite Trails"
+            and "Calibration" in self._open
+        ):
+            idx = self._open.pop("Calibration")
+            self._rows[idx].finish(_ST_OK)
+            self._refresh_row(idx)
+
+        # A later mosaic set starts measuring / aligning after the previous
+        # set's drizzle already finished. Without a terminal Integration rule
+        # (or if that message was missed), the old Integration row would stay
+        # "running" next to Registration.
+        if (
+            status == _ST_RUNNING
+            and op in ("Measurements", "Normalization", "Registration")
+            and "Integration" in self._open
+        ):
+            idx = self._open.pop("Integration")
+            self._rows[idx].finish(_ST_OK)
+            self._refresh_row(idx)
+
         # ── new row ───────────────────────────────────────────────────────
         r = _MonitorRow(op, group, status, note)
         self._rows.append(r)
