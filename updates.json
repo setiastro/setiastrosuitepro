@@ -1,10 +1,10 @@
 {
-  "version": "1.21.5",
+  "version": "1.21.4",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.5/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.5/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.5/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.5/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.4/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.4/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.4/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.4/SetiAstroSuitePro_linux.tar.xz"
   },
  "notes": "Seti Astro Suite Pro\n\nV1.21.5\nBig Update:\nMetadata from fits/xisf headers now get written and read from other formats like tiff, png, etc. This means your astrometric solutions should even save across image formats.\n\nMajor contributions from user GRM for ram and vram usage\n\nMajor updates to Stacking Suite including the use of Sets in Image Integration. Allowing you to integration multiple targets to their own reference frames, perfect for batch stacking multiple targets, mosaics, etc. Calibration pipeline streamlined under the hood. Execution Monitor bug fixes.\n\nStar Alignment major optimizations for greatly improved speed in image registration processes.\n\nMany other bug fixes throughout."
 }
