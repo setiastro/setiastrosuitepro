@@ -13636,6 +13636,7 @@ class StackingSuiteDialog(QDialog):
             top.setExpanded(True)
 
         self._refresh_quick_stack_summary_later()
+        self._auto_assign_sets_by_object(files)   # per-target Sets before the column renders
         self._refresh_set_column()
 
     def _iter_group_items(self):
@@ -13919,6 +13920,59 @@ class StackingSuiteDialog(QDialog):
             self._pipeline_objects = objs
         return objs
 
+    def _auto_assign_sets_by_object(self, paths=None) -> None:
+        """Assign each integration frame to a Set named for its FITS OBJECT so a
+        multi-target run auto-splits into per-target Sets (each registers to its
+        own reference). Every frame carrying an OBJECT/TARGET is keyed to a Set
+        named for it (single target or mosaic alike). A frame is
+        auto-assigned at most once (first time it appears) and only while still on
+        'Default', so a later manual reassignment or reset is respected. Frames
+        whose headers carry no usable OBJECT stay on 'Default'."""
+        try:
+            if paths is None:
+                paths = self._all_reg_tree_paths()
+        except Exception:
+            return
+        if not paths:
+            return
+        if getattr(self, "_object_name_cache", None) is None:
+            self._object_name_cache = {}
+        obj_of = {}
+        for fp in paths:
+            o = self._object_name_cache.get(fp)
+            if o is None:
+                o = self._object_from_path(fp)
+                self._object_name_cache[fp] = o
+            obj_of[fp] = o
+        distinct = {o for o in obj_of.values() if o}
+        if not distinct:
+            return  # no OBJECT/TARGET on any frame -> nothing to key Sets on
+        seen = getattr(self, "_auto_set_seen", None)
+        if seen is None:
+            seen = set(); self._auto_set_seen = seen
+        changed = False
+        for fp, o in obj_of.items():
+            key = self._set_key(fp)
+            if key in seen:
+                continue          # only auto-assign a given frame once
+            seen.add(key)
+            if not o:
+                continue
+            if self.frame_set_of.get(key, "Default") != "Default":
+                continue          # respect an existing manual assignment
+            self.reg_sets.setdefault(o, {"reference": None, "locked": False})
+            self.frame_set_of[key] = o
+            changed = True
+        if changed:
+            try:
+                self._rebuild_set_combo()
+            except Exception:
+                pass
+            self.update_status(self.tr(
+                "🎯 Auto-assigned targets to Sets: {0}. "
+                "Review Set assignments & references in Image Integration."
+            ).format(", ".join(sorted(distinct))))
+
     def _maybe_offer_new_stacking_dir(self, paths) -> bool:
         """
         Pre-ingest guard for LIGHT adds: if incoming files carry a different
@@ -13959,27 +14013,31 @@ class StackingSuiteDialog(QDialog):
             resuming = os.path.isdir(suggested)
 
             msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setWindowTitle(self.tr("Different Target Detected"))
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setWindowTitle(self.tr("Multiple Targets Detected"))
             msg.setText(self.tr(
-                "The files you're adding are for <b>{0}</b>, but this stacking "
+                "The files you're adding are for <b>{0}</b>, and this stacking "
                 "directory already contains <b>{1}</b>.<br><br>"
-                "Mixing targets in one stacking directory will send both to "
-                "Image Integration as a single set — they'll try to register to "
-                "one reference frame and the stack will fail."
+                "That's fine — SASpro stacks multiple targets in one run using "
+                "<b>Sets</b> in Image Integration. Frames are auto-assigned to a "
+                "Set per target, so each registers to its own reference. Just "
+                "confirm the Set assignments (and each Set's reference frame) in "
+                "the Image Integration tab before integrating."
             ).format(", ".join(new_targets), ", ".join(sorted(existing))))
-            msg.setInformativeText(self.tr("{0}:<br><code>{1}</code>").format(
-                self.tr("Existing folder for this target found — switch to it")
-                if resuming else self.tr("Suggested new stacking directory"),
+            msg.setInformativeText(self.tr(
+                "Prefer to keep this target in its own folder instead? {0}:<br><code>{1}</code>"
+            ).format(
+                self.tr("Existing folder found — switch to it")
+                if resuming else self.tr("Suggested separate directory"),
                 suggested))
+            mix_btn = msg.addButton(self.tr("Add && Auto-Assign Sets"),
+                                    QMessageBox.ButtonRole.AcceptRole)
             switch_btn = msg.addButton(
-                self.tr("Switch to Target Folder") if resuming
-                else self.tr("Create && Switch"),
-                QMessageBox.ButtonRole.AcceptRole)
-            mix_btn = msg.addButton(self.tr("Add Anyway (mix targets)"),
-                                    QMessageBox.ButtonRole.DestructiveRole)
+                self.tr("Use Separate Folder") if resuming
+                else self.tr("Create Separate Folder"),
+                QMessageBox.ButtonRole.ActionRole)
             msg.addButton(QMessageBox.StandardButton.Cancel)
-            msg.setDefaultButton(switch_btn)
+            msg.setDefaultButton(mix_btn)
             msg.exec()
 
             clicked = msg.clickedButton()
