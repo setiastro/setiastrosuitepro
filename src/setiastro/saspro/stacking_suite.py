@@ -19080,7 +19080,7 @@ class StackingSuiteDialog(QDialog):
         )
         QApplication.processEvents()
         _cal_timer = StageTimer()
-        _profile_cal = self.settings.value("stacking/profile_calibration", False, type=bool)
+        _profile_cal = False #debug flag to profile calibration stages
 
         # ════════════════════════════════════════════════════════════════
         # PIPELINE — producer / GPU / consumer
