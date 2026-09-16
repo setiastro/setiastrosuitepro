@@ -759,48 +759,58 @@ def apply_transform(transform, source, target, fill_value=None, propagate_mask=F
     """
     Apply *transform* to *source*, outputting an image the same shape as *target*.
 
-    Returns (aligned_image, footprint) — footprint is True where no source
-    pixel contributes.
+    Returns (aligned_image, footprint) — footprint is True where no source pixel
+    contributes. The warp runs on OpenCV (multithreaded + SIMD); it replaced
+    skimage.warp, which was single-threaded and the registration bottleneck.
     """
-    from skimage.transform import warp
+    import cv2
 
-    source_data = _data(source)
+    source_data  = _data(source)
     target_shape = _data(target).shape
+    cval = float(np.median(source_data))
 
-    aligned_image = warp(
-        source_data,
-        inverse_map=transform.inverse,
-        output_shape=target_shape,
-        order=3,
-        mode="constant",
-        cval=float(np.median(source_data)),
-        clip=True,
-        preserve_range=True,
+    H, W  = int(target_shape[0]), int(target_shape[1])
+    src32 = np.ascontiguousarray(source_data, dtype=np.float32)
+
+    # skimage samples output(x,y) = src(T.inverse(x,y)); pass the inverse matrix
+    # with WARP_INVERSE_MAP so cv2 performs exactly that map (no double inversion).
+    M_inv = np.linalg.inv(np.asarray(transform.params, dtype=np.float64))[:2]
+
+    nch = 1 if src32.ndim == 2 else src32.shape[2]
+    border_val = cval if src32.ndim == 2 else (cval,) * nch
+
+    aligned_image = cv2.warpAffine(
+        src32, M_inv, (W, H),
+        flags=cv2.INTER_CUBIC | cv2.WARP_INVERSE_MAP,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=border_val,
     )
 
-    footprint = warp(
-        np.zeros(_shape(source_data), dtype=np.float32),
-        inverse_map=transform.inverse,
-        output_shape=target_shape,
-        cval=1.0,
-    ) > 0.4
+    # footprint: warp a ones image — interior → 1, outside → 0.
+    cover = cv2.warpAffine(
+        np.ones(source_data.shape[:2], dtype=np.uint8), M_inv, (W, H),
+        flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    footprint = cover < 1   # True where no source pixel contributed
 
     source_mask = _mask(source)
-    if source_mask is not None and propagate_mask:
-        if source_mask.shape == source_data.shape:
-            src_mask_rot = warp(
-                source_mask.astype(np.float32),
-                inverse_map=transform.inverse,
-                output_shape=target_shape,
-                cval=1.0,
-            ) > 0.4
-            footprint = footprint | src_mask_rot
+    if source_mask is not None and propagate_mask \
+            and source_mask.shape == source_data.shape:
+        m_rot = cv2.warpAffine(
+            np.ascontiguousarray(source_mask.astype(np.uint8)), M_inv, (W, H),
+            flags=cv2.INTER_NEAREST | cv2.WARP_INVERSE_MAP,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=1,
+        ) > 0
+        footprint = footprint | m_rot
 
+    aligned_image = np.ascontiguousarray(aligned_image, dtype=np.float32)
     if fill_value is not None:
         aligned_image[footprint] = fill_value
 
     return aligned_image, footprint
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # register  (identical to upstream)

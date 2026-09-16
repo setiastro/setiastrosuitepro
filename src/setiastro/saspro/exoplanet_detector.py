@@ -4338,7 +4338,7 @@ class ExoPlanetWindow(QDialog):
                         f"{am:.1f}",
                         "na",
                         "na",
-                        note_field,
+                        note_field.replace(",", ";"),
                     ]
                     f.write(",".join(fields) + "\n")
                     _rows_written += 1

@@ -38,6 +38,13 @@ class NBtoRGBStars(QWidget):
     """
     THUMB_ICON_SIZE = QSize(22, 22)  # just for button decoration if icon_path provided
 
+    # Default adjustment values — single source of truth shared by the initial
+    # UI build and the Reset button.
+    DEFAULT_RATIO        = 30    # Ha:OIII ratio  -> 0.30
+    DEFAULT_STAR_STRETCH = True
+    DEFAULT_STRETCH      = 500   # stretch factor -> 5.00
+    DEFAULT_SAT          = 100   # saturation     -> 1.00x
+
     def __init__(self, doc_manager=None, parent=None, icon_path: str | None = None):
         super().__init__(parent)
         self.doc_manager = doc_manager
@@ -187,18 +194,18 @@ class NBtoRGBStars(QWidget):
         # Ratio (Ha to OIII)
         row = QHBoxLayout()
         self.lbl_ratio = QLabel("Ha:OIII ratio = 0.30")
-        self.sld_ratio = QSlider(Qt.Orientation.Horizontal); self.sld_ratio.setRange(0, 100); self.sld_ratio.setValue(30)
+        self.sld_ratio = QSlider(Qt.Orientation.Horizontal); self.sld_ratio.setRange(0, 100); self.sld_ratio.setValue(self.DEFAULT_RATIO)
         self.sld_ratio.valueChanged.connect(lambda v: self.lbl_ratio.setText(f"Ha:OIII ratio = {v/100:.2f}"))
         row.addWidget(self.lbl_ratio); left.addLayout(row)
         left.addWidget(self.sld_ratio)
 
         # Star Stretch
-        self.chk_star_stretch = QCheckBox("Enable star stretch"); self.chk_star_stretch.setChecked(True)
+        self.chk_star_stretch = QCheckBox("Enable star stretch"); self.chk_star_stretch.setChecked(self.DEFAULT_STAR_STRETCH)
         left.addWidget(self.chk_star_stretch)
 
         row2 = QHBoxLayout()
         self.lbl_stretch = QLabel("Stretch factor = 5.00")
-        self.sld_stretch = QSlider(Qt.Orientation.Horizontal); self.sld_stretch.setRange(0, 800); self.sld_stretch.setValue(500)
+        self.sld_stretch = QSlider(Qt.Orientation.Horizontal); self.sld_stretch.setRange(0, 800); self.sld_stretch.setValue(self.DEFAULT_STRETCH)
         self.sld_stretch.valueChanged.connect(lambda v: self.lbl_stretch.setText(f"Stretch factor = {v/100:.2f}"))
         row2.addWidget(self.lbl_stretch); left.addLayout(row2)
         left.addWidget(self.sld_stretch)
@@ -207,7 +214,7 @@ class NBtoRGBStars(QWidget):
         self.lbl_sat = QLabel("Saturation = 1.00×")
         self.sld_sat = QSlider(Qt.Orientation.Horizontal)
         self.sld_sat.setRange(0, 300)         # 0.00× … 3.00×
-        self.sld_sat.setValue(100)            # 1.00× by default
+        self.sld_sat.setValue(self.DEFAULT_SAT)            # 1.00× by default
         self.sld_sat.valueChanged.connect(lambda v: self.lbl_sat.setText(f"Saturation = {v/100:.2f}×"))
         row3.addWidget(self.lbl_sat)
         left.addLayout(row3)
@@ -222,9 +229,16 @@ class NBtoRGBStars(QWidget):
 
         from setiastro.saspro.resources import get_resources
 
+        clr_row = QHBoxLayout()
+        self.btn_reset = QPushButton("Reset Adjustments")
+        self.btn_reset.setToolTip("Restore ratio, star stretch, stretch factor and\n"
+                                  "saturation to their defaults (loaded images are kept).")
+        self.btn_reset.clicked.connect(self._reset_adjustments)
         self.btn_clear = QPushButton("Clear Inputs")
         self.btn_clear.clicked.connect(self._clear_inputs)
-        left.addWidget(self.btn_clear)
+        clr_row.addWidget(self.btn_reset)
+        clr_row.addWidget(self.btn_clear)
+        left.addLayout(clr_row)
 
         # Spinner (resource-based)
         self.spinner = QLabel(self)
@@ -295,6 +309,7 @@ class NBtoRGBStars(QWidget):
             self.btn_preview.setEnabled(False)
             self.btn_push.setEnabled(False)
             self.btn_clear.setEnabled(False)
+            self.btn_reset.setEnabled(False)
         except Exception:
             pass
 
@@ -321,6 +336,7 @@ class NBtoRGBStars(QWidget):
             self.btn_preview.setEnabled(True)
             self.btn_push.setEnabled(True)
             self.btn_clear.setEnabled(True)
+            self.btn_reset.setEnabled(True)
         except Exception:
             pass
 
@@ -567,6 +583,38 @@ class NBtoRGBStars(QWidget):
         for which in ("Ha","OIII","SII","OSC"):
             self._set_status_label(which, None)
         self.status.setText("Cleared inputs.")
+
+    def _reset_adjustments(self):
+        """Restore the ratio / star-stretch / stretch / saturation controls to defaults.
+
+        Loaded images are left untouched (use "Clear Inputs" for those). If a preview
+        has already been generated, it is re-combined so it reflects the reset values.
+        """
+        widgets = (self.sld_ratio, self.sld_stretch, self.sld_sat, self.chk_star_stretch)
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            self.sld_ratio.setValue(self.DEFAULT_RATIO)
+            self.chk_star_stretch.setChecked(self.DEFAULT_STAR_STRETCH)
+            self.sld_stretch.setValue(self.DEFAULT_STRETCH)
+            self.sld_sat.setValue(self.DEFAULT_SAT)
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+
+        # Signals were blocked, so refresh the value labels ourselves.
+        self.lbl_ratio.setText(f"Ha:OIII ratio = {self.sld_ratio.value()/100:.2f}")
+        self.lbl_stretch.setText(f"Stretch factor = {self.sld_stretch.value()/100:.2f}")
+        self.lbl_sat.setText(f"Saturation = {self.sld_sat.value()/100:.2f}×")
+
+        self._save_ui_state()
+
+        # Only re-run the combine if the user has already produced a preview;
+        # otherwise just report, so Reset never kicks off work unprompted.
+        if self.final is not None:
+            self._preview_combine()
+        else:
+            self.status.setText("Adjustments reset to defaults.")
 
     @staticmethod
     def _as_float01(arr):

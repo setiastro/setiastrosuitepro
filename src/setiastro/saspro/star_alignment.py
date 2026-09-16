@@ -107,6 +107,10 @@ def qs_bool(settings, key, default=False, *, purge_bad=True):
 # Executor helper: avoid ProcessPool in frozen (PyInstaller) builds
 # ---------------------------------------------------------------------
 _IS_FROZEN = bool(getattr(sys, "frozen", False))
+# Frozen builds re-exec the EXE per worker; only enable process pools there
+# after a test build confirms multiprocessing.freeze_support() (in __main__)
+# catches the children instead of launching extra SASpro windows.
+_ALIGN_USE_PROCS_FROZEN = False
 
 def _make_executor(max_workers: int):
     """
@@ -117,9 +121,17 @@ def _make_executor(max_workers: int):
     - In dev (non-frozen), you can still use processes if you want. For
       now we keep it simple and always use threads – safer everywhere.
     """
-    # If you want to keep processes in dev, uncomment the if-block:
-    # if not _IS_FROZEN:
-    #     return ProcessPoolExecutor(max_workers=max_workers)
+    # Processes give real multi-core; the thread pool serialized every solve
+    # through the GIL + _AA_LOCK and pinned cv2 to one thread process-wide.
+    # Frozen builds re-exec the EXE per worker, so they use processes only once
+    # freeze_support() is wired in the entry AND _ALIGN_USE_PROCS_FROZEN is True.
+    use_procs = (not _IS_FROZEN) or _ALIGN_USE_PROCS_FROZEN
+    if use_procs:
+        try:
+            _ctx = multiprocessing.get_context("spawn")   # matches frozen + Qt-safe
+            return ProcessPoolExecutor(max_workers=max_workers, mp_context=_ctx)
+        except Exception:
+            pass
     return ThreadPoolExecutor(max_workers=max_workers)
 
 
@@ -2623,7 +2635,7 @@ def _solve_delta_job(args):
     Worker: compute incremental affine/similarity delta for one frame against the ref preview.
     args =
         (orig_path, current_transform_2x3,
-         ref_small_ds, Wref_ds, Href_ds,
+         ref_ds_npy, Wref_ds, Href_ds,
          resample_flag, det_sigma, limit_stars, minarea,
          model, h_reproj, ds,
          min_fwhm, max_ellipticity) = args 
@@ -2635,7 +2647,7 @@ def _solve_delta_job(args):
         from astropy.io import fits
 
         (orig_path, current_transform_2x3,
-         ref_small_ds, Wref_ds, Href_ds,
+         ref_ds_npy, Wref_ds, Href_ds,
          resample_flag, det_sigma, limit_stars, minarea,
          model, h_reproj, ds,
          min_fwhm, max_ellipticity) = args 
@@ -2685,7 +2697,9 @@ def _solve_delta_job(args):
         # fast hot pixel suppression — 3x3 median replaces only extreme spikes,
         # no SEP background estimation needed
         #src_for_match_ds = _suppress_hotpx_fast(src_for_match_ds)
-        ref_for_match_ds = np.asarray(ref_small_ds, np.float32, order="C") #_suppress_hotpx_fast(np.asarray(ref_small_ds, np.float32, order="C"))
+        # memmap the DS reference (persisted once in run()); the OS page-cache
+        # is shared across workers and only the crop is materialized downstream.
+        ref_for_match_ds = np.load(ref_ds_npy, mmap_mode="r")
 
         # 5) AA delta solve in DS space
         m = (model or "affine").lower()
@@ -2833,7 +2847,8 @@ def _finalize_write_job(args):
     import cv2
 
     try:
-        cv2.setNumThreads(1)
+        _ft = int(os.environ.get("SASPRO_FINALIZE_CV2_THREADS", "1"))
+        cv2.setNumThreads(max(1, _ft))   # fill cores on the warp; parent bounds this to cores/workers
         try:
             cv2.ocl.setUseOpenCL(False)
         except Exception:
@@ -3854,6 +3869,13 @@ class StarRegistrationThread(QThread):
             self.ref_small = self.ref_small_full               # keep existing attribute name (full)
             self.ref_small_ds = np.ascontiguousarray(ref_ds.astype(np.float32, copy=False))
 
+            # Persist the DS reference ONCE so solve workers memmap it instead of
+            # receiving a multi-MB pickled copy in every job (N x passes copies over
+            # the spawn pipe). Cleaned up in the finally at the end of run().
+            self._refds_dir  = tempfile.mkdtemp(prefix="sas_refds_")
+            self._ref_ds_npy = os.path.join(self._refds_dir, "ref_ds.npy")
+            np.save(self._ref_ds_npy, self.ref_small_ds)
+
             # Initialize transforms to identity for EVERY original frame
             self.alignment_matrices = {os.path.normpath(f): IDENTITY_2x3.copy() for f in self.original_files}
             self.delta_transforms = {}
@@ -3905,6 +3927,14 @@ class StarRegistrationThread(QThread):
 
         except Exception as e:
             self.registration_complete.emit(False, f"Error: {e}")
+        finally:
+            try:
+                import shutil
+                _d = getattr(self, "_refds_dir", None)
+                if _d:
+                    shutil.rmtree(_d, ignore_errors=True)
+            except Exception:
+                pass
 
 
     def _increment_progress(self):
@@ -3929,8 +3959,7 @@ class StarRegistrationThread(QThread):
         else:
             refine_model = "affine"
 
-        ref_small_ds = np.ascontiguousarray(self.ref_small_ds.astype(np.float32, copy=False))
-        Href_ds, Wref_ds = ref_small_ds.shape[:2]
+        Href_ds, Wref_ds = self.ref_small_ds.shape[:2]
         ds = max(1, int(getattr(self, "solve_downsample", 1)))
 
         # --- reverse map: current_path -> original_key
@@ -3985,7 +4014,7 @@ class StarRegistrationThread(QThread):
             jobs.append((
                 current_path,
                 current_transform,
-                ref_small_ds, int(Wref_ds), int(Href_ds),
+                self._ref_ds_npy, int(Wref_ds), int(Href_ds),
                 resample_flag, float(self.det_sigma),
                 int(self.limit_stars) if self.limit_stars is not None else None,
                 int(self.minarea),
@@ -4212,6 +4241,16 @@ class StarRegistrationThread(QThread):
 
         finalize_workers = int(self.align_prefs.get("finalize_workers", min(os.cpu_count() or 8, 8)))
         finalize_workers = max(2, finalize_workers)
+
+        # Finalize is capped on worker COUNT (each job holds a full-res frame +
+        # anti-ring warp buffers). To fill the remaining cores we instead let each
+        # worker's OpenCV use cores/workers threads on the compute-heavy warp — no
+        # extra frames in RAM. Self-balances if finalize_workers is raised.
+        _fin_cv2_threads = max(1, (os.cpu_count() or 8) // finalize_workers)
+        os.environ["SASPRO_FINALIZE_CV2_THREADS"] = str(_fin_cv2_threads)
+        self.progress_update.emit(
+            self.tr(f"📝 Finalize: {finalize_workers} workers x {_fin_cv2_threads} cv2 threads")
+        )
 
         jobs = []
         for orig_path in self.original_files:

@@ -38,7 +38,7 @@ from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleV
 from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,QRadioButton,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
-                             QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox, QFrame, QSplitter)
+                             QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox, QFrame, QSplitter, QInputDialog)
 
 
 
@@ -97,6 +97,7 @@ from setiastro.saspro.legacy.numba_utils import (
     gradient_descent_to_dim_spot_numba
 )
 from setiastro.saspro.legacy.image_manager import load_image, save_image, get_valid_header
+from setiastro.saspro.calibration_io import write_calibrated_fast, MasterCache, StageTimer
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from setiastro.saspro.log_bus import LogBus
 from setiastro.saspro import comet_stacking as CS
@@ -108,6 +109,15 @@ from setiastro.saspro.accel_installer import current_backend
 from setiastro.saspro.accel_workers import AccelInstallWorker
 from setiastro.saspro.runtime_torch import add_runtime_to_sys_path
 from setiastro.saspro.free_torch_memory import _free_torch_memory
+from setiastro.saspro.stacking_gpu_mem import (
+    gpu_flat_cache_key,
+    is_cuda_oom,
+    is_master_flat_key,
+    reap_completed,
+    session_from_manual_keyword,
+    set_name_from_filename_keyword,
+    submit_bounded,
+)
 from setiastro.saspro.torch_rejection import (
     torch_available as _torch_ok,
     gpu_algo_supported as _gpu_algo_supported,
@@ -6202,7 +6212,23 @@ class StackingSuiteDialog(QDialog):
         self._align_prog_pending = None      # tuple[int, int] (done, total)
         self._align_prog_in_slot = False
         self._align_prog_last = None
-
+        # Registration Sets — orthogonal partition above filter/exp grouping.
+        # Each mosaic panel / distinct target becomes its own set with its own reference.
+        self.reg_sets: dict[str, dict] = {}          # set_name -> {"reference": str|None, "locked": bool}
+        self.frame_set_of: dict[str, str] = {}       # normcase(abspath) -> set_name  (unassigned => "Default")
+        self._active_set_name = "Default"
+        # Registration-set run queue (multi-panel / multi-target)
+        self._reg_queue = None            # None => no multi-set run in flight
+        self._reg_queue_pos = 0
+        self._reg_current_set = None
+        self._reg_current_set_slug = None
+        self._reg_summary_buffer = []     # per-set results, flushed as one summary at run end
+        # Already-registered pre-check decision, reused across every set in a
+        # single multi-set run so the user is only prompted once. Canonical
+        # values: "reuse" (skip/short-circuit existing registrations),
+        # "register_all" (re-register everything), "cancel". None => ask.
+        self._reg_precheck_choice = None
+        self._reg_queue_master_paths = []  # masters accumulated across sets for the final popup
         self.reference_frame = None
         # Set by the register-only-new shortcut so the completion handler
         # integrates the full tree (old twins + freshly registered) instead of
@@ -6431,6 +6457,19 @@ class StackingSuiteDialog(QDialog):
             )
         except Exception as e:
             print(f"[CANCEL] _start_exec_monitor: CONNECT FAILED: {e!r}")
+        # A queued multi-set run already started the monitor on set 1; don't
+        # wipe rows / restart the elapsed timer when set 2+ re-enters.
+        if getattr(self, "_reg_queue", None) and getattr(self, "_reg_queue_pos", 0) > 0:
+            try:
+                if not m._tick_timer.isActive():
+                    m._tick_timer.start()
+                m._set_stop_available(True)
+                self._exec_monitor_pipeline_active = True
+            except Exception:
+                pass
+            m.show()
+            m.raise_()
+            return
         if m._run_start is not None and m._tick_timer.isActive():
             m.show()
             m.raise_()
@@ -8479,6 +8518,9 @@ class StackingSuiteDialog(QDialog):
         self.hw_accel_cb.setToolTip(self.tr("Enable GPU/MPS via PyTorch when supported; falls back to CPU automatically."))
         self.hw_accel_cb.setChecked(self.settings.value("stacking/use_hardware_accel", True, type=bool))
         fl_perf.addRow(self.hw_accel_cb)
+        self.hw_accel_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/use_hardware_accel", bool(v))
+        )
 
         # NEW: MFDeconv engine choice (radio buttons)
         eng_box = QGroupBox(self.tr("MFDeconv Engine"))
@@ -10914,27 +10956,10 @@ class StackingSuiteDialog(QDialog):
         When auto-session is OFF, build a session tag from the folder names
         using a user-provided keyword.
         Example: keyword='NIGHT' and path contains .../NIGHT2/... => session 'NIGHT2'
+        The filename is ignored so a keyword that also appears in light names
+        does not create one session per file.
         """
-        kw = (keyword or "").strip()
-        if not kw or kw.lower() == "default":
-            return "Default"
-
-        parts = os.path.normpath(path).split(os.sep)
-
-        # Prefer folders like NIGHT1 / NIGHT_2 / NIGHT-3 etc.
-        pat = re.compile(rf"^{re.escape(kw)}\s*[_-]?\s*\d+$", re.IGNORECASE)
-        for part in reversed(parts):
-            if pat.match(part):
-                return part
-
-        # Fallback: any folder containing the keyword
-        kw_low = kw.lower()
-        for part in reversed(parts):
-            if kw_low in part.lower():
-                return part
-
-        # Last resort: just use the keyword
-        return kw
+        return session_from_manual_keyword(path, keyword)
 
     def prompt_set_session(self, item, frame_type):
         text, ok = QInputDialog.getText(
@@ -11657,6 +11682,7 @@ class StackingSuiteDialog(QDialog):
 
         for i in range(tree.topLevelItemCount()):
             _summarize_item(tree.topLevelItem(i))
+        self._refresh_set_column()           
 
     def _find_or_make_exposure_group_key(self, grouped: dict, filt: str, exp: float, size: str,
                                           gain: float | None = None) -> str:
@@ -11695,6 +11721,180 @@ class StackingSuiteDialog(QDialog):
         gain_suffix = f" [G{int(gain)}]" if gain is not None else ""
         return f"{filt} - {float(exp):.1f}s ({size}){gain_suffix}"
 
+    def _set_key(self, path: str) -> str:
+        return os.path.normcase(os.path.abspath(path))
+
+    def _set_of_frame(self, path: str) -> str:
+        return self.frame_set_of.get(self._set_key(path), "Default")
+
+    def _ensure_default_set(self):
+        if "Default" not in self.reg_sets:
+            # Default set inherits the existing global reference/lock so current behavior is unchanged.
+            self.reg_sets["Default"] = {
+                "reference": (self.reference_frame if getattr(self, "_user_ref_locked", False) else None),
+                "locked": bool(getattr(self, "_user_ref_locked", False)),
+            }
+
+    def _rebuild_set_combo(self):
+        self._ensure_default_set()
+        cur = self._active_set_name
+        self.reg_set_combo.blockSignals(True)
+        self.reg_set_combo.clear()
+        self.reg_set_combo.addItems(list(self.reg_sets.keys()))
+        if cur in self.reg_sets:
+            self.reg_set_combo.setCurrentText(cur)
+        self.reg_set_combo.blockSignals(False)
+        self._refresh_active_set_ref_label()
+
+    def _on_active_set_changed(self, name: str):
+        if name:
+            self._active_set_name = name
+            self._refresh_active_set_ref_label()
+
+    def _new_reg_set(self):
+        name, ok = QInputDialog.getText(self, self.tr("New Registration Set"),
+                                        self.tr("Set name (e.g. Panel 1, M31, OIII-mosaic):"))
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        if name in self.reg_sets:
+            QMessageBox.information(self, self.tr("Set exists"),
+                                    self.tr("A set named '{0}' already exists.").format(name))
+        else:
+            self.reg_sets[name] = {"reference": None, "locked": False}
+        self._active_set_name = name
+        self._rebuild_set_combo()
+        # If frames are selected, assign them immediately — the common case.
+        if self.reg_tree.selectedItems():
+            self._assign_selected_to_set()
+
+    def _selected_leaf_paths(self) -> list[str]:
+        """All frame paths under the current selection (selecting a group == selecting its leaves)."""
+        paths, seen = [], set()
+        for it in self.reg_tree.selectedItems():
+            leaves = [it] if it.childCount() == 0 else [it.child(j) for j in range(it.childCount())]
+            for leaf in leaves:
+                fp = leaf.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(fp, str) and fp and fp not in seen:
+                    seen.add(fp); paths.append(fp)
+        return paths
+
+    def _assign_selected_to_set(self, target: str | None = None):
+        target = target or self._active_set_name
+        self._ensure_default_set()
+        if target not in self.reg_sets:
+            self.reg_sets[target] = {"reference": None, "locked": False}
+        paths = self._selected_leaf_paths()
+        if not paths:
+            self.update_status(self.tr("ℹ️ Select frames or a group first, then assign to a set."))
+            return
+        for fp in paths:
+            if target == "Default":
+                self.frame_set_of.pop(self._set_key(fp), None)
+            else:
+                self.frame_set_of[self._set_key(fp)] = target
+        self.update_status(self.tr("🧩 Assigned {0} frame(s) → set '{1}'.").format(len(paths), target))
+        self._refresh_set_column()
+
+    def _all_reg_tree_paths(self) -> list[str]:
+        """Every frame path currently shown in the registration tree."""
+        paths, seen = [], set()
+        for i in range(self.reg_tree.topLevelItemCount()):
+            top = self.reg_tree.topLevelItem(i)
+            leaves = [top] if top.childCount() == 0 else [
+                top.child(j) for j in range(top.childCount())
+            ]
+            for leaf in leaves:
+                fp = leaf.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(fp, str) and fp and fp not in seen:
+                    seen.add(fp)
+                    paths.append(fp)
+        return paths
+
+    def _assign_sets_from_filename_keyword(self):
+        """Create sets and assign every loaded frame from Keyword + separator + tag."""
+        kw = (self.reg_set_keyword_edit.text() or "").strip()
+        self.settings.setValue("stacking/reg_set_filename_keyword", kw)
+        if not kw:
+            self.update_status(self.tr("ℹ️ Enter a filename keyword (e.g. Panel) first."))
+            return
+        paths = self._all_reg_tree_paths()
+        if not paths:
+            self.update_status(self.tr("ℹ️ No frames in the registration tree to assign."))
+            return
+        self._ensure_default_set()
+        counts: dict[str, int] = {}
+        n_default = 0
+        for fp in paths:
+            name = set_name_from_filename_keyword(fp, kw)
+            if not name:
+                self.frame_set_of.pop(self._set_key(fp), None)
+                n_default += 1
+                continue
+            if name not in self.reg_sets:
+                self.reg_sets[name] = {"reference": None, "locked": False}
+            self.frame_set_of[self._set_key(fp)] = name
+            counts[name] = counts.get(name, 0) + 1
+        self._rebuild_set_combo()
+        self._refresh_set_column()
+        if counts:
+            summary = ", ".join(f"'{n}'×{c}" for n, c in counts.items())
+            self.update_status(self.tr(
+                "🧩 Assigned {0} frame(s) from keyword '{1}' ({2}; {3} unmatched → Default)."
+            ).format(sum(counts.values()), kw, summary, n_default))
+        else:
+            self.update_status(self.tr(
+                "ℹ️ No filenames contained '{0}' followed by a separator and a tag."
+            ).format(kw))
+
+    def _set_reference_for_active_set(self, auto: bool = False):
+        name = self._active_set_name
+        self._ensure_default_set()
+        self.reg_sets.setdefault(name, {"reference": None, "locked": False})
+        if auto:
+            self.reg_sets[name]["reference"] = None
+            self.reg_sets[name]["locked"] = False
+        else:
+            start = self.stacking_directory or ""
+            fp, _ = QFileDialog.getOpenFileName(
+                self, self.tr("Select Reference for set '{0}'").format(name), start,
+                self.tr("Images (*.fit *.fits *.xisf *.tif *.tiff *.png);;All files (*)"))
+            if not fp:
+                return
+            # Enforce set membership: a reference must belong to the set it anchors.
+            if name != "Default" and self._set_of_frame(fp) != name:
+                self.frame_set_of[self._set_key(fp)] = name
+                self.update_status(self.tr("🧩 Reference added to set '{0}'.").format(name))
+            self.reg_sets[name]["reference"] = os.path.normpath(fp)
+            self.reg_sets[name]["locked"] = True
+        # Keep the Default set wired to the existing global reference machinery.
+        if name == "Default":
+            if auto:
+                self.reset_reference_to_auto()
+            else:
+                self._set_user_reference(self.reg_sets[name]["reference"])
+        self._refresh_active_set_ref_label()
+        self._refresh_set_column()
+
+    def _refresh_active_set_ref_label(self):
+        cfg = self.reg_sets.get(self._active_set_name, {})
+        ref = cfg.get("reference")
+        self.set_ref_label.setText(os.path.basename(ref) if ref else self.tr("Auto (best in set)"))
+
+    def _refresh_set_column(self):
+        """Paint each leaf's set name in column 3 and summarize sets on each group header."""
+        for i in range(self.reg_tree.topLevelItemCount()):
+            top = self.reg_tree.topLevelItem(i)
+            sets_here = set()
+            for j in range(top.childCount()):
+                leaf = top.child(j)
+                fp = leaf.data(0, Qt.ItemDataRole.UserRole)
+                s = self._set_of_frame(fp) if isinstance(fp, str) else "Default"
+                leaf.setText(3, "" if s == "Default" else s)
+                sets_here.add(s)
+            top.setText(3, self.tr("mixed") if len(sets_here) > 1 else
+                            ("" if sets_here == {"Default"} else next(iter(sets_here))))
+
     def create_image_registration_tab(self):
         """
         Image Registration tab with:
@@ -11714,17 +11914,19 @@ class StackingSuiteDialog(QDialog):
         # 1) QTreeWidget
         # ─────────────────────────────────────────
         self.reg_tree = QTreeWidget()
-        self.reg_tree.setColumnCount(3)
+        self.reg_tree.setColumnCount(4)
         self.reg_tree.setHeaderLabels([
             self.tr("Filter - Exposure - Size"),
             self.tr("Metadata"),
-            self.tr("Drizzle")
+            self.tr("Drizzle"),
+            self.tr("Set"),
         ])
         self.reg_tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         header = self.reg_tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
 
         layout.addWidget(QLabel(self.tr("Calibrated Light Frames")))
         layout.addWidget(self.reg_tree)
@@ -11906,7 +12108,88 @@ class StackingSuiteDialog(QDialog):
         # Disable Select button when auto-accept is on
         self.auto_accept_ref_cb.toggled.connect(self.select_ref_frame_btn.setDisabled)
         self.select_ref_frame_btn.setDisabled(self.auto_accept_ref_cb.isChecked())
+        # ─────────────────────────────────────────
+        # 5b) Registration Sets (mosaic panels / multiple targets)
+        # ─────────────────────────────────────────
+        self._ensure_default_set()
+        set_box = QGroupBox(self.tr("Registration Sets — per-panel / per-target references"))
+        set_box.setToolTip(self.tr(
+            "Assign frames to independent sets. Each set registers to its own reference and "
+            "integrates separately — use this for mosaic panels or completely different targets "
+            "loaded in one run. Unassigned frames use the 'Default' set and the global reference above."
+        ))
+        set_v = QVBoxLayout(set_box)
 
+        set_row = QHBoxLayout()
+        set_row.addWidget(QLabel(self.tr("Active set:")))
+        self.reg_set_combo = QComboBox()
+        self.reg_set_combo.setEditable(False)
+        self.reg_set_combo.setMinimumWidth(160)
+        self.reg_set_combo.currentTextChanged.connect(self._on_active_set_changed)
+        set_row.addWidget(self.reg_set_combo)
+
+        self.new_set_btn = QPushButton(self.tr("New Set…"))
+        self.new_set_btn.clicked.connect(self._new_reg_set)
+        set_row.addWidget(self.new_set_btn)
+
+        self.assign_set_btn = QPushButton(self.tr("Assign Selected → Set"))
+        self.assign_set_btn.setToolTip(self.tr("Move the selected frames (or whole groups) into the active set."))
+        self.assign_set_btn.clicked.connect(self._assign_selected_to_set)
+        set_row.addWidget(self.assign_set_btn)
+
+        self.unassign_set_btn = QPushButton(self.tr("Reset Selected → Default"))
+        self.unassign_set_btn.clicked.connect(lambda: self._assign_selected_to_set(target="Default"))
+        set_row.addWidget(self.unassign_set_btn)
+        set_row.addStretch(1)
+        set_v.addLayout(set_row)
+
+        kw_row = QHBoxLayout()
+        kw_row.addWidget(QLabel(self.tr("Filename keyword:")))
+        self.reg_set_keyword_edit = QLineEdit()
+        self.reg_set_keyword_edit.setPlaceholderText(self.tr("e.g. Panel"))
+        self.reg_set_keyword_edit.setText(
+            self.settings.value("stacking/reg_set_filename_keyword", "Panel", type=str)
+        )
+        self.reg_set_keyword_edit.setToolTip(self.tr(
+            "Looks in each filename for this word followed by a separator "
+            "(space, underscore, hyphen, or dot) and a tag — "
+            "e.g. 'Panel 1', 'Panel_2', 'Panel-3'. Matching frames are assigned "
+            "to sets named like 'Panel 1'. Unmatched frames stay in Default."
+        ))
+        self.reg_set_keyword_edit.textChanged.connect(
+            lambda txt: self.settings.setValue(
+                "stacking/reg_set_filename_keyword", (txt or "").strip()
+            )
+        )
+        kw_row.addWidget(self.reg_set_keyword_edit, 1)
+        self.assign_from_filename_btn = QPushButton(self.tr("Assign from filenames"))
+        self.assign_from_filename_btn.setToolTip(self.tr(
+            "Create registration sets from the keyword in every loaded filename "
+            "and assign the matching frames."
+        ))
+        self.assign_from_filename_btn.clicked.connect(self._assign_sets_from_filename_keyword)
+        kw_row.addWidget(self.assign_from_filename_btn)
+        set_v.addLayout(kw_row)
+
+        ref_set_row = QHBoxLayout()
+        ref_set_row.addWidget(QLabel(self.tr("Reference for active set:")))
+        self.set_ref_label = QLabel(self.tr("Auto (best in set)"))
+        self.set_ref_label.setWordWrap(True)
+        ref_set_row.addWidget(self.set_ref_label, 1)
+
+        self.set_ref_pick_btn = QPushButton(self.tr("Pick…"))
+        self.set_ref_pick_btn.clicked.connect(self._set_reference_for_active_set)
+        ref_set_row.addWidget(self.set_ref_pick_btn)
+
+        self.set_ref_auto_btn = QPushButton(self.tr("Auto"))
+        self.set_ref_auto_btn.setToolTip(self.tr("Let the best-scoring frame in this set be the reference."))
+        self.set_ref_auto_btn.clicked.connect(lambda: self._set_reference_for_active_set(auto=True))
+        ref_set_row.addWidget(self.set_ref_auto_btn)
+        ref_set_row.addStretch(1)
+        set_v.addLayout(ref_set_row)
+
+        layout.addWidget(set_box)
+        self._rebuild_set_combo()
         # ─────────────────────────────────────────
         # 6) MFDeconv (title cleaned; no “beta”)
         # ─────────────────────────────────────────
@@ -13216,10 +13499,10 @@ class StackingSuiteDialog(QDialog):
             return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}" if enabled else "Drizzle: False")
 
         self.reg_tree.clear()
-        self.reg_tree.setColumnCount(3)
-        self.reg_tree.setHeaderLabels(["Filter - Exposure - Size", "Metadata", "Drizzle"])
+        self.reg_tree.setColumnCount(4)
+        self.reg_tree.setHeaderLabels(["Filter - Exposure - Size", "Metadata", "Drizzle", "Set"])
         hdr = self.reg_tree.header()
-        for col in (0, 1, 2):
+        for col in (0, 1, 2, 3):
             hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
 
         # only allow real image/light formats
@@ -13353,6 +13636,8 @@ class StackingSuiteDialog(QDialog):
             top.setExpanded(True)
 
         self._refresh_quick_stack_summary_later()
+        self._auto_assign_sets_by_object(files)   # per-target Sets before the column renders
+        self._refresh_set_column()
 
     def _iter_group_items(self):
         for i in range(self.reg_tree.topLevelItemCount()):
@@ -13635,6 +13920,59 @@ class StackingSuiteDialog(QDialog):
             self._pipeline_objects = objs
         return objs
 
+    def _auto_assign_sets_by_object(self, paths=None) -> None:
+        """Assign each integration frame to a Set named for its FITS OBJECT so a
+        multi-target run auto-splits into per-target Sets (each registers to its
+        own reference). Every frame carrying an OBJECT/TARGET is keyed to a Set
+        named for it (single target or mosaic alike). A frame is
+        auto-assigned at most once (first time it appears) and only while still on
+        'Default', so a later manual reassignment or reset is respected. Frames
+        whose headers carry no usable OBJECT stay on 'Default'."""
+        try:
+            if paths is None:
+                paths = self._all_reg_tree_paths()
+        except Exception:
+            return
+        if not paths:
+            return
+        if getattr(self, "_object_name_cache", None) is None:
+            self._object_name_cache = {}
+        obj_of = {}
+        for fp in paths:
+            o = self._object_name_cache.get(fp)
+            if o is None:
+                o = self._object_from_path(fp)
+                self._object_name_cache[fp] = o
+            obj_of[fp] = o
+        distinct = {o for o in obj_of.values() if o}
+        if not distinct:
+            return  # no OBJECT/TARGET on any frame -> nothing to key Sets on
+        seen = getattr(self, "_auto_set_seen", None)
+        if seen is None:
+            seen = set(); self._auto_set_seen = seen
+        changed = False
+        for fp, o in obj_of.items():
+            key = self._set_key(fp)
+            if key in seen:
+                continue          # only auto-assign a given frame once
+            seen.add(key)
+            if not o:
+                continue
+            if self.frame_set_of.get(key, "Default") != "Default":
+                continue          # respect an existing manual assignment
+            self.reg_sets.setdefault(o, {"reference": None, "locked": False})
+            self.frame_set_of[key] = o
+            changed = True
+        if changed:
+            try:
+                self._rebuild_set_combo()
+            except Exception:
+                pass
+            self.update_status(self.tr(
+                "🎯 Auto-assigned targets to Sets: {0}. "
+                "Review Set assignments & references in Image Integration."
+            ).format(", ".join(sorted(distinct))))
+
     def _maybe_offer_new_stacking_dir(self, paths) -> bool:
         """
         Pre-ingest guard for LIGHT adds: if incoming files carry a different
@@ -13675,27 +14013,31 @@ class StackingSuiteDialog(QDialog):
             resuming = os.path.isdir(suggested)
 
             msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Icon.Warning)
-            msg.setWindowTitle(self.tr("Different Target Detected"))
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setWindowTitle(self.tr("Multiple Targets Detected"))
             msg.setText(self.tr(
-                "The files you're adding are for <b>{0}</b>, but this stacking "
+                "The files you're adding are for <b>{0}</b>, and this stacking "
                 "directory already contains <b>{1}</b>.<br><br>"
-                "Mixing targets in one stacking directory will send both to "
-                "Image Integration as a single set — they'll try to register to "
-                "one reference frame and the stack will fail."
+                "That's fine — SASpro stacks multiple targets in one run using "
+                "<b>Sets</b> in Image Integration. Frames are auto-assigned to a "
+                "Set per target, so each registers to its own reference. Just "
+                "confirm the Set assignments (and each Set's reference frame) in "
+                "the Image Integration tab before integrating."
             ).format(", ".join(new_targets), ", ".join(sorted(existing))))
-            msg.setInformativeText(self.tr("{0}:<br><code>{1}</code>").format(
-                self.tr("Existing folder for this target found — switch to it")
-                if resuming else self.tr("Suggested new stacking directory"),
+            msg.setInformativeText(self.tr(
+                "Prefer to keep this target in its own folder instead? {0}:<br><code>{1}</code>"
+            ).format(
+                self.tr("Existing folder found — switch to it")
+                if resuming else self.tr("Suggested separate directory"),
                 suggested))
+            mix_btn = msg.addButton(self.tr("Add && Auto-Assign Sets"),
+                                    QMessageBox.ButtonRole.AcceptRole)
             switch_btn = msg.addButton(
-                self.tr("Switch to Target Folder") if resuming
-                else self.tr("Create && Switch"),
-                QMessageBox.ButtonRole.AcceptRole)
-            mix_btn = msg.addButton(self.tr("Add Anyway (mix targets)"),
-                                    QMessageBox.ButtonRole.DestructiveRole)
+                self.tr("Use Separate Folder") if resuming
+                else self.tr("Create Separate Folder"),
+                QMessageBox.ButtonRole.ActionRole)
             msg.addButton(QMessageBox.StandardButton.Cancel)
-            msg.setDefaultButton(switch_btn)
+            msg.setDefaultButton(mix_btn)
             msg.exec()
 
             clicked = msg.clickedButton()
@@ -14266,7 +14608,7 @@ class StackingSuiteDialog(QDialog):
 
         candidates = []
         for key, path in self.master_files.items():
-            if (ftoken in key) and (f"({image_size})" in key):
+            if is_master_flat_key(key, filter_name=ftoken, image_size=image_size):
                 candidates.append((key, path))
         if not candidates:
             return None
@@ -17359,7 +17701,9 @@ class StackingSuiteDialog(QDialog):
         # No dedup — every leaf is a distinct file, even if basenames collide
         return paths
 
-    def _apply_satellite_removal_to_calibrated_light(self, light_data, *, is_mono: bool):
+    def _apply_satellite_removal_to_calibrated_light(
+        self, light_data, *, is_mono: bool, models=None
+    ):
         """
         Run SASpro satellite trail removal on an already-calibrated light frame.
 
@@ -17378,6 +17722,8 @@ class StackingSuiteDialog(QDialog):
         - The satellite engine now handles normalization/denormalization internally.
         - The returned sat_mask_2d is authoritative and should be saved/propagated
         instead of inferring rejection from pixel values.
+        - Pass a preloaded `models` bundle to avoid re-resolving the backend
+          on every frame.
         """
         import numpy as np
         from setiastro.saspro.resources import get_resources
@@ -17419,8 +17765,11 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
-        resources = get_resources()
-        models = get_satellite_models(resources=resources, use_gpu=bool(use_gpu), status_cb=_status)
+        if models is None:
+            resources = get_resources()
+            models = get_satellite_models(
+                resources=resources, use_gpu=bool(use_gpu), status_cb=_status
+            )
 
         out_img, detected, sat_mask_2d = satellite_remove_image(
             image=arr_in,
@@ -17562,6 +17911,7 @@ class StackingSuiteDialog(QDialog):
         star_max_ratio  = self.settings.value("stacking/cosmetic/star_max_ratio",  0.55, type=float)
         sat_quantile    = self.settings.value("stacking/cosmetic/sat_quantile",  0.9995, type=float)
         processed_files = 0
+        _master_cache = MasterCache(load_image, _maybe_normalize_16bit_float)
 
         def _mask2d_from_image_zero_pixels(arr):
             a = np.asarray(arr)
@@ -17752,10 +18102,7 @@ class StackingSuiteDialog(QDialog):
                 dark_data = None
                 master_dark_path = fi["master_dark_path"]
                 if master_dark_path:
-                    dark_data, _, _, dark_is_mono = load_image(master_dark_path)
-                    dark_data = _maybe_normalize_16bit_float(
-                        dark_data, name=os.path.basename(master_dark_path)
-                    )
+                    dark_data, dark_is_mono = _master_cache.get(master_dark_path)
                     if dark_data is not None:
                         if not dark_is_mono and dark_data.ndim == 3 \
                                 and dark_data.shape[-1] == 3:
@@ -17803,10 +18150,7 @@ class StackingSuiteDialog(QDialog):
                         else:
                             flat_data = np.asarray(adj, dtype=np.float32).copy()
                     else:
-                        flat_data, _, _, flat_is_mono = load_image(master_flat_path)
-                        flat_data = _maybe_normalize_16bit_float(
-                            flat_data, name=os.path.basename(master_flat_path)
-                        )
+                        flat_data, _flat_is_mono = _master_cache.get(master_flat_path)
 
                     if flat_data is not None:
                         if not interactive_flat:
@@ -17950,14 +18294,7 @@ class StackingSuiteDialog(QDialog):
                     pass
 
                 calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
-                save_image(
-                    img_array=light_data,
-                    filename=calibrated_filename,
-                    original_format="fit",
-                    bit_depth="32-bit floating point",
-                    original_header=hdr,
-                    is_mono=is_mono,
-                )
+                write_calibrated_fast(calibrated_filename, light_data, hdr, is_mono)
 
                 del light_data
                 del hdr
@@ -18519,6 +18856,36 @@ class StackingSuiteDialog(QDialog):
                 protect_sigma=self.settings.value("stacking/cosmetic/protect_sigma", 5.0, type=float),
             )
             return
+
+        dark_tensors = {}          # path -> (C,H,W) tensor on GPU
+        group_flat_tensors = {}    # group_key -> tensor on GPU or None
+        _flat_gpu_by_key = {}      # gpu_flat_cache_key -> shared tensor
+
+        def _fallback_calibrate_cpu(reason: str) -> None:
+            self.update_status(self.tr(
+                "⚠️ GPU out of memory while preparing calibration. "
+                "Falling back to CPU."
+            ))
+            self.update_status(self.tr(f"   {reason}"))
+            try:
+                dark_tensors.clear()
+                group_flat_tensors.clear()
+                _flat_gpu_by_key.clear()
+            except Exception:
+                pass
+            _free_torch_memory()
+            self._calibrate_lights_cpu(
+                frame_infos=frame_infos,
+                calibrated_dir=calibrated_dir,
+                total_files=total_files,
+                master_bias_np=master_bias_np,
+                interactive_flat=interactive_flat,
+                do_satellite=do_satellite,
+                hot_sigma=hot_sigma,
+                cold_sigma=cold_sigma,
+                protect_sigma=protect_sigma,
+            )
+
         # ════════════════════════════════════════════════════════════════
         # PHASE 0C — load master darks + flats to GPU once per unique path
         # ════════════════════════════════════════════════════════════════
@@ -18531,9 +18898,6 @@ class StackingSuiteDialog(QDialog):
         dev    = _device() or (
             torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
         )
-
-        dark_tensors = {}   # path -> (C,H,W) tensor on GPU
-        flat_tensors = {}   # path -> (C,H,W) tensor on GPU (normalised)
 
         # collect unique paths
         unique_darks = {fi["master_dark_path"] for fi in frame_infos
@@ -18559,6 +18923,9 @@ class StackingSuiteDialog(QDialog):
                         self.tr(f"  ✓ Dark loaded: {os.path.basename(dark_path)}")
                     )
             except Exception as e:
+                if is_cuda_oom(e):
+                    _fallback_calibrate_cpu(str(e))
+                    return
                 self.update_status(
                     self.tr(f"  ⚠️ Could not load dark {os.path.basename(dark_path)}: {e}")
                 )
@@ -18710,8 +19077,8 @@ class StackingSuiteDialog(QDialog):
             # if interactive, we need per-group tensors; otherwise one per path
             pass  # handled below per-frame using group_key
 
-        # build group-keyed flat tensors (respects interactive adjustments)
-        group_flat_tensors = {}   # group_key -> tensor on GPU or None
+        # build group-keyed flat tensors (respects interactive adjustments).
+        # Share one GPU tensor per unique master path across groups.
         for fi in frame_infos:
             gk        = fi["group_key"]
             flat_path = fi["master_flat_path"]
@@ -18720,6 +19087,13 @@ class StackingSuiteDialog(QDialog):
 
             if flat_path is None:
                 group_flat_tensors[gk] = None
+                continue
+
+            cache_key = gpu_flat_cache_key(
+                gk, flat_path, interactive=interactive_flat
+            )
+            if cache_key is not None and cache_key in _flat_gpu_by_key:
+                group_flat_tensors[gk] = _flat_gpu_by_key[cache_key]
                 continue
 
             if interactive_flat:
@@ -18743,9 +19117,18 @@ class StackingSuiteDialog(QDialog):
                     flat_raws[flat_path], "flat"
                 )
 
-            group_flat_tensors[gk] = torch.from_numpy(
-                flat_prepared
-            ).to(dev, dtype=torch.float32, non_blocking=True)
+            try:
+                flat_t = torch.from_numpy(flat_prepared).to(
+                    dev, dtype=torch.float32, non_blocking=True
+                )
+            except Exception as e:
+                if is_cuda_oom(e):
+                    _fallback_calibrate_cpu(str(e))
+                    return
+                raise
+            if cache_key is not None:
+                _flat_gpu_by_key[cache_key] = flat_t
+            group_flat_tensors[gk] = flat_t
 
         # free raw flat numpy — no longer needed
         flat_raws.clear()
@@ -18754,12 +19137,20 @@ class StackingSuiteDialog(QDialog):
             self.tr(f"🔧 Calibration frames ready. Starting pipeline on {total_files} frame(s)…")
         )
         QApplication.processEvents()
+        _cal_timer = StageTimer()
+        _profile_cal = False #debug flag to profile calibration stages
 
         # ════════════════════════════════════════════════════════════════
         # PIPELINE — producer / GPU / consumer
         # PREFETCH_N controls how many raw frames sit in RAM at once
         # ════════════════════════════════════════════════════════════════
-        PREFETCH_N = 4
+        # Parallel readers keep the compute stage constantly fed; queues are
+        # sized to READ_WORKERS so readers run ahead of the GPU while maxsize
+        # still bounds RAM (backpressure).
+        READ_WORKERS = int(self.settings.value(
+            "stacking/calibration_readers",
+            max(2, min(4, (os.cpu_count() or 4))), type=int))
+        PREFETCH_N = max(6, READ_WORKERS * 2)
 
         raw_queue    = Queue(maxsize=PREFETCH_N)
         result_queue = Queue(maxsize=PREFETCH_N)
@@ -18768,13 +19159,22 @@ class StackingSuiteDialog(QDialog):
         processed_files = 0
         total_done      = 0
 
-        # ── producer: loads raw lights from disk ──────────────────────────
-        def _producer():
-            for fi in frame_infos:
-                if pipeline_error.is_set() or self._cancelled():
-                    break
+        # ── readers: N threads decode raw lights in parallel from one shared
+        #    work queue, so the compute stage never waits on a single slow read.
+        import queue as _rq
+        _feed_queue = _rq.SimpleQueue()
+        for _fi in frame_infos:
+            _feed_queue.put(_fi)
+
+        def _reader():
+            while not (pipeline_error.is_set() or self._cancelled()):
                 try:
-                    light_data, hdr, bit_depth, is_mono = load_image(fi["light_file"])
+                    fi = _feed_queue.get_nowait()
+                except _rq.Empty:
+                    return
+                try:
+                    with _cal_timer("load"):
+                        light_data, hdr, bit_depth, is_mono = load_image(fi["light_file"])
                     if light_data is None or hdr is None:
                         raw_queue.put(("error", fi, "Failed to load"))
                         continue
@@ -18790,11 +19190,19 @@ class StackingSuiteDialog(QDialog):
                         rej_mask = None
 
                     raw_queue.put(("frame", fi, light_data, hdr, is_mono, rej_mask))
-                    del light_data  # ← producer drops its reference immediately
+                    del light_data
 
                 except Exception as e:
                     raw_queue.put(("error", fi, str(e)))
 
+        def _producer():
+            # coordinator: run the reader pool, then emit exactly one sentinel
+            readers = [threading.Thread(target=_reader, daemon=True)
+                       for _ in range(READ_WORKERS)]
+            for r in readers:
+                r.start()
+            for r in readers:
+                r.join()
             raw_queue.put(None)
 
         # ── consumer: saves corrected frames, runs satellite removal ─────
@@ -18861,14 +19269,8 @@ class StackingSuiteDialog(QDialog):
                     pass
 
                 calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
-                save_image(
-                    img_array=light_data,
-                    filename=calibrated_filename,
-                    original_format="fit",
-                    bit_depth="32-bit floating point",
-                    original_header=hdr,
-                    is_mono=is_mono,
-                )
+                with _cal_timer("save"):
+                    write_calibrated_fast(calibrated_filename, light_data, hdr, is_mono)
 
                 del light_data
                 del hdr
@@ -18894,9 +19296,12 @@ class StackingSuiteDialog(QDialog):
             # Phase 1 is pure calibration + disk save now (satellite deferred to
             # Phase 2), so parallel writers are safe again.
             WRITE_WORKERS = 3
+            def _on_write_error(e):
+                _status_queue.put(f"⚠️ Write error: {e}")
+
             with ThreadPoolExecutor(max_workers=WRITE_WORKERS) as write_pool:
-                # drain futures in a sliding window — never hold more than
-                # WRITE_WORKERS completed futures at once
+                # Bound in-flight saves. ThreadPoolExecutor queues unlimited
+                # submit() args, and each queued job retains its frame.
                 pending = []
                 while True:
                     item = result_queue.get()
@@ -18904,33 +19309,24 @@ class StackingSuiteDialog(QDialog):
                         result_queue.task_done()
                         break
                     try:
-                        pending.append(write_pool.submit(_save_one, item))
+                        pending = submit_bounded(
+                            write_pool, pending, _save_one, item,
+                            max_pending=WRITE_WORKERS,
+                            on_error=_on_write_error,
+                        )
                         del item
                     except Exception as e:
                         _status_queue.put(f"⚠️ Could not submit save task: {e}")
                         del item
                     finally:
                         result_queue.task_done()
+                    pending = reap_completed(pending, on_error=_on_write_error)
 
-                    # drain completed futures immediately — don't let them accumulate
-                    still_pending = []
-                    for f in pending:
-                        if f.done():
-                            try:
-                                f.result()
-                            except Exception as e:
-                                _status_queue.put(f"⚠️ Write error: {e}")
-                            # future is done and result collected — drop it
-                        else:
-                            still_pending.append(f)
-                    pending = still_pending
-
-                # drain any remaining
                 for f in pending:
                     try:
                         f.result()
                     except Exception as e:
-                        _status_queue.put(f"⚠️ Write error: {e}")
+                        _on_write_error(e)
                 pending.clear()
                 del pending
 
@@ -18946,6 +19342,15 @@ class StackingSuiteDialog(QDialog):
         _current_group_label = None
         _group_frame_count   = 0
         _group_frame_total   = 0
+
+        # per-group totals precomputed once — progress stays correct even though
+        # parallel readers can deliver frames out of strict group order.
+        from collections import defaultdict as _dd
+        _group_totals = _dd(int)
+        for _f2 in frame_infos:
+            _group_totals[(_f2["filter_name"], _f2["exposure_text"])] += 1
+        _group_counts = _dd(int)
+        _seen_groups  = set()
 
         def _drain_status():
             try:
@@ -18975,19 +19380,12 @@ class StackingSuiteDialog(QDialog):
             _, fi, light_data, hdr, is_mono, rej_mask = item
             gk = fi["group_key"]
 
-            # ── group change detection ────────────────────────────────
+            # ── group label + first-seen announcement (order-independent) ──
             group_label = f"{fi['filter_name']} — {fi['exposure_text']}"
-            if group_label != _current_group_label:
-                _current_group_label = group_label
-                _group_frame_count   = 0
-                _group_frame_total   = sum(
-                    1 for f2 in frame_infos
-                    if f2["filter_name"] == fi["filter_name"]
-                    and f2["exposure_text"] == fi["exposure_text"]
-                )
-                self.update_status(
-                    self.tr(f"📷 Calibrating group: {group_label}")
-                )
+            _gkey = (fi["filter_name"], fi["exposure_text"])
+            if _gkey not in _seen_groups:
+                _seen_groups.add(_gkey)
+                self.update_status(self.tr(f"📷 Calibrating group: {group_label}"))
 
             try:
                 dark_path = fi["master_dark_path"]
@@ -19015,22 +19413,28 @@ class StackingSuiteDialog(QDialog):
                       f"Flat: {os.path.basename(fi['master_flat_path']) if fi['master_flat_path'] else 'None'} | "
                       f"Cosmetic: {fi['apply_cosmetic']}")
                 )
-                light_data = calibration_pipeline_gpu(
-                    light_data,
-                    dark_t=dark_t,
-                    flat_t=flat_t,
-                    pedestal=fi["pedestal_value"],
-                    hot_sigma=hot_sigma,
-                    cold_sigma=cold_sigma,
-                    protect_sigma=protect_sigma,
-                    apply_cosmetic=fi["apply_cosmetic"],
-                    bayer_pattern=fi["bayerpat"],
-                )
+                try:
+                    with _cal_timer("gpu"):
+                        light_data = calibration_pipeline_gpu(
+                            light_data,
+                            dark_t=dark_t,
+                            flat_t=flat_t,
+                            pedestal=fi["pedestal_value"],
+                            hot_sigma=hot_sigma,
+                            cold_sigma=cold_sigma,
+                            protect_sigma=protect_sigma,
+                            apply_cosmetic=fi["apply_cosmetic"],
+                            bayer_pattern=fi["bayerpat"],
+                        )
+                except Exception as _gpu_e:
+                    if not is_cuda_oom(_gpu_e):
+                        raise
+                    _free_torch_memory()
 
-                _group_frame_count += 1
+                _group_counts[_gkey] += 1
                 self.update_status(
                     self.tr(f"📷 Progress: {group_label} — "
-                            f"{_group_frame_count}/{_group_frame_total} frames")
+                            f"{_group_counts[_gkey]}/{_group_totals[_gkey]} frames")
                 )
 
             except Exception as e:
@@ -19074,31 +19478,42 @@ class StackingSuiteDialog(QDialog):
             QApplication.processEvents()
             consumer_thread.join(timeout=0.1)
         producer_thread.join()
+        if _profile_cal:
+            self.update_status(self.tr(_cal_timer.report()))
 
         # drain any final status messages
         _drain_status()
         QApplication.processEvents()
+
+        # Close the last Calibration monitor row before Phase 2 so satellite
+        # trail time is not billed to the last filter group.
+        if do_satellite and not cancelled:
+            self.update_status(self.tr("📷 All light groups calibrated"))
+            QApplication.processEvents()
 
         # ── Phase 1 done: every frame calibrated + saved. Free the GPU
         #    COMPLETELY before the satellite pass so the CNN gets a clean
         #    card — this is the whole point of the split. frame_infos is
         #    kept until AFTER Phase 2 (it rebuilds the calibrated paths).
         import gc
-        from setiastro.saspro.torch_rejection import _clear_cc_buffers
-        _clear_cc_buffers()
 
         dark_tensors.clear()
         group_flat_tensors.clear()
+        _flat_gpu_by_key.clear()
         del dark_tensors
         del group_flat_tensors
-
-        try:
-            import torch as _torch
-            if _torch.cuda.is_available():
-                _torch.cuda.empty_cache()
-        except Exception:
-            pass
+        del _flat_gpu_by_key
+        _free_torch_memory()
         gc.collect()
+
+        # Phase 1 (pure calibration) is fully done here. When a Phase-2
+        # satellite pass follows, close the per-group Calibration row now so
+        # the final filter stops accruing time while the (separate) satellite
+        # pass runs. Without a Phase-2 pass, the "✅ Calibration Complete!"
+        # emitted below already closes it at the right moment.
+        if do_satellite and not cancelled:
+            self.update_status(self.tr("📷 Calibration pipeline complete."))
+            QApplication.processEvents()
 
         # ════════════════════════════════════════════════════════════════
         # PHASE 2 — satellite trail removal on a CLEAN GPU
@@ -19115,59 +19530,100 @@ class StackingSuiteDialog(QDialog):
                 f"🛰️ Satellite trail removal — {n_sat} frame(s) on a clean GPU…"
             ))
             QApplication.processEvents()
-            for s_idx, cal_path in enumerate(sat_files, 1):
-                if self._cancelled():
-                    self.update_status(self.tr("⏹ Satellite pass cancelled."))
-                    break
+
+            from setiastro.saspro.resources import get_resources
+            from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
+                get_satellite_models,
+                trail_mask_requires_rewrite,
+            )
+
+            def _sat_status(msg):
                 try:
-                    if not os.path.exists(cal_path):
-                        continue
-                    sd, shdr, _sbits, s_mono = load_image(cal_path)
-                    if sd is None:
-                        continue
-                    cleaned, _sat_mask = self._apply_satellite_removal_to_calibrated_light(
-                        sd, is_mono=s_mono
-                    )
-                    cleaned = np.asarray(cleaned, dtype=np.float32)
-                    if (not s_mono) and cleaned.ndim == 3 and cleaned.shape[0] == 3:
-                        cleaned = cleaned.transpose(1, 2, 0)
-                    cleaned = np.nan_to_num(
-                        cleaned.astype(np.float32, copy=False),
-                        nan=0.0, posinf=0.0, neginf=0.0,
-                    )
+                    self.update_status(self.tr(str(msg)))
+                except Exception:
+                    pass
+
+            sat_models = None
+            try:
+                sat_models = get_satellite_models(
+                    resources=get_resources(),
+                    use_gpu=bool(self.settings.value(
+                        "stacking/calibration_satellite_gpu", True, type=bool
+                    )),
+                    status_cb=_sat_status,
+                )
+            except Exception as e:
+                self.update_status(self.tr(
+                    f"⚠️ Satellite models failed to load: {e}"
+                ))
+
+            n_rewritten = 0
+            n_unchanged = 0
+            if sat_models is not None:
+                for s_idx, cal_path in enumerate(sat_files, 1):
+                    if self._cancelled():
+                        self.update_status(self.tr("⏹ Satellite pass cancelled."))
+                        break
                     try:
-                        if hasattr(shdr, "add_history"):
-                            shdr.add_history("Satellite trails removed (clipped to 0.0)")
-                        else:
-                            shdr["HISTORY"] = "Satellite trails removed (clipped to 0.0)"
-                    except Exception:
-                        pass
-                    save_image(
-                        img_array=cleaned,
-                        filename=cal_path,
-                        original_format="fit",
-                        bit_depth="32-bit floating point",
-                        original_header=shdr,
-                        is_mono=s_mono,
-                    )
-                    self.update_status(self.tr(
-                        f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
-                    ))
-                except Exception as e:
-                    self.update_status(self.tr(
-                        f"⚠️ Satellite pass failed on "
-                        f"{os.path.basename(cal_path)}: {e}"
-                    ))
-                finally:
-                    try:
-                        import torch as _torch_sat
-                        if _torch_sat.cuda.is_available():
-                            _torch_sat.cuda.empty_cache()
-                    except Exception:
-                        pass
-                QApplication.processEvents()
+                        if not os.path.exists(cal_path):
+                            continue
+                        sd, shdr, _sbits, s_mono = load_image(cal_path)
+                        if sd is None:
+                            continue
+                        cleaned, sat_mask = self._apply_satellite_removal_to_calibrated_light(
+                            sd, is_mono=s_mono, models=sat_models
+                        )
+                        if not trail_mask_requires_rewrite(sat_mask):
+                            n_unchanged += 1
+                            self.update_status(self.tr(
+                                f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
+                            ))
+                            QApplication.processEvents()
+                            continue
+                        cleaned = np.asarray(cleaned, dtype=np.float32)
+                        if (not s_mono) and cleaned.ndim == 3 and cleaned.shape[0] == 3:
+                            cleaned = cleaned.transpose(1, 2, 0)
+                        cleaned = np.nan_to_num(
+                            cleaned.astype(np.float32, copy=False),
+                            nan=0.0, posinf=0.0, neginf=0.0,
+                        )
+                        try:
+                            if hasattr(shdr, "add_history"):
+                                shdr.add_history("Satellite trails removed (clipped to 0.0)")
+                            else:
+                                shdr["HISTORY"] = "Satellite trails removed (clipped to 0.0)"
+                        except Exception:
+                            pass
+                        write_calibrated_fast(cal_path, cleaned, shdr, s_mono)
+                        n_rewritten += 1
+                        self.update_status(self.tr(
+                            f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
+                        ))
+                    except Exception as e:
+                        self.update_status(self.tr(
+                            f"⚠️ Satellite pass failed on "
+                            f"{os.path.basename(cal_path)}: {e}"
+                        ))
+                    finally:
+                        try:
+                            import torch as _torch_sat
+                            if _torch_sat.cuda.is_available():
+                                _torch_sat.cuda.empty_cache()
+                        except Exception:
+                            pass
+                    QApplication.processEvents()
             # honor a cancel that arrived during the satellite pass
             cancelled = cancelled or self._cancelled()
+            # Give the monitor an explicit terminal signal so the dedicated
+            # "Satellite Removal" row finishes here instead of lingering as
+            # "running" until the end-of-run sweep.
+            if not cancelled:
+                self.update_status(self.tr(
+                    f"✅ Satellite trail removal complete "
+                    f"({n_rewritten} clipped, {n_unchanged} unchanged)"
+                ))
+                QApplication.processEvents()
+            _free_torch_memory()
 
         # frame_infos no longer needed
         frame_infos.clear()
@@ -19185,7 +19641,11 @@ class StackingSuiteDialog(QDialog):
             self._refresh_quick_stack_summary_later()
             return   # skip auto-register-after-cal on cancel
 
-        self.update_status(self.tr("✅ Calibration Complete!"))
+        # In the satellite path, Phase-1 completion was already signalled by
+        # "📷 Calibration pipeline complete." before Phase 2; re-emitting here
+        # would spawn a duplicate (empty-group) row in the monitor.
+        if not do_satellite:
+            self.update_status(self.tr("✅ Calibration Complete!"))
         QApplication.processEvents()
 
         if not self.settings.value("stacking/auto_register_after_cal", False, type=bool):
@@ -19232,7 +19692,6 @@ class StackingSuiteDialog(QDialog):
                         )
         except Exception as e:
             self.update_status(self.tr(f"⚠️ Auto register/integrate failed: {e}"))
-
     def select_reference_frame_robust(self, frame_weights, sigma_threshold=1.0):
         """
         Instead of sigma filtering, pick the frame at the 75th percentile of frame weights.
@@ -19358,8 +19817,17 @@ class StackingSuiteDialog(QDialog):
 
                 return {"filter": filt, "exp": exp, "gain": gain, "dims": dims}
 
+            def _set_of_key(k: str) -> str:
+                # A group's set = the unique set of all its frames; mixed => a
+                # sentinel that never matches, so mixed groups never merge.
+                s = {self._set_of_frame(p) for p in light_files.get(k, [])}
+                return next(iter(s)) if len(s) == 1 else "__mixed__"
+
             def _can_merge(a: str, b: str) -> bool:
-                """True if two group keys are tolerance-compatible."""
+                """True if two group keys are tolerance-compatible AND same set."""
+                # Never merge across registration sets (mosaic panels / targets).
+                if _set_of_key(a) != _set_of_key(b):
+                    return False
                 pa = _parse_key(a)
                 pb = _parse_key(b)
 
@@ -20404,6 +20872,256 @@ class StackingSuiteDialog(QDialog):
             return 0.0
         return float(np.median(fwhms))
 
+    def _slugify_set(self, name):
+        import re
+        s = re.sub(r'[^A-Za-z0-9._-]+', '_', str(name or "")).strip('_')
+        return s or "set"
+
+    def _partition_light_files_by_set(self, light_files):
+        """Split {group_key:[paths]} into an ordered list of
+        (set_name, {group_key:[paths]}) — one entry per registration set that
+        actually has frames. Group keys are preserved (NOT prefixed) so drizzle
+        settings and tree lookups keep matching; per-set disambiguation of
+        outputs is handled by the Aligned_Images subfolder and the master tag."""
+        from collections import OrderedDict
+        order = list(self.reg_sets.keys())
+        if "Default" not in order:
+            order = ["Default"] + order
+        buckets = OrderedDict((s, OrderedDict()) for s in order)
+        for group_key, paths in light_files.items():
+            for p in paths:
+                sname = self._set_of_frame(p)
+                b = buckets.setdefault(sname, OrderedDict())
+                b.setdefault(group_key, []).append(p)
+        return [(s, dict(g)) for s, g in buckets.items() if g]
+
+    def _buffer_set_summary(self, master_paths, sasd_path, sasd_exists):
+        """Stash one set's integration results for a single end-of-run summary
+        (used during multi-set / mosaic runs instead of prompting per set).
+        Each set's .sasd is copied to a per-set name so it survives the next
+        set overwriting alignment_transforms.sasd."""
+        preserved_sasd = None
+        if sasd_exists:
+            try:
+                import shutil
+                slug = self._reg_current_set_slug or self._slugify_set(self._reg_current_set)
+                preserved_sasd = os.path.join(self.stacking_directory,
+                                              f"alignment_transforms_{slug}.sasd")
+                shutil.copy2(sasd_path, preserved_sasd)
+                from setiastro.saspro.dither_analysis import _save_pixscale_for_sasd
+                ps = getattr(self, "_ref_pixscale_arcsec", None)
+                if ps:
+                    _save_pixscale_for_sasd(QSettings("SetiAstro", "SASpro"), preserved_sasd, ps)
+            except Exception:
+                preserved_sasd = sasd_path
+        if getattr(self, "_reg_summary_buffer", None) is None:
+            self._reg_summary_buffer = []
+        self._reg_summary_buffer.append({
+            "set": self._reg_current_set,
+            "masters": list(master_paths or []),
+            "sasd": preserved_sasd,
+        })
+        self.update_status(self.tr(
+            f"🧩 Set '{self._reg_current_set}' integrated — summary deferred to end of run."
+        ))
+
+    def _show_multiset_summary(self):
+        """One prompt after all registration sets finish: open all masters,
+        every per-set dither analysis, or both. No-op if nothing was buffered."""
+        buf = getattr(self, "_reg_summary_buffer", None)
+        if not buf:
+            return
+        self._reg_summary_buffer = []
+
+        all_masters = []
+        for e in buf:
+            for m in e.get("masters", []):
+                if m not in all_masters:
+                    all_masters.append(m)
+        sasd_list = [e["sasd"] for e in buf
+                     if e.get("sasd") and os.path.exists(e["sasd"])]
+
+        lines = [self.tr(f"All {len(buf)} registration sets complete."), ""]
+        for e in buf:
+            lines.append(f"• {e['set']}: {len(e.get('masters', []))} master(s)")
+        text = "\n".join(lines)
+
+        def _open_all_masters():
+            self._open_saved_masters(all_masters)
+
+        def _open_all_dither():
+            from setiastro.saspro.dither_analysis import DitherAnalysisWindow
+            if not hasattr(self, "_dither_windows"):
+                self._dither_windows = []
+            for sp in sasd_list:
+                try:
+                    dlg = DitherAnalysisWindow(parent=self)
+                    dlg.setWindowFlag(Qt.WindowType.Window, True)
+                    dlg.load_sasd(sp)
+                    dlg.show()
+                    dlg.raise_()
+                    dlg.activateWindow()
+                    self._dither_windows.append(dlg)
+                except Exception as ex:
+                    QMessageBox.warning(
+                        self, "Dither Analysis",
+                        f"Could not open Dither Analysis for {os.path.basename(sp)}:\n{ex}"
+                    )
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(self.tr("All Sets Complete"))
+        msg_box.setText(text)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+        msg_box.addButton(QMessageBox.StandardButton.Ok)
+
+        masters_btn = None
+        if all_masters:
+            masters_btn = msg_box.addButton(
+                self.tr("🖼 Open All Masters ({0})").format(len(all_masters)),
+                QMessageBox.ButtonRole.ActionRole
+            )
+        dither_btn = None
+        if sasd_list:
+            dither_btn = msg_box.addButton(
+                self.tr("📊 Open All Dither ({0})").format(len(sasd_list)),
+                QMessageBox.ButtonRole.ActionRole
+            )
+        both_btn = None
+        if all_masters and sasd_list:
+            both_btn = msg_box.addButton(
+                self.tr("🖼 📊 Open Both"), QMessageBox.ButtonRole.ActionRole
+            )
+
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+        if both_btn is not None and clicked == both_btn:
+            _open_all_masters()
+            _open_all_dither()
+        elif masters_btn is not None and clicked == masters_btn:
+            _open_all_masters()
+        elif dither_btn is not None and clicked == dither_btn:
+            _open_all_dither()
+
+    def _release_reg_set_runtime_memory(self, status_cb=None):
+        """Drop per-set arrays / GPU cache so the next mosaic panel can fit in RAM.
+
+        Integration stores full-frame rejection maps and (when MFDeconv is on)
+        the whole prepass payload on ``self``. Those survive after the masters
+        are written, so a 6-filter 9576×6388 panel can leave several GB resident
+        when set 2 starts measuring.
+        """
+        log = status_cb or (lambda *_: None)
+        n_maps = 0
+        try:
+            n_maps = len(getattr(self, "_rej_maps", {}) or {})
+        except Exception:
+            n_maps = 0
+
+        def _drop(name, empty):
+            if hasattr(self, name):
+                try:
+                    setattr(self, name, empty)
+                except Exception:
+                    pass
+
+        _drop("_rej_maps", {})
+        _drop("_mf_prepass", None)
+        _drop("_mf_grouped_files", None)
+        _drop("_mf_transforms_dict", None)
+        _drop("_mf_results", {})
+        _drop("_mf_queue", [])
+        _drop("_mf_failures", None)
+        _drop("valid_matrices", {})
+        _drop("valid_transforms", {})
+        _drop("drizzle_xforms", {})
+        _drop("matrix_by_aligned", {})
+        _drop("orig_by_aligned", {})
+        _drop("_split_drizzle_info", {})
+        _drop("_pending_cfa_sparse", {})
+        _drop("_upscale_factor_by_orig", {})
+        _drop("_orig2norm", {})
+        _drop("frame_weights", {})
+        _drop("_mf_autocrop_rect", None)
+
+        th = getattr(self, "alignment_thread", None)
+        if th is not None:
+            for a in (
+                "reference_image_2d", "ref_small_full", "ref_small", "ref_small_ds",
+                "alignment_matrices", "file_key_to_current_path", "drizzle_xforms",
+            ):
+                try:
+                    setattr(th, a, None)
+                except Exception:
+                    pass
+            try:
+                th.deleteLater()
+            except Exception:
+                pass
+            self.alignment_thread = None
+
+        import gc
+        gc.collect()
+        try:
+            _free_torch_memory()
+        except Exception:
+            pass
+        try:
+            import ctypes
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
+        extra = f", {n_maps} rejection map(s)" if n_maps else ""
+        log(self.tr("🧹 Freed previous set runtime buffers{0}.").format(extra))
+
+    def _reg_queue_has_more(self) -> bool:
+        """True if the current set is not the last one in an in-flight queue."""
+        q = getattr(self, "_reg_queue", None)
+        if not q:
+            return False
+        return int(getattr(self, "_reg_queue_pos", 0) or 0) + 1 < len(q)
+
+    def _reg_queue_advance(self):
+        """Advance to the next registration set, or tear the queue down when the
+        last set is done. Returns True if a further set was launched."""
+        if not getattr(self, "_reg_queue", None):
+            return False
+        self._reg_queue_pos += 1
+        if self._reg_queue_pos >= len(self._reg_queue):
+            n = len(self._reg_queue)
+            self._reg_queue = None
+            self._reg_queue_pos = 0
+            self._reg_current_set = None
+            self._reg_current_set_slug = None
+            self._reg_precheck_choice = None
+            self._release_reg_set_runtime_memory(self.update_status)
+            if n > 1:
+                self.update_status(self.tr(f"🎉 All {n} registration sets complete."))
+            self._show_multiset_summary()
+            return False
+        nxt = self._reg_queue[self._reg_queue_pos][0]
+        self.update_status(self.tr(
+            f"➡️ Next set {self._reg_queue_pos + 1}/{len(self._reg_queue)}: '{nxt}'"
+        ))
+        # Drop panel-N arrays before panel N+1 measures / aligns / stacks.
+        self._release_reg_set_runtime_memory(self.update_status)
+        # Busy flag is already cleared by the time a set finishes; re-enter the
+        # normal path, which narrows to the new position without rebuilding.
+        QTimer.singleShot(0, self.register_images)
+        return True
+
+    def _reg_queue_abort(self, reason: str = ""):
+        """Stop a multi-set run without launching further sets."""
+        if getattr(self, "_reg_queue", None):
+            self._reg_queue = None
+            self._reg_queue_pos = 0
+            self._reg_current_set = None
+            self._reg_current_set_slug = None
+            self._reg_precheck_choice = None
+            self._reg_queue_master_paths = []
+            self._release_reg_set_runtime_memory(self.update_status)
+            if reason:
+                self.update_status(self.tr(f"⏹ Multi-set run halted: {reason}"))
+
     def register_images(self):
 
         # ---- local helper: force exact (H,W) via center-crop or reflect-pad ----
@@ -20587,6 +21305,46 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr(f"🚫 Excluding {len(dead)} removed frame(s) from registration/stacking."))
                 QApplication.processEvents()
 
+            # ── Registration Sets: build the run queue once, then narrow this
+            #    pass to the current set's frames + reference. A classic run with
+            #    no assignments is just a 1-element "Default" queue == old behavior.
+            self._ensure_default_set()
+            if getattr(self, "_reg_queue", None) is None:
+                self._reg_queue = self._partition_light_files_by_set(self.light_files)
+                self._reg_queue_pos = 0
+                # Fresh run → forget any pre-check choice from a previous run so
+                # the first set that finds registered twins prompts again.
+                self._reg_precheck_choice = None
+                self._reg_queue_master_paths = []
+                if len(self._reg_queue) > 1:
+                    self.update_status(self.tr(
+                        f"🧩 {len(self._reg_queue)} registration sets queued: "
+                        + ", ".join(s for s, _ in self._reg_queue)
+                    ))
+            if not self._reg_queue or self._reg_queue_pos >= len(self._reg_queue):
+                self._reg_queue = None
+                self.update_status(self.tr("⚠️ No frames to register."))
+                self._set_registration_busy(False)
+                return
+            _set_name, _set_groups = self._reg_queue[self._reg_queue_pos]
+            self._reg_current_set = _set_name
+            self._reg_current_set_slug = self._slugify_set(_set_name)
+            self.light_files = {g: list(p) for g, p in _set_groups.items()}
+            _cfg = self.reg_sets.get(_set_name, {"reference": None, "locked": False})
+            if _cfg.get("locked") and _cfg.get("reference"):
+                self.reference_frame = os.path.normpath(_cfg["reference"])
+                self._user_ref_locked = True
+                self.update_status(self.tr(
+                    f"📌 Set '{_set_name}': locked reference {os.path.basename(self.reference_frame)}"
+                ))
+            else:
+                self._user_ref_locked = False   # auto-pick the best frame *within this set*
+            if len(self._reg_queue) > 1:
+                _nfr = sum(len(v) for v in self.light_files.values())
+                self.update_status(self.tr(
+                    f"🎬 Set {self._reg_queue_pos + 1}/{len(self._reg_queue)}: "
+                    f"'{_set_name}' — {_nfr} frame(s)"
+                ))
 
             comet_mode = bool(getattr(self, "comet_cb", None) and self.comet_cb.isChecked())
             if comet_mode:
@@ -20626,6 +21384,9 @@ class StackingSuiteDialog(QDialog):
                     self.integrate_registered_images()
                     return
                 if _decision == "cancel":
+                    # Cancel stops the whole run, not just this set — tear the
+                    # multi-set queue down so no further sets launch.
+                    self._reg_queue_abort()
                     self.update_status(self.tr("❌ Registration cancelled."))
                     self._set_registration_busy(False)
                     return
@@ -21189,14 +21950,24 @@ class StackingSuiteDialog(QDialog):
             # Modeless ref review (unchanged)
             stats_payload = {"star_count": ref_count, "eccentricity": ref_ecc, "mean": ref_median}
 
+            _multi_followup = (
+                bool(getattr(self, "_reg_queue", None))
+                and int(getattr(self, "_reg_queue_pos", 0) or 0) > 0
+            )
             if user_ref_locked:
                 self.update_status(self.tr("✅ User reference is locked; skipping reference review dialog."))
                 try:
                     self.ref_frame_path.setText(os.path.basename(self.reference_frame or "") or "No file selected")
                 except Exception:
                     pass
-            elif self.auto_accept_ref_cb.isChecked():
-                self.update_status(self.tr("✅ Auto-accept measured reference is enabled; using the measured best frame."))
+            elif self.auto_accept_ref_cb.isChecked() or _multi_followup:
+                if _multi_followup and not self.auto_accept_ref_cb.isChecked():
+                    self.update_status(self.tr(
+                        "✅ Auto-accepting measured reference for set '{0}' "
+                        "(multi-set run continues without a prompt)."
+                    ).format(getattr(self, "_reg_current_set", "") or ""))
+                else:
+                    self.update_status(self.tr("✅ Auto-accept measured reference is enabled; using the measured best frame."))
                 try:
                     self.ref_frame_path.setText(os.path.basename(self.reference_frame or "") or "No file selected")
                 except Exception:
@@ -21898,7 +22669,11 @@ class StackingSuiteDialog(QDialog):
             # ─────────────────────────────────────────────────────────────────────
             # Start alignment on the normalized files
             # ─────────────────────────────────────────────────────────────────────
-            align_dir = os.path.join(self.stacking_directory, "Aligned_Images")
+            if getattr(self, "_reg_current_set", "Default") and self._reg_current_set != "Default":
+                align_dir = os.path.join(self.stacking_directory, "Aligned_Images",
+                                         self._reg_current_set_slug or self._slugify_set(self._reg_current_set))
+            else:
+                align_dir = os.path.join(self.stacking_directory, "Aligned_Images")
             os.makedirs(align_dir, exist_ok=True)
 
             passes = self.settings.value("stacking/refinement_passes", 3, type=int)
@@ -22639,6 +23414,21 @@ class StackingSuiteDialog(QDialog):
                 "drizzle_dict": drizzle_dict,
             })
             return out
+
+        # Masters are on disk — drop the in-RAM prepass so a queued next set
+        # does not start with this panel's stacks still resident.
+        try:
+            for g in (prepass.get("groups") or {}).values():
+                g.pop("integrated_image", None)
+                g.pop("rejection_map", None)
+                g.pop("rej_maps", None)
+            prepass["groups"] = {}
+        except Exception:
+            pass
+        try:
+            self._rej_maps = {}
+        except Exception:
+            pass
 
         if isinstance(finalize_result, dict):
             finalize_result = dict(finalize_result)
@@ -23477,7 +24267,10 @@ class StackingSuiteDialog(QDialog):
 
             H, W = integrated_image.shape[:2]
             display_group = self._label_with_dims(group_key, W, H)
-            base = f"MasterLight_{display_group}_{n_frames_group}stacked"
+            _set_pref = (f"{self._reg_current_set_slug}_"
+                         if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                         else "")
+            base = f"MasterLight_{_set_pref}{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
             out_path_orig = self._dedupe_out_path(out_path_orig)
@@ -23593,7 +24386,10 @@ class StackingSuiteDialog(QDialog):
                 )
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
-                base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
+                _set_pref = (f"{self._reg_current_set_slug}_"
+                             if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                             else "")
+                base_crop = f"MasterLight_{_set_pref}{display_group_crop}_{n_frames_group}stacked_autocrop"
                 base_crop = self._normalize_master_stem(base_crop)
                 out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
                 out_path_crop = self._dedupe_out_path(out_path_crop)
@@ -23825,26 +24621,44 @@ class StackingSuiteDialog(QDialog):
                     self._set_registration_busy(False)
                     return
 
+            more_sets = self._reg_queue_has_more()
             if getattr(self, "_mf_failures", None):
                 lines = [f"{g}: {m}" for g, m in self._mf_failures]
                 log("⚠️ MFDeconv finished with failures:\n" + "\n".join(lines))
-                # ↓ ADD THIS
-                try:
-                    if self._exec_monitor is not None:
-                        self._exec_monitor.finish_all(False)
-                    self._exec_monitor_pipeline_active = False
-                except Exception:
-                    pass
+                if not more_sets:
+                    try:
+                        if self._exec_monitor is not None:
+                            self._exec_monitor.finish_all(False)
+                        self._exec_monitor_pipeline_active = False
+                    except Exception:
+                        pass
             else:
                 log("✅ MFDeconv complete for all groups.")
-                # ↓ ADD THIS
-                try:
-                    if self._exec_monitor is not None:
-                        self._exec_monitor.finish_run(True)
-                    self._exec_monitor_pipeline_active = False
-                except Exception:
-                    pass
+                if not more_sets:
+                    try:
+                        if self._exec_monitor is not None:
+                            self._exec_monitor.finish_run(True)
+                        self._exec_monitor_pipeline_active = False
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        self._exec_monitor_pipeline_active = True
+                    except Exception:
+                        pass
             self._set_registration_busy(False)
+            # Registration-set queue: advance once this set's MF phase is done.
+            if getattr(self, "_reg_queue", None):
+                if getattr(self, "_mf_cancelled", False) or getattr(self, "_mf_failures", None):
+                    self._reg_queue_abort("MFDeconv did not complete for a set")
+                else:
+                    if more_sets:
+                        set_name = getattr(self, "_reg_current_set", "") or ""
+                        n_left = len(self._reg_queue) - self._reg_queue_pos - 1
+                        log(self.tr(
+                            "✅ Set '{0}' complete. Continuing with {1} remaining set(s)…"
+                        ).format(set_name, n_left))
+                    self._reg_queue_advance()
 
         def _start_next_mf_job():
             if self._mf_cancelled or not self._mf_queue:
@@ -24139,6 +24953,91 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
+    def _accumulate_reg_set_masters(self, payload) -> None:
+        """Append this set's masters onto the multi-set accumulator."""
+        acc = getattr(self, "_reg_queue_master_paths", None)
+        if acc is None:
+            acc = []
+            self._reg_queue_master_paths = acc
+        for p in self._collect_master_paths(payload):
+            if p not in acc:
+                acc.append(p)
+
+    def _show_post_alignment_complete_popup(self, message: str, master_paths: list[str]) -> None:
+        sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+        sasd_exists = os.path.exists(sasd_path)
+
+        def _open_masters():
+            self._open_saved_masters(master_paths)
+
+        def _open_dither():
+            try:
+                from setiastro.saspro.dither_analysis import DitherAnalysisWindow
+                dlg = DitherAnalysisWindow(parent=self)
+                dlg.setWindowFlag(Qt.WindowType.Window, True)
+                dlg.load_sasd(sasd_path)
+                dlg.show()
+                dlg.raise_()
+                dlg.activateWindow()
+                if not hasattr(self, "_dither_windows"):
+                    self._dither_windows = []
+                self._dither_windows.append(dlg)
+            except Exception as e:
+                QMessageBox.warning(
+                    self, "Dither Analysis",
+                    f"Could not open Dither Analysis:\n{e}"
+                )
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
+        msg_box.setText(message)
+        msg_box.setIcon(QMessageBox.Icon.Information)
+
+        msg_box.addButton(QMessageBox.StandardButton.Ok)
+
+        masters_btn = None
+        if master_paths:
+            masters_btn = msg_box.addButton(
+                self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
+                QMessageBox.ButtonRole.ActionRole
+            )
+
+        dither_btn = None
+        if sasd_exists:
+            dither_btn = msg_box.addButton(
+                self.tr("📊 Open Dither Analysis"),
+                QMessageBox.ButtonRole.ActionRole
+            )
+
+        both_btn = None
+        if master_paths and sasd_exists:
+            both_btn = msg_box.addButton(
+                self.tr("🖼 📊 Open Both"),
+                QMessageBox.ButtonRole.ActionRole
+            )
+
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+
+        if both_btn is not None and clicked == both_btn:
+            _open_masters()
+            _open_dither()
+        elif masters_btn is not None and clicked == masters_btn:
+            _open_masters()
+        elif dither_btn is not None and clicked == dither_btn:
+            _open_dither()
+
+        if sasd_exists:
+            try:
+                from setiastro.saspro.dither_analysis import _save_pixscale_for_sasd
+                ps = getattr(self, "_ref_pixscale_arcsec", None)
+                if ps:
+                    _save_pixscale_for_sasd(
+                        QSettings("SetiAstro", "SASpro"), sasd_path, ps
+                    )
+            except Exception:
+                pass
+
     def _collect_master_paths(self, payload) -> list[str]:
         """Best-effort discovery of the integrated master paths for the
         completion popup. Prefers explicit keys on the finished payload, then a
@@ -24218,23 +25117,29 @@ class StackingSuiteDialog(QDialog):
             (isinstance(payload, dict) and payload.get("cancelled"))
             or (not ok and isinstance(message, str) and "cancel" in message.lower())
         )
+        more_sets = self._reg_queue_has_more()
         try:
             if self._exec_monitor is not None:
                 if was_cancelled:
                     self._exec_monitor.mark_stopped()
+                    self._exec_monitor_pipeline_active = False
+                elif more_sets and ok:
+                    # Keep the monitor (and Stop) alive across remaining sets.
+                    self._exec_monitor_pipeline_active = True
                 else:
                     summary = ""
                     if isinstance(payload, dict):
                         lines = payload.get("summary_lines") or []
                         summary = "  ".join(str(l) for l in lines if l and not l.startswith("•"))[:80]
                     self._exec_monitor.finish_run(ok, summary)
-                self._exec_monitor_pipeline_active = False
+                    self._exec_monitor_pipeline_active = False
         except Exception:
             pass
 
         if was_cancelled:
             self._cfa_for_this_run = None
             self.update_status(self.tr("⏹ Stacking stopped by user."))
+            self._reg_queue_abort()
             try:
                 QMessageBox.information(self, self.tr("Stopped"),
                                         self.tr("Stacking was cancelled. Any partial master was discarded."))
@@ -24252,6 +25157,7 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
                 self.update_status(self.tr("⏹ Stopped before MFDeconv (cancel requested)."))
+                self._reg_queue_abort()
                 self._cfa_for_this_run = None
                 return
             try:
@@ -24280,99 +25186,61 @@ class StackingSuiteDialog(QDialog):
                 self._cfa_for_this_run = None
                 QApplication.processEvents()
             return
-        
+
+        if ok:
+            q = getattr(self, "_reg_queue", None)
+            if q and len(q) > 1:
+                sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+                self._buffer_set_summary(
+                    self._collect_master_paths(payload),
+                    sasd_path,
+                    os.path.exists(sasd_path),
+                )
+            else:
+                self._accumulate_reg_set_masters(payload)
+
+        # Intermediate sets: no completion popup — chain immediately.
+        if more_sets and ok:
+            set_name = getattr(self, "_reg_current_set", "") or ""
+            n_left = len(self._reg_queue) - self._reg_queue_pos - 1
+            self.update_status(self.tr(
+                "✅ Set '{0}' complete. Continuing with {1} remaining set(s)…"
+            ).format(set_name, n_left))
+            self._cfa_for_this_run = None
+            QApplication.processEvents()
+            self._reg_queue_advance()
+            return
+
         try:
             if self._exec_monitor is not None:
                 self._exec_monitor.finish_all(ok, "")
         except Exception:
             pass
-        # ---- normal popup summary ----
+        # ---- popup once, after the last set (or a single-set run) ----
         if ok:
-            sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
-            sasd_exists = os.path.exists(sasd_path)
-
-            master_paths = self._collect_master_paths(payload)
-
-            # --- helpers so a single button can trigger one action, or "Both" can trigger both ---
-            def _open_masters():
-                self._open_saved_masters(master_paths)
-
-            def _open_dither():
-                try:
-                    from setiastro.saspro.dither_analysis import DitherAnalysisWindow
-                    dlg = DitherAnalysisWindow(parent=self)
-                    dlg.setWindowFlag(Qt.WindowType.Window, True)
-                    dlg.load_sasd(sasd_path)
-                    dlg.show()
-                    dlg.raise_()
-                    dlg.activateWindow()
-                    # keep a reference so it doesn't get garbage collected
-                    if not hasattr(self, "_dither_windows"):
-                        self._dither_windows = []
-                    self._dither_windows.append(dlg)
-                except Exception as e:
-                    QMessageBox.warning(
-                        self, "Dither Analysis",
-                        f"Could not open Dither Analysis:\n{e}"
-                    )
-
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
-            msg_box.setText(message)
-            msg_box.setIcon(QMessageBox.Icon.Information)
-
-            ok_btn = msg_box.addButton(QMessageBox.StandardButton.Ok)
-
-            masters_btn = None
-            if master_paths:
-                masters_btn = msg_box.addButton(
-                    self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
-                    QMessageBox.ButtonRole.ActionRole
+            q = getattr(self, "_reg_queue", None)
+            if q and len(q) > 1:
+                # Last mosaic set is already in `_reg_summary_buffer`;
+                # `_reg_queue_advance` shows the combined All Sets Complete dialog.
+                pass
+            else:
+                self._show_post_alignment_complete_popup(
+                    message, self._collect_master_paths(payload)
                 )
-
-            dither_btn = None
-            if sasd_exists:
-                dither_btn = msg_box.addButton(
-                    self.tr("📊 Open Dither Analysis"),
-                    QMessageBox.ButtonRole.ActionRole
-                )
-
-            both_btn = None
-            if master_paths and sasd_exists:
-                both_btn = msg_box.addButton(
-                    self.tr("🖼 📊 Open Both"),
-                    QMessageBox.ButtonRole.ActionRole
-                )
-
-            msg_box.exec()
-            clicked = msg_box.clickedButton()
-
-            # Order matters: check `both_btn` first so it doesn't fall through to
-            # one of the singles by accident.
-            if both_btn is not None and clicked == both_btn:
-                _open_masters()
-                _open_dither()
-            elif masters_btn is not None and clicked == masters_btn:
-                _open_masters()
-            elif dither_btn is not None and clicked == dither_btn:
-                _open_dither()
-
-            if sasd_exists:
-                try:
-                    from setiastro.saspro.dither_analysis import _save_pixscale_for_sasd
-                    ps = getattr(self, "_ref_pixscale_arcsec", None)
-                    if ps:
-                        _save_pixscale_for_sasd(
-                            QSettings("SetiAstro", "SASpro"), sasd_path, ps
-                        )
-                except Exception:
-                    pass
-
         else:
             QMessageBox.critical(self, self.tr("Post-Alignment Failed"), message)
 
         self._cfa_for_this_run = None
         QApplication.processEvents()
+
+        # Registration-set queue: advance to the next set, or finish. When
+        # MFDeconv is enabled this point isn't reached (that path returns after
+        # launching MF); the chain fires from _finish_mf_phase_and_exit instead.
+        if getattr(self, "_reg_queue", None):
+            if ok:
+                self._reg_queue_advance()
+            else:
+                self._reg_queue_abort("a set failed during integration")
 
 
     def save_rejection_map_sasr(self, rejection_map: dict, out_path: str):
@@ -24914,7 +25782,10 @@ class StackingSuiteDialog(QDialog):
             n_frames_group = len(file_list)
             H, W = integrated_image.shape[:2]
             display_group = self._label_with_dims(group_key, W, H)
-            base = f"MasterLight_{display_group}_{n_frames_group}stacked"
+            _set_pref = (f"{self._reg_current_set_slug}_"
+                         if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                         else "")
+            base = f"MasterLight_{_set_pref}{display_group}_{n_frames_group}stacked"
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
             out_path_orig = self._dedupe_out_path(out_path_orig)
@@ -25035,7 +25906,10 @@ class StackingSuiteDialog(QDialog):
                 is_mono_crop = (cropped_img.ndim == 2)
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
-                base_crop = f"MasterLight_{display_group_crop}_{n_frames_group}stacked_autocrop"
+                _set_pref = (f"{self._reg_current_set_slug}_"
+                             if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                             else "")
+                base_crop = f"MasterLight_{_set_pref}{display_group_crop}_{n_frames_group}stacked_autocrop"
                 base_crop = self._normalize_master_stem(base_crop)
                 out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
                 out_path_crop = self._dedupe_out_path(out_path_crop)
@@ -26735,6 +27609,16 @@ class StackingSuiteDialog(QDialog):
 
         # ── Case 1: everything already registered ───────────────────────────
         if n_unmatched == 0:
+            # Reuse the first set's decision on later sets instead of asking
+            # again. "reuse" here means "everything's registered → integrate".
+            cached = getattr(self, "_reg_precheck_choice", None)
+            if cached is not None:
+                if cached == "register_all":
+                    return "register_all"
+                if cached == "cancel":
+                    return "cancel"
+                return "integrate"  # cached == "reuse"
+
             msg = self.tr(
                 f"Found already-registered versions for all {n_total} frame(s) "
                 f"in Aligned_Images.\n\nSkip registration and integrate them now?"
@@ -26757,9 +27641,12 @@ class StackingSuiteDialog(QDialog):
             box.exec()
             clicked = box.clickedButton()
             if clicked is skip_btn:
+                self._reg_precheck_choice = "reuse"
                 return "integrate"
             if clicked is reg_btn:
+                self._reg_precheck_choice = "register_all"
                 return "register_all"
+            self._reg_precheck_choice = "cancel"
             return "cancel"
 
         # ── Case 2: some registered, some not ───────────────────────────────
@@ -26794,6 +27681,14 @@ class StackingSuiteDialog(QDialog):
                     can_merge_append = False
 
         if drizzle_on and not can_merge_append:
+            # Only Register-All or Cancel are meaningful here. On a later set,
+            # honor the cached choice: a prior "cancel" cancels; anything else
+            # (including a "reuse" intent that can't be satisfied under drizzle
+            # without a mergeable .sasd) falls back to a full re-registration.
+            cached = getattr(self, "_reg_precheck_choice", None)
+            if cached is not None:
+                return "cancel" if cached == "cancel" else "register_all"
+
             # Drizzle wants uniform coverage. Without a mergeable .sasd we'd
             # end up with per-frame transforms only for the newly-registered
             # stragglers, so tell the user honestly and offer full re-reg.
@@ -26812,38 +27707,55 @@ class StackingSuiteDialog(QDialog):
             box.addButton(QMessageBox.StandardButton.Cancel)
             box.exec()
             role = box.buttonRole(box.clickedButton())
-            return "register_all" if role == QMessageBox.ButtonRole.AcceptRole else "cancel"
+            if role == QMessageBox.ButtonRole.AcceptRole:
+                self._reg_precheck_choice = "register_all"
+                return "register_all"
+            self._reg_precheck_choice = "cancel"
+            return "cancel"
 
         # Drizzle-off partial, or drizzle-on with a mergeable .sasd → offer
         # the real time-saver: register only the stragglers, then integrate
         # (and, if drizzle is on, merge-append into the existing .sasd first).
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Icon.Question)
-        box.setWindowTitle(self.tr("Partially Registered"))
-        _dz_note = ""
-        if drizzle_on and can_merge_append:
-            _dz_note = self.tr(
-                "\n\nDrizzle is enabled: the new transforms will be merged "
-                "into the existing alignment_transforms.sasd so all frames "
-                "are drizzled uniformly."
-            )
-        box.setText(self.tr(
-            f"{n_matched} of {n_total} frame(s) already have registered "
-            f"versions in Aligned_Images.\n\nRegister only the {n_unmatched} "
-            f"new frame(s) and then integrate all {n_total} together?"
-        ) + _dz_note)
-        new_btn = box.addButton(self.tr(f"Register {n_unmatched} New → Integrate All"),
-                                QMessageBox.ButtonRole.AcceptRole)
-        all_btn = box.addButton(self.tr("Register All"),
-                                QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(new_btn)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is all_btn:
-            return "register_all"
-        if clicked is not new_btn:
-            return "cancel"
+        # On a later set, reuse the first set's decision: "reuse" falls through
+        # to the register-new setup below, the others return immediately.
+        cached = getattr(self, "_reg_precheck_choice", None)
+        if cached is not None:
+            if cached == "register_all":
+                return "register_all"
+            if cached == "cancel":
+                return "cancel"
+            # cached == "reuse" → fall through to the register-new setup.
+        else:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(self.tr("Partially Registered"))
+            _dz_note = ""
+            if drizzle_on and can_merge_append:
+                _dz_note = self.tr(
+                    "\n\nDrizzle is enabled: the new transforms will be merged "
+                    "into the existing alignment_transforms.sasd so all frames "
+                    "are drizzled uniformly."
+                )
+            box.setText(self.tr(
+                f"{n_matched} of {n_total} frame(s) already have registered "
+                f"versions in Aligned_Images.\n\nRegister only the {n_unmatched} "
+                f"new frame(s) and then integrate all {n_total} together?"
+            ) + _dz_note)
+            new_btn = box.addButton(self.tr(f"Register {n_unmatched} New → Integrate All"),
+                                    QMessageBox.ButtonRole.AcceptRole)
+            all_btn = box.addButton(self.tr("Register All"),
+                                    QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(new_btn)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is all_btn:
+                self._reg_precheck_choice = "register_all"
+                return "register_all"
+            if clicked is not new_btn:
+                self._reg_precheck_choice = "cancel"
+                return "cancel"
+            self._reg_precheck_choice = "reuse"
 
         # Resolve the aligned (_n_r) twin the NEW frames will align to. Every
         # _n_r frame sits on the stack grid by construction, so any twin is a
@@ -28058,7 +28970,10 @@ class StackingSuiteDialog(QDialog):
         # ---- save (single-HDU; no rejection layers here) ----
         Hd, Wd = final_drizzle.shape[:2] if final_drizzle.ndim >= 2 else (0, 0)
         display_group_driz = self._label_with_dims(group_key, Wd, Hd)
-        base_stem = f"MasterLight_{display_group_driz}_{len(file_list)}stacked_drizzle"
+        _set_pref = (f"{self._reg_current_set_slug}_"
+                     if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                     else "")
+        base_stem = f"MasterLight_{_set_pref}{display_group_driz}_{len(file_list)}stacked_drizzle"
         base_stem = self._normalize_master_stem(base_stem)
         out_path_orig = self._build_out(self._master_light_dir(), base_stem, "fit")
         out_path_orig = self._dedupe_out_path(out_path_orig)
@@ -28115,7 +29030,10 @@ class StackingSuiteDialog(QDialog):
 
             is_mono_crop = (cropped_drizzle.ndim == 2)
             display_group_driz_crop = self._label_with_dims(group_key, cropped_drizzle.shape[1], cropped_drizzle.shape[0])
-            base_crop = f"MasterLight_{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
+            _set_pref = (f"{self._reg_current_set_slug}_"
+                         if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
+                         else "")
+            base_crop = f"MasterLight_{_set_pref}{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
             base_crop = self._normalize_master_stem(base_crop)
             out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
             out_path_crop = self._dedupe_out_path(out_path_crop)
@@ -28652,6 +29570,10 @@ class StackingSuiteDialog(QDialog):
                 pass
 
         tp.shutdown(wait=True)
+        try:
+            del _buf_pool, _mask_pool, pending, tiles
+        except Exception:
+            pass
 
         import threading as _threading2
         _sources_to_close = list(sources)
@@ -28677,8 +29599,12 @@ class StackingSuiteDialog(QDialog):
             try: cleanup_memmap(None, integrated_memmap_path)
             except Exception: pass
 
-        import threading as _threading
-        _threading.Thread(target=lambda: _free_torch_memory(), daemon=True).start()
+        import gc as _gc
+        _gc.collect()
+        try:
+            _free_torch_memory()
+        except Exception:
+            pass
 
         return integrated_image, per_file_rejections, ref_header
 
@@ -29066,8 +29992,12 @@ class StackingSuiteDialog(QDialog):
             try: cleanup_memmap(None, integrated_memmap_path)
             except Exception: pass
 
-        import threading as _t
-        _t.Thread(target=lambda: _free_torch_memory(), daemon=True).start()
+        import gc as _gc
+        _gc.collect()
+        try:
+            _free_torch_memory()
+        except Exception:
+            pass
 
         return integrated_image, per_file_rejections, ref_header
 

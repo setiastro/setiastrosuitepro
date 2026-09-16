@@ -68,4 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     return entry(argv)
 
 if __name__ == "__main__":
+    # Frozen ProcessPool workers re-exec this EXE; freeze_support() makes them
+    # act as workers instead of launching new SASpro windows. Must precede entry().
+    import multiprocessing
+    multiprocessing.freeze_support()
     raise SystemExit(entry())
