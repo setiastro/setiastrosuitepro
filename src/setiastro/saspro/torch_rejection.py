@@ -443,6 +443,7 @@ def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
     Stride = 2 for Bayer (same-colour neighbours), 1 otherwise.
     """
     import torch.nn.functional as F
+    from setiastro.saspro.cosmetic_metal import median5_along_dim0, sort8_along_dim0
 
     s = 2 if bayer_pattern else 1
     pad_amt = s
@@ -480,10 +481,14 @@ def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
 
         # ── background stats (strided sample) ─────────────────────────
         sample     = plane[::_stride, ::_stride]
-        med_val    = sample.median()
-        avg_dev_f  = float((sample - med_val).abs().mean())
-        robust_sig = max(1.4826 * float((sample - med_val).abs().median()), 1e-8)
-        med_f      = float(med_val)
+        # background stats on the strided sample, on the HOST: it's ~1e-4 of
+        # the frame and this avoids torch.median (slow / CPU-fallback on MPS).
+        _s        = sample.reshape(-1).to('cpu', dtype=torch.float32).numpy()
+        med_f     = float(np.median(_s))
+        _absdev   = np.abs(_s - med_f)
+        avg_dev_f = float(_absdev.mean())
+        robust_sig= max(1.4826 * float(np.median(_absdev)), 1e-8)
+        del _s, _absdev
         del sample
 
         # ── reflect-pad the plane once (whole frame) ──────────────────
@@ -499,7 +504,7 @@ def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
             p[pad_amt:H+pad_amt,     2*pad_amt:W+2*pad_amt],      # E
             plane,                                                # center
         ), dim=0)
-        m5 = five.median(dim=0).values
+        m5 = median5_along_dim0(five, torch)  # 5-elt median, min/max only
         del five
 
         # ── detection + structure gate (whole frame) ──────────────────
@@ -541,7 +546,8 @@ def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
 
             # flagged neighbours are +inf and sort to the top; index is
             # transient and freed here (strip-sized, not frame-sized)
-            so.copy_(torch.sort(st, dim=0).values)
+            so.copy_(st)
+            sort8_along_dim0(so, torch)   # 8-elt sort, min/max only (no torch.sort)
 
             raw_count = (st < float("inf")).sum(dim=0)   # clean neighbours
             vc        = raw_count.clamp(min=1)

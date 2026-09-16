@@ -253,7 +253,12 @@ class MasterCache:
 
         cache = MasterCache(loader_fn=load_image,
                             normalize_fn=_maybe_normalize_16bit_float)
-        dark = cache.get(master_dark_path)     # np.float32 or None
+        dark, dark_is_mono = cache.get(master_dark_path)   # (np.float32|None, bool)
+
+    get() returns a (array, is_mono) pair: the array is None on failure, and
+    is_mono carries load_image's authoritative mono/color flag so callers keep
+    their existing layout decisions (the CPU path's HWC->CHW transpose depends
+    on it — deriving it from shape alone would misclassify some frames).
     """
 
     def __init__(
@@ -263,22 +268,23 @@ class MasterCache:
     ):
         self._loader = loader_fn
         self._normalize = normalize_fn
-        self._store: dict[str, Optional[np.ndarray]] = {}
+        self._store: dict[str, Tuple[Optional[np.ndarray], bool]] = {}
         self._lock = threading.Lock()
 
-    def get(self, path: Optional[str]) -> Optional[np.ndarray]:
+    def get(self, path: Optional[str]) -> Tuple[Optional[np.ndarray], bool]:
+        """Return (normalized float32 array | None, is_mono)."""
         if not path:
-            return None
+            return None, True
         with self._lock:
             if path in self._store:
                 return self._store[path]
         # decode outside the lock so slow disk reads don't serialize threads
-        arr = self._decode(path)
+        entry = self._decode(path)
         with self._lock:
-            self._store[path] = arr
-        return arr
+            self._store[path] = entry
+        return entry
 
-    def _decode(self, path: str) -> Optional[np.ndarray]:
+    def _decode(self, path: str) -> Tuple[Optional[np.ndarray], bool]:
         # Always go through the app's real loader (+ normalizer). Masters need the
         # SAME /65535 normalization and ROWORDER flip that load_image applies to
         # lights, or dark/flat land at the wrong scale/orientation. The win here is
@@ -287,13 +293,17 @@ class MasterCache:
         try:
             res = self._loader(path)
             arr = res[0] if res else None
+            is_mono = bool(res[3]) if (res is not None and len(res) > 3) \
+                else (arr is None or arr.ndim < 3)
             if arr is None:
-                return None
+                return None, is_mono
             if self._normalize is not None:
                 arr = self._normalize(arr, name=os.path.basename(path))
-            return None if arr is None else np.ascontiguousarray(arr, dtype=np.float32)
+            if arr is None:
+                return None, is_mono
+            return np.ascontiguousarray(arr, dtype=np.float32), is_mono
         except Exception:
-            return None
+            return None, True
 
     def clear(self) -> None:
         with self._lock:
