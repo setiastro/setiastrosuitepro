@@ -97,6 +97,7 @@ from setiastro.saspro.legacy.numba_utils import (
     gradient_descent_to_dim_spot_numba
 )
 from setiastro.saspro.legacy.image_manager import load_image, save_image, get_valid_header
+from setiastro.saspro.calibration_io import write_calibrated_fast, MasterCache, StageTimer
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from setiastro.saspro.log_bus import LogBus
 from setiastro.saspro import comet_stacking as CS
@@ -8517,6 +8518,9 @@ class StackingSuiteDialog(QDialog):
         self.hw_accel_cb.setToolTip(self.tr("Enable GPU/MPS via PyTorch when supported; falls back to CPU automatically."))
         self.hw_accel_cb.setChecked(self.settings.value("stacking/use_hardware_accel", True, type=bool))
         fl_perf.addRow(self.hw_accel_cb)
+        self.hw_accel_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/use_hardware_accel", bool(v))
+        )
 
         # NEW: MFDeconv engine choice (radio buttons)
         eng_box = QGroupBox(self.tr("MFDeconv Engine"))
@@ -17849,6 +17853,7 @@ class StackingSuiteDialog(QDialog):
         star_max_ratio  = self.settings.value("stacking/cosmetic/star_max_ratio",  0.55, type=float)
         sat_quantile    = self.settings.value("stacking/cosmetic/sat_quantile",  0.9995, type=float)
         processed_files = 0
+        _master_cache = MasterCache(load_image, _maybe_normalize_16bit_float)
 
         def _mask2d_from_image_zero_pixels(arr):
             a = np.asarray(arr)
@@ -18039,10 +18044,7 @@ class StackingSuiteDialog(QDialog):
                 dark_data = None
                 master_dark_path = fi["master_dark_path"]
                 if master_dark_path:
-                    dark_data, _, _, dark_is_mono = load_image(master_dark_path)
-                    dark_data = _maybe_normalize_16bit_float(
-                        dark_data, name=os.path.basename(master_dark_path)
-                    )
+                    dark_data, dark_is_mono = _master_cache.get(master_dark_path)
                     if dark_data is not None:
                         if not dark_is_mono and dark_data.ndim == 3 \
                                 and dark_data.shape[-1] == 3:
@@ -18090,10 +18092,7 @@ class StackingSuiteDialog(QDialog):
                         else:
                             flat_data = np.asarray(adj, dtype=np.float32).copy()
                     else:
-                        flat_data, _, _, flat_is_mono = load_image(master_flat_path)
-                        flat_data = _maybe_normalize_16bit_float(
-                            flat_data, name=os.path.basename(master_flat_path)
-                        )
+                        flat_data, _flat_is_mono = _master_cache.get(master_flat_path)
 
                     if flat_data is not None:
                         if not interactive_flat:
@@ -18237,14 +18236,7 @@ class StackingSuiteDialog(QDialog):
                     pass
 
                 calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
-                save_image(
-                    img_array=light_data,
-                    filename=calibrated_filename,
-                    original_format="fit",
-                    bit_depth="32-bit floating point",
-                    original_header=hdr,
-                    is_mono=is_mono,
-                )
+                write_calibrated_fast(calibrated_filename, light_data, hdr, is_mono)
 
                 del light_data
                 del hdr
@@ -19087,12 +19079,20 @@ class StackingSuiteDialog(QDialog):
             self.tr(f"🔧 Calibration frames ready. Starting pipeline on {total_files} frame(s)…")
         )
         QApplication.processEvents()
+        _cal_timer = StageTimer()
+        _profile_cal = self.settings.value("stacking/profile_calibration", False, type=bool)
 
         # ════════════════════════════════════════════════════════════════
         # PIPELINE — producer / GPU / consumer
         # PREFETCH_N controls how many raw frames sit in RAM at once
         # ════════════════════════════════════════════════════════════════
-        PREFETCH_N = 4
+        # Parallel readers keep the compute stage constantly fed; queues are
+        # sized to READ_WORKERS so readers run ahead of the GPU while maxsize
+        # still bounds RAM (backpressure).
+        READ_WORKERS = int(self.settings.value(
+            "stacking/calibration_readers",
+            max(2, min(4, (os.cpu_count() or 4))), type=int))
+        PREFETCH_N = max(6, READ_WORKERS * 2)
 
         raw_queue    = Queue(maxsize=PREFETCH_N)
         result_queue = Queue(maxsize=PREFETCH_N)
@@ -19101,13 +19101,22 @@ class StackingSuiteDialog(QDialog):
         processed_files = 0
         total_done      = 0
 
-        # ── producer: loads raw lights from disk ──────────────────────────
-        def _producer():
-            for fi in frame_infos:
-                if pipeline_error.is_set() or self._cancelled():
-                    break
+        # ── readers: N threads decode raw lights in parallel from one shared
+        #    work queue, so the compute stage never waits on a single slow read.
+        import queue as _rq
+        _feed_queue = _rq.SimpleQueue()
+        for _fi in frame_infos:
+            _feed_queue.put(_fi)
+
+        def _reader():
+            while not (pipeline_error.is_set() or self._cancelled()):
                 try:
-                    light_data, hdr, bit_depth, is_mono = load_image(fi["light_file"])
+                    fi = _feed_queue.get_nowait()
+                except _rq.Empty:
+                    return
+                try:
+                    with _cal_timer("load"):
+                        light_data, hdr, bit_depth, is_mono = load_image(fi["light_file"])
                     if light_data is None or hdr is None:
                         raw_queue.put(("error", fi, "Failed to load"))
                         continue
@@ -19123,11 +19132,19 @@ class StackingSuiteDialog(QDialog):
                         rej_mask = None
 
                     raw_queue.put(("frame", fi, light_data, hdr, is_mono, rej_mask))
-                    del light_data  # ← producer drops its reference immediately
+                    del light_data
 
                 except Exception as e:
                     raw_queue.put(("error", fi, str(e)))
 
+        def _producer():
+            # coordinator: run the reader pool, then emit exactly one sentinel
+            readers = [threading.Thread(target=_reader, daemon=True)
+                       for _ in range(READ_WORKERS)]
+            for r in readers:
+                r.start()
+            for r in readers:
+                r.join()
             raw_queue.put(None)
 
         # ── consumer: saves corrected frames, runs satellite removal ─────
@@ -19194,14 +19211,8 @@ class StackingSuiteDialog(QDialog):
                     pass
 
                 calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
-                save_image(
-                    img_array=light_data,
-                    filename=calibrated_filename,
-                    original_format="fit",
-                    bit_depth="32-bit floating point",
-                    original_header=hdr,
-                    is_mono=is_mono,
-                )
+                with _cal_timer("save"):
+                    write_calibrated_fast(calibrated_filename, light_data, hdr, is_mono)
 
                 del light_data
                 del hdr
@@ -19274,6 +19285,15 @@ class StackingSuiteDialog(QDialog):
         _group_frame_count   = 0
         _group_frame_total   = 0
 
+        # per-group totals precomputed once — progress stays correct even though
+        # parallel readers can deliver frames out of strict group order.
+        from collections import defaultdict as _dd
+        _group_totals = _dd(int)
+        for _f2 in frame_infos:
+            _group_totals[(_f2["filter_name"], _f2["exposure_text"])] += 1
+        _group_counts = _dd(int)
+        _seen_groups  = set()
+
         def _drain_status():
             try:
                 while True:
@@ -19302,19 +19322,12 @@ class StackingSuiteDialog(QDialog):
             _, fi, light_data, hdr, is_mono, rej_mask = item
             gk = fi["group_key"]
 
-            # ── group change detection ────────────────────────────────
+            # ── group label + first-seen announcement (order-independent) ──
             group_label = f"{fi['filter_name']} — {fi['exposure_text']}"
-            if group_label != _current_group_label:
-                _current_group_label = group_label
-                _group_frame_count   = 0
-                _group_frame_total   = sum(
-                    1 for f2 in frame_infos
-                    if f2["filter_name"] == fi["filter_name"]
-                    and f2["exposure_text"] == fi["exposure_text"]
-                )
-                self.update_status(
-                    self.tr(f"📷 Calibrating group: {group_label}")
-                )
+            _gkey = (fi["filter_name"], fi["exposure_text"])
+            if _gkey not in _seen_groups:
+                _seen_groups.add(_gkey)
+                self.update_status(self.tr(f"📷 Calibrating group: {group_label}"))
 
             try:
                 dark_path = fi["master_dark_path"]
@@ -19343,37 +19356,27 @@ class StackingSuiteDialog(QDialog):
                       f"Cosmetic: {fi['apply_cosmetic']}")
                 )
                 try:
-                    light_data = calibration_pipeline_gpu(
-                        light_data,
-                        dark_t=dark_t,
-                        flat_t=flat_t,
-                        pedestal=fi["pedestal_value"],
-                        hot_sigma=hot_sigma,
-                        cold_sigma=cold_sigma,
-                        protect_sigma=protect_sigma,
-                        apply_cosmetic=fi["apply_cosmetic"],
-                        bayer_pattern=fi["bayerpat"],
-                    )
+                    with _cal_timer("gpu"):
+                        light_data = calibration_pipeline_gpu(
+                            light_data,
+                            dark_t=dark_t,
+                            flat_t=flat_t,
+                            pedestal=fi["pedestal_value"],
+                            hot_sigma=hot_sigma,
+                            cold_sigma=cold_sigma,
+                            protect_sigma=protect_sigma,
+                            apply_cosmetic=fi["apply_cosmetic"],
+                            bayer_pattern=fi["bayerpat"],
+                        )
                 except Exception as _gpu_e:
                     if not is_cuda_oom(_gpu_e):
                         raise
                     _free_torch_memory()
-                    light_data = calibration_pipeline_gpu(
-                        light_data,
-                        dark_t=dark_t,
-                        flat_t=flat_t,
-                        pedestal=fi["pedestal_value"],
-                        hot_sigma=hot_sigma,
-                        cold_sigma=cold_sigma,
-                        protect_sigma=protect_sigma,
-                        apply_cosmetic=fi["apply_cosmetic"],
-                        bayer_pattern=fi["bayerpat"],
-                    )
 
-                _group_frame_count += 1
+                _group_counts[_gkey] += 1
                 self.update_status(
                     self.tr(f"📷 Progress: {group_label} — "
-                            f"{_group_frame_count}/{_group_frame_total} frames")
+                            f"{_group_counts[_gkey]}/{_group_totals[_gkey]} frames")
                 )
 
             except Exception as e:
@@ -19417,6 +19420,8 @@ class StackingSuiteDialog(QDialog):
             QApplication.processEvents()
             consumer_thread.join(timeout=0.1)
         producer_thread.join()
+        if _profile_cal:
+            self.update_status(self.tr(_cal_timer.report()))
 
         # drain any final status messages
         _drain_status()
@@ -19531,14 +19536,7 @@ class StackingSuiteDialog(QDialog):
                                 shdr["HISTORY"] = "Satellite trails removed (clipped to 0.0)"
                         except Exception:
                             pass
-                        save_image(
-                            img_array=cleaned,
-                            filename=cal_path,
-                            original_format="fit",
-                            bit_depth="32-bit floating point",
-                            original_header=shdr,
-                            is_mono=s_mono,
-                        )
+                        write_calibrated_fast(cal_path, cleaned, shdr, s_mono)
                         n_rewritten += 1
                         self.update_status(self.tr(
                             f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
@@ -19548,6 +19546,13 @@ class StackingSuiteDialog(QDialog):
                             f"⚠️ Satellite pass failed on "
                             f"{os.path.basename(cal_path)}: {e}"
                         ))
+                    finally:
+                        try:
+                            import torch as _torch_sat
+                            if _torch_sat.cuda.is_available():
+                                _torch_sat.cuda.empty_cache()
+                        except Exception:
+                            pass
                     QApplication.processEvents()
             # honor a cancel that arrived during the satellite pass
             cancelled = cancelled or self._cancelled()
@@ -19629,7 +19634,6 @@ class StackingSuiteDialog(QDialog):
                         )
         except Exception as e:
             self.update_status(self.tr(f"⚠️ Auto register/integrate failed: {e}"))
-
     def select_reference_frame_robust(self, frame_weights, sigma_threshold=1.0):
         """
         Instead of sigma filtering, pick the frame at the 75th percentile of frame weights.
