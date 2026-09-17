@@ -2926,9 +2926,21 @@ def _gaia_fit_and_validate(
     # ── Iterative refinement via fitted-WCS reprojection ──────────────────────
     try:
         MAX_ITER     = 5
-        RMS_CONVERGE = 0.05
         NN_TOL_PX    = 8.0
         MIN_PAIRS    = 10
+
+        # Convergence threshold is pixel-relative, like the matcher and gate:
+        # stop when the RMS improvement drops below a small fraction of a pixel.
+        # A flat 0.05" is 0.007px on a 7"/px rig (never fires) and 0.1px on a
+        # 0.5"/px rig (fires early) — neither is right.
+        try:
+            from astropy.wcs.utils import proj_plane_pixel_scales
+            _pxsc_conv  = proj_plane_pixel_scales(wcs_solution)
+            _scale_conv = float(np.mean(_pxsc_conv[:2])) * 3600.0
+        except Exception:
+            _scale_conv = None
+        RMS_CONVERGE_PX = 0.02
+        RMS_CONVERGE = (RMS_CONVERGE_PX * _scale_conv) if (_scale_conv and _scale_conv > 0) else 0.05
         prev_rms = None
         rms = None
 
@@ -2939,7 +2951,7 @@ def _gaia_fit_and_validate(
             print(f"[GaiaLocal] iter={iteration} RMS={rms:.3f}\"  n={n_matched}")
 
             if prev_rms is not None and (prev_rms - rms) < RMS_CONVERGE:
-                print(f"[GaiaLocal] converged (improvement {prev_rms-rms:.3f}\" < {RMS_CONVERGE}\")")
+                print(f"[GaiaLocal] converged (improvement {prev_rms-rms:.3f}\" < {RMS_CONVERGE:.3f}\")")
                 break
             prev_rms = rms
 
@@ -3047,12 +3059,34 @@ def _gaia_fit_and_validate(
         p95        = float(np.percentile(sep_arcsec, 95))
         print(f"[GaiaLocal] final RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
 
-        QUALITY_RMS_LIMIT = 3.0
-        QUALITY_MIN_PAIRS = 20
+        # ── Quality gate — PIXEL-RELATIVE, not raw arcsec ─────────────────────
+        # The matcher and NN refinement are already in pixels; the gate must be
+        # too, or a wide-field rig gets failed for a sub-pixel solve (e.g. a
+        # 7"/px image where 3.0" is 0.4px). Derive the solved plate scale and
+        # express the RMS limit in pixels, with an arcsec floor so fine-scale
+        # rigs keep their old strictness (no regression at/above ~1.5"/px).
+        try:
+            from astropy.wcs.utils import proj_plane_pixel_scales
+            _pxsc = proj_plane_pixel_scales(wcs_solution)
+            scale_arcsec = float(np.mean(_pxsc[:2])) * 3600.0
+        except Exception:
+            scale_arcsec = None
+
+        RMS_GATE_PX           = 2.0    # pixel-relative tolerance
+        RMS_GATE_FLOOR_ARCSEC = 3.0    # don't loosen below this on fine scales
+        QUALITY_MIN_PAIRS     = 20
+
+        if scale_arcsec and scale_arcsec > 0:
+            QUALITY_RMS_LIMIT = max(RMS_GATE_FLOOR_ARCSEC, RMS_GATE_PX * scale_arcsec)
+            rms_px_str = f", {rms / scale_arcsec:.2f}px @ {scale_arcsec:.2f}\"/px"
+        else:
+            QUALITY_RMS_LIMIT = RMS_GATE_FLOOR_ARCSEC
+            rms_px_str = ""
+
         if rms > QUALITY_RMS_LIMIT or n_matched < QUALITY_MIN_PAIRS:
             return False, (
-                f"match quality too low (RMS={rms:.2f}\", n={n_matched}; "
-                f"need RMS<={QUALITY_RMS_LIMIT}\" and n>={QUALITY_MIN_PAIRS})"
+                f"match quality too low (RMS={rms:.2f}\"{rms_px_str}, n={n_matched}; "
+                f"need RMS<={QUALITY_RMS_LIMIT:.2f}\" and n>={QUALITY_MIN_PAIRS})"
             )
     except Exception as e:
         return False, f"Gaia DR3 solver: refinement exception: {e}"
