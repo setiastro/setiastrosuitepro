@@ -1723,10 +1723,16 @@ class ABEDialog(QDialog):
         # map image-space polys to label-space
         img_w = self._preview_qimg.width() if self._preview_qimg else 1
         img_h = self._preview_qimg.height() if self._preview_qimg else 1
-        lab_w = self.preview_label.width()
-        lab_h = self.preview_label.height()
-        sx = lab_w / img_w
-        sy = lab_h / img_h
+        # Map image-space -> overlay-canvas space. The overlay is pm_base-sized
+        # (the SCALED pixmap), so use the preview scale, NOT the label size:
+        # when the scaled image is smaller than the label's 480x360 minimum it
+        # gets centered, the label is wider than the pixmap, and lab_w/img_w
+        # overshoots — which is exactly why drawn polygons drift from the cursor
+        # once the image leaves the viewport edge. _label_to_image_coords divides
+        # by this same scale (and subtracts the centering offset), so this makes
+        # the draw and the hit-test exact inverses at every zoom level.
+        sx = float(self._preview_scale)
+        sy = float(self._preview_scale)
 
         # finalized polygons (green, semi-transparent)
         pen = QPen(QColor(0, 255, 0), 2)
