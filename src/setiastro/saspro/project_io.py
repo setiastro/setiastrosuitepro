@@ -1,8 +1,10 @@
 # pro/project_io.py
 from __future__ import annotations
+import gc
 import io
 import os
 import json
+import tempfile
 import time
 import zipfile
 import uuid
@@ -18,22 +20,10 @@ try:
 except Exception:
     sip = None
 # ---------- helpers ----------
-def _np_save_to_bytes(arr, *, compress: bool = True) -> bytes:
-    """
-    Safely serialize an image-like payload to bytes.
-
-    - Accepts numpy arrays, things convertible via np.asarray, and (optionally)
-      torch tensors if torch is installed.
-    - Ensures the final payload is a numeric float32 ndarray before writing.
-    - Raises a clear TypeError for non-numeric / unexpected payloads.
-    """
+def _coerce_image_array(arr):
+    """Unwrap an image-like payload to a numeric float32 ndarray."""
     import numpy as _np
-    bio = io.BytesIO()
-
-    # Unwrap various possible payload types into a numpy array
     a = arr
-
-    # Torch tensor support (if present)
     try:
         import torch
     except Exception:
@@ -42,7 +32,6 @@ def _np_save_to_bytes(arr, *, compress: bool = True) -> bytes:
     if torch is not None and isinstance(a, torch.Tensor):  # type: ignore[name-defined]
         a = a.detach().cpu().numpy()
 
-    # If it's not already an ndarray, try to coerce
     if not isinstance(a, _np.ndarray):
         try:
             a = _np.asarray(a)
@@ -51,26 +40,96 @@ def _np_save_to_bytes(arr, *, compress: bool = True) -> bytes:
                 f"Unsupported image payload type {type(arr).__name__} (cannot convert to ndarray)"
             ) from exc
 
-    # At this point we MUST have an ndarray
     if not isinstance(a, _np.ndarray):
         raise TypeError(
             f"Unsupported image payload type after coercion: {type(a).__name__}"
         )
 
-    # Only allow numeric arrays (int/float); bail out on strings/objects
     if not _np.issubdtype(a.dtype, _np.number):
         raise TypeError(
             f"Non-numeric image payload dtype {a.dtype!r} (expected numeric image data)"
         )
 
-    a = a.astype(_np.float32, copy=False)
+    return a.astype(_np.float32, copy=False)
 
-    if compress:
-        _np.savez_compressed(bio, img=a)
-    else:
-        _np.save(bio, a)
 
-    return bio.getvalue()
+def _np_save_to_bytes(arr, *, compress: bool = True) -> bytes:
+    """
+    Safely serialize an image-like payload to bytes.
+
+    Prefer `_np_write_array_to_zip` for project saves so the compressed
+    payload is not held twice in RAM.
+    """
+    import numpy as _np
+    a = _coerce_image_array(arr)
+    bio = io.BytesIO()
+    try:
+        if compress:
+            _np.savez_compressed(bio, img=a)
+        else:
+            _np.save(bio, a)
+        return bio.getvalue()
+    finally:
+        bio.close()
+
+
+def _np_write_array_to_zip(z: zipfile.ZipFile, arcname: str, arr, *, compress: bool) -> None:
+    """
+    Write one image into the project zip via a temp file, then stream it in.
+
+    Avoids keeping a full compressed BytesIO plus zipfile.writestr copy in RAM.
+    npz is already compressed, so the zip member is stored (ZIP_STORED).
+    """
+    import numpy as _np
+    a = _coerce_image_array(arr)
+    suffix = ".npz" if compress else ".npy"
+    fd, tmp = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    try:
+        if compress:
+            _np.savez_compressed(tmp, img=a)
+        else:
+            _np.save(tmp, a)
+        z.write(tmp, arcname=arcname, compress_type=zipfile.ZIP_STORED)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _write_history_entries(z, sm, entries, base: str, prefix: str, hist_ext: str, compress: bool) -> list:
+    out = []
+    for i, entry in enumerate(entries or []):
+        try:
+            sid, m, name = entry
+        except Exception:
+            continue
+        if not sid or sm is None:
+            continue
+
+        img = None
+        try:
+            img = sm.load_state(sid, cache=False)
+        except Exception:
+            img = None
+        if img is None:
+            continue
+
+        fname = f"history/{prefix}_{i:04d}.{hist_ext}"
+        try:
+            _np_write_array_to_zip(z, f"{base}/{fname}", img, compress=compress)
+        except Exception:
+            continue
+        finally:
+            del img
+
+        out.append({
+            "name": name or "Edit",
+            "meta": _json_sanitize(m or {}),
+            "file": fname,
+        })
+    return out
 
 
 
@@ -409,81 +468,34 @@ class ProjectWriter:
 
                 # --- current image ---------------------------------------------------
                 if getattr(doc, "image", None) is not None:
-                    z.writestr(f"{base}/current.{cur_ext}", _np_save_to_bytes(doc.image, compress=compress))
+                    _np_write_array_to_zip(
+                        z, f"{base}/current.{cur_ext}", doc.image, compress=compress
+                    )
 
                 # --- history stacks --------------------------------------------------
-                # --- history stacks --------------------------------------------------
-                # _undo/_redo now store (swap_id, meta, name). We must load the swap states
-                # and embed the image payloads into the project file.
+                # _undo/_redo store (swap_id, meta, name). Load each swap state
+                # without putting it back into the 5GB RAM cache, write it, drop it.
                 try:
                     sm = get_swap_manager()
                 except Exception:
                     sm = None
 
-                undo_list = []
-                for i, entry in enumerate(getattr(doc, "_undo", []) or []):
-                    try:
-                        sid, m, name = entry
-                    except Exception:
-                        continue
-                    if not sid or sm is None:
-                        continue
-
-                    img = None
-                    try:
-                        img = sm.load_state(sid)
-                    except Exception:
-                        img = None
-                    if img is None:
-                        continue
-
-                    fname = f"history/undo_{i:04d}.{hist_ext}"
-                    try:
-                        payload = _np_save_to_bytes(img, compress=compress)
-                    except Exception:
-                        continue
-
-                    undo_list.append({
-                        "name": name or "Edit",
-                        "meta": _json_sanitize(m or {}),
-                        "file": fname
-                    })
-                    z.writestr(f"{base}/{fname}", payload)
-
-                redo_list = []
-                for i, entry in enumerate(getattr(doc, "_redo", []) or []):
-                    try:
-                        sid, m, name = entry
-                    except Exception:
-                        continue
-                    if not sid or sm is None:
-                        continue
-
-                    img = None
-                    try:
-                        img = sm.load_state(sid)
-                    except Exception:
-                        img = None
-                    if img is None:
-                        continue
-
-                    fname = f"history/redo_{i:04d}.{hist_ext}"
-                    try:
-                        payload = _np_save_to_bytes(img, compress=compress)
-                    except Exception:
-                        continue
-
-                    redo_list.append({
-                        "name": name or "Edit",
-                        "meta": _json_sanitize(m or {}),
-                        "file": fname
-                    })
-                    z.writestr(f"{base}/{fname}", payload)
+                undo_list = _write_history_entries(
+                    z, sm, getattr(doc, "_undo", []) or [],
+                    base, "undo", hist_ext, compress,
+                )
+                redo_list = _write_history_entries(
+                    z, sm, getattr(doc, "_redo", []) or [],
+                    base, "redo", hist_ext, compress,
+                )
 
                 z.writestr(
                     f"{base}/history/stack.json",
                     json.dumps({"undo": undo_list, "redo": redo_list}, indent=2),
                 )
+
+                # Drop compressor / mmap leftovers before the next document.
+                gc.collect()
 
 
 
