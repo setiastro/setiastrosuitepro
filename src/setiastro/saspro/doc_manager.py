@@ -2305,7 +2305,7 @@ class DocManager(QObject):
         """Return a live, ROI-aware proxy for this view."""
         return LiveViewDocument(self, view, base_doc)
 
-    def open_path(self, path: str):
+    def open_path(self, path: str, open_auxiliary_images: bool | None = None):
         ext = os.path.splitext(path)[1].lower().lstrip('.')
         norm_ext = _normalize_ext(ext)
 
@@ -2315,6 +2315,17 @@ class DocManager(QObject):
 
         primary_doc = None
         created_any = False
+
+        if open_auxiliary_images is None:
+            try:
+                from PyQt6.QtCore import QSettings
+                open_auxiliary_images = bool(
+                    QSettings().value("files/open_auxiliary_images", True, type=bool)
+                )
+            except Exception:
+                open_auxiliary_images = True
+        else:
+            open_auxiliary_images = bool(open_auxiliary_images)
 
         # ---------- local helper: build vector-style table from 1-D FITS image HDU ----------
         def _make_vector_table_doc_from_hdu(hdu, base_path: str, base_name: str, key_str: str):
@@ -2600,7 +2611,9 @@ class DocManager(QObject):
             created_any = True
 
         # ---------- 2) FITS: enumerate HDUs (tables + vector HDUs + extra images + ICC) ----------
-        if is_fits:
+        # Extra image HDUs (weights, rejection maps, …) each become another
+        # full float32 document + view. Skip them unless explicitly requested.
+        if is_fits and open_auxiliary_images:
             try:
                 with fits.open(path, memmap=False) as hdul:
                     base = os.path.basename(path)
@@ -2778,55 +2791,56 @@ class DocManager(QObject):
                         print(f"[DocManager] XISF primary (index 0) open failed: {e0}")
 
                 # Add images 1..N-1 as siblings (even if primary came from legacy)
-                for i in range(1, len(metas)):
-                    try:
-                        m = metas[i]
-                        arr = xisf.read_image(i, data_format="channels_last")
-                        arr_f32 = _to_float32_preserve(arr)
-                        arr_f32 = _normalize_image_01(arr_f32)
-
-                        bd = _bit_depth_from_dtype(m.get("dtype", arr.dtype))
-                        is_mono_i = (arr_f32.ndim == 2) or (arr_f32.ndim == 3 and arr_f32.shape[2] == 1)
-
-                        # Friendly label: prefer id, else EXTNAME/EXTVER in FITSKeywords, else index
-                        label = m.get("id") or None
-                        if not label:
-                            try:
-                                fk = m.get("FITSKeywords", {})
-                                en = (fk.get("EXTNAME") or [{}])[0].get("value", "")
-                                ev = (fk.get("EXTVER")  or [{}])[0].get("value", "")
-                                if en:
-                                    label = f"{en}[{ev}]" if ev else en
-                            except Exception:
-                                pass
-                        if not label:
-                            label = f"Image[{i}]"
-
-                        md = {
-                            "file_path": f"{path}::XISF[{i}]",
-                            "original_header": m,  # snapshot; sanitized below
-                            "bit_depth": bd,
-                            "is_mono": is_mono_i,
-                            "original_format": "xisf",
-                            "image_meta": {"derived_from": path, "layer_index": i, "readonly": True},
-                            "display_name": f"{base} {label}",
-                        }
-                        hdri = _xisf_meta_to_fits_header(m)
-                        if hdri is not None:
-                            md = attach_wcs_to_metadata(md, hdri)
-
-                        _snapshot_header_for_metadata(md)
-                        sib = ImageDocument(arr_f32, md)
-                        self._register_doc(sib)
+                if open_auxiliary_images:
+                    for i in range(1, len(metas)):
                         try:
-                            sib.changed.emit()
-                        except Exception as e:
-                            import logging
-                            logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
-                        created_any = True
+                            m = metas[i]
+                            arr = xisf.read_image(i, data_format="channels_last")
+                            arr_f32 = _to_float32_preserve(arr)
+                            arr_f32 = _normalize_image_01(arr_f32)
 
-                    except Exception as _e:
-                        print(f"[DocManager] XISF image {i} skipped: {_e}")
+                            bd = _bit_depth_from_dtype(m.get("dtype", arr.dtype))
+                            is_mono_i = (arr_f32.ndim == 2) or (arr_f32.ndim == 3 and arr_f32.shape[2] == 1)
+
+                            # Friendly label: prefer id, else EXTNAME/EXTVER in FITSKeywords, else index
+                            label = m.get("id") or None
+                            if not label:
+                                try:
+                                    fk = m.get("FITSKeywords", {})
+                                    en = (fk.get("EXTNAME") or [{}])[0].get("value", "")
+                                    ev = (fk.get("EXTVER")  or [{}])[0].get("value", "")
+                                    if en:
+                                        label = f"{en}[{ev}]" if ev else en
+                                except Exception:
+                                    pass
+                            if not label:
+                                label = f"Image[{i}]"
+
+                            md = {
+                                "file_path": f"{path}::XISF[{i}]",
+                                "original_header": m,  # snapshot; sanitized below
+                                "bit_depth": bd,
+                                "is_mono": is_mono_i,
+                                "original_format": "xisf",
+                                "image_meta": {"derived_from": path, "layer_index": i, "readonly": True},
+                                "display_name": f"{base} {label}",
+                            }
+                            hdri = _xisf_meta_to_fits_header(m)
+                            if hdri is not None:
+                                md = attach_wcs_to_metadata(md, hdri)
+
+                            _snapshot_header_for_metadata(md)
+                            sib = ImageDocument(arr_f32, md)
+                            self._register_doc(sib)
+                            try:
+                                sib.changed.emit()
+                            except Exception as e:
+                                import logging
+                                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+                            created_any = True
+
+                        except Exception as _e:
+                            print(f"[DocManager] XISF image {i} skipped: {_e}")
             except Exception as _e:
                 print(f"[DocManager] XISF open/enumeration failed: {_e}")
 

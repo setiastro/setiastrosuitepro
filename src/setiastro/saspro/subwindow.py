@@ -99,6 +99,7 @@ from setiastro.saspro.dnd_mime import (
 )
 from setiastro.saspro.shortcuts import _unpack_cmd_payload
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
+from setiastro.saspro.imageops.viewport_render import resize_for_display, to_uint8_rgb
 
 
 __all__ = ["ImageSubWindow", "TableSubWindow"]
@@ -689,9 +690,11 @@ class ImageSubWindow(QWidget):
         self._sync_host_title()
         self.document.changed.connect(self._refresh_local_undo_buttons)
 
-        # Cached display buffer
-        self._buf8 = None         # backing np.uint8 [H,W,3]
-        self._qimg_src = None     # QImage wrapping _buf8
+        # Cached display buffer — viewport-sized, never a full-res 8-bit copy
+        self._buf8 = None         # unused; kept so loupe falls back to document.image
+        self._qimg_src = None     # QImage at display size
+        self._pm_src = None
+        self._pm_src_scale = None
 
         # Keep mask visuals in sync when doc changes
         self.document.changed.connect(self._on_doc_mask_changed)
@@ -1684,9 +1687,10 @@ class ImageSubWindow(QWidget):
             return
 
         # Keep the small pixmap as the source; the trailing full-resolution apply
-        # restores the true full-res _pm_src once dragging stops.
+        # restores a display-sized _pm_src once dragging stops.
         self._qimg_src = None
         self._pm_src = pm_small
+        self._pm_src_scale = float(scale)
         self._pm_src_wcs = None
         self._buf8 = None
         self.label.setPixmap(pm_disp)
@@ -3107,6 +3111,7 @@ class ImageSubWindow(QWidget):
         if base_img is None:
             self._qimg_src = None
             self._pm_src = None
+            self._pm_src_scale = None
             self._pm_src_wcs = None
             self._buf8 = None
             self.label.clear()
@@ -3127,75 +3132,74 @@ class ImageSubWindow(QWidget):
         is_mono = (arr.ndim == 2)
 
         # ---------------------------------------
-        # 3) Visualization buffer (float32)
+        # 3) Viewport-sized visualization (never a full-res 8-bit copy)
         # ---------------------------------------
+        scale = float(getattr(self, "scale", 1.0) or 1.0)
+        src_h, src_w = int(arr.shape[0]), int(arr.shape[1])
+        out_w = max(1, int(round(src_w * scale)))
+        out_h = max(1, int(round(src_h * scale)))
+        # Hard cap so 1:1 zoom of a huge mosaic cannot recreate the old pixmap.
+        _max_side = 8192
+        if out_w > _max_side or out_h > _max_side:
+            k = min(_max_side / out_w, _max_side / out_h)
+            out_w = max(1, int(out_w * k))
+            out_h = max(1, int(out_h * k))
+
+        vis_src = arr
+        if np.issubdtype(arr.dtype, np.integer):
+            info = np.iinfo(arr.dtype)
+            vis_src = arr.astype(np.float32) / float(max(1, info.max))
+        elif not np.issubdtype(arr.dtype, np.floating):
+            vis_src = arr.astype(np.float32, copy=False)
+
+        small = resize_for_display(vis_src, out_w, out_h)
+
         if self.autostretch_enabled:
-            if np.issubdtype(arr.dtype, np.integer):
-                info = np.iinfo(arr.dtype)
-                denom = float(max(1, info.max))
-                arr_f = (arr.astype(np.float32) / denom)
-            else:
-                arr_f = arr.astype(np.float32, copy=False)
-                mx = float(arr_f.max()) if arr_f.size else 1.0
-                if mx > 5.0:
-                    arr_f = arr_f / mx
+            arr_f = vis_src.astype(np.float32, copy=False)
+            mx = float(arr_f.max()) if arr_f.size else 1.0
+            if mx > 5.0:
+                arr_f = arr_f / mx
+                small = resize_for_display(arr_f, out_w, out_h)
 
             cache_key = (
                 bool(is_mono),
                 bool(self._autostretch_linked),
                 float(self.autostretch_target),
                 float(self.autostretch_sigma),
-                bool(getattr(self, "_no_black_clip", False)),   # ← add this
+                bool(getattr(self, "_no_black_clip", False)),
                 tuple(arr_f.shape),
             )
-
             use_cached = (
                 (not self._autostretch_continuous)
                 and (self._autostretch_lut_cache is not None)
                 and (self._autostretch_cache_key == cache_key)
             )
-
-            if use_cached:
-                vis = apply_autostretch_lut(
-                    arr_f,
-                    self._autostretch_lut_cache,
-                    linked=(not is_mono and self._autostretch_linked),
-                )
-            else:
-                vis, lut_cache = autostretch_with_lut(
-                    arr_f,
+            if not use_cached:
+                n = int(arr_f.shape[0]) * int(arr_f.shape[1])
+                s = max(1, int(np.sqrt(n / 65536.0))) if n > 65536 else 1
+                sample = np.ascontiguousarray(arr_f[::s, ::s])
+                _stretched, lut_cache = autostretch_with_lut(
+                    sample,
                     target_median=self.autostretch_target,
                     sigma=self.autostretch_sigma,
                     linked=(not is_mono and self._autostretch_linked),
                     use_24bit=None,
-                    no_black_clip=bool(getattr(self, "_no_black_clip", False)),   # ← add this
+                    no_black_clip=bool(getattr(self, "_no_black_clip", False)),
                 )
                 self._autostretch_lut_cache = lut_cache
                 self._autostretch_cache_key = cache_key
+            vis = apply_autostretch_lut(
+                small.astype(np.float32, copy=False),
+                self._autostretch_lut_cache,
+                linked=(not is_mono and self._autostretch_linked),
+            )
         else:
-            vis = arr
+            vis = small
 
         # ---------------------------------------
-        # 4) Convert to 8-bit RGB for QImage
+        # 4) Convert to 8-bit RGB for QImage (display size only)
         # ---------------------------------------
-        if vis.dtype == np.uint8:
-            buf8 = vis
-        elif vis.dtype == np.uint16:
-            buf8 = (vis.astype(np.float32) / 65535.0 * 255.0).clip(0, 255).astype(np.uint8)
-        else:
-            buf8 = (np.clip(vis.astype(np.float32, copy=False), 0.0, 1.0) * 255.0).astype(np.uint8)
-
-        # Force H×W×3
-        if buf8.ndim == 2:
-            buf8 = np.stack([buf8] * 3, axis=-1)
-        elif buf8.ndim == 3:
-            c = buf8.shape[2]
-            if c == 1:
-                buf8 = np.repeat(buf8, 3, axis=2)
-            elif c > 3:
-                buf8 = buf8[..., :3]
-        else:
-            buf8 = np.stack([buf8.squeeze()] * 3, axis=-1)
+        buf8 = to_uint8_rgb(vis)
 
         # ---------------------------------------
         # 5) Optional mask overlay (baked into buf8)
@@ -3228,7 +3232,7 @@ class ImageSubWindow(QWidget):
         h, w, c = buf8.shape
         bytes_per_line = int(w * 3)
 
-        self._buf8 = buf8  # keep numpy ref alive as backup
+        self._buf8 = None  # loupe / readout sample document.image (source coords)
 
         try:
             # tobytes() makes a deep copy — Qt owns this memory independently
@@ -3244,6 +3248,7 @@ class ImageSubWindow(QWidget):
         except Exception:
             self._qimg_src = None
             self._pm_src = None
+            self._pm_src_scale = None
             self._pm_src_wcs = None
             self._buf8 = None
             self.label.clear()
@@ -3252,8 +3257,9 @@ class ImageSubWindow(QWidget):
         qimg = tag_qimage_with_working_color_space(qimg)
         self._qimg_src = qimg
 
-        # Cache unscaled pixmap ONCE per rebuild
+        # Cache pixmap at the current display scale (not 1:1 source pixels)
         self._pm_src = QPixmap.fromImage(self._qimg_src)
+        self._pm_src_scale = float(scale)
 
         # Invalidate any cached "WCS baked" pixmap on rebuild
         self._pm_src_wcs = None
@@ -3283,8 +3289,10 @@ class ImageSubWindow(QWidget):
 
         pm_base = self._pm_src
 
-        sw = max(1, int(pm_base.width() * self.scale))
-        sh = max(1, int(pm_base.height() * self.scale))
+        src_scale = float(getattr(self, "_pm_src_scale", None) or 1.0)
+        ratio = float(self.scale) / max(src_scale, 1e-12)
+        sw = max(1, int(round(pm_base.width() * ratio)))
+        sh = max(1, int(round(pm_base.height() * ratio)))
 
         # Honour the "smooth on final redraw" setting globally. If the user has
         # disabled it, we never smooth — even on non-interactive presents.
@@ -3339,12 +3347,12 @@ class ImageSubWindow(QWidget):
         if not pref_enabled:
             return pm_scaled
 
-        # Determine full image geometry from the CURRENT SOURCE buffer (not pm_scaled)
-        # We can infer W/H from qimg src (original)
-        if getattr(self, "_qimg_src", None) is None:
+        # Determine full image geometry from the science array (display pixmap is scaled)
+        src = getattr(self.document, "image", None)
+        if src is None:
             return pm_scaled
-        H_full = int(self._qimg_src.height())
-        W_full = int(self._qimg_src.width())
+        H_full = int(np.asarray(src).shape[0])
+        W_full = int(np.asarray(src).shape[1])
 
         # Pixel scales/FOV
         px_scales_deg = proj_plane_pixel_scales(wcs2)
@@ -3591,7 +3599,7 @@ class ImageSubWindow(QWidget):
             return
         if getattr(self, "_pm_src", None) is None:
             return
-        self._present_scaled(interactive=False)
+        self._render(rebuild=True)
 
 
 
@@ -4425,6 +4433,7 @@ class ImageSubWindow(QWidget):
         self._buf8 = None
         self._qimg_src = None
         self._pm_src = None
+        self._pm_src_scale = None
         self._pm_src_wcs = None
 
         super().closeEvent(e)
