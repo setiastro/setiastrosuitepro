@@ -888,7 +888,7 @@ def _push_image_to_active_view(parent, new_image: np.ndarray, metadata_update: d
 ASTROMETRY_API_URL = "http://nova.astrometry.net/api/"
 
 # Flip to True to log NaN carry-through at the alignment checkpoints (per frame).
-NAN_PROBE = True
+NAN_PROBE = False
 
 def _cap_points(src_pts: np.ndarray, tgt_pts: np.ndarray, max_cp: int) -> tuple[np.ndarray,np.ndarray]:
     if src_pts.shape[0] <= max_cp:

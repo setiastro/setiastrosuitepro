@@ -1122,7 +1122,7 @@ def _Luma(img: np.ndarray) -> np.ndarray:
 # silently turns back into 0. Flip NAN_PROBE = True (below) to print
 # per-checkpoint NaN counts to the stacking log.
 # ---------------------------------------------------------------------------
-NAN_PROBE = True   # <-- set True to enable the NaN carry-through probes
+NAN_PROBE = False   # <-- set True to enable the NaN carry-through probes
 
 def _nan_probe_enabled() -> bool:
     return bool(NAN_PROBE)
