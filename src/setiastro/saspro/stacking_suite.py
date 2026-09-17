@@ -1116,6 +1116,48 @@ def _Luma(img: np.ndarray) -> np.ndarray:
         return 0.2126 * r + 0.7152 * g + 0.0722 * b
     return np.squeeze(a, axis=-1).astype(np.float32, copy=False)
 
+# ---------------------------------------------------------------------------
+# NaN carry-through probe (debug). Satellite-trail no-data travels as NaN from
+# calibration through registration into integration; it is invisible unless it
+# silently turns back into 0. Flip NAN_PROBE = True (below) to print
+# per-checkpoint NaN counts to the stacking log.
+# ---------------------------------------------------------------------------
+NAN_PROBE = True   # <-- set True to enable the NaN carry-through probes
+
+def _nan_probe_enabled() -> bool:
+    return bool(NAN_PROBE)
+
+def _probe_load_first(path):
+    from setiastro.saspro.legacy.image_manager import _load_nan_ctx
+    _prev = getattr(_load_nan_ctx, "preserve", False)
+    _load_nan_ctx.preserve = True   # read true file contents (NaN no-data)
+    try:
+        d = load_image(path)
+    finally:
+        _load_nan_ctx.preserve = _prev
+    return d[0] if isinstance(d, (list, tuple)) else d
+
+def _nan_probe(tag, arr, log_fn=None, *, force: bool = False) -> None:
+    if not (force or _nan_probe_enabled()):
+        return
+    try:
+        a = np.asarray(arr)
+        n = int(a.size)
+        if a.dtype.kind == "f":
+            nan = int(np.isnan(a).sum()); inf = int(np.isinf(a).sum())
+        else:
+            nan = inf = 0
+        pct = (100.0 * nan / n) if n else 0.0
+        msg = (f"🔎 NaN-probe [{tag}] shape={tuple(a.shape)} dtype={a.dtype} "
+               f"NaN={nan} ({pct:.4f}%) inf={inf}")
+    except Exception as e:
+        msg = f"🔎 NaN-probe [{tag}] error: {e}"
+    try:
+        (log_fn or print)(msg)
+    except Exception:
+        pass
+
+
 def normalize_images(stack: np.ndarray,
                      target_median: float,
                      use_Luma: bool = True) -> np.ndarray:
@@ -3536,7 +3578,7 @@ def _median_fast_sample(img: np.ndarray, stride: int = 8) -> float:
     else:
         sample = img[::stride, ::stride]
     sample = sample - float(np.nanmin(sample))
-    return float(np.median(sample))
+    return float(np.nanmedian(sample))   # ignore NaN no-data (satellite trails)
 
 def _luma_view(img: np.ndarray) -> np.ndarray:
     """Return a float32 2D luma view (no copy if mono)."""
@@ -3560,7 +3602,7 @@ def _median_fast_sample(img: np.ndarray, stride: int = 8) -> float:
     v = v[::stride, ::stride]
     # subtract a tiny pedestal so transparency/G gain differences dominate
     vmin = float(np.nanmin(v))
-    return float(np.median(v - vmin)) if v.size else 0.0
+    return float(np.nanmedian(v - vmin)) if v.size else 0.0   # ignore NaN no-data
 
 
 def _compute_scale(ref_target_median: float,
@@ -7675,6 +7717,28 @@ class StackingSuiteDialog(QDialog):
 
                 # Single shared implementation — flip-in/flip-out lives in
                 # debayer_array, so the pipeline can never drift from the dialog.
+                #
+                # NaN-safe demosaic: satellite-trail no-data arrives here as NaN in
+                # the bayered frame. The (numba) demosaic isn't NaN-aware, so fill
+                # NaN->0 for it, then re-impose NaN on the RGB output over a small
+                # dilation of the CFA no-data sites (covers the demosaic footprint).
+                # Dense path only; the sparse CFA-drizzle frame is handled elsewhere.
+                _nan2d = ~np.isfinite(img)
+                if (not cfa) and bool(_nan2d.any()):
+                    _img_fill = np.where(_nan2d, np.float32(0.0), img).astype(np.float32, copy=False)
+                    _rgb = np.asarray(debayer_array(
+                        _img_fill, pattern=eff_bp, roworder=roworder,
+                        method=dmethod, cfa_drizzle=cfa,
+                    ))
+                    _grow = cv2.dilate(_nan2d.astype(np.uint8),
+                                       np.ones((7, 7), np.uint8)).astype(bool)
+                    if _rgb.ndim == 3 and _rgb.shape[-1] in (1, 3):     # HWC
+                        _rgb[_grow, :] = np.nan
+                    elif _rgb.ndim == 3 and _rgb.shape[0] in (1, 3):    # CHW
+                        _rgb[:, _grow] = np.nan
+                    else:
+                        _rgb[_grow] = np.nan
+                    return _rgb
                 return debayer_array(
                     img,
                     pattern=eff_bp,
@@ -17826,13 +17890,12 @@ class StackingSuiteDialog(QDialog):
         # every rejection kernel via isfinite(). Uses the authoritative
         # sat_mask_2d rather than an (out == 0.0) scan so genuine clamped-zero
         # background is left untouched. Gated on clip_trail.
-        if clip_trail and bool(sat_mask_2d.any()):
-            if out.ndim == 2:
-                out[sat_mask_2d] = np.nan
-            elif out.shape[0] == 3:            # CHW
-                out[:, sat_mask_2d] = np.nan
-            else:                               # HWC
-                out[sat_mask_2d, :] = np.nan
+        # Blanket no-data: every exactly-zero pixel becomes NaN, not just the
+        # satellite mask. The removal engine clips trails to 0.0, and any other
+        # genuine 0 in a calibrated light is dead data anyway, so this is safe
+        # and drops all dependence on the mask surviving downstream.
+        if clip_trail:
+            out[out == 0.0] = np.nan
         return out, sat_mask_2d
 
     def _apply_flat_strength(
@@ -18254,6 +18317,8 @@ class StackingSuiteDialog(QDialog):
                         # during registration warp, so it stays perfectly co-registered; a
                         # separate boolean mask can drift sub-pixel and leave a bright band.
                         light_data = np.asarray(cleaned_light_data, dtype=np.float32, copy=False)
+                        if _nan_probe_enabled():
+                            _nan_probe(f"calib: post sat-removal (mem) {os.path.basename(fi['light_file'])}", cleaned_light_data, self.update_status, force=True)
                         self.update_status(
                             self.tr(f"Satellite Trail Removal Applied "
                                     f"({int(np.count_nonzero(sat_mask_2d))} px)")
@@ -18270,7 +18335,7 @@ class StackingSuiteDialog(QDialog):
 
                 light_data = np.nan_to_num(
                     light_data.astype(np.float32, copy=False),
-                    nan=0.0, posinf=0.0, neginf=0.0
+                    nan=np.nan, posinf=0.0, neginf=0.0   # keep satellite-trail NaN no-data; scrub only +/-inf
                 )
 
                 min_val = float(np.min(light_data))
@@ -18309,6 +18374,11 @@ class StackingSuiteDialog(QDialog):
 
                 calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
                 write_calibrated_fast(calibrated_filename, light_data, hdr, is_mono)
+                if _nan_probe_enabled():
+                    try:
+                        _nan_probe(f"calib: reopened {os.path.basename(calibrated_filename)}", _probe_load_first(calibrated_filename), self.update_status, force=True)
+                    except Exception as _e:
+                        self.update_status(f"🔎 NaN-probe (reopen _c) failed: {_e}")
 
                 del light_data
                 del hdr
@@ -19244,7 +19314,7 @@ class StackingSuiteDialog(QDialog):
 
                 light_data = np.nan_to_num(
                     light_data.astype(np.float32, copy=False),
-                    nan=0.0, posinf=0.0, neginf=0.0
+                    nan=np.nan, posinf=0.0, neginf=0.0   # keep satellite-trail NaN no-data; scrub only +/-inf
                 )
 
                 min_val = float(np.min(light_data))
@@ -19285,6 +19355,11 @@ class StackingSuiteDialog(QDialog):
                 calibrated_filename = _cal_out_name(fi["light_file"], calibrated_dir)
                 with _cal_timer("save"):
                     write_calibrated_fast(calibrated_filename, light_data, hdr, is_mono)
+                if _nan_probe_enabled():
+                    try:
+                        _nan_probe(f"calib: reopened {os.path.basename(calibrated_filename)}", _probe_load_first(calibrated_filename), self.update_status, force=True)
+                    except Exception as _e:
+                        self.update_status(f"🔎 NaN-probe (reopen _c) failed: {_e}")
 
                 del light_data
                 del hdr
@@ -19595,11 +19670,13 @@ class StackingSuiteDialog(QDialog):
                             QApplication.processEvents()
                             continue
                         cleaned = np.asarray(cleaned, dtype=np.float32)
+                        if _nan_probe_enabled():
+                            _nan_probe(f"calib(repass): post sat-removal (mem) {os.path.basename(cal_path)}", cleaned, self.update_status, force=True)
                         if (not s_mono) and cleaned.ndim == 3 and cleaned.shape[0] == 3:
                             cleaned = cleaned.transpose(1, 2, 0)
                         cleaned = np.nan_to_num(
                             cleaned.astype(np.float32, copy=False),
-                            nan=0.0, posinf=0.0, neginf=0.0,
+                            nan=np.nan, posinf=0.0, neginf=0.0,   # keep satellite-trail NaN no-data; scrub only +/-inf
                         )
                         try:
                             if hasattr(shdr, "add_history"):
@@ -19609,6 +19686,11 @@ class StackingSuiteDialog(QDialog):
                         except Exception:
                             pass
                         write_calibrated_fast(cal_path, cleaned, shdr, s_mono)
+                        if _nan_probe_enabled():
+                            try:
+                                _nan_probe(f"calib: reopened {os.path.basename(cal_path)}", _probe_load_first(cal_path), self.update_status, force=True)
+                            except Exception as _e:
+                                self.update_status(f"🔎 NaN-probe (reopen _c) failed: {_e}")
                         n_rewritten += 1
                         self.update_status(self.tr(
                             f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
@@ -20522,8 +20604,16 @@ class StackingSuiteDialog(QDialog):
         ext = os.path.splitext(fp)[1].lower()
         try:
             if ext in (".fits", ".fit", ".fz"):
-                from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image
-                img, hdr, _, _ = legacy_load_image(fp)
+                from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image, _load_nan_ctx
+                # Preserve satellite-trail NaN through this load (calibrated _c
+                # frames carry NaN no-data). Thread-local so only this load opts in;
+                # measurement / preview / other loaders keep scrubbing NaN->0.
+                _prev_pn = getattr(_load_nan_ctx, "preserve", False)
+                _load_nan_ctx.preserve = True
+                try:
+                    img, hdr, _, _ = legacy_load_image(fp)
+                finally:
+                    _load_nan_ctx.preserve = _prev_pn
                 return img, (hdr or fits.Header())
             if ext == ".xisf":
                 from setiastro.saspro.legacy.xisf import XISF
@@ -22475,7 +22565,7 @@ class StackingSuiteDialog(QDialog):
                                 for _c in range(3):
                                     if _cfa_sparse_frame:
                                         _plane = img[..., _c]
-                                        _nz = _plane[_plane != 0.0]
+                                        _nz = _plane[np.isfinite(_plane) & (_plane != 0.0)]
                                         if _nz.size == 0:
                                             _s_c, _off_c = 1.0, 0.0
                                         else:
@@ -22689,6 +22779,7 @@ class StackingSuiteDialog(QDialog):
             else:
                 align_dir = os.path.join(self.stacking_directory, "Aligned_Images")
             os.makedirs(align_dir, exist_ok=True)
+            self._last_align_dir = align_dir
 
             passes = self.settings.value("stacking/refinement_passes", 3, type=int)
             shift_tol = self.settings.value("stacking/shift_tolerance", 0.2, type=float)
@@ -22703,6 +22794,14 @@ class StackingSuiteDialog(QDialog):
                 self.update_status(self.tr(f"🚨 Reference file does not exist: {ref_path}"))
                 return
             
+
+            if _nan_probe_enabled():
+                try:
+                    _nan_probe("register: reference", _probe_load_first(ref_path), self.update_status, force=True)
+                    for _p in normalized_files[:3]:
+                        _nan_probe(f"register: input {os.path.basename(_p)}", _probe_load_first(_p), self.update_status, force=True)
+                except Exception as _e:
+                    self.update_status(f"🔎 NaN-probe (register inputs) failed: {_e}")
 
             self._set_registration_busy(True)
 
@@ -22824,6 +22923,20 @@ class StackingSuiteDialog(QDialog):
             self._set_registration_busy(False)
         except Exception:
             pass
+
+        # NaN carry-through spot check on the finished aligned frames (debug).
+        # "After alignment complete" checkpoint: the _n_r frames here are exactly
+        # what integration will read, so any NaN loss shows up now.
+        if success and _nan_probe_enabled():
+            try:
+                _ad = getattr(self, "_last_align_dir", None)
+                if _ad and os.path.isdir(_ad):
+                    _files = sorted(f for f in os.listdir(_ad) if f.endswith("_n_r.fit"))
+                    self.update_status(f"🔎 NaN-probe: alignment complete — {len(_files)} aligned frame(s)")
+                    for _f in _files[:3]:
+                        _nan_probe(f"post-align {_f}", _probe_load_first(os.path.join(_ad, _f)), self.update_status, force=True)
+            except Exception as _e:
+                self.update_status(f"🔎 NaN-probe (post-align) failed: {_e}")
 
         # Update any local label directly (avoid update_status to prevent feedback)
         try:

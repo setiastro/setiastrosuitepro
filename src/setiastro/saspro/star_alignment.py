@@ -887,6 +887,9 @@ def _push_image_to_active_view(parent, new_image: np.ndarray, metadata_update: d
 
 ASTROMETRY_API_URL = "http://nova.astrometry.net/api/"
 
+# Flip to True to log NaN carry-through at the alignment checkpoints (per frame).
+NAN_PROBE = True
+
 def _cap_points(src_pts: np.ndarray, tgt_pts: np.ndarray, max_cp: int) -> tuple[np.ndarray,np.ndarray]:
     if src_pts.shape[0] <= max_cp:
         return src_pts, tgt_pts
@@ -3073,6 +3076,17 @@ def _finalize_write_job(args):
         # lanes via isfinite().
         if np.isinf(aligned).any():
             aligned = np.nan_to_num(aligned, nan=np.nan, posinf=0.0, neginf=0.0)
+
+        # NaN carry-through probe (debug): confirm the trail no-data survived the
+        # warp into the aligned frame integration will read. Enable via the
+        # module-level NAN_PROBE flag; routed through dbg() so it lands in the log.
+        if NAN_PROBE:
+            try:
+                dbg(f"🔎 NaN-probe [after-align {base}] "
+                    f"NaN={int(np.isnan(aligned).sum())} inf={int(np.isinf(aligned).sum())} "
+                    f"shape={tuple(aligned.shape)}")
+            except Exception:
+                pass
 
         # 5) save aligned image
         name, _ = os.path.splitext(base)
