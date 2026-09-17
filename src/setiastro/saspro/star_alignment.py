@@ -897,7 +897,7 @@ def _zero_ignore_mask(gray2d: np.ndarray, edge_trim: int = 8) -> np.ndarray | No
     """SEP 'ignore' mask (True = skip) for the border-fill left by WCS
     reprojection: exact-zero pixels, dilated inward a few px to also swallow
     the Lanczos ringing fringe at the footprint edge. None if nothing to mask."""
-    m = (gray2d == 0.0)
+    m = (gray2d == 0.0) | ~np.isfinite(gray2d)   # trail no-data may be 0.0 or NaN
     if not m.any():
         return None
     if edge_trim > 0:
@@ -2881,7 +2881,11 @@ def _finalize_write_job(args):
         is_mono = (img.ndim == 2)
         src_gray_full = img if is_mono else np.mean(img, axis=2)
         src_gray_full = np.nan_to_num(src_gray_full, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
-        img = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+        # Keep satellite-trail NaN (no-data) in the frame we warp + save; scrub
+        # only +/-inf. Detection uses the filled src_gray_full above, so star
+        # matching is unaffected. NaN blooms through the Lanczos warp (covering
+        # the ring halo) and is dropped by isfinite() at integration.
+        img = np.nan_to_num(img, nan=np.nan, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
         img = np.ascontiguousarray(img)
 
         # Satellite sidecar masks retired: trail pixels are baked to 0.0 at
@@ -3064,8 +3068,11 @@ def _finalize_write_job(args):
             drizzle_tuple = (align_model, None)
             warp_label = align_model
 
-        if np.isnan(aligned).any() or np.isinf(aligned).any():
-            aligned = np.nan_to_num(aligned, nan=0.0, posinf=0.0, neginf=0.0)
+        # Keep satellite-trail NaN as no-data through to integration; scrub
+        # only +/-inf (which would poison the reducer sums). Kernels drop NaN
+        # lanes via isfinite().
+        if np.isinf(aligned).any():
+            aligned = np.nan_to_num(aligned, nan=np.nan, posinf=0.0, neginf=0.0)
 
         # 5) save aligned image
         name, _ = os.path.splitext(base)
@@ -3379,6 +3386,14 @@ def _detect_stars_uniform(img32: np.ndarray,
 
     img32 = np.asarray(img32, np.float32, order="C")
     H, W = img32.shape[:2]
+
+    # Satellite-trail no-data reaches detection as NaN; SEP cannot background or
+    # extract across NaN, so fold non-finite pixels into the ignore mask and
+    # fill them for the stats. Detection copy only -- the saved frame keeps NaN.
+    if not np.isfinite(img32).all():
+        _nf = ~np.isfinite(img32)
+        mask = _nf if mask is None else (np.asarray(mask, bool) | _nf)
+        img32 = np.nan_to_num(img32, nan=0.0, posinf=0.0, neginf=0.0)
 
     bkg = sep.Background(img32, bw=64, bh=64, mask=mask)                    # <- mask
     thresh = float(det_sigma) * float(bkg.globalrms)

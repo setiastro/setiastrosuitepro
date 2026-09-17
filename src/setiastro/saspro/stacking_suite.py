@@ -729,7 +729,7 @@ def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
 
         a = np.asarray(a, dtype=np.float32, order="C")
         if not np.isfinite(a).all():
-            np.nan_to_num(a, copy=False, posinf=0.0, neginf=0.0)
+            np.nan_to_num(a, copy=False, nan=np.nan, posinf=0.0, neginf=0.0)  # keep NaN (satellite no-data); scrub only +/-inf
         return a
 
     max_workers = min(N, max(1, (os.cpu_count() or 4)))
@@ -17819,6 +17819,20 @@ class StackingSuiteDialog(QDialog):
                 f"Satellite mask shape mismatch: got {sat_mask_2d.shape}, expected {expected_hw}"
             )
 
+        # --- Satellite trail no-data marking -------------------------------
+        # Turn the removed trail into NaN (no-data), not a magic 0.0. NaN is
+        # nan-safe through normalization, blooms through the Lanczos
+        # registration warp (covering its ringing halo too), and is dropped by
+        # every rejection kernel via isfinite(). Uses the authoritative
+        # sat_mask_2d rather than an (out == 0.0) scan so genuine clamped-zero
+        # background is left untouched. Gated on clip_trail.
+        if clip_trail and bool(sat_mask_2d.any()):
+            if out.ndim == 2:
+                out[sat_mask_2d] = np.nan
+            elif out.shape[0] == 3:            # CHW
+                out[:, sat_mask_2d] = np.nan
+            else:                               # HWC
+                out[sat_mask_2d, :] = np.nan
         return out, sat_mask_2d
 
     def _apply_flat_strength(
