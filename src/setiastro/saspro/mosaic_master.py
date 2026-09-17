@@ -1155,27 +1155,51 @@ def _as_hwc(img):
     return a[:, :, None] if a.ndim == 2 else a
 
 def _panel_mad(img, *, mono=None) -> float:
-    """Median absolute deviation of a panel's pixels (robust spread).
+    """Raw median absolute deviation of a panel, computed identically to the
+    Histogram statistics dialog so the two surfaces report the same number.
+
+    Mirrors histogram.py's real-statistics MAD exactly: per channel, raw
+    ``median(|x - median(x)|)`` with no 1.4826 scaling and no black-point
+    normalization. (The old black-point subtraction was a no-op -- MAD is
+    translation-invariant, so subtracting a pedestal never changed the value.)
+    Large channels are subsampled with the same seeded RNG and 5M cap the
+    Histogram uses, so the numbers agree bit-for-bit on clean data. Non-finite
+    pixels are dropped per channel; that only diverges from the Histogram where
+    the Histogram itself would return NaN, and it keeps the linear/stretched
+    discriminator from silently collapsing to NaN on panels with masked borders.
 
     Linear astronomical data is sky-dominated and pathologically tight, so its
-    MAD is tiny (order 1e-3). A display stretch lifts and spreads the midtones,
-    raising the MAD by one to two orders of magnitude. This is the cleanest
-    single-number discriminator between linear and stretched panels.
+    MAD is tiny (order 1e-3); a display stretch lifts and spreads the midtones,
+    raising the MAD by one to two orders of magnitude. That gap is what the
+    caller uses to tell linear panels from stretched ones.
 
-    Uses a black-point-normalized copy so a pure pedestal offset between panels
-    doesn't affect the spread measurement.
+    For a colour panel each channel is measured exactly as the Histogram
+    measures it and the per-channel MADs are averaged into the single scalar the
+    caller needs (swap ``np.mean`` for ``np.max`` below to track the widest
+    channel instead).
     """
-    m = mono if mono is not None else (img if img.ndim == 2 else np.mean(img, axis=2))
-    m = np.asarray(m, dtype=np.float32)
-    finite = m[np.isfinite(m)]
-    if finite.size == 0:
-        return 0.0
-    # Black-point normalize (subtract the floor) so MAD reflects spread, not offset.
-    lo = float(np.percentile(finite, 0.5))
-    v = finite - lo
-    med = float(np.median(v))
-    mad = float(np.median(np.abs(v - med)))
-    return mad
+    def _hist_mad_1d(chan) -> float:
+        # One channel, identical to histogram.py's real-statistics MAD path.
+        flat = np.asarray(chan, dtype=np.float32).ravel()
+        flat = flat[np.isfinite(flat)]
+        if flat.size == 0:
+            return 0.0
+        if flat.size > 20_000_000:
+            idx = np.random.default_rng(0).choice(
+                flat.size, size=5_000_000, replace=False)
+            flat = flat[idx]
+        cmed = float(np.median(flat))
+        return float(np.median(np.abs(flat - cmed)))
+
+    if mono is not None:
+        return _hist_mad_1d(mono)
+
+    a = np.asarray(img)
+    if a.ndim == 2:
+        return _hist_mad_1d(a)
+
+    mads = [_hist_mad_1d(a[..., c]) for c in range(a.shape[2])]
+    return float(np.mean(mads)) if mads else 0.0
 
 def estimate_background_level(img, *, tiles=16, keep_frac=0.15, valid=None,
                               min_tile_valid=0.60, clip_sigma=2.5, clip_iters=3):

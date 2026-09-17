@@ -24,7 +24,8 @@ try:
 except Exception:
     sip = None
     
-from setiastro.saspro.dnd_mime import MIME_VIEWSTATE, MIME_CMD, MIME_MASK, MIME_ACTION
+from setiastro.saspro.dnd_mime import (MIME_VIEWSTATE, MIME_CMD, MIME_MASK,
+                                       MIME_ACTION, MIME_SHORTCUT_MOVE)
 
 from pathlib import Path
 import os  # ← NEW
@@ -281,46 +282,30 @@ class DraggableToolBar(QToolBar):
                 self._press_had_mod[obj] = self._mods_ok(QApplication.keyboardModifiers())
                 return False  # allow normal press visuals
 
-            # Move with L held:
+            # Move with L held → start ONE unified drag. No modifier required.
+            #
+            # The drag carries every payload the possible drop targets know how
+            # to read, and the TARGET decides what happens on drop:
+            #   • dropped on a View           → runs the command      (MIME_CMD)
+            #   • dropped on the empty canvas → creates a shortcut     (MIME_ACTION)
+            #   • dropped back on a toolbar   → reorders the button    (TOOLBAR_REORDER_MIME)
+            #
+            # Alt/Ctrl/Shift are no longer needed. The only thing the lock still
+            # changes is whether the reorder payload is offered.
             if ev.type() == QEvent.Type.MouseMove and (ev.buttons() & Qt.MouseButton.LeftButton):
                 start = self._press_pos.get(obj)
                 if start is not None:
                     delta = ev.globalPosition().toPoint() - start
                     if delta.manhattanLength() > QApplication.startDragDistance():
-                        mods_now = QApplication.keyboardModifiers()
-                        had_mod  = self._press_had_mod.get(obj, False)
-                        
-                        # CASE 1: had/has modifiers → create desktop shortcut / function-bundle drag (existing behavior)
-                        if had_mod or self._mods_ok(mods_now):
-                            act = self._find_action_for_button(obj)
-                            if act:
-                                self._start_drag_for_action(act)
-                                self._suppress_release.add(obj)
-                            self._press_pos.pop(obj, None)
-                            self._press_had_mod.pop(obj, None)
-                            return True  # consume
-                        else:
-                            # CASE 2: plain drag (no modifiers) → reorder within this toolbar
-                            # CHECK LOCK STATE FIRST
-                            if self._is_locked():
-                                # Lock is active: DO NOT start drag.
-                                # Should we consume the event? 
-                                # If we consume it, the button won't feel "pressed" anymore if the user keeps dragging?
-                                # Actually, if we just return False, standard QToolButton behavior applies (it might think it's being pressed).
-                                # However, we want to prevent the *reorder* logic.
-                                # So simply doing nothing here is enough to prevent the reorder drag from starting.
-                                
-                                # But we might want to let the user know, or just silently fail distinctively?
-                                # Silently failing distinctively is what the user asked for (prevent involuntary move).
-                                # If we return False, the button keeps tracking the mouse, which is fine (it won't click unless released inside).
-                                return False 
-
-                            self._start_reorder_drag_for_button(obj)
+                        act = self._find_action_for_button(obj)
+                        if act is not None:
+                            self._start_unified_drag_for_button(
+                                obj, act, allow_reorder=not self._is_locked()
+                            )
                             self._suppress_release.add(obj)
-                            self._press_pos.pop(obj, None)
-                            self._press_had_mod.pop(obj, None)
-                            return True  # consume
-
+                        self._press_pos.pop(obj, None)
+                        self._press_had_mod.pop(obj, None)
+                        return True  # consume
                 return False
 
             # Release: if we started any drag, swallow the release so click won't fire
@@ -334,6 +319,40 @@ class DraggableToolBar(QToolBar):
 
         return super().eventFilter(obj, ev)
 
+    def _start_unified_drag_for_button(self, btn: QToolButton, act: QAction,
+                                       allow_reorder: bool = True):
+        act_id = act.property("command_id") or act.objectName()
+        if not act_id:
+            return
+        act_id = str(act_id)
+
+        md = QMimeData()
+
+        # 1) run-on-view payload (carries per-command preset if one is stored)
+        s = QSettings()
+        raw = s.value(f"presets/{act_id}", "", type=str) or ""
+        try:
+            preset = json.loads(raw) if raw else {}
+        except Exception:
+            preset = {}
+        md.setData(MIME_CMD, _pack_cmd_payload(act_id, preset, name=act.text() or None))
+
+        # 2) create-shortcut-on-canvas payload
+        md.setData(MIME_ACTION, act_id.encode("utf-8"))
+
+        # 3) reorder handshake — only when the toolbar is unlocked
+        if allow_reorder:
+            md.setData(TOOLBAR_REORDER_MIME, b"1")
+
+        drag = QDrag(btn)  # source MUST be the button for reorder drops
+        drag.setMimeData(md)
+        pm = act.icon().pixmap(32, 32) if not act.icon().isNull() else QPixmap(32, 32)
+        if pm.isNull():
+            pm = QPixmap(32, 32); pm.fill(Qt.GlobalColor.darkGray)
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction,
+                  Qt.DropAction.CopyAction)
 
     def _start_drag_for_action(self, act: QAction):
         act_id = act.property("command_id") or act.objectName()
@@ -1029,8 +1048,9 @@ class ShortcutButton(QToolButton):
         self._press_pos = None
         self._start_geom = None
         self._did_command_drag = False
+        self._moved = False
         self.setToolTip(
-            f"{label}\n• Double-click: open\n• Drag: move\n• Alt/Ctrl+Drag onto a view: headless apply"
+            f"{label}\n• Double-click: open\n• Drag onto a view: headless apply\n• Drag on empty canvas: move"
         )
 
     # --- Preset helpers (QSettings) -------------------------------------
@@ -1122,53 +1142,73 @@ class ShortcutButton(QToolButton):
         self._did_command_drag = True
 
     # --- Mouse handlers --------------------------------------------------
-    def _mods_mean_command_drag(self) -> bool:
-        # Use ALT only for headless drag so Ctrl/Shift can be used for multiselect
-        return bool(QApplication.keyboardModifiers() & Qt.KeyboardModifier.AltModifier)
-
     def mousePressEvent(self, e: QMouseEvent):
         if e.button() == Qt.MouseButton.LeftButton:
             mods = QApplication.keyboardModifiers()
 
             if mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
-                self._mgr.toggle_select(self.sid)            # ← was self.shortcut_id
+                self._mgr.toggle_select(self.sid)
                 return
 
-            if self.sid not in self._mgr.selected:           # ← was self.shortcut_id
+            if self.sid not in self._mgr.selected:
                 self._mgr.select_only(self.sid)
 
             self._dragging = True
             self._press_pos = e.globalPosition().toPoint()
-            self._last_drag_pos = self._press_pos
-            self._did_command_drag = False
 
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e: QMouseEvent):
-        if self._dragging and self._press_pos is not None:
-            cur = e.globalPosition().toPoint()
-            step = cur - self._last_drag_pos
-            if step.manhattanLength() < QApplication.startDragDistance():
-                return super().mouseMoveEvent(e)
-
-            # If exactly 1 selected and ALT held → command drag (headless)
-            if len(self._mgr.selected) == 1 and self._mods_mean_command_drag():
-                self._start_command_drag()
-                return
-
-            # Otherwise: move the whole selection by step delta
-            self._mgr.move_selected_by(step.x(), step.y())
-            self._last_drag_pos = cur
+        if (self._dragging
+                and self._press_pos is not None
+                and (e.buttons() & Qt.MouseButton.LeftButton)
+                and (e.globalPosition().toPoint() - self._press_pos).manhattanLength()
+                    >= QApplication.startDragDistance()):
+            self._dragging = False
+            self._press_pos = None
+            self._start_shortcut_drag()          # ONE real QDrag; the target decides
             return
-
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e: QMouseEvent):
-        if self._dragging and e.button() == Qt.MouseButton.LeftButton:
-            self._dragging = False
-            if not self._did_command_drag:
-                self._mgr.save_shortcuts()  # persist positions after move
+        self._dragging = False
+        self._press_pos = None
         super().mouseReleaseEvent(e)
+
+    def _start_shortcut_drag(self):
+        """
+        Start ONE real drag from this canvas shortcut. No modifier required.
+
+        The payload is understood by every existing MIME_CMD drop target:
+          - a View                -> runs the command (ImageSubWindow.dropEvent)
+          - a Function Bundle chip -> appends the step
+          - the Workflow Assistant -> adds the step to a lane
+        Plus MIME_SHORTCUT_MOVE (the sid), so dropping back on the empty canvas
+        MOVES this icon instead of creating a duplicate.
+
+        Multi-selection is a pure group MOVE: we omit MIME_CMD so a stray drop
+        on a view/chip can't fire one command out of many - only the canvas,
+        which reads MIME_SHORTCUT_MOVE, accepts it and shifts the whole group.
+        """
+        md = QMimeData()
+        multi = len(self._mgr.selected) > 1
+
+        if not multi:
+            md.setData(MIME_CMD, _pack_cmd_payload(
+                self.command_id, self._load_preset() or {}, name=self.text()))
+
+        # Canvas reposition handshake (records which icon initiated the drag)
+        md.setData(MIME_SHORTCUT_MOVE, self.sid.encode("utf-8"))
+
+        drag = QDrag(self)
+        drag.setMimeData(md)
+        pm = self.icon().pixmap(32, 32)
+        if pm.isNull():
+            pm = QPixmap(32, 32); pm.fill(Qt.GlobalColor.darkGray)
+        drag.setPixmap(pm)
+        drag.setHotSpot(pm.rect().center())
+        drag.exec(Qt.DropAction.CopyAction | Qt.DropAction.MoveAction,
+                  Qt.DropAction.CopyAction)
 
     def mouseDoubleClickEvent(self, e: QMouseEvent):
         # Double-click opens the tool. If this shortcut carries a preset, route
@@ -1280,7 +1320,8 @@ class ShortcutCanvas(QWidget):
 
     def dragEnterEvent(self, e):
         md = e.mimeData()
-        if md.hasFormat(MIME_ACTION) or md.hasFormat(MIME_CMD) or self._md_has_openable_urls(md):
+        if (md.hasFormat(MIME_ACTION) or md.hasFormat(MIME_CMD)
+                or md.hasFormat(MIME_SHORTCUT_MOVE) or self._md_has_openable_urls(md)):
             self.raise_()
             e.acceptProposedAction()
         else:
@@ -1326,7 +1367,9 @@ class ShortcutCanvas(QWidget):
 
 
     def dragMoveEvent(self, e):
-        if e.mimeData().hasFormat(MIME_ACTION) or e.mimeData().hasFormat(MIME_CMD) or self._md_has_openable_urls(e.mimeData()):
+        md = e.mimeData()
+        if (md.hasFormat(MIME_ACTION) or md.hasFormat(MIME_CMD)
+                or md.hasFormat(MIME_SHORTCUT_MOVE) or self._md_has_openable_urls(md)):
             e.acceptProposedAction()
         else:
             e.ignore()
@@ -1342,6 +1385,21 @@ class ShortcutCanvas(QWidget):
         if self._forward_command_drop(e):
             self.lower()
             return
+
+        # 1.5) an EXISTING canvas shortcut dropped on empty canvas → MOVE it
+        #      (don't fall through to the create-shortcut path, which would
+        #      duplicate it). We only reach here when 1) found no view under
+        #      the cursor, i.e. this really is an empty-canvas drop.
+        if md.hasFormat(MIME_SHORTCUT_MOVE):
+            try:
+                sid = bytes(md.data(MIME_SHORTCUT_MOVE)).decode("utf-8")
+            except Exception:
+                sid = ""
+            if sid:
+                self._mgr.move_shortcut_group_to(sid, e.position().toPoint())
+                e.acceptProposedAction()
+                self.lower()
+                return
 
         # 2) command-only drops (no MIME_ACTION) → create a shortcut with preset
         #    This is used by History Explorer Alt+drag.
@@ -2472,6 +2530,19 @@ class ShortcutManager:
             g = w.geometry()
             g.translate(dx, dy)
             w.setGeometry(g)
+
+    def move_shortcut_group_to(self, sid: str, pos: QPoint):
+        """Reposition the dragged shortcut (and, if multi-selected, its whole
+        group) so the initiating icon's center lands at `pos` (canvas coords).
+        Called from ShortcutCanvas.dropEvent for an empty-canvas drop."""
+        w = self.widgets.get(sid)
+        if _is_dead(w):
+            return
+        if sid not in self.selected:
+            self.select_only(sid)   # a bare drag of an unselected icon moves just it
+        old_center = w.geometry().center()
+        self.move_selected_by(pos.x() - old_center.x(), pos.y() - old_center.y())
+        self.save_shortcuts()
 
     def delete_by_id(self, sid: str, *, persist: bool = True):
         self.selected.discard(sid)

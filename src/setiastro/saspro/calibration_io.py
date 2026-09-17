@@ -211,9 +211,11 @@ def write_calibrated_fast(
     a single float32 PrimaryHDU with scaling keywords scrubbed. Only FITS is
     fast-pathed here; callers that need XISF/TIFF output should keep save_image.
     """
+    # Preserve NaN as no-data (satellite trails) — write float32 straight
+    # through; scrub only +/-inf. FITS float32 stores NaN natively.
     arr = np.ascontiguousarray(
         np.nan_to_num(np.asarray(img, dtype=np.float32),
-                      nan=0.0, posinf=0.0, neginf=0.0)
+                      nan=np.nan, posinf=0.0, neginf=0.0)
     )
 
     hdr = scrub_scaling_keywords(header)

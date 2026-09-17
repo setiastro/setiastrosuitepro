@@ -97,23 +97,6 @@ class LiveStackSettingsDialog(QDialog):
         )
         self.star_spin.valueChanged.connect(lambda v: None)
         
-        # Acquisition Dely (int)
-        self.delay_spin = CustomDoubleSpinBox(
-            minimum=0.0,
-            maximum=60.0,
-            initial=parent.FILE_STABLE_SECS,
-            step=0.5
-        )
-
-        # find this block:
-        self.delay_spin = CustomDoubleSpinBox(
-            minimum=0.0,
-            maximum=60.0,
-            initial=parent.FILE_STABLE_SECS,
-            step=0.5
-        )
-
-        # replace with:
         self.delay_spin = CustomDoubleSpinBox(
             minimum=0.0,
             maximum=60.0,
@@ -133,7 +116,14 @@ class LiveStackSettingsDialog(QDialog):
             "Lower = more stars found (including faint ones).\n"
             "Higher = only bright/obvious stars. Default: 7.0"
         )
-
+        # Ignore non-FITS files
+        self.fits_only_check = QCheckBox("Ignore non-FITS files (skip TIFF/PNG/JPG/RAW/XISF)")
+        self.fits_only_check.setChecked(parent.fits_only)
+        self.fits_only_check.setToolTip(
+            "When enabled, only *.fit and *.fits files are picked up from the watch folder.\n"
+            "Useful when your capture software also writes preview JPGs, autostretch TIFFs,\n"
+            "or other derived images alongside the raw FITS frames."
+        )
         # Build form layout
         form = QFormLayout()
         form.addRow("Switch to μ–σ clipping after:", self.bs_spin)
@@ -144,6 +134,7 @@ class LiveStackSettingsDialog(QDialog):
         form.addRow("Min Star Count:", self.star_spin)
         form.addRow("Acquisition Delay:", self.delay_spin)
         form.addRow("Star Detection σ:", self.star_sigma_spin)
+        form.addRow(self.fits_only_check)
 
         self.mapping_combo = QComboBox()
         opts = ["Natural", "SHO", "HSO", "OSH", "SOH", "HOS", "OHS"]
@@ -171,7 +162,8 @@ class LiveStackSettingsDialog(QDialog):
         """
         Returns a tuple in order:
             (bootstrap_frames, clip_threshold,
-            max_fwhm, max_ecc, min_star_count, mapping, delay, star_thresh_sigma)
+            max_fwhm, max_ecc, min_star_count, mapping, delay,
+            star_thresh_sigma, fits_only)
         """
         bs            = int(self.bs_spin.value())
         sigma         = self.sigma_spin.value()
@@ -181,7 +173,8 @@ class LiveStackSettingsDialog(QDialog):
         mapping       = self.mapping_combo.currentText()
         delay         = self.delay_spin.value()
         star_sigma    = self.star_sigma_spin.value()
-        return bs, sigma, fwhm, ecc, stars, mapping, delay, star_sigma
+        fits_only     = self.fits_only_check.isChecked()
+        return bs, sigma, fwhm, ecc, stars, mapping, delay, star_sigma, fits_only
 
 def _qget(settings: QSettings, key: str, default, typ):
     try:
@@ -435,6 +428,7 @@ class LiveStackWindow(QDialog):
         self.star_trail_mode    = _qget(s, "LiveStack/star_trail_mode",    False, bool)
         self.FILE_STABLE_SECS     = _qget(s, "LiveStack/file_stable_secs",     3.0,   float)
         self.star_thresh_sigma    = _qget(s, "LiveStack/star_thresh_sigma",     7.0,   float)
+        self.fits_only          = _qget(s, "LiveStack/fits_only",         False, bool)
 
 
         self.total_exposure = 0.0  # seconds
@@ -703,7 +697,7 @@ class LiveStackWindow(QDialog):
     def open_settings(self):
         dlg = LiveStackSettingsDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            bs, sigma, fwhm, ecc, stars, mapping, delay, star_sigma = dlg.getValues()
+            bs, sigma, fwhm, ecc, stars, mapping, delay, star_sigma, fits_only = dlg.getValues()
 
             # 1) Persist into QSettings
             s = QSettings()
@@ -715,6 +709,7 @@ class LiveStackWindow(QDialog):
             s.setValue("LiveStack/narrowband_mapping", mapping)
             s.setValue("LiveStack/file_stable_secs",   delay)
             s.setValue("LiveStack/star_thresh_sigma",  star_sigma)
+            s.setValue("LiveStack/fits_only",          fits_only)
 
             # 2) Apply to this live‐stack session
             self.bootstrap_frames   = bs
@@ -725,13 +720,26 @@ class LiveStackWindow(QDialog):
             self.narrowband_mapping = mapping
             self.FILE_STABLE_SECS   = delay
             self.star_thresh_sigma  = star_sigma
+            self.fits_only          = fits_only
 
             self.status_label.setText(
                 f"↺ Settings saved: BS={bs}, σ={sigma:.1f}, "
                 f"FWHM≤{fwhm:.1f}, ECC≤{ecc:.2f}, Stars≥{stars}, "
-                f"Mapping={mapping}, StarSigma={star_sigma:.1f}"
+                f"Mapping={mapping}, StarSigma={star_sigma:.1f}, "
+                f"FITS-only={'on' if fits_only else 'off'}"
             )
             QApplication.processEvents()
+
+    def _watch_extensions(self):
+        """Glob patterns to scan for in the watch folder, honoring 'FITS only' setting."""
+        if getattr(self, "fits_only", False):
+            return ("*.fit", "*.fits")
+        return (
+            "*.fit", "*.fits", "*.tif", "*.tiff",
+            "*.cr2", "*.cr3", "*.nef", "*.arw",
+            "*.dng", "*.raf", "*.orf", "*.rw2", "*.pef", "*.xisf",
+            "*.png", "*.jpg", "*.jpeg",
+        )
 
     def zoom_in(self):
         self.view.scale(1.2, 1.2)
@@ -1146,11 +1154,7 @@ class LiveStackWindow(QDialog):
             return
         self._stop_event.clear()
         # Populate processed_files with all existing files so they won't be re-processed
-        exts = (
-            "*.fit", "*.fits", "*.tif", "*.tiff",
-            "*.cr2", "*.cr3", "*.nef", "*.arw",
-            "*.dng", "*.raf", "*.orf", "*.rw2", "*.pef", "*.xisf", "*.png", "*.jpg", "*.jpeg"
-        )
+        exts = self._watch_extensions()
         all_paths = []
         for ext in exts:
             all_paths += glob.glob(os.path.join(self.watch_folder, "**", ext), recursive=True)
@@ -1314,12 +1318,7 @@ class LiveStackWindow(QDialog):
         self._poll_busy = True
         try:
             # Gather candidates
-            exts = (
-                "*.fit", "*.fits", "*.tif", "*.tiff",
-                "*.cr2", "*.cr3", "*.nef", "*.arw",
-                "*.dng", "*.raf", "*.orf", "*.rw2", "*.pef", "*.xisf",
-                "*.png", "*.jpg", "*.jpeg"
-            )
+            exts = self._watch_extensions()
             all_paths = []
             for ext in exts:
                 all_paths += glob.glob(os.path.join(self.watch_folder, '**', ext), recursive=True)

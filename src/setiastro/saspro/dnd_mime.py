@@ -13,8 +13,8 @@ MIME_ASTROMETRY  = "application/x-sas-astrometry"   # WCS copy payload
 
 # New (for Alt+drag ⧉ to create live link between two views)
 MIME_LINKVIEW    = "application/x-sas-link-view"    # view-link handshake (carries source_view_id)
+MIME_SHORTCUT_MOVE = "application/x-sas-shortcut-move"  # reposition an existing canvas shortcut (carries sid)
 
-# Optional: a quick set you can reference when accepting DnD
 SUPPORTED_MIME_FORMATS = {
     MIME_VIEWSTATE,
     MIME_CMD,
@@ -22,6 +22,7 @@ SUPPORTED_MIME_FORMATS = {
     MIME_ACTION,
     MIME_ASTROMETRY,
     MIME_LINKVIEW,
+    MIME_SHORTCUT_MOVE,
 }
 
 __all__ = [
@@ -31,5 +32,6 @@ __all__ = [
     "MIME_ACTION",
     "MIME_ASTROMETRY",
     "MIME_LINKVIEW",
+    "MIME_SHORTCUT_MOVE",
     "SUPPORTED_MIME_FORMATS",
 ]

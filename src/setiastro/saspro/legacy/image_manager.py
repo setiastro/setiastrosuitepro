@@ -660,12 +660,23 @@ class MaskManager(QObject):
         """
         return self.applied_mask_slot
 
+import threading as _threading
+_load_nan_ctx = _threading.local()
+
+def _nan_preserve_on_load() -> bool:
+    """True when the current thread opted into NaN-preserving loads."""
+    return bool(getattr(_load_nan_ctx, "preserve", False))
+
 def _finalize_loaded_image(arr: np.ndarray) -> np.ndarray:
     """Ensure float32 [finite], C-contiguous for downstream Qt/Numba."""
     if arr is None:
         return None
     # Replace NaN/Inf (can appear after BSCALE/BZERO math)
-    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+    # Preserve NaN as no-data when a NaN-aware caller opts in (satellite
+    # trails); otherwise keep the historical NaN->0 scrub. Always kill +/-inf
+    # (can appear after BSCALE/BZERO math).
+    _nanfill = np.nan if _nan_preserve_on_load() else 0.0
+    arr = np.nan_to_num(arr, nan=_nanfill, posinf=1.0, neginf=0.0)
     # Force float32 + C-order (copies if needed; detaches from memmap)
     return np.asarray(arr, dtype=np.float32, order="C")
 
