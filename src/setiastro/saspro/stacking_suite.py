@@ -21765,12 +21765,23 @@ class StackingSuiteDialog(QDialog):
                 if preview is None:
                     return ("noprev", fp, None)
                 try:
-                    mean  = float(np.mean(preview))
-                    pmin  = float(np.nanmin(preview))
-                    med   = float(np.median(preview - pmin))
-                    c, ecc, _blind = _star_count_ecc_size(preview)
-                    size  = self._measure_fwhm_halfres(preview)
-                    noise = self._mad_noise(preview)
+                    # NaN = satellite-trail no-data. Plain np.mean/np.median and the
+                    # cv2 star detector return garbage/NaN on it, which floored the
+                    # frame's weight (Bg=nan). Measure on finite, nonzero pixels; give
+                    # the star detector a NaN-free (background-filled) copy.
+                    preview = np.asarray(preview, dtype=np.float32)
+                    finite  = np.isfinite(preview)
+                    vals    = preview[finite & (preview != 0.0)]
+                    if vals.size == 0:
+                        return ("err", fp, "no finite data in preview")
+                    pmin  = float(np.min(vals))
+                    med   = float(np.median(vals - pmin))
+                    mean  = float(np.mean(vals))
+                    _fill = float(np.median(vals))
+                    preview_filled = np.where(finite, preview, _fill).astype(np.float32, copy=False)
+                    c, ecc, _blind = _star_count_ecc_size(preview_filled)
+                    size  = self._measure_fwhm_halfres(preview_filled)
+                    noise = self._mad_noise(vals)
                     return ("ok", fp, (mean, med, c, ecc, size, noise))
                 except Exception as e:
                     return ("err", fp, f"{type(e).__name__}: {e}")
@@ -22584,16 +22595,18 @@ class StackingSuiteDialog(QDialog):
                                         _m = img[..., _c] != 0.0
                                         img[..., _c][_m] = img[..., _c][_m] * _s_c
                                     else:
-                                        _s_c, _off_c = _compute_scale(
-                                            ref_target_medians_rgb[_c],
-                                            pm if pm > 0 else 1.0,
-                                            img[..., _c],
-                                            refine_stride=8,
-                                            refine_if_rel_err=0.10,
-                                            return_offset=True,
-                                        )
-                                        img[..., _c] = _apply_scale_inplace(img[..., _c], _s_c, offset=_off_c)
-                                    _ch_dbg.append(f"{'RGB'[_c]}: s={_s_c:.6g} off={_off_c:.6g}")
+                                        # Additive per-channel background match (nan-safe),
+                                        # mirroring the mono fix. Pure multiplicative scaling does
+                                        # NOT equalize an additive sky pedestal across sessions, so
+                                        # multi-night OSC would band exactly like mono did. NaN
+                                        # (satellite no-data) is preserved through the shift.
+                                        _pl   = img[..., _c]
+                                        _finc = _pl[np.isfinite(_pl) & (_pl != 0.0)]
+                                        _bg_c = float(np.median(_finc)) if _finc.size else 0.0
+                                        _tgt_c = float(ref_target_medians_rgb[_c])
+                                        img[..., _c] = (_pl - _bg_c + _tgt_c).astype(np.float32, copy=False)
+                                        _s_c, _off_c = 1.0, float(_tgt_c - _bg_c)
+                                    _ch_dbg.append(f"{'RGB'[_c]}: bg_shift={_off_c:.6g}")
                                 if getattr(self, "_norm_dbg_on", False):
                                     self.update_status(
                                         f"🔬[04 scale-args] {os.path.basename(fp)} per-channel"
