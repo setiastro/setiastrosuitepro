@@ -8,7 +8,12 @@ import numpy as np
 import pytest
 
 from setiastro.saspro.doc_manager import ImageDocument
-from setiastro.saspro.project_io import ProjectWriter, _np_load_from_bytes
+from setiastro.saspro.project_io import (
+    ProjectWriter,
+    _GC_EVERY_N_DOCS,
+    _np_load_from_bytes,
+    _should_gc_after_doc,
+)
 from setiastro.saspro.swap_manager import get_swap_manager
 
 
@@ -76,3 +81,13 @@ def test_project_writer_loads_history_without_caching(tmp_path, qapp, monkeypatc
         img = _np_load_from_bytes(z.read([n for n in names if "/current." in n][0]))
         assert img.shape == (8, 8)
         assert np.allclose(img, 0.5)
+
+
+def test_gc_runs_every_n_docs_and_once_at_end():
+    every = _GC_EVERY_N_DOCS
+    assert every >= 2
+    hits = [i for i in range(1, every + 2) if _should_gc_after_doc(i, every + 1, every)]
+    assert hits == [every, every + 1]
+    assert [_should_gc_after_doc(i, every, every) for i in range(1, every + 1)] == (
+        [False] * (every - 1) + [True]
+    )

@@ -4,7 +4,6 @@ import gc
 import io
 import os
 import json
-import tempfile
 import time
 import zipfile
 import uuid
@@ -19,6 +18,20 @@ try:
     from PyQt6 import sip
 except Exception:
     sip = None
+
+# Full collections are expensive on a heap of large ndarrays. Do them in batches
+# (and once at the end) instead of after every document.
+_GC_EVERY_N_DOCS = 8
+
+
+def _should_gc_after_doc(index_1based: int, total: int, every: int = _GC_EVERY_N_DOCS) -> bool:
+    if every <= 0 or index_1based <= 0 or total <= 0:
+        return False
+    if index_1based % every == 0:
+        return True
+    return index_1based == total
+
+
 # ---------- helpers ----------
 def _coerce_image_array(arr):
     """Unwrap an image-like payload to a numeric float32 ndarray."""
@@ -75,27 +88,27 @@ def _np_save_to_bytes(arr, *, compress: bool = True) -> bytes:
 
 def _np_write_array_to_zip(z: zipfile.ZipFile, arcname: str, arr, *, compress: bool) -> None:
     """
-    Write one image into the project zip via a temp file, then stream it in.
+    Serialize one image in RAM and write it into the zip, then drop the buffer.
 
-    Avoids keeping a full compressed BytesIO plus zipfile.writestr copy in RAM.
+    Peak extra memory is one payload (plus the already-open view), not N copies.
+    History frames are loaded with cache=False and discarded by the caller.
     npz is already compressed, so the zip member is stored (ZIP_STORED).
     """
     import numpy as _np
     a = _coerce_image_array(arr)
-    suffix = ".npz" if compress else ".npy"
-    fd, tmp = tempfile.mkstemp(suffix=suffix)
-    os.close(fd)
+    bio = io.BytesIO()
     try:
         if compress:
-            _np.savez_compressed(tmp, img=a)
+            _np.savez_compressed(bio, img=a)
         else:
-            _np.save(tmp, a)
-        z.write(tmp, arcname=arcname, compress_type=zipfile.ZIP_STORED)
+            _np.save(bio, a)
+        payload = bio.getvalue()
     finally:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
+        bio.close()
+    try:
+        z.writestr(arcname, payload, compress_type=zipfile.ZIP_STORED)
+    finally:
+        del payload
 
 
 def _write_history_entries(z, sm, entries, base: str, prefix: str, hist_ext: str, compress: bool) -> list:
@@ -399,7 +412,8 @@ class ProjectWriter:
             cur_ext = "npz" if compress else "npy"
             hist_ext = cur_ext
 
-            for doc in docs:
+            n_docs = len(docs)
+            for i, doc in enumerate(docs, start=1):
                 doc_id = id_map[doc]
                 base = f"views/{doc_id}"
 
@@ -494,8 +508,8 @@ class ProjectWriter:
                     json.dumps({"undo": undo_list, "redo": redo_list}, indent=2),
                 )
 
-                # Drop compressor / mmap leftovers before the next document.
-                gc.collect()
+                if _should_gc_after_doc(i, n_docs):
+                    gc.collect()
 
 
 
