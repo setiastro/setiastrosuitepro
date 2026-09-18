@@ -186,9 +186,8 @@ def test_export_rebuilds_header_from_snapshot(qapp, tmp_path):
     assert doc.metadata["__header_snapshot__"]["cards"][0][1] == "NGC7000"
 
 
-def test_export_dialog_closes_after_successful_apply(qapp, tmp_path):
+def _fake_main(qapp, doc, dm):
     from PyQt6.QtWidgets import QWidget
-    from setiastro.saspro.export_fits import ExportFitsDialog
 
     class _Settings:
         def value(self, key, default="", type=str):
@@ -198,7 +197,7 @@ def test_export_dialog_closes_after_successful_apply(qapp, tmp_path):
             pass
 
     class _Main(QWidget):
-        def __init__(self, doc, dm):
+        def __init__(self):
             super().__init__()
             self.docman = dm
             self.settings = _Settings()
@@ -211,10 +210,16 @@ def test_export_dialog_closes_after_successful_apply(qapp, tmp_path):
         def _log(self, msg):
             self.logs.append(msg)
 
+    return _Main()
+
+
+def test_export_dialog_closes_after_successful_apply(qapp, tmp_path):
+    from setiastro.saspro.export_fits import ExportFitsDialog
+
     hdr = fits.Header()
     hdr["OBJECT"] = "M42"
     doc = _doc(qapp, title="orion", extra_meta={"original_header": hdr})
-    mw = _Main(doc, DocManager())
+    mw = _fake_main(qapp, doc, DocManager())
     dlg = ExportFitsDialog(mw, {"out_dir": str(tmp_path), "overwrite": True})
     dlg.show()
     assert dlg.isVisible()
@@ -222,3 +227,37 @@ def test_export_dialog_closes_after_successful_apply(qapp, tmp_path):
     assert not dlg.isVisible()
     assert os.path.isfile(tmp_path / "orion.fits")
     assert fits.getheader(tmp_path / "orion.fits")["OBJECT"] == "M42"
+
+
+def test_export_dialog_is_independent_sized_window(qapp, tmp_path):
+    from PyQt6.QtCore import Qt
+    from setiastro.saspro.export_fits import ExportFitsDialog
+
+    doc = _doc(qapp, title="size")
+    mw = _fake_main(qapp, doc, DocManager())
+    dlg = ExportFitsDialog(mw, {"out_dir": str(tmp_path), "overwrite": True})
+    dlg.show()
+    assert dlg.windowFlags() & Qt.WindowType.Window
+    assert dlg.minimumWidth() >= 480
+    assert dlg.width() >= 480
+    assert dlg.height() >= 200
+    dlg.close()
+
+
+def test_export_dialog_closes_after_batch_docs(qapp, tmp_path):
+    from setiastro.saspro.export_fits import ExportFitsDialog
+
+    docs = [
+        _doc(qapp, title="one", extra_meta={"original_header": fits.Header({"OBJECT": "A"})}),
+        _doc(qapp, title="two", extra_meta={"original_header": fits.Header({"OBJECT": "B"})}),
+    ]
+    mw = _fake_main(qapp, docs[0], DocManager())
+    dlg = ExportFitsDialog(mw, {"out_dir": str(tmp_path), "overwrite": True})
+    dlg.show()
+    assert dlg.isVisible()
+    applied, errors = dlg._export_docs(docs, close_when_done=True)
+    assert applied == 2
+    assert errors == []
+    assert not dlg.isVisible()
+    assert os.path.isfile(tmp_path / "one.fits")
+    assert os.path.isfile(tmp_path / "two.fits")

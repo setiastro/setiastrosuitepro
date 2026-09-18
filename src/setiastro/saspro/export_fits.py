@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
+import platform
 from dataclasses import dataclass
 
+from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
-    QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout,
-    QWidget,
+    QApplication, QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QProgressDialog, QPushButton, QVBoxLayout, QWidget,
 )
 
 from setiastro.saspro.file_utils import sanitize_filename
@@ -311,7 +314,12 @@ class ExportFitsDialog(QDialog):
         super().__init__(main_window)
         self._mw = main_window
         self.setWindowTitle("Export FITS")
+        self.setWindowFlag(Qt.WindowType.Window, True)
+        if platform.system() == "Darwin":
+            self.setWindowFlag(Qt.WindowType.Tool, True)
+        self.setWindowModality(Qt.WindowModality.NonModal)
         self.setModal(False)
+        self.setMinimumSize(520, 260)
         init = normalize_export_fits_preset(preset)
         init["out_dir"] = _last_export_dir(main_window, init)
 
@@ -327,7 +335,7 @@ class ExportFitsDialog(QDialog):
 
         hint = QLabel(
             "Saves the current view as .fits into this folder.\n"
-            "In a Function Bundle the folder comes from this preset — no dialog per image."
+            "Use Apply to View Bundle, or drop a shortcut on a bundle, to export many views."
         )
         hint.setWordWrap(True)
 
@@ -343,9 +351,12 @@ class ExportFitsDialog(QDialog):
         btns = QHBoxLayout()
         btn_apply = QPushButton("Apply")
         btn_apply.clicked.connect(self._apply)
+        self.btn_apply_vbundle = QPushButton("Apply to View Bundle…")
+        self.btn_apply_vbundle.clicked.connect(self._apply_to_view_bundle)
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.close)
         btns.addWidget(btn_apply)
+        btns.addWidget(self.btn_apply_vbundle)
         btns.addStretch(1)
         btns.addWidget(btn_close)
         v.addLayout(btns)
@@ -367,6 +378,7 @@ class ExportFitsDialog(QDialog):
         grip.addWidget(self.preset_drag_handle)
         grip.addStretch(1)
         v.addLayout(grip)
+        self.resize(560, 280)
 
     def current_preset(self) -> dict:
         return {
@@ -386,37 +398,223 @@ class ExportFitsDialog(QDialog):
         if chosen:
             self.edit_dir.setText(chosen)
 
-    def _apply(self):
+    def _require_folder(self) -> dict | None:
         spec = self.current_preset()
         if not spec["out_dir"]:
             self._browse()
             spec = self.current_preset()
         if not spec["out_dir"]:
             QMessageBox.warning(self, "Export FITS", "Choose an output folder first.")
+            return None
+        return spec
+
+    def _docman(self):
+        return getattr(self._mw, "docman", None) or getattr(self._mw, "doc_manager", None)
+
+    def _export_docs(self, docs, *, close_when_done: bool = False):
+        spec = self.current_preset()
+        dm = self._docman()
+        if dm is None:
+            return 0, ["Document manager not available."]
+        log = getattr(self._mw, "_log", None)
+        applied = 0
+        errors = []
+        total = max(1, len(docs))
+        pd = None
+        if len(docs) > 1:
+            pd = QProgressDialog("Exporting FITS…", None, 0, total, self)
+            pd.setWindowTitle("Export FITS")
+            pd.setWindowFlag(Qt.WindowType.Window, True)
+            pd.setMinimumWidth(420)
+            pd.setMinimumHeight(110)
+            pd.setMinimumDuration(0)
+            pd.setWindowModality(Qt.WindowModality.ApplicationModal)
+            pd.setAutoClose(False)
+            pd.setAutoReset(False)
+            pd.setCancelButton(None)
+            pd.resize(420, 120)
+            pd.show()
+            QApplication.processEvents()
+        try:
+            for i, doc in enumerate(docs, start=1):
+                if pd is not None:
+                    pd.setValue(i - 1)
+                    pd.setLabelText(f"Exporting FITS ({i}/{total})…")
+                    QApplication.processEvents()
+                result = export_document_as_fits(dm, doc, spec)
+                if result.ok:
+                    applied += 1
+                    if callable(log):
+                        log(f"Exported FITS: {result.path}")
+                else:
+                    reason = result.reason or "Export failed."
+                    errors.append(reason)
+                    if callable(log):
+                        log(f"Export FITS skipped: {reason}")
+            if pd is not None:
+                pd.setValue(total)
+        finally:
+            if pd is not None:
+                pd.close()
+                pd.deleteLater()
+                QApplication.processEvents()
+        if spec.get("out_dir"):
+            _remember_export_dir(self._mw, spec["out_dir"])
+        if close_when_done:
+            self.close()
+        return applied, errors
+
+    def _apply(self):
+        if self._require_folder() is None:
             return
         doc = _active_doc_from_main(self._mw)
         if doc is None or getattr(doc, "image", None) is None:
             QMessageBox.information(self, "Export FITS", "No image in the active view.")
             return
-        dm = getattr(self._mw, "docman", None) or getattr(self._mw, "doc_manager", None)
-        if dm is None:
+        if self._docman() is None:
             QMessageBox.warning(self, "Export FITS", "Document manager not available.")
             return
-        result = export_document_as_fits(dm, doc, spec)
-        _remember_export_dir(self._mw, spec["out_dir"])
-        log = getattr(self._mw, "_log", None)
-        if result.ok:
-            if callable(log):
-                log(f"Exported FITS: {result.path}")
+        applied, errors = self._export_docs([doc], close_when_done=False)
+        if errors:
+            QMessageBox.warning(self, "Export FITS", errors[0])
+            return
+        if applied:
             self.close()
-        else:
-            if callable(log):
-                log(f"Export FITS skipped: {result.reason}")
-            QMessageBox.warning(self, "Export FITS", result.reason or "Export failed.")
+
+    def _load_view_bundle_choices(self):
+        settings = QSettings()
+        settings.sync()
+        raw = ""
+        for key in ("viewbundles/v3", "viewbundles/v2", "viewbundles/v1"):
+            raw = settings.value(key, "", type=str) or ""
+            if raw:
+                break
+        try:
+            data = json.loads(raw or "[]")
+        except Exception:
+            data = []
+        choices = []
+        for bundle in data:
+            if not isinstance(bundle, dict):
+                continue
+            name = str(bundle.get("name") or "Bundle").strip() or "Bundle"
+            ptrs = []
+            for x in (bundle.get("doc_ptrs") or []):
+                try:
+                    ptrs.append(int(x))
+                except Exception:
+                    pass
+            files = [str(p) for p in (bundle.get("file_paths") or []) if p]
+            choices.append((name, ptrs, files))
+        return choices
+
+    def _pick_view_bundle(self):
+        choices = self._load_view_bundle_choices()
+        if not choices:
+            QMessageBox.information(self, "Export FITS", "No View Bundles found.")
+            return None
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Apply to View Bundle…")
+        dlg.setMinimumSize(420, 280)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("Select a View Bundle:"))
+        lb = QListWidget(dlg)
+        for name, ptrs, files in choices:
+            it = QListWidgetItem(f"{name}  ({len(ptrs)} views, {len(files)} files)")
+            it.setData(Qt.ItemDataRole.UserRole, (ptrs, files))
+            lb.addItem(it)
+        if lb.count():
+            lb.setCurrentRow(0)
+        v.addWidget(lb, 1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dlg,
+        )
+        v.addWidget(buttons)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        cur = lb.currentItem()
+        if not cur:
+            return None
+        return cur.data(Qt.ItemDataRole.UserRole)
+
+    def _doc_from_file(self, path: str):
+        from setiastro.saspro.doc_manager import ImageDocument
+        from setiastro.saspro.legacy.image_manager import load_image
+        img, header, bit_depth, is_mono = load_image(path)
+        if img is None:
+            raise RuntimeError(f"Could not load: {path}")
+        ext = os.path.splitext(path)[1].lower().lstrip(".") or "fits"
+        return ImageDocument(img, metadata={
+            "file_path": path,
+            "original_header": header,
+            "bit_depth": bit_depth,
+            "is_mono": is_mono,
+            "original_format": ext,
+        })
+
+    def _apply_to_view_bundle(self):
+        if self._require_folder() is None:
+            return
+        picked = self._pick_view_bundle()
+        if not picked:
+            return
+        ptrs, files = picked
+        from setiastro.saspro.view_bundle import _find_main_window, _resolve_doc_and_subwindow
+        mw = _find_main_window(self) or self._mw
+        docs = []
+        for ptr in ptrs or []:
+            doc = None
+            if mw is not None:
+                doc, sw = _resolve_doc_and_subwindow(mw, ptr)
+                if sw is not None and hasattr(mw, "mdi"):
+                    try:
+                        mw.mdi.setActiveSubWindow(sw)
+                        QApplication.processEvents()
+                    except Exception:
+                        pass
+            if doc is not None and getattr(doc, "image", None) is not None:
+                docs.append(doc)
+        for path in files or []:
+            try:
+                docs.append(self._doc_from_file(path))
+            except Exception as e:
+                QMessageBox.warning(self, "Export FITS", str(e))
+                return
+        if not docs:
+            QMessageBox.information(self, "Export FITS", "No valid targets in the selected bundle.")
+            return
+        applied, errors = self._export_docs(docs, close_when_done=True)
+        if applied == 0 and errors:
+            QMessageBox.warning(self, "Export FITS", errors[0])
+        elif errors:
+            QMessageBox.warning(
+                self,
+                "Export FITS",
+                f"Exported {applied} file(s).\n\nErrors:\n" + "\n".join(errors[:12]),
+            )
 
 
 def open_export_fits_with_preset(main_window, preset: dict | None = None):
-    dlg = ExportFitsDialog(main_window, preset or {})
+    dlg = getattr(main_window, "_export_fits_dialog", None)
+    if dlg is None:
+        dlg = ExportFitsDialog(main_window, preset or {})
+        try:
+            main_window._export_fits_dialog = dlg
+            dlg.destroyed.connect(
+                lambda *_: setattr(main_window, "_export_fits_dialog", None)
+                if getattr(main_window, "_export_fits_dialog", None) is dlg
+                else None
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            dlg.seed_from_preset(preset or {})
+        except Exception:
+            pass
     try:
         dlg.seed_from_preset(preset or {})
     except Exception:

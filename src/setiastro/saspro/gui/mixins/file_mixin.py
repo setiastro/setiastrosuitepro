@@ -1365,9 +1365,9 @@ class FileMixin:
         except Exception as e:
             QMessageBox.critical(self, self.tr("Save failed"), str(e))
 
-    def _open_export_fits(self):
+    def _open_export_fits(self, preset=None):
         from setiastro.saspro.export_fits import open_export_fits_with_preset
-        open_export_fits_with_preset(self)
+        open_export_fits_with_preset(self, preset)
 
     def _apply_export_fits_to_doc(self, doc, preset=None):
         from setiastro.saspro.export_fits import export_document_as_fits

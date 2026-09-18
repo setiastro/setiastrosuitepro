@@ -7505,6 +7505,10 @@ class AstroSuiteProMainWindow(
                 open_syqontools_with_preset(self, preset)
                 return
 
+            if cid == "export_fits":
+                self._open_export_fits(preset)
+                return
+
             # Fallback: trigger QAction by cid (ok when no target)
             act = self._find_action_by_cid(cid)
             if act:
@@ -7522,6 +7526,13 @@ class AstroSuiteProMainWindow(
             base_doc = doc
 
         # --- Existing image-processing blocks (unchanged) ---
+        if cid == "export_fits":
+            try:
+                self._apply_export_fits_to_doc(doc, preset or {})
+            except Exception as e:
+                QMessageBox.warning(self, "Export FITS", str(e))
+            return
+
         if cid == "stat_stretch":
             try:
                 self._apply_stat_stretch_preset_to_doc(doc, preset)
