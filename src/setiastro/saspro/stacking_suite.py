@@ -1123,6 +1123,7 @@ def _Luma(img: np.ndarray) -> np.ndarray:
 # per-checkpoint NaN counts to the stacking log.
 # ---------------------------------------------------------------------------
 NAN_PROBE = False   # <-- set True to enable the NaN carry-through probes
+DEBUG_INTEGRATION_ONLY = False   # <-- set True: skip ALL rejection bookkeeping and dump the raw integrated buffer
 
 def _nan_probe_enabled() -> bool:
     return bool(NAN_PROBE)
@@ -20892,6 +20893,7 @@ class StackingSuiteDialog(QDialog):
         """Robust MAD-based noise estimate, star-insensitive. Plain numpy so it
         works on any preview dtype without njit compilation concerns."""
         a = np.asarray(arr, dtype=np.float32).ravel()
+        a = a[np.isfinite(a)]  
         if a.size == 0:
             return 0.0
         med = float(np.median(a))
@@ -20921,7 +20923,9 @@ class StackingSuiteDialog(QDialog):
         a = np.asarray(img2d, dtype=np.float32)
         if a.ndim != 2 or a.size == 0:
             return 0.0
-
+        if not np.isfinite(a).all():                 # fill NaN with background first
+            fin = a[np.isfinite(a)]
+            a = np.where(np.isfinite(a), a, float(np.median(fin)) if fin.size else 0.0)
         med = float(np.median(a))
         mad = float(np.median(np.abs(a - med))) * 1.4826
         if not (mad > 0):
@@ -22597,21 +22601,23 @@ class StackingSuiteDialog(QDialog):
                                         + "  ".join(_ch_dbg)
                                     )
                             else:
-                                s, offset = _compute_scale(
-                                    ref_target_median,
-                                    pm if pm > 0 else 1.0,
-                                    img,
-                                    refine_stride=8,
-                                    refine_if_rel_err=0.10,
-                                    return_offset=True,
-                                )
+                                # Additive background matching (nan-safe).
+                                # _compute_scale is purely MULTIPLICATIVE (s = target/median);
+                                # that equalizes signal above the floor but does NOT equalize an
+                                # additive sky pedestal, so subs from different-brightness sessions
+                                # landed at different background levels -> the 'trail' deficits in
+                                # the master. Subtract each frame's own background and re-level to
+                                # the reference sky, exactly like the standalone bgmatch that fixed
+                                # it. NaN (satellite no-data) is preserved through the shift.
+                                _fin = img[np.isfinite(img) & (img != 0.0)]
+                                _frame_bg = float(np.median(_fin)) if _fin.size else 0.0
+                                _target_bg = float(ref_target_median + ref_min)   # reference sky level
+                                img = (img - _frame_bg + _target_bg).astype(np.float32, copy=False)
                                 if getattr(self, "_norm_dbg_on", False):
                                     self.update_status(
-                                        f"🔬[04 scale-args] {os.path.basename(fp)} "
-                                        f"ref_target_median={ref_target_median:.6g} pm={pm:.6g} "
-                                        f"→ s={s:.6g} offset={offset:.6g}"
+                                        f"🔬[04 bg-match] {os.path.basename(fp)} "
+                                        f"frame_bg={_frame_bg:.6g} target_bg={_target_bg:.6g}"
                                     )
-                                img = _apply_scale_inplace(img, s, offset=offset)
                             _ndbg("05 after-scale", img, fp)
 
                             # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
@@ -26968,17 +26974,18 @@ class StackingSuiteDialog(QDialog):
 
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                trm = np.asarray(tile_rej_map, dtype=bool)
-                if trm.ndim == 4:
-                    trm = np.any(trm, axis=-1)
-                rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+                if not DEBUG_INTEGRATION_ONLY:
+                    trm = np.asarray(tile_rej_map, dtype=bool)
+                    if trm.ndim == 4:
+                        trm = np.any(trm, axis=-1)
+                    rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
+                    rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                if collect_per_file:
-                    for i, fpath in enumerate(file_list):
-                        m = trm[i]
-                        if np.any(m):
-                            per_file_rejections[fpath].append((x0, y0, m.copy()))
+                    if collect_per_file:
+                        for i, fpath in enumerate(file_list):
+                            m = trm[i]
+                            if np.any(m):
+                                per_file_rejections[fpath].append((x0, y0, m.copy()))
 
                 dt = _time.perf_counter() - t0_tile
                 work_px = th * tw * len(file_list) * C
@@ -27348,11 +27355,26 @@ class StackingSuiteDialog(QDialog):
             return None
 
         aligned_files = []
+        seen_al = set()
         for d in aligned_dirs:
+            # "Sets" now nest each set's registered frames in a daughter folder
+            # under Aligned_Images (…/Aligned_Images/<set>/<frame>_r.fit), so a
+            # flat os.listdir(d) would only see the sub-folder *names* and miss
+            # every aligned frame. Walk the tree so per-set daughters (and the
+            # legacy flat layout) are both discovered.
             try:
-                for name in os.listdir(d):
-                    if name.lower().endswith(self._COUNTERPART_EXTS):
-                        aligned_files.append(os.path.normpath(os.path.join(d, name)))
+                for root, _dirs, names in os.walk(d):
+                    for name in names:
+                        if name.lower().endswith(self._COUNTERPART_EXTS):
+                            ap = os.path.normpath(os.path.join(root, name))
+                            # De-dup across overlapping candidate dirs; recursion
+                            # makes double-discovery (which would look like an
+                            # ambiguous core-key collision) more likely.
+                            key = os.path.normcase(ap)
+                            if key in seen_al:
+                                continue
+                            seen_al.add(key)
+                            aligned_files.append(ap)
             except Exception:
                 pass
 
@@ -29634,6 +29656,15 @@ class StackingSuiteDialog(QDialog):
                 fut, bidx, _ = pending.popleft()
                 th, tw = fut.result()
                 ts               = _buf_pool[bidx][:N, :th, :tw, :channels]
+                if NAN_PROBE:
+                    try:
+                        _tsv = np.asarray(ts)
+                        self._ip_nan  = getattr(self, "_ip_nan", 0)  + int(np.isnan(_tsv).sum())
+                        self._ip_zero = getattr(self, "_ip_zero", 0) + int((_tsv == 0.0).sum())
+                        self._ip_tiny = getattr(self, "_ip_tiny", 0) + int(((_tsv > 0.0) & (_tsv < 1e-4)).sum())
+                        self._ip_tot  = getattr(self, "_ip_tot", 0)  + int(_tsv.size)
+                    except Exception:
+                        pass
                 forced_mask_tile = _mask_pool[bidx][:N, :th, :tw]
 
                 _submit_next()
@@ -29671,17 +29702,18 @@ class StackingSuiteDialog(QDialog):
 
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                trm = np.asarray(tile_rej_map, dtype=bool)
-                if trm.ndim == 4:
-                    trm = np.any(trm, axis=-1)
-                rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+                if not DEBUG_INTEGRATION_ONLY:
+                    trm = np.asarray(tile_rej_map, dtype=bool)
+                    if trm.ndim == 4:
+                        trm = np.any(trm, axis=-1)
+                    rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
+                    rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                if collect_per_file:
-                    for i, fpath in enumerate(file_list):
-                        m = trm[i]
-                        if np.any(m):
-                            per_file_rejections[fpath].append((x0, y0, m.copy()))
+                    if collect_per_file:
+                        for i, fpath in enumerate(file_list):
+                            m = trm[i]
+                            if np.any(m):
+                                per_file_rejections[fpath].append((x0, y0, m.copy()))
 
                 dt = time.perf_counter() - t0
                 work_px = th * tw * N * channels
@@ -29714,11 +29746,35 @@ class StackingSuiteDialog(QDialog):
         if channels == 1:
             integrated_image = integrated_image[..., 0]
 
-        if not hasattr(self, "_rej_maps"):
-            self._rej_maps = {}
-        rej_frac = rej_count.astype(np.float32) / float(max(1, N))
-        self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
+        _dbg_stem = self._normalize_master_stem(str(group_key))
+        if DEBUG_INTEGRATION_ONLY:
+            try:
+                import os as _os
+                from astropy.io import fits as _fits
+                _dbg = np.asarray(integrated_image, np.float32)
+                if _dbg.ndim == 3 and _dbg.shape[-1] in (3, 4):
+                    _dbg = np.transpose(_dbg, (2, 0, 1))
+                _dbgp = _os.path.join(self._master_light_dir(), f"_DEBUG_rawintegration_{_dbg_stem}.fit")
+                _fits.PrimaryHDU(data=_dbg).writeto(_dbgp, overwrite=True)
+                log(f"🧪 DEBUG_INTEGRATION_ONLY: raw integration (pre-normalize, no rejection) → {_dbgp}")
+            except Exception as _e:
+                log(f"🧪 DEBUG raw-integration dump failed: {_e}")
+        else:
+            if not hasattr(self, "_rej_maps"):
+                self._rej_maps = {}
+            rej_frac = rej_count.astype(np.float32) / float(max(1, N))
+            self._rej_maps[group_key] = {"any": rej_any, "frac": rej_frac, "count": rej_count, "n": N}
 
+        if NAN_PROBE:
+            try:
+                _ii = np.asarray(integrated_image)
+                log(f"🔎 ts-probe [{group_key}] ts-NaN={getattr(self,'_ip_nan',0)} "
+                    f"ts-exact0={getattr(self,'_ip_zero',0)} ts-tiny(0<v<1e-4)={getattr(self,'_ip_tiny',0)} "
+                    f"of {getattr(self,'_ip_tot',0)} samples | integrated NaN={int(np.isnan(_ii).sum())} "
+                    f"min={float(np.nanmin(_ii)) if np.isfinite(_ii).any() else float('nan'):.6g}")
+            except Exception as _e:
+                log(f"🔎 ts-probe log failed: {_e}")
+            self._ip_nan = self._ip_zero = self._ip_tiny = self._ip_tot = 0
         log(f"Integration complete for group '{group_key}'.")
 
         if integrated_memmap_path is not None:
@@ -30068,17 +30124,18 @@ class StackingSuiteDialog(QDialog):
 
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                trm = np.asarray(tile_rej_map, dtype=bool)
-                if trm.ndim == 4:
-                    trm = np.any(trm, axis=-1)
-                rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+                if not DEBUG_INTEGRATION_ONLY:
+                    trm = np.asarray(tile_rej_map, dtype=bool)
+                    if trm.ndim == 4:
+                        trm = np.any(trm, axis=-1)
+                    rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
+                    rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                if collect_per_file:
-                    for i, fpath in enumerate(file_list):
-                        m = trm[i]
-                        if np.any(m):
-                            per_file_rejections[fpath].append((x0, y0, m.copy()))
+                    if collect_per_file:
+                        for i, fpath in enumerate(file_list):
+                            m = trm[i]
+                            if np.any(m):
+                                per_file_rejections[fpath].append((x0, y0, m.copy()))
 
                 dt = time.perf_counter() - t0
                 work_px = th * tw * N * channels
@@ -30105,12 +30162,26 @@ class StackingSuiteDialog(QDialog):
         if channels == 1:
             integrated_image = integrated_image[..., 0]
 
-        if not hasattr(self, "_rej_maps"):
-            self._rej_maps = {}
-        rej_frac = rej_count.astype(np.float32) / float(max(1, N))
-        self._rej_maps[group_key] = {
-            "any": rej_any, "frac": rej_frac, "count": rej_count, "n": N
-        }
+        _dbg_stem = self._normalize_master_stem(str(group_key))
+        if DEBUG_INTEGRATION_ONLY:
+            try:
+                import os as _os
+                from astropy.io import fits as _fits
+                _dbg = np.asarray(integrated_image, np.float32)
+                if _dbg.ndim == 3 and _dbg.shape[-1] in (3, 4):
+                    _dbg = np.transpose(_dbg, (2, 0, 1))
+                _dbgp = _os.path.join(self._master_light_dir(), f"_DEBUG_rawintegration_{_dbg_stem}.fit")
+                _fits.PrimaryHDU(data=_dbg).writeto(_dbgp, overwrite=True)
+                log(f"🧪 DEBUG_INTEGRATION_ONLY: raw integration (pre-normalize, no rejection) → {_dbgp}")
+            except Exception as _e:
+                log(f"🧪 DEBUG raw-integration dump failed: {_e}")
+        else:
+            if not hasattr(self, "_rej_maps"):
+                self._rej_maps = {}
+            rej_frac = rej_count.astype(np.float32) / float(max(1, N))
+            self._rej_maps[group_key] = {
+                "any": rej_any, "frac": rej_frac, "count": rej_count, "n": N
+            }
 
         log(f"✅ [LowRAM] Integration complete for group '{group_key}'.")
 
