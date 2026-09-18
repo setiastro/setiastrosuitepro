@@ -190,6 +190,10 @@ ALIASES: Dict[str, str] = {
     "narrowband_channel_extractor": "nbextract",
     "extract_narrowband": "nbextract",
     "nbx": "nbextract",
+
+    "export_fits": "export_fits",
+    "export fits": "export_fits",
+    "save_fits": "export_fits",
 }
 
 
@@ -209,6 +213,34 @@ def list_commands() -> Dict[str, str]:
 # -----------------------------------------------------------------------------
 # Registry population (starter set)
 # -----------------------------------------------------------------------------
+
+register(CommandSpec(
+    id="export_fits",
+    name="Export FITS",
+    group="File",
+    ui_method="_open_export_fits",
+    headless_method="_apply_export_fits_to_doc",
+    notes=(
+        "Export the current view as a .fits file into a chosen output folder. "
+        "Designed as a Function Bundle step for batch saving. "
+        "Preset: out_dir (folder) and overwrite (bool, default True). "
+        "Does not change the in-memory document path."
+    ),
+    presets=[
+        PresetSpec("out_dir", "str", default="",
+                   desc="Destination folder for the .fits files.", optional=False),
+        PresetSpec("overwrite", "bool", default=True,
+                   desc="Overwrite an existing file with the same name."),
+    ],
+    aliases=["export fits", "save_fits", "save as fits"],
+    examples=[
+        "ctx.run_command('export_fits', {'out_dir': r'D:/export', 'overwrite': True})",
+    ],
+    supports_mono=True,
+    supports_rgb=True,
+    supports_linear=True,
+    supports_nonlinear=True,
+))
 
 # Bundles
 register(CommandSpec(
