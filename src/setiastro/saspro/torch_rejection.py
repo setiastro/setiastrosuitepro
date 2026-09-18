@@ -795,7 +795,40 @@ def _weighted_mean_or(torch, ts, keep, w, fallback):
 # ---------------------------------------------------------------------------
 # Public GPU reducer – lazy-loads Torch, never decorates at import time
 # ---------------------------------------------------------------------------
-def torch_reduce_tile(
+DEBUG_INTEGRATION_ONLY = False   # <-- set True: reducer returns a ZEROED rejection map (out left untouched)
+
+
+def torch_reduce_tile(*args, **kwargs):
+    """Public entry point for the tile reducer.
+
+    When DEBUG_INTEGRATION_ONLY is True, the integrated tile is returned exactly
+    as computed, but the rejection map is replaced with an all-False array of the
+    same shape. This severs every downstream use of the per-tile rejection data
+    (accumulation, compositing, MEF layers) so we can tell whether the trail
+    contamination rides the rejection array (trails vanish) or is already baked
+    into the integrated result itself (trails persist)."""
+    out, rej = _torch_reduce_tile_impl(*args, **kwargs)
+    if DEBUG_INTEGRATION_ONLY:
+        import numpy as _np
+        # Leave the GPU self-test (_rejection_gpu_ok) alone: it feeds a tiny
+        # 5x1x1x1 probe and asserts the outlier IS rejected. If we zero that
+        # map the self-test 'fails' and integration silently drops to CPU.
+        # Only neuter the rejection map for real integration tiles (spatial
+        # area > 1); the 1x1 probe keeps its true map so GPU stays selected.
+        _ts0 = args[0] if args else kwargs.get("ts_np")
+        _is_selftest = False
+        try:
+            _shp = _np.asarray(_ts0).shape
+            if len(_shp) >= 3 and int(_shp[1]) * int(_shp[2]) <= 1:
+                _is_selftest = True
+        except Exception:
+            _is_selftest = False
+        if not _is_selftest:
+            rej = _np.zeros_like(_np.asarray(rej), dtype=bool)
+    return out, rej
+
+
+def _torch_reduce_tile_impl(
     ts_np: np.ndarray,
     weights_np: np.ndarray,
     *,

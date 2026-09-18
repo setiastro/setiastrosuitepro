@@ -249,12 +249,13 @@ def _star_count_ecc_size(preview, **kwargs):
 
 
 # ── copied verbatim from stacking_suite._measure_fwhm_halfres ─────────────────
-def _measure_fwhm_halfres(img2d, *, max_stars: int = 100, stamp: int = 11,
-                          detect_sigma: float = 5.0) -> float:
+def _measure_fwhm_halfres(img2d, *, max_stars=100, stamp=11, detect_sigma=5.0):
     a = np.asarray(img2d, dtype=np.float32)
     if a.ndim != 2 or a.size == 0:
         return 0.0
-
+    if not np.isfinite(a).all():                 # fill NaN with background first
+        fin = a[np.isfinite(a)]
+        a = np.where(np.isfinite(a), a, float(np.median(fin)) if fin.size else 0.0)
     med = float(np.median(a))
     mad = float(np.median(np.abs(a - med))) * 1.4826
     if not (mad > 0):
@@ -312,13 +313,13 @@ def _measure_fwhm_halfres(img2d, *, max_stars: int = 100, stamp: int = 11,
 
 # ── copied verbatim from stacking_suite._mad_noise ────────────────────────────
 def _mad_noise(arr) -> float:
-    """Robust MAD-based noise estimate, star-insensitive."""
     a = np.asarray(arr, dtype=np.float32).ravel()
+    a = a[np.isfinite(a)]                         # drop NaN
     if a.size == 0:
         return 0.0
     med = float(np.median(a))
     mad = float(np.median(np.abs(a - med)))
-    return mad * 1.4826  # scale to Gaussian-sigma equivalent
+    return mad * 1.4826
 
 
 # ── the process-pool entry point ──────────────────────────────────────────────
@@ -337,12 +338,27 @@ def measure_file(fp, target_xbin, target_ybin):
     if preview is None:
         return ("noprev", fp, None)
     try:
-        mean  = float(np.mean(preview))
-        pmin  = float(np.nanmin(preview))
-        med   = float(np.median(preview - pmin))
-        c, ecc, _blind = _star_count_ecc_size(preview)
-        size  = _measure_fwhm_halfres(preview)
-        noise = _mad_noise(preview)
+        preview = np.asarray(preview, dtype=np.float32)
+
+        # NaN = satellite-trail no-data. The star detector (cv2) and plain
+        # np.mean/np.median all return garbage/NaN on it, which floors the
+        # frame's weight. Measure on the FINITE, NONZERO pixels only; give the
+        # star detector a NaN-free copy (fill non-finite with the background).
+        finite = np.isfinite(preview)
+        vals   = preview[finite & (preview != 0.0)]
+        if vals.size == 0:
+            return ("err", fp, "no finite data in preview")
+
+        pmin  = float(np.min(vals))
+        med   = float(np.median(vals - pmin))     # background — the old Bg=nan
+        mean  = float(np.mean(vals))
+
+        bg_fill = float(np.median(vals))
+        preview_filled = np.where(finite, preview, bg_fill).astype(np.float32, copy=False)
+
+        c, ecc, _blind = _star_count_ecc_size(preview_filled)
+        size  = _measure_fwhm_halfres(preview_filled)
+        noise = _mad_noise(vals)                  # noise on finite pixels only
         return ("ok", fp, (mean, med, c, ecc, size, noise))
     except Exception as e:
         return ("err", fp, f"{type(e).__name__}: {e}")

@@ -768,7 +768,12 @@ def _solve_system_response(
             Gm_xp_n = Gm_arr[xp_indices] / g_integrals
             Bm_xp_n = Bm_arr[xp_indices] / g_integrals
             n_xp_s3 = n_xp_stage3
-
+            # Measured color ratios (XP subset) — per-star flux/zero-point cancels,
+            # exactly as Stage 1/2. This is the space we optimise AND report in, so
+            # Stage 3 RMS becomes directly comparable to Stage 2 RMS.
+            _Gm_safe_s3 = np.where(Gm_xp_n > eps, Gm_xp_n, eps)
+            meas_RG_s3  = Rm_xp_n / _Gm_safe_s3
+            meas_BG_s3  = Bm_xp_n / _Gm_safe_s3
 
             # N_CTRL: control points per channel. More = finer R(λ) resolution
             # but requires more stars to avoid fitting noise. Rule of thumb:
@@ -837,7 +842,8 @@ def _solve_system_response(
                 for ch_name in ("R", "G", "B")
                 if ch_data[ch_name] is not None
             ]
-
+            _ratio_ok = {"R", "G", "B"}.issubset({c[0] for c in active_channels})
+            _n_terms  = (2 if _ratio_ok else len(active_channels)) * n_xp_s3
             # Stage 1 scalar gains (k_R, k_G=1, k_B) used throughout the solver
             # loss — we minimize the SAME residual that gets reported as RMS,
             # not an internal surrogate. NOTE: pixel correction later uses the
@@ -962,29 +968,41 @@ def _solve_system_response(
                         "starting from Stage 2 operating point"
                     )
 
-            def _rms_loss(x):
-                """
-                Sum of squared fractional residuals using the Stage 1 scalar
-                gains (k_R, k_G=1, k_B). This is exactly what gets reported as RMS.
-                """
+            def _integrals(x):
+                return {cn: cd["W"] @ np.maximum(x[ci*N_CTRL:(ci+1)*N_CTRL], 0.0)
+                        for ci, (cn, cd) in enumerate(active_channels)}
+
+            def _ratio_terms(I):
+                IG  = np.where(I["G"] > eps, I["G"], eps)
+                mRG = (s3_gains["R"] * I["R"]) / IG
+                mBG = (s3_gains["B"] * I["B"]) / IG
+                rRG = meas_RG_s3 / np.where(mRG > eps, mRG, eps) - 1.0
+                rBG = meas_BG_s3 / np.where(mBG > eps, mBG, eps) - 1.0
+                return rRG, rBG
+
+            def _abs_loss(x):   # degenerate fallback: a channel is missing, no G reference
                 total = 0.0
-                for ci, (ch_name, cd) in enumerate(active_channels):
-                    r_vals = np.maximum(x[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0)
-                    I = cd["W"] @ r_vals
-                    I_safe = np.where(I > eps, I, eps)
-                    k_c = s3_gains[ch_name]
-                    resid = cd["meas_n"] / (k_c * I_safe) - 1.0
-                    total += float(np.sum(resid ** 2))
+                for ci, (cn, cd) in enumerate(active_channels):
+                    I  = cd["W"] @ np.maximum(x[ci*N_CTRL:(ci+1)*N_CTRL], 0.0)
+                    Is = np.where(I > eps, I, eps)
+                    total += float(np.sum((cd["meas_n"] / (s3_gains[cn] * Is) - 1.0) ** 2))
                 return total
 
-            def _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j):
-                """1D loss: only this channel, only this control point varies."""
+            def _rms_loss(x):
+                if not _ratio_ok:
+                    return _abs_loss(x)
+                rRG, rBG = _ratio_terms(_integrals(x))
+                return float(np.sum(rRG**2) + np.sum(rBG**2))
+
+            def _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j, I_fixed):
                 r_j = max(r_j, 0.0)
-                I = r_j * cd["W"][:, j] + I_rest
-                I_safe = np.where(I > eps, I, eps)
-                k_c = s3_gains[ch_name]
-                resid = cd["meas_n"] / (k_c * I_safe) - 1.0
-                return float(np.sum(resid ** 2))
+                I_c = r_j * cd["W"][:, j] + I_rest
+                if not _ratio_ok:
+                    Is = np.where(I_c > eps, I_c, eps)
+                    return float(np.sum((cd["meas_n"] / (s3_gains[ch_name] * Is) - 1.0) ** 2))
+                I = dict(I_fixed); I[ch_name] = I_c
+                rRG, rBG = _ratio_terms(I)
+                return float(np.sum(rRG**2) + np.sum(rBG**2))
 
             # ── Coordinate descent ────────────────────────────────────────────
             # Coordinate descent — directional search per control point.
@@ -1007,6 +1025,7 @@ def _solve_system_response(
             STEPS_DOWN = [0.9, 0.8]   # try smaller if up didn't help
 
             x_cur = x0.copy()
+            I_cur = _integrals(x_cur)
             loss_prev = _rms_loss(x_cur)
             status_cb(
                 f"[SSSC] Stage 3: coordinate descent "
@@ -1023,36 +1042,27 @@ def _solve_system_response(
             for sweep in range(60):
                 any_improved = False
                 for ci, (ch_name, cd) in enumerate(active_channels):
-                    r_vals = np.maximum(x_cur[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0)
+                    r_vals  = np.maximum(x_cur[ci*N_CTRL:(ci+1)*N_CTRL], 0.0)
+                    I_fixed = {cn: I_cur[cn] for cn in I_cur if cn != ch_name}
                     for j in range(N_CTRL):
-                        r_j       = r_vals[j]
-                        I_rest    = cd["W"] @ r_vals - r_j * cd["W"][:, j]
-                        cur_loss  = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j)
+                        r_j      = r_vals[j]
+                        I_rest   = cd["W"] @ r_vals - r_j * cd["W"][:, j]
+                        best_loss = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j, I_fixed)
                         best_r    = r_j
-                        best_loss = cur_loss
-
-                        # Try UP first
                         for s in STEPS_UP:
-                            l = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j * s)
-                            if l < best_loss:
-                                best_loss = l
-                                best_r    = r_j * s
-
-                        # Only try DOWN if UP didn't improve
+                            l = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j*s, I_fixed)
+                            if l < best_loss: best_loss, best_r = l, r_j*s
                         if best_r == r_j:
                             for s in STEPS_DOWN:
-                                l = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j * s)
-                                if l < best_loss:
-                                    best_loss = l
-                                    best_r    = r_j * s
-
+                                l = _rms_loss_1d(ci, ch_name, cd, j, I_rest, r_j*s, I_fixed)
+                                if l < best_loss: best_loss, best_r = l, r_j*s
                         if best_r != r_j:
                             r_vals[j] = best_r
                             any_improved = True
-                    x_cur[ci * N_CTRL : (ci + 1) * N_CTRL] = r_vals
-
+                    x_cur[ci*N_CTRL:(ci+1)*N_CTRL] = r_vals
+                    I_cur[ch_name] = cd["W"] @ r_vals     # refresh after this channel
                 loss_new = _rms_loss(x_cur)
-                rms_new  = float(np.sqrt(loss_new / (n_xp_s3 * len(active_channels))))
+                rms_new  = float(np.sqrt(loss_new / max(_n_terms, 1)))
                 delta    = loss_prev - loss_new
                 status_cb(
                     f"[SSSC] Stage 3 sweep {sweep + 1}: "
@@ -1122,18 +1132,42 @@ def _solve_system_response(
             for ch_name, R_full in R_channels.items():
                 ch_response_norm[ch_name] = R_full / global_ch_max
 
-            # Final RMS
-            rms_terms = []
-            for ci, (ch_name, cd) in enumerate(active_channels):
-                r_vals = np.maximum(x_opt[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0)
-                I_c    = cd["W"] @ r_vals
-                I_safe = np.where(I_c > eps, I_c, eps)
-                k_use  = s3_gains[ch_name]
-                resid_c = cd["meas_n"] / (k_use * I_safe) - 1.0
-                rms_terms.append(float(np.mean(resid_c ** 2)))
-            residual_rms = float(np.sqrt(np.mean(rms_terms)))
+            # ── Final RMS — color-ratio space, comparable to Stage 2 ──────────
+            if _ratio_ok:
+                rRG_f, rBG_f = _ratio_terms(_integrals(x_opt))
+                residual_rms = float(
+                    np.sqrt(np.mean(np.concatenate([rRG_f, rBG_f]) ** 2)))
+            else:
+                # Degenerate fallback (a channel missing → no G reference).
+                rms_terms = []
+                for ci, (ch_name, cd) in enumerate(active_channels):
+                    r_vals = np.maximum(x_opt[ci * N_CTRL : (ci + 1) * N_CTRL], 0.0)
+                    I_c    = cd["W"] @ r_vals
+                    I_safe = np.where(I_c > eps, I_c, eps)
+                    k_use  = s3_gains[ch_name]
+                    resid_c = cd["meas_n"] / (k_use * I_safe) - 1.0
+                    rms_terms.append(float(np.mean(resid_c ** 2)))
+                residual_rms = float(np.sqrt(np.mean(rms_terms)))
 
             stage_rms[3] = residual_rms
+
+            # ── Guard: Stage 3 must never report a worse RMS than Stage 2 ─────
+            # Both numbers are now in color-ratio space, so this is apples-to-
+            # apples. Stage 3's piecewise-linear R(λ) is strictly more expressive
+            # than Stage 2's per-band quadratic, so it should match or beat it;
+            # if it doesn't (bad seed, pathological field), fall back to Stage 2
+            # rather than regress.
+            _s2 = stage_rms.get(2)
+            if _s2 is not None and residual_rms > _s2 + 1e-6:
+                status_cb(
+                    f"[SSSC] Stage 3 RMS={residual_rms:.4f} > "
+                    f"Stage 2 RMS={_s2:.4f} — reverting to Stage 2"
+                )
+                stage            = 2
+                residual_rms     = _s2
+                response         = np.ones_like(_WL_GRID, dtype=np.float64)
+                ctrl_points      = None   # don't seed future sessions from a rejected solve
+                ch_response_norm = None
 
             status_cb(
                 f"[SSSC] Stage 3 complete — "
