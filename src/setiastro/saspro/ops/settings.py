@@ -70,6 +70,12 @@ class SettingsDialog(QDialog):
         self.btn_check_now.clicked.connect(self._check_updates_now_clicked)
 
         self.chk_save_shortcuts = QCheckBox(self.tr("Save desktop shortcuts on exit"))
+        self.chk_open_all_hdus = QCheckBox(self.tr("Open All detected HDUs"))
+        self.chk_open_all_hdus.setToolTip(self.tr(
+            "When checked, opening a FITS or XISF file also opens extra HDUs "
+            "(weights, rejection maps, other image layers, tables).\n"
+            "Uncheck to open the Primary image only."
+        ))
 
         self.cb_theme = QComboBox()
         # Order: Dark, Gray, Light, System, Custom
@@ -229,6 +235,7 @@ class SettingsDialog(QDialog):
 
         left_col.addRow(self.tr("Astrometry.net API key:"), self.le_astrometry)
         left_col.addRow(self.chk_save_shortcuts)
+        left_col.addRow(self.chk_open_all_hdus)
 
         row_theme = QHBoxLayout()
         row_theme.setContentsMargins(0, 0, 0, 0)
@@ -1382,6 +1389,9 @@ class SettingsDialog(QDialog):
         self.chk_save_shortcuts.setChecked(
             self.settings.value("shortcuts/save_on_exit", True, type=bool)
         )
+        self.chk_open_all_hdus.setChecked(
+            self.settings.value("files/open_auxiliary_images", True, type=bool)
+        )
         
         # Theme
         theme_val = (self.settings.value("ui/theme", "system", type=str) or "system").lower()
@@ -1606,6 +1616,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue("paths/starnet", self.le_starnet.text().strip())
         self.settings.setValue("paths/astap", self.le_astap.text().strip())
         self.settings.setValue("shortcuts/save_on_exit", self.chk_save_shortcuts.isChecked())
+        self.settings.setValue("files/open_auxiliary_images", self.chk_open_all_hdus.isChecked())
         self.settings.setValue("api/astrometry_key", self.le_astrometry.text().strip())
 
         # RA/Dec Overlay
