@@ -20655,6 +20655,49 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             return None
 
+    def _fast_fits_read(self, fp: str):
+        """Fast FITS reader for the normalization hot path: raw float32 pixels
+        + header, NaN preserved, row-order normalized -- WITHOUT load_image's
+        general overhead (second header open via get_valid_header, WCS attach,
+        per-frame prints, redundant copies). Returns (img, hdr) on the float
+        fast path, or (None, None) to tell the caller to use the full loader
+        (int/scaled/odd FITS, so bit-depth handling stays byte-identical)."""
+        try:
+            with fits.open(fp, memmap=False) as hdul:
+                hdu = None
+                for _x in hdul:
+                    _d = getattr(_x, "data", None)
+                    if _d is not None and getattr(_d, "ndim", 0) >= 2:
+                        hdu = _x; break
+                if hdu is None:
+                    return None, None
+                data = np.asarray(hdu.data)
+                hdr = hdu.header.copy()
+            # Fast path only for float FITS (calibrated/normalized frames).
+            if data.dtype.kind != "f":
+                return None, None
+            if data.dtype.byteorder not in ("=", "|"):
+                data = data.astype(data.dtype.newbyteorder("="))
+            img = np.asarray(data, dtype=np.float32)
+            # preserve NaN (satellite no-data); scrub only +/-inf -- matches
+            # _finalize_loaded_image under the NaN-preserve context.
+            img = np.nan_to_num(img, nan=np.nan, posinf=1.0, neginf=0.0)
+            img = np.squeeze(img)
+            if img.ndim == 3 and img.shape[0] == 3 and img.shape[1] > 1 and img.shape[2] > 1:
+                img = np.transpose(img, (1, 2, 0))   # CHW -> HWC
+            elif img.ndim == 3 and img.shape[-1] not in (1, 3):
+                return None, None   # unusual layout -> full loader
+            if img.ndim == 3 and img.shape[-1] == 1:
+                img = img[..., 0]
+            img = np.ascontiguousarray(img, dtype=np.float32)
+            try:
+                from setiastro.saspro.legacy.image_manager import _apply_roworder_flip
+                img, hdr = _apply_roworder_flip(img, hdr)
+            except Exception:
+                pass
+            return img, hdr
+        except Exception:
+            return None, None
 
     # ——— on-demand full load (float32, header-like), for normalization stage ———
     def _load_image_any(self, fp: str):
@@ -20666,10 +20709,13 @@ class StackingSuiteDialog(QDialog):
         ext = os.path.splitext(fp)[1].lower()
         try:
             if ext in (".fits", ".fit", ".fz"):
+                # Fast float32 path (skips load_image's double-open / WCS / prints
+                # / extra copies); full loader fallback keeps int/scaled FITS
+                # byte-identical. Both preserve satellite-trail NaN no-data.
+                _img, _hdr = self._fast_fits_read(fp)
+                if _img is not None:
+                    return _img, (_hdr or fits.Header())
                 from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image, _load_nan_ctx
-                # Preserve satellite-trail NaN through this load (calibrated _c
-                # frames carry NaN no-data). Thread-local so only this load opts in;
-                # measurement / preview / other loaders keep scrubbing NaN->0.
                 _prev_pn = getattr(_load_nan_ctx, "preserve", False)
                 _load_nan_ctx.preserve = True
                 try:
@@ -21781,7 +21827,7 @@ class StackingSuiteDialog(QDialog):
 
             total = len(all_files)
             done = 0
-            report_every = max(1, total // 100)
+            report_every = max(10, total // 20)   # ~20 updates max; never per-frame
 
             def _ingest(status, fp, payload):
                 # Shared result consumer for both the process and thread paths.
