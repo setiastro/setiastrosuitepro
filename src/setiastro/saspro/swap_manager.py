@@ -291,7 +291,7 @@ class SwapManager:
             print(f"[SwapManager] Failed to save state {swap_id}: {e}")
             return None
 
-    def load_state(self, swap_id: str) -> np.ndarray | None:
+    def load_state(self, swap_id: str, *, cache: bool = True) -> np.ndarray | None:
         if not swap_id:
             return None
         if swap_id in self._tombstone:
@@ -310,8 +310,12 @@ class SwapManager:
             return None
 
         try:
-            # mmap read is fast; materialize to real ndarray for safety/writability
+            # mmap read is fast; materialize to a writable copy only when caching.
             mm = np.load(path, mmap_mode="r", allow_pickle=False)
+            if not cache:
+                # Read-only view — caller must not mutate. Avoids a RAM copy
+                # plus a 5GB-cache insert (critical for project save).
+                return mm
             arr = np.array(mm, copy=True)
             self._cache_put(swap_id, arr)
             return arr

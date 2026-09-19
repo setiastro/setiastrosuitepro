@@ -15,6 +15,7 @@ so tools that are NOT replayable steps are intentionally omitted here:
   - capture / stacking:  blink, live_stacking, stacking_suite, planetary_stacker
   - project / view I/O:  open, save_as, checkpoint_save, undo, redo,
     project_new/save/load, view_bundles, function_bundles, zoom_1_1, autostretch
+    (export_fits IS a replayable bundle step — see aliases below)
   - masks / interactive: create_mask, invert_mask, remove_mask, show_mask,
     hide_mask, blemish_blaster, clone_stamp, signature positioning, star_spikes,
     astrospike, slap, mosaic_master, surface_mosaic, planet_projection, flythrough
@@ -209,6 +210,12 @@ COMMAND_ID_ALIASES: dict[str, str] = {
     "plate_solve": "plate_solve",
     "plate solve": "plate_solve",
     "platesolve": "plate_solve",
+
+    # ---- export / I/O steps used in function bundles ----
+    "export_fits": "export_fits",
+    "export fits": "export_fits",
+    "save_fits": "export_fits",
+    "save as fits": "export_fits",
 }
 
 

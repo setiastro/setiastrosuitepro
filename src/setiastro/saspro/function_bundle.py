@@ -751,6 +751,7 @@ class FunctionBundleDialog(QDialog):
         "save_project",
         "save_active",
         "save_active_as",
+        "export_fits",
         "export_fits_bundle",
         "plate_solve",          # writes header/WCS, may or may not emit `changed`
         "psf_viewer",

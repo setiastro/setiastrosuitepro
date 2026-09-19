@@ -98,7 +98,14 @@ class ToolbarMixin:
             save_menu.addAction(self.act_save_psb)
             btn_save.setMenu(save_menu)
             btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)        
-        tb.addAction(self.act_checkpoint_save) 
+        # Unified Save: main click = instant Checkpoint, dropdown = full dialog
+        tb.addAction(self.act_checkpoint_now)
+        btn_ckpt = tb.widgetForAction(self.act_checkpoint_now)
+        if isinstance(btn_ckpt, QToolButton):
+            ckpt_menu = QMenu(btn_ckpt)
+            ckpt_menu.addAction(self.act_export_fits)
+            btn_ckpt.setMenu(ckpt_menu)
+            btn_ckpt.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
         tb.addSeparator()
         tb.addAction(self.act_undo)
         tb.addAction(self.act_redo)
@@ -655,6 +662,18 @@ class ToolbarMixin:
                 save_menu.addAction(self.act_save_psb)
                 btn_save.setMenu(save_menu)
                 btn_save.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+
+        # ---- Checkpoint / Save dropdown ----
+        # tb.clear() during restore destroys this button + its menu, so the
+        # dropdown must be reattached here (not only in _init_toolbar).
+        tb_ckpt = self._toolbar_containing_action(self.act_checkpoint_now)
+        if tb_ckpt:
+            btn_ckpt = tb_ckpt.widgetForAction(self.act_checkpoint_now)
+            if isinstance(btn_ckpt, QToolButton):
+                ckpt_menu = QMenu(btn_ckpt)
+                ckpt_menu.addAction(self.act_export_fits)
+                btn_ckpt.setMenu(ckpt_menu)
+                btn_ckpt.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
                 
     def _bind_view_toolbar_menus(self, tb: DraggableToolBar):
         # --- Display-Stretch menu ---
@@ -740,10 +759,17 @@ class ToolbarMixin:
         self.act_project_save.setStatusTip(self.tr("Save all views, histories, and shortcuts to a .sas file"))
         self.act_project_load.setStatusTip(self.tr("Load a .sas project (views, histories, shortcuts)"))
 
-        self.act_checkpoint_save = QAction(QIcon.fromTheme("document-save"), self.tr("Checkpoint Save"), self)
-        self.act_checkpoint_save.setIconVisibleInMenu(True)
-        self.act_checkpoint_save.setStatusTip(self.tr("Save a numbered checkpoint copy (e.g., _proc1, _proc2, ...)"))
-        self.act_checkpoint_save.triggered.connect(self.checkpoint_save)
+        self.act_checkpoint_now = QAction(QIcon.fromTheme("document-save"), self.tr("Checkpoint Save"), self)
+        self.act_checkpoint_now.setIconVisibleInMenu(True)
+        self.act_checkpoint_now.setStatusTip(self.tr("Save a numbered checkpoint copy beside the source (e.g., _proc1, _proc2, ...)"))
+        self.act_checkpoint_now.triggered.connect(self._checkpoint_now)
+
+        self.act_export_fits = QAction(QIcon(disk_path), self.tr("Save Checkpoint / Export…"), self)
+        self.act_export_fits.setIconVisibleInMenu(True)
+        self.act_export_fits.setStatusTip(
+            self.tr("Save the current view: numbered checkpoint beside the source, or export into a folder (bundleable)")
+        )
+        self.act_export_fits.triggered.connect(self._open_export_fits)
 
         self.act_project_new.triggered.connect(self._new_project)
         self.act_project_save.triggered.connect(self._save_project)
@@ -1632,7 +1658,8 @@ class ToolbarMixin:
         # register whatever you want draggable/launchable
         reg("open",           self.act_open)
         reg("save_as",        self.act_save)
-        reg("checkpoint_save", self.act_checkpoint_save)
+        reg("checkpoint_save", self.act_checkpoint_now)
+        reg("export_fits",    self.act_export_fits)
         reg("undo",           self.act_undo)
         reg("redo",           self.act_redo)
         reg("autostretch",    self.act_autostretch)

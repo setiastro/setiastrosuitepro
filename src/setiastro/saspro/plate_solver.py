@@ -16,12 +16,12 @@ from astropy.io import fits
 from astropy.io.fits import Header
 from astropy.wcs import WCS
 
-from PyQt6.QtCore import QProcess, QTimer, QEventLoop, Qt, QCoreApplication, pyqtSignal, QThread
+from PyQt6.QtCore import QProcess, QTimer, QEventLoop, Qt, QCoreApplication, QSettings, pyqtSignal, QThread
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import (
-    QDialog, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QComboBox, QStackedWidget, QWidget, QMessageBox,
-    QLineEdit, QTextEdit, QApplication, QProgressBar
+    QDialog, QDialogButtonBox, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QFileDialog, QComboBox, QStackedWidget, QWidget, QMessageBox, QFormLayout,
+    QLineEdit, QTextEdit, QApplication, QProgressBar, QListWidget, QListWidgetItem,
 )
 
 # === our I/O & stretch — migrate from SASv2 ===
@@ -1135,6 +1135,70 @@ def _get_solver_preference(settings) -> str:
 
 def _set_solver_preference(settings, pref: str):
     settings.setValue("plate_solver/preference", (pref or "both").lower())
+
+_SEED_MODES = {"auto", "manual", "none"}
+_SOLVER_PREFS = {"both", "gaia_only", "astap_only", "astrometry_only"}
+_RADIUS_MODES = {"auto", "value"}
+_FOV_MODES = {"compute", "auto", "value"}
+
+
+def _choice(val, allowed: set[str], default: str) -> str:
+    s = str(val if val is not None else default).strip().lower()
+    return s if s in allowed else default
+
+
+def _opt_float(val):
+    if val is None or val == "":
+        return None
+    try:
+        return float(val)
+    except Exception:
+        return None
+
+
+def normalize_plate_solve_preset(preset: dict | None) -> dict:
+    p = dict(preset or {})
+    solver = p.get("solver") or p.get("solver_pref") or p.get("preference") or "both"
+    scale = p.get("scale")
+    if scale is None:
+        scale = p.get("scale_arcsec")
+    radius_value = _opt_float(p.get("radius_value"))
+    if radius_value is None:
+        radius_value = 5.0
+    fov_value = _opt_float(p.get("fov_value"))
+    if fov_value is None:
+        fov_value = 0.0
+    return {
+        "seed_mode": _choice(p.get("seed_mode"), _SEED_MODES, "auto"),
+        "ra": str(p.get("ra") or "").strip(),
+        "dec": str(p.get("dec") or "").strip(),
+        "scale": _opt_float(scale),
+        "radius_mode": _choice(p.get("radius_mode"), _RADIUS_MODES, "auto"),
+        "radius_value": float(radius_value),
+        "fov_mode": _choice(p.get("fov_mode"), _FOV_MODES, "compute"),
+        "fov_value": float(fov_value),
+        "solver": _choice(solver, _SOLVER_PREFS, "both"),
+    }
+
+
+def apply_plate_solve_preset(settings, preset: dict | None) -> dict:
+    spec = normalize_plate_solve_preset(preset)
+    if settings is None:
+        return spec
+    _set_seed_mode(settings, spec["seed_mode"])
+    _set_manual_seed(settings, spec["ra"], spec["dec"], spec["scale"])
+    settings.setValue("astap/seed_radius_mode", spec["radius_mode"])
+    settings.setValue("astap/seed_radius_value", float(spec["radius_value"]))
+    settings.setValue("astap/seed_fov_mode", spec["fov_mode"])
+    settings.setValue("astap/seed_fov_value", float(spec["fov_value"]))
+    _set_solver_preference(settings, spec["solver"])
+    return spec
+
+
+def apply_plate_solve_to_doc(parent, doc, settings, preset: dict | None = None):
+    """Headless plate-solve of a specific document, using an optional preset."""
+    apply_plate_solve_preset(settings, preset)
+    return plate_solve_doc_inplace(parent, doc, settings)
 
 def _read_header_from_fits(path: str) -> Dict[str, Any]:
     with fits.open(path, memmap=False) as hdul:
@@ -3038,7 +3102,10 @@ def _gaia_fit_and_validate(
                 t_rms     = float(np.sqrt(np.mean(t_cat_sky_m.separation(t_sky_fit).arcsec**2)))
                 print(f"[GaiaLocal] iter={iteration}: new WCS RMS={t_rms:.3f}\" ({len(t_img_m)} pairs)")
 
-                if len(t_img_m) > n_matched or (len(t_img_m) >= n_matched and t_rms <= rms):
+                _gained = len(t_img_m) > n_matched
+                _kept   = len(t_img_m) >= 0.8 * n_matched   # tolerate small pair loss
+                _better = t_rms <= rms + 1e-9
+                if _gained or (_better and _kept):
                     print(f"[GaiaLocal] iter={iteration}: adopting ({len(t_img_m)} pairs, RMS={t_rms:.3f}\")")
                     img_matched  = t_img_m
                     matched_sky  = t_cat_sky_m
@@ -3053,6 +3120,50 @@ def _gaia_fit_and_validate(
                 break
 
         # Final RMS + quality gate
+        sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+        sep_arcsec = matched_sky.separation(sky_fit).arcsec
+        rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
+        p95        = float(np.percentile(sep_arcsec, 95))
+        print(f"[GaiaLocal] TAN RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
+
+        # ── Fit SIP BEFORE the quality gate ──────────────────────────────────
+        # A linear TAN projection cannot absorb wide-field lens distortion, so a
+        # distorted rig can sit above the gate on TAN yet well under it on SIP.
+        # Fit SIP here (own try/except -> fall back to TAN) and let the gate below
+        # judge whichever is better; otherwise a fixable distorted field is
+        # rejected before SIP ever runs.
+        if n_matched >= 20:
+            try:
+                if n_matched >= 100:
+                    sip_degree = 4
+                elif n_matched >= 50:
+                    sip_degree = 3
+                else:
+                    sip_degree = 2
+                _sip_proj = SkyCoord(
+                    ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
+                    dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
+                )
+                _wcs_sip = fit_wcs_from_points(
+                    (img_matched[:, 0], img_matched[:, 1]),
+                    matched_sky,
+                    projection='TAN',
+                    proj_point=_sip_proj,
+                    sip_degree=sip_degree,
+                )
+                _wcs_sip.array_shape = (img_h, img_w)
+                _rms_sip = float(np.sqrt(np.mean(
+                    matched_sky.separation(
+                        _wcs_sip.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+                    ).arcsec ** 2)))
+                print(f"[GaiaLocal] TAN RMS={rms:.3f}\"  SIP-{sip_degree} RMS={_rms_sip:.3f}\"")
+                if _rms_sip < rms:
+                    wcs_solution = _wcs_sip
+                    print(f"[GaiaLocal] using SIP-{sip_degree} solution")
+            except Exception as e:
+                print(f"[GaiaLocal] SIP fit failed, using TAN: {e}")
+
+        # Final residuals of the CHOSEN (SIP or TAN) solution — the gate uses these.
         sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
         sep_arcsec = matched_sky.separation(sky_fit).arcsec
         rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
@@ -3092,40 +3203,7 @@ def _gaia_fit_and_validate(
         return False, f"Gaia DR3 solver: refinement exception: {e}"
 
     # ── SIP fit ────────────────────────────────────────────────────────────
-    if n_matched >= 20:
-        try:
-            if n_matched >= 100:
-                sip_degree = 4
-            elif n_matched >= 50:
-                sip_degree = 3
-            else:
-                sip_degree = 2
-
-            proj_point = SkyCoord(
-                ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
-                dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
-            )
-            wcs_sip = fit_wcs_from_points(
-                (img_matched[:, 0], img_matched[:, 1]),
-                matched_sky,
-                projection='TAN',
-                proj_point=proj_point,
-                sip_degree=sip_degree,
-            )
-            wcs_sip.array_shape = (img_h, img_w)
-
-            sky_sip  = wcs_sip.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
-            res_sip  = matched_sky.separation(sky_sip).arcsec
-            sky_tan2 = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
-            res_tan2 = matched_sky.separation(sky_tan2).arcsec
-            rms_sip  = float(np.sqrt(np.mean(res_sip**2)))
-            rms_tan2 = float(np.sqrt(np.mean(res_tan2**2)))
-            print(f"[GaiaLocal] TAN RMS={rms_tan2:.3f}\"  SIP-{sip_degree} RMS={rms_sip:.3f}\"")
-            if rms_sip < rms_tan2:
-                wcs_solution = wcs_sip
-                print(f"[GaiaLocal] using SIP-{sip_degree} solution")
-        except Exception as e:
-            print(f"[GaiaLocal] SIP fit failed, using TAN: {e}")
+    # SIP fit now runs BEFORE the quality gate (see above); nothing to do here.
 
     # Recompute final residuals against whichever solution (TAN or SIP) won,
     # and stash on the WCS object for _gaia_build_final_header to pick up.
@@ -4015,6 +4093,94 @@ def show_solve_summary(parent, hdr: Header, img_w: int, img_h: int,
 # Dialog UI with Active/File and Batch modes
 # ---------------------------------------------------------------------
 
+class PlateSolverPresetDialog(QDialog):
+    """Compact preset editor used by shortcuts / Function Bundles."""
+
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Plate Solver — Preset"))
+        spec = normalize_plate_solve_preset(initial)
+        form = QFormLayout(self)
+
+        self.cb_seed_mode = QComboBox(self)
+        self.cb_seed_mode.addItem(self.tr("Auto (from header)"), "auto")
+        self.cb_seed_mode.addItem(self.tr("Manual"), "manual")
+        self.cb_seed_mode.addItem(self.tr("None (blind)"), "none")
+        self.cb_seed_mode.setCurrentIndex(max(0, self.cb_seed_mode.findData(spec["seed_mode"])))
+        form.addRow(self.tr("Seed mode:"), self.cb_seed_mode)
+
+        self.le_ra = QLineEdit(spec["ra"]); self.le_ra.setPlaceholderText(self.tr("RA"))
+        self.le_dec = QLineEdit(spec["dec"]); self.le_dec.setPlaceholderText(self.tr("Dec"))
+        self.le_scale = QLineEdit("" if spec["scale"] is None else str(spec["scale"]))
+        self.le_scale.setPlaceholderText(self.tr('Scale ["/px]'))
+        seed_row = QHBoxLayout()
+        seed_row.addWidget(self.le_ra, 1)
+        seed_row.addWidget(self.le_dec, 1)
+        seed_row.addWidget(self.le_scale, 1)
+        seed_w = QWidget(self); seed_w.setLayout(seed_row)
+        form.addRow(self.tr("Manual RA/Dec/Scale:"), seed_w)
+
+        self.cb_radius_mode = QComboBox(self)
+        self.cb_radius_mode.addItem(self.tr("Auto"), "auto")
+        self.cb_radius_mode.addItem(self.tr("Value (deg)"), "value")
+        self.cb_radius_mode.setCurrentIndex(max(0, self.cb_radius_mode.findData(spec["radius_mode"])))
+        self.le_radius_val = QLineEdit(str(spec["radius_value"]))
+        rad_row = QHBoxLayout(); rad_row.addWidget(self.cb_radius_mode); rad_row.addWidget(self.le_radius_val)
+        rad_w = QWidget(self); rad_w.setLayout(rad_row)
+        form.addRow(self.tr("Search radius:"), rad_w)
+
+        self.cb_fov_mode = QComboBox(self)
+        self.cb_fov_mode.addItem(self.tr("Compute from scale"), "compute")
+        self.cb_fov_mode.addItem(self.tr("Auto"), "auto")
+        self.cb_fov_mode.addItem(self.tr("Value (deg)"), "value")
+        self.cb_fov_mode.setCurrentIndex(max(0, self.cb_fov_mode.findData(spec["fov_mode"])))
+        self.le_fov_val = QLineEdit(str(spec["fov_value"]))
+        fov_row = QHBoxLayout(); fov_row.addWidget(self.cb_fov_mode); fov_row.addWidget(self.le_fov_val)
+        fov_w = QWidget(self); fov_w.setLayout(fov_row)
+        form.addRow(self.tr("FOV:"), fov_w)
+
+        self.cb_solver_pref = QComboBox(self)
+        self.cb_solver_pref.addItem(self.tr("Gaia DR3 → ASTAP → Astrometry.net (all)"), "both")
+        self.cb_solver_pref.addItem(self.tr("In-House Gaia DR3 only"), "gaia_only")
+        self.cb_solver_pref.addItem(self.tr("ASTAP only"), "astap_only")
+        self.cb_solver_pref.addItem(self.tr("Astrometry.net only"), "astrometry_only")
+        self.cb_solver_pref.setCurrentIndex(max(0, self.cb_solver_pref.findData(spec["solver"])))
+        form.addRow(self.tr("Solver:"), self.cb_solver_pref)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def result_dict(self) -> dict:
+        try:
+            radius_value = float(self.le_radius_val.text().strip())
+        except Exception:
+            radius_value = 5.0
+        try:
+            fov_value = float(self.le_fov_val.text().strip())
+        except Exception:
+            fov_value = 0.0
+        try:
+            scale = float(self.le_scale.text().strip()) if self.le_scale.text().strip() else None
+        except Exception:
+            scale = None
+        return normalize_plate_solve_preset({
+            "seed_mode": self.cb_seed_mode.currentData(),
+            "ra": self.le_ra.text().strip(),
+            "dec": self.le_dec.text().strip(),
+            "scale": scale,
+            "radius_mode": self.cb_radius_mode.currentData(),
+            "radius_value": radius_value,
+            "fov_mode": self.cb_fov_mode.currentData(),
+            "fov_value": fov_value,
+            "solver": self.cb_solver_pref.currentData(),
+        })
+
+
 class PlateSolverDialog(QDialog):
     """
     Plate-solve either:
@@ -4159,12 +4325,38 @@ class PlateSolverDialog(QDialog):
         main.addWidget(self.status)
 
         btn_row = QHBoxLayout()
+        self.btn_apply_vbundle = QPushButton(self.tr("Apply to View Bundle…"), self)
+        self.btn_apply_vbundle.setToolTip(
+            self.tr("Plate-solve every open view (and on-disk files) in a View Bundle.")
+        )
+        btn_row.addWidget(self.btn_apply_vbundle)
         btn_row.addStretch(1)
         self.btn_go = QPushButton(self.tr("Start"), self)
         self.btn_close = QPushButton(self.tr("Close"), self)
         btn_row.addWidget(self.btn_go)
         btn_row.addWidget(self.btn_close)
         main.addLayout(btn_row)
+
+        from setiastro.saspro.shortcuts import PresetDragHandle
+        try:
+            from setiastro.saspro.resources import platesolve_path as _ps_icon
+        except Exception:
+            _ps_icon = None
+        drag_row = QHBoxLayout()
+        self.preset_drag_handle = PresetDragHandle(
+            "plate_solve",
+            self.current_preset,
+            icon=QIcon(_ps_icon) if _ps_icon else QIcon(),
+            tooltip=self.tr(
+                "Drag to the canvas to create a Plate Solver shortcut\n"
+                "with these settings. Drop on an image or a View Bundle chip\n"
+                "to solve headlessly."
+            ),
+            parent=self,
+        )
+        drag_row.addWidget(self.preset_drag_handle)
+        drag_row.addStretch(1)
+        main.addLayout(drag_row)
 
         # ---------------- Connections ----------------
         self.mode_combo.currentIndexChanged.connect(self.stack.setCurrentIndex)
@@ -4173,6 +4365,7 @@ class PlateSolverDialog(QDialog):
         b_out.clicked.connect(self._browse_out)
         self.btn_go.clicked.connect(self._run)
         self.btn_close.clicked.connect(self.close)
+        self.btn_apply_vbundle.clicked.connect(self._apply_to_view_bundle)
 
         # ---------------- Load settings & init UI ----------------
         mode_map = {"auto": 0, "manual": 1, "none": 2}
@@ -4212,6 +4405,57 @@ class PlateSolverDialog(QDialog):
         self.status.setObjectName("status_label")
         # if batch page exists:
         self.log.setObjectName("batch_log")
+
+    def current_preset(self) -> dict:
+        idx = self.cb_seed_mode.currentIndex()
+        seed = "auto" if idx == 0 else ("manual" if idx == 1 else "none")
+        try:
+            scale = float(self.le_scale.text().strip()) if self.le_scale.text().strip() else None
+        except Exception:
+            scale = None
+        try:
+            radius_value = float(self.le_radius_val.text().strip()) if self.le_radius_val.text().strip() else 5.0
+        except Exception:
+            radius_value = 5.0
+        try:
+            fov_value = float(self.le_fov_val.text().strip()) if self.le_fov_val.text().strip() else 0.0
+        except Exception:
+            fov_value = 0.0
+        pref_idx_map = {0: "both", 1: "gaia_only", 2: "astap_only", 3: "astrometry_only"}
+        return normalize_plate_solve_preset({
+            "seed_mode": seed,
+            "ra": self.le_ra.text().strip(),
+            "dec": self.le_dec.text().strip(),
+            "scale": scale,
+            "radius_mode": "auto" if self.cb_radius_mode.currentIndex() == 0 else "value",
+            "radius_value": radius_value,
+            "fov_mode": (
+                "compute" if self.cb_fov_mode.currentIndex() == 0
+                else ("auto" if self.cb_fov_mode.currentIndex() == 1 else "value")
+            ),
+            "fov_value": fov_value,
+            "solver": pref_idx_map.get(self.cb_solver_pref.currentIndex(), "both"),
+        })
+
+    def seed_from_preset(self, preset: dict | None):
+        spec = normalize_plate_solve_preset(preset)
+        mode_map = {"auto": 0, "manual": 1, "none": 2}
+        self.cb_seed_mode.setCurrentIndex(mode_map.get(spec["seed_mode"], 0))
+        self.le_ra.setText(spec["ra"])
+        self.le_dec.setText(spec["dec"])
+        self.le_scale.setText("" if spec["scale"] is None else str(spec["scale"]))
+        self.cb_radius_mode.setCurrentIndex(0 if spec["radius_mode"] == "auto" else 1)
+        self.le_radius_val.setText(str(spec["radius_value"]))
+        fov_map = {"compute": 0, "auto": 1, "value": 2}
+        self.cb_fov_mode.setCurrentIndex(fov_map.get(spec["fov_mode"], 0))
+        self.le_fov_val.setText(str(spec["fov_value"]))
+        pref_map = {"both": 0, "gaia_only": 1, "astap_only": 2, "astrometry_only": 3}
+        self.cb_solver_pref.setCurrentIndex(pref_map.get(spec["solver"], 0))
+
+    def _persist_ui_to_settings(self) -> dict:
+        spec = self.current_preset()
+        apply_plate_solve_preset(self.settings, spec)
+        return spec
 
     def _lookup_catalog_object(self):
         """
@@ -4436,27 +4680,8 @@ class PlateSolverDialog(QDialog):
 
     def _run_impl(self):
         # ── Save all settings first ──────────────────────────────────────────
-        idx = self.cb_seed_mode.currentIndex()
-        _set_seed_mode(self.settings, "auto" if idx == 0 else ("manual" if idx == 1 else "none"))
-        try:
-            manual_scale = float(self.le_scale.text().strip()) if self.le_scale.text().strip() else None
-        except Exception:
-            manual_scale = None
-        _set_manual_seed(self.settings, self.le_ra.text().strip(), self.le_dec.text().strip(), manual_scale)
-        self.settings.setValue("astap/seed_radius_mode", "auto" if self.cb_radius_mode.currentIndex()==0 else "value")
-        try:
-            self.settings.setValue("astap/seed_radius_value", float(self.le_radius_val.text().strip()))
-        except Exception:
-            pass
-        pref_idx_map = {0: "both", 1: "gaia_only", 2: "astap_only", 3: "astrometry_only"}
-        pref = pref_idx_map.get(self.cb_solver_pref.currentIndex(), "both")
-        _set_solver_preference(self.settings, pref)
-        self.settings.setValue("astap/seed_fov_mode",
-                               "compute" if self.cb_fov_mode.currentIndex()==0 else ("auto" if self.cb_fov_mode.currentIndex()==1 else "value"))
-        try:
-            self.settings.setValue("astap/seed_fov_value", float(self.le_fov_val.text().strip()))
-        except Exception:
-            pass
+        spec = self._persist_ui_to_settings()
+        pref = spec["solver"]
 
         # ── ASTAP check only when ASTAP will actually be used ────────────────
         if pref not in ("gaia_only", "astrometry_only"):
@@ -4658,4 +4883,169 @@ class PlateSolverDialog(QDialog):
             QApplication.processEvents()
 
         self.log.append(self.tr("Batch plate solving completed."))
+
+    def _load_view_bundle_choices(self):
+        settings = QSettings()
+        settings.sync()
+        raw = ""
+        for key in ("viewbundles/v3", "viewbundles/v2", "viewbundles/v1"):
+            raw = settings.value(key, "", type=str) or ""
+            if raw:
+                break
+        try:
+            data = json.loads(raw or "[]")
+        except Exception:
+            data = []
+        choices = []
+        for b in data:
+            if not isinstance(b, dict):
+                continue
+            name = str(b.get("name") or "Bundle").strip() or "Bundle"
+            ptrs = []
+            for x in (b.get("doc_ptrs") or []):
+                try:
+                    ptrs.append(int(x))
+                except Exception:
+                    pass
+            files = [str(p) for p in (b.get("file_paths") or []) if p]
+            choices.append((name, ptrs, files))
+        return choices
+
+    def _pick_view_bundle(self):
+        choices = self._load_view_bundle_choices()
+        if not choices:
+            QMessageBox.information(self, self.tr("Plate Solver"), self.tr("No View Bundles found."))
+            return None
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self.tr("Apply to View Bundle…"))
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(self.tr("Select a View Bundle:")))
+        lb = QListWidget(dlg)
+        for name, ptrs, files in choices:
+            it = QListWidgetItem(f"{name}  ({len(ptrs)} views, {len(files)} files)")
+            it.setData(Qt.ItemDataRole.UserRole, (ptrs, files))
+            lb.addItem(it)
+        if lb.count():
+            lb.setCurrentRow(0)
+        v.addWidget(lb, 1)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dlg,
+        )
+        v.addWidget(buttons)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return None
+        cur = lb.currentItem()
+        if not cur:
+            return None
+        return cur.data(Qt.ItemDataRole.UserRole)
+
+    def _solve_bundle_file(self, path: str, preset: dict) -> None:
+        from setiastro.saspro.doc_manager import ImageDocument
+        img, header, bit_depth, is_mono = load_image(path)
+        if img is None:
+            raise RuntimeError(f"Could not load: {path}")
+        ext = os.path.splitext(path)[1].lower().lstrip(".") or "fits"
+        doc = ImageDocument(img, metadata={
+            "file_path": path,
+            "original_header": header,
+            "bit_depth": bit_depth,
+            "is_mono": is_mono,
+            "original_format": ext,
+        })
+        ok, res = apply_plate_solve_to_doc(self, doc, self.settings, preset)
+        if not ok:
+            raise RuntimeError(str(res))
+        save_image(
+            img_array=doc.image,
+            filename=path,
+            original_format=ext,
+            bit_depth=doc.metadata.get("bit_depth", bit_depth or "32-bit floating point"),
+            original_header=doc.metadata.get("original_header"),
+            is_mono=doc.metadata.get("is_mono", is_mono),
+        )
+
+    def _apply_to_view_bundle(self):
+        spec = self._persist_ui_to_settings()
+        picked = self._pick_view_bundle()
+        if not picked:
+            return
+        ptrs, files = picked
+        from setiastro.saspro.view_bundle import _find_main_window, _resolve_doc_and_subwindow
+        mw = _find_main_window(self) or self.parent()
+        applied = 0
+        errors = []
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.BusyCursor)
+        except Exception:
+            pass
+        try:
+            for p in ptrs or []:
+                doc = None
+                sw = None
+                if mw is not None:
+                    doc, sw = _resolve_doc_and_subwindow(mw, p)
+                    if sw is not None and hasattr(mw, "mdi"):
+                        try:
+                            mw.mdi.setActiveSubWindow(sw)
+                            QApplication.processEvents()
+                        except Exception:
+                            pass
+                if doc is None or getattr(doc, "image", None) is None:
+                    continue
+                ok, res = apply_plate_solve_to_doc(self, doc, self.settings, spec)
+                if ok:
+                    applied += 1
+                    title = getattr(doc, "display_name", lambda: "view")()
+                    self.status.setText(self.tr("Solved: {0}").format(title))
+                else:
+                    errors.append(str(res))
+                QApplication.processEvents()
+            for path in files or []:
+                try:
+                    self._solve_bundle_file(path, spec)
+                    applied += 1
+                    self.status.setText(self.tr("Solved: {0}").format(os.path.basename(path)))
+                except Exception as e:
+                    errors.append(f"{os.path.basename(path)}: {e}")
+                QApplication.processEvents()
+        finally:
+            try:
+                QApplication.restoreOverrideCursor()
+            except Exception:
+                pass
+        if applied == 0 and not errors:
+            QMessageBox.information(self, self.tr("Plate Solver"), self.tr("No valid targets in the selected bundle."))
+            return
+        if errors:
+            QMessageBox.warning(
+                self,
+                self.tr("Plate Solver"),
+                self.tr("Solved {0} target(s).\n\nErrors:\n{1}").format(applied, "\n".join(errors[:12])),
+            )
+        else:
+            self.status.setText(self.tr("Plate solve complete for {0} target(s).").format(applied))
+
+
+def open_plate_solver_with_preset(main_window, preset: dict | None = None):
+    settings = getattr(main_window, "settings", None)
+    if settings is None:
+        settings = QSettings()
+    dlg = PlateSolverDialog(settings, parent=main_window)
+    try:
+        from setiastro.saspro.resources import platesolve_path
+        dlg.setWindowIcon(QIcon(platesolve_path))
+    except Exception:
+        pass
+    try:
+        if preset:
+            dlg.seed_from_preset(preset)
+    except Exception:
+        pass
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
+    return dlg
 

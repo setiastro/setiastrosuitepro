@@ -473,9 +473,16 @@ def extract_channels_nnls(
     H, W = img_rgb.shape[:2]
     pixels = img_rgb.reshape(-1, 3).astype(np.float64)
 
+    # NaN-safety: any pixel non-finite in ANY channel is 'no data' -> NaN in both
+    # outputs, so the downstream integrator's NaN handling still works. A finite-0
+    # warp border stays 0 (pinv @ [0,0,0] = [0,0]); only NaN/Inf become NaN.
+    invalid = ~np.all(np.isfinite(pixels), axis=1)
+    filled = np.where(np.isfinite(pixels), pixels, 0.0)
+
     A_pinv = np.linalg.pinv(A)
-    out = (A_pinv @ pixels.T).T
+    out = (A_pinv @ filled.T).T
     out = np.clip(out, 0.0, None)
+    out[invalid, :] = np.nan
 
     line1 = out[:, 0].reshape(H, W).astype(np.float32)
     line2 = out[:, 1].reshape(H, W).astype(np.float32)
@@ -1076,10 +1083,23 @@ class NBExtractDialog(SFCCDialog):
         img_float = img.astype(np.float32) / (255.0 if img.dtype == np.uint8 else 1.0)
         base = self._make_working_base_for_sep(img_float)
 
+        # Registration/warp borders (all-channel 0.0) and non-finite pixels must
+        # not pollute the SEP background, global RMS, detection, or photometry.
+        _finite_all  = np.all(np.isfinite(img_float), axis=2)
+        _zero_border = np.all(img_float == 0.0, axis=2)
+        self._nb_invalid_mask = (~_finite_all) | _zero_border
+
         # ── SEP re-detection ──────────────────────────────────────────────
         import sep
-        gray     = np.mean(base, axis=2).astype(np.float32)
-        bkg      = sep.Background(gray)
+        gray = np.mean(np.where(np.isfinite(base), base, 0.0), axis=2).astype(np.float32)
+        _inv = self._nb_invalid_mask
+        if _inv.shape != gray.shape:            # base was resized -> disable masking
+            _inv = np.zeros(gray.shape, dtype=bool)
+            self._nb_invalid_mask = _inv
+        gray[_inv] = 0.0
+        gray = np.ascontiguousarray(gray)
+        _inv = np.ascontiguousarray(_inv)
+        bkg      = sep.Background(gray, mask=_inv)
         data_sub = gray - bkg.back()
         err      = float(bkg.globalrms)
 
@@ -1087,7 +1107,7 @@ class NBExtractDialog(SFCCDialog):
         _sfcc_status(self, f"NBExtract XP: re-detecting stars (SEP σ={sep_sigma:.1f})…")
         QApplication.processEvents()
 
-        sources = sep.extract(data_sub, sep_sigma, err=err)
+        sources = sep.extract(data_sub, sep_sigma, err=err, mask=_inv)
         if sources.size == 0:
             self._nb_abort("SEP Error", "SEP found no sources.")
             return
@@ -1186,6 +1206,16 @@ class NBExtractDialog(SFCCDialog):
             y    = cand["y"]
             a    = cand["a"]
             r    = float(np.clip(2.0 * a, 2.0, 10.0))
+
+            # Skip stars whose aperture bbox overlaps any invalid (border/NaN) pixel.
+            _inv = getattr(self, "_nb_invalid_mask", None)
+            if _inv is not None:
+                _H, _W = _inv.shape
+                _rr = int(np.ceil(r)) + 1
+                _x0 = max(0, int(x) - _rr); _x1 = min(_W, int(x) + _rr + 1)
+                _y0 = max(0, int(y) - _rr); _y1 = min(_H, int(y) + _rr + 1)
+                if _x1 <= _x0 or _y1 <= _y0 or _inv[_y0:_y1, _x0:_x1].any():
+                    continue
 
             phot = measure_star_rgb_raw_aperture(base, x, y, r)
             if phot is None:
@@ -1651,6 +1681,62 @@ class NBExtractDialog(SFCCDialog):
         if preset.get("stretch") is not None and hasattr(self, "nb_stretch_chk"):
             self.nb_stretch_chk.setChecked(bool(preset["stretch"]))
 
+    def calibrate_only(self, *, doc=None, preset: Optional[dict] = None):
+        """
+        Headless Fetch -> Calibrate ONLY (no channel extraction, no new documents).
+
+        Returns (A, star_records, cond):
+            A            : (3, 2) mixing matrix
+            star_records : raw per-star photometry dicts (R/G/B_meas + S_line1/2),
+                           ready to be pooled across subs by the caller
+            cond         : float(cond(A))
+
+        The resolved target (doc, else doc_manager.get_active_document()) MUST be a
+        plate-solved RGB image. Batch callers typically wrap doc_manager in a shim
+        whose get_active_document() returns `doc`.
+
+        Raises NBExtractError on any condition that would normally pop a modal.
+        """
+        preset = dict(preset or {})
+        self._headless = True
+        self._allow_fallback = False
+        try:
+            dm = self.doc_manager
+            target = doc if doc is not None else (
+                dm.get_active_document() if dm is not None else None
+            )
+            if target is None or getattr(target, "image", None) is None:
+                raise NBExtractError("No document to calibrate NBExtract on.")
+            img = target.image
+            if img.ndim != 3 or img.shape[2] != 3:
+                raise NBExtractError(
+                    "NBExtract calibration requires an RGB (3-channel) image."
+                )
+
+            self._apply_preset(preset)
+
+            # Always refetch so the star_list matches THIS document, even if the
+            # dialog instance is reused across several subs.
+            self.star_list = []
+            self.fetch_stars()
+            if not getattr(self, "star_list", None):
+                raise NBExtractError(
+                    "Star fetch returned no stars. The image must be plate-solved "
+                    "(valid WCS) and lie within Gaia/SIMBAD catalog coverage."
+                )
+
+            self._calibrate_mixing_matrix()
+            if self._A_matrix is None:
+                raise NBExtractError(
+                    "Calibration produced no mixing matrix (too few Gaia XP stars, "
+                    "or the NNLS fit failed)."
+                )
+            A = np.asarray(self._A_matrix, dtype=np.float64).copy()
+            recs = [dict(r) for r in (self._nb_star_records or [])]
+            return A, recs, float(np.linalg.cond(A))
+        finally:
+            self._headless = False
+
     def run_headless(self, *, doc=None, preset: Optional[dict] = None):
         """
         Run the full NBExtract pipeline (Fetch → Calibrate → Extract) with no
@@ -1902,6 +1988,27 @@ class NBExtractDialog(SFCCDialog):
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
+
+def calibrate_matrix_headless(doc_manager, sasp_data_path, *, doc,
+                              preset: Optional[dict] = None, parent=None):
+    """
+    Build a hidden NBExtractDialog and run Fetch -> Calibrate ONLY on `doc`.
+
+    Returns (A, star_records, cond). Raises NBExtractError on failure.
+
+    doc_manager.get_active_document() MUST return `doc` (batch callers pass a shim
+    to guarantee this). The dialog is disposed before returning.
+    """
+    dlg = NBExtractDialog(doc_manager, sasp_data_path, parent=parent)
+    try:
+        return dlg.calibrate_only(doc=doc, preset=preset)
+    finally:
+        try:
+            dlg.close()
+            dlg.deleteLater()
+        except Exception:
+            pass
+
 
 def open_nbextract(doc_manager, sasp_data_path: str, parent=None) -> NBExtractDialog:
     """

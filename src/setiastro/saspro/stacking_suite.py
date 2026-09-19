@@ -1610,7 +1610,19 @@ def _fit_poly2_on_small(img_small: np.ndarray, pts_small: np.ndarray, patch_size
     for i, (x, y) in enumerate(zip(xs, ys)):
         x0, x1 = max(0, x - half), min(Ws, x + half + 1)
         y0, y1 = max(0, y - half), min(Hs, y + half + 1)
-        z[i] = float(np.median(gray[y0:y1, x0:x1]))
+        _patch = gray[y0:y1, x0:x1]
+        _fin = _patch[np.isfinite(_patch)]
+        z[i] = float(np.median(_fin)) if _fin.size else np.nan
+
+    # Drop samples whose patch was all no-data (NaN). Forced border/corner
+    # anchors bypass the sampler's finite check, so a trail on an edge can still
+    # place a NaN sample here -- if it reached lstsq it would make the entire
+    # polynomial NaN and poison the whole frame. Fit on finite samples only.
+    _good = np.isfinite(z)
+    xs, ys, z = xs[_good], ys[_good], z[_good]
+    if z.size < 6:
+        _fa = gray[np.isfinite(gray)]
+        return np.full((Hs, Ws), float(np.median(_fa)) if _fa.size else 0.0, dtype=np.float32)
 
     A = _build_poly_terms_deg2(xs.astype(np.float32), ys.astype(np.float32))
     coef, *_ = np.linalg.lstsq(A, z, rcond=None)
@@ -1660,10 +1672,15 @@ def remove_poly2_gradient_abe(
 
     # --- Downsample image & optional mask
     img_small = _downsample_area(work, max(1, int(downsample)))
-    mask_small = None
+    # Satellite-trail no-data arrives as NaN (there is no separate exclusion
+    # mask anymore -- the NaN *is* the exclusion). Build a 'keep' mask of finite
+    # pixels so sample points never land in a trail; block-mean downsampling has
+    # already spread each NaN across its block, so this covers the footprint.
+    _lum_small = _to_Luma(img_small) if img_small.ndim == 3 else img_small
+    mask_small = np.isfinite(_lum_small)
     if exclusion_mask is not None:
         em  = _asarray(exclusion_mask, dtype=np.float32)
-        mask_small = _downsample_area(em, max(1, int(downsample))) >= 0.5
+        mask_small &= (_downsample_area(em, max(1, int(downsample))) >= 0.5)
 
     # --- Sample & fit
     ds = max(1, int(downsample))
@@ -1679,31 +1696,47 @@ def remove_poly2_gradient_abe(
     bg_small = _fit_poly2_on_small(img_small, pts_small, patch_size=int(patch_size))
     bg = _upscale_bg(bg_small, H, W)
 
-    # --- Strength check
-    bg_med = float(np.nanmedian(bg)) or 1e-6
-    p5, p95 = np.nanpercentile(bg, 5), np.nanpercentile(bg, 95)
+    # --- Strength check (robust stats on the SMALL background model). bg is a
+    #     smooth poly2 surface upscaled from bg_small, so its median/percentiles
+    #     match -- but a full-res nanpercentile sorts ~61 Mpx per frame. bg_med
+    #     is reused by the divide path below. No processEvents() here: this runs
+    #     in worker threads (Qt-unsafe) and blocks a process-pool move.
+    _bs = np.asarray(bg_small, dtype=np.float32).ravel()
+    _bs = _bs[np.isfinite(_bs)]
+    if _bs.size:
+        bg_med = float(np.median(_bs)) or 1e-6
+        p5, p95 = float(np.percentile(_bs, 5)), float(np.percentile(_bs, 95))
+    else:
+        bg_med, p5, p95 = 1e-6, 0.0, 0.0
     rel_amp = float((p95 - p5) / max(bg_med, 1e-6))
     if log_fn:
         log_fn(f"ABE poly2: samples={num_samples}, ds={downsample}, patch={patch_size} | "
                f"bg_med={bg_med:.6f}, rel_amp={rel_amp*100:.2f}%")
-    QApplication.processEvents()    
     if rel_amp < float(min_strength):
         # Return original image in original layout
         return img
 
     # --- Apply (luma-only fit, channel-consistent apply)
+    # Re-centering medians on a strided subsample: a background median is
+    # statistically identical from every 4th pixel but ~16x cheaper than a
+    # full-res nanmedian sort (the dominant per-frame cost). NaN-safe.
+    def _bg_med_sub(a):
+        s = a[::4, ::4]
+        s = s[np.isfinite(s)]
+        return (float(np.median(s)) if s.size else 0.0) or 1e-6
+
     def _apply_sub(ch):  # re-center to preserve median
-        med0 = float(np.nanmedian(ch)) or 1e-6
+        med0 = _bg_med_sub(ch)
         out = ch - bg
-        med1 = float(np.nanmedian(out)) or 1e-6
+        med1 = _bg_med_sub(out)
         out += (med0 - med1)
         return out
 
     def _apply_div(ch):
-        med0 = float(np.nanmedian(ch)) or 1e-6
+        med0 = _bg_med_sub(ch)
         norm_bg = np.clip(bg / bg_med, gain_clip[0], gain_clip[1])
         out = ch / norm_bg
-        med1 = float(np.nanmedian(out)) or 1e-6
+        med1 = _bg_med_sub(out)
         out *= (med0 / med1)
         return out
 
@@ -1845,7 +1878,19 @@ def remove_gradient_stack_abe(stack, target_hw: tuple[int,int] | None = None, **
     ref = arr[0]
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4)) as ex:
+    # Physical-cores-minus-2 workers (headroom for GUI + I/O), capped at N. The
+    # per-frame work releases the GIL (cv2 / numpy / numba) so threads scale;
+    # pin cv2 to 1 thread per call so N workers don't each fan out and thrash.
+    try:
+        import psutil as _ps
+        _phys = int(_ps.cpu_count(logical=False) or (os.cpu_count() or 4))
+    except Exception:
+        _phys = int(os.cpu_count() or 4)
+    _n_workers = max(1, min(int(N), _phys - 2))
+    import cv2 as _cv2abe
+    _prev_cv2_threads = _cv2abe.getNumThreads()
+    _cv2abe.setNumThreads(1)
+    with ThreadPoolExecutor(max_workers=_n_workers) as ex:
         futs = {}
         for i in range(N):
             img = arr[i]
@@ -1875,6 +1920,7 @@ def remove_gradient_stack_abe(stack, target_hw: tuple[int,int] | None = None, **
 
             out[i_] = res.astype(out.dtype, copy=False)
 
+    _cv2abe.setNumThreads(_prev_cv2_threads)   # restore global cv2 thread count
     return out
 
 def load_fits_tile(filepath, y_start, y_end, x_start, x_end):
@@ -12066,6 +12112,21 @@ class StackingSuiteDialog(QDialog):
         self.split_dualband_cb.setToolTip(self.tr("For OSC dual-band data: SII/OIII → R=SII, G=OIII; Ha/OIII → R=Ha, G=OIII"))
         tol_layout.addWidget(self.split_dualband_cb)
 
+        self.adv_nb_split_cb = QCheckBox(self.tr("Advanced Dual NB Split (matrix)"))
+        self.adv_nb_split_cb.setToolTip(self.tr(
+            "Plate-solve a few subs per dual-band filter, fit the empirical NBExtract "
+            "mixing matrix, and apply it per-frame instead of the naive R->Ha / G->OIII "
+            "assignment. Requires 'Split dual-band OSC before integration'. "
+            "Applies to non-drizzle groups only; drizzle groups keep the raw R/G split."
+        ))
+        self.adv_nb_split_cb.setChecked(
+            self.settings.value("stacking/adv_nb_split_enabled", False, type=bool)
+        )
+        self.adv_nb_split_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/adv_nb_split_enabled", bool(v))
+        )
+        tol_layout.addWidget(self.adv_nb_split_cb)
+
         layout.addLayout(tol_layout)
         self.exposure_tolerance_spin.valueChanged.connect(
                 lambda _ : (self.populate_calibrated_lights(), self._refresh_reg_tree_summaries())
@@ -15238,7 +15299,6 @@ class StackingSuiteDialog(QDialog):
 
                 self.update_status(self.tr(f"✅ Added Master {file_type} -> {file_path} under {key} with metadata: {metadata}"))
 
-                self.update_status(self.tr(f"📂 DEBUG: Master Files Stored: {self.master_files}"))
                 QApplication.processEvents()
 
             except Exception as e:
@@ -17432,7 +17492,7 @@ class StackingSuiteDialog(QDialog):
                 item.setData(2, Qt.ItemDataRole.UserRole, file_path)
 
         # Do NOT write to manual_dark_overrides — per-leaf UserRole is the source of truth
-        print("✅ DEBUG: Light Dark override applied.")
+        print("✅ Light Dark override applied.")
 
     def _auto_pick_master_dark(self, image_size: str, exposure_time: float,
                                 light_gain: float | None = None,
@@ -20043,7 +20103,7 @@ class StackingSuiteDialog(QDialog):
 
         # NEW: if user explicitly asked to split dual-band, default to Ha/OIII
         try:
-            if hasattr(self, "split_dualband_cb") and self.split_dualband_cb.isChecked():
+            if self._dual_split_requested():
                 return "DUAL_HA_OIII"
         except Exception:
             pass
@@ -20594,6 +20654,49 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             return None
 
+    def _fast_fits_read(self, fp: str):
+        """Fast FITS reader for the normalization hot path: raw float32 pixels
+        + header, NaN preserved, row-order normalized -- WITHOUT load_image's
+        general overhead (second header open via get_valid_header, WCS attach,
+        per-frame prints, redundant copies). Returns (img, hdr) on the float
+        fast path, or (None, None) to tell the caller to use the full loader
+        (int/scaled/odd FITS, so bit-depth handling stays byte-identical)."""
+        try:
+            with fits.open(fp, memmap=False) as hdul:
+                hdu = None
+                for _x in hdul:
+                    _d = getattr(_x, "data", None)
+                    if _d is not None and getattr(_d, "ndim", 0) >= 2:
+                        hdu = _x; break
+                if hdu is None:
+                    return None, None
+                data = np.asarray(hdu.data)
+                hdr = hdu.header.copy()
+            # Fast path only for float FITS (calibrated/normalized frames).
+            if data.dtype.kind != "f":
+                return None, None
+            if data.dtype.byteorder not in ("=", "|"):
+                data = data.astype(data.dtype.newbyteorder("="))
+            img = np.asarray(data, dtype=np.float32)
+            # preserve NaN (satellite no-data); scrub only +/-inf -- matches
+            # _finalize_loaded_image under the NaN-preserve context.
+            img = np.nan_to_num(img, nan=np.nan, posinf=1.0, neginf=0.0)
+            img = np.squeeze(img)
+            if img.ndim == 3 and img.shape[0] == 3 and img.shape[1] > 1 and img.shape[2] > 1:
+                img = np.transpose(img, (1, 2, 0))   # CHW -> HWC
+            elif img.ndim == 3 and img.shape[-1] not in (1, 3):
+                return None, None   # unusual layout -> full loader
+            if img.ndim == 3 and img.shape[-1] == 1:
+                img = img[..., 0]
+            img = np.ascontiguousarray(img, dtype=np.float32)
+            try:
+                from setiastro.saspro.legacy.image_manager import _apply_roworder_flip
+                img, hdr = _apply_roworder_flip(img, hdr)
+            except Exception:
+                pass
+            return img, hdr
+        except Exception:
+            return None, None
 
     # ——— on-demand full load (float32, header-like), for normalization stage ———
     def _load_image_any(self, fp: str):
@@ -20605,10 +20708,13 @@ class StackingSuiteDialog(QDialog):
         ext = os.path.splitext(fp)[1].lower()
         try:
             if ext in (".fits", ".fit", ".fz"):
+                # Fast float32 path (skips load_image's double-open / WCS / prints
+                # / extra copies); full loader fallback keeps int/scaled FITS
+                # byte-identical. Both preserve satellite-trail NaN no-data.
+                _img, _hdr = self._fast_fits_read(fp)
+                if _img is not None:
+                    return _img, (_hdr or fits.Header())
                 from setiastro.saspro.legacy.image_manager import load_image as legacy_load_image, _load_nan_ctx
-                # Preserve satellite-trail NaN through this load (calibrated _c
-                # frames carry NaN no-data). Thread-local so only this load opts in;
-                # measurement / preview / other loaders keep scrubbing NaN->0.
                 _prev_pn = getattr(_load_nan_ctx, "preserve", False)
                 _load_nan_ctx.preserve = True
                 try:
@@ -21720,7 +21826,7 @@ class StackingSuiteDialog(QDialog):
 
             total = len(all_files)
             done = 0
-            report_every = max(1, total // 100)
+            report_every = max(10, total // 20)   # ~20 updates max; never per-frame
 
             def _ingest(status, fp, payload):
                 # Shared result consumer for both the process and thread paths.
@@ -22433,45 +22539,50 @@ class StackingSuiteDialog(QDialog):
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 self.update_status(self.tr(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…"))
-                with ThreadPoolExecutor(max_workers=io_workers) as ex:
-                    futs = {ex.submit(self._load_image_any, fp): fp for fp in chunk}
-                    for fut in as_completed(futs):
-                        if self._cancelled():
-                            raise StackCancelled()
-                        fp = futs[fut]
-                        try:
-                            img, hdr = fut.result()
-                            if img is None:
-                                self.update_status(self.tr(f"⚠️ No data for {fp}"))
-                                continue
+                # Parallel normalize-as-they-arrive: each worker LOADS and NORMALIZES a
+                # frame end-to-end so all cores stay busy. update_status is thread-safe
+                # (queued signal); the debayer path mutates a shared flag so it is
+                # serialized by _debayer_lock (mono skips it -> full parallelism); cv2 is
+                # pinned to 1 thread; processEvents() runs only on the main thread below.
+                import threading as _norm_threading
+                _debayer_lock = _norm_threading.Lock()
+                try:
+                    _cfa_pre = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
+                except Exception:
+                    _cfa_pre = False
+                self._norm_dbg_on = False
 
-                            self._norm_dbg_seen = getattr(self, "_norm_dbg_seen", 0) + 1
-                            self._norm_dbg_on = (self._norm_dbg_seen <= 0)
-                            _ndbg("00 loaded", img, fp)
+                def _normalize_one(fp):
+                    try:
+                        img, hdr = self._load_image_any(fp)
+                        if img is None:
+                            self.update_status(self.tr(f"⚠️ No data for {fp}"))
+                            return
 
-                            img = _to_writable_f32(img)
-                            _ndbg("01 to_f32", img, fp)
+                        self._norm_dbg_seen = getattr(self, "_norm_dbg_seen", 0) + 1
+                        self._norm_dbg_on = (self._norm_dbg_seen <= 0)
+                        _ndbg("00 loaded", img, fp)
 
-                            bayerish = (
-                                self._hdr_get(hdr, 'BAYERPAT')
-                                or self._hdr_get(hdr, 'CFA_PATTERN')
-                                or self._hdr_get(hdr, 'BAYERPATN')
-                                or self._hdr_get(hdr, 'BAYER_PATTERN')
-                            )
-                            splitdb = bool(self._hdr_get(hdr, 'SPLITDB', False))
+                        img = _to_writable_f32(img)
+                        _ndbg("01 to_f32", img, fp)
 
-                            if bayerish and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
-                                self.update_status(self.tr(f"📦 Debayering {os.path.basename(fp)}…"))
-                                _cfa_active = (
-                                    bool(self._cfa_for_this_run)
-                                    if getattr(self, "_cfa_for_this_run", None) is not None
-                                    else bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
-                                )
-                                if _cfa_active and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
-                                    # CFA drizzle: main _n.fit is DENSE (for rejection /
-                                    # per-channel normalization); stash a SPARSE copy for
-                                    # drizzle, written later as _n_cfa.fit.
-                                    _saved_flag = self._cfa_for_this_run
+                        bayerish = (
+                            self._hdr_get(hdr, 'BAYERPAT')
+                            or self._hdr_get(hdr, 'CFA_PATTERN')
+                            or self._hdr_get(hdr, 'BAYERPATN')
+                            or self._hdr_get(hdr, 'BAYER_PATTERN')
+                        )
+                        splitdb = bool(self._hdr_get(hdr, 'SPLITDB', False))
+
+                        if bayerish and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                            self.update_status(self.tr(f"📦 Debayering {os.path.basename(fp)}…"))
+                            _cfa_active = _cfa_pre
+                            if _cfa_active and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                                # CFA drizzle: main _n.fit is DENSE (for rejection /
+                                # per-channel normalization); stash a SPARSE copy for
+                                # drizzle, written later as _n_cfa.fit.
+                                _saved_flag = self._cfa_for_this_run
+                                with _debayer_lock:
                                     try:
                                         self._cfa_for_this_run = True
                                         _img_sparse = self.debayer_image(img.copy(), fp, dict(hdr) if hasattr(hdr, "keys") else hdr)
@@ -22479,214 +22590,231 @@ class StackingSuiteDialog(QDialog):
                                         img = self.debayer_image(img, fp, hdr)
                                     finally:
                                         self._cfa_for_this_run = _saved_flag
-                                    if not hasattr(self, "_pending_cfa_sparse"):
-                                        self._pending_cfa_sparse = {}
-                                    self._pending_cfa_sparse[os.path.normcase(os.path.normpath(fp))] = _img_sparse
-                                else:
+                                if not hasattr(self, "_pending_cfa_sparse"):
+                                    self._pending_cfa_sparse = {}
+                                self._pending_cfa_sparse[os.path.normcase(os.path.normpath(fp))] = _img_sparse
+                            else:
+                                with _debayer_lock:
                                     img = self.debayer_image(img, fp, hdr)
-                            else:
-                                if img.ndim == 3 and img.shape[-1] == 1:
-                                    img = np.squeeze(img, axis=-1)
+                        else:
+                            if img.ndim == 3 and img.shape[-1] == 1:
+                                img = np.squeeze(img, axis=-1)
 
-                            _ndbg("02 debayer", img, fp)
+                        _ndbg("02 debayer", img, fp)
 
-                            # meridian flip assist
-                            if self.auto_rot180 and ref_pa is not None:
-                                pa = self._extract_pa_deg(hdr)
-                                img, did = self._maybe_rot180(img, pa, ref_pa, self.auto_rot180_tol_deg)
-                                if did:
-                                    self.update_status(self.tr(f"↻ 180° rotate (PA Δ≈180°): {os.path.basename(fp)}"))
-                                    try:
-                                        if hasattr(hdr, "__setitem__"):
-                                            hdr['ROT180'] = (True, 'Rotated 180° pre-align by SAS')
-                                    except Exception:
-                                        pass
+                        # Meridian-flip pre-rotation removed: astroalign's asterism
+                        # matching is rotation-invariant and aligns a 180°-flipped
+                        # frame directly (the homography absorbs the flip). Pre-
+                        # rotating the pixels also desynced the WCS/PA header, which
+                        # broke downstream plate-solve/annotate. Let alignment handle it.
 
-                            # --- ONE geometry normalization path ---
-                            if do_scale_norm:
-                                # We normalize to physical pixel scale (arcsec/px) → this ALSO compensates binning,
-                                # so we must NOT pre-resample to target bin.
-                                raw_psx, raw_psy = _robust_scale_from_header(hdr)  # arcsec/px as shot
-                                if raw_psx and raw_psy and target_sx and target_sy:
-                                    gx = float(raw_psx) / float(target_sx)
-                                    gy = float(raw_psy) / float(target_sy)
-                                    # clamp tiny jitter
-                                    if _rel_delta(gx, 1.0) <= tol:
-                                        gx = 1.0
-                                    if _rel_delta(gy, 1.0) <= tol:
-                                        gy = 1.0
-                                    if (gx != 1.0) or (gy != 1.0):
-                                        before_hw = img.shape[:2]
-                                        img = _resize_to_scale(img, gx, gy)
-                                        after_hw = img.shape[:2]
-                                        self.update_status(self.tr(
-                                            f"📏 Pixel-scale normalize {raw_psx:.3f}\"/{raw_psy:.3f}\" → "
-                                            f"{target_sx:.3f}\"/{target_sy:.3f}\" | "
-                                            f"size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
-                                        ))
-                                        if not hasattr(self, "_upscale_factor_by_orig"):
-                                            self._upscale_factor_by_orig = {}
-                                        self._upscale_factor_by_orig[
-                                            os.path.normcase(os.path.normpath(fp))
-                                        ] = (gx, gy)
-                            else:
-                                # We are NOT doing physical/pixel-scale normalization (single group, within tol).
-                                # In that case we ONLY need to unify binning → simple pixel resample.
-                                xb, yb = bin_map.get(fp, (1, 1))
-                                sx = float(xb) / float(target_xbin)
-                                sy = float(yb) / float(target_ybin)
-                                if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
-                                    before = img.shape[:2]
-                                    img = _resize_to_scale(img, sx, sy)
-                                    after = img.shape[:2]
+                        # --- ONE geometry normalization path ---
+                        if do_scale_norm:
+                            # We normalize to physical pixel scale (arcsec/px) → this ALSO compensates binning,
+                            # so we must NOT pre-resample to target bin.
+                            raw_psx, raw_psy = _robust_scale_from_header(hdr)  # arcsec/px as shot
+                            if raw_psx and raw_psy and target_sx and target_sy:
+                                gx = float(raw_psx) / float(target_sx)
+                                gy = float(raw_psy) / float(target_sy)
+                                # clamp tiny jitter
+                                if _rel_delta(gx, 1.0) <= tol:
+                                    gx = 1.0
+                                if _rel_delta(gy, 1.0) <= tol:
+                                    gy = 1.0
+                                if (gx != 1.0) or (gy != 1.0):
+                                    before_hw = img.shape[:2]
+                                    img = _resize_to_scale(img, gx, gy)
+                                    after_hw = img.shape[:2]
                                     self.update_status(self.tr(
-                                        f"🔧 Resampled for binning {xb}×{yb} → {target_xbin}×{target_ybin} "
-                                        f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}"
+                                        f"📏 Pixel-scale normalize {raw_psx:.3f}\"/{raw_psy:.3f}\" → "
+                                        f"{target_sx:.3f}\"/{target_sy:.3f}\" | "
+                                        f"size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
                                     ))
                                     if not hasattr(self, "_upscale_factor_by_orig"):
                                         self._upscale_factor_by_orig = {}
                                     self._upscale_factor_by_orig[
                                         os.path.normcase(os.path.normpath(fp))
-                                    ] = (sx, sy)
-                            _ndbg("03 geom", img, fp)
+                                    ] = (gx, gy)
+                        else:
+                            # We are NOT doing physical/pixel-scale normalization (single group, within tol).
+                            # In that case we ONLY need to unify binning → simple pixel resample.
+                            xb, yb = bin_map.get(fp, (1, 1))
+                            sx = float(xb) / float(target_xbin)
+                            sy = float(yb) / float(target_ybin)
+                            if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
+                                before = img.shape[:2]
+                                img = _resize_to_scale(img, sx, sy)
+                                after = img.shape[:2]
+                                self.update_status(self.tr(
+                                    f"🔧 Resampled for binning {xb}×{yb} → {target_xbin}×{target_ybin} "
+                                    f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}"
+                                ))
+                                if not hasattr(self, "_upscale_factor_by_orig"):
+                                    self._upscale_factor_by_orig = {}
+                                self._upscale_factor_by_orig[
+                                    os.path.normcase(os.path.normpath(fp))
+                                ] = (sx, sy)
+                        _ndbg("03 geom", img, fp)
 
-                            # 3) Brightness normalization / scale refine
-                            pm = float(preview_medians.get(fp, 0.0))
-                            if (ref_target_medians_rgb is not None
-                                    and img.ndim == 3 and img.shape[-1] == 3):
-                                # OSC: normalize each channel independently to
-                                # the reference's matching channel. A single
-                                # luma scale cannot correct color-varying sky
-                                # (LP drift, moonlight, airmass reddening), and
-                                # the leftover per-channel offsets between
-                                # frames weaken per-channel rejection.
-                                #
-                                # CFA-drizzle frames are SPARSE: each channel is
-                                # populated only at its Bayer sites (R~25%,
-                                # G~50%, B~25%), the rest are structural zeros.
-                                # Measuring the median across all pixels then
-                                # gives 0 for R/B and crushes those channels, so
-                                # for sparse frames we measure the median over
-                                # POPULATED pixels only and never add a pedestal
-                                # (structural zeros must stay exactly 0).
+                        # 3) Brightness normalization / scale refine
+                        pm = float(preview_medians.get(fp, 0.0))
+                        if (ref_target_medians_rgb is not None
+                                and img.ndim == 3 and img.shape[-1] == 3):
+                            # OSC: normalize each channel independently to
+                            # the reference's matching channel. A single
+                            # luma scale cannot correct color-varying sky
+                            # (LP drift, moonlight, airmass reddening), and
+                            # the leftover per-channel offsets between
+                            # frames weaken per-channel rejection.
+                            #
+                            # CFA-drizzle frames are SPARSE: each channel is
+                            # populated only at its Bayer sites (R~25%,
+                            # G~50%, B~25%), the rest are structural zeros.
+                            # Measuring the median across all pixels then
+                            # gives 0 for R/B and crushes those channels, so
+                            # for sparse frames we measure the median over
+                            # POPULATED pixels only and never add a pedestal
+                            # (structural zeros must stay exactly 0).
+                            _cfa_sparse_frame = False
+                            try:
+                                _zfr = [float((img[..., _k] == 0.0).mean()) for _k in range(3)]
+                                _cfa_sparse_frame = max(_zfr) > 0.4
+                            except Exception:
                                 _cfa_sparse_frame = False
-                                try:
-                                    _zfr = [float((img[..., _k] == 0.0).mean()) for _k in range(3)]
-                                    _cfa_sparse_frame = max(_zfr) > 0.4
-                                except Exception:
-                                    _cfa_sparse_frame = False
 
-                                _ch_dbg = []
-                                for _c in range(3):
-                                    if _cfa_sparse_frame:
-                                        _plane = img[..., _c]
-                                        _nz = _plane[np.isfinite(_plane) & (_plane != 0.0)]
-                                        if _nz.size == 0:
+                            _ch_dbg = []
+                            for _c in range(3):
+                                if _cfa_sparse_frame:
+                                    _plane = img[..., _c]
+                                    _nz = _plane[np.isfinite(_plane) & (_plane != 0.0)]
+                                    if _nz.size == 0:
+                                        _s_c, _off_c = 1.0, 0.0
+                                    else:
+                                        _med = float(np.median(_nz))
+                                        if (not np.isfinite(_med)) or _med <= 1e-30:
                                             _s_c, _off_c = 1.0, 0.0
                                         else:
-                                            _med = float(np.median(_nz))
-                                            if (not np.isfinite(_med)) or _med <= 1e-30:
-                                                _s_c, _off_c = 1.0, 0.0
-                                            else:
-                                                _s_c = float(ref_target_medians_rgb[_c] / _med)
-                                                _off_c = 0.0
-                                        # apply scale to populated pixels only;
-                                        # structural zeros stay exactly 0
-                                        _m = img[..., _c] != 0.0
-                                        img[..., _c][_m] = img[..., _c][_m] * _s_c
-                                    else:
-                                        # Additive per-channel background match (nan-safe),
-                                        # mirroring the mono fix. Pure multiplicative scaling does
-                                        # NOT equalize an additive sky pedestal across sessions, so
-                                        # multi-night OSC would band exactly like mono did. NaN
-                                        # (satellite no-data) is preserved through the shift.
-                                        _pl   = img[..., _c]
-                                        _finc = _pl[np.isfinite(_pl) & (_pl != 0.0)]
-                                        _bg_c = float(np.median(_finc)) if _finc.size else 0.0
-                                        _tgt_c = float(ref_target_medians_rgb[_c])
-                                        img[..., _c] = (_pl - _bg_c + _tgt_c).astype(np.float32, copy=False)
-                                        _s_c, _off_c = 1.0, float(_tgt_c - _bg_c)
-                                    _ch_dbg.append(f"{'RGB'[_c]}: bg_shift={_off_c:.6g}")
-                                if getattr(self, "_norm_dbg_on", False):
-                                    self.update_status(
-                                        f"🔬[04 scale-args] {os.path.basename(fp)} per-channel"
-                                        + (" [sparse/CFA]" if _cfa_sparse_frame else "") + "  "
-                                        + "  ".join(_ch_dbg)
-                                    )
-                            else:
-                                # Additive background matching (nan-safe).
-                                # _compute_scale is purely MULTIPLICATIVE (s = target/median);
-                                # that equalizes signal above the floor but does NOT equalize an
-                                # additive sky pedestal, so subs from different-brightness sessions
-                                # landed at different background levels -> the 'trail' deficits in
-                                # the master. Subtract each frame's own background and re-level to
-                                # the reference sky, exactly like the standalone bgmatch that fixed
-                                # it. NaN (satellite no-data) is preserved through the shift.
-                                _fin = img[np.isfinite(img) & (img != 0.0)]
-                                _frame_bg = float(np.median(_fin)) if _fin.size else 0.0
-                                _target_bg = float(ref_target_median + ref_min)   # reference sky level
-                                img = (img - _frame_bg + _target_bg).astype(np.float32, copy=False)
-                                if getattr(self, "_norm_dbg_on", False):
-                                    self.update_status(
-                                        f"🔬[04 bg-match] {os.path.basename(fp)} "
-                                        f"frame_bg={_frame_bg:.6g} target_bg={_target_bg:.6g}"
-                                    )
-                            _ndbg("05 after-scale", img, fp)
-
-                            # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
-                            if hasattr(self, "_norm_target_hw") and self._norm_target_hw:
-                                img = _force_shape_hw(img, *self._norm_target_hw)
-                            _ndbg("06 force_hw", img, fp)
-
-                            if abe_enabled:
-                                scaled_images.append(img.astype(np.float32, copy=False))
-                                scaled_paths.append(fp)
-                                scaled_hdrs.append(hdr)
-                            else:
-                                # write out normalized FITS
-                                out_path = _norm_out_name(fp, norm_dir)
-
-                                try:
-                                    if os.path.splitext(fp)[1].lower() in (".fits", ".fit", ".fz"):
-                                        orig_header = fits.getheader(fp, ext=0)
-                                    else:
-                                        orig_header = fits.Header()
-                                except Exception:
-                                    orig_header = fits.Header()
-
-                                if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[-1] == 3:
-                                    orig_header["DEBAYERED"] = (True, "Color debayered normalized")
+                                            _s_c = float(ref_target_medians_rgb[_c] / _med)
+                                            _off_c = 0.0
+                                    # apply scale to populated pixels only;
+                                    # structural zeros stay exactly 0
+                                    _m = img[..., _c] != 0.0
+                                    img[..., _c][_m] = img[..., _c][_m] * _s_c
                                 else:
-                                    orig_header["DEBAYERED"] = (False, "Mono normalized")
+                                    # Additive per-channel background match (nan-safe),
+                                    # mirroring the mono fix. Pure multiplicative scaling does
+                                    # NOT equalize an additive sky pedestal across sessions, so
+                                    # multi-night OSC would band exactly like mono did. NaN
+                                    # (satellite no-data) is preserved through the shift.
+                                    _pl   = img[..., _c]
+                                    _finc = _pl[np.isfinite(_pl) & (_pl != 0.0)]
+                                    _bg_c = float(np.median(_finc)) if _finc.size else 0.0
+                                    _tgt_c = float(ref_target_medians_rgb[_c])
+                                    img[..., _c] = (_pl - _bg_c + _tgt_c).astype(np.float32, copy=False)
+                                    _s_c, _off_c = 1.0, float(_tgt_c - _bg_c)
+                                _ch_dbg.append(f"{'RGB'[_c]}: bg_shift={_off_c:.6g}")
+                            if getattr(self, "_norm_dbg_on", False):
+                                self.update_status(
+                                    f"🔬[04 scale-args] {os.path.basename(fp)} per-channel"
+                                    + (" [sparse/CFA]" if _cfa_sparse_frame else "") + "  "
+                                    + "  ".join(_ch_dbg)
+                                )
+                        else:
+                            # Additive background matching (nan-safe).
+                            # _compute_scale is purely MULTIPLICATIVE (s = target/median);
+                            # that equalizes signal above the floor but does NOT equalize an
+                            # additive sky pedestal, so subs from different-brightness sessions
+                            # landed at different background levels -> the 'trail' deficits in
+                            # the master. Subtract each frame's own background and re-level to
+                            # the reference sky, exactly like the standalone bgmatch that fixed
+                            # it. NaN (satellite no-data) is preserved through the shift.
+                            _fin = img[np.isfinite(img) & (img != 0.0)]
+                            _frame_bg = float(np.median(_fin)) if _fin.size else 0.0
+                            _target_bg = float(ref_target_median + ref_min)   # reference sky level
+                            img = (img - _frame_bg + _target_bg).astype(np.float32, copy=False)
+                            if getattr(self, "_norm_dbg_on", False):
+                                self.update_status(
+                                    f"🔬[04 bg-match] {os.path.basename(fp)} "
+                                    f"frame_bg={_frame_bg:.6g} target_bg={_target_bg:.6g}"
+                                )
+                        _ndbg("05 after-scale", img, fp)
 
-                                from os import path
-                                _key = path.normcase(path.normpath(fp))
-                                _val = path.normpath(out_path)
-                                self._orig2norm[_key] = _val
-                                _ndbg("07 pre-write", img, fp)
-                                fits.PrimaryHDU(data=img.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
-                                normalized_files.append(out_path)
-                                # CFA drizzle: also write the sparse sibling for the
-                                # drizzle deposit (rejection uses the dense out_path).
-                                _cfa_key = os.path.normcase(os.path.normpath(fp))
-                                _cfa_sparse = getattr(self, "_pending_cfa_sparse", {}).pop(_cfa_key, None) if hasattr(self, "_pending_cfa_sparse") else None
-                                if _cfa_sparse is not None:
-                                    try:
-                                        _cfa_out = self._cfa_sibling_path(out_path)
-                                        _ch = fits.Header(orig_header)
-                                        _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
-                                        _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
-                                        fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
-                                    except Exception as _e:
-                                        self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
-                                # Carry the satellite-trail mask sidecar onto the
-                                # normalized frame so registration can find + warp it.
-                                _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
+                        # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
+                        if hasattr(self, "_norm_target_hw") and self._norm_target_hw:
+                            img = _force_shape_hw(img, *self._norm_target_hw)
+                        _ndbg("06 force_hw", img, fp)
 
-                        except Exception as e:
-                            self.update_status(self.tr(f"⚠️ Error normalizing {fp}: {e}"))
-                        finally:
-                            QApplication.processEvents()
+                        if abe_enabled:
+                            scaled_images.append(img.astype(np.float32, copy=False))
+                            scaled_paths.append(fp)
+                            scaled_hdrs.append(hdr)
+                        else:
+                            # write out normalized FITS
+                            out_path = _norm_out_name(fp, norm_dir)
+
+                            try:
+                                if os.path.splitext(fp)[1].lower() in (".fits", ".fit", ".fz"):
+                                    orig_header = fits.getheader(fp, ext=0)
+                                else:
+                                    orig_header = fits.Header()
+                            except Exception:
+                                orig_header = fits.Header()
+
+                            if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[-1] == 3:
+                                orig_header["DEBAYERED"] = (True, "Color debayered normalized")
+                            else:
+                                orig_header["DEBAYERED"] = (False, "Mono normalized")
+
+                            from os import path
+                            _key = path.normcase(path.normpath(fp))
+                            _val = path.normpath(out_path)
+                            self._orig2norm[_key] = _val
+                            _ndbg("07 pre-write", img, fp)
+                            fits.PrimaryHDU(data=img.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
+                            normalized_files.append(out_path)
+                            # CFA drizzle: also write the sparse sibling for the
+                            # drizzle deposit (rejection uses the dense out_path).
+                            _cfa_key = os.path.normcase(os.path.normpath(fp))
+                            _cfa_sparse = getattr(self, "_pending_cfa_sparse", {}).pop(_cfa_key, None) if hasattr(self, "_pending_cfa_sparse") else None
+                            if _cfa_sparse is not None:
+                                try:
+                                    _cfa_out = self._cfa_sibling_path(out_path)
+                                    _ch = fits.Header(orig_header)
+                                    _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
+                                    _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
+                                    fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
+                                except Exception as _e:
+                                    self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
+                            # Carry the satellite-trail mask sidecar onto the
+                            # normalized frame so registration can find + warp it.
+                            _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
+
+                    except Exception as e:
+                        self.update_status(self.tr(f"⚠️ Error normalizing {fp}: {e}"))
+
+                with ThreadPoolExecutor(max_workers=io_workers) as ex:
+                    _prev_cv2n = None
+                    try:
+                        import cv2 as _cv2n
+                        _prev_cv2n = _cv2n.getNumThreads(); _cv2n.setNumThreads(1)
+                    except Exception:
+                        pass
+                    futs = {ex.submit(_normalize_one, fp): fp for fp in chunk}
+                    for fut in as_completed(futs):
+                        if self._cancelled():
+                            raise StackCancelled()
+                        try:
+                            fut.result()
+                        except StackCancelled:
+                            raise
+                        except Exception as _e:
+                            self.update_status(self.tr(f"⚠️ Error normalizing (worker): {_e}"))
+                        QApplication.processEvents()
+                    try:
+                        if _prev_cv2n is not None:
+                            _cv2n.setNumThreads(_prev_cv2n)
+                    except Exception:
+                        pass
 
                 # 2) ABE with canonical size lock
                 if abe_enabled and scaled_images:
@@ -22697,22 +22825,13 @@ class StackingSuiteDialog(QDialog):
                     ))
                     QApplication.processEvents()
 
-                    abe_stack = np.ascontiguousarray(np.stack(scaled_images, axis=0, dtype=np.float32))
-                    abe_stack = remove_gradient_stack_abe(
-                        abe_stack,
-                        target_hw=getattr(self, "_norm_target_hw", None),  # 🔒 enforce (H,W) for every frame
-                        mode=mode,
-                        num_samples=samples,
-                        downsample=downsample,
-                        patch_size=patch_size,
-                        min_strength=min_strength,
-                        gain_clip=(gain_lo, gain_hi),
-                        log_fn=(self._ui_log if hasattr(self, "_ui_log") else self.update_status),
-                    )
-                    QApplication.processEvents()
-
+                    # File-based ABE: write the normalized (pre-ABE) frames, then
+                    # run poly2 ABE over them in a process pool (rewrites each _n
+                    # in place) -- no GIL, no big-array IPC, all cores. Header /
+                    # _orig2norm / CFA-sparse handling is unchanged (pre-ABE).
+                    _abe_paths = []
                     for i, fp in enumerate(scaled_paths):
-                        img_out = abe_stack[i]; hdr = scaled_hdrs[i]
+                        img_out = scaled_images[i]; hdr = scaled_hdrs[i]
                         out_path = _norm_out_name(fp, norm_dir)
 
                         try:
@@ -22731,6 +22850,7 @@ class StackingSuiteDialog(QDialog):
                         self._orig2norm[_key] = _val
                         fits.PrimaryHDU(data=img_out.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
                         normalized_files.append(out_path)
+                        _abe_paths.append(out_path)
                         # CFA drizzle: also write the sparse sibling (ABE path).
                         _cfa_key = os.path.normcase(os.path.normpath(fp))
                         _cfa_sparse = getattr(self, "_pending_cfa_sparse", {}).pop(_cfa_key, None) if hasattr(self, "_pending_cfa_sparse") else None
@@ -22746,6 +22866,23 @@ class StackingSuiteDialog(QDialog):
                         # Carry the satellite-trail mask sidecar onto the
                         # normalized frame so registration can find + warp it.
                         _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
+
+                    # ---- Parallel poly2 ABE over the just-written _n frames ----
+                    try:
+                        from setiastro.saspro.gradient_abe import run_abe_files_parallel
+                        _n_ok, _n_skip, _n_err = run_abe_files_parallel(
+                            _abe_paths,
+                            kw=dict(mode=mode, num_samples=samples, downsample=downsample,
+                                    patch_size=patch_size, min_strength=min_strength,
+                                    gain_clip=(gain_lo, gain_hi)),
+                            target_hw=getattr(self, "_norm_target_hw", None),
+                            log_fn=self.update_status,
+                        )
+                        self.update_status(self.tr(
+                            f"Gradient removal complete: {_n_ok} ok, {_n_skip} skipped, {_n_err} error(s)."))
+                    except Exception as _abe_e:
+                        self.update_status(self.tr(f"⚠️ ABE parallel pass failed: {_abe_e}"))
+                    QApplication.processEvents()
 
             # restore OpenCV threads
             try:
@@ -23227,6 +23364,335 @@ class StackingSuiteDialog(QDialog):
             hist[iy, ix] += 1
         return float(np.count_nonzero(hist)) / float(hist.size)
 
+    # ── Advanced Dual NB Split (empirical mixing-matrix) ──────────────────────
+
+    class _NBActiveDocShim:
+        """Wrap the real DocManager but force get_active_document() to a target doc."""
+        def __init__(self, real, doc):
+            object.__setattr__(self, "_real", real)
+            object.__setattr__(self, "_doc", doc)
+        def get_active_document(self):
+            return object.__getattribute__(self, "_doc")
+        def __getattr__(self, name):
+            return getattr(object.__getattribute__(self, "_real"), name)
+
+    class _NBScratchDoc:
+        """Minimal in-memory stand-in for a SASpro ImageDocument: just enough for
+        plate_solve_doc_inplace and the SFCC/NBExtract calibration to read the
+        image + WCS. NEVER registered with the DocManager, so it spawns no
+        window. Backed by a scratch temp FITS via `file_path` for any code path
+        that reopens the file."""
+        def __init__(self, image, metadata):
+            self.image = image
+            self.metadata = dict(metadata)
+            self.file_path = self.metadata.get("file_path")
+            self.display_name = self.metadata.get("display_name", "__nbcal__")
+            self.is_mono = (getattr(image, "ndim", 2) == 2)
+            self.wcs = None
+            self.changed = False
+
+    def _nb_data_path(self):
+        """Resolve the bundled SASP_data.fits (SFCC's sasp_data_path).
+
+        NBExtract's own calibration uses the Gaia XP spectra, NOT the sensor
+        curves in this file — the shared SFCC constructor / fetch_stars just
+        needs a real FITS to open (its Pickles-template list) — so resolve the
+        packaged resource directly rather than hunting for a lazily-set
+        main-window attribute."""
+        try:
+            from setiastro.saspro.resources import get_resources
+            p = get_resources().SASP_DATA
+            if p and os.path.exists(p):
+                return p
+        except Exception:
+            pass
+        try:
+            from setiastro.saspro.resources import _resource_path
+            p = _resource_path("data/SASP_data.fits")
+            if p and os.path.exists(p):
+                return p
+        except Exception:
+            pass
+        return None
+
+    def _nb_discard_doc(self, dm, doc):
+        for m in ("close_document", "remove_document", "delete_document", "close", "remove"):
+            fn = getattr(dm, m, None)
+            if callable(fn):
+                try:
+                    fn(doc)
+                    return
+                except Exception:
+                    pass
+
+    def _nb_rgb_hwc(self, arr, layout=None):
+        import numpy as np
+        a = np.asarray(arr)
+        if a.ndim != 3:
+            return None
+        if layout == "HWC":
+            hwc = a
+        elif layout == "CHW":
+            hwc = np.transpose(a, (1, 2, 0))
+        elif a.shape[-1] in (3, 4) and a.shape[0] > 8 and a.shape[1] > 8:
+            hwc = a
+        elif a.shape[0] in (3, 4) and a.shape[1] > 8 and a.shape[2] > 8:
+            hwc = np.transpose(a, (1, 2, 0))
+        else:
+            return None
+        if hwc.shape[-1] < 3:
+            return None
+        return np.ascontiguousarray(hwc[..., :3].astype(np.float32))
+
+    def _nb_throughput_scalar(self, recs):
+        import numpy as np
+        vals = [
+            (float(r["R_meas"]) + float(r["G_meas"]) + float(r["B_meas"])) / 3.0
+            for r in recs
+        ]
+        if not vals:
+            return 0.0
+        m = float(np.median(vals))
+        return m if m > 0 else 0.0
+
+    def _nb_calibrate_class(self, sample_files, preset_name, *, n_cal=5):
+        """Plate-solve ONCE (all subs share the aligned reference grid), then
+        calibrate NBExtract on up to n_cal subs reusing that WCS, QC, pool the
+        throughput-normalised star records, and fit ONE mixing matrix.
+
+        Runs entirely on SCRATCH TEMP FITS + in-memory stand-in docs — it never
+        calls doc_manager.create_document, so NO SASpro windows are spawned.
+        Returns the (3, 2) matrix, or None to signal 'use raw R/G split'."""
+        import os, tempfile, shutil
+        import numpy as np
+        from astropy.io import fits
+        try:
+            from setiastro.saspro.nbextract import (
+                calibrate_matrix_headless, fit_mixing_matrix, condition_number_warning,
+            )
+            from setiastro.saspro.plate_solver import plate_solve_doc_inplace
+            from setiastro.saspro.legacy.image_manager import save_image
+        except Exception as e:
+            self.update_status(self.tr(f"\u26a0\ufe0f Advanced NB split unavailable ({e}); raw split."))
+            return None
+
+        # Only used to back the active-doc shim; we NEVER create a document here.
+        real_dm = self._saspro_doc_manager()
+
+        data_path = self._nb_data_path()
+        if not data_path:
+            self.update_status(self.tr(
+                "\u26a0\ufe0f Advanced NB split: SASpro data path not found; raw split."))
+            return None
+
+        def _save_scratch(path, rgb_img, header):
+            save_image(img_array=rgb_img, filename=path, original_format="fit",
+                       bit_depth="32-bit floating point",
+                       original_header=header, is_mono=False)
+
+        tmpdir = tempfile.mkdtemp(prefix="sas_nbcal_")
+        pooled = []
+        n_ok = 0
+        ref_wcs = None
+        try:
+            for i, fp in enumerate(sample_files):
+                if n_ok >= n_cal:
+                    break
+                try:
+                    with fits.open(fp, memmap=False) as hdul:
+                        arr = np.asarray(hdul[0].data)
+                        hdr = hdul[0].header.copy()
+                except Exception as e:
+                    self.update_status(self.tr(f"   \u21b3 NB cal read failed {os.path.basename(fp)}: {e}"))
+                    continue
+
+                rgb = self._nb_rgb_hwc(arr, None)
+                if rgb is None:
+                    continue
+
+                scratch = os.path.join(tmpdir, f"nbcal_{i:03d}.fit")
+
+                if ref_wcs is None:
+                    # First usable sub: write scratch, solve it once via the waterfall.
+                    try:
+                        _save_scratch(scratch, rgb, hdr)
+                    except Exception as e:
+                        self.update_status(self.tr(f"   \u21b3 NB cal scratch write failed: {e}"))
+                        continue
+                    doc = self._NBScratchDoc(rgb, {"original_header": hdr, "file_path": scratch})
+                    try:
+                        ok, res = plate_solve_doc_inplace(self, doc, self.settings)
+                    except Exception as e:
+                        ok, res = False, str(e)
+                    if not ok:
+                        self.update_status(self.tr(
+                            f"   \u21b3 NB cal plate solve failed {os.path.basename(fp)}: {res}"))
+                        continue
+                    ref_wcs = {
+                        "original_header": doc.metadata.get("original_header"),
+                        "wcs_header":      doc.metadata.get("wcs_header"),
+                    }
+                    # Bake the solved WCS into the scratch header so any file reopen
+                    # sees a plate-solved image.
+                    try:
+                        _save_scratch(scratch, rgb, ref_wcs["original_header"])
+                    except Exception:
+                        pass
+                    self.update_status(self.tr(
+                        "   \u21b3 NB cal: solved reference grid once; reusing WCS for the rest."))
+                else:
+                    # Aligned to the same grid: write scratch with the solved WCS baked in.
+                    try:
+                        _save_scratch(scratch, rgb, ref_wcs["original_header"])
+                    except Exception as e:
+                        self.update_status(self.tr(f"   \u21b3 NB cal scratch write failed: {e}"))
+                        continue
+                    doc = self._NBScratchDoc(rgb, {
+                        "original_header": ref_wcs["original_header"],
+                        "wcs_header":      ref_wcs["wcs_header"],
+                        "file_path":       scratch,
+                    })
+
+                shim = self._NBActiveDocShim(real_dm, doc)
+                try:
+                    A_k, recs_k, cond_k = calibrate_matrix_headless(
+                        shim, data_path, doc=doc,
+                        preset={"preset": preset_name}, parent=self,
+                    )
+                except Exception as e:
+                    self.update_status(self.tr(
+                        f"   \u21b3 NB cal failed {os.path.basename(fp)}: {e}"))
+                    continue
+
+                _, sev = condition_number_warning(A_k)
+                if sev == "severe" or len(recs_k) < 30:
+                    self.update_status(self.tr(
+                        f"   \u21b3 NB cal rejected sub (cond={cond_k:.1f}, n={len(recs_k)})"))
+                    continue
+
+                t = self._nb_throughput_scalar(recs_k)
+                if t <= 0:
+                    continue
+                for r in recs_k:
+                    r["R_meas"] = float(r["R_meas"]) / t
+                    r["G_meas"] = float(r["G_meas"]) / t
+                    r["B_meas"] = float(r["B_meas"]) / t
+                    pooled.append(r)
+                n_ok += 1
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+        if n_ok == 0 or len(pooled) < 6:
+            self.update_status(self.tr(
+                f"\u26a0\ufe0f Advanced NB split ({preset_name}): calibration failed "
+                f"({n_ok} usable subs); raw R/G split."))
+            return None
+
+        A, n_used = fit_mixing_matrix(pooled)
+        if A is None:
+            self.update_status(self.tr(
+                f"\u26a0\ufe0f Advanced NB split ({preset_name}): pooled fit failed; raw split."))
+            return None
+
+        _, sev = condition_number_warning(A)
+        if sev == "severe":
+            self.update_status(self.tr(
+                f"\u26a0\ufe0f Advanced NB split ({preset_name}): pooled matrix "
+                f"ill-conditioned (cond={np.linalg.cond(A):.1f}); raw split."))
+            return None
+
+        self.update_status(self.tr(
+            f"\u2705 Advanced NB matrix ({preset_name}): {n_ok} subs, {n_used} stars, "
+            f"cond={np.linalg.cond(A):.2f}"))
+        return np.asarray(A, dtype=np.float64)
+
+    def _nb_filter_recognized(self, filt_str) -> bool:
+        """True if the FILTER name carries any line / vendor / dual identifier
+        that _classify_filter keys on. When False, a DUAL_HA_OIII class came only
+        from the 'assume Ha/OIII' fallback — i.e. the header had no filter info.
+        (Token set mirrors _classify_filter; keep them in sync.)"""
+        try:
+            k = self._norm_filter_key(filt_str or "")
+        except Exception:
+            k = str(filt_str or "").strip().lower()
+        if not k:
+            return False
+        toks = (
+            "ha", "halpha", "sii", "s2", "oiii", "o3", "hb", "hbeta",
+            "lextreme", "lenhance", "lultimate", "nbz", "nbzu", "alpt", "alp",
+            "duo-band", "duoband", "dual band", "dual-band", "dualband",
+            "dual", "duo", "2band", "2-band", "two band",
+            "bicolor", "bi-color", "bicolour", "bi-colour",
+            "dualnb", "dual-nb", "duo-nb", "duonb", "duo narrow", "dual narrow",
+        )
+        return any(t in k for t in toks)
+
+    def _nb_prepare_matrices_for_split(self, aligned_light_files, old_drizzle):
+        """Populate self._nb_matrices {class: A|None} once per split run.
+        Only non-drizzle subs are eligible calibration inputs (and only non-drizzle
+        groups will consume the matrix downstream)."""
+        self._nb_matrices = {}
+        self._nb_advanced_split = bool(
+            getattr(self, "adv_nb_split_cb", None) and self.adv_nb_split_cb.isChecked()
+        )
+        if not self._nb_advanced_split:
+            return
+
+        DUAL = ("DUAL_HA_OIII", "DUAL_SII_OIII", "DUAL_SII_HB")
+        preset_for = {
+            "DUAL_HA_OIII":  "Ha / OIII",
+            "DUAL_SII_OIII": "SII / OIII",
+            "DUAL_SII_HB":   "SII / H\u03b2",
+        }
+        buckets = {}
+        recognized = {}   # cls -> True if any sub carried an informative FILTER name
+        for group, files in aligned_light_files.items():
+            drizzled = self._group_is_drizzled(old_drizzle, group)
+            if drizzled:
+                continue  # drizzle groups keep the raw R/G split
+            for fp in files:
+                filt = self._get_filter_name(fp)
+                cls = self._classify_filter(filt)
+                if cls not in DUAL:
+                    continue
+                buckets.setdefault(cls, []).append(fp)
+                recognized[cls] = recognized.get(cls, False) or self._nb_filter_recognized(filt)
+
+        for cls in DUAL:
+            sample = buckets.get(cls) or []
+            if not sample:
+                continue
+            if cls == "DUAL_HA_OIII" and not recognized.get(cls, False):
+                self.update_status(self.tr(
+                    "\u26a0\ufe0f NB split: no usable FILTER in the headers \u2014 assuming "
+                    "Ha/OIII. If this is an SII/OIII set, set the FILTER keyword "
+                    "(acquisition software or the batch FITS header tool) and re-run."))
+            self.update_status(self.tr(
+                f"\U0001f9ea Advanced NB split: calibrating {cls} mixing matrix "
+                f"from up to 5 subs\u2026"))
+            self._nb_matrices[cls] = self._nb_calibrate_class(
+                sample, preset_for[cls], n_cal=5
+            )
+
+    def _group_is_drizzled(self, drizzle_map, group) -> bool:
+        """True only if drizzle is actually ENABLED for this group.
+        per_group_drizzle values are config dicts ({"enabled": bool, "scale":…,
+        "drop":…}), so bool(dict) is truthy even when drizzle is off — check the
+        flag explicitly. Tolerates a bare bool/None too."""
+        v = (drizzle_map or {}).get(group)
+        if isinstance(v, dict):
+            return bool(v.get("enabled", v.get("drizzle_enabled", False)))
+        return bool(v)
+
+    def _dual_split_requested(self) -> bool:
+        """True if EITHER the base dual-band split OR the advanced matrix split
+        is enabled. The advanced checkbox implies the split must run."""
+        base = bool(getattr(self, "split_dualband_cb", None)
+                    and self.split_dualband_cb.isChecked())
+        adv = bool(getattr(self, "adv_nb_split_cb", None)
+                   and self.adv_nb_split_cb.isChecked())
+        return base or adv
+
     def _split_dual_band_after_align(
         self,
         aligned_light_files: dict[str, list[str]]
@@ -23272,6 +23738,10 @@ class StackingSuiteDialog(QDialog):
 
         # Normalized aligned->original map (should exist from your registration pipeline)
         oba = getattr(self, "orig_by_aligned", {}) or {}
+
+        # Advanced Dual NB Split: fit one empirical mixing matrix per dual-band
+        # class from a few plate-solved subs (non-drizzle groups only).
+        self._nb_prepare_matrices_for_split(aligned_light_files, old_drizzle)
 
         # --- Pass 1: classify + split each aligned frame ---
         for group, files in aligned_light_files.items():
@@ -23365,45 +23835,80 @@ class StackingSuiteDialog(QDialog):
                     if parent_orig:
                         split_info[os.path.normpath(path_written)] = {"orig": parent_orig, "chan": chan}
 
-                if cls == "DUAL_HA_OIII":
-                    ha_path   = os.path.join(out_dir, f"{base}_Ha.fit")
-                    oiii_path = os.path.join(out_dir, f"{base}_OIII.fit")
-                    self._write_band_fit(ha_path,   R, hdr, "Ha",   src_filter=filt)
-                    self._write_band_fit(oiii_path, G, hdr, "OIII", src_filter=filt)
-
-                    ha_files.append(ha_path);     parent_of[ha_path]   = group
-                    oiii_files.append(oiii_path); parent_of[oiii_path] = group
-
-                    _map_split(ha_path, "R")
-                    _map_split(oiii_path, "G")
-
-                elif cls == "DUAL_SII_OIII":
-                    sii_path  = os.path.join(out_dir, f"{base}_SII.fit")
-                    oiii_path = os.path.join(out_dir, f"{base}_OIII.fit")
-                    self._write_band_fit(sii_path,  R, hdr, "SII",  src_filter=filt)
-                    self._write_band_fit(oiii_path, G, hdr, "OIII", src_filter=filt)
-
-                    sii_files.append(sii_path);     parent_of[sii_path]  = group
-                    oiii_files.append(oiii_path);   parent_of[oiii_path] = group
-
-                    _map_split(sii_path, "R")
-                    _map_split(oiii_path, "G")
-
-                elif cls == "DUAL_SII_HB":
-                    sii_path = os.path.join(out_dir, f"{base}_SII.fit")
-                    hb_path  = os.path.join(out_dir, f"{base}_Hb.fit")
-                    self._write_band_fit(sii_path, R, hdr, "SII", src_filter=filt)
-                    self._write_band_fit(hb_path,  G, hdr, "Hb",  src_filter=filt)
-
-                    sii_files.append(sii_path); parent_of[sii_path] = group
-                    hb_files.append(hb_path);   parent_of[hb_path]  = group
-
-                    _map_split(sii_path, "R")
-                    _map_split(hb_path, "G")
-
-                else:
+                # ── Per-class band mapping + NBExtract preset ─────────────────
+                _dual_map = {
+                    "DUAL_HA_OIII":  ("Ha",  "OIII", "Ha / OIII"),
+                    "DUAL_SII_OIII": ("SII", "OIII", "SII / OIII"),
+                    "DUAL_SII_HB":   ("SII", "Hb",   "SII / Hβ"),
+                }
+                if cls not in _dual_map:
                     # UNKNOWN dual → ignore
                     continue
+                band1, band2, _preset = _dual_map[cls]
+
+                _band_lists = {
+                    "Ha": ha_files, "SII": sii_files,
+                    "OIII": oiii_files, "Hb": hb_files,
+                }
+                p1 = os.path.join(out_dir, f"{base}_{band1}.fit")
+                p2 = os.path.join(out_dir, f"{base}_{band2}.fit")
+
+                # Advanced matrix split only for non-drizzle groups that produced a
+                # good matrix; drizzle groups keep the raw R/G split (the deposit loop
+                # re-pulls a single original plane, which a matrix mix cannot provide).
+                A_nb = None
+                rgb_hwc = None
+                if (getattr(self, "_nb_advanced_split", False)
+                        and not self._group_is_drizzled(old_drizzle, group)):
+                    A_nb = (getattr(self, "_nb_matrices", {}) or {}).get(cls)
+                if A_nb is not None:
+                    rgb_hwc = self._nb_rgb_hwc(arr, layout)
+
+                if A_nb is not None and rgb_hwc is not None:
+                    from setiastro.saspro.nbextract import extract_channels_nnls
+                    # Pure linear NNLS: no stretch, no raw-prior Q-blend, so the planes
+                    # stay linear for normalise/reject/integrate. Averaging N frames
+                    # beats down the NNLS noise amplification; low-Q bleed would be
+                    # correlated across frames and would NOT average away.
+                    line1, line2 = extract_channels_nnls(rgb_hwc, A_nb)
+                    self._write_band_fit(p1, line1, hdr, band1, src_filter=filt)
+                    self._write_band_fit(p2, line2, hdr, band2, src_filter=filt)
+                    # Matrix-mixed -> no single source plane. chan=None keeps the
+                    # non-drizzle path (integration reads these mono files directly).
+                    # For matrix-mixed DRIZZLE, thread the pseudo-inverse rows through
+                    # and honour ent["mix"] in the deposit loop, e.g.:
+                    #     import numpy as _np
+                    #     Ainv = _np.linalg.pinv(A_nb)            # (2, 3)
+                    #     _map_split(p1, None)
+                    #     split_info[os.path.normpath(p1)]["mix"] = Ainv[0].tolist()
+                    #     _map_split(p2, None)
+                    #     split_info[os.path.normpath(p2)]["mix"] = Ainv[1].tolist()
+                    # then in the drizzle deposit: if ent.get("mix"): img_data =
+                    #     (orig_rgb_hwc @ _np.asarray(ent["mix"], _np.float32))
+                    _map_split(p1, None)
+                    _map_split(p2, None)
+                else:
+                    # Raw split (unchanged behaviour): R->band1, G->band2.
+                    self._write_band_fit(p1, R, hdr, band1, src_filter=filt)
+                    self._write_band_fit(p2, G, hdr, band2, src_filter=filt)
+                    _map_split(p1, "R")
+                    _map_split(p2, "G")
+
+                _band_lists[band1].append(p1); parent_of[p1] = group
+                _band_lists[band2].append(p2); parent_of[p2] = group
+
+                # Daughters inherit the parent frame's integration weight — else
+                # they default to 1.0 and the split stacks lose PSF weighting.
+                # Resolve the parent weight the same way integration does:
+                # direct hit, then via the parent original (orig_by_aligned).
+                _fw = getattr(self, "frame_weights", None)
+                if isinstance(_fw, dict):
+                    _pw = _fw.get(fpn, _fw.get(fp))
+                    if _pw is None and parent_orig:
+                        _pw = _fw.get(parent_orig, _fw.get(os.path.normpath(parent_orig)))
+                    if _pw is not None:
+                        _fw[os.path.normpath(p1)] = _pw
+                        _fw[os.path.normpath(p2)] = _pw
 
         # --- Pass 2: group the new files using the SAME exposure-tolerance helper
         #              used by populate_calibrated_lights() ---
@@ -23867,11 +24372,11 @@ class StackingSuiteDialog(QDialog):
                 if aligned and os.path.exists(aligned):
                     new_list.append(aligned)
                 else:
-                    self.update_status(self.tr(f"DEBUG: File '{aligned}' does not exist on disk."))
+                    self.update_status(self.tr(f"File '{aligned}' does not exist on disk."))
             aligned_light_files[group] = new_list
 
-        # ----Split dual-band if requested----
-        if self.split_dualband_cb.isChecked():
+        # ----Split dual-band if requested (base checkbox OR advanced matrix)----
+        if self._dual_split_requested():
             self.update_status(self.tr("🌈 Splitting aligned dual-band OSC frames into Ha / OIII…"))
             aligned_light_files = self._split_dual_band_after_align(aligned_light_files)
 
@@ -25765,13 +26270,18 @@ class StackingSuiteDialog(QDialog):
 
     def _maybe_plate_solve_master(self, img_array, header, *, label="master", status_cb=None):
         log = status_cb or self.update_status
-
         if not self.settings.value("stacking/platesolve_master_enabled", False, type=bool):
             return header
+        ok, result = self._plate_solve_waterfall(img_array, header, label=label, status_cb=log)
+        return result if ok else header
 
+    def _plate_solve_waterfall(self, img_array, header, *, label="frame", status_cb=None):
+        """Run the Gaia DR3 → ASTAP → Astrometry.net solver waterfall, UNGATED by the
+        master-solve setting. Returns (ok, solved_header | error_msg). Thread-safe:
+        hops to the GUI thread when required."""
+        log = status_cb or self.update_status
         log(self.tr(f"🔭 Plate solving {label} (Gaia DR3 → ASTAP → Astrometry.net)…"))
         QApplication.processEvents()
-
         try:
             if QThread.currentThread() is self._gui_thread:
                 from setiastro.saspro.plate_solver import plate_solve_numpy_headless, _status_popup_close
@@ -25789,14 +26299,12 @@ class StackingSuiteDialog(QDialog):
                 result = holder.get("result", "plate solve failed (no result returned)")
         except Exception as e:
             log(self.tr(f"⚠️ Plate solve error for {label}: {e}"))
-            return header
-
+            return False, str(e)
         if ok:
             log(self.tr(f"✅ Plate solve succeeded for {label}."))
-            return result
         else:
             log(self.tr(f"⚠️ Plate solve failed for {label}: {result}"))
-            return header
+        return ok, result
 
     def stack_images_mixed_drizzle(
         self,
@@ -27391,6 +27899,37 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
+        # Collapse duplicate registered twins to a single FRESHEST file per
+        # core-key. Aligned_Images now holds BOTH pre-"Sets" loose _n_r files at
+        # the root AND the current set's _n_r files in a daughter subfolder, so
+        # the recursive walk finds two copies per source. Two files sharing a
+        # core-key are the same source registered twice (core-key = unique raw
+        # stem, dir-independent), not a real collision -- but the duplicates make
+        # every core-key look ambiguous, so the matcher bails and the
+        # "already registered?" prompt silently stops appearing. Keeping the
+        # newest also prefers the current set over the stale leftovers.
+        _by_core = {}
+        for _ap in aligned_files:
+            _k = self._pipeline_core_key(_ap)
+            _cur = _by_core.get(_k)
+            if _cur is None:
+                _by_core[_k] = _ap
+            else:
+                try:
+                    if os.path.getmtime(_ap) > os.path.getmtime(_cur):
+                        _by_core[_k] = _ap
+                except Exception:
+                    pass
+        _raw_n = len(aligned_files)
+        aligned_files = list(_by_core.values())
+
+        try:
+            self.update_status(self.tr(
+                f"🔎 reg-precheck: {len(aligned_dirs)} aligned dir(s), "
+                f"{_raw_n} registered file(s) -> {len(aligned_files)} unique source(s)"))
+        except Exception:
+            pass
+
         if not aligned_files:
             return None
 
@@ -27746,11 +28285,30 @@ class StackingSuiteDialog(QDialog):
         # Partition each group into matched (fresh twin) vs unmatched.
         matched_lf, unmatched_lf = {}, {}
         n_matched = n_unmatched = 0
+        _dbg_none = _dbg_missing = _dbg_stale = 0
+        _dbg_sample = []
         for g, lst in light_files.items():
             mkeep, ukeep = [], []
             for p in lst:
                 twin = matcher(p)
-                if twin and os.path.exists(twin) and self._twin_is_fresh(p, twin):
+                fresh = bool(twin and os.path.exists(twin) and self._twin_is_fresh(p, twin))
+                if not fresh:
+                    if not twin:
+                        _dbg_none += 1
+                        _why = "no-twin (matcher returned None: ambiguous or unmatched)"
+                    elif not os.path.exists(twin):
+                        _dbg_missing += 1
+                        _why = f"twin-missing: {os.path.basename(twin)}"
+                    else:
+                        _dbg_stale += 1
+                        try:
+                            _dt = os.path.getmtime(twin) - os.path.getmtime(p)
+                        except Exception:
+                            _dt = float("nan")
+                        _why = f"stale (twin−tree mtime = {_dt:+.0f}s): {os.path.basename(twin)}"
+                    if len(_dbg_sample) < 4:
+                        _dbg_sample.append(f"{os.path.basename(p)} → {_why}")
+                if fresh:
                     mkeep.append(p); n_matched += 1
                 else:
                     ukeep.append(p); n_unmatched += 1
@@ -27761,6 +28319,13 @@ class StackingSuiteDialog(QDialog):
 
         n_total = n_matched + n_unmatched
         if n_matched == 0:
+            try:
+                self.update_status(self.tr(
+                    f"🔎 reg-precheck: 0/{n_total} usable twins "
+                    f"(no-twin={_dbg_none}, missing={_dbg_missing}, stale={_dbg_stale}). "
+                    + " | ".join(_dbg_sample)))
+            except Exception:
+                pass
             return None  # nothing already registered → nothing to offer
 
         drizzle_on = False
@@ -28528,7 +29093,7 @@ class StackingSuiteDialog(QDialog):
             aligned_light_files = {g: lst for g, lst in self.light_files.items() if lst}
 
             # 7) Optional: split dual-band OSC into Ha / SII / OIII / Hb
-            if getattr(self, "split_dualband_cb", None) and self.split_dualband_cb.isChecked():
+            if self._dual_split_requested():
                 self.update_status(self.tr(
                     "🌈 Splitting registered dual-band OSC frames into Ha / SII / OIII / Hb…"
                 ))

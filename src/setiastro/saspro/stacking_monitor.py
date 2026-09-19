@@ -227,6 +227,25 @@ _r(r"✅ Satellite trail removal complete",            "Satellite Removal", _ST_
 _r(r"⏹ Satellite pass cancelled",                    "Satellite Removal", _ST_WARN)
 _r(r"⚠️ Satellite pass failed on",                    "Satellite Removal", _ST_RUNNING)
 
+# ── Advanced dual-band NB split (matrix) ──────────────────────────────────
+# OSC dual-band frames (e.g. L-eXtreme) are split into Ha / OIII after
+# alignment. The "advanced" path first solves a per-scene mixing matrix from
+# a few subs — its condition number reports how well-posed that solve was —
+# then applies it to every frame. Two rows are tracked: the outer split
+# (opened by "🌈 Splitting…", closed by "Dual-band split … complete") and the
+# inner matrix calibration (opened by "calibrating … mixing matrix", closed
+# by "Advanced NB matrix"). Keeping the matrix as its own row parks the
+# cond/star-count on screen. Any fallback to a raw split (import failure,
+# pooled-fit failure, or a severely ill-conditioned matrix — all end in
+# "raw split") closes the matrix row as a warning; the split itself carries
+# on and still reports its own completion. Per-frame "↳ NB cal …" chatter is
+# left unrecognised (suppressed), as is the "ℹ️ No dual-band frames …" no-op.
+_r(r"🌈 Splitting aligned dual-band .*? into ([^…]+)",    "Dual-Band Split", _ST_RUNNING, 1)
+_r(r"Advanced NB split: calibrating (\S+) mixing matrix", "NB Matrix Cal",   _ST_RUNNING, 1)
+_r(r"Advanced NB split.*raw split",                       "NB Matrix Cal",   _ST_WARN)
+_r(r"✅ Advanced NB matrix",                               "NB Matrix Cal",   _ST_OK)
+_r(r"✅ Dual-band split .*complete",                       "Dual-Band Split", _ST_OK)
+
 # ── Generic catch-alls — MUST be last ─────────────────────────────────────
 _r(r"^✅",   "Complete",  _ST_OK)
 _r(r"^⚠️",  "Warning",   _ST_WARN)
@@ -373,6 +392,13 @@ class StackingMonitorDialog(QDialog):
         self._open: dict[str, int] = {}
         self._run_start: Optional[float] = None
         self._log_bus   = None
+
+        # ── bottom-label run state ─────────────────────────────────────────
+        # While True, _tick_elapsed repaints the summary label with a live
+        # "Running · MM:SS" so it never sits on "Ready." mid-run. Terminal
+        # states (finish_run/finish_all/mark_stopped) and clear() flip it off.
+        self._running_active: bool = False
+        self._running_caption: str = "Running"
 
         # ── disk-budget state (persistent label; live-polled on tick) ──
         self._disk_dir: Optional[str] = None   # volume to poll for free space
@@ -541,6 +567,10 @@ class StackingMonitorDialog(QDialog):
                 if item is not None:
                     item.setText(self._rows[idx].elapsed_str())
 
+        # The summary line is a static state word ("In Progress"); the live
+        # ticking lives in the per-row Elapsed cells above, so nothing to
+        # repaint here.
+
         # Refresh the free-space figure every ~3 s so the readout tracks the
         # disk filling up during a long write phase without polling too often.
         if self._disk_dir:
@@ -655,9 +685,40 @@ class StackingMonitorDialog(QDialog):
         self._run_start = time.monotonic()
         self._set_stop_available(True)
         self._tick_timer.start()
+        # Replace the "Ready." placeholder with a simple in-progress state.
+        self._set_running_label("In Progress")
         self.show()
         self.raise_()
         self.activateWindow()
+
+    # ------------------------------------------------- bottom-label helpers
+    def _process_seconds(self) -> int:
+        """Total *processing* time: the sum of each finished step's own
+        duration (t_end − t_start). This reconciles with the per-row Elapsed
+        column and deliberately excludes the idle gaps between steps that a
+        wall-clock run total would otherwise fold in."""
+        total = 0.0
+        for r in self._rows:
+            if r.t_end is not None:
+                total += max(0.0, r.t_end - r.t_start)
+        return int(total)
+
+    @staticmethod
+    def _mmss(seconds: float) -> str:
+        m, s = divmod(int(seconds), 60)
+        return f"{m:02d}:{s:02d}"
+
+    def _set_running_label(self, caption: str = "In Progress"):
+        """Show a simple live 'in progress' state on the summary line. The
+        per-row Elapsed cells carry the ticking; this line only states that
+        work is ongoing — no wall-clock total, which would drift from the
+        summed row times."""
+        self._running_caption = caption
+        self._running_active = True
+        self._lbl_total.setText(f"⟳ {caption}…")
+        self._lbl_total.setStyleSheet(
+            "color:#f0c040; font-size:11px; font-weight:bold;"
+        )
 
 
     def _phase_label(self) -> str:
@@ -689,11 +750,13 @@ class StackingMonitorDialog(QDialog):
         # a soft stop; _on_message will restart if new RUNNING ops appear.
         self._tick_timer.stop()
 
-        total_s = ""
-        if self._run_start is not None:
-            t = time.monotonic() - self._run_start
-            m, s = divmod(int(t), 60)
-            total_s = f"{m:02d}:{s:02d}"
+        # Processing-time total (sum of step durations), not wall clock, so it
+        # matches the per-row Elapsed column.
+        total_s = self._mmss(self._process_seconds())
+
+        # Soft finish: hand the summary line over to a phase caption. If a
+        # later phase posts a running op, _on_message re-arms the live label.
+        self._running_active = False
 
         # Show as "integration complete" rather than fully done,
         # since drizzle/MFD may still follow
@@ -718,12 +781,9 @@ class StackingMonitorDialog(QDialog):
                 self._refresh_row(idx)
         self._open.clear()
         self._tick_timer.stop()
+        self._running_active = False
 
-        total_s = ""
-        if self._run_start is not None:
-            t = time.monotonic() - self._run_start
-            m, s = divmod(int(t), 60)
-            total_s = f"{m:02d}:{s:02d}"
+        total_s = self._mmss(self._process_seconds())
 
         if ok:
             self._lbl_total.setText(f"Executed in {total_s}   ✓ Complete")
@@ -751,11 +811,8 @@ class StackingMonitorDialog(QDialog):
             self._refresh_row(idx)
         self._open.clear()
         self._tick_timer.stop()
-        total_s = ""
-        if self._run_start is not None:
-            t = time.monotonic() - self._run_start
-            m, s = divmod(int(t), 60)
-            total_s = f"{m:02d}:{s:02d}"
+        self._running_active = False
+        total_s = self._mmss(self._process_seconds())
         self._lbl_total.setText(f"⏹ Stopped by user ({total_s})")
         self._lbl_total.setStyleSheet("color:#ffa726; font-size:12px; font-weight:bold;")
         self._set_stop_available(False)
@@ -765,6 +822,7 @@ class StackingMonitorDialog(QDialog):
         self._rows.clear()
         self._open.clear()
         self._run_start = None
+        self._running_active = False
         self._lbl_total.setText("Ready.")
         self._lbl_total.setStyleSheet(f"color:{_DIM};font-size:10px;")
         self.clear_disk_budget()
@@ -793,9 +851,11 @@ class StackingMonitorDialog(QDialog):
                 self._set_stop_available(True)
             if not self._tick_timer.isActive():
                 self._tick_timer.start()
-                # Clear the "Complete" label so it doesn't show as done while work continues
-                self._lbl_total.setText("Running (post-integration phase)…")
-                self._lbl_total.setStyleSheet(f"color:{_YELLOW};font-size:11px;")
+            # A running op after a soft finish means a later phase (drizzle,
+            # MFDeconv, a fresh mosaic set) has begun — flip the summary line
+            # back to a live running caption so a stale "…done" doesn't linger.
+            if not self._running_active:
+                self._set_running_label("In Progress (post-integration phase)")
 
         # ── finishing transitions ─────────────────────────────────────────
         if status in (_ST_OK, _ST_FAIL, _ST_WARN) and op in self._open:

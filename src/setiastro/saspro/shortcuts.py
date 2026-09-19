@@ -611,6 +611,7 @@ _PRESET_UI_IDS = {
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine","geom_resize_canvas",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
     "satchroma","fx","unwarp","pedestal","cosmetic_correction",
+    "export_fits","plate_solve",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -710,7 +711,13 @@ def _preset_opener_for_command(command_id: str):
         return open_remove_pedestal_with_preset 
     if command_id == "cosmetic_correction":
         from setiastro.saspro.cosmetic_correction import open_cosmetic_correction_with_preset
-        return open_cosmetic_correction_with_preset    
+        return open_cosmetic_correction_with_preset
+    if command_id == "export_fits":
+        from setiastro.saspro.export_fits import open_export_fits_with_preset
+        return open_export_fits_with_preset
+    if command_id == "plate_solve":
+        from setiastro.saspro.plate_solver import open_plate_solver_with_preset
+        return open_plate_solver_with_preset
     return None                      
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
@@ -783,6 +790,14 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
     if command_id == "unwarp":
         from setiastro.saspro.unwarp import _UnwarpPresetDialog
         dlg = _UnwarpPresetDialog(parent, initial=cur or {"expand": True, "order": 3, "fill_nan": False})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+    if command_id == "export_fits":
+        from setiastro.saspro.export_fits import ExportFitsPresetDialog
+        dlg = ExportFitsPresetDialog(parent, initial=cur or {"out_dir": "", "overwrite": True})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+    if command_id == "plate_solve":
+        from setiastro.saspro.plate_solver import PlateSolverPresetDialog
+        dlg = PlateSolverPresetDialog(parent, initial=cur or {})
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
     if command_id == "syqontools":
         dlg = _SyQonToolsPresetDialog(parent, initial=cur or {})
