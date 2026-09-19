@@ -5042,25 +5042,17 @@ class AstroSuiteProMainWindow(
 
 
     def _open_plate_solver(self):
-        from setiastro.saspro.plate_solver import plate_solve_doc_inplace, PlateSolverDialog
-        dlg = PlateSolverDialog(self.settings, parent=self)
-        dlg.setWindowIcon(QIcon(platesolve_path))
-        dlg.show()  # modal; keeps the dialog (and its QProcess) alive until done
+        from setiastro.saspro.plate_solver import open_plate_solver_with_preset
+        open_plate_solver_with_preset(self)
 
-        # After modal returns, refresh header viewer just in case it changed
-        try:
-            doc = self._active_doc()
-            if doc:
-                self._hdr_refresh_timer.start(0)
-        except Exception:
-            pass
-
-        # Optional: if you have a tree/list that depends on metadata, refresh it too
-        try:
-            if hasattr(self, "_refresh_treebox"):
-                self._refresh_treebox()
-        except Exception:
-            pass
+    def _apply_plate_solve_to_doc(self, doc, preset=None):
+        from setiastro.saspro.plate_solver import apply_plate_solve_to_doc
+        if doc is None or getattr(doc, "image", None) is None:
+            raise RuntimeError("No image to plate-solve.")
+        ok, res = apply_plate_solve_to_doc(self, doc, self.settings, preset or {})
+        if not ok:
+            raise RuntimeError(str(res) or "Plate solve failed.")
+        return res
 
     def _doc_has_wcs(self, doc) -> bool:
         if doc is None:
@@ -7513,6 +7505,10 @@ class AstroSuiteProMainWindow(
                 open_syqontools_with_preset(self, preset)
                 return
 
+            if cid == "export_fits":
+                self._open_export_fits(preset)
+                return
+
             # Fallback: trigger QAction by cid (ok when no target)
             act = self._find_action_by_cid(cid)
             if act:
@@ -7530,6 +7526,13 @@ class AstroSuiteProMainWindow(
             base_doc = doc
 
         # --- Existing image-processing blocks (unchanged) ---
+        if cid == "export_fits":
+            try:
+                self._apply_export_fits_to_doc(doc, preset or {})
+            except Exception as e:
+                QMessageBox.warning(self, "Export FITS", str(e))
+            return
+
         if cid == "stat_stretch":
             try:
                 self._apply_stat_stretch_preset_to_doc(doc, preset)
@@ -8461,58 +8464,63 @@ class AstroSuiteProMainWindow(
                 QMessageBox.warning(self, "PSF Viewer", f"Open failed:\n{e}")
             return            
         if cid == "plate_solve":
-            # headless: solve the active document in-place
-            doc = self._active_doc() if hasattr(self, "_active_doc") else None
+            doc = None
+            if target_sw is not None:
+                try:
+                    doc = self._target_doc_from_subwindow(target_sw)
+                except Exception:
+                    doc = None
+            if doc is None and hasattr(self, "_active_doc"):
+                try:
+                    doc = self._active_doc()
+                except Exception:
+                    doc = None
             if not doc or getattr(doc, "image", None) is None:
                 QMessageBox.information(self, "Plate Solver", "No active image view.")
                 return
 
-            # optional: quick sanity check for ASTAP path
-            astap_path = self.settings.value("paths/astap", "", type=str)
-            if not astap_path or not os.path.exists(astap_path):
-                QMessageBox.information(
-                    self, "Plate Solver",
-                    "ASTAP executable not set. Go to Preferences -> ASTAP executable."
-                )
-                return
+            solver = str((preset or {}).get("solver") or (preset or {}).get("solver_pref") or "").lower()
+            pref = solver or (self.settings.value("plate_solver/preference", "both", type=str) or "both").lower()
+            if pref not in ("gaia_only", "astrometry_only"):
+                astap_path = self.settings.value("paths/astap", "", type=str)
+                if not astap_path or not os.path.exists(astap_path):
+                    QMessageBox.information(
+                        self, "Plate Solver",
+                        "ASTAP executable not set. Go to Preferences -> ASTAP executable."
+                    )
+                    return
 
-            try:       
-                from setiastro.saspro.plate_solver import plate_solve_doc_inplace         
-                ok, hdr_or_err = plate_solve_doc_inplace(self, doc, self.settings)
-                if ok:
-                    h = hdr_or_err  # astropy.io.fits.Header
+            try:
+                hdr = self._apply_plate_solve_to_doc(doc, preset or {})
+                h = hdr
 
-                    # build a nice one-line summary
-                    def _ff(x):
-                        try: return float(x)
-                        except Exception: return None
+                def _ff(x):
+                    try: return float(x)
+                    except Exception: return None
 
-                    ra  = _ff(h.get("CRVAL1"))
-                    dec = _ff(h.get("CRVAL2"))
-                    cd11 = _ff(h.get("CD1_1")); cd21 = _ff(h.get("CD2_1"))
-                    cd11 = cd11 if cd11 is not None else _ff(h.get("CDELT1"))
-                    cd21 = cd21 if cd21 is not None else _ff(h.get("CDELT2"))
-                    scale = None
-                    if cd11 is not None or cd21 is not None:
-                        a = cd11 or 0.0; b = cd21 or 0.0
-                        scale = (a*a + b*b) ** 0.5 * 3600.0  # "/px
+                ra  = _ff(h.get("CRVAL1")) if hasattr(h, "get") else None
+                dec = _ff(h.get("CRVAL2")) if hasattr(h, "get") else None
+                cd11 = _ff(h.get("CD1_1")) if hasattr(h, "get") else None
+                cd21 = _ff(h.get("CD2_1")) if hasattr(h, "get") else None
+                cd11 = cd11 if cd11 is not None else (_ff(h.get("CDELT1")) if hasattr(h, "get") else None)
+                cd21 = cd21 if cd21 is not None else (_ff(h.get("CDELT2")) if hasattr(h, "get") else None)
+                scale = None
+                if cd11 is not None or cd21 is not None:
+                    a = cd11 or 0.0; b = cd21 or 0.0
+                    scale = (a*a + b*b) ** 0.5 * 3600.0
 
-                    msg = "Plate solve complete"
-                    if ra is not None and dec is not None:
-                        msg += f" | RA={ra:.6f}Â deg, Dec={dec:.6f}Â deg"
-                    if scale is not None:
-                        msg += f" | scale~{scale:.3f}\"/px"
+                msg = "Plate solve complete"
+                if ra is not None and dec is not None:
+                    msg += f" | RA={ra:.6f} deg, Dec={dec:.6f} deg"
+                if scale is not None:
+                    msg += f" | scale~{scale:.3f}\"/px"
 
-                    if hasattr(self, "_log"):
-                        self._log(msg)
-                    else:
-                        print(msg)
-
-                    # views will already refresh via doc.changed in plate_solve_doc_inplace
+                if hasattr(self, "_log"):
+                    self._log(msg)
                 else:
-                    QMessageBox.warning(self, "Plate Solver", f"Plate solve failed:\n{hdr_or_err}")
+                    print(msg)
             except Exception as e:
-                QMessageBox.critical(self, "Plate Solver", f"Unhandled error:\n{e}")
+                QMessageBox.warning(self, "Plate Solver", f"Plate solve failed:\n{e}")
             self._hdr_refresh_timer.start(0)
             return
         if cid == "star_align":
