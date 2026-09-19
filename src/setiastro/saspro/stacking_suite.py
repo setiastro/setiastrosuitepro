@@ -22540,45 +22540,50 @@ class StackingSuiteDialog(QDialog):
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 self.update_status(self.tr(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…"))
-                with ThreadPoolExecutor(max_workers=io_workers) as ex:
-                    futs = {ex.submit(self._load_image_any, fp): fp for fp in chunk}
-                    for fut in as_completed(futs):
-                        if self._cancelled():
-                            raise StackCancelled()
-                        fp = futs[fut]
-                        try:
-                            img, hdr = fut.result()
-                            if img is None:
-                                self.update_status(self.tr(f"⚠️ No data for {fp}"))
-                                continue
+                # Parallel normalize-as-they-arrive: each worker LOADS and NORMALIZES a
+                # frame end-to-end so all cores stay busy. update_status is thread-safe
+                # (queued signal); the debayer path mutates a shared flag so it is
+                # serialized by _debayer_lock (mono skips it -> full parallelism); cv2 is
+                # pinned to 1 thread; processEvents() runs only on the main thread below.
+                import threading as _norm_threading
+                _debayer_lock = _norm_threading.Lock()
+                try:
+                    _cfa_pre = bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
+                except Exception:
+                    _cfa_pre = False
+                self._norm_dbg_on = False
 
-                            self._norm_dbg_seen = getattr(self, "_norm_dbg_seen", 0) + 1
-                            self._norm_dbg_on = (self._norm_dbg_seen <= 0)
-                            _ndbg("00 loaded", img, fp)
+                def _normalize_one(fp):
+                    try:
+                        img, hdr = self._load_image_any(fp)
+                        if img is None:
+                            self.update_status(self.tr(f"⚠️ No data for {fp}"))
+                            return
 
-                            img = _to_writable_f32(img)
-                            _ndbg("01 to_f32", img, fp)
+                        self._norm_dbg_seen = getattr(self, "_norm_dbg_seen", 0) + 1
+                        self._norm_dbg_on = (self._norm_dbg_seen <= 0)
+                        _ndbg("00 loaded", img, fp)
 
-                            bayerish = (
-                                self._hdr_get(hdr, 'BAYERPAT')
-                                or self._hdr_get(hdr, 'CFA_PATTERN')
-                                or self._hdr_get(hdr, 'BAYERPATN')
-                                or self._hdr_get(hdr, 'BAYER_PATTERN')
-                            )
-                            splitdb = bool(self._hdr_get(hdr, 'SPLITDB', False))
+                        img = _to_writable_f32(img)
+                        _ndbg("01 to_f32", img, fp)
 
-                            if bayerish and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
-                                self.update_status(self.tr(f"📦 Debayering {os.path.basename(fp)}…"))
-                                _cfa_active = (
-                                    bool(self._cfa_for_this_run)
-                                    if getattr(self, "_cfa_for_this_run", None) is not None
-                                    else bool(getattr(self, "cfa_drizzle_cb", None) and self.cfa_drizzle_cb.isChecked())
-                                )
-                                if _cfa_active and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
-                                    # CFA drizzle: main _n.fit is DENSE (for rejection /
-                                    # per-channel normalization); stash a SPARSE copy for
-                                    # drizzle, written later as _n_cfa.fit.
-                                    _saved_flag = self._cfa_for_this_run
+                        bayerish = (
+                            self._hdr_get(hdr, 'BAYERPAT')
+                            or self._hdr_get(hdr, 'CFA_PATTERN')
+                            or self._hdr_get(hdr, 'BAYERPATN')
+                            or self._hdr_get(hdr, 'BAYER_PATTERN')
+                        )
+                        splitdb = bool(self._hdr_get(hdr, 'SPLITDB', False))
+
+                        if bayerish and not splitdb and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                            self.update_status(self.tr(f"📦 Debayering {os.path.basename(fp)}…"))
+                            _cfa_active = _cfa_pre
+                            if _cfa_active and (img.ndim == 2 or (img.ndim == 3 and img.shape[-1] == 1)):
+                                # CFA drizzle: main _n.fit is DENSE (for rejection /
+                                # per-channel normalization); stash a SPARSE copy for
+                                # drizzle, written later as _n_cfa.fit.
+                                _saved_flag = self._cfa_for_this_run
+                                with _debayer_lock:
                                     try:
                                         self._cfa_for_this_run = True
                                         _img_sparse = self.debayer_image(img.copy(), fp, dict(hdr) if hasattr(hdr, "keys") else hdr)
@@ -22586,208 +22591,231 @@ class StackingSuiteDialog(QDialog):
                                         img = self.debayer_image(img, fp, hdr)
                                     finally:
                                         self._cfa_for_this_run = _saved_flag
-                                    if not hasattr(self, "_pending_cfa_sparse"):
-                                        self._pending_cfa_sparse = {}
-                                    self._pending_cfa_sparse[os.path.normcase(os.path.normpath(fp))] = _img_sparse
-                                else:
+                                if not hasattr(self, "_pending_cfa_sparse"):
+                                    self._pending_cfa_sparse = {}
+                                self._pending_cfa_sparse[os.path.normcase(os.path.normpath(fp))] = _img_sparse
+                            else:
+                                with _debayer_lock:
                                     img = self.debayer_image(img, fp, hdr)
-                            else:
-                                if img.ndim == 3 and img.shape[-1] == 1:
-                                    img = np.squeeze(img, axis=-1)
+                        else:
+                            if img.ndim == 3 and img.shape[-1] == 1:
+                                img = np.squeeze(img, axis=-1)
 
-                            _ndbg("02 debayer", img, fp)
+                        _ndbg("02 debayer", img, fp)
 
-                            # Meridian-flip pre-rotation removed: astroalign's asterism
-                            # matching is rotation-invariant and aligns a 180°-flipped
-                            # frame directly (the homography absorbs the flip). Pre-
-                            # rotating the pixels also desynced the WCS/PA header, which
-                            # broke downstream plate-solve/annotate. Let alignment handle it.
+                        # Meridian-flip pre-rotation removed: astroalign's asterism
+                        # matching is rotation-invariant and aligns a 180°-flipped
+                        # frame directly (the homography absorbs the flip). Pre-
+                        # rotating the pixels also desynced the WCS/PA header, which
+                        # broke downstream plate-solve/annotate. Let alignment handle it.
 
-                            # --- ONE geometry normalization path ---
-                            if do_scale_norm:
-                                # We normalize to physical pixel scale (arcsec/px) → this ALSO compensates binning,
-                                # so we must NOT pre-resample to target bin.
-                                raw_psx, raw_psy = _robust_scale_from_header(hdr)  # arcsec/px as shot
-                                if raw_psx and raw_psy and target_sx and target_sy:
-                                    gx = float(raw_psx) / float(target_sx)
-                                    gy = float(raw_psy) / float(target_sy)
-                                    # clamp tiny jitter
-                                    if _rel_delta(gx, 1.0) <= tol:
-                                        gx = 1.0
-                                    if _rel_delta(gy, 1.0) <= tol:
-                                        gy = 1.0
-                                    if (gx != 1.0) or (gy != 1.0):
-                                        before_hw = img.shape[:2]
-                                        img = _resize_to_scale(img, gx, gy)
-                                        after_hw = img.shape[:2]
-                                        self.update_status(self.tr(
-                                            f"📏 Pixel-scale normalize {raw_psx:.3f}\"/{raw_psy:.3f}\" → "
-                                            f"{target_sx:.3f}\"/{target_sy:.3f}\" | "
-                                            f"size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
-                                        ))
-                                        if not hasattr(self, "_upscale_factor_by_orig"):
-                                            self._upscale_factor_by_orig = {}
-                                        self._upscale_factor_by_orig[
-                                            os.path.normcase(os.path.normpath(fp))
-                                        ] = (gx, gy)
-                            else:
-                                # We are NOT doing physical/pixel-scale normalization (single group, within tol).
-                                # In that case we ONLY need to unify binning → simple pixel resample.
-                                xb, yb = bin_map.get(fp, (1, 1))
-                                sx = float(xb) / float(target_xbin)
-                                sy = float(yb) / float(target_ybin)
-                                if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
-                                    before = img.shape[:2]
-                                    img = _resize_to_scale(img, sx, sy)
-                                    after = img.shape[:2]
+                        # --- ONE geometry normalization path ---
+                        if do_scale_norm:
+                            # We normalize to physical pixel scale (arcsec/px) → this ALSO compensates binning,
+                            # so we must NOT pre-resample to target bin.
+                            raw_psx, raw_psy = _robust_scale_from_header(hdr)  # arcsec/px as shot
+                            if raw_psx and raw_psy and target_sx and target_sy:
+                                gx = float(raw_psx) / float(target_sx)
+                                gy = float(raw_psy) / float(target_sy)
+                                # clamp tiny jitter
+                                if _rel_delta(gx, 1.0) <= tol:
+                                    gx = 1.0
+                                if _rel_delta(gy, 1.0) <= tol:
+                                    gy = 1.0
+                                if (gx != 1.0) or (gy != 1.0):
+                                    before_hw = img.shape[:2]
+                                    img = _resize_to_scale(img, gx, gy)
+                                    after_hw = img.shape[:2]
                                     self.update_status(self.tr(
-                                        f"🔧 Resampled for binning {xb}×{yb} → {target_xbin}×{target_ybin} "
-                                        f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}"
+                                        f"📏 Pixel-scale normalize {raw_psx:.3f}\"/{raw_psy:.3f}\" → "
+                                        f"{target_sx:.3f}\"/{target_sy:.3f}\" | "
+                                        f"size {before_hw[1]}×{before_hw[0]} → {after_hw[1]}×{after_hw[0]}"
                                     ))
                                     if not hasattr(self, "_upscale_factor_by_orig"):
                                         self._upscale_factor_by_orig = {}
                                     self._upscale_factor_by_orig[
                                         os.path.normcase(os.path.normpath(fp))
-                                    ] = (sx, sy)
-                            _ndbg("03 geom", img, fp)
+                                    ] = (gx, gy)
+                        else:
+                            # We are NOT doing physical/pixel-scale normalization (single group, within tol).
+                            # In that case we ONLY need to unify binning → simple pixel resample.
+                            xb, yb = bin_map.get(fp, (1, 1))
+                            sx = float(xb) / float(target_xbin)
+                            sy = float(yb) / float(target_ybin)
+                            if (abs(sx - 1.0) > 1e-6) or (abs(sy - 1.0) > 1e-6):
+                                before = img.shape[:2]
+                                img = _resize_to_scale(img, sx, sy)
+                                after = img.shape[:2]
+                                self.update_status(self.tr(
+                                    f"🔧 Resampled for binning {xb}×{yb} → {target_xbin}×{target_ybin} "
+                                    f"size {before[1]}×{before[0]} → {after[1]}×{after[0]}"
+                                ))
+                                if not hasattr(self, "_upscale_factor_by_orig"):
+                                    self._upscale_factor_by_orig = {}
+                                self._upscale_factor_by_orig[
+                                    os.path.normcase(os.path.normpath(fp))
+                                ] = (sx, sy)
+                        _ndbg("03 geom", img, fp)
 
-                            # 3) Brightness normalization / scale refine
-                            pm = float(preview_medians.get(fp, 0.0))
-                            if (ref_target_medians_rgb is not None
-                                    and img.ndim == 3 and img.shape[-1] == 3):
-                                # OSC: normalize each channel independently to
-                                # the reference's matching channel. A single
-                                # luma scale cannot correct color-varying sky
-                                # (LP drift, moonlight, airmass reddening), and
-                                # the leftover per-channel offsets between
-                                # frames weaken per-channel rejection.
-                                #
-                                # CFA-drizzle frames are SPARSE: each channel is
-                                # populated only at its Bayer sites (R~25%,
-                                # G~50%, B~25%), the rest are structural zeros.
-                                # Measuring the median across all pixels then
-                                # gives 0 for R/B and crushes those channels, so
-                                # for sparse frames we measure the median over
-                                # POPULATED pixels only and never add a pedestal
-                                # (structural zeros must stay exactly 0).
+                        # 3) Brightness normalization / scale refine
+                        pm = float(preview_medians.get(fp, 0.0))
+                        if (ref_target_medians_rgb is not None
+                                and img.ndim == 3 and img.shape[-1] == 3):
+                            # OSC: normalize each channel independently to
+                            # the reference's matching channel. A single
+                            # luma scale cannot correct color-varying sky
+                            # (LP drift, moonlight, airmass reddening), and
+                            # the leftover per-channel offsets between
+                            # frames weaken per-channel rejection.
+                            #
+                            # CFA-drizzle frames are SPARSE: each channel is
+                            # populated only at its Bayer sites (R~25%,
+                            # G~50%, B~25%), the rest are structural zeros.
+                            # Measuring the median across all pixels then
+                            # gives 0 for R/B and crushes those channels, so
+                            # for sparse frames we measure the median over
+                            # POPULATED pixels only and never add a pedestal
+                            # (structural zeros must stay exactly 0).
+                            _cfa_sparse_frame = False
+                            try:
+                                _zfr = [float((img[..., _k] == 0.0).mean()) for _k in range(3)]
+                                _cfa_sparse_frame = max(_zfr) > 0.4
+                            except Exception:
                                 _cfa_sparse_frame = False
-                                try:
-                                    _zfr = [float((img[..., _k] == 0.0).mean()) for _k in range(3)]
-                                    _cfa_sparse_frame = max(_zfr) > 0.4
-                                except Exception:
-                                    _cfa_sparse_frame = False
 
-                                _ch_dbg = []
-                                for _c in range(3):
-                                    if _cfa_sparse_frame:
-                                        _plane = img[..., _c]
-                                        _nz = _plane[np.isfinite(_plane) & (_plane != 0.0)]
-                                        if _nz.size == 0:
+                            _ch_dbg = []
+                            for _c in range(3):
+                                if _cfa_sparse_frame:
+                                    _plane = img[..., _c]
+                                    _nz = _plane[np.isfinite(_plane) & (_plane != 0.0)]
+                                    if _nz.size == 0:
+                                        _s_c, _off_c = 1.0, 0.0
+                                    else:
+                                        _med = float(np.median(_nz))
+                                        if (not np.isfinite(_med)) or _med <= 1e-30:
                                             _s_c, _off_c = 1.0, 0.0
                                         else:
-                                            _med = float(np.median(_nz))
-                                            if (not np.isfinite(_med)) or _med <= 1e-30:
-                                                _s_c, _off_c = 1.0, 0.0
-                                            else:
-                                                _s_c = float(ref_target_medians_rgb[_c] / _med)
-                                                _off_c = 0.0
-                                        # apply scale to populated pixels only;
-                                        # structural zeros stay exactly 0
-                                        _m = img[..., _c] != 0.0
-                                        img[..., _c][_m] = img[..., _c][_m] * _s_c
-                                    else:
-                                        # Additive per-channel background match (nan-safe),
-                                        # mirroring the mono fix. Pure multiplicative scaling does
-                                        # NOT equalize an additive sky pedestal across sessions, so
-                                        # multi-night OSC would band exactly like mono did. NaN
-                                        # (satellite no-data) is preserved through the shift.
-                                        _pl   = img[..., _c]
-                                        _finc = _pl[np.isfinite(_pl) & (_pl != 0.0)]
-                                        _bg_c = float(np.median(_finc)) if _finc.size else 0.0
-                                        _tgt_c = float(ref_target_medians_rgb[_c])
-                                        img[..., _c] = (_pl - _bg_c + _tgt_c).astype(np.float32, copy=False)
-                                        _s_c, _off_c = 1.0, float(_tgt_c - _bg_c)
-                                    _ch_dbg.append(f"{'RGB'[_c]}: bg_shift={_off_c:.6g}")
-                                if getattr(self, "_norm_dbg_on", False):
-                                    self.update_status(
-                                        f"🔬[04 scale-args] {os.path.basename(fp)} per-channel"
-                                        + (" [sparse/CFA]" if _cfa_sparse_frame else "") + "  "
-                                        + "  ".join(_ch_dbg)
-                                    )
-                            else:
-                                # Additive background matching (nan-safe).
-                                # _compute_scale is purely MULTIPLICATIVE (s = target/median);
-                                # that equalizes signal above the floor but does NOT equalize an
-                                # additive sky pedestal, so subs from different-brightness sessions
-                                # landed at different background levels -> the 'trail' deficits in
-                                # the master. Subtract each frame's own background and re-level to
-                                # the reference sky, exactly like the standalone bgmatch that fixed
-                                # it. NaN (satellite no-data) is preserved through the shift.
-                                _fin = img[np.isfinite(img) & (img != 0.0)]
-                                _frame_bg = float(np.median(_fin)) if _fin.size else 0.0
-                                _target_bg = float(ref_target_median + ref_min)   # reference sky level
-                                img = (img - _frame_bg + _target_bg).astype(np.float32, copy=False)
-                                if getattr(self, "_norm_dbg_on", False):
-                                    self.update_status(
-                                        f"🔬[04 bg-match] {os.path.basename(fp)} "
-                                        f"frame_bg={_frame_bg:.6g} target_bg={_target_bg:.6g}"
-                                    )
-                            _ndbg("05 after-scale", img, fp)
-
-                            # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
-                            if hasattr(self, "_norm_target_hw") and self._norm_target_hw:
-                                img = _force_shape_hw(img, *self._norm_target_hw)
-                            _ndbg("06 force_hw", img, fp)
-
-                            if abe_enabled:
-                                scaled_images.append(img.astype(np.float32, copy=False))
-                                scaled_paths.append(fp)
-                                scaled_hdrs.append(hdr)
-                            else:
-                                # write out normalized FITS
-                                out_path = _norm_out_name(fp, norm_dir)
-
-                                try:
-                                    if os.path.splitext(fp)[1].lower() in (".fits", ".fit", ".fz"):
-                                        orig_header = fits.getheader(fp, ext=0)
-                                    else:
-                                        orig_header = fits.Header()
-                                except Exception:
-                                    orig_header = fits.Header()
-
-                                if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[-1] == 3:
-                                    orig_header["DEBAYERED"] = (True, "Color debayered normalized")
+                                            _s_c = float(ref_target_medians_rgb[_c] / _med)
+                                            _off_c = 0.0
+                                    # apply scale to populated pixels only;
+                                    # structural zeros stay exactly 0
+                                    _m = img[..., _c] != 0.0
+                                    img[..., _c][_m] = img[..., _c][_m] * _s_c
                                 else:
-                                    orig_header["DEBAYERED"] = (False, "Mono normalized")
+                                    # Additive per-channel background match (nan-safe),
+                                    # mirroring the mono fix. Pure multiplicative scaling does
+                                    # NOT equalize an additive sky pedestal across sessions, so
+                                    # multi-night OSC would band exactly like mono did. NaN
+                                    # (satellite no-data) is preserved through the shift.
+                                    _pl   = img[..., _c]
+                                    _finc = _pl[np.isfinite(_pl) & (_pl != 0.0)]
+                                    _bg_c = float(np.median(_finc)) if _finc.size else 0.0
+                                    _tgt_c = float(ref_target_medians_rgb[_c])
+                                    img[..., _c] = (_pl - _bg_c + _tgt_c).astype(np.float32, copy=False)
+                                    _s_c, _off_c = 1.0, float(_tgt_c - _bg_c)
+                                _ch_dbg.append(f"{'RGB'[_c]}: bg_shift={_off_c:.6g}")
+                            if getattr(self, "_norm_dbg_on", False):
+                                self.update_status(
+                                    f"🔬[04 scale-args] {os.path.basename(fp)} per-channel"
+                                    + (" [sparse/CFA]" if _cfa_sparse_frame else "") + "  "
+                                    + "  ".join(_ch_dbg)
+                                )
+                        else:
+                            # Additive background matching (nan-safe).
+                            # _compute_scale is purely MULTIPLICATIVE (s = target/median);
+                            # that equalizes signal above the floor but does NOT equalize an
+                            # additive sky pedestal, so subs from different-brightness sessions
+                            # landed at different background levels -> the 'trail' deficits in
+                            # the master. Subtract each frame's own background and re-level to
+                            # the reference sky, exactly like the standalone bgmatch that fixed
+                            # it. NaN (satellite no-data) is preserved through the shift.
+                            _fin = img[np.isfinite(img) & (img != 0.0)]
+                            _frame_bg = float(np.median(_fin)) if _fin.size else 0.0
+                            _target_bg = float(ref_target_median + ref_min)   # reference sky level
+                            img = (img - _frame_bg + _target_bg).astype(np.float32, copy=False)
+                            if getattr(self, "_norm_dbg_on", False):
+                                self.update_status(
+                                    f"🔬[04 bg-match] {os.path.basename(fp)} "
+                                    f"frame_bg={_frame_bg:.6g} target_bg={_target_bg:.6g}"
+                                )
+                        _ndbg("05 after-scale", img, fp)
 
-                                from os import path
-                                _key = path.normcase(path.normpath(fp))
-                                _val = path.normpath(out_path)
-                                self._orig2norm[_key] = _val
-                                _ndbg("07 pre-write", img, fp)
-                                fits.PrimaryHDU(data=img.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
-                                normalized_files.append(out_path)
-                                # CFA drizzle: also write the sparse sibling for the
-                                # drizzle deposit (rejection uses the dense out_path).
-                                _cfa_key = os.path.normcase(os.path.normpath(fp))
-                                _cfa_sparse = getattr(self, "_pending_cfa_sparse", {}).pop(_cfa_key, None) if hasattr(self, "_pending_cfa_sparse") else None
-                                if _cfa_sparse is not None:
-                                    try:
-                                        _cfa_out = self._cfa_sibling_path(out_path)
-                                        _ch = fits.Header(orig_header)
-                                        _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
-                                        _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
-                                        fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
-                                    except Exception as _e:
-                                        self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
-                                # Carry the satellite-trail mask sidecar onto the
-                                # normalized frame so registration can find + warp it.
-                                _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
+                        # 🔒 4) Enforce canonical geometry BEFORE ABE / writing
+                        if hasattr(self, "_norm_target_hw") and self._norm_target_hw:
+                            img = _force_shape_hw(img, *self._norm_target_hw)
+                        _ndbg("06 force_hw", img, fp)
 
-                        except Exception as e:
-                            self.update_status(self.tr(f"⚠️ Error normalizing {fp}: {e}"))
-                        finally:
-                            QApplication.processEvents()
+                        if abe_enabled:
+                            scaled_images.append(img.astype(np.float32, copy=False))
+                            scaled_paths.append(fp)
+                            scaled_hdrs.append(hdr)
+                        else:
+                            # write out normalized FITS
+                            out_path = _norm_out_name(fp, norm_dir)
+
+                            try:
+                                if os.path.splitext(fp)[1].lower() in (".fits", ".fit", ".fz"):
+                                    orig_header = fits.getheader(fp, ext=0)
+                                else:
+                                    orig_header = fits.Header()
+                            except Exception:
+                                orig_header = fits.Header()
+
+                            if isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[-1] == 3:
+                                orig_header["DEBAYERED"] = (True, "Color debayered normalized")
+                            else:
+                                orig_header["DEBAYERED"] = (False, "Mono normalized")
+
+                            from os import path
+                            _key = path.normcase(path.normpath(fp))
+                            _val = path.normpath(out_path)
+                            self._orig2norm[_key] = _val
+                            _ndbg("07 pre-write", img, fp)
+                            fits.PrimaryHDU(data=img.astype(np.float32), header=orig_header).writeto(out_path, overwrite=True)
+                            normalized_files.append(out_path)
+                            # CFA drizzle: also write the sparse sibling for the
+                            # drizzle deposit (rejection uses the dense out_path).
+                            _cfa_key = os.path.normcase(os.path.normpath(fp))
+                            _cfa_sparse = getattr(self, "_pending_cfa_sparse", {}).pop(_cfa_key, None) if hasattr(self, "_pending_cfa_sparse") else None
+                            if _cfa_sparse is not None:
+                                try:
+                                    _cfa_out = self._cfa_sibling_path(out_path)
+                                    _ch = fits.Header(orig_header)
+                                    _ch["DEBAYERED"] = (True, "Sparse CFA drizzle debayer")
+                                    _ch["CFADRIZ"] = (True, "Sparse CFA planes for drizzle deposit")
+                                    fits.PrimaryHDU(data=np.asarray(_cfa_sparse, np.float32), header=_ch).writeto(_cfa_out, overwrite=True)
+                                except Exception as _e:
+                                    self.update_status(self.tr(f"⚠️ Failed to write CFA sparse sibling: {_e}"))
+                            # Carry the satellite-trail mask sidecar onto the
+                            # normalized frame so registration can find + warp it.
+                            _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
+
+                    except Exception as e:
+                        self.update_status(self.tr(f"⚠️ Error normalizing {fp}: {e}"))
+
+                with ThreadPoolExecutor(max_workers=io_workers) as ex:
+                    _prev_cv2n = None
+                    try:
+                        import cv2 as _cv2n
+                        _prev_cv2n = _cv2n.getNumThreads(); _cv2n.setNumThreads(1)
+                    except Exception:
+                        pass
+                    futs = {ex.submit(_normalize_one, fp): fp for fp in chunk}
+                    for fut in as_completed(futs):
+                        if self._cancelled():
+                            raise StackCancelled()
+                        try:
+                            fut.result()
+                        except StackCancelled:
+                            raise
+                        except Exception as _e:
+                            self.update_status(self.tr(f"⚠️ Error normalizing (worker): {_e}"))
+                        QApplication.processEvents()
+                    try:
+                        if _prev_cv2n is not None:
+                            _cv2n.setNumThreads(_prev_cv2n)
+                    except Exception:
+                        pass
 
                 # 2) ABE with canonical size lock
                 if abe_enabled and scaled_images:
