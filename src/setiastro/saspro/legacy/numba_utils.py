@@ -4815,7 +4815,7 @@ def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
 
 
 
-@njit(fastmath=True, cache=True)
+@njit(nogil=True, fastmath=True, cache=True)
 def gradient_descent_to_dim_spot_numba(gray_small, start_x, start_y, patch_size):
     """
     Numba implementation of _gradient_descent_to_dim_spot.

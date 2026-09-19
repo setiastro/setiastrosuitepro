@@ -1651,6 +1651,62 @@ class NBExtractDialog(SFCCDialog):
         if preset.get("stretch") is not None and hasattr(self, "nb_stretch_chk"):
             self.nb_stretch_chk.setChecked(bool(preset["stretch"]))
 
+    def calibrate_only(self, *, doc=None, preset: Optional[dict] = None):
+        """
+        Headless Fetch -> Calibrate ONLY (no channel extraction, no new documents).
+
+        Returns (A, star_records, cond):
+            A            : (3, 2) mixing matrix
+            star_records : raw per-star photometry dicts (R/G/B_meas + S_line1/2),
+                           ready to be pooled across subs by the caller
+            cond         : float(cond(A))
+
+        The resolved target (doc, else doc_manager.get_active_document()) MUST be a
+        plate-solved RGB image. Batch callers typically wrap doc_manager in a shim
+        whose get_active_document() returns `doc`.
+
+        Raises NBExtractError on any condition that would normally pop a modal.
+        """
+        preset = dict(preset or {})
+        self._headless = True
+        self._allow_fallback = False
+        try:
+            dm = self.doc_manager
+            target = doc if doc is not None else (
+                dm.get_active_document() if dm is not None else None
+            )
+            if target is None or getattr(target, "image", None) is None:
+                raise NBExtractError("No document to calibrate NBExtract on.")
+            img = target.image
+            if img.ndim != 3 or img.shape[2] != 3:
+                raise NBExtractError(
+                    "NBExtract calibration requires an RGB (3-channel) image."
+                )
+
+            self._apply_preset(preset)
+
+            # Always refetch so the star_list matches THIS document, even if the
+            # dialog instance is reused across several subs.
+            self.star_list = []
+            self.fetch_stars()
+            if not getattr(self, "star_list", None):
+                raise NBExtractError(
+                    "Star fetch returned no stars. The image must be plate-solved "
+                    "(valid WCS) and lie within Gaia/SIMBAD catalog coverage."
+                )
+
+            self._calibrate_mixing_matrix()
+            if self._A_matrix is None:
+                raise NBExtractError(
+                    "Calibration produced no mixing matrix (too few Gaia XP stars, "
+                    "or the NNLS fit failed)."
+                )
+            A = np.asarray(self._A_matrix, dtype=np.float64).copy()
+            recs = [dict(r) for r in (self._nb_star_records or [])]
+            return A, recs, float(np.linalg.cond(A))
+        finally:
+            self._headless = False
+
     def run_headless(self, *, doc=None, preset: Optional[dict] = None):
         """
         Run the full NBExtract pipeline (Fetch → Calibrate → Extract) with no
@@ -1902,6 +1958,27 @@ class NBExtractDialog(SFCCDialog):
 # ─────────────────────────────────────────────────────────────────────────────
 # Entry point
 # ─────────────────────────────────────────────────────────────────────────────
+
+def calibrate_matrix_headless(doc_manager, sasp_data_path, *, doc,
+                              preset: Optional[dict] = None, parent=None):
+    """
+    Build a hidden NBExtractDialog and run Fetch -> Calibrate ONLY on `doc`.
+
+    Returns (A, star_records, cond). Raises NBExtractError on failure.
+
+    doc_manager.get_active_document() MUST return `doc` (batch callers pass a shim
+    to guarantee this). The dialog is disposed before returning.
+    """
+    dlg = NBExtractDialog(doc_manager, sasp_data_path, parent=parent)
+    try:
+        return dlg.calibrate_only(doc=doc, preset=preset)
+    finally:
+        try:
+            dlg.close()
+            dlg.deleteLater()
+        except Exception:
+            pass
+
 
 def open_nbextract(doc_manager, sasp_data_path: str, parent=None) -> NBExtractDialog:
     """
