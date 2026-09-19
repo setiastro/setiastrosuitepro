@@ -1363,4 +1363,19 @@ class FileMixin:
             self._add_recent_image(path)
             self.settings.setValue("paths/last_save_dir", os.path.dirname(path))
         except Exception as e:
-            QMessageBox.critical(self, self.tr("Save failed"), str(e))    
+            QMessageBox.critical(self, self.tr("Save failed"), str(e))
+
+    def _open_export_fits(self, preset=None):
+        from setiastro.saspro.export_fits import open_export_fits_with_preset
+        open_export_fits_with_preset(self, preset)
+
+    def _apply_export_fits_to_doc(self, doc, preset=None):
+        from setiastro.saspro.export_fits import export_document_as_fits
+        dm = getattr(self, "docman", None) or getattr(self, "doc_manager", None)
+        if dm is None:
+            raise RuntimeError("Document manager not available.")
+        result = export_document_as_fits(dm, doc, preset or {})
+        if result.ok:
+            self._log(f"Exported FITS: {result.path}")
+            return
+        self._log(f"Export FITS skipped: {result.reason}") 

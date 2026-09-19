@@ -190,6 +190,14 @@ ALIASES: Dict[str, str] = {
     "narrowband_channel_extractor": "nbextract",
     "extract_narrowband": "nbextract",
     "nbx": "nbextract",
+
+    "export_fits": "export_fits",
+    "export fits": "export_fits",
+    "save_fits": "export_fits",
+
+    "plate_solve": "plate_solve",
+    "plate solve": "plate_solve",
+    "platesolve": "plate_solve",
 }
 
 
@@ -209,6 +217,72 @@ def list_commands() -> Dict[str, str]:
 # -----------------------------------------------------------------------------
 # Registry population (starter set)
 # -----------------------------------------------------------------------------
+
+register(CommandSpec(
+    id="export_fits",
+    name="Export FITS",
+    group="File",
+    ui_method="_open_export_fits",
+    headless_method="_apply_export_fits_to_doc",
+    notes=(
+        "Export the current view as a .fits file into a chosen output folder. "
+        "Designed as a Function Bundle step for batch saving. "
+        "Preset: out_dir (folder) and overwrite (bool, default True). "
+        "Does not change the in-memory document path."
+    ),
+    presets=[
+        PresetSpec("out_dir", "str", default="",
+                   desc="Destination folder for the .fits files.", optional=False),
+        PresetSpec("overwrite", "bool", default=True,
+                   desc="Overwrite an existing file with the same name."),
+    ],
+    aliases=["export fits", "save_fits", "save as fits"],
+    examples=[
+        "ctx.run_command('export_fits', {'out_dir': r'D:/export', 'overwrite': True})",
+    ],
+    supports_mono=True,
+    supports_rgb=True,
+    supports_linear=True,
+    supports_nonlinear=True,
+))
+
+register(CommandSpec(
+    id="plate_solve",
+    name="Plate Solver",
+    group="Star",
+    ui_method="_open_plate_solver",
+    headless_method="_apply_plate_solve_to_doc",
+    notes=(
+        "Solve WCS/SIP for a view. Usable as a Function Bundle step and by "
+        "dropping a shortcut on a View Bundle. "
+        "Preset: seed_mode, ra/dec/scale, radius, FOV, solver."
+    ),
+    presets=[
+        PresetSpec("seed_mode", "enum", default="auto",
+                   enum=["auto", "manual", "none"],
+                   desc="Header seed, manual RA/Dec/scale, or blind."),
+        PresetSpec("ra", "str", default="", desc="Manual RA (hours or degrees)."),
+        PresetSpec("dec", "str", default="", desc="Manual Dec."),
+        PresetSpec("scale", "float", default=None, desc="Pixel scale in arcsec/pixel."),
+        PresetSpec("radius_mode", "enum", default="auto",
+                   enum=["auto", "value"], desc="ASTAP search radius mode."),
+        PresetSpec("radius_value", "float", default=5.0, desc="Search radius in degrees."),
+        PresetSpec("fov_mode", "enum", default="compute",
+                   enum=["compute", "auto", "value"], desc="ASTAP FOV mode."),
+        PresetSpec("fov_value", "float", default=0.0, desc="FOV in degrees."),
+        PresetSpec("solver", "enum", default="both",
+                   enum=["both", "gaia_only", "astap_only", "astrometry_only"],
+                   desc="Which solver chain to run."),
+    ],
+    aliases=["plate solve", "platesolve"],
+    examples=[
+        "ctx.run_command('plate_solve', {'seed_mode': 'auto', 'solver': 'both'})",
+    ],
+    supports_mono=True,
+    supports_rgb=True,
+    supports_linear=True,
+    supports_nonlinear=True,
+))
 
 # Bundles
 register(CommandSpec(

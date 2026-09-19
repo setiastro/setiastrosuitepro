@@ -110,6 +110,7 @@ class MenuMixin:
         m_save_as.addAction(self.act_save_webp)
         m_save_as.addAction(self.act_save_psb)
         m_file.addAction(self.act_export_fits_bundle)
+        m_file.addAction(self.act_export_fits)
         m_file.addAction(self.act_checkpoint_save) 
         m_file.addSeparator()
         m_file.addAction(self.act_clear_views) 
@@ -577,7 +578,7 @@ class MenuMixin:
 
         MENU_GROUPS = [
             ("File", [
-                self.act_open, self.act_save, self.act_checkpoint_save,
+                self.act_open, self.act_save, self.act_export_fits, self.act_checkpoint_save,
                 self.act_project_new, self.act_project_save, self.act_project_load,
             ]),
             ("Edit", [

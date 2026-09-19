@@ -1769,7 +1769,7 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     elif image_data.dtype == np.float32:
                         bit_depth = "32-bit floating point"
                         print("Identified 32-bit floating point FITS image.")
-                        image = np.array(image_data, dtype=np.float32, copy=True, order="C")
+                        image = np.ascontiguousarray(image_data, dtype=np.float32)
 
                     elif image_data.dtype == np.float64:
                         bit_depth = "64-bit floating point"
