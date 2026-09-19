@@ -23392,28 +23392,25 @@ class StackingSuiteDialog(QDialog):
             self.changed = False
 
     def _nb_data_path(self):
-        # 1) Qt parent chain of this widget.
-        w = self
-        while w is not None:
-            for attr in ("_sasp_data_path", "sasp_data_path"):
-                v = getattr(w, attr, None)
-                if v:
-                    return v
-            w = getattr(w, "parent", lambda: None)()
-        # 2) The main window holds _sasp_data_path but may not be in our parent
-        #    chain — scan top-level widgets (and their doc managers).
+        """Resolve the bundled SASP_data.fits (SFCC's sasp_data_path).
+
+        NBExtract's own calibration uses the Gaia XP spectra, NOT the sensor
+        curves in this file — the shared SFCC constructor / fetch_stars just
+        needs a real FITS to open (its Pickles-template list) — so resolve the
+        packaged resource directly rather than hunting for a lazily-set
+        main-window attribute."""
         try:
-            from PyQt6.QtWidgets import QApplication
-            for tw in QApplication.topLevelWidgets():
-                for attr in ("_sasp_data_path", "sasp_data_path"):
-                    v = getattr(tw, attr, None)
-                    if v:
-                        return v
-                dm = getattr(tw, "doc_manager", None) or getattr(tw, "docman", None)
-                for attr in ("_sasp_data_path", "sasp_data_path"):
-                    v = getattr(dm, attr, None)
-                    if v:
-                        return v
+            from setiastro.saspro.resources import get_resources
+            p = get_resources().SASP_DATA
+            if p and os.path.exists(p):
+                return p
+        except Exception:
+            pass
+        try:
+            from setiastro.saspro.resources import _resource_path
+            p = _resource_path("data/SASP_data.fits")
+            if p and os.path.exists(p):
+                return p
         except Exception:
             pass
         return None
@@ -23609,6 +23606,27 @@ class StackingSuiteDialog(QDialog):
             f"cond={np.linalg.cond(A):.2f}"))
         return np.asarray(A, dtype=np.float64)
 
+    def _nb_filter_recognized(self, filt_str) -> bool:
+        """True if the FILTER name carries any line / vendor / dual identifier
+        that _classify_filter keys on. When False, a DUAL_HA_OIII class came only
+        from the 'assume Ha/OIII' fallback — i.e. the header had no filter info.
+        (Token set mirrors _classify_filter; keep them in sync.)"""
+        try:
+            k = self._norm_filter_key(filt_str or "")
+        except Exception:
+            k = str(filt_str or "").strip().lower()
+        if not k:
+            return False
+        toks = (
+            "ha", "halpha", "sii", "s2", "oiii", "o3", "hb", "hbeta",
+            "lextreme", "lenhance", "lultimate", "nbz", "nbzu", "alpt", "alp",
+            "duo-band", "duoband", "dual band", "dual-band", "dualband",
+            "dual", "duo", "2band", "2-band", "two band",
+            "bicolor", "bi-color", "bicolour", "bi-colour",
+            "dualnb", "dual-nb", "duo-nb", "duonb", "duo narrow", "dual narrow",
+        )
+        return any(t in k for t in toks)
+
     def _nb_prepare_matrices_for_split(self, aligned_light_files, old_drizzle):
         """Populate self._nb_matrices {class: A|None} once per split run.
         Only non-drizzle subs are eligible calibration inputs (and only non-drizzle
@@ -23627,20 +23645,28 @@ class StackingSuiteDialog(QDialog):
             "DUAL_SII_HB":   "SII / H\u03b2",
         }
         buckets = {}
+        recognized = {}   # cls -> True if any sub carried an informative FILTER name
         for group, files in aligned_light_files.items():
             drizzled = self._group_is_drizzled(old_drizzle, group)
             if drizzled:
                 continue  # drizzle groups keep the raw R/G split
             for fp in files:
-                cls = self._classify_filter(self._get_filter_name(fp))
+                filt = self._get_filter_name(fp)
+                cls = self._classify_filter(filt)
                 if cls not in DUAL:
                     continue
                 buckets.setdefault(cls, []).append(fp)
+                recognized[cls] = recognized.get(cls, False) or self._nb_filter_recognized(filt)
 
         for cls in DUAL:
             sample = buckets.get(cls) or []
             if not sample:
                 continue
+            if cls == "DUAL_HA_OIII" and not recognized.get(cls, False):
+                self.update_status(self.tr(
+                    "\u26a0\ufe0f NB split: no usable FILTER in the headers \u2014 assuming "
+                    "Ha/OIII. If this is an SII/OIII set, set the FILTER keyword "
+                    "(acquisition software or the batch FITS header tool) and re-run."))
             self.update_status(self.tr(
                 f"\U0001f9ea Advanced NB split: calibrating {cls} mixing matrix "
                 f"from up to 5 subs\u2026"))
@@ -23870,6 +23896,19 @@ class StackingSuiteDialog(QDialog):
 
                 _band_lists[band1].append(p1); parent_of[p1] = group
                 _band_lists[band2].append(p2); parent_of[p2] = group
+
+                # Daughters inherit the parent frame's integration weight — else
+                # they default to 1.0 and the split stacks lose PSF weighting.
+                # Resolve the parent weight the same way integration does:
+                # direct hit, then via the parent original (orig_by_aligned).
+                _fw = getattr(self, "frame_weights", None)
+                if isinstance(_fw, dict):
+                    _pw = _fw.get(fpn, _fw.get(fp))
+                    if _pw is None and parent_orig:
+                        _pw = _fw.get(parent_orig, _fw.get(os.path.normpath(parent_orig)))
+                    if _pw is not None:
+                        _fw[os.path.normpath(p1)] = _pw
+                        _fw[os.path.normpath(p2)] = _pw
 
         # --- Pass 2: group the new files using the SAME exposure-tolerance helper
         #              used by populate_calibrated_lights() ---

@@ -227,6 +227,25 @@ _r(r"✅ Satellite trail removal complete",            "Satellite Removal", _ST_
 _r(r"⏹ Satellite pass cancelled",                    "Satellite Removal", _ST_WARN)
 _r(r"⚠️ Satellite pass failed on",                    "Satellite Removal", _ST_RUNNING)
 
+# ── Advanced dual-band NB split (matrix) ──────────────────────────────────
+# OSC dual-band frames (e.g. L-eXtreme) are split into Ha / OIII after
+# alignment. The "advanced" path first solves a per-scene mixing matrix from
+# a few subs — its condition number reports how well-posed that solve was —
+# then applies it to every frame. Two rows are tracked: the outer split
+# (opened by "🌈 Splitting…", closed by "Dual-band split … complete") and the
+# inner matrix calibration (opened by "calibrating … mixing matrix", closed
+# by "Advanced NB matrix"). Keeping the matrix as its own row parks the
+# cond/star-count on screen. Any fallback to a raw split (import failure,
+# pooled-fit failure, or a severely ill-conditioned matrix — all end in
+# "raw split") closes the matrix row as a warning; the split itself carries
+# on and still reports its own completion. Per-frame "↳ NB cal …" chatter is
+# left unrecognised (suppressed), as is the "ℹ️ No dual-band frames …" no-op.
+_r(r"🌈 Splitting aligned dual-band .*? into ([^…]+)",    "Dual-Band Split", _ST_RUNNING, 1)
+_r(r"Advanced NB split: calibrating (\S+) mixing matrix", "NB Matrix Cal",   _ST_RUNNING, 1)
+_r(r"Advanced NB split.*raw split",                       "NB Matrix Cal",   _ST_WARN)
+_r(r"✅ Advanced NB matrix",                               "NB Matrix Cal",   _ST_OK)
+_r(r"✅ Dual-band split .*complete",                       "Dual-Band Split", _ST_OK)
+
 # ── Generic catch-alls — MUST be last ─────────────────────────────────────
 _r(r"^✅",   "Complete",  _ST_OK)
 _r(r"^⚠️",  "Warning",   _ST_WARN)
