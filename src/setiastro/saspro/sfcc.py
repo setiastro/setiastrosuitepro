@@ -2426,6 +2426,20 @@ class SFCCDialog(QDialog):
         from astroquery.simbad import Simbad
         from astropy.io import fits
         from PyQt6.QtWidgets import QMessageBox, QApplication
+        if getattr(self, "_headless", False):
+            # Headless calibration (e.g. NBExtract batch): never pop a modal — it
+            # would block the whole run. Failure paths below just return empty and
+            # the caller falls back. Interactive use keeps the real dialogs.
+            class QMessageBox:  # local no-op shim; shadows the import above
+                StandardButton = None
+                @staticmethod
+                def warning(*a, **k):     return None
+                @staticmethod
+                def critical(*a, **k):    return None
+                @staticmethod
+                def information(*a, **k):  return None
+                @staticmethod
+                def question(*a, **k):     return None
 
         # 0) Grab current image + header
         img, hdr, _meta = self._get_active_image_and_header()

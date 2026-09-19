@@ -3038,7 +3038,10 @@ def _gaia_fit_and_validate(
                 t_rms     = float(np.sqrt(np.mean(t_cat_sky_m.separation(t_sky_fit).arcsec**2)))
                 print(f"[GaiaLocal] iter={iteration}: new WCS RMS={t_rms:.3f}\" ({len(t_img_m)} pairs)")
 
-                if len(t_img_m) > n_matched or (len(t_img_m) >= n_matched and t_rms <= rms):
+                _gained = len(t_img_m) > n_matched
+                _kept   = len(t_img_m) >= 0.8 * n_matched   # tolerate small pair loss
+                _better = t_rms <= rms + 1e-9
+                if _gained or (_better and _kept):
                     print(f"[GaiaLocal] iter={iteration}: adopting ({len(t_img_m)} pairs, RMS={t_rms:.3f}\")")
                     img_matched  = t_img_m
                     matched_sky  = t_cat_sky_m
@@ -3053,6 +3056,50 @@ def _gaia_fit_and_validate(
                 break
 
         # Final RMS + quality gate
+        sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+        sep_arcsec = matched_sky.separation(sky_fit).arcsec
+        rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
+        p95        = float(np.percentile(sep_arcsec, 95))
+        print(f"[GaiaLocal] TAN RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
+
+        # ── Fit SIP BEFORE the quality gate ──────────────────────────────────
+        # A linear TAN projection cannot absorb wide-field lens distortion, so a
+        # distorted rig can sit above the gate on TAN yet well under it on SIP.
+        # Fit SIP here (own try/except -> fall back to TAN) and let the gate below
+        # judge whichever is better; otherwise a fixable distorted field is
+        # rejected before SIP ever runs.
+        if n_matched >= 20:
+            try:
+                if n_matched >= 100:
+                    sip_degree = 4
+                elif n_matched >= 50:
+                    sip_degree = 3
+                else:
+                    sip_degree = 2
+                _sip_proj = SkyCoord(
+                    ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
+                    dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
+                )
+                _wcs_sip = fit_wcs_from_points(
+                    (img_matched[:, 0], img_matched[:, 1]),
+                    matched_sky,
+                    projection='TAN',
+                    proj_point=_sip_proj,
+                    sip_degree=sip_degree,
+                )
+                _wcs_sip.array_shape = (img_h, img_w)
+                _rms_sip = float(np.sqrt(np.mean(
+                    matched_sky.separation(
+                        _wcs_sip.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
+                    ).arcsec ** 2)))
+                print(f"[GaiaLocal] TAN RMS={rms:.3f}\"  SIP-{sip_degree} RMS={_rms_sip:.3f}\"")
+                if _rms_sip < rms:
+                    wcs_solution = _wcs_sip
+                    print(f"[GaiaLocal] using SIP-{sip_degree} solution")
+            except Exception as e:
+                print(f"[GaiaLocal] SIP fit failed, using TAN: {e}")
+
+        # Final residuals of the CHOSEN (SIP or TAN) solution — the gate uses these.
         sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
         sep_arcsec = matched_sky.separation(sky_fit).arcsec
         rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
@@ -3092,40 +3139,7 @@ def _gaia_fit_and_validate(
         return False, f"Gaia DR3 solver: refinement exception: {e}"
 
     # ── SIP fit ────────────────────────────────────────────────────────────
-    if n_matched >= 20:
-        try:
-            if n_matched >= 100:
-                sip_degree = 4
-            elif n_matched >= 50:
-                sip_degree = 3
-            else:
-                sip_degree = 2
-
-            proj_point = SkyCoord(
-                ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
-                dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
-            )
-            wcs_sip = fit_wcs_from_points(
-                (img_matched[:, 0], img_matched[:, 1]),
-                matched_sky,
-                projection='TAN',
-                proj_point=proj_point,
-                sip_degree=sip_degree,
-            )
-            wcs_sip.array_shape = (img_h, img_w)
-
-            sky_sip  = wcs_sip.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
-            res_sip  = matched_sky.separation(sky_sip).arcsec
-            sky_tan2 = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
-            res_tan2 = matched_sky.separation(sky_tan2).arcsec
-            rms_sip  = float(np.sqrt(np.mean(res_sip**2)))
-            rms_tan2 = float(np.sqrt(np.mean(res_tan2**2)))
-            print(f"[GaiaLocal] TAN RMS={rms_tan2:.3f}\"  SIP-{sip_degree} RMS={rms_sip:.3f}\"")
-            if rms_sip < rms_tan2:
-                wcs_solution = wcs_sip
-                print(f"[GaiaLocal] using SIP-{sip_degree} solution")
-        except Exception as e:
-            print(f"[GaiaLocal] SIP fit failed, using TAN: {e}")
+    # SIP fit now runs BEFORE the quality gate (see above); nothing to do here.
 
     # Recompute final residuals against whichever solution (TAN or SIP) won,
     # and stash on the WCS object for _gaia_build_final_header to pick up.

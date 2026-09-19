@@ -473,9 +473,16 @@ def extract_channels_nnls(
     H, W = img_rgb.shape[:2]
     pixels = img_rgb.reshape(-1, 3).astype(np.float64)
 
+    # NaN-safety: any pixel non-finite in ANY channel is 'no data' -> NaN in both
+    # outputs, so the downstream integrator's NaN handling still works. A finite-0
+    # warp border stays 0 (pinv @ [0,0,0] = [0,0]); only NaN/Inf become NaN.
+    invalid = ~np.all(np.isfinite(pixels), axis=1)
+    filled = np.where(np.isfinite(pixels), pixels, 0.0)
+
     A_pinv = np.linalg.pinv(A)
-    out = (A_pinv @ pixels.T).T
+    out = (A_pinv @ filled.T).T
     out = np.clip(out, 0.0, None)
+    out[invalid, :] = np.nan
 
     line1 = out[:, 0].reshape(H, W).astype(np.float32)
     line2 = out[:, 1].reshape(H, W).astype(np.float32)
@@ -1076,10 +1083,23 @@ class NBExtractDialog(SFCCDialog):
         img_float = img.astype(np.float32) / (255.0 if img.dtype == np.uint8 else 1.0)
         base = self._make_working_base_for_sep(img_float)
 
+        # Registration/warp borders (all-channel 0.0) and non-finite pixels must
+        # not pollute the SEP background, global RMS, detection, or photometry.
+        _finite_all  = np.all(np.isfinite(img_float), axis=2)
+        _zero_border = np.all(img_float == 0.0, axis=2)
+        self._nb_invalid_mask = (~_finite_all) | _zero_border
+
         # ── SEP re-detection ──────────────────────────────────────────────
         import sep
-        gray     = np.mean(base, axis=2).astype(np.float32)
-        bkg      = sep.Background(gray)
+        gray = np.mean(np.where(np.isfinite(base), base, 0.0), axis=2).astype(np.float32)
+        _inv = self._nb_invalid_mask
+        if _inv.shape != gray.shape:            # base was resized -> disable masking
+            _inv = np.zeros(gray.shape, dtype=bool)
+            self._nb_invalid_mask = _inv
+        gray[_inv] = 0.0
+        gray = np.ascontiguousarray(gray)
+        _inv = np.ascontiguousarray(_inv)
+        bkg      = sep.Background(gray, mask=_inv)
         data_sub = gray - bkg.back()
         err      = float(bkg.globalrms)
 
@@ -1087,7 +1107,7 @@ class NBExtractDialog(SFCCDialog):
         _sfcc_status(self, f"NBExtract XP: re-detecting stars (SEP σ={sep_sigma:.1f})…")
         QApplication.processEvents()
 
-        sources = sep.extract(data_sub, sep_sigma, err=err)
+        sources = sep.extract(data_sub, sep_sigma, err=err, mask=_inv)
         if sources.size == 0:
             self._nb_abort("SEP Error", "SEP found no sources.")
             return
@@ -1186,6 +1206,16 @@ class NBExtractDialog(SFCCDialog):
             y    = cand["y"]
             a    = cand["a"]
             r    = float(np.clip(2.0 * a, 2.0, 10.0))
+
+            # Skip stars whose aperture bbox overlaps any invalid (border/NaN) pixel.
+            _inv = getattr(self, "_nb_invalid_mask", None)
+            if _inv is not None:
+                _H, _W = _inv.shape
+                _rr = int(np.ceil(r)) + 1
+                _x0 = max(0, int(x) - _rr); _x1 = min(_W, int(x) + _rr + 1)
+                _y0 = max(0, int(y) - _rr); _y1 = min(_H, int(y) + _rr + 1)
+                if _x1 <= _x0 or _y1 <= _y0 or _inv[_y0:_y1, _x0:_x1].any():
+                    continue
 
             phot = measure_star_rgb_raw_aperture(base, x, y, r)
             if phot is None:

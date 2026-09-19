@@ -15299,7 +15299,6 @@ class StackingSuiteDialog(QDialog):
 
                 self.update_status(self.tr(f"✅ Added Master {file_type} -> {file_path} under {key} with metadata: {metadata}"))
 
-                self.update_status(self.tr(f"📂 DEBUG: Master Files Stored: {self.master_files}"))
                 QApplication.processEvents()
 
             except Exception as e:
@@ -17493,7 +17492,7 @@ class StackingSuiteDialog(QDialog):
                 item.setData(2, Qt.ItemDataRole.UserRole, file_path)
 
         # Do NOT write to manual_dark_overrides — per-leaf UserRole is the source of truth
-        print("✅ DEBUG: Light Dark override applied.")
+        print("✅ Light Dark override applied.")
 
     def _auto_pick_master_dark(self, image_size: str, exposure_time: float,
                                 light_gain: float | None = None,
@@ -20104,7 +20103,7 @@ class StackingSuiteDialog(QDialog):
 
         # NEW: if user explicitly asked to split dual-band, default to Ha/OIII
         try:
-            if hasattr(self, "split_dualband_cb") and self.split_dualband_cb.isChecked():
+            if self._dual_split_requested():
                 return "DUAL_HA_OIII"
         except Exception:
             pass
@@ -23377,7 +23376,23 @@ class StackingSuiteDialog(QDialog):
         def __getattr__(self, name):
             return getattr(object.__getattribute__(self, "_real"), name)
 
+    class _NBScratchDoc:
+        """Minimal in-memory stand-in for a SASpro ImageDocument: just enough for
+        plate_solve_doc_inplace and the SFCC/NBExtract calibration to read the
+        image + WCS. NEVER registered with the DocManager, so it spawns no
+        window. Backed by a scratch temp FITS via `file_path` for any code path
+        that reopens the file."""
+        def __init__(self, image, metadata):
+            self.image = image
+            self.metadata = dict(metadata)
+            self.file_path = self.metadata.get("file_path")
+            self.display_name = self.metadata.get("display_name", "__nbcal__")
+            self.is_mono = (getattr(image, "ndim", 2) == 2)
+            self.wcs = None
+            self.changed = False
+
     def _nb_data_path(self):
+        # 1) Qt parent chain of this widget.
         w = self
         while w is not None:
             for attr in ("_sasp_data_path", "sasp_data_path"):
@@ -23385,6 +23400,22 @@ class StackingSuiteDialog(QDialog):
                 if v:
                     return v
             w = getattr(w, "parent", lambda: None)()
+        # 2) The main window holds _sasp_data_path but may not be in our parent
+        #    chain — scan top-level widgets (and their doc managers).
+        try:
+            from PyQt6.QtWidgets import QApplication
+            for tw in QApplication.topLevelWidgets():
+                for attr in ("_sasp_data_path", "sasp_data_path"):
+                    v = getattr(tw, attr, None)
+                    if v:
+                        return v
+                dm = getattr(tw, "doc_manager", None) or getattr(tw, "docman", None)
+                for attr in ("_sasp_data_path", "sasp_data_path"):
+                    v = getattr(dm, attr, None)
+                    if v:
+                        return v
+        except Exception:
+            pass
         return None
 
     def _nb_discard_doc(self, dm, doc):
@@ -23428,10 +23459,14 @@ class StackingSuiteDialog(QDialog):
         return m if m > 0 else 0.0
 
     def _nb_calibrate_class(self, sample_files, preset_name, *, n_cal=5):
-        """Plate-solve up to n_cal RGB subs, calibrate NBExtract on each, QC them,
-        pool the throughput-normalised star records, and fit ONE mixing matrix.
-        Returns the (3, 2) matrix, or None to signal 'use the raw R/G split'."""
-        import os
+        """Plate-solve ONCE (all subs share the aligned reference grid), then
+        calibrate NBExtract on up to n_cal subs reusing that WCS, QC, pool the
+        throughput-normalised star records, and fit ONE mixing matrix.
+
+        Runs entirely on SCRATCH TEMP FITS + in-memory stand-in docs — it never
+        calls doc_manager.create_document, so NO SASpro windows are spawned.
+        Returns the (3, 2) matrix, or None to signal 'use raw R/G split'."""
+        import os, tempfile, shutil
         import numpy as np
         from astropy.io import fits
         try:
@@ -23439,51 +23474,87 @@ class StackingSuiteDialog(QDialog):
                 calibrate_matrix_headless, fit_mixing_matrix, condition_number_warning,
             )
             from setiastro.saspro.plate_solver import plate_solve_doc_inplace
+            from setiastro.saspro.legacy.image_manager import save_image
         except Exception as e:
             self.update_status(self.tr(f"\u26a0\ufe0f Advanced NB split unavailable ({e}); raw split."))
             return None
 
+        # Only used to back the active-doc shim; we NEVER create a document here.
         real_dm = self._saspro_doc_manager()
-        if real_dm is None or not hasattr(real_dm, "create_document"):
-            self.update_status(self.tr("\u26a0\ufe0f Advanced NB split: no DocManager; raw split."))
-            return None
 
         data_path = self._nb_data_path()
+        if not data_path:
+            self.update_status(self.tr(
+                "\u26a0\ufe0f Advanced NB split: SASpro data path not found; raw split."))
+            return None
+
+        def _save_scratch(path, rgb_img, header):
+            save_image(img_array=rgb_img, filename=path, original_format="fit",
+                       bit_depth="32-bit floating point",
+                       original_header=header, is_mono=False)
+
+        tmpdir = tempfile.mkdtemp(prefix="sas_nbcal_")
         pooled = []
         n_ok = 0
-
-        for fp in sample_files:
-            if n_ok >= n_cal:
-                break
-            try:
-                with fits.open(fp, memmap=False) as hdul:
-                    arr = np.asarray(hdul[0].data)
-                    hdr = hdul[0].header.copy()
-            except Exception as e:
-                self.update_status(self.tr(f"   \u21b3 NB cal read failed {os.path.basename(fp)}: {e}"))
-                continue
-
-            rgb = self._nb_rgb_hwc(arr, None)
-            if rgb is None:
-                continue
-
-            try:
-                doc = real_dm.create_document(
-                    rgb, metadata={"original_header": hdr}, name="__nbcal_tmp__"
-                )
-            except Exception as e:
-                self.update_status(self.tr(f"\u26a0\ufe0f NB cal create_document failed: {e}; raw split."))
-                return None
-
-            try:
+        ref_wcs = None
+        try:
+            for i, fp in enumerate(sample_files):
+                if n_ok >= n_cal:
+                    break
                 try:
-                    ok, res = plate_solve_doc_inplace(self, doc, self.settings)
+                    with fits.open(fp, memmap=False) as hdul:
+                        arr = np.asarray(hdul[0].data)
+                        hdr = hdul[0].header.copy()
                 except Exception as e:
-                    ok, res = False, str(e)
-                if not ok:
-                    self.update_status(self.tr(
-                        f"   \u21b3 NB cal plate solve failed {os.path.basename(fp)}: {res}"))
+                    self.update_status(self.tr(f"   \u21b3 NB cal read failed {os.path.basename(fp)}: {e}"))
                     continue
+
+                rgb = self._nb_rgb_hwc(arr, None)
+                if rgb is None:
+                    continue
+
+                scratch = os.path.join(tmpdir, f"nbcal_{i:03d}.fit")
+
+                if ref_wcs is None:
+                    # First usable sub: write scratch, solve it once via the waterfall.
+                    try:
+                        _save_scratch(scratch, rgb, hdr)
+                    except Exception as e:
+                        self.update_status(self.tr(f"   \u21b3 NB cal scratch write failed: {e}"))
+                        continue
+                    doc = self._NBScratchDoc(rgb, {"original_header": hdr, "file_path": scratch})
+                    try:
+                        ok, res = plate_solve_doc_inplace(self, doc, self.settings)
+                    except Exception as e:
+                        ok, res = False, str(e)
+                    if not ok:
+                        self.update_status(self.tr(
+                            f"   \u21b3 NB cal plate solve failed {os.path.basename(fp)}: {res}"))
+                        continue
+                    ref_wcs = {
+                        "original_header": doc.metadata.get("original_header"),
+                        "wcs_header":      doc.metadata.get("wcs_header"),
+                    }
+                    # Bake the solved WCS into the scratch header so any file reopen
+                    # sees a plate-solved image.
+                    try:
+                        _save_scratch(scratch, rgb, ref_wcs["original_header"])
+                    except Exception:
+                        pass
+                    self.update_status(self.tr(
+                        "   \u21b3 NB cal: solved reference grid once; reusing WCS for the rest."))
+                else:
+                    # Aligned to the same grid: write scratch with the solved WCS baked in.
+                    try:
+                        _save_scratch(scratch, rgb, ref_wcs["original_header"])
+                    except Exception as e:
+                        self.update_status(self.tr(f"   \u21b3 NB cal scratch write failed: {e}"))
+                        continue
+                    doc = self._NBScratchDoc(rgb, {
+                        "original_header": ref_wcs["original_header"],
+                        "wcs_header":      ref_wcs["wcs_header"],
+                        "file_path":       scratch,
+                    })
 
                 shim = self._NBActiveDocShim(real_dm, doc)
                 try:
@@ -23495,24 +23566,24 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(self.tr(
                         f"   \u21b3 NB cal failed {os.path.basename(fp)}: {e}"))
                     continue
-            finally:
-                self._nb_discard_doc(real_dm, doc)
 
-            _, sev = condition_number_warning(A_k)
-            if sev == "severe" or len(recs_k) < 30:
-                self.update_status(self.tr(
-                    f"   \u21b3 NB cal rejected sub (cond={cond_k:.1f}, n={len(recs_k)})"))
-                continue
+                _, sev = condition_number_warning(A_k)
+                if sev == "severe" or len(recs_k) < 30:
+                    self.update_status(self.tr(
+                        f"   \u21b3 NB cal rejected sub (cond={cond_k:.1f}, n={len(recs_k)})"))
+                    continue
 
-            t = self._nb_throughput_scalar(recs_k)
-            if t <= 0:
-                continue
-            for r in recs_k:
-                r["R_meas"] = float(r["R_meas"]) / t
-                r["G_meas"] = float(r["G_meas"]) / t
-                r["B_meas"] = float(r["B_meas"]) / t
-                pooled.append(r)
-            n_ok += 1
+                t = self._nb_throughput_scalar(recs_k)
+                if t <= 0:
+                    continue
+                for r in recs_k:
+                    r["R_meas"] = float(r["R_meas"]) / t
+                    r["G_meas"] = float(r["G_meas"]) / t
+                    r["B_meas"] = float(r["B_meas"]) / t
+                    pooled.append(r)
+                n_ok += 1
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
         if n_ok == 0 or len(pooled) < 6:
             self.update_status(self.tr(
@@ -23557,7 +23628,7 @@ class StackingSuiteDialog(QDialog):
         }
         buckets = {}
         for group, files in aligned_light_files.items():
-            drizzled = bool(old_drizzle.get(group))
+            drizzled = self._group_is_drizzled(old_drizzle, group)
             if drizzled:
                 continue  # drizzle groups keep the raw R/G split
             for fp in files:
@@ -23576,6 +23647,25 @@ class StackingSuiteDialog(QDialog):
             self._nb_matrices[cls] = self._nb_calibrate_class(
                 sample, preset_for[cls], n_cal=5
             )
+
+    def _group_is_drizzled(self, drizzle_map, group) -> bool:
+        """True only if drizzle is actually ENABLED for this group.
+        per_group_drizzle values are config dicts ({"enabled": bool, "scale":…,
+        "drop":…}), so bool(dict) is truthy even when drizzle is off — check the
+        flag explicitly. Tolerates a bare bool/None too."""
+        v = (drizzle_map or {}).get(group)
+        if isinstance(v, dict):
+            return bool(v.get("enabled", v.get("drizzle_enabled", False)))
+        return bool(v)
+
+    def _dual_split_requested(self) -> bool:
+        """True if EITHER the base dual-band split OR the advanced matrix split
+        is enabled. The advanced checkbox implies the split must run."""
+        base = bool(getattr(self, "split_dualband_cb", None)
+                    and self.split_dualband_cb.isChecked())
+        adv = bool(getattr(self, "adv_nb_split_cb", None)
+                   and self.adv_nb_split_cb.isChecked())
+        return base or adv
 
     def _split_dual_band_after_align(
         self,
@@ -23743,7 +23833,7 @@ class StackingSuiteDialog(QDialog):
                 A_nb = None
                 rgb_hwc = None
                 if (getattr(self, "_nb_advanced_split", False)
-                        and not bool(old_drizzle.get(group))):
+                        and not self._group_is_drizzled(old_drizzle, group)):
                     A_nb = (getattr(self, "_nb_matrices", {}) or {}).get(cls)
                 if A_nb is not None:
                     rgb_hwc = self._nb_rgb_hwc(arr, layout)
@@ -24243,11 +24333,11 @@ class StackingSuiteDialog(QDialog):
                 if aligned and os.path.exists(aligned):
                     new_list.append(aligned)
                 else:
-                    self.update_status(self.tr(f"DEBUG: File '{aligned}' does not exist on disk."))
+                    self.update_status(self.tr(f"File '{aligned}' does not exist on disk."))
             aligned_light_files[group] = new_list
 
-        # ----Split dual-band if requested----
-        if self.split_dualband_cb.isChecked():
+        # ----Split dual-band if requested (base checkbox OR advanced matrix)----
+        if self._dual_split_requested():
             self.update_status(self.tr("🌈 Splitting aligned dual-band OSC frames into Ha / OIII…"))
             aligned_light_files = self._split_dual_band_after_align(aligned_light_files)
 
@@ -28964,7 +29054,7 @@ class StackingSuiteDialog(QDialog):
             aligned_light_files = {g: lst for g, lst in self.light_files.items() if lst}
 
             # 7) Optional: split dual-band OSC into Ha / SII / OIII / Hb
-            if getattr(self, "split_dualband_cb", None) and self.split_dualband_cb.isChecked():
+            if self._dual_split_requested():
                 self.update_status(self.tr(
                     "🌈 Splitting registered dual-band OSC frames into Ha / SII / OIII / Hb…"
                 ))
