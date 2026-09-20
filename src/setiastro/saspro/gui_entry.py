@@ -1482,6 +1482,45 @@ def main(argv: list[str] | None = None) -> int:
 
         win.show()
         QTimer.singleShot(0, lambda: win.setWindowIcon(_app.windowIcon()))
+
+        # ── Non-fatal environment sanity check (source runs only) ──────
+        # Frozen/installer builds are isolated + correct, so skip them. For
+        # users running from GitHub, a NumPy/SciPy mismatch or two mixed Python
+        # environments makes the multi-process workers die (BrokenProcessPool
+        # -> 'no frames to stack'). The fallbacks keep SASpro working
+        # single-process; this just tells the user how to fix it. Warn and keep
+        # running — never touch their environment.
+        def _saspro_env_warn():
+            try:
+                import sys as _sys2
+                if getattr(_sys2, "frozen", False):
+                    return
+                from setiastro.saspro.worker_env import diagnose_local_env
+                _ok, _msg = diagnose_local_env()
+                if _ok:
+                    return
+                from PyQt6.QtWidgets import QMessageBox as _QMB, QApplication as _QApp
+                _box = _QMB(win)
+                _box.setIcon(_QMB.Icon.Warning)
+                _box.setWindowTitle("Python environment problem")
+                _box.setText(
+                    "SASpro detected an inconsistent scientific-library setup.\n\n"
+                    "It will still run, but multi-core stacking is disabled until "
+                    "this is fixed (stacking will be slower).")
+                _box.setInformativeText(_msg)
+                _copy = _box.addButton("Copy fix command", _QMB.ButtonRole.ActionRole)
+                _box.addButton(_QMB.StandardButton.Ok)
+                _box.setDefaultButton(_QMB.StandardButton.Ok)
+                _box.exec()
+                if _box.clickedButton() is _copy:
+                    try:
+                        _QApp.clipboard().setText(
+                            f'"{_sys2.executable}" -m pip install -r requirements.txt')
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        QTimer.singleShot(1500, _saspro_env_warn)
         
         if open_paths:
             def _open_cli_paths():

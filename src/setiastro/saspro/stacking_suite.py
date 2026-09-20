@@ -21893,7 +21893,18 @@ class StackingSuiteDialog(QDialog):
                     return ("err", fp, f"{type(e).__name__}: {e}")
 
             measured_ok = False
-            if use_processes:
+            # One-shot worker preflight (spawns a single probe process that
+            # imports the scientific stack). If it can't, every real pool would
+            # BrokenProcessPool -> disable process pools for this run and log the
+            # fix. Cached, so measurement / ABE / registration all see the same
+            # decision. Registration reads it via star_alignment._make_executor.
+            try:
+                from setiastro.saspro.worker_env import check_process_pools, process_pools_ok as _pp_ok
+                check_process_pools(log_fn=self.update_status)
+            except Exception:
+                def _pp_ok():
+                    return True
+            if use_processes and _pp_ok():
                 try:
                     import multiprocessing as _mp
                     from setiastro.saspro.stacking_measure_worker import measure_file
@@ -22867,21 +22878,40 @@ class StackingSuiteDialog(QDialog):
                         # normalized frame so registration can find + warp it.
                         _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
 
-                    # ---- Parallel poly2 ABE over the just-written _n frames ----
+                    # ---- poly2 ABE over the just-written _n frames ----
                     try:
-                        from setiastro.saspro.gradient_abe import run_abe_files_parallel
-                        _n_ok, _n_skip, _n_err = run_abe_files_parallel(
-                            _abe_paths,
-                            kw=dict(mode=mode, num_samples=samples, downsample=downsample,
-                                    patch_size=patch_size, min_strength=min_strength,
-                                    gain_clip=(gain_lo, gain_hi)),
-                            target_hw=getattr(self, "_norm_target_hw", None),
-                            log_fn=self.update_status,
-                        )
+                        from setiastro.saspro.gradient_abe import run_abe_files_parallel, abe_one_file
+                        try:
+                            from setiastro.saspro.worker_env import process_pools_ok as _pp_ok
+                            _abe_pp = _pp_ok()
+                        except Exception:
+                            _abe_pp = True
+                        _abe_kw = dict(mode=mode, num_samples=samples, downsample=downsample,
+                                       patch_size=patch_size, min_strength=min_strength,
+                                       gain_clip=(gain_lo, gain_hi))
+                        _abe_thw = getattr(self, "_norm_target_hw", None)
+                        if _abe_pp:
+                            _n_ok, _n_skip, _n_err = run_abe_files_parallel(
+                                _abe_paths, kw=_abe_kw, target_hw=_abe_thw,
+                                log_fn=self.update_status,
+                            )
+                        else:
+                            # Broken worker env: run ABE single-process (still
+                            # removes gradients, just not across cores).
+                            _n_ok = _n_skip = _n_err = 0
+                            for _i, _p in enumerate(_abe_paths, 1):
+                                _st, _pp, _er = abe_one_file((_p, _abe_kw, _abe_thw))
+                                if _st == "ok":
+                                    _n_ok += 1
+                                elif _st == "skip":
+                                    _n_skip += 1
+                                else:
+                                    _n_err += 1
+                                self.update_status(self.tr(f"🌈 ABE (1-proc) {_i}/{len(_abe_paths)}"))
                         self.update_status(self.tr(
                             f"Gradient removal complete: {_n_ok} ok, {_n_skip} skipped, {_n_err} error(s)."))
                     except Exception as _abe_e:
-                        self.update_status(self.tr(f"⚠️ ABE parallel pass failed: {_abe_e}"))
+                        self.update_status(self.tr(f"⚠️ ABE pass failed: {_abe_e}"))
                     QApplication.processEvents()
 
             # restore OpenCV threads
