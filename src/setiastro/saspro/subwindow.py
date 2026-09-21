@@ -1263,8 +1263,7 @@ class ImageSubWindow(QWidget):
                 self.scale = scale
                 self._render(rebuild=False)
                 self._update_zoom_label()
-                if self._smooth_zoom:
-                    self._request_zoom_redraw()
+                self._request_zoom_redraw()
 
             hbar = self.scroll.horizontalScrollBar()
             vbar = self.scroll.verticalScrollBar()
@@ -2413,8 +2412,10 @@ class ImageSubWindow(QWidget):
         self.scale = s
         self._render()
         self._schedule_emit_view_transform()
-        if self._smooth_zoom:
-            self._request_zoom_redraw()
+        # Always schedule a debounced settle. Even with smooth-zoom-settle OFF,
+        # zooming IN can leave the cached (display-scale) pixmap under-resolved;
+        # the settle is what re-rasterizes it from the full-res source.
+        self._request_zoom_redraw()
         self._update_zoom_label()
 
 
@@ -3260,6 +3261,11 @@ class ImageSubWindow(QWidget):
         # Cache pixmap at the current display scale (not 1:1 source pixels)
         self._pm_src = QPixmap.fromImage(self._qimg_src)
         self._pm_src_scale = float(scale)
+        # Remember the TRUE source dimensions this pixmap was built from, so the
+        # zoom-settle can tell when the cached pixmap is under-resolved for the
+        # current zoom and needs a full-res re-rasterize.
+        self._pm_src_src_w = int(src_w)
+        self._pm_src_src_h = int(src_h)
 
         # Invalidate any cached "WCS baked" pixmap on rebuild
         self._pm_src_wcs = None
@@ -3560,8 +3566,7 @@ class ImageSubWindow(QWidget):
 
         self._update_zoom_label()
         self._schedule_emit_view_transform()
-        if self._smooth_zoom:
-            self._request_zoom_redraw()
+        self._request_zoom_redraw()
 
     def _zoom_at_anchor(self, factor: float):
         if getattr(self, "_qimg_src", None) is None and getattr(self, "_pm_src", None) is None:
@@ -3583,23 +3588,120 @@ class ImageSubWindow(QWidget):
 
         self._zoom_to_scale(new_scale, anchor_vp=anchor_vp)
 
+    def _zoom_settle_needs_rebuild(self) -> bool:
+        """
+        True when the cached display pixmap is under-resolved for the current
+        zoom — i.e. we are UPSAMPLING _pm_src and a rebuild from the full-res
+        source would actually recover detail (and we are still below the
+        8192-per-side render cap).
+
+        This is what makes zoom-in sharp again now that _pm_src is rasterized at
+        display scale instead of 1:1. It is deliberately independent of the
+        smooth-zoom-settle *interpolation* preference.
+        """
+        pm = getattr(self, "_pm_src", None)
+        if pm is None or pm.isNull():
+            return False
+
+        src_w = int(getattr(self, "_pm_src_src_w", 0) or 0)
+        src_h = int(getattr(self, "_pm_src_src_h", 0) or 0)
+        if src_w <= 0 or src_h <= 0:
+            # Fall back to inferring source size from the recorded build scale.
+            base_scale = float(getattr(self, "_pm_src_scale", 0.0) or 0.0)
+            if base_scale <= 0.0:
+                return False
+            src_w = max(1, int(round(pm.width()  / base_scale)))
+            src_h = max(1, int(round(pm.height() / base_scale)))
+
+        # Effective source-scale currently baked into the cached pixmap.
+        cur_eff = pm.width() / float(src_w)
+
+        # Best effective scale a rebuild could produce at the current zoom,
+        # honouring the same 8192-per-side cap that _render() applies.
+        _max_side = 8192
+        achievable = min(float(self.scale),
+                         _max_side / float(src_w),
+                         _max_side / float(src_h))
+
+        tol = 0.01
+        return (float(self.scale) > cur_eff * (1.0 + tol)) and \
+               (achievable > cur_eff * (1.0 + tol))
+
+    def _recalc_overlay_widget(self):
+        """Lazily build the small translucent 'recalculating' overlay."""
+        lbl = getattr(self, "_recalc_overlay", None)
+        if lbl is not None:
+            return lbl
+        try:
+            vp = self.scroll.viewport()
+        except Exception:
+            return None
+        lbl = QLabel(vp)
+        lbl.setStyleSheet(
+            "background: rgba(0,0,0,0.55); color: rgba(255,255,255,0.90);"
+            " padding: 3px 8px; border-radius: 6px; font-size: 11px;"
+        )
+        lbl.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        lbl.hide()
+        self._recalc_overlay = lbl
+        return lbl
+
+    def _show_recalc_overlay(self):
+        lbl = self._recalc_overlay_widget()
+        if lbl is None:
+            return
+        lbl.setText(
+            self.tr("Recalculating display stretch…")
+            if getattr(self, "autostretch_enabled", False)
+            else self.tr("Refreshing view…")
+        )
+        lbl.adjustSize()
+        try:
+            vp = self.scroll.viewport()
+            m = 8
+            lbl.move(m, max(m, vp.height() - lbl.height() - m))
+        except Exception:
+            pass
+        lbl.show()
+        lbl.raise_()
+
+    def _hide_recalc_overlay(self):
+        lbl = getattr(self, "_recalc_overlay", None)
+        if lbl is not None:
+            lbl.hide()
+
     def _request_zoom_redraw(self):
         if getattr(self, "_zoom_timer", None) is None:
             self._zoom_timer = QTimer(self)
             self._zoom_timer.setSingleShot(True)
             self._zoom_timer.timeout.connect(self._apply_zoom_redraw)
 
-        # 60–120ms feels better than 16ms for “zoom burst collapse”
-        # but keep your 16ms if you prefer.
-        self._zoom_timer.start(90)
+        # Single-shot + restart-on-every-zoom collapses a wheel/click burst into
+        # ONE settle ~180ms after the user stops. Only surface the overlay when
+        # the settle will actually re-rasterize (zoomed in past the cached
+        # resolution); zooming out costs nothing and stays silent.
+        if self._zoom_settle_needs_rebuild():
+            self._show_recalc_overlay()
+
+        self._zoom_timer.start(180)
 
 
     def _apply_zoom_redraw(self):
-        if not getattr(self, "_smooth_zoom", True):
-            return
         if getattr(self, "_pm_src", None) is None:
+            self._hide_recalc_overlay()
             return
-        self._render(rebuild=True)
+        try:
+            if self._zoom_settle_needs_rebuild():
+                # Re-rasterize _pm_src from the full-res source at the settled
+                # scale. _render() ends on a smooth present when smooth-zoom is
+                # on, else a crisp (nearest) present — either way at full res.
+                self._render(rebuild=True)
+            elif getattr(self, "_smooth_zoom", True):
+                # Nothing to re-rasterize (zoomed out, or already at native/cap):
+                # just give the smooth final present the settle used to provide.
+                self._present_scaled(interactive=False)
+        finally:
+            self._hide_recalc_overlay()
 
 
 
@@ -4352,6 +4454,7 @@ class ImageSubWindow(QWidget):
             zt = getattr(self, "_zoom_timer", None)
             if zt is not None:
                 zt.stop()
+            self._hide_recalc_overlay()
         except Exception:
             pass
         try:

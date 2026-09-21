@@ -2464,6 +2464,19 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                 from setiastro.saspro.imageops.save_psb import load_psb
                 image, bit_depth, is_mono = load_psb(filename)
                 image = _finalize_loaded_image(image)
+            elif filename.lower().endswith('.syq'):
+                print(f"Loading SYQ file: {filename}")
+                from setiastro.saspro.imageops.syq_io import read_syq
+                # read_syq validates every object's SHA-256, returns the primary
+                # image as float32 (integer samples normalized to [0,1]; Float32/
+                # Float64 preserved) and a fits.Header synthesized from the layer's
+                # source metadata (original FITS cards + the WCS/astrometric
+                # solution). Feeding it as original_header lets the shared tail
+                # attach the WCS exactly as it does for FITS/XISF.
+                image, syq_header, bit_depth, is_mono = read_syq(filename)
+                if syq_header is not None:
+                    original_header = syq_header
+                image = _finalize_loaded_image(image)
             else:
                 raise ValueError("Unsupported file format!")
 
@@ -3913,6 +3926,31 @@ def save_image(img_array,
 
             save_psb(filename, img_array, depth=psb_depth)
             print(f"Saved {psb_depth}-bit PSB image to: {filename}")
+            return
+        # ---------------------------------------------------------------------
+        # SYQ — SyQon Studio Core 1 scientific container (tiled, CBOR + SHA-256)
+        # ---------------------------------------------------------------------
+        if fmt == "syq":
+            from setiastro.saspro.imageops.syq_io import write_syq
+
+            bd = bit_depth or "32-bit floating point"
+
+            # write_syq takes HxW (mono) or HxWxC. Honor is_mono by collapsing
+            # to a single plane so we store one channel, not three identical
+            # ones (mirrors the WebP/round-trip logic elsewhere).
+            arr = img_array
+            if is_mono and arr.ndim == 3 and arr.shape[2] > 1:
+                arr = arr[:, :, 0]
+
+            if not filename.lower().endswith(".syq"):
+                filename = f"{base}.syq"
+
+            # NOTE: the public SYQ spec doesn't define how FITS/XISF-style
+            # metadata maps into namespaced syq.* keys, so we don't guess —
+            # only pixels + a provenance note are written until the white paper
+            # lands. write_syq stamps syq.processing.software itself.
+            write_syq(arr, filename, bit_depth=bd, compress=False)
+            print(f"Saved {bd} SYQ image to: {filename}")
             return
         # ---------------------------------------------------------------------
         # Unknown format

@@ -223,39 +223,6 @@ def _detect_rocm_arch() -> str:
         pass
     return ""
 
-def _apply_rocm_arch_env_overrides(arch: str, status_cb=print) -> None:
-    """Configure runtime environment variables for consumer AMD RDNA GPUs and APUs."""
-    if not arch or platform.system() != "Linux":
-        return
-
-    arch_lower = arch.lower()
-
-    # RDNA 3 APUs & GPUs (e.g. Phoenix/Hawk Point 780M gfx1103, RX 7000 series gfx1100-gfx1102)
-    if arch_lower in {"gfx1103", "gfx1102", "gfx1101", "gfx1100"}:
-        if "HSA_OVERRIDE_GFX_VERSION" not in os.environ:
-            os.environ["HSA_OVERRIDE_GFX_VERSION"] = "11.0.0"
-            status_cb(f"[RT] Set HSA_OVERRIDE_GFX_VERSION=11.0.0 for {arch}")
-        # Enable unified coherent memory for integrated APUs
-        if arch_lower == "gfx1103" and "ROCM_ENABLE_COH_MEMORY" not in os.environ:
-            os.environ["ROCM_ENABLE_COH_MEMORY"] = "1"
-            status_cb("[RT] Set ROCM_ENABLE_COH_MEMORY=1 for APU")
-
-    # RDNA 3.5 APUs (Strix Point gfx1150, gfx1151)
-    elif arch_lower in {"gfx1150", "gfx1151"}:
-        if "HSA_OVERRIDE_GFX_VERSION" not in os.environ:
-            os.environ["HSA_OVERRIDE_GFX_VERSION"] = "11.5.0"
-            status_cb(f"[RT] Set HSA_OVERRIDE_GFX_VERSION=11.5.0 for {arch}")
-        if "ROCM_ENABLE_COH_MEMORY" not in os.environ:
-            os.environ["ROCM_ENABLE_COH_MEMORY"] = "1"
-
-    # RDNA 2 consumer discrete GPUs & APUs (e.g. RX 6000 series, Rembrandt 680M gfx1035)
-    elif arch_lower in {"gfx1030", "gfx1031", "gfx1032", "gfx1034", "gfx1035", "gfx1036"}:
-        if "HSA_OVERRIDE_GFX_VERSION" not in os.environ:
-            os.environ["HSA_OVERRIDE_GFX_VERSION"] = "10.3.0"
-            status_cb(f"[RT] Set HSA_OVERRIDE_GFX_VERSION=10.3.0 for {arch}")
-        if arch_lower in {"gfx1035", "gfx1036"} and "ROCM_ENABLE_COH_MEMORY" not in os.environ:
-            os.environ["ROCM_ENABLE_COH_MEMORY"] = "1"
-
 def _user_runtime_dir(status_cb=print) -> Path:
     global _RUNTIME_DIR_CACHED, _RUNTIME_USERDIR_LOGGED
 
@@ -1355,12 +1322,6 @@ _RUNTIME_DIR_CACHED: Path | None = None
 _RUNTIME_DISCOVERY_LOGGED = False
 _RUNTIME_USERDIR_LOGGED = False
 
-_ROCM_PYTORCH_STABLE_INDICES: list[tuple[str, str]] = [
-    ("rocm6.2", "https://download.pytorch.org/whl/rocm6.2"),
-    ("rocm6.1", "https://download.pytorch.org/whl/rocm6.1"),
-    ("rocm6.0", "https://download.pytorch.org/whl/rocm6.0"),
-]
-
 _ROCM_PYTORCH_NIGHTLY_INDICES: list[tuple[str, str]] = [
     ("rocm7.2", "https://download.pytorch.org/whl/nightly/rocm7.2"),
     ("rocm7.1", "https://download.pytorch.org/whl/nightly/rocm7.1"),
@@ -1638,7 +1599,6 @@ def _install_torch(
     rocm_ver = _detect_rocm_version(status_cb=status_cb) if (prefer_rocm and sysname == "Linux") else ""
 
     if rocm_arch:
-        _apply_rocm_arch_env_overrides(rocm_arch, status_cb=status_cb)
         status_cb(f"ROCm GPU detected: {rocm_arch}" + (f" (ROCm {rocm_ver})" if rocm_ver else ""))
         rocm_candidates: list[tuple[str, str, bool]] = []
 
@@ -1657,11 +1617,6 @@ def _install_torch(
 
         for label, url in _ordered_rocm_nightly_indices(rocm_ver, status_cb=status_cb):
             rocm_candidates.append((f"pytorch-nightly:{label}", url, True))
-
-        # Add official stable PyTorch ROCm release wheels as primary/fallback targets
-        for label, url in _ROCM_PYTORCH_STABLE_INDICES:
-          # use_pre=False because stable releases do not need the --pre pip flag
-          rocm_candidates.append((f"pytorch-stable:{label}", url, False))
 
         ladder = _TORCH_VERSION_LADDER.get((ver[0], ver[1]), ["2.11.*"])
 
@@ -2076,7 +2031,6 @@ def import_torch(
         try:
             rocm_arch = _detect_rocm_arch()
             if rocm_arch:
-                _apply_rocm_arch_env_overrides(rocm_arch, status_cb=status_cb)
                 try:
                     import importlib as _il
                     _t = _il.import_module("torch")

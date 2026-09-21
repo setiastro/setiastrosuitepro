@@ -303,6 +303,8 @@ _ALLOWED_DEPTHS = {
     "xisf": {"16-bit", "32-bit unsigned", "32-bit floating point"},
     "psb":  {"16-bit", "32-bit floating point"},
     "webp": ["8-bit"],
+    # SYQ Core 1: u8 / u16 / f32 (SASpro is f32-internal; no u32 or f64 export).
+    "syq":  {"8-bit", "16-bit", "32-bit floating point"},
 }
 
 class TableDocument(QObject):
@@ -2312,6 +2314,7 @@ class DocManager(QObject):
         lower_path = path.lower()
         is_fits = lower_path.endswith((".fit", ".fits", ".fts", ".fit.gz", ".fits.gz", ".fz"))
         is_xisf = (norm_ext == "xisf")
+        is_syq = (norm_ext == "syq")
 
         primary_doc = None
         created_any = False
@@ -2843,6 +2846,82 @@ class DocManager(QObject):
                             print(f"[DocManager] XISF image {i} skipped: {_e}")
             except Exception as _e:
                 print(f"[DocManager] XISF open/enumeration failed: {_e}")
+
+        # ---------- 3b) SYQ: primary already loaded; enumerate extra image layers ----------
+        # Each additional IMAGE_DESCRIPTOR (processing checkpoints, linear images,
+        # masks, …) becomes a read-only sibling view — the SYQ analog of extra
+        # FITS image HDUs / XISF images. The primary was opened by legacy_load_image
+        # above (with its WCS already attached); here we also fold the raw SYQ
+        # metadata onto it and bring in the other layers.
+        if is_syq:
+            try:
+                from setiastro.saspro.imageops.syq_io import (
+                    list_syq_images, read_syq as _syq_read_layer,
+                )
+                base = os.path.basename(path)
+                layers = list_syq_images(path)
+
+                if primary_doc is not None:
+                    prim = next((L for L in layers if L["is_primary"]), None)
+                    if prim is not None:
+                        try:
+                            im = primary_doc.metadata.setdefault("image_meta", {})
+                            if isinstance(im, dict):
+                                im.setdefault("syq_metadata", prim["metadata"])
+                                im.setdefault("syq_role", prim["role"])
+                        except Exception:
+                            pass
+
+                used_names = set()
+                if open_auxiliary_images:
+                    for L in layers:
+                        if L["is_primary"]:
+                            continue
+                        try:
+                            arr, hdr, bd, mono = _syq_read_layer(path, image_id=L["id"])
+                            arr = _normalize_image_01(arr)
+                            # Studio files often carry many layers sharing a role
+                            # (e.g. PROCESSING_CHECKPOINT), which would produce
+                            # identically-titled views. Number the repeats
+                            # ("NAME", "NAME 2", …); the object id in file_path
+                            # stays the stable, unique key regardless.
+                            label = L["role"] or f"SYQ[{L['id']}]"
+                            disp = f"{base} {label}"
+                            if disp in used_names:
+                                k = 2
+                                while f"{base} {label} {k}" in used_names:
+                                    k += 1
+                                disp = f"{base} {label} {k}"
+                            used_names.add(disp)
+                            md = {
+                                "file_path": f"{path}::SYQ[{L['id']}]",
+                                "original_header": hdr,
+                                "bit_depth": bd,
+                                "is_mono": mono,
+                                "original_format": "syq",
+                                "image_meta": {
+                                    "derived_from": path,
+                                    "layer_id": L["id"],
+                                    "syq_role": L["role"],
+                                    "syq_metadata": L["metadata"],
+                                    "readonly": True,
+                                },
+                                "display_name": disp,
+                            }
+                            md = attach_wcs_to_metadata(md, hdr)
+                            _snapshot_header_for_metadata(md)
+                            sib = ImageDocument(arr, md)
+                            self._register_doc(sib)
+                            try:
+                                sib.changed.emit()
+                            except Exception as e:
+                                import logging
+                                logging.debug(f"Exception suppressed: {type(e).__name__}: {e}")
+                            created_any = True
+                        except Exception as _e:
+                            print(f"[DocManager] SYQ layer {L.get('id')} skipped: {_e}")
+            except Exception as _e:
+                print(f"[DocManager] SYQ open/enumeration failed: {_e}")
 
         # ---------- 4) Return sensible doc or raise ----------
         if primary_doc is not None:

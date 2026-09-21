@@ -137,9 +137,10 @@ def diagnose_local_env() -> tuple[bool, str]:
     except Exception as e:
         return False, f"NumPy failed to import: {e}"
     _nmaj = int(getattr(_np, "__version__", "0").split(".")[0] or 0)
+    _mods = {}
     for _name in ("scipy", "scipy.sparse", "astropy", "astropy.io.fits"):
         try:
-            __import__(_name)
+            _mods[_name] = __import__(_name)
         except Exception as e:
             _pkg = _name.split(".")[0]
             return (False,
@@ -156,6 +157,7 @@ def diagnose_local_env() -> tuple[bool, str]:
         head, tail = os.path.split(p)
         return head or p
     try:
+        import scipy as _sp  # already imported cleanly above; just rebind the name
         nr, sr = _site_root(_np), _site_root(_sp)
         if nr and sr and nr != sr:
             return (False,

@@ -110,7 +110,7 @@ def ensure_torch_installed(
         elif preferred_backend == "xpu":
             prefer_xpu = prefer_gpu and (is_windows or is_linux) and (not has_nv) and has_intel
         elif preferred_backend == "rocm":
-            prefer_rocm = prefer_gpu and is_linux and has_amd
+            prefer_rocm = prefer_gpu and is_linux and (not has_nv) and has_amd
         elif preferred_backend == "directml":
             prefer_dml = prefer_gpu and is_windows and (not has_nv)
         else:  # auto

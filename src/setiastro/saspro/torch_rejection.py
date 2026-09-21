@@ -795,6 +795,29 @@ def _weighted_mean_or(torch, ts, keep, w, fallback):
 # ---------------------------------------------------------------------------
 # Public GPU reducer – lazy-loads Torch, never decorates at import time
 # ---------------------------------------------------------------------------
+def _finalize(torch, out, rej, reduce_rej_maps):
+    """Move a reducer result to the host.
+
+    Default (reduce_rej_maps=False): return (out_np, full_rej_np) exactly as
+    before — the full (F,H,W,C) or (F,H,W) boolean rejection map.
+
+    reduce_rej_maps=True: collapse the rejection map ON THE GPU to the only two
+    things the integrator actually accumulates — a per-pixel "any frame
+    rejected" mask and a per-pixel rejected-frame count — and copy back just
+    those two (H,W) arrays. That turns the per-band device->host transfer from
+    N*H*W*C bytes down to ~2*H*W, and moves the any()/sum() reduction off the
+    CPU's critical path. Use it whenever per-file rejection maps are NOT being
+    collected (the common case)."""
+    out_np = out.to(dtype=torch.float32).contiguous().cpu().numpy()
+    if not reduce_rej_maps:
+        return out_np, rej.cpu().numpy()
+    # collapse channels, then reduce over the frame axis, all on-device
+    rej_fhw = rej.any(dim=-1) if rej.dim() == 4 else rej          # (F,H,W)
+    rej_any = rej_fhw.any(dim=0).cpu().numpy()                    # (H,W) bool
+    rej_cnt = rej_fhw.sum(dim=0).to(torch.int32).cpu().numpy()    # (H,W) int32
+    return out_np, (rej_any, rej_cnt)
+
+
 DEBUG_INTEGRATION_ONLY = False   # <-- set True: reducer returns a ZEROED rejection map (out left untouched)
 
 
@@ -824,7 +847,11 @@ def torch_reduce_tile(*args, **kwargs):
         except Exception:
             _is_selftest = False
         if not _is_selftest:
-            rej = _np.zeros_like(_np.asarray(rej), dtype=bool)
+            if isinstance(rej, tuple):
+                _ra, _rc = rej
+                rej = (_np.zeros_like(_ra, dtype=bool), _np.zeros_like(_rc))
+            else:
+                rej = _np.zeros_like(_np.asarray(rej), dtype=bool)
     return out, rej
 
 
@@ -845,6 +872,7 @@ def _torch_reduce_tile_impl(
     comet_hclip_p: float = 25.0,
     ignore_zero_pixels: bool = True,
     forced_reject_mask_np: np.ndarray | None = None,
+    reduce_rej_maps: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
 
     torch = _get_torch(prefer_cuda=True)
@@ -993,13 +1021,13 @@ def _torch_reduce_tile_impl(
             x = ts.masked_fill(~valid, float("nan"))
             out = _nanmedian(torch, x, dim=0)
             rej = forced_rej_map
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo == "Comet Percentile (40th)":
             x = ts.masked_fill(~valid, float("nan"))
             out = _nanquantile(torch, x, 0.40, dim=0)
             rej = forced_rej_map
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo_name == "Windsorized Sigma Clipping":
             # True Winsorized sigma clipping (APP/PI-parity):
@@ -1016,7 +1044,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, ones_w, fallback)
 
             rej = ~keep
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
 
         if algo == "Comet Lower-Trim (30%)":
@@ -1040,7 +1068,7 @@ def _torch_reduce_tile_impl(
             keep_orig = torch.zeros_like(keep_sorted)
             keep_orig.scatter_(0, idx, keep_sorted)
             rej = ~keep_orig
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo == "Comet High-Clip Percentile":
             x = ts.masked_fill(~valid, float("nan"))
@@ -1050,7 +1078,7 @@ def _torch_reduce_tile_impl(
             clipped = torch.where(valid, torch.minimum(ts, hi.unsqueeze(0)), torch.full_like(ts, float("nan")))
             out = _nanquantile(torch, clipped, float(comet_hclip_p) / 100.0, dim=0)
             rej = forced_rej_map
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo == "Simple Average (No Rejection)":
             w_eff = torch.where(valid, w, torch.zeros_like(w))
@@ -1063,14 +1091,14 @@ def _torch_reduce_tile_impl(
             out = torch.where(den > 0, num / den.clamp_min(1e-20), fallback)
 
             rej = forced_rej_map
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo == "Max Value":
             x = ts.masked_fill(~valid, float("-inf"))
             out = x.max(dim=0).values
             out = torch.where(torch.isfinite(out), out, torch.zeros_like(out))
             rej = forced_rej_map
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
 
         if algo == "Weighted Windsorized Sigma Clipping":
@@ -1087,7 +1115,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo == "Extreme Studentized Deviate (ESD)":
             # Generalized ESD (Rosner) done properly, vectorized per pixel.
@@ -1192,7 +1220,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo == "Kappa-Sigma Clipping":
             # Classic kappa-sigma: median center, std of the KEPT sample,
@@ -1215,7 +1243,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo == "Trimmed Mean":
             x = ts.masked_fill(~valid, float("nan"))
@@ -1227,7 +1255,7 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo == "Biweight Estimator":
             x = ts.masked_fill(~valid, float("nan"))
@@ -1248,7 +1276,7 @@ def _torch_reduce_tile_impl(
             out = torch.nan_to_num(out, nan=0.0)
 
             rej = ~mask
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         if algo == "Modified Z-Score Clipping":
             x = ts.masked_fill(~valid, float("nan"))
@@ -1266,6 +1294,6 @@ def _torch_reduce_tile_impl(
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return out.to(dtype=torch.float32).contiguous().cpu().numpy(), rej.cpu().numpy()
+            return _finalize(torch, out, rej, reduce_rej_maps)
 
         raise NotImplementedError(f"GPU path not implemented for: {algo_name}")

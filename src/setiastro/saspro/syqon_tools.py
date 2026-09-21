@@ -151,19 +151,28 @@ class SyQonToolsDialog(QDialog):
         top = QHBoxLayout()
         top.addWidget(QLabel("Tool family:"))
         self.cmb_family = QComboBox(self)
-        self.cmb_family.addItem("Starless", userData="starless")
-        self.cmb_family.addItem("Denoise", userData="denoise")
-        self.cmb_family.addItem("Sharpening", userData="sharpening")
+        # Studio is the consolidated path (single SyQon neural CLI). The legacy
+        # per-tool families below it are retained for backward compatibility.
+        self.cmb_family.addItem("Studio (all models)", userData="studio")
+        self.cmb_family.addItem("Starless (legacy)", userData="starless")
+        self.cmb_family.addItem("Denoise (legacy)", userData="denoise")
+        self.cmb_family.addItem("Sharpening (legacy)", userData="sharpening")
         top.addWidget(self.cmb_family, 1)
         lay.addLayout(top)
 
         self.stack = QStackedWidget(self)
         lay.addWidget(self.stack, 1)
 
+        # Lazy import avoids an import cycle (syqon_studio imports helpers from
+        # this module at load time; this module must not import it at top level).
+        from setiastro.saspro.syqon_studio import _SyQonStudioHubPage
+
+        self.page_studio = _SyQonStudioHubPage(self)
         self.page_starless = _SyQonStarlessHubPage(self)
         self.page_denoise = _SyQonDenoiseHubPage(self)
         self.page_sharpen = _SyQonSharpenHubPage(self)
 
+        self.stack.addWidget(self.page_studio)
         self.stack.addWidget(self.page_starless)
         self.stack.addWidget(self.page_denoise)
         self.stack.addWidget(self.page_sharpen)
@@ -181,10 +190,10 @@ class SyQonToolsDialog(QDialog):
         self.cmb_family.currentIndexChanged.connect(self._on_family_changed)
 
         # restore last-used family
-        saved_family = str(self.settings.value("syqon/tools/last_family", "starless", type=str) or "starless")
+        saved_family = str(self.settings.value("syqon/tools/last_family", "studio", type=str) or "studio")
         idx = self.cmb_family.findData(saved_family)
         if idx < 0:
-            idx = self.cmb_family.findData("starless")
+            idx = self.cmb_family.findData("studio")
         if idx >= 0:
             self.cmb_family.setCurrentIndex(idx)
 
@@ -222,12 +231,16 @@ class SyQonToolsDialog(QDialog):
         self.page_starless.ensure_embedded(self.parent(), doc)
 
     def _on_family_changed(self, *_):
-        self.settings.setValue("syqon/tools/last_family", str(self.cmb_family.currentData() or "starless"))
+        self.settings.setValue("syqon/tools/last_family", str(self.cmb_family.currentData() or "studio"))
         self._sync_page()
 
     def _sync_page(self):
         key = self.cmb_family.currentData()
-        if key == "starless":
+        if key == "studio":
+            self.stack.setCurrentWidget(self.page_studio)
+            self.btn_launch.setVisible(True)
+            self.btn_launch.setText("Process")
+        elif key == "starless":
             self.stack.setCurrentWidget(self.page_starless)
             self.btn_launch.setVisible(False)
         elif key == "denoise":
@@ -246,6 +259,10 @@ class SyQonToolsDialog(QDialog):
             return
 
         key = self.cmb_family.currentData()
+
+        if key == "studio":
+            self.page_studio.process_document(doc, self.parent())
+            return
 
         if key == "starless":
             # Already embedded — the Process button inside SyQonStarlessDialog handles it
@@ -308,7 +325,7 @@ class SyQonToolsDialog(QDialog):
 
     def _all_pages_safe_to_close(self) -> bool:
         # Any hub page with a running worker gets a chance to veto the close.
-        for attr in ("page_denoise", "page_sharpen"):
+        for attr in ("page_studio", "page_denoise", "page_sharpen"):
             page = getattr(self, attr, None)
             if page is not None and hasattr(page, "_safe_to_close"):
                 if not page._safe_to_close():
@@ -2192,6 +2209,10 @@ def run_syqon_tools_via_preset(main, doc, preset: dict | None = None):
         QMessageBox.information(main, "SyQon Tools", "No active image.")
         return
 
+    if family == "studio":
+        _run_syqon_studio_headless(main, doc, preset)
+        return
+
     if family == "denoise":
         _run_syqon_prism_headless(main, doc, preset)
         return
@@ -2423,6 +2444,168 @@ def _run_syqon_parallax_headless(main, doc, preset: dict | None = None):
     dlg.exec()
 
 
+def _run_syqon_studio_headless(main, doc, preset: dict | None = None):
+    """
+    Headless SyQon Studio CLI runner (drops / shortcuts / bundles).
+
+    Mirrors the interactive Studio page but drives the worker under a small
+    progress dialog instead of the hub. The result (and any stars-only /
+    gradient side-product) is applied exactly as the page does.
+    """
+    import numpy as np
+    from PyQt6.QtCore import QSettings as _QSettings
+    from setiastro.saspro.syqon_studio import (
+        _SyQonStudioCLIThread, find_studio_cli, studio_family_for,
+    )
+    from setiastro.saspro.remove_stars import _push_as_new_doc
+
+    preset = dict(preset or {})
+    mid = str(preset.get("studio_model", "prism-essential") or "prism-essential").strip()
+    fam = studio_family_for(mid)
+
+    settings = _QSettings()
+    exe = str(preset.get("studio_cli_path", "") or "").strip()
+    if not exe:
+        exe = find_studio_cli(settings) or ""
+    if not exe or not os.path.isfile(exe):
+        QMessageBox.warning(main, "SyQon Studio",
+                            "SyQon Studio CLI not found. Open SyQon Tools → Studio and "
+                            "click Locate… to select syqon-cli first.")
+        return
+
+    # Parallax needs at least one stage.
+    if fam == "parallax" and not any((
+        bool(preset.get("studio_px_correct", True)),
+        bool(preset.get("studio_px_reduce", True)),
+        bool(preset.get("studio_px_deblur", True)),
+    )):
+        QMessageBox.warning(main, "SyQon Studio",
+                            "Parallax needs at least one stage enabled.")
+        return
+
+    src = np.asarray(doc.image).astype(np.float32, copy=False)
+    orig_was_mono = (src.ndim == 2) or (src.ndim == 3 and src.shape[2] == 1)
+    x = np.nan_to_num(src, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+
+    scale_factor = float(np.max(x)) if x.size else 1.0
+    x01 = np.clip(x / scale_factor, 0.0, 1.0) if scale_factor > 1.01 else np.clip(x, 0.0, 1.0)
+    if x01.ndim == 2:
+        xrgb = np.stack([x01] * 3, axis=-1)
+    elif x01.ndim == 3 and x01.shape[2] == 1:
+        xrgb = np.repeat(x01, 3, axis=2)
+    else:
+        xrgb = x01[..., :3]
+
+    opts = dict(
+        domain=str(preset.get("studio_domain", "auto") or "auto"),
+        tile=int(preset.get("studio_tile", 512)),
+        overlap=int(preset.get("studio_overlap", 64)),
+        application=float(preset.get("studio_application", 1.0)),
+        parallax_family=str(preset.get("studio_px_family", "aesthetics") or "aesthetics"),
+        parallax_correction=bool(preset.get("studio_px_correct", True)),
+        parallax_reduction=bool(preset.get("studio_px_reduce", True)),
+        parallax_reduction_level=int(preset.get("studio_px_reduce_level", 5)),
+        parallax_deblur=bool(preset.get("studio_px_deblur", True)),
+        parallax_deblur_strength=float(preset.get("studio_px_deblur_strength", 0.5)),
+        axiom_stretch=str(preset.get("studio_ax_stretch", "auto") or "auto"),
+        axiom_black=float(preset.get("studio_ax_black", 0.0)),
+        axiom_mid=float(preset.get("studio_ax_mid", 0.25)),
+        axiom_white=float(preset.get("studio_ax_white", 1.0)),
+        precision="f32",
+    )
+
+    want_secondary = False
+    secondary_flag = None
+    if fam == "axiom" and bool(preset.get("studio_ax_make_stars", True)):
+        want_secondary = True; secondary_flag = "--stars-output"
+    elif fam == "deep-gradient" and bool(preset.get("studio_dg_make_gradient", False)):
+        want_secondary = True; secondary_flag = "--gradient-output"
+
+    dlg = _ProcDialog(main, title="SyQon Studio Progress")
+    dlg.append_text(f"Starting SyQon Studio ({mid})…\n")
+
+    thr = _SyQonStudioCLIThread(
+        input_rgb01=xrgb, scale_factor=scale_factor, exe=exe, model_id=mid,
+        argv_opts=opts, want_secondary=want_secondary, secondary_flag=secondary_flag,
+        parent=dlg,
+    )
+
+    def _on_prog(pct, stage):
+        dlg.set_progress(pct, 100, stage)
+
+    def _on_done(primary, secondary, info, err):
+        if err == "__cancelled__":
+            dlg.close(); return
+        if err:
+            QMessageBox.critical(main, "SyQon Studio", err); dlg.close(); return
+
+        primary = np.asarray(primary, dtype=np.float32)
+        if primary.ndim == 2:
+            primary = np.stack([primary] * 3, axis=-1)
+
+        orig = np.asarray(doc.image).astype(np.float32, copy=False)
+        orig = np.nan_to_num(orig, nan=0.0, posinf=0.0, neginf=0.0)
+        if orig.ndim == 2:
+            orig_rgb = np.stack([orig] * 3, axis=-1)
+        elif orig.ndim == 3 and orig.shape[2] == 1:
+            orig_rgb = np.repeat(orig, 3, axis=2)
+        else:
+            orig_rgb = orig[..., :3]
+
+        if secondary is not None:
+            try:
+                sec = np.asarray(secondary, dtype=np.float32)
+                if sec.ndim == 2:
+                    sec = np.stack([sec] * 3, axis=-1)
+                if fam == "axiom":
+                    suffix, source = "_stars", "Stars-Only (SyQon Axiom)"
+                else:
+                    suffix, source = "_gradient", "Gradient (SyQon Deep Gradient)"
+                sec_push = sec.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else sec
+                _push_as_new_doc(main, doc, sec_push, title_suffix=suffix, source=source)
+            except Exception:
+                pass
+
+        final_rgb = _blend_result_with_mask(primary, orig_rgb, doc)
+        final_to_apply = final_rgb.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_rgb
+        final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
+
+        step_name = {"prism": "Denoised", "parallax": "Sharpened",
+                     "axiom": "Stars Removed", "deep-gradient": "Gradient Removed"}.get(fam, "SyQon Studio")
+        meta = {
+            "step_name": step_name,
+            "command_id": "syqontools",
+            "preset": dict(preset),
+            "bit_depth": "32-bit floating point",
+            "is_mono": bool(orig_was_mono),
+            "masked": bool(getattr(doc, "active_mask_id", None)),
+            "mask_id": getattr(doc, "active_mask_id", None) or None,
+            "mask_blend": "m*out+(1-m)*src",
+            "replay_last": {"op": "syqon_studio",
+                            "params": {**dict(preset), "label": f"SyQon Studio ({mid})"}},
+        }
+        doc.apply_edit(final_to_apply, metadata=meta, step_name=step_name)
+        try:
+            if hasattr(main, "_log"):
+                main._log(f"SyQon Studio {mid} (headless)")
+        except Exception:
+            pass
+        dlg.close()
+
+    thr.progress.connect(_on_prog)
+    thr.finished.connect(_on_done)
+    dlg.cancel_button.clicked.connect(lambda: thr.cancel())
+    dlg.show()
+    thr.start()
+    dlg.exec()
+
+
+def run_syqon_studio_via_preset(main, doc, preset: dict | None = None):
+    preset = dict(preset or {})
+    preset["family"] = "studio"
+    return run_syqon_tools_via_preset(main, doc, preset)
+
+
 def _run_syqon_prism_headless(main, doc, preset: dict | None = None):
     preset = dict(preset or {})
 
@@ -2643,13 +2826,15 @@ def open_syqontools_with_preset(main_window, preset: dict | None = None):
 
     dlg = SyQonToolsDialog(main_window, docman, get_active, icon=_icon)
 
-    family = str(p.get("family", "denoise") or "denoise").strip().lower()
+    family = str(p.get("family", "studio") or "studio").strip().lower()
     fam_idx = dlg.cmb_family.findData(family)
     if fam_idx >= 0:
         dlg.cmb_family.setCurrentIndex(fam_idx)   # fires _on_family_changed -> _sync_page
 
     try:
-        if family == "denoise":
+        if family == "studio":
+            dlg.page_studio.seed_from_preset(p)
+        elif family == "denoise":
             dlg.page_denoise.seed_from_preset(p)
         elif family == "sharpening":
             dlg.page_sharpen.seed_from_preset(p)

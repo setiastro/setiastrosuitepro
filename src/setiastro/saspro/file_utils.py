@@ -87,6 +87,11 @@ ALLOWED_BIT_DEPTHS = {
     "xisf": {"16-bit", "32-bit unsigned", "32-bit floating point"},
     "psb":  {"16-bit", "32-bit floating point"},
     "webp": {"8-bit"},
+    # SYQ Core 1 samples are u8 / u16 / f32 / f64. SASpro is float32-internal
+    # and has no 32-bit-unsigned or 64-bit-float export path, so we expose the
+    # three depths SASpro can actually produce; the reader still accepts f64
+    # files from Studio and downcasts to f32.
+    "syq":  {"8-bit", "16-bit", "32-bit floating point"},
 }
 
 WEBP_MAX_DIM = 16383

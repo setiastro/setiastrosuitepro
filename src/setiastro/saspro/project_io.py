@@ -737,7 +737,7 @@ class ProjectReader:
 
             # Defer to avoid racing with dock/MDI state changes during project open/close
             QTimer.singleShot(0, _do_restore)
-        print("UNDO LEN:", len(doc._undo), "REDO LEN:", len(doc._redo), "TOP:", doc._undo[-1] if doc._undo else None)    
+        #print("UNDO LEN:", len(doc._undo), "REDO LEN:", len(doc._redo), "TOP:", doc._undo[-1] if doc._undo else None)    
 
     # --- NEW: cache folder for extracted sources ------------------------------
     def _ensure_project_cache(self, project_path: str) -> str:
