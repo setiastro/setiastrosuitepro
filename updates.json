@@ -1,10 +1,10 @@
 {
-  "version": "1.21.8",
+  "version": "1.21.9",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.8/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.8/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.8/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.8/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.9/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.9/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.9/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.9/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.21.8\nStacking Suite updates for further speed improvements, advanced NB splitting option, gradient removal optimizations, and more. Other updates from contributor GRM for ram usage, HDU loading options in preferences, and updates to checkpoint saving. Further fixes in Plate Solver, View port, sfcc, and more."
+ "notes": "Seti Astro Suite Pro\n\nV1.21.9\nNew File Format: .syq and New SyQon Studio option in the SyQon Tools process to support the upcoming release of SyQon Studio.\n\nChanges in Stacking Suite to drive integration by data rows instead of tiled data improving the seek and read IO of integration dramatically.\n\nMany other under the hood adjustments for ram and speed optimizations and bug fixes."
 }
