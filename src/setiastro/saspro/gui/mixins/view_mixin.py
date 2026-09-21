@@ -1,4 +1,4 @@
-# pro/gui/mixins/view_mixin.py
+# saspro/gui/mixins/view_mixin.py
 """
 View management mixin for AstroSuiteProMainWindow.
 

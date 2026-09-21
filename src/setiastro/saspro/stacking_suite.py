@@ -2573,69 +2573,89 @@ def bytes_available():
     return int(vm.available * 0.9)
 
 
+# ──────────────────────────────────────────────────────────────────────────
+# ROW-BAND PROCESSING
+# ──────────────────────────────────────────────────────────────────────────
+# Integration no longer walks a 2D tile grid. A narrow (e.g. 256-wide) tile is
+# scattered on disk: one image row is contiguous, so a 256-wide tile is 256
+# discontiguous ~1 KB fragments per frame. That scatter is invisible on a slow
+# GPU (compute hides it) but starves a fast one — it drains the prefetch queue
+# and idles waiting on the reads. Instead we process FULL-WIDTH horizontal
+# bands (band_rows × image_width). A band is one contiguous run per frame, so
+# reads are sequential and OS read-ahead keeps even a 4090 fed.
+#
+# The only user knob is the band height ("Rows" in Settings); width is always
+# the image width. _BAND_MAX_PIXELS bounds band AREA so a very wide sensor (or
+# a large Rows value) can't build a band big enough to bog down the per-pixel
+# sort kernels in the rejection reducers — empirically bands past a few MPx
+# choke every GPU, the same way 2048×2048 tiles did.
+_BAND_MAX_PIXELS = 2_000_000          # safety ceiling on band_rows * width
+_PREFETCH_POOL_GUESS = 8              # ~PREFETCH_DEPTH+1 buffers in flight
+# Default band height (full-width rows). 16 keeps per-band pixel load close to
+# the old, proven 256x256 tile (~65 KPx), so it won't regress any GPU; raise to
+# 32/64 to trade more per-band GPU work for fewer, fatter passes. One knob.
+_DEFAULT_BAND_ROWS = 16
+# One-time settings migrations. Bump this when a stored value needs a forced
+# reset on next launch; the current bump (0 -> 1) re-homes the pre-band
+# chunk_height (a TILE height like 256/512/2048) onto a safe band height.
+_STACKING_SCHEMA_VERSION = 1
+
+def _band_shape(pref_rows, height, width):
+    """Resolve a full-width band shape.
+
+    Bands are ALWAYS the full image width; only the row count is tunable. The
+    requested pref_rows is clamped to the image height and to the compute-safety
+    pixel cap (_BAND_MAX_PIXELS). Returns (band_rows, image_width) so it is a
+    drop-in for the old (chunk_h, chunk_w) tuple — every downstream
+    `for x0 in range(0, width, chunk_w)` then yields a single full-width column.
+    """
+    width  = int(max(1, width))
+    height = int(max(1, height))
+    rows   = int(max(1, pref_rows))
+    cap_rows = max(1, _BAND_MAX_PIXELS // width)   # keep rows*width <= cap
+    rows = max(1, min(rows, height, cap_rows))
+    return rows, width
+
 def compute_safe_chunk(height, width, N, channels, dtype, pref_h, pref_w):
-    vm    = psutil.virtual_memory()
-    avail = vm.free * 0.9
-    bpe64 = np.dtype(dtype).itemsize      # 8 bytes
-    workers = os.cpu_count() or 1
+    """ROW-BAND MODE. pref_w is ignored — the band is always the full image
+    width. pref_h is the requested band height (the "Rows" setting); we shrink
+    it to fit host RAM for the prefetch buffer pool, then clamp via _band_shape
+    (image height + compute pixel cap). Returns (band_rows, image_width)."""
+    vm       = psutil.virtual_memory()
+    avail    = vm.free * 0.9
+    itemsize = np.dtype(dtype).itemsize
+    workers  = os.cpu_count() or 1
 
-    # budget *all* float64 copies (master + per-thread)
-    bytes_per_pixel = (N + workers) * channels * bpe64 / 2
-    max_pixels      = int(avail // bytes_per_pixel)
-    if max_pixels < 1:
-        raise MemoryError("Not enough RAM for even a 1×1 tile")
+    # Host-RAM cost of ONE full-width row across the working set: a handful of
+    # prefetch buffers (N frames each) plus per-thread scratch, counted at the
+    # integration dtype so we stay safe even when callers use float64.
+    pool          = N * _PREFETCH_POOL_GUESS + workers
+    bytes_per_row = max(1, pool * channels * itemsize * int(max(1, width)))
 
-    raw_side = int(math.sqrt(max_pixels))
-    # **shrink by √workers to be super-safe**
-    fudge    = int(math.sqrt(workers)) or 1
-    safe_side = max(1, raw_side // fudge)
+    ram_rows = int(avail // bytes_per_row)
+    if ram_rows < 1:
+        ram_rows = 1                      # _band_shape floors to 1 full-width row
 
-    # clamp to user prefs and image dims
-    ch = min(pref_h, height, safe_side)
-    cw = min(pref_w, width,  safe_side)
-
-    # final area clamp
-    if ch * cw > max_pixels // fudge**2:
-        # extra safety: adjust cw so area ≤ max_pixels/fudge²
-        cw = max(1, (max_pixels // (fudge**2)) // ch)
-
-    if ch < 1 or cw < 1:
-        raise MemoryError(f"Chunk too small after fudge: {ch}×{cw}")
-
-    return ch, cw
+    rows = min(int(pref_h), ram_rows)
+    return _band_shape(rows, height, width)
 
 def compute_safe_chunk_low_ram(height, width, N, channels, dtype, pref_h, pref_w):
-    """
-    Chunk budget for low-RAM seek mode.
-    Only needs to fit (N, th, tw, C) × 4 bytes in available RAM —
-    no full-file mappings held simultaneously.
-    """
+    """ROW-BAND MODE, low-RAM seek reader.
+
+    Same full-width-band contract as compute_safe_chunk. The seek reader holds
+    only a single (N, rows, width, C) stack buffer plus a little output headroom
+    (no simultaneous full-file mappings), so the row budget is looser. pref_w is
+    ignored; the band is always the full image width. Returns
+    (band_rows, image_width)."""
     vm    = psutil.virtual_memory()
     avail = int(vm.available * 0.75)
-    bpe   = 4  # float32 always
+    bpe   = 4  # float32 always in the seek path
 
-    # Stack buffer: N frames × th × tw × C × 4 bytes
-    # Plus 2× output headroom
-    bytes_per_tile_pixel = (N * channels + 2 * channels) * bpe
-    max_pixels = max(1, avail // bytes_per_tile_pixel)
+    bytes_per_row = max(1, (N * channels + 2 * channels) * bpe * int(max(1, width)))
+    ram_rows      = max(1, int(avail // bytes_per_row))
 
-    ch = min(pref_h, height)
-    cw = min(pref_w, width)
-
-    while ch > 1 and cw > 1 and ch * cw > max_pixels:
-        if ch >= cw:
-            ch = max(1, ch // 2)
-        else:
-            cw = max(1, cw // 2)
-
-    ch = max(1, min(ch, height))
-    cw = max(1, min(cw, width))
-
-    if ch * cw < 1:
-        raise MemoryError(
-            f"Not enough RAM for even a 1×1 tile (N={N}, C={channels})"
-        )
-    return ch, cw
+    rows = min(int(pref_h), ram_rows)
+    return _band_shape(rows, height, width)
 
 # ──────────────────────────────────────────────────────────────────────────
 # Disk-space estimation helpers (pre-flight checks for calibration / register /
@@ -4462,6 +4482,26 @@ class _MMImageSeek:
 
         plane_offset = data_start + channel_plane * full_height * full_width * bpp
         out = np.empty((th, tw), dtype=np.float32)
+
+        # Fast path: a full-width band is ONE contiguous run on disk, so pull
+        # the whole (th x full_width) block in a single seek + read instead of
+        # th per-row syscalls. (Consecutive rows are already back-to-back, so
+        # the per-row seeks below never move the head — but each still costs a
+        # syscall + allocation + byteswap.) The per-row loop stays for the
+        # legacy narrow-tile case, which really is strided on disk.
+        if x0 == 0 and tw == full_width:
+            fh.seek(plane_offset + y0 * full_width * bpp)
+            raw = fh.read(th * full_width * bpp)
+            usable = len(raw) - (len(raw) % bpp)
+            flat = np.frombuffer(raw[:usable], dtype=dtype).astype(np.float32)
+            n = flat.size
+            if n >= th * full_width:
+                return flat[:th * full_width].reshape(th, full_width)
+            # short read at EOF: fill what we got, zero-pad the remainder
+            flat_out = out.reshape(-1)          # view into out (C-contiguous)
+            flat_out[:n] = flat
+            flat_out[n:] = 0.0
+            return out
 
         for ri in range(th):
             row_idx = y0 + ri
@@ -6357,8 +6397,20 @@ class StackingSuiteDialog(QDialog):
         self.biweight_constant = self.settings.value("stacking/biweight_constant", 6.0, type=float)
         self.trim_fraction = self.settings.value("stacking/trim_fraction", 0.1, type=float)
         self.modz_threshold = self.settings.value("stacking/modz_threshold", 3.5, type=float)
-        self.chunk_height = self.settings.value("stacking/chunk_height", 2048, type=int)
-        self.chunk_width = self.settings.value("stacking/chunk_width", 2048, type=int)
+        # ── One-time migration to row-band processing ──────────────────────
+        # Pre-band builds stored chunk_height as a TILE height (256/512/2048 were
+        # fine as 2D tiles). In band mode the same number means FULL-WIDTH rows,
+        # so a stale 256 builds a 256xWidth band that hammers the GPU. Reset the
+        # stored height ONCE to a safe band default; the schema flag stops it from
+        # re-running, so a user's later choice is preserved.
+        if int(self.settings.value("stacking/settings_schema_version", 0, type=int)) < _STACKING_SCHEMA_VERSION:
+            self.settings.setValue("stacking/chunk_height", _DEFAULT_BAND_ROWS)
+            self.settings.setValue("stacking/chunk_width", 0)  # ignored (full width)
+            self.settings.setValue("stacking/settings_schema_version", _STACKING_SCHEMA_VERSION)
+            try: self.settings.sync()
+            except Exception: pass
+        self.chunk_height = self.settings.value("stacking/chunk_height", _DEFAULT_BAND_ROWS, type=int)
+        self.chunk_width = self.settings.value("stacking/chunk_width", 0, type=int)  # ignored: bands are always full image width
 
         # Dictionaries to store file paths
         self.conversion_files = {}
@@ -8026,8 +8078,8 @@ class StackingSuiteDialog(QDialog):
         kv = {
             # General
             "internal_dtype": "float32",
-            "chunk_height": 256,
-            "chunk_width": 256,
+            "chunk_height": _DEFAULT_BAND_ROWS,
+            "chunk_width": 0,
             "temp_group_step": 5.0,
 
             # Distortion / Transform
@@ -8391,19 +8443,28 @@ class StackingSuiteDialog(QDialog):
         fl_general.addRow(self.tr("Internal Precision:"), self.precision_combo)
 
 
-        # Chunk sizes
+        # Row-band height ("Rows"): integration runs in full-width horizontal
+        # bands, so only the band height is user-tunable. The old width control
+        # is forced to the image width at run time and hidden.
         self.chunkHeightSpinBox = QSpinBox()
-        self.chunkHeightSpinBox.setRange(32, 8192)
-        self.chunkHeightSpinBox.setValue(self.settings.value("stacking/chunk_height", 512, type=int))
+        self.chunkHeightSpinBox.setRange(8, 8192)
+        self.chunkHeightSpinBox.setValue(self.settings.value("stacking/chunk_height", _DEFAULT_BAND_ROWS, type=int))
+        self.chunkHeightSpinBox.setToolTip(self.tr(
+            "Number of image rows processed per pass. Each band spans the full "
+            "image width and is read contiguously from disk, which keeps fast "
+            "GPUs fed. Larger = fewer, bigger passes; very large bands are "
+            "capped internally so they don't overload the rejection kernels."
+        ))
+        # Width is always the full image width now. Keep the control for
+        # settings back-compat, but it is hidden and its value is never used.
         self.chunkWidthSpinBox = QSpinBox()
-        self.chunkWidthSpinBox.setRange(32, 8192)
-        self.chunkWidthSpinBox.setValue(self.settings.value("stacking/chunk_width", 512, type=int))
+        self.chunkWidthSpinBox.setRange(0, 65536)
+        self.chunkWidthSpinBox.setValue(self.settings.value("stacking/chunk_width", 0, type=int))
+        self.chunkWidthSpinBox.setVisible(False)
         hw_row = QHBoxLayout()
-        hw_row.addWidget(QLabel(self.tr("H:"))); hw_row.addWidget(self.chunkHeightSpinBox)
-        hw_row.addSpacing(8)
-        hw_row.addWidget(QLabel(self.tr("W:"))); hw_row.addWidget(self.chunkWidthSpinBox)
+        hw_row.addWidget(self.chunkHeightSpinBox)
         w_hw = QWidget(); w_hw.setLayout(hw_row)
-        fl_general.addRow(self.tr("Chunk Size:"), w_hw)
+        fl_general.addRow(self.tr("Rows per pass:"), w_hw)
 
         self.low_ram_safe_mode_cb = QCheckBox(self.tr("Low RAM Safe Mode"))
         self.low_ram_safe_mode_cb.setToolTip(self.tr(
@@ -15475,7 +15536,7 @@ class StackingSuiteDialog(QDialog):
             try:
                 chunk_h, chunk_w = compute_safe_chunk(H, W, N, C, DTYPE, pref_chunk_h, pref_chunk_w)
             except MemoryError:
-                chunk_h, chunk_w = pref_chunk_h, pref_chunk_w
+                chunk_h, chunk_w = _band_shape(pref_chunk_h, H, W)
 
             gk = (exposure_time, image_size, session, temp_bucket, gain, offset)
             group_shapes[gk] = (H, W, C, chunk_h, chunk_w)
@@ -15572,7 +15633,7 @@ class StackingSuiteDialog(QDialog):
                             height, width, N_tmp, channels, DTYPE, pref_chunk_h, pref_chunk_w
                         )
                     except MemoryError:
-                        chunk_height, chunk_width = pref_chunk_h, pref_chunk_w
+                        chunk_height, chunk_width = _band_shape(pref_chunk_h, height, width)
 
                 N = len(file_list)
 
@@ -16195,7 +16256,7 @@ class StackingSuiteDialog(QDialog):
                     H, W, N, C, DTYPE, pref_chunk_h, pref_chunk_w
                 )
             except MemoryError:
-                chunk_h, chunk_w = pref_chunk_h, pref_chunk_w
+                chunk_h, chunk_w = _band_shape(pref_chunk_h, H, W)
 
             group_shapes[(exposure_time, image_size, filter_name, session)] = (H, W, C, chunk_h, chunk_w)
             total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
@@ -16575,7 +16636,7 @@ class StackingSuiteDialog(QDialog):
                             pref_chunk_h, pref_chunk_w
                         )
                     except MemoryError:
-                        chunk_height, chunk_width = pref_chunk_h, pref_chunk_w
+                        chunk_height, chunk_width = _band_shape(pref_chunk_h, height, width)
 
                 channels = max(1, channels)
                 N = len(file_list)
@@ -21893,7 +21954,18 @@ class StackingSuiteDialog(QDialog):
                     return ("err", fp, f"{type(e).__name__}: {e}")
 
             measured_ok = False
-            if use_processes:
+            # One-shot worker preflight (spawns a single probe process that
+            # imports the scientific stack). If it can't, every real pool would
+            # BrokenProcessPool -> disable process pools for this run and log the
+            # fix. Cached, so measurement / ABE / registration all see the same
+            # decision. Registration reads it via star_alignment._make_executor.
+            try:
+                from setiastro.saspro.worker_env import check_process_pools, process_pools_ok as _pp_ok
+                check_process_pools(log_fn=self.update_status)
+            except Exception:
+                def _pp_ok():
+                    return True
+            if use_processes and _pp_ok():
                 try:
                     import multiprocessing as _mp
                     from setiastro.saspro.stacking_measure_worker import measure_file
@@ -22867,21 +22939,40 @@ class StackingSuiteDialog(QDialog):
                         # normalized frame so registration can find + warp it.
                         _carry_satmask_sidecar(fp, out_path, log_fn=self.update_status)
 
-                    # ---- Parallel poly2 ABE over the just-written _n frames ----
+                    # ---- poly2 ABE over the just-written _n frames ----
                     try:
-                        from setiastro.saspro.gradient_abe import run_abe_files_parallel
-                        _n_ok, _n_skip, _n_err = run_abe_files_parallel(
-                            _abe_paths,
-                            kw=dict(mode=mode, num_samples=samples, downsample=downsample,
-                                    patch_size=patch_size, min_strength=min_strength,
-                                    gain_clip=(gain_lo, gain_hi)),
-                            target_hw=getattr(self, "_norm_target_hw", None),
-                            log_fn=self.update_status,
-                        )
+                        from setiastro.saspro.gradient_abe import run_abe_files_parallel, abe_one_file
+                        try:
+                            from setiastro.saspro.worker_env import process_pools_ok as _pp_ok
+                            _abe_pp = _pp_ok()
+                        except Exception:
+                            _abe_pp = True
+                        _abe_kw = dict(mode=mode, num_samples=samples, downsample=downsample,
+                                       patch_size=patch_size, min_strength=min_strength,
+                                       gain_clip=(gain_lo, gain_hi))
+                        _abe_thw = getattr(self, "_norm_target_hw", None)
+                        if _abe_pp:
+                            _n_ok, _n_skip, _n_err = run_abe_files_parallel(
+                                _abe_paths, kw=_abe_kw, target_hw=_abe_thw,
+                                log_fn=self.update_status,
+                            )
+                        else:
+                            # Broken worker env: run ABE single-process (still
+                            # removes gradients, just not across cores).
+                            _n_ok = _n_skip = _n_err = 0
+                            for _i, _p in enumerate(_abe_paths, 1):
+                                _st, _pp, _er = abe_one_file((_p, _abe_kw, _abe_thw))
+                                if _st == "ok":
+                                    _n_ok += 1
+                                elif _st == "skip":
+                                    _n_skip += 1
+                                else:
+                                    _n_err += 1
+                                self.update_status(self.tr(f"🌈 ABE (1-proc) {_i}/{len(_abe_paths)}"))
                         self.update_status(self.tr(
                             f"Gradient removal complete: {_n_ok} ok, {_n_skip} skipped, {_n_err} error(s)."))
                     except Exception as _abe_e:
-                        self.update_status(self.tr(f"⚠️ ABE parallel pass failed: {_abe_e}"))
+                        self.update_status(self.tr(f"⚠️ ABE pass failed: {_abe_e}"))
                     QApplication.processEvents()
 
             # restore OpenCV threads
@@ -27439,6 +27530,7 @@ class StackingSuiteDialog(QDialog):
                 try: shutil.rmtree(tmp_root, ignore_errors=True)
                 except Exception: pass
 
+        reduce_maps = (not collect_per_file) and (not DEBUG_INTEGRATION_ONLY)
         _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
 
         with _ctx_instance:
@@ -27496,17 +27588,24 @@ class StackingSuiteDialog(QDialog):
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
                 if not DEBUG_INTEGRATION_ONLY:
-                    trm = np.asarray(tile_rej_map, dtype=bool)
-                    if trm.ndim == 4:
-                        trm = np.any(trm, axis=-1)
-                    rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                    rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+                    if isinstance(tile_rej_map, tuple):
+                        # GPU already reduced to (any-rejected, reject-count);
+                        # copy the two small (th,tw) maps straight in.
+                        tr_any, tr_cnt = tile_rej_map
+                        rej_any[y0:y1, x0:x1]   |= tr_any
+                        rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
+                    else:
+                        trm = np.asarray(tile_rej_map, dtype=bool)
+                        if trm.ndim == 4:
+                            trm = np.any(trm, axis=-1)
+                        rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
+                        rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                    if collect_per_file:
-                        for i, fpath in enumerate(file_list):
-                            m = trm[i]
-                            if np.any(m):
-                                per_file_rejections[fpath].append((x0, y0, m.copy()))
+                        if collect_per_file:
+                            for i, fpath in enumerate(file_list):
+                                m = trm[i]
+                                if np.any(m):
+                                    per_file_rejections[fpath].append((x0, y0, m.copy()))
 
                 dt = _time.perf_counter() - t0_tile
                 work_px = th * tw * len(file_list) * C
@@ -30025,7 +30124,7 @@ class StackingSuiteDialog(QDialog):
         pref_w = self.chunk_width
         try:
             chunk_h, chunk_w = compute_safe_chunk(height, width, N, channels, DTYPE, pref_h, pref_w)
-            log(f"🔧 Using chunk size {chunk_h}×{chunk_w} for {DTYPE}")
+            log(f"🔧 Row-band mode: {chunk_h} rows × {chunk_w}px full width ({DTYPE})")
         except MemoryError as e:
             for s in sources:
                 s.close()
@@ -30222,6 +30321,7 @@ class StackingSuiteDialog(QDialog):
                 try: cleanup_memmap(None, integrated_memmap_path)
                 except Exception: pass
 
+        reduce_maps = (not collect_per_file) and (not DEBUG_INTEGRATION_ONLY)
         _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
         with _ctx_instance:
             for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
@@ -30265,6 +30365,7 @@ class StackingSuiteDialog(QDialog):
                             comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
                             comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
                             forced_reject_mask_np=forced_mask_tile,
+                            reduce_rej_maps=reduce_maps,
                         )
                         if hasattr(tile_result, "detach"):
                             tile_result = tile_result.detach().cpu().numpy()
@@ -30281,17 +30382,24 @@ class StackingSuiteDialog(QDialog):
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
                 if not DEBUG_INTEGRATION_ONLY:
-                    trm = np.asarray(tile_rej_map, dtype=bool)
-                    if trm.ndim == 4:
-                        trm = np.any(trm, axis=-1)
-                    rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                    rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+                    if isinstance(tile_rej_map, tuple):
+                        # GPU already reduced to (any-rejected, reject-count);
+                        # copy the two small (th,tw) maps straight in.
+                        tr_any, tr_cnt = tile_rej_map
+                        rej_any[y0:y1, x0:x1]   |= tr_any
+                        rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
+                    else:
+                        trm = np.asarray(tile_rej_map, dtype=bool)
+                        if trm.ndim == 4:
+                            trm = np.any(trm, axis=-1)
+                        rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
+                        rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                    if collect_per_file:
-                        for i, fpath in enumerate(file_list):
-                            m = trm[i]
-                            if np.any(m):
-                                per_file_rejections[fpath].append((x0, y0, m.copy()))
+                        if collect_per_file:
+                            for i, fpath in enumerate(file_list):
+                                m = trm[i]
+                                if np.any(m):
+                                    per_file_rejections[fpath].append((x0, y0, m.copy()))
 
                 dt = time.perf_counter() - t0
                 work_px = th * tw * N * channels
@@ -30647,6 +30755,7 @@ class StackingSuiteDialog(QDialog):
                 try: cleanup_memmap(None, integrated_memmap_path)
                 except Exception: pass
 
+        reduce_maps = (not collect_per_file) and (not DEBUG_INTEGRATION_ONLY)
         _ctx_instance = (
             _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
         )
@@ -30684,6 +30793,7 @@ class StackingSuiteDialog(QDialog):
                             comet_hclip_p=float(self.settings.value(
                                 "stacking/comet_hclip_p", 25.0, type=float)),
                             forced_reject_mask_np=forced_mask_tile,
+                            reduce_rej_maps=reduce_maps,
                         )
                         if hasattr(tile_result, "detach"):
                             tile_result = tile_result.detach().cpu().numpy()
@@ -30703,17 +30813,24 @@ class StackingSuiteDialog(QDialog):
                 integrated_image[y0:y1, x0:x1, :] = tile_result
 
                 if not DEBUG_INTEGRATION_ONLY:
-                    trm = np.asarray(tile_rej_map, dtype=bool)
-                    if trm.ndim == 4:
-                        trm = np.any(trm, axis=-1)
-                    rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                    rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+                    if isinstance(tile_rej_map, tuple):
+                        # GPU already reduced to (any-rejected, reject-count);
+                        # copy the two small (th,tw) maps straight in.
+                        tr_any, tr_cnt = tile_rej_map
+                        rej_any[y0:y1, x0:x1]   |= tr_any
+                        rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
+                    else:
+                        trm = np.asarray(tile_rej_map, dtype=bool)
+                        if trm.ndim == 4:
+                            trm = np.any(trm, axis=-1)
+                        rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
+                        rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
 
-                    if collect_per_file:
-                        for i, fpath in enumerate(file_list):
-                            m = trm[i]
-                            if np.any(m):
-                                per_file_rejections[fpath].append((x0, y0, m.copy()))
+                        if collect_per_file:
+                            for i, fpath in enumerate(file_list):
+                                m = trm[i]
+                                if np.any(m):
+                                    per_file_rejections[fpath].append((x0, y0, m.copy()))
 
                 dt = time.perf_counter() - t0
                 work_px = th * tw * N * channels

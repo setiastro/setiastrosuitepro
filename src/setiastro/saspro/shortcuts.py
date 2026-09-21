@@ -42,6 +42,7 @@ OPENABLE_ENDINGS = (
     ".fits.gz", ".fit.gz", ".fz",
     ".xisf",
     ".psb",
+    ".syq",
     ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef",
 )
 
@@ -603,12 +604,13 @@ class DraggableToolBar(QToolBar):
 
 _PRESET_UI_IDS = {
     "stat_stretch","star_stretch","crop","curves","ghs","abe","graxpert",
-    "remove_stars","cosmic_clarity","cosmic","cosmicclarity","histogram_transform",
+    "remove_stars","cosmic_clarity","cosmic","cosmicclarity","histogram_transform","levels",
     "convo","convolution","deconvolution","convo_deconvo",
     "linear_fit","wavescale_hdr","wavescale_dark_enhance","wavescale_dark_enhancer",
     "remove_green","star_align","background_neutral","white_balance","clahe",
     "morphology","pixel_math","rgb_align","signature_insert","signature_adder",
     "signature","halo_b_gon","geom_rescale","rescale","debayer","image_combine","geom_resize_canvas",
+    "resize_canvas","canvas_resize","texture_clarity","aberrationai",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
     "satchroma","fx","unwarp","pedestal","cosmetic_correction",
     "export_fits","plate_solve",
@@ -1827,8 +1829,16 @@ class ShortcutManager:
 
                 self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid)
 
-                # If you also inline per-instance presets for normal shortcuts,
-                # you can restore them here as well (omitted here for brevity).
+                # Restore the inlined per-instance preset (written by
+                # _collect_live_items on export) so a .sass round-trip keeps it.
+                pr = it.get("preset")
+                if isinstance(pr, dict) and pr:
+                    w = self.widgets.get(sid)
+                    if w and not _is_dead(w):
+                        try:
+                            w._save_preset(pr)
+                        except Exception:
+                            pass
 
             # Persist shortcuts to QSettings
             self.save_shortcuts()
@@ -2513,6 +2523,7 @@ class ShortcutManager:
         self.selected.clear()
         self.settings.setValue(SET_KEY_V2, "[]")
         self.settings.remove(SET_KEY_V1)
+        self.settings.remove("presets/shortcuts")   # whole per-instance subtree
         self.settings.sync()
         try:
             self.canvas.update()  # nudge repaint
@@ -2571,6 +2582,11 @@ class ShortcutManager:
                 w.deleteLater()
             except RuntimeError:
                 pass
+        # drop the per-instance preset so it doesn't linger in QSettings forever
+        try:
+            self.settings.remove(f"presets/shortcuts/{sid}")
+        except Exception:
+            pass
         if persist:
             self._allow_empty_save = True
             try:
@@ -3285,11 +3301,13 @@ class _TextureClarityPresetDialog(QDialog):
 class _SyQonToolsPresetDialog(QDialog):
     """
     Preset editor for command_id="syqontools"
- 
+
     Families:
-      sclass _SyQonToolsPresetDialog(QDialog):tarless   — model kind + temp stretch
-      denoise    — Prism Mini/Deep + all Prism settings
-      sharpening — Parallax: correction, star reduction, sharpen strength
+      studio     — SyQon Studio neural CLI (all models: Prism / Parallax /
+                   Axiom / Deep Gradient) — the consolidated path
+      starless   — (legacy) model kind + temp stretch
+      denoise    — (legacy) Prism Mini/Deep + all Prism settings
+      sharpening — (legacy) Parallax: correction, star reduction, sharpen strength
     """
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
@@ -3301,18 +3319,169 @@ class _SyQonToolsPresetDialog(QDialog):
  
         # ── Family ──
         self.cmb_family = QComboBox(self)
-        self.cmb_family.addItem("Starless",            "starless")
-        self.cmb_family.addItem("Denoise",             "denoise")
-        self.cmb_family.addItem("Sharpening (Parallax)", "sharpening")
+        self.cmb_family.addItem("Studio (all models)",   "studio")
+        self.cmb_family.addItem("Starless (legacy)",     "starless")
+        self.cmb_family.addItem("Denoise (legacy)",      "denoise")
+        self.cmb_family.addItem("Sharpening (legacy)",   "sharpening")
  
-        fam0 = str(init.get("family", "starless") or "starless").strip().lower()
+        fam0 = str(init.get("family", "studio") or "studio").strip().lower()
         idx  = self.cmb_family.findData(fam0)
         if idx < 0: idx = 0
         self.cmb_family.setCurrentIndex(idx)
         form.addRow("Tool family:", self.cmb_family)
  
         lay.addLayout(form)
- 
+
+        # ── Studio group (SyQon Studio neural CLI) ──
+        # Single source of truth for the model list; fall back to a static copy
+        # if the module can't be imported at editor-open time.
+        try:
+            from setiastro.saspro.syqon_studio import STUDIO_MODELS as _SM, studio_family_for as _sff
+            self._studio_fam = {m[0]: m[3] for m in _SM}
+            _studio_choices = [(m[0], m[1]) for m in _SM]
+        except Exception:
+            _studio_choices = [
+                ("prism-essential", "Prism Essential — Denoise"),
+                ("prism-advanced",  "Prism Deep Advanced — Denoise"),
+                ("prism-ultra",     "Prism Deep Ultra — Denoise"),
+                ("prism-max",       "Prism Deep Max — Denoise"),
+                ("prism-legacy-v1", "Prism Legacy V1 — Denoise"),
+                ("prism-legacy-v2", "Prism Legacy V2 — Denoise"),
+                ("parallax",        "Parallax — Correct / Reduce / Deblur"),
+                ("axiom",           "Axiom V3 — Starless"),
+                ("deep-gradient",   "Deep Gradient — Gradient removal"),
+            ]
+            self._studio_fam = {
+                "prism-essential": "prism", "prism-advanced": "prism", "prism-ultra": "prism",
+                "prism-max": "prism", "prism-legacy-v1": "prism", "prism-legacy-v2": "prism",
+                "parallax": "parallax", "axiom": "axiom", "deep-gradient": "deep-gradient",
+            }
+
+        self.grp_studio = QGroupBox("SyQon Studio Preset", self)
+        fst = QFormLayout(self.grp_studio)
+
+        self.cmb_studio_model = QComboBox(self)
+        for _mid, _label in _studio_choices:
+            self.cmb_studio_model.addItem(_label, userData=_mid)
+        _sm0 = str(init.get("studio_model", "prism-essential") or "prism-essential").strip()
+        _smi = self.cmb_studio_model.findData(_sm0)
+        self.cmb_studio_model.setCurrentIndex(max(0, _smi))
+        fst.addRow("Model:", self.cmb_studio_model)
+
+        self.cmb_studio_domain = QComboBox(self)
+        self.cmb_studio_domain.addItem("Auto (read metadata)", userData="auto")
+        self.cmb_studio_domain.addItem("Linear", userData="linear")
+        self.cmb_studio_domain.addItem("Non-linear", userData="nonlinear")
+        _sd = self.cmb_studio_domain.findData(str(init.get("studio_domain", "auto") or "auto").lower())
+        self.cmb_studio_domain.setCurrentIndex(max(0, _sd))
+        fst.addRow("Input domain:", self.cmb_studio_domain)
+
+        self.spin_studio_tile = QSpinBox(self)
+        self.spin_studio_tile.setRange(256, 2048); self.spin_studio_tile.setSingleStep(64)
+        self.spin_studio_tile.setValue(int(init.get("studio_tile", 512)))
+        fst.addRow("Tile size:", self.spin_studio_tile)
+
+        self.spin_studio_overlap = QSpinBox(self)
+        self.spin_studio_overlap.setRange(0, 512)
+        self.spin_studio_overlap.setValue(int(init.get("studio_overlap", 64)))
+        fst.addRow("Overlap:", self.spin_studio_overlap)
+
+        self.spin_studio_app = QDoubleSpinBox(self)
+        self.spin_studio_app.setRange(0.0, 1.0); self.spin_studio_app.setDecimals(2)
+        self.spin_studio_app.setSingleStep(0.05)
+        self.spin_studio_app.setValue(float(init.get("studio_application", 1.0)))
+        self.spin_studio_app.setToolTip("Prism only: blends the inferred result with the original (0..1).")
+        self.lbl_studio_app = QLabel("Application (blend):", self)
+        fst.addRow(self.lbl_studio_app, self.spin_studio_app)
+
+        # Parallax sub-controls
+        self.cmb_studio_px_family = QComboBox(self)
+        self.cmb_studio_px_family.addItem("Aesthetics", userData="aesthetics")
+        self.cmb_studio_px_family.addItem("Classic", userData="classic")
+        _pf = self.cmb_studio_px_family.findData(str(init.get("studio_px_family", "aesthetics") or "aesthetics").lower())
+        self.cmb_studio_px_family.setCurrentIndex(max(0, _pf))
+        self.row_studio_px_family_lbl = QLabel("Parallax family:", self)
+        fst.addRow(self.row_studio_px_family_lbl, self.cmb_studio_px_family)
+
+        self.chk_studio_px_correct = QCheckBox("Stellar correction / defect repair", self)
+        self.chk_studio_px_correct.setChecked(bool(init.get("studio_px_correct", True)))
+        fst.addRow("", self.chk_studio_px_correct)
+
+        _red = QWidget(self); _redl = QHBoxLayout(_red); _redl.setContentsMargins(0, 0, 0, 0)
+        self.chk_studio_px_reduce = QCheckBox("Star reduction", self)
+        self.chk_studio_px_reduce.setChecked(bool(init.get("studio_px_reduce", True)))
+        self.spin_studio_px_reduce = QSpinBox(self); self.spin_studio_px_reduce.setRange(0, 10)
+        self.spin_studio_px_reduce.setValue(int(init.get("studio_px_reduce_level", 5)))
+        self.spin_studio_px_reduce.setFixedWidth(56)
+        _redl.addWidget(self.chk_studio_px_reduce); _redl.addWidget(QLabel("level:", self))
+        _redl.addWidget(self.spin_studio_px_reduce); _redl.addStretch(1)
+        fst.addRow("", _red)
+
+        _deb = QWidget(self); _debl = QHBoxLayout(_deb); _debl.setContentsMargins(0, 0, 0, 0)
+        self.chk_studio_px_deblur = QCheckBox("Deblur (deconvolution)", self)
+        self.chk_studio_px_deblur.setChecked(bool(init.get("studio_px_deblur", True)))
+        self.spin_studio_px_deblur = QDoubleSpinBox(self); self.spin_studio_px_deblur.setRange(0.0, 1.0)
+        self.spin_studio_px_deblur.setDecimals(2); self.spin_studio_px_deblur.setSingleStep(0.05)
+        self.spin_studio_px_deblur.setValue(float(init.get("studio_px_deblur_strength", 0.5)))
+        self.spin_studio_px_deblur.setFixedWidth(64)
+        _debl.addWidget(self.chk_studio_px_deblur); _debl.addWidget(QLabel("strength:", self))
+        _debl.addWidget(self.spin_studio_px_deblur); _debl.addStretch(1)
+        fst.addRow("", _deb)
+
+        # Axiom sub-controls
+        self.cmb_studio_ax_stretch = QComboBox(self)
+        self.cmb_studio_ax_stretch.addItem("Auto", userData="auto")
+        self.cmb_studio_ax_stretch.addItem("Identity (already stretched)", userData="identity")
+        self.cmb_studio_ax_stretch.addItem("Custom", userData="custom")
+        _ax = self.cmb_studio_ax_stretch.findData(str(init.get("studio_ax_stretch", "auto") or "auto").lower())
+        self.cmb_studio_ax_stretch.setCurrentIndex(max(0, _ax))
+        self.row_studio_ax_stretch_lbl = QLabel("Axiom stretch:", self)
+        fst.addRow(self.row_studio_ax_stretch_lbl, self.cmb_studio_ax_stretch)
+
+        _axc = QWidget(self); _axcl = QHBoxLayout(_axc); _axcl.setContentsMargins(0, 0, 0, 0)
+        self.spin_studio_ax_black = QDoubleSpinBox(self); self.spin_studio_ax_black.setRange(0.0, 1.0)
+        self.spin_studio_ax_black.setDecimals(4); self.spin_studio_ax_black.setSingleStep(0.001)
+        self.spin_studio_ax_black.setValue(float(init.get("studio_ax_black", 0.0)))
+        self.spin_studio_ax_mid = QDoubleSpinBox(self); self.spin_studio_ax_mid.setRange(0.0, 1.0)
+        self.spin_studio_ax_mid.setDecimals(4); self.spin_studio_ax_mid.setSingleStep(0.001)
+        self.spin_studio_ax_mid.setValue(float(init.get("studio_ax_mid", 0.25)))
+        self.spin_studio_ax_white = QDoubleSpinBox(self); self.spin_studio_ax_white.setRange(0.0, 1.0)
+        self.spin_studio_ax_white.setDecimals(4); self.spin_studio_ax_white.setSingleStep(0.001)
+        self.spin_studio_ax_white.setValue(float(init.get("studio_ax_white", 1.0)))
+        for _cap, _sp in (("black", self.spin_studio_ax_black), ("mid", self.spin_studio_ax_mid), ("white", self.spin_studio_ax_white)):
+            _axcl.addWidget(QLabel(_cap, self)); _axcl.addWidget(_sp)
+        _axcl.addStretch(1)
+        self.row_studio_ax_custom = _axc
+        self.row_studio_ax_custom_lbl = QLabel("Custom points:", self)
+        fst.addRow(self.row_studio_ax_custom_lbl, _axc)
+
+        self.chk_studio_ax_stars = QCheckBox("Also create a Stars-Only document", self)
+        self.chk_studio_ax_stars.setChecked(bool(init.get("studio_ax_make_stars", True)))
+        fst.addRow("", self.chk_studio_ax_stars)
+
+        # Deep Gradient sub-control
+        self.chk_studio_dg_gradient = QCheckBox("Also create the extracted-gradient document", self)
+        self.chk_studio_dg_gradient.setChecked(bool(init.get("studio_dg_make_gradient", False)))
+        fst.addRow("", self.chk_studio_dg_gradient)
+
+        lay.addWidget(self.grp_studio)
+
+        # keep a list of every studio widget so we can toggle the whole group
+        self._studio_widgets = [
+            self.cmb_studio_model, self.cmb_studio_domain, self.spin_studio_tile,
+            self.spin_studio_overlap, self.spin_studio_app, self.lbl_studio_app,
+            self.cmb_studio_px_family, self.row_studio_px_family_lbl,
+            self.chk_studio_px_correct, self.chk_studio_px_reduce, self.spin_studio_px_reduce,
+            self.chk_studio_px_deblur, self.spin_studio_px_deblur,
+            self.cmb_studio_ax_stretch, self.row_studio_ax_stretch_lbl,
+            self.row_studio_ax_custom, self.row_studio_ax_custom_lbl,
+            self.chk_studio_ax_stars, self.chk_studio_dg_gradient,
+        ]
+        self.cmb_studio_model.currentIndexChanged.connect(self._studio_sync)
+        self.cmb_studio_ax_stretch.currentIndexChanged.connect(self._studio_sync)
+        self.chk_studio_px_reduce.toggled.connect(lambda on: self.spin_studio_px_reduce.setEnabled(on))
+        self.chk_studio_px_deblur.toggled.connect(lambda on: self.spin_studio_px_deblur.setEnabled(on))
+
         # ── Starless group ──
         self.grp_starless = QGroupBox("Starless Preset", self)
         fs = QFormLayout(self.grp_starless)
@@ -3488,16 +3657,73 @@ class _SyQonToolsPresetDialog(QDialog):
         self._sync_visibility()
  
     def _sync_visibility(self):
-        fam = str(self.cmb_family.currentData() or "starless")
+        fam = str(self.cmb_family.currentData() or "studio")
+        self.grp_studio.setVisible(fam == "studio")
         self.grp_starless.setVisible(fam == "starless")
         self.grp_prism.setVisible(fam == "denoise")
         self.grp_parallax.setVisible(fam == "sharpening")
+        if fam == "studio":
+            self._studio_sync()
+
+    def _studio_sync(self):
+        """Enable only the sub-controls relevant to the selected Studio model."""
+        mid = str(self.cmb_studio_model.currentData() or "prism-essential")
+        fam = self._studio_fam.get(mid, "prism")
+
+        is_prism = (fam == "prism")
+        is_parallax = (fam == "parallax")
+        is_axiom = (fam == "axiom")
+        is_gradient = (fam == "deep-gradient")
+
+        # Application: Prism only. Tile/overlap: Prism + Parallax.
+        self.lbl_studio_app.setVisible(is_prism)
+        self.spin_studio_app.setVisible(is_prism)
+        self.spin_studio_tile.setEnabled(is_prism or is_parallax)
+        self.spin_studio_overlap.setEnabled(is_prism or is_parallax)
+
+        for w in (self.cmb_studio_px_family, self.row_studio_px_family_lbl,
+                  self.chk_studio_px_correct, self.chk_studio_px_reduce,
+                  self.spin_studio_px_reduce, self.chk_studio_px_deblur,
+                  self.spin_studio_px_deblur):
+            w.setVisible(is_parallax)
+        # keep the reduction/deblur amount enable-state honest even when shown
+        self.spin_studio_px_reduce.setEnabled(is_parallax and self.chk_studio_px_reduce.isChecked())
+        self.spin_studio_px_deblur.setEnabled(is_parallax and self.chk_studio_px_deblur.isChecked())
+
+        for w in (self.cmb_studio_ax_stretch, self.row_studio_ax_stretch_lbl,
+                  self.row_studio_ax_custom, self.row_studio_ax_custom_lbl,
+                  self.chk_studio_ax_stars):
+            w.setVisible(is_axiom)
+        self.row_studio_ax_custom.setEnabled(
+            is_axiom and self.cmb_studio_ax_stretch.currentData() == "custom"
+        )
+
+        self.chk_studio_dg_gradient.setVisible(is_gradient)
  
     def result_dict(self) -> dict:
         return {
-            "family":   str(self.cmb_family.currentData() or "starless"),
+            "family":   str(self.cmb_family.currentData() or "studio"),
             "auto_run": True,
- 
+
+            # Studio (SyQon neural CLI)
+            "studio_model":             str(self.cmb_studio_model.currentData() or "prism-essential"),
+            "studio_domain":            str(self.cmb_studio_domain.currentData() or "auto"),
+            "studio_tile":              int(self.spin_studio_tile.value()),
+            "studio_overlap":           int(self.spin_studio_overlap.value()),
+            "studio_application":       float(self.spin_studio_app.value()),
+            "studio_px_family":         str(self.cmb_studio_px_family.currentData() or "aesthetics"),
+            "studio_px_correct":        bool(self.chk_studio_px_correct.isChecked()),
+            "studio_px_reduce":         bool(self.chk_studio_px_reduce.isChecked()),
+            "studio_px_reduce_level":   int(self.spin_studio_px_reduce.value()),
+            "studio_px_deblur":         bool(self.chk_studio_px_deblur.isChecked()),
+            "studio_px_deblur_strength": float(self.spin_studio_px_deblur.value()),
+            "studio_ax_stretch":        str(self.cmb_studio_ax_stretch.currentData() or "auto"),
+            "studio_ax_black":          float(self.spin_studio_ax_black.value()),
+            "studio_ax_mid":            float(self.spin_studio_ax_mid.value()),
+            "studio_ax_white":          float(self.spin_studio_ax_white.value()),
+            "studio_ax_make_stars":     bool(self.chk_studio_ax_stars.isChecked()),
+            "studio_dg_make_gradient":  bool(self.chk_studio_dg_gradient.isChecked()),
+
             # Starless
             "starless_model_kind":        str(self.cmb_starless_model.currentData() or "nadir"),
             "starless_use_mtf":           bool(self.chk_starless_mtf.isChecked()),
@@ -4311,13 +4537,36 @@ class _DebayerPresetDialog(QDialog):
 
 #src/setiastro/saspro/shortcuts.py
 
-from setiastro.saspro.curves_preset import list_custom_presets, _norm_mode
+from setiastro.saspro.curves_preset import (
+    list_custom_presets, _norm_mode,
+    _unwrap_preset_dict, _coerce_modes_dict, _is_linear_points_norm,
+    _shape_points_norm, _MODE_KEY_TO_LABEL, _LABEL_TO_MODE_KEY,
+)
 
 class _CurvesPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)
         self.setWindowTitle("Curves — Preset")
         init = dict(initial or {})
+        init = _unwrap_preset_dict(init)          # peel {"preset": {...}} etc.
+        self._original = dict(init)
+        self._is_multi = (init.get("kind") == "curves_multi"
+                        or isinstance(init.get("modes"), dict))
+        if self._is_multi:
+            self._modes = _coerce_modes_dict(init.get("modes", {}))
+            ak = str(init.get("active") or "K")
+            if ak not in self._modes and self._modes:
+                ak = next(iter(self._modes))
+            self._active_key = ak
+            pts = self._modes.get(ak) or [(0.0, 0.0), (1.0, 1.0)]
+            init = {                              # drive the widgets from the real data
+                "mode":  _MODE_KEY_TO_LABEL.get(ak, "K (Brightness)"),
+                "shape": "linear" if _is_linear_points_norm(pts) else "custom",
+                "amount": 1.0,
+                "points_norm": pts,
+            }
+        else:
+            self._modes, self._active_key = None, None
 
         # --- Mode ---------------------------------------------------------
         self.mode = QComboBox()
@@ -4463,18 +4712,33 @@ class _CurvesPresetDialog(QDialog):
         return out
 
     def result_dict(self) -> dict:
-        mode  = _norm_mode(self.mode.currentText())
+        mode_label = _norm_mode(self.mode.currentText())
         shape = self.shape.currentData() or "linear"
         amt   = float(self.amount.value())
-        d = {"mode": mode, "shape": shape, "amount": amt}
+
+        if self._is_multi:
+            pts = (self._parse_points_text() or [(0.0, 0.0), (1.0, 1.0)]) \
+                if shape == "custom" else _shape_points_norm(shape, amt)
+            modes = dict(self._modes or {})
+            modes[_LABEL_TO_MODE_KEY.get(mode_label, "K")] = \
+                [(float(x), float(y)) for (x, y) in pts]
+            out = dict(self._original)        # keep kind/version/other channels
+            out.update({
+                "kind": "curves_multi", "version": 2,
+                "active": _LABEL_TO_MODE_KEY.get(mode_label, "K"),
+                "modes": {k: [list(p) for p in v] for k, v in modes.items()},
+            })
+            for k in ("mode", "shape", "amount", "points_norm"):
+                out.pop(k, None)
+            return out
+
+        d = {"mode": mode_label, "shape": shape, "amount": amt}
         if shape == "custom":
             pts = self._parse_points_text()
-            if pts:
-                d["points_norm"] = pts
-            else:
-                d["shape"] = "linear"
-                d.pop("points_norm", None)
+            if pts: d["points_norm"] = pts
+            else:   d["shape"] = "linear"; d.pop("points_norm", None)
         return d
+
 class _GHSPresetDialog(QDialog):
     def __init__(self, parent=None, initial: dict | None = None):
         super().__init__(parent)

@@ -577,10 +577,11 @@ class FileMixin:
         # One-stop "All Supported" plus focused groups the user can switch to
         filters = (
             "All Supported (*.png *.jpg *.jpeg *.webp *.tif *.tiff "
-            "*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf *.pdf "
+            "*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf *.syq *.pdf "
             "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.psb);;"
             "PDF (*.pdf);;"
-            "Astro (FITS/XISF) (*.xisf *.fits *.fit *.fts *.fits.gz *.fit.gz *.fz);;"
+            "Astro (FITS/XISF/SYQ) (*.xisf *.syq *.fits *.fit *.fts *.fits.gz *.fit.gz *.fz);;"
+            "SYQ (SyQon) (*.syq);;"
             "RAW Images (*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
             "Photoshop Documents (*.psb);;"
             "Common Images (*.png *.jpg *.jpeg *.webp *.tif *.tiff);;"
@@ -616,7 +617,18 @@ class FileMixin:
                     if p.lower().endswith(".pdf"):
                         self._open_pdf(p)
                         continue
-                    _ = self.docman.open_path(p)
+                    _syq_busy = (
+                        self._show_bundle_busy("Unpacking and Opening Bundled File...")
+                        if p.lower().endswith(".syq") else None
+                    )
+                    try:
+                        _ = self.docman.open_path(p)
+                    finally:
+                        if _syq_busy is not None:
+                            try:
+                                _syq_busy.close()
+                            except Exception:
+                                pass
                     self._log(f"Opened: {p}")
                     self._add_recent_image(p)
 
@@ -639,6 +651,34 @@ class FileMixin:
                 self._mdi_end_open_batch()
             except Exception:
                 pass
+
+    def _show_bundle_busy(self, text: str = "Unpacking and Opening Bundled File..."):
+        """
+        Indeterminate busy popup shown while a bundled container (.syq) is
+        unpacked and its image layers are opened — same idiom as the project
+        load/save dialog. Returns the QProgressDialog (call .close() when done),
+        or None if it couldn't be created. A processEvents() forces it to paint
+        before the (synchronous) open blocks the event loop.
+        """
+        try:
+            dlg = QProgressDialog(self.tr(text), "", 0, 0, self)
+            dlg.setWindowTitle(self.tr("Opening"))
+            try:
+                dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+            except AttributeError:
+                dlg.setWindowModality(Qt.ApplicationModal)  # PyQt5 fallback
+            try:
+                dlg.setCancelButton(None)
+            except TypeError:
+                dlg.setCancelButtonText("")
+            dlg.setMinimumDuration(0)
+            dlg.setAutoClose(False)
+            dlg.setAutoReset(False)
+            dlg.show()
+            QApplication.processEvents()
+            return dlg
+        except Exception:
+            return None
 
     def _open_pdf(self, path: str):
         try:
@@ -717,6 +757,7 @@ class FileMixin:
         filters = (
             "FITS (*.fits *.fit);;"
             "XISF (*.xisf);;"
+            "SYQ (SyQon) (*.syq);;"
             "TIFF (*.tif *.tiff);;"
             "PNG (*.png);;"
             "JPEG (*.jpg *.jpeg);;"
@@ -1067,7 +1108,7 @@ class FileMixin:
         """
         Save active document directly in a specific format,
         pre-populating the file dialog with the right extension.
-        fmt: 'fits', 'xisf', 'tiff', 'png', 'jpeg', 'webp', 'psb'
+        fmt: 'fits', 'xisf', 'syq', 'tiff', 'png', 'jpeg', 'webp', 'psb'
         """
         from setiastro.saspro.main_helpers import (
             best_doc_name as _best_doc_name,
@@ -1082,6 +1123,7 @@ class FileMixin:
         fmt_map = {
             "fits":  ("FITS (*.fits *.fit)",              ".fits"),
             "xisf":  ("XISF (*.xisf)",                   ".xisf"),
+            "syq":   ("SYQ (SyQon) (*.syq)",             ".syq"),
             "tiff":  ("TIFF (*.tif *.tiff)",              ".tiff"),
             "png":   ("PNG (*.png)",                      ".png"),
             "jpeg":  ("JPEG (*.jpg *.jpeg)",              ".jpg"),
@@ -1098,6 +1140,7 @@ class FileMixin:
         all_filters = [
             "FITS (*.fits *.fit)",
             "XISF (*.xisf)",
+            "SYQ (SyQon) (*.syq)",
             "TIFF (*.tif *.tiff)",
             "PNG (*.png)",
             "JPEG (*.jpg *.jpeg)",

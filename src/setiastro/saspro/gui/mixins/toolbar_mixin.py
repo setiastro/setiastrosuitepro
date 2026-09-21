@@ -91,6 +91,7 @@ class ToolbarMixin:
             save_menu = QMenu(btn_save)
             save_menu.addAction(self.act_save_fits)
             save_menu.addAction(self.act_save_xisf)
+            save_menu.addAction(self.act_save_syq)
             save_menu.addAction(self.act_save_tiff)
             save_menu.addAction(self.act_save_png)
             save_menu.addAction(self.act_save_jpeg)
@@ -655,6 +656,7 @@ class ToolbarMixin:
                 save_menu = QMenu(btn_save)
                 save_menu.addAction(self.act_save_fits)
                 save_menu.addAction(self.act_save_xisf)
+                save_menu.addAction(self.act_save_syq)
                 save_menu.addAction(self.act_save_tiff)
                 save_menu.addAction(self.act_save_png)
                 save_menu.addAction(self.act_save_jpeg)
@@ -789,6 +791,7 @@ class ToolbarMixin:
         # Save As format submenu actions
         self.act_save_fits  = QAction(self.tr("FITS (.fits)"),  self)
         self.act_save_xisf  = QAction(self.tr("XISF (.xisf)"),  self)
+        self.act_save_syq   = QAction(self.tr("SYQ (.syq)"),    self)
         self.act_save_tiff  = QAction(self.tr("TIFF (.tiff)"),  self)
         self.act_save_png   = QAction(self.tr("PNG (.png)"),    self)
         self.act_save_jpeg  = QAction(self.tr("JPEG (.jpg)"),   self)
@@ -797,6 +800,7 @@ class ToolbarMixin:
 
         self.act_save_fits.triggered.connect(lambda: self.save_active_as_format("fits"))
         self.act_save_xisf.triggered.connect(lambda: self.save_active_as_format("xisf"))
+        self.act_save_syq.triggered.connect(lambda:  self.save_active_as_format("syq"))
         self.act_save_tiff.triggered.connect(lambda: self.save_active_as_format("tiff"))
         self.act_save_png.triggered.connect(lambda:  self.save_active_as_format("png"))
         self.act_save_jpeg.triggered.connect(lambda: self.save_active_as_format("jpeg"))

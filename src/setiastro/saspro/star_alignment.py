@@ -126,6 +126,16 @@ def _make_executor(max_workers: int):
     # Frozen builds re-exec the EXE per worker, so they use processes only once
     # freeze_support() is wired in the entry AND _ALIGN_USE_PROCS_FROZEN is True.
     use_procs = (not _IS_FROZEN) or _ALIGN_USE_PROCS_FROZEN
+    # A broken worker environment (NumPy/SciPy mismatch, or two mixed Python
+    # envs on Windows) makes spawned workers die on import (BrokenProcessPool),
+    # which would leave registration reporting 0 succeeded and aborting the
+    # whole stack. Fall back to threads so registration still completes.
+    try:
+        from setiastro.saspro.worker_env import process_pools_ok
+        if not process_pools_ok():
+            use_procs = False
+    except Exception:
+        pass
     if use_procs:
         try:
             _ctx = multiprocessing.get_context("spawn")   # matches frozen + Qt-safe
