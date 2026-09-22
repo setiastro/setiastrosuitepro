@@ -236,6 +236,7 @@ import contextlib
 
 from setiastro.saspro.gaia_downloader import GaiaSpectraDB, CalibratedSpectrum
 from setiastro.saspro.gaia_downloader import download_xp_spectra_only, ensure_saspro_spcc_dirs
+from setiastro.saspro.async_task import run_async_blocking
 
 def _get_sfcc_gaia_tap():
     """
@@ -1900,8 +1901,13 @@ class SFCCDialog(QDialog):
                     self.count_label.setText(msg)
                 QApplication.processEvents()
 
-                job = Gaia.launch_job_async(adql, dump_to_file=False)
-                tab = job.get_results()
+                def _gaia_tap_query():
+                    _job = Gaia.launch_job_async(adql, dump_to_file=False)
+                    return _job.get_results()
+                tab = run_async_blocking(
+                    _gaia_tap_query, parent=self, title="SFCC",
+                    label="Querying Gaia archive…", cancellable=False,
+                )
 
                 self._last_gaia_query_ok = True
                 self._last_gaia_query_error = None
