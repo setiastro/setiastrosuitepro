@@ -23956,12 +23956,14 @@ class StackingSuiteDialog(QDialog):
                     rgb_hwc = self._nb_rgb_hwc(arr, layout)
 
                 if A_nb is not None and rgb_hwc is not None:
-                    from setiastro.saspro.nbextract import extract_channels_nnls
-                    # Pure linear NNLS: no stretch, no raw-prior Q-blend, so the planes
-                    # stay linear for normalise/reject/integrate. Averaging N frames
-                    # beats down the NNLS noise amplification; low-Q bleed would be
-                    # correlated across frames and would NOT average away.
-                    line1, line2 = extract_channels_nnls(rgb_hwc, A_nb)
+                    from setiastro.saspro.nbextract import extract_channels_regularized
+                    # Conditioning-aware Q-blend (q*NNLS + (1-q)*raw prior) — the same
+                    # regularisation NBExtract uses, kept LINEAR (no stretch / unity
+                    # rescale) for normalise/reject/integrate. Pure NNLS was too
+                    # aggressive: it amplifies noise (esp. the faint line) and widens
+                    # the sigma-clip thresholds, hurting rejection. Q auto-derives from
+                    # the matrix conditioning (auto_q_per_channel).
+                    line1, line2 = extract_channels_regularized(rgb_hwc, A_nb)
                     self._write_band_fit(p1, line1, hdr, band1, src_filter=filt)
                     self._write_band_fit(p2, line2, hdr, band2, src_filter=filt)
                     # Matrix-mixed -> no single source plane. chan=None keeps the
