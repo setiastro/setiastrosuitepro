@@ -100,6 +100,7 @@ from setiastro.saspro.dnd_mime import (
 from setiastro.saspro.shortcuts import _unpack_cmd_payload
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
 from setiastro.saspro.imageops.viewport_render import resize_for_display, to_uint8_rgb
+from setiastro.saspro.imageops.viewport_canvas import ViewportImageCanvas
 
 
 __all__ = ["ImageSubWindow", "TableSubWindow"]
@@ -832,7 +833,20 @@ class ImageSubWindow(QWidget):
         self.scroll = QScrollArea(full_host)
         self.scroll.setWidgetResizable(False)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)        
-        self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        try:
+            from PyQt6.QtCore import QSettings as _QSettings
+            import os as _os
+            self._use_viewport_canvas = (
+                _os.environ.get("SASPRO_VIEWPORT_CANVAS", "").lower() in ("1", "true", "yes", "on")
+                or bool(_QSettings().value("display/viewport_canvas", False, type=bool))
+            )
+        except Exception:
+            self._use_viewport_canvas = False
+
+        if self._use_viewport_canvas:
+            self.label = ViewportImageCanvas(self, alignment=Qt.AlignmentFlag.AlignCenter)
+        else:
+            self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.scroll.setWidget(self.label)
         self.scroll.viewport().setMouseTracking(True)
         self.label.setMouseTracking(True)        
@@ -975,9 +989,10 @@ class ImageSubWindow(QWidget):
 
         # Snap everyone to the initiator’s transform immediately
         try:
-            s, h, v = self._current_transform()
+            s = float(self.scale)
+            fx, fy = self._viewport_center_fraction()
             for peer in merged - {self}:
-                peer.set_view_transform(s, h, v, from_link=True)
+                peer.apply_linked_center(s, fx, fy, from_link=True)
         except Exception:
             pass
 
@@ -1000,12 +1015,68 @@ class ImageSubWindow(QWidget):
     def _relay_to_linked(self, scale: float, h: int, v: int):
         """
         When this view pans/zooms, nudge all linked peers. Guarded to avoid loops.
+
+        Resolution-independent: forward the image point currently under THIS
+        view's viewport centre as a fraction of the (scaled) image, plus the
+        scale. Each peer re-derives its own scrollbars from that fraction using
+        its own viewport, so linked windows no longer have to share a size.
         """
+        try:
+            fx, fy = self._viewport_center_fraction()
+        except Exception:
+            return
+        s = float(scale)
         for peer in list(self._linked_views):
             try:
-                peer.set_view_transform(scale, h, v, from_link=True)
+                peer.apply_linked_center(s, fx, fy, from_link=True)
             except Exception:
                 pass
+
+    def _viewport_center_fraction(self):
+        """(fx, fy) in [0, 1]: the image fraction under this view's viewport
+        centre. Uses Qt's label->viewport mapping, so it is correct whether the
+        image is larger than the viewport (scrollbars active) or smaller (centred
+        by AlignCenter), and whether or not the 8192 render cap is in force
+        (fractions are relative to this view's own label)."""
+        vp = self.scroll.viewport()
+        lbl = self.label
+        p = lbl.mapFrom(vp, QPoint(vp.width() // 2, vp.height() // 2))
+        lw = max(1, lbl.width())
+        lh = max(1, lbl.height())
+        fx = min(1.0, max(0.0, p.x() / float(lw)))
+        fy = min(1.0, max(0.0, p.y() / float(lh)))
+        return float(fx), float(fy)
+
+    def apply_linked_center(self, scale, fx, fy, from_link=True):
+        """Resolution-independent linked-view apply: match *scale*, then place the
+        image fraction (fx, fy) at this view's OWN viewport centre. Peers need not
+        share window size or zoom-cap state with the sender. Replaces the old
+        raw-scrollbar set_view_transform() path for links."""
+        self._suppress_link_emit = True
+        try:
+            scale = float(max(self._min_scale, min(float(scale), self._max_scale)))
+            if abs(scale - self.scale) > 1e-9:
+                self.scale = scale
+                self._render(rebuild=False)   # fast present; resizes label synchronously
+                self._update_zoom_label()
+                self._request_zoom_redraw()
+
+            vp = self.scroll.viewport()
+            lbl = self.label
+            lx = float(fx) * float(lbl.width())
+            ly = float(fy) * float(lbl.height())
+
+            hbar = self.scroll.horizontalScrollBar()
+            vbar = self.scroll.verticalScrollBar()
+            new_h = int(round(lx - vp.width() * 0.5))
+            new_v = int(round(ly - vp.height() * 0.5))
+            hbar.setValue(max(hbar.minimum(), min(new_h, hbar.maximum())))
+            vbar.setValue(max(vbar.minimum(), min(new_v, vbar.maximum())))
+        finally:
+            self._suppress_link_emit = False
+
+        if not from_link:
+            self._schedule_emit_view_transform()
 
     def _set_link_badge(self, on: bool):
         self._link_badge_on = bool(on)
@@ -1828,21 +1899,24 @@ class ImageSubWindow(QWidget):
         else:
             return None
 
-        pm = self.label.pixmap()
-        if pm is None:
-            return None
-
         # Convert viewport pos → label pos
         p_label = self.label.mapFrom(self.scroll.viewport(), vp_pos)
 
-        # Account for centering offset when image is smaller than viewport
-        pm_w = pm.width()
-        pm_h = pm.height()
-        lbl_w = self.label.width()
-        lbl_h = self.label.height()
-
-        off_x = max(0, (lbl_w - pm_w) // 2)
-        off_y = max(0, (lbl_h - pm_h) // 2)
+        if isinstance(self.label, ViewportImageCanvas):
+            # Canvas is full-sized and self-centring: no pixmap-centring offset.
+            pm_w, pm_h = int(self.label.width()), int(self.label.height())
+            off_x = off_y = 0
+        else:
+            pm = self.label.pixmap()
+            if pm is None:
+                return None
+            # Account for centering offset when image is smaller than viewport
+            pm_w = pm.width()
+            pm_h = pm.height()
+            lbl_w = self.label.width()
+            lbl_h = self.label.height()
+            off_x = max(0, (lbl_w - pm_w) // 2)
+            off_y = max(0, (lbl_h - pm_h) // 2)
 
         px = p_label.x() - off_x
         py = p_label.y() - off_y
@@ -1871,6 +1945,19 @@ class ImageSubWindow(QWidget):
     def sizeHint(self) -> QSize:
         lbl = getattr(self, "image_label", None) or getattr(self, "label", None)
         sa  = getattr(self, "scroll_area", None) or self.findChild(QScrollArea)
+        if isinstance(lbl, ViewportImageCanvas):
+            fw_, fh_ = lbl.full_size()
+            if fw_ > 1 and fh_ > 1:
+                lm = lbl.contentsMargins()
+                w = int(fw_) + lm.left() + lm.right()
+                h = int(fh_) + lm.top() + lm.bottom()
+                if sa:
+                    fw = sa.frameWidth(); w += fw * 2; h += fw * 2
+                m = self.contentsMargins()
+                w += m.left() + m.right() + 2
+                h += m.top()  + m.bottom() + 20
+                return QSize(w + 2, h + 8)
+            return super().sizeHint()
         if lbl and hasattr(lbl, "pixmap") and lbl.pixmap() and not lbl.pixmap().isNull():
             pm = lbl.pixmap()
             dpr  = pm.devicePixelRatioF() if hasattr(pm, "devicePixelRatioF") else 1.0
@@ -2991,6 +3078,17 @@ class ImageSubWindow(QWidget):
         - includes current zoom scale + pan position (viewport crop)
         - works for Full tab and Preview tabs (because _pm_src is built from active source)
         """
+        if isinstance(self.label, ViewportImageCanvas):
+            vp = self.scroll.viewport()
+            hbar = self.scroll.horizontalScrollBar()
+            vbar = self.scroll.verticalScrollBar()
+            x = max(0, int(hbar.value()))
+            y = max(0, int(vbar.value()))
+            w = max(1, min(int(vp.width()), int(self.label.width()) - x))
+            h = max(1, min(int(vp.height()), int(self.label.height()) - y))
+            grab = self.label.grab(QRect(x, y, w, h))
+            return None if grab.isNull() else grab.toImage()
+
         # Make sure we have something rendered
         pm = getattr(self, "_pm_src", None)
         if pm is None or pm.isNull():
@@ -3279,6 +3377,146 @@ class ImageSubWindow(QWidget):
         rebuild = False  # done
 
 
+    def _current_display_source(self):
+        """The array currently on display: preview ROI array, display override,
+        else the document image. Mirrors _render()'s source selection so the
+        canvas rasterizes exactly what _render() would."""
+        try:
+            if self._active_source_kind == "preview" and self._active_preview_id is not None:
+                src = next((p for p in self._previews if p["id"] == self._active_preview_id), None)
+                return None if src is None else src.get("arr", None)
+            if getattr(self, "_display_override", None) is not None:
+                return self._display_override
+            doc = getattr(self, "document", None)
+            return getattr(doc, "image", None) if doc is not None else None
+        except Exception:
+            return None
+
+    def _present_viewport_canvas(self):
+        """Size the canvas to the FULL (uncapped) scaled image so scroll ranges
+        are correct, then repaint. Pixels are produced per-viewport in
+        ViewportImageCanvas.paintEvent -> _rasterize_widget_rect(); no
+        full-resolution pixmap is ever built here."""
+        arr = self._current_display_source()
+        if arr is None:
+            try:
+                self.label.clear()
+            except Exception:
+                pass
+            return
+        a = np.asarray(arr)
+        if a.ndim == 3 and a.shape[-1] == 1:
+            a = a[..., 0]
+        if a.ndim not in (2, 3):
+            return
+        src_h, src_w = int(a.shape[0]), int(a.shape[1])
+        scale = float(getattr(self, "scale", 1.0) or 1.0)
+        full_w = max(1, int(round(src_w * scale)))
+        full_h = max(1, int(round(src_h * scale)))
+        self.label.request_full_size(full_w, full_h)
+
+    def _rasterize_widget_rect(self, wx, wy, ww, wh):
+        """Rasterize ONLY the widget rectangle (wx, wy, ww, wh) at true scale.
+
+        Returns (QImage, ox, oy): the image is drawn at widget offset (ox, oy),
+        which is snapped to whole source pixels for exact alignment (it may sit
+        <= scale px left/above the requested rect; QPainter clips the overhang).
+        Reuses the autostretch LUT cached by _render(), so the stretch matches
+        the overview. Cost is O(viewport), with no per-side cap.
+        """
+        arr = self._current_display_source()
+        if arr is None:
+            return None
+        a = np.asarray(arr)
+        if a.ndim == 3 and a.shape[-1] == 1:
+            a = a[..., 0]
+        if a.ndim not in (2, 3):
+            return None
+        is_mono = (a.ndim == 2)
+        src_h, src_w = int(a.shape[0]), int(a.shape[1])
+        scale = float(getattr(self, "scale", 1.0) or 1.0)
+
+        # Widget rect -> integer source crop (snapped outward to whole pixels).
+        sx = max(0, min(int(np.floor(wx / scale)), src_w - 1))
+        sy = max(0, min(int(np.floor(wy / scale)), src_h - 1))
+        sx2 = max(sx + 1, min(int(np.ceil((wx + ww) / scale)), src_w))
+        sy2 = max(sy + 1, min(int(np.ceil((wy + wh) / scale)), src_h))
+        crop_w = sx2 - sx
+        crop_h = sy2 - sy
+
+        # Output size = crop rendered at scale; offset = crop origin at scale.
+        ox = int(round(sx * scale))
+        oy = int(round(sy * scale))
+        out_w = max(1, int(round(crop_w * scale)))
+        out_h = max(1, int(round(crop_h * scale)))
+
+        # Float view for the stretch/convert path (mirror _render dtype handling).
+        vis_src = a
+        if np.issubdtype(a.dtype, np.integer):
+            info = np.iinfo(a.dtype)
+            vis_src = a.astype(np.float32) / float(max(1, info.max))
+        elif not np.issubdtype(a.dtype, np.floating):
+            vis_src = a.astype(np.float32, copy=False)
+
+        small = resize_for_display(
+            vis_src, out_w, out_h,
+            src_x=sx, src_y=sy, src_w=crop_w, src_h=crop_h,
+        )
+
+        lut = getattr(self, "_autostretch_lut_cache", None)
+        if getattr(self, "autostretch_enabled", False) and lut is not None:
+            try:
+                vis = apply_autostretch_lut(
+                    small.astype(np.float32, copy=False),
+                    lut,
+                    linked=(not is_mono and getattr(self, "_autostretch_linked", False)),
+                )
+            except Exception:
+                vis = small
+        else:
+            vis = small
+
+        buf8 = to_uint8_rgb(vis)
+
+        # Mask overlay, baked over the same source crop (parity with _render()).
+        if getattr(self, "show_mask_overlay", False):
+            try:
+                m = self._active_mask_array()
+            except Exception:
+                m = None
+            if m is not None:
+                m = np.asarray(m)
+                if getattr(self, "_mask_overlay_invert", True):
+                    m = 1.0 - m
+                mc = m[sy:sy2, sx:sx2]
+                th, tw = buf8.shape[:2]
+                sh2, sw2 = mc.shape[:2]
+                if sh2 > 0 and sw2 > 0:
+                    if (sh2, sw2) != (th, tw):
+                        yi = np.linspace(0, sh2 - 1, th).astype(np.int32)
+                        xi = np.linspace(0, sw2 - 1, tw).astype(np.int32)
+                        mc = mc[yi][:, xi]
+                    ov = mc.astype(np.float32, copy=False) * float(getattr(self, "_mask_overlay_alpha", 0.35))
+                    bf = buf8.astype(np.float32, copy=False)
+                    bf[..., 0] = np.clip(bf[..., 0] + (255.0 - bf[..., 0]) * ov, 0.0, 255.0)
+                    buf8 = bf.astype(np.uint8, copy=False)
+
+        if buf8.dtype != np.uint8:
+            buf8 = buf8.astype(np.uint8)
+        buf8 = ensure_contiguous(buf8)
+        h, w = int(buf8.shape[0]), int(buf8.shape[1])
+        try:
+            qimg = QImage(buf8.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
+            if qimg.isNull():
+                return None
+        except Exception:
+            return None
+        try:
+            qimg = tag_qimage_with_working_color_space(qimg)
+        except Exception:
+            pass
+        return qimg, ox, oy
+
     def _present_scaled(self, interactive: bool):
         """
         Present the cached source pixmap scaled to current self.scale.
@@ -3290,6 +3528,12 @@ class ImageSubWindow(QWidget):
         - Smooth scaling
         - Optionally draw WCS overlay once
         """
+        if isinstance(self.label, ViewportImageCanvas):
+            # Viewport-crop path: size the canvas and let paintEvent rasterize
+            # only what's visible. (WCS-grid bake is not ported to this path yet.)
+            self._present_viewport_canvas()
+            return
+
         if getattr(self, "_pm_src", None) is None:
             return
 
@@ -3306,7 +3550,18 @@ class ImageSubWindow(QWidget):
             mode = Qt.TransformationMode.FastTransformation
         else:
             mode = Qt.TransformationMode.SmoothTransformation
-        pm_scaled = pm_base.scaled(sw, sh, Qt.AspectRatioMode.KeepAspectRatio, mode)
+
+        # Memoise the scaled pixmap. _render() calls _present_scaled twice
+        # (interactive then settle) and the WCS re-present hits the same scale,
+        # so this skips redundant full-image QPixmap.scaled() calls. The key
+        # includes pm_base.cacheKey(), so a rebuilt _pm_src invalidates it for free.
+        _pkey = (pm_base.cacheKey(), int(sw), int(sh), mode)
+        _pc = getattr(self, "_present_scaled_cache", None)
+        if _pc is not None and _pc[0] == _pkey:
+            pm_scaled = _pc[1]
+        else:
+            pm_scaled = pm_base.scaled(sw, sh, Qt.AspectRatioMode.KeepAspectRatio, mode)
+            self._present_scaled_cache = (_pkey, pm_scaled)
 
         # If interactive, skip WCS overlay entirely (this is the biggest speed win)
         if interactive:
@@ -3558,8 +3813,20 @@ class ImageSubWindow(QWidget):
         new_h = int(round(x_label_post - anchor_vp.x()))
         new_v = int(round(y_label_post - anchor_vp.y()))
 
-        new_h = max(hbar.minimum(), min(new_h, hbar.maximum()))
-        new_v = max(vbar.minimum(), min(new_v, vbar.maximum()))
+        # The scroll area updates its scrollbar ranges from the just-resized label
+        # only on a deferred layout pass, so hbar/vbar max/min may still hold the
+        # PRE-zoom range here. Setting the value against the stale range clamps it
+        # wrong and the view jumps toward a corner once the range catches up.
+        # Refresh the range from the label's synchronously-updated size first.
+        max_h = max(0, int(self.label.width())  - int(vp.width()))
+        max_v = max(0, int(self.label.height()) - int(vp.height()))
+        hbar.setRange(0, max_h)
+        vbar.setRange(0, max_v)
+        hbar.setPageStep(int(vp.width()))
+        vbar.setPageStep(int(vp.height()))
+
+        new_h = max(0, min(new_h, max_h))
+        new_v = max(0, min(new_v, max_v))
 
         hbar.setValue(new_h)
         vbar.setValue(new_v)
@@ -3599,6 +3866,11 @@ class ImageSubWindow(QWidget):
         display scale instead of 1:1. It is deliberately independent of the
         smooth-zoom-settle *interpolation* preference.
         """
+        if isinstance(self.label, ViewportImageCanvas):
+            # The viewport canvas always paints at true 1:1 for the current zoom;
+            # there is no under-resolved pixmap to rebuild, so skip the settle.
+            return False
+
         pm = getattr(self, "_pm_src", None)
         if pm is None or pm.isNull():
             return False
@@ -3683,7 +3955,7 @@ class ImageSubWindow(QWidget):
         if self._zoom_settle_needs_rebuild():
             self._show_recalc_overlay()
 
-        self._zoom_timer.start(180)
+        self._zoom_timer.start(500)
 
 
     def _apply_zoom_redraw(self):
@@ -3883,19 +4155,21 @@ class ImageSubWindow(QWidget):
         Convert a point in viewport coordinates to FULL image pixel coordinates.
         Returns None if the point is outside the displayed pixmap (in margins).
         """
-        pm = self.label.pixmap()
-        if pm is None:
-            return None
-
         # Convert viewport point into label coordinates
         p_label = self.label.mapFrom(self.scroll.viewport(), vp_pos)
 
-        # If label is larger than pixmap, pixmap may be centered inside label.
-        pm_w, pm_h = pm.width(), pm.height()
-        lbl_w, lbl_h = self.label.width(), self.label.height()
-
-        off_x = max(0, (lbl_w - pm_w) // 2)
-        off_y = max(0, (lbl_h - pm_h) // 2)
+        if isinstance(self.label, ViewportImageCanvas):
+            pm_w, pm_h = int(self.label.width()), int(self.label.height())
+            off_x = off_y = 0
+        else:
+            pm = self.label.pixmap()
+            if pm is None:
+                return None
+            # If label is larger than pixmap, pixmap may be centered inside label.
+            pm_w, pm_h = pm.width(), pm.height()
+            lbl_w, lbl_h = self.label.width(), self.label.height()
+            off_x = max(0, (lbl_w - pm_w) // 2)
+            off_y = max(0, (lbl_h - pm_h) // 2)
 
         px = p_label.x() - off_x
         py = p_label.y() - off_y
@@ -4423,10 +4697,18 @@ class ImageSubWindow(QWidget):
 
         if self._dragging:
             delta = e.pos() - self._drag_start
-            self.scroll.horizontalScrollBar().setValue(self.scroll.horizontalScrollBar().value() - delta.x())
-            self.scroll.verticalScrollBar().setValue(self.scroll.verticalScrollBar().value() - delta.y())
+            hbar = self.scroll.horizontalScrollBar()
+            vbar = self.scroll.verticalScrollBar()
+            # Coalesce the pan into a SINGLE linked emit. Previously each of the
+            # two setValue() calls fired the scroll-changed slot -> emit, plus the
+            # explicit emit below: up to 3 relays to every peer per mouse-move.
+            self._suppress_link_emit = True
+            try:
+                hbar.setValue(hbar.value() - delta.x())
+                vbar.setValue(vbar.value() - delta.y())
+            finally:
+                self._suppress_link_emit = False
             self._drag_start = e.pos()
-            # live emit happens via _on_scroll_changed(), but this is a nice extra nudge:
             self._emit_view_transform_now()
             return
 
