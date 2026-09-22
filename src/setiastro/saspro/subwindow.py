@@ -101,6 +101,7 @@ from setiastro.saspro.shortcuts import _unpack_cmd_payload
 from setiastro.saspro.widgets.image_utils import ensure_contiguous
 from setiastro.saspro.imageops.viewport_render import resize_for_display, to_uint8_rgb
 from setiastro.saspro.imageops.viewport_canvas import ViewportImageCanvas
+from setiastro.saspro.imageops.tiled_canvas import TiledImageCanvas
 
 
 __all__ = ["ImageSubWindow", "TableSubWindow"]
@@ -844,7 +845,7 @@ class ImageSubWindow(QWidget):
             self._use_viewport_canvas = False
 
         if self._use_viewport_canvas:
-            self.label = ViewportImageCanvas(self, alignment=Qt.AlignmentFlag.AlignCenter)
+            self.label = TiledImageCanvas(self, alignment=Qt.AlignmentFlag.AlignCenter)
         else:
             self.label = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
         self.scroll.setWidget(self.label)
@@ -3358,6 +3359,8 @@ class ImageSubWindow(QWidget):
 
         # Cache pixmap at the current display scale (not 1:1 source pixels)
         self._pm_src = QPixmap.fromImage(self._qimg_src)
+        if isinstance(self.label, ViewportImageCanvas):
+            self.label.invalidate()   # LUT/data changed -> drop cached tiles + proxy
         self._pm_src_scale = float(scale)
         # Remember the TRUE source dimensions this pixmap was built from, so the
         # zoom-settle can tell when the cached pixmap is under-resolved for the
@@ -3413,7 +3416,7 @@ class ImageSubWindow(QWidget):
         scale = float(getattr(self, "scale", 1.0) or 1.0)
         full_w = max(1, int(round(src_w * scale)))
         full_h = max(1, int(round(src_h * scale)))
-        self.label.request_full_size(full_w, full_h)
+        self.label.request_full_size(full_w, full_h, src_w, src_h)
 
     def _rasterize_widget_rect(self, wx, wy, ww, wh):
         """Rasterize ONLY the widget rectangle (wx, wy, ww, wh) at true scale.
@@ -3516,6 +3519,82 @@ class ImageSubWindow(QWidget):
         except Exception:
             pass
         return qimg, ox, oy
+
+    def _render_source_tile(self, sx, sy, sw, sh):
+        """Source-resolution RGB of a tile (sx, sy, sw, sh), LUT + mask applied,
+        with NO geometric scaling -- TiledImageCanvas scales cached tiles on
+        blit. Same stretch/mask path as _rasterize_widget_rect, minus the resize.
+        Returns a QImage (or None)."""
+        arr = self._current_display_source()
+        if arr is None:
+            return None
+        a = np.asarray(arr)
+        if a.ndim == 3 and a.shape[-1] == 1:
+            a = a[..., 0]
+        if a.ndim not in (2, 3):
+            return None
+        is_mono = (a.ndim == 2)
+        H, W = int(a.shape[0]), int(a.shape[1])
+        sx = max(0, int(sx)); sy = max(0, int(sy))
+        sw = max(1, min(int(sw), W - sx)); sh = max(1, min(int(sh), H - sy))
+        sx2 = sx + sw; sy2 = sy + sh
+        crop = a[sy:sy2, sx:sx2]
+
+        vis = crop.astype(np.float32, copy=False)
+        if np.issubdtype(a.dtype, np.integer):
+            info = np.iinfo(a.dtype)
+            vis = crop.astype(np.float32) / float(max(1, info.max))
+
+        lut = getattr(self, "_autostretch_lut_cache", None)
+        if getattr(self, "autostretch_enabled", False) and lut is not None:
+            try:
+                vis = apply_autostretch_lut(
+                    vis, lut,
+                    linked=(not is_mono and getattr(self, "_autostretch_linked", False)),
+                )
+            except Exception:
+                pass
+
+        buf8 = to_uint8_rgb(vis)
+
+        # Mask overlay over the same source crop (parity with _render()).
+        if getattr(self, "show_mask_overlay", False):
+            try:
+                m = self._active_mask_array()
+            except Exception:
+                m = None
+            if m is not None:
+                m = np.asarray(m)
+                if getattr(self, "_mask_overlay_invert", True):
+                    m = 1.0 - m
+                mc = m[sy:sy2, sx:sx2]
+                th, tw = buf8.shape[:2]
+                sh2, sw2 = mc.shape[:2]
+                if sh2 > 0 and sw2 > 0:
+                    if (sh2, sw2) != (th, tw):
+                        yi = np.linspace(0, sh2 - 1, th).astype(np.int32)
+                        xi = np.linspace(0, sw2 - 1, tw).astype(np.int32)
+                        mc = mc[yi][:, xi]
+                    ov = mc.astype(np.float32, copy=False) * float(getattr(self, "_mask_overlay_alpha", 0.35))
+                    bf = buf8.astype(np.float32, copy=False)
+                    bf[..., 0] = np.clip(bf[..., 0] + (255.0 - bf[..., 0]) * ov, 0.0, 255.0)
+                    buf8 = bf.astype(np.uint8, copy=False)
+
+        if buf8.dtype != np.uint8:
+            buf8 = buf8.astype(np.uint8)
+        buf8 = ensure_contiguous(buf8)
+        h, w = int(buf8.shape[0]), int(buf8.shape[1])
+        try:
+            qimg = QImage(buf8.tobytes(), w, h, w * 3, QImage.Format.Format_RGB888)
+            if qimg.isNull():
+                return None
+        except Exception:
+            return None
+        try:
+            qimg = tag_qimage_with_working_color_space(qimg)
+        except Exception:
+            pass
+        return qimg
 
     def _present_scaled(self, interactive: bool):
         """
