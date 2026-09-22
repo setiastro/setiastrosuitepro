@@ -104,7 +104,7 @@ class MenuMixin:
         m_save_as = m_file.addMenu(self.tr("Save As Format"))
         m_save_as.addAction(self.act_save_fits)
         m_save_as.addAction(self.act_save_xisf)
-        m_save_as.addAction(self.act_save_syq)
+        #m_save_as.addAction(self.act_save_syq)
         m_save_as.addAction(self.act_save_tiff)
         m_save_as.addAction(self.act_save_png)
         m_save_as.addAction(self.act_save_jpeg)

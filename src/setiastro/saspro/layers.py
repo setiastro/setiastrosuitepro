@@ -19,14 +19,15 @@ BLEND_MODES = [
     "Color Dodge",
     "Color Burn",
     "Pin Light",
-    "Add",
-    "Lighten",
-    "Darken",
-    "Difference",
-    "Difference (Squared)",
-    "Relativistic Addition",
+    "Add",    "Relativistic Addition",
+    "Subtract", "Divide",    
+    "Lighten", "Darken", "Lighter Color", "Darker Color",
+    "Difference", "Difference (Squared)", "Exclusion", "Negation",
+    "Grain Extract", "Grain Merge",
+    "Average", "Geometric Mean",
+
     "Sigmoid",
-    "Luminosity",
+    "Luminosity", "Color",
 ]
 
 
@@ -457,6 +458,62 @@ def _apply_mode(base: np.ndarray, src: np.ndarray, layer: ImageLayer) -> np.ndar
             blend=1.0,
             highlight_soft_knee=0.0,
         )
+    
+    if mode == "Subtract":                      # gradient/pedestal/synthetic-flat removal
+        return np.clip(base - src, 0.0, 1.0)
+
+    if mode == "Divide":                         # flat-fielding / illumination correction
+        eps = 1e-6
+        return np.clip(base / np.maximum(src, eps), 0.0, 1.0)
+
+    if mode == "Linear Burn":
+        return np.clip(base + src - 1.0, 0.0, 1.0)
+
+    if mode == "Linear Light":
+        return np.clip(base + 2.0 * src - 1.0, 0.0, 1.0)
+
+    if mode == "Vivid Light":
+        eps = 1e-6
+        burn  = 1.0 - (1.0 - base) / np.maximum(2.0 * src, eps)
+        dodge = base / np.maximum(2.0 * (1.0 - src), eps)
+        return np.clip(np.where(src <= 0.5, burn, dodge), 0.0, 1.0)
+
+    if mode == "Exclusion":                      # softer Difference
+        return base + src - 2.0 * base * src
+
+    if mode == "Negation":                       # "bright difference" — equal pixels → white
+        return 1.0 - np.abs(1.0 - base - src)
+
+    if mode == "Grain Extract":                  # great for building/visualizing gradient models
+        return np.clip(base - src + 0.5, 0.0, 1.0)
+
+    if mode == "Grain Merge":                    # re-add an extracted grain/gradient layer
+        return np.clip(base + src - 0.5, 0.0, 1.0)
+
+    if mode == "Average":
+        return 0.5 * (base + src)
+
+    if mode == "Geometric Mean":                 # sits between Multiply and Average
+        return np.sqrt(np.clip(base * src, 0.0, 1.0))
+
+    if mode == "Lighter Color":                  # luminance-based whole-pixel max
+        lb = _luminance01(base)[..., None]
+        ls = _luminance01(src)[..., None]
+        return np.where(ls >= lb, src, base)
+
+    if mode == "Darker Color":                   # luminance-based whole-pixel min
+        lb = _luminance01(base)[..., None]
+        ls = _luminance01(src)[..., None]
+        return np.where(ls <= lb, src, base)
+
+    if mode == "Color":                          # chrominance of src onto luminance of base
+        # Linear recombine, to mirror your existing "Luminosity". They're inverses:
+        # Luminosity keeps base's color + src's luma; Color keeps base's luma + src's color.
+        eps = 1e-6
+        lb = _luminance01(base)[..., None]
+        ls = _luminance01(src)[..., None]
+        return np.clip(src * (lb / np.maximum(ls, eps)), 0.0, 1.0)
+
     # Normal
     return src
 

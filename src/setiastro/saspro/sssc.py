@@ -169,6 +169,7 @@ from PyQt6.QtCore import QEventLoop
 
 # ── SASpro internals
 from setiastro.saspro.main_helpers import non_blocking_sleep
+from setiastro.saspro.async_task import run_async_blocking
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
 # astroquery.gaia is imported lazily — see _get_sssc_gaia_tap() below.
 # Importing it at module level triggers a network connection to the ESA
@@ -2721,12 +2722,17 @@ class SSSCDialog(QDialog):
         simbad_result = None
         if ok:
             Simbad.ROW_LIMIT = 10000
+            Simbad.TIMEOUT = 30   # bound a hung query; retry loop + off-thread wrap handle the rest
             for attempt in range(1, 6):
                 try:
                     _sfcc_status(self,
                         f"Querying SIMBAD for spectral types (attempt {attempt}/5)…")
                     QApplication.processEvents()
-                    simbad_result = Simbad.query_region(center_sky, radius=radius)
+                    simbad_result = run_async_blocking(
+                        Simbad.query_region, center_sky, radius=radius,
+                        parent=self, title="SSSC",
+                        label="Querying SIMBAD…", cancellable=False,
+                    )
                     break
                 except Exception:
                     QApplication.processEvents(); non_blocking_sleep(1.2)
