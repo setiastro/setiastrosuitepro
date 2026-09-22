@@ -679,51 +679,71 @@ def cosmetic_correction_gpu(
 
             flagged = hot_map | cold_map
 
-            # 8 neighbors at stride s
-            offsets = [
-                (-s, -s), (-s,  0), (-s, +s),
-                ( 0, -s),           ( 0, +s),
-                (+s, -s), (+s,  0), (+s, +s),
-            ]
+            # --- START OPTIMIZED SPARSE PROCESSING ---
+            # 1. Find the 1D coordinates of the bad pixels
+            fy, fx = torch.where(flagged)
+            
+            # Default state is the original uncorrected plane
+            result[ci] = plane.clone()
 
-            flagged_pad = torch.nn.functional.pad(
-                flagged.float().unsqueeze(0).unsqueeze(0),
-                (s, s, s, s), mode='reflect'
-            ).squeeze().bool()
+            # Only do the heavy math if we actually found bad pixels
+            if len(fy) > 0:
+                # 8 neighbors at stride s
+                offsets = [
+                    (-s, -s), (-s,  0), (-s, +s),
+                    ( 0, -s),           ( 0, +s),
+                    (+s, -s), (+s,  0), (+s, +s),
+                ]
 
-            plane_pad2 = torch.nn.functional.pad(
-                plane.unsqueeze(0).unsqueeze(0),
-                (s, s, s, s), mode='reflect'
-            ).squeeze()
+                flagged_pad = torch.nn.functional.pad(
+                    flagged.float().unsqueeze(0).unsqueeze(0),
+                    (s, s, s, s), mode='reflect'
+                ).squeeze().bool()
 
-            neighbor_stack = []
-            for dy, dx in offsets:
-                ny0, ny1 = dy + s, dy + s + H
-                nx0, nx1 = dx + s, dx + s + W
-                nbr_vals    = plane_pad2[ny0:ny1, nx0:nx1]
-                nbr_flagged = flagged_pad[ny0:ny1, nx0:nx1]
-                nbr_clean   = torch.where(
-                    nbr_flagged,
-                    torch.full_like(nbr_vals, float('nan')),
-                    nbr_vals
-                )
-                neighbor_stack.append(nbr_clean)
+                plane_pad2 = torch.nn.functional.pad(
+                    plane.unsqueeze(0).unsqueeze(0),
+                    (s, s, s, s), mode='reflect'
+                ).squeeze()
 
-            stacked     = torch.stack(neighbor_stack, dim=0)
-            stacked_inf = torch.where(torch.isnan(stacked),
-                                      torch.full_like(stacked, float('inf')), stacked)
-            sorted_s, _ = stacked_inf.sort(dim=0)
+                # Shift coordinates into the padded array space
+                fy_pad = fy + s
+                fx_pad = fx + s
 
-            valid_count = (~torch.isnan(stacked)).sum(dim=0).clamp(min=1)
-            mid_lo = ((valid_count - 1) // 2).long()
-            mid_hi = (valid_count       // 2).long()
+                neighbor_stack = []
+                for dy, dx in offsets:
+                    # Gather ONLY the neighbors for the flagged pixels (returns a 1D tensor of size N)
+                    nbr_vals = plane_pad2[fy_pad + dy, fx_pad + dx]
+                    nbr_flagged = flagged_pad[fy_pad + dy, fx_pad + dx]
+                    
+                    nbr_clean = torch.where(
+                        nbr_flagged,
+                        torch.full_like(nbr_vals, float('nan')),
+                        nbr_vals
+                    )
+                    neighbor_stack.append(nbr_clean)
 
-            rep_lo      = sorted_s.gather(0, mid_lo.unsqueeze(0)).squeeze(0)
-            rep_hi      = sorted_s.gather(0, mid_hi.unsqueeze(0)).squeeze(0)
-            replacement = (rep_lo + rep_hi) * 0.5
-            replacement = torch.where(torch.isinf(replacement), m5, replacement)
+                # Stack is now (8, N) instead of (8, H, W). Massive memory savings.
+                stacked = torch.stack(neighbor_stack, dim=0)
+                
+                stacked_inf = torch.where(torch.isnan(stacked),
+                                          torch.full_like(stacked, float('inf')), stacked)
+                sorted_s, _ = stacked_inf.sort(dim=0)
 
-            result[ci] = torch.where(flagged, replacement, plane)
+                valid_count = (~torch.isnan(stacked)).sum(dim=0).clamp(min=1)
+                mid_lo = ((valid_count - 1) // 2).long()
+                mid_hi = (valid_count       // 2).long()
+
+                rep_lo      = sorted_s.gather(0, mid_lo.unsqueeze(0)).squeeze(0)
+                rep_hi      = sorted_s.gather(0, mid_hi.unsqueeze(0)).squeeze(0)
+                replacement = (rep_lo + rep_hi) * 0.5
+                
+                # If all 8 neighbors were bad (inf), fall back to the local median m5
+                m5_bad = m5[fy, fx]
+                replacement = torch.where(torch.isinf(replacement), m5_bad, replacement)
+
+                # Patch only the bad pixels in the result
+                result[ci][fy, fx] = replacement
+            # --- END OPTIMIZED SPARSE PROCESSING ---
 
     out = result.cpu().numpy().transpose(1, 2, 0)
     if was_gray:
