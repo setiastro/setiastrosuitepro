@@ -17058,14 +17058,40 @@ class StackingSuiteDialog(QDialog):
             return None
 
 
+    # Sensor/actual temperature keywords, most specific first, generic last.
+    _CCD_TEMP_KEYS = (
+        "CCD-TEMP", "CCDTEMP", "CCD_TEMP",
+        "SENSOR-TEMP", "SENSORTEMP", "SENSOR_TEMP",
+        "CMOS-TEMP", "CMOSTEMP",
+        "CAMTEMP", "CAM-TEMP", "CAM_TEMP",
+        "CCD-TEMPERATURE", "SENSOR-TEMPERATURE",
+        "TEMPERAT", "TEMPERATURE", "TEMP",
+    )
+    # Commanded/setpoint temperature keywords.
+    _SET_TEMP_KEYS = (
+        "SET-TEMP", "SETTEMP", "SET_TEMP",
+        "TARGTEMP", "TARGET-TEMP", "TARGET_TEMP",
+        "SETPOINT", "SET-POINT", "TEC-TEMP", "TECTEMP",
+    )
+
     def _read_ccd_set_temp_from_fits(self, path: str) -> tuple[float|None, float|None]:
-        """Read CCD-TEMP and SET-TEMP from FITS header (primary HDU)."""
+        """Read the sensor (actual) and setpoint temperatures from the FITS
+        header. Tries the standard CCD-TEMP/SET-TEMP first, then vendor variants
+        (SVBony/DWARF/ASI/QHY/etc.) so headers that store the temperature under a
+        non-standard keyword still match. Used for BOTH lights and master darks,
+        so widening it here fixes temperature matching on both sides."""
         try:
             with fits.open(path) as hdul:
                 hdr = hdul[0].header
-                ccd = self._parse_float(hdr.get("CCD-TEMP", None))
-                st  = self._parse_float(hdr.get("SET-TEMP", None))
-                return ccd, st
+
+                def _first(keys):
+                    for k in keys:
+                        v = self._parse_float(hdr.get(k, None))
+                        if v is not None:
+                            return v
+                    return None
+
+                return _first(self._CCD_TEMP_KEYS), _first(self._SET_TEMP_KEYS)
         except Exception:
             return None, None
 
@@ -17145,6 +17171,10 @@ class StackingSuiteDialog(QDialog):
         meta["ccd"] = ccd
         meta["set"] = st
         meta["temp"] = self._temp_for_matching(ccd, st) if (ccd is not None or st is not None) else meta["temp"]
+        if meta["temp"] is None:
+            # No header temp and no MasterDark_ filename match — try a generic
+            # filename temp token (e.g. 'dark_exp..._21C_stack.fits').
+            meta["temp"] = self._temp_from_filename(p)
 
         # size from header if missing
         if not meta["size"]:
@@ -17160,6 +17190,28 @@ class StackingSuiteDialog(QDialog):
         return meta
 
 
+    def _temp_from_filename(self, name) -> float | None:
+        """Parse a sensor temperature from a filename token when the header has
+        none. Handles the plain convention ('..._27C', '..._-15C', '..._21.5C')
+        and SASpro's safe m/p convention ('m10p0C' -> -10.0, 'p5p3C' -> 5.3).
+        Returns None if no temperature token is present."""
+        import os, re
+        base = os.path.splitext(os.path.basename(str(name or "")))[0]
+        # SASpro m/p convention first, so 'm10p0C' isn't misread as a plain '0C'.
+        m = re.search(r"(?:^|[_\-. ])([mp])(\d+)(?:p(\d+))?C(?=[_\-. ]|$)", base)
+        if m:
+            sign = -1.0 if m.group(1) == "m" else 1.0
+            val = float(m.group(2)) + (float("0." + m.group(3)) if m.group(3) else 0.0)
+            return sign * val
+        # plain '<num>C' token (allow a leading sign and one decimal).
+        m = re.search(r"(?:^|[_\-. ])([+-]?\d+(?:\.\d+)?)\s*[cC](?=[_\-. ]|$)", base)
+        if m:
+            try:
+                return float(m.group(1))
+            except Exception:
+                return None
+        return None
+
     def _get_light_temp(self, light_path: str) -> tuple[float|None, float|None, float|None]:
         """Return (ccd, set, chosen) with caching."""
         if not hasattr(self, "_light_temp_cache"):
@@ -17174,6 +17226,10 @@ class StackingSuiteDialog(QDialog):
 
         ccd, st = self._read_ccd_set_temp_from_fits(p)
         chosen = self._temp_for_matching(ccd, st)
+        if chosen is None:
+            # Header carried no usable temp keyword (or the path is stale) —
+            # fall back to the temp token in the filename, e.g. '..._27C.fits'.
+            chosen = self._temp_from_filename(p)
         cache[p] = (ccd, st, chosen)
         return cache[p]
 
@@ -17246,9 +17302,11 @@ class StackingSuiteDialog(QDialog):
                         dark_choice = curr_dark  # leaf has its own per-file override, leave it
                     elif dark_override:
                         dark_choice = os.path.basename(dark_override)
-                    elif fill_only and curr_dark and curr_dark.lower() != "none":
-                        dark_choice = curr_dark
                     else:
+                        # Always recompute auto-assignments (never keep a stale
+                        # auto-fill) so the load order (darks / lights / flats, in
+                        # any sequence) can't leave a wrong match in place. Manual
+                        # per-leaf and group overrides above still win.
                         l_ccd, l_set, l_temp = self._get_light_temp(light_path)
 
                         if not hasattr(self, "_master_dark_go"):
@@ -17354,9 +17412,8 @@ class StackingSuiteDialog(QDialog):
                         flat_choice = curr_flat  # leaf has its own per-file override, leave it
                     elif flat_override:
                         flat_choice = os.path.basename(flat_override)
-                    elif fill_only and curr_flat and curr_flat.lower() != "none":
-                        flat_choice = curr_flat
                     else:
+                        # Always recompute auto-assignments (see dark branch note).
                         best_flat_path = None
 
                         # NOTE: master_files keys are like:
