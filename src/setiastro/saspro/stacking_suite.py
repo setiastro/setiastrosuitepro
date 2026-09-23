@@ -20133,13 +20133,18 @@ class StackingSuiteDialog(QDialog):
         if "oiii"  in k or "o3"     in k: comps.add("oiii")
         if "hb"    in k or "hbeta"  in k: comps.add("hb")
 
+        # Common compact label for an SII/OIII dual-band filter.  Although
+        # "SiO3" is not spectroscopic notation, it is used in filter names.
+        if "sio3" in k:
+            comps.update({"sii", "oiii"})
+
         # common vendor aliases → Ha/OIII
         vendor_aliases = (
             "lextreme", "lenhance", "lultimate",
             "nbz", "nbzu", "alpt", "alp",
             "duo-band", "duoband", "dual band", "dual-band", "dualband"
         )
-        if any(alias in k for alias in vendor_aliases):
+        if not comps and any(alias in k for alias in vendor_aliases):
             comps.update({"ha", "oiii"})
 
         # generic dual/duo/bicolor markers → assume Ha/OIII (most OSC duals)
@@ -20149,7 +20154,7 @@ class StackingSuiteDialog(QDialog):
             "dualnb", "dual-nb", "duo-nb", "duonb",
             "duo narrow", "dual narrow"
         )
-        if any(m in k for m in dual_markers):
+        if not comps and any(m in k for m in dual_markers):
             comps.update({"ha", "oiii"})
 
         # decide
@@ -23709,7 +23714,7 @@ class StackingSuiteDialog(QDialog):
         if not k:
             return False
         toks = (
-            "ha", "halpha", "sii", "s2", "oiii", "o3", "hb", "hbeta",
+            "ha", "halpha", "sii", "s2", "oiii", "o3", "sio3", "hb", "hbeta",
             "lextreme", "lenhance", "lultimate", "nbz", "nbzu", "alpt", "alp",
             "duo-band", "duoband", "dual band", "dual-band", "dualband",
             "dual", "duo", "2band", "2-band", "two band",
