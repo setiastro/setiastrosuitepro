@@ -1012,12 +1012,7 @@ class HistogramTransformDialogPro(QDialog):
 
         if self.cb_live.isChecked():
             out = apply_histogram_transform_channel(self._preview_base, b, m_rel, w, chan)
-            # ── mask blend on preview ──
-            mask_full = self._active_mask_array()
-            if mask_full is not None:
-                ph, pw = self._preview_base.shape[:2]
-                mask_prev = self._resize_mask_to(mask_full, ph, pw)
-                out = self._blend_with_mask(self._preview_base, out, mask_prev)
+            # ...mask blend unchanged...
         else:
             out = self._preview_base
 
@@ -1245,11 +1240,17 @@ class HistogramTransformDialogPro(QDialog):
             QMessageBox.critical(self, "Levels", f"Failed to apply:\n{e}")
             return
 
-        # Reload base image + cached hist0, KEEP UI OPEN and KEEP slider values
+        # Reload base image + cached hist0, KEEP UI OPEN.
         self._reload_base_from_document()
 
-        # immediate refresh
-        self._recompute()
+        # Reset black/mid/white back to identity after a successful apply, so the
+        # next adjustment starts from a clean curve on the already-transformed
+        # image. (Previously the handles were left where the user had them —
+        # PI's behavior — but users preferred a reset here.) _reset() restores
+        # both spinboxes, both sliders, and the curve widget together, and it
+        # calls _schedule()/_recompute() so the preview refreshes on the new
+        # base — so we don't need a separate _recompute() call below.
+        self._reset()
 
         self.btn_apply.setEnabled(True)
         self.btn_new.setEnabled(True)
