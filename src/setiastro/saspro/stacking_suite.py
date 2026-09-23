@@ -5407,6 +5407,68 @@ def _get_key_float(hdr: fits.Header, key: str):
     except Exception:
         return None
 
+
+# Ordered list of header keywords that carry the *measured sensor* temperature.
+# Tried in order; first present wins. CCD-TEMP is the FITS standard; DET-TEMP is
+# used by the Dwarf mini and some other smart-scope cameras; CMOS-TEMP/SENSORTEMP
+# turn up in a few capture apps.
+_SENSOR_TEMP_KEYS = ("CCD-TEMP", "DET-TEMP", "CMOS-TEMP", "SENSOR-TEMP", "SENSORTEMP")
+
+# Keywords that look like "*-TEMP"/"*TEMP" but are NOT the sensor temperature.
+# A blind wildcard would grab these and silently mis-match darks; exclude them.
+_NON_SENSOR_TEMP_KEYS = frozenset((
+    "SET-TEMP", "SETTEMP",              # setpoint, not measured
+    "AMB-TEMP", "AMBTEMP", "AIR-TEMP",  # ambient / environmental
+    "FOC-TEMP", "FOCTEMP", "FOCUSTEMP", "FOCTEMPERATURE",  # focuser
+    "ROTATORTEMP", "ROT-TEMP",          # rotator
+    "AUX-TEMP", "AUXTEMP",              # auxiliary probe
+    "DEWTEMP", "DEW-TEMP", "HEATERTEMP",# dew heater probe
+    "MNT-TEMP", "MOUNTTEMP",            # mount
+    # provenance stats we write onto masters (not a live reading)
+    "CCDTMIN", "CCDTMAX", "CCDTSTD",
+    "SETTMIN", "SETTMAX", "SETTSTD",
+))
+
+
+def _sensor_temp_from_header(hdr, *, allow_wildcard: bool = True):
+    """Return the measured sensor temperature (float °C) from a FITS header, or None.
+
+    Resolution order:
+      1) Known sensor keys in priority order (CCD-TEMP, DET-TEMP, …).
+      2) If still nothing and allow_wildcard: any remaining "*TEMP" keyword that
+         is not in the non-sensor exclusion set. This is a last-ditch catch for
+         an unknown camera; it deliberately skips setpoint / ambient / focuser /
+         rotator / dew / provenance temps so we never mis-key a match on them.
+    Does NOT fall back to the setpoint (SET-TEMP) — that is the caller's job, so
+    a measured reading always outranks a setpoint.
+    """
+    if hdr is None:
+        return None
+
+    for k in _SENSOR_TEMP_KEYS:
+        v = _get_key_float(hdr, k)
+        if v is not None:
+            return v
+
+    if not allow_wildcard:
+        return None
+
+    try:
+        for card_key in hdr.keys():
+            ku = str(card_key).upper().strip()
+            if not ku or ku in _NON_SENSOR_TEMP_KEYS:
+                continue
+            # match "*-TEMP" or "*TEMP" but not e.g. "TEMPLATE"
+            if ku.endswith("TEMP") or ku.endswith("-TEMP"):
+                v = _get_key_float(hdr, card_key)
+                if v is not None:
+                    return v
+    except Exception:
+        pass
+
+    return None
+
+
 def _collect_temp_stats(file_list: list[str]):
     ccd = []
     setp = []
@@ -5421,6 +5483,11 @@ def _collect_temp_stats(file_list: list[str]):
 
         v1 = _get_key_float(hdr, "CCD-TEMP")
         v2 = _get_key_float(hdr, "SET-TEMP")
+        # Some cameras (e.g. Dwarf mini) report sensor temp as DET-TEMP only;
+        # the helper also covers other known sensor keys and a curated
+        # "*TEMP" wildcard (excluding ambient/focuser/setpoint/etc.).
+        if v1 is None:
+            v1 = _sensor_temp_from_header(hdr)
 
         if v1 is not None:
             ccd.append(v1); n_ccd += 1
@@ -15113,7 +15180,6 @@ class StackingSuiteDialog(QDialog):
                 session_tag = self._session_from_manual_keyword(path, keyword) or "Default"
 
             # --- Temperature (fast: header already loaded) ---
-            ccd_temp = header.get("CCD-TEMP", None)
             set_temp = header.get("SET-TEMP", None)
 
             def _to_float_temp(v):
@@ -15128,9 +15194,12 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     return None
 
-            ccd_temp_f = _to_float_temp(ccd_temp)
             set_temp_f = _to_float_temp(set_temp)
-            use_temp_f = ccd_temp_f if ccd_temp_f is not None else set_temp_f
+            # Measured sensor temp: CCD-TEMP / DET-TEMP (Dwarf mini) / other known
+            # sensor keys / curated "*TEMP" wildcard. Falls back to the setpoint
+            # (SET-TEMP) only if no measured reading exists.
+            meas_temp_f = _sensor_temp_from_header(header)
+            use_temp_f = meas_temp_f if meas_temp_f is not None else set_temp_f
 
             # --- Common metadata string for leaf rows ---
             meta_text = f"Size: {image_size} | Session: {session_tag}"
@@ -15141,9 +15210,11 @@ class StackingSuiteDialog(QDialog):
 
             # === DARKs ===
             if expected_type_u == "DARK":
-                ccd_t = _get_key_float(header, "CCD-TEMP")
                 set_t = _get_key_float(header, "SET-TEMP")
-                chosen_t = ccd_t if ccd_t is not None else set_t
+                # Measured sensor temp (CCD-TEMP / DET-TEMP / known keys /
+                # curated wildcard); fall back to setpoint only if absent.
+                meas_t = _sensor_temp_from_header(header)
+                chosen_t = meas_t if meas_t is not None else set_t
 
                 temp_step = float(self.settings.value("stacking/temp_group_step", 1.0, type=float) or 1.0)
                 temp_step = max(0.0, temp_step)
@@ -15315,7 +15386,12 @@ class StackingSuiteDialog(QDialog):
                     except Exception:
                         exposure_text = f"{exposure}s" if str(exposure).endswith("s") else str(exposure)
 
-                    sensor_temp = header.get("CCD-TEMP", header.get("SET-TEMP", None))
+                    # Measured sensor temp (CCD-TEMP / DET-TEMP / known keys /
+                    # curated wildcard), else setpoint. Helper returns a clean
+                    # float, so no float("-10 C") crash on string-valued cards.
+                    sensor_temp = _sensor_temp_from_header(header)
+                    if sensor_temp is None:
+                        sensor_temp = _get_key_float(header, "SET-TEMP")
                     gain_val = header.get("GAIN", None)
                     temp_suffix = f" [{float(sensor_temp):+.1f}C]" if sensor_temp is not None else ""
                     gain_suffix = f" [G{int(gain_val)}]" if gain_val is not None else ""
@@ -15339,7 +15415,10 @@ class StackingSuiteDialog(QDialog):
                     self.master_sizes[file_path] = image_size
 
                 # Extract additional metadata from header.
-                sensor_temp = header.get("CCD-TEMP", "N/A")
+                _disp_t = _sensor_temp_from_header(header)
+                if _disp_t is None:
+                    _disp_t = _get_key_float(header, "SET-TEMP")
+                sensor_temp = f"{_disp_t:.1f}" if _disp_t is not None else "N/A"
                 date_obs = header.get("DATE-OBS", "Unknown")
                 metadata = f"Size: {image_size}, Temp: {sensor_temp}°C, Date: {date_obs}"
 
@@ -15400,8 +15479,11 @@ class StackingSuiteDialog(QDialog):
                 hdr = fits.getheader(path, memmap=True)
             except Exception:
                 return None, None, None
-            ccd = _get_key_float(hdr, "CCD-TEMP")
             st  = _get_key_float(hdr, "SET-TEMP")
+            # Measured sensor temp: CCD-TEMP / DET-TEMP (Dwarf mini) / known
+            # sensor keys / curated "*TEMP" wildcard. Ensures grouping buckets by
+            # real temperature even on cameras with non-standard keywords.
+            ccd = _sensor_temp_from_header(hdr)
             chosen = ccd if ccd is not None else st
             return ccd, st, chosen
 
@@ -15968,7 +16050,9 @@ class StackingSuiteDialog(QDialog):
         try:
             hdr = fits.getheader(master_dark_path, memmap=True)
             gain_val = _get_key_float(hdr, "GAIN")
-            temp_val = hdr.get("CCD-TEMP", hdr.get("SET-TEMP", None))
+            temp_val = _sensor_temp_from_header(hdr)
+            if temp_val is None:
+                temp_val = _get_key_float(hdr, "SET-TEMP")
             gain_suffix = f" [G{int(gain_val)}]" if gain_val is not None else ""
             temp_suffix = f" [{float(temp_val):+.1f}C]" if temp_val is not None else ""
             # Extract base exposure+size from the label
@@ -17056,11 +17140,19 @@ class StackingSuiteDialog(QDialog):
 
 
     def _read_ccd_set_temp_from_fits(self, path: str) -> tuple[float|None, float|None]:
-        """Read CCD-TEMP and SET-TEMP from FITS header (primary HDU)."""
+        """Read measured sensor temp and SET-TEMP from FITS header (primary HDU).
+
+        The first return value is the *measured* sensor temperature via
+        _sensor_temp_from_header: CCD-TEMP (FITS standard), DET-TEMP (Dwarf mini
+        and some smart scopes), other known sensor keys, and finally a curated
+        "*TEMP" wildcard that excludes ambient/focuser/rotator/dew/setpoint temps.
+        The second is the SET-TEMP setpoint. Callers prefer measured over
+        setpoint via _temp_for_matching.
+        """
         try:
             with fits.open(path) as hdul:
                 hdr = hdul[0].header
-                ccd = self._parse_float(hdr.get("CCD-TEMP", None))
+                ccd = _sensor_temp_from_header(hdr)
                 st  = self._parse_float(hdr.get("SET-TEMP", None))
                 return ccd, st
         except Exception:
@@ -17278,10 +17370,12 @@ class StackingSuiteDialog(QDialog):
                         l_ccd, l_set, l_temp = self._get_light_temp(light_path)
 
                         # Fallback: if _get_light_temp found nothing but we
-                        # already loaded the header for gain/offset, try it.
+                        # already loaded the header for gain/offset, try it —
+                        # measured sensor temp first (incl. DET-TEMP / wildcard),
+                        # then the setpoint.
                         if l_temp is None and "_lhdr" in dir():
                             try:
-                                _lt = _get_key_float(_lhdr, "CCD-TEMP")
+                                _lt = _sensor_temp_from_header(_lhdr)
                                 if _lt is None:
                                     _lt = _get_key_float(_lhdr, "SET-TEMP")
                                 if _lt is not None:
@@ -20192,18 +20286,13 @@ class StackingSuiteDialog(QDialog):
         if "oiii"  in k or "o3"     in k: comps.add("oiii")
         if "hb"    in k or "hbeta"  in k: comps.add("hb")
 
-        # Common compact label for an SII/OIII dual-band filter.  Although
-        # "SiO3" is not spectroscopic notation, it is used in filter names.
-        if "sio3" in k:
-            comps.update({"sii", "oiii"})
-
         # common vendor aliases → Ha/OIII
         vendor_aliases = (
             "lextreme", "lenhance", "lultimate",
             "nbz", "nbzu", "alpt", "alp",
             "duo-band", "duoband", "dual band", "dual-band", "dualband"
         )
-        if not comps and any(alias in k for alias in vendor_aliases):
+        if any(alias in k for alias in vendor_aliases):
             comps.update({"ha", "oiii"})
 
         # generic dual/duo/bicolor markers → assume Ha/OIII (most OSC duals)
@@ -20213,7 +20302,7 @@ class StackingSuiteDialog(QDialog):
             "dualnb", "dual-nb", "duo-nb", "duonb",
             "duo narrow", "dual narrow"
         )
-        if not comps and any(m in k for m in dual_markers):
+        if any(m in k for m in dual_markers):
             comps.update({"ha", "oiii"})
 
         # decide
@@ -23773,7 +23862,7 @@ class StackingSuiteDialog(QDialog):
         if not k:
             return False
         toks = (
-            "ha", "halpha", "sii", "s2", "oiii", "o3", "sio3", "hb", "hbeta",
+            "ha", "halpha", "sii", "s2", "oiii", "o3", "hb", "hbeta",
             "lextreme", "lenhance", "lultimate", "nbz", "nbzu", "alpt", "alp",
             "duo-band", "duoband", "dual band", "dual-band", "dualband",
             "dual", "duo", "2band", "2-band", "two band",
