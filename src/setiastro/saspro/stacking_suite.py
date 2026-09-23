@@ -538,7 +538,7 @@ def xisf_fits_header(path: str, image_index: int = 0) -> fits.Header:
 
     return hdr
 
-def get_valid_header(path: str):
+def _get_valid_header_impl(path: str):
     """
     Fast header-only peek with targeted fallback.
 
@@ -679,6 +679,92 @@ def get_valid_header(path: str):
 
     except Exception:
         return None, False
+
+
+def _dwarf_dark_meta_from_name(name):
+    """If `name` looks like a DWARF Labs auto-dark
+    (e.g. 'dark_exp_30.000000_gain_60_bin_1_21C_stack_20.fits'), return the
+    metadata encoded in the filename: {'exptime','gain','binning','temp'}.
+    DWARF auto-darks ship minimal headers, so this is what SASpro backfills to
+    key and match them. Returns {} if it doesn't look like a DWARF dark.
+    Tolerant of '_' / '.' / '-' separators (dark_exp_30 or dark_exp.30)."""
+    import os, re
+    stem = os.path.splitext(os.path.basename(str(name or "")))[0]
+    low = stem.lower()
+    if not low.startswith("dark"):
+        return {}
+    m_exp  = re.search(r"exp[_.\- ]?(\d+(?:\.\d+)?)", low)
+    m_gain = re.search(r"gain[_.\- ]?(\d+)", low)
+    m_bin  = re.search(r"bin[_.\- ]?(\d+)", low)
+    m_temp = re.search(r"[_.\- ](-?\d+(?:\.\d+)?)\s*c(?=[_.\- ]|$)", low)
+    # Require exposure + gain + bin to treat it as a DWARF auto-dark.
+    if not (m_exp and m_gain and m_bin):
+        return {}
+    meta = {}
+    try:
+        meta["exptime"] = float(m_exp.group(1))
+    except Exception:
+        pass
+    try:
+        meta["gain"] = int(m_gain.group(1))
+    except Exception:
+        pass
+    try:
+        meta["binning"] = int(m_bin.group(1))
+    except Exception:
+        pass
+    if m_temp:
+        try:
+            meta["temp"] = float(m_temp.group(1))
+        except Exception:
+            pass
+    return meta
+
+
+def _backfill_dwarf_dark_header(hdr, path):
+    """Fill exposure/gain/binning/temperature on a DWARF auto-dark from its
+    filename when the header omits them. Mutates ONLY the in-memory header
+    (never the file). No-op for anything that isn't a DWARF auto-dark."""
+    dm = _dwarf_dark_meta_from_name(path)
+    if not dm:
+        return
+
+    def _missing(*keys):
+        for k in keys:
+            try:
+                v = hdr.get(k, None)
+            except Exception:
+                v = None
+            if v not in (None, "", "Unknown"):
+                return False
+        return True
+
+    if "exptime" in dm and _missing("EXPTIME", "EXPOSURE"):
+        hdr["EXPTIME"] = dm["exptime"]
+        hdr["EXPOSURE"] = dm["exptime"]
+    if "gain" in dm and _missing("GAIN"):
+        hdr["GAIN"] = dm["gain"]
+    if "binning" in dm:
+        if _missing("XBINNING"):
+            hdr["XBINNING"] = dm["binning"]
+        if _missing("YBINNING"):
+            hdr["YBINNING"] = dm["binning"]
+    if "temp" in dm and _missing("CCD-TEMP", "SET-TEMP", "DET-TEMP"):
+        hdr["CCD-TEMP"] = dm["temp"]
+
+
+def get_valid_header(path: str):
+    """Header-only peek (see _get_valid_header_impl) plus a NON-DESTRUCTIVE
+    backfill for DWARF Labs auto-darks, whose filenames encode exposure / gain /
+    binning / temperature but whose headers are minimal. Only missing keys are
+    filled, and only in the returned in-memory header — the file is untouched."""
+    hdr, ok = _get_valid_header_impl(path)
+    if ok and hdr is not None:
+        try:
+            _backfill_dwarf_dark_header(hdr, path)
+        except Exception:
+            pass
+    return hdr, ok
 
 
 def _read_tile_stack(file_list, y0, y1, x0, x1, channels, out_buf):
@@ -6498,6 +6584,12 @@ class StackingSuiteDialog(QDialog):
         self.stacking_path_display.setFrame(False)
         self.stacking_path_display.setToolTip(self.stacking_directory or self.tr("No stacking folder selected"))
         header_row.addWidget(self.stacking_path_display, 1)
+
+        self.change_dir_btn = QToolButton(self)
+        self.change_dir_btn.setText(self.tr("Change…"))
+        self.change_dir_btn.setToolTip(self.tr("Choose a different stacking directory"))
+        self.change_dir_btn.clicked.connect(self.select_stacking_directory)
+        header_row.addWidget(self.change_dir_btn)
 
         layout.addLayout(header_row)
 
