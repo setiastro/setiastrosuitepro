@@ -5407,68 +5407,6 @@ def _get_key_float(hdr: fits.Header, key: str):
     except Exception:
         return None
 
-
-# Ordered list of header keywords that carry the *measured sensor* temperature.
-# Tried in order; first present wins. CCD-TEMP is the FITS standard; DET-TEMP is
-# used by the Dwarf mini and some other smart-scope cameras; CMOS-TEMP/SENSORTEMP
-# turn up in a few capture apps.
-_SENSOR_TEMP_KEYS = ("CCD-TEMP", "DET-TEMP", "CMOS-TEMP", "SENSOR-TEMP", "SENSORTEMP")
-
-# Keywords that look like "*-TEMP"/"*TEMP" but are NOT the sensor temperature.
-# A blind wildcard would grab these and silently mis-match darks; exclude them.
-_NON_SENSOR_TEMP_KEYS = frozenset((
-    "SET-TEMP", "SETTEMP",              # setpoint, not measured
-    "AMB-TEMP", "AMBTEMP", "AIR-TEMP",  # ambient / environmental
-    "FOC-TEMP", "FOCTEMP", "FOCUSTEMP", "FOCTEMPERATURE",  # focuser
-    "ROTATORTEMP", "ROT-TEMP",          # rotator
-    "AUX-TEMP", "AUXTEMP",              # auxiliary probe
-    "DEWTEMP", "DEW-TEMP", "HEATERTEMP",# dew heater probe
-    "MNT-TEMP", "MOUNTTEMP",            # mount
-    # provenance stats we write onto masters (not a live reading)
-    "CCDTMIN", "CCDTMAX", "CCDTSTD",
-    "SETTMIN", "SETTMAX", "SETTSTD",
-))
-
-
-def _sensor_temp_from_header(hdr, *, allow_wildcard: bool = True):
-    """Return the measured sensor temperature (float °C) from a FITS header, or None.
-
-    Resolution order:
-      1) Known sensor keys in priority order (CCD-TEMP, DET-TEMP, …).
-      2) If still nothing and allow_wildcard: any remaining "*TEMP" keyword that
-         is not in the non-sensor exclusion set. This is a last-ditch catch for
-         an unknown camera; it deliberately skips setpoint / ambient / focuser /
-         rotator / dew / provenance temps so we never mis-key a match on them.
-    Does NOT fall back to the setpoint (SET-TEMP) — that is the caller's job, so
-    a measured reading always outranks a setpoint.
-    """
-    if hdr is None:
-        return None
-
-    for k in _SENSOR_TEMP_KEYS:
-        v = _get_key_float(hdr, k)
-        if v is not None:
-            return v
-
-    if not allow_wildcard:
-        return None
-
-    try:
-        for card_key in hdr.keys():
-            ku = str(card_key).upper().strip()
-            if not ku or ku in _NON_SENSOR_TEMP_KEYS:
-                continue
-            # match "*-TEMP" or "*TEMP" but not e.g. "TEMPLATE"
-            if ku.endswith("TEMP") or ku.endswith("-TEMP"):
-                v = _get_key_float(hdr, card_key)
-                if v is not None:
-                    return v
-    except Exception:
-        pass
-
-    return None
-
-
 def _collect_temp_stats(file_list: list[str]):
     ccd = []
     setp = []
@@ -5483,11 +5421,6 @@ def _collect_temp_stats(file_list: list[str]):
 
         v1 = _get_key_float(hdr, "CCD-TEMP")
         v2 = _get_key_float(hdr, "SET-TEMP")
-        # Some cameras (e.g. Dwarf mini) report sensor temp as DET-TEMP only;
-        # the helper also covers other known sensor keys and a curated
-        # "*TEMP" wildcard (excluding ambient/focuser/setpoint/etc.).
-        if v1 is None:
-            v1 = _sensor_temp_from_header(hdr)
 
         if v1 is not None:
             ccd.append(v1); n_ccd += 1
@@ -15180,6 +15113,7 @@ class StackingSuiteDialog(QDialog):
                 session_tag = self._session_from_manual_keyword(path, keyword) or "Default"
 
             # --- Temperature (fast: header already loaded) ---
+            ccd_temp = header.get("CCD-TEMP", None)
             set_temp = header.get("SET-TEMP", None)
 
             def _to_float_temp(v):
@@ -15194,12 +15128,9 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     return None
 
+            ccd_temp_f = _to_float_temp(ccd_temp)
             set_temp_f = _to_float_temp(set_temp)
-            # Measured sensor temp: CCD-TEMP / DET-TEMP (Dwarf mini) / other known
-            # sensor keys / curated "*TEMP" wildcard. Falls back to the setpoint
-            # (SET-TEMP) only if no measured reading exists.
-            meas_temp_f = _sensor_temp_from_header(header)
-            use_temp_f = meas_temp_f if meas_temp_f is not None else set_temp_f
+            use_temp_f = ccd_temp_f if ccd_temp_f is not None else set_temp_f
 
             # --- Common metadata string for leaf rows ---
             meta_text = f"Size: {image_size} | Session: {session_tag}"
@@ -15208,13 +15139,14 @@ class StackingSuiteDialog(QDialog):
                 if set_temp_f is not None:
                     meta_text += f" (Set: {set_temp_f:.1f}C)"
 
+            # --- Common metadata string for leaf rows ---
+            meta_text = f"Size: {image_size} | Session: {session_tag}"
+
             # === DARKs ===
             if expected_type_u == "DARK":
+                ccd_t = _get_key_float(header, "CCD-TEMP")
                 set_t = _get_key_float(header, "SET-TEMP")
-                # Measured sensor temp (CCD-TEMP / DET-TEMP / known keys /
-                # curated wildcard); fall back to setpoint only if absent.
-                meas_t = _sensor_temp_from_header(header)
-                chosen_t = meas_t if meas_t is not None else set_t
+                chosen_t = ccd_t if ccd_t is not None else set_t
 
                 temp_step = float(self.settings.value("stacking/temp_group_step", 1.0, type=float) or 1.0)
                 temp_step = max(0.0, temp_step)
@@ -15386,12 +15318,7 @@ class StackingSuiteDialog(QDialog):
                     except Exception:
                         exposure_text = f"{exposure}s" if str(exposure).endswith("s") else str(exposure)
 
-                    # Measured sensor temp (CCD-TEMP / DET-TEMP / known keys /
-                    # curated wildcard), else setpoint. Helper returns a clean
-                    # float, so no float("-10 C") crash on string-valued cards.
-                    sensor_temp = _sensor_temp_from_header(header)
-                    if sensor_temp is None:
-                        sensor_temp = _get_key_float(header, "SET-TEMP")
+                    sensor_temp = header.get("CCD-TEMP", header.get("SET-TEMP", None))
                     gain_val = header.get("GAIN", None)
                     temp_suffix = f" [{float(sensor_temp):+.1f}C]" if sensor_temp is not None else ""
                     gain_suffix = f" [G{int(gain_val)}]" if gain_val is not None else ""
@@ -15415,10 +15342,7 @@ class StackingSuiteDialog(QDialog):
                     self.master_sizes[file_path] = image_size
 
                 # Extract additional metadata from header.
-                _disp_t = _sensor_temp_from_header(header)
-                if _disp_t is None:
-                    _disp_t = _get_key_float(header, "SET-TEMP")
-                sensor_temp = f"{_disp_t:.1f}" if _disp_t is not None else "N/A"
+                sensor_temp = header.get("CCD-TEMP", "N/A")
                 date_obs = header.get("DATE-OBS", "Unknown")
                 metadata = f"Size: {image_size}, Temp: {sensor_temp}°C, Date: {date_obs}"
 
@@ -15479,11 +15403,8 @@ class StackingSuiteDialog(QDialog):
                 hdr = fits.getheader(path, memmap=True)
             except Exception:
                 return None, None, None
+            ccd = _get_key_float(hdr, "CCD-TEMP")
             st  = _get_key_float(hdr, "SET-TEMP")
-            # Measured sensor temp: CCD-TEMP / DET-TEMP (Dwarf mini) / known
-            # sensor keys / curated "*TEMP" wildcard. Ensures grouping buckets by
-            # real temperature even on cameras with non-standard keywords.
-            ccd = _sensor_temp_from_header(hdr)
             chosen = ccd if ccd is not None else st
             return ccd, st, chosen
 
@@ -16050,9 +15971,7 @@ class StackingSuiteDialog(QDialog):
         try:
             hdr = fits.getheader(master_dark_path, memmap=True)
             gain_val = _get_key_float(hdr, "GAIN")
-            temp_val = _sensor_temp_from_header(hdr)
-            if temp_val is None:
-                temp_val = _get_key_float(hdr, "SET-TEMP")
+            temp_val = hdr.get("CCD-TEMP", hdr.get("SET-TEMP", None))
             gain_suffix = f" [G{int(gain_val)}]" if gain_val is not None else ""
             temp_suffix = f" [{float(temp_val):+.1f}C]" if temp_val is not None else ""
             # Extract base exposure+size from the label
@@ -17140,19 +17059,11 @@ class StackingSuiteDialog(QDialog):
 
 
     def _read_ccd_set_temp_from_fits(self, path: str) -> tuple[float|None, float|None]:
-        """Read measured sensor temp and SET-TEMP from FITS header (primary HDU).
-
-        The first return value is the *measured* sensor temperature via
-        _sensor_temp_from_header: CCD-TEMP (FITS standard), DET-TEMP (Dwarf mini
-        and some smart scopes), other known sensor keys, and finally a curated
-        "*TEMP" wildcard that excludes ambient/focuser/rotator/dew/setpoint temps.
-        The second is the SET-TEMP setpoint. Callers prefer measured over
-        setpoint via _temp_for_matching.
-        """
+        """Read CCD-TEMP and SET-TEMP from FITS header (primary HDU)."""
         try:
             with fits.open(path) as hdul:
                 hdr = hdul[0].header
-                ccd = _sensor_temp_from_header(hdr)
+                ccd = self._parse_float(hdr.get("CCD-TEMP", None))
                 st  = self._parse_float(hdr.get("SET-TEMP", None))
                 return ccd, st
         except Exception:
@@ -17234,35 +17145,6 @@ class StackingSuiteDialog(QDialog):
         meta["ccd"] = ccd
         meta["set"] = st
         meta["temp"] = self._temp_for_matching(ccd, st) if (ccd is not None or st is not None) else meta["temp"]
-
-        # General-purpose filename temp fallback when header and MasterDark_
-        # regex both failed.  Handles patterns like:
-        #   dark_exp_30_gain_60_bin_1_21C_stack.fits   →  21.0
-        #   dark_..._m10C_...                          → -10.0
-        #   dark_..._m10p5C_...                        → -10.5
-        if meta["temp"] is None:
-            bn = os.path.basename(p)
-            # try "m10p5C" / "p5p0C" style first (SASpro / PI convention)
-            _mt = re.search(r"([mp])(\d+)p(\d)C", bn)
-            if _mt:
-                _sign = -1.0 if _mt.group(1) == "m" else 1.0
-                meta["temp"] = _sign * (float(_mt.group(2)) + float(_mt.group(3)) / 10.0)
-            else:
-                # plain integer temp like "_21C_" or "_m10C_" (N.I.N.A. / SharpCap style)
-                _mt2 = re.search(r"[_\-](-?\d+)C(?:[_.\-]|$)", bn, re.IGNORECASE)
-                if _mt2:
-                    meta["temp"] = float(_mt2.group(1))
-
-        # exp from filename fallback (non-MasterDark naming conventions)
-        if meta["exp"] is None:
-            bn = os.path.basename(p)
-            # "dark_exp_30.000000_..." or "EXPOSURE-300s" or "_300s_"
-            _me = re.search(r"(?:exp(?:osure)?[_\-])([\d.]+)", bn, re.IGNORECASE)
-            if _me:
-                try:
-                    meta["exp"] = float(_me.group(1))
-                except Exception:
-                    pass
 
         # size from header if missing
         if not meta["size"]:
@@ -17369,31 +17251,6 @@ class StackingSuiteDialog(QDialog):
                     else:
                         l_ccd, l_set, l_temp = self._get_light_temp(light_path)
 
-                        # Fallback: if _get_light_temp found nothing but we
-                        # already loaded the header for gain/offset, try it —
-                        # measured sensor temp first (incl. DET-TEMP / wildcard),
-                        # then the setpoint.
-                        if l_temp is None and "_lhdr" in dir():
-                            try:
-                                _lt = _sensor_temp_from_header(_lhdr)
-                                if _lt is None:
-                                    _lt = _get_key_float(_lhdr, "SET-TEMP")
-                                if _lt is not None:
-                                    l_temp = _lt
-                            except Exception:
-                                pass
-
-                        # Fallback: parse temp from light filename
-                        # e.g. "M27_30s_..._26C.fits" or "..._m10C_..."
-                        if l_temp is None and light_path:
-                            _lbn = os.path.basename(light_path)
-                            _lmt = re.search(r"[_\-](-?\d+)C(?:[_.\-]|$)", _lbn, re.IGNORECASE)
-                            if _lmt:
-                                try:
-                                    l_temp = float(_lmt.group(1))
-                                except Exception:
-                                    pass
-
                         if not hasattr(self, "_master_dark_go"):
                             self._master_dark_go = {}
 
@@ -17451,16 +17308,6 @@ class StackingSuiteDialog(QDialog):
                             sess_mismatch = 0
 
                             md_temp = md.get("temp")
-                            # Fallback: parse temp from the master_files key
-                            # (e.g. "30s (1920x1080) [+21.0C] [G60]") which
-                            # was built from the FITS header at load time.
-                            if md_temp is None:
-                                _kt = re.search(r"\[([+-]?\d+(?:\.\d+)?)C\]", mk_str)
-                                if _kt:
-                                    try:
-                                        md_temp = float(_kt.group(1))
-                                    except Exception:
-                                        pass
                             if (l_temp is not None) and (md_temp is not None):
                                 temp_diff = abs(float(md_temp) - float(l_temp))
                                 temp_unknown = 0
@@ -20285,6 +20132,16 @@ class StackingSuiteDialog(QDialog):
         if "sii"   in k or "s2"     in k: comps.add("sii")
         if "oiii"  in k or "o3"     in k: comps.add("oiii")
         if "hb"    in k or "hbeta"  in k: comps.add("hb")
+
+        # SII written with a single i ("Si", "SiO3", "SiOiii", "SiHb"). Bare "si"
+        # is too generic to match blindly (it appears in unrelated words), so we
+        # only treat it as SII when it forms a recognizable dual-band pairing
+        # with OIII/Hb, or is the leading token of the name. Real narrowband
+        # filters always pair SII with OIII or Hβ, so this stays specific.
+        if "sii" not in k:  # don't double-handle the already-correct spelling
+            if (re.search(r"si(?=o3|oiii|hb)", k)      # SiO3 / SiOiii / SiHb (anywhere)
+                    or re.match(r"si(?![a-z])", k)):   # leading "si" then digit/end
+                comps.add("sii")
 
         # common vendor aliases → Ha/OIII
         vendor_aliases = (
@@ -23863,6 +23720,7 @@ class StackingSuiteDialog(QDialog):
             return False
         toks = (
             "ha", "halpha", "sii", "s2", "oiii", "o3", "hb", "hbeta",
+            "sio3", "sioiii", "sihb",
             "lextreme", "lenhance", "lultimate", "nbz", "nbzu", "alpt", "alp",
             "duo-band", "duoband", "dual band", "dual-band", "dualband",
             "dual", "duo", "2band", "2-band", "two band",
@@ -24572,6 +24430,13 @@ class StackingSuiteDialog(QDialog):
 
         self.matrix_by_aligned = {}
         self.orig_by_aligned   = {}
+        # Normal registration solves real transforms; a missing SASD entry in the
+        # drizzle deposit is a genuine error here, not an identity pass. Clear any
+        # pre-registered reconstruction state from a previous "Skip Registration"
+        # run so it can't leak into this run's drizzle.
+        self._drizzle_pre_registered = False
+        self._pre_reg_xforms = {}
+        self._pre_reg_ref_shape = None
         for norm_path, aligned_path in self.valid_transforms.items():
             M = self.valid_matrices.get(norm_path)
             if M is not None:
@@ -28786,6 +28651,200 @@ class StackingSuiteDialog(QDialog):
         ))
         return "register_new"
 
+    def _read_drizzle_stamp(self, path: str) -> dict | None:
+        """Reconstruct a drizzle entry from an aligned frame's SASDZ* header stamp.
+
+        star_alignment stamps every aligned frame it writes with the source
+        original, the transform kind + matrix, and the reference grid. This
+        recovers that so "Skip Registration and Integrate" can drizzle from the
+        original pixels even when no (or a stale) .sasd exists.
+
+        Returns {"kind","matrix"(np or None),"ref_shape"(H,W)|None,"orig_path"|None}
+        or None if the frame carries no stamp.
+        """
+        try:
+            hdr = fits.getheader(path, ext=0)
+        except Exception:
+            return None
+        if not bool(hdr.get("SASDZ", False)):
+            return None
+
+        kind = hdr.get("SASDZKND", None)
+        if kind is not None:
+            kind = str(kind).strip().lower() or None
+
+        ref_shape = None
+        try:
+            rh = int(hdr.get("SASDZRFH", 0) or 0)
+            rw = int(hdr.get("SASDZRFW", 0) or 0)
+            if rh > 0 and rw > 0:
+                ref_shape = (rh, rw)
+        except Exception:
+            ref_shape = None
+
+        # Recover the full original path from the COMMENT sidecar if present,
+        # else fall back to the stored basename (resolved against the tree later).
+        orig_path = None
+        try:
+            for c in hdr.get("COMMENT", []) or []:
+                cs = str(c)
+                if cs.startswith("SASDZORGPATH="):
+                    orig_path = cs.split("=", 1)[1].strip()
+                    break
+        except Exception:
+            orig_path = None
+        if not orig_path:
+            _bn = hdr.get("SASDZORG", None)
+            orig_path = str(_bn).strip() if _bn else None
+
+        # Rebuild the matrix for the small-matrix kinds.
+        matrix = None
+        if kind in ("affine", "similarity", "homography"):
+            try:
+                nr = int(hdr.get("SASDZNR", 0) or 0)
+                nc = int(hdr.get("SASDZNC", 0) or 0)
+                if nr > 0 and nc > 0:
+                    vals = []
+                    for i in range(nr * nc):
+                        v = hdr.get(f"SASDZ{i:02d}", None)
+                        if v is None:
+                            vals = []
+                            break
+                        vals.append(float(v))
+                    if len(vals) == nr * nc:
+                        matrix = np.asarray(vals, np.float64).reshape(nr, nc)
+            except Exception:
+                matrix = None
+            # affine/homography with no usable matrix is not reconstructable →
+            # treat as unstamped so the caller uses identity rather than a
+            # silently-wrong transform.
+            if matrix is None:
+                return None
+
+        return {"kind": kind, "matrix": matrix, "ref_shape": ref_shape, "orig_path": orig_path}
+
+    def _infer_ref_shape_from_first(self, grouped_files: dict) -> tuple | None:
+        """Reference grid = pixel dims of the first aligned frame (all frames in
+        the pre-registered set share the same grid). Returns (H, W) or None."""
+        try:
+            for _g, _lst in (grouped_files or {}).items():
+                for _p in _lst:
+                    try:
+                        h = fits.getheader(_p, ext=0)
+                        ht = int(h.get("NAXIS2", 0) or 0)
+                        wd = int(h.get("NAXIS1", 0) or 0)
+                        if ht > 0 and wd > 0:
+                            return (ht, wd)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        return None
+
+    def _write_sasd_from_pre_registered(self, status_cb=None) -> bool:
+        """Persist a complete alignment_transforms.sasd for the pre-registered
+        ("Skip Registration and Integrate") path from transforms reconstructed
+        out of the aligned frames' SASDZ* header stamps.
+
+        The .sasd is a first-class artifact — dither analysis and other tooling
+        read it, and its absence on the skip path is why the Dither button never
+        appeared and drizzle had nothing to load. We rebuild it here so those
+        consumers work again.
+
+        Clobber-safety (the crux of the 5-of-100 problem): we NEVER blindly
+        overwrite. If a compatible .sasd already exists (same REF_SHAPE) we
+        merge-append into it so no prior entries are lost; only when there is no
+        file (or an incompatible-geometry one) do we write a fresh complete file.
+        If we reconstructed no real transforms (all frames unstamped), we leave
+        any existing .sasd untouched rather than replace it with an empty one.
+
+        Returns True if a .sasd was written or updated.
+        """
+        log = status_cb or (lambda *_: None)
+
+        xf = getattr(self, "_pre_reg_xforms", None) or {}
+        # Keep only entries that carry a real, reconstructable transform. Unstamped
+        # frames map to (None, None) and must not be written as bogus entries.
+        real = {os.path.normpath(k): v for k, v in xf.items()
+                if isinstance(v, tuple) and v[0]}
+        if not real:
+            log("ℹ️ No stamped transforms recovered; leaving existing .sasd untouched.")
+            return False
+
+        rs = getattr(self, "ref_shape_for_drizzle", None)
+        try:
+            Href, Wref = int(rs[0]), int(rs[1])
+        except Exception:
+            log("⚠️ No usable reference shape; cannot write .sasd for pre-registered set.")
+            return False
+        if Href <= 0 or Wref <= 0:
+            log("⚠️ Reference shape is degenerate; cannot write .sasd.")
+            return False
+
+        sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
+        ref_path = getattr(self, "reference_frame", None) or "__PRE_REGISTERED__"
+
+        # Split reconstructed transforms into the writer's two inputs:
+        #   drizzle_xforms {orig: (kind, matrix|None)}   — all kinds
+        #   fallback_affine {orig: 2x3}                  — affine/similarity only
+        drizzle_xforms = {}
+        fallback_affine = {}
+        for orig, (kind, mat) in real.items():
+            drizzle_xforms[orig] = (kind, mat)
+            if kind in ("affine", "similarity") and mat is not None:
+                try:
+                    fallback_affine[orig] = np.asarray(mat, np.float64).reshape(2, 3)
+                except Exception:
+                    pass
+
+        # If a compatible SASD already exists, merge-append (never clobber).
+        old_H, old_W, _ = self._sasd_read_header(sasd_path)
+        try:
+            if old_H and old_W and (old_H, old_W) == (Href, Wref):
+                ok = self._merge_append_sasd_v2(
+                    existing_path=sasd_path,
+                    out_path=sasd_path,
+                    ref_shape=(Href, Wref),
+                    ref_path=ref_path,
+                    new_drizzle_xforms=drizzle_xforms,
+                    new_fallback_affine=fallback_affine,
+                )
+                if ok:
+                    log(f"✅ Merge-appended {len(real)} reconstructed transform(s) "
+                        f"into existing alignment_transforms.sasd.")
+                    return True
+                # Merge refused (e.g. geometry drift mid-read): fall through to a
+                # fresh write below rather than leaving the skip path with nothing.
+                log("ℹ️ Merge-append declined; writing a fresh .sasd from stamps.")
+            elif old_H and old_W:
+                log(f"ℹ️ Existing .sasd REF_SHAPE {old_H}×{old_W} ≠ this set "
+                    f"{Href}×{Wref}; writing a fresh .sasd from stamps.")
+
+            self._save_alignment_transforms_sasd_v2(
+                out_path=sasd_path,
+                ref_shape=(Href, Wref),
+                ref_path=ref_path,
+                drizzle_xforms=drizzle_xforms,
+                fallback_affine=fallback_affine,
+            )
+            log(f"✅ Wrote alignment_transforms.sasd from {len(real)} reconstructed "
+                f"transform(s) (pre-registered set).")
+
+            # Preserve the pixscale sidecar dither analysis relies on, when known.
+            try:
+                from setiastro.saspro.dither_analysis import _save_pixscale_for_sasd
+                ps = getattr(self, "_ref_pixscale_arcsec", None)
+                if ps:
+                    from PyQt6.QtCore import QSettings as _QS
+                    _save_pixscale_for_sasd(_QS("SetiAstro", "SASpro"), sasd_path, ps)
+            except Exception:
+                pass
+
+            return True
+        except Exception as e:
+            log(f"⚠️ Failed writing .sasd for pre-registered set: {e!r}")
+            return False
+
     def integrate_registered_images(self):
         """
         Integrate frames that are already aligned (and typically normalized).
@@ -29346,6 +29405,81 @@ class StackingSuiteDialog(QDialog):
             # 6) Build aligned file groups from tree (they're already aligned/normalized)
             aligned_light_files = {g: lst for g, lst in self.light_files.items() if lst}
 
+            # 6b) Reconstruct drizzle geometry from aligned-frame header stamps.
+            # These frames are already in the reference grid; there is no live
+            # .sasd we can trust (a later registration run overwrites it, and a
+            # partial run may describe only a handful of frames). Instead, read
+            # the per-frame SASDZ* stamp written at alignment time to recover each
+            # frame's ORIGINAL source, transform kind+matrix, and reference grid.
+            # From those we synthesize the same structures a fresh registration
+            # would hand drizzle: orig_by_aligned, a drizzle xforms map, and
+            # ref_shape_for_drizzle. Frames with no stamp fall back to identity
+            # (deposit the aligned pixels as-is) so drizzle still runs, just
+            # without deposit-from-original for those specific frames.
+            self.orig_by_aligned = {}
+            self._pre_reg_xforms = {}          # orig_path(norm) -> (kind, matrix|None)
+            self._pre_reg_ref_shape = None     # (H, W) recovered from stamps
+            _n_stamped = 0
+            _n_unstamped = 0
+            for _g, _lst in aligned_light_files.items():
+                for _p in _lst:
+                    _pn = os.path.normpath(_p)
+                    stamp = self._read_drizzle_stamp(_pn)
+                    if stamp is not None:
+                        # Map aligned → recovered ORIGINAL so the dual-band split
+                        # and the entry builder deposit from original pixels.
+                        orig_norm = stamp.get("orig_path") or _pn
+                        self.orig_by_aligned[_pn] = os.path.normpath(orig_norm)
+                        self._pre_reg_xforms[os.path.normpath(orig_norm)] = (
+                            stamp.get("kind"), stamp.get("matrix")
+                        )
+                        if self._pre_reg_ref_shape is None and stamp.get("ref_shape"):
+                            self._pre_reg_ref_shape = stamp["ref_shape"]
+                        _n_stamped += 1
+                    else:
+                        # Unstamped: identity deposit from the aligned pixels.
+                        self.orig_by_aligned[_pn] = _pn
+                        self._pre_reg_xforms[_pn] = (None, None)
+                        _n_unstamped += 1
+
+            # Reference grid for the drizzle canvas: prefer a stamp-recovered
+            # shape; else fall back to the actual pixel dimensions of the first
+            # aligned frame (they are all on the same grid by definition here).
+            if self._pre_reg_ref_shape is not None:
+                self.ref_shape_for_drizzle = tuple(self._pre_reg_ref_shape)
+            else:
+                self.ref_shape_for_drizzle = self._infer_ref_shape_from_first(aligned_light_files)
+
+            # Mark this run as pre-registered so the drizzle deposit knows a
+            # missing/None transform means "identity deposit", not "skip".
+            self._drizzle_pre_registered = True
+
+            if _n_stamped or _n_unstamped:
+                self.update_status(self.tr(
+                    f"🧭 Drizzle geometry from aligned headers: "
+                    f"{_n_stamped} stamped, {_n_unstamped} unstamped"
+                    + (f", ref grid {self.ref_shape_for_drizzle[0]}×{self.ref_shape_for_drizzle[1]}"
+                       if self.ref_shape_for_drizzle else "")
+                ))
+                if _n_unstamped and not _n_stamped:
+                    self.update_status(self.tr(
+                        "ℹ️ These aligned frames predate drizzle stamping. Drizzle will "
+                        "upsample the aligned pixels (identity), which is NOT true "
+                        "deposit-from-original drizzle. Re-run registration with drizzle "
+                        "enabled for full drizzle quality."
+                    ))
+
+            # 6c) Persist a complete alignment_transforms.sasd from the recovered
+            # transforms. This restores the artifact that dither analysis and
+            # other tooling read, and gives drizzle a real file to load. It is
+            # clobber-safe: it merge-appends into a compatible existing .sasd and
+            # only writes fresh when none exists, so a partial set never destroys
+            # a complete file. No-op when nothing was reconstructable.
+            try:
+                self._write_sasd_from_pre_registered(status_cb=self.update_status)
+            except Exception as _e:
+                self.update_status(self.tr(f"⚠️ Could not persist .sasd for this set: {_e!r}"))
+
             # 7) Optional: split dual-band OSC into Ha / SII / OIII / Hb
             if self._dual_split_requested():
                 self.update_status(self.tr(
@@ -29602,6 +29736,24 @@ class StackingSuiteDialog(QDialog):
 
         log(f"✅ SASD v2: loaded {len(xforms)} transform(s).")
 
+        # Merge in transforms reconstructed from aligned-frame header stamps
+        # (the "Skip Registration and Integrate" path). These are keyed by the
+        # ORIGINAL path recovered from each frame's SASDZ* stamp, matching the
+        # entry["orig"] the split/entry builder produced. SASD entries win on a
+        # key collision (a live full run is the most authoritative), but for
+        # pre-registered frames the SASD usually lacks these originals entirely,
+        # so the stamps fill the gap and let deposit-from-original drizzle work.
+        pre_reg_xf = getattr(self, "_pre_reg_xforms", None)
+        if isinstance(pre_reg_xf, dict) and pre_reg_xf:
+            _added = 0
+            for _k, _v in pre_reg_xf.items():
+                _kk = os.path.normpath(_k)
+                if _kk not in xforms:
+                    xforms[_kk] = _v
+                    _added += 1
+            if _added:
+                log(f"🧭 Merged {_added} transform(s) reconstructed from aligned headers.")
+
         # ---- sanity: entries must exist ----
         if not entries:
             log(f"⚠️ Group '{group_key}' has no drizzle entries – skipping.")
@@ -29816,15 +29968,23 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
             return orig_path
+        _pre_registered = bool(getattr(self, "_drizzle_pre_registered", False))
+
         def _pixel_path_for_entry(ent):
             orig = os.path.normpath(ent.get("orig", ""))
             aligned = os.path.normpath(ent.get("aligned", ""))
             kind, X = xforms.get(orig, (None, None))
             if kind is None:
+                # Pre-registered frames carry no solved transform: the aligned
+                # (split) file already sits in the reference grid, so deposit
+                # its pixels directly (identity). Non-pre-registered = genuine
+                # miss → no pixel source.
+                if _pre_registered:
+                    return aligned or orig or None
                 return None
             if isinstance(kind, str) and (kind.startswith("poly") or kind in ("tps", "thin_plate_spline")):
                 return aligned or None
-            if kind in ("affine", "homography") and X is not None:
+            if kind in ("affine", "similarity", "homography") and X is not None:
                 return _cfa_pixel_source(orig)
             return None
 
@@ -29849,8 +30009,22 @@ class StackingSuiteDialog(QDialog):
             weight = frame_weights.get(aligned_file, frame_weights.get(orig_file, 1.0))
 
             kind, X = xforms.get(orig_file, (None, None))
+
+            # Pre-registered safety: if we have a real transform from a header
+            # stamp but the ORIGINAL pixels are gone (user kept only aligned
+            # frames), we cannot deposit-from-original. Fall back to identity on
+            # the aligned pixels rather than dropping the frame. Only do this in
+            # pre-registered mode — in a live run a missing original is a real
+            # error worth surfacing.
+            if (_pre_registered and kind in ("affine", "similarity", "homography")
+                    and X is not None):
+                if not os.path.exists(orig_file):
+                    log(f"ℹ️ Original missing for {os.path.basename(orig_file)}; "
+                        f"depositing aligned pixels (identity) instead of true drizzle.")
+                    kind, X = None, None
+
             log(f"🧭 Drizzle uses {kind or '-'} for {os.path.basename(orig_file)} (chan={chan or 'all'})")
-            if kind is None:
+            if kind is None and not _pre_registered:
                 log(f"⚠️ No usable transform for {os.path.basename(orig_file)} – skipping")
                 continue
 
@@ -29858,7 +30032,18 @@ class StackingSuiteDialog(QDialog):
             pixels_are_registered = False
             img_data = None
 
-            if isinstance(kind, str) and (kind.startswith("poly") or kind in ("tps", "thin_plate_spline")):
+            if kind is None and _pre_registered:
+                # Pre-registered / "Skip Registration and Integrate": the aligned
+                # (or split) file is already on the reference grid. Deposit it
+                # directly with an identity canvas at the requested drizzle scale.
+                pixel_path = aligned_file or orig_file
+                if not pixel_path:
+                    log(f"⚠️ Pre-registered frame has no pixel source – skipping {os.path.basename(orig_file)}")
+                    continue
+                H_canvas = np.eye(3, dtype=np.float32)
+                pixels_are_registered = True
+
+            elif isinstance(kind, str) and (kind.startswith("poly") or kind in ("tps", "thin_plate_spline")):
                 # Already warped to reference during registration
                 pixel_path = aligned_file
                 if not pixel_path:
@@ -29867,8 +30052,9 @@ class StackingSuiteDialog(QDialog):
                 H_canvas = np.eye(3, dtype=np.float32)
                 pixels_are_registered = True
 
-            elif kind == "affine" and X is not None:
-                # Use ORIGINAL pixels + affine subpixel mapping
+            elif kind in ("affine", "similarity") and X is not None:
+                # Use ORIGINAL pixels + affine subpixel mapping. 'similarity' is
+                # a constrained 2x3 affine, so it deposits identically.
                 pixel_path = _cfa_pixel_source(orig_file)
                 H_canvas = np.eye(3, dtype=np.float32)
                 H_canvas[:2] = np.asarray(X, np.float32).reshape(2, 3)
