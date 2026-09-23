@@ -199,15 +199,9 @@ def _replay_audit(step_name, marker) -> None:
             return
         _REPLAY_AUDIT_SEEN.add(key)
 
-        print(f"[REPLAY-AUDIT] {verdict:12} cid={str(cid):22} step={label!r}  ({detail})", flush=True)
+        #print(f"[REPLAY-AUDIT] {verdict:12} cid={str(cid):22} step={label!r}  ({detail})", flush=True)
     except Exception:
         pass
-
-
-def dump_replay_audit() -> None:
-    """Print every distinct (step, verdict) seen so far this session."""
-    for label, verdict in sorted(_REPLAY_AUDIT_SEEN):
-        print(f"[REPLAY-AUDIT] {verdict:12} {label}", flush=True)
 
 _REPLAY_ROUTING_KEYS = ("command_id", "cid", "preset", "preset_dict")
 
