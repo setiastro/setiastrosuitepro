@@ -1012,7 +1012,16 @@ class HistogramTransformDialogPro(QDialog):
 
         if self.cb_live.isChecked():
             out = apply_histogram_transform_channel(self._preview_base, b, m_rel, w, chan)
-            # ...mask blend unchanged...
+            # Mask-aware preview: _active_mask_array() is sized to the FULL doc,
+            # but the preview base is downsampled, so resize the mask down to the
+            # preview dimensions before blending. Without this the preview shows
+            # an unmasked transform while Apply (fullres) blends — the mismatch
+            # the user sees.
+            mask_full = self._active_mask_array()
+            if mask_full is not None:
+                ph, pw = self._preview_base.shape[:2]
+                mask_prev = self._resize_mask_to(mask_full, ph, pw)
+                out = self._blend_with_mask(self._preview_base, out, mask_prev)
         else:
             out = self._preview_base
 
