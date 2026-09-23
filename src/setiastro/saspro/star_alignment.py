@@ -3107,6 +3107,49 @@ def _finalize_write_job(args):
 
         out_path = os.path.join(output_directory, f"{name}.fit")
 
+        # ── Drizzle self-description stamp ───────────────────────────────────
+        # Persist everything drizzle needs to reconstruct this frame's entry
+        # WITHOUT the .sasd: the source original, the reference grid, and the
+        # transform kind + matrix. This lets "Skip Registration and Integrate"
+        # drizzle from already-aligned frames (any session, even after the .sasd
+        # was overwritten by a later run). affine/homography carry their matrix;
+        # poly*/tps are dense coordinate maps with no small matrix, so we record
+        # only kind + ref grid and let the deposit treat them as already-warped
+        # (identity canvas), which is exactly how the drizzle loop handles them.
+        try:
+            _dz_kind, _dz_mat = (drizzle_tuple if isinstance(drizzle_tuple, tuple)
+                                 and len(drizzle_tuple) == 2 else (None, None))
+            if _dz_kind:
+                hdr["SASDZ"]    = (True, "SASpro drizzle stamp present")
+                hdr["SASDZKND"] = (str(_dz_kind), "Drizzle transform kind")
+                hdr["SASDZRFH"] = (int(Href), "Drizzle reference height (px)")
+                hdr["SASDZRFW"] = (int(Wref), "Drizzle reference width (px)")
+                # Original source path (drizzle deposits from these pixels for
+                # affine/homography; for poly*/tps the aligned pixels are used).
+                try:
+                    hdr["SASDZORG"] = (os.path.basename(orig_path), "Drizzle source original (basename)")
+                    hdr.add_comment(f"SASDZORGPATH={os.path.normpath(orig_path)}")
+                except Exception:
+                    pass
+                # Matrix rows, only for the small-matrix kinds.
+                if _dz_mat is not None and str(_dz_kind) in ("affine", "similarity", "homography"):
+                    _M = np.asarray(_dz_mat, np.float64)
+                    if str(_dz_kind) == "homography":
+                        _M = _M.reshape(3, 3)
+                        _rows = 3
+                    else:
+                        _M = _M.reshape(2, 3)
+                        _rows = 2
+                    hdr["SASDZNR"] = (int(_rows), "Drizzle matrix row count")
+                    hdr["SASDZNC"] = (int(_M.shape[1]), "Drizzle matrix col count")
+                    # Flatten row-major into SASDZ00.. cards (FITS key <= 8 chars).
+                    _flat = _M.reshape(-1)
+                    for _i, _v in enumerate(_flat):
+                        hdr[f"SASDZ{_i:02d}"] = (float(_v), f"Drizzle matrix elem {_i}")
+        except Exception:
+            # Stamping is best-effort; never block the aligned write on it.
+            pass
+
         from setiastro.saspro.legacy.image_manager import save_image as _legacy_save
         _legacy_save(
             img_array=aligned,

@@ -490,6 +490,48 @@ def extract_channels_nnls(
     return line1, line2
 
 
+def extract_channels_regularized(
+    img_rgb: np.ndarray,
+    A: np.ndarray,
+    q1: Optional[float] = None,
+    q2: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Conditioning-aware regularised extraction: q*NNLS + (1-q)*raw_prior per line.
+
+    Same Q-blend the interactive NBExtract uses (auto_q_per_channel +
+    raw_prior_from_matrix), but WITHOUT the display median-stretch or unity
+    rescale — the output stays linear so it can be normalised / rejected /
+    integrated by the stacker. Pure NNLS (Q=1) is too aggressive per-frame: it
+    amplifies noise in the faint line and widens sigma-clip thresholds, hurting
+    rejection. q1/q2 default to auto_q_per_channel(A) (clipped to [0.2, 0.9]).
+
+    NaN-safe: any pixel non-finite in ANY RGB channel comes out NaN in both
+    lines; finite-0 warp borders stay 0.
+    """
+    line1_nnls, line2_nnls = extract_channels_nnls(img_rgb, A)
+
+    aq1, aq2 = auto_q_per_channel(A)
+    if q1 is None:
+        q1 = aq1
+    if q2 is None:
+        q2 = aq2
+    q1 = float(np.clip(q1, 0.0, 1.0))
+    q2 = float(np.clip(q2, 0.0, 1.0))
+
+    raw1 = np.asarray(raw_prior_from_matrix(img_rgb, A, 0), dtype=np.float32)
+    raw2 = np.asarray(raw_prior_from_matrix(img_rgb, A, 1), dtype=np.float32)
+
+    with np.errstate(invalid="ignore"):
+        line1 = np.clip(q1 * line1_nnls + (1.0 - q1) * raw1, 0.0, None).astype(np.float32)
+        line2 = np.clip(q2 * line2_nnls + (1.0 - q2) * raw2, 0.0, None).astype(np.float32)
+
+    invalid = ~np.all(np.isfinite(img_rgb[..., :3]), axis=2)
+    line1[invalid] = np.nan
+    line2[invalid] = np.nan
+    return line1, line2
+
+
 def condition_number_warning(A: np.ndarray) -> Tuple[Optional[str], str]:
     """
     Return (warning_text, severity) where severity is one of:
