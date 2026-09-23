@@ -17277,6 +17277,29 @@ class StackingSuiteDialog(QDialog):
                     else:
                         l_ccd, l_set, l_temp = self._get_light_temp(light_path)
 
+                        # Fallback: if _get_light_temp found nothing but we
+                        # already loaded the header for gain/offset, try it.
+                        if l_temp is None and "_lhdr" in dir():
+                            try:
+                                _lt = _get_key_float(_lhdr, "CCD-TEMP")
+                                if _lt is None:
+                                    _lt = _get_key_float(_lhdr, "SET-TEMP")
+                                if _lt is not None:
+                                    l_temp = _lt
+                            except Exception:
+                                pass
+
+                        # Fallback: parse temp from light filename
+                        # e.g. "M27_30s_..._26C.fits" or "..._m10C_..."
+                        if l_temp is None and light_path:
+                            _lbn = os.path.basename(light_path)
+                            _lmt = re.search(r"[_\-](-?\d+)C(?:[_.\-]|$)", _lbn, re.IGNORECASE)
+                            if _lmt:
+                                try:
+                                    l_temp = float(_lmt.group(1))
+                                except Exception:
+                                    pass
+
                         if not hasattr(self, "_master_dark_go"):
                             self._master_dark_go = {}
 
