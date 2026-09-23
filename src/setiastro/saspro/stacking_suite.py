@@ -15139,9 +15139,6 @@ class StackingSuiteDialog(QDialog):
                 if set_temp_f is not None:
                     meta_text += f" (Set: {set_temp_f:.1f}C)"
 
-            # --- Common metadata string for leaf rows ---
-            meta_text = f"Size: {image_size} | Session: {session_tag}"
-
             # === DARKs ===
             if expected_type_u == "DARK":
                 ccd_t = _get_key_float(header, "CCD-TEMP")
@@ -17146,6 +17143,35 @@ class StackingSuiteDialog(QDialog):
         meta["set"] = st
         meta["temp"] = self._temp_for_matching(ccd, st) if (ccd is not None or st is not None) else meta["temp"]
 
+        # General-purpose filename temp fallback when header and MasterDark_
+        # regex both failed.  Handles patterns like:
+        #   dark_exp_30_gain_60_bin_1_21C_stack.fits   →  21.0
+        #   dark_..._m10C_...                          → -10.0
+        #   dark_..._m10p5C_...                        → -10.5
+        if meta["temp"] is None:
+            bn = os.path.basename(p)
+            # try "m10p5C" / "p5p0C" style first (SASpro / PI convention)
+            _mt = re.search(r"([mp])(\d+)p(\d)C", bn)
+            if _mt:
+                _sign = -1.0 if _mt.group(1) == "m" else 1.0
+                meta["temp"] = _sign * (float(_mt.group(2)) + float(_mt.group(3)) / 10.0)
+            else:
+                # plain integer temp like "_21C_" or "_m10C_" (N.I.N.A. / SharpCap style)
+                _mt2 = re.search(r"[_\-](-?\d+)C(?:[_.\-]|$)", bn, re.IGNORECASE)
+                if _mt2:
+                    meta["temp"] = float(_mt2.group(1))
+
+        # exp from filename fallback (non-MasterDark naming conventions)
+        if meta["exp"] is None:
+            bn = os.path.basename(p)
+            # "dark_exp_30.000000_..." or "EXPOSURE-300s" or "_300s_"
+            _me = re.search(r"(?:exp(?:osure)?[_\-])([\d.]+)", bn, re.IGNORECASE)
+            if _me:
+                try:
+                    meta["exp"] = float(_me.group(1))
+                except Exception:
+                    pass
+
         # size from header if missing
         if not meta["size"]:
             try:
@@ -17308,6 +17334,16 @@ class StackingSuiteDialog(QDialog):
                             sess_mismatch = 0
 
                             md_temp = md.get("temp")
+                            # Fallback: parse temp from the master_files key
+                            # (e.g. "30s (1920x1080) [+21.0C] [G60]") which
+                            # was built from the FITS header at load time.
+                            if md_temp is None:
+                                _kt = re.search(r"\[([+-]?\d+(?:\.\d+)?)C\]", mk_str)
+                                if _kt:
+                                    try:
+                                        md_temp = float(_kt.group(1))
+                                    except Exception:
+                                        pass
                             if (l_temp is not None) and (md_temp is not None):
                                 temp_diff = abs(float(md_temp) - float(l_temp))
                                 temp_unknown = 0

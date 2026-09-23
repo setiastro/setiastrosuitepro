@@ -1012,7 +1012,12 @@ class HistogramTransformDialogPro(QDialog):
 
         if self.cb_live.isChecked():
             out = apply_histogram_transform_channel(self._preview_base, b, m_rel, w, chan)
-            # ...mask blend unchanged...
+            # ── mask blend on preview ──
+            mask_full = self._active_mask_array()
+            if mask_full is not None:
+                ph, pw = self._preview_base.shape[:2]
+                mask_prev = self._resize_mask_to(mask_full, ph, pw)
+                out = self._blend_with_mask(self._preview_base, out, mask_prev)
         else:
             out = self._preview_base
 
