@@ -2230,6 +2230,89 @@ def import_torch(
     )
 
     if not ok_all:
+        # In-process false-negative recovery.
+        #
+        # The subprocess probe above runs ``venv_python -c "import torch"``.
+        # It's the safest way to check whether the venv is really installable
+        # WITHOUT risking a hard crash of THIS interpreter — but it can also
+        # be a false negative. Two scenarios we've hit in the wild:
+        #
+        #   1. A user manually pip-installed a working torch build into the
+        #      venv (e.g. ROCm on Linux). No fast-path marker got written,
+        #      so we fell through to the subprocess probe, which reports
+        #      "not installed" because the parent process's environment
+        #      (LD_LIBRARY_PATH pointing at bundled libs, PYTHONHOME, or a
+        #      PyInstaller _MEIPASS trail) breaks the venv python's own
+        #      import of torch — even though the same import works fine
+        #      IN THIS process, which has already been configured for the
+        #      venv's runtime.
+        #   2. Any environment where the parent has GPU-vendor env vars
+        #      that only make sense once torch is loaded in-process
+        #      (ROCM_PATH pointing at libs an isolated subprocess can't
+        #      resolve, etc.).
+        #
+        # settings.py's Backend line proves this happens: it does an
+        # in-process import via ``importlib.import_module("torch")`` and
+        # cheerfully shows "ROCm (…)" while THIS function was about to
+        # raise "GPU acceleration runtime is not installed" for the same
+        # runtime. Reconcile the two by trying an in-process import here
+        # before we conclude anything. If it works, we know torch is
+        # really usable and we cache/marker it so the next launch takes
+        # the fast path.
+        try:
+            sp = str(site)
+            if sp not in sys.path:
+                sys.path.insert(0, sp)
+            _demote_shadow_torch_paths(status_cb=status_cb)
+            _purge_bad_torch_from_sysmodules(status_cb=status_cb, rocm=prefer_rocm)
+            _register_dll_dirs_for_frozen(site, vp, status_cb=status_cb)
+            if getattr(sys, "frozen", False):
+                try:
+                    os.chdir(Path.home())
+                except Exception:
+                    pass
+            import torch as _t_probe
+            import torchvision as _tv_probe  # noqa: F401
+            if require_torchaudio:
+                import torchaudio as _ta_probe  # noqa: F401
+            # Only accept it if it actually resolves under the runtime
+            # venv's site — otherwise we'd be honouring a system torch we
+            # explicitly don't want to promote. ``_torch_sanity_check``
+            # separately guards against shadow torches and missing C-ext.
+            tf = getattr(_t_probe, "__file__", "") or ""
+            site_str = str(site)
+            site_alt = str(site.parent / "site-packages")
+            site_dist = str(site.parent / "dist-packages")
+            resolves_under_venv = tf and (
+                site_str in tf or site_alt in tf or site_dist in tf
+            )
+            if resolves_under_venv:
+                _torch_sanity_check(status_cb=status_cb)
+                status_cb(
+                    "[RT] Subprocess probe reported torch missing, but "
+                    f"in-process import from the venv succeeded ({tf}). "
+                    "Trusting the in-process import."
+                )
+                _TORCH_CACHED = _t_probe
+                # Write the marker + fast-path cache so future launches
+                # skip the subprocess probe entirely.
+                try:
+                    _write_torch_marker(marker, status_cb=status_cb)
+                except Exception:
+                    pass
+                _write_cache_best_effort(rt, site, venv_ver)
+                return _t_probe
+            else:
+                status_cb(
+                    "[RT] In-process fallback imported torch but it does "
+                    f"not resolve under the venv ({tf!r}); ignoring."
+                )
+        except Exception as e:
+            status_cb(
+                f"[RT] In-process fallback also failed "
+                f"({type(e).__name__}: {e}); honouring the subprocess probe."
+            )
+
         if not allow_install:
             _raise_missing_runtime(info)
 
