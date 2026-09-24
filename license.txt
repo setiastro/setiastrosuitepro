@@ -2616,6 +2616,27 @@ License:
 
 
 ========================================================
+Cosmic Clarity AI Models — Franklin Marek / SetiAstro
+========================================================
+The Cosmic Clarity neural network models (including but not limited to
+models for denoising, sharpening, dark star recovery, super-resolution,
+and satellite trail removal) are the exclusive intellectual property of
+Franklin Marek / SetiAstro. These models are NOT open source and are NOT
+covered by SASpro's GPLv3 license.
+
+The models are distributed separately from SASpro via private download
+and are licensed solely for use within SASpro for personal,
+non-commercial astrophotography processing. Redistribution, reverse
+engineering, extraction of weights, creation of derivative works, and
+use outside of SASpro are strictly prohibited without prior written
+consent from the author.
+
+The full Cosmic Clarity license is included with the model files.
+For licensing inquiries, contact Franklin Marek / SetiAstro at
+https://www.setiastro.com.
+
+
+========================================================
 SYQ Core (.syq) — SyQon
 ========================================================
 SASpro interoperates with SyQon's SYQ Core (.syq) scientific image format via

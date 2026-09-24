@@ -541,6 +541,10 @@ If a reproducible defect is identified, open an issue on GitHub and attach the c
 
 Seti Astro Suite Pro is licensed under the **GNU General Public License v3.0**. See the `LICENSE` file at the repository root for the full license text.
 
+### Cosmic Clarity AI Models
+
+The Cosmic Clarity neural network models are **proprietary** and are **not** covered by SASpro's GPLv3 license. They are distributed separately and licensed exclusively for use within SASpro. Redistribution, reverse engineering, and use outside of SASpro are prohibited without written consent from the author. See the `COSMIC_CLARITY_LICENSE.txt` included with the model files and the notice in `license.txt` for full terms.
+
 ## Acknowledgments
 
 The authors gratefully acknowledge the open-source libraries and projects upon which SASpro depends, as well as the broader astrophotography community whose feedback has continuously shaped the direction of development.
