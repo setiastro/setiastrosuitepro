@@ -30,6 +30,9 @@ from setiastro.saspro.imageops.narrowband_normalization import normalize_narrowb
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
 
+# Real SCNR core (green / colour channel suppression)
+from setiastro.saspro.remove_green import _apply_scnr_rgb
+
 
 @dataclass
 class _NBNJob:
@@ -88,6 +91,10 @@ class NarrowbandNormalization(QWidget):
         self.sii: np.ndarray | None = None
         self.osc1: np.ndarray | None = None   # (Ha/OIII)
         self.osc2: np.ndarray | None = None   # (SII/OIII)
+
+        # Track the source document so Apply writes back to the correct
+        # image even when channels were split from an OSC (colour) view.
+        self._source_doc = None
 
         self._dim_mismatch_accepted = False
 
@@ -400,8 +407,15 @@ class NarrowbandNormalization(QWidget):
         self.cmb_blendmode = QComboBox(self)
         self.cmb_blendmode.addItems(["Screen", "Add", "Linear Dodge", "Normal"])
 
+        # ---- SCNR controls (inline) ----
         self.chk_scnr = QCheckBox("SCNR (reduce green cast)", self)
         self.chk_scnr.setChecked(True)
+
+        self.row_scnr_amount, self.spin_scnr_amount, self.sld_scnr_amount = self._slider_spin_row(
+            lo=0.0, hi=1.0, step=0.01, val=0.80, decimals=2
+        )
+        self.chk_scnr_preserve = QCheckBox("Preserve luminance", self)
+        self.chk_scnr_preserve.setChecked(True)
 
         self.chk_linear_fit = QCheckBox("Linear Fit (highest signal)", self)
         self.chk_linear_fit.setChecked(False)
@@ -444,6 +458,9 @@ class NarrowbandNormalization(QWidget):
         form.addRow(self._lbl_oiiiboost2, self.row_oiii_sho)
 
         form.addRow("", self.chk_scnr)
+        self._lbl_scnr_amount = QLabel("SCNR Amount:", self)
+        form.addRow(self._lbl_scnr_amount, self.row_scnr_amount)
+        form.addRow("", self.chk_scnr_preserve)
         form.addRow("", self.chk_linear_fit)
         form.addRow("", self.chk_bg_neutral)   
         form.addRow("", self.chk_preview_autostretch)
@@ -492,7 +509,10 @@ class NarrowbandNormalization(QWidget):
         ):
             s.valueChanged.connect(self._schedule_preview)
 
-        self.chk_scnr.toggled.connect(self._schedule_preview)
+        self.chk_scnr.toggled.connect(self._on_scnr_toggled)
+        self.spin_scnr_amount.valueChanged.connect(self._schedule_preview)
+        self.sld_scnr_amount.valueChanged.connect(self._schedule_preview)
+        self.chk_scnr_preserve.toggled.connect(self._schedule_preview)
         self.chk_linear_fit.toggled.connect(self._schedule_preview)
         self.chk_preview_autostretch.toggled.connect(self._schedule_preview)
 
@@ -610,7 +630,8 @@ class NarrowbandNormalization(QWidget):
             return
 
         def on_done(out: np.ndarray, step_name: str):
-            out2 = self._maybe_background_neutralize_rgb(out, doc_for_mask=None)
+            out2 = self._maybe_apply_scnr(out)
+            out2 = self._maybe_background_neutralize_rgb(out2, doc_for_mask=None)
             self.final = out2
 
             disp = out2
@@ -635,6 +656,28 @@ class NarrowbandNormalization(QWidget):
             step_name="NBN Preview",
             on_done=on_done,
             on_fail=on_fail,
+        )
+
+    def _maybe_apply_scnr(self, rgb: np.ndarray) -> np.ndarray:
+        """
+        Apply full SCNR green suppression as a post-step if enabled.
+        Uses the real SCNR core from remove_green with the user's amount
+        and preserve-luminance settings.
+        """
+        if not self.chk_scnr.isChecked():
+            return rgb
+        if rgb is None or rgb.ndim != 3 or rgb.shape[2] != 3:
+            return rgb
+
+        amount = float(self.spin_scnr_amount.value())
+        preserve = bool(self.chk_scnr_preserve.isChecked())
+
+        if amount <= 0.0:
+            return rgb
+
+        return _apply_scnr_rgb(
+            rgb, amount, mode="avg",
+            preserve_lightness=preserve, channel="G",
         )
 
     def _maybe_background_neutralize_rgb(self, rgb: np.ndarray, *, doc_for_mask=None) -> np.ndarray:
@@ -746,8 +789,11 @@ class NarrowbandNormalization(QWidget):
         show_row(self.row_siiboost,   not is_hoo)
         show_row(self.row_oiii_sho,   not is_hoo)
 
-        # Optional: hide the SCNR row cleanly (instead of just the checkbox)
-        show_row(self.chk_scnr,       not is_hoo)
+        # SCNR block: checkbox visible for non-HOO; sub-rows only when enabled
+        show_row(self.chk_scnr,               not is_hoo)
+        scnr_subs = (not is_hoo) and self.chk_scnr.isChecked()
+        show_row(self.row_scnr_amount,         scnr_subs)
+        show_row(self.chk_scnr_preserve,       scnr_subs)
 
         # Lightness row visibility (unchanged)
         lightness_allowed = (mode == 1)
@@ -766,6 +812,11 @@ class NarrowbandNormalization(QWidget):
 
         self.chk_linear_fit.setEnabled(True)
 
+        self._schedule_preview()
+
+    def _on_scnr_toggled(self, checked: bool):
+        """Show/hide the SCNR sub-controls and recompute preview."""
+        self._refresh_visibility()
         self._schedule_preview()
 
     def _make_dspin(self, lo, hi, step, val, _debounce_timer_unused) -> QDoubleSpinBox:
@@ -806,7 +857,7 @@ class NarrowbandNormalization(QWidget):
             oiiiboost=float(self.spin_oiiiboost.value()),
             siiboost=float(self.spin_siiboost.value()),
             oiiiboost2=float(self.spin_oiiiboost2.value()),
-            scnr=bool(self.chk_scnr.isChecked()),
+            scnr=False,  # handled by our own post-step (_maybe_apply_scnr)
         )
 
     def _set_status_label(self, which: str, text: str | None):
@@ -836,7 +887,11 @@ class NarrowbandNormalization(QWidget):
         if out is None:
             return
 
-        img, header, bit_depth, is_mono, path, label = out
+        img, header, bit_depth, is_mono, path, label, src_doc = out
+
+        # Track source document for apply-back (first loaded view wins)
+        if src_doc is not None and self._source_doc is None:
+            self._source_doc = src_doc
 
         # NB channels → mono; OSC → RGB
         if which in ("Ha", "OIII", "SII"):
@@ -907,6 +962,10 @@ class NarrowbandNormalization(QWidget):
         # Clear OSC helpers (we’re now using direct NB channels)
         self.osc1 = None
         self.osc2 = None
+
+        # Track source document so Apply writes back to the correct view
+        # (not the temp split channels that only exist in memory)
+        self._source_doc = doc
 
         # Labels
         src = f"From View: {choice}"
@@ -999,7 +1058,7 @@ class NarrowbandNormalization(QWidget):
         bit_depth = meta.get("bit_depth", "Unknown")
         is_mono = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
         path = meta.get("file_path", None)
-        return img, header, bit_depth, is_mono, path, f"From View: {choice}"
+        return img, header, bit_depth, is_mono, path, f"From View: {choice}", doc
 
     def _load_from_file(self, which):
         filt = "Images (*.png *.tif *.tiff *.fits *.fit *.xisf)"
@@ -1011,7 +1070,7 @@ class NarrowbandNormalization(QWidget):
             QMessageBox.critical(self, "Load Error", f"Could not load {os.path.basename(path)}")
             return None
         label = f"From File: {os.path.basename(path)}"
-        return img, header, bit_depth, is_mono, path, label
+        return img, header, bit_depth, is_mono, path, label, None
 
     # ---------------- channel prep ----------------
     def _as_float01(self, arr):
@@ -1378,6 +1437,7 @@ class NarrowbandNormalization(QWidget):
 
         params = self._gather_params()
         out = normalize_narrowband(ha, oo, si, params, progress_cb=None)
+        out = self._maybe_apply_scnr(out)
         self.final = out
 
         disp = out
@@ -1525,6 +1585,7 @@ class NarrowbandNormalization(QWidget):
     # ---------------- actions ----------------
     def _clear_channels(self):
         self.ha = self.oiii = self.sii = self.osc1 = self.osc2 = None
+        self._source_doc = None
         self._dim_mismatch_accepted = False
         self.final = None
         self._base_pm = None
@@ -1533,9 +1594,31 @@ class NarrowbandNormalization(QWidget):
             self._set_status_label(which, None)
         self.status.setText("Cleared all loaded channels.")
 
-    def _apply_to_current_view(self):
+    def _resolve_target_doc(self):
+        """
+        Return the document that "Apply to Current View" should write to.
+
+        Priority:
+          1. _source_doc  – the view the user loaded channels from (especially
+             important for OSC imports where the temp channel arrays are in
+             memory only).
+          2. mw.current_document()  – whatever is focused right now.
+          3. None  → caller falls back to Push.
+        """
+        # Try the source doc we tracked at load time
+        if self._source_doc is not None:
+            img = getattr(self._source_doc, "image", None)
+            if img is not None:
+                return self._source_doc
+
         mw = self._find_main_window()
-        doc = getattr(mw, "current_document", None)() if (mw and hasattr(mw, "current_document")) else None
+        doc = getattr(mw, "current_document", None)
+        if callable(doc):
+            doc = doc()
+        return doc
+
+    def _apply_to_current_view(self):
+        doc = self._resolve_target_doc()
         if doc is None:
             QMessageBox.information(self, "No Active Doc", "Couldn't find an active document; pushing to new view instead.")
             self._push_result()
@@ -1543,7 +1626,8 @@ class NarrowbandNormalization(QWidget):
 
         def on_done(out: np.ndarray, step_name: str):
             try:
-                out2 = self._maybe_background_neutralize_rgb(out, doc_for_mask=doc)
+                out2 = self._maybe_apply_scnr(out)
+                out2 = self._maybe_background_neutralize_rgb(out2, doc_for_mask=doc)
 
                 # Prefer apply_edit if your doc supports it (history + metadata)
                 if hasattr(doc, "apply_edit"):
@@ -1585,8 +1669,9 @@ class NarrowbandNormalization(QWidget):
 
         def on_done(out: np.ndarray, step_name: str):
             try:
-                # Apply optional headless BN to the RESULT before pushing
-                out2 = self._maybe_background_neutralize_rgb(out, doc_for_mask=None)
+                # Apply optional SCNR + headless BN to the RESULT before pushing
+                out2 = self._maybe_apply_scnr(out)
+                out2 = self._maybe_background_neutralize_rgb(out2, doc_for_mask=None)
 
                 meta = {"is_mono": False}
                 if getattr(self, "chk_bg_neutral", None) and self.chk_bg_neutral.isChecked():

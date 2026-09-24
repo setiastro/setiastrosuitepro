@@ -21441,42 +21441,68 @@ class StackingSuiteDialog(QDialog):
 
         Integration stores full-frame rejection maps and (when MFDeconv is on)
         the whole prepass payload on ``self``. Those survive after the masters
-        are written, so a 6-filter 9576×6388 panel can leave several GB resident
-        when set 2 starts measuring.
+        are written, so a 6-filter 9576×6388 panel can leave several GB
+        resident when set 2 starts measuring.
+
+        Fast-path on the main thread: detach big references from ``self`` (and
+        from the alignment thread) — cheap pointer moves. Slow-path on a
+        daemon sweeper: actual freeing of the numpy buffers, ``gc.collect()``,
+        torch cache release, and glibc ``malloc_trim(0)``. Before this split
+        all four ran synchronously on the main thread and left the UI
+        unresponsive for several seconds after the completion popup was
+        dismissed — enough time to look like SASpro had frozen. The sweeper
+        coalesces rapid back-to-back calls so we don't stack up threads if
+        the user finishes another set while the previous one is still being
+        freed.
         """
+        import threading as _threading
+
         log = status_cb or (lambda *_: None)
-        n_maps = 0
         try:
             n_maps = len(getattr(self, "_rej_maps", {}) or {})
         except Exception:
             n_maps = 0
 
-        def _drop(name, empty):
+        # ---- Phase 1: FAST detach on the main thread -----------------------
+        # Move each big object into ``to_release`` so it lives only there while
+        # ``self`` gets a small empty replacement. Nothing is actually freed
+        # here — the sweeper below drops ``to_release`` and pays the free()
+        # cost off the main thread.
+        to_release: dict = {}
+
+        def _detach(name, empty):
             if hasattr(self, name):
                 try:
+                    to_release[name] = getattr(self, name)
                     setattr(self, name, empty)
                 except Exception:
                     pass
 
-        _drop("_rej_maps", {})
-        _drop("_mf_prepass", None)
-        _drop("_mf_grouped_files", None)
-        _drop("_mf_transforms_dict", None)
-        _drop("_mf_results", {})
-        _drop("_mf_queue", [])
-        _drop("_mf_failures", None)
-        _drop("valid_matrices", {})
-        _drop("valid_transforms", {})
-        _drop("drizzle_xforms", {})
-        _drop("matrix_by_aligned", {})
-        _drop("orig_by_aligned", {})
-        _drop("_split_drizzle_info", {})
-        _drop("_pending_cfa_sparse", {})
-        _drop("_upscale_factor_by_orig", {})
-        _drop("_orig2norm", {})
-        _drop("frame_weights", {})
-        _drop("_mf_autocrop_rect", None)
+        for name, empty in (
+            ("_rej_maps", {}),
+            ("_mf_prepass", None),
+            ("_mf_grouped_files", None),
+            ("_mf_transforms_dict", None),
+            ("_mf_results", {}),
+            ("_mf_queue", []),
+            ("_mf_failures", None),
+            ("valid_matrices", {}),
+            ("valid_transforms", {}),
+            ("drizzle_xforms", {}),
+            ("matrix_by_aligned", {}),
+            ("orig_by_aligned", {}),
+            ("_split_drizzle_info", {}),
+            ("_pending_cfa_sparse", {}),
+            ("_upscale_factor_by_orig", {}),
+            ("_orig2norm", {}),
+            ("frame_weights", {}),
+            ("_mf_autocrop_rect", None),
+        ):
+            _detach(name, empty)
 
+        # Alignment thread: keep the QObject-level cleanup on main (Qt
+        # requires deleteLater() to be called from the thread that owns
+        # the object), but hand its large buffers over to the sweeper.
         th = getattr(self, "alignment_thread", None)
         if th is not None:
             for a in (
@@ -21484,6 +21510,7 @@ class StackingSuiteDialog(QDialog):
                 "alignment_matrices", "file_key_to_current_path", "drizzle_xforms",
             ):
                 try:
+                    to_release[f"alignment_thread.{a}"] = getattr(th, a, None)
                     setattr(th, a, None)
                 except Exception:
                     pass
@@ -21493,19 +21520,79 @@ class StackingSuiteDialog(QDialog):
                 pass
             self.alignment_thread = None
 
-        import gc
-        gc.collect()
-        try:
-            _free_torch_memory()
-        except Exception:
-            pass
-        try:
-            import ctypes
-            ctypes.CDLL("libc.so.6").malloc_trim(0)
-        except Exception:
-            pass
+        # ---- Phase 2: BACKGROUND sweep (coalesced) -------------------------
+        # Class-level lock + pending list + active flag so overlapping calls
+        # to this method don't spawn multiple sweeper threads. If one is
+        # already running, we just append our payload and let it drain
+        # everything in one final gc / torch / malloc_trim pass.
+        cls = type(self)
+        lock = getattr(cls, "_stacking_sweeper_lock", None)
+        if lock is None:
+            lock = _threading.Lock()
+            cls._stacking_sweeper_lock = lock
+        if not hasattr(cls, "_stacking_sweeper_pending"):
+            cls._stacking_sweeper_pending = []
+        if not hasattr(cls, "_stacking_sweeper_active"):
+            cls._stacking_sweeper_active = False
+
+        with lock:
+            cls._stacking_sweeper_pending.append(to_release)
+            if cls._stacking_sweeper_active:
+                extra = f", {n_maps} rejection map(s)" if n_maps else ""
+                log(self.tr(
+                    "🧹 Releasing previous set runtime buffers{0} (background, coalesced)."
+                ).format(extra))
+                return
+            cls._stacking_sweeper_active = True
+
+        def _sweep():
+            try:
+                while True:
+                    with lock:
+                        batch = list(cls._stacking_sweeper_pending)
+                        cls._stacking_sweeper_pending.clear()
+                        if not batch:
+                            cls._stacking_sweeper_active = False
+                            return
+                    # Drop refs OUTSIDE the lock — this is where numpy free()
+                    # actually runs and where the wall-clock cost lives.
+                    for item in batch:
+                        try:
+                            item.clear()
+                        except Exception:
+                            pass
+                    del batch
+                    try:
+                        import gc as _gc
+                        _gc.collect()
+                    except Exception:
+                        pass
+                    try:
+                        _free_torch_memory()
+                    except Exception:
+                        pass
+                    try:
+                        import ctypes
+                        ctypes.CDLL("libc.so.6").malloc_trim(0)
+                    except Exception:
+                        pass
+            except BaseException:
+                # Never let the sweep bring the app down; clear the active
+                # flag so the next call can start a fresh sweeper.
+                try:
+                    with lock:
+                        cls._stacking_sweeper_active = False
+                except Exception:
+                    pass
+
+        _threading.Thread(
+            target=_sweep,
+            name="StackingRuntimeSweeper",
+            daemon=True,
+        ).start()
+
         extra = f", {n_maps} rejection map(s)" if n_maps else ""
-        log(self.tr("🧹 Freed previous set runtime buffers{0}.").format(extra))
+        log(self.tr("🧹 Releasing previous set runtime buffers{0} (background).").format(extra))
 
     def _reg_queue_has_more(self) -> bool:
         """True if the current set is not the last one in an in-flight queue."""

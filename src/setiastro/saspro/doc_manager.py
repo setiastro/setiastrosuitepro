@@ -163,6 +163,80 @@ def _normalize_image_01(arr: np.ndarray) -> np.ndarray:
 
     return a
 
+# ---------------------------------------------------------------------
+# Metadata stratification: sticky (WCS / plate-solve) and identity keys.
+# ---------------------------------------------------------------------
+# The undo/redo stack stores a full metadata snapshot per state, but not
+# every metadata key is state-shaped. Some keys — WCS / plate-solve results
+# — are "sticky": they belong to the document as a whole, not to any one
+# pixel snapshot. Others — target name, acquisition time, telescope, filter
+# — are "identity": they never vary with processing.
+#
+# When the user runs undo/redo we still restore the frozen state metadata
+# from the tuple (so per-state values like step_name, _replay etc. come
+# back), but we then overlay the current strata so sticky+identity keys
+# survive the restore. This is what lets you plate-solve at an early undo
+# state and have the WCS carry forward through redo, matching how
+# PixInsight handles WCS across processing history.
+#
+# NOTE: geometry-changing operations (crop, rotate, resample) will need
+# to transform the sticky WCS to remain valid. That is a separate
+# migration step — see ImageDocument.apply_geometry_transform() for the
+# entry point. Until each such tool is updated, we deliberately keep
+# individual FITS WCS keys (CRPIX*, CD*_*, CRVAL*, …) OUT of the sticky
+# set so that undo past a crop still restores the correct per-state
+# snapshot for those cards.
+_STICKY_KEYS: frozenset[str] = frozenset({
+    "wcs",                    # astropy.wcs.WCS object, if cached
+    "wcs_header",             # fits.Header carrying the solved WCS
+    "is_solved",              # bool: plate-solve success flag
+    "plate_solve_source",     # e.g. "astap", "astrometry.net"
+    "plate_solve_time",       # timestamp / ISO string
+    "roi_wcs_header",         # ROI-cropped WCS header (preview docs)
+    "__header_snapshot__",    # JSON-safe serialised header snapshot
+})
+
+# Identity keys are matched case-insensitively against the FITS convention.
+_IDENTITY_KEYS_UPPER: frozenset[str] = frozenset({
+    "OBJECT", "TARGET", "OBJNAME",
+    "DATE-OBS", "DATE_OBS", "DATE", "MJD-OBS", "MJD_OBS", "JD",
+    "TELESCOP", "TELESCOPE", "INSTRUME", "INSTRUMENT", "DETECTOR",
+    "FILTER", "FILTNAM", "FILTNAME",
+    "EXPTIME", "EXPOSURE",
+    "XPIXSZ", "YPIXSZ", "PIXSIZE1", "PIXSIZE2",
+    "FOCALLEN",
+    "GAIN", "EGAIN", "ELECTRONS", "RDNOISE", "READNOIS",
+    "OFFSET", "CCDTEMP", "CCD-TEMP", "SETTEMP", "SET-TEMP",
+    "RA", "DEC", "OBJCTRA", "OBJCTDEC",
+    "SITELAT", "SITELONG", "SITEELEV",
+    "OBSGEO-L", "OBSGEO-B", "OBSGEO-H",
+    "OBSERVER", "CREATOR", "SWCREATE", "ORIGIN",
+    "AIRMASS", "ALTITUDE", "AZIMUTH",
+    "IMAGETYP", "FRAME", "BAYERPAT", "XBAYROFF", "YBAYROFF",
+    "MOUNT",
+})
+
+# Case-sensitive SASpro identity keys (non-FITS).
+_IDENTITY_KEYS_EXACT: frozenset[str] = frozenset({
+    "display_name",           # user-visible title
+    "file_meta",              # source-file metadata block
+})
+
+
+def _is_sticky_key(key) -> bool:
+    """True if the metadata key represents document-level sticky state."""
+    return isinstance(key, str) and key in _STICKY_KEYS
+
+
+def _is_identity_key(key) -> bool:
+    """True if the metadata key represents invariant document identity."""
+    if not isinstance(key, str):
+        return False
+    if key in _IDENTITY_KEYS_EXACT:
+        return True
+    return key.upper() in _IDENTITY_KEYS_UPPER
+
+
 # ---- Replay-capture audit (opt-in) ----------------------------------
 # Finds tools that don't yet self-identify for the replay/bundle system.
 #
@@ -351,7 +425,28 @@ class ImageDocument(QObject):
         #   "ts": float
         # }
         self._op_log: list[dict] = []
-        
+        # Playhead index into _op_log. Points at the position where the NEXT
+        # recorded op will land. undo/redo move it back/forward; a new edit
+        # from a mid-log position truncates the "future" branch (matching the
+        # linear-undo model already used for _redo).
+        self._op_log_playhead: int = 0
+
+        # ---- Stratified metadata stores -------------------------------
+        # These hold WCS / plate-solve data (_sticky_meta) and acquisition
+        # invariants (_identity_meta) independently of the per-state undo
+        # snapshots, so plate-solve results survive undo/redo across
+        # WCS-invariant operations (color cal, sharpen, denoise, star
+        # removal, stretch, …). See _sync_strata_from_metadata /
+        # _overlay_strata_onto_metadata below.
+        self._sticky_meta: dict = {}
+        self._identity_meta: dict = {}
+        # Promote anything the caller already put in metadata (e.g. from a
+        # freshly-loaded file: OBJECT, DATE-OBS, wcs_header, …).
+        try:
+            self._sync_strata_from_metadata()
+        except Exception:
+            pass
+
         # Track unsaved changes explicitly
         self.dirty: bool = False
         
@@ -371,8 +466,16 @@ class ImageDocument(QObject):
         """
         Append a param-record for this edit. This is *lightweight* metadata
         used for replaying ROI recipes etc; it does NOT affect undo/redo.
+
+        Honours _op_log_playhead: if the playhead is behind the log tail
+        (user is mid-undo), the "future" branch is truncated first — the
+        same linear-undo model that apply_edit uses for _redo.
         """
         import time as _time
+        # Truncate the future branch if we were mid-log after undo.
+        ph = max(0, min(self._op_log_playhead, len(self._op_log)))
+        if ph < len(self._op_log):
+            del self._op_log[ph:]
         op_id = uuid.uuid4().hex
         entry = {
             "id": op_id,
@@ -383,15 +486,149 @@ class ImageDocument(QObject):
             "ts": float(_time.time()),
         }
         self._op_log.append(entry)
+        self._op_log_playhead = len(self._op_log)
         return op_id
 
     def get_operation_log(self) -> list[dict]:
-        """Return a copy of the operation log (for UI / replay)."""
+        """
+        Return a copy of the operation log, respecting the undo/redo
+        playhead — entries beyond the playhead are the "future" branch
+        that would be discarded on the next edit and are hidden from the
+        default view. Use get_full_operation_log() to see everything.
+        """
+        ph = max(0, min(self._op_log_playhead, len(self._op_log)))
+        return list(self._op_log[:ph])
+
+    def get_full_operation_log(self) -> list[dict]:
+        """Return the full log including entries past the playhead."""
         return list(self._op_log)
 
     def clear_operation_log(self):
         """Clear the operation log (does not touch pixel history)."""
         self._op_log.clear()
+        self._op_log_playhead = 0
+
+    # --- metadata strata helpers (WCS / plate-solve survival) ----------
+    def _sync_strata_from_metadata(self, source: dict | None = None):
+        """
+        Scan `source` (default: self.metadata) and promote any sticky /
+        identity keys into the corresponding stratum store. Safe to call
+        multiple times; safe on partial dicts (e.g. the incoming metadata=
+        arg of apply_edit).
+
+        Tools that mutate self.metadata directly (bypassing apply_edit)
+        can call sync_strata_from_metadata() to make sure their sticky /
+        identity keys are captured before the next undo/redo.
+        """
+        src = source if source is not None else getattr(self, "metadata", None)
+        if not isinstance(src, dict):
+            return
+        for k, v in src.items():
+            if _is_sticky_key(k):
+                self._sticky_meta[k] = v
+            elif _is_identity_key(k):
+                self._identity_meta[k] = v
+
+    def sync_strata_from_metadata(self):
+        """Public alias for _sync_strata_from_metadata."""
+        self._sync_strata_from_metadata()
+
+    def _overlay_strata_onto_metadata(self):
+        """
+        Overlay identity then sticky onto self.metadata. Called after
+        undo/redo restores a frozen snapshot — so document-level keys
+        survive the restore. Sticky wins over identity where they overlap
+        (they should be disjoint sets, but sticky is 'more current'
+        semantically).
+        """
+        if not isinstance(getattr(self, "metadata", None), dict):
+            return
+        if self._identity_meta:
+            for k, v in self._identity_meta.items():
+                self.metadata[k] = v
+        if self._sticky_meta:
+            for k, v in self._sticky_meta.items():
+                self.metadata[k] = v
+
+    def set_wcs(self, hdr_like, *, source: str | None = None, wcs_obj=None):
+        """
+        Attach a plate-solve result to this document as sticky metadata.
+
+        `hdr_like` should be a fits.Header (or a plain dict of WCS keys),
+        `wcs_obj` optionally an astropy.wcs.WCS. The result is stored in
+        _sticky_meta so it will survive undo/redo across WCS-invariant
+        operations. Also mirrored to self.metadata so current code paths
+        that read doc.metadata["wcs_header"] etc. see it immediately.
+        """
+        if hdr_like is None and wcs_obj is None:
+            return
+        if hdr_like is not None:
+            self._sticky_meta["wcs_header"] = hdr_like
+        if wcs_obj is not None:
+            self._sticky_meta["wcs"] = wcs_obj
+        self._sticky_meta["is_solved"] = True
+        if source:
+            self._sticky_meta["plate_solve_source"] = source
+        # Mirror to live self.metadata for immediate consumers.
+        md = getattr(self, "metadata", None)
+        if isinstance(md, dict):
+            if hdr_like is not None:
+                md["wcs_header"] = hdr_like
+            if wcs_obj is not None:
+                md["wcs"] = wcs_obj
+            md["is_solved"] = True
+            if source:
+                md["plate_solve_source"] = source
+        try:
+            self.changed.emit()
+        except Exception:
+            pass
+
+    def clear_wcs(self):
+        """Drop sticky WCS (for operations that fundamentally invalidate it)."""
+        _keys = ("wcs", "wcs_header", "is_solved",
+                 "plate_solve_source", "plate_solve_time",
+                 "__header_snapshot__")
+        for k in _keys:
+            self._sticky_meta.pop(k, None)
+            md = getattr(self, "metadata", None)
+            if isinstance(md, dict):
+                md.pop(k, None)
+
+    def apply_geometry_transform(self, wcs_transform):
+        """
+        Entry point for crop / rotate / resample tools to keep the sticky
+        WCS valid across a geometry change.
+
+        `wcs_transform` is a callable taking the current sticky WCS
+        payload (dict or fits.Header) and returning the new one, e.g.::
+
+            def crop_transform(hdr):
+                new = dict(hdr) if not hasattr(hdr, 'copy') else hdr.copy()
+                new['CRPIX1'] = float(new.get('CRPIX1', 0)) - x_offset
+                new['CRPIX2'] = float(new.get('CRPIX2', 0)) - y_offset
+                return new
+
+        NOTE: this is a stub for the WCS_TRANSFORM migration described in
+        the stratification design. Once a tool implements it, the
+        (before, after) pair should also be recorded on the tool's undo
+        record so undo/redo can invert the transform. Until then, undo
+        past a geometry change may leave the sticky WCS reflecting the
+        post-transform pixel grid — the same class of bug as today.
+        """
+        if not callable(wcs_transform):
+            return
+        for key in ("wcs_header", "wcs", "roi_wcs_header"):
+            if key in self._sticky_meta:
+                try:
+                    new_val = wcs_transform(self._sticky_meta[key])
+                    if new_val is not None:
+                        self._sticky_meta[key] = new_val
+                        md = getattr(self, "metadata", None)
+                        if isinstance(md, dict):
+                            md[key] = new_val
+                except Exception as e:
+                    print(f"[ImageDocument] geometry transform failed for {key}: {e}")
 
 
     def can_undo(self) -> bool:
@@ -644,11 +881,30 @@ class ImageDocument(QObject):
                 new_full = base.copy()
                 new_full[y:y + h, x:x + w] = img
 
+                # NEW: capture any sticky/identity keys the caller may have
+                # written directly to parent.metadata since the last edit
+                # (e.g. a plate solve) BEFORE we snapshot for undo, so they
+                # don't get lost when future undos restore this snapshot.
+                try:
+                    if hasattr(parent, "_sync_strata_from_metadata"):
+                        parent._sync_strata_from_metadata()
+                except Exception:
+                    pass
+
                 # push onto the PARENT’s history
                 if metadata:
                     parent.metadata = _merge_meta(parent.metadata, _strip_replay_keys(metadata), step_name)
                 else:
                     parent.metadata.setdefault("step_name", step_name)
+
+                # NEW: promote sticky/identity keys just merged in from the
+                # incoming metadata (e.g. wcs_header from plate solve, or
+                # DATE-OBS refreshed from a fresh header).
+                try:
+                    if hasattr(parent, "_sync_strata_from_metadata"):
+                        parent._sync_strata_from_metadata()
+                except Exception:
+                    pass
 
                 sm = get_swap_manager()
                 sid = sm.save_state(parent.image)
@@ -690,6 +946,16 @@ class ImageDocument(QObject):
             self._cow_source = None
 
         if self.image is not None:
+            # NEW: capture any sticky/identity keys the caller wrote
+            # directly to self.metadata since the last edit (e.g. a plate
+            # solve that bypasses apply_edit) BEFORE we snapshot for undo.
+            # Without this, the snapshot below is fine but future undos
+            # that restore it would not preserve the newly-set sticky keys.
+            try:
+                self._sync_strata_from_metadata()
+            except Exception:
+                pass
+
             # snapshot current image + metadata for undo
             try:
                 curr = np.asarray(self.image, dtype=np.float32)
@@ -734,6 +1000,15 @@ class ImageDocument(QObject):
             self.metadata = _merge_meta(self.metadata, _strip_replay_keys(metadata), step_name)
         else:
             self.metadata.setdefault("step_name", step_name)
+
+        # NEW: promote sticky/identity keys just merged in from the incoming
+        # metadata. This is how, e.g., plate-solve results delivered via
+        # apply_edit(metadata={"wcs_header": hdr, ...}) end up in
+        # _sticky_meta and survive later undo/redo.
+        try:
+            self._sync_strata_from_metadata()
+        except Exception:
+            pass
 
         # normalize new image
         img = np.asarray(new_image, dtype=np.float32)
@@ -784,6 +1059,16 @@ class ImageDocument(QObject):
         )
 
         sm = get_swap_manager()
+
+        # NEW: capture any sticky/identity keys currently in self.metadata
+        # (including anything a tool set directly since the last apply_edit
+        # — e.g. plate solve) so they get promoted to _sticky_meta /
+        # _identity_meta BEFORE we blow away self.metadata with a frozen
+        # snapshot below.
+        try:
+            self._sync_strata_from_metadata()
+        except Exception:
+            pass
 
         # Pop with an extra guard in case something cleared _undo between
         # the check above and this call (re-entrancy / threading).
@@ -861,6 +1146,16 @@ class ImageDocument(QObject):
 
         self.image = prev_arr
         self.metadata = dict(prev_meta or {})
+        # NEW: overlay sticky (WCS / plate-solve) and identity keys so they
+        # survive the snapshot restore. This is what makes plate-solve
+        # results carry through undo/redo across WCS-invariant operations.
+        try:
+            self._overlay_strata_onto_metadata()
+        except Exception:
+            pass
+        # NEW: move op-log playhead back one step (bounded at 0).
+        if self._op_log_playhead > 0:
+            self._op_log_playhead -= 1
         self.dirty = True
         try:
             self.changed.emit()
@@ -893,6 +1188,14 @@ class ImageDocument(QObject):
         )
 
         sm = get_swap_manager()
+
+        # NEW: capture any sticky/identity keys currently in self.metadata
+        # (e.g. a plate solve done at this intermediate state) before we
+        # overwrite self.metadata with the redo snapshot below.
+        try:
+            self._sync_strata_from_metadata()
+        except Exception:
+            pass
 
         nxt_sid, nxt_meta, name = self._redo.pop()
 
@@ -957,6 +1260,15 @@ class ImageDocument(QObject):
 
         self.image = nxt_arr
         self.metadata = dict(nxt_meta or {})
+        # NEW: overlay sticky/identity so plate-solve results and identity
+        # keys survive the snapshot restore on redo.
+        try:
+            self._overlay_strata_onto_metadata()
+        except Exception:
+            pass
+        # NEW: advance op-log playhead (bounded at len(_op_log)).
+        if self._op_log_playhead < len(self._op_log):
+            self._op_log_playhead += 1
         self.dirty = True
         try:
             self.changed.emit()
@@ -1477,6 +1789,14 @@ class _RoiViewDocument(ImageDocument):
         self._pundo: list[tuple[_np.ndarray, dict, str]] = []  # (img, meta, name)
         self._predo: list[tuple[_np.ndarray, dict, str]] = []  # (img, meta, name)
 
+        # NEW: promote sticky keys (roi_wcs_header, original_header, ...)
+        # that we assigned directly to self.metadata above, so they survive
+        # this doc's local preview undo/redo.
+        try:
+            self._sync_strata_from_metadata()
+        except Exception:
+            pass
+
     @property
     def image(self):
         p = self._parent_doc
@@ -1637,6 +1957,13 @@ class _RoiViewDocument(ImageDocument):
             self.metadata.update(_strip_replay_keys(metadata))
         self.metadata.setdefault("step_name", step_name)
 
+        # NEW: promote sticky/identity keys just merged in, so they
+        # survive this ROI doc's local preview undo/redo.
+        try:
+            self._sync_strata_from_metadata()
+        except Exception:
+            pass
+
         # 1) notify ROI listeners (e.g. the main window via _on_roi_changed)
         try:
             self.changed.emit()
@@ -1712,6 +2039,13 @@ class _RoiViewDocument(ImageDocument):
                 pundo_len=len(self._pundo),
                 predo_len=len(self._predo),
             )
+            # NEW: capture any sticky/identity keys currently in metadata
+            # before we blow it away with the frozen snapshot.
+            try:
+                self._sync_strata_from_metadata()
+            except Exception:
+                pass
+
             # move current → redo; pop undo → current
             curr = self._current_preview_copy()
             self._predo.append((curr, dict(self.metadata), self._pundo[-1][2]))
@@ -1719,6 +2053,12 @@ class _RoiViewDocument(ImageDocument):
             prev_img, prev_meta, name = self._pundo.pop()
             self._preview_override = prev_img
             self.metadata = dict(prev_meta)
+            # NEW: overlay sticky/identity so ROI-level WCS + identity
+            # keys survive local preview undo.
+            try:
+                self._overlay_strata_onto_metadata()
+            except Exception:
+                pass
             _debug_log_undo(
                 "_RoiViewDocument.undo.local.apply",
                 roi=self._roi,
@@ -1774,6 +2114,13 @@ class _RoiViewDocument(ImageDocument):
     def redo(self) -> str | None:
         # --- Case 1: ROI-local preview history ---
         if self._predo:
+            # NEW: capture any sticky/identity keys currently in metadata
+            # before we replace it with the redo snapshot below.
+            try:
+                self._sync_strata_from_metadata()
+            except Exception:
+                pass
+
             # move current → undo; pop redo → current
             curr = self._current_preview_copy()
             self._pundo.append((curr, dict(self.metadata), self._predo[-1][2]))
@@ -1781,6 +2128,12 @@ class _RoiViewDocument(ImageDocument):
             nxt_img, nxt_meta, name = self._predo.pop()
             self._preview_override = nxt_img
             self.metadata = dict(nxt_meta)
+            # NEW: overlay sticky/identity so ROI-level WCS + identity
+            # keys survive local preview redo.
+            try:
+                self._overlay_strata_onto_metadata()
+            except Exception:
+                pass
 
             try:
                 self.changed.emit()
@@ -3322,6 +3675,15 @@ class DocManager(QObject):
             meta["original_header"] = effective_header
 
         doc.metadata = meta
+        # Post-save the in-memory metadata was replaced wholesale. Re-sync
+        # sticky/identity strata so they reflect what's actually there now
+        # (e.g. the refreshed original_header). Best-effort — older doc
+        # types (ProjectDocument etc.) may not implement this.
+        try:
+            if hasattr(doc, "_sync_strata_from_metadata"):
+                doc._sync_strata_from_metadata()
+        except Exception:
+            pass
 
         # reset dirty flag
         if hasattr(doc, "dirty"):
