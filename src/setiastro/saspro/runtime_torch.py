@@ -2071,22 +2071,40 @@ def import_torch(
         except Exception:
             pass
 
-    def _raise_missing_runtime(info: dict) -> None:
+    def _raise_missing_runtime(info: dict, fallback_detail: str | None = None) -> None:
         missing = [k for k in ("torch", "torchvision") if not info[k][0]]
         if require_torchaudio and not info["torchaudio"][0]:
             missing.append("torchaudio")
-        if prefer_cuda or prefer_xpu or prefer_dml or prefer_rocm:
-            msg = (
-                "GPU acceleration runtime is not installed or is incomplete.\n\n"
-                f"Missing packages in runtime venv: {', '.join(missing)}\n\n"
-                "Please go to Settings -> Preferences and install GPU Acceleration "
-                "before running Cosmic Clarity, SyQon, or other hardware accelerated tools."
+        gpu = prefer_cuda or prefer_xpu or prefer_dml or prefer_rocm
+        head = (
+            "GPU acceleration runtime is not installed or is incomplete."
+            if gpu else
+            "Hardware acceleration runtime is not installed or is incomplete."
+        )
+        parts = [head, f"Missing packages in runtime venv: {', '.join(missing)}"]
+        # When the in-process fallback below tried to import torch/torchvision
+        # itself and hit a concrete error (typically an ABI mismatch such as
+        # ``operator torchvision::nms does not exist`` from a torch and
+        # torchvision that were built against different releases, or a HIP
+        # library the installed torch expects that this GPU / driver does not
+        # actually support), thread that error through the message so the
+        # popup shows something searchable instead of a generic "install GPU
+        # Acceleration" hint that will not help.
+        if fallback_detail:
+            parts.append(f"Underlying error: {fallback_detail}")
+            parts.append(
+                "This usually means the installed torch and torchvision were "
+                "built against different versions of each other, or the GPU / "
+                "driver combination is not fully supported by the installed "
+                "runtime."
             )
-        else:
-            msg = (
-                "Hardware acceleration runtime is not installed or is incomplete.\n\n"
-                f"Missing packages in runtime venv: {', '.join(missing)}"
+        if gpu:
+            parts.append(
+                "Please go to Settings -> Preferences and install GPU "
+                "Acceleration before running Cosmic Clarity, SyQon, or other "
+                "hardware accelerated tools."
             )
+        msg = "\n\n".join(parts)
         status_cb(f"[RT] {msg}")
         raise RuntimeError(msg)
 
@@ -2259,6 +2277,7 @@ def import_torch(
         # before we conclude anything. If it works, we know torch is
         # really usable and we cache/marker it so the next launch takes
         # the fast path.
+        _fallback_detail: str | None = None
         try:
             sp = str(site)
             if sp not in sys.path:
@@ -2303,18 +2322,22 @@ def import_torch(
                 _write_cache_best_effort(rt, site, venv_ver)
                 return _t_probe
             else:
+                _fallback_detail = (
+                    f"in-process torch resolved outside the venv ({tf!r})"
+                )
                 status_cb(
                     "[RT] In-process fallback imported torch but it does "
                     f"not resolve under the venv ({tf!r}); ignoring."
                 )
         except Exception as e:
+            _fallback_detail = f"{type(e).__name__}: {e}"
             status_cb(
                 f"[RT] In-process fallback also failed "
-                f"({type(e).__name__}: {e}); honouring the subprocess probe."
+                f"({_fallback_detail}); honouring the subprocess probe."
             )
 
         if not allow_install:
-            _raise_missing_runtime(info)
+            _raise_missing_runtime(info, fallback_detail=_fallback_detail)
 
         status_cb("[RT] Runtime torch stack missing/incomplete; explicit install allowed. Starting…")
         try:
