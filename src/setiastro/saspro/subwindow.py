@@ -2669,6 +2669,8 @@ class ImageSubWindow(QWidget):
             new_scale = self.scale
         # clamp with new max
         self.scale = max(self._min_scale, min(new_scale, self._max_scale))
+        # Fast present at the new scale first so label size + scrollbar
+        # ranges are correct before we position the view.
         self._render(rebuild=False)
 
         vp = self.scroll.viewport().size()
@@ -2681,21 +2683,41 @@ class ImageSubWindow(QWidget):
             vv = int(st.get("vval", vbar.value()))
             hbar.setValue(hv)
             vbar.setValue(vv)
-            return
+        else:
+            # fallback: center in image coordinates
+            center = st.get("center")
+            if center is not None:
+                try:
+                    cx_img, cy_img = float(center[0]), float(center[1])
+                except Exception:
+                    cx_img = cy_img = None
+                if cx_img is not None:
+                    cx_label = cx_img * self.scale
+                    cy_label = cy_img * self.scale
+                    hbar.setValue(int(cx_label - vp.width()  / 2.0))
+                    vbar.setValue(int(cy_label - vp.height() / 2.0))
 
-        # fallback: center in image coordinates
-        center = st.get("center")
-        if center is None:
-            return
+        # Trigger the same settle logic a real zoom-end uses so the receiving
+        # view rebuilds the source pixmap when the dropped scale is beyond the
+        # cached resolution -- otherwise it stays pixelated until the user
+        # nudges the zoom to force a rebuild.
         try:
-            cx_img, cy_img = float(center[0]), float(center[1])
+            if self._zoom_settle_needs_rebuild():
+                self._render(rebuild=True)
+            elif getattr(self, "_smooth_zoom", True):
+                self._present_scaled(interactive=False)
         except Exception:
-            return
-        cx_label = cx_img * self.scale
-        cy_label = cy_img * self.scale
-        hbar.setValue(int(cx_label - vp.width()  / 2.0))
-        vbar.setValue(int(cy_label - vp.height() / 2.0))
-        self._emit_view_transform() 
+            pass
+        finally:
+            try:
+                self._hide_recalc_overlay()
+            except Exception:
+                pass
+
+        try:
+            self._emit_view_transform()
+        except Exception:
+            pass
 
 
     # ---- DnD 'view tab' -------------------------------------------------
@@ -3236,14 +3258,32 @@ class ImageSubWindow(QWidget):
         # ---------------------------------------
         scale = float(getattr(self, "scale", 1.0) or 1.0)
         src_h, src_w = int(arr.shape[0]), int(arr.shape[1])
-        out_w = max(1, int(round(src_w * scale)))
-        out_h = max(1, int(round(src_h * scale)))
-        # Hard cap so 1:1 zoom of a huge mosaic cannot recreate the old pixmap.
+
+        # We never build the numpy display buffer bigger than source. Zoom past
+        # 100% is presentation-time upscaling: Qt scales _pm_src up to the label
+        # size in one pass (nearest for crisp pixels, or bilinear when smooth-zoom
+        # is on). Pre-upsampling in numpy would just replicate pixels into a
+        # larger uint8 buffer for no visual gain -- and, when smooth-zoom is on,
+        # actively degrade quality (Qt smooths an already-blocky nearest upsample
+        # instead of smoothing the source directly).
+        build_scale = min(1.0, float(scale))
+
+        out_w = max(1, int(round(src_w * build_scale)))
+        out_h = max(1, int(round(src_h * build_scale)))
+        # Hard cap so a huge mosaic at 100% still stays bounded (RAM sanity).
+        # When either the 1.0 cap or the 8192 cap engages, the pixmap represents
+        # an EFFECTIVE scale below what the user asked for. _pm_src_scale below
+        # records that honest value so _present_scaled sizes the label to
+        # src * self.scale (via Qt upsampling) and every consumer of self.scale
+        # (zoom % readout, loupe coord math, view-state drops, linked views)
+        # stays in sync with what is actually on screen.
         _max_side = 8192
+        effective_scale = float(build_scale)
         if out_w > _max_side or out_h > _max_side:
             k = min(_max_side / out_w, _max_side / out_h)
             out_w = max(1, int(out_w * k))
             out_h = max(1, int(out_h * k))
+            effective_scale = float(build_scale) * float(k)
 
         vis_src = arr
         if np.issubdtype(arr.dtype, np.integer):
@@ -3361,7 +3401,12 @@ class ImageSubWindow(QWidget):
         self._pm_src = QPixmap.fromImage(self._qimg_src)
         if isinstance(self.label, ViewportImageCanvas):
             self.label.invalidate()   # LUT/data changed -> drop cached tiles + proxy
-        self._pm_src_scale = float(scale)
+        # Truthful: this is the scale that the built pixmap actually represents.
+        # Equals `scale` when the 8192 cap did NOT engage; below `scale` when it
+        # did. Downstream (_present_scaled, _zoom_settle_needs_rebuild) rely on
+        # this being honest so ratio math sizes the label to src_w*self.scale
+        # and every coord conversion using self.scale keeps working.
+        self._pm_src_scale = float(effective_scale)
         # Remember the TRUE source dimensions this pixmap was built from, so the
         # zoom-settle can tell when the cached pixmap is under-resolved for the
         # current zoom and needs a full-res re-rasterize.
@@ -3968,9 +4013,11 @@ class ImageSubWindow(QWidget):
         cur_eff = pm.width() / float(src_w)
 
         # Best effective scale a rebuild could produce at the current zoom,
-        # honouring the same 8192-per-side cap that _render() applies.
+        # honouring both the 8192-per-side cap and the 1.0 cap that _render()
+        # applies (we never build the numpy buffer larger than source).
         _max_side = 8192
         achievable = min(float(self.scale),
+                         1.0,
                          _max_side / float(src_w),
                          _max_side / float(src_h))
 
