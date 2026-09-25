@@ -129,10 +129,12 @@ _r(r"🛰️ \d+/\d+:",                                  "Satellite Trails",  _S
 
 # ── Measurements ─────────────────────────────────────────────────────────
 _r(r"📏 Phase: Measurements starting",              "Measurements",      _ST_RUNNING)
+_r(r"📦 Measured \d+/\d+ frames",                   "Measurements",      _ST_RUNNING)
 _r(r"📏 Phase: Measurements complete",              "Measurements",      _ST_OK)
 
 # ── Normalization ─────────────────────────────────────────────────────────
 _r(r"📏 Phase: Normalization starting",             "Normalization",     _ST_RUNNING)
+_r(r"🌀 Normalizing chunk \d+/\d+",                 "Normalization",     _ST_RUNNING)
 _r(r"📏 Phase: Normalization complete",             "Normalization",     _ST_OK)
 
 # ── Reference frame ───────────────────────────────────────────────────────
@@ -141,6 +143,7 @@ _r(r"📌 Reference for alignment",                  "Ref Frame Selection", _ST_
 
 # ── Star alignment ────────────────────────────────────────────────────────
 _r(r"📏 Phase: Star alignment starting",            "Registration",      _ST_RUNNING)
+_r(r"(?:📐\s*)?Aligning stars… \(\d+/\d+\)",         "Registration",      _ST_RUNNING)
 _r(r"📏 Phase: Star alignment complete",            "Registration",      _ST_OK)
 _r(r"Alignment summary: (\d+ succeeded)",           "Registration",      _ST_OK,   1)
 _r(r"🚨 Rejected \d+ frame",                        "Registration",      _ST_WARN)
@@ -149,6 +152,8 @@ _r(r"🚨 Rejected \d+ frame",                        "Registration",      _ST_W
 _r(r"📏 Phase: Integration starting",               "Integration",       _ST_RUNNING)
 _r(r"Starting integration for group '(.+?)' with",  "Integration",       _ST_RUNNING, 1)
 _r(r"📊 Stacking group '(.+?)' with (.+)",           "Integration",       _ST_RUNNING, 1)
+_r(r"🔧 \[LowRAM\] Tile \d+/\d+",                   "Integration",       _ST_RUNNING)
+_r(r"🔧 Tile \d+/\d+",                              "Integration",       _ST_RUNNING)
 _r(r"Post-align finalize from prepass",             "Integration",       _ST_RUNNING)
 _r(r"🔹 .* Finalizing '(.+?)' from prepass",         "Integration",       _ST_RUNNING, 1)
 _r(r"✅ Saved integrated image.*for '(.+?)'",        "Integration",       _ST_OK,   1)
@@ -253,21 +258,17 @@ _r(r"^❌",   "Error",     _ST_FAIL)
 
 # ── Noise patterns to suppress (tile-level chatter) ──────────────────────
 _SUPPRESS = re.compile(
-    r"tile \d+/\d+"
-    r"|Creating temp memmap"
+    r"Creating temp memmap"
     r"|memmap:"
-    r"|chunk \d+/\d+.*frames"
     r"|Before saving:"
     r"|min ="
     r"|max ="
     r"|LIGHT final"
     r"|💾 Saved:"
-    r"|📷 Progress:"
     r"|  ✓ GPU calibrated:"
     r"|  ✓ Dark loaded:"
     r"|  ✓ Flat loaded:"
     r"|  Mask saved:"
-    r"|Aligning stars… \(\d"
     r"|🗂️"
     r"|📦 \d+ tiles"
     r"|🧭 Total tiles"
@@ -277,6 +278,8 @@ _SUPPRESS = re.compile(
     r"|✅ Master Dark saved: "
     r"|scale_guess"
     r"|✅ Prepass '"
+    r"|✅ SASD v2"
+    r"|✅ Saved rejection map"
     r"|🔹 \[\d+/\d+\] Finalizing"
     r"|Rejection prepass:"
     r"|🔹 .* Finalizing '.+?' from prepass"
@@ -290,10 +293,8 @@ _SUPPRESS = re.compile(
     r"|refine_if"
     r"|Image Registration Started"
     r"|🔄 Image Registration"
-    r"|Aligning stars"
     r"|Measuring chunk"
     r"|✅ All chunks complete"
-    r"|🌀 Normalizing chunk"
     r"|Updated self\.light_files"
     r"|Transform file saved.*alignment_transforms\.sasd(?! \(v2\))"
     r"|_n\.fit"
@@ -922,6 +923,13 @@ class StackingMonitorDialog(QDialog):
             idx = self._open.pop("Integration")
             self._rows[idx].finish(_ST_OK)
             self._refresh_row(idx)
+
+        # Generic ✅/⚠️/❌ catch-alls must not spawn orphan rows while a real
+        # phase is still open — e.g. "✅ SASD v2: loaded…" right after
+        # "📐 Drizzle for …" was showing a false "Complete" under a running
+        # Integration/Drizzle row.
+        if op in ("Complete", "Warning", "Error") and self._open:
+            return
 
         # ── new row ───────────────────────────────────────────────────────
         r = _MonitorRow(op, group, status, note)
