@@ -1502,17 +1502,29 @@ class CosmicClarityDialogPro(QDialog):
             self._wait.close()
             self._wait = None
 
-        if "GPU acceleration runtime" in str(msg):
-            QMessageBox.warning(
-                self,
-                "Cosmic Clarity",
-                "GPU acceleration is not installed.\n\n"
-                "Please go to Settings -> Preferences and install GPU Acceleration "
-                "before running Cosmic Clarity."
-            )
+        text = str(msg)
+
+        # Runtime-diagnosed acceleration problems: show the message runtime_torch
+        # composed, not a fixed generic one. It already carries the missing-package
+        # list AND, when the in-process fallback tripped over a real error (typical
+        # cases: a torch and torchvision built against different releases surface
+        # as ``operator torchvision::nms does not exist``; a HIP/CUDA library the
+        # installed torch expects but the driver does not really support surfaces
+        # as an ``undefined symbol`` or a load failure), the underlying error too.
+        # That detail is the searchable string a user actually needs. The old
+        # handler swallowed it and told everyone to click Install/Repair, which
+        # does not help when the runtime is installed-but-broken.
+        if "GPU acceleration runtime" in text or "Hardware acceleration runtime" in text:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle("Cosmic Clarity")
+            box.setText("Hardware acceleration is not usable for this run.")
+            box.setInformativeText(text)
+            box.setStandardButtons(QMessageBox.StandardButton.Ok)
+            box.exec()
             return
 
-        QMessageBox.critical(self, "Cosmic Clarity", msg)
+        QMessageBox.critical(self, "Cosmic Clarity", text)
 
     def _on_engine_result(self, out_arr: np.ndarray, step_title: str):
         if self._wait:

@@ -92,7 +92,7 @@ STUDIO_MODELS: list[tuple[str, str, str, str, str]] = [
     ("prism-legacy-v2", "Prism Legacy V2 — Denoise",       "Licensed", "prism",         "Robust linear input"),
     ("parallax",        "Parallax — Correct / Reduce / Deblur", "Licensed", "parallax",  "Linear or non-linear"),
     ("axiom",           "Axiom V3 — Starless",             "Licensed", "axiom",         "Linear (Axiom stretch) or non-linear"),
-    ("deep-gradient",   "Deep Gradient — Gradient removal", "Included", "deep-gradient", "Linear RGB or mono"),
+    ("deep-gradient",   "Deep Gradient (Untested Beta) — Gradient removal", "Included", "deep-gradient", "Linear RGB or mono"),
 ]
 
 _MODEL_INDEX = {m[0]: m for m in STUDIO_MODELS}
@@ -1166,22 +1166,8 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         else:
             orig_rgb = orig[..., :3]
 
-        # Secondary product → new view (stars-only for Axiom, gradient for Deep Gradient)
-        if secondary is not None:
-            try:
-                sec = np.asarray(secondary, dtype=np.float32)
-                if sec.ndim == 2:
-                    sec = np.stack([sec] * 3, axis=-1)
-                if fam == "axiom":
-                    suffix, source = "_stars", "Stars-Only (SyQon Axiom)"
-                else:
-                    suffix, source = "_gradient", "Gradient (SyQon Deep Gradient)"
-                sec_push = sec.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else sec
-                _push_as_new_doc(self.main, self.doc, sec_push, title_suffix=suffix, source=source)
-            except Exception:
-                pass
-
-        # Mask-blend the primary against the original using the doc's active mask.
+        # Mask-blend the primary against the original using the doc's active
+        # mask (all families). No mask ⇒ blend returns the primary unchanged.
         final_rgb = _blend_result_with_mask(primary, orig_rgb, self.doc)
         final_to_apply = final_rgb.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_rgb
         final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
@@ -1208,7 +1194,48 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             },
         }
 
-        self.doc.apply_edit(final_to_apply, metadata=meta, step_name=step_name)
+        # Apply the primary to the original doc FIRST, before pushing the
+        # secondary as a new doc. If _push_as_new_doc shifts active-doc focus
+        # or otherwise mutates state that apply_edit relies on, doing the
+        # apply_edit first eliminates that as a variable.
+        import sys as _sys
+        print(f"[SyQon apply] fam={fam} secondary_present={secondary is not None} "
+              f"final_shape={final_to_apply.shape} "
+              f"stats=(min={float(final_to_apply.min()):.4f}, max={float(final_to_apply.max()):.4f}, mean={float(final_to_apply.mean()):.4f})",
+              file=_sys.stderr, flush=True)
+        try:
+            self.doc.apply_edit(final_to_apply, metadata=meta, step_name=step_name)
+            print("[SyQon apply] apply_edit returned normally", file=_sys.stderr, flush=True)
+        except Exception as _ae:
+            import traceback
+            print(f"[SyQon apply] apply_edit RAISED: {_ae!r}", file=_sys.stderr, flush=True)
+            traceback.print_exc(file=_sys.stderr); _sys.stderr.flush()
+
+        # Now push the secondary as a new view (stars-only for Axiom, gradient
+        # for Deep Gradient). Done AFTER apply_edit so nothing it does can
+        # interfere with the primary being written to the original doc.
+        # The mask scopes the secondary too: the CLI operates on the whole
+        # image, but the user only asked us to touch pixels the mask allows,
+        # so we blend the secondary against a ZERO image via the same mask.
+        # Result: masked region shows the extracted stars/gradient, the rest
+        # is black. With no mask set, _blend_result_with_mask returns the
+        # secondary unchanged (full-image behavior, as before).
+        if secondary is not None:
+            try:
+                sec = np.asarray(secondary, dtype=np.float32)
+                if sec.ndim == 2:
+                    sec = np.stack([sec] * 3, axis=-1)
+                if fam == "axiom":
+                    suffix, source = "_stars", "Stars-Only (SyQon Axiom)"
+                else:
+                    suffix, source = "_gradient", "Gradient (SyQon Deep Gradient)"
+                sec_zero = np.zeros_like(sec, dtype=np.float32)
+                sec_masked = _blend_result_with_mask(sec, sec_zero, self.doc)
+                sec_push = sec_masked.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else sec_masked
+                sec_push = np.clip(sec_push, 0.0, 1.0).astype(np.float32, copy=False)
+                _push_as_new_doc(self.main, self.doc, sec_push, title_suffix=suffix, source=source)
+            except Exception as _se:
+                print(f"[SyQon apply] secondary push failed: {_se!r}", file=_sys.stderr, flush=True)
         try:
             self.main._last_headless_command = {"command_id": "syqontools", "preset": self.get_preset()}
         except Exception:
