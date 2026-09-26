@@ -13,17 +13,25 @@ never selects TBB on the fragile combo.
 
 Numba resolves its threading layer once, at import time, and (with
 THREADING_LAYER left at its 'default') picks the first AVAILABLE layer from
-THREADING_LAYER_PRIORITY. So instead of hard-forcing 'workqueue', we demote TBB
-to last in that priority list:
+THREADING_LAYER_PRIORITY. So instead of hard-forcing 'workqueue', we set an
+explicit priority that front-loads the threadsafe layers:
 
-    omp  ->  workqueue  ->  tbb
+    Windows (TBB fragile):  omp  ->  workqueue  ->  tbb   (tbb unreachable)
+    elsewhere:              omp  ->  tbb        ->  workqueue
 
-omp is threadsafe and keeps real parallelism; workqueue is the always-available
-pure-C fallback. Because workqueue is always available, tbb is never reached —
-it can't be selected, so it can't crash. If omp is present and healthy on this
-machine the user gets it (and stays off the not-threadsafe workqueue path that
-the blink loader has to serialize around); otherwise they get workqueue and the
-app still boots.
+omp and tbb are both threadsafe and keep real parallelism; workqueue is the
+always-available pure-C fallback but is NOT threadsafe. On Windows we drop tbb
+behind the always-available workqueue so tbb can never be selected (and so can
+never trigger the 3.14 crash). Everywhere else tbb is healthy, so we keep both
+threadsafe layers ahead of workqueue and only land on workqueue when neither
+omp nor tbb is installed — which is the one case the blink loader must
+serialize around. Either way the app still boots.
+
+NOTE: numba_warmup formerly hard-pinned NUMBA_THREADING_LAYER=workqueue on ALL
+platforms, which overrode this steering and forced the non-threadsafe layer
+even where omp/tbb existed (this is what put a Linux user on workqueue). That
+pin is now scoped to Windows; this module is the single source of truth for
+layer selection everywhere else.
 
 This must be imported as the very first thing in every process entry point
 (gui_entry, the CLI, __main__) — before any module that does `import numba` or
@@ -48,9 +56,14 @@ import sys
 # The *resolved* layer is logged by numba_warmup, not known here.
 SELECTED_PRIORITY: str | None = None
 
-# Priority with TBB demoted to last. workqueue being always-available means
-# tbb is unreachable, so it can never be the one that runs.
+# Windows / TBB-fragile priority: TBB demoted BELOW the always-available
+# workqueue, so tbb is unreachable and can never be the one that runs.
 _SAFE_PRIORITY = "omp workqueue tbb"
+
+# Non-fragile priority: keep BOTH threadsafe layers (omp, then tbb) ahead of the
+# non-threadsafe workqueue fallback, so a box only lands on workqueue — and the
+# blink loader only has to serialize — when neither omp nor tbb is installed.
+_PREFER_SAFE_PRIORITY = "omp tbb workqueue"
 
 
 def _tbb_is_fragile() -> bool:
@@ -87,13 +100,18 @@ def configure() -> str | None:
         SELECTED_PRIORITY = existing_prio
         return existing_prio
 
-    if not _tbb_is_fragile():
-        SELECTED_PRIORITY = None
-        return None
-
-    os.environ["NUMBA_THREADING_LAYER_PRIORITY"] = _SAFE_PRIORITY
-    SELECTED_PRIORITY = _SAFE_PRIORITY
-    return _SAFE_PRIORITY
+    # Set an explicit priority on EVERY platform. Where TBB is fragile
+    # (Windows) it goes last, behind the always-available workqueue, so tbb is
+    # unreachable and can't crash. Everywhere else we front-load the threadsafe
+    # layers (omp, then tbb) and leave workqueue as the last resort, so a box
+    # only lands on the non-threadsafe workqueue layer when neither omp nor tbb
+    # is installed. Leaving numba's own default here would have preferred tbb
+    # first, which is fine for safety but skips omp; being explicit also pins
+    # sane behavior against any future change to numba's built-in default.
+    prio = _SAFE_PRIORITY if _tbb_is_fragile() else _PREFER_SAFE_PRIORITY
+    os.environ["NUMBA_THREADING_LAYER_PRIORITY"] = prio
+    SELECTED_PRIORITY = prio
+    return prio
 
 
 # Configure on import so a bare `import ...numba_bootstrap` is enough.
