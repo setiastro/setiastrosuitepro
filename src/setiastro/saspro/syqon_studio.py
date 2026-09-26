@@ -153,9 +153,21 @@ def studio_cli_candidates() -> list[str]:
         if local:
             out.append(str(Path(local) / "Programs" / "SyQon Studio" / "syqon-cli.exe"))
     else:
-        # No official Linux install location is documented yet; rely on
-        # $SYQON_CLI_PATH and the user-selected fallback.
-        pass
+        # Linux: prefer the CLI on $PATH (this is where the .deb installs it,
+        # /usr/bin/syqon-cli, same pattern as astap et al.). Fall back to the
+        # standard install location, then to common AppImage / tarball drops.
+        which = shutil.which("syqon-cli")
+        if which:
+            out.append(which)
+        out.append("/usr/bin/syqon-cli")
+        out.append("/usr/local/bin/syqon-cli")
+        out.append("/opt/SyQonStudio/syqon-cli")
+        out.append("/opt/syqon-studio/syqon-cli")
+        # User-scoped installs (pipx / local tarball / extracted AppImage in $HOME)
+        home = Path.home()
+        out.append(str(home / ".local" / "bin" / "syqon-cli"))
+        out.append(str(home / "Applications" / "SyQonStudio" / "syqon-cli"))
+        out.append(str(home / "Applications" / "syqon-studio" / "syqon-cli"))
 
     # de-dup, keep order
     seen: set[str] = set()
@@ -1166,10 +1178,19 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         else:
             orig_rgb = orig[..., :3]
 
-        # Mask-blend the primary against the original using the doc's active
-        # mask (all families). No mask ⇒ blend returns the primary unchanged.
-        final_rgb = _blend_result_with_mask(primary, orig_rgb, self.doc)
-        final_to_apply = final_rgb.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_rgb
+        # Deep Gradient / Axiom paths: skip the mask blend — the CLI's primary
+        # IS the final image (gradient-removed / starless); blending it against
+        # the original with-stars/with-gradient image just re-contaminates it
+        # wherever the mask isn't "on". Other families still go through the mask
+        # blend (Prism denoise / Parallax sharpen do benefit from local blends).
+        if fam in ("deep-gradient", "axiom"):
+            pri = np.asarray(primary, dtype=np.float32)
+            if pri.ndim == 2:
+                pri = np.stack([pri] * 3, axis=-1)
+            final_to_apply = pri.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else pri
+        else:
+            final_rgb = _blend_result_with_mask(primary, orig_rgb, self.doc)
+            final_to_apply = final_rgb.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else final_rgb
         final_to_apply = np.clip(final_to_apply, 0.0, 1.0).astype(np.float32, copy=False)
 
         step_name = {
@@ -1214,12 +1235,6 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         # Now push the secondary as a new view (stars-only for Axiom, gradient
         # for Deep Gradient). Done AFTER apply_edit so nothing it does can
         # interfere with the primary being written to the original doc.
-        # The mask scopes the secondary too: the CLI operates on the whole
-        # image, but the user only asked us to touch pixels the mask allows,
-        # so we blend the secondary against a ZERO image via the same mask.
-        # Result: masked region shows the extracted stars/gradient, the rest
-        # is black. With no mask set, _blend_result_with_mask returns the
-        # secondary unchanged (full-image behavior, as before).
         if secondary is not None:
             try:
                 sec = np.asarray(secondary, dtype=np.float32)
@@ -1229,10 +1244,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
                     suffix, source = "_stars", "Stars-Only (SyQon Axiom)"
                 else:
                     suffix, source = "_gradient", "Gradient (SyQon Deep Gradient)"
-                sec_zero = np.zeros_like(sec, dtype=np.float32)
-                sec_masked = _blend_result_with_mask(sec, sec_zero, self.doc)
-                sec_push = sec_masked.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else sec_masked
-                sec_push = np.clip(sec_push, 0.0, 1.0).astype(np.float32, copy=False)
+                sec_push = sec.mean(axis=2).astype(np.float32, copy=False) if orig_was_mono else sec
                 _push_as_new_doc(self.main, self.doc, sec_push, title_suffix=suffix, source=source)
             except Exception as _se:
                 print(f"[SyQon apply] secondary push failed: {_se!r}", file=_sys.stderr, flush=True)
