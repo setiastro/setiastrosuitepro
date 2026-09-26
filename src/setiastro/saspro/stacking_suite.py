@@ -6786,9 +6786,9 @@ class StackingSuiteDialog(QDialog):
             return
         self._align_prog_in_slot = True
         try:
+            done, total = self._align_prog_pending
             dlg = getattr(self, "align_progress", None)
             if dlg is not None:
-                done, total = self._align_prog_pending
                 if total > 0:
                     done = max(0, min(int(done), int(total)))
                     dlg.setRange(0, int(total))
@@ -6798,6 +6798,18 @@ class StackingSuiteDialog(QDialog):
                     # unknown total: keep it as a pulsing dialog
                     dlg.setRange(0, 0)
                     dlg.setLabelText(self.tr("Aligning stars…"))
+            # Throttled LogBus post so the Execution Monitor Note updates
+            # (~20 updates max), matching Measurements cadence.
+            if total > 0:
+                done = max(0, min(int(done), int(total)))
+                report_every = max(1, int(total) // 20)
+                if done == 1 or done == int(total) or (done % report_every == 0):
+                    tup = (done, int(total))
+                    if getattr(self, "_align_prog_status_last", None) != tup:
+                        self._align_prog_status_last = tup
+                        self.update_status(
+                            self.tr("📐 Aligning stars… ({0}/{1})").format(done, int(total))
+                        )
         finally:
             self._align_prog_in_slot = False
             self._align_prog_pending = None

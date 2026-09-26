@@ -71,7 +71,8 @@ _try_raise_fd_limit()
 
 def _blink_thread_safety_mode() -> str:
     """Return 'safe' or 'fast'. QSettings 'blink/thread_safety' may be:
-       'auto' (default) -> safe on macOS, fast elsewhere
+       'auto' (default) -> safe iff numba's resolved threading layer is not
+                           threadsafe (workqueue), fast otherwise
        'safe'           -> force serialized numba + conservative workers
        'fast'           -> force concurrent numba + aggressive workers"""
     try:
@@ -82,7 +83,19 @@ def _blink_thread_safety_mode() -> str:
     if mode not in ("auto", "safe", "fast"):
         mode = "auto"
     if mode == "auto":
-        return "safe" if sys.platform == "darwin" else "fast"
+        # The real hazard is the resolved threading layer, not the OS: any box
+        # whose numba fell back to the non-threadsafe 'workqueue' layer aborts
+        # under the parallel loader (StellarMate/Linux and macOS alike). Key off
+        # that, falling back to the old darwin guess only while the layer is
+        # still unknown (i.e. before warmup has run a parallel region).
+        try:
+            from setiastro.saspro.legacy.numba_utils import numba_threading_layer_unsafe
+            unsafe = numba_threading_layer_unsafe()
+        except Exception:
+            unsafe = None
+        if unsafe is None:
+            return "safe" if sys.platform == "darwin" else "fast"
+        return "safe" if unsafe else "fast"
     return mode
 
 
@@ -96,6 +109,38 @@ def _blink_apply_thread_safety() -> str:
     except Exception:
         pass
     return mode
+
+
+def _blink_wait_for_numba_layer(timeout: float = 20.0) -> None:
+    """Block (pumping the UI) until numba_warmup has resolved and recorded the
+    threading layer.
+
+    The lazy NUMBA_PARALLEL_LOCK decides serialize-vs-concurrent from numba's
+    *resolved* layer, which numba_warmup records only after its background
+    compile finishes. If a user opens Blink and loads before that completes, the
+    layer is still unknown and the decision falls back to an OS guess
+    (fast/no-op on Linux) — the exact path that aborts on a workqueue box. So we
+    wait here, before fanning out. Idempotent and best-effort: any failure just
+    returns and lets loadImages' pathological-case fallback take over."""
+    try:
+        from setiastro.saspro.numba_warmup import (
+            start_background_warmup, wait_for_warmup, is_warmup_done,
+        )
+    except Exception:
+        return
+    try:
+        if is_warmup_done():
+            return
+        start_background_warmup()  # idempotent; no-op if already running
+        deadline = time.monotonic() + float(timeout)
+        while not is_warmup_done() and time.monotonic() < deadline:
+            wait_for_warmup(timeout=0.1)
+            try:
+                QApplication.processEvents()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _percentile_scale(arr, lo=0.5, hi=99.5):
@@ -3405,8 +3450,26 @@ class BlinkTab(QWidget):
         attempt = 0
         last_pct = -1
 
+        # Make sure numba's threading layer is resolved & recorded before we
+        # fan out — otherwise the lock's decision falls back to an OS guess
+        # (fast/no-op on Linux), which is the concurrent-access abort path.
+        _blink_wait_for_numba_layer()
+
         # Apply platform / QSettings thread-safety mode once, before the pool.
         _mode = _blink_apply_thread_safety()
+
+        # Pathological fallback: if warmup still hasn't resolved the layer
+        # (e.g. it timed out on a very slow machine), don't gamble on a possible
+        # workqueue box — serialize this load. Better slow than aborted.
+        try:
+            from setiastro.saspro.legacy.numba_utils import (
+                numba_threading_layer_unsafe, set_numba_parallel_serialize,
+            )
+            if numba_threading_layer_unsafe() is None:
+                set_numba_parallel_serialize(True)
+                _mode = "safe"
+        except Exception:
+            pass
 
         while remaining and attempt <= MAX_RETRIES:
 

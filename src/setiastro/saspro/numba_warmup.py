@@ -28,11 +28,21 @@ def _do_warmup():
     """
     try:
         #print("[numba] warmup thread started")
-        # Guard against TBB access violation on Windows — must be set
-        # BEFORE the first numba import.  setdefault respects any
-        # explicit override the user (or the bootstrap) already set.
-        import os as _os
-        _os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
+        # Guard against the CPython 3.14 TBB access violation on Windows — must
+        # be set BEFORE the first numba import. setdefault respects any explicit
+        # override the user (or the bootstrap) already set.
+        #
+        # WINDOWS ONLY: a hard NUMBA_THREADING_LAYER pin beats the priority
+        # steering numba_bootstrap sets, so applying it on every platform forced
+        # the NON-threadsafe 'workqueue' layer even where omp/tbb were available.
+        # That is exactly what put a Linux (StellarMate) user on workqueue and
+        # into the blink concurrent-access abort. numba_bootstrap already makes
+        # tbb unreachable via priority, so this pin is redundant for crash-safety
+        # and could be dropped entirely once omp-on-Windows is confirmed healthy;
+        # for now keep it as a belt-and-suspenders guard on Windows alone.
+        import os as _os, sys as _sys
+        if _sys.platform.startswith("win"):
+            _os.environ.setdefault("NUMBA_THREADING_LAYER", "workqueue")
 
         # Import numba functions - expanded set
         from setiastro.saspro.legacy.numba_utils import (
@@ -110,6 +120,15 @@ def _do_warmup():
             _layer = numba.threading_layer()
             #print(f"[numba] threading layer resolved: {_layer}")
             logging.info("Numba threading layer resolved: %s", _layer)
+            # Pin the resolved layer into numba_utils NOW, at the one place we
+            # already know it, so the lazy NUMBA_PARALLEL_LOCK decides correctly
+            # for the very first concurrent parallel region (e.g. the blink
+            # loader) instead of falling back to an OS guess before warmup ran.
+            try:
+                from setiastro.saspro.legacy import numba_utils as _nu
+                _nu.record_numba_threading_layer(str(_layer))
+            except Exception:
+                pass
             if _layer not in ("tbb", "omp"):
                 logging.warning("Numba resolved to '%s' (NOT threadsafe).", _layer)
         except Exception as _e:

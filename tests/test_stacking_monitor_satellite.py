@@ -165,6 +165,19 @@ class MonitorDrizzleRowSequenceTests(unittest.TestCase):
         )
         self.assertNotIn("Integration", self.dlg._open)
 
+    def test_sasd_loaded_during_drizzle_does_not_spawn_complete_row(self):
+        self.dlg._on_message(
+            "📐 Drizzle for 'H - 600.0s (9576x6388) [G100]' at 1.0× (drop=0.7) using 52 frame(s)."
+        )
+        self.dlg._on_message("✅ SASD v2: loaded 429 transform(s).")
+        self.dlg._on_message("✅ Saved rejection map to /tmp/rej.sasr")
+        self.assertEqual(
+            self._ops(),
+            [("Integration", "H - 600.0s (9576x6388) [G100]", "running")],
+        )
+        self.assertIn("Integration", self.dlg._open)
+        self.assertIn("Drizzle for", self.dlg._rows[-1].note)
+
     def test_next_set_does_not_show_two_running_rows(self):
         self.dlg._on_message(
             "📐 Drizzle for 'S - 600.0s (9576x6388) [G100]' at 1.0× (drop=0.7) using 52 frame(s)."

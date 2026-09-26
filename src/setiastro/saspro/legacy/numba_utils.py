@@ -18,21 +18,28 @@ import threading
 # no CPU parallelism — it only stops the oversubscription that was aborting.
 # RLock (not Lock): stretch_color_image nests into stretch_mono_image, and both
 # serialize on this same lock, so the same thread must be able to re-enter.
-class _NoOpLock:
-    """Context-manager stand-in used when numba-parallel serialization is
-    disabled. On platforms where concurrent entry into numba parallel regions is
-    safe (Windows / Linux in our testing), we skip the real RLock entirely so
-    parallel loaders / debayer calls run concurrently at full speed."""
-    __slots__ = ()
-    def acquire(self, *a, **k): return True
-    def release(self): pass
-    def __enter__(self): return self
-    def __exit__(self, exc_type, exc, tb): return False
+#
+# WHY A LAZY PROXY (not a plain RLock/no-op chosen at import time):
+# the real predictor of "will concurrent entry abort?" is numba's *resolved
+# threading layer*, not the OS. Only 'tbb' and 'omp' are threadsafe; 'workqueue'
+# is not, and numba falls back to workqueue on any box without tbb/omp — Linux
+# (StellarMate/ARM) included, not just macOS. But numba.threading_layer() is not
+# knowable until the first parallel region has run, which is usually AFTER this
+# module is imported. Deciding at import time therefore mis-guesses, and any
+# module that grabbed the lock object by reference (imageops.stretch) would be
+# frozen to that wrong guess even after a runtime swap. So we defer the
+# serialize-or-not decision to acquire time: one singleton object, never
+# rebound, that consults the resolved layer on every __enter__. Import order
+# and by-reference imports stop mattering.
 
+# Layers safe to enter concurrently from multiple Python threads.
+_THREADSAFE_LAYERS = ("tbb", "omp")
 
-def _default_numba_serialize() -> bool:
-    # Explicit override via environment. Set this BEFORE importing any SASpro
-    # module to make it authoritative for every importer of NUMBA_PARALLEL_LOCK:
+# Cache of the resolved threading-layer name (lowercased) once it's known.
+_RESOLVED_THREADING_LAYER = None            # None = not resolved yet
+
+# Force flag: None = auto (decide by resolved layer), True/False = forced.
+def _env_force_serialize():
     #   SASPRO_NUMBA_SERIALIZE=1  -> always serialize (safe, slower)
     #   SASPRO_NUMBA_SERIALIZE=0  -> never serialize (fast)
     ev = os.environ.get("SASPRO_NUMBA_SERIALIZE", "").strip().lower()
@@ -40,39 +47,123 @@ def _default_numba_serialize() -> bool:
         return True
     if ev in ("0", "false", "no", "off"):
         return False
-    # Default: only macOS has shown the "Concurrent access has been detected"
-    # abort when numba's threading layer is re-entered from multiple Python
-    # threads. Everywhere else we default to the fast, unserialized path.
+    return None
+
+_FORCE_SERIALIZE = _env_force_serialize()
+
+
+def record_numba_threading_layer(name) -> None:
+    """Let the startup warmup — which resolves and logs the layer — push the
+    authoritative name here. Makes the serialize decision deterministic even
+    before numba.threading_layer() would answer on its own."""
+    global _RESOLVED_THREADING_LAYER
+    if name:
+        _RESOLVED_THREADING_LAYER = str(name).strip().lower()
+
+
+def _resolved_threading_layer():
+    """Best-effort resolved layer name (lowercased), or None if not yet known.
+    numba.threading_layer() raises until a parallel region has executed once."""
+    global _RESOLVED_THREADING_LAYER
+    if _RESOLVED_THREADING_LAYER is not None:
+        return _RESOLVED_THREADING_LAYER
+    try:
+        import numba
+        layer = str(numba.threading_layer()).strip().lower()
+    except Exception:
+        return None
+    _RESOLVED_THREADING_LAYER = layer
+    return layer
+
+
+def numba_threading_layer_unsafe():
+    """True  -> resolved layer is NOT threadsafe (workqueue): must serialize.
+       False -> resolved layer is threadsafe (tbb/omp): no need to serialize.
+       None  -> not resolved yet: caller should fall back to a platform guess."""
+    layer = _resolved_threading_layer()
+    if layer is None:
+        return None
+    return layer not in _THREADSAFE_LAYERS
+
+
+def _effective_serialize() -> bool:
+    """The live decision: explicit force wins; otherwise trust the resolved
+    layer; while the layer is still unknown, fall back to the old OS heuristic
+    (macOS has historically resolved to workqueue too)."""
+    if _FORCE_SERIALIZE is not None:
+        return _FORCE_SERIALIZE
+    unsafe = numba_threading_layer_unsafe()
+    if unsafe is not None:
+        return unsafe
     return sys.platform == "darwin"
 
 
-_NUMBA_SERIALIZE = _default_numba_serialize()
+# Thread-local stack recording, per nested `with`, whether THAT enter acquired
+# the RLock — so __exit__ releases exactly what __enter__ took even if the
+# effective decision were to change between them.
+_lock_tls = threading.local()
 
-# On serialize platforms this is a real re-entrant lock; on fast platforms it's a
-# no-op so debayer / stretch calls run concurrently.
-NUMBA_PARALLEL_LOCK = threading.RLock() if _NUMBA_SERIALIZE else _NoOpLock()
+
+class _LazyNumbaLock:
+    """Process-wide guard whose behavior is decided at acquire time, not import
+    time. Serializes iff _effective_serialize() says so; otherwise a no-op so
+    debayer / stretch run concurrently at full speed. Re-entrant when it does
+    serialize (stretch_color nests into stretch_mono)."""
+    __slots__ = ("_rlock",)
+
+    def __init__(self):
+        self._rlock = threading.RLock()
+
+    def __enter__(self):
+        acquired = False
+        if _effective_serialize():
+            self._rlock.acquire()
+            acquired = True
+        stack = getattr(_lock_tls, "stack", None)
+        if stack is None:
+            stack = _lock_tls.stack = []
+        stack.append(acquired)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        stack = getattr(_lock_tls, "stack", None)
+        acquired = stack.pop() if stack else False
+        if acquired:
+            self._rlock.release()
+        return False
+
+    # Kept for the rare direct acquire()/release() caller. The decision is read
+    # once here; pair these within a single serialize regime.
+    def acquire(self, *a, **k):
+        if _effective_serialize():
+            return self._rlock.acquire(*a, **k)
+        return True
+
+    def release(self):
+        try:
+            self._rlock.release()
+        except RuntimeError:
+            pass  # wasn't held (no-op regime) — nothing to release
+
+
+# Single instance, imported by name OR by reference — either is safe now.
+NUMBA_PARALLEL_LOCK = _LazyNumbaLock()
 _DEBAYER_LOCK = NUMBA_PARALLEL_LOCK
 
 
 def numba_parallel_serialized() -> bool:
-    """True when numba parallel entry is being serialized (safe/slow mode)."""
-    return _NUMBA_SERIALIZE
+    """True when numba parallel entry is currently being serialized."""
+    return _effective_serialize()
 
 
-def set_numba_parallel_serialize(enabled: bool) -> None:
-    """Swap the module-level lock at runtime.
-
-    Updates the module global, so it controls every call that looks up
-    NUMBA_PARALLEL_LOCK by name at call time (e.g. debayer_fits_fast — the path
-    Blink's concurrent load workers hit). Modules that imported the lock *object*
-    by reference at import time keep their original lock; for a fully
-    authoritative override across all importers, set the SASPRO_NUMBA_SERIALIZE
-    environment variable before importing SASpro."""
-    global _NUMBA_SERIALIZE, NUMBA_PARALLEL_LOCK, _DEBAYER_LOCK
-    enabled = bool(enabled)
-    _NUMBA_SERIALIZE = enabled
-    NUMBA_PARALLEL_LOCK = threading.RLock() if enabled else _NoOpLock()
-    _DEBAYER_LOCK = NUMBA_PARALLEL_LOCK
+def set_numba_parallel_serialize(enabled) -> None:
+    """Force serialization on/off at runtime, or pass None to return to auto
+    (decide by the resolved threading layer). Because NUMBA_PARALLEL_LOCK is a
+    single lazy object that re-reads this flag on every entry, the change
+    reaches every caller — including modules that imported the lock object by
+    reference — with no rebinding needed."""
+    global _FORCE_SERIALIZE
+    _FORCE_SERIALIZE = None if enabled is None else bool(enabled)
 
 @njit(parallel=True, fastmath=True, cache=True)
 def blend_add_numba(A, B, alpha):
