@@ -151,6 +151,116 @@ def _percentile_scale(arr, lo=0.5, hi=99.5):
         return np.clip(a, 0.0, 1.0)
     return np.clip((a - p1) / (p2 - p1), 0.0, 1.0)
 
+
+# ── Robust FITS header parsing for temperature & exposure ──────────────────
+# Mirrors the Stacking Suite's tolerant reads so Blink / Blink Metrics see the
+# same temps and exposures the stacker does: many keyword spellings, and string
+# values carrying units ("-10 C", "300 s", EXIF "1/125").
+
+# Actual-sensor temps first; the cooler SETPOINT (SET-TEMP) is the last resort,
+# matching the stacker's "prefer CCD-TEMP over SET-TEMP". DET-TEMP and common
+# variants are included so detectors that only write those are read.
+_BLINK_TEMP_KEYS = (
+    "CCD-TEMP", "CCDTEMP", "CCD_TEMP",
+    "DET-TEMP", "DETTEMP", "DET_TEMP",
+    "SENSOR-TEMP", "SENSORTEMP", "SENSOR_TEMP",
+    "CAMTEMP", "CAM-TEMP", "TEMPERAT", "TEMP",
+    "SET-TEMP", "SETTEMP", "SET_TEMP", "SETPOINT",
+)
+
+_BLINK_EXP_KEYS = (
+    "EXPTIME", "EXPOSURE", "XPOSURE",
+    "EXP-TIME", "EXP_TIME", "EXPTIMES",
+    "ITIME", "INTTIME", "EXP",
+)
+
+
+def _blink_hdr_get(hdr, key):
+    """Header .get that works on an astropy Header or a plain dict."""
+    if hdr is None:
+        return None
+    try:
+        if key in hdr:
+            return hdr[key]
+    except Exception:
+        pass
+    try:
+        return hdr.get(key, None)
+    except Exception:
+        return None
+
+
+def _blink_key_float(hdr, key):
+    """Float value for one key, tolerant of unit-carrying strings and simple
+    EXIF fractions. Returns None when absent or unparseable."""
+    v = _blink_hdr_get(hdr, key)
+    if v is None:
+        return None
+    try:
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, (int, float)):
+            f = float(v)
+            return f if np.isfinite(f) else None
+        s = str(v).strip()
+        if not s:
+            return None
+        s = s.replace("\u2212", "-")          # unicode minus -> ASCII
+        s = s.replace("\u00b0", "").replace("\u00ba", "")  # degree marks
+        low = s.lower()
+        for _u in ("seconds", "second", "secs", "sec"):
+            if low.endswith(_u):
+                s = s[: -len(_u)]
+                break
+        s = s.rstrip()
+        # trailing 's'/'c' unit, tolerating a space before it ("300 s", "-10 C"),
+        # but only when a number-like token precedes it (never mangle text values)
+        if s and s[-1] in ("s", "S", "c", "C"):
+            _s2 = s[:-1].rstrip()
+            if _s2 and (_s2[-1].isdigit() or _s2[-1] == "."):
+                s = _s2
+        s = s.strip()
+        if not s:
+            return None
+        if "/" in s:                            # EXIF shutter fraction "1/125"
+            top, bot = s.split("/", 1)
+            f = float(top) / float(bot)
+        else:
+            f = float(s)
+        return f if np.isfinite(f) else None
+    except Exception:
+        return None
+
+
+def _blink_hdr_temp_c(hdr):
+    """Sensor temperature (deg C) from the first present temp keyword, or None."""
+    for _k in _BLINK_TEMP_KEYS:
+        f = _blink_key_float(hdr, _k)
+        if f is not None:
+            return f
+    return None
+
+
+def _blink_hdr_exptime(hdr):
+    """Exposure time (seconds) from the first present exposure keyword, or None."""
+    for _k in _BLINK_EXP_KEYS:
+        f = _blink_key_float(hdr, _k)
+        if f is not None and f > 0:
+            return f
+    return None
+
+
+def _blink_exposure_label(hdr):
+    """Canonical exposure label for tree grouping/display ('300s', '1.5s'), or
+    'Unknown'. Normalizes 300, '300.0' and '300 s' into one bucket."""
+    f = _blink_hdr_exptime(hdr)
+    if f is None:
+        return "Unknown"
+    if abs(f - round(f)) < 1e-6:
+        return f"{int(round(f))}s"
+    return f"{f:.3f}".rstrip("0").rstrip(".") + "s"
+
+
 # ⬇️ your SASv2 classes — paste them unchanged (Qt6 compatible already)
 class MetricsPanel(QWidget):
     """2×2 grid with clickable dots and draggable thresholds."""
@@ -385,8 +495,10 @@ class MetricsPanel(QWidget):
                         return _f
             return float("nan")
 
-        _temp_c  = _hget("CCD-TEMP", "CCDTEMP", "SET-TEMP", "SENSOR-TEMP")
-        _exptime = _hget("EXPTIME", "EXPOSURE")
+        _tc = _blink_hdr_temp_c(_hdr)
+        _temp_c  = _tc if _tc is not None else float("nan")
+        _et = _blink_hdr_exptime(_hdr)
+        _exptime = _et if _et is not None else float("nan")
         _offset  = _hget("OFFSET", "BIAS")
         # Many acquisition tools (SGP with default templates observed;
         # some ASCOM drivers) don't write OFFSET or BIAS to the FITS
@@ -3111,7 +3223,7 @@ class BlinkTab(QWidget):
             hdr = entry.get('header', {}) or {}
             obj = hdr.get('OBJECT', 'Unknown')
             fil = hdr.get('FILTER', 'Unknown')
-            exp = hdr.get('EXPOSURE', 'Unknown')
+            exp = _blink_exposure_label(hdr)
             grouped[(obj, fil, exp)].append(entry['file_path'])
 
         for key, paths in grouped.items():
@@ -3542,7 +3654,7 @@ class BlinkTab(QWidget):
             hdr = entry['header']
             obj = hdr.get('OBJECT', 'Unknown')
             filt = hdr.get('FILTER', 'Unknown')
-            exp = hdr.get('EXPOSURE', 'Unknown')
+            exp = _blink_exposure_label(hdr)
             grouped[(obj, filt, exp)].append(entry['file_path'])
 
         for key, paths in grouped.items():
@@ -3813,7 +3925,7 @@ class BlinkTab(QWidget):
         header = image_entry['header']
         object_name = header.get('OBJECT', 'Unknown') if header else 'Unknown'
         filter_name = header.get('FILTER', 'Unknown') if header else 'Unknown'
-        exposure_time = header.get('EXPOSURE', 'Unknown') if header else 'Unknown'
+        exposure_time = _blink_exposure_label(header) if header else 'Unknown'
 
         # Group images by filter and exposure time
         group_key = (object_name, filter_name, exposure_time)

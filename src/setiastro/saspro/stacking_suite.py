@@ -22595,6 +22595,92 @@ class StackingSuiteDialog(QDialog):
                     f"B={ref_target_medians_rgb[2]:.6f}"))
             else:
                 ref_target_medians_rgb = None
+
+            # ─────────────────────────────────────────────────────────────
+            # PER-FILTER normalization targets
+            # ─────────────────────────────────────────────────────────────
+            # The single global reference above still defines alignment
+            # geometry + a fallback brightness target. But normalizing EVERY
+            # filter to one reference forces e.g. Ha subs onto a broadband G
+            # reference's sky level, crushing them relative to G. Instead,
+            # record the best-scored frame PER FILTER and give each filter its
+            # own target (luma min-subtracted median + per-channel medians for
+            # OSC) so each filter normalizes to its own best frame. Alignment
+            # geometry is unaffected (still the one global reference).
+            def _compute_norm_target(_dimg):
+                """(target_median, target_min, target_medians_rgb) from a
+                debayered image, mirroring the global-reference semantics."""
+                _L = _Luma(_dimg)
+                _mn = float(np.nanmin(_L))
+                _tmed = float(np.nanmedian(_L - _mn))
+                if isinstance(_dimg, np.ndarray) and _dimg.ndim == 3 and _dimg.shape[-1] == 3:
+                    try:
+                        _sparse = max(float((_dimg[..., _k] == 0.0).mean()) for _k in range(3)) > 0.4
+                    except Exception:
+                        _sparse = False
+                    _rgb = []
+                    for _c in range(3):
+                        _band = _dimg[..., _c].astype(np.float32, copy=False)
+                        if _sparse:
+                            _nz = _band[_band != 0.0]
+                            _rgb.append(float(np.median(_nz)) if _nz.size else 0.0)
+                        else:
+                            _bmin = float(np.nanmin(_band))
+                            _rgb.append(float(np.nanmedian(_band - _bmin)))
+                else:
+                    _rgb = None
+                return _tmed, _mn, _rgb
+
+            # frame -> filter (from THIS set's light_files group keys)
+            self._norm_filter_by_frame = {}
+            for _gk, _flist in (self.light_files or {}).items():
+                try:
+                    _filt, _e, _s = self.parse_group_key(_gk)
+                except Exception:
+                    _filt = "Unknown"
+                _filt = (_filt or "Unknown")
+                for _f in (_flist or []):
+                    self._norm_filter_by_frame[os.path.normpath(_f)] = _filt
+
+            # best-scored frame per filter, then that frame's target
+            self._norm_target_by_filter = {}   # filter -> (t_med, t_min, t_rgb)
+            _best_by_filter = {}               # filter -> (score, fp)
+            for _fp in measured_frames:
+                _filt = self._norm_filter_by_frame.get(os.path.normpath(_fp), "Unknown")
+                try:
+                    _sc = _fast_ref_score(_fp)
+                except Exception:
+                    _sc = -1.0
+                _prev = _best_by_filter.get(_filt)
+                if (_prev is None) or (_sc > _prev[0]):
+                    _best_by_filter[_filt] = (_sc, _fp)
+
+            for _filt, (_sc, _fp) in _best_by_filter.items():
+                try:
+                    _bimg_raw, _bhdr = self._load_image_any(_fp)
+                    if _bimg_raw is None:
+                        continue
+                    _bayer = self._hdr_get(_bhdr, 'BAYERPAT')
+                    _splitdb = bool(self._hdr_get(_bhdr, 'SPLITDB', False))
+                    if _bayer and not _splitdb and (_bimg_raw.ndim == 2 or (_bimg_raw.ndim == 3 and _bimg_raw.shape[-1] == 1)):
+                        _bimg = self.debayer_image(_bimg_raw, _fp, _bhdr)
+                    else:
+                        _bimg = _bimg_raw
+                        if _bimg.ndim == 3 and _bimg.shape[-1] == 1:
+                            _bimg = np.squeeze(_bimg, axis=-1)
+                    _tm, _tmin, _trgb = _compute_norm_target(_bimg)
+                    self._norm_target_by_filter[_filt] = (_tm, _tmin, _trgb)
+                    self.update_status(self.tr(
+                        f"\U0001F4CA Filter '{_filt}' target \u2190 {os.path.basename(_fp)} "
+                        f"(score={_sc:.4f}): norm-median={_tm:.6f}"
+                        + ("" if _trgb is None else
+                           f", RGB=({_trgb[0]:.4f},{_trgb[1]:.4f},{_trgb[2]:.4f})")
+                    ))
+                except Exception as _e:
+                    self.update_status(self.tr(
+                        f"\u26A0\uFE0F Per-filter target failed for '{_filt}' "
+                        f"({os.path.basename(str(_fp))}): {_e}; using global reference target."))
+
             QApplication.processEvents()
             # Store pixscale from reference frame for Dither Analysis
             # Done here unconditionally — works for single-group and multi-group runs
@@ -22988,7 +23074,19 @@ class StackingSuiteDialog(QDialog):
 
                         # 3) Brightness normalization / scale refine
                         pm = float(preview_medians.get(fp, 0.0))
-                        if (ref_target_medians_rgb is not None
+                        # Resolve this frame's PER-FILTER target (falls back to
+                        # the global reference target when unavailable).
+                        _pf_tgt = None
+                        try:
+                            _pf_tgt = self._norm_target_by_filter.get(
+                                self._norm_filter_by_frame.get(os.path.normpath(fp)))
+                        except Exception:
+                            _pf_tgt = None
+                        if _pf_tgt is not None:
+                            _tgt_med, _tgt_min, _tgt_rgb = _pf_tgt
+                        else:
+                            _tgt_med, _tgt_min, _tgt_rgb = ref_target_median, ref_min, ref_target_medians_rgb
+                        if (_tgt_rgb is not None
                                 and img.ndim == 3 and img.shape[-1] == 3):
                             # OSC: normalize each channel independently to
                             # the reference's matching channel. A single
@@ -23024,7 +23122,7 @@ class StackingSuiteDialog(QDialog):
                                         if (not np.isfinite(_med)) or _med <= 1e-30:
                                             _s_c, _off_c = 1.0, 0.0
                                         else:
-                                            _s_c = float(ref_target_medians_rgb[_c] / _med)
+                                            _s_c = float(_tgt_rgb[_c] / _med)
                                             _off_c = 0.0
                                     # apply scale to populated pixels only;
                                     # structural zeros stay exactly 0
@@ -23039,7 +23137,7 @@ class StackingSuiteDialog(QDialog):
                                     _pl   = img[..., _c]
                                     _finc = _pl[np.isfinite(_pl) & (_pl != 0.0)]
                                     _bg_c = float(np.median(_finc)) if _finc.size else 0.0
-                                    _tgt_c = float(ref_target_medians_rgb[_c])
+                                    _tgt_c = float(_tgt_rgb[_c])
                                     img[..., _c] = (_pl - _bg_c + _tgt_c).astype(np.float32, copy=False)
                                     _s_c, _off_c = 1.0, float(_tgt_c - _bg_c)
                                 _ch_dbg.append(f"{'RGB'[_c]}: bg_shift={_off_c:.6g}")
@@ -23060,7 +23158,7 @@ class StackingSuiteDialog(QDialog):
                             # it. NaN (satellite no-data) is preserved through the shift.
                             _fin = img[np.isfinite(img) & (img != 0.0)]
                             _frame_bg = float(np.median(_fin)) if _fin.size else 0.0
-                            _target_bg = float(ref_target_median + ref_min)   # reference sky level
+                            _target_bg = float(_tgt_med + _tgt_min)   # per-filter sky level
                             img = (img - _frame_bg + _target_bg).astype(np.float32, copy=False)
                             if getattr(self, "_norm_dbg_on", False):
                                 self.update_status(
