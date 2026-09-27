@@ -1,10 +1,10 @@
 {
-  "version": "1.21.12",
+  "version": "1.21.13",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.12/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.12/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.12/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.12/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.13/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.13/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.13/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.21.13/SetiAstroSuitePro_linux.tar.xz"
   },
- "notes": "Seti Astro Suite Pro\n\nV1.21.12\nMajor Bug Fixes in Syqon Studio for star removal and gradient removal. Other minor bug fixes."
+ "notes": "Seti Astro Suite Pro\n\nV1.21.13\nUpdates for Linux support for syqon studio. Expanded parsing in stacking suite and blink for various fits header variations. Stacking suite will now normalize each filter to the best scored image in that filter group instead of the old behavior trying to normalize all to the single best reference frame regardless of what filter that came from. Other optimizations."
 }
