@@ -3708,6 +3708,48 @@ class ImageSubWindow(QWidget):
         self.label.setPixmap(pm_scaled)
         self.label.resize(pm_scaled.size())
 
+    def apply_current_display_stretch(self, image=None):
+        if not self.autostretch_enabled:
+            return None
+
+        lut = self._autostretch_lut_cache
+        if lut is None:
+            self._render(rebuild=True)
+            lut = self._autostretch_lut_cache
+        if lut is None:
+            return None
+
+        a = np.asarray(self.document.image if image is None else image)
+        if a.size == 0:
+            return None
+
+        is_mono = (a.ndim == 2) or (a.ndim == 3 and a.shape[2] == 1)
+
+        # Derive the LUT's bit-depth from its length so apply can't mismatch the
+        # build (12-bit LUT = 4096 entries, 24-bit = 16,777,216). This is immune to
+        # the display/autostretch_24bit setting being changed after the LUT was
+        # built without the display cache being invalidated.
+        lut0 = lut[0] if isinstance(lut, tuple) else lut   # tuple = unlinked color
+        n = int(np.asarray(lut0).shape[0])
+        use_24bit = (n > 4096)
+
+        # mirror _render()'s pre-LUT normalization exactly
+        if np.issubdtype(a.dtype, np.integer):
+            info = np.iinfo(a.dtype)
+            arr_f = a.astype(np.float32) / float(max(1, info.max))
+        else:
+            arr_f = a.astype(np.float32, copy=False)
+
+        mx = float(arr_f.max()) if arr_f.size else 1.0
+        if mx > 5.0:
+            arr_f = arr_f / mx
+
+        out = apply_autostretch_lut(
+            arr_f, lut,
+            linked=(not is_mono and self._autostretch_linked),
+            use_24bit=use_24bit,           # explicit, from the LUT — not QSettings
+        )
+        return np.clip(np.asarray(out, dtype=np.float32), 0.0, 1.0)
 
     def _draw_wcs_grid_on_pixmap(self, pm_scaled: QPixmap) -> QPixmap:
         """

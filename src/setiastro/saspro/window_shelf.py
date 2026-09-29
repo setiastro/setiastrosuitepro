@@ -91,17 +91,25 @@ class WindowShelf(QDockWidget):
         self.show()
 
     def _on_sub_destroyed(self, tok: str):
-        # Called when the subwindow is deleted by Qt
-        self._remove_item_for_token(tok)
-        self._tok2sub.pop(tok, None)
+        # Fired when Qt deletes a subwindow. During app teardown this can arrive
+        # AFTER the shelf's QListWidget has already been destroyed (sibling
+        # subtrees have no guaranteed teardown order), so touch Qt only if alive.
+        self._tok2sub.pop(tok, None)       # pure-Python — always safe
         self._saved_state.pop(tok, None)
+
+        if self._is_dead(self) or self._is_dead(self.list):
+            return
+
+        self._remove_item_for_token(tok)
         if self.list.count() == 0:
             self.hide()
 
     def _remove_item_for_token(self, tok: str):
+        if self._is_dead(self.list):
+            return
         for i in range(self.list.count()):
             it = self.list.item(i)
-            if it.data(Qt.ItemDataRole.UserRole) == tok:
+            if it is not None and it.data(Qt.ItemDataRole.UserRole) == tok:
                 self.list.takeItem(i)
                 break
 
@@ -188,7 +196,7 @@ class WindowShelf(QDockWidget):
             self.list.clear()
         finally:
             self.list.blockSignals(False)
-        self._item2sub.clear()
+        self._tok2sub.clear()
         self._saved_state.clear()
         self.hide()
 
@@ -198,6 +206,43 @@ class WindowShelf(QDockWidget):
         except Exception:
             # if sip can’t inspect it, be conservative
             return obj is None
+
+    def restore_all(self):
+        """Un-shelve every minimized view back into the MDI and empty the shelf.
+        Call before any close-all / new-project / quit flow so shelved views go
+        through the same save/confirm path as normal windows."""
+        if self._is_dead(self) or self._is_dead(self.list):
+            # Nothing safe to touch; just drop bookkeeping.
+            self._tok2sub.clear()
+            self._saved_state.clear()
+            return
+
+        for tok in list(self._tok2sub.keys()):
+            sub = self._tok2sub.get(tok)
+            st  = self._saved_state.get(tok)
+            if self._is_dead(sub):
+                continue
+            try:
+                if st and st.get("max", False):
+                    sub.showMaximized()
+                else:
+                    sub.setWindowState(Qt.WindowState.WindowNoState)
+                    sub.showNormal()
+                    g = st.get("geom") if st else None
+                    if isinstance(g, QRect) and g.isValid():
+                        sub.setGeometry(QRect(g))
+            except Exception:
+                pass
+
+        self._tok2sub.clear()
+        self._saved_state.clear()
+
+        try:
+            self.list.blockSignals(True)
+            self.list.clear()
+        finally:
+            self.list.blockSignals(False)
+        self.hide()
 
 from PyQt6.QtWidgets import QMdiArea
 

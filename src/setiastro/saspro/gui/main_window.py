@@ -273,7 +273,7 @@ from setiastro.saspro.file_utils import (
 # GUI Mixins for modular code organization
 from setiastro.saspro.gui.mixins import (
     DockMixin, MenuMixin, ToolbarMixin, FileMixin,
-    ThemeMixin, GeometryMixin, ViewMixin, HeaderMixin, MaskMixin, UpdateMixin
+    ThemeMixin, GeometryMixin, ViewMixin, HeaderMixin, MaskMixin, UpdateMixin, DockRailMixin
 )
 
 import sys
@@ -469,7 +469,7 @@ def _normalize_title_for_compare(t: str) -> str:
     return t.strip()
 
 class AstroSuiteProMainWindow(
-    DockMixin, MenuMixin, ToolbarMixin, FileMixin,
+    DockMixin, DockRailMixin, MenuMixin, ToolbarMixin, FileMixin,
     ThemeMixin, GeometryMixin, ViewMixin, HeaderMixin, MaskMixin, UpdateMixin,
     QMainWindow
 ):
@@ -659,6 +659,7 @@ class AstroSuiteProMainWindow(
         self._init_menubar()
         self._init_toolbar()
         self._install_command_search()
+        self._init_dock_rails() 
 
         # Keep explorer in sync
         self.docman.documentAdded.connect(self._add_doc_to_explorer)
@@ -2687,7 +2688,12 @@ class AstroSuiteProMainWindow(
         QMessageBox.information(self, "WCS Updated", text)
 
     def _bake_display_stretch(self):
-        """Apply the current Display-Stretch to the image data (undoable, non-replayable)."""
+        """Bake the *currently displayed* Display-Stretch into the image data.
+
+        Applies the exact LUT the view is showing (via the view's own apply path)
+        rather than recomputing a stretch, which would drift from the preview if
+        the image was modified (e.g. denoised) since the stretch was toggled on.
+        """
         sw = self.mdi.activeSubWindow()
         if not sw:
             QMessageBox.information(self, "Display-Stretch", "No active image window.")
@@ -2699,98 +2705,63 @@ class AstroSuiteProMainWindow(
             QMessageBox.information(self, "Display-Stretch", "Active window has no image.")
             return
 
-        img = getattr(doc, "image", None)
-        a = np.asarray(img)
+        if not getattr(view, "autostretch_enabled", False):
+            QMessageBox.information(
+                self, "Display-Stretch",
+                "Display-Stretch isn't on for this view.\nTurn it on first, then bake it in."
+            )
+            return
+
+        a = np.asarray(doc.image)
         if a.size == 0:
             QMessageBox.information(self, "Display-Stretch", "Image is empty.")
             return
 
-        # --- Get the *current* display-stretch parameters ---
-        # start from global defaults
-        target       = float(self.settings.value("display/target", 0.30, type=float))
-        sigma        = float(self.settings.value("display/sigma", 5.0, type=float))
-        linked       = bool(self.settings.value("display/stretch_linked", False, type=bool))
-        use_24       = self.settings.value("display/autostretch_24bit", True, type=bool)
-        no_black_clip = bool(self.settings.value("display/no_black_clip", False, type=bool))
-
-        # if your view exposes per-view overrides, prefer those
-        if hasattr(view, "autostretch_target"):
-            try:
-                target = float(view.autostretch_target)
-            except Exception:
-                pass
-        if hasattr(view, "autostretch_sigma"):
-            try:
-                sigma = float(view.autostretch_sigma)
-            except Exception:
-                pass
-        if hasattr(view, "stretch_linked"):
-            try:
-                linked = bool(view.stretch_linked)
-            except Exception:
-                pass
-        if hasattr(view, "no_black_clip"):
-            try:
-                no_black_clip = bool(view.no_black_clip)
-            except Exception:
-                pass
-
-        # --- Run the same autostretch math used for display ---
-        try:
-            stretched01 = _autostretch(
-                a,
-                target_median=target,
-                linked=linked,
-                sigma=sigma,
-                use_24bit=use_24,
-                no_black_clip=no_black_clip,
+        stretched01 = None
+        if hasattr(view, "apply_current_display_stretch"):
+            stretched01 = view.apply_current_display_stretch()
+        if stretched01 is None:
+            QMessageBox.warning(
+                self, "Display-Stretch",
+                "Couldn't read the active display-stretch. Toggle it off and on, then retry."
             )
-        except Exception as e:
-            QMessageBox.warning(self, "Display-Stretch", f"Failed to apply autostretch:\n{e}")
             return
 
-        # --- Convert back to original dtype ---
+        # back to original dtype
         if np.issubdtype(a.dtype, np.integer):
             info = np.iinfo(a.dtype)
             out = (np.clip(stretched01, 0.0, 1.0) * float(info.max)).astype(a.dtype, copy=False)
         else:
-            # float images: bake 0-1 stretched data into same float dtype
             out = np.clip(stretched01, 0.0, 1.0).astype(a.dtype, copy=False)
 
-        # --- Commit to document with undo metadata (no command_id -> non-replayable) ---
         meta = {
             "step_name": "Display-Stretch (baked)",
-            "autostretch_target": float(target),
-            "autostretch_sigma": float(sigma),
-            "autostretch_linked": bool(linked),
-            "autostretch_no_black_clip": bool(no_black_clip),
+            "autostretch_target": float(getattr(view, "autostretch_target", 0.0)),
+            "autostretch_sigma": float(getattr(view, "autostretch_sigma", 0.0)),
+            "autostretch_linked": bool(getattr(view, "_autostretch_linked", False)),
+            "autostretch_no_black_clip": bool(getattr(view, "_no_black_clip", False)),
+            "baked_from_display_lut": True,
         }
 
         try:
             if hasattr(doc, "set_image"):
-                # your Document.set_image already manages undo/redo
                 doc.set_image(out, meta)
             elif hasattr(doc, "update_image"):
                 doc.update_image(out, meta)
             else:
-                # last-resort fallback (no undo)
                 doc.image = out
         except Exception as e:
             QMessageBox.critical(self, "Display-Stretch", f"Failed to update image:\n{e}")
             return
 
-        # Turn OFF display-stretch so the baked image looks exactly like the preview did
+        # turn display-stretch off so the baked (already-stretched) data shows linearly,
+        # i.e. identical to the preview
         if hasattr(view, "set_autostretch"):
             view.set_autostretch(False)
         self._sync_autostretch_action(False)
 
         try:
-            self._log(
-                f"Display-Stretch baked into image (target={target:.3f}, "
-                f"sigma={sigma:.2f}, linked={'on' if linked else 'off'}, "
-                f"no_black_clip={'on' if no_black_clip else 'off'}) "
-                f"-> {sw.windowTitle()}"
-            )
+            self._log(f"Display-Stretch baked into image -> {sw.windowTitle()}")
         except Exception:
             pass
 
@@ -10855,6 +10826,7 @@ class AstroSuiteProMainWindow(
 
         # --- Confirmation Logic ---
         self._shutting_down = True
+
         # Gather open docs
         docs = []
         for sw in self.mdi.subWindowList():
@@ -10944,7 +10916,11 @@ class AstroSuiteProMainWindow(
     def _do_shutdown_steps(self, e):
         self._force_close_all = True
         self._shutting_down = True
-
+        # User has confirmed exit. Un-shelve any minimized views before we
+        # persist UI state and before Qt tears the shelf down.
+        shelf = getattr(self, "window_shelf", None)
+        if shelf is not None and not shelf._is_dead(shelf):
+            shelf.restore_all()
         self.save_ui_state()
 
         # Now safe to fully close the dock host

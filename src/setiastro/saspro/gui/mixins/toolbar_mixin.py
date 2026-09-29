@@ -440,6 +440,14 @@ class ToolbarMixin:
         for tb in self.findChildren(DraggableToolBar):
             tb.setIconSize(qs)
 
+        # Keep the dock rails in lockstep with the toolbar icon size.
+        applier = getattr(self, "_apply_rail_icon_size", None)
+        if callable(applier):
+            try:
+                applier()
+            except Exception:
+                pass
+
     def _toolbar_containing_action(self, action: QAction):
         from setiastro.saspro.shortcuts import DraggableToolBar
         for tb in self.findChildren(DraggableToolBar):
