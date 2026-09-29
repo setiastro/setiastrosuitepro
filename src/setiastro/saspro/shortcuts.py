@@ -1287,6 +1287,10 @@ class ShortcutCanvas(QWidget):
         # keep sized with viewport
         if obj is self.parent() and ev.type() == ev.Type.Resize:
             self.setGeometry(self.parent().rect())
+            try:
+                self._mgr.reflow_into_view()
+            except Exception:
+                pass
         return super().eventFilter(obj, ev)
 
     # --- rubber-band selection on empty space ---
@@ -1665,7 +1669,10 @@ class ShortcutManager:
                 if not w.isVisible():
                     continue
 
-                p = w.pos()
+                # Persist the user's intended position, not a temporarily
+                # clamped one, so saving while the window is shrunk doesn't bake
+                # the squashed layout in.
+                p = getattr(w, "_desired_pos", None) or w.pos()
                 item = {
                     "id": sid,
                     "command_id": getattr(w, "command_id", None),
@@ -1919,6 +1926,7 @@ class ShortcutManager:
         w = ShortcutButton(self, sid, command_id, ico, lbl, self.canvas)
         w.adjustSize()
         w.move(pos)
+        w._desired_pos = QPoint(pos)   # remember intended spot for reflow/persist
         w.show()
 
         # when the C++ object dies, clean maps using the SID
@@ -2337,8 +2345,36 @@ class ShortcutManager:
             return
         try:
             w.move(self._clamp_point_for_widget(w, x, y))
+            # an explicit (align/distribute) move is a fresh user placement
+            w._desired_pos = QPoint(int(x), int(y))
         except RuntimeError:
             pass
+
+    def reflow_into_view(self):
+        """Keep every shortcut reachable when the viewport shrinks.
+
+        Each chip remembers the position the user placed it at (``_desired_pos``);
+        here we display it clamped to the current canvas bounds. Growing the
+        viewport again restores the original spot, because clamping is a no-op
+        once the desired position fits — so shrinking never permanently loses a
+        chip's placement.
+        """
+        if getattr(self, "_loading", False):
+            return
+        rect = self._viewport_rect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return  # viewport not realized yet; a later resize will reflow
+        for sid, w in list(self.widgets.items()):
+            if _is_dead(w):
+                continue
+            desired = getattr(w, "_desired_pos", None)
+            if desired is None:
+                desired = w.pos()
+                w._desired_pos = QPoint(desired)
+            try:
+                w.move(self._clamp_point_for_widget(w, desired.x(), desired.y()))
+            except RuntimeError:
+                pass
 
     def make_neat_row(self, spacing: int = 16):
         ws = self.selected_widgets()
@@ -2556,6 +2592,7 @@ class ShortcutManager:
             g = w.geometry()
             g.translate(dx, dy)
             w.setGeometry(g)
+            w._desired_pos = QPoint(g.topLeft())   # user drag = new intended spot
 
     def move_shortcut_group_to(self, sid: str, pos: QPoint):
         """Reposition the dragged shortcut (and, if multi-selected, its whole
