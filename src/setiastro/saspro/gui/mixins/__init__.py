@@ -17,6 +17,7 @@ from .view_mixin import ViewMixin
 from .header_mixin import HeaderMixin
 from .mask_mixin import MaskMixin
 from .update_mixin import UpdateMixin
+from .dock_rail_mixin import DockRailMixin
 
 __all__ = [
     "DockMixin",
@@ -29,5 +30,6 @@ __all__ = [
     "HeaderMixin",
     "MaskMixin",
     "UpdateMixin",
+    "DockRailMixin"
 ]
 

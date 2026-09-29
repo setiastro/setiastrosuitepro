@@ -304,6 +304,17 @@ class Icons:
     SYQON_AXIOM = property(lambda self: _resource_path('axiom.png'))
     SYQON_PARALLAX = property(lambda self: _resource_path('parallax.png'))
 
+    # Dock panel rail icons
+    PANEL_CONSOLE   = property(lambda self: _resource_path('consolepanel.png'))
+    PANEL_EXPLORER  = property(lambda self: _resource_path('explorerpanel.png'))
+    PANEL_HEADER    = property(lambda self: _resource_path('headerpanel.png'))
+    PANEL_LAYERS    = property(lambda self: _resource_path('layerspanel.png'))
+    PANEL_MINIMIZED = property(lambda self: _resource_path('minimizedpanel.png'))
+    PANEL_MONITOR   = property(lambda self: _resource_path('monitorpanel.png'))
+    PANEL_STACKING  = property(lambda self: _resource_path('stackingpanel.png'))
+    PANEL_SYSTEM    = property(lambda self: _resource_path('systempanel.png'))
+    PANEL_SEARCH    = property(lambda self: _resource_path('searchpanel.png'))
+
 # Singleton instances for easy access
 _icons_instance = None
 _resources_instance = None

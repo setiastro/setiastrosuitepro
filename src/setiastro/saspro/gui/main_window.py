@@ -273,7 +273,7 @@ from setiastro.saspro.file_utils import (
 # GUI Mixins for modular code organization
 from setiastro.saspro.gui.mixins import (
     DockMixin, MenuMixin, ToolbarMixin, FileMixin,
-    ThemeMixin, GeometryMixin, ViewMixin, HeaderMixin, MaskMixin, UpdateMixin
+    ThemeMixin, GeometryMixin, ViewMixin, HeaderMixin, MaskMixin, UpdateMixin, DockRailMixin
 )
 
 import sys
@@ -469,7 +469,7 @@ def _normalize_title_for_compare(t: str) -> str:
     return t.strip()
 
 class AstroSuiteProMainWindow(
-    DockMixin, MenuMixin, ToolbarMixin, FileMixin,
+    DockMixin, DockRailMixin, MenuMixin, ToolbarMixin, FileMixin,
     ThemeMixin, GeometryMixin, ViewMixin, HeaderMixin, MaskMixin, UpdateMixin,
     QMainWindow
 ):
@@ -659,6 +659,7 @@ class AstroSuiteProMainWindow(
         self._init_menubar()
         self._init_toolbar()
         self._install_command_search()
+        self._init_dock_rails() 
 
         # Keep explorer in sync
         self.docman.documentAdded.connect(self._add_doc_to_explorer)
