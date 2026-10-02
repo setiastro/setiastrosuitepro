@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b7e4d6; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Recombine Luminance</h1>
+<p class="sub">Replace the luminance channel of an RGB image with
+luminance taken from another open image &mdash; while preserving the
+RGB image's hue and chroma. The classic astrophotography application
+is L+RGB processing: build a deep, well-processed mono master
+(stacked L, extracted L, denoised L, deconvolved L&hellip;) and swap it
+into a colour image whose own luminance is noisier or less resolved
+without disturbing the colour balance. Also useful for borrowing
+narrowband detail into an RGB continuum shot, or for pulling in a
+synthetic L (e.g. from a star-removed deconv) when iterating on
+colour and detail separately.</p>
+
+<h2>1. Opening the dialog</h2>
+<p>The active image window is the <b>target</b> &mdash; its colour is
+kept and its luminance is replaced. It must be a 3-channel RGB image;
+mono or RGBA targets are refused with a message. The dialog then lists
+every other open image that could serve as the luminance source
+(mono, or any image whose first channel can be used as L); if nothing
+qualifies, you're told to open one.</p>
+<p>This dialog is a modal picker &mdash; there's no live preview and no
+Push. On OK, the chosen settings run immediately against the target
+document as a single undoable edit named &ldquo;Recombine Luminance&rdquo;.
+Cancel leaves everything alone.</p>
+
+<h2>2. Luminance source</h2>
+<p>Dropdown of candidate source windows. The dialog auto-selects the
+first mono image if one is open; otherwise it defaults to the
+first eligible RGB. For RGB sources, SASpro computes a luminance plane
+on the fly using the weighting profile you pick below &mdash; so pointing
+the source at another colour image is a legitimate workflow, not a
+mistake.</p>
+
+<h2>3. Luminance weighting profile</h2>
+<p>The profile controls how R, G, B are weighted when SASpro either
+<i>computes</i> Y from an RGB source, or <i>reconstructs</i> Y from the
+target in order to compute the per-pixel scale that replaces it.
+Both operations need to agree on what &ldquo;luminance&rdquo; means, so
+this one setting drives both ends.</p>
+
+<h3>Standard profiles</h3>
+<table>
+  <tr><th>Entry</th><th>Weights (R, G, B)</th><th>Use for</th></tr>
+  <tr><td>Rec.709 (default)</td><td>(0.2126, 0.7152, 0.0722)</td>
+      <td>Broadband RGB, modern monitors, generic astrophoto work.
+      Safe fallback.</td></tr>
+  <tr><td>Rec.601</td><td>(0.2990, 0.5870, 0.1140)</td>
+      <td>Legacy sRGB video, scans of older material.</td></tr>
+  <tr><td>Rec.2020</td><td>(0.2627, 0.6780, 0.0593)</td>
+      <td>Wide-gamut HDR targets.</td></tr>
+  <tr><td>Equal RGB</td><td>(&frac13;, &frac13;, &frac13;)</td>
+      <td>When the three channels really do carry equal information
+      content (unusual).</td></tr>
+  <tr><td>Max (Narrowband mappings)</td><td>per-pixel channel max</td>
+      <td>HOO, SHO and other narrowband palettes where each channel
+      is a distinct emission line and &ldquo;brightness&rdquo; is
+      whichever line is strongest at that pixel.</td></tr>
+  <tr><td>Median RGB</td><td>per-pixel channel median</td>
+      <td>Robust-against-outlier variant; blocks single-channel
+      artefacts (cosmic hits, star-core clipping in one filter) from
+      dominating Y.</td></tr>
+  <tr><td>Unequal noise (SNR)</td><td>&prop; 1/&sigma;<sub>c</sub>&sup2;</td>
+      <td>Weighted by inverse channel variance, so the quietest
+      channel contributes most. See &sect;&nbsp;8.4.</td></tr>
+</table>
+
+<h3>Sensor profiles</h3>
+<p>The dropdown groups a library of per-sensor luminance weights below
+the standard entries, with disabled header rows acting as section
+dividers. The sensors are organised:</p>
+<ul>
+  <li><b>Sensors / Sony Modern BSI</b> &mdash; IMX571 (ASI2600/QHY268),
+      IMX533, IMX455 (ASI6200/QHY600), IMX294, IMX183, IMX178, IMX224.</li>
+  <li><b>Sensors / Sony STARVIS 2</b> &mdash; IMX585, IMX662, IMX678/715.
+      NIR-optimised &mdash; red is noticeably heavier (~0.343) than the
+      Rec.709 red (0.2126), reflecting the extended red/NIR response.</li>
+  <li><b>Sensors / Panasonic</b> &mdash; MN34230 (ASI1600/QHY163).</li>
+  <li><b>Sensors / Canon</b> &mdash; modern (60D/6D/R-series) and legacy
+      (Digic 2/3 era) profiles.</li>
+  <li><b>Sensors / Nikon</b> &mdash; modern (Expeed 4+) profile.</li>
+  <li><b>Sensors / Smart Telescopes</b> &mdash; ZWO Seestar S50 (IMX462)
+      and S30.</li>
+</ul>
+<p>Each entry carries a tooltip (hover to read) describing what the
+sensor is best for &mdash; e.g. &ldquo;Gold standard APS-C. Excellent
+balance for broadband&rdquo; for the IMX571, or &ldquo;NIR optimised.
+Excellent for H-Alpha/Narrowband&rdquo; for the IMX585. Canon/Nikon
+aren't auto-detected (modern vs legacy depends on model, not make).</p>
+
+<h3>Auto-selection</h3>
+<p>When the dialog opens, and whenever you change the source dropdown,
+SASpro picks a profile automatically along this cascade:</p>
+<ul>
+  <li><b>1. Source metadata</b> &mdash; if the source document was itself
+      produced by SASpro's L-extraction (Extract Luminance is a button,
+      not a dialog) it carries a <code>luma_method</code> key naming
+      the exact profile used; that key is reused here.</li>
+  <li><b>2. Legacy source metadata</b> &mdash; older extracted-L docs
+      stored the sensor <i>name</i> under <code>luma_profile</code>
+      with <code>luma_method</code> collapsed to <code>rec709</code>.
+      SASpro reverse-looks-up the display name to recover the correct
+      profile key.</li>
+  <li><b>3. Target metadata</b> &mdash; FITS/XISF
+      <code>INSTRUME</code>, <code>CAMERA</code> or <code>CAMNAME</code>
+      is scanned for known sensor substrings
+      (<code>imx571</code>, <code>asi2600</code>, <code>seestar s50</code>, &hellip;)
+      and the matching profile is picked.</li>
+  <li><b>4. Global default</b> &mdash; whatever profile you last confirmed
+      in this dialog is remembered on the main window as
+      <code>self.luma_method</code> and reused.</li>
+  <li><b>5. Rec.709</b> &mdash; final fallback.</li>
+</ul>
+<p>Once you manually pick a profile from the dropdown (as opposed to
+accepting the auto-selection), SASpro stops re-selecting on subsequent
+source-combo changes &mdash; your choice sticks for the rest of the
+dialog's lifetime. Clicking OK persists that choice as the new global
+default.</p>
+
+<h2>4. Blend strength</h2>
+<p>Slider + spin box, 0.00&ndash;1.00, default 1.00. Linear mix between
+the untouched target and the recombined result:</p>
+<div class="matheq">\mathrm{out} \;=\; (1-b)\,\mathrm{rgb}_{\mathrm{target}} \;+\; b\,\mathrm{recombined}</div>
+<p>At 1.00 the new L replaces the old entirely; at 0.70 you keep 30% of
+the original luminance structure, useful if the new L is sharper but
+noisier and you want a softer substitution. Dropping below ~0.5 is
+rarely what you want; use the Advanced sliders instead to protect
+specific tonal regions.</p>
+
+<h2>5. Advanced controls</h2>
+<p>Collapsed by default; click the <b>&#9654; Advanced</b> button to
+expand. All four sliders operate before the final result is written,
+in the order Saturation&nbsp;&rarr;&nbsp;Chrominance NR&nbsp;&rarr;&nbsp;Recombine.</p>
+
+<h3>Saturation boost</h3>
+<p>&minus;1.00 to +3.00, default 0.00. HSV-space saturation multiplier,
+applied to the <i>target RGB</i> before luminance is swapped. Because
+the boost happens pre-recombine, it changes colour richness but
+cannot distort the new luminance SASpro is about to place
+(see &sect;&nbsp;8.5 for why).</p>
+<ul>
+  <li><b>0.00</b> &mdash; no change (identity).</li>
+  <li><b>Positive</b> &mdash; multiplies S by (1+a). 0.3 is a gentle
+      lift; 1.0 doubles saturation; 3.0 is close to full clipping and
+      only useful on very weakly-coloured data.</li>
+  <li><b>Negative</b> &mdash; desaturates. &minus;1.0 is pure monochrome.</li>
+</ul>
+
+<h3>Chrominance noise reduction (&sigma;, px)</h3>
+<p>0.0 to 20.0&nbsp;px, step 0.1, default 0.0. Converts the target to
+YCbCr, Gaussian-blurs only the Cb and Cr channels, converts back.
+Luminance structure is untouched. The role is exactly PixInsight's
+chrominance NR slider: suppress colour mottling in low-SNR regions
+without softening fine detail. Typical range is 0.5&ndash;3.0&nbsp;px;
+heavier values are good for very noisy OSC data at the price of a
+subtle colour-wash look.</p>
+
+<h3>Noise-floor pedestal</h3>
+<p>0.000 to 0.500, step 0.005, default 0.050. Protects deep shadows
+from hue skew during the per-pixel scale that recombine performs.
+Without it, pixels whose RGB luminance is near zero are divided by a
+near-zero denominator and the scale factor can swing wildly &mdash;
+amplifying whatever faint colour cast those pixels happened to
+have. The pedestal lifts both target RGB and new L by the same amount
+before the scale, then subtracts it off at the end; the operation is
+exactly identity-preserving when the new L equals the target's own L
+(see &sect;&nbsp;8.6).</p>
+<ul>
+  <li><b>0.000</b> &mdash; pure linear scaling. Fine when the image is
+      well above zero everywhere.</li>
+  <li><b>0.050</b> (default) &mdash; the right compromise for most data.</li>
+  <li><b>0.100&ndash;0.200</b> &mdash; stronger shadow protection for data
+      with a true black. Mildly flattens contrast in the deepest
+      pixels.</li>
+</ul>
+
+<h3>Highlight soft-knee</h3>
+<p>0.00 to 1.00, default 0.00. Compresses large upward scale factors
+so that highlights don't blow out when the new L is substantially
+brighter than the target's own L. See &sect;&nbsp;8.6 for the compression
+curve &mdash; above k&nbsp;&asymp;&nbsp;0.3 the knee becomes
+visible; most work is fine at 0.00.</p>
+
+<h2>6. OK / Cancel</h2>
+<p>OK persists the chosen profile as the new default and runs
+<code>apply_recombine_to_doc</code> against the target. The resulting
+edit shows up in Undo History as &ldquo;Recombine Luminance&rdquo;; the
+log records source title, target title, profile, and all four Advanced
+values. Cancel discards every slider state &mdash; nothing is persisted
+except through OK.</p>
+
+<h2>7. Companion: Extract Luminance (button, no dialog)</h2>
+<p>There's no dialog for the extract side &mdash; a toolbar button on the
+main window pulls luminance out of the active RGB image into a new
+mono document, using the global <code>self.luma_method</code> as its
+profile. The resulting document carries <code>luma_method</code> and
+(for sensor profiles) <code>luma_profile</code> in its metadata, which
+is what lets this dialog's auto-selection cascade recover the right
+profile when you later use that mono as a recombine source. In other
+words: extract with the sensor-matched profile, do your work on the L
+document, feed it back here, and the dialog finds the right weights
+without you having to think about it.</p>
+
+<h2>8. Technical details</h2>
+<p class="tech-lead">All processing on float32 [0, 1]. The target
+RGB is passed through two optional colour-only passes, then recombined
+with the new L. No per-image renormalisation.</p>
+
+<h3>8.1 Pipeline order</h3>
+<p>Inside <code>apply_recombine_to_doc</code>:</p>
+<div class="eq">rgb_target  ─▶  saturation boost  ─▶  chrominance NR  ─▶  recombine(., new_L)  ─▶  out</div>
+<p>Both pre-passes act on colour-space representations that leave
+luminance invariant, so they can't change the Y value SASpro is about
+to overwrite. New&nbsp;L is independently computed from the source
+document (passed through if mono, computed by <code>compute_luminance</code>
+if RGB).</p>
+
+<h3>8.2 Saturation boost (HSV path)</h3>
+<p>The target RGB is converted to HSV via OpenCV
+(<code>cv2.cvtColor(., COLOR_RGB2BGR)</code> then
+<code>COLOR_BGR2HSV</code>), the S channel is scaled, and the image is
+converted back the same way:</p>
+<div class="matheq">S' \;=\; \mathrm{clip}\!\left(S\,(1 + a),\;0,\;1\right)</div>
+<p>Hue and Value are untouched, so the operation is luminance-preserving
+in the HSV sense. OpenCV uses linear floats for the HSV conversion
+when passed a float32 image, so no 8-bit round-trip is involved.</p>
+
+<h3>8.3 Chrominance NR (YCbCr Gaussian path)</h3>
+<p>Transform the target to BT.601 YCbCr with Cb and Cr biased to [0, 1]
+by adding 0.5:</p>
+<div class="matheq">Y = 0.299R + 0.587G + 0.114B</div>
+<div class="matheq">C_b = -0.16875\,R - 0.33126\,G + 0.5\,B + 0.5</div>
+<div class="matheq">C_r = 0.5\,R - 0.41869\,G - 0.08131\,B + 0.5</div>
+<p>Gaussian-blur Cb and Cr only (kernel size <code>&lceil;6&sigma;&rceil;</code>,
+forced odd), then re-centre them and invert the matrix:</p>
+<div class="matheq">R = Y + 1.402\,C_r^{s}</div>
+<div class="matheq">G = Y - 0.34414\,C_b^{s} - 0.71414\,C_r^{s}</div>
+<div class="matheq">B = Y + 1.772\,C_b^{s}</div>
+<p>with <code>C<sub>b</sub><sup>s</sup>&nbsp;=&nbsp;C<sub>b</sub>&nbsp;&minus;&nbsp;0.5</code>
+and likewise for Cr. Y is bit-for-bit preserved through the round-trip;
+only the colour components are smoothed. Result clipped to [0, 1].</p>
+
+<h3>8.4 Luminance computation (<code>compute_luminance</code>)</h3>
+<p>When the source is RGB, Y is computed per the selected profile:</p>
+<ul>
+  <li><b>Weighted profiles</b> (Rec.709/601/2020 and every sensor
+      entry) &mdash; dot product with the profile's weight vector:
+      <div class="matheq">Y \;=\; w_R\,R + w_G\,G + w_B\,B</div>
+      Weight vectors from the standard profiles are already
+      sum-normalised; sensor profiles are respected as declared. If a
+      caller passes custom weights with
+      <code>normalize_weights&nbsp;=&nbsp;False</code>, their absolute
+      sum is kept (allowing deliberate scaling).</li>
+  <li><b>Equal</b> &mdash; simple mean of RGB.</li>
+  <li><b>Max</b> &mdash; per-pixel channel maximum.</li>
+  <li><b>Median</b> &mdash; per-pixel channel median.</li>
+  <li><b>SNR (Unequal noise)</b> &mdash; inverse-variance weighted:
+      <div class="matheq">w_i \;=\; \frac{1/\sigma_i^{2}}{\sum_{j} 1/\sigma_j^{2}}</div>
+      with per-channel &sigma; estimated by MAD on a 4&times;
+      down-sampled view of the source:
+      <div class="matheq">\sigma_i \;=\; 1.4826 \cdot \mathrm{MAD}(c_i)</div>
+      which is robust against stars and bright features. The quietest
+      channel ends up dominating Y, which can give an exceptionally
+      clean luminance from very asymmetric SNR data (classic
+      narrowband-H&alpha; + weaker OIII/SII palettes).</li>
+</ul>
+<p>Mono source documents skip all of this &mdash; their single plane is
+used directly as L.</p>
+
+<h3>8.5 Why pre-passes preserve the new luminance</h3>
+<p>Saturation boost is HSV-space scaling of S only, leaving H and V
+unchanged &mdash; so by construction the HSV Value doesn't move. The
+Y used by recombine is a weighted RGB sum, which isn't HSV Value, but
+in HSV scaling of S only, the only operation that mixes RGB is the
+<code>HSV&nbsp;&rarr;&nbsp;RGB</code> inverse; across that inverse
+the colour variation stays within a constant-Value hyperplane, so Y
+excursions are small and &mdash; crucially &mdash; they're part of the
+<i>target&apos;s</i> Y, not the <i>new</i> L. The chrominance NR path
+leaves Y bit-exact. So when SASpro computes
+<code>Y&nbsp;=&nbsp;w&middot;RGB<sub>pre</sub></code> to build the scale factor,
+it's reading the target's post-pre-pass luminance, and the <i>replacement</i>
+L is unaffected by either pre-pass.</p>
+
+<h3>8.6 Linear-scale recombine with pedestal lift</h3>
+<p>The core recombine, with pedestal <code>p</code>, replacement
+luminance <code>L</code>, and weight vector <code>w</code>:</p>
+<div class="matheq-hero">\mathbf{rgb}_p \;=\; \frac{\mathbf{rgb} + p}{1 + p}\,,\qquad L_p \;=\; \frac{L + p}{1 + p}</div>
+<p>Both target and new L are lifted by the same affine map so black
+sits at <code>p/(1+p)</code> instead of 0. Compute Y and the per-pixel
+scale:</p>
+<div class="matheq-hero">Y_p \;=\; w_R R_p + w_G G_p + w_B B_p\,,\qquad s \;=\; \frac{L_p}{Y_p + \varepsilon}</div>
+<p>with <code>&epsilon;&nbsp;=&nbsp;10<sup>&minus;6</sup></code>. Apply the
+scale to every channel of the lifted target and invert the pedestal:</p>
+<div class="matheq-hero">\mathbf{out}_p \;=\; s\,\mathbf{rgb}_p\,,\qquad \mathbf{out} \;=\; \mathbf{out}_p\,(1+p) \;-\; p</div>
+<p>Clipped to [0, 1] and finally blended against the untouched target
+by the global blend slider.</p>
+
+<h4>Round-trip identity</h4>
+<p>If the new L equals the target's own luminance
+(<code>L&nbsp;=&nbsp;Y</code>, i.e. you fed back the extracted L of the
+target itself), then <code>L<sub>p</sub>&nbsp;=&nbsp;Y<sub>p</sub></code>,
+so <code>s&nbsp;=&nbsp;1</code>, and:</p>
+<div class="matheq">L = Y \;\Rightarrow\; s = 1 \;\Rightarrow\; \mathbf{out} = \mathbf{rgb}</div>
+<p>bit-equal to the input (modulo the <code>&epsilon;</code>). The
+pedestal lift doesn't break this because the same lift and inverse
+are applied symmetrically to RGB and L.</p>
+
+<h4>Why linear scaling preserves hue</h4>
+<p>The per-pixel scale <code>s</code> is one scalar applied uniformly
+to R, G and B. In linear light, chromaticity depends only on the
+<i>ratios</i> of R:G:B, and multiplying all three by the same factor
+leaves those ratios unchanged. So the recombined pixel has exactly
+the same hue as the original &mdash; only its brightness is modulated
+to match the new L. This is why doing recombine in linear space,
+rather than in Lab or HSL, is the right choice for photometric data.</p>
+
+<h4>Highlight soft-knee</h4>
+<p>When enabled (<code>k&nbsp;&gt;&nbsp;0</code>), the raw scale <code>s</code>
+is passed through the compression curve:</p>
+<div class="matheq-hero">s' \;=\; \frac{s}{1 + k\,(s - 1)}</div>
+<p>which fixes <code>s'(1)&nbsp;=&nbsp;1</code>, so scales at or below 1
+(the common case of lowering brightness) are untouched, and asymptotes
+to <code>1/k</code> for very large <code>s</code>. Setting
+<code>k&nbsp;=&nbsp;0</code> recovers plain linear scaling.</p>
+
+<h3>8.7 Sensor profile library</h3>
+<p>Each sensor entry is a declared triple
+<code>(w<sub>R</sub>,&nbsp;w<sub>G</sub>,&nbsp;w<sub>B</sub>)</code>
+measured against the sensor's spectral response. A few representative
+values:</p>
+<table>
+  <tr><th>Sensor</th><th>w<sub>R</sub></th><th>w<sub>G</sub></th><th>w<sub>B</sub></th><th>Note</th></tr>
+  <tr><td>Rec.709 (reference)</td><td>0.2126</td><td>0.7152</td><td>0.0722</td>
+      <td>Standard broadcast luma</td></tr>
+  <tr><td>IMX571 (ASI2600)</td><td>0.2944</td><td>0.5021</td><td>0.2035</td>
+      <td>Modern BSI, APS-C</td></tr>
+  <tr><td>IMX455 (ASI6200)</td><td>0.2987</td><td>0.5001</td><td>0.2013</td>
+      <td>Full-frame reference</td></tr>
+  <tr><td>IMX585 (STARVIS 2)</td><td>0.3431</td><td>0.4822</td><td>0.1747</td>
+      <td>NIR-extended; red carries more weight</td></tr>
+  <tr><td>IMX224 (ASI224)</td><td>0.3402</td><td>0.4765</td><td>0.1833</td>
+      <td>Classic planetary; high red response</td></tr>
+  <tr><td>Seestar S50 (IMX462)</td><td>0.3333</td><td>0.4866</td><td>0.1801</td>
+      <td>Smart-telescope OSC</td></tr>
+</table>
+<p>Notice how the STARVIS 2 and classic planetary profiles push
+noticeably more weight onto R compared to Rec.709 &mdash; using Rec.709
+on an IMX585 undercounts real red signal in the computed Y, and that
+error then propagates into every subsequent scale factor. The sensor
+profiles make this correct automatically.</p>
+
+<h3>8.8 Metadata handshake with Extract Luminance</h3>
+<p>When Extract Luminance writes a mono document, its metadata gets:</p>
+<ul>
+  <li><code>luma_method</code> &mdash; the canonical LUMA_PROFILES key
+      used (e.g. <code>sensor:Sony IMX571 (ASI2600/QHY268)</code>, or
+      <code>rec709</code> for standard profiles). This is the durable
+      profile identity: later re-resolution with
+      <code>resolve_luma_profile_weights()</code> recovers the exact
+      weight vector.</li>
+  <li><code>luma_profile</code> &mdash; the sensor's display name (for
+      sensor keys only). Redundant with the key for current writers,
+      but kept because older extracted-L docs stored only this and
+      <code>find_sensor_profile_key_by_display_name</code> uses it
+      to recover the key.</li>
+  <li><code>luma_weights</code> &mdash; the actual weight vector as a
+      3-list, present whenever weights were used. Lets code
+      downstream that doesn't want to re-import LUMA_PROFILES still
+      read the numbers.</li>
+</ul>
+<p>Recombine's auto-selection cascade reads them in that order; the
+same metadata survives into the recombined target as part of its
+Undo-History entry.</p>
+
+<div class="credit">
+<b>Credits.</b> OpenCV's HSV conversion and Gaussian blur, NumPy's
+tensordot and MAD-based variance estimation, and the BT.601 YCbCr
+matrices are standard primitives used here. The sensor profile library
+with its per-camera weight vectors, the five-step metadata
+auto-selection cascade, the pedestal-lift round-trip, the pre-recombine
+saturation + chrominance NR pipeline (and the proof that they can't
+contaminate the replacement luminance), and the whole dialog's
+behaviour are SASpro's own design.
+</div>
+
+</body>
+</html>

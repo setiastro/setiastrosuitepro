@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Add Stars</h1>
+<p class="sub">Recombine a starless image with a stars-only image &mdash; the
+inverse of removing stars. Choose a Screen or Add blend, dial the intensity, and
+apply the result to the starless view. Mask-aware, with a live preview.</p>
+
+<h2>1. Using the tool</h2>
+<p>Pick the two layers (from open views or files), choose how they combine, and
+watch the preview update live. <b>Apply</b> writes the blend onto the chosen
+Starless View.</p>
+
+<h3>Choosing the two layers</h3>
+<ul>
+  <li><b>Starless View</b> &mdash; the background layer, and the image the result
+      is applied to. Pick an open view from the dropdown, or use <b>Load from
+      File</b>.</li>
+  <li><b>Stars-Only View</b> &mdash; the star layer to add back. Again, an open
+      view or a file.</li>
+  <li><b>Refresh Views</b> &mdash; rebuild the dropdowns after opening or closing
+      images elsewhere in SASpro.</li>
+</ul>
+<p class="cap">The two layers must be the same size. The dropdowns list every open
+view plus a &ldquo;Load from File&rdquo; entry; the file buttons set a layer
+directly from disk.</p>
+
+<h3>Blend controls</h3>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Blend Type</td><td><b>Screen</b> (non-linear, keeps bright stars from
+      clipping) or <b>Add</b> (straight sum). See &sect;2.1.</td></tr>
+  <tr><td>Blend Ratio (0&ndash;100)</td><td>How strongly the stars are mixed in:
+      0 leaves the starless image untouched, 100 is the full Screen/Add result.</td></tr>
+</table>
+
+<h3>Preview &amp; apply</h3>
+<ul>
+  <li><b>Zoom In / Out / Fit</b> and the mouse wheel navigate the preview; scroll
+      position is preserved as you adjust settings.</li>
+  <li><b>Apply</b> commits a &ldquo;Stars Added&rdquo; step onto the Starless View's
+      document (if the starless layer came from a file, it falls back to the active
+      view); <b>Cancel</b> closes without changes.</li>
+</ul>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">A per-pixel blend of the two layers, mixed by the ratio and
+confined to any active mask. Everything runs on float RGB in [0,1] (mono layers
+are promoted to RGB and collapsed back on output).</p>
+
+<h3>2.1 Screen vs Add</h3>
+<p>The two layers are first combined into a base result one of two ways:</p>
+<div class="matheq">\mathrm{Screen:}\quad \mathrm{base}=\mathrm{starless}+\mathrm{stars}-\mathrm{starless}\cdot\mathrm{stars}</div>
+<div class="matheq">\mathrm{Add:}\quad \mathrm{base}=\mathrm{starless}+\mathrm{stars}</div>
+<p><b>Screen</b> is the complement-product blend &mdash; it rolls off as values
+approach 1.0, so bright stars layer over the background without the hard clipping
+a straight sum produces. It's the exact inverse of the <i>unscreen</i> extraction
+in Remove Stars, so a round-trip (remove &rarr; add) is faithful. <b>Add</b> is the
+literal sum, useful when the stars layer is already scaled for it.</p>
+
+<h3>2.2 Ratio mix</h3>
+<p>The base is then mixed with the original starless image by the ratio
+<code>r</code> (slider / 100) and clipped:</p>
+<div class="matheq-hero">\mathrm{out}=(1-r)\,\mathrm{starless}+r\,\mathrm{base}\,,\qquad r\in[0,1]</div>
+<p>So the slider is a continuous fade from &ldquo;no stars&rdquo; (r = 0) to the
+full blend (r = 1), letting you tune exactly how prominent the stars are.</p>
+
+<h3>2.3 Masking</h3>
+<p>If the destination (Starless View) document has an active mask, the blend is
+confined to it &mdash; the starless background is kept everywhere the mask is
+zero:</p>
+<div class="matheq">\mathrm{out}=\mathrm{starless}\cdot(1-m)+\mathrm{out}\cdot m</div>
+
+<h3>2.4 Notes</h3>
+<ul>
+  <li>Mono layers are treated as RGB internally; the committed result follows the
+      source's mono/colour shape.</li>
+  <li>The result is applied to the selected Starless View (or the active view if
+      the starless layer was loaded from a file), as an undoable &ldquo;Stars
+      Added&rdquo; step.</li>
+  <li>This is the natural partner to Remove Stars: process the starless image
+      however you like (stretch, denoise, sharpen), then add the untouched stars
+      back on top.</li>
+</ul>
+
+</body>
+</html>

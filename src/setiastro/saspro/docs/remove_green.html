@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+</style>
+</head>
+<body>
+
+<h1>Remove Green (SCNR)</h1>
+<p class="sub">Subtractive Chromatic Noise Reduction. Suppresses an unwanted
+colour cast on one channel by pulling it toward a &ldquo;neutral&rdquo; built
+from the other two channels, so greys stay grey while the targeted hue is
+removed. Classic use case is the green cast left behind after star removal
+or in continuum-subtracted narrowband; the tool generalises the same
+operation to any RGB or CMY channel.</p>
+
+<h2>1. Using the tool</h2>
+<p>The dialog stays open after Apply so you can run the same settings on
+other images &mdash; the active document is picked up automatically on the
+next Apply, no need to reopen.</p>
+
+<h3>Target channel</h3>
+<p>Which channel is pulled toward neutral. Default is <b>Green</b>
+&mdash; the classical SCNR. Other options:</p>
+<ul>
+  <li><b>Red / Blue</b> &mdash; same operation applied to a red or blue cast
+      (e.g. a magenta star-core residue after an overzealous G suppression,
+      which is really excess R).</li>
+  <li><b>Cyan / Magenta / Yellow</b> &mdash; the CMY targets. SSSC implements
+      these by inverting the image, running the equivalent RGB SCNR on the
+      complementary channel (C &harr; R, M &harr; G, Y &harr; B), and
+      inverting back. The result is a subtractive &ldquo;remove this
+      secondary hue&rdquo; identical in character to the primary-colour
+      SCNR, useful when the cast you want gone is on a mix channel
+      rather than a pure R/G/B.</li>
+</ul>
+
+<h3>Amount</h3>
+<p>How strongly to pull the target channel toward neutral, 0.00&ndash;1.00.
+At <code>1.00</code> any excess over the neutral comparator is removed
+entirely (full SCNR); at <code>0.00</code> nothing happens. The default
+<code>1.00</code> is usually right for a visible cast; dial back when the
+subject itself is legitimately green (planetary nebulae with strong OIII,
+some comets, aurorae) and you want to keep that colour.</p>
+
+<h3>Neutral mode</h3>
+<p>What counts as the &ldquo;neutral&rdquo; level the target channel is
+compared against. All three are built from the <i>other</i> two channels:</p>
+<ul>
+  <li><b>Average of other two</b> (default) &mdash; the smoothest, least
+      destructive choice. Treats the target channel as excess over the
+      mean of the other two.</li>
+  <li><b>Max of other two</b> &mdash; more conservative. The target channel
+      only gets suppressed where it exceeds the <i>brighter</i> of the two
+      others, so pure target-coloured subjects (where other channels are
+      low) survive longer. Use when you need to remove a cast without
+      touching legitimately-coloured features.</li>
+  <li><b>Min of other two</b> &mdash; most aggressive. Suppresses any excess
+      over the <i>dimmer</i> of the two others. Useful for very strong
+      casts, but can desaturate real signal if used at high amount.</li>
+</ul>
+
+<h3>Preserve lightness</h3>
+<p>On by default. SCNR by itself only subtracts from one channel, so pixels
+become darker as well as less tinted. With this on, SSSC measures each
+pixel's perceived lightness (Rec.&nbsp;709 luma) before and after, then
+scales <i>all three</i> channels equally so the pixel's lightness is
+restored while its new colour balance is kept. A highlight-safety cap
+prevents any channel from exceeding 1.0 during that rescale, so star cores
+and other bright features don't get pushed into clipping. Turn it off if
+you specifically want the darkening behaviour of raw SCNR.</p>
+
+<h3>Masks</h3>
+<p>If the destination document has an active mask, SCNR runs on the whole
+frame and then blends through the mask &mdash; so the correction only
+affects masked regions, with original pixels preserved everywhere else.
+The mask is resampled to match the image dimensions if needed.</p>
+
+<h3>Preset grip</h3>
+<p>The handle at the bottom-left of the dialog carries the current four
+settings (channel, amount, mode, preserve-lightness) and can be dragged
+onto the canvas to create a shortcut tile, or dropped directly onto an
+image to apply those settings headlessly. Double-clicking the tile reopens
+this dialog with those settings pre-filled.</p>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">RGB only; mono and single-channel inputs pass through
+unchanged. Operates on a float32 [0,1] working copy.</p>
+
+<h3>2.1 Core SCNR operation</h3>
+<p>For a target channel <code>C_c</code> with the other two channels
+denoted <code>A</code> and <code>B</code>, and a user amount
+<code>a &isin; [0,1]</code>:</p>
+<div class="matheq-hero">C'_c \;=\; C_c \;-\; a\cdot\max\!\left(0,\;C_c - N\right)</div>
+<p>where <code>N</code> is the neutral comparator built from the other two
+channels. Only positive excess over <code>N</code> is removed &mdash; the
+target channel is never pushed <i>up</i>, so pixels that are already at or
+below the neutral level are untouched. The result is clipped to [0,1].</p>
+
+<h3>2.2 Neutral comparator</h3>
+<p>Three modes, selected by the dropdown:</p>
+<div class="matheq">N_{\mathrm{avg}}=\frac{A+B}{2}\,,\quad N_{\max}=\max(A,B)\,,\quad N_{\min}=\min(A,B)</div>
+<p>Average is the default and the most common SCNR variant. Max is more
+conservative (removes less), min is more aggressive (removes more),
+because <code>N_min &le; N_avg &le; N_max</code> and the amount removed
+scales with <code>C_c - N</code>.</p>
+
+<h3>2.3 CMY targets via inversion</h3>
+<p>SCNR is defined on primary channels, but the subtractive relationship
+means the same operation on the <i>complement</i> of the image removes a
+secondary-colour cast. For a CMY target channel, SSSC maps
+C&nbsp;&harr;&nbsp;R, M&nbsp;&harr;&nbsp;G, Y&nbsp;&harr;&nbsp;B and
+performs:</p>
+<div class="matheq">\mathrm{SCNR}_{\mathrm{CMY}}(\mathbf{c}) \;=\; \mathbf{1} - \mathrm{SCNR}_{\mathrm{RGB}}(\mathbf{1}-\mathbf{c})</div>
+<p>with the SCNR on the right-hand side applied to the complementary primary
+channel. No new math is required — the same formulas from
+&sect;&nbsp;2.1&ndash;2.2 run on the inverted buffer.</p>
+
+<h3>2.4 Preserve lightness</h3>
+<p>Raw SCNR subtracts, so lightness drops. When the checkbox is on, SSSC
+rescales all three channels of each pixel to restore the pre-SCNR
+Rec.&nbsp;709 luma while keeping the new chromaticity:</p>
+<div class="matheq">Y \;=\; 0.2126\,R \;+\; 0.7152\,G \;+\; 0.0722\,B</div>
+<p>Per pixel the raw scale would be <code>s = Y_before / Y_after</code>,
+but applying that blindly could push bright, already-near-white pixels
+above 1.0. SSSC caps the scale so no channel exceeds unity:</p>
+<div class="matheq">s \;=\; \min\!\left(\frac{Y_{\mathrm{before}}}{Y_{\mathrm{after}}},\;\frac{1}{\max(R',G',B')}\right)</div>
+<p>where <code>R', G', B'</code> are the post-SCNR channel values. The
+final output is <code>(R', G', B') &times; s</code>, clipped to [0,1].
+This keeps star cores and other high-end features from clipping during
+the rescale, at the cost of leaving those specific pixels slightly dimmer
+than full luma preservation would. For typical starfields the effect is
+visually invisible.</p>
+
+<h3>2.5 Mask-aware output</h3>
+<p>When the destination document carries an active mask <code>m &isin; [0,1]</code>,
+the processed buffer is blended against the original:</p>
+<div class="matheq">\mathrm{out} \;=\; \mathrm{src}\cdot(1-m) \;+\; \mathrm{SCNR}(\mathrm{src})\cdot m</div>
+<p>Masks of a different resolution than the image are nearest-neighbour
+resampled to match (OpenCV when available, NumPy index-based fallback
+otherwise). Images with more than three channels (RGBA etc.) keep their
+extra channels untouched &mdash; only the first three are passed through
+SCNR and written back.</p>
+
+</body>
+</html>

@@ -138,7 +138,7 @@ import math
 from setiastro.saspro.autostretch import autostretch
 from setiastro.saspro.autostretch import autostretch as _autostretch
 from setiastro.saspro.rgb_extract import extract_rgb_channels
-
+from setiastro.saspro.help_support import make_help_button
 
 
 from setiastro.saspro.legacy.numba_utils import (
@@ -3860,7 +3860,13 @@ class AstroSuiteProMainWindow(
         )
         btns.accepted.connect(dlg.accept)
         btns.rejected.connect(dlg.reject)
-        lay.addWidget(btns)
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        btn_help = make_help_button("luminance_recombine", dlg)
+        btn_row.addWidget(btn_help)
+        btn_row.addStretch(1)
+        btn_row.addWidget(btns)
+        lay.addLayout(btn_row)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return

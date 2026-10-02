@@ -40,7 +40,7 @@ import sep  # PSF estimator
 from setiastro.saspro.widgets.spinboxes import CustomSpinBox
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
-
+from setiastro.saspro.help_support import make_help_button
 
 from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
 import numpy as np
@@ -368,6 +368,8 @@ class ConvoDeconvoDialog(QDialog):
                 parent=self,
             )
             drag_row.addWidget(self.preset_drag_handle)
+            self.btn_help = make_help_button("convo", self)
+            drag_row.addWidget(self.btn_help)
             drag_row.addStretch(1)
             left_layout.addLayout(drag_row)
         except Exception:

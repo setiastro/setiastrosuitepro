@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Cosmetic Correction</h1>
+<p class="sub">Detects and repairs hot and cold pixels by comparing each pixel to
+its neighbours, with a structure guard that keeps star and nebula cores from
+being clipped. GPU-accelerated (CUDA/MPS) with a transparent CPU fallback;
+works on single images or in batch.</p>
+
+<h2>1. Using the tool</h2>
+<p>Dial in the detection sigmas while watching the before/after preview, then
+<b>Apply</b>. The preview shows a tile of the frame, always autostretched, so you
+can see whether your settings are eating real detail. The two panes are
+pan/zoom-linked &mdash; move one and the other follows.</p>
+
+<h3>Detection settings</h3>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Hot pixels &sigma; (0.5&ndash;10, default 3)</td><td>Threshold for
+      flagging a pixel as too bright vs its neighbours. Lower = more
+      aggressive.</td></tr>
+  <tr><td>Cold pixels &sigma; (0.5&ndash;10, default 3)</td><td>Same, for pixels
+      too dark vs their neighbours.</td></tr>
+  <tr><td>Protect structure &sigma; (2&ndash;50, default 5)</td><td>The anti-core
+      guard. A region whose local median sits this many &sigma; above the global
+      background is treated as real signal (star / nebula core) and left
+      untouched by the hot pass. Lower = protect more; set very high to
+      disable.</td></tr>
+  <tr><td>Correct hot / Correct cold</td><td>Enable each pass independently.</td></tr>
+  <tr><td>Bayer pattern</td><td><b>Auto-detect</b> (reads BAYERPAT from the FITS
+      header, only for a raw 2-D mosaic), <b>None</b> (mono / already-debayered),
+      or force <b>RGGB/BGGR/GRBG/GBRG</b> &mdash; see &sect;2.3.</td></tr>
+  <tr><td>Push &sigma; to Stacking Suite</td><td>Copies the current Hot/Cold/Protect
+      &sigma; into the Stacking Suite settings, so per-frame cosmetic correction
+      during light calibration uses the same numbers you just tuned.</td></tr>
+</table>
+
+<h3>Previewing</h3>
+<ul>
+  <li><b>Region (3&times;3 grid)</b> &mdash; choose which part of the frame to
+      preview (corner / edge / centre). A bright centred object can hide hot/cold
+      activity, so shifting to a corner is key for tuning sigmas that don't clip
+      star cores. The choice is remembered.</li>
+  <li><b>Refresh preview</b> &mdash; recompute the after-pane (it also recomputes
+      automatically when you change a setting).</li>
+  <li><b>Pan / zoom</b> &mdash; drag to pan, wheel to zoom; both panes stay locked
+      together so before/after line up pixel-for-pixel.</li>
+  <li><b>Pixel map &rarr;</b> &mdash; opens a diagnostic map as a new view:
+      <b>red</b> = hot pixel (pulled down), <b>blue</b> = cold (pushed up),
+      <b>black</b> = untouched, so you can see exactly what gets flagged and how
+      many. The current image isn't modified.</li>
+</ul>
+
+<h3>Applying &amp; batch</h3>
+<ul>
+  <li><b>Apply</b> commits a &ldquo;Cosmetic Correction&rdquo; step and reports how
+      many hot / cold pixels were corrected; <b>Cancel</b> closes.</li>
+  <li><b>Batch&hellip;</b> opens the batch processor: add files or folders (or drag
+      them in), choose output (overwrite in place, add a suffix, or save to a
+      directory), and run the same detection over the whole list on a worker
+      thread with per-file progress.</li>
+  <li><b>Grip</b> (bottom-left) drags to the canvas to mint a shortcut with these
+      settings, or drops on an image to apply headlessly. If no image is open, the
+      opener falls back to the batch dialog.</li>
+</ul>
+<div class="tip">The tool also runs in a <b>Stacking-Suite tuning mode</b>: it
+previews on a sample light frame (with ◀ / picker / ▶ to step through your
+lights) and the Apply button becomes &ldquo;Save &sigma; Settings&rdquo; &mdash; it
+writes the sigmas back for per-frame calibration without ever modifying the
+sample.</div>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">A two-pass neighbour-median comparison flags and replaces
+outliers, gated by a structure test so real detail survives. The detection
+kernel runs on GPU when available and on CPU otherwise.</p>
+
+<h3>2.1 Neighbour-median detection</h3>
+<p>Each pixel <code>x</code> is compared to the median <code>m</code> of its
+orthogonal neighbours; if it deviates by more than the chosen number of noise
+sigmas it is flagged and replaced by that median. The two passes run
+independently:</p>
+<div class="matheq">\mathrm{hot:}\ \ x-m > \sigma_{\mathrm{hot}}\,\hat{\sigma}\quad\Rightarrow\quad x\to m</div>
+<div class="matheq">\mathrm{cold:}\ \ m-x > \sigma_{\mathrm{cold}}\,\hat{\sigma}\quad\Rightarrow\quad x\to m</div>
+<p>Replacing with the neighbour median (rather than the mean) means a corrected
+pixel takes on a value its surroundings actually support, and a single bad pixel
+can't drag the estimate. Turning a pass off pushes its threshold out of reach so
+it contributes nothing:</p>
+<div class="matheq">\sigma \to 10^{9}\quad(\mathrm{pass\ disabled})</div>
+
+<h3>2.2 Structure protection (anti-core guard)</h3>
+<p>The danger with hot-pixel removal is clipping the bright peak of a tight star
+or nebula core. The guard compares each region's <i>local median</i> to the
+<i>global background</i>: if it stands too many sigmas above it, the region is
+real signal and the hot pass skips it.</p>
+<div class="matheq-hero">\mathrm{median}(\mathrm{patch})-\mu_{\mathrm{bg}} > \sigma_{\mathrm{protect}}\,\sigma_{\mathrm{bg}}\ \Rightarrow\ \mathrm{protected}</div>
+<p class="cap">The key insight: a lone hot pixel can't shift a median, so it is
+still corrected even inside a bright area &mdash; only genuine <i>structure</i>
+(which does move the local median) is protected. Lower Protect &sigma; shields
+more; higher corrects more aggressively.</p>
+
+<h3>2.3 Bayer-aware neighbours</h3>
+<p>On a raw, undebayered mosaic the orthogonal neighbours are different colours,
+so a stride-1 comparison would be meaningless. When a Bayer pattern applies
+(auto-detected from BAYERPAT only for a 2-D image, or forced), the comparison
+uses <b>stride-2 same-colour neighbours</b> instead. For mono or already-debayered
+RGB, standard stride-1 neighbours are used.</p>
+
+<h3>2.4 Notes</h3>
+<ul>
+  <li>Runs on float data in [0,1]. With an active mask, the result is blended back
+      against the source over the mask, so only masked pixels change.</li>
+  <li>Corrected-pixel counts are exact: unchanged pixels come back bit-identical,
+      so the sign of <code>source &minus; corrected</code> cleanly separates hot
+      (<code>&gt;0</code>) from cold (<code>&lt;0</code>) &mdash; the same test that
+      drives the pixel map.</li>
+  <li>The detection kernel (<code>torch_rejection.cosmetic_correction_gpu</code>)
+      picks GPU (CUDA/MPS) or CPU automatically; the batch path preserves each
+      file's bit depth and adds a HISTORY note to FITS headers.</li>
+</ul>
+
+</body>
+</html>

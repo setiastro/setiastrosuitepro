@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Background Neutralization</h1>
+<p class="sub">Equalize the per-channel background so the sky is neutral grey,
+using the medians inside a sample box. Shadows are lifted onto a common
+background level while bright highlights (stars, bright nebulosity) are left
+untouched &mdash; so colour balance in the signal survives.</p>
+
+<h2>1. Using the tool</h2>
+<p>Pick a patch of empty sky &mdash; manually or automatically &mdash; and click
+<b>Apply Neutralization</b>. SASpro computes the per-channel medians inside the
+box, picks the mean as the common target, and rebalances the channels so the
+background reaches it.</p>
+
+<h3>Choosing the sample box</h3>
+<ul>
+  <li><b>Draw a box</b> &mdash; left-click-drag on the preview; a green dashed
+      rectangle follows the mouse, and release leaves a solid red box. The
+      selection must be at least 10&times;10&nbsp;px.</li>
+  <li><b>Find Background</b> &mdash; auto-selects a 50&times;50&nbsp;px patch of
+      the darkest usable sky (&sect;2.2) and marks its centre with a gold
+      crosshair that stays the same size as you zoom.</li>
+  <li>Pick a region that's <i>pure sky</i> &mdash; no nebulosity, no stars, no
+      gradient hot spot. The further off the sample is, the more it'll push
+      colour balance.</li>
+</ul>
+
+<h3>Preview &amp; apply</h3>
+<ul>
+  <li><b>Enable Auto-Stretch</b> toggles a non-destructive preview stretch so you
+      can see faint background structure while picking a patch; the data processed
+      on Apply is always the linear source.</li>
+  <li><b>Zoom In / Out / Fit to View</b> navigate the preview; the wheel also
+      zooms (anchored under the cursor). While the user hasn't manually zoomed,
+      resizes refit automatically.</li>
+  <li><b>Apply Neutralization</b> commits a &ldquo;Background Neutralization&rdquo;
+      step (and records the sample box so the operation is replayable);
+      <b>Cancel</b> closes without changes. The dialog follows the active image
+      window, so clicking a different view loads it in place.</li>
+  <li><b>Grip</b> (bottom-left) drags to the canvas to mint a shortcut &mdash;
+      with a box, as a <code>rect</code> preset; without one, as <code>auto</code>
+      so each drop re-finds its own patch.</li>
+</ul>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">RGB only. The sample box fixes a per-channel baseline; the
+rebalance pins highlights at 1.0 so bright signal doesn't drift.</p>
+
+<h3>2.1 The neutralization</h3>
+<p>Optionally, a <b>per-channel pedestal</b> is removed from the whole image first
+&mdash; each channel's minimum is subtracted so the darkest pixel per channel sits
+at zero:</p>
+<div class="matheq">I_c\;\to\;I_c-\min(I_c)\quad(\mathrm{per\ channel,\ whole\ image})</div>
+<p>Then the per-channel medians inside the sample box, and the common grey target
+as their mean, are computed:</p>
+<div class="matheq">m_c=\mathrm{median}\!\left(I_{\mathrm{sample}}[\cdot,c]\right)\,,\qquad t=\frac{1}{3}\!\left(m_R+m_G+m_B\right)</div>
+<p>The default rebalance is a <b>per-channel gain pivoted around 1.0</b>, which
+keeps bright pixels fixed and only lifts the shadows:</p>
+<div class="matheq-hero">g_c=\frac{1-t}{1-m_c}\,,\qquad \mathrm{out}_c=1-(1-I_c)\,g_c</div>
+<p>By construction this maps <code>I_c = m_c &rarr; t</code> (every channel's
+background lands on the shared grey) and <code>I_c = 1 &rarr; 1</code> (pure white
+is left alone), so star cores and highlights don't drift colour:</p>
+<div class="matheq">\mathrm{at}\ I_c=1:\ \mathrm{out}_c=1\,;\qquad \mathrm{at}\ I_c=m_c:\ \mathrm{out}_c=t</div>
+<p>An alternative <b>offset</b> mode adds a flat per-channel shift sized to not
+clip:</p>
+<div class="matheq">\mathrm{out}_c=I_c+(t-m_c)\quad(\mathrm{capped\ to\ avoid\ clipping})</div>
+<p class="cap">Offset is simplest and leaves relative colours untouched, but can't
+protect highlights the way the pivot-at-1 gain does &mdash; which is why the
+pivot form is the default.</p>
+
+<h3>2.2 The automatic background finder</h3>
+<p>With no box drawn, <b>Find Background</b> locates a dark patch of sky in three
+stages:</p>
+<ul>
+  <li>Split the luminance plane into a 10&times;10 grid and keep the two tiles
+      with the lowest median.</li>
+  <li>Inside each dark tile, drop ~200 random seeds and walk each one downhill
+      through its 8-neighbourhood until it reaches a local minimum &mdash; so the
+      final points cluster on the dimmest sky, not on arbitrary pixels.</li>
+  <li>Score the candidates by the median of a 50&times;50 window around each, then
+      refine with a small step grid, keeping the box at least ~100&nbsp;px from
+      every edge.</li>
+</ul>
+<p>The result is a 50&times;50 background patch; the preview marks its centre with
+a crosshair rather than a filled rectangle, so you can see exactly which point
+drives the medians.</p>
+
+<h3>2.3 Masking</h3>
+<p>With an active mask on the destination document, the neutralized image is
+blended back against the original over the mask, so only masked regions change
+(<code>out = src&middot;(1&minus;m) + out&middot;m</code>).</p>
+
+<h3>2.4 Notes</h3>
+<ul>
+  <li>The algorithm requires an RGB image; mono doesn't have a colour balance to
+      neutralize.</li>
+  <li>Headless and grip-dropped runs follow the same preset schema: <code>mode:
+      "rect"</code> with normalised <code>rect_norm = [x, y, w, h]</code> in
+      [0,1], or <code>mode: "auto"</code> to re-find a patch on each run.</li>
+</ul>
+
+</body>
+</html>

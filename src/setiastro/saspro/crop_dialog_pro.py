@@ -7,8 +7,8 @@ import numpy as np
 import cv2
 from typing import Optional
 import platform
-from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer, QSettings, QByteArray
-from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath, QPainter, QCursor
+from PyQt6.QtCore import Qt, QEvent, QPointF, QRectF, pyqtSignal, QPoint, QTimer, QSettings, QByteArray, QSignalBlocker
+from PyQt6.QtGui import QPixmap, QImage, QPen, QBrush, QColor, QPainterPath, QPainter, QCursor, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QComboBox, QToolButton,
     QMessageBox, QGraphicsScene, QGraphicsView, QGraphicsRectItem, QGraphicsEllipseItem,
@@ -18,6 +18,9 @@ from PyQt6.QtWidgets import (
 
 from setiastro.saspro.wcs_update import update_wcs_after_crop
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro.shortcuts import PresetDragHandle
+from setiastro.saspro.resources import get_icon_path
 
 _ROTATION_CURSOR = None
 
@@ -860,9 +863,32 @@ class CropDialogPro(QDialog):
             "find the best shared crop region before applying."
         )
         self.btn_close = QToolButton(); self.btn_close.setText(self.tr("Close"))
+        # PI-style "new instance" grip (far left): drag to the canvas to mint a
+        # Crop shortcut carrying the current rectangle/angle, or drop on an image
+        # to apply the crop headlessly.
+        try:
+            self.preset_drag_handle = PresetDragHandle(
+                "crop",
+                self._crop_params,
+                icon=QIcon(get_icon_path("cropicon")),
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Crop shortcut with these exact\n"
+                    "settings. Drop directly on an image to apply the crop headlessly."
+                ),
+                parent=self,
+            )
+            btn_row.addWidget(self.preset_drag_handle)
+            btn_row.addSpacing(10)
+        except Exception:
+            self.preset_drag_handle = None
         for b in (self.btn_autostretch, self.btn_prev, self.btn_apply,
                   self.btn_batch, self.btn_overlap, self.btn_close):
             btn_row.addWidget(b)
+        # small in-app documentation button at the far right (across the dialog
+        # from the grip, near the resize grip)
+        btn_row.addStretch(1)
+        self.btn_help = make_help_button("crop", self)
+        btn_row.addWidget(self.btn_help)
         main.addLayout(btn_row)
 
         # composite status label (hidden when not in composite mode)
@@ -1436,6 +1462,76 @@ class CropDialogPro(QDialog):
         sx, sy = w_img / pm.width(), h_img / pm.height()
         return np.array([pt_scene.x() * sx, pt_scene.y() * sy], dtype=np.float32)
 
+    def _crop_params(self) -> dict:
+        """Canonical preset for the drag handle — the SAME quad_norm that
+        _apply_one would crop with (normalized image-pixel corners). Captures
+        axis-aligned and rotated crops exactly; size-independent on replay.
+        Falls back to a no-op margins preset if nothing is drawn yet."""
+        try:
+            if self._rect_item is not None and self._pix_item is not None:
+                W, H = self._orig_w, self._orig_h
+                corners = self._corners_scene()
+                src = np.array(
+                    [self._scene_to_img_pixels(p, W, H) for p in corners],
+                    dtype=np.float32,
+                )
+                quad = (src / np.array([float(W), float(H)], dtype=np.float32)).tolist()
+                return {"mode": "quad_norm", "quad": quad, "create_new_view": False}
+        except Exception:
+            pass
+        return {"mode": "margins",
+                "margins": {"top": 0, "right": 0, "bottom": 0, "left": 0},
+                "create_new_view": False}
+
+    def seed_from_preset(self, preset: dict | None) -> None:
+        """Load a preset (margins / rect_norm / quad_norm) into the live
+        rectangle so a dropped/double-clicked Crop shortcut opens the dialog
+        showing exactly the crop it would apply. The preset is converted to
+        image-pixel corners through the SAME crop_preset builders the headless
+        runner uses, so the on-screen rectangle matches the headless result."""
+        if not preset or self._pix_item is None:
+            return
+        try:
+            import math
+            from setiastro.saspro import crop_preset as _cp
+            W, H = self._orig_w, self._orig_h
+            mode = str(preset.get("mode", "quad_norm")).lower()
+            if mode == "margins":
+                q = _cp._quad_from_margins(W, H, preset.get("margins", {}) or {})
+            elif mode == "rect_norm":
+                q = _cp._quad_from_rect_norm(W, H, preset.get("rect", {}) or {})
+            else:
+                qn = np.array(preset.get("quad", []), dtype=np.float32)
+                if qn.shape != (4, 2):
+                    return
+                q = qn * np.array([float(W), float(H)], dtype=np.float32)
+
+            # image pixels -> scene coords (inverse of _scene_to_img_pixels)
+            pm = self._pix_item.pixmap()
+            sx = pm.width() / float(W)
+            sy = pm.height() / float(H)
+            pts = [(float(px) * sx, float(py) * sy) for px, py in np.asarray(q, dtype=np.float32)]
+            (tlx, tly), (trx, tryy), (brx, bry), (blx, bly) = pts
+
+            w = math.hypot(trx - tlx, tryy - tly)
+            h = math.hypot(blx - tlx, bly - tly)
+            cx = (tlx + trx + brx + blx) / 4.0
+            cy = (tly + tryy + bry + bly) / 4.0
+            ang = math.degrees(math.atan2(tryy - tly, trx - tlx))
+
+            # A rotated rectangle == axis-aligned rect centered at C, dims w×h,
+            # rotated about its center by `ang` — which is exactly what
+            # _restore_rect_state reproduces.
+            r = QRectF(cx - w / 2.0, cy - h / 2.0, w, h)
+            self._restore_rect_state((r, ang, QPointF(0.0, 0.0)))
+            try:
+                _blk = QSignalBlocker(self.sb_angle)
+                self.sb_angle.setValue(ang)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _apply_one(self):
         try:
             self._save_window_geometry()
@@ -1685,3 +1781,35 @@ class CropDialogPro(QDialog):
             pass
         self._cleanup_connections()
         super().closeEvent(ev)
+
+def open_crop_with_preset(main_window, preset: dict | None = None):
+    """Open the live Crop dialog seeded from a preset. Used by the preset-open
+    path (_preset_opener_for_command -> ShortcutManager) when a Crop shortcut is
+    double-clicked. Resolves the active document from the active MDI subwindow
+    first, matching the tool's toolbar opener."""
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            doc = getattr(sw.widget(), "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager", getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    if doc is None:
+        return None
+
+    dlg = CropDialogPro(main_window, doc)
+    try:
+        dlg.setWindowIcon(QIcon(get_icon_path("cropicon")))
+    except Exception:
+        pass
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception:
+        pass
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
+    return dlg

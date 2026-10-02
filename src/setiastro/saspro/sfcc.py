@@ -210,6 +210,7 @@ from setiastro.saspro.backgroundneutral import run_background_neutral_via_preset
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
 # --- Gaia XP fallback (optional) ---
 from setiastro.saspro.gaia_downloader import GaiaDownloader, HAS_GAIAXPY
+from setiastro.saspro.help_support import make_help_button
 
 import warnings
 from typing import Callable, Dict, Any, Iterable
@@ -1365,12 +1366,33 @@ class SFCCDialog(QDialog):
         self.sep_thr_spin.setValue(15)            # our current hardcoded value
         self.sep_thr_spin.valueChanged.connect(self.save_sep_threshold_setting)
         row4.addWidget(self.sep_thr_spin)
+
+        # Auto σ (waterfall) — removes the manual guess-and-check.
+        # Starts at σ=100 and steps down [100,50,25,12,8,5,3] until the
+        # detection returns at least SFCC_AUTO_SIGMA_MIN_STARS (1200) sources,
+        # then uses that σ. If none of the trials hit the threshold, the
+        # lowest σ in the ladder is used (highest-sensitivity attempt).
+        self.auto_sigma_chk = QCheckBox(self.tr("Auto"))
+        self.auto_sigma_chk.setToolTip(self.tr(
+            "Auto σ waterfall:\n"
+            "  Tries σ = 100, 50, 25, 12, 8, 5, 3 in order and stops at the\n"
+            "  first value that yields ≥ 1200 detections. Removes the need to\n"
+            "  guess a threshold for different fields.\n\n"
+            "  Uncheck to use the manual σ value in the spin box."
+        ))
+        self.auto_sigma_chk.setChecked(True)
+        self.auto_sigma_chk.toggled.connect(self._on_auto_sigma_toggled)
+        row4.addWidget(self.auto_sigma_chk)
+        # Reflect initial state on the spin box
+        self.sep_thr_spin.setEnabled(not self.auto_sigma_chk.isChecked())
         row4.addStretch()
         self.add_curve_btn = QPushButton(self.tr("Add Custom Filter/Sensor Curve…"))
         self.add_curve_btn.clicked.connect(self.add_custom_curve); row4.addWidget(self.add_curve_btn)
         self.remove_curve_btn = QPushButton(self.tr("Remove Filter/Sensor Curve…"))
         self.remove_curve_btn.clicked.connect(self.remove_custom_curve); row4.addWidget(self.remove_curve_btn)
         row4.addStretch()
+        self.btn_help = make_help_button("sfcc", self)
+        row4.addWidget(self.btn_help)
         self.close_btn = QPushButton(self.tr("Close")); self.close_btn.clicked.connect(self.reject); row4.addWidget(self.close_btn)
 
         self.count_label = QLabel(""); layout.addWidget(self.count_label)
@@ -1432,12 +1454,89 @@ class SFCCDialog(QDialog):
         sep_thr = int(s.value("SFCC/SEPThreshold", 5))
         if hasattr(self, "sep_thr_spin"):
             self.sep_thr_spin.setValue(sep_thr)
+
+        # Auto-σ waterfall preference (default: ON — removes guess-and-check)
+        auto_sig = s.value("SFCC/AutoSigma", True, type=bool)
+        if hasattr(self, "auto_sigma_chk"):
+            self.auto_sigma_chk.setChecked(bool(auto_sig))
+            # Keep spin box enabled state in sync with the restored value
+            self.sep_thr_spin.setEnabled(not bool(auto_sig))
         use_cm = s.value("SFCC/UseColorMatrix", False, type=bool)
         if hasattr(self, "color_matrix_chk"):
             self.color_matrix_chk.setChecked(bool(use_cm))
 
     def save_sep_threshold_setting(self, v: int):
         QSettings().setValue("SFCC/SEPThreshold", int(v))
+
+    # ── Auto-σ waterfall config / helpers ─────────────────────────────
+    # Ladder of σ values tried from highest (strictest) to lowest.
+    # Highest σ that still yields ≥ SFCC_AUTO_SIGMA_MIN_STARS wins.
+    SFCC_AUTO_SIGMA_LADDER = (100.0, 50.0, 25.0, 12.0, 8.0, 5.0, 3.0)
+    SFCC_AUTO_SIGMA_MIN_STARS = 1200
+
+    def _on_auto_sigma_toggled(self, on: bool):
+        try:
+            self.sep_thr_spin.setEnabled(not bool(on))
+        except Exception:
+            pass
+        QSettings().setValue("SFCC/AutoSigma", bool(on))
+
+    def _auto_sigma_enabled(self) -> bool:
+        try:
+            return bool(self.auto_sigma_chk.isChecked())
+        except Exception:
+            return False
+
+    def _sep_detect_waterfall(self, data_sub, err, *, status_prefix: str = ""):
+        """
+        Run sep.extract with the σ waterfall when Auto is enabled, or with
+        the manual spin value when Auto is off.
+
+        Returns (sources, used_sigma). `sources` may be empty if nothing was
+        detected at any σ in the ladder — callers should handle that case
+        exactly as they handled an empty result before.
+        """
+        if self._auto_sigma_enabled():
+            last_sources = None
+            last_sigma   = None
+            for sig in self.SFCC_AUTO_SIGMA_LADDER:
+                if status_prefix:
+                    _sfcc_status(self, f"{status_prefix} (trying σ={sig:.1f})…")
+                    QApplication.processEvents()
+                try:
+                    srcs = sep.extract(data_sub, float(sig), err=err)
+                except Exception:
+                    # Treat as "no detections at this σ" and keep stepping down
+                    srcs = None
+                last_sources = srcs
+                last_sigma   = sig
+                n = 0 if srcs is None else int(srcs.size)
+                if n >= self.SFCC_AUTO_SIGMA_MIN_STARS:
+                    if status_prefix:
+                        _sfcc_status(
+                            self,
+                            f"{status_prefix} — auto σ={sig:.1f} → {n:,} sources."
+                        )
+                        QApplication.processEvents()
+                    return srcs, float(sig)
+            # Ladder exhausted — return the last (lowest-σ, most sensitive) try
+            n = 0 if last_sources is None else int(last_sources.size)
+            if status_prefix:
+                _sfcc_status(
+                    self,
+                    f"{status_prefix} — auto σ ladder exhausted, using σ="
+                    f"{(last_sigma or 3.0):.1f} ({n:,} sources)."
+                )
+                QApplication.processEvents()
+            return (last_sources if last_sources is not None
+                    else sep.extract(data_sub, 3.0, err=err)), float(last_sigma or 3.0)
+
+        # Manual mode — single shot at the spin value
+        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
+        if status_prefix:
+            _sfcc_status(self, f"{status_prefix} (manual σ={sep_sigma:.1f})…")
+            QApplication.processEvents()
+        return sep.extract(data_sub, sep_sigma, err=err), sep_sigma
 
     def save_lp_setting(self, _):  QSettings().setValue("SFCC/LPFilter", self.lp_filter_combo.currentText())
     def save_lp2_setting(self, _): QSettings().setValue("SFCC/LPFilter2", self.lp_filter_combo2.currentText())
@@ -2502,10 +2601,11 @@ class SFCCDialog(QDialog):
         data_sub = gray - bkg.back()
         err   = float(bkg.globalrms)
 
-        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
-        sources = sep.extract(data_sub, sep_sigma, err=err)
+        sources, sep_sigma = self._sep_detect_waterfall(
+            data_sub, err, status_prefix="Detecting stars with SEP"
+        )
 
-        if sources.size == 0:
+        if sources is None or sources.size == 0:
             QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
             return
 
@@ -2520,7 +2620,7 @@ class SFCCDialog(QDialog):
             QMessageBox.critical(self, "SEP Error", "All SEP detections rejected by radius filter.")
             return
 
-        _sfcc_status(self, f"SEP detected {sources.size:,} stars — converting to sky coords…")
+        _sfcc_status(self, f"SEP detected {sources.size:,} stars (σ={sep_sigma:.1f}) — converting to sky coords…")
         QApplication.processEvents()
 
         # ── Step 2: WCS → RA/Dec for every SEP source ─────────────────────
@@ -3139,22 +3239,20 @@ class SFCCDialog(QDialog):
         data_sub = gray - bkg.back()
         err      = float(bkg.globalrms)
 
-        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
-        _sfcc_status(self, f"Re-detecting stars for photometry (SEP σ={sep_sigma:.1f})…")
-        QApplication.processEvents()
+        sources, sep_sigma = self._sep_detect_waterfall(
+            data_sub, err, status_prefix="Re-detecting stars for photometry"
+        )
 
-        sources = sep.extract(data_sub, sep_sigma, err=err)
-
-        if sources.size > 300_000:
+        if sources is not None and sources.size > 300_000:
             QMessageBox.warning(self, "Too many detections",
                 f"SEP found {sources.size:,} sources with σ={sep_sigma:.1f}.\n"
                 f"Increase the threshold and rerun.")
             return
-        if sources.size == 0:
+        if sources is None or sources.size == 0:
             QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
             return
 
-        _sfcc_status(self, f"SEP found {sources.size:,} sources — applying radius filter…")
+        _sfcc_status(self, f"SEP found {sources.size:,} sources (σ={sep_sigma:.1f}) — applying radius filter…")
         QApplication.processEvents()
 
         r_fluxrad, _ = sep.flux_radius(
@@ -3709,12 +3807,10 @@ class SFCCDialog(QDialog):
         data_sub = gray - bkg.back()
         err      = float(bkg.globalrms)
 
-        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
-        _sfcc_status(self, f"Gradient: detecting stars (SEP σ={sep_sigma:.1f})…")
-        QApplication.processEvents()
-
-        sources = sep.extract(data_sub, sep_sigma, err=err)
-        if sources.size == 0:
+        sources, sep_sigma = self._sep_detect_waterfall(
+            data_sub, err, status_prefix="Gradient: detecting stars"
+        )
+        if sources is None or sources.size == 0:
             QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
             return
 

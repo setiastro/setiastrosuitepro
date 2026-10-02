@@ -18,6 +18,7 @@ from setiastro.saspro.imageops.stretch import (
     _compute_blackpoint_sigma,
     _compute_blackpoint_sigma_per_channel,
 )
+from setiastro.saspro.help_support import make_help_button
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.luminancerecombine import LUMA_PROFILES
@@ -452,6 +453,8 @@ class StatisticalStretchDialog(QDialog):
         )
         drag_row.addWidget(self.preset_drag_handle)
         drag_row.addStretch(1)
+        self.btn_help = make_help_button("stat_stretch", self)
+        drag_row.addWidget(self.btn_help)
         left.addLayout(drag_row)
 
         right = QVBoxLayout()

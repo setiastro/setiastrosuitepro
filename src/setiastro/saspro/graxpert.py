@@ -114,6 +114,7 @@ class GraXpertOperationDialog(QDialog):
         # ── Drag-to-canvas grip (PI-style "new instance") ─────────────────
         # Deferred import avoids a shortcuts.py <-> graxpert import cycle.
         from setiastro.saspro.shortcuts import PresetDragHandle
+        from setiastro.saspro.help_support import make_help_button
         try:
             from setiastro.saspro.resources import graxperticon_path
             _gx_icon = QIcon(graxperticon_path)
@@ -136,6 +137,8 @@ class GraXpertOperationDialog(QDialog):
         )
         drag_row.addWidget(self.preset_drag_handle)
         drag_row.addStretch(1)
+        self.btn_help = make_help_button("graxpert", self)
+        drag_row.addWidget(self.btn_help)
         root.addLayout(drag_row)
 
     def seed_from_preset(self, preset: dict | None):

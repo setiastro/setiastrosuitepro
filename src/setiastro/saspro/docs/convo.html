@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b7e4d6; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Convolution / Deconvolution</h1>
+<p class="sub">Four tools in one dialog. The <b>Convolution</b> tab blurs
+with a user-shaped PSF (useful for softening synthetic stars, generating
+calibration kernels, or deliberately matching another image's seeing).
+<b>Deconvolution</b> runs four classical sharpeners &mdash; Richardson&ndash;Lucy,
+Wiener, Larson&ndash;Sekanina (comet feature enhancer), and Van Cittert.
+<b>PSF Estimator</b> extracts a real stellar PSF from the frame with SEP
+and feeds it back to RL/Wiener. <b>Classical Denoise</b> hosts six
+denoisers (TV, NLM, Bilateral, Gaussian, Median, Wavelet) running on a
+background thread with a Cancel button.</p>
+
+<h2>1. Shared controls (always visible)</h2>
+
+<h3>Preview panel</h3>
+<p>The right-hand view shows the active image (or current preview result).
+Scroll-wheel and trackpad gestures zoom with cursor as the anchor &mdash;
+small trackpad swipes give fine control, click-wheel detents coarse,
+hold Ctrl for faster zoom in either case. Click-and-drag pans
+(scroll-hand). The zoom row above the view holds explicit buttons for
+Zoom&nbsp;In, Zoom&nbsp;Out, and Fit-to-Preview.</p>
+
+<h3>Auto-stretch display</h3>
+<p>The checkbox above the view applies a statistical stretch <i>to the
+preview only</i> &mdash; the underlying pixel data is never modified by
+this control. It exists so you can judge denoise/deconv results on
+linear data without having to Push and then Undo a dedicated stretch.
+<b>Target median</b> picks the stretch strength (0.01&ndash;0.60, default
+0.25). <b>Linked</b> keeps the three RGB channels tied together; uncheck
+to stretch each channel independently (useful when the image has a
+strong colour cast you want to see through). Both controls are
+disabled until the checkbox is on.</p>
+
+<h3>PSF preview chip</h3>
+<p>The 64&times;64 chip below the tabs always shows the PSF that will
+actually be used by Preview on the current tab. For the Convolution
+tab, that's the elliptical super-Gaussian built from the four sliders.
+For RL/Wiener on the Deconvolution tab, it's either those sliders'
+Gaussian or the custom stellar PSF when one is active. For other tabs
+the chip is empty. Change any slider and the chip updates live.</p>
+
+<h3>Strength</h3>
+<p>Global blend between the processed result and the original, applied
+at the end of every Preview on every tab:</p>
+<div class="matheq">\mathrm{out} \;=\; s\cdot\mathrm{processed} \;+\; (1-s)\cdot\mathrm{src}</div>
+<p>Lets you &ldquo;dial back&rdquo; an aggressive deconv or denoise rather
+than having to re-run with weaker parameters. The slider accepts values
+from 0.00 (no change) to 1.00 (full effect).</p>
+
+<h3>Preview / Undo / Push</h3>
+<ul>
+  <li><b>Preview</b> &mdash; runs the current tab's operation and shows
+      the result in the view. The result lives in the dialog only; the
+      document isn't modified yet. On the Classical Denoise tab, the
+      Preview runs on a background thread, lights the status line, and
+      shows a Cancel button next to it &mdash; the other controls stay
+      responsive while it works.</li>
+  <li><b>Undo</b> &mdash; swap the view back to the original image. Does
+      not touch the document; the Preview is just dropped.</li>
+  <li><b>Push</b> &mdash; commits the current preview to the active
+      document as an undoable edit, step-named &ldquo;Convo/Deconvo&rdquo;.
+      The dialog then rebases on the pushed result so you can iterate
+      (Push, tweak sliders, Preview, Push again).</li>
+</ul>
+
+<h3>Masks</h3>
+<p>If the destination document carries an active mask, the processed
+result is blended through it against the pre-processed image when
+Preview runs, so only masked regions are affected. The mask is
+nearest-neighbour resampled to match the image shape and broadcast to
+the right channel count. See &sect;&nbsp;6.6 for the formula.</p>
+
+<h3>Preset grip</h3>
+<p>The handle at the bottom-left of the controls captures the <i>current
+tab's</i> state as a preset &mdash; drag it onto the canvas to make a
+shortcut tile, or drop it onto an image to apply those settings
+headlessly. Each tab has its own preset schema: Convolution carries
+the four PSF sliders + strength; Deconvolution carries every slider on
+every algorithm's panel (plus the Larson&ndash;Sekanina centre if one has
+been clicked) so that Replay Last Action and the shortcut re-create the
+<i>exact</i> run; Classical Denoise carries the method + its parameters.</p>
+
+<h2>2. Convolution tab</h2>
+<p>Blurs the image with a parametric elliptical super-Gaussian. All four
+sliders feed the live PSF chip; see &sect;&nbsp;6.1 for the formula.</p>
+<ul>
+  <li><b>Radius</b> (0.1&ndash;200&nbsp;px) &mdash; the Gaussian's &sigma;
+      along its major axis. Kernel grid size is auto-sized to
+      <code>&lceil;6&sigma;&rceil;</code> and forced odd.</li>
+  <li><b>Kurtosis (&sigma;)</b> (0.1&ndash;10.0, default 2.0) &mdash; the
+      exponent &beta; applied to the squared radius sum before the
+      exp(). &beta;&nbsp;=&nbsp;1 is a classic Gaussian; &beta;&nbsp;&gt;&nbsp;1
+      gives a flatter top and sharper falloff (closer to a top-hat
+      disk); &beta;&nbsp;&lt;&nbsp;1 gives a pointier core with wider
+      wings (closer to a Moffat profile). The slider's &ldquo;&sigma;&rdquo;
+      label refers to how the control feels, not Gaussian sigma.</li>
+  <li><b>Aspect ratio</b> (0.1&ndash;10.0, default 1.0) &mdash; ratio of
+      major to minor axis. 1.0 is circular; higher values stretch the
+      PSF along the rotation axis.</li>
+  <li><b>Rotation</b> (0&ndash;360&deg;) &mdash; orientation of the major
+      axis. Only matters when aspect&nbsp;&ne;&nbsp;1.</li>
+</ul>
+<p>Preview convolves each channel independently with reflect padding, so
+borders don't darken (see &sect;&nbsp;6.2).</p>
+
+<h2>3. Deconvolution tab</h2>
+
+<h3>Algorithm selector</h3>
+<p>Dropdown at the top of the tab chooses which algorithm Preview runs.
+The parameter panel below updates to show only that algorithm's
+controls. The PSF slider group is visible only for Richardson&ndash;Lucy
+and Wiener; the other two define their own kernels internally.</p>
+
+<h3>Custom PSF bar</h3>
+<p>When a stellar PSF has been loaded from the PSF Estimator tab, a blue
+&ldquo;Using Stellar PSF&rdquo; bar appears above the parameter stack with
+a <b>Disable Stellar PSF</b> button. While the bar is lit, RL and Wiener
+use the measured PSF instead of the slider-built Gaussian, and the
+preview chip shows the stellar kernel. Clicking Disable, or changing any
+of the four PSF sliders, drops the custom PSF and reverts to the
+Gaussian.</p>
+
+<h3>Richardson&ndash;Lucy</h3>
+<p>Iterative multiplicative deconvolution. The classical choice for
+restoring stars and small-scale detail on photon-limited data.</p>
+<ul>
+  <li><b>Iterations</b> (1&ndash;100, default 30) &mdash; more iterations
+      sharpen more but also amplify noise and can produce ringing
+      around bright edges. 20&ndash;40 is typical.</li>
+  <li><b>Regularization</b> &mdash; adds a stabilising prior each
+      iteration:
+      <ul>
+        <li><i>None (Plain R&ndash;L)</i> &mdash; the textbook algorithm.
+            Fastest, but prone to noise amplification.</li>
+        <li><i>Tikhonov (L2)</i> &mdash; subtracts a small multiple of the
+            Laplacian after each RL step, suppressing high-frequency
+            noise. Preserves large structures.</li>
+        <li><i>Total Variation (TV)</i> &mdash; applies a tiny TV&ndash;Chambolle
+            smoothing after each RL step. Edge-preserving; good when
+            you have strong contrast features (stars on dark sky) that
+            Tikhonov would soften too much.</li>
+      </ul>
+  </li>
+  <li><b>Enable de-ring</b> (on by default) &mdash; after the final
+      iteration, run one pass of bilateral filtering to suppress
+      Gibbs-style ringing around bright features. Very cheap compared
+      to the RL loop itself.</li>
+  <li><b>Deconvolve L* Only</b> (on by default) &mdash; for colour
+      images, convert to CIE&nbsp;Lab, deconvolve the L*&nbsp;channel
+      only, then convert back. Chroma stays untouched, which is almost
+      always what you want: deconvolving each RGB channel independently
+      amplifies colour noise in dim regions. Uncheck only for
+      narrowband-mapped palettes where you specifically want the
+      sharpening to see each emission line.</li>
+</ul>
+
+<h3>Wiener</h3>
+<p>Single-pass frequency-domain deconvolution. Much faster than RL and
+less prone to ringing, but less adaptive to local statistics.</p>
+<ul>
+  <li><b>Noise/Signal (&lambda;)</b> (0&ndash;1, step 0.001, default
+      0.01) &mdash; the stabilising constant. Larger values are more
+      conservative (less sharpening, less noise); very small values
+      approach a pure inverse filter and will amplify noise savagely.
+      0.005&ndash;0.05 covers most use.</li>
+  <li><b>Regularization</b> &mdash; either <i>classical Wiener</i>
+      (K&nbsp;=&nbsp;&lambda;) or <i>Tikhonov L2</i>
+      (K&nbsp;=&nbsp;&lambda;&sup2;). Tikhonov is stronger for the same
+      slider value; dial &lambda; down when switching to it.</li>
+  <li><b>Deconvolve L* Only</b> &mdash; same role as the RL checkbox.</li>
+  <li><b>Enable de-ring</b> &mdash; same role as the RL checkbox; one
+      bilateral pass after the FFT.</li>
+</ul>
+
+<h3>Larson&ndash;Sekanina</h3>
+<p>Comet feature enhancer. Rotates a copy of the image by a small angle
+around a chosen centre, optionally shifts it radially, then divides or
+subtracts the rotated copy from the original. The result enhances
+anisotropic features (jets, tails, shells) by cancelling the roughly
+circular comet coma, and is then blended back into the original with
+either SoftLight or Screen.</p>
+<ul>
+  <li><b>Choosing the centre is a required step</b> &mdash; hold
+      <b>Shift</b> and left-click on the preview to place a crosshair
+      at the comet nucleus. Preview will refuse to run until a centre
+      has been set; the message dialog reminds you how.</li>
+  <li><b>Radial step (px)</b> (0&ndash;50, default 0) &mdash; how far
+      <i>outward</i> the rotated copy is pushed before being combined
+      with the original. Zero gives pure rotational differencing;
+      non-zero adds a radial shear that enhances jets pointing along
+      the shift direction.</li>
+  <li><b>Angular step (&deg;)</b> (0.1&ndash;360, default 1) &mdash;
+      rotation of the comparison copy. Small angles (0.5&ndash;3&deg;)
+      bring out fine jets near the nucleus; larger angles reveal
+      broader features but blur spatial detail.</li>
+  <li><b>LS operator</b> &mdash; <i>Divide</i> normalises by the median
+      and multiplies the result (preserves faint low-SNR features);
+      <i>Subtract</i> clips the signed difference to positive and
+      stretches it (sharper but noisier). The blend mode dropdown
+      auto-switches to the recommended partner when you change this:
+      SoftLight with Divide, Screen with Subtract.</li>
+  <li><b>Blend mode</b> &mdash; how the enhanced image is combined with
+      the original. SoftLight keeps the original's dynamic range and
+      overlays contrast; Screen brightens where the enhanced result is
+      bright.</li>
+</ul>
+<div class="tip"><b>Tip:</b> for a first look at a comet, place the
+centre, set radial step 0 and angular step 1&deg; with Divide + SoftLight,
+Preview, then push the angular step up in 0.5&deg; steps watching the
+jets lengthen and the coma vanish. Add a radial step of 2&ndash;5&nbsp;px
+once you see what direction the jets want.</div>
+
+<h3>Van Cittert</h3>
+<p>The oldest practical deconvolution scheme &mdash; additive, non-blind,
+non-regularised. Fast, intuitive, and prone to runaway amplification
+with too many iterations. Useful when you want a mild sharpening pass
+without the full RL machinery, and the PSF is a smooth Gaussian.</p>
+<ul>
+  <li><b>Iterations</b> (1&ndash;1000, default 10).</li>
+  <li><b>Relaxation</b> (0&ndash;1, default 0) &mdash; the step size.
+      0 means no change; 0.1&ndash;0.3 is a safe exploratory range.
+      Larger values converge faster but can overshoot and ring.</li>
+</ul>
+<p>Van Cittert uses an internally-fixed &sigma;&nbsp;=&nbsp;3 Gaussian PSF
+and is applied to each channel independently; the four PSF sliders at the
+top of the Deconvolution tab are ignored.</p>
+
+<h2>4. PSF Estimator tab</h2>
+<p>Measures the real point-spread function of the image by stacking
+normalised postage stamps around detected stars, using SEP for
+detection. The result can be sent straight into RL or Wiener as a
+custom PSF, or saved for use later.</p>
+<ul>
+  <li><b>Detection &sigma;</b> (1.0&ndash;5.0, default 2.5) &mdash;
+      threshold for SEP's star detector in units of background RMS.
+      Low values catch faint stars (and noise); 2.5 is a good compromise.</li>
+  <li><b>Min area (px&sup2;)</b> (1&ndash;100, default 5) &mdash; minimum
+      connected-pixel count for a detection. Keeps hot pixels and single
+      cosmic-ray hits out.</li>
+  <li><b>Saturation cutoff (ADU)</b> (1000&ndash;100000, default 50000)
+      &mdash; sources whose peak exceeds this are discarded, so clipped
+      star cores don't flatten the stacked PSF. For a 16-bit image
+      consider 60000&ndash;64000; for already-stretched 32-bit float
+      data drop it to the equivalent of ~90&nbsp;% of max.</li>
+  <li><b>Max stars</b> (1&ndash;500, default 50) &mdash; cap on how many
+      brightest-valid sources go into the stack. More stars = smoother
+      PSF but slower.</li>
+  <li><b>Half-width (px)</b> (5&ndash;50, default 15) &mdash; the postage
+      stamp around each star is <code>(2w+1)&times;(2w+1)</code>. The
+      stamp has to comfortably contain the whole stellar profile
+      including a quiet annulus around it; too small clips the wings,
+      too large wastes memory on sky.</li>
+</ul>
+<p><b>Run SEP Extraction</b> runs detection, stacks the stamps, and
+updates the small PSF preview below. <b>Use as Current PSF</b> loads
+that kernel into RL/Wiener, switches the algorithm to Richardson&ndash;Lucy,
+lights the Custom PSF bar on the Deconvolution tab, and refuses to
+reset until you click Disable or move a PSF slider. <b>Save PSF&hellip;</b>
+writes the kernel to FITS (float32, no header) or TIFF
+(float32) for reuse in other tools or later sessions.</p>
+
+<h2>5. Classical Denoise tab</h2>
+<p>Six classical denoisers under one roof, selected from a dropdown.
+Preview runs on a background thread with a Cancel button next to the
+status line &mdash; the dialog stays responsive and you can abort a
+too-slow run without force-killing SASpro. The strength and mask blends
+from &sect;&nbsp;1 apply on the GUI thread once the worker finishes.</p>
+
+<h3>Operate on L* only (shared)</h3>
+<p>Default on. For colour images, converts to Lab, denoises only the
+L* channel, converts back. Preserves chroma, which is nearly always
+what you want &mdash; running the per-channel path on RGB tends to
+desaturate and introduce colour mottling in low-SNR regions. Uncheck
+to run on each channel independently.</p>
+
+<h3>Methods</h3>
+<ul>
+  <li><b>TV Chambolle</b> &mdash; total-variation denoising. Preserves
+      edges, flattens textured noise. <i>TV weight</i> controls
+      strength (0.05&ndash;0.20 typical); <i>Max iterations</i> caps
+      the solver.</li>
+  <li><b>Non-Local Means</b> &mdash; patch-matching denoiser. Excellent
+      for smooth gradients and faint nebulosity. <i>h</i> is the
+      cut-off distance (0.01&ndash;0.05 for stretched astro); <i>Patch
+      size</i> and <i>Search dist</i> control quality vs speed.
+      The noise &sigma; is estimated per-channel from the data.</li>
+  <li><b>Bilateral</b> &mdash; edge-preserving smoothing via OpenCV's
+      <code>bilateralFilter</code>. Works on 8-bit internally so very
+      fast but with limited dynamic range. <i>Diameter</i> is the
+      neighbourhood size; <i>Sigma colour</i> and <i>Sigma space</i>
+      tune how aggressively similar values are mixed.</li>
+  <li><b>Gaussian</b> &mdash; straight-up blur. Useful as a baseline
+      and for deliberate soft-focus; too destructive for most real
+      denoising.</li>
+  <li><b>Median</b> &mdash; non-linear filter that replaces each pixel
+      with the local median. Devastatingly effective on cosmic-ray
+      speckle and hot-pixel residue; kernel size 3 is the usual pick,
+      5 if the speckles are bigger than one pixel.</li>
+  <li><b>Wavelet</b> &mdash; BayesShrink thresholding on a wavelet
+      decomposition. <i>Noise &sigma;</i>&nbsp;=&nbsp;0 auto-estimates;
+      <i>Wavelet</i> picks the family (db2&ndash;4 for general use,
+      sym4/sym8 for smooth nebulosity); <i>Threshold mode</i> is soft
+      (smoother) or hard (sharper edges, may ring).</li>
+</ul>
+
+<h2>6. Technical details</h2>
+<p class="tech-lead">All algorithms operate on float32 [0,1]. Mask and
+strength blends apply uniformly at the end of every Preview path.</p>
+
+<h3>6.1 Elliptical super-Gaussian PSF</h3>
+<p>Both the Convolution tab and the slider path for RL/Wiener build
+their kernel from the same four parameters: radius&nbsp;<code>r</code>,
+kurtosis exponent&nbsp;<code>&beta;</code>, aspect ratio&nbsp;<code>a</code>,
+and rotation&nbsp;<code>&theta;</code>. With
+<code>&sigma;<sub>x</sub>&nbsp;=&nbsp;r</code>,
+<code>&sigma;<sub>y</sub>&nbsp;=&nbsp;r/a</code>, and the rotated grid:</p>
+<div class="matheq">x_r=\cos\theta\,x+\sin\theta\,y\,,\quad y_r=-\sin\theta\,x+\cos\theta\,y</div>
+<div class="matheq-hero">h(x,y) \;=\; \exp\!\left(-\left(\left(\frac{x_r}{\sigma_x}\right)^{2} + \left(\frac{y_r}{\sigma_y}\right)^{2}\right)^{\!\beta}\right)</div>
+<p>normalised to unit sum so convolution preserves image mean. The
+exponent <code>&beta;</code> is the &ldquo;kurtosis&rdquo; slider: at
+&beta;&nbsp;=&nbsp;1 the formula reduces to the standard elliptical
+Gaussian; &beta;&nbsp;&gt;&nbsp;1 produces a flat-topped, sharply
+falling kernel (approaching a top-hat as &beta; grows); &beta;&nbsp;&lt;&nbsp;1
+produces a peaked, long-wing kernel (approaching a Moffat profile for
+small &beta;). The kernel grid size is
+<code>&lceil;6&sigma;<sub>x</sub>&rceil;</code>, forced odd. Results
+are LRU-cached by (r, &beta;, a, &theta;) so the live PSF preview and
+repeated previews with the same kernel don't rebuild.</p>
+
+<h3>6.2 Convolution with reflect padding</h3>
+<p>Each channel is reflect-padded by half the kernel size on each edge,
+convolved via <code>scipy.signal.fftconvolve</code> in "same" mode,
+then cropped back. Reflect padding (as opposed to zero padding) is
+what keeps the image border from darkening when a large soft kernel
+reaches past the frame &mdash; the reflected pixels present the kernel
+with sensible data instead of zeros.</p>
+
+<h3>6.3 Richardson&ndash;Lucy</h3>
+<p>The classical multiplicative update:</p>
+<div class="matheq-hero">f_{k+1} \;=\; f_k \;\cdot\; \left(\frac{y}{f_k \ast h} \;\ast\; h^{*}\right)</div>
+<p>where <code>y</code> is the observed image, <code>h</code> is the
+PSF, <code>h*</code> is <code>h</code> flipped in both axes, and
+<code>&lowast;</code> denotes convolution. The multiplicative form
+guarantees non-negativity automatically. SASpro initialises
+<code>f<sub>0</sub></code> from <code>y</code> clipped to
+<code>&ge;&nbsp;10<sup>-8</sup></code>, then runs the stated number of
+iterations.</p>
+
+<h4>Regularised variants</h4>
+<p>After each RL step, when a regulariser is selected:</p>
+<div class="matheq">\mathrm{Tikhonov\;(L2):}\quad f_{k+1} \;\leftarrow\; f_{k+1} \;-\; \alpha_{L_2}\,\nabla^{2} f_{k+1}</div>
+<div class="matheq">\mathrm{Total\;Variation:}\quad f_{k+1} \;\leftarrow\; \mathrm{TV}_{\alpha_{\mathrm{TV}}}(f_{k+1})</div>
+<p>with <code>&alpha;<sub>L2</sub>&nbsp;=&nbsp;0.01</code> and
+<code>&alpha;<sub>TV</sub>&nbsp;=&nbsp;0.01</code> hard-coded, chosen
+to be gentle enough that the regulariser nudges rather than overrides
+the data term. The Laplacian in the L2 term uses
+<code>scipy.ndimage.laplace</code>; the TV step calls
+<code>skimage.restoration.denoise_tv_chambolle</code> on the current
+estimate. Each iteration ends with a clip to [0, 1] before the next
+step.</p>
+
+<h4>De-ring</h4>
+<p>When the checkbox is on, a single pass of
+<code>skimage.restoration.denoise_bilateral</code>
+(<code>sigma_color&nbsp;=&nbsp;0.08</code>, <code>sigma_spatial&nbsp;=&nbsp;1</code>)
+runs after the last iteration. This is applied per-tile just before
+blending (see below), so ring artefacts around bright edges are
+suppressed without a big post-pass over the whole image.</p>
+
+<h4>Tiled parallel execution</h4>
+<p>Full-frame RL on a large image is slow and FFT-dominated, so SASpro
+splits the frame into horizontal tiles, one per CPU core, deconvolves
+them in parallel with a <code>ThreadPoolExecutor</code>, and seamlessly
+blends them back together. Each tile is extended by
+<code>overlap&nbsp;=&nbsp;max(psf_h,&nbsp;psf_w)/2&nbsp;+&nbsp;15</code>
+rows on each side before the RL loop, so neighbouring tiles overlap
+and the central rows are far from any padding-induced artefacts. The
+overlapping rows are blended with a vertical ramp:</p>
+<div class="matheq">w_i \;=\; \min\!\left(1,\;\frac{i+1}{\mathrm{overlap}},\;\frac{L-i}{\mathrm{overlap}}\right)</div>
+<p>that goes smoothly from 0 at the tile's extreme edge to 1 in its
+core. Overlapping contributions are accumulated weighted by this ramp
+and divided by the summed weights:</p>
+<div class="matheq">\tilde f(y,x) \;=\; \frac{\sum_t w_t(y)\,\tilde f_t(y,x)}{\sum_t w_t(y)}</div>
+<p>which gives a smooth hand-off across tile seams. For colour images,
+each RGB channel (or the L* channel in L*-only mode) runs through this
+pipeline independently; the status label at the bottom-left of the
+dialog shows which channel and iteration count is active.</p>
+
+<h3>6.4 Wiener</h3>
+<p>The PSF is embedded in a zero-padded, image-sized array, FFT'd, and
+the standard Wiener filter is applied in the frequency domain:</p>
+<div class="matheq-hero">W(u,v) \;=\; \frac{H^{*}(u,v)}{|H(u,v)|^{2} + K}</div>
+<p>with <code>K&nbsp;=&nbsp;&lambda;</code> for classical Wiener and
+<code>K&nbsp;=&nbsp;&lambda;&sup2;</code> for Tikhonov L2, where &lambda;
+is the Noise/Signal slider. The result is
+<code>IFFT(W&nbsp;&middot;&nbsp;FFT(y))</code>, clipped to [0, 1].
+When de-ring is on, a single bilateral pass with the same parameters
+as the RL de-ring runs on the output. Colour handling (L*-only vs
+per-channel) is identical to RL.</p>
+
+<h3>6.5 Larson&ndash;Sekanina</h3>
+<p>For each pixel at image position (x, y) with respect to the chosen
+centre (x<sub>0</sub>, y<sub>0</sub>), compute polar coordinates
+<code>(r, &theta;)</code> and sample the image at the shifted polar
+position:</p>
+<div class="matheq-hero">J(r,\theta) \;=\; I\!\left(r + \Delta r,\;\theta + \Delta\theta\right)</div>
+<p>using bilinear interpolation (SASpro's own
+<code>_bilinear_interpolate_gray</code> on the vectorised polar grid,
+not <code>scipy.ndimage.map_coordinates</code>, so the memory footprint
+scales with image size only). Out-of-bounds samples return 0. The
+resulting <code>J</code> is then combined with the original <code>I</code>
+by the chosen operator:</p>
+<div class="matheq">\mathrm{Divide:}\quad B \;=\; I \cdot \frac{\mathrm{median}(J)}{J + \varepsilon}</div>
+<div class="matheq">\mathrm{Subtract:}\quad B \;=\; \max(0,\;I - J)\,/\,\max_{x,y}(I-J)</div>
+<p>The subtract variant is renormalised to [0, 1] so the final blend
+has a predictable range. For colour inputs the image is reduced to its
+luma before the LS step and then broadcast back to three channels for
+blending. The final composite with the original uses one of:</p>
+<div class="matheq">\mathrm{Screen:}\quad C \;=\; A + B - A\cdot B</div>
+<div class="matheq">\mathrm{SoftLight:}\quad C \;=\; (1 - 2B)\cdot A^{2} + 2B\cdot A</div>
+<p>chosen to match the operator (Divide&nbsp;&rarr;&nbsp;SoftLight,
+Subtract&nbsp;&rarr;&nbsp;Screen); the dropdown lets you override.</p>
+
+<h3>6.6 Van Cittert</h3>
+<p>Simple additive update toward the observed image:</p>
+<div class="matheq-hero">f_{k+1} \;=\; f_k \;+\; \beta\,(y - f_k \ast h)</div>
+<p>with <code>&beta;</code> the relaxation parameter and <code>h</code> a
+fixed <code>&sigma;&nbsp;=&nbsp;3</code> separable Gaussian built from a
+1-D outer product. No stabilisation; stays well-behaved only for small
+&beta; and modest iteration counts. Each channel runs independently.</p>
+
+<h3>6.7 SEP stellar PSF estimator</h3>
+<p>For each selected source <code>i</code> inside the saturation cap,
+a <code>(2w+1)&times;(2w+1)</code> stamp is cut from the
+background-subtracted frame around its integer-rounded centre,
+flux-normalised, and summed:</p>
+<div class="matheq-hero">\mathrm{PSF}(x,y) \;=\; \frac{1}{N}\sum_{i=1}^{N}\frac{\mathrm{stamp}_i(x,y)}{\sum_{x,y}\mathrm{stamp}_i(x,y)}</div>
+<p>Sources are sorted by SEP's reported peak value descending, so the
+<i>brightest unsaturated</i> stars dominate the first entries; the
+<i>Max stars</i> cap trims the tail. The final kernel is
+sum-normalised so convolution preserves image mean. If a source's
+stamp runs off the edge or has non-positive total flux it is skipped;
+if every candidate fails, Preview reports the error and no PSF is
+produced.</p>
+
+<h3>6.8 Classical denoisers</h3>
+<p>Each method dispatches through
+<code>_denoise_single_channel</code>, so L*-only vs per-channel is
+decided once at the top level. The underlying implementations are:</p>
+<ul>
+  <li><b>TV Chambolle</b>&nbsp;&mdash;
+      <code>skimage.restoration.denoise_tv_chambolle</code> with
+      <code>channel_axis&nbsp;=&nbsp;None</code> (2-D per-channel call).</li>
+  <li><b>NLM</b>&nbsp;&mdash;
+      <code>skimage.restoration.denoise_nl_means</code> in fast mode,
+      with <code>sigma</code> from
+      <code>skimage.restoration.estimate_sigma</code> on the input
+      channel. Patch and search sizes are forced odd.</li>
+  <li><b>Bilateral</b>&nbsp;&mdash; <code>cv2.bilateralFilter</code>
+      on an 8-bit copy, converted back to float32 [0,1].</li>
+  <li><b>Gaussian</b>&nbsp;&mdash; <code>scipy.ndimage.gaussian_filter</code>.</li>
+  <li><b>Median</b>&nbsp;&mdash; <code>scipy.ndimage.median_filter</code>
+      with the kernel size forced odd.</li>
+  <li><b>Wavelet</b>&nbsp;&mdash;
+      <code>skimage.restoration.denoise_wavelet</code> with
+      <code>method&nbsp;=&nbsp;BayesShrink</code> and
+      <code>sigma&nbsp;=&nbsp;None</code> when the slider is at 0.</li>
+</ul>
+<p>Every result is clipped to [0, 1] before returning to the GUI thread.</p>
+
+<h3>6.9 Strength and mask blend</h3>
+<p>After every Preview on every tab, the strength slider blends the
+processed result with the original:</p>
+<div class="matheq">\mathrm{processed} \;\leftarrow\; s\cdot\mathrm{processed} \;+\; (1-s)\cdot\mathrm{src}</div>
+<p>and, if the active document carries a mask <code>m &isin; [0, 1]</code>:</p>
+<div class="matheq">\mathrm{out} \;=\; \mathrm{processed}\cdot m \;+\; \mathrm{original}\cdot(1-m)</div>
+<p>in that order. The mask is read from the destination document, resized
+with nearest-neighbour sampling (OpenCV when available, NumPy index
+fallback otherwise), and broadcast to the right channel count.</p>
+
+<div class="credit">
+<b>Credits.</b> Richardson&ndash;Lucy, Wiener, Van Cittert, Larson&ndash;Sekanina,
+TV Chambolle, non-local means, and wavelet thresholding are all classical
+published algorithms; the implementations here call into <b>SciPy</b>,
+<b>scikit-image</b>, and <b>OpenCV</b> for the mathematical primitives
+(FFT convolution, Laplacian, TV solver, NLM, bilateral filter, wavelet
+transform). Stellar PSF detection uses <b>SEP</b>
+(Barbary et al.). The tiled multithreaded RL executor, the overlapping
+vertical-ramp blend, the elliptical super-Gaussian with its kurtosis
+exponent, the custom bilinear LS polar sampler, the Divide/Subtract LS
+operator pair with its auto-matched blend modes, the strength blend, and
+the stamp-stacking PSF normalisation on top of SEP's detections are
+SASpro's own work.
+</div>
+
+</body>
+</html>

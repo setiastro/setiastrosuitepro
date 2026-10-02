@@ -715,6 +715,8 @@ class DockRailMixin:
         }}
         QToolBar#DockRail_{edge} QToolButton {{
             border: none;
+            min-width: 0px;
+            min-height: 0px;
             {side}: 2px solid transparent;
             border-radius: 6px;
             padding: 6px;

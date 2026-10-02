@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Statistical Stretch</h1>
+<p class="sub">Take linear data to a non-linear display stretch by placing the
+background median <b>exactly</b> where you ask &mdash; analytically, in closed
+form. No iterative midtone search, no guess-and-check: the same inputs always
+produce the same result, bit for bit.</p>
+
+<h2>1. Using the tool</h2>
+<p>Adjust the controls, use <b>Preview</b> (or enable <b>Auto-refresh preview</b>)
+to see the result, then <b>Apply</b>. The preview supports zoom/pan; <b>Clip
+stats</b> reports how many pixels sit at or below the black point.</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Target median</td><td>The background level you want after the stretch
+      (0.001&ndash;0.990, default 0.25). It is placed <i>exactly</i> &mdash; see
+      &sect;2.4.</td></tr>
+  <tr><td>Black point &sigma;</td><td>How many robust sigmas below the median to
+      set the black point. Higher = darker background / more contrast (can crush
+      faint dust); lower = preserves faint background. Start ~2.7&ndash;5.0.</td></tr>
+  <tr><td>No black clipping</td><td>Use the image minimum as the black point
+      instead (old Stat-Stretch behaviour) &mdash; preserves faint background but
+      can look flatter.</td></tr>
+  <tr><td>Linked channels</td><td>On: one black point/median for all of RGB
+      (keeps colour balance). Off: each channel stretched independently (removes
+      a colour cast, can shift balance).</td></tr>
+  <tr><td>Luminance-only (+ Mode, Luma blend)</td><td>Stretch only the luminance
+      and re-apply it to the original colour by ratio (preserves/boosts
+      saturation). The blend slider mixes a normal linked stretch (0.00) with the
+      luma result (1.00).</td></tr>
+  <tr><td>HDR highlight compress (Amount, Knee)</td><td>Soft-compress highlights
+      after the stretch to tame cores and bright stars. Use lightly.</td></tr>
+  <tr><td>Curves boost (Strength)</td><td>An optional gentle S-curve for extra
+      contrast, pinned at black/median/white.</td></tr>
+  <tr><td>Normalize to [0..1]</td><td>Rescale so the brightest pixel is 1.0.</td></tr>
+  <tr><td>Store / Recall 1&ndash;3</td><td>Snapshot and restore full control
+      sets for quick A/B comparison.</td></tr>
+  <tr><td>Grip (bottom-left)</td><td>Drag to the canvas to mint a shortcut with
+      these settings, or drop on an image to apply headlessly.</td></tr>
+</table>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">Per channel the data is black-point subtracted, rescaled to
+[0,1], then passed through one closed-form transfer curve whose single parameter
+is solved analytically so the median lands on your target.</p>
+
+<h3>2.1 The midtones-transfer family</h3>
+<p>The stretch belongs to a one-parameter midtones-transfer family. For a pixel
+<code>x &isin; [0,1]</code> and a real-valued amount <code>a</code>:</p>
+<div class="matheq-hero">f_a(x)=\frac{3^{a}\,x}{(3^{a}-1)\,x+1}</div>
+<p>Here <code>a</code> analytically continues the effect of applying a midtones
+operator <code>a</code> times (the base 3 sets the per-unit strength). It is
+pinned at <code>f_a(0)=0</code> and <code>f_a(1)=1</code>, and
+<code>a=0</code> is the identity. <b>This is not an arcsinh stretch</b> &mdash;
+it is an analytic midtones transfer aimed precisely at a target median.</p>
+
+<h3>2.2 The amount that lands the median &mdash; solved, not searched</h3>
+<p>Given the measured (rescaled) median <code>M</code> and your requested target
+<code>T</code>, the amount that maps <code>M &rarr; T</code> is closed-form:</p>
+<div class="matheq">a=\frac{\ln\left(\dfrac{T}{1-T}\cdot\dfrac{1-M}{M}\right)}{\ln 3}</div>
+<p>Because both <code>M</code> (measured) and <code>T</code> (chosen) are known
+before a single pixel is transformed, <code>a</code> is computed once in closed
+form &mdash; deterministic, perfectly reproducible, with no iterative midtone
+search and no recursive convergence. The median lands where you asked, the first
+time.</p>
+
+<h3>2.3 Black point (robust)</h3>
+<p>The background noise is estimated robustly from the <i>lower half</i> of the
+distribution (values at or below the median), so stars and bright structure
+can't inflate it:</p>
+<div class="matheq">\mathrm{noise}=1.4826\cdot\mathrm{MAD}\left(x\leq\mathrm{median}(x)\right)</div>
+<p>The black point is then placed a chosen number of sigmas below the median
+(or, with <b>No black clipping</b>, at the image minimum):</p>
+<div class="matheq">b=\mathrm{clip}\left(\mathrm{median}(x)-\sigma\cdot\mathrm{noise},\;\min(x),\;0.99\right)</div>
+
+<h3>2.4 Rescale and exact median placement</h3>
+<p>Pixels are shifted/rescaled so the black point maps to 0 and 1 stays at 1,
+and the median is carried into the same space:</p>
+<div class="matheq">r=\frac{x-b}{1-b}\qquad M=\frac{\mathrm{median}-b}{1-b}</div>
+<p>The evaluated kernel (the same family as &sect;2.1, with the solved amount
+folded in) is:</p>
+<div class="matheq-hero">S(r)=\frac{(M-1)\,T\,r}{M\,(T+r-1)-T\,r}</div>
+<p>It is pinned through three points &mdash; and the middle one is the whole point
+of the tool:</p>
+<div class="eq">S(0) = 0            (black stays black)
+S(1) = 1            (white stays white)
+S(M) = T            (the measured median lands on your target, exactly)</div>
+<p>Why <code>S(M)=T</code> holds exactly, by construction:</p>
+<div class="eq">at r = M:
+  numerator   = (M - 1)·T·M
+  denominator = M·(T + M - 1) - T·M  =  M² - M  =  M·(M - 1)
+  S(M) = (M - 1)·T·M / [ M·(M - 1) ]  =  T</div>
+
+<h3>2.5 Colour handling</h3>
+<ul>
+  <li><b>Linked</b> &mdash; one black point and one median across all of RGB, the
+      same curve applied to every channel, so colour balance is preserved.</li>
+  <li><b>Unlinked</b> &mdash; black point, median and curve computed per channel,
+      which neutralises a flat cast but can shift balance.</li>
+  <li><b>Luminance-only</b> &mdash; a luminance <code>L</code> (profile weights,
+      default Rec.709) is stretched with the same curve, then re-applied to the
+      original linear RGB by per-pixel ratio, preserving chroma:
+      <div class="matheq">\mathrm{out}=\mathrm{rgb}\cdot\frac{L_{\mathrm{stretched}}}{L}</div>
+      <b>Luma blend</b> &beta; linearly mixes a normal linked stretch
+      (&beta;=0) with the luma-applied result (&beta;=1).</li>
+</ul>
+
+<h3>2.6 Optional post-steps</h3>
+<p>Applied, in order, after the core stretch:</p>
+<ul>
+  <li><b>Curves boost</b> &mdash; a 6-knot piecewise-linear S-curve pinned at
+      black, median and white; the quarter-tone control points (strength
+      <code>c</code>, target <code>t</code>) are
+      <div class="matheq">p_{3x}=0.25\,(1-t)+t,\quad p_{3y}=p_{3x}^{\,1-c}</div>
+      <div class="matheq">p_{4x}=0.75\,(1-t)+t,\quad p_{4y}=\left(p_{4x}^{\,1-c}\right)^{\,1-c}</div></li>
+  <li><b>HDR highlight compress</b> &mdash; a C1-continuous cubic-Hermite
+      soft-knee above knee <code>k</code>; strength <code>a</code> sets the
+      end-slope
+      <div class="matheq">m_1=\mathrm{clip}(1+4a,\,1,\,5)</div>
+      (&gt;1 compresses). For colour it is applied to luminance and recombined by
+      linear scaling, which avoids star bloat.</li>
+  <li><b>Normalize</b> &mdash; divide by the maximum so the brightest pixel is 1.0.</li>
+</ul>
+
+<h3>2.7 Notes</h3>
+<ul>
+  <li>Runs per channel on float data in [0,1] (integer input is scaled by
+      255/65535; float with max &gt; 5 is divided by its max first).</li>
+  <li>If the document has an active mask, the result is blended back against the
+      source over the mask.</li>
+  <li><b>Clip stats</b> reports pixels at or below the black point for the current
+      mode &mdash; mono, linked/luma (on luminance), or unlinked (any channel).</li>
+</ul>
+
+</body>
+</html>

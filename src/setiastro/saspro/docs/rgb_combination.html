@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+</style>
+</head>
+<body>
+
+<h1>RGB Combination</h1>
+<p class="sub">Build a single RGB document from three mono channels &mdash;
+either from open views in the current session or from files on disk.
+Classical workflow for RGB/LRGB/narrowband assembly: process each
+filter's stack as mono (calibration, registration, denoise, stretch
+if you want pre-combine stretches) and bring the three together here.
+Always creates a <i>new</i> document; nothing is written to the source
+channels.</p>
+
+<h2>1. Mode selector</h2>
+<p>Two radio buttons at the top of the dialog pick where the three
+channels come from:</p>
+<ul>
+  <li><b>Use Open Views</b> (default) &mdash; three dropdowns list every
+      open document in the session, and R/G/B are chosen from them.
+      The quickest path when the mono masters are already loaded.</li>
+  <li><b>Load Individual Files</b> &mdash; three Load&hellip; buttons open
+      a file picker (PNG, TIFF, FITS, XISF, JPEG) for each channel.
+      Useful when you want to assemble a quick colour view without
+      opening the mono masters as top-level documents first. This
+      option is auto-disabled when SASpro's file loader isn't
+      available in the current build.</li>
+</ul>
+<p>Only one mode is active at a time &mdash; the inactive mode's widgets
+are greyed out so there's no ambiguity about which inputs will be
+used.</p>
+
+<h2>2. Views mode</h2>
+<p>Three combo boxes (Red / Green / Blue), each showing every open
+document by its window title.</p>
+
+<h3>Automatic channel guessing</h3>
+<p>When the dialog opens with at least three documents available,
+SASpro scores every title against the three channels and pre-selects
+the best match for each dropdown. Scoring looks at the title in
+lowercase and awards points for:</p>
+<ul>
+  <li><b>Full colour word</b> (<code>red</code>, <code>green</code>,
+      <code>blue</code>) &mdash; +10.</li>
+  <li><b>Separator-bounded letter</b> (<code>_r_</code>,
+      <code>-g-</code>, <code>.b.</code>) &mdash; +8.</li>
+  <li><b>Suffix</b> (<code>_r</code>, <code>-g</code>) or end-of-title
+      letter &mdash; +7.</li>
+  <li><b>Narrowband emission-line hints</b> &mdash; <code>Ha</code>
+      scores +6 for Red; <code>SII</code> scores +5 for Red;
+      <code>OIII</code> scores +5 for Green and +4 for Blue (the usual
+      HOO/SHO mappings).</li>
+  <li><b>Conflicting colour words</b> (e.g. the title contains
+      &ldquo;blue&rdquo; while scoring for red) &mdash; &minus;10.</li>
+  <li><b>Conflicting letter codes</b> &mdash; &minus;5.</li>
+</ul>
+<p>The best-scoring title is pre-selected; ties fall to the first match
+in the dropdown order. If no title scores above zero for a channel,
+the first document is chosen as a neutral default and you're expected
+to pick manually. The heuristic is designed to Just Work on filenames
+like <code>NGC7000_Ha.fits / NGC7000_OIII.fits / NGC7000_SII.fits</code>
+or the more literal <code>M31_red / M31_green / M31_blue</code>, but
+it never locks a choice &mdash; the dropdowns are always
+user-overridable.</p>
+
+<h2>3. Files mode</h2>
+<p>Each of the three Load&hellip; buttons opens an OS file dialog filtered
+to common astronomy formats. The chosen filename is shown next to its
+button; nothing is read from disk until Combine is pressed. Multi-channel
+files are supported &mdash; see &sect;&nbsp;6.1 for what happens to
+their channels.</p>
+
+<h2>4. Combine</h2>
+<p>Reads the three channels, verifies dimensions, stacks them into a
+new RGB document named either <code>RGB_Combined</code> (views mode)
+or <code>RGB_&lt;red-file-stem&gt;</code> (files mode), and opens a
+subwindow for it. The source documents and files are left untouched.</p>
+
+<h3>WCS inheritance</h3>
+<p>In views mode, the new document inherits a World Coordinate System
+from the first donor among the three that carries one, in the order
+<b>Green&nbsp;&rarr;&nbsp;Red&nbsp;&rarr;&nbsp;Blue</b>. Green is
+tried first because it sits in the middle of the visible spectrum and
+is the usual astrometric calibration channel in LRGB rigs; the other
+two are tried only if green has no WCS. In files mode no WCS is
+inherited &mdash; the source documents don't exist in-session to pull
+headers from. If you want WCS on a files-mode combine, open the files
+as documents first, then use views mode.</p>
+
+<h3>Shape requirement</h3>
+<p>All three channels must have identical dimensions. A mismatched
+set raises a message dialog with the mismatch and no new document
+is created; align or crop upstream and retry.</p>
+
+<h2>5. Technical details</h2>
+<p class="tech-lead">Everything happens on float32 [0, 1]. The combine
+is a plain stack-along-axis-2; the interesting work is in the input
+normalisation and the channel-match scoring.</p>
+
+<h3>5.1 Mono extraction</h3>
+<p>Each selected input (view image or loaded file) passes through
+<code>_mono_from_any</code>, which produces a 2-D float32 [0, 1]
+array:</p>
+<ul>
+  <li>2-D input &mdash; passed through after normalisation (see 5.2).</li>
+  <li>3-D input with any channel count &ge; 1 &mdash; the <i>first
+      channel</i> is used; others are discarded. This means that if
+      you accidentally point an R-channel selector at an already-RGB
+      document, the dialog quietly uses its red plane rather than
+      refusing &mdash; which is what you usually want for a quick
+      recombine (e.g. &ldquo;this already-combined RGB has the best
+      red data; use its R plane with better G and B elsewhere&rdquo;).
+      For narrowband swapping, make sure the mono master is actually
+      2-D so there's no surprise.</li>
+</ul>
+
+<h3>5.2 Normalisation</h3>
+<p><code>_to_f01</code> coerces every input to float32 [0, 1] without
+assumptions about where the data came from:</p>
+<ul>
+  <li>Integer dtypes are promoted to float32.</li>
+  <li>Floats are promoted to float32 if they aren't already.</li>
+  <li>If <code>max(|a|)&nbsp;&gt;&nbsp;1</code> and finite, the array
+      is divided by that max; otherwise the data is kept as-is. This
+      means 16-bit integer data gets divided by its own max (not 65535),
+      which keeps the per-image contrast but drops a frame's absolute
+      scale information &mdash; which is fine for colour combine, where
+      per-channel scaling will be re-done anyway by any downstream
+      balance operation.</li>
+  <li>Everything is finally clipped to [0, 1].</li>
+</ul>
+
+<h3>5.3 Channel-match scoring</h3>
+<p>Each candidate title gets a per-channel score computed from case-folded
+regex matches. The scoring vector by channel is:</p>
+<table>
+  <tr><th>Pattern</th><th>R</th><th>G</th><th>B</th></tr>
+  <tr><td>Full colour word (<code>red</code>/<code>green</code>/<code>blue</code>)</td>
+      <td>+10</td><td>+10</td><td>+10</td></tr>
+  <tr><td>Separator-bounded letter (<code>_r_</code> etc.)</td>
+      <td>+8</td><td>+8</td><td>+8</td></tr>
+  <tr><td>Suffix / end-of-title letter</td>
+      <td>+7</td><td>+7</td><td>+7</td></tr>
+  <tr><td><code>Ha</code> emission line</td>
+      <td>+6</td><td>&mdash;</td><td>&mdash;</td></tr>
+  <tr><td><code>SII</code> emission line</td>
+      <td>+5</td><td>&mdash;</td><td>&mdash;</td></tr>
+  <tr><td><code>OIII</code> emission line</td>
+      <td>&mdash;</td><td>+5</td><td>+4</td></tr>
+  <tr><td>Conflicting colour word</td>
+      <td>&minus;10</td><td>&minus;10</td><td>&minus;10</td></tr>
+  <tr><td>Conflicting single-letter code</td>
+      <td>&minus;5</td><td>&minus;5</td><td>&minus;5</td></tr>
+</table>
+<p>Separator matching uses the character class
+<code>[_\-\s\.]</code> for &ldquo;letter boundary&rdquo;, so dots in
+filenames behave the same as underscores or hyphens. The three channel
+scorers run independently per title, and the title with the highest
+positive score wins its dropdown. Scores of zero or less leave the
+dropdown at index&nbsp;0 as a neutral default &mdash; which is why,
+on a fresh session with three generically-named documents, you'll
+sometimes see all three channels defaulting to the first document;
+that's by design, not a bug.</p>
+
+<h3>5.4 Stack and clip</h3>
+<p>Once R, G, B are three identically-shaped 2-D float32 arrays:</p>
+<div class="eq">RGB[y, x, 0] = R[y, x]
+RGB[y, x, 1] = G[y, x]
+RGB[y, x, 2] = B[y, x]</div>
+<p>via <code>np.stack([r, g, b], axis=2)</code>, then clipped once more
+to [0, 1] as a belt-and-braces guard against anything the per-channel
+normalisation might have missed in edge cases
+(NaN-dominated frames, etc.).</p>
+
+<h3>5.5 Document creation and WCS transfer</h3>
+<p>The result is handed to the document manager via whichever of
+<code>open_array</code>, <code>open_numpy</code>, or
+<code>create_document</code> is available, with metadata
+<code>step_name&nbsp;=&nbsp;&quot;RGB Combination&quot;</code> and the
+title derived from the mode (as in &sect;&nbsp;4). The main window's
+WCS helpers (<code>_extract_wcs_dict</code>, <code>_apply_wcs_dict_to_doc</code>)
+are then called in the G&nbsp;&rarr;&nbsp;R&nbsp;&rarr;&nbsp;B donor
+order until one of them yields a usable WCS, which is copied onto the
+new document before its subwindow is spawned. If no donor has a WCS,
+the new document carries none &mdash; a plate-solve can be run on it
+afterwards from any of SASpro's astrometry tools.</p>
+
+</body>
+</html>

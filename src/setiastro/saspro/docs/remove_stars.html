@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Remove Stars</h1>
+<p class="sub">Separate stars from the background with your choice of engine
+&mdash; SyQon Starless, StarNet, or CosmicClarity Dark Star. The result replaces
+the view (mask-blended), and you can optionally keep a stars-only image. Linear
+data is temporarily stretched for the network and un-stretched afterward, so
+photometry survives.</p>
+
+<h2>1. Using the tool</h2>
+<p>Pick an engine from the chooser, configure it, and run. Whatever the engine,
+the outcome is the same shape: the starless image is blended back through any
+active mask and applied as a &ldquo;Stars Removed&rdquo; step, and &mdash; if you
+ask for it &mdash; a stars-only image opens as a new <code>_stars</code>
+document.</p>
+
+<h3>SyQon Starless</h3>
+<div class="credit">SyQon's starless models (Nadir, Axiom V2 / V2.1 / V2.2 / V3,
+Signal 1.0) are SyQon's own, obtained from SyQon &mdash; SASpro integrates them.
+Use the <b>Get Starless Model Here…</b> button to obtain a model, then
+<b>Install Downloaded Model…</b>.</div>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Processing engine</td><td><b>SyQon Model (Integrated)</b> runs the model
+      inside SASpro; <b>Starless Standalone CLI</b> drives SyQon's separate
+      executable instead (browse to it).</td></tr>
+  <tr><td>Model variant</td><td>Nadir / AxiomV2 / V2.1 / V2.2 / V3. Install, remove,
+      or buy from the buttons. AxiomV2.2 can also use the optional Signal 1.0
+      model for star-core inpainting.</td></tr>
+  <tr><td>Tile size / Overlap</td><td>The image is processed in overlapping tiles;
+      overlap must be smaller than the tile.</td></tr>
+  <tr><td>Apply temporary stretch (+ target median)</td><td>Stretch the image for
+      the model and invert afterward (recommended for linear data) &mdash; see
+      &sect;2.1.</td></tr>
+  <tr><td>Also create stars-only document</td><td>Push the extracted stars as a new
+      <code>_stars</code> view.</td></tr>
+  <tr><td>Pad edges / Pad pixels</td><td>Reflect-pad the frame before processing to
+      improve edge-star removal, cropped back after.</td></tr>
+  <tr><td>Use AMP / RGB + Per-Channel</td><td>Mixed-precision for speed; the
+      per-channel mode runs RGB and per-channel passes and averages them (slower,
+      not available for AxiomV3).</td></tr>
+  <tr><td>Stars-only extraction</td><td><b>unscreen</b> or <b>subtract</b> (see
+      &sect;2.2).</td></tr>
+  <tr><td>Live tile preview</td><td>Show tiles as they complete in a side window
+      (slower; integrated engine only).</td></tr>
+  <tr><td>Target background (Advanced)</td><td>Auto-estimated from the image;
+      reveal the control to override it.</td></tr>
+</table>
+
+<h3>StarNet</h3>
+<div class="credit">StarNet is a separate external program (StarNet++ / StarNet2).
+SASpro runs the executable you point it at (asked for once, then remembered) and
+auto-detects the classic vs 2.5+ command style.</div>
+<p>StarNet asks whether the current image is <b>linear</b>. If yes, SASpro applies
+the temporary stretch (&sect;2.1) before handing the frame to StarNet and inverts
+it on the way back; if no, the image is passed through as-is. A progress window
+streams StarNet's own output, and a stars-only image is produced alongside the
+starless result.</p>
+
+<h3>CosmicClarity Dark Star</h3>
+<p>Dark Star runs in-process (its mono AI model must be installed).</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Star Removal Mode</td><td><b>unscreen</b> or <b>additive</b> &mdash; how
+      the stars are separated from the background.</td></tr>
+  <tr><td>Processing Path</td><td><b>Mono AI per channel</b>, <b>Hybrid Luma +
+      Color</b> (best balance), or <b>Color AI only</b>.</td></tr>
+  <tr><td>Chunk Size / Overlap (%)</td><td>Tile size (power of two) and the overlap
+      fraction between chunks.</td></tr>
+  <tr><td>Edge Padding</td><td>Reflected border added before processing to reduce
+      edge artefacts, cropped back after.</td></tr>
+  <tr><td>Disable GPU / GPU Compatibility Mode</td><td>Fall back to CPU, or use a
+      more conservative GPU path.</td></tr>
+  <tr><td>Show Extracted Stars</td><td>Also push the stars-only image.</td></tr>
+</table>
+<p>Both config dialogs carry a <b>grip</b> (bottom-left) to mint a Remove-Stars
+shortcut with the current engine and settings, or drop on an image to run
+headlessly.</p>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">The networks themselves belong to each engine; what SASpro
+contributes around them is an invertible stretch so linear data is handled
+correctly, and the maths that turns a starless frame into a clean stars-only
+layer.</p>
+
+<h3>2.1 Invertible stretch round-trip</h3>
+<p>Star-removal networks are trained on <i>stretched</i> (non-linear) data, so
+linear input is temporarily taken through a midtones transfer before the network
+and brought back afterward. Per channel, after subtracting the black point
+<code>s</code>, the forward transfer is the PixInsight MTF:</p>
+<div class="matheq">x'=\mathrm{clip}\!\left(\frac{x-s}{h-s},\,0,\,1\right)\,,\qquad y=\frac{(m-1)\,x'}{(2m-1)\,x'-m}</div>
+<p>The midtone <code>m</code> is solved so the channel median <code>M</code> lands
+on the target (0.25) &mdash; the same analytic placement Statistical Stretch uses:</p>
+<div class="matheq">m=\frac{M\,(T-1)}{(2T-1)\,M-T}\qquad(T=0.25)</div>
+<p>Crucially the transfer has an <b>exact algebraic inverse</b>, so the stretch
+fully round-trips and the returned starless image is mapped back to the original
+linear domain with photometry intact:</p>
+<div class="matheq-hero">x'=\frac{\left((s+h)\,m-s\right)y-s\,m+s}{(2m-1)\,y-m+1}</div>
+<p class="cap">Because the stretch is applied per channel with its own black point
+and inverted exactly, star colour and linear flux relationships are preserved
+&mdash; the network only ever sees a well-exposed image, but the committed result
+is linear.</p>
+
+<h3>2.2 Stars-only extraction</h3>
+<p>Given the original and the starless result, the stars-only layer is recovered
+one of two ways. <b>Subtract</b> is the straight difference:</p>
+<div class="matheq">\mathrm{stars}=\mathrm{clip}(\mathrm{orig}-\mathrm{starless},\,0,\,1)</div>
+<p><b>Unscreen</b> instead inverts the screen blend &mdash; the model that stars
+sit <i>over</i> the background rather than adding to it:</p>
+<div class="matheq">\mathrm{screen}(A,B)=1-(1-A)(1-B)\;\Rightarrow\;\mathrm{stars}=1-\frac{1-\mathrm{orig}}{1-\mathrm{starless}}</div>
+<p>Unscreen is usually cleaner around bright cores (it doesn't leave dark halos
+where a star saturated), which is why it's the default for SyQon and an option
+for Dark Star.</p>
+
+<h3>2.3 Tiling, padding &amp; masking</h3>
+<ul>
+  <li>Large frames are processed in overlapping tiles (tile size + overlap);
+      optional reflect-padding adds a border before processing and is cropped off
+      afterward, so stars at the very edge are removed cleanly.</li>
+  <li>The starless result is blended back against the original through any active
+      mask, so only masked regions change:
+      <div class="matheq">\mathrm{out}=\mathrm{starless}\cdot m+\mathrm{orig}\cdot(1-m)</div></li>
+  <li>A mono source is processed as RGB internally and collapsed back to a single
+      channel on output; the stars-only document follows the same mono/colour
+      shape as the source.</li>
+</ul>
+
+<h3>2.4 Notes</h3>
+<ul>
+  <li>StarNet and the SyQon Standalone CLI are external programs; SyQon's models
+      are obtained from SyQon. Dark Star runs in-process but needs its mono AI
+      model installed. Each engine's own stretch/processing happens inside it;
+      SASpro's MTF round-trip wraps the engines that expect stretched input.</li>
+  <li>Every engine records a replayable <code>remove_stars</code> preset (tool +
+      its settings) for the workflow and grip/headless paths.</li>
+</ul>
+
+</body>
+</html>

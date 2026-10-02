@@ -12,6 +12,7 @@ from PyQt6.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QPalette
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.help_support import make_help_button
 
 def _to_float_preserve(img):
     if img is None: return None
@@ -201,6 +202,10 @@ class HistogramDialog(QDialog):
         ))
         self.btn_sensor_max.clicked.connect(self._prompt_sensor_max)
         ctl.addWidget(self.btn_sensor_max)
+
+        # in-app documentation button, trailing the control row (far right)
+        self.btn_help = make_help_button("histogram", self)
+        ctl.addWidget(self.btn_help)
 
         main_layout.addLayout(ctl)
 

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2a2015; border-left:3px solid #f0a000; padding:8px 12px;
+          margin:10px 0; color:#f0d9a0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>White Balance</h1>
+<p class="sub">Three ways to fix colour: <b>Star-Based</b> uses the detected
+stellar population to put the scatter on the blackbody locus (physically
+grounded colour); <b>Manual</b> dials per-channel gains by hand; <b>Auto</b>
+grey-worlds the whole frame. Mask-aware; the star-based mode also opens a
+diagnostic before/after plot.</p>
+
+<h2>1. Using the tool</h2>
+<p>Pick a mode from the <b>White Balance Type</b> dropdown; the relevant controls
+appear below. Then <b>Apply</b>.</p>
+
+<h3>Star-Based (default)</h3>
+<ul>
+  <li><b>Auto &sigma; (waterfall)</b> &mdash; on by default. SASpro tries
+      <code>&sigma; = 100, 50, 25, 12, 8, 5, 3</code> in order and stops at the
+      first value that detects &ge; 1200 stars (&sect;2.3). When this is on the
+      slider becomes a read-out of the resolved &sigma;; uncheck to drive it
+      manually. The choice is remembered.</li>
+  <li><b>Detection threshold (&sigma;)</b> &mdash; manual threshold in units of
+      background noise. Lower finds more stars but risks nebulosity and noise.</li>
+  <li><b>Advanced Color Matrix WB</b> &mdash; solve a 3&times;3 matrix that rotates
+      the stellar colour scatter onto the blackbody locus (&sect;2.5), rather than
+      per-channel gains. <b>Not recommended for narrowband/duoband data</b>
+      &mdash; emission lines sit off the locus and the matrix will shift them.</li>
+  <li><b>Autostretch overlay preview</b> &mdash; stretch the on-screen preview so
+      faint stars are visible; the maths runs on the linear data.</li>
+  <li>The <b>live preview</b> shows the background-neutralized image with the
+      detected stars circled, and the current star count. Changing settings
+      debounces and re-detects.</li>
+</ul>
+
+<h3>Manual</h3>
+<p>Three gain spinboxes (R / G / B, range 0.5&ndash;1.5) scale each channel
+directly. Useful for fine-tuning after an automatic pass or dialing in a known
+cast.</p>
+
+<h3>Auto</h3>
+<p>Grey-world: each channel is scaled so its mean matches the overall mean. One
+button, no settings &mdash; fast and simple, but only right when the scene really
+averages to grey.</p>
+
+<h3>Apply, grip &amp; the diagnostic plot</h3>
+<ul>
+  <li><b>Apply</b> commits a &ldquo;White Balance&rdquo; step; <b>Cancel</b>
+      closes. The dialog follows the active image window.</li>
+  <li>After a Star-Based apply, a separate <b>result window</b> opens with
+      before/after scatter plots in <b>R/B vs G/B</b> space, a best-fit line, the
+      blackbody locus with labeled Kelvin ticks, and the neutral marker &mdash;
+      a visual check that the stars now sit along the locus.</li>
+  <li><b>Grip</b> (bottom-left) drags to the canvas to mint a shortcut with these
+      settings, or drops on an image to run headlessly. Star-Based presets record
+      the <i>resolved</i> &sigma; so a replay reproduces what the waterfall picked,
+      even on a different field.</li>
+</ul>
+<p>RGB only; all three modes blend through any active mask on the destination
+document (<code>out = src&middot;(1&minus;m) + out&middot;m</code>).</p>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">Auto is one line of maths; Manual is two. Star-Based is the
+interesting one &mdash; it uses the detected stars themselves as a colour
+reference, aligned to the Planckian locus.</p>
+
+<h3>2.1 Auto (grey-world) and Manual</h3>
+<p>Grey-world scales each channel so its mean matches the overall mean:</p>
+<div class="matheq">k_c=\frac{\bar{I}}{\bar{I}_c}\,,\qquad \mathrm{out}_c=\mathrm{clip}(I_c\,k_c,\,0,\,1)</div>
+<p>Manual is the same shape with user-set <code>k_c</code> (0.5&ndash;1.5 per
+channel).</p>
+
+<h3>2.2 Star-Based pipeline</h3>
+<p>The star-based mode runs a five-step pipeline:</p>
+<ol>
+  <li><b>Background neutralization</b> on an auto-found 50&times;50 sky patch
+      (shared with the BN tool) &mdash; the stars are then measured against a
+      grey background, so colour balance isn't confounded by a channel pedestal.</li>
+  <li><b>SEP star detection</b> on the BN luminance at threshold &sigma; (auto or
+      manual &mdash; &sect;2.3), filtered to flux-radius &isin; (0, 10]&nbsp;px, then
+      <b>spatially sampled</b> on a 3&times;3 grid (max 500 stars per cell) so a
+      dense core doesn't dominate the fit.</li>
+  <li><b>Circular-median sampling</b>: each star's colour is the median RGB inside
+      a 3-px-radius aperture at its centroid &mdash; robust to a single hot
+      pixel.</li>
+  <li>Fit the stellar scatter in <b>(R/B, G/B)</b> ratio space and find the
+      slope-correction + neutral-shift gains (&sect;2.4) that align the median star
+      colour to the blackbody locus and put the median at neutral.</li>
+  <li>Apply the gains with a pivot at the sky background so the correction
+      doesn't push the background off neutral:
+      <div class="matheq">\mathrm{out}=(I_{\mathrm{BN}}-p)\cdot g+p</div></li>
+</ol>
+
+<h3>2.3 Auto-&sigma; waterfall</h3>
+<p>Rather than guessing a detection threshold for each field, the waterfall tries
+them in order and stops at the first that works:</p>
+<div class="matheq">\sigma \in \{100,\,50,\,25,\,12,\,8,\,5,\,3\}\quad\to\quad \text{stop at first }\sigma\text{ with }N_{\mathrm{stars}}\geq 1200</div>
+<p>Only <code>sep.extract</code> is retried per rung &mdash; the one-off BN pass
+and SEP background estimation are computed once &mdash; so the extra cost is
+modest even on large frames. If no rung reaches 1200, the lowest (most
+sensitive) &sigma; is kept so the pipeline still has something to work with. The
+resolved &sigma; is reported back and drives the slider.</p>
+
+<h3>2.4 Slope correction + neutral shift</h3>
+<p>In (R/B, G/B) space the stellar scatter lies on a line whose slope depends on
+colour balance. A linear fit gives the current slope:</p>
+<div class="matheq">g_b = s\,r_b + b\quad(\text{least-squares over stars})</div>
+<p>With a target slope <code>s_target = 0.55</code> matching the blackbody locus,
+and tilt strength <code>&tau; = 0.7</code> (so the full correction isn't forced
+in one step):</p>
+<div class="matheq">\rho=\frac{s_{\mathrm{target}}}{s_{\mathrm{current}}}\,,\qquad \rho'=1+\tau\,(\rho-1)</div>
+<p>Splitting the gain symmetrically between R and G keeps the overall exposure
+roughly constant:</p>
+<div class="matheq-hero">k_R=\frac{1}{\sqrt{\rho'}}\,,\qquad k_G=\sqrt{\rho'}\,,\qquad k_B=1</div>
+<p>The tilt is then applied to the reference star-colour median, and a
+<b>neutral shift</b> brings that tilted median to grey:</p>
+<div class="matheq">s_c=\frac{\max_j(\mathrm{tilt}_j\cdot \mathrm{ref}_j)}{\mathrm{tilt}_c\cdot \mathrm{ref}_c}\,,\qquad g_c=\mathrm{tilt}_c\cdot s_c</div>
+<p>The combined gain <code>g_c</code> is applied at the background pivot (&sect;2.2
+step 5), so both the stellar scatter and the sky end up where they should.</p>
+
+<h3>2.5 Advanced Color Matrix WB</h3>
+<div class="warn">The matrix mixes channels and can shift narrowband/duoband
+emission colours off their physically meaningful positions &mdash; the amber
+checkbox label is a reminder. For broadband RGB it produces more accurate
+star/galaxy colours than per-channel scaling can.</div>
+<p>Instead of three scalars, this mode solves a 3&times;3 matrix that maps measured
+star colours to targets projected orthogonally onto the blackbody locus. The
+locus is anchored at the physically correct neutral <code>(R/B = 1, G/B &asymp;
+0.96)</code> &mdash; a truly neutral grey star is <i>slightly green-deficient</i>
+relative to equal RGB:</p>
+<div class="matheq">g_b = s_{\mathrm{target}}\,r_b + (0.96 - s_{\mathrm{target}})</div>
+<p>Each star's current ratio point is projected onto that line and blended
+toward the target by the tilt strength:</p>
+<div class="matheq">r_b^{\,t}=\frac{r_b+s\,(g_b-c)}{1+s^{2}}\,,\qquad g_b^{\,t}=s\,r_b^{\,t}+c</div>
+<p>The matrix is then solved by least-squares (per output channel), weighted so
+the anchor neutral is reproduced exactly. The result is clamped by a per-pixel
+negative-fix (shift up by the minimum channel so no pixel goes negative) and a
+luminance-pivoted ceiling compression &mdash; both preserve inter-channel
+ratios instead of hard-clipping any one channel.</p>
+
+<h3>2.6 Diagnostic plot</h3>
+<p>The result window plots the measured star colours in R/B vs G/B space before
+and after, over a Planckian locus drawn in the same ratio space (Planck
+spectrum &rarr; approximate CIE 2&deg; XYZ matching functions &rarr; linear sRGB
+&rarr; ratios), with Kelvin tick marks at 1500, 2000, 2500, 3000, 4000, 6000 and
+10000&nbsp;K. The blue cross at <code>(1,&nbsp;1)</code> is the equal-RGB neutral
+reference. A well-balanced broadband image should land the scatter on the locus
+and the median near the reference.</p>
+
+</body>
+</html>

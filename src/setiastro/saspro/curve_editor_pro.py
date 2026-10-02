@@ -1841,6 +1841,7 @@ class CurvesDialogPro(QDialog):
         # After the stretch → pins to the lower-left corner.
         # Deferred import avoids any shortcuts.py <-> curve_editor_pro cycle.
         from setiastro.saspro.shortcuts import PresetDragHandle
+        from setiastro.saspro.help_support import make_help_button
         try:
             from setiastro.saspro.resources import curves_path
             _cv_icon = QIcon(curves_path)
@@ -1862,6 +1863,8 @@ class CurvesDialogPro(QDialog):
         )
         drag_row.addWidget(self.preset_drag_handle)
         drag_row.addStretch(1)
+        self.btn_help = make_help_button("curves", self)
+        drag_row.addWidget(self.btn_help)
         left.addLayout(drag_row)
 
         self._top_row = top

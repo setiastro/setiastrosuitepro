@@ -177,6 +177,7 @@ from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_r
 from setiastro.saspro.gaia_downloader import GaiaDownloader, HAS_GAIAXPY
 from setiastro.saspro.gaia_downloader import GaiaSpectraDB
 from setiastro.saspro.gaia_database import get_library
+from setiastro.saspro.help_support import make_help_button
 
 # ── Re-use shared utilities from sfcc.py
 from setiastro.saspro.sfcc import (
@@ -230,6 +231,7 @@ _SK_LP1      = "SSSC/LPFilter"
 _SK_LP2      = "SSSC/LPFilter2"
 _SK_SENSOR   = "SSSC/WhiteReference"   # white reference SED only — no QE
 _SK_SEP_THR  = "SSSC/SEPThreshold"
+_SK_AUTO_SIG = "SSSC/AutoSigma"
 _SK_N_CTRL   = "SSSC/NCtrlPoints"
 _SK_BN       = "SSSC/BackgroundNeutralization"
 
@@ -1997,16 +1999,33 @@ class SSSCDialog(QDialog):
         self.add_curve_btn.clicked.connect(self.add_custom_curve)
         row1.addWidget(self.add_curve_btn)
 
-        self.about_btn = QPushButton("About")
-        self.about_btn.setStyleSheet(
-            "QPushButton { background: #1a2f4a; color: #88bbee; border: 1px solid #2a5080;"
-            " border-radius: 4px; padding: 4px 10px; font-size: 11px; }"
-            " QPushButton:hover { background: #1f3a5f; color: #aaccff; border-color: #3a70aa; }"
+        # ── Docs cluster: About (what it is) + Help (full documentation) ──
+        INFO_STYLE = (
+            "QPushButton { background: #1a2f4a; color: #88bbee;"
+            " border: 1px solid #2a5080; border-radius: 4px;"
+            " padding: 4px 10px; font-size: 11px; }"
+            " QPushButton:hover  { background: #1f3a5f; color: #aaccff;"
+            " border-color: #3a70aa; }"
             " QPushButton:pressed { background: #111f33; }"
         )
+
+        self.about_btn = QPushButton("About")
+        self.about_btn.setStyleSheet(INFO_STYLE)
         self.about_btn.setToolTip("About SSSC — what it is and how it works")
         self.about_btn.clicked.connect(self._show_about)
-        row1.addWidget(self.about_btn)        
+        row1.addWidget(self.about_btn)
+
+        # Help / documentation — matched to About so the pair reads together.
+        # We build it manually (not make_help_button) so we can give it the
+        # same blue styling as About; the click handler is the same one
+        # make_help_button wires up internally.
+        from setiastro.saspro.help_support import show_tool_doc
+        self.btn_help = QPushButton("📄 Docs")
+        self.btn_help.setStyleSheet(INFO_STYLE)
+        self.btn_help.setToolTip("Open the SSSC documentation page")
+        self.btn_help.clicked.connect(lambda: show_tool_doc("sssc", self))
+        row1.addWidget(self.btn_help)
+
         layout.addLayout(row1)
  
         # ── Row 2: RGB Filters ────────────────────────────────────────────────
@@ -2098,6 +2117,25 @@ class SSSCDialog(QDialog):
         self.sep_thr_spin.valueChanged.connect(
             lambda v: QSettings().setValue(_SK_SEP_THR, int(v)))
         row4.addWidget(self.sep_thr_spin)
+
+        # Auto σ (waterfall) — removes the manual guess-and-check.
+        # Starts at σ=100 and steps down [100,50,25,12,8,5,3] until the
+        # detection returns at least SSSC_AUTO_SIGMA_MIN_STARS (1200) sources.
+        # Falls back to the lowest σ in the ladder if nothing hits the bar.
+        self.auto_sigma_chk = QCheckBox("Auto")
+        self.auto_sigma_chk.setStyleSheet(CHK_STYLE)
+        self.auto_sigma_chk.setChecked(True)
+        self.auto_sigma_chk.setToolTip(
+            "Auto σ waterfall:\n"
+            "  Tries σ = 100, 50, 25, 12, 8, 5, 3 in order and stops at the\n"
+            "  first value that yields ≥ 1200 detections. Removes the need to\n"
+            "  guess a threshold for different fields.\n\n"
+            "  Uncheck to use the manual σ value in the spin box."
+        )
+        self.auto_sigma_chk.toggled.connect(self._on_auto_sigma_toggled)
+        row4.addWidget(self.auto_sigma_chk)
+        # Reflect initial state on the spin box
+        self.sep_thr_spin.setEnabled(not self.auto_sigma_chk.isChecked())
  
 
         adv_box = QGroupBox("Advanced")
@@ -2167,13 +2205,11 @@ class SSSCDialog(QDialog):
         self.clear_session_btn.clicked.connect(self._clear_session_history)
         row4.addWidget(self.clear_session_btn)
  
-
- 
         self.close_btn = QPushButton("Close")
         self.close_btn.setStyleSheet(UTIL_STYLE)
         self.close_btn.clicked.connect(self.reject)
         row4.addWidget(self.close_btn)
-        layout.addLayout(row4)
+        layout.addLayout(row4)  
  
         # ── Status label ──────────────────────────────────────────────────────
         self.count_label = QLabel("")
@@ -2348,6 +2384,12 @@ class SSSCDialog(QDialog):
         sep_thr = int(s.value(_SK_SEP_THR, 15))
         self.sep_thr_spin.setValue(sep_thr)
 
+        # Auto-σ waterfall preference (default: ON — removes guess-and-check)
+        auto_sig = s.value(_SK_AUTO_SIG, True, type=bool)
+        if hasattr(self, "auto_sigma_chk"):
+            self.auto_sigma_chk.setChecked(bool(auto_sig))
+            self.sep_thr_spin.setEnabled(not bool(auto_sig))
+
         self.max_stars_spin.setValue(int(s.value("SSSC/MaxStars", 500)))
 
         nctrl = int(s.value(_SK_N_CTRL, 8))
@@ -2363,6 +2405,78 @@ class SSSCDialog(QDialog):
             return self.camera_label_edit.text().strip()
         except Exception:
             return ""
+
+    # ── Auto-σ waterfall config / helpers ─────────────────────────────
+    # Ladder of σ values tried from highest (strictest) to lowest.
+    # Highest σ that still yields ≥ SSSC_AUTO_SIGMA_MIN_STARS wins; if
+    # none clear the bar, the last (most sensitive) rung is used so
+    # genuinely sparse fields still get something to work with.
+    SSSC_AUTO_SIGMA_LADDER = (100.0, 50.0, 25.0, 12.0, 8.0, 5.0, 3.0)
+    SSSC_AUTO_SIGMA_MIN_STARS = 1200
+
+    def _on_auto_sigma_toggled(self, on: bool):
+        try:
+            self.sep_thr_spin.setEnabled(not bool(on))
+        except Exception:
+            pass
+        QSettings().setValue(_SK_AUTO_SIG, bool(on))
+
+    def _auto_sigma_enabled(self) -> bool:
+        try:
+            return bool(self.auto_sigma_chk.isChecked())
+        except Exception:
+            return False
+
+    def _sep_detect_waterfall(self, data_sub, err, *, status_prefix: str = ""):
+        """
+        Run sep.extract with the σ waterfall when Auto is enabled, or with
+        the manual spin value when Auto is off.
+
+        Returns (sources, used_sigma). `sources` may be empty if nothing was
+        detected at any σ in the ladder — callers should handle that case
+        exactly as they handled an empty result before.
+        """
+        if self._auto_sigma_enabled():
+            last_sources = None
+            last_sigma   = None
+            for sig in self.SSSC_AUTO_SIGMA_LADDER:
+                if status_prefix:
+                    _sfcc_status(self, f"{status_prefix} (trying σ={sig:.1f})…")
+                    QApplication.processEvents()
+                try:
+                    srcs = sep.extract(data_sub, float(sig), err=err)
+                except Exception:
+                    # Treat as "no detections at this σ" and keep stepping down
+                    srcs = None
+                last_sources = srcs
+                last_sigma   = sig
+                n = 0 if srcs is None else int(srcs.size)
+                if n >= self.SSSC_AUTO_SIGMA_MIN_STARS:
+                    if status_prefix:
+                        _sfcc_status(
+                            self,
+                            f"{status_prefix} — auto σ={sig:.1f} → {n:,} sources."
+                        )
+                        QApplication.processEvents()
+                    return srcs, float(sig)
+            # Ladder exhausted — return the last (lowest-σ, most sensitive) try
+            n = 0 if last_sources is None else int(last_sources.size)
+            if status_prefix:
+                _sfcc_status(
+                    self,
+                    f"{status_prefix} — auto σ ladder exhausted, using σ="
+                    f"{(last_sigma or 3.0):.1f} ({n:,} sources)."
+                )
+                QApplication.processEvents()
+            return (last_sources if last_sources is not None
+                    else sep.extract(data_sub, 3.0, err=err)), float(last_sigma or 3.0)
+
+        # Manual mode — single shot at the spin value
+        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
+        if status_prefix:
+            _sfcc_status(self, f"{status_prefix} (manual σ={sep_sigma:.1f})…")
+            QApplication.processEvents()
+        return sep.extract(data_sub, sep_sigma, err=err), sep_sigma
 
     # ── View plumbing ─────────────────────────────────────────────────────────
 
@@ -2592,10 +2706,11 @@ class SSSCDialog(QDialog):
         data_sub = gray - bkg.back()
         err      = float(bkg.globalrms)
 
-        sep_sigma = float(self.sep_thr_spin.value()) if hasattr(self, "sep_thr_spin") else 5.0
-        sources   = sep.extract(data_sub, sep_sigma, err=err)
+        sources, sep_sigma = self._sep_detect_waterfall(
+            data_sub, err, status_prefix="Detecting stars with SEP"
+        )
 
-        if sources.size == 0:
+        if sources is None or sources.size == 0:
             QMessageBox.critical(self, "SEP Error", "SEP found no sources.")
             return
 
@@ -2611,7 +2726,7 @@ class SSSCDialog(QDialog):
             return
 
         _sfcc_status(self,
-            f"SEP detected {sources.size:,} stars — converting to sky coords…")
+            f"SEP detected {sources.size:,} stars (σ={sep_sigma:.1f}) — converting to sky coords…")
         QApplication.processEvents()
 
         xs = sources["x"].astype(np.float64)
@@ -3233,12 +3348,10 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
         data_sub = gray - bkg.back()
         err      = float(bkg.globalrms)
 
-        sep_sigma = float(self.sep_thr_spin.value())
-        _sfcc_status(self, f"Re-detecting stars (SEP σ={sep_sigma:.1f})…")
-        QApplication.processEvents()
-
-        sources = sep.extract(data_sub, sep_sigma, err=err)
-        if sources.size == 0:
+        sources, sep_sigma = self._sep_detect_waterfall(
+            data_sub, err, status_prefix="Re-detecting stars"
+        )
+        if sources is None or sources.size == 0:
             QMessageBox.critical(self, "SEP Error", "No sources detected.")
             return
 
@@ -3253,7 +3366,7 @@ SSSC is part of SetiAstro Suite Pro &mdash; www.setiastro.com
                 "All detections rejected by radius filter.")
             return
 
-        _sfcc_status(self, f"Matching {sources.size:,} SEP sources to star catalog…")
+        _sfcc_status(self, f"Matching {sources.size:,} SEP sources (σ={sep_sigma:.1f}) to star catalog…")
         QApplication.processEvents()
 
         raw_matches = []

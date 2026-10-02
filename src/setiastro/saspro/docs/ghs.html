@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Hyperbolic Stretch</h1>
+<p class="sub">Six pivot-aware stretch functions in one tool &mdash; SASpro's
+Universal Hyperbolic Stretch, the Generalised Hyperbolic Stretch of
+Cranfield &amp; Payne, plus ArcSinh, Logarithmic, Exponential, and Power of
+Inverted Pixels &mdash; each anchored at a symmetry point you choose, with
+shadow/highlight protection and per-channel control.</p>
+
+<h2>1. Using the tool</h2>
+<p>Pick a function, set the symmetry point (pivot), and shape the stretch with
+its parameters while the preview updates live. All functions except Power of
+Inverted Pixels are <i>pivot-aware</i>: they pass through your chosen point so
+tones below and above it move in a controlled, continuous way.</p>
+
+<h3>Choosing the function</h3>
+<ul>
+  <li><b>Universal Hyperbolic Stretch (UHS)</b> &mdash; SASpro's own: &alpha;
+      sets the slope directly at the symmetry point, &beta; biases shadows
+      against highlights.</li>
+  <li><b>Generalised Hyperbolic Stretch (GHS)</b> &mdash; Cranfield/Payne: D is
+      the overall stretch amount, b controls how tightly it concentrates around
+      SP (and selects hyperbolic / exponential / logarithmic behaviour).</li>
+  <li><b>ArcSinh</b> &mdash; gentle, highlight-preserving lift.</li>
+  <li><b>Logarithmic</b> &mdash; compresses highlights harder than ArcSinh.</li>
+  <li><b>Exponential</b> &mdash; lifts upward from the pivot.</li>
+  <li><b>Power of Inverted Pixels (PIP)</b> &mdash; a fixed <code>x^(1-s·x)</code>
+      shape; has no pivot.</li>
+</ul>
+
+<h3>Setting the symmetry point (pivot)</h3>
+<ul>
+  <li><b>SP slider / spin-box</b> &mdash; set it directly (0&ndash;1), the two
+      stay in sync.</li>
+  <li><b>Double-click the image</b> (or the histogram) &mdash; sets the pivot to
+      the clicked pixel's brightness.</li>
+  <li><b>Ctrl+click the image</b> &mdash; same, as a modifier click.</li>
+</ul>
+
+<h3>Parameters &amp; controls</h3>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Channel</td><td>Apply to <b>K</b> (brightness / all RGB), or a single
+      <b>R/G/B</b>.</td></tr>
+  <tr><td>&alpha; / &beta; (UHS)</td><td>Slope at SP / shadow&ndash;highlight
+      bias.</td></tr>
+  <tr><td>D / b (GHS)</td><td>Stretch amount (entered log-scaled) / concentration
+      around SP.</td></tr>
+  <tr><td>LP / HP / BP (GHS)</td><td>Shadow- and highlight-<b>protection points</b>
+      and a black-point, all in [0,1] (see &sect;2.3). These replace the generic
+      LP/HP below in GHS mode.</td></tr>
+  <tr><td>Strength (ArcSinh / Log / Exp / PIP)</td><td>Intensity of the
+      lift/compression for those functions.</td></tr>
+  <tr><td>LP / HP (other functions)</td><td>Shadow/highlight <b>protection
+      weights</b> in [0,1] that blend the result back toward the identity on each
+      side of the pivot (see &sect;2.6).</td></tr>
+  <tr><td>&gamma;</td><td>A final gamma applied after the stretch (shared by all
+      functions).</td></tr>
+  <tr><td>Fine adjustment (&#9662;)</td><td>The down-arrow on &alpha;/&beta;/D/b/&gamma;
+      reveals a high-resolution slider spanning a small window around the current
+      value, for sub-step precision.</td></tr>
+  <tr><td>Auto-stretch (display only)</td><td>Stretches the <i>preview</i> for
+      visibility on linear data. Mouse-over readouts and the pivot pick still use
+      the real, unstretched values.</td></tr>
+  <tr><td>Histogram</td><td>Opens a histogram with SP / LP / HP / BP marker
+      lines; hovering the image draws value lines on it.</td></tr>
+  <tr><td>Toggle Preview / Apply / Reset</td><td>Show the result, commit it as a
+      &ldquo;Hyperbolic Stretch&rdquo; step, or return all sliders to defaults.</td></tr>
+  <tr><td>Grip (bottom-left)</td><td>Drag to the canvas to mint a shortcut with
+      the function, channel and <b>all</b> sliders baked in, or drop on an image
+      to apply headlessly.</td></tr>
+</table>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">Every function builds a monotone lookup table on [0,1] and
+is applied per selected channel. All are anchored so the pivot maps to itself.</p>
+
+<h3>2.1 Common framework</h3>
+<p>Each function defines a raw response; it is then normalised so the curve
+passes through three points &mdash; <code>f(0)=0</code>, <code>f(SP)=SP</code>,
+<code>f(1)=1</code> &mdash; by scaling the two halves independently. For a raw
+response <code>raw(x)</code> the left half [0, SP] is mapped as</p>
+<div class="matheq">f=\mathrm{SP}\cdot\frac{\mathrm{raw}(x)-\mathrm{raw}(0)}{\mathrm{raw}(\mathrm{SP})-\mathrm{raw}(0)}</div>
+<p>and the right half [SP, 1] symmetrically onto [SP, 1]. LP/HP protection and
+gamma (&sect;2.6) are applied afterward, and the LUT is finally forced monotone
+(a running maximum) so the transform can never invert.</p>
+
+<h3>2.2 Universal Hyperbolic Stretch (UHS)</h3>
+<p>SASpro's own function. The raw response is a rational sigmoid whose exponent
+is the slope control and whose denominator weight is the bias:</p>
+<div class="matheq-hero">\mathrm{raw}(u)=\frac{u^{\alpha}}{u^{\alpha}+\beta\,(1-u)^{\alpha}}</div>
+<p>&alpha; sets the slope <i>directly at the symmetry point</i>, and &beta;
+biases the two halves against each other (the right half uses <code>1/&beta;</code>),
+so shadows and highlights can be pushed asymmetrically. The result is
+renormalised through the midpoints so it passes through (0,0), (SP, SP) and
+(1,1). This is <b>not</b> a reparameterisation of GHS &mdash; UHS gives you a
+direct handle on the local slope at SP, where GHS sets a global amount and a
+concentration.</p>
+
+<h3>2.3 Generalised Hyperbolic Stretch (GHS)</h3>
+<div class="credit">The GHS method and its equations are the work of
+<b>Mike Cranfield and David Payne</b>. SASpro claims authorship of neither; this
+is an independent NumPy implementation of their published formulation, offered
+with credit and thanks. Project &amp; licence:
+<code>ghsastro.co.uk/information/</code> (GPLv3, as is SASpro).</div>
+<p>The family is the integral of a local stretch kernel taken outward from the
+symmetry point. With <code>t = |x &minus; SP|</code> and stretch amount
+<code>D</code>, the monotone building block <code>g(t)</code> (with
+<code>g(0)=0</code>) takes one of four forms selected by <code>b</code>:</p>
+<div class="matheq">g(t)=1-(1+D\,b\,t)^{-1/b}\qquad(b>0,\ \mathrm{hyperbolic})</div>
+<div class="matheq">g(t)=1-e^{-D\,t}\qquad(b=0,\ \mathrm{exponential})</div>
+<div class="matheq">g(t)=\ln(1+D\,t)\qquad(b=-1,\ \mathrm{logarithmic})</div>
+<div class="matheq">g(t)=\frac{(1+D\,B\,t)^{(B-1)/B}-1}{B-1}\qquad(b<0,\ B=-b)</div>
+<p>The transform is the odd extension about SP,</p>
+<div class="matheq">G(x)=\mathrm{sign}(x-\mathrm{SP})\;g\!\left(\,|x-\mathrm{SP}|\,\right)</div>
+<p>then affinely rescaled so <code>f(0)=0</code> and <code>f(1)=1</code>.
+<b>Shadow/highlight protection</b> replaces <code>G</code> with its own tangent
+line outside <code>[LP, HP]</code> &mdash; this is what stops the stretch
+amplifying read-noise below LP or blowing out stellar cores above HP:</p>
+<div class="matheq">G(x)=g(t_L)+g'(t_L)\,(x-\mathrm{LP})\qquad(x<\mathrm{LP},\ t_L=\mathrm{SP}-\mathrm{LP})</div>
+<p>A black point <code>BP</code> is subtracted first
+(<code>x &rarr; max(0, (x&minus;BP)/(1&minus;BP))</code>), and <code>D</code> is
+entered in the UI as <code>ln(D+1)</code> so the slider is linear across the
+useful range:</p>
+<div class="matheq">D=e^{D_{\mathrm{slider}}}-1</div>
+
+<h3>2.4 ArcSinh / Logarithmic / Exponential</h3>
+<p>Three pivot-aware functions sharing the two-half normalisation of &sect;2.1.
+With <code>d = x &minus; SP</code> and strength <code>s</code>:</p>
+<div class="matheq">\mathrm{arcsinh:}\quad \mathrm{raw}(x)=\mathrm{arcsinh}\!\left(s\,d\right)</div>
+<div class="matheq">\mathrm{log:}\quad \mathrm{raw}(x)=\mathrm{sign}(d)\,\ln(1+s\,|d|)</div>
+<div class="matheq">\mathrm{exp:}\quad \mathrm{raw}(x)=e^{\,s\,d}-1</div>
+<p>ArcSinh gives the gentlest highlight roll-off; Log compresses the bright end
+harder; Exp lifts away from the pivot.</p>
+
+<h3>2.5 Power of Inverted Pixels (PIP)</h3>
+<p>A fixed-shape power curve whose exponent falls with intensity, so faint tones
+are lifted while bright ones are left near-linear. It has no pivot:</p>
+<div class="matheq">f(x)=x^{\,1-s\,x}\qquad s\in[0,2]</div>
+
+<h3>2.6 Shared post-steps</h3>
+<p>For every pivot-aware function, LP and HP blend the result back toward the
+identity on their side of the pivot (0 = full stretch, 1 = untouched), then a
+shared gamma is applied:</p>
+<div class="matheq">v'=(1-\mathrm{LP})\,v+\mathrm{LP}\,x\quad(x\leq\mathrm{SP})\,,\qquad v'=v^{\,1/\gamma}</div>
+<p>(HP does the same for <code>x &geq; SP</code>.) Note these generic LP/HP
+<i>weights</i> are distinct from GHS's LP/HP protection <i>points</i> in
+&sect;2.3 &mdash; in GHS mode the generic LP/HP controls are hidden.</p>
+
+<h3>2.7 Notes</h3>
+<ul>
+  <li>Works per channel (K applies to all RGB; R/G/B to one) on float data in
+      [0,1]. The preview runs downsampled; Apply recomputes full-resolution on a
+      worker thread.</li>
+  <li>The display auto-stretch never changes the data &mdash; readouts and the
+      pivot pick always read the true linear values.</li>
+  <li>The grip/headless preset stores the function, channel and every slider, so
+      a dropped shortcut reproduces the exact stretch; legacy presets saved as
+      &ldquo;Hyperbolic Stretch&rdquo; are mapped forward to UHS.</li>
+</ul>
+
+</body>
+</html>

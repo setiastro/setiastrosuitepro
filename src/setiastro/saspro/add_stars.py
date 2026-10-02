@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 # I/O (use your legacy functions)
 from setiastro.saspro.legacy.image_manager import load_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 
 try:
     import cv2
@@ -364,7 +364,10 @@ class AddStarsDialog(QDialog):
         layout.addLayout(row)
 
         # Buttons
-        brow = QHBoxLayout(); brow.addStretch(1)
+        brow = QHBoxLayout()
+        self.btn_help = make_help_button("add_stars", self)
+        brow.addWidget(self.btn_help)
+        brow.addStretch(1)
         btn_apply = QPushButton(self.tr("Apply")); btn_apply.clicked.connect(self._apply)
         btn_cancel= QPushButton(self.tr("Cancel")); btn_cancel.clicked.connect(self.reject)
         brow.addWidget(btn_apply); brow.addWidget(btn_cancel)

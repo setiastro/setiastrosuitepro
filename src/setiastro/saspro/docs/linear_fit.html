@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Linear Fit</h1>
+<p class="sub">Match the brightness of channels (RGB) or of one image to another
+(mono) by scaling their medians to a common reference. A pure multiplicative
+gain &mdash; it equalises levels without clipping or distorting the linear data.</p>
+
+<h2>1. Using the tool</h2>
+<p>The dialog adapts to the active image: RGB images show a channel-target
+strategy; mono images show a reference-view picker. Results apply to the active
+view (OK runs it; a progress bar reports work).</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Target channel (RGB)</td><td>Which channel's median the others are
+      scaled to: <b>Highest Median</b>, <b>Lowest Median</b>, or an explicit
+      <b>Red</b> / <b>Green</b> / <b>Blue</b>.</td></tr>
+  <tr><td>Reference view (mono)</td><td>Another open image whose median the
+      active mono image is scaled to. If the reference is RGB, a luminance proxy
+      is used (see &sect;2.3).</td></tr>
+  <tr><td>Out-of-range handling</td><td><b>Clip to [0..1]</b>,
+      <b>Normalize to [0..1] if needed</b> (default), or <b>Leave values
+      as-is</b> &mdash; how to treat values pushed outside [0,1] by the
+      scale.</td></tr>
+  <tr><td>Grip (bottom-left)</td><td>Drag to the canvas to mint a Linear Fit
+      shortcut with these settings, or drop on an image to apply headlessly.</td></tr>
+</table>
+<div class="tip">Typical uses: equalise the R/G/B backgrounds of a colour image
+before neutralising it, or bring a mono channel (e.g. a narrowband or luminance
+frame) to the same level as a reference before combining them.</div>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">The fit is a per-target multiplicative scale that matches
+<b>medians</b>. The median is used because it tracks the dominant background
+population and is insensitive to stars and hot pixels.</p>
+
+<h3>2.1 Why the median, and why a scale</h3>
+<p>Each channel/image is modelled as differing from the reference by a single
+gain factor (different filter throughput, exposure, or sensitivity). Matching a
+robust central value &mdash; the median &mdash; aligns the overall level without
+being skewed by the bright tail. The fit has <b>no additive term</b>: it is
+<code>y = s&middot;x</code> with zero intercept. (Removing an additive floor is a
+separate operation &mdash; see Remove Pedestal.)</p>
+
+<h3>2.2 RGB mode</h3>
+<p>Per-channel medians <code>m_c = median(x_c)</code> are computed (nan-median), a
+reference channel is chosen by the strategy (<code>argmax(m)</code> for highest,
+<code>argmin(m)</code> for lowest, or a fixed R/G/B index), and every channel is
+scaled so its median equals the reference's:</p>
+<div class="matheq">s_c=\frac{m_{\mathrm{ref}}}{m_c}\,,\qquad \mathrm{out}_c=x_c\cdot s_c\qquad(m_c\ \mathrm{floored\ at}\ 10^{-12})</div>
+<p>The reference channel is left unchanged (its scale is 1); the others are
+pulled to meet it, which equalises the channel backgrounds and removes a flat
+colour cast.</p>
+
+<h3>2.3 Mono &rarr; reference mode</h3>
+<p>A mono image is scaled so its median matches a reference image's median. If
+the reference is colour, its median is taken on a Rec.709 luminance proxy:</p>
+<div class="matheq">L=0.2126\,R+0.7152\,G+0.0722\,B</div>
+<div class="matheq">s=\frac{m_{\mathrm{ref}}}{m_{\mathrm{src}}}\,,\qquad \mathrm{out}=x\cdot s\qquad(m_{\mathrm{src}}\ \mathrm{floored\ at}\ 10^{-12})</div>
+
+<h3>2.4 Out-of-range handling</h3>
+<p>Because scaling can push values past 1.0 (or a negative input below 0), the
+result is post-processed by the chosen mode:</p>
+<div class="eq">Clip to [0..1]            out = clip(out, 0, 1)
+Normalize if needed      if min(out) < 0 or max(out) > 1:
+                             out = (out - min) / (max - min)
+Leave as-is              out unchanged</div>
+<p class="cap">&ldquo;Normalize if needed&rdquo; (the default) only rescales when
+values actually left [0,1], so well-behaved data passes through untouched while
+over-range results are brought back without hard clipping.</p>
+
+<h3>2.5 Notes</h3>
+<ul>
+  <li>RGB vs mono is decided from the <i>active</i> image's shape when the
+      dialog opens, so a seeded preset only drives the controls the current
+      dialog actually shows.</li>
+  <li>Mono fitting needs another image open as the reference; the headless path
+      prompts for one at drop time if the preset doesn't carry it.</li>
+  <li>The fit runs on a worker thread; the result is applied through the
+      document manager as an undoable &ldquo;Linear Fit&rdquo; step.</li>
+</ul>
+
+</body>
+</html>

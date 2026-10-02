@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Levels (Histogram Transform)</h1>
+<p class="sub">Classic black / midtones / white levels: set the black and white
+points, then bend the midtones with a PixInsight-style Midtones Transfer
+Function. Live curve, histogram overlay, per-channel, and mask-aware.</p>
+
+<h2>1. Using the tool</h2>
+<p>Drag the three handles on the curve (or use the sliders/spin-boxes), watch the
+preview and the original-vs-result histogram, then <b>Apply</b>. The curve's
+black and white handles carry the midtone proportionally, so narrowing the range
+doesn't jump the midpoint.</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Channel</td><td><b>L</b> (luminance, chroma preserved), <b>K</b>
+      (brightness &mdash; same curve on R, G, B), or a single <b>R/G/B</b>. Mono
+      images are locked to L.</td></tr>
+  <tr><td>Black point</td><td>Input level mapped to 0. Everything at or below it
+      is clipped to black.</td></tr>
+  <tr><td>Midtones</td><td>The input level pulled to mid-grey (0.5) &mdash; the
+      gamma-like bend between black and white.</td></tr>
+  <tr><td>White point</td><td>Input level mapped to 1. Everything at or above it
+      is clipped to white.</td></tr>
+  <tr><td>Live preview</td><td>Recompute the preview on every change (debounced).</td></tr>
+  <tr><td>Curve + histogram</td><td>Draggable B/M/W handles; the histogram shows
+      original (dim) vs result (bright) for R/G/B and luminance.</td></tr>
+  <tr><td>Apply / Apply as New / Reset</td><td>Write to the document, open the
+      result as a new view, or return the handles to 0 / 0.5 / 1.</td></tr>
+  <tr><td>Grip (bottom-left)</td><td>Drag to the canvas to mint a Levels shortcut,
+      or drop on an image to apply headlessly.</td></tr>
+</table>
+<p>The clip readout reports, for the selected channel, how many pixels the
+current black/white points drive to pure black or white; a min/max readout shows
+the data's actual range.</p>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">Two stages per channel: a linear black/white rescale, then
+a non-linear midtones transfer. Everything operates on float data in [0,1].</p>
+
+<h3>2.1 Black / white rescale</h3>
+<p>The black point <code>b</code> and white point <code>w</code> linearly remap
+and clip the input:</p>
+<div class="matheq">t=\mathrm{clip}\left(\frac{x-b}{w-b},\;0,\;1\right)</div>
+
+<h3>2.2 Midtones transfer</h3>
+<p>The rescaled value is bent by the PixInsight Midtones Transfer Function with a
+single midtone parameter <code>m</code>:</p>
+<div class="matheq-hero">M(t;m)=\frac{(m-1)\,t}{(2m-1)\,t-m}</div>
+<p>It is pinned at the ends and sends the midtone to mid-grey:</p>
+<div class="eq">M(0;m) = 0            (black stays black)
+M(1;m) = 1            (white stays white)
+M(m;m) = 0.5          (the midtone input maps to mid-grey)</div>
+<p>The <b>Midtones</b> handle is an absolute input level; it is converted to the
+MTF parameter relative to the black/white window before the curve is evaluated,
+so the midpoint stays meaningful as you move the end points:</p>
+<div class="matheq">m=\frac{m_{\mathrm{abs}}-b}{w-b}</div>
+<p class="cap">This is the same midtones transfer that Statistical Stretch uses
+&mdash; here you place black/mid/white by hand (midtone &rarr; 0.5), whereas
+Statistical Stretch solves the midtone analytically to land a target median.</p>
+
+<h3>2.3 Channel modes</h3>
+<ul>
+  <li><b>L (luminance)</b> &mdash; the curve is applied to the luminance
+      <div class="matheq">Y=0.2126\,R+0.7152\,G+0.0722\,B</div>
+      and re-applied to the colour by ratio, preserving chroma:
+      <div class="matheq">\mathrm{out}=\mathrm{rgb}\cdot\frac{M(t_Y;\,m)}{Y}</div></li>
+  <li><b>K (brightness / RGB linked)</b> &mdash; the identical curve is applied
+      to R, G and B directly (same black/mid/white on every channel).</li>
+  <li><b>R / G / B</b> &mdash; the curve is applied to that one channel only.</li>
+  <li><b>Mono</b> &mdash; the curve is applied to the single plane; channel
+      selection is disabled.</li>
+</ul>
+
+<h3>2.4 Clipping stats</h3>
+<p>For the selected channel's values <code>v</code> (L and K use the luminance
+proxy), the readout counts what the current end points clip:</p>
+<div class="matheq">n_{\mathrm{low}}=\#\{v\leq b\}\,,\qquad n_{\mathrm{high}}=\#\{v\geq w\}</div>
+
+<h3>2.5 Masking</h3>
+<p>If the document has an active mask, the transform is blended back against the
+original over the mask (and the mask is resized to match &mdash; downsampled for
+the preview, full-res on apply, so what you see matches what you get):</p>
+<div class="matheq">\mathrm{out}=\mathrm{base}\cdot(1-\mathrm{mask})+\mathrm{out}\cdot\mathrm{mask}</div>
+
+<h3>2.6 Notes</h3>
+<ul>
+  <li>The preview runs on a downsampled copy (longest side capped) for
+      responsiveness; <b>Apply</b> recomputes on the full-resolution image.</li>
+  <li>Histograms are 256-bin, sampled, and show original (dim) against result
+      (bright) for R/G/B and L.</li>
+  <li>After a successful Apply the handles reset to 0 / 0.5 / 1 so the next
+      adjustment starts clean on the already-transformed image.</li>
+  <li>The headless/grip preset carries the <i>relative</i> midtone, so a dropped
+      shortcut reproduces the live curve exactly even with the end points moved.</li>
+</ul>
+
+</body>
+</html>
