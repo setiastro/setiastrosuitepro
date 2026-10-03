@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  kbd { background:#333; color:#fff; padding:1px 6px; border-radius:3px;
+        border:1px solid #555; font-family:Consolas,"DejaVu Sans Mono",monospace;
+        font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Clone Stamp</h1>
+<p class="sub">Classic clone brush. Pick a <i>source</i> point in a
+clean part of the image, then paint that source into a <i>target</i>
+area with a feathered brush. The source follows the cursor at a
+locked offset for the duration of each stroke, so you can repair
+along curved paths (galaxy arms, nebula filaments) while sampling a
+parallel stretch of similar structure. Useful for anything the
+one-click Blemish Blaster can't handle on its own: large irregular
+defects, star field continuations, satellite trail patches on
+textured background, and any time you want manual control over which
+pixels get used as the heal source.</p>
+
+<h2>1. Workflow in a nutshell</h2>
+<ol>
+  <li>Hold <kbd>Ctrl</kbd> and <b>left-click</b> on a clean part of
+      the image. A green X marks the source.</li>
+  <li>Release Ctrl. Move the cursor to the area you want to repair
+      &mdash; a green circle at the current brush size follows.</li>
+  <li><b>Left-click and drag</b>. The offset between target and source
+      locks on the first click of the stroke; from then on, a green X
+      tracks the live source position with a dotted line linking
+      source and brush.</li>
+  <li>Release. Zoom and inspect. Undo with <kbd>Ctrl</kbd>+<kbd>Z</kbd>
+      if the stroke isn't right.</li>
+  <li>Repeat with new strokes (same or different source) until the
+      repair looks seamless, then <b>Apply to Document</b>.</li>
+</ol>
+
+<h2>2. Setting the source</h2>
+<p><kbd>Ctrl</kbd>+<b>left-click</b> anywhere in the image sets the
+source point. A solid green X is drawn at that location so you can
+see what you've picked. The source persists until you Ctrl+click
+somewhere else or press <b>Clear Source</b>; it survives between
+strokes, mode changes, zoom and pan.</p>
+<p>Each stroke captures the source&ndash;target offset at its
+<i>first</i> click &mdash; so the X marker you see while painting
+isn't the original Ctrl+click point, it's the live source position
+offset from your current cursor by that captured amount. This is the
+classical Photoshop clone-stamp behaviour: start the stroke where
+you want the fix to begin, and the source tracks along at the same
+relative offset.</p>
+
+<h2>3. Painting</h2>
+<p>Once a source is set, a plain <b>left-click</b> (no Ctrl) starts a
+stroke. Dragging continues it. Releasing ends it. A dotted green line
+links the brush to its live source position while the stroke is
+active, so you can always see where the next dab is being sampled
+from.</p>
+<p>Dabs are placed at regular intervals along the drag path to keep
+the stroke smooth; the spacing is &frac14; of the brush radius, so
+large brushes dab less often (fewer but bigger) and small brushes
+dab tightly along the path. Each dab's source position is computed
+from the stroke-wide offset &mdash; so if the source approaches the
+image edge mid-stroke, the dabs quietly skip over the out-of-bounds
+part rather than filling it with black.</p>
+
+<h2>4. Visual overlays</h2>
+<ul>
+  <li><b>Green solid circle</b> &mdash; the brush at the current
+      radius, following the cursor. Shows exactly where the next
+      click will dab.</li>
+  <li><b>Green X</b> &mdash; the source. Static while not painting
+      (shows the Ctrl-click point). While painting, tracks the live
+      source position offset from the cursor.</li>
+  <li><b>Green dotted line</b> &mdash; link from brush to live source,
+      only during an active stroke. Lets you see at a glance whether
+      the source is still over a safe area as you move around.</li>
+</ul>
+
+<h2>5. Brush controls</h2>
+
+<h3>Radius / Feather / Opacity</h3>
+<ul>
+  <li><b>Radius</b> &mdash; 1&ndash;900&nbsp;px. Brush size in image
+      pixels (not screen pixels). Also drives the preview circle and
+      the dab spacing.</li>
+  <li><b>Feather</b> &mdash; 0&ndash;100&nbsp;%. The soft falloff
+      ring at the edge of the brush as a fraction of the radius.
+      <b>0</b> is a hard disk; <b>100</b> is a linear ramp from
+      centre to edge. 50&ndash;70 is usual for gradient repairs
+      (nebula backgrounds); 20&ndash;30 for crisp edges (star
+      cores).</li>
+  <li><b>Opacity</b> &mdash; 0&ndash;100&nbsp;%. The maximum blend
+      strength the brush can apply with a single dab. 100&nbsp;%
+      replaces fully; lower values build up gradually, so you can
+      overlay multiple dabs to soften a transition.</li>
+</ul>
+
+<h3>Brush preview chip</h3>
+<p>The 90&times;90 preview to the right of the sliders shows the
+current mask at the live radius/feather/opacity values. Watching
+this while adjusting feather is the quickest way to understand what
+the brush will do before you click &mdash; the chip renders the
+exact mask that will be multiplied into the image.</p>
+
+<h3>Clear Source</h3>
+<p>Dismisses the current source point so Ctrl+click is needed again
+before the next stroke. Doesn't affect the painted result &mdash;
+only the source marker.</p>
+
+<h2>6. Auto-stretch preview</h2>
+<p>Off by default. When on, a statistical stretch is applied to the
+preview buffer only; the underlying image data (and the undo/redo
+state) is never modified by this control. Essential for working on
+linear data where a defect would otherwise be invisible against the
+background.</p>
+<ul>
+  <li><b>Target median</b> &mdash; 0.01&ndash;0.60, default 0.25.
+      Controls how aggressive the stretch is.</li>
+  <li><b>Linked color channels</b> &mdash; stretch all RGB together
+      (default) or independently per channel.</li>
+</ul>
+<p>Both stretched and non-stretched display buffers are kept in sync
+during painting so toggling the checkbox is instant &mdash; no need
+to wait for a re-stretch of the whole image.</p>
+
+<h2>7. Zoom and pan</h2>
+<p>Toolbuttons for Zoom Out, Zoom In, Fit to Preview. Mouse wheel
+and trackpad zoom with the cursor as the anchor &mdash; small
+trackpad swipes fine, click-wheel detents coarse, hold Ctrl to
+zoom faster in either case. Range 0.05&times; to 4&times;. The
+preview auto-fits on first open; after that your zoom and pan state
+is preserved across all operations in the session.</p>
+
+<h2>8. Undo / Redo / Apply</h2>
+<p>Each complete stroke (down&ndash;drag&ndash;up) is one undo entry,
+regardless of how many dabs it contained. The ring holds up to 20
+strokes. <kbd>Ctrl</kbd>+<kbd>Z</kbd> and <kbd>Ctrl</kbd>+<kbd>Y</kbd>
+undo/redo as usual (bound as actions on the dialog itself so they
+take priority when the dialog has focus).</p>
+<p><b>Apply to Document</b> commits the current working image back to
+the originating document as a single edit named &ldquo;Clone Stamp&rdquo;
+and closes the dialog. Mono originals are automatically collapsed
+back to a single plane; RGB sources stay RGB. <b>Close</b> discards
+everything. The dialog's window geometry is persisted per-user and
+restored on next open.</p>
+
+<h2>9. Keyboard shortcuts</h2>
+<ul>
+  <li><kbd>[</kbd> and <kbd>]</kbd> &mdash; decrease / increase brush
+      radius by 2&nbsp;px. The preview circle updates live at the
+      current cursor position so you can judge coverage without a
+      round trip to the slider.</li>
+  <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd>
+      &mdash; undo / redo the last stroke.</li>
+</ul>
+
+<h2>10. Technical details</h2>
+<p class="tech-lead">All processing on float32 [0, 1]. The dialog
+displays a 3-channel copy of the working image regardless of source
+depth; on Apply, mono originals are collapsed back to a single
+plane.</p>
+
+<h3>10.1 Brush mask</h3>
+<p>The brush is a circular disk with a feathered falloff ring at the
+edge. With radius <code>r</code> and feather fraction
+<code>f &isin; [0, 1]</code>, the inner hard-disk radius is:</p>
+<div class="matheq">r_{\mathrm{inner}} \;=\; r\,(1 - f)</div>
+<p>Everything inside <code>r<sub>inner</sub></code> has weight 1;
+between <code>r<sub>inner</sub></code> and <code>r</code> the weight
+falls off linearly to zero at the edge:</p>
+<div class="matheq-hero">w(d) \;=\; \mathrm{clip}\!\left(\frac{r - d}{r\,f},\;0,\;1\right)\;\;\mathrm{for}\;\;d \leq r</div>
+<p>where <code>d</code> is the Euclidean distance from the brush
+centre. At <code>f&nbsp;=&nbsp;0</code> the formula collapses to a
+hard disk (the <code>r&middot;f</code> denominator special-cases to a
+step at <code>d&nbsp;=&nbsp;r</code>); at <code>f&nbsp;=&nbsp;1</code>
+it ramps linearly from the brush centre to the edge. The resulting
+mask is cached by its <code>(r, f)</code> key as a NumPy array, so
+subsequent dabs with the same parameters reuse the same buffer
+without rebuilding it.</p>
+
+<h3>10.2 Dab placement along a stroke</h3>
+<p>During a drag from <code>p<sub>0</sub></code> to
+<code>p<sub>1</sub></code>, dabs are placed at a fixed spacing
+proportional to the brush radius:</p>
+<div class="matheq">\Delta_{\mathrm{dab}} \;=\; \max(1,\;0.25\,r)</div>
+<div class="matheq">n \;=\; \max\!\left(1,\;\left\lfloor\frac{\|\mathbf{p}_1 - \mathbf{p}_0\|}{\Delta_{\mathrm{dab}}}\right\rfloor\right)</div>
+<p>then <code>n</code> dabs are linearly interpolated along the
+segment. The &frac14;-radius spacing is the standard Photoshop
+default &mdash; dense enough that the overlapping dab masks sum to a
+flat stroke, sparse enough that huge brushes don't thrash the CPU.</p>
+
+<h3>10.3 Source-follow offset</h3>
+<p>When a stroke starts at target position
+<code>(t<sub>x</sub><sup>(0)</sup>,&nbsp;t<sub>y</sub><sup>(0)</sup>)</code>
+with source at <code>(s<sub>x</sub>,&nbsp;s<sub>y</sub>)</code>, the
+offset is captured and locked for the whole stroke:</p>
+<div class="matheq">(o_x,\,o_y) \;=\; (s_x - t_x^{(0)},\;s_y - t_y^{(0)})</div>
+<p>Each subsequent dab at target position <code>i</code> samples
+from:</p>
+<div class="matheq">(s_x^{(i)},\,s_y^{(i)}) \;=\; (t_x^{(i)} + o_x,\;t_y^{(i)} + o_y)</div>
+<p>which is the signature behaviour of a classical clone brush: as
+you drag the cursor, the sampled source traces a parallel path.
+Starting a new stroke captures a <i>new</i> offset based on wherever
+the stroke begins, so moving to a new target area doesn't drag the
+source along with you until you click to begin painting.</p>
+
+<h3>10.4 Blend formula</h3>
+<p>Per dab, the final per-pixel alpha combines mask weight and
+opacity, and the result is a straight linear blend:</p>
+<div class="matheq-hero">\alpha \;=\; w \,\cdot\, \mathrm{opacity}\,,\qquad \mathrm{out} \;=\; (1 - \alpha)\,\mathrm{target} \;+\; \alpha\,\mathrm{source}</div>
+<p>applied in place on all three display channels. Source and target
+rectangles are clipped against the image bounds <i>jointly</i>:
+if either falls off the edge, the visible intersection is painted
+and the invisible part is skipped, so a brush that straddles the
+border still paints its in-bounds half without pulling in bogus
+zeros from off-image.</p>
+
+<h3>10.5 Tile-based stroke undo</h3>
+<p>Snapshotting the entire image on every stroke is expensive and
+wasteful &mdash; most strokes touch a tiny fraction of the frame. The
+dialog partitions the image into 64&times;64 tiles and tracks which
+tiles each stroke has modified:</p>
+<ul>
+  <li>At the start of a stroke, an empty dirty set is created.</li>
+  <li>Each dab computes which tiles its brush bounding box overlaps.
+      For tiles not yet in the dirty set, the pre-stroke contents of
+      the whole tile are copied into a per-stroke patch list, and
+      the tile key is added to the set.</li>
+  <li>Tiles already in the dirty set are skipped &mdash; their original
+      pre-stroke state was already saved on the first dab that
+      touched them.</li>
+  <li>On stroke end, the whole patch list becomes one entry in the
+      undo ring. Undo walks the list restoring each tile; redo mirrors
+      it.</li>
+</ul>
+<p>The result: a 20-pixel dab in a 6000&times;4000 frame costs one
+64&times;64 patch to undo (16 KB), not the entire frame (288 MB).
+A long freehand stroke that traverses several tiles pays only for
+those tiles once each, regardless of how many dabs crossed them.</p>
+
+<h3>10.6 Display buffers and throttled refresh</h3>
+<p>The dialog keeps three identical-shape float32 buffers in sync:
+<code>_image</code> (authoritative), <code>_display_raw</code> (what
+auto-stretch-off shows), and <code>_display_stretched</code> (what
+auto-stretch-on shows). Each dab is applied in place to all three,
+so toggling the auto-stretch checkbox swaps between them with no
+latency.</p>
+<p>During a drag, repainting the whole scene on every mouse-move
+event would starve the paint loop, so refresh is throttled to
+~30&nbsp;fps via a 33&nbsp;ms single-shot timer: the first dab
+schedules a refresh, subsequent dabs within the window are coalesced
+into that pending refresh, and the preview catches up smoothly
+without flooding Qt's event queue.</p>
+
+</body>
+</html>

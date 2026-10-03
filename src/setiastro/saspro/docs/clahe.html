@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>CLAHE</h1>
+<p class="sub">Contrast-Limited Adaptive Histogram Equalization. Boosts
+local contrast by equalising the histogram of small overlapping tiles
+across the image instead of the frame as a whole, with a clip limit
+that prevents noise amplification in flat areas. In astrophotography:
+pulls out texture in dust lanes, loosens nebula filaments from their
+background, and reveals subtle brightness variation in galaxy arms
+without the blown highlights that straight histogram equalization
+would produce. SASpro's take wraps OpenCV's CLAHE implementation
+with a pixel-based tile-size slider (more intuitive than tile count),
+a global blend slider for strength control, document-mask
+integration, and live preview.</p>
+
+<h2>1. Opening the dialog</h2>
+<p>The active image window is the target &mdash; CLAHE runs on its
+luminance (L* channel in Lab for colour, intensity directly for mono)
+and the result replaces the source on Apply. The dialog opens with
+a live preview showing the effect at the default settings
+(clip&nbsp;=&nbsp;2.0, tile&nbsp;=&nbsp;128&nbsp;px, blend&nbsp;=&nbsp;100%).
+It's non-modal and stays open after Apply so you can run it on another
+document with the same (or edited) settings.</p>
+
+<h2>2. Clip Limit</h2>
+<p>Slider, 0.1&ndash;4.0, default 2.0. The maximum height any single
+histogram bin can reach within a tile before being clipped and its
+excess mass redistributed uniformly. This is what distinguishes
+CLAHE from plain adaptive histogram equalisation.</p>
+<ul>
+  <li><b>Low (0.1&ndash;1.0)</b> &mdash; aggressive clipping, mild
+      effect. Safe for noisy data where you want some contrast
+      enhancement without lifting background grain.</li>
+  <li><b>2.0</b> (default) &mdash; the OpenCV default. Visible
+      contrast lift on most images without noise explosion.</li>
+  <li><b>Above 2.5</b> &mdash; stronger effect but more noise. Fine
+      on clean, well-stacked data; risky on short-exposure or
+      heavily-stretched frames.</li>
+</ul>
+
+<h2>3. Tile Size (px)</h2>
+<p>Slider, 8&ndash;512&nbsp;px, step 8, default 128. The size of
+each equalisation tile in <i>image pixels</i>, not tile count &mdash;
+which is how OpenCV itself takes the parameter. SASpro converts
+automatically (&sect;&nbsp;6.2) so the slider behaves the same way
+regardless of image resolution: a 128&nbsp;px tile on a 24&nbsp;MP
+frame means the same thing as a 128&nbsp;px tile on a 6&nbsp;MP
+crop.</p>
+<ul>
+  <li><b>Small (16&ndash;64&nbsp;px)</b> &mdash; fine-detail
+      enhancement. Each tile sees only a small neighbourhood, so the
+      histogram equalisation adapts to very local features
+      (micro-contrast in dust, texture in a nebula filament).
+      Risk: amplified noise in truly flat regions, and visible
+      tile-boundary artefacts if the clip limit is low enough that
+      adjacent tiles diverge a lot.</li>
+  <li><b>128&nbsp;px</b> (default) &mdash; the usual working value.
+      Big enough to average over image noise, small enough to pick
+      up medium-scale contrast variation.</li>
+  <li><b>Large (256&ndash;512&nbsp;px)</b> &mdash; approaches global
+      equalisation. Softer effect, less local adaptation. Useful for
+      broad gentle contrast lift across a whole widefield.</li>
+</ul>
+
+<h2>4. Blend Amount</h2>
+<p>Slider, 0&ndash;100%, default 100%. Final linear mix between the
+original image and the CLAHE-processed result:</p>
+<ul>
+  <li><b>100%</b> (default) &mdash; full CLAHE result.</li>
+  <li><b>50&ndash;80%</b> &mdash; dial back when the effect is right
+      in character but too strong in magnitude. Lets you keep the
+      same tile size and clip limit (which define the <i>shape</i>
+      of the effect) while reducing how much of it lands.</li>
+  <li><b>0%</b> &mdash; no change.</li>
+</ul>
+<p>This is cleaner than lowering clip limit to achieve the same
+visual strength, because clip limit also changes which features
+are enhanced; blend only changes <i>how much</i>.</p>
+
+<h2>5. Live preview</h2>
+<p>Every slider change triggers a 250&nbsp;ms-debounced re-render
+of the preview so you can judge the result interactively without
+each tiny slider nudge triggering a full computation. The preview
+shows the final blended, mask-gated result &mdash; exactly what
+Apply will commit.</p>
+
+<h2>6. Zoom controls</h2>
+<p>Zoom In, Zoom Out, and Fit to Preview buttons sit above the
+Apply row. The preview view also supports cursor-anchored
+mouse-wheel and trackpad zoom with the standard SASpro behaviour.
+The preview auto-fits to the viewport on first open.</p>
+
+<h2>7. Masks</h2>
+<p>If the active document carries a mask, CLAHE runs on the whole
+image and then blends through the mask so only masked regions
+receive the effect, with original pixels preserved everywhere else.
+The global Blend Amount is applied first, then the mask gating on
+top; both compose cleanly (&sect;&nbsp;6.5).</p>
+
+<h2>8. Apply / Reset / Cancel</h2>
+<p><b>Apply</b> runs the final computation on the full-resolution
+original and commits the result to the document as an undoable edit
+named &ldquo;CLAHE&rdquo;. The three slider values are recorded in
+the preset so Replay Last Action and the preset grip reproduce the
+exact run. The dialog stays open so you can switch to another open
+image and apply with the same settings.</p>
+<p><b>Reset</b> returns the three sliders to their defaults
+(clip&nbsp;2.0, tile&nbsp;128&nbsp;px, blend&nbsp;100%) and shows
+the untouched original in the preview. <b>Cancel</b> discards
+everything.</p>
+
+<h2>9. Preset grip</h2>
+<p>The handle at the bottom-left of the dialog carries the current
+three slider values and can be dragged to the canvas to make a
+shortcut tile, or dropped directly on an image to apply those
+settings headlessly. Double-clicking the tile reopens this dialog
+pre-seeded with those values.</p>
+
+<h2>10. Technical details</h2>
+<p class="tech-lead">All processing on float32 [0, 1]. Colour inputs
+converted to Lab for L*-only processing; mono processed directly.</p>
+
+<h3>10.1 CLAHE algorithm (OpenCV)</h3>
+<p>SASpro calls <code>cv2.createCLAHE(clipLimit,&nbsp;tileGridSize)</code>
+with the slider values. Per tile, OpenCV builds the local 256-bin
+histogram <code>h(v)</code>, clips bins above the limit:</p>
+<div class="matheq">h'(v) \;=\; \min(h(v),\;C)</div>
+<p>and redistributes the clipped excess uniformly across all bins
+so the histogram still integrates to the tile's pixel count:</p>
+<div class="matheq">h''(v) \;=\; h'(v) \;+\; \frac{E}{N}\,,\qquad E \;=\; \sum_{v}\max(0,\;h(v) - C)</div>
+<p>The redistributed histogram's CDF, scaled to [0, 255], becomes
+the per-tile transform:</p>
+<div class="matheq">T(v) \;=\; \mathrm{round}\!\left(255 \cdot \frac{\sum_{u \leq v} h''(u)}{\sum_{u} h''(u)}\right)</div>
+<p>and the output for a given pixel is the bilinear interpolation of
+the four nearest tile transforms, which keeps tile boundaries from
+showing as visible seams:</p>
+<div class="matheq">T_{\mathrm{eff}}(x,y) \;=\; \sum_{\mathrm{4 tiles}} w_k(x,y) \,T_k(v)</div>
+<p>For colour inputs, SASpro converts the image to CIE Lab via
+OpenCV's <code>COLOR_RGB2LAB</code>, applies CLAHE only to the L*
+channel, and converts back &mdash; so chroma (a*, b*) is preserved
+and only luminance structure changes.</p>
+
+<h3>10.2 Pixel-based tile sizing</h3>
+<p>OpenCV's native parameter is <code>tileGridSize&nbsp;=&nbsp;(n,&nbsp;n)</code>
+&mdash; the number of tiles across each axis. That means a given
+<code>n</code> covers a totally different physical area on a
+24&nbsp;MP frame vs a 6&nbsp;MP crop, which is a confusing user
+experience: &ldquo;tile count 8&rdquo; doesn't tell you how large
+each tile actually is. SASpro's slider instead takes the tile size
+<i>in image pixels</i> and derives the count from the image
+dimensions:</p>
+<div class="matheq-hero">n \;=\; \mathrm{clip}\!\left(\mathrm{round}\!\left(\frac{\min(H,W)}{t_{\mathrm{px}}}\right),\;2,\;128\right)</div>
+<p>so a 128&nbsp;px slider setting always produces roughly
+128&nbsp;px tiles regardless of image resolution. The clamp to
+[2, 128] handles edge cases (tile sizes larger than the image, or
+small enough to blow past OpenCV's internal limits).</p>
+
+<h3>10.3 Backward-compatible preset decoding</h3>
+<p>Older SASpro presets stored tile count directly as
+<code>"tile":&nbsp;N</code>. The current decoder accepts both the
+new <code>"tile_px":&nbsp;px</code> and the legacy
+<code>"tile":&nbsp;N</code> keys, preferring the former when both
+are present. Older shortcut tiles continue to work with their
+tile-count interpretation; new ones get pixel-based sizing. The
+written preset metadata always uses the new key, so Replay Last
+Action after a seed-from-old-preset promotes the entry forward.</p>
+
+<h3>10.4 Blend</h3>
+<p>Global blend is a straight linear mix between the untouched
+input and the CLAHE output:</p>
+<div class="matheq-hero">\mathrm{out} \;=\; (1 - \beta)\,\mathrm{orig} \;+\; \beta\,\mathrm{CLAHE}(\mathrm{orig})</div>
+<p>applied before any mask gating. Because it rides on top of the
+same CLAHE result, the <i>character</i> of the effect (which features
+get enhanced, which are suppressed) stays locked across blend
+values &mdash; only the amplitude changes. This is a strictly better
+user experience than lowering the clip limit to weaken the effect,
+which would also redistribute mass differently and change which
+features win the equalisation.</p>
+
+<h3>10.5 Mask gating</h3>
+<p>If the active document carries a mask <code>m&nbsp;&isin;&nbsp;[0,&nbsp;1]</code>,
+it's resampled to the processed image's dimensions and used as a
+second blend:</p>
+<div class="matheq">\mathrm{out} \;=\; (1 - m)\,\mathrm{orig} \;+\; m\,\mathrm{out}_{\mathrm{blended}}</div>
+<p>which composes with the global blend from &sect;&nbsp;10.4 so the
+final per-pixel effect strength is the <i>product</i> of &beta;
+(global strength) and <code>m</code> (local shape). Set a 50% blend
+plus a half-transparent mask and the effect lands at 25% in the
+masked region, 0% outside. The order matters: global blend first,
+then mask gating, so the mask gates the <i>already-blended</i>
+result rather than a full-strength CLAHE output.</p>
+
+<div class="credit">
+<b>Credits.</b> The core <b>CLAHE algorithm</b> is Karel Zuiderveld's
+&ldquo;Contrast Limited Adaptive Histogram Equalisation&rdquo;
+(<i>Graphics Gems IV</i>, 1994). The implementation used here is
+<b>OpenCV's</b> <code>cv2.createCLAHE</code> with its bilinear tile
+interpolation. SASpro's additions are the pixel-based tile-size
+slider with its automatic conversion to OpenCV's tile-count
+parameter, the global Blend Amount slider, the live-preview
+pipeline with its 250&nbsp;ms debouncing, document-mask integration
+with the described global-then-mask compositing order, and the
+backward-compatible preset decoder.
+</div>
+
+</body>
+</html>

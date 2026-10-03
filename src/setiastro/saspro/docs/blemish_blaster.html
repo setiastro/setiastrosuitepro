@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b7e4d6; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  kbd { background:#333; color:#fff; padding:1px 6px; border-radius:3px;
+        border:1px solid #555; font-family:Consolas,"DejaVu Sans Mono",monospace;
+        font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Blemish Blaster</h1>
+<p class="sub">Three healing tools in one interactive dialog. The
+<b>Blemish Blaster</b> fixes round defects (dust motes, bad pixels,
+satellite flashes, residual stars after StarNet) with a one-click
+median-of-median heal. <b>Linear Blaster</b> paints out straight or
+bent line defects (satellite trails, cosmic rays, airplane trails)
+with a draggable path. <b>Banding Blaster</b> suppresses horizontal
+or vertical row/column banding across the entire frame.</p>
+
+<h2>1. Mode selector</h2>
+<p>Three radio buttons at the top of the controls panel choose the
+active mode. Switching modes resets any in-progress linear path and
+hides the controls that don't apply, so the panel stays uncluttered.
+The preview on the right responds differently in each mode &mdash;
+hover-and-click in Blemish, click-and-drag path building in Linear,
+pan-only in Banding (because banding operates on the whole frame at
+once).</p>
+
+<h2>2. Shared controls</h2>
+
+<h3>Zoom</h3>
+<p>Three toolbuttons at the top of the left pane: Zoom Out, Zoom In,
+Fit to Preview. Mouse-wheel and trackpad gestures also zoom with the
+cursor as the anchor &mdash; small trackpad swipes give fine control,
+click-wheel detents give coarse, hold Ctrl to zoom faster in either
+case. Zoom range is 0.05&times; to 4&times;. The first time the
+dialog opens the preview is auto-fit to its viewport; after that your
+zoom and pan state is preserved across mode switches.</p>
+
+<h3>Radius / Feather / Opacity</h3>
+<p>These three sliders are shared by Blemish and Linear modes (Banding
+uses its own set). Each has a live numeric spinbox alongside the
+slider that stays in sync.</p>
+<ul>
+  <li><b>Radius</b> &mdash; 1&ndash;900&nbsp;px. In Blemish mode this
+      is the healing brush radius (and the preview circle size). In
+      Linear mode it has no effect; use Thickness instead.</li>
+  <li><b>Feather</b> &mdash; 0&ndash;100&nbsp;%. The soft edge of the
+      heal, as a fraction of the radius. 0 is a hard edge; 100 ramps
+      the heal weight linearly from the brush center to zero at the
+      edge. 50 is a reasonable default &mdash; soft enough to hide
+      transitions, firm enough that the center of the brush fully
+      replaces the defect.</li>
+  <li><b>Opacity</b> &mdash; 0&ndash;100&nbsp;%. The final blend
+      strength. 100 fully replaces the defect; lower values let some
+      of the original leak through, useful when you want to soften
+      a feature rather than erase it.</li>
+</ul>
+
+<h3>Auto-stretch preview</h3>
+<p>Below the mode-specific controls. When on (default), a statistical
+stretch is applied <i>to the preview only</i> &mdash; the underlying
+image data is never modified by this control. Essential when working
+on linear data where a dust mote would otherwise be invisible.</p>
+<ul>
+  <li><b>Target median</b> &mdash; 0.01&ndash;0.60, default 0.25.
+      Controls how aggressively the preview is stretched.</li>
+  <li><b>Linked color channels</b> &mdash; stretch all RGB channels
+      together (default) rather than independently. Uncheck when the
+      image has a strong colour cast you want to see through.</li>
+</ul>
+
+<h3>Undo / Redo / Apply</h3>
+<p>The in-dialog undo/redo ring holds the last 20 operations. Each
+blemish heal snapshots only its affected patch; linear and banding
+operations snapshot the whole image (since a line can span the frame
+and banding touches every pixel). <kbd>Ctrl</kbd>+<kbd>Z</kbd> and
+<kbd>Ctrl</kbd>+<kbd>Y</kbd> are intercepted inside the dialog so
+they don't trigger the main window's own undo &mdash; the dialog
+wins whenever it has focus.</p>
+<p><b>Apply to Document</b> commits the current working image back to
+the originating document as a single undoable edit named
+&ldquo;Blemish Blaster&rdquo; (whichever modes were used during the
+session), then closes the dialog. <b>Close</b> discards everything.
+The dialog's window geometry is saved per-user and restored on next
+open.</p>
+
+<h3>Keyboard shortcuts</h3>
+<p><kbd>[</kbd> and <kbd>]</kbd> decrease or increase the brush radius
+by 2 pixels at a time, and the preview circle updates immediately
+under the current cursor position. Standard for digital-brush tools;
+indispensable for working through a frame with mixed defect sizes
+without reaching for the slider.</p>
+
+<h2>3. Blemish Blaster mode</h2>
+<p>Default mode. The classical SetiAstro one-click heal.</p>
+
+<h3>Interactions</h3>
+<ul>
+  <li><b>Hover</b> &mdash; a red dashed circle at the current brush
+      radius follows the cursor so you can judge coverage before
+      clicking.</li>
+  <li><b>Left-click</b> &mdash; heals under the circle. The dialog
+      disables briefly while the worker thread runs, then re-enables
+      with the result in place.</li>
+  <li><b>Right-click / drag</b> &mdash; no effect in Blemish mode.</li>
+</ul>
+
+<h3>Workflow</h3>
+<p>Set the radius just slightly larger than the defect itself (not
+larger than the defect <i>plus</i> its surroundings &mdash; the
+healer samples the surroundings, so leave them visible). Feather
+around 50% hides the transition on most backgrounds. Click once;
+if the result looks off, undo and try at a different radius or
+offset the click a few pixels to pick a different hex arrangement
+of sampling patches. The algorithm itself is described in
+&sect;&nbsp;6.1.</p>
+
+<div class="tip"><b>Tip:</b> for a tiny defect against complex
+background (nebula filaments, galaxy spiral arms), reduce opacity to
+50&ndash;70% so the real structure around the defect bleeds
+through, then click twice &mdash; each click re-runs the median-of-median
+selection so you get a different hex arrangement if you've nudged
+slightly.</div>
+
+<h2>4. Linear Blaster mode</h2>
+<p>Draws a path that gets stroked at the current Thickness with
+rounded caps, and healed by sampling parallel offsets on either
+side. The path can be straight or bent as a quadratic B&eacute;zier,
+and can optionally extend all the way to the image borders.</p>
+
+<h3>Building the path</h3>
+<ul>
+  <li><b>Left-click</b> places an endpoint. First click places point
+      A; a second click places point B and the full path becomes
+      visible with handles on both ends and a green mid handle.</li>
+  <li><b>Right-click</b> pops the last placed endpoint. Click again
+      to clear the path entirely.</li>
+  <li><b>Drag any blue handle</b> moves that endpoint. The red
+      outline (the exact blast region, see below) updates live.</li>
+  <li><b>Drag the green mid handle</b> bends the path into a
+      quadratic B&eacute;zier that passes through the handle. Great
+      for curved satellite trails or cosmic rays that aren't quite
+      straight.</li>
+  <li><b>Double-click the green mid handle</b> straightens the path
+      again by moving the mid handle back onto the chord midpoint.</li>
+  <li><b>Right-click once more</b> after the path is placed will pop
+      an endpoint &mdash; use it to re-aim without starting over.</li>
+</ul>
+
+<h3>Thickness and extent</h3>
+<ul>
+  <li><b>Thickness</b> &mdash; 1&ndash;100&nbsp;px slider. The width
+      of the healed band. Set to a bit wider than the defect itself
+      so the feathered edges have somewhere to blend into.</li>
+  <li><b>Blast extent</b> &mdash;
+      <i>Segment</i> heals only between the two endpoints (with
+      rounded caps). <i>Full line across image</i> extends the path
+      along the endpoint tangents to the image border on each side,
+      so a satellite trail that leaves the frame is still fully
+      healed without you having to click outside the preview.</li>
+</ul>
+
+<h3>Overlays</h3>
+<ul>
+  <li>The <b>cyan dashed centerline</b> is the path itself.</li>
+  <li>The <b>red dashed outline</b> is the exact region that will be
+      blasted when you press the button &mdash; it accounts for
+      thickness, caps and bend. Nothing outside the red is touched.</li>
+  <li>Blue filled dots are the two endpoint handles; the green dot
+      is the bend handle.</li>
+</ul>
+
+<h3>Blast Line button</h3>
+<p>The <b>&#9889; Blast Line</b> button is enabled once both endpoints
+are placed. Pressing it dispatches the linear worker (algorithm in
+&sect;&nbsp;6.2) and clears the path once the heal completes. The
+undo ring records the entire pre-blast image so a full undo always
+works.</p>
+
+<h2>5. Banding Blaster mode</h2>
+<p>Row- or column-banding reducer for Canon DSLRs (horizontal) and
+some CMOS sensors with column banding (vertical). This mode does not
+use the preview-click interface &mdash; the correction runs on the
+entire frame at once with a single button press. The preview switches
+to scroll-hand drag so you can pan to inspect the result, but
+clicking does nothing until you switch back to Blemish or Linear.</p>
+
+<h3>Direction</h3>
+<p>Horizontal (default) or Vertical. Horizontal targets rows &mdash;
+the common Canon DSLR pattern. Vertical targets columns &mdash; some
+CMOS astro cameras exhibit column banding especially on long
+exposures. Internally, vertical is implemented as a transpose +
+horizontal + un-transpose, so the algorithm is bit-identical in
+either direction.</p>
+
+<h3>Amount</h3>
+<p>0.00&ndash;4.00 spinbox, default 1.00. The strength of the
+correction, as a multiplier on the per-row median offset.</p>
+<ul>
+  <li><b>1.00</b> &mdash; fully equalises each row's median to the
+      global median. Georg Viehoever's own default (see credits).</li>
+  <li><b>&lt; 1.00</b> &mdash; partial correction. Useful when the
+      bands have real signal mixed in and you don't want to flatten
+      everything.</li>
+  <li><b>&gt; 1.00</b> &mdash; over-correction. Rarely useful; usually
+      amplifies noise or introduces inverse banding.</li>
+</ul>
+
+<h3>Protect highlights / Sigma</h3>
+<p><b>Protect highlights</b> (checkbox, default on) excludes bright
+pixels from the per-row median so stars and DSO cores don't bias the
+correction. Essential for astronomical images and the only reason
+this tool works at all on a Milky Way frame or a nebula field.
+When off, the sigma control is disabled.</p>
+<p><b>Sigma</b> (0.01&ndash;5.00, default 1.00) is the rejection
+threshold above the global median, in robust-sigma units
+(&sect;&nbsp;6.3). Lower is more aggressive. 1.0 keeps roughly 80%
+of a smooth background in the row-median estimate; drop to 0.3&ndash;0.5
+on very star-dense fields.</p>
+
+<h3>Blast Banding button</h3>
+<p>The <b>&#9889; Blast Banding</b> button runs the correction and
+pushes the result into the preview and the dialog's undo stack as a
+whole-image patch. Undoable like any other operation.</p>
+
+<h2>6. Technical details</h2>
+<p class="tech-lead">All processing on float32 [0, 1]. The dialog
+displays a 3-channel copy of the working image regardless of source
+depth; on Apply, mono originals are collapsed back to a single
+plane.</p>
+
+<h3>6.1 Blemish healing algorithm</h3>
+<p>For a click at pixel <code>p&nbsp;=&nbsp;(x,&nbsp;y)</code> and
+brush radius <code>r</code>, six candidate neighbour centres are
+placed on a hexagon at 1.5&times; the radius:</p>
+<div class="matheq-hero">\mathbf{c}_k \;=\; \mathbf{p} \;+\; 1.5\,r\,(\cos\theta_k,\;\sin\theta_k)\,,\quad \theta_k = 60^{\circ}k\,,\;k=0,\dots,5</div>
+<p>The median brightness is computed inside the circular mask of
+radius <code>r</code> at the target position and at each of the six
+candidates. The three candidates whose medians are closest to the
+target's are selected:</p>
+<div class="matheq-hero">\{\Delta_1,\Delta_2,\Delta_3\} \;=\; \mathrm{argmin}_{\{3\}\subset K}\;|\mathrm{median}(I\|_{\mathrm{patch}_k}) - \mathrm{median}(I\|_{\mathrm{target}})|</div>
+<p>For every pixel <code>q</code> inside the brush, the healed value
+is the median of three samples at the matching offsets:</p>
+<div class="matheq-hero">\mathrm{healed}(\mathbf{q}) \;=\; \mathrm{median}\!\left(I(\mathbf{q}+\Delta_1),\;I(\mathbf{q}+\Delta_2),\;I(\mathbf{q}+\Delta_3)\right)</div>
+<p>This two-level median (medians across patches to pick, then median
+across the three samples to synthesise) is what gives the heal its
+resistance to local features. A bright star in one neighbour patch
+would be flagged by its high median and excluded at the pick step;
+and even if a bright pixel slips through, the per-pixel median across
+three samples throws it out. The &ldquo;match the median&rdquo; pick
+is also what makes the heal look seamless on gradients &mdash; it
+automatically prefers neighbours of the same local brightness level
+as the defect's own surroundings.</p>
+<p>The feathered mask is built from the Euclidean distance
+<code>d</code> from the brush centre, inside the circular support
+<code>d&nbsp;&le;&nbsp;r</code>:</p>
+<div class="matheq">w(\mathbf{q}) \;=\; \mathrm{clip}\!\left(\frac{r - d}{r\,f},\;0,\;1\right)</div>
+<p>where <code>f</code> is the feather fraction. At
+<code>f&nbsp;=&nbsp;0</code> the mask is a hard disk; at
+<code>f&nbsp;=&nbsp;1</code> it ramps linearly from the centre.
+The final blend uses the opacity slider as a scaling factor on this
+weight:</p>
+<div class="matheq">\alpha \;=\; \mathrm{opacity}\,\cdot\,w\,,\qquad \mathrm{out} \;=\; (1 - \alpha)\,\mathrm{orig} \;+\; \alpha\,\mathrm{healed}</div>
+<p>Sample positions that would fall outside the image are REPLICATE-clipped
+to the nearest in-bounds pixel &mdash; a blemish near the edge still
+gets corrected, using the border rather than being skipped.</p>
+<p>Per-click the operation is tiled to the bounding box
+<code>[x&nbsp;&plusmn;&nbsp;r,&nbsp;y&nbsp;&plusmn;&nbsp;r]</code>
+and runs on a background thread so the GUI stays responsive during
+larger brushes.</p>
+
+<h3>6.2 Linear healing algorithm</h3>
+<p>The user's path (two endpoints and an optional bend handle) is
+converted into a sequence of straight sub-segments. When bent, the
+path is a quadratic B&eacute;zier through endpoints
+<code>A</code>, <code>B</code> and a control point computed so the
+curve passes through the user's handle <code>m</code> at
+<code>t&nbsp;=&nbsp;0.5</code>:</p>
+<div class="matheq">\mathbf{M} \;=\; 2\,\mathbf{m} \;-\; \frac{1}{2}(\mathbf{A} + \mathbf{B})</div>
+<div class="matheq">\mathbf{B}(t) \;=\; (1-t)^{2}\mathbf{A} \;+\; 2(1-t)t\,\mathbf{M} \;+\; t^{2}\mathbf{B}</div>
+<p>The curve is discretised into
+<code>n&nbsp;=&nbsp;clip(arclen/24,&nbsp;4,&nbsp;64)</code>
+vertices; each pair of consecutive vertices becomes a straight
+sub-segment with its own local tangent. Full-line mode adds two more
+sub-segments: a ray from <code>A</code> along <code>&minus;</code>end-tangent
+to the image border, and a ray from <code>B</code> along the far
+end-tangent to the border.</p>
+<p>Each sub-segment is healed in its own local frame of orthonormal
+coordinates <code>(&#373;,&nbsp;&#324;)</code> along and perpendicular
+to the segment:</p>
+<div class="matheq">t = (\mathbf{q} - \mathbf{p}_0)\cdot\hat{\mathbf{u}}\,,\qquad s = (\mathbf{q} - \mathbf{p}_0)\cdot\hat{\mathbf{n}}</div>
+<div class="matheq">\mathrm{band} \;=\; \{\mathbf{q} \;:\; |s(\mathbf{q})| \leq T/2\}</div>
+<p>Caps are rounded at true endpoints (first/last sub-segment under
+Segment mode); joints between internal sub-segments are flat and
+overlap each other by half the thickness so the stroke doesn't seam
+visibly along a bent path.</p>
+<p>Within each sub-segment, SASpro samples the target band and six
+offset slabs at <code>&plusmn;T</code>, <code>&plusmn;2T</code>,
+<code>&plusmn;3T</code> perpendicular to the segment (via
+<code>cv2.remap</code> with reflect border). For each column
+<code>t</code>, the three offset slabs whose medians most closely
+match the target column's median are selected and used as the heal
+source &mdash; the same two-level median idea as the blemish mode,
+but applied column-wise along the segment so a curved path can heal
+differently at each t.</p>
+<div class="matheq">\mathrm{offsets} \;=\; \{\pm T,\;\pm 2T,\;\pm 3T\}</div>
+<p>The feather/opacity blend is identical to &sect;&nbsp;6.1 using
+<code>|s|/T</code> as the distance variable instead of radial
+<code>d</code>. When sub-segments overlap at joints, a
+&ldquo;keep-strongest&rdquo; rule writes to the output only where
+the current sub-segment's &alpha; exceeds whatever a previous
+sub-segment already wrote &mdash; so the heal doesn't double-blend
+along the join line.</p>
+
+<h3>6.3 Banding reduction algorithm</h3>
+<p>Vertical banding is handled by transposing the array, running the
+horizontal algorithm, then transposing back. The horizontal algorithm
+operates per channel and per row.</p>
+<p>Let <code>g</code> be the channel's global median and
+<code>I</code> the full channel. The robust background sigma uses
+mean (not median) of absolutes to match Georg's original script
+bit-for-bit:</p>
+<div class="matheq">\sigma_{\mathrm{rob}} \;=\; 1.4826\,\cdot\,\mathrm{mean}\!\left(|I - g|\right)</div>
+<p>With Protect highlights on, the per-row median is computed over
+only those pixels at or below a threshold:</p>
+<div class="matheq">m_r \;=\; \mathrm{median}\!\left\{ I_{r,c} \;:\; I_{r,c} \leq g + \sigma\,\sigma_{\mathrm{rob}} \right\}</div>
+<p>Rows with no pixels at or below the threshold fall back to
+<code>g</code> (which makes <code>fix<sub>r</sub>&nbsp;=&nbsp;0</code>
+for those rows). The correction and application are:</p>
+<div class="matheq-hero">\mathrm{fix}_r \;=\; (g - m_r)\,\cdot\,\mathrm{amount}\,,\qquad I'_{r,c} \;=\; \mathrm{clip}\!\left(I_{r,c} + \mathrm{fix}_r,\;0,\;1\right)</div>
+<p>Which is to say: each row is additively shifted so its surviving
+(dim) pixels sit at the global median, scaled by the amount slider.
+Rows whose medians already match the global sit still; rows that are
+anomalously dim or bright get pulled back by the same amount
+end-to-end, which is exactly the right fix for a readout-induced
+constant offset per row.</p>
+
+<h4>Sort-based masked median speedup</h4>
+<p>The naive implementation of
+<code>median(row&nbsp;where&nbsp;row&nbsp;&le;&nbsp;threshold)</code>
+is <code>np.nanmedian</code> on a masked copy. SASpro ports Georg's
+JS code to a vectorised numpy formulation that is 4&ndash;7&times;
+faster on typical astro-image sizes while producing bit-identical
+results: for each row count the survivors
+<code>n<sub>r</sub>&nbsp;=&nbsp;|{c&nbsp;:&nbsp;I<sub>r,c</sub>&nbsp;&le;&nbsp;threshold}|</code>,
+sort every row ascending (so survivors occupy positions
+<code>[0,&nbsp;n<sub>r</sub>)</code>), and index out the median
+positionally with an odd/even case split.</p>
+
+<h3>6.4 Auto-stretch preview</h3>
+<p>Purely display-side. On every image refresh, if the checkbox is on,
+the working image is passed through
+<code>stretch_mono_image</code> (for original mono source) or
+<code>stretch_color_image</code> (for RGB) with the Target Median and
+Linked settings. The result goes into a separate display buffer; the
+working image used by the healers is never touched.</p>
+
+<h3>6.5 Undo/redo patch system</h3>
+<p>Each operation records a tuple
+<code>(y<sub>0</sub>, x<sub>0</sub>, prev)</code> where
+<code>prev</code> is a copy of the pre-op image bytes in the affected
+rectangle. For blemish heals this is just the brush bounding box
+plus the 1.5r sampling padding; for linear and banding it's the
+whole image. Undo swaps the current pixels in that rectangle with
+the saved copy and pushes the forward-direction patch into the redo
+ring; redo is the mirror operation. The ring is bounded at 20 entries
+to cap peak memory.</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>Banding Blaster</b> algorithm is a port of
+<b>CanonBandingReduction.js v0.9.1</b> by <b>Georg Viehoever</b>
+(PixInsight JavaScript, GPLv3, 2009&ndash;2013). All credit for the
+row-median-subtraction method with robust-sigma highlight rejection
+goes to Georg; SASpro's port is a straight translation to Python/NumPy
+with a sort-based masked-median speedup and vertical-direction support
+added. The port is also GPLv3. The <b>Blemish Blaster</b>
+(hex-neighbour median-of-median heal with feathered circular blend)
+and the <b>Linear Blaster</b> (perpendicular-offset band heal with
+B&eacute;zier bending, full-line extension, and column-wise match
+selection via <code>cv2.remap</code>) are SetiAstro's own designs and
+implementation, originally for SetiAstro Suite v2 and extended for
+SASpro.
+</div>
+
+</body>
+</html>

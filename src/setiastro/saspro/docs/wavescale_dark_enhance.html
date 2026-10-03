@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b7e4d6; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>WaveScale Dark Enhancer</h1>
+<p class="sub">SASpro-exclusive dynamic-range decompressor for the
+<i>dark</i> half of the histogram &mdash; the symmetric partner to
+WaveScale HDR. The problem it solves: after stretching and processing,
+shadow regions in an astronomical image often collapse into a nearly
+flat dark grey. There <i>is</i> real structure in there &mdash; dark
+nebulae, dust lanes, LDN filaments, molecular cloud texture that was
+present in the raw data &mdash; but it has been compressed into such
+a narrow luminance range above pure black that it reads as featureless.
+The Dark Enhancer decomposes luminance into starlet wavelet planes,
+builds a mask that highlights <i>where the darkness is</i>, and then
+subtracts from the negative wavelet coefficients only in those regions
+to re-expand the shadow micro-contrast. Dust lanes, LDN texture, and
+subtle shadow structure reappear without the background sky or the
+mid-tones being touched.</p>
+
+<p>If WaveScale HDR works on the bright half of your tonal range,
+this works on the dark half. The algorithm shares the same starlet
+backbone and side-mask-window UX, so if you've used HDR this will
+feel familiar immediately; the differences are in <i>what</i> the
+mask selects (dark structure, not bright regions) and <i>how</i> the
+wavelet planes are modified (negative coefficients get pushed more
+negative, rather than all coefficients being amplified).</p>
+
+<h2>1. Workflow</h2>
+<ol>
+  <li>Open the dialog with an image active. A side <b>Dark Mask</b>
+      window pops up immediately showing where the effect will be
+      applied &mdash; this is the darkness mask built from the image's
+      own wavelet decomposition at the current Mask Gamma.</li>
+  <li>Adjust <b>Mask Gamma</b> so the mask lights up on the shadow
+      regions where you want to recover detail (dark nebula lanes,
+      LDN clouds, dust in galaxy arms). The side window updates live
+      with a 250&nbsp;ms debounce.</li>
+  <li>Adjust <b>Boost Factor</b> for strength, <b>Number of Scales</b>
+      for how large a dark structure the effect can reach, and
+      <b>Iterations</b> for how many passes of the whole pipeline to
+      run.</li>
+  <li>Press <b>Preview</b>. A worker thread runs the full iterative
+      pipeline and the main view updates.</li>
+  <li>Use <b>Show Original</b> to A/B compare; iterate on the sliders
+      and Preview again.</li>
+  <li><b>Apply to Document</b> commits. The dialog stays open for the
+      next image.</li>
+</ol>
+
+<h2>2. Dark Enhancer controls</h2>
+
+<h3>Number of Scales</h3>
+<p>Slider, 2&ndash;10, default 6. How many wavelet detail layers the
+luminance is split into. The algorithm skips the finest plane (plane
+0) and the coarse residual (so the finest-scale noise and the overall
+brightness level are both left alone), and the enhancement runs on
+every intermediate scale.</p>
+<ul>
+  <li><b>Fewer</b> &mdash; effect confined to small shadow texture
+      (fine dust streaks, grain-sized filaments).</li>
+  <li><b>More</b> &mdash; effect reaches progressively larger shadow
+      structures (broad LDN clouds, extended dust lanes across a
+      galaxy, long dark filaments in nebula fields). The default of 6
+      is a good general setting.</li>
+</ul>
+
+<h3>Boost Factor</h3>
+<p>Slider, 0.10&ndash;10.00, default 5.00. Strength of the shadow
+contrast enhancement &mdash; the per-plane amplification applied to
+the negative wavelet coefficients where the darkness mask says to.</p>
+<ul>
+  <li><b>1.00</b> &mdash; identity. No enhancement. Baseline.</li>
+  <li><b>&lt;&nbsp;1.00</b> &mdash; <i>softens</i> shadow contrast
+      instead of enhancing it. Useful for taming an over-stretched
+      shadow region.</li>
+  <li><b>3.0&ndash;5.0</b> &mdash; the usual working range for dust
+      recovery in galaxies and dark nebulae. Visibly reveals shadow
+      structure without introducing noise lift.</li>
+  <li><b>&gt;&nbsp;7.0</b> &mdash; aggressive. Can produce a
+      &ldquo;cardboard cutout&rdquo; look in extreme cases, where
+      shadow regions develop over-sharpened edges against the lit
+      areas. Pair with fewer iterations to stay under control.</li>
+</ul>
+
+<h3>Mask Gamma</h3>
+<p>Slider, 0.10&ndash;10.00, default 1.00. Shapes the darkness mask
+by raising it to this power after normalisation. Unlike HDR's gamma
+(which directly operates on luminance), this one shapes the <i>already
+normalised darkness response</i> &mdash; so 1.0 is neutral, higher
+values narrow the mask onto the strongest-dark features, lower values
+spread it to more subtle shadow variation.</p>
+<ul>
+  <li><b>1.00</b> (default) &mdash; natural response. Suits most data.</li>
+  <li><b>2&ndash;4</b> &mdash; mask concentrated on the strongest
+      dark features only. Use when you want to enhance only prominent
+      dust lanes, not the fainter texture around them.</li>
+  <li><b>&lt;&nbsp;1</b> &mdash; mask spreads into subtler shadow
+      variation. Useful for broad diffuse dark nebulosity where there
+      aren't sharp dust-lane edges to anchor on.</li>
+</ul>
+<p>The side <b>Dark Mask</b> window shows exactly what this slider
+produces, with the window title changing to <i>&ldquo;Dark Mask
+(Algo&nbsp;&times;&nbsp;Active Mask)&rdquo;</i> when the document has
+an active mask that's being multiplied in.</p>
+
+<h3>Iterations</h3>
+<p>Slider, 1&ndash;10, default 2. How many times the whole pipeline
+(mask build&nbsp;&rarr;&nbsp;decompose&nbsp;&rarr;&nbsp;boost&nbsp;&rarr;&nbsp;reconstruct)
+is applied in series. Crucially the mask is <i>rebuilt from the
+current luminance</i> at each iteration &mdash; so previously flat
+shadow regions that now have more contrast get a fresh mask that
+can target newly-revealed sub-structure.</p>
+<ul>
+  <li><b>1</b> &mdash; single pass. Fastest, least invasive.</li>
+  <li><b>2</b> (default) &mdash; usually the right balance. The second
+      pass picks up finer micro-contrast the first pass unlocked.</li>
+  <li><b>3&ndash;4</b> &mdash; deeper recovery. Use when the shadows
+      are badly compressed and one or two passes isn't enough.</li>
+  <li><b>&gt;&nbsp;5</b> &mdash; rarely useful. The iterations tend
+      to converge to a fixed point by then, and extra passes just
+      amplify artefacts without adding real detail.</li>
+</ul>
+
+<h2>3. The Dark Mask window</h2>
+<p>A 400&times;400 side window showing the current effective mask
+&mdash; the algorithmic darkness mask multiplied by the document's
+active mask if one exists. White means &ldquo;full effect here&rdquo;,
+black means &ldquo;leave alone&rdquo;, greys are proportional blends.
+Updates live as you drag Mask Gamma (250&nbsp;ms debounce) and after
+every Preview completes. Purely display &mdash; nothing you do here
+changes the result.</p>
+
+<h2>4. Preview / Show Original / Apply</h2>
+<p>Standard controls:</p>
+<ul>
+  <li><b>Preview</b> runs the full iterative pipeline on a
+      background QThread and streams progress updates
+      (&ldquo;Analyzing dark structure&hellip;&rdquo;,
+      &ldquo;Finalizing&hellip;&rdquo;).</li>
+  <li><b>Show Original</b> is a toggle for A/B comparison; the label
+      flips to &ldquo;Show Preview&rdquo; when pressed so a second
+      press flips back.</li>
+  <li><b>Apply to Document</b> commits as an undoable edit named
+      &ldquo;WaveScale Dark Enhancer&rdquo; with the four slider
+      values recorded as its preset. The dialog stays open so you
+      can run on another document.</li>
+  <li><b>Reset</b> returns all sliders to defaults;
+      <b>Close</b> discards.</li>
+</ul>
+
+<h2>5. Zoom and preset grip</h2>
+<p>Zoom In / Zoom Out / Fit to Preview buttons sit above the
+preview area; the view also supports cursor-anchored wheel/trackpad
+zoom. The preset grip at the bottom-left carries the four slider
+values and can be dragged onto the canvas to make a shortcut tile,
+or dropped onto an image to apply those settings headlessly.</p>
+
+<h2>6. Technical details</h2>
+<p class="tech-lead">All processing on float32. Luminance is CIE L*
+in [0, 100] for RGB inputs, or the mono channel in [0, 1] directly.
+The algorithm shares its starlet decomposition and document-mask
+integration with WaveScale HDR; see that tool's documentation for
+the B3-spline starlet and mask-multiplication specifics.</p>
+
+<h3>6.1 Pipeline overview</h3>
+<p>End-to-end, Preview runs:</p>
+<div class="eq">RGB  →  Lab  →  L*
+                 ↓
+       for iter = 1 to N:
+           build darkness mask from current L*
+           combine with doc mask (if present)
+           starlet-decompose L*
+           for each intermediate plane:  push its negatives further negative, scaled by mask
+           reconstruct L*
+                 ↓
+          Lab → RGB  →  mask-blend with original  →  preview</div>
+<p>The iteration loop is the main structural difference from HDR
+&mdash; the mask is rebuilt from the current luminance at each pass,
+so what was flat shadow at iteration 1 can reveal new sub-structure
+at iteration 2 which then gets its own fresh mask.</p>
+
+<h3>6.2 Darkness mask construction</h3>
+<p>Where HDR builds its mask directly from normalised luminance
+<code>(L&nbsp;/&nbsp;100)<sup>&gamma;</sup></code>, the Dark Enhancer
+builds its mask from the <i>wavelet decomposition itself</i> &mdash;
+specifically, from the negative parts of mid-scale planes, which
+mark regions that are darker than their local background at those
+scales. For each mid-scale plane
+<code>w<sub>i</sub></code> with <code>i&nbsp;=&nbsp;1,&nbsp;2,&nbsp;3</code>
+(the second, third, and fourth planes &mdash; skipping the finest
+noise-dominated plane 0):</p>
+<div class="matheq">n_i \;=\; \max(0,\;-w_i)</div>
+<p>which captures only the darker-than-local-average parts of each
+plane. These are averaged, normalised by their own maximum,
+gamma-shaped by the user's slider, Gaussian-blurred, and finally
+passed through a mild S-curve brightener:</p>
+<div class="matheq-hero">m_{\mathrm{raw}} \;=\; \frac{1}{3}\sum_{i=1}^{3}\max(0,\;-w_i)</div>
+<div class="matheq">m_0 \;=\; \frac{m_{\mathrm{raw}}}{\max(m_{\mathrm{raw}}) + \varepsilon}\,,\qquad m_1 \;=\; m_0^{\,\gamma}</div>
+<div class="matheq">m_2 \;=\; G_{\sigma=3} \ast m_1</div>
+<div class="matheq-hero">m \;=\; \mathrm{clip}(1.5\,m_2 - 0.5\,m_2^{\,2},\;0,\;1)</div>
+<p>Three design choices worth unpacking:</p>
+<ul>
+  <li><b>Why mid-scales 1&ndash;3?</b> Plane 0 is dominated by
+      single-pixel noise &mdash; its negative parts would mark noisy
+      pixels, not real dark structure. The coarse residual is just
+      the overall brightness level and doesn't carry local-contrast
+      information. Scales 1&ndash;3 capture features at roughly
+      2&ndash;8 pixel extent, which is where visible dust lanes and
+      shadow texture live in a typical astronomical frame.</li>
+  <li><b>Why the Gaussian blur?</b> The mid-scale negative parts are
+      sharp; without smoothing, the mask would have abrupt edges that
+      would translate into visible banding when the enhancement is
+      applied. &sigma;&nbsp;=&nbsp;3&nbsp;px gives a mask that
+      transitions smoothly across detail boundaries while still
+      following the shape of the shadow regions closely.</li>
+  <li><b>Why the S-curve brightener?</b> The function
+      <code>f(x)&nbsp;=&nbsp;1.5x&nbsp;&minus;&nbsp;0.5x&sup2;</code>
+      is a mild midtone-lift: it fixes
+      <code>f(0)&nbsp;=&nbsp;0</code> and <code>f(1)&nbsp;=&nbsp;1</code>
+      with <code>f'(0)&nbsp;=&nbsp;1.5</code>, so weak dark signals
+      get boosted into the usable mask range without the strongest
+      ones overshooting unity. Essentially a one-knee gamma that
+      makes the mask more sensitive without blowing out its top end:
+      <div class="matheq">f(x) \;=\; 1.5x - 0.5x^2\,,\quad f(0)=0,\;f(1)=1,\;f'(0)=1.5</div>
+  </li>
+</ul>
+<p>If the document has an active mask <code>m<sub>doc</sub></code>,
+the effective mask used downstream is their product:</p>
+<div class="matheq">m_{\mathrm{eff}} \;=\; m_{\mathrm{dark}} \,\cdot\, m_{\mathrm{doc}}</div>
+<p>so you can spatially restrict the dark-recovery effect to any
+arbitrary shape drawn in a mask layer on top of the automatic
+darkness-driven selection.</p>
+
+<h3>6.3 Per-scale enhancement by negative subtraction</h3>
+<p>This is where the algorithm diverges from HDR most dramatically.
+HDR <i>amplifies</i> all wavelet coefficients (both positive and
+negative) in bright regions. The Dark Enhancer instead <i>subtracts</i>
+from only the negative parts of each plane, in shadow regions. For
+each intermediate plane <code>i&nbsp;&ge;&nbsp;1</code>:</p>
+<div class="matheq">n_i \;=\; \max(0,\;-w_i)\,,\qquad \mathrm{decay} \;=\; \rho^{\,i}\;\;(\rho = 0.5)</div>
+<div class="matheq-hero">e_i \;=\; n_i \,\cdot\, m_{\mathrm{eff}} \,\cdot\, (B - 1) \,\cdot\, \rho^{\,i}</div>
+<div class="matheq-hero">w'_i \;=\; w_i \;-\; e_i</div>
+<p>Pixels where the original plane coefficient was positive
+(<code>w<sub>i</sub>&nbsp;&gt;&nbsp;0</code>, locally brighter than
+background) have <code>n<sub>i</sub>&nbsp;=&nbsp;0</code> and so
+<code>e<sub>i</sub>&nbsp;=&nbsp;0</code> &mdash; they're untouched.
+Pixels where the coefficient was negative get their value pushed
+<i>more negative</i> by an amount proportional to how negative they
+already were, how strong the mask is at that location, and how fine
+the scale is (via the decay rate). Plane 0 is explicitly skipped (its
+scale is dominated by noise), and the coarse residual is passed
+through unchanged.</p>
+<p>When the modified planes and the untouched residual are
+reconstructed, the pixels that were already in shadow get darker,
+creating stronger local contrast against the surrounding not-shadow
+pixels. The effect reads as <i>revealed structure in the shadows</i>:
+dust lanes become more defined against the galaxy's broad light,
+LDN filaments stand out from their surrounding faint nebulosity,
+subtle grain within a dark cloud becomes visible.</p>
+
+<h3>6.4 Iteration</h3>
+<p>The whole mask-build&nbsp;&rarr;&nbsp;boost pipeline runs
+<code>N</code> times with the output of each pass becoming the input
+to the next:</p>
+<div class="matheq-hero">L^{(k+1)} \;=\; \mathrm{DSE}\!\left(L^{(k)},\;m(L^{(k)})\right)\,,\quad k=0,\dots,N-1</div>
+<p>Crucially the mask is rebuilt from the <i>current</i>
+<code>L<sup>(k)</sup></code> at each pass, not frozen to its initial
+value. This matters: after the first iteration, previously flat
+shadow regions have more contrast, which changes which wavelet
+coefficients are negative, which changes the darkness mask. The
+second pass can then target newly-revealed sub-structure that the
+first pass unlocked. Each iteration ends with a clip to the valid
+L* range ([0, 100] for Lab, [0, 1] for mono) before the next pass
+starts.</p>
+
+<h3>6.5 Reconstruction</h3>
+<p>At the end of each iteration the modified planes and the
+untouched coarse residual are summed back using the same identity
+reconstruction as HDR:</p>
+<div class="matheq">L' \;=\; \sum_{i=0}^{n-1} w'_i \;+\; c_n</div>
+<p>No midtone realignment or dimming gamma is applied here, unlike
+HDR. The Dark Enhancer only pushes values <i>downward</i> (toward
+zero), so there's no risk of highlights clipping past unity &mdash;
+the clip to the valid L* range at the end of each iteration is
+sufficient to keep the result in bounds.</p>
+
+<h3>6.6 Mask-blended composite</h3>
+<p>The gamma-dimming step from HDR is absent, but the final composite
+with the untouched original still uses the effective mask so that
+pixels outside the shadow regions remain exactly as they were:</p>
+<div class="matheq-hero">\mathrm{out} \;=\; (1 - m_{\mathrm{eff}})\,\mathrm{original} \;+\; m_{\mathrm{eff}}\,\mathrm{transformed}</div>
+<p>So midtones and highlights pass through untouched, and only the
+regions the darkness mask selected get the enhanced version. This is
+what makes the tool safe to use before or after any other tonal
+adjustment &mdash; the background sky and brighter regions are
+guaranteed-unchanged by construction.</p>
+
+<h3>6.7 RGB vs mono handling</h3>
+<p>RGB inputs are converted to Lab, operated on in the L* channel,
+and converted back &mdash; so chroma (a*, b*) is bit-for-bit preserved
+and only luminance structure changes. Mono inputs skip the Lab step
+and operate directly on the normalised intensity in [0, 1]; the mask
+construction and plane modification formulas are the same, with the
+L&nbsp;/&nbsp;100 normalisation step omitted. On Apply, mono inputs
+are collapsed back to their original channel count (2-D or
+(H,&nbsp;W,&nbsp;1)).</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>B3-spline starlet (&agrave; trous) wavelet
+transform</b> is the classical isotropic undecimated wavelet of
+Starck &amp; Murtagh (see <i>Astronomical Image and Data Analysis</i>).
+SASpro uses it as its luminance decomposition primitive via the
+shared <code>wavelet_utils</code> module. Lab colour-space conversion
+follows CIE 1976.
+The whole <b>WaveScale Dark Enhancer algorithm</b> &mdash; the
+mid-scale-negatives darkness mask with its Gaussian smoothing and
+S-curve brightener, the per-scale enhancement by subtraction from
+negative plane coefficients only, the geometric decay across scales,
+the mask-rebuilding iteration scheme, the integration with the
+document's active mask, and the final mask-blended composite
+&mdash; is SASpro-exclusive, designed and implemented by
+SetiAstro as the complementary dark-end companion to WaveScale HDR.
+</div>
+
+</body>
+</html>

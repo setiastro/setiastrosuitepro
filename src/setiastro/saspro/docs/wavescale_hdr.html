@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b7e4d6; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>WaveScale HDR</h1>
+<p class="sub">SASpro-exclusive dynamic-range compressor for the
+bright half of the histogram. The classical problem it solves:
+inside a galaxy core, a planetary nebula shell, or a bright star's
+near-saturated inner profile, there <i>is</i> real structure &mdash;
+dust lanes, HII regions, concentric shells, a tiny companion &mdash;
+but it has been squeezed into such a narrow luminance range near
+unity that it reads to the eye as featureless white. WaveScale HDR
+decomposes the luminance into starlet wavelet planes, amplifies the
+fine-detail planes <i>only where the image is bright</i>, aligns
+midtones so the overall look doesn't shift, and finally applies a
+gentle dimming curve that pulls the result back down into display
+range. The lost detail reappears without destroying the dark
+background.</p>
+
+<h2>1. Workflow</h2>
+<ol>
+  <li>Open the dialog with an RGB (or mono) image active. A side
+      <b>HDR Mask</b> window pops up immediately showing where the
+      effect will be applied at the current Mask Gamma.</li>
+  <li>Adjust <b>Mask Gamma</b> until the mask window shows white
+      exactly on the regions you want to decompress (galaxy core,
+      nebula centre, bright star cores) and black everywhere else.
+      This drives <i>where</i>.</li>
+  <li>Adjust <b>Coarse Compression</b> for strength and
+      <b>Number of Scales</b> for how large a structure the effect
+      can reach. These drive <i>how much</i> and <i>how far</i>.</li>
+  <li>Press <b>Preview</b>. A worker thread runs the full pipeline
+      and the result is shown in the main preview, mask-blended with
+      the original so untouched regions stay untouched.</li>
+  <li>Use <b>Show Original</b> to A/B toggle; iterate on the sliders
+      and press Preview again as needed.</li>
+  <li><b>Apply to Document</b> commits. The dialog stays open so you
+      can run on another image, or close.</li>
+</ol>
+
+<h2>2. HDR controls</h2>
+
+<h3>Number of Scales</h3>
+<p>Slider, 2&ndash;10, default 5. How many wavelet detail layers the
+luminance is split into. Each additional scale reaches structures
+roughly twice as large in pixels, so 5 scales covers everything from
+single-pixel detail out to ~32-pixel features; 10 scales reaches
+kilopixel-scale structure.</p>
+<ul>
+  <li><b>Fewer</b> &mdash; effect focused on fine detail only. Good
+      for sharpening dust lanes in a galaxy core, revealing fine
+      filaments in a planetary nebula shell.</li>
+  <li><b>More</b> &mdash; effect reaches larger structures (broad
+      spiral arms, big nebula gradients). Useful when there's
+      compressed <i>brightness variation</i> on scales of hundreds
+      of pixels inside a bright region.</li>
+</ul>
+<p>Also drives the automatic dimming gamma applied at the end
+(&sect;&nbsp;6.6), so more scales means more highlight-taming after
+the amplification.</p>
+
+<h3>Coarse Compression</h3>
+<p>Slider, 0.10&ndash;5.00, default 1.50. The strength of the
+local-contrast boost per plane. Only takes effect where the
+luminance mask is non-zero.</p>
+<ul>
+  <li><b>1.00</b> &mdash; a gentle uniform lift (see &sect;&nbsp;6.4 for
+      why this isn't a no-op). Baseline.</li>
+  <li><b>Below 1.00</b> &mdash; suppresses detail in bright areas
+      rather than enhancing it. Useful for softening an over-sharpened
+      core.</li>
+  <li><b>1.5&ndash;2.0</b> &mdash; the sweet spot for most galaxy cores
+      and bright nebulae. Reveals compressed detail without obvious
+      artefacts.</li>
+  <li><b>&gt;&nbsp;2.0</b> &mdash; strong compression. Can produce
+      halos around bright edges and a &ldquo;crunchy&rdquo; look if
+      pushed; use with care and consider dropping Number of Scales
+      to keep the effect localised.</li>
+</ul>
+
+<h3>Mask Gamma</h3>
+<p>Slider, 0.10&ndash;10.00, default 5.00. Shapes the luminance mask
+that decides <i>where</i> the effect is applied. The mask is the
+image's own normalised luminance raised to this gamma, so higher
+values pull the mask threshold up toward unity.</p>
+<ul>
+  <li><b>High (5&ndash;10)</b> &mdash; effect concentrated on only
+      the brightest regions, e.g. a galaxy core. The background and
+      midtones stay completely untouched.</li>
+  <li><b>Medium (2&ndash;5)</b> &mdash; effect reaches into brighter
+      midtones; useful for diffuse bright nebulosity that doesn't
+      peak at near-white.</li>
+  <li><b>Low (&lt;&nbsp;2)</b> &mdash; effect spreads into fainter
+      areas, which also lifts background noise. Rarely what you want
+      for astronomical data; useful on daylight HDR imagery where
+      the whole image is &ldquo;bright&rdquo;.</li>
+</ul>
+<p>The side <b>HDR Mask</b> window shows exactly what this slider
+produces, updated live (debounced to 250&nbsp;ms) so you can watch
+the white region shrink as you push gamma higher. If the current
+document has an active mask, the window title changes to
+<i>&ldquo;HDR Mask (L&nbsp;&times;&nbsp;Active Mask)&rdquo;</i> and
+the two masks are multiplied together before display and
+application.</p>
+
+<div class="tip"><b>Tip:</b> for a galaxy core, start with Mask Gamma
+around 5&ndash;7, Coarse Compression around 1.5, and 5 scales. Watch
+the HDR Mask window as you adjust gamma until only the inner core
+is white &mdash; everything outside that will be left alone, which
+is exactly what you want for the background sky and the fainter
+outer arms.</div>
+
+<h2>3. The HDR Mask window</h2>
+<p>A small 400&times;400 side window that appears when the dialog
+opens. It shows the current effective mask &mdash; the luminance
+mask built from the image's L* channel at the current gamma,
+multiplied by the document's active mask if one exists. White means
+&ldquo;full effect here&rdquo;, black means &ldquo;leave alone&rdquo;,
+greys are proportional blends.</p>
+<p>The window updates automatically as you drag the Mask Gamma
+slider (with a 250&nbsp;ms debounce to avoid lag on large images),
+and after each Preview completes, so you can always see what mask
+the next Apply will use. It's purely display &mdash; nothing you do
+in this window changes the result.</p>
+
+<h2>4. Preview / Show Original / Apply</h2>
+
+<h3>Preview</h3>
+<p>Runs the full pipeline on a background QThread and streams
+progress updates to the small progress bar at the bottom-right
+(&ldquo;Converting to Lab color space&rdquo;,
+&ldquo;Decomposing luminance with starlet&rdquo;,
+&ldquo;Finalizing&rdquo;). When it completes, the main view updates
+to show the mask-blended result and the Apply button is enabled.</p>
+
+<h3>Show Original</h3>
+<p>A toggle button next to Preview. When pressed, flips the main
+view to the untouched original so you can compare before and after;
+the button label switches to &ldquo;Show Preview&rdquo; so a second
+press flips back. The side mask window is unaffected.</p>
+
+<h3>Apply to Document</h3>
+<p>Commits the current preview to the document as an undoable edit
+named &ldquo;WaveScale HDR&rdquo;, with the current three slider
+values stored as its preset. The dialog does <i>not</i> close
+afterward &mdash; you can switch to another open document and run
+again with the same (or edited) settings. <b>Reset</b> returns all
+sliders to their defaults and clears the preview; <b>Close</b>
+discards everything.</p>
+
+<h2>5. Preset grip</h2>
+<p>The handle at the bottom-left carries the current three slider
+values and can be dragged onto the canvas to make a shortcut tile,
+or dropped onto an image to apply those settings headlessly.
+Double-clicking the tile reopens this dialog with the settings
+pre-filled.</p>
+
+<h2>6. Technical details</h2>
+<p class="tech-lead">All processing on float32. Luminance channel is
+CIE L* in [0, 100]; RGB channels are in [0, 1]. The pipeline is
+non-destructive right up to the final mask-blended composite.</p>
+
+<h3>6.1 Pipeline overview</h3>
+<p>End-to-end, Preview runs:</p>
+<div class="eq">RGB  →  Lab  →  L*  →  à trous decomposition  →  per-scale amplification
+                                  ↓                                        ↓
+                             mask (L^γ)  ─────────────────────────────────┘
+                                  ↓
+                              reconstruct L′  →  midtone align  →  put back into Lab
+                                  ↓
+                              Lab → RGB  →  dimming curve  →  mask-blend with original  →  preview</div>
+
+<h3>6.2 Luminance mask</h3>
+<p>The image's L* channel (0&ndash;100) is normalised and raised to
+the user's gamma to produce a value in [0, 1] per pixel:</p>
+<div class="matheq-hero">m \;=\; \mathrm{clip}\!\left(\frac{L^{*}}{100},\;0,\;1\right)^{\!\gamma}</div>
+<p>With <code>&gamma;&nbsp;=&nbsp;1</code> the mask is just the
+normalised luminance itself; higher gamma pulls the mask response
+toward only the brightest pixels. If the document has an active
+mask <code>m<sub>doc</sub></code>, the effective mask used
+downstream is their product:</p>
+<div class="matheq">m_{\mathrm{eff}} \;=\; m_{\mathrm{HDR}} \,\cdot\, m_{\mathrm{doc}}</div>
+<p>which lets you spatially restrict the HDR effect to any arbitrary
+shape drawn in a mask layer, on top of the automatic
+luminance-driven selection.</p>
+
+<h3>6.3 Starlet (&agrave; trous) decomposition</h3>
+<p>SASpro uses the classical B3-spline starlet wavelet for luminance
+decomposition. The analysis kernel is the normalised B3 spline:</p>
+<div class="matheq">h \;=\; \frac{1}{16}[1,\;4,\;6,\;4,\;1]</div>
+<p>applied separably with reflection boundaries. The decomposition
+produces <code>n</code> detail planes <code>w<sub>i</sub></code> and
+one coarse residual <code>c<sub>n</sub></code>, reconstructing the
+original L* exactly:</p>
+<div class="matheq-hero">L^{*} \;=\; \sum_{i=0}^{n-1} w_i \;+\; c_{n}</div>
+<p>Each successive scale is produced by convolving with a
+<i>spaced</i> version of the base kernel &mdash; zeros inserted
+between its coefficients so that scale <code>i</code> captures
+features of roughly <code>2<sup>i</sup></code> pixels in extent:</p>
+<div class="matheq">w_i \;=\; c_{i-1} - c_i\,,\qquad c_i \;=\; c_{i-1} \ast h^{(2^{i})}</div>
+<p>with <code>c<sub>0</sub>&nbsp;=&nbsp;L*</code>. The &agrave; trous
+scheme leaves plane dimensions unchanged (no decimation), which is
+what makes a plane-by-plane multiplicative amplification possible
+without resampling artefacts.</p>
+
+<h3>6.4 Per-scale amplification with decay</h3>
+<p>Each detail plane is multiplied by a per-pixel scale factor
+built from the compression <code>C</code>, the mask
+<code>m<sub>eff</sub></code>, and a geometric decay with rate
+<code>&rho;&nbsp;=&nbsp;0.5</code> across scales:</p>
+<div class="matheq-hero">s_i \;=\; (1 + (C - 1)\,m\,\rho^{i})\,\cdot\,2\,,\qquad w'_i \;=\; s_i \,\cdot\, w_i</div>
+<p>Two things worth unpacking:</p>
+<ul>
+  <li><b>Decay across scales</b>: with <code>&rho;&nbsp;=&nbsp;0.5</code>,
+      plane 0 (the finest detail) gets the full compression effect
+      <code>(C&minus;1)&middot;m</code>, plane 1 gets half of that,
+      plane 2 a quarter, and so on. This concentrates the
+      amplification on fine detail (where the real recoverable
+      structure in a glare-washed region tends to live) and leaves
+      coarse structure comparatively alone.</li>
+  <li><b>The baseline factor of 2</b>: even at
+      <code>C&nbsp;=&nbsp;1</code> or <code>m&nbsp;=&nbsp;0</code>,
+      every plane is doubled. This isn't an accident &mdash; it's a
+      deliberate per-plane contrast lift that WaveScale HDR applies
+      <i>in addition</i> to the compression:
+      <div class="matheq">s_0 \;=\; 2 + 2(C-1)\,m\,,\quad \mathrm{so}\;s_0 \to 2\;\mathrm{as}\;m \to 0\;\mathrm{or}\;C \to 1</div>
+      which means that even outside the mask, the detail planes
+      are strengthened relative to the coarse residual. This is why
+      <code>C&nbsp;=&nbsp;1</code> isn't a no-op &mdash; it's a
+      uniform detail lift. The mask-and-compression term rides on
+      top of that baseline to push extra amplification into bright
+      regions.</li>
+</ul>
+
+<h3>6.5 Reconstruction and midtone alignment</h3>
+<p>After amplification, the modified planes and the untouched
+coarse residual are summed back to a new L*:</p>
+<div class="matheq">L' \;=\; \sum_{i=0}^{n-1} w'_i \;+\; c_{n}</div>
+<p>Because every plane was multiplied by at least 2, the raw
+<code>L'</code> can land well above the original L* in bright
+regions. To keep the overall tonal character consistent, SASpro
+rescales <code>L'</code> so its median matches the original:</p>
+<div class="matheq-hero">L'' \;=\; L' \,\cdot\, \frac{\mathrm{median}(L^{*})}{\mathrm{median}(L')}</div>
+<p>and clips to [0, 100]. The median is used because it's robust
+against the small handful of pixels that got pushed well past
+100&nbsp;&mdash; a mean would be dragged upward by them, defeating
+the alignment.</p>
+
+<h3>6.6 Automatic dimming curve</h3>
+<p>Even after midtone alignment, highlights that got boosted hard in
+the detail planes can still clip against unity. Rather than hard-clip
+them, SASpro applies a global gamma to the whole RGB output after
+converting back from Lab:</p>
+<div class="matheq">g \;=\; 1 \;+\; 0.2\,n</div>
+<div class="matheq-hero">\mathrm{RGB}_{\mathrm{out}} \;=\; \mathrm{clip}(\mathrm{RGB},\,0,\,1)^{\,g}</div>
+<p>The dimming exponent scales with the number of wavelet scales
+precisely because more scales means more overall amplification across
+the pipeline &mdash; so with 5 scales <code>g&nbsp;=&nbsp;2.0</code>,
+with 10 scales <code>g&nbsp;=&nbsp;3.0</code>. Larger <code>g</code>
+pulls highlights down harder, keeping the output in range even on
+aggressive settings.</p>
+
+<h3>6.7 Mask-blended composite</h3>
+<p>The gamma-dimmed output of the pipeline (call it
+<code>RGB<sub>transformed</sub></code>) is blended with the original
+input through the same mask that drove the amplification:</p>
+<div class="matheq-hero">\mathrm{out} \;=\; (1 - m_{\mathrm{eff}})\,\mathrm{original} \;+\; m_{\mathrm{eff}}\,\mathrm{transformed}</div>
+<p>So dark regions &mdash; where <code>m<sub>eff</sub>&nbsp;&asymp;&nbsp;0</code>
+&mdash; come through from the original untouched, while bright
+regions &mdash; where <code>m<sub>eff</sub>&nbsp;&asymp;&nbsp;1</code>
+&mdash; get the full transformed version. The transitions follow
+the mask shape, which the user controls via gamma, so you can
+confine the effect to arbitrarily narrow ranges of luminance.
+The composite is the preview you see in the main view and what gets
+written to the document on Apply.</p>
+
+<h3>6.8 Mono inputs</h3>
+<p>Grayscale and single-channel inputs are promoted to three
+identical channels for processing (the Lab conversion then produces
+a nonzero L* and zero a*/b*, which the pipeline handles correctly),
+and on Apply the result is collapsed back to the original shape
+&mdash; 2-D for 2-D inputs, (H,&nbsp;W,&nbsp;1) for 1-channel 3-D
+inputs. The effect on mono data is identical to processing the
+luminance of an equivalent neutral-grey RGB.</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>B3-spline starlet (&agrave; trous) wavelet
+transform</b> is the classical isotropic undecimated wavelet of
+Starck &amp; Murtagh, long established in astronomical image
+analysis (see e.g. <i>Astronomical Image and Data Analysis</i>,
+Starck &amp; Murtagh). SASpro uses it as its luminance decomposition
+primitive via the shared <code>wavelet_utils</code> module. Lab
+colour-space conversion follows CIE 1976.
+The whole <b>WaveScale HDR algorithm</b> &mdash; the per-scale
+amplification with geometric decay across scales, the
+luminance-raised-to-gamma mask, the baseline-factor-of-2 detail
+lift, the median-based midtone realignment, the
+scales-dependent automatic dimming gamma, the integration with
+the document's active mask, and the final mask-blended composite
+&mdash; is SASpro-exclusive, designed and implemented by
+SetiAstro to solve the glare-decompression problem in bright
+astronomical regions.
+</div>
+
+</body>
+</html>
