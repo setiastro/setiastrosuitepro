@@ -87,7 +87,7 @@ from setiastro.saspro.sfcc import (
     _force_mpl_no_tex,
     SFCCDialog,
 )
-
+from setiastro.saspro.help_support import make_help_button
 # ─────────────────────────────────────────────────────────────────────────────
 # Constants
 # ─────────────────────────────────────────────────────────────────────────────
@@ -612,6 +612,7 @@ class NBExtractDialog(SFCCDialog):
             "run_spcc_btn", "run_grad_btn", "grad_method_combo",
             "neutralize_chk", "open_sasp_btn",
             "add_curve_btn", "remove_curve_btn", "star_combo",
+            "btn_help",
         ]
         for attr in _sfcc_only:
             w = getattr(self, attr, None)
@@ -741,9 +742,8 @@ class NBExtractDialog(SFCCDialog):
             "300 is more than sufficient — increase only for very sparse fields."
         )
         row_act.addWidget(self.nb_max_cal_spin)
-        self.nb_max_cal_spin.valueChanged.connect(self._save_nb_settings)        
+        self.nb_max_cal_spin.valueChanged.connect(self._save_nb_settings)
         grp_lay.addLayout(row_act)
-
         # Matrix readout
         self.nb_matrix_label = QLabel("Mixing matrix: (not yet calibrated)")
         self.nb_matrix_label.setWordWrap(True)
@@ -839,8 +839,52 @@ class NBExtractDialog(SFCCDialog):
         )
 
         self.nb_max_cal_spin.valueChanged.connect(self._redraw_fetch_histogram)
-
+        self._place_nb_help_button()
         self._on_preset_changed()
+
+    def _place_nb_help_button(self):
+        """
+        Put the NBExtract help button to the right of the inherited
+        'Reset View/Close' button at the bottom of the SFCC layout —
+        matches the lower-right placement used by every other SASpro tool.
+        """
+        from PyQt6.QtWidgets import QPushButton
+
+        # Find the Reset View/Close button in the inherited SFCC UI
+        reset_btn = None
+        for b in self.findChildren(QPushButton):
+            txt = b.text() or ""
+            if "Reset View" in txt and "Close" in txt:
+                reset_btn = b
+                break
+        if reset_btn is None:
+            return
+
+        # Walk the layout tree to find the layout holding the reset button
+        def _find_layout(layout, target):
+            if layout is None:
+                return None
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item is None:
+                    continue
+                if item.widget() is target:
+                    return (layout, i)
+                sub = item.layout()
+                if sub is not None:
+                    r = _find_layout(sub, target)
+                    if r is not None:
+                        return r
+            return None
+
+        found = _find_layout(self.layout(), reset_btn)
+        if found is None:
+            return
+        layout, idx = found
+
+        # Create the NB help button and insert it just after the Reset button
+        self.btn_help = make_help_button("nbextract", self)
+        layout.insertWidget(idx + 1, self.btn_help)
 
     def _hide_sfcc_filter_labels(self):
         layout = self.layout()

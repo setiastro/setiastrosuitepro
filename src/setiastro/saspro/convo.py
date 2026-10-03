@@ -369,8 +369,9 @@ class ConvoDeconvoDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             self.btn_help = make_help_button("convo", self)
-            drag_row.addWidget(self.btn_help)
             drag_row.addStretch(1)
+            drag_row.addWidget(self.btn_help)
+            
             left_layout.addLayout(drag_row)
         except Exception:
             pass

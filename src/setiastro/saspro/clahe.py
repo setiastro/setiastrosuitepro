@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 from setiastro.saspro.widgets.graphics_views import ZoomableGraphicsView
 from setiastro.saspro.widgets.image_utils import extract_mask_resized as _get_active_mask_resized
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 
 # ----------------------- Core -----------------------
 def apply_clahe(image: np.ndarray, clip_limit: float = 2.0, tile_grid_size: tuple = (8, 8)) -> np.ndarray:
@@ -257,6 +257,9 @@ class CLAHEDialogPro(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)
+            self.btn_help = make_help_button("clahe", self)
+            drag_row.addWidget(self.btn_help)
+
             v.addLayout(drag_row)
         except Exception:
             pass

@@ -55,6 +55,13 @@ _DOC_TITLES: dict[str, str] = {
     "convo": "Convolution / Deconvolution",
     "luminance_recombine": "Recombine Luminance",
     "rgb_combination": "RGB Combination",
+    "blemish_blaster": "Blemish Blaster",
+    "clone_stamp": "Clone Stamp",
+    "wavescale_hdr": "WaveScale HDR",
+    "wavescale_dark_enhance": "WaveScale Dark Enhancer",
+    "clahe": "CLAHE",
+    "nbextract": "Narrowband Channel Extractor (NBExtract)",
+    "texture_clarity": "Texture and Clarity",
 }
 
 

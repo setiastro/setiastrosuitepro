@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.widgets.graphics_views import ZoomableGraphicsView
-
+from setiastro.saspro.help_support import make_help_button
 # Import shared wavelet utilities
 from setiastro.saspro.widgets.wavelet_utils import (
     conv_sep_reflect as _conv_sep_reflect,
@@ -318,7 +318,10 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
                 parent=self,
             )
             drag_row.addWidget(self.preset_drag_handle)
-            drag_row.addStretch(1)   # pushes grip to the left edge
+            drag_row.addStretch(1)
+            self.btn_help = make_help_button("wavescale_dark_enhance", self)
+            drag_row.addWidget(self.btn_help)
+            
             main.addLayout(drag_row)
         except Exception:
             pass

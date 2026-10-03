@@ -311,8 +311,10 @@ class RemoveGreenDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             self.btn_help = make_help_button("remove_green", self)
-            drag_row.addWidget(self.btn_help)
             drag_row.addStretch(1)
+            drag_row.addWidget(self.btn_help)
+            lay.addLayout(drag_row)
+            
         except Exception:
             pass
 
