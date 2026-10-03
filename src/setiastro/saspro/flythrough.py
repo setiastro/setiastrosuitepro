@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QWidget, QSizePolicy, QCheckBox,
 )
 from PyQt6.QtGui import QImage, QPixmap
-
+from setiastro.saspro.help_support import make_help_button
 try:
     import cv2
     HAS_CV2 = True
@@ -1902,9 +1902,13 @@ class FlythroughDialog(QDialog):
         self.btn_cancel_export.clicked.connect(self._cancel_export)
         right.addWidget(self.btn_cancel_export)
 
+        close_row = QHBoxLayout()
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.close)
-        right.addWidget(btn_close)
+        close_row.addWidget(btn_close)
+        close_row.addStretch(1)
+        close_row.addWidget(make_help_button("flythrough", self))
+        right.addLayout(close_row)
         right.addStretch(1)
         body.addLayout(right, 2)
 

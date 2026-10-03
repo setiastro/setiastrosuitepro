@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:8px 12px;
+         margin:10px 0; color:#c9e3ce; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Perfect Palette Picker</h1>
+<p class="sub">A gallery-grid palette browser for narrowband data.
+Load your Ha / OIII / SII (or OSC dual-band equivalents), click
+<b>Create Palettes</b>, and 18 standard and specialty palette
+mappings render side-by-side. Click any thumbnail to blow it up in
+the main preview, nudge the per-channel intensities to taste, and
+push the final to a new document.</p>
+
+<p>PPP was built around a specific frustration: most tools make you
+pick a palette <i>first</i>, then look at the result, then pick a
+different one if you don't like it &mdash; a workflow that's bad at
+helping you discover the surprising combination that fits <i>your</i>
+data. Showing every palette at once collapses that into one glance.</p>
+
+<p class="pub"><b>Dynamic Inverse</b> is Frank's own palette and
+appears only here. The other 17 palettes are the industry-standard
+permutations plus the published Foraxx algorithm (see
+&sect;&nbsp;13.4). See the credit block at the bottom.</p>
+
+<h2>1. The layout</h2>
+<p>Two windows:</p>
+<ul>
+  <li><b>Main window</b> &mdash; left column holds the channel loaders
+      and action buttons; right side is the full-size preview with
+      zoom and pan.</li>
+  <li><b>Palette Gallery</b> &mdash; a separate non-modal window
+      holding the 3&times;6 thumbnail grid. Opens by default; toggle
+      with <b>Show Palette Gallery</b>. The gallery's position and
+      visibility persist across sessions.</li>
+</ul>
+<p>Keeping the gallery in its own window lets you position it on a
+second monitor or beside the main preview without one eating the
+other's space.</p>
+
+<h2>2. Loading channels</h2>
+<p>Five load slots on the left:</p>
+<ul>
+  <li><b>Load Ha&hellip;</b></li>
+  <li><b>Load OIII&hellip;</b></li>
+  <li><b>Load SII&hellip;</b></li>
+  <li><b>Load OSC1 (Ha/OIII)&hellip;</b> &mdash; for dual-narrowband
+      filters that pair Ha and OIII (Optolong L-eXtreme / L-eNhance,
+      IDAS NBZ, etc.). The red channel carries Ha, the green and blue
+      channels together carry OIII.</li>
+  <li><b>Load OSC2 (SII/OIII)&hellip;</b> &mdash; for the SII+OIII
+      dual-narrowband pairing.</li>
+</ul>
+<p>Each load dialog asks whether to pull <b>From View</b> (any
+currently open SASpro document) or <b>From File</b> (PNG, TIF, FITS,
+XISF). The green status line under each slot confirms the loaded
+source. Minimum requirement is any two of the three narrowband
+channels, or one OSC image.</p>
+
+<h3>2.1 Linear input toggle</h3>
+<p>The <b>Linear input (apply statistical stretch before build)</b>
+checkbox at the top of the controls governs whether PPP stretches
+each loaded channel before combining them. For stretched data turn
+this <i>off</i>. For linear sub-stacks straight out of integration
+leave it <i>on</i> (the default): PPP runs its usual statistical
+stretch at target median 0.25 on each channel individually before
+building the palettes, so the result is a usable display image rather
+than an inky black square.</p>
+<p>Toggling this at any time rebuilds the cached stretched versions
+of every loaded channel &mdash; the next palette render uses them
+immediately. The setting persists across sessions.</p>
+
+<h3>2.2 OSC synthesis</h3>
+<p>Both OSC slots split the loaded RGB into pseudo-narrowband
+channels and either seed or blend with existing loaded data:</p>
+<ul>
+  <li><b>OSC1</b> gives
+      <code>Ha&nbsp;&approx;&nbsp;R</code> and
+      <code>OIII&nbsp;&approx;&nbsp;mean(G,&nbsp;B)</code>.</li>
+  <li><b>OSC2</b> gives
+      <code>SII&nbsp;&approx;&nbsp;R</code> and
+      <code>OIII&nbsp;&approx;&nbsp;mean(G,&nbsp;B)</code>.</li>
+</ul>
+<p>If one of the narrowband slots is also loaded (say you have a
+dedicated Ha mono alongside your OSC1 data), PPP blends them
+50&nbsp;/&nbsp;50 rather than discarding either. This gives you a
+clean upgrade path from OSC-only to OSC-plus-mono-narrowband without
+rebuilding the project.</p>
+
+<h3>2.3 Dimension mismatch</h3>
+<p>If the loaded channels aren't the same pixel size &mdash; different
+cameras, cropped files, or OSC frames at a different scale from
+mono &mdash; PPP offers to resize everything to a reference frame
+(preferred: Ha, then OIII, then SII). You get asked once per session.
+The resize is a simple spatial warp with no plate-solving
+alignment, so for serious work you want to register your channels
+upstream first; the resize is a convenience for lazy quick looks and
+for dropping in a lower-resolution Ha into a higher-resolution
+OIII&nbsp;/&nbsp;SII pair.</p>
+
+<h2>3. Create Palettes</h2>
+<p>The <b>Create Palettes</b> button builds a thumbnail for every
+palette in the gallery grid. Each thumbnail is a half-size view of
+the full frame (so the full composition is visible, not just a
+centre crop) with the palette name painted on a translucent strip at
+the bottom. The selected palette's name turns green.</p>
+
+<h3>3.1 Clicking a thumbnail</h3>
+<p>Clicking any thumbnail does two things:</p>
+<ul>
+  <li>Marks it as selected (green label).</li>
+  <li>Builds the <i>full-resolution</i> version of that palette and
+      shows it in the main preview.</li>
+</ul>
+<p>Switching between palettes is fast because PPP uses the already-cached
+(and possibly stretched) channel buffers. There's no need to re-click
+Create Palettes between selections.</p>
+
+<h3>3.2 Preserving view state</h3>
+<p>Pan and zoom in the main preview are preserved when you switch
+palettes. This is the whole point: zoom in on the Running Man, click
+through SHO &rarr; HOO &rarr; Foraxx &rarr; Dynamic Inverse, and
+you're looking at the same patch each time, so differences in colour
+balance jump out. Only the first palette you generate fits
+automatically to the preview; everything after reuses whatever zoom
+and pan state you were already in.</p>
+
+<h2>4. The main preview</h2>
+<ul>
+  <li><b>Zoom Out</b> / <b>Zoom In</b> / <b>Fit to Preview</b>
+      toolbuttons at the top.</li>
+  <li>Mouse wheel (with or without Ctrl) zooms cursor-anchored.
+      Range 0.05&times; to 6&times;.</li>
+  <li>Left-click-drag anywhere in the preview to pan.</li>
+</ul>
+
+<h2>5. The 18 palettes</h2>
+
+<h3>5.1 Standard permutations</h3>
+<p>Fourteen three-letter palettes assigning the three narrowband
+channels to R / G / B in different orders:</p>
+<table>
+  <tr><th>Name</th><th>R</th><th>G</th><th>B</th><th>Notes</th></tr>
+  <tr><td>SHO</td><td>SII</td><td>Ha</td><td>OIII</td>
+      <td>&ldquo;Hubble palette.&rdquo; The classic.</td></tr>
+  <tr><td>HOO</td><td>Ha</td><td>OIII</td><td>OIII</td>
+      <td>Bicolour, Ha+OIII. Workhorse for Ha+OIII datasets.</td></tr>
+  <tr><td>HOS</td><td>Ha</td><td>OIII</td><td>SII</td>
+      <td>Ha-forward natural-ish rendering.</td></tr>
+  <tr><td>HSO</td><td>Ha</td><td>SII</td><td>OIII</td>
+      <td>Ha red, SII green, OIII blue.</td></tr>
+  <tr><td>HSS</td><td>Ha</td><td>SII</td><td>SII</td>
+      <td>Bicolour, warm. Yellows the SII regions.</td></tr>
+  <tr><td>HHO</td><td>Ha</td><td>Ha</td><td>OIII</td>
+      <td>Bicolour Ha-forward, OIII in blue.</td></tr>
+  <tr><td>OHH</td><td>OIII</td><td>Ha</td><td>Ha</td>
+      <td>OIII red, bicolour warm shadows.</td></tr>
+  <tr><td>OHS</td><td>OIII</td><td>Ha</td><td>SII</td>
+      <td>OIII-forward with SII in blue.</td></tr>
+  <tr><td>OOS</td><td>OIII</td><td>OIII</td><td>SII</td>
+      <td>Cool bicolour, OIII-forward.</td></tr>
+  <tr><td>OSH</td><td>OIII</td><td>SII</td><td>Ha</td>
+      <td>Rotated SHO; Ha becomes blue.</td></tr>
+  <tr><td>OSS</td><td>OIII</td><td>SII</td><td>SII</td>
+      <td>OIII red, SII dominant in green and blue.</td></tr>
+  <tr><td>SHH</td><td>SII</td><td>Ha</td><td>Ha</td>
+      <td>SII-red bicolour.</td></tr>
+  <tr><td>SOH</td><td>SII</td><td>OIII</td><td>Ha</td>
+      <td>Completes the six true permutations.</td></tr>
+  <tr><td>SOO</td><td>SII</td><td>OIII</td><td>OIII</td>
+      <td>SII-red / OIII bicolour.</td></tr>
+</table>
+<p>With only two of the three narrowband channels available, PPP
+substitutes the missing one from the available ones so every
+thumbnail still renders. The substitution rules are documented in
+&sect;&nbsp;13.1.</p>
+
+<h3>5.2 Realistic1 and Realistic2</h3>
+<p>Weighted blends aimed at approximating broadband-like colour from
+narrowband data:</p>
+<ul>
+  <li><b>Realistic1</b> &mdash;
+      <code>R&nbsp;=&nbsp;(Ha&nbsp;+&nbsp;SII)&nbsp;/&nbsp;2</code>,
+      <code>G&nbsp;=&nbsp;0.3&middot;Ha&nbsp;+&nbsp;0.7&middot;OIII</code>,
+      <code>B&nbsp;=&nbsp;0.9&middot;OIII&nbsp;+&nbsp;0.1&middot;Ha</code>.</li>
+  <li><b>Realistic2</b> &mdash;
+      <code>R&nbsp;=&nbsp;0.7&middot;Ha&nbsp;+&nbsp;0.3&middot;SII</code>,
+      <code>G&nbsp;=&nbsp;0.3&middot;SII&nbsp;+&nbsp;0.7&middot;OIII</code>,
+      <code>B&nbsp;=&nbsp;OIII</code>.</li>
+</ul>
+<p>Neither is a true LRGB combine; both bias OIII into the blue
+channel and spread Ha across red and green to approximate a
+natural-looking H&alpha; emission in a red / orange hue.</p>
+
+<h3>5.3 Foraxx</h3>
+<p>Dynamic-gated palette that automatically switches character
+based on whether both Ha and OIII (or all three) are strong at a
+given pixel. Produces smooth, hue-aware blends without hard
+thresholds. Works in both bicolour (Ha&nbsp;+&nbsp;OIII) and
+tricolour (Ha&nbsp;+&nbsp;OIII&nbsp;+&nbsp;SII) modes. See
+&sect;&nbsp;13.4 for the math.</p>
+
+<h3>5.4 Dynamic Inverse</h3>
+<p>Frank's own palette, exclusive to SASpro. Uses the Foraxx-style
+gate function but applies it <i>inversely</i>: Ha and SII swap roles
+based on OIII presence, and the blue channel is driven by OIII
+weighted against SII absence. Tends to produce a cooler, more
+cyan&nbsp;/&nbsp;violet appearance than SHO or Foraxx, which can
+reveal structure in OIII-dominant regions that the standard palettes
+flatten. See &sect;&nbsp;13.5 for the full algorithm.</p>
+
+<h2>6. Push Final to New View</h2>
+<p>Once you've picked a palette, click <b>Push Final to New View</b>.
+This opens the <b>Adjust Palette Intensities</b> dialog:</p>
+<ul>
+  <li>Three sliders (Ha, OIII, SII) at 0&ndash;200% apply a per-channel
+      intensity multiplier before the palette is recombined.</li>
+  <li>A live preview updates with a 300&nbsp;ms debounce.</li>
+  <li>Zoom and pan work exactly like the main preview (Ctrl+wheel,
+      zoom buttons, Fit, click-drag pan).</li>
+  <li><b>Reset</b> returns all three sliders to 100%.</li>
+  <li><b>Accept</b> commits the adjusted palette as the final result
+      and opens it as a new document in SASpro titled after the
+      palette (e.g. &ldquo;SHO&rdquo;, &ldquo;Dynamic Inverse&rdquo;).</li>
+  <li><b>Discard</b> closes without pushing.</li>
+</ul>
+<p>This is where you tune the balance between emission lines without
+having to rebuild upstream: if the Dynamic Inverse looks great but
+SII is overpowering the midtones, drop its slider to ~60% and you've
+calibrated the final composite in two seconds.</p>
+
+<p class="tip"><b>Workflow suggestion.</b> Create Palettes once, click
+through every thumbnail that looks promising at a glance, pin the two
+or three favourites, then run Push Final on each with the intensity
+sliders fine-tuned. You'll have three polished versions of the same
+object in different palettes within a few minutes, ready to compare
+side-by-side at the end.</p>
+
+<h2>7. Other buttons</h2>
+<ul>
+  <li><b>Clear Loaded Channels</b> &mdash; wipes all five channel
+      slots and the thumbnail cache. Resets the session mismatch
+      acknowledgement so you'll be asked again if the next load has
+      inconsistent sizes.</li>
+  <li><b>Show Palette Gallery</b> &mdash; toggle the gallery window on
+      and off without closing it. Its state (visible / hidden and
+      window geometry) persists.</li>
+</ul>
+
+<h2>8. Persistence</h2>
+<p>Saved to QSettings under the <code>perfect_palette_picker/</code>
+namespace:</p>
+<ul>
+  <li>Main window geometry.</li>
+  <li>Linear input checkbox.</li>
+  <li>Palette Gallery geometry and visibility.</li>
+</ul>
+
+<h2>9. Technical details</h2>
+<p class="tech-lead">All channels normalised to float32 in [0,&nbsp;1].
+Where cv2 is available it handles resize and interpolation; a PIL
+fallback kicks in on systems without it. The palette algorithms are
+pure NumPy; the stretch functions use SASpro's standard statistical
+stretch at target median 0.25.</p>
+
+<h3>13.1 Channel substitution</h3>
+<p>When only two of Ha / OIII / SII are loaded, PPP fills the
+missing one at palette-build time so every three-letter permutation
+still renders:</p>
+<ul>
+  <li>If Ha is missing, Ha is cloned from SII (or from the available
+      OSC-synthesised Ha).</li>
+  <li>If SII is missing, SII is cloned from Ha.</li>
+  <li>If OIII is missing, OIII is cloned from Ha (or SII if Ha also
+      absent).</li>
+</ul>
+<p>Substitution happens <i>after</i> OSC synthesis and <i>after</i>
+stretch, so a palette like HOS run on Ha+OIII only (no SII) uses
+<code>SII&nbsp;:=&nbsp;Ha</code>, giving a result that is really a
+tinted bicolour but reads as a tricolour. The thumbnails make this
+visually obvious: palettes that depend on the missing channel look
+flat relative to those that don't.</p>
+
+<h3>13.2 OSC synthesis</h3>
+<p>OSC filters (Optolong L-eXtreme, L-eNhance, IDAS NBZ, Antlia ALP-T,
+etc.) deliver two emission lines on a Bayer sensor. The red
+site captures the long-wavelength line; the green and blue sites
+share the shorter-wavelength line because both are inside the
+filter's second passband. PPP exploits this:</p>
+<div class="matheq-hero">\mathrm{Ha} \;\approx\; \mathrm{OSC}[R]</div>
+<div class="matheq-hero">\mathrm{OIII} \;\approx\; \frac{\mathrm{OSC}[G] + \mathrm{OSC}[B]}{2}</div>
+<p>and symmetrically for OSC2 with SII in place of Ha. When a mono
+channel is also loaded alongside the OSC, the two signals are
+averaged:</p>
+<div class="matheq">\mathrm{Ha}' \;=\; 0.5\,\mathrm{Ha}_{\mathrm{mono}} \;+\; 0.5\,\mathrm{OSC}[R]</div>
+<p>This averaging is deliberately simple: the user who went to the
+trouble of adding a dedicated mono panel probably wants that signal
+to count equally, not dominate or be dominated by the OSC estimate.</p>
+
+<h3>13.3 Statistical stretch</h3>
+<p>When Linear input is checked, each loaded channel is run through
+SASpro's own statistical stretch at a target median of 0.25
+(<code>stretch_mono_image</code> for narrowband,
+<code>stretch_color_image</code> with <code>linked=False</code> for
+OSC). The stretched buffer is cached per channel; it's rebuilt only
+when either the Linear toggle changes or the user loads a new
+channel. Palette construction always uses whatever cache is current,
+so switching Linear on and off is essentially free after the first
+build.</p>
+
+<h3>13.4 Foraxx algorithm</h3>
+<p>At the heart of Foraxx is a dynamic gate function:</p>
+<div class="matheq-hero">g(x) \;=\; x^{(1 - x)}</div>
+<p>on <code>x&nbsp;&isin;&nbsp;[0,&nbsp;1]</code>. Properties:
+<code>g(0)&nbsp;=&nbsp;0</code>, <code>g(1)&nbsp;=&nbsp;1</code>,
+and <code>g(x)</code> stays high across the midrange (for example
+<code>g(0.5)&nbsp;&asymp;&nbsp;0.707</code>) with a sharp drop only
+near zero. Used as a blend weight, it produces hue-aware transitions
+that are smooth where the signal is present and sharp where it isn't.</p>
+
+<p><b>Tricolour (Ha + OIII + SII)</b>:</p>
+<div class="matheq-hero">R \;=\; g(\mathrm{OIII}) \,\cdot\, \mathrm{SII} \;+\; (1 - g(\mathrm{OIII})) \,\cdot\, \mathrm{Ha}</div>
+<div class="matheq-hero">G \;=\; g(\mathrm{Ha} \cdot \mathrm{OIII}) \,\cdot\, \mathrm{Ha} \;+\; (1 - g(\mathrm{Ha} \cdot \mathrm{OIII})) \,\cdot\, \mathrm{OIII}</div>
+<div class="matheq">B \;=\; \mathrm{OIII}</div>
+
+<p><b>Bicolour (Ha + OIII, no SII)</b>:</p>
+<div class="matheq">R \;=\; \mathrm{Ha}</div>
+<div class="matheq-hero">G \;=\; g(\mathrm{Ha} \cdot \mathrm{OIII}) \,\cdot\, \mathrm{Ha} \;+\; (1 - g(\mathrm{Ha} \cdot \mathrm{OIII})) \,\cdot\, \mathrm{OIII}</div>
+<div class="matheq">B \;=\; \mathrm{OIII}</div>
+
+<p>PPP picks between tricolour and bicolour automatically based on
+whether a <i>real</i> SII channel was loaded (not a substituted one).
+If only two of Ha / OIII are present with a dummy SII substitution,
+the bicolour form runs so you don't get a smeared-SII artefact.</p>
+
+<h3>13.5 Dynamic Inverse (Frank's algorithm)</h3>
+<p>Dynamic Inverse reuses the Foraxx gate but applies it to a
+different structural question: &ldquo;where OIII is <i>absent</i>,
+emphasise SII; where OIII is <i>present</i>, emphasise Ha.&rdquo; This
+inverts the usual SHO logic where SII sits in red regardless of what
+OIII is doing.</p>
+<div class="matheq-hero">R \;=\; (1 - \mathrm{OIII}) \,\cdot\, \mathrm{SII} \;+\; \mathrm{OIII} \,\cdot\, \mathrm{Ha}</div>
+<div class="matheq-hero">G \;=\; (1 - g(1 - \mathrm{SII})) \,\cdot\, \mathrm{SII} \;+\; g(1 - \mathrm{SII}) \,\cdot\, \mathrm{OIII}</div>
+<div class="matheq-hero">B \;=\; g(1 - \mathrm{SII}) \,\cdot\, \mathrm{OIII} \;+\; (1 - g(1 - \mathrm{SII})) \,\cdot\, 0.5\,\mathrm{OIII}</div>
+<p>Interpretation:</p>
+<ul>
+  <li><b>Red</b> flips between SII and Ha based on the local OIII
+      level, giving warm structure where oxygen is dominant and
+      cooler red tones in oxygen-poor regions.</li>
+  <li><b>Green</b> transitions through the Foraxx gate from SII (where
+      SII is strong) to OIII (where SII is weak).</li>
+  <li><b>Blue</b> is OIII in SII-absent regions and <i>half</i> OIII
+      in SII-rich regions, which pulls violet / magenta hues forward
+      without erasing them.</li>
+</ul>
+<p>The visual effect is a palette that reads more like a true
+tri-colour photograph than SHO does &mdash; emission regions keep
+distinct hues even when they overlap &mdash; while the inverse logic
+in the red channel reveals structure that gets buried in flat SHO.</p>
+
+<h3>13.6 Thumbnail sizing strategy</h3>
+<p>Thumbnails are built from a <i>half-size view of the full
+rectangle</i>, not a centre crop. The first step resizes every
+loaded channel to the reference frame's full dimensions; the second
+step scales uniformly to 50% of width and height. The result is a
+220&times;110 button icon that shows the whole composition at
+reduced resolution, so you can see edge features, nebular extent,
+and overall balance &mdash; information lost in a centre crop. This
+is why clicking a thumbnail that looks subtle in the gallery can
+reveal a very striking full-resolution composition in the main
+preview.</p>
+
+<h3>13.7 View state preservation across palette switches</h3>
+<p>When you click a different thumbnail, PPP captures the current
+viewport centre as a fraction of the base image size and the current
+zoom level, builds the new palette, and restores both. Because the
+palette outputs always share the same dimensions and spatial
+layout (they're the same channels combined differently), the
+restored view lands on exactly the same patch of sky. Only the first
+build fits-to-view automatically.</p>
+
+<h3>13.8 Push Final flow</h3>
+<p>Push Final doesn't just send the current preview &mdash; it opens
+the <b>Adjust Palette Intensities</b> dialog with sliders backed by
+the <i>same</i> prepared Ha / OIII / SII buffers the palette build
+used. The sliders multiply each channel before the palette formula
+runs, and the formula runs again from scratch on every slider move
+(debounced at 300&nbsp;ms). The &ldquo;Accept&rdquo; path writes the
+adjusted result back into the main preview and creates a new
+document through DocManager with the palette name as the title. If
+DocManager isn't available (unusual &mdash; standalone usage), a
+basic viewer window is opened as a fallback.</p>
+
+<div class="credit">
+<b>Credits.</b> <b>Dynamic Inverse</b> is Frank's own palette, developed
+for SASpro. The <b>Foraxx</b> algorithm (bicolour and tricolour forms,
+and the dynamic gate function <code>x<sup>1&minus;x</sup></code>) is
+the published creation of <b>Bob Franke / &ldquo;Foraxx&rdquo;</b> in
+the astrophotography community, implemented here under its original
+public specification. The 14 three-letter palette permutations
+(<b>SHO</b>, <b>HOO</b>, <b>HSO</b>, &hellip;) are the industry-standard
+narrowband conventions dating back to the Hubble Space Telescope
+imaging team's work; the specific set and naming follow general
+community practice. The <b>Realistic1</b> and <b>Realistic2</b> weighted
+blends are classical mixing formulas with slight custom weight choices
+in SASpro. Image loading uses SASpro's
+<code>legacy.image_manager.load_image</code>; stretching uses
+SASpro's own <code>stretch_mono_image</code> and
+<code>stretch_color_image</code>. OSC filter examples
+(Optolong L-eXtreme / L-eNhance, IDAS NBZ, Antlia ALP-T) are
+third-party products referenced for context only.
+</div>
+
+</body>
+</html>

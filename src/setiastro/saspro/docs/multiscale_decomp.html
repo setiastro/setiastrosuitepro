@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Multiscale Decomposition</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .gpu { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; font-size:12px; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>Multiscale Decomposition</h1>
+<p class="sub">Split an image into independent spatial-frequency bands, edit each one on its own, then reassemble — a general-purpose detail amplifier, noise reducer, and texture sculptor built on a dyadic Gaussian pyramid.</p>
+
+<div class="pub">
+<b>SASpro-exclusive tool.</b> Multiscale Decomposition is an original <b>SetiAstro Suite Pro</b> implementation by <b>Franklin Marek</b>, not a port of or derivative of any other platform's multiscale transform. It uses a dyadic Gaussian pyramid with σ-aware per-layer soft thresholding, scale-weighted multiscale denoising, and a torch-accelerated separable-blur engine designed from the ground up for SASpro's pipeline, mask system, and ROI preview.
+</div>
+
+<p>Each decomposition pass splits the input into <i>N</i> <b>detail layers</b> (increasingly coarse spatial scales) plus a <b>residual</b> (the lowest-frequency "DC" image). Every layer can be independently amplified, soft-thresholded against its own measured noise σ, denoised with a scale-weighted multiscale shrinkage, or turned off — then everything is summed back together. The pyramid is dyadic: each successive layer blurs with twice the sigma of the previous one, so Layer 1 holds the finest grain, Layer 4 holds structure several pixels wide, Layer 7+ holds large nebular or lunar-feature-scale content.</p>
+
+<div class="tip">
+<b>Where it shines.</b> This is a genuine miracle on <b>planetary, lunar, and solar</b> images — crank up the Gain on the mid-scale detail layers and watch surface structure, cloud bands, limb detail and crater rims leap out of a seemingly flat frame. On deep-sky work it doubles as a surgical sharpener for nebular filaments and galaxy spiral arms, and the Denoise column gives you a per-scale noise-reduction knob that most tools don't expose.
+</div>
+
+<h2>1. The preview area</h2>
+
+<p>The left pane shows the current reconstruction (or the single layer you've selected, see §2). It uses a graphics view with wheel-zoom under the cursor and click-drag panning — the same interaction model as the rest of SASpro.</p>
+
+<div class="keys">
+<b>Preview controls.</b>
+<br><b>Mouse wheel</b> — zoom in / out, anchored under the cursor.
+<br><b>Left-click drag</b> — pan the view.
+<br><b>Zoom Out / Zoom In</b> toolbar buttons — 0.8× / 1.25× steps.
+<br><b>Fit</b> — fit the whole image into the preview pane.
+<br><b>1:1</b> — reset to native pixel scale.
+</div>
+
+<p>Two toggles above the layer table change what the preview is doing:</p>
+
+<ul>
+  <li><b>Fast ROI preview (compute visible area only)</b> — default on. Only the currently visible portion of the image is decomposed, tuned, and reconstructed, with a few extra pixels of padding on each side so the blur doesn't see an edge. As you pan or zoom the preview recomputes just the new visible rectangle. This makes every slider move feel instant on large frames (16-megapixel+ stacks). <b>Apply</b> and <b>Send to Document</b> always run on the full image.</li>
+  <li><b>Auto-stretch preview</b> — display-only autostretch so you can see linear data clearly while you work. It is never baked into the output — Apply and Send always write linear pixel values.</li>
+</ul>
+
+<p>A small spinner next to the zoom toolbar lights up whenever a recomputation is in flight, and a <i>Computing…</i> overlay appears over the preview if a pass takes longer than ~120 ms.</p>
+
+<h2>2. Global settings</h2>
+
+<p>The top-right <b>Global</b> group controls the shape of the pyramid itself and the top-level preview mode.</p>
+
+<ul>
+  <li><b>Layers</b> (1–10, default 4) — number of detail layers. More layers means finer-grained scale separation and reaches to coarser structures (Layer 10 blurs with σ = 512 × base). Add layers when you want to sculpt structures at bigger scales than four layers can reach; drop to 2–3 when you only want to boost fine detail and want to keep the pyramid fast.</li>
+  <li><b>Base sigma</b> (0.3–5.0, default 1.0) — the Gaussian sigma of the first blur pass, in pixels. Later layers double this each time. A larger base sigma gives you a coarser decomposition overall; use 0.5–0.8 to really concentrate on single-pixel grain.</li>
+  <li><b>Linked RGB</b> — apply the same per-layer settings to all channels (default on). Turn it off to decorrelate channels — useful if your blue channel needs more NR than red, for instance. (In the current release the per-layer editor still edits a single parameter set; linked-off mode decomposes each channel independently so future per-channel editing drops in naturally.)</li>
+  <li><b>Mode</b> — <b>μ–σ Thresholding</b> (default) is the full nonlinear pipeline: Denoise, Threshold, Amount <i>and</i> Gain are all active. <b>Linear</b> turns off all σ-aware operations and uses Gain only — a strictly linear multiscale transform. Linear mode is the right choice when you want pure spatial-frequency boost or cut with zero shrinkage artifacts, for example when the decomposition is feeding a downstream math step that assumes linearity.</li>
+  <li><b>Layer preview</b> — switches what the preview is showing. <b>Final</b> shows the full reconstruction (details + residual, your actual output). <b>R (Residual)</b> shows just the lowest-frequency image. <b>Detail Layer k</b> shows a single band's content, remapped to mid-gray so positive and negative detail are both visible.</li>
+</ul>
+
+<div class="tip">
+<b>Layer-preview trick.</b> Flipping through the detail-layer previews is the fastest way to learn where your data lives. On a planetary frame you'll typically see crater rims and cloud edges concentrated in Layers 2–4; on a galaxy frame, spiral-arm structure shows up in Layers 4–6; on a wide nebula, large-scale brightness variations live in Layers 6–8. Edit the layers where the structure you care about is actually present.
+</div>
+
+<h2>3. The Layers table</h2>
+
+<p>Below the Global group is the <b>Layers</b> table — one row per detail layer, plus a final <b>R</b> row for the residual. Columns are:</p>
+
+<table>
+<tr><th>Column</th><th>Meaning</th></tr>
+<tr><td><b>On</b></td><td>Checkbox — enable or disable this layer. A disabled detail layer contributes zero to the reconstruction (useful for isolating what a layer is actually doing). Unchecking the residual row holds back the DC image, giving you a high-pass view (see §7).</td></tr>
+<tr><td><b>Layer</b></td><td>Layer index: 1 (finest) through <i>N</i>, then R for residual.</td></tr>
+<tr><td><b>Scale</b></td><td>The Gaussian sigma this layer corresponds to, in pixels — base_sigma × 2<sup>k</sup>. Residual shows "—" because it's an accumulated image, not a scale.</td></tr>
+<tr><td><b>Gain</b></td><td>Multiplier applied to the layer's detail coefficients. 1.00 is unchanged, >1 boosts, &lt;1 attenuates. Negative values are not supported (use 0 to zero out).</td></tr>
+<tr><td><b>Thr (σ)</b></td><td>Soft-threshold level in multiples of the layer's measured noise σ (see §4). 0 is no thresholding; 1–3 is mild to strong grain suppression.</td></tr>
+<tr><td><b>Amt</b></td><td>Blend factor between the raw and thresholded version of the layer. 0 means ignore thresholding entirely; 1 means use the thresholded layer fully. Lets you dial in <i>how much</i> of the Thr action to apply.</td></tr>
+<tr><td><b>NR</b></td><td>Multiscale noise reduction amount for this layer, 0–1. See §9.3 for the scale-weighted formula.</td></tr>
+<tr><td><b>Type</b></td><td><b>D</b> for a detail layer, <b>R</b> for the residual.</td></tr>
+</table>
+
+<p>Click a row to load that layer into the <b>Selected Layer</b> editor below. Clicking any cell in the Gain / Thr / Amt / NR columns lets you edit the value directly — handy for setting the same number across several rows without going slider-by-slider. The checkbox and the editor stay in sync automatically.</p>
+
+<h2>4. The Selected Layer editor</h2>
+
+<p>Each of the four edit sliders is paired with a spin box, and either side updates the other. The ranges are:</p>
+
+<ul>
+  <li><b>Gain</b> (0.00 – 10.00) — multiplies the layer's detail coefficients. Values above 2–3 are routine on planetary and lunar frames; stay closer to 1.0–1.8 on deep-sky data to avoid amplifying noise.</li>
+  <li><b>Threshold (σ)</b> (0.00 – 10.00) — the soft-threshold level in units of this layer's robust σ. SASpro re-measures σ per layer (via MAD, see §9.2), so a Thr of 2.0 means the same thing on every scale: "zero out any coefficient under 2× this layer's noise, soften the rest." Typical starting point for grain suppression: 1.5–2.5 on the finest two layers, with Amount at 0.6–1.0.</li>
+  <li><b>Amount</b> (0.00 – 1.00) — the blend ratio toward the thresholded version. Pairs with Threshold.</li>
+  <li><b>Denoise</b> (0.00 – 1.00) — scale-weighted multiscale noise reduction. Internally this applies a soft threshold at <i>3σ scaled by √(2<sup>k</sup>)</i>, so the shrinkage ramps up on coarser layers automatically — a tuned-for-astro NR profile that behaves well across the whole pyramid at a single value. 0.2–0.4 is typical; 0.6+ is strong NR.</li>
+</ul>
+
+<p>When the <b>R (Residual)</b> row is selected, all four controls grey out — the residual is a reconstructed image, not a set of coefficients, so none of the per-layer operations apply to it. In <b>Linear</b> mode, Threshold / Amount / Denoise grey out on every row (the mode is literally gain-only); Gain stays active.</p>
+
+<div class="tip">
+<b>Threshold vs Denoise.</b> They're both σ-based shrinkage, but they're tuned for different jobs. <b>Threshold + Amount</b> is a sharpening-safe grain filter: it keeps everything above <i>N</i>σ at its full strength (minus the σ-sized soft knee) and blends how aggressively it suppresses the rest. <b>Denoise</b> is a smoother, scale-aware shrinkage that ramps up on coarse scales, so a single Denoise value gives you balanced NR across the whole pyramid. Use Threshold when you also want to boost — denoising first keeps the Gain from amplifying residual grain.
+</div>
+
+<h2>5. Masking</h2>
+
+<p>Multiscale Decomposition respects the document's <b>active mask</b>. If a mask is set when you Apply, the final result is blended against the untouched input using the mask's intensity, so you can confine detail boosts to a nebula while leaving background sky linear and quiet, or protect a star field while sharpening galaxy arms.</p>
+
+<p>Mask handling: non-finite values fall through as "no change," masks are rescaled to 0–1 whether they came in as 8-bit, 16-bit or float, and if the mask resolution doesn't match the image a fast nearest-neighbour resample brings them into alignment. See §9.8 for the formula.</p>
+
+<h2>6. Applying your result</h2>
+
+<p>Four buttons at the bottom of the right pane finish the session:</p>
+
+<ul>
+  <li><b>Apply to Document</b> — writes the full-image reconstruction back to the current document as a new history step named "Multiscale Decomposition" and closes the dialog. Full image, full precision, mask-aware. The preset dict and the active mask id are stored in the step metadata so Replay and Shortcuts can reproduce it later.</li>
+  <li><b>Send to New Document</b> — creates a brand-new document containing the reconstruction and leaves the source untouched. The new doc inherits the source's bit depth and headers but is unlinked from the file (no file_path, no ROI/preview flags).</li>
+  <li><b>Split Layers to Documents</b> — creates one new document per detail layer plus one for the residual. Detail layers are visualized mid-gray (0.5 + 4w, clipped) so positive and negative detail are both visible; the residual document holds the raw residual image. Very useful for frequency-separation-style retouching workflows where you want to edit a layer by hand in another tool and then bring it back.</li>
+  <li><b>Close</b> — discard preview, don't touch the document.</li>
+</ul>
+
+<h2>7. Residual off: the high-pass trick</h2>
+
+<p>If you uncheck the <b>R</b> row's "On" box, the preview and Apply both drop the residual from the reconstruction — you keep only the sum of your tuned detail layers. Because the detail layers are signed (zero-centred), the result is remapped to mid-gray for display:</p>
+
+<div class="matheq">v = 0.5 + 4 \sum_{k=0}^{N-1} w_k^{(\text{tuned})}</div>
+
+<p>That mid-gray image <i>is</i> the high-pass of your data, filtered through whatever gain / threshold / NR profile you set per layer. It is useful on its own as an edge/structure map, or as input to subsequent processing — the Split Layers button sends each tuned layer out this way automatically.</p>
+
+<h2>8. Shortcuts and presets</h2>
+
+<p>The small grip icon at the bottom-left of the dialog is a <b>drag-to-canvas preset handle</b>. It captures your current state (layer count, base sigma, mode, per-layer config, residual on/off, linked-RGB flag) and does one of two things depending on where you drop it:</p>
+
+<ul>
+  <li><b>Drop on empty canvas</b> → creates a <b>Multiscale Decomposition shortcut</b> on the canvas carrying your exact current settings. Double-clicking that shortcut later reopens the dialog seeded with the same values.</li>
+  <li><b>Drop directly on an image</b> → applies the preset <i>headlessly</i>. No dialog, no preview — the reconstruction runs immediately against that document using the preset you captured.</li>
+</ul>
+
+<p>Combined with Replay, this makes it trivial to carry a particular detail-enhancement recipe from one subject to the next — tune it once on a representative frame, drag off a shortcut, and apply it to a whole mosaic panel set.</p>
+
+<h2>9. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Planetary / lunar / solar sharpening.</b>
+<br>Base sigma: <b>0.7–1.0</b>. Layers: <b>5–6</b>. Mode: <b>μ–σ Thresholding</b>.
+<br>• <b>Layers 1–2</b>: Gain 1.2–1.5, Threshold 1.5–2.5 at Amount 0.6–0.8, Denoise 0.15–0.25 — tames high-frequency camera and seeing grain so the next step doesn't just amplify it.
+<br>• <b>Layers 3–4</b>: <b>Gain 2.0–3.5</b>, no threshold or denoise — this is where crater rims, cloud banding, and surface structure live. Push until it looks dramatic, back off until it looks real.
+<br>• <b>Layer 5+</b>: Gain 1.0 or slightly less; let the base image carry the broad tonality.
+<br>• Residual: leave on.
+</div>
+
+<div class="workflow">
+<b>Deep-sky structure boost (galaxies, nebular filaments).</b>
+<br>Base sigma: <b>1.0</b>. Layers: <b>5</b>. Mode: <b>μ–σ Thresholding</b>.
+<br>• <b>Layer 1</b>: Gain 1.0, Threshold 2.0 at Amount 0.8, Denoise 0.3 — pure grain filter.
+<br>• <b>Layer 2</b>: Gain 1.15, Threshold 1.5 at Amount 0.6, Denoise 0.2 — small-scale detail with light NR.
+<br>• <b>Layers 3–4</b>: Gain 1.3–1.6 — spiral-arm and filament scale.
+<br>• <b>Layer 5</b>: Gain 1.0.
+<br>• Mask: use a star-protection mask or a range mask excluding the background, so the boost lands on the object only.
+</div>
+
+<div class="workflow">
+<b>Multiscale noise reduction only.</b>
+<br>Mode: <b>μ–σ Thresholding</b>. All Gains at 1.0. Denoise 0.25–0.45 on Layers 1–2, 0.15 on Layer 3, 0 beyond. Threshold / Amount left at 0. Residual on. This gives you SASpro's scale-weighted NR profile as a standalone step without any sharpening — a nice complement to the dedicated denoisers.
+</div>
+
+<div class="workflow">
+<b>Frequency-separation retouching.</b>
+<br>Click <b>Split Layers to Documents</b> on a portrait or close-up — you now have Layer 1 (grain), Layer 2–3 (texture), Layer 4+ (form), and the residual (tone/colour) as separate documents. Paint, blur, or clone on the one you need, then re-import and combine with Pixel Math or by sending back through this tool with those layers set to Gain 1 and the rest to 0.
+</div>
+
+<h2>10. Technical details</h2>
+<p class="tech-lead">What the pipeline actually does, in order, with the formulas and the engineering choices behind them.</p>
+
+<h3>10.1 The multiscale pyramid</h3>
+
+<p>Multiscale Decomposition builds a <b>dyadic Gaussian pyramid</b>. Starting from the input image c<sub>0</sub> = x, each successive scale is generated by Gaussian blur with a doubling sigma:</p>
+
+<div class="matheq">c_0 = x</div>
+<div class="matheq">c_{k+1} = G_{\sigma_k}(c_k)</div>
+<div class="matheq">\sigma_k = \sigma_0 \cdot 2^k</div>
+
+<p>where σ<sub>0</sub> is <b>Base sigma</b> from the Global group and <i>G<sub>σ</sub></i> is a reflect-padded Gaussian blur. The <b>detail layers</b> are the differences between consecutive scales:</p>
+
+<div class="matheq">w_k = c_k - c_{k+1}, \quad k = 0,\, 1,\, \dots,\, N-1</div>
+
+<p>The <b>residual</b> is the deepest blur:</p>
+
+<div class="matheq">r = c_N</div>
+
+<p>This structure is a <b>perfect-reconstruction</b> transform: without any tuning, summing the layers plus the residual recovers the input bit-exactly (to float32 rounding):</p>
+
+<div class="matheq">x = r + \sum_{k=0}^{N-1} w_k</div>
+
+<p>That identity is why unchecking "On" boxes gives you clean partial reconstructions, why disabling the residual yields a pure high-pass, and why the preview can show you individual layers that mean something.</p>
+
+<p>For RGB images each channel is decomposed independently in parallel (one thread per channel), then merged channel-wise. For mono images the pyramid is computed on the single plane and expanded to 3-channel only for preview display.</p>
+
+<h3>10.2 Robust noise estimation</h3>
+
+<p>Every detail layer has its own noise σ, estimated by the <b>Median Absolute Deviation</b>:</p>
+
+<div class="matheq">\hat{\sigma}_k = 1.4826 \cdot \mathrm{median}\!\left(\left|w_k - \mathrm{median}(w_k)\right|\right)</div>
+
+<p>The 1.4826 factor converts MAD to a standard-deviation estimate under Gaussian assumptions. MAD is used instead of plain std because detail layers contain real structure (edges, point sources) that would inflate a straight std and make all σ-based thresholds too generous. For layers larger than ~100,000 samples SASpro grid-subsamples the array first — the cost of a full-image median scales badly, and MAD on a 1% stride samples is statistically indistinguishable from the full computation.</p>
+
+<p>Non-finite values are stripped before the median, so NaNs or Infs in a region of the frame don't poison the σ estimate for the entire layer.</p>
+
+<h3>10.3 μ–σ Thresholding mode</h3>
+
+<p>In the default mode three operations are applied per layer, in order: <b>denoise</b>, then <b>threshold-with-amount</b>, then <b>gain</b>. The shared primitive is a <b>soft threshold</b>:</p>
+
+<div class="matheq">S_t(x) = \mathrm{sign}(x) \cdot \max(0,\, |x| - t)</div>
+
+<p>Soft thresholding is preferred over hard thresholding here because it preserves continuity: coefficients just above the threshold aren't yanked to their raw value, they are smoothly attenuated by <i>t</i>. That matters because detail layers are what the reconstruction sums — hard thresholding introduces visible discontinuities at structure boundaries.</p>
+
+<p><b>Denoise step.</b> With Denoise amount β<sub>k</sub>, a scale-weighted threshold is applied:</p>
+
+<div class="matheq">s_k = \sqrt{2^k}</div>
+<div class="matheq">\tau_k = 3\, \beta_k \cdot s_k \cdot \hat{\sigma}_k</div>
+<div class="matheq">w_k^{(1)} = (1 - \beta_k)\, w_k + \beta_k \cdot S_{\tau_k}(w_k)</div>
+
+<p>The <i>√(2<sup>k</sup>)</i> scale factor is the key piece — coarser layers get a proportionally larger threshold, because that's where the energy of real smooth structure lives and the layers accumulate noise variance across scales. A single Denoise value therefore delivers balanced NR across the whole pyramid without the user needing to tune each layer separately.</p>
+
+<p><b>Threshold-with-amount step.</b> Using Thr <i>N</i><sub>σ</sub> and Amount α<sub>k</sub>:</p>
+
+<div class="matheq">t_k = N_\sigma \cdot \hat{\sigma}_k</div>
+<div class="matheq">w_k^{(2)} = (1 - \alpha_k)\, w_k^{(1)} + \alpha_k \cdot S_{t_k}(w_k^{(1)})</div>
+
+<p>Amount is the blend lever. α = 0 completely ignores the threshold; α = 1 uses it fully. In between is the usual sweet spot — Amount around 0.5–0.8 keeps enough of the original coefficient energy that boosted detail doesn't look thin while still cleaning up the grain.</p>
+
+<p><b>Gain step.</b> Simple multiply:</p>
+
+<div class="matheq">w_k^{(\text{tuned})} = g_k \cdot w_k^{(2)}</div>
+
+<h3>10.4 Linear mode</h3>
+
+<p>Linear mode skips Denoise, Threshold and Amount entirely and keeps only Gain:</p>
+
+<div class="matheq">w_k^{(\text{tuned})} = g_k \cdot w_k</div>
+
+<p>This makes the whole pipeline strictly linear — a multiscale frequency-weighted multiplier. Use it when you want pure band-boost/cut with zero shrinkage artifacts, when you're prototyping a filter design, or when the output is feeding another linear step and nonlinearities would complicate the math downstream.</p>
+
+<h3>10.5 Reconstruction and output modes</h3>
+
+<p>After all layers are tuned, the output is the straightforward sum:</p>
+
+<div class="matheq">y = r_{\text{on}} + \sum_{k=0}^{N-1} w_k^{(\text{tuned})}</div>
+
+<p>where <i>r</i><sub>on</sub> is the residual if its "On" box is checked, zero otherwise. When the residual is off, the sum is signed and remapped to mid-gray for display and output:</p>
+
+<div class="matheq">y_{\text{display}} = \mathrm{clip}\!\left(0.5 + 4\,y,\; 0,\; 1\right)</div>
+
+<p>With the residual on, the result is clipped straight into [0, 1]. Mono inputs are preserved as mono — the pyramid runs on the single plane, and only the preview is expanded to RGB internally; Apply writes back the single-channel reconstruction in the original shape.</p>
+
+<h3>10.6 The Gaussian blur engine</h3>
+
+<p>The Gaussian pyramid's performance <i>is</i> the dialog's performance — on a 24-megapixel RGB frame with 6 layers, that's 18 full-image blurs with sigmas ranging from 1 to 32 pixels. SASpro picks the best available backend at each call:</p>
+
+<ol>
+  <li>Images under 256×256 or sigma below 0.5 go straight to OpenCV's <code>GaussianBlur</code> — no backend overhead is worth it at that scale.</li>
+  <li>Otherwise, a <b>torch separable-conv</b> path is tried first. The 2D Gaussian factors into two 1D convolutions, which SASpro implements as grouped <code>conv2d</code> operations with reflect padding — once with a (1 × K) horizontal kernel and once with a (K × 1) vertical kernel. This runs on CUDA when a GPU is present and on torch's CPU backend otherwise. Both paths are genuinely parallel across all cores and don't fight with the per-channel thread pool.</li>
+  <li>If torch is unavailable, SASpro falls back to a <b>tiled SciPy</b> path: the image is divided into roughly 2× worker-count tiles sized to the image aspect ratio, each tile is extended by an overlap of <i>⌈4σ⌉ + 4</i> pixels on all sides, and the tiles are blurred in parallel with <code>scipy.ndimage.gaussian_filter</code> before being stitched back without the overlap. The overlap guarantees reflect-pad continuity at the tile seams.</li>
+  <li>If neither is available, OpenCV's <code>GaussianBlur</code> is used unconditionally.</li>
+</ol>
+
+<p>The kernel size is picked from sigma the standard way:</p>
+
+<div class="matheq">K = \max\!\left(3,\, 2 \lfloor 3\sigma \rfloor + 1\right) \;|\; 1</div>
+
+<p>(the <i>| 1</i> forces an odd kernel size, which both OpenCV and torch's conv2d want for centred padding).</p>
+
+<p>Separable 1D convolution is the second big win here. A 2D Gaussian is the outer product of two 1D Gaussians, so a <i>K × K</i> blur can be done as:</p>
+
+<div class="matheq">G_\sigma(I) = \left(I \ast g_\sigma^{\mathsf{T}}\right) \ast g_\sigma</div>
+
+<p>at <i>2K</i> multiplies per pixel instead of <i>K<sup>2</sup></i>. On a 32-pixel-sigma blur that's roughly a 20× arithmetic saving, which stacks with the GPU/multicore gains.</p>
+
+<div class="gpu">
+<b>GPU vs CPU vs scipy.</b> On a mid-range CUDA card the torch GPU path is roughly 10–20× faster than tiled scipy on large frames; on CPU torch is typically 2–4× faster than tiled scipy because it keeps the arithmetic in a single contiguous tensor and avoids NumPy per-tile overhead. The dialog's "init progress" dialog you see on first open is almost entirely the time of this first pyramid build; subsequent slider changes reuse the cached pyramid and only recompute what has to change.
+</div>
+
+<h3>10.7 Fast ROI preview</h3>
+
+<p>With <b>Fast ROI preview</b> on, the preview computes only the currently visible region of the image, with a safety margin on each side so the deepest blur still sees valid pixels. The pad is sized to the coarsest layer in the pyramid:</p>
+
+<div class="matheq">\sigma_{\max} = \sigma_0 \cdot 2^{N-1}</div>
+<div class="matheq">p = \lceil 3 \sigma_{\max} \rceil + 2</div>
+
+<p>The ROI is further capped at 1400 px per side to protect responsiveness when the user is zoomed way out. For a 24-megapixel frame zoomed to a 1200×800 ROI with 6 layers, this means decomposing ~1.1M pixels instead of ~24M on each slider move — a 20× cost reduction that puts slider latency in the 20–50 ms range even with CPU-only torch.</p>
+
+<p>The viewport scrollbars and the zoom/pan handlers all schedule the same debounced ROI recompute (60 ms coalescing) so a rapid pan or wheel-roll produces one recomputation at the end rather than a storm of them during the gesture.</p>
+
+<div class="warn">
+<b>ROI is a preview only.</b> Apply, Send to New Document and Split Layers always run on the full image and always use the full-resolution pyramid. The ROI path exists so you can tune parameters interactively on huge frames without waiting; the committed result is never a stitched-up ROI.
+</div>
+
+<h3>10.8 Mask blending</h3>
+
+<p>If the document has an active mask, the final reconstruction is blended against the untouched source:</p>
+
+<div class="matheq">y_{\text{final}} = m \cdot y + (1 - m) \cdot x</div>
+
+<p>where <i>m</i> is the mask value in [0, 1], <i>y</i> is the full reconstruction, and <i>x</i> is the original input. Masks are normalised regardless of their input dtype — integer masks are divided by their type-max, float masks greater than 1 are rescaled by their observed max, and anything outside [0, 1] is clipped. If the mask resolution doesn't match the image, SASpro resamples with a fast nearest-neighbour index map; if the blend produces non-finite values anywhere (bad mask data), the entire mask step is bypassed and the plain reconstruction is written through instead.</p>
+
+<p>The mask id, blend formula and whether the step was masked are all recorded in the history-step metadata so Replay reproduces the exact masked composition on the next frame.</p>
+
+<div class="credit">
+<b>Credits.</b> Multiscale Decomposition — algorithm, implementation, UI and ROI/preview engineering — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro, with the following standard components credited to community: the Gaussian pyramid is a classic construction (Burt &amp; Adelson 1983, "The Laplacian Pyramid as a Compact Image Code"); soft thresholding is Donoho (1995, "De-noising by soft-thresholding"); robust σ from MAD follows the Rousseeuw &amp; Croux convention; separable Gaussian factorization is textbook image processing. OpenCV, PyTorch and SciPy are credited as the compute backends. The scale-weighted multiscale denoiser (<i>τ<sub>k</sub> = 3β<sub>k</sub>√(2<sup>k</sup>)σ̂<sub>k</sub></i>), the mode system, the ROI-preview architecture, the mask blending integration, and the overall per-layer editor are SASpro-exclusive.
+</div>
+
+</body>
+</html>

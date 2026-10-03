@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Dither Analysis</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>Dither Analysis</h1>
+<p class="sub">Honest, geometrically-correct dither measurement — scatter, path, step distribution, directional rose, with walking-noise and clustering diagnostics. Meridian-flip aware.</p>
+
+<div class="pub">
+<b>SASpro-exclusive dither diagnostics.</b> Original work by <b>Franklin Marek</b>, built around a single geometric correctness principle: <i>the only honest way to measure dither is to track where the image center moves under the full alignment transform, not to read raw tx/ty from the affine matrix.</i> The raw tx/ty approach — common in simpler tools — breaks catastrophically on meridian flips, which rotate the frame 180° and produce apparent "offsets" of hundreds or thousands of pixels that are not dither at all. This tool applies each frame's complete 2×3 affine to the center point (W/2, H/2), subtracts the reference frame's mapped center, and reports true pointing displacement regardless of rotation or flip. The result: a plot you can actually trust, a walking-noise diagnosis you can act on, and clear calls on whether your fixed-pattern noise will stack out.
+</div>
+
+<div class="warn">
+<b>Why "raw tx/ty" dither tools lie.</b> A 2×3 affine alignment matrix M carries both the translation (tx, ty = M[0,2], M[1,2]) <i>and</i> any rotation needed to align the frame to the reference. On a meridian flip the mount rotates the field 180°, so the alignment solution produces a matrix whose linear part is a 180° rotation. The tx/ty values of that matrix are no longer "where did the pointing move" — they're "where does the rotated image's top-left corner now sit", which can be thousands of pixels away even when the sky pointing is unchanged. Any dither tool that plots raw tx/ty across a meridian flip will show a massive apparent dither excursion that has nothing to do with pointing jitter. This tool solves that problem at the source by evaluating the transform at the frame's center and reporting its true displacement.
+</div>
+
+<h2>1. Overview</h2>
+
+<p>Dither Analysis measures how well your mount actually dithered during an imaging session, from the alignment transforms produced by registration. There are three entry points:</p>
+
+<ul>
+  <li><b>Stand-alone</b> — pick a folder of light frames, press Run, and the tool runs star registration internally and then analyses the resulting transforms.</li>
+  <li><b>.sasd file</b> — load a previously-saved alignment transform file from any earlier stacking run (SASpro writes <code>alignment_transforms.sasd</code> during integration). Fastest workflow: analyse an old session without re-registering.</li>
+  <li><b>Bolt-on</b> — called programmatically with <code>load_transforms(transforms, filenames, ref_shape)</code> from inside other SASpro modules (e.g. stacking suite post-registration).</li>
+</ul>
+
+<p>After loading, you get four plots on the right (scatter, path, step histogram, directional rose), a detailed statistics panel on the left including <b>warning cards</b> for walking noise and clustering, and the ability to click any point on the plots to find its frame in the list — or right-drag a rectangle to select many frames at once for culling.</p>
+
+<h2>2. Workflow — Stand-alone</h2>
+
+<ol>
+  <li><b>Add Files</b> — pick your light frames (FITS, XISF, TIFF). The first file becomes the reference. The directory is remembered across sessions.</li>
+  <li><b>(Optional) Trial Detect</b> — pick a <b>Detection σ</b> value (12.0 is the default) and press 🔍 Trial Detect to see how many stars SEP finds on frame 0 at that threshold. The result turns green for a healthy count (100-25000), yellow for borderline, red for unusable. Use this to tune σ before running the full registration.</li>
+  <li><b>(Optional) Plate Solve Frame 0</b> — unlocks the RA/Dec display mode so your dither plot shows real sky axes (East right, North up) instead of pixel axes.</li>
+  <li><b>(Optional) Save aligned images</b> — tick the box and pick an output folder to keep the aligned frames; otherwise registration output goes to a temp directory and is cleaned up after analysis.</li>
+  <li><b>▶ Run Registration & Analyze</b> — kicks off the star-registration thread. A progress dialog shows per-frame alignment; you can press Abort to kill the run. On completion the tool prompts you to save the resulting <code>alignment_transforms.sasd</code> for reuse later.</li>
+</ol>
+
+<h2>3. Workflow — Loading a .sasd</h2>
+
+<p>Click <b>📄 Load Previous Transform File (.sasd)</b> and pick an <code>alignment_transforms.sasd</code> from any earlier SASpro stacking session. The file contains all per-frame transforms plus the reference shape; parsing is instant. The tool then runs the full analysis without needing to re-register anything — the fastest way to review a session's dither quality.</p>
+
+<p>The pixel scale (for the arcsec display mode) is picked up in priority order:</p>
+
+<ol>
+  <li>From a per-sasd cache in QSettings (fastest; works even if source files have moved).</li>
+  <li>By searching for a source image file (FITS/XISF/TIFF with a matching stem) in the <code>.sasd</code> directory or its parent, then reading its header.</li>
+  <li>From the <code>REF_PATH</code> line stored inside the <code>.sasd</code> itself.</li>
+</ol>
+
+<p>Once found, the pixel scale is cached under a hash of the <code>.sasd</code> file so re-opening it is instant on subsequent sessions.</p>
+
+<h2>4. The four plots</h2>
+
+<h3>4.1 Scatter</h3>
+
+<p>Every frame's dither offset plotted as a point, color-coded by frame index (plasma colormap — dark purple for early frames, bright yellow for late ones). The red <b>+</b> marks the origin (reference frame's center). A tight, roughly-circular cloud is what you want; a line is walking noise; clumps are clustering.</p>
+
+<h3>4.2 Path</h3>
+
+<p>The scatter points connected in time order. <b>Flip-transition steps are drawn in orange</b>, every other step in dark blue, so the single giant step across a meridian flip is immediately visible and visually separable from true dither steps. A green ★ marks frame 0. The path tells a story the scatter can't: whether your mount dithered randomly, drifted smoothly in one direction, or did something unexpected like repeatedly returning to the same quadrant.</p>
+
+<h3>4.3 Step histogram</h3>
+
+<p>Distribution of inter-frame step sizes, in the current display unit. <b>Flip-transition steps are excluded</b> so the histogram shows only real dither-step magnitudes. A dashed yellow line marks the mean. Bimodal distributions reveal clustering workflows ("I dither every N frames"), which is normal and expected if you set it up that way; a tight unimodal distribution means every frame dithered to a fresh position.</p>
+
+<h3>4.4 Directional rose</h3>
+
+<p>Polar histogram of step directions in 16 angular bins, with a yellow arrow pointing at the <b>circular mean</b> direction. A roughly-uniform rose means random dither (good); a strong preferred direction means walking noise (bad). When RA/Dec mode is active, the rose uses true sky axes (N up, E right); in pixel mode, the directions are relative to the sensor's pixel grid.</p>
+
+<h2>5. Interactive selection</h2>
+
+<p>The plots and the file list are two-way linked for frame culling:</p>
+
+<div class="keys">
+<b>Plot interactions.</b>
+<br><b>Left-click a point</b> — selects the corresponding frame in the file list and scrolls to it.
+<br><b>Shift + left-click</b> — extends the selection without clearing previous picks.
+<br><b>Right-drag a rectangle</b> on the scatter or path plot — multi-selects every frame whose point falls inside the rectangle, with the yellow dashed selection outline.
+<br><b>Clicking anywhere empty</b> — leaves the current selection unchanged (no accidental deselect from near-misses, enforced by a 12-pixel click radius).
+<br><br>
+<b>File list interactions.</b>
+<br><b>Click or Ctrl-click</b> frames in the list — the matching points light up with a yellow ring on both the scatter and the path.
+<br><b>Right-click selected frames</b> — context menu with:
+<br>&nbsp;&nbsp;&nbsp;· <i>Remove from list</i> (list-only, keeps files on disk)
+<br>&nbsp;&nbsp;&nbsp;· <i>Move to folder</i> (prompts for destination)
+<br>&nbsp;&nbsp;&nbsp;· <i>Copy to folder</i>
+<br>&nbsp;&nbsp;&nbsp;· <i>Permanently delete from disk</i> (with confirmation)
+</div>
+
+<p>The intended workflow: right-drag a rectangle around a bad cluster on the scatter plot, confirm the file list shows the frames you expected, then right-click → <i>Move to folder</i> to shunt them to a "rejected" directory for later review.</p>
+
+<h2>6. Display units — Pixels / Arcsec / RA-Dec</h2>
+
+<p>Three buttons at the top of the right panel switch the plot units:</p>
+
+<ul>
+  <li><b>Pixels</b> — always available. Plot axes are pixel-space ΔX / ΔY. Default on first open.</li>
+  <li><b>Arcsec</b> — enabled when a pixel scale was found in the frame header (or recovered from a cached <code>.sasd</code>). Multiplies pixel values by arcsec-per-pixel. The physical scale is what matters for comparing your dither to your seeing or your pixel size.</li>
+  <li><b>RA / Dec</b> — enabled only after plate solving frame 0. Switches to true sky axes with East right and North up, with the directional rose relabeled N / E / S / W. This is the most honest display for cross-session comparisons where sensor orientation changed.</li>
+</ul>
+
+<h2>7. The two headline diagnostics</h2>
+
+<h3>7.1 Walking noise</h3>
+
+<p>Walking noise is the single most important thing dither analysis exists to catch. If your dither offsets fall along a near-linear track instead of spreading in two dimensions, <i>fixed-pattern noise does not stack out</i> — amp glow, column bias, hot pixel residuals, and dark-current gradient structure all survive integration as residual gradient streaks along the walking axis. The whole point of dithering is to randomize sub-pixel pointing so the fixed-pattern contributions average down with √N; a linear walk destroys that randomization along one direction while preserving it along the perpendicular, producing an obviously-asymmetric noise floor in the stack.</p>
+
+<p>The tool measures three independent metrics and raises the walking flag only when the evidence is strong (see §8.3 for the exact formulas and thresholds). The warning card lists which specific metrics fired, with their values and thresholds, so you can tell whether the diagnosis came from clean geometric linearity or from temporal drift corroborated by directional consistency.</p>
+
+<h3>7.2 Clustering</h3>
+
+<p>Clustering is less serious than walking but still worth knowing about: when multiple consecutive frames share the same pointing position before the mount dithers again (common for "dither every N frames" workflows), those frames share fixed-pattern noise and are not fully separated by sigma rejection. The tool finds the valley in the step-size distribution — the gap between within-cluster noise-level steps and the actual dither steps — and counts cluster sizes.</p>
+
+<p>A soft tag ("dither pattern detected, X frames per position, normal for every-N workflows") appears when clustering is intentional and benign. A hard warning card appears only when mean cluster size exceeds 3, the worst cluster is 5+ frames, and more than 30% of frames are in problem-sized clusters — the point at which the within-cluster noise commonality starts to be visible in the stack.</p>
+
+<h2>8. Technical details</h2>
+<p class="tech-lead">The math behind the dither offsets, the flip detection, the walking-noise metrics, and the WCS conversions.</p>
+
+<h3>8.1 Image-center dither offsets</h3>
+
+<p>Each frame's 2×3 affine alignment transform M<sub>i</sub> is applied to the reference frame's center point:</p>
+
+<div class="matheq">\mathbf{p}_i = M_i \cdot \left[\, c_x,\ c_y,\ 1\, \right]^T</div>
+
+<p>where (c<sub>x</sub>, c<sub>y</sub>) = (W/2, H/2) are the center coordinates. The dither offset for frame i is the displacement of its mapped center relative to frame 0's mapped center:</p>
+
+<div class="matheq">\Delta_i = \mathbf{p}_i - \mathbf{p}_0</div>
+
+<p>This gives true pointing displacement regardless of whether M<sub>i</sub> contains a rotation (meridian flip) or just a translation. The center point is specifically chosen because it's the <b>fixed point of pure rotation</b> — a 180° rotation about the center leaves the center unchanged, so a meridian-flipped frame whose pointing matches the reference will register as near-zero dither offset instead of a thousand-pixel apparent excursion.</p>
+
+<p>Per-frame derived quantities:</p>
+
+<div class="matheq">r_i = \sqrt{\Delta x_i^2 + \Delta y_i^2}</div>
+
+<p>is the radial offset of frame i (used for the RMS and max-radius stats), and the inter-frame step magnitude is:</p>
+
+<div class="matheq">s_i = \sqrt{(\Delta x_{i+1} - \Delta x_i)^2 + (\Delta y_{i+1} - \Delta y_i)^2}</div>
+
+<p>which measures how far the mount moved between consecutive frames (the direct dither-step size).</p>
+
+<h3>8.2 Meridian flip detection</h3>
+
+<p>The rotation angle of each frame's transform comes from the matrix's upper-left 2×2 block via standard atan2:</p>
+
+<div class="matheq">\theta = \arctan 2\!\left(M_{1,0},\ M_{0,0}\right)</div>
+
+<p>For a similarity transform M = s · R(θ) + t, this expression recovers θ exactly. A frame is classified as "flipped" relative to the reference angle θ<sub>ref</sub> when the signed angular difference exceeds 90°:</p>
+
+<div class="matheq">\Delta\theta = \left((\theta_a - \theta_b + 180)\ \mathrm{mod}\ 360\right) - 180</div>
+
+<p>The modular arithmetic puts Δθ in the range (-180°, 180°] so the comparison respects the circular nature of angles — a jump from 179° to -179° is a 2° difference, not a 358° one.</p>
+
+<p><b>Flip transitions</b> are the steps between consecutive frames where the flip state changes. For step i (between frames i and i+1), the step is a flip transition if exactly one of frames i and i+1 is on the flipped side. These transition steps are excluded from the step-magnitude statistics, the step histogram, and the directional rose — because they're not dither, they're a meridian flip. The frame positions themselves remain valid data and show up normally in the scatter and path plots.</p>
+
+<h3>8.3 Walking-noise metrics</h3>
+
+<p>Three independent metrics are computed from the full set of dither offsets and compared to thresholds.</p>
+
+<p><b>Metric 1: Scatter linearity.</b> The ratio of the first to second singular value of the mean-centered point cloud (equivalent to the square root of the eigenvalue ratio of the covariance matrix):</p>
+
+<div class="matheq">L = \frac{\sigma_1}{\sigma_2},\quad \sigma_1, \sigma_2 = \mathrm{SVD}(\mathbf{P} - \bar{\mathbf{P}})</div>
+
+<p>where <b>P</b> is the N×2 matrix of offset points. A perfect random 2D scatter has L ≈ 1 (both singular values roughly equal). A straight-line drift sends σ₂ to zero and L to infinity. Threshold: <b>L &gt; 4.0 fires</b>.</p>
+
+<p><b>Metric 2: Temporal drift correlation.</b> The Pearson correlation coefficient between the frame index i and the radial offset r<sub>i</sub>:</p>
+
+<div class="matheq">r = \mathrm{corr}(i,\ |\Delta_i|)</div>
+
+<p>Values near +1 mean the pointing drifts monotonically outward from the reference with time — the classic signature of a mount with polar alignment error. Values near -1 would mean monotonic return to origin (rare but possible). Values near 0 indicate no temporal structure (healthy random dither). Threshold: <b>|r| &gt; 0.85 fires</b>.</p>
+
+<p><b>Metric 3: Directional consistency.</b> The fraction of inter-frame step directions that lie within 45° of the circular mean direction:</p>
+
+<div class="matheq">\bar{\alpha} = \arctan 2\!\left(\overline{\sin \alpha},\ \overline{\cos \alpha}\right)</div>
+<div class="matheq">C = \frac{1}{N}\sum_k \mathbb{1}\left[|\alpha_k - \bar{\alpha}| < 45^\circ\right]</div>
+
+<p>A uniformly-distributed random dither has C ≈ 90°/360° = 0.25. A walking pattern where every step goes roughly the same direction approaches C ≈ 1.0. Threshold: <b>C &gt; 0.65 fires</b>.</p>
+
+<p><b>Combined logic.</b> The walking flag is raised when:</p>
+
+<ul>
+  <li>Scatter linearity fires alone (strong geometric evidence by itself), OR</li>
+  <li>Temporal drift fires AND is corroborated by either linearity OR directional consistency.</li>
+</ul>
+
+<p>Temporal drift alone is insufficient because it can fire on legitimate outward-exploring dither patterns with small frame counts — a mount that happened to dither in a slow spiral during a short run has r &gt; 0.85 without being pathological. Requiring geometric evidence to accompany temporal evidence rejects that false positive.</p>
+
+<h3>8.4 Clustering detection</h3>
+
+<p>The step-size threshold between "within-cluster drift" and "real dither step" is found by searching for the largest gap in the sorted step distribution, clipped to the bottom 85% (so one unusually large outlier doesn't pull the threshold):</p>
+
+<p>1. Sort all valid step magnitudes.</p>
+<p>2. Compute consecutive differences (gaps) between sorted values.</p>
+<p>3. Find the largest gap within the lower 85% of sorted steps.</p>
+<p>4. The threshold is the midpoint of that gap.</p>
+<p>5. Clamp to [0.5, 5.0] pixels and no larger than half the maximum step.</p>
+
+<p>Steps below the threshold are treated as "same cluster"; steps above are "new dither position." The tool then walks the step sequence, counting consecutive runs of same-cluster steps as cluster sizes. The reported metrics are the number of distinct clusters, their mean size, max size, and the fraction of frames in clusters of 3+ members.</p>
+
+<p>The hard clustering warning requires all three of: mean cluster size &gt; 3, max cluster size &gt; 4, and clustered fraction &gt; 30%. This threshold set is deliberately conservative — a 2-frame cluster is normal in most dither workflows, and firing on normal patterns would be noise.</p>
+
+<h3>8.5 Pixel scale extraction from headers</h3>
+
+<p>Four fallback paths, in priority order:</p>
+
+<ol>
+  <li><b>CD matrix</b> — the modern WCS convention. The arcsec-per-pixel scale averages the two row magnitudes:
+    <div class="matheq">s = \frac{1}{2}\!\left(\sqrt{CD_{11}^2 + CD_{21}^2} + \sqrt{CD_{12}^2 + CD_{22}^2}\right) \cdot 3600</div>
+    This correctly accounts for rotation and non-square pixel projections.
+  </li>
+  <li><b>CDELT1/2</b> — simple TAN projection, less accurate than CD when the field is rotated. If the stored value is less than 1, it's treated as degrees per pixel and multiplied by 3600.</li>
+  <li><b>Direct keywords</b> — <code>PIXSCALE</code>, <code>SCALE</code>, <code>PLATESCL</code>, <code>SECPIX</code>, <code>SECPIX1</code> are common header keys written by capture software (SGP, N.I.N.A., PixInsight). Values are sanity-checked to be between 0.01 and 100 arcsec/pixel.</li>
+  <li><b>Instrumental</b> — compute from focal length and pixel pitch:
+    <div class="matheq">s = 206.265 \cdot \frac{p_{\mathrm{um}}}{f_{\mathrm{mm}}}</div>
+    where 206.265 arcsec per radian × 10⁻³ gives the standard small-angle conversion.
+  </li>
+</ol>
+
+<h3>8.6 Pixel offsets to RA / Dec</h3>
+
+<p>With the solved WCS header's CD matrix available (plate solve succeeded), pixel offsets are converted to on-sky offsets:</p>
+
+<div class="matheq">\Delta \mathrm{RA}_{\mathrm{deg}} = CD_{11}\, \Delta x + CD_{12}\, \Delta y</div>
+<div class="matheq">\Delta \mathrm{Dec}_{\mathrm{deg}} = CD_{21}\, \Delta x + CD_{22}\, \Delta y</div>
+
+<p>and then to arcseconds, with the standard <b>cos(Dec)</b> correction on the RA component:</p>
+
+<div class="matheq">\Delta \mathrm{RA}'' = \Delta \mathrm{RA}_{\mathrm{deg}} \cdot 3600 \cdot \cos(\mathrm{Dec}_c)</div>
+<div class="matheq">\Delta \mathrm{Dec}'' = \Delta \mathrm{Dec}_{\mathrm{deg}} \cdot 3600</div>
+
+<p>Without the cos(Dec) correction, dither near the celestial poles would be reported as hugely larger than near the equator for the same mount motion, because lines of RA converge at the poles. The correction factor cos(Dec<sub>c</sub>) is taken at the frame center's declination (CRVAL2 from the solved WCS), which is accurate to well under 1% across any reasonable field of view.</p>
+
+<p>The sign flip on RA for the plot — plot_x = -ΔRA — exists because RA increases <i>west</i> on the sky (looking out from Earth), but the plot convention is East = right. Flipping the sign puts East on the right where it belongs.</p>
+
+<h3>8.7 WCS rotation and the directional rose compass</h3>
+
+<p>The position angle of North in the image, used to orient the directional rose with real sky labels, comes from:</p>
+
+<div class="matheq">\mathrm{PA}_{N} = \arctan 2\!\left(CD_{12},\ CD_{22}\right)</div>
+
+<p>This is the angle (CCW from pixel +X) at which the celestial declination axis points in pixel space. The rose's compass labels (N, E, S, W) and the arrow direction are all derived from this, so the rose shows true sky directions regardless of your camera's rotator position.</p>
+
+<h3>8.8 Why dithering matters at all — the √N stacking relationship</h3>
+
+<p>Fixed-pattern noise (FPN) components — amp glow, column bias, hot pixels, dark current structure — are <i>correlated</i> between consecutive subframes taken at the same mount pointing. Shot noise and read noise are <i>uncorrelated</i>. When you stack N subframes, uncorrelated noise averages down as 1/√N while correlated FPN does not reduce at all — your stack ends up FPN-limited no matter how many subs you add.</p>
+
+<p>Dithering breaks the FPN correlation by moving the sky signal across different pixels between subs. Sigma rejection or median stacking at the stack-combine step then throws away the stationary FPN while preserving the moving sky. In the limit of truly random 2D dither with enough frames to populate every nearby pixel, residual FPN scales as:</p>
+
+<div class="matheq">\mathrm{FPN}_{\mathrm{residual}} \propto \frac{1}{\sqrt{N_{\mathrm{dither}}}}</div>
+
+<p>Walking noise is exactly the failure of this: when dither offsets are collinear, the FPN at one pixel never gets replaced by sky at a different pixel along the perpendicular axis, so sigma rejection has nothing to reject against — the FPN stays visible in the stack as a streak along the walking direction. The three walking metrics (§8.3) are chosen to be sensitive to this failure mode with low false-positive rate.</p>
+
+<h3>8.9 Frame-list &lt;-&gt; plot bidirectional selection</h3>
+
+<p>The scatter and path plots store the exact pixel coordinates of every point in their current axes. Mouse clicks are converted from pixel coordinates to axes coordinates via Matplotlib's transData, then the Euclidean display-space distance from the click to every point is computed; the nearest point within 12 display pixels is selected. The 12-pixel radius prevents accidental selection from mild near-misses and is comfortable for touch input as well as mouse.</p>
+
+<p>Rectangle selection uses Matplotlib's RectangleSelector on both axes, triggered by right mouse button (so left-click single-point selection still works). The resulting selection is converted to a set of frame indices and posted back to the file list, which blocks its own selection-changed signal during the bulk update (to avoid highlight flicker from each individual item change) and manually re-triggers the highlight on the plot once the full new selection is in place.</p>
+
+<div class="credit">
+<b>Credits.</b> Dither Analysis — the image-center-under-full-affine measurement principle, the flip-transition detection and exclusion logic, the three-metric walking-noise diagnostic with its specific combined-logic rule, the clustering detector with gap-based threshold finding, the four-plot layout, the pixel/arcsec/RA-Dec unit toggle, the plate-solve-backed sky-oriented rose, the bidirectional plot-list selection, and the per-sasd pixel-scale cache — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to the community: SEP (Source Extractor in Python) by Barbary (2016) for trial-detect star counts; the SIP distortion / CD-matrix WCS convention from Shupe et al. (2005) and Greisen & Calabretta (2002); plate solving via ASTAP (Han Kleijn) and Astrometry.net (Lang et al. 2010); the FPN-under-dithering reduction with √N follows standard CCD imaging theory (Howell 2006). PCA / SVD-based linearity, Pearson temporal correlation, and the circular-statistics directional-consistency metric are all textbook techniques; the specific threshold set and the combined-logic rule for the walking diagnosis are tuned for astrophotography data and are Frank's choice.
+</div>
+
+</body>
+</html>

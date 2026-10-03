@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Magnitude / Surface Brightness Tool</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>Magnitude / Surface Brightness Tool</h1>
+<p class="sub">Calibrated aperture photometry on linear astronomical data: catalog-anchored integrated magnitudes, surface brightness in mag/arcsec², robust background subtraction with placement verification, and direct AAVSO Extended-format export.</p>
+
+<div class="pub">
+<b>Published-science tool.</b> This is the photometry engine used in <b>Franklin Marek (2026),</b> <i>"Calibrated Emission-Line Surface Photometry of the High–Proper-Motion Planetary Nebula Sh 2-68 (PN G030.6+06.2),"</i> SetiAstro Technical Note, where it produced calibrated µ measurements across physically distinct regions of the nebula in Hα, [O III], and [S II] — reaching µ ≈ 23.8 mag/arcsec² in the deepest [O III] halo detection. The whitepaper is <a href="https://www.setiastro.com/s/Calibrated-Emission-Line-Surface-Photometry-of-the-High-Proper-Motion-Planetary-Nebula-SH2-68.pdf">available on setiastro.com</a>. If you use this tool for publication, cite the whitepaper and this release of SASpro.
+</div>
+
+<p>At its core the tool solves one equation per channel from a field of catalog stars — the photometric <b>zero point</b> that relates measured instrumental magnitudes to a real stellar magnitude system — and then uses that zero point to turn an arbitrary user-defined region of the sky into a calibrated magnitude and surface brightness. It operates exclusively on linear data (no stretches, no clipping), carries full uncertainty propagation from the per-star ZP scatter and background noise all the way to the reported ±3σ, and verifies the result by re-measuring your target against four independently-placed background boxes.</p>
+
+<div class="warn">
+<b>The image must be linear.</b> This tool only produces meaningful numbers on linear-light data — the raw master, calibrated stack, or any linear transform of them (crop, mosaic, drizzle). A stretched image breaks the ZP relation: the instrumental magnitudes of the catalog stars no longer sit on a straight line and the fit becomes meaningless. If you've stretched the image for display, revert to the linear version before measuring.
+</div>
+
+<h2>1. The four-step workflow at a glance</h2>
+
+<p>Measurement always runs in the same order:</p>
+
+<div class="workflow">
+<b>Step 1 — Fetch catalog stars.</b> Pull reference stars with known photometry from the local Gaia XP library (primary), SIMBAD (augment), and APASS (last-resort fallback). Needs a plate-solved WCS header.
+<br><b>Step 2 — Compute zero points.</b> Detect stars in the actual image with SEP, cross-match to the catalog, run per-star aperture photometry, and fit ZP per channel with sigma-clipped linear regression.
+<br><b>Step 3 — Pick target region.</b> Define what you want to measure — a box, ellipse, freehand lasso, or a single star auto-fit by curve-of-growth — on the linear image.
+<br><b>Step 4 — Measure.</b> Integrate the region's flux, subtract the automatically-chosen or manually-placed sky background, and report the calibrated magnitude, surface brightness, and uncertainty.
+</div>
+
+<p>Each step produces output you can inspect before continuing. Step 2 opens a scatter plot of catalog mag vs instrumental mag with the fit line and clipped points marked — the plot <i>is</i> your calibration's reality check (the Sh 2-68 paper's Figure 2 is this exact plot for three narrowband frames). Step 4 opens a non-blocking results dialog with every number you need, including a Bortle-scale estimate of your sky quality.</p>
+
+<h2>2. Step 1 — Fetching catalog stars</h2>
+
+<p>Click <b>Step 1: Fetch Catalog Stars</b>. The tool reads the active document's WCS header, builds a field center and radius from the image corners, and queries catalogs in this order:</p>
+
+<ol>
+  <li><b>Local Gaia XP library</b> (primary) — Gaia DR3 sources with stored BP/RP spectra, matched by position in a radius sweep across your field. Each matched spectrum is integrated through Johnson B / V / R passbands to synthesize per-star photometry, then anchored to each star's real Gaia G magnitude (see §10.5) to put the result on a true magnitude scale. This source is fully offline and typically delivers hundreds to thousands of stars across a modest field.</li>
+  <li><b>SIMBAD</b> (augment) — a cone query to CDS Strasbourg (with a VizieR SIMBAD-mirror fallback on separate CDS infrastructure if the primary endpoint is down). SIMBAD contributes bright saturated stars Gaia XP cannot cover, and lifts identifiers / spectral types / Pickles-match template labels onto the XP matches (2″ cross-match tolerance).</li>
+  <li><b>APASS DR9</b> via VizieR (last-resort) — only triggered if the Gaia XP + SIMBAD union has fewer than 20 stars. Common on small FOVs with no local Gaia library installed, or during a widespread CDS outage.</li>
+</ol>
+
+<p>The result is a single merged star list cached into the document's metadata under <code>SFCC_star_list</code> (shared with the Spectral Flux Color Calibration tool). Subsequent runs on the same document skip the catalog query entirely and use the cache. Use <b>Clear All</b> to invalidate it.</p>
+
+<div class="tip">
+<b>Catalog-source resilience.</b> SIMBAD and VizieR have had serious outages this year — the SIMBAD TAP endpoint can fail silently for hours. The local Gaia XP library insulates you from all of that: it was promoted to primary catalog source precisely so your workflow stays productive during CDS downtime. If you plan to do serious photometry regularly, install the Gaia XP library through the Gaia Database tool once; the primary catalog becomes read-only disk access from then on.
+</div>
+
+<h2>3. Step 2 — Computing zero points</h2>
+
+<p>Click <b>Step 2: Compute Zero Points</b>. The tool:</p>
+
+<ol>
+  <li>Runs <b>SEP</b> source detection on the gray-mean of the image (or the mono plane for mono images) using the configured <b>SEP detect σ</b> threshold.</li>
+  <li>Estimates the scene FWHM from the median of the detected sources' second-moment semi-axes, and uses that to drive per-star aperture sizing.</li>
+  <li><b>Cross-matches</b> catalog stars to detections with mutual nearest-neighbour at a tolerance that starts at 3 px and grows (6, 12, 24 px) until at least 16 matches are secured — this is forgiving of small WCS offsets.</li>
+  <li>Runs <b>per-star aperture photometry</b> with sized apertures and local annulus background subtraction (§10.2).</li>
+  <li>Fits a <b>sigma-clipped zero point</b> per channel: computes one ZP candidate per matched star, iteratively rejects outliers at the configured <b>ZP sigma-clip</b> threshold (default 2.5σ), and reports the median of the survivors (§10.3).</li>
+</ol>
+
+<p>Three settings govern this stage:</p>
+
+<ul>
+  <li><b>SEP detect σ</b> (2-50, default 5) — detection threshold for source extraction, in multiples of the background noise. Lower picks up fainter stars (more matches, more noise); raise to 8-10 on crowded or noisy fields. Does not affect your target measurement, only the ZP ensemble.</li>
+  <li><b>ZP sigma-clip</b> (1.0-10.0, default 2.5) — sigma-clipping threshold for rejecting outlier stars from the ZP fit, iterated three times. Lower is more aggressive; the default is a safe choice for most fields. Drop to 2.0 in dense fields where blended neighbours contaminate the per-star photometry.</li>
+  <li><b>Mono/L band</b> — for mono images, controls which SIMBAD catalog magnitude the fit uses. <b>L→V</b>, <b>R→R</b>, <b>G→V</b>, <b>B→B</b>. For RGB images this is forced: R→Rmag, G→Vmag, B→Bmag.</li>
+</ul>
+
+<p>Afterward, click <b>Show ZP Graphs</b> to open a per-channel scatter plot of catalog magnitude vs instrumental magnitude. The fit line is drawn as y = x + ZP, kept points are blue, clipped points are red. For a healthy calibration this looks like a tight straight line across six to eight magnitudes of dynamic range (as in the whitepaper's Figure 2 for all three narrowband frames). A visibly nonlinear plot — sagging at the bright end, hooking at the faint end — means saturation or detection noise is biasing the fit, and the measurement should be redone with revised SEP settings.</p>
+
+<div class="warn">
+<b>Low match-rate warning.</b> If Step 2 matches fewer than ~15% of catalog stars (or fewer than 12 total), the tool warns you with a dialog. This is almost always a WCS problem: the plate solution doesn't match the current pixel grid (because the image was cropped, resized, or the catalog cache is stale from a different crop). The fix is to re-solve <i>this exact image</i> and re-run Steps 1 and 2.
+</div>
+
+<div class="tip">
+<b>Crowded-field warning.</b> If 25% or more of your matched stars have a neighbour inside their background annulus, Step 2 appends a <i>Dense field</i> note to the status line. The annulus background subtraction is contaminated by neighbour light in that regime, which pulls the faint end of the ZP relation and inflates its scatter. In practice this hits globular cluster cores and some rich galactic disk fields; nebular and galaxy fields are rarely affected.
+</div>
+
+<h2>4. Step 3 — Picking a target region</h2>
+
+<p>Click <b>Step 3: Pick Target Region</b> to open the region picker. The picker shows your image (optionally autostretched for visibility — the stretch is display-only, your measurement uses the linear pixels) and offers four selection modes selected from the dropdown at the top:</p>
+
+<ul>
+  <li><b>Box</b> — click-drag a rectangle. Finalizes in red on release.</li>
+  <li><b>Ellipse</b> — click-drag an ellipse. Same interaction.</li>
+  <li><b>Freehand</b> — click-drag a lasso of any shape. Closes automatically when you release the mouse.</li>
+  <li><b>Star (auto)</b> — click near a star's core and the tool runs SEP on a 128×128 window around the click, picks the closest detection, measures its curve of growth, and fits an ellipse enclosing a user-specified fraction of its flux. This is how you do single-star photometry (variable stars for AAVSO, standard stars) without hand-sizing the aperture.</li>
+</ul>
+
+<div class="keys">
+<b>Picker controls.</b>
+<br><b>Left-click drag</b> — draw a selection (Box/Ellipse/Freehand modes).
+<br><b>Left-click</b> — identify a star to aperture-fit (Star auto mode).
+<br><b>Mouse wheel</b> — zoom under the cursor.
+<br><b>Zoom In / Out / Fit / 1:1</b> toolbar — explicit zoom controls.
+<br><b>Enable/Disable Auto-Stretch</b> — toggle a display-only stretch to see dim regions.
+<br><b>Find Background</b> — manually trigger (or re-trigger) the automatic background box placement.
+<br><b>Use Target</b> — commit the current selection and return to the main dialog.
+</div>
+
+<h3>4.1 Star (auto) mode: curve-of-growth aperture</h3>
+
+<p>Switch to <b>Star (auto)</b> and the picker exposes two extra controls:</p>
+
+<ul>
+  <li><b>Capture</b> (90.0-99.9 %, default 99.0 %) — the fraction of total stellar flux the aperture should enclose. The half-flux radius (HFR) alone captures only 50% — far too little for an absolute magnitude. 99% is the right default for AAVSO submissions; 95% is slightly tighter and gives a better SNR for photometry of a very faint star against a bright background.</li>
+  <li><b>Circular</b> — ignore the measured ellipticity and force a circular aperture. Useful for intercomparison with other photometry packages that use circular apertures by convention.</li>
+</ul>
+
+<p>The algorithm: SEP runs on a cutout around your click with a decreasing detection threshold until a source is found; the nearest source to the click wins. The second-moment axes <i>a</i>, <i>b</i>, and position angle <i>θ</i> give the aperture's shape. The <i>half-flux radius</i> is measured directly from the curve of growth; the <i>capture-fraction radius</i> is read from the same curve at your chosen flux percentile. The ellipse is scaled area-preservingly to that radius and drawn on the image for inspection. Re-click to try a different source, or adjust Capture% and re-click to re-fit.</p>
+
+<h3>4.2 Finding a star by name</h3>
+
+<p>Instead of clicking in the picker, you can type a name into the <b>Find a star by name</b> field on the main dialog and press Enter. SIMBAD resolves the name, the tool projects RA/Dec to pixels through the WCS, confirms the star falls on the frame, opens the picker in Star (auto) mode, and auto-fits it on the first attempt. For AAVSO variable-star submission this is faster than clicking, especially on dense fields.</p>
+
+<h3>4.3 Saving and loading WCS-locked regions</h3>
+
+<p><b>Save Region</b> stores the current target as a <b>sky polygon</b> (RA/Dec coordinates), tagged with the OBJECT header value as its default name. <b>Load Region</b> reprojects a saved region through the current image's WCS and rasterizes it onto this frame.</p>
+
+<p>Because the storage format is in sky coordinates, the same physical patch of the nebula is measured identically across different stacks of the same object — different nights, different filters, different subs, re-registered or re-cropped. In the Sh 2-68 whitepaper this is how the Hα coma was re-measured against two independent background placements with aperture-level agreement to 0.004 mag (Table 2 of the paper). Regions densify to ~64 vertices on save, so distortion-corrected (SIP) WCS solutions re-project faithfully: a straight edge in pixel space on image A becomes a slightly curved edge on image B's pixel grid, exactly as the physics demands.</p>
+
+<h2>5. Step 4 — Measuring the region</h2>
+
+<p>Click <b>Step 4: Measure Object Region</b>. The tool combines the target mask with the background mask (automatically placed by <code>auto_rect_box</code> if you haven't drawn one), computes net flux via scaled background subtraction, propagates uncertainty from the background noise and the ZP SEM, applies the systematic floor, and opens a non-blocking results dialog.</p>
+
+<p>For a <b>mono</b> image the results dialog reports:</p>
+
+<ul>
+  <li>Net flux and its 1σ uncertainty (both in linear image units).</li>
+  <li>Object area and background area in pixels.</li>
+  <li>The systematic floor value folded in.</li>
+  <li><b>Integrated magnitude</b> on the chosen band's scale, ± total 3σ.</li>
+  <li><b>Background surface brightness</b> µ<sub>bg</sub> in mag/arcsec² (if pixscale is known from the WCS).</li>
+  <li><b>Estimated Bortle class</b> from the background µ (unless a narrowband filter is detected in the header, in which case this is reported as N/A — a 4.5 nm Hα filter is a sky-brightness measurement of a different physical quantity entirely).</li>
+  <li><b>Surface brightness</b> µ of the target region in mag/arcsec² ± total 3σ.</li>
+</ul>
+
+<p>For an <b>RGB</b> image the same quantities are reported per channel: m_R, m_G, m_B and µ_R, µ_G, µ_B, each with its own ±3σ. The Bortle estimate comes from the green channel.</p>
+
+<p>The dialog is non-modal — you can leave it open while you tweak the region or roll the systematic floor and remeasure. Use <b>Copy to Clipboard</b> to paste the full report into an observation log or paper.</p>
+
+<h3>5.1 The systematic floor</h3>
+
+<p>The <b>Systematic floor</b> setting (mag, 0-1.0, default 0.100) is a catch-all for calibration uncertainties not captured by photon and background statistics: ZP colour term, narrowband-to-broadband mapping, flat-field residuals, and the sensitivity of the result to background placement. The reported ± is <i>3× the combined uncertainty</i>:</p>
+
+<div class="matheq">\sigma_{\mathrm{tot}} = \sqrt{\sigma_{\mathrm{stat}}^2 + \sigma_{\mathrm{sys}}^2}</div>
+<div class="matheq">\Delta m = 3\,\sigma_{\mathrm{tot}}</div>
+
+<p>A value of 0.100 mag is defensible for calibrated narrowband surface photometry — this is the value used in the Sh 2-68 paper. Raise it (0.15-0.20) if your calibration is less certain (e.g. small ZP ensemble, visible non-linearity in the ZP plot); lower it only with explicit justification.</p>
+
+<h3>5.2 Four-quadrant background robustness check</h3>
+
+<p>Check <b>Verify against 4-quadrant backgrounds</b> before measuring and the results dialog gains an extra section: the target is re-measured against the primary background box <i>plus</i> an independent 50×50 (or your sized) box automatically placed in each of the four image quadrants. The four quadrant boxes are chosen as the darkest source-free region in each quadrant that does not overlap with the primary background box's keep-out zone, so the quadrant placements can never duplicate your primary.</p>
+
+<p>The section reports µ measured against each background, their spread (max − min), and a verdict: <b>ROBUST</b> if the maximum deviation from the primary measurement sits within the 3σ error envelope, <b>SENSITIVE</b> if it exceeds it. "SENSITIVE" is not necessarily wrong — it tells you the measurement depends on where you drew the background box, which may itself be a physical reality (an uneven gradient, a nebula filling most of the frame). "ROBUST" is a strong defence of the quoted value: the Sh 2-68 whitepaper's two-background Hα coma check (0.004 mag agreement, far inside the 3σ envelope) is exactly this check surfaced as a published number.</p>
+
+<p>The <b>Full Image View</b> button opens an annotated full-frame overview showing the target as a red mask overlay with an adjustable opacity, the primary background box in gold, and (toggleable) the four qualifying quadrant backgrounds in cyan. This is the figure you want in a whitepaper's aperture-placement section: it unambiguously documents where every number came from. Save as PNG/TIFF or copy straight to the clipboard.</p>
+
+<h2>6. AAVSO submission</h2>
+
+<p>The right-column AAVSO panel wraps the AAVSO Extended-format upload workflow around the measurement engine. The sequence is:</p>
+
+<ol>
+  <li><b>Measure</b> a star (Step 4 after picking it in Star-auto mode).</li>
+  <li><b>Identify Target</b> — queries SIMBAD at the target's centroid RA/Dec and resolves the result to a VSX / AAVSO designation when one exists.</li>
+  <li><b>Add Measurement → AAVSO Batch</b> — formats one Extended-format row per channel (TR/TG/TB for RGB, or your mono filter) and appends to the batch. The tool prompts for the STARID (prefilled from Identify Target), the check-star name and magnitude (suggested from the brightest in-field catalog star of similar brightness to the target), and airmass if the FITS header doesn't yield one.</li>
+  <li><b>AAVSO Batch</b> — opens the batch window. Review, delete bad rows, and export a valid Extended-format file; the tool offers to open the AAVSO WebObs upload page afterward.</li>
+</ol>
+
+<p>The exported file carries 1σ statistical errors (per AAVSO convention), not the 3σ totals the results dialog shows. Your observer code is remembered between sessions. The filter mapping prefers the FITS <code>FILTER</code> card when it maps confidently (standard Johnson/Cousins or Sloan letters, Astrodon-labeled filters, "g'" and similar); when it's ambiguous you're prompted with a dropdown pre-selected to the best guess.</p>
+
+<h2>7. The ROI preview and full-image view</h2>
+
+<p>The main dialog's right column shows a live crop around your current target region, with the mask drawn as a red translucent overlay. Two controls govern it: <b>Overlay opacity</b> (0-1.0, default 0.25) and <b>ROI padding</b> (0-200 px around the mask bbox, default 20). The crop stretches for display — it never affects the measurement. This is the fastest way to confirm you're measuring the correct region before clicking Measure.</p>
+
+<p>The <b>Full Image View</b> button opens the whole frame with the same overlays plus the primary and (toggleable) qualifying backgrounds drawn in. This is the publication-ready figure.</p>
+
+<h2>8. Clear All</h2>
+
+<p><b>Clear All</b> wipes everything: cached stars, computed zero points, drawn regions, and the metadata-cached SIMBAD star list on the active document. Use when the WCS has changed (re-solve, crop, resample) and you need the catalog cross-match done fresh.</p>
+
+<h2>9. Technical details</h2>
+<p class="tech-lead">The math behind every number the tool reports.</p>
+
+<h3>9.1 Aperture photometry and background subtraction</h3>
+
+<p>Target measurement is a straightforward integration over the mask Ω<sub>obj</sub> with a scaled-area background subtraction from a disjoint mask Ω<sub>bg</sub>:</p>
+
+<div class="matheq">F_{\mathrm{net}} = \sum_{p \in \Omega_{\mathrm{obj}}} I_p - \frac{N_{\mathrm{obj}}}{N_{\mathrm{bg}}}\sum_{p \in \Omega_{\mathrm{bg}}} I_p</div>
+
+<p>where <i>N</i><sub>obj</sub> and <i>N</i><sub>bg</sub> are pixel counts. The ratio <i>N</i><sub>obj</sub> / <i>N</i><sub>bg</sub> scales the background sum to the object's area regardless of their relative sizes — one of them can be a 500-pixel freehand lasso and the other a 50×50 box without any correction gymnastics.</p>
+
+<p>The background noise is measured <b>robustly</b> on the background mask via the Median Absolute Deviation:</p>
+
+<div class="matheq">\hat{\sigma}_{\mathrm{bg}} = 1.4826 \cdot \mathrm{median}\!\left(\left|I - \mathrm{median}(I)\right|\right)</div>
+
+<p>The 1.4826 factor converts MAD to a standard-deviation equivalent under Gaussian noise assumptions. MAD is used instead of a plain standard deviation because any real stars that leak into the background box inflate std but barely move MAD, which is exactly what we want: the σ we quote should reflect the <i>sky</i>, not whatever happens to be sitting in the box.</p>
+
+<p>The flux-level uncertainty assumes photon-dominated Poisson statistics on each pixel, which sum in quadrature over the object area:</p>
+
+<div class="matheq">\sigma_F = \hat{\sigma}_{\mathrm{bg}} \sqrt{N_{\mathrm{obj}}}</div>
+
+<h3>9.2 Per-star aperture sizing</h3>
+
+<p>For each matched catalog star the aperture radii are set from the SEP second-moment axes <i>a</i> and <i>b</i>, with the FWHM computed from their geometric mean to handle elliptical PSFs:</p>
+
+<div class="matheq">\mathrm{FWHM}_i = 2.35 \cdot 2\sqrt{a_i\,b_i}</div>
+<div class="matheq">r_{\mathrm{ap},i} = 1.5\,\mathrm{FWHM}_i</div>
+<div class="matheq">r_{\mathrm{in},i} = 3.0\,\mathrm{FWHM}_i</div>
+<div class="matheq">r_{\mathrm{out},i} = 4.5\,\mathrm{FWHM}_i</div>
+
+<p>r<sub>ap</sub> is clamped to [2.0, 15.0] px, and <i>r<sub>in</sub>, r<sub>out</sub></i> are guaranteed to grow strictly outward from r<sub>ap</sub>. Per-star sizing matters: a bright well-focused star and a dim near-saturation one carry very different FWHM, and a one-size-fits-all aperture systematically under-reads one or over-reads the other.</p>
+
+<p>Local background is estimated as the mean flux per pixel in the annulus r<sub>in</sub>-r<sub>out</sub>:</p>
+
+<div class="matheq">b_{\mathrm{ann},i} = \frac{F_{\mathrm{ann},i}}{\pi\!\left(r_{\mathrm{out},i}^2 - r_{\mathrm{in},i}^2\right)}</div>
+
+<p>and the star's net flux is the aperture sum minus the annulus-level background scaled to the aperture area:</p>
+
+<div class="matheq">F_{i,\mathrm{net}} = F_{\mathrm{ap},i} - \pi r_{\mathrm{ap},i}^2 \cdot b_{\mathrm{ann},i}</div>
+
+<p>SEP's <code>sum_circle</code> and <code>sum_circann</code> handle fractional-pixel aperture coverage at 5× subpixel sampling, which keeps aperture correction below the 0.01 mag level for well-sampled PSFs.</p>
+
+<h3>9.3 Zero-point ensemble fit</h3>
+
+<p>For each star with net flux <i>F<sub>i</sub></i> > 0 and a catalog magnitude <i>m</i><sub>cat,i</sub> in the chosen band, one ZP candidate is formed:</p>
+
+<div class="matheq">\mathrm{ZP}_i = m_{\mathrm{cat},i} + 2.5 \log_{10}(F_i)</div>
+
+<p>This is the ZP such that <i>m</i><sub>cat,i</sub> = m<sub>inst,i</sub> + ZP, where <i>m</i><sub>inst</sub> = −2.5 log<sub>10</sub>(<i>F</i>). A sigma-clipping iteration (up to 3 rounds, threshold set by the <b>ZP sigma-clip</b> parameter, default 2.5σ) refines the surviving set:</p>
+
+<div class="matheq">\mathcal{K} = \left\{i : \left|\mathrm{ZP}_i - \mathrm{median}\right| \leq k\sigma\right\}</div>
+<div class="matheq">\mathrm{ZP} = \mathrm{median}\{\mathrm{ZP}_i : i \in \mathcal{K}\}</div>
+
+<p>The uncertainty on the median is reported as the standard error of the mean:</p>
+
+<div class="matheq">\sigma_{\mathrm{ZP}} = \frac{\mathrm{std}(\mathrm{ZP}_i)}{\sqrt{|\mathcal{K}|}}</div>
+
+<p>Why the median rather than a weighted mean? With sigma-clipping already in play the surviving set is close to Gaussian around the true ZP, so median and mean converge, but the median remains robust against pathological ZP outliers from blended neighbours or badly-matched sources that happen to sneak through the sigma clip. Reported standard error is more conservative than any weighted mean would give.</p>
+
+<p>Per-target error propagation combines the ZP standard error and the flux SNR in the standard way (δ(log<sub>10</sub>x)/δx = 1/(x ln 10)):</p>
+
+<div class="matheq">\sigma_m = \sqrt{\sigma_{\mathrm{ZP}}^2 + \left(\frac{2.5}{\ln 10}\cdot\frac{\sigma_F}{F}\right)^2}</div>
+
+<h3>9.4 From magnitude to surface brightness</h3>
+
+<p>The integrated target magnitude is:</p>
+
+<div class="matheq">m = -2.5 \log_{10}(F_{\mathrm{net}}) + \mathrm{ZP}</div>
+
+<p>and the surface brightness in mag/arcsec² is obtained by normalizing the flux to the region's angular area:</p>
+
+<div class="matheq">\mu = -2.5 \log_{10}\!\left(\frac{F_{\mathrm{net}}}{A}\right) + \mathrm{ZP}</div>
+
+<p>equivalent to:</p>
+
+<div class="matheq">\mu = m + 2.5 \log_{10}\!\left(\frac{A}{1\ \mathrm{arcsec}^2}\right)</div>
+
+<p>where the angular area is computed from the pixel count and the WCS pixel scale <i>p</i> (arcsec/px):</p>
+
+<div class="matheq">A = N_{\mathrm{obj}} \cdot p^2</div>
+
+<p>Pixel scale is read from the WCS celestial pixel-scale matrix as the length of its first column, in arcseconds. This is correct for a plate solution without significant distortion; for highly distorted fields (very wide-field, SIP-heavy) the per-pixel area varies slightly across the frame, and strictly the sum over Ω<sub>obj</sub> of per-pixel areas should be used — a sub-percent correction in practice that this tool does not currently apply.</p>
+
+<h3>9.5 Local Gaia XP synthetic photometry</h3>
+
+<p>For stars matched out of the local Gaia XP library, the catalog magnitudes used in the ZP fit are not pre-tabulated — they are synthesized from the star's stored BP/RP spectrum by integration through Johnson passbands. Given the flux density <i>f<sub>λ</sub></i>(λ) on the Gaia wavelength grid and the Johnson transmission <i>T<sub>X</sub></i>(λ) for X ∈ {B, V, R}:</p>
+
+<div class="matheq">S_X = \int f_\lambda(\lambda)\,T_X(\lambda)\,d\lambda</div>
+
+<p>The raw integrals are on an arbitrary instrumental scale (XP flux units) and are useless as absolute catalog magnitudes directly. To put them on a real magnitude system, each star is anchored to its own real Gaia G magnitude by first synthesizing a Gaia-G instrumental magnitude the same way:</p>
+
+<div class="matheq">g_{\mathrm{synth}} = -2.5 \log_{10}\!\int f_\lambda(\lambda)\,T_G(\lambda)\,d\lambda</div>
+
+<p>and then computing a per-star offset to the real Gaia G from the Gaia DR3 catalog:</p>
+
+<div class="matheq">C = G_{\mathrm{Gaia}} - g_{\mathrm{synth}}</div>
+
+<p>The same offset is applied to all three Johnson synthetic magnitudes:</p>
+
+<div class="matheq">B,V,R = -2.5 \log_{10}(S_{B,V,R}) + C</div>
+
+<p>Because the same multiplicative instrumental scale factor appears in all four integrals, dividing it out via <i>C</i> places B, V, R on a real magnitude system star-by-star. Any colour-dependent error in the synthetic Gaia-G passband enters as a systematic that is strongly correlated across all three channels — so it moves the whole ZP up or down together, which the ZP fit absorbs identically to a flat throughput factor. This is why the whitepaper's Figure 2 shows such tight linearity: the per-star anchoring handles the hardest part of making XP spectra behave as catalog photometry.</p>
+
+<h3>9.6 Catalog cross-match and union</h3>
+
+<p>Gaia XP and SIMBAD results are merged by spatial cross-match at 2″:</p>
+
+<div class="matheq">\theta_{ij} = \arccos(\sin\delta_i\sin\delta_j + \cos\delta_i\cos\delta_j\cos(\alpha_i-\alpha_j))</div>
+
+<p>computed via astropy's <code>match_to_catalog_sky</code>. Gaia XP is authoritative on position and photometry (uniform calibration across the ensemble matters more for a clean ZP than picking up individual measured mags from a different pipeline). SIMBAD contributes two things: entries with no XP counterpart within 2″ (bright saturated stars Gaia didn't register, well-catalogued objects, etc.), and non-photometric fields — main identifier, object type, spectral type, Pickles-match template — lifted onto XP matches that lacked them. If both tiers fail or the merged list is still too thin (fewer than 20 stars), APASS DR9 is queried as a last-resort fallback and merged the same way.</p>
+
+<h3>9.7 Star-auto curve-of-growth aperture</h3>
+
+<p>In Star (auto) picker mode, the aperture radius is set from the <b>cumulative flux</b> as a function of aperture radius centered on the star:</p>
+
+<div class="matheq">F(r) = \int_0^r 2\pi r'\,I(r')\,dr'</div>
+
+<p>Two radii are extracted from the measured curve: the <b>half-flux radius</b> (HFR, used to set the search range and as a fallback) is <i>F(r<sub>HFR</sub>) = ½ F(∞)</i>, and the aperture radius is the solution of:</p>
+
+<div class="matheq">F(r_{\mathrm{cap}}) = f \cdot F(\infty), \quad f \in [0.90,\,0.999]</div>
+
+<p>where <i>f</i> is the user-chosen Capture %. SEP's <code>flux_radius</code> solves this numerically on the background-subtracted cutout; if the measurement fails (wings cut off, very faint star), the tool falls back to a Gaussian-equivalent scaling from the HFR using the inverse-CDF relation between <i>r<sub>HFR</sub></i> and <i>r<sub>cap</sub></i>. The ellipse is then scaled area-preservingly to <i>r<sub>cap</sub></i> along the measured <i>b/a</i> ratio.</p>
+
+<h3>9.8 WCS-locked region storage</h3>
+
+<p>When you Save Region, the current pixel-space polygon is densified to ~64 vertices per edge, each vertex is projected through the active image's WCS to RA/Dec, and the resulting sky polygon is stored in a JSON region library at the user's config directory. On Load, the sky polygon is projected through the <i>current</i> image's WCS back to pixel space and rasterized to a mask via matplotlib's <code>Path.contains_points</code> at pixel centres (origin 0 to match astropy's convention).</p>
+
+<p>Densification is the critical step: a straight edge in pixel space on image A is <i>not</i> a straight edge on image B's pixel grid if the two frames differ in rotation, scale, or SIP distortion coefficients. Sampling 64 points along each original edge preserves the shape of the sky polygon through the round-trip to within fractional-pixel accuracy, so a region measured on one frame of a time series lands on the same physical patch of sky on every other frame.</p>
+
+<h3>9.9 Bortle estimation from sky brightness</h3>
+
+<p>If a pixel scale is available and the FITS <code>FILTER</code> card does not match a narrowband token (Hα, OIII, SII, Hβ, "NB", "NARROWBAND", "DUOBAND", common duo-/tri-/quad-band products), the tool maps the measured background surface brightness to a <b>Bortle class</b> using the standard SQM→Bortle correspondence:</p>
+
+<table>
+<tr><th>Bortle</th><th>Label</th><th>Sky µ (mag/arcsec²)</th></tr>
+<tr><td>1</td><td>Excellent</td><td>≥ 21.99</td></tr>
+<tr><td>2</td><td>Typical dark</td><td>21.89-21.99</td></tr>
+<tr><td>3</td><td>Rural</td><td>21.69-21.89</td></tr>
+<tr><td>4</td><td>Rural/suburban</td><td>20.49-21.69</td></tr>
+<tr><td>5</td><td>Suburban</td><td>19.50-20.49</td></tr>
+<tr><td>6</td><td>Bright suburban</td><td>18.94-19.50</td></tr>
+<tr><td>7</td><td>Suburban/urban</td><td>18.38-18.94</td></tr>
+<tr><td>8</td><td>City</td><td>17.80-18.38</td></tr>
+<tr><td>9</td><td>Inner city</td><td>&lt; 17.80</td></tr>
+</table>
+
+<p>The Bortle estimate is explicitly suppressed for narrowband frames because a 4.5 nm filter is not measuring the same quantity as an unfiltered sky-quality meter — a dark NB-filtered background can mask a mediocre visual site. The whitepaper quotes the <i>site's</i> visual Bortle rating separately from the <i>frame's</i> per-filter sky background measurement, exactly for this reason.</p>
+
+<h3>9.10 Narrowband-to-broadband mapping</h3>
+
+<p>SIMBAD and APASS provide B, V, and R catalog magnitudes directly. Narrowband filters do not match any catalog band perfectly, so SASpro maps them to the closest broadband filter: Hα → R, [S II] → R, [O III] → V, Hβ → B. This is the convention used in the Sh 2-68 paper and is standard practice in narrowband surface photometry.</p>
+
+<p>The approximation enters the error budget as a per-filter colour term: the catalog's B / V / R passbands are much wider than the narrowband filter, so stars of different spectral types have slightly different throughput ratios, and the ZP shifts by a star-colour-dependent amount. For an ensemble ZP fit over a diverse stellar population this averages out to within the systematic floor (the 0.100 mag default), but strictly it means intra-species comparisons (two [O III] measurements of the same object) are more rigorous than inter-species comparisons (an [O III] vs an [S II] measurement). The whitepaper is explicit about this limitation.</p>
+
+<div class="credit">
+<b>Credits.</b> Magnitude / Surface Brightness Tool — the overall architecture, the local-Gaia-XP synthetic-photometry pipeline with per-star Gaia-G anchoring, the WCS-locked region library, the four-quadrant background robustness check, and the Sh 2-68 whitepaper deployment — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. The following components are standard and credited to their communities: source extraction via <b>SEP</b> (Barbary 2016, Python port of Bertin &amp; Arnouts' SExtractor); catalog data from <b>Gaia DR3</b> (ESA/Gaia Collaboration), <b>SIMBAD</b> and the <b>VizieR</b> SIMBAD mirror (CDS Strasbourg), and <b>APASS DR9</b> (AAVSO); object naming via <b>VSX</b> and submission format per <b>AAVSO Extended</b> specifications; stellar-type templates via the <b>Pickles</b> stellar flux library (Pickles 1998); the <b>Bortle scale</b> correspondence (Bortle 2001); robust σ from MAD (standard Rousseeuw &amp; Croux convention); separable aperture photometry on background-subtracted stamps (standard SExtractor practice). The published science demonstrating the tool is <b>Marek (2026)</b>, <i>"Calibrated Emission-Line Surface Photometry of the High–Proper-Motion Planetary Nebula Sh 2-68 (PN G030.6+06.2)"</i>, SetiAstro Technical Note.
+</div>
+
+</body>
+</html>

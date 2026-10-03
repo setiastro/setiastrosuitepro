@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Live Stacking</h1>
+<p class="sub">Watch a capture folder, stack every new sub-exposure as it lands, and see a cumulative image build in real time &mdash; with on-the-fly calibration, star alignment, &mu;&ndash;&sigma; clipping rejection, per-filter mono-to-colour composition, star-trail mode, live metrics plotting and a culling folder for bad frames. The <i>during</i>-session companion to the batch <b>Stacking Suite</b>.</p>
+
+<div class="pub">
+<b>SASpro-exclusive tool.</b> Live Stacking is an original <b>SetiAstro Suite Pro</b> implementation by <b>Franklin Marek</b>. The watch-folder orchestration (file-stability probe, penalty window, three-strike retry), the three-phase linear&harr;&mu;&sigma; bootstrap-to-Welford transition, the FILTER-header-based mono-to-colour bucketing with seven narrowband mapping modes including the auto-Natural logic, the SNR proxy formula used for the live metrics plot, the per-filter flat support, and the red/blue culling display on the live metrics window are all built from the ground up for SASpro's streaming pipeline.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+Point your capture software at a folder &rarr; in SASpro, open Live Stacking and <b>Select Folder</b> &rarr; (optionally) load master dark, master flat, per-filter flats, and pick a cull folder &rarr; pick <b>Mono&rarr;Color</b> and/or <b>Star-Trail</b> if you want those modes &rarr; hit <b>Process &amp;&amp; Monitor</b> &mdash; the stack rebuilds live as frames arrive, with metrics plotting alongside and bad frames culled automatically.
+</div>
+
+<div class="hero">
+<p>The core incremental update, applied per pixel for every good frame <code>x</code> arriving at count <code>n+1</code>:</p>
+<div class="matheq-hero">S_{n+1} = \frac{n}{n+1}\,S_n + \frac{1}{n+1}\,x_{n+1}</div>
+<p>During bootstrap this runs over raw normalized frames; after <code>n</code> reaches the bootstrap threshold, it runs over &mu;&ndash;&sigma;-clipped frames with per-pixel Welford statistics (&sect;13.9).</p>
+</div>
+
+<h2>1. The main window</h2>
+<p>The window is a vertical stack: a top row of controls, a status line showing where files come from and go to, a zoom toolbar with a Settings wrench, the <b>Show Metrics</b> button, the large live-preview area, brightness/contrast sliders, and the <b>Open in New View &#9654;</b> button at the bottom. A dynamic <b>Mode</b> label (&ldquo;Linear Average&rdquo; / &ldquo;&mu;-&sigma; Clipping Average&rdquo; / &ldquo;Star-Trail&rdquo; / per-filter variants) and a <b>Status</b> label at the very bottom narrate what's happening.</p>
+<p>The preview is a true <code>QGraphicsView</code>, so pan with click-drag and zoom with the toolbar. The dialog is non-modal &mdash; you can leave it running and keep working in SASpro.</p>
+
+<h2>2. Picking a watch folder</h2>
+<p>Click <b>Select Folder&hellip;</b> and pick the directory your capture software writes to. Live Stacking recurses into subfolders, so if your capture program organizes by filter or session into subdirectories, it still works.</p>
+<p>By default every supported file type in the folder is scanned:</p>
+<table>
+  <tr><th>Category</th><th>Extensions</th></tr>
+  <tr><td>FITS</td><td><code>.fit</code>, <code>.fits</code></td></tr>
+  <tr><td>TIFF &amp; XISF</td><td><code>.tif</code>, <code>.tiff</code>, <code>.xisf</code></td></tr>
+  <tr><td>Camera RAW</td><td><code>.cr2</code>, <code>.cr3</code>, <code>.nef</code>, <code>.arw</code>, <code>.dng</code>, <code>.raf</code>, <code>.orf</code>, <code>.rw2</code>, <code>.pef</code></td></tr>
+  <tr><td>Everyday</td><td><code>.png</code>, <code>.jpg</code>, <code>.jpeg</code></td></tr>
+</table>
+<p>If your capture program writes preview JPGs, autostretch TIFFs, debug thumbnails or other derived files alongside the real subs, tick <b>Ignore non-FITS files</b> in Settings (&sect;9) &mdash; the scanner then limits itself to <code>*.fit</code> and <code>*.fits</code> only, which is also what you want for most dedicated astro cameras.</p>
+
+<h3>How Live Stacking knows a file is &ldquo;done&rdquo;</h3>
+<p>Capture software writes a file in chunks and often holds the handle open for a moment after the last byte lands. Reading it half-written would be a disaster. Live Stacking's file-readiness probe handles this:</p>
+<ol>
+  <li>Every scan, each candidate's size and modification time are recorded.</li>
+  <li>A file is &ldquo;ready&rdquo; only once size and mtime have stayed <i>exactly</i> the same for the <b>Acquisition Delay</b> window (default 3.0&nbsp;s; see Settings).</li>
+  <li>A final small open-and-read is attempted. If the OS still refuses (writer holds the handle), the file enters a 10&nbsp;s penalty window and gets rechecked next cycle.</li>
+  <li>If a file fails three times in a row during processing, it's marked permanently skipped so it stops blocking the queue; its basename appears in the status line.</li>
+</ol>
+<p>The watch loop polls every 1.5&nbsp;s. A re-entrancy guard prevents overlapping scans if a frame takes longer than one tick to process.</p>
+
+<h2>3. Calibration masters</h2>
+<p>Live Stacking supports a single master dark, a single master flat, <i>and</i> a per-filter flat dictionary for mono-to-colour sessions.</p>
+<ul>
+  <li><b>Load Master Dark&hellip;</b> &mdash; one file. Dimensions must be compatible with the master flat (&sect;13.3). Status badge changes to <b>Dark: &#9989;</b> on success.</li>
+  <li><b>Load Master Flat&hellip;</b> &mdash; one file. Same dimension check against any already-loaded dark. Badge changes to <b>Flat: &#9989;</b>.</li>
+  <li><b>Load MonoFilter Flats&hellip;</b> &mdash; one or more files; each is bucketed by its FITS <code>FILTER</code> header if present, otherwise by its filename stem. Stored as a dictionary keyed on the filter letter (<code>H</code>, <code>O</code>, <code>S</code>, <code>R</code>, <code>G</code>, <code>B</code>, <code>L</code>). The badge then lists the loaded filter names.</li>
+</ul>
+<p>During processing (&sect;13.3), per-filter flats take precedence over the global master flat when the incoming frame's FILTER header matches a key. Masters are automatically shape-coerced to match each incoming frame: a mono master applied to a colour frame broadcasts to all three channels; a colour master applied to a mono frame is collapsed to its channel mean. This means you can load a mono dark and still have it correctly subtract from debayered RGB frames.</p>
+
+<div class="tip"><b>Shape mismatches are rejected up front.</b> If you try to load a 2D flat while a 3D dark is already loaded (or vice versa), the load is refused with a message rather than silently miscalibrating later. Reset or reload the mismatched master first.</div>
+
+<h3>Cull folder</h3>
+<p>Click <b>Select Cull Folder&hellip;</b> to pick a destination for rejected frames (frames whose star metrics fail the thresholds in &sect;7). When set, flagged frames are <i>moved</i> there with <code>shutil.move</code>; when not set, they're simply logged in the status line and skipped. The folder is created on first use if it doesn't exist.</p>
+
+<h2>4. Running the stack</h2>
+<p>Four run buttons sit at the right of the top row:</p>
+<ul>
+  <li><b>Process &amp;&amp; Monitor</b> &mdash; processes every file currently in the folder, then stays running and processes every new file that lands. Use this to pick up a session in progress or to re-stack from scratch.</li>
+  <li><b>Monitor Only</b> &mdash; marks every file currently in the folder as &ldquo;seen&rdquo; without processing them, then watches for new arrivals. Use this to start a fresh live stack on just the frames you're about to capture, ignoring whatever's already there.</li>
+  <li><b>Stop</b> &mdash; signals the processing loop to stop at its next safe checkpoint (there are many &mdash; a Stop is responsive even mid-frame). The frame currently being written is finished, nothing new is picked up.</li>
+  <li><b>Reset</b> &mdash; clears the running stack, all per-filter stacks, buffers, Welford statistics, metrics plots, the frame counter, exposure accumulator and the current preview. Masters and cull folder are kept. The reference frame is also cleared, so the next good frame becomes the new alignment reference.</li>
+</ul>
+
+<p>The <b>Frames</b> counter and <b>Total Exp</b> label (format <code>HH:MM:SS</code>) in the status row tick up with each accepted frame; exposure is accumulated from the FITS <code>EXPOSURE</code> or <code>EXPTIME</code> header, or from EXIF on RAW.</p>
+
+<h2>5. Stack modes</h2>
+<p>Live Stacking has three top-level modes, two of them toggled by checkboxes next to the run buttons.</p>
+
+<h3>Linear Average &rarr; &mu;&ndash;&sigma; Clipping (default)</h3>
+<p>With both checkboxes off, Live Stacking runs a classical two-phase integration: the first <b>Bootstrap frames</b> (default 24) go into a plain linear running mean while per-pixel statistics are collected; after the bootstrap, the stack switches to <b>&mu;&ndash;&sigma; clipping</b> at <b>Clip threshold</b> &sigma; (default 3.5&sigma;) with Welford's incremental mean/variance updates (&sect;13.9). The Mode label narrates the transition.</p>
+
+<h3>Mono &rarr; Color Stacking</h3>
+<p>Tick <b>Mono &rarr; Color Stacking</b> to bucket incoming mono frames by their <code>FILTER</code> header into separate per-filter stacks and composite them live into an RGB preview according to a <b>Narrowband Mapping</b> (&sect;6). Each filter stack goes through its own independent bootstrap&rarr;Welford transition. The composite is rebuilt from scratch each new frame, so adding a late OIII frame updates the whole preview immediately.</p>
+<p>Mono-to-colour mode works entirely from the FILTER header &mdash; frames with no FILTER are not routed to any channel. OSC frames with a <code>BAYERPAT</code> header are still debayered and stacked as colour, bypassing the mono buckets.</p>
+
+<h3>Star-Trail Mode</h3>
+<p>Tick <b>&#9733;&#9733; Star-Trail Mode &#9733;&#9733;</b> to replace the running-mean pipeline with an elementwise <b>per-pixel maximum</b> accumulator. No alignment is performed and no clipping is applied; each frame is calibrated, debayered if needed, stretched to <code>target_median = 0.3</code>, and then combined with the current stack as:</p>
+<div class="matheq">S_{n+1} = \max(S_n,\,x_{n+1})</div>
+<p>&mdash; the classic star-trail blend, where every bright pixel wins. Enabling Star-Trail disables Mono&rarr;Color (they're mutually exclusive).</p>
+
+<h2>6. Narrowband mapping (Mono &rarr; Color)</h2>
+<p>When Mono&rarr;Color is on, the Narrowband Mapping setting controls how per-filter stacks are composited into the live RGB preview. Change it any time in Settings (&sect;9) &mdash; the next preview refresh uses the new mapping.</p>
+
+<h3>FILTER-header matching</h3>
+<p>SASpro recognises these FILTER values (case-insensitive, with common synonyms):</p>
+<table>
+  <tr><th>Key</th><th>Matches</th></tr>
+  <tr><td><b>H</b></td><td><code>H</code>, <code>Ha</code>, <code>HAlpha</code>, <code>H-Alpha</code></td></tr>
+  <tr><td><b>O</b></td><td><code>O</code>, <code>O3</code>, <code>OIII</code></td></tr>
+  <tr><td><b>S</b></td><td><code>S</code>, <code>S2</code>, <code>SII</code></td></tr>
+  <tr><td><b>R</b></td><td><code>R</code>, <code>Red</code>, <code>Rd</code></td></tr>
+  <tr><td><b>G</b></td><td><code>G</code>, <code>Green</code>, <code>Grn</code></td></tr>
+  <tr><td><b>B</b></td><td><code>B</code>, <code>Blue</code>, <code>Bl</code></td></tr>
+  <tr><td><b>L</b></td><td><code>L</code>, <code>Lum</code>, <code>Lumi</code>, <code>Luminance</code></td></tr>
+</table>
+
+<h3>Mapping options</h3>
+<p><b>Natural</b> (default) &mdash; auto-selects the composite based on what's loaded:</p>
+<ul>
+  <li>If SII is present &mdash; a modified SHO:
+    <div class="matheq">R = \frac{\mathrm{H}\alpha + \mathrm{SII}}{2},\;\; G = \frac{\mathrm{SII} + \mathrm{OIII}}{2},\;\; B = \mathrm{OIII}</div>
+  </li>
+  <li>Else, if any of R/G/B broadband filters are present &mdash; broadband with an OIII boost on the two shortest-wavelength channels:
+    <div class="matheq">R = R_f,\;\; G = G_f + \mathrm{OIII},\;\; B = B_f + \mathrm{OIII}</div>
+  </li>
+  <li>Else (only H&alpha; and OIII) &mdash; HOO:
+    <div class="matheq">R = \mathrm{H}\alpha,\;\; G = \mathrm{OIII},\;\; B = \mathrm{OIII}</div>
+  </li>
+</ul>
+
+<p><b>SHO</b>, <b>HSO</b>, <b>OSH</b>, <b>SOH</b>, <b>HOS</b>, <b>OHS</b> &mdash; direct three-letter mappings. The letters assign to <code>R</code>, <code>G</code>, <code>B</code> in order:</p>
+<ul>
+  <li><b>SHO</b> &mdash; <code>R = SII</code>, <code>G = H&alpha;</code>, <code>B = OIII</code> &mdash; the classic Hubble palette.</li>
+  <li><b>HSO</b> &mdash; <code>R = H&alpha;</code>, <code>G = SII</code>, <code>B = OIII</code>.</li>
+  <li><b>OSH</b> &mdash; <code>R = OIII</code>, <code>G = SII</code>, <code>B = H&alpha;</code>.</li>
+  <li><b>SOH</b> &mdash; <code>R = SII</code>, <code>G = OIII</code>, <code>B = H&alpha;</code>.</li>
+  <li><b>HOS</b> &mdash; <code>R = H&alpha;</code>, <code>G = OIII</code>, <code>B = SII</code>.</li>
+  <li><b>OHS</b> &mdash; <code>R = OIII</code>, <code>G = H&alpha;</code>, <code>B = SII</code>.</li>
+</ul>
+<p>Missing channels in a direct mapping default to zero, so an SHO composition with only H&alpha; and OIII loaded shows up red-less until the first SII frame lands.</p>
+
+<h2>7. Culling</h2>
+<p>Every frame is measured for star quality (&sect;13.6) <i>after</i> calibration and alignment but <i>before</i> it gets combined into the stack. A frame is flagged and rejected if any of the three thresholds in Settings is exceeded:</p>
+<div class="matheq">\mathrm{flag} = (\mathrm{FWHM} > F_{\max})\;\vee\;(e > e_{\max})\;\vee\;(N < N_{\min})</div>
+<table>
+  <tr><th>Threshold</th><th>Default</th><th>Meaning</th></tr>
+  <tr><td><b>Max FWHM</b></td><td>15.0 px</td><td>Reject frames with median star FWHM above this. Catches heavy defocus and bad seeing spikes.</td></tr>
+  <tr><td><b>Max Eccentricity</b></td><td>0.9</td><td>Reject frames with median eccentricity above this. Catches tracking slips, wind gusts, cable snags.</td></tr>
+  <tr><td><b>Min Star Count</b></td><td>5</td><td>Reject frames with fewer detected stars than this. Catches clouds, satellite streaks saturating detection, and dome lights.</td></tr>
+</table>
+<p>Flagged frames appear as <b>red dots</b> on the live metrics plot. If a cull folder is set, the file is moved there; otherwise the status line notes it and continues. The frame counter and exposure accumulator don't tick up for culled frames &mdash; what you see in <b>Frames: N</b> is the <i>integrated</i> count only.</p>
+
+<div class="tip"><b>Picking thresholds.</b> Run a session for a few minutes with wide thresholds (say Max FWHM = 50, Max Ecc = 1.0, Min Star = 0), look at the metrics plot's blue-dot cloud, and <i>then</i> set thresholds slightly outside the usual spread. Overly tight thresholds on a bad night will cull everything.</div>
+
+<h2>8. Live metrics window</h2>
+<p>Click <b>Show Metrics</b> to open a separate 2&times;2 scatter window that updates per frame:</p>
+<ul>
+  <li><b>FWHM (px)</b> vs frame number &mdash; median star FWHM reported by SEP.</li>
+  <li><b>Eccentricity</b> vs frame number &mdash; median star eccentricity, 0 = round, 1 = line.</li>
+  <li><b>Star Count</b> vs frame number &mdash; number of detected sources at the current detection threshold.</li>
+  <li><b>(&mu;&ndash;&nu;)/&sigma; (&prop;SNR)</b> vs frame number &mdash; a cumulative-stack SNR proxy, defined in &sect;13.7, that should rise as &radic;N.</li>
+</ul>
+<p>Blue dots are kept frames; red dots are culled. Both colours stay plotted for the whole session so you can see when and why conditions changed. The window is independent of the main dialog &mdash; close it any time without stopping the stack; reopen with <b>Show Metrics</b>.</p>
+
+<h2>9. Settings dialog</h2>
+<p>Click the orange <b>wrench</b> button in the zoom toolbar to open the combined Live Stack &amp; Culling settings dialog. All values persist across sessions via <code>QSettings</code> under the <code>LiveStack/</code> key.</p>
+
+<table>
+  <tr><th>Setting</th><th>Default</th><th>Range</th><th>Effect</th></tr>
+  <tr><td>Switch to &mu;&ndash;&sigma; clipping after</td><td>24</td><td>1 &ndash; 100</td><td>Bootstrap frame count. The linear running mean collects frames up to this count, then the stack switches to Welford-based clipping.</td></tr>
+  <tr><td>Clip threshold</td><td>3.5</td><td>0.1 &ndash; 10.0</td><td>&mu;&ndash;&sigma; rejection multiplier (&sect;13.9). Lower = more aggressive rejection.</td></tr>
+  <tr><td>Max FWHM (px)</td><td>15.0</td><td>0.1 &ndash; 50.0</td><td>Culling threshold on median star FWHM.</td></tr>
+  <tr><td>Max Eccentricity</td><td>0.9</td><td>0.0 &ndash; 1.0</td><td>Culling threshold on median star eccentricity.</td></tr>
+  <tr><td>Min Star Count</td><td>5</td><td>0 &ndash; 5000</td><td>Culling threshold on detected star count.</td></tr>
+  <tr><td>Acquisition Delay</td><td>3.0&nbsp;s</td><td>0.0 &ndash; 60.0&nbsp;s</td><td>File stability window. Size+mtime must stay unchanged for this long before a file is considered writeable-complete.</td></tr>
+  <tr><td>Star Detection &sigma;</td><td>7.0</td><td>1.0 &ndash; 20.0</td><td>SEP detection threshold above background. Lower = more faint stars (and more false positives in a bright sky).</td></tr>
+  <tr><td>Ignore non-FITS files</td><td>off</td><td>&mdash;</td><td>When on, only <code>*.fit</code>/<code>*.fits</code> are picked up. Use when the capture app writes derived files beside the raw subs.</td></tr>
+  <tr><td>Narrowband Mapping</td><td>Natural</td><td>&mdash;</td><td>Composition rule for Mono&rarr;Color (&sect;6).</td></tr>
+</table>
+
+<h2>10. Opening the live result</h2>
+<p>Click <b>Open in New View &#9654;</b> to push the current stack (or composite) into SASpro as a new document named <code>LiveStack_&lt;YYYYMMDD_HHMMSS&gt;_&lt;N&gt;f</code> where <i>N</i> is the integrated frame count. The result is always float32 clipped to <code>[0,&nbsp;1]</code>, with metadata recording the source and frame count.</p>
+<p>Live Stacking tries a sequence of document-manager entry points (<code>create_numpy_document</code>, <code>new_document_from_numpy</code>, <code>open_numpy</code>, <code>open_array</code>, <code>open_image_array</code>, <code>add_document_from_array</code>) so it works across SASpro's variants; if none fit, it writes a temp 16-bit TIFF and asks the host window to open it as a fallback. If even that fails, the temp path is shown in a dialog so you can grab it manually.</p>
+
+<h2>11. Preview, brightness, contrast and zoom</h2>
+<p>The brightness and contrast sliders affect the <b>preview only</b> &mdash; the underlying stack is untouched. Both are pivoted at <code>0.3</code> (the normalization target median, so the preview midtone is where the sliders have most leverage):</p>
+<div class="matheq">y = (x - 0.3)\,c + 0.3 + b</div>
+<p>with <code>c</code> the contrast slider (10&ndash;1000 mapped to 0.1&ndash;10.0) and <code>b</code> the brightness slider (-100&ndash;100 mapped to -1.0&ndash;+1.0). The result is clipped to <code>[0,&nbsp;1]</code> for display.</p>
+<div class="keys">
+<b>Preview controls:</b><br>
+🖱️ <b>Drag</b> &mdash; pan (QGraphicsView scroll-hand drag).<br>
+<b>Zoom-in</b> / <b>Zoom-out</b> toolbar buttons &mdash; 1.2&times; steps centred on the cursor.<br>
+<b>Fit to Window</b> &mdash; rescale to fill the preview area with aspect preserved.<br>
+The first good frame auto-fits; later frames preserve your current zoom/pan.
+</div>
+
+<h2>12. Technical details</h2>
+<p class="tech-lead">The streaming pipeline, in order of each frame's processing.</p>
+
+<h3>12.1 File readiness and polling</h3>
+<p>The scanner runs on a 1500&nbsp;ms <code>QTimer</code>. Each tick, the folder is reglobbed recursively against the current extension set, candidate paths are normalised (case-insensitive, absolute, platform-normalised slashes), and those not yet in the processed set are tested for readiness. Each path accumulates a probe record:</p>
+<ul>
+  <li><code>size</code> and <code>mtime</code> from <code>os.stat</code>, refreshed each cycle.</li>
+  <li><code>since</code> &mdash; the last cycle where either size or mtime changed; the file is only ready once <code>now - since &ge; FILE_STABLE_SECS</code>.</li>
+  <li><code>penalty_until</code> &mdash; a cool-down timestamp. On a <code>PermissionError</code> or <code>OSError</code> during the final 1-byte read probe, the penalty is set to <code>now + 10&nbsp;s</code> so repeated hammering doesn't make matters worse.</li>
+  <li><code>fails</code> &mdash; a counter incremented on every exception during <code>process_frame</code>. After three failures the file is permanently marked processed so it stops blocking the queue, and its name goes to the status line.</li>
+</ul>
+<p>A <code>_poll_busy</code> re-entrancy guard prevents a long-running frame from stacking up overlapping scans. A <code>threading.Event</code> (<code>_stop_event</code>) is checked at every major pipeline stage so <b>Stop</b> is responsive mid-frame rather than only between frames.</p>
+
+<h3>12.2 Image loading</h3>
+<p>Non-RAW files go through SASpro's shared <code>load_image</code>, which returns the pixel array, a FITS-style header, bit depth and a mono flag. XISF, TIFF, FITS, PNG and JPG all land in the same code path.</p>
+<p>Camera-RAW files are decoded through <b>rawpy</b> (LibRaw) with <code>use_camera_wb=True</code>, <code>no_auto_bright=True</code>, <code>output_bps=16</code>, then normalised to float32 in <code>[0,&nbsp;1]</code> by dividing by 65535. Exposure time, ISO and DateTimeOriginal are pulled from EXIF via <b>exifread</b> and planted into a synthetic FITS header so the rest of the pipeline sees a RAW frame as if it had come from a FITS-aware camera. If EXIF parsing fails the defaults <code>"Unknown"</code> are kept and processing continues.</p>
+
+<h3>12.3 Calibration</h3>
+<p>Calibration is a two-step process applied once per frame after loading:</p>
+<div class="matheq">I' = I - D</div>
+<div class="matheq">I'' = \frac{I'}{F}</div>
+<p>Dark subtraction is a plain NumPy subtraction in float32. Flat division is dispatched through <code>apply_flat_division_numba</code>, a JIT-compiled helper shared with the Stacking Suite. The flat used is the per-filter flat <code>F_k</code> when (a) Mono&rarr;Color is active, (b) the frame's FILTER header matches a key in the per-filter dictionary; otherwise the global master flat is used.</p>
+<p>Shape coercion is automatic:</p>
+<ul>
+  <li>A mono master against a colour frame is reshaped to <code>(H, W, 1)</code> so it broadcasts across the three channels.</li>
+  <li>A colour master against a mono frame is collapsed to its channel mean.</li>
+</ul>
+<p>Up-front shape compatibility between the master dark and master flat themselves is checked at load time, so you can't mix a 3D dark with a 2D flat without noticing.</p>
+
+<h3>12.4 Debayering</h3>
+<p>If a frame is marked mono by the loader but its header carries a <code>BAYERPAT</code>, Live Stacking debayers it with <code>debayer_fits_fast</code> (SASpro's shared vectorised debayerer, same one the Stacking Suite uses) before the alignment stage. Supports RGGB, GRBG, GBRG and BGGR patterns.</p>
+
+<h3>12.5 Star alignment</h3>
+<p>The first good frame becomes <code>reference_image_2d</code> &mdash; a 2D intensity plane used as the alignment reference for the rest of the session (reset clears it, so a new reference is picked on the next good frame after a Reset). Every subsequent frame is reduced to a 2D plane (channel mean for colour, or the mono plane in Mono&rarr;Color), aligned to the reference via <b>Astroalign</b>'s star-triangle matching, and the resulting 2&times;3 affine transform:</p>
+<div class="matheq">\mathbf{p}' = A\,\mathbf{p} + \mathbf{t}</div>
+<p>is applied to the full image (full RGB tensor if the frame is colour, else the mono plane). If Astroalign fails to find a transform (too few stars, catastrophic defocus), SASpro falls back to the identity transform rather than discarding the frame &mdash; so even badly-degraded frames at least land on top of the stack rather than vanishing, and will usually be culled by the FWHM/eccentricity thresholds anyway.</p>
+
+<h3>12.6 Per-frame normalization</h3>
+<p>Before stacking, each frame is pulled to a common median via SASpro's <code>stretch_mono_image</code> / <code>stretch_color_image</code> helpers (shared with Stacking Suite's normalization block), both with <code>target_median = 0.3</code>. Mono frames pass through the mono stretcher directly; colour frames use the colour stretcher with <code>linked=False</code> (each channel pulled independently) so a per-channel exposure imbalance doesn't skew the composite.</p>
+<p>Target 0.3 is deliberately above the typical sky median so the running stack has useful contrast on the live preview from the first frame.</p>
+
+<h3>12.7 Star metrics (SEP)</h3>
+<p>Per-frame star metrics come from SASpro's <code>measure_stars_sep</code>, which wraps <b>SEP</b> (Barbary 2016; the Python port of Bertin &amp; Arnouts' <b>Source Extractor</b>). The call uses:</p>
+<ul>
+  <li><b>Background model:</b> <code>sep.Background()</code> with default mesh parameters.</li>
+  <li><b>Detection threshold:</b> <b>Star Detection &sigma;</b> (default 7.0) above background.</li>
+  <li><b>Minimum area:</b> 16 connected pixels.</li>
+  <li><b>Deblending:</b> <code>deblend_nthresh = 32</code>.</li>
+  <li><b>Aggregation:</b> <i>median</i> over all detected sources for FWHM and eccentricity (robust against a handful of blown-highlight artefacts dominating the mean).</li>
+</ul>
+<p>This matches the metrics SASpro's <b>Blink</b> tool uses, so the FWHM you see live is directly comparable with the quality numbers you'd get from running Blink on the same subs later.</p>
+
+<h3>12.8 Global SNR proxy</h3>
+<p>The fourth metric plot &mdash; <code>(&mu;&ndash;&nu;)/&sigma;</code> &mdash; is a cheap, scale-stable SNR proxy computed on the <i>cumulative stack</i> (the running stack for colour sessions; the composite for Mono&rarr;Color sessions; the current frame if nothing's integrated yet). The construction:</p>
+<ol>
+  <li>Reduce the stack to a 2D intensity plane (OpenCV's <code>cvtColor</code> with <code>COLOR_RGB2GRAY</code> if available, else a channel mean).</li>
+  <li>Isolate the middle 50% rectangle of the plane (quartered on both axes). Call this <code>C</code>.</li>
+  <li>Centre a patch <code>P</code> of up to 200&times;200 pixels inside <code>C</code>.</li>
+  <li>Compute:
+    <div class="matheq">\mu_{\mathrm{patch}} = \mathrm{mean}(P)</div>
+    <div class="matheq">\mathrm{med}_{\mathrm{patch}} = \mathrm{median}(P)</div>
+    <div class="matheq">\sigma_{\mathrm{central}} = \mathrm{std}(C)</div>
+  </li>
+  <li>Build a background offset
+    <div class="matheq">\nu = \mathrm{med}_{\mathrm{patch}} - 3\,\sigma_{\mathrm{central}}</div>
+    which places &nu; roughly at the sky-noise floor estimate.</li>
+  <li>Report:
+    <div class="matheq-hero">S = \frac{\mu_{\mathrm{patch}} - \nu}{\sigma_{\mathrm{central}}}</div>
+  </li>
+</ol>
+<p>If <code>&sigma;_central</code> is zero (empty stack, uniform fill), the proxy returns 0. The result isn't a calibrated SNR &mdash; it's a monotonic quantity that should grow roughly as <code>&radic;N</code> for a stack of similar frames, giving you a clean visual indicator that integration is actually helping. Noisy nights with gradients show up as a slower rise; a sudden flattening usually means clouds or focus drift.</p>
+
+<h3>12.9 The bootstrap &rarr; Welford transition</h3>
+<p>Running mean and running variance of the normalized frames are built up in two phases.</p>
+<p><b>Phase 1 &mdash; linear bootstrap.</b> For frames 1 through <code>B</code> (the bootstrap frame count), the pixel-wise running mean uses the standard incremental form:</p>
+<div class="matheq">S_{n+1} = \frac{n}{n+1}\,S_n + \frac{1}{n+1}\,x_{n+1}</div>
+<p>and every frame is also appended to an in-memory buffer. The stack is therefore available from the very first frame &mdash; no &ldquo;warmup&rdquo; delay before you see anything.</p>
+<p><b>Phase 2 &mdash; Welford initialization.</b> When <code>n</code> reaches <code>B</code>, the buffered frames are collapsed into the Welford summary:</p>
+<div class="matheq">\mu_0 = \frac{1}{B}\sum_{i=1}^{B} x_i</div>
+<div class="matheq">M_2^{(0)} = \sum_{i=1}^{B} (x_i - \mu_0)^2</div>
+<p>and the frame buffer is discarded. The Mode label flips to <i>&mu;-&sigma; Clipping Average</i>.</p>
+<p><b>Phase 3 &mdash; incremental &mu;&ndash;&sigma; clipping.</b> From frame <code>B+1</code> onwards, each new frame goes through the clipping update in &sect;13.9. In Mono&rarr;Color mode every filter runs through this three-phase transition <i>independently</i> at its own frame count, so H&alpha; might still be bootstrapping while OIII has already switched to clipping.</p>
+
+<h3>12.10 &mu;&ndash;&sigma; clipping with Welford updates</h3>
+<p>For each incoming post-bootstrap frame, pixels further than <code>k = clip_threshold</code> standard deviations from the running mean are rejected and replaced with the running mean itself before being combined into the stack:</p>
+<div class="matheq">\sigma = \sqrt{\frac{M_2}{n - 1}}</div>
+<div class="matheq">m(x,y) = \mathbb{1}\!\left[\,|x - \mu| \leq k\,\sigma\,\right]</div>
+<div class="matheq">x' = m\,x + (1-m)\,\mu</div>
+<p>The clipped frame <code>x'</code> is combined into the running mean with the same incremental formula as the bootstrap, and the Welford mean/variance summary is updated in place using the standard online algorithm (Welford 1962):</p>
+<div class="matheq">\delta_1 = x' - \mu_{\mathrm{old}}</div>
+<div class="matheq">\mu_{\mathrm{new}} = \mu_{\mathrm{old}} + \frac{\delta_1}{n+1}</div>
+<div class="matheq">\delta_2 = x' - \mu_{\mathrm{new}}</div>
+<div class="matheq">M_2^{\mathrm{new}} = M_2^{\mathrm{old}} + \delta_1\,\delta_2</div>
+<p>This never requires revisiting past frames and uses <code>O(H &times; W)</code> memory regardless of integration count &mdash; critical when you're going to stack hundreds of frames over the course of a session. Replacing rejected pixels with the current <code>&mu;</code> rather than skipping them keeps the running mean's denominator consistent and prevents the variance estimate from drifting when hot pixels or satellite trails are rejected.</p>
+
+<h3>12.11 Mono &rarr; Color composition rules</h3>
+<p>Each incoming mono frame whose FILTER key is recognized (&sect;6) goes into its own stack (<code>filter_stacks[key]</code>) with its own frame counter, bootstrap buffer, and Welford summary. The RGB preview is rebuilt from scratch after every new frame using the current mapping. For the Natural mode, the branch decision is made at <i>composite time</i>, not at frame-ingestion time, so adding the first SII frame to an already-running HOO session automatically promotes the composite to the SII palette on the next refresh.</p>
+<p>For direct 3-letter mappings (SHO, HSO, &hellip;), missing filter stacks default to zeros in that channel, so a partial dataset simply shows the available channels and the missing one as black. If an invalid mapping string is somehow set, the composite falls back to Natural and the mapping is reset.</p>
+
+<h3>12.12 Star-trail max accumulator</h3>
+<p>Star-trail mode replaces steps 7&ndash;10 of the normal pipeline (align, normalize, measure, cull, integrate) with a direct per-pixel maximum:</p>
+<div class="matheq">S_{n+1} = \max(S_n,\,x_{n+1})</div>
+<p>Each frame is still calibrated and debayered as usual and still stretched to <code>target_median = 0.3</code> &mdash; stars across the frames may have different brightnesses but the max accumulator always keeps the brightest sample at each pixel. No alignment is performed (that's the whole point &mdash; tracking off, let the stars sweep), no metrics are collected and no culling is done. The frame counter still ticks and the exposure accumulator still accumulates, so you can see how long you've been building the trail.</p>
+
+<h3>12.13 Error handling and retry policy</h3>
+<p>Every pipeline stage is bracketed by <code>_should_stop()</code> checks so <b>Stop</b> is responsive mid-frame. Exceptions during <code>process_frame</code> are caught and reflected to the status line without crashing the dialog; the file's fail counter in the probe record is incremented and a 10&nbsp;s penalty window is set. After three failures the file is marked permanently processed so the queue drains past it; this is the right call for e.g. a half-written file the capture app aborted and left behind.</p>
+<p><code>QApplication.processEvents()</code> is called at key points through the pipeline so the UI stays responsive during long frames (large debayer, big affine warp). The dialog connects to <code>QApplication.aboutToQuit</code> to call <code>stop_live()</code> at app shutdown, so you never leave a polling timer running past exit.</p>
+
+<div class="credit">
+<b>Credits.</b> Live Stacking &mdash; the watch-folder orchestration, file-stability probe, three-phase linear&harr;&mu;&sigma; bootstrap-to-Welford transition in both single and per-filter variants, Mono&rarr;Color FILTER-header bucketing with seven narrowband mapping modes including the auto-Natural logic, the SNR proxy on the live metrics plot, per-filter flat support, red/blue culling display, star-trail max accumulator, and the whole UI and preview engine &mdash; is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to community: incremental mean and variance follow <b>Welford (1962, &ldquo;Note on a method for calculating corrected sums of squares and products&rdquo;)</b>, with the pairwise-formulation refinement attributed to Chan, Golub &amp; LeVeque; &mu;&ndash;&sigma; clipping (sigma-clipping) is classical outlier rejection in observational astronomy. Star detection and background estimation use <b>SEP</b> (Barbary 2016, J.&nbsp;Open&nbsp;Source&nbsp;Softw. 1(6):58; a Python port of Bertin &amp; Arnouts 1996's <b>Source Extractor</b>). Star-based affine registration uses <b>Astroalign</b> (Beroiz, Cabral &amp; Sanchez 2020, Astronomy and Computing 32:100384). Camera-RAW decoding uses <b>rawpy</b> (a Python binding to <b>LibRaw</b>); EXIF parsing uses <b>exifread</b>. FITS I/O and header handling use <b>Astropy</b> (Astropy Collaboration 2013, 2018, 2022). The affine-warp application and debayer kernels are SASpro's shared helpers (ported from the Stacking Suite). <b>OpenCV</b> is credited as an optional backend for grayscale conversion in the SNR proxy. <b>PyQtGraph</b> renders the live metrics plot, <b>NumPy</b> provides the array engine, and <b>PyQt6</b> / <b>Qt QGraphicsView</b> the UI framework and interactive preview.
+</div>
+
+</body>
+</html>

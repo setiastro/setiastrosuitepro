@@ -22,7 +22,7 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.ser_stack_config import SERStackConfig
 from setiastro.saspro.ser_stacker import stack_ser
 from setiastro.saspro.ser_stacker_dialog import SERStackerDialog
-
+from setiastro.saspro.help_support import make_help_button
 # Use your stretch functions for DISPLAY
 try:
     from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
@@ -412,6 +412,13 @@ class SERViewer(QDialog):
         right.addWidget(stack, 0)
 
         right.addStretch(1)
+
+        # Help button
+        from setiastro.saspro.help_support import make_help_button
+        help_row = QHBoxLayout()
+        help_row.addStretch(1)
+        help_row.addWidget(make_help_button("planetary_viewer", self))
+        right.addLayout(help_row, 0)
 
         # Keep the right panel from getting too wide
         for gb in (opts, stack):

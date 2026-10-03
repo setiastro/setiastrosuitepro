@@ -2,7 +2,7 @@
 from __future__ import annotations
 import os
 import numpy as np
-
+from setiastro.saspro.help_support import make_help_button
 # Optional deps used by the processing threads
 try:
     import cv2
@@ -895,10 +895,12 @@ class FrequencySeperationTab(QWidget):
         self.btn_zoom_in.clicked.connect(lambda: self._zoom_at_pair(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self._zoom_at_pair(0.8))
         self.btn_fit.clicked.connect(self._fit_to_preview)
-
         top_row.addWidget(self.btn_zoom_in)
         top_row.addWidget(self.btn_zoom_out)
         top_row.addWidget(self.btn_fit)
+
+        self.btn_doc_help = make_help_button("frequency_separation", self)
+        top_row.addWidget(self.btn_doc_help)
 
         right.addLayout(top_row)
 

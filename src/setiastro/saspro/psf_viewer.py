@@ -20,7 +20,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, QObject
 from PyQt6.QtWidgets import QWidget
 
 from .psf_utils import detect_stars_waterfall
-
+from setiastro.saspro.help_support import make_help_button
 
 # ---------------------------------------------------------------------------
 # Processing overlay
@@ -590,7 +590,8 @@ class PSFViewer(QDialog):
         self.mode_toggle_button = QPushButton("Show Flux Histogram", self)
         self.mode_toggle_button.clicked.connect(self.toggleHistogramMode)
         controls_layout.addWidget(self.mode_toggle_button)
-
+        controls_layout.addStretch(1)
+        controls_layout.addWidget(make_help_button("psf_viewer", self))
         main_layout.addLayout(controls_layout)
 
         # ── Threshold ───────────────────────────────────────────────────

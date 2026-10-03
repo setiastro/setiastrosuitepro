@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Batch Planetary Stacker</h1>
+<p class="sub">Queue many planetary videos and let SASpro process them one after another with the same alignment and stacking settings &mdash; ideal for an all-nighter of Jupiter or Saturn clips where you'd rather script the processing than babysit it. The engine is identical to the per-file <b>Planetary Stacker</b>; this dialog adds file-list management, per-batch settings inheritance, progress reporting across files, and automatic output document creation.</p>
+
+<div class="pub">
+<b>SASpro-exclusive tool.</b> The Batch Planetary Stacker is an original <b>SetiAstro Suite Pro</b> implementation by <b>Franklin Marek</b>. The batch orchestration (QThread worker that runs analyze+stack sequentially per file while keeping the GUI responsive), the GUI-thread signalling pattern that lets each completed stack be pushed as a new SASpro document safely from the worker thread, the colour-coded status list with per-file + overall progress bars, the surface-anchor acquisition dialog that opens on the first file when none is set in the Viewer, and the per-batch drizzle override are all original work. The underlying stacking engine is the <b>Planetary Stacker</b> &mdash; see its separate help page for the alignment and integration pipeline.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+Open the dialog from the <b>Planetary Stacker Viewer</b> via <b>Batch Stack&hellip;</b> &rarr; <b>Add Files&hellip;</b> to populate the list with SER/AVI/MP4/MOV/MKV files &rarr; pick an <b>Output folder</b> &rarr; optionally change the <b>Drizzle</b> override for the batch &rarr; <b>Run Batch</b> &rarr; watch each file turn green as it completes.
+</div>
+
+<h2>1. Adding files</h2>
+<p>Click <b>Add Files&hellip;</b> and multi-select from the file browser. Only video containers are accepted:</p>
+<ul>
+  <li><code>.ser</code> &mdash; SER planetary videos.</li>
+  <li><code>.avi</code>, <code>.mp4</code>, <code>.mov</code>, <code>.mkv</code> &mdash; other video containers.</li>
+</ul>
+<p>Image sequences and single-frame files are skipped with a log entry naming each one (batch mode processes whole clips, not static images). The last-used folder is remembered via <code>QSettings</code> so the next <b>Add Files&hellip;</b> starts there.</p>
+<p>If the Viewer currently has a video open, that file is <i>pre-added</i> to the list when you open the Batch dialog &mdash; so a common pattern is: open the first video in the Viewer, dial in your ROI, surface anchor, Keep%, and tracking mode, then open Batch, add the other files for the same target, and run.</p>
+<p><b>Remove Selected</b> removes the highlighted entries; <b>Clear All</b> empties the list.</p>
+
+<h2>2. Settings inheritance from the Viewer</h2>
+<p>Batch inherits all the setup from the Viewer at the moment you opened this dialog:</p>
+<ul>
+  <li><b>Tracking mode</b> &mdash; Planetary / Surface / Off.</li>
+  <li><b>Keep %</b> &mdash; what fraction of frames each file keeps for stacking.</li>
+  <li><b>ROI</b> &mdash; the crop. Must be chosen such that it makes sense for <i>every</i> file in the batch, since the same ROI applies to all of them.</li>
+  <li><b>Debayer</b> &mdash; whether to decode a Bayer mosaic.</li>
+  <li><b>Bayer pattern</b> &mdash; RGGB/GRBG/GBRG/BGGR or <code>AUTO</code>.</li>
+  <li><b>Surface anchor</b> &mdash; required for Surface mode (see &sect;5 if the Viewer didn't set one).</li>
+  <li><b>Planet detection parameters</b> &mdash; threshold, normalize flag, smooth sigma for Planetary mode.</li>
+</ul>
+<p>These settings are displayed read-only in the Settings panel for sanity-check. If you need to change them, close the Batch dialog, adjust them in the Viewer, and reopen the Batch dialog.</p>
+<div class="warn"><b>ROI and anchor must be meaningful across all files.</b> A batch assumes the files were shot in the same framing &mdash; same target, same scope, same camera position. If one file has the planet in the top-left and another in the bottom-right of the frame, the shared ROI will clip them differently and alignment will fail on at least one. Shoot batches with a consistent framing or process the mismatched files individually.</div>
+
+<h2>3. Output folder</h2>
+<p>Click <b>Choose Folder&hellip;</b> and pick where stacked results should land. Each file in the list produces one <code>.tif</code> file in this folder, named <code>&lt;input-stem&gt;_stack.tif</code>. For example:</p>
+<ul>
+  <li><code>jupiter_2026_11_21_2130ut.ser</code> &rarr; <code>jupiter_2026_11_21_2130ut_stack.tif</code></li>
+  <li><code>mars_run_01.avi</code> &rarr; <code>mars_run_01_stack.tif</code></li>
+</ul>
+<p>Existing files with the same name will be overwritten without prompting &mdash; the batch assumes you want fresh output.</p>
+
+<h2>4. Drizzle override</h2>
+<p>The only per-batch Stacker setting that's exposed in the Batch dialog is <b>Drizzle</b>. Options: <b>Off (1&times;)</b>, <b>1.5&times;</b>, <b>2&times;</b>. (3&times; and 4&times; drizzle are available in the Planetary Stacker's own dialog but not here &mdash; those scales are expensive enough that it's worth checking per-file results before committing a whole batch to them.) Pixfrac, kernel, sigma, planet axial rotation, field rotation, flats, and all analyze/AP settings use the Stacker defaults for every file in the batch.</p>
+<p>If you need per-file control over these, run those files through the Planetary Stacker individually.</p>
+
+<h2>5. Surface anchor acquisition on the first file</h2>
+<p>If Tracking is set to Surface <i>and</i> no surface anchor was defined in the Viewer, SASpro opens an <b>Anchor Picker</b> dialog on frame&nbsp;0 of the first file when you click <b>Run Batch</b>. The picker shows the reference frame full-size with zoom (<code>+</code> / <code>-</code> / <code>Fit</code> / <code>1:1</code> buttons, <b>Ctrl+Wheel</b>), and you <b>Shift+drag</b> a patch to define the anchor. The chosen anchor applies to <i>every</i> file in the batch &mdash; which is why you want files with consistent framing.</p>
+<p>If you cancel the picker, the batch doesn't start. If you pick a tiny anchor (less than 16&times;16), the OK button stays disabled.</p>
+
+<h2>6. Running the batch</h2>
+<p>Click <b>&#9654; Run Batch</b> to start processing. SASpro locks the file-list and settings controls (so you can't modify them mid-run), shows two progress bars (per-file and overall), and lights up each file in turn:</p>
+<table>
+  <tr><th>Status</th><th>Colour</th><th>Icon</th><th>Meaning</th></tr>
+  <tr><td>Pending</td><td>Grey</td><td>&#9203; (hourglass)</td><td>Queued, not yet processed.</td></tr>
+  <tr><td>Running</td><td>Blue</td><td>&#128260; (reload arrows)</td><td>Currently being analyzed and stacked.</td></tr>
+  <tr><td>Done</td><td>Green</td><td>&#9989; (check)</td><td>Finished successfully; output TIFF saved and opened as a SASpro document.</td></tr>
+  <tr><td>Failed</td><td>Red</td><td>&#10060; (cross)</td><td>Something went wrong; see the Log for the error.</td></tr>
+</table>
+<p>Below the list, the <b>phase label</b> shows the current pipeline phase (Quality, SSD Refine, Stack, Drizzle) with a percentage, and the <b>overall</b> label shows <code>N / Total files done</code>. The log window at the bottom records every file-start, file-done and file-failed event with the output path or error message.</p>
+
+<h2>7. Canceling mid-batch</h2>
+<p>Click <b>Cancel</b> during a batch run to stop after the current file finishes. The already-done files keep their output TIFFs; files that were still pending stay pending (grey) and are not processed. The dialog becomes editable again, so you can tweak and re-run just the remaining files if you want.</p>
+<p>Cancel is a cooperative signal: SASpro checks it between the Analyze and Stack phases of each file, so a cancel during Analyze will still let that file's Analyze finish before stopping. There's no mid-phase abort &mdash; this avoids leaving partial state behind.</p>
+
+<h2>8. Results</h2>
+<p>When each file completes, two things happen:</p>
+<ol>
+  <li>The float32 result is saved to <code>&lt;output-folder&gt;/&lt;input-stem&gt;_stack.tif</code> as a 32-bit floating-point TIFF.</li>
+  <li>The same result is pushed as a new SASpro document named <code>&lt;input-stem&gt;_stack</code>, opened in a sub-window, ready for stretch and post-processing.</li>
+</ol>
+<p>By the end of a 20-file batch you'll have 20 TIFFs on disk and 20 open sub-windows in SASpro. On completion, a message box tells you how many succeeded and how many failed, plus the output path.</p>
+
+<h2>9. Technical details</h2>
+<p class="tech-lead">The batch orchestration architecture.</p>
+
+<h3>9.1 Threading model</h3>
+<p>Each run spawns a single <b>_BatchWorker</b> QThread that iterates over the file list sequentially. Each file goes through:</p>
+<ol>
+  <li><code>analyze_ser</code> on that file's SERStackConfig &rarr; produces an <code>AnalyzeResult</code>.</li>
+  <li><code>stack_ser</code> with that result &rarr; produces the stacked float32 array.</li>
+  <li>Save to TIFF via SASpro's shared <code>save_image</code> (with a <code>tifffile.imwrite</code> fallback if that import fails).</li>
+  <li>Emit <code>file_done(index, path, array)</code> back to the GUI thread.</li>
+</ol>
+<p>Only the worker thread does Analyze/Stack work; the GUI thread stays responsive for progress updates, cancel clicks, and the mandatory step of pushing each result as a new SASpro document (which must happen on the GUI thread for Qt safety).</p>
+
+<h3>9.2 Why document creation goes through a signal</h3>
+<p>SASpro's document system is Qt-based, and creating a new <code>QWidget</code> sub-window from a background thread is undefined behaviour in Qt. The worker therefore does <i>not</i> create documents directly &mdash; it emits <code>file_done(index, path, array)</code> and the GUI-thread slot <code>_on_file_done</code> calls <code>_push_as_new_doc</code> safely on the main thread. This signal-slot pattern is why the result array is marshalled through the signal payload rather than being written to disk and immediately re-read.</p>
+
+<h3>9.3 Per-file config isolation</h3>
+<p>Before running, SASpro builds one <code>SERStackConfig</code> per file by copying the base keyword set (inherited from the Viewer) and setting the per-file <code>source</code>. Each file's config carries its own copy, so modifying one in-flight (which doesn't happen, but conceptually) wouldn't bleed into others. Drizzle scale is set per batch from the dropdown and applied uniformly to all configs.</p>
+
+<h3>9.4 Anchor picker implementation</h3>
+<p>The <b>_AnchorPickerDialog</b> is a self-contained modal dialog that loads the first file's frame&nbsp;0 (via <code>open_planetary_source</code> with a 2-frame cache), displays it as a mono preview with 1&ndash;99.5 percentile stretch, and lets you Shift+drag a rectangle on it. The result is stored in ROI-space coordinates (so if the Viewer's ROI is active, the anchor stays sensible when the Stacker crops to the ROI). On OK the anchor becomes the batch's surface anchor for every file; on Cancel the batch doesn't start.</p>
+
+<div class="credit">
+<b>Credits.</b> The Batch Planetary Stacker &mdash; the batch orchestration (QThread worker iterating sequentially while keeping the GUI responsive), the GUI-thread signalling pattern that lets each completed stack be pushed as a new SASpro document safely from the background thread, the colour-coded four-state status list (pending/running/done/failed) with per-file and overall progress bars, the Anchor Picker dialog that acquires a surface anchor from the first file when none is set in the Viewer, and the per-batch Drizzle override &mdash; is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. The underlying stacking engine &mdash; quality scoring, reference frame construction, AP autoplace and editing, phase-correlation and SSD alignment, field rotation search, chromatic dispersion correction, planet axial derotation, drizzle resampling, quality-weighted integration and flat-field calibration &mdash; is the <b>Planetary Stacker</b> engine documented separately on its own help page, with full credits for OpenCV, Numba, Astropy, NumPy, PyQt6, FFmpeg and the standard algorithms (drizzle: Fruchter &amp; Hook 2002; phase correlation: Kuglin &amp; Hines 1975; log-polar Fourier-Mellin: De Castro &amp; Morandi 1987; MAD-based outlier rejection: Rousseeuw &amp; Croux convention). Output TIFF writing uses SASpro's shared <code>save_image</code> helper with <b>tifffile</b> as a fallback. The Planetary Stacker Viewer, which feeds this batch processor its base settings, is also documented separately.
+</div>
+
+</body>
+</html>

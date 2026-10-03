@@ -32,7 +32,7 @@ from setiastro.saspro.legacy.numba_utils import apply_flat_division_numba, debay
 from setiastro.saspro.legacy.image_manager import load_image
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from setiastro.saspro.widgets.spinboxes import CustomSpinBox, CustomDoubleSpinBox
-
+from setiastro.saspro.help_support import make_help_button
 
 class LiveStackSettingsDialog(QDialog):
     """
@@ -519,6 +519,11 @@ class LiveStackWindow(QDialog):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
+
+        # In-tool documentation button, left of the Settings wrench
+        self.btn_help = make_help_button("live_stacking", self)
+        tb.addWidget(self.btn_help)
+
         # — Replace the QAction “wrench” with a styled QToolButton —
         self.wrench_button = QToolButton()
         self.wrench_button.setIcon(QIcon(self._wrench_path))

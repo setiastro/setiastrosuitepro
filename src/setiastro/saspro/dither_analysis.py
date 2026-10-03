@@ -38,7 +38,7 @@ from __future__ import annotations
 import math
 import os
 from typing import Optional
-
+from setiastro.saspro.help_support import make_help_button
 import numpy as np
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtWidgets import (
@@ -1258,10 +1258,12 @@ class DitherAnalysisWindow(QWidget):
         self._btn_show_radec.toggled.connect(self._on_unit_toggle)
 
         ctrl_row.addWidget(plot_hint)
-        ctrl_row.addStretch()
+        ctrl_row.addStretch(1)
         ctrl_row.addWidget(self._btn_show_px)
         ctrl_row.addWidget(self._btn_show_arcsec)
         ctrl_row.addWidget(self._btn_show_radec)
+        ctrl_row.addStretch(1)
+        ctrl_row.addWidget(make_help_button("dither_analysis", self))
 
         rv.addLayout(ctrl_row)
 

@@ -32,6 +32,7 @@ from scipy.ndimage import zoom as _ndzoom
 import sep
 sep.set_extract_pixstack(20000000)
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.help_support import make_help_button
 
 # bring in your existing helpers/classes from the snippet you posted
 # (we assume they live next to this file or already in pro/)
@@ -1941,6 +1942,7 @@ class ImagePeekerDialogPro(QDialog):
         self.analyze_btn = QPushButton(self.tr("Analyze"))
         analysis_row.addWidget(self.analyze_btn)
         analysis_row.addStretch(1)
+        analysis_row.addWidget(make_help_button("image_peeker", self))
 
         btns = QHBoxLayout(); btns.addStretch(1)
         ok_btn = QPushButton(self.tr("Save Settings && Exit")); cancel_btn = QPushButton(self.tr("Exit without Saving"))

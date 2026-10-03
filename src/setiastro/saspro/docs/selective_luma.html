@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+</style>
+</head>
+<body>
+
+<h1>Selective Luminance Correction</h1>
+<p class="sub">Sister tool to Selective Color Correction. Instead of
+building a mask from a hue range, you build it from a luminance
+band &mdash; shadows, dark mids, midtones, bright mids, highlights,
+or any custom range &mdash; and push CMY&nbsp;/&nbsp;RGB&nbsp;/&nbsp;Luminance&nbsp;/&nbsp;Chroma&nbsp;/&nbsp;Saturation&nbsp;/&nbsp;Contrast
+adjustments through it. The contrast slider is the one Selective
+Color doesn't have: an anchored sigmoid S-curve pinned to the band
+endpoints, so contrast changes only reshape the midrange of your
+selected band without ever pushing a pixel outside it.</p>
+
+<p class="pub"><b>Why this exists.</b> Classic selective-colour tools
+let you edit by hue; curves and levels let you edit globally by
+luminance. What very few tools let you do is combine both &mdash;
+&ldquo;only shift the <i>bright</i> blues toward cyan&rdquo;,
+&ldquo;only lift the <i>shadows</i> saturation&rdquo;,
+&ldquo;only add contrast to the <i>midtone</i> dust lanes without
+clipping the galaxy core&rdquo;. This dialog does exactly that, with
+the same freehand lasso, imported-mask, and live-preview niceties
+as Selective Color.</p>
+
+<h2>1. Layout</h2>
+<p>Same two-pane split as Selective Color: a scrollable left column
+with the Luminance Mask group, three adjustment groups
+(CMY&nbsp;/&nbsp;RGB&nbsp;/&nbsp;LSC), live-preview toggle and action
+buttons; a right column with zoom toolbar, help banner, large
+preview, picked-luminance readout, and region-mask readout. Window
+size, splitter position, small-preview toggle, live-preview toggle,
+mask-overlay toggle, and current zoom are all persisted to QSettings
+under the <code>sellum/</code> namespace.</p>
+
+<h2>2. Building a luminance mask</h2>
+
+<h3>2.1 Preset bands</h3>
+<p>The <b>Preset</b> dropdown offers five standard luminance bands
+plus Custom:</p>
+<table>
+  <tr><th>Preset</th><th>Range (0&ndash;1)</th><th>8-bit range</th></tr>
+  <tr><td>Shadows</td><td>0.00&nbsp;&ndash;&nbsp;0.25</td><td>0&ndash;64</td></tr>
+  <tr><td>Dark Mids</td><td>0.20&nbsp;&ndash;&nbsp;0.45</td><td>51&ndash;115</td></tr>
+  <tr><td>Midtones</td><td>0.35&nbsp;&ndash;&nbsp;0.65</td><td>89&ndash;166</td></tr>
+  <tr><td>Bright Mids</td><td>0.55&nbsp;&ndash;&nbsp;0.80</td><td>140&ndash;204</td></tr>
+  <tr><td>Highlights</td><td>0.75&nbsp;&ndash;&nbsp;1.00</td><td>191&ndash;255</td></tr>
+</table>
+<p>Any manual change to the Luminance Wheel or either slider
+switches the preset to <b>Custom</b> automatically.</p>
+
+<h3>2.2 The Luminance Wheel</h3>
+<p>A circular grayscale ring with two draggable white handles for
+the lo and hi ends of the band. The convention is unusual but
+intuitive once you see it: <b>black</b> sits at the bottom
+(270&deg;), <b>white</b> sits at the top (90&deg;), and the ring
+transitions smoothly between the two around the circle. The yellow
+arc between the handles shows your current luminance range. A small
+orange marker appears when you click to sample a pixel (see
+&sect;&nbsp;3).</p>
+
+<h3>2.3 Lum. low / Lum. high sliders</h3>
+<p>0&ndash;255 integer sliders paired with 0.0&ndash;1.0 double spinboxes.
+Edit either side of each pair and the other updates in step. Both
+also mirror the Luminance Wheel.</p>
+
+<h3>2.4 Smoothness</h3>
+<p>Range 0.0&ndash;0.5, default 0.05. Feather width (in luminance
+units) applied at both ends of the band. At 0.0 the mask is a hard
+rectangle; at 0.05 you get soft edges roughly one 8-bit code value
+wide; at 0.5 the band bleeds halfway across the luminance axis in
+each direction. See &sect;&nbsp;12.1 for the exact formula.</p>
+
+<h3>2.5 Invert range</h3>
+<p>Replaces the mask with its complement before any downstream
+step. Useful for &ldquo;adjust everything <i>except</i> the midtones&rdquo;
+operations.</p>
+
+<h3>2.6 Soft (proportional)</h3>
+<p>Switches the band from a hard rectangle with linear feathers to a
+smooth-shoulder bump: the mask peaks at 1.0 inside the band and
+tapers off through smoothstep curves outside. For a narrow band this
+becomes a bell curve; for a wide band it keeps a soft-shouldered
+plateau. The result removes iso-luminance contours
+(&ldquo;blobbiness&rdquo;) that pure threshold masks produce. See
+&sect;&nbsp;12.2.</p>
+<p>Special case: a band that reaches a pure endpoint
+(<code>lo&nbsp;=&nbsp;0.0</code> or <code>hi&nbsp;=&nbsp;1.0</code>)
+keeps that endpoint fully in at 1.0 regardless of smoothness, so a
+Shadows preset (0.00&ndash;0.25) still selects true black at full
+strength instead of tapering off into it.</p>
+
+<h3>2.7 Intensity</h3>
+<p>Range 0.0&ndash;2.0, default 1.0. Scalar multiplier on the mask
+before it's handed to the adjustment pipeline. Same semantics as in
+Selective Color &mdash; think of it as the strength of the
+adjustment.</p>
+
+<h3>2.8 Edge blur</h3>
+<p>Gaussian blur applied to the mask after all other mask steps,
+0&ndash;150&nbsp;px radius. Useful for softening sharp luminance
+boundaries into gradient transitions. Default 5&nbsp;px (not 0 like
+Selective Color): luminance masks tend to have harder edges than
+hue masks, and a few pixels of blur almost always improves the
+result.</p>
+
+<h3>2.9 Show mask overlay</h3>
+<p>Red semi-transparent overlay in the preview showing exactly
+which pixels the current mask is selecting. Alpha scales with the
+mask value, so a soft-mode bell curve looks visibly feathered. Pair
+with the overlay to find the right luminance range for the structure
+you're trying to isolate.</p>
+
+<h3>2.10 Imported mask</h3>
+<p>Two controls:</p>
+<ul>
+  <li><b>Pick mask from view</b> &mdash; choose any currently open
+      image document as the mask source. The chosen image is
+      squeezed to one channel and resized to match the target.</li>
+  <li><b>Use imported mask</b> &mdash; when checked, bypasses the
+      luminance-band mask entirely. All the mask-build controls above
+      are ignored; the lasso region (if any) still AND's with it.</li>
+</ul>
+
+<h3>2.11 Lasso region mask</h3>
+<p>Hold <b>Alt</b> and drag in the preview to draw a freehand
+closed region. On release, the polygon is filled, converted to a
+binary mask at full resolution, and AND'd with the luminance mask.
+This is particularly powerful here: you can select, say, &ldquo;the
+midtone dust lanes <i>only on the north side</i> of the galaxy&rdquo;
+without having to craft a precise mask externally. The dashed-orange
+outline marks the active region in the preview until you click the
+<b>&times; Clear Region Mask</b> button.</p>
+
+<h2>3. Preview interaction</h2>
+<div class="keys">
+<b>Mouse</b>:<br>
+&bull; <b>Click</b> &mdash; sample the luminance at that pixel. The
+       wheel shows an orange marker; the readout shows the value as
+       both 0&ndash;1 float and 0&ndash;255 integer.<br>
+&bull; <b>Shift&nbsp;+&nbsp;Click</b> &mdash; sample and set the
+       luminance range to &plusmn;0.05 around that value (an 8-bit
+       spread of about &plusmn;13 code values).<br>
+&bull; <b>Ctrl&nbsp;+&nbsp;Drag</b> &mdash; pan the preview.<br>
+&bull; <b>Alt&nbsp;+&nbsp;Drag</b> &mdash; draw a lasso region mask.<br>
+&bull; <b>Mouse wheel</b> &mdash; zoom cursor-anchored (plain or
+       Ctrl, with Ctrl using a bigger step).<br>
+&bull; <b>Zoom buttons</b> &mdash; zoom out / in / 1:1 / fit.
+</div>
+
+<h3>3.1 Small-sized Preview (fast)</h3>
+<p>The toggle at the top-left controls whether the preview path
+operates on a downsampled copy (longest side &le; 1200&nbsp;px) or
+full resolution. On by default; always off for the Apply /
+Apply-as-New / Export Mask paths.</p>
+
+<h3>3.2 Preview changed image</h3>
+<p>Toggle between the raw image and the adjustment-applied image.
+Useful for before/after without undoing anything. The mask overlay
+works independently.</p>
+
+<h3>3.3 Colour boost mode</h3>
+<p>Same as Selective Color &mdash; pick <b>Chroma (L-preserving)</b>
+or <b>Saturation (HSV S)</b> for the colourfulness slider in the
+LSC group. See the Selective Color docs for the trade-off; the
+math is identical here.</p>
+
+<h2>4. The adjustment sliders</h2>
+<p>Identical to Selective Color in both range and semantics:</p>
+<ul>
+  <li><b>CMY</b> &mdash; Cyan, Magenta, Yellow, each
+      [&minus;0.2, +0.2]. Positive values pull a channel toward its
+      complement.</li>
+  <li><b>RGB</b> &mdash; Red, Green, Blue, each [&minus;0.2, +0.2].
+      Direct additive on each channel.</li>
+  <li><b>Luminance</b> &mdash; additive brightness, [&minus;0.2, +0.2].</li>
+  <li><b>Chroma (L-preserving)</b> or <b>Saturation (HSV S)</b> &mdash;
+      colourfulness, [&minus;0.2, +0.2]. Only one is active at a time
+      (picked by Color boost mode).</li>
+  <li><b>Contrast</b> &mdash; <i>different from Selective Color</i>
+      &mdash; an anchored sigmoid S-curve inside the luminance band,
+      not a simple multiplicative scale around 0.5. See &sect;&nbsp;12.4.</li>
+</ul>
+
+<h2>5. The non-monotonic contrast warning</h2>
+<p>When the Contrast slider drops below <code>&minus;0.667</code>
+(precisely <code>&minus;2/3</code>), an orange warning appears
+underneath the LSC group:</p>
+<div class="warn">&#9888; Contrast below &minus;0.67: curve is no
+longer monotonically increasing</div>
+<p>The slider itself turns red (groove, fill, handle) while the
+condition holds. This isn't a bug &mdash; the sigmoid compression
+math naturally stops being monotonic past this point, so very dark
+pixels can end up slightly brighter than slightly-less-dark pixels,
+producing wavy artefacts. The slider still works; the warning just
+says &ldquo;you're off the beaten path, verify the preview looks
+right&rdquo;. See &sect;&nbsp;12.5.</p>
+
+<h2>6. Reset behaviour</h2>
+
+<h3>6.1 After Apply or Apply as New Document</h3>
+<p>Only the adjustment sliders are reset to zero. The luminance
+range, preset, smoothness, invert, blur, and intensity are kept
+exactly as you had them. This is a deliberate difference from
+Selective Color &mdash; Selective Color resets everything after
+Apply because hue selections tend to be one-and-done, but luminance
+bands are often reused for multiple passes (adjust shadows for
+colour, then for contrast, then for luminance tweak, same band each
+time).</p>
+
+<h3>6.2 &#x21ba; Reset button</h3>
+<p>Full reset: luminance range back to the Shadows preset
+(0.00&ndash;0.25), smoothness 0.05, invert off, soft off, blur 0,
+mask overlay off, all adjustment sliders at 0.0, intensity 1.0,
+Chroma mode selected. Loaded image, imported mask, and lasso region
+are preserved.</p>
+
+<h3>6.3 &times; Clear Region Mask</h3>
+<p>Removes any lasso region constraint. Enabled only when a region
+is active.</p>
+
+<h2>7. Applying the result</h2>
+<ul>
+  <li><b>Apply</b> &mdash; full-resolution pipeline on the current
+      <code>self.img</code>, writes back to the source document,
+      promotes the result to the new working base, resets only the
+      adjustment sliders (see &sect;&nbsp;6.1).</li>
+  <li><b>Apply as New Document</b> &mdash; same but opens the
+      result as a new SASpro document titled
+      <code>&lt;name&gt; [SelLum]</code> and switches the dialog's
+      target to it.</li>
+  <li><b>Export Mask</b> &mdash; pushes the current mask (as a
+      3-channel grayscale image) to a new document titled
+      <code>&lt;name&gt; [SelLum MASK]</code>. Useful for feeding it
+      into another SASpro tool or for round-tripping into Selective
+      Color via its Pick-mask-from-view path.</li>
+</ul>
+
+<h2>8. Fun applications</h2>
+
+<p>A few things this tool can do that are awkward or impossible in
+general-purpose editors:</p>
+
+<ul>
+  <li><b>Galaxy core taming</b> &mdash; set the preset to Highlights,
+      drag the lower handle up to 0.85, enable Soft mode, drop
+      Luminance to &minus;0.08. Only the overexposed core dims; the
+      surrounding spiral arms are untouched.</li>
+  <li><b>Dark-sky colour desaturation</b> &mdash; preset Shadows,
+      Chroma &minus;0.1. Removes colour noise from the background
+      without affecting star cores or nebulosity, which live in
+      higher luminance ranges.</li>
+  <li><b>Midtone-band contrast lift</b> &mdash; preset Midtones,
+      Soft on, Contrast +0.15. The anchored sigmoid pulls faint
+      dust lanes into visibility without touching highlights or
+      shadows. This is the specific move the band-locked contrast
+      formula was designed for.</li>
+  <li><b>Shift bright Ha without changing dim Ha</b> &mdash; preset
+      Bright Mids, Red +0.03, Magenta &minus;0.02. Only the brightest
+      Ha structures gain the warmth; the faint stuff stays the colour
+      it was.</li>
+  <li><b>Highlight-only clarity</b> &mdash; preset Highlights,
+      Contrast +0.08. Adds crispness to bright star cores and the
+      brightest galaxy structure without affecting the midrange or
+      shadows.</li>
+</ul>
+
+<p>Chain this with Selective Color for &ldquo;only touch the
+<i>bright</i> blues&rdquo;: export a luminance mask from here, then
+import it into Selective Color via Pick-mask-from-view and pick
+the Blue preset. The two masks AND together.</p>
+
+<h2>9. Technical details</h2>
+
+<p class="tech-lead">Everything in float32 in [0,&nbsp;1]. Luminance
+is Rec. BT.601. Core pipeline runs on the GUI thread with debounced
+timers (200&nbsp;ms for mask and adjustment paths), identical to
+Selective Color. The band-locked contrast formula and the luminance
+wheel are the two pieces that set this tool apart.</p>
+
+<h3>12.1 Luminance basis</h3>
+<p>Rec. BT.601 weights, same as Selective Color:</p>
+<div class="matheq-hero">L \;=\; 0.2989\,R + 0.5870\,G + 0.1140\,B</div>
+
+<h3>12.2 Soft vs hard band</h3>
+<p>Let <code>L</code> be the pixel luminance, <code>L_lo</code> and
+<code>L_hi</code> the band endpoints, and <code>s</code> the
+smoothness. In <b>soft mode</b>, the mask is a bump function with
+smoothstep shoulders:</p>
+<div class="matheq-hero">m_{\mathrm{soft}}(L) \;=\; t(L;\; L_{\mathrm{lo}} - s,\; L_{\mathrm{lo}} + s) \cdot (1 - t(L;\; L_{\mathrm{hi}} - s,\; L_{\mathrm{hi}} + s))</div>
+<p>where <code>t</code> is the smoothstep from Selective Color
+&sect;&nbsp;13.2. The clamp around the pure endpoints (0 and 1) is
+applied by replacing the relevant factor with 1 when the band
+reaches that endpoint, so Shadows and Highlights presets include
+true black and true white without a false taper.</p>
+<p>In <b>hard mode</b>, the band is 1 inside and linearly
+feathered at the ends:</p>
+<div class="matheq-hero">m_{\mathrm{hard}}(L) \;=\; 1,\quad L_{\mathrm{lo}} \leq L \leq L_{\mathrm{hi}}</div>
+<div class="matheq">m(L) \;=\; \frac{L - (L_{\mathrm{lo}} - s)}{s},\quad L_{\mathrm{lo}} - s \leq L < L_{\mathrm{lo}}</div>
+<div class="matheq">m(L) \;=\; 1 - \frac{L - L_{\mathrm{hi}}}{s},\quad L_{\mathrm{hi}} < L \leq L_{\mathrm{hi}} + s</div>
+<p>The Invert checkbox replaces the result with <code>1 &minus; m</code>.</p>
+
+<h3>12.3 Luminance wheel geometry</h3>
+<p>The wheel maps angle (in degrees, measured counterclockwise from
+the positive x-axis) to luminance in [0,&nbsp;1]:</p>
+<div class="matheq-hero">L(\theta) \;=\; \frac{(270^{\circ} - \theta) \;\mathrm{mod}\; 360^{\circ}}{360^{\circ}}</div>
+<div class="matheq-hero">\theta(L) \;=\; (270^{\circ} - 360^{\circ} L) \;\mathrm{mod}\; 360^{\circ}</div>
+<p>Which places <code>L&nbsp;=&nbsp;0</code> (black) at the 270&deg;
+position (bottom), <code>L&nbsp;=&nbsp;1</code> (white) at 90&deg;
+(top), and midtones at the sides. The arc from <code>lo</code> to
+<code>hi</code> always moves in the direction of <i>decreasing</i>
+angle (i.e. toward higher luminance).</p>
+
+<h3>12.4 Band-locked contrast (anchored sigmoid)</h3>
+<p>This is the maths that distinguishes Selective Luminance from
+Selective Color. Let <code>&kappa;</code> be the Contrast slider
+value, <code>x</code> a pixel's channel value, and
+<code>[L_lo, L_hi]</code> the current luminance band. The steepness
+is:</p>
+<div class="matheq-hero">k \;=\; 6 \cdot |\kappa|</div>
+<p>The sigmoid is normalised against its own endpoints so the
+transformation maps <code>L_lo</code> to <code>L_lo</code> and
+<code>L_hi</code> to <code>L_hi</code> exactly:</p>
+<div class="matheq-hero">\sigma_{-} \;=\; \frac{1}{1 + e^{k}},\quad \sigma_{+} \;=\; \frac{1}{1 + e^{-k}}</div>
+<p>Then the pixel is remapped by first centring on the band:</p>
+<div class="matheq-hero">t \;=\; \frac{x - L_{\mathrm{lo}}}{L_{\mathrm{hi}} - L_{\mathrm{lo}}},\quad u \;=\; 2t - 1</div>
+<p>Running through the normalised sigmoid:</p>
+<div class="matheq-hero">e(t) \;=\; \frac{\sigma(k u) - \sigma_{-}}{\sigma_{+} - \sigma_{-}}</div>
+<p>and then expand or compress depending on the slider sign:</p>
+<div class="matheq-hero">\mathrm{anchored}(t) \;=\; e(t),\quad \kappa > 0</div>
+<div class="matheq-hero">\mathrm{anchored}(t) \;=\; 2t - e(t),\quad \kappa < 0</div>
+<p>and finally remap back out:</p>
+<div class="matheq-hero">x' \;=\; \mathrm{anchored}(t) \cdot (L_{\mathrm{hi}} - L_{\mathrm{lo}}) \;+\; L_{\mathrm{lo}}</div>
+<p>The output pixel is a mask-weighted blend of original and
+remapped:</p>
+<div class="matheq">x_{\mathrm{out}} \;=\; (1 - m) \cdot x \;+\; m \cdot x'</div>
+<p>Because the sigmoid is anchored at both endpoints, pixels
+<i>outside</i> the band (where <code>t</code> is outside
+<code>[0,&nbsp;1]</code>) still get remapped by the formula &mdash;
+but their mask value <code>m</code> is near zero, so the blend keeps
+them untouched. The feathering at the band edges comes entirely from
+the mask, which means contrast transitions at the band boundary are
+as smooth as the mask's smoothness setting allows.</p>
+
+<h3>12.5 Non-monotonic contrast limit</h3>
+<p>In compression mode (<code>&kappa; &lt; 0</code>) the remap is
+<code>anchored(t)&nbsp;=&nbsp;2t&nbsp;&minus;&nbsp;e(t)</code>.
+Differentiating with respect to <code>t</code>:</p>
+<div class="matheq-hero">\frac{d\,\mathrm{anchored}}{dt} \;=\; 2 - \frac{d\,e}{dt}</div>
+<p>The curve stops being monotonically increasing where
+<code>de/dt&nbsp;&gt;&nbsp;2</code>, which happens for sufficiently
+large <code>k</code>. The threshold works out to:</p>
+<div class="matheq-hero">\kappa \;>\; -\frac{2}{3}</div>
+<p>Past this point (slider positions below &minus;0.667), the
+compressed curve wiggles rather than monotonically decreasing in
+slope, so dark pixels can end up slightly brighter than
+slightly-less-dark pixels at the band ends &mdash; the wavy artefact
+the on-screen warning calls out. The slider still functions; the
+warning just makes the regime explicit.</p>
+
+<h3>12.6 Everything else</h3>
+<p>CMY, RGB primaries, Luminance additive, Chroma (L-preserving),
+Saturation (HSV S), and Intensity scaling are all identical to
+Selective Color &mdash; see that tool's &sect;&nbsp;13.6 for the
+formulas. Region-mask AND composition (&sect;&nbsp;13.8) and the
+dual debounced-timer architecture (&sect;&nbsp;13.9) also carry over
+unchanged.</p>
+
+<h3>12.7 Debounced pipeline</h3>
+<p>Two 200&nbsp;ms single-shot QTimers:</p>
+<ul>
+  <li><b>Mask timer</b> fires on changes to lo/hi/smoothness/invert/
+      blur/soft/imported-toggle; rebuilds the mask then repaints the
+      preview.</li>
+  <li><b>Adjustment timer</b> fires on changes to any CMY/RGB/LSC
+      slider or Intensity; skips the mask rebuild and repaints
+      directly.</li>
+</ul>
+<p>Slider release and spin-box editing-finished force an immediate
+repaint so you don't wait after letting go.</p>
+
+<h3>12.8 OpenCV dependency</h3>
+<p>Required for Gaussian edge blur, lasso polygon fill, mask resize,
+region outline rendering, and HSV conversion inside the saturation
+path. The <code>_build_lum_mask</code> core itself is pure NumPy and
+runs without cv2; the UI will still work for the band mask path, but
+blur and lasso fall back to no-op / Matplotlib path respectively.</p>
+
+<div class="credit">
+<b>Credits.</b> The luminance-selective editing concept &mdash;
+build a mask from a brightness band and apply colour/contrast
+through it &mdash; is a classical darkroom and digital-editing
+move. What's specific to this tool and Frank's work for SASpro:
+the <b>circular Luminance Wheel</b> widget (grayscale ring with
+black-at-bottom / white-at-top mapping, two draggable handles,
+sampled-luminance marker), the <b>soft-mode bump mask</b> with
+endpoint-clamped shoulders that keep pure black and pure white
+in-band, the <b>anchored-sigmoid band contrast</b> formula that
+pins the sigmoid to the band endpoints so contrast only reshapes
+the midrange of the selected band, the <b>non-monotonic warning</b>
+at <code>&kappa; &lt; &minus;2/3</code>, the <b>reset-adjustments-only</b>
+behaviour after Apply (as opposed to Selective Color's full reset),
+and the UI around all of it. HSV conversion, Gaussian blur, lasso
+polygon fill, and image resize use <b>OpenCV</b>. The
+luminance-preserving chroma formula and the CMY/RGB adjustment math
+are the same classical approaches used in Selective Color
+(&sect;&nbsp;13.6 there).
+</div>
+
+</body>
+</html>

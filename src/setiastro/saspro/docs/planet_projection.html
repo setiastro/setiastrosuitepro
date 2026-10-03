@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>3D Projection</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>3D Projection</h1>
+<p class="sub">Turn flat astro images into stereo pairs, wiggle animations, red/cyan anaglyphs, interactive HTML 3D, pseudo-surface point clouds, and top-down galaxy views — all from a single sub.</p>
+
+<div class="pub">
+<b>The fun one.</b> This tool takes a 2D image of a planet, moon, or galaxy and gives you six different ways to see it in 3D: side-by-side stereo pairs (parallel or cross-eye), rapid wiggle animations, classic red/cyan anaglyphs for 3D glasses, interactive Plotly-based sphere HTML you can rotate in a browser, pseudo-surface point clouds that treat image brightness as height for lunar / solar / nebula detail, and — perhaps the most useful scientific option — a <i>galaxy polar-view deprojection</i> that takes a near-edge-on galaxy and lets you look straight down on its disk. The math underneath is standard computer graphics (sphere reprojection, orthographic unprojection, ellipse foreshortening); the fun comes from applying all of it to the frames you already imaged. Original work by <b>Franklin Marek</b> for SetiAstro Suite Pro.
+</div>
+
+<h2>1. The six output modes</h2>
+
+<p>Pick one from the top <b>Output</b> dropdown:</p>
+
+<table>
+<tr><th>Mode</th><th>What it does</th><th>How to view</th></tr>
+<tr><td><b>Stereo (Parallel) L | R</b></td><td>Side-by-side left-eye-left, right-eye-right. Image is reasonably sized to free-fuse.</td><td>Diverge your eyes slightly (as if staring past the screen) until the two images fuse into one 3D image.</td></tr>
+<tr><td><b>Stereo (Cross-eye) R | L</b></td><td>Side-by-side right-eye-left, left-eye-right. Same source, swapped output.</td><td>Cross your eyes (as if looking at your nose) to fuse. Easier for most people than parallel.</td></tr>
+<tr><td><b>Wiggle stereo</b></td><td>Rapidly alternates L and R views at the Wiggle period you set.</td><td>Just watch — your visual system interprets the motion as depth. No glasses, no eye-crossing. Share as GIF or MP4.</td></tr>
+<tr><td><b>Anaglyph (Red/Cyan)</b></td><td>Classic 3D-glasses composite — red channel is left-eye luminance, cyan is right-eye luminance.</td><td>Red/cyan paper glasses. Looks washed out without them, pops into 3D with.</td></tr>
+<tr><td><b>Interactive 3D (HTML)</b></td><td>Exports a Plotly-based 3D sphere (or point cloud) you can rotate, zoom and pan in any browser.</td><td>Opens in your default browser. Standalone HTML, works offline, shareable.</td></tr>
+<tr><td><b>Galaxy Polar View (Top-Down)</b></td><td>Takes an inclined galaxy and reprojects it as if viewed face-on from the galactic north pole.</td><td>Just view normally. The deprojected image lives at native resolution for stacking into comparisons.</td></tr>
+</table>
+
+<p>The three stereo modes (Parallel, Cross-eye, Wiggle) and the Anaglyph all share the same underlying <b>stereo-pair generation</b> — they just differ in how the pair is composited for display. Interactive 3D and Galaxy Polar View generate their outputs via different pipelines.</p>
+
+<h2>2. The four planet types</h2>
+
+<table>
+<tr><th>Type</th><th>When to use</th></tr>
+<tr><td><b>Normal (Sphere only)</b></td><td>Any planet, moon, or round body where you want the body treated as a sphere. Mars, Venus, Jupiter without rings, Mercury, moons.</td></tr>
+<tr><td><b>Saturn (Sphere + Rings)</b></td><td>Saturn — adds an elliptical annulus for the rings with front/back occlusion by the planet body.</td></tr>
+<tr><td><b>Pseudo surface (Height from brightness)</b></td><td>Lunar craters, solar granulation, or any surface where image brightness correlates with 3D height. Also works beautifully on nebulae for an artistic "cosmic landscape" effect.</td></tr>
+<tr><td><b>Galaxy (Disk deprojection)</b></td><td>Edge-on or inclined galaxies where you want to see the disk structure from above. Also exposes PA / tilt controls that let the Interactive 3D export produce a proper tilted galaxy mesh.</td></tr>
+</table>
+
+<p>The planet type and the output mode combine freely: for example, "Saturn + Interactive 3D" gives you a Plotly sphere with real ring geometry you can orbit, while "Pseudo surface + Wiggle" gives you a swaying heightmap of your lunar close-up.</p>
+
+<h2>3. Common workflow</h2>
+
+<ol>
+  <li><b>Open the dialog</b> on an active image.</li>
+  <li><b>Pick Output and Planet type</b> from the two top dropdowns.</li>
+  <li><b>Set Strength (°)</b> — the stereo parallax angle. 6° is the sweet spot for most planets; 2-3° for subtle depth, 10-15° for exaggerated. Only matters for the stereo and anaglyph modes.</li>
+  <li><b>Review the detected disk</b> if the "Review / adjust detected disk" checkbox is ticked (default). The disk-adjust dialog opens with an automatic estimate — nudge or redraw as needed.</li>
+  <li><b>Click Generate</b>. The preview window opens with your result.</li>
+  <li>From the preview: <b>Save Still</b>, <b>Save Wiggle</b> (if wiggle mode is active), or <b>Push to New Document</b> to drop the result into a SASpro doc for further processing.</li>
+</ol>
+
+<h2>4. The disk-adjust dialog</h2>
+
+<p>When "Review / adjust detected disk" is enabled, Generate pauses to let you confirm the disk location. The dialog shows the image with a green circle (and, for Saturn / galaxy / planet types, an ellipse overlay with PA and tilt handles).</p>
+
+<div class="keys">
+<b>Disk-adjust controls.</b>
+<br><b>Ctrl+Click+Drag</b> — move the circle center.
+<br><b>Arrow keys</b> or <b>▲▼◀▶ buttons</b> — nudge by the configurable px step.
+<br><b>Radius slider / spinbox / Radius ± buttons</b> — resize the circle.
+<br><b>🎯 Auto-detect disk</b> — WinJUPOS-style ellipse fit on the brightest blob. Updates center, radius, and (for ellipse modes) PA and tilt all at once. Great starting point.
+<br><b>Ring/Disk PA (deg)</b> — rotate the ellipse. For Saturn, this is the ring plane's angle in the image; for galaxy, the galactic disk's major-axis angle; for planet-type with axis alignment, the rotation axis direction.
+<br><b>Tilt (b/a)</b> — ellipse minor/major ratio, 0.05-1.0. 1.0 = circle (face-on); smaller = more edge-on.
+<br><b>Outer / Inner factor</b> (Saturn only) — ring radii in units of planet radius.
+<br><b>Zoom controls</b> — Fit, 1:1, +/- for close inspection.
+<br><b>Use This Disk</b> — accept and continue to generation.
+</div>
+
+<h2>5. Backgrounds and parallax</h2>
+
+<p>The background behind the planet can be configured three ways:</p>
+
+<ul>
+  <li><b>Starfield</b> (checkbox) — a synthetic random starfield, with density and seed controls. Default on. The starfield is <i>screen-locked</i> (no parallax) by default, which looks right for most planetary stereo.</li>
+  <li><b>Background image</b> (checkbox + Choose… button) — load any image (nebula field, your Milky Way shot, a star cluster). It's resized to fit the ROI and composited behind the planet.</li>
+  <li><b>Both</b> — background image + starfield painted on top.</li>
+</ul>
+
+<p>The <b>Background depth</b> slider controls how much the background participates in the stereo parallax, as a percentage of the planet's parallax:</p>
+
+<ul>
+  <li><b>0%</b> — screen-locked, no parallax. Stars appear to float at the screen plane.</li>
+  <li><b>25%</b> (default for most workflows) — background sits visually behind the planet. Recommended for a clean depth cue without forcing the eye to fuse the stars themselves.</li>
+  <li><b>100%</b> — background at the same depth as the planet (unnatural for astro-stereo, since stars are much farther than planets).</li>
+  <li><b>Negative values</b> — background in front of the planet. Mostly for creative/weird effects.</li>
+</ul>
+
+<div class="tip">
+<b>Background depth and Saturn.</b> For Saturn specifically the depth sign is auto-flipped internally, so a positive slider value keeps the stars visually <i>behind</i> the ring plane as you'd expect, matching your sense of "I'm looking at Saturn with a star field behind it".
+</div>
+
+<h2>6. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Classic planet stereo with 3D glasses.</b> Planet type: Normal. Output: Anaglyph. Strength: 6°. Turn Starfield on (density 0.03), background depth 25%. Click Generate. Put on red/cyan glasses, look at the preview. The planet pops forward of the stars; you should see curvature in the globe immediately.
+</div>
+
+<div class="workflow">
+<b>Saturn with rings in 3D.</b> Planet type: Saturn. Output: Anaglyph (or Wiggle for shareable animation). In the disk-adjust dialog, click Auto-detect — this usually catches Saturn's ellipse PA automatically. Fine-tune the ring tilt until the ring major axis matches your real image. The front half of the ring will occlude behind-the-body, the back half will emerge in front, giving a solid 3D feel of the ring plane geometry.
+</div>
+
+<div class="workflow">
+<b>Shareable GIF for social media.</b> Planet type: Normal (or Saturn). Output: Wiggle stereo. Strength: 8°. Wiggle period: 150 ms (a comfortable blink rate). Click Generate — the preview starts wiggling. Click Save Wiggle, pick GIF, save. The resulting file loops forever and shows depth without needing glasses or eye-crossing. Share directly.
+</div>
+
+<div class="workflow">
+<b>Lunar craters as a 3D landscape.</b> Planet type: Pseudo surface. Output: any (Anaglyph works well). Depth gamma 1.5 to emphasize crater rims, depth blur 1.0 to reduce noise, invert off (bright = closer, so sunlit rims come forward). The result is a tilt-shift-looking terrain view, excellent for high-detail lunar images.
+</div>
+
+<div class="workflow">
+<b>Nebula "cosmic landscape".</b> Planet type: Pseudo surface. Output: Interactive 3D (HTML). Height from: Dual (brightness + saturation). Max points: 500000. Click Generate, pick a save path, and the HTML opens in your browser — bright nebular features become hills, dust lanes become valleys, and the whole thing rotates in your browser. Not scientifically meaningful (brightness isn't actually height for a nebula), but visually stunning.
+</div>
+
+<div class="workflow">
+<b>Galaxy polar view — see a tilted galaxy from above.</b> Planet type: Galaxy. Output switches automatically to Galaxy Polar View. In the disk-adjust dialog, align the ellipse overlay to the galaxy's projected shape: PA to the major axis, tilt (b/a) to the apparent axis ratio. Click Auto-detect to get a good starting fit, then fine-tune. On Generate, the galaxy is reprojected into a face-on view — you can now see spiral arm structure that was foreshortened in the original. This is the fun scientific one: you can take your edge-on M31 or NGC 4565 and reveal spiral structure that your line-of-sight was hiding.
+</div>
+
+<div class="workflow">
+<b>Interactive 3D sphere for a web page or presentation.</b> Planet type: Normal (or Saturn for rings). Output: Interactive 3D (HTML). Click Generate, pick a save path. The resulting .html file is standalone (just needs internet for the Plotly JS, which it pulls from CDN) and lets anyone rotate, zoom, and inspect your planet from any angle. Drop it in a blog post, email it, keep it on your observing laptop as a 3D reference.
+</div>
+
+<h2>7. Interactive 3D exports — details</h2>
+
+<p>The HTML export has three distinct forms depending on planet type:</p>
+
+<ul>
+  <li><b>Sphere</b> (Normal, Saturn) — a Plotly Mesh3d sphere with the equirectangular texture derived from your disk. 480 × 960 latitude/longitude resolution by default. The visible-hemisphere pixels are mapped to the near side; the back hemisphere is painted black (since you only have one view of the planet). Camera starts at (0, 0, 2.2) looking at origin.</li>
+  <li><b>Saturn rings</b> (if enabled) — a second Mesh3d built as a polar grid (180 radial × 720 angular by default), textured from the ROI by sampling along the ellipse at each (radius, angle) point. The rings are 3D-tilted around the X axis by inclination = arccos(tilt), rotated around Z by the PA. Ring pixels <i>behind</i> the sphere are painted black so the planet correctly occludes them.</li>
+  <li><b>Pseudo-surface point cloud</b> (Pseudo surface) — a Plotly Scatter3d with up to 900000 points (default 250000), each positioned at (x, y, z=height) where height is derived from luminance or saturation (or both in Dual mode). The point color follows the "3D Color Mode" setting: Brightness (actual pixel RGB), Depth (colormap by height), or Dual (overlaid). Downsampling honors a target vertex count so the file stays browser-friendly.</li>
+</ul>
+
+<h2>8. Technical details</h2>
+<p class="tech-lead">The projection math, the ring geometry, the pseudo-surface heightmap, the galaxy deprojection, and the anaglyph composition.</p>
+
+<h3>8.1 Sphere reprojection (the core of planet stereo)</h3>
+
+<p>The planet in your image is a 2D disk — the orthographic shadow of a sphere. To make stereo, we first <i>unproject</i> each disk pixel back onto the sphere, then <i>rotate</i> the sphere by ±θ around the vertical axis, then project back to pixels for the left and right views.</p>
+
+<p>Setup: center coordinates at the disk center, scale so x and y lie in [-1, 1] at the limb (so r = 1 is the disk radius). The front-hemisphere height is:</p>
+
+<div class="matheq">z = \sqrt{1 - x^2 - y^2}, \quad x^2 + y^2 \leq 1</div>
+
+<p>Rotate the sphere around the vertical (Y) axis by angle θ (positive for left eye, negative for right):</p>
+
+<div class="matheq">x' = x \cos\theta + z \sin\theta, \quad y' = y</div>
+
+<p>Project back to pixel coordinates:</p>
+
+<div class="matheq">u = c_x + r \cdot x', \quad v = c_y + r \cdot y</div>
+
+<p>where (c<sub>x</sub>, c<sub>y</sub>) is the disk center in the image and r is the disk radius in pixels. The result is implemented as <code>cv2.remap</code> with Lanczos4 interpolation; pixels outside the disk get <code>borderValue=0</code>. This correctly curves the sphere so that limb features move more than central features — the natural stereo effect of looking at a 3D ball from two angles.</p>
+
+<h3>8.2 Ring geometry (Saturn)</h3>
+
+<p>Rings are modeled as a tilted elliptical annulus in the image plane. For a position (x, y) relative to the disk center, rotate into the ring's own frame by -PA to get (x<sub>r</sub>, y<sub>r</sub>). The outer ellipse condition is:</p>
+
+<div class="matheq">\frac{x_r^2}{a_o^2} + \frac{y_r^2}{b_o^2} \leq 1</div>
+
+<p>with a<sub>o</sub> = (outer factor) · r and b<sub>o</sub> = a<sub>o</sub> · tilt. The inner ellipse is the same with a<sub>i</sub>, b<sub>i</sub>. The ring annulus is:</p>
+
+<div class="matheq">\mathcal{A} = \mathcal{E}_{\mathrm{outer}} \wedge \neg\, \mathcal{E}_{\mathrm{inner}}</div>
+
+<p>The <b>tilt parameter</b> (b/a) encodes the viewing inclination of the ring plane:</p>
+
+<div class="matheq">b = a \cdot \mathrm{tilt}, \quad \mathrm{tilt} = \cos(\mathrm{inc})</div>
+
+<p>so tilt = 1 is face-on (circle) and tilt → 0 is edge-on. For true 3D geometry in the Interactive HTML export, this is inverted:</p>
+
+<div class="matheq">\mathrm{inc} = \arccos(\mathrm{tilt})</div>
+
+<p>to recover the actual ring-plane inclination from the apparent axis ratio in your image.</p>
+
+<h3>8.3 Ring front/back split and occlusion</h3>
+
+<p>The ring plane crosses the planet body: part of the ring sits in front of the body (closer to you), part sits behind. To composite them correctly, we split the ring annulus into two halves using the signed distance along the <b>minor-axis normal</b>:</p>
+
+<div class="matheq">s = x\,n_x + y\,n_y, \quad \mathrm{front} = (s > 0)</div>
+
+<p>where (n<sub>x</sub>, n<sub>y</sub>) = (cos(PA + 90°), sin(PA + 90°)) is the unit vector along the ring plane's minor axis in the image. During compositing, back-half ring pixels are drawn first (so the planet body overpaints them), then the planet body is drawn, then front-half ring pixels (so they sit on top of the body). This creates the familiar "ring passing in front of Saturn" visual effect.</p>
+
+<h3>8.4 Ring stereo via yaw warp</h3>
+
+<p>Rings are flat 2D structures — the sphere-reprojection math from §8.1 doesn't apply. Instead, we use a simpler <b>yaw warp</b> for stereo disparity on the ring pixels:</p>
+
+<div class="matheq">x' = c_x + (x - c_x) \cos\theta</div>
+
+<p>which horizontally foreshortens the ring positions around the rotation center. This produces parallax that scales with distance from the center (so ring tips move more than ring bases), matching how a rotating ring plane would appear to shift between two eye positions.</p>
+
+<h3>8.5 Pseudo-surface heightmap and disparity warp</h3>
+
+<p>For the Pseudo surface planet type, image brightness is treated as 3D height. The pipeline, in order:</p>
+
+<p>1. <b>Compute luminance</b> as the Rec.709 weighted sum: Y = 0.299·R + 0.587·G + 0.114·B.</p>
+
+<p>2. <b>Center around the median</b> so background is near zero height:</p>
+
+<div class="matheq">h = \mathrm{luma} - \mathrm{median}(\mathrm{luma})</div>
+
+<p>3. <b>Apply gamma shaping</b> (preserving sign) to control contrast:</p>
+
+<div class="matheq">h_\gamma = \mathrm{sign}(h) \cdot |h|^\gamma</div>
+
+<p>Default γ = 1.15 emphasizes bright peaks slightly; γ &lt; 1 broadens depth; γ &gt; 1 sharpens it.</p>
+
+<p>4. <b>Normalize by MAD</b> (Median Absolute Deviation) so bright stars don't dominate:</p>
+
+<div class="matheq">\mathrm{MAD} = \mathrm{median}(|h - \mathrm{median}(h)|)</div>
+<div class="matheq">h_{\mathrm{norm}} = \frac{h_\gamma}{6 \cdot \mathrm{MAD}}</div>
+
+<p>The gain divisor 6 gives a visually comfortable amplitude without stars exploding into huge disparity spikes. The result is clipped to [-1, 1].</p>
+
+<p>5. <b>Compute per-pixel disparity</b> from the stereo strength θ:</p>
+
+<div class="matheq">\Delta_{\max} = \frac{\theta}{25^\circ} \cdot 0.12 \cdot \min(H, W)</div>
+<div class="matheq">\Delta = h_{\mathrm{norm}} \cdot \Delta_{\max}</div>
+
+<p>and clamp Δ<sub>max</sub> to at most 0.35 · min(H, W) so disparity never gets absurd on large frames.</p>
+
+<p>6. <b>Warp</b> each pixel horizontally by ±½Δ for the left/right views:</p>
+
+<div class="matheq">x_L = x + \frac{1}{2}\Delta, \quad x_R = x - \frac{1}{2}\Delta</div>
+
+<p>Bilinear remap (INTER_LINEAR, deliberately not Lanczos) because Lanczos ringing on sharp stars would produce visible halos in the output.</p>
+
+<h3>8.6 Anaglyph composition</h3>
+
+<p>The red/cyan anaglyph composite uses luminance from each eye to drive one color channel:</p>
+
+<div class="matheq">L_Y = 0.299\, R_L + 0.587\, G_L + 0.114\, B_L</div>
+<div class="matheq">\mathrm{Out}_R = L_Y, \quad \mathrm{Out}_G = \mathrm{Out}_B = R_Y</div>
+
+<p>Luminance (rather than per-color-channel copying) is used because it's more robust across different source color balances — a stereo pair derived from a monochrome luminance capture produces the same anaglyph as one from a well-balanced RGB. The red lens of the glasses blocks the cyan (G+B) channels, delivering only the left-eye luminance to the left eye; the cyan lens blocks red, delivering only the right-eye luminance to the right eye. Your visual system fuses the two monochrome views into depth.</p>
+
+<h3>8.7 Galaxy top-down deprojection</h3>
+
+<p>The Galaxy Polar View reverses the perspective-and-tilt projection that turned the real face-on galactic disk into the elliptical patch you see in your image. Given an output grid (u, v) ∈ [-1, 1] in the deprojected disk plane:</p>
+
+<p>1. Apply the inclination foreshortening (y compressed by the tilt factor):</p>
+
+<div class="matheq">x_e = u, \quad y_e = v \cdot \mathrm{tilt}</div>
+
+<p>2. Rotate by the galaxy's position angle α (negative, to undo the on-sky rotation):</p>
+
+<div class="matheq">x_r = x_e \cos\alpha - y_e \sin\alpha, \quad y_r = x_e \sin\alpha + y_e \cos\alpha</div>
+
+<p>3. Scale by the galaxy's apparent radius r in pixels and translate back to image coordinates:</p>
+
+<div class="matheq">u = c_x + r X, \quad v = c_y + r Y, \quad \text{visible}: Z \geq 0</div>
+
+<p>where X and Y are the rotated-and-tilted plane coordinates. The output image is sampled by <code>cv2.remap</code> at these back-projected coordinates. Pixels where (u, v) falls outside the galaxy's apparent ellipse remain black.</p>
+
+<p>The result: a galaxy that looked like a thin needle (edge-on) can be shown as a face-on disk, revealing spiral structure that was foreshortened out of visibility in the original frame. This is purely a geometric reprojection — it doesn't invent any new information, so features that were hidden <i>behind</i> the disk from your line of sight stay hidden. But features that were just squashed by projection recover their original on-disk shape.</p>
+
+<h3>8.8 Equirectangular texture for Interactive 3D sphere</h3>
+
+<p>For the Plotly sphere export, the planet disk is first converted to an equirectangular (latitude/longitude) texture that can be mapped onto a sphere mesh. For each (lat φ, lon λ) in the texture:</p>
+
+<div class="matheq">X = \cos\phi \sin\lambda, \quad Y = \sin\phi, \quad Z = \cos\phi \cos\lambda</div>
+
+<p>Orthographically project onto the disk:</p>
+
+<div class="matheq">u = c_x + r X, \quad v = c_y + r Y, \quad \text{visible}: Z \geq 0</div>
+
+<p>and sample the disk pixel at (u, v). Points on the back hemisphere (Z &lt; 0) stay black because you have no information about what's behind. The resulting equirectangular image is then wrapped onto a Plotly Mesh3d sphere, giving you a rotatable 3D planet where the near-side pixels are your real data and the far side is dark.</p>
+
+<h3>8.9 Automatic disk detection (WinJUPOS-style)</h3>
+
+<p>The disk-detection pipeline (used both for automatic ROI centering and in the Auto-detect button of the adjust dialog):</p>
+
+<ol>
+  <li>Percentile stretch the green channel to uint8 (1st-99.5th percentile).</li>
+  <li>Gaussian blur with σ=1.2 to reduce noise.</li>
+  <li>Otsu's method to find the optimal threshold between background and planet.</li>
+  <li>Morphological open+close with a 7×7 ellipse kernel to clean the mask.</li>
+  <li>Connected-components; pick the largest component with area ≥ 200 pixels.</li>
+  <li>Centroid gives (c<sub>x</sub>, c<sub>y</sub>). Equivalent radius from area:
+    <div class="matheq">r = \sqrt{\frac{A_{\mathrm{disk}}}{\pi}}</div>
+  </li>
+  <li>For ellipse modes (Saturn, Galaxy, Planet-axis): extract the component's contour and fit an ellipse with <code>cv2.fitEllipse</code>, recovering the major/minor axes, orientation angle, and refined center all in one step. The ellipse PA and the b/a tilt both come out of this fit directly.</li>
+</ol>
+
+<p>This matches the WinJUPOS approach of fitting a limb ellipse rather than assuming a perfect circle — valuable for Jupiter and Saturn, which are visibly oblate, and essential for galaxies, which are inclined.</p>
+
+<h3>8.10 Background parallax math</h3>
+
+<p>The background depth setting determines how much the background participates in stereo:</p>
+
+<div class="matheq">\Delta_{\mathrm{bg}} = p_{\mathrm{depth}} \cdot \Delta_{\mathrm{planet}}</div>
+
+<p>where p<sub>depth</sub> is the depth percentage from the slider (0 to 1 for 0% to 100%). The background is then shifted by ±½Δ<sub>bg</sub> for the left/right views. At p<sub>depth</sub> = 0 the shift is zero and both views see the same background — the stars appear "screen locked". At p<sub>depth</sub> = 1 the background shifts the same as the planet — stars appear "at planet depth". The 25% default puts stars visually further than the planet, which is the natural astronomical ordering.</p>
+
+<div class="credit">
+<b>Credits.</b> 3D Projection — the six-mode output system, the four planet-type pipelines, the Saturn ring geometry with front/back occlusion split, the pseudo-surface heightmap with MAD normalization, the galaxy top-down deprojection, the WinJUPOS-style auto-detect, and the Plotly Mesh3d / Scatter3d HTML exports — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to the community: OpenCV (<code>cv2.remap</code>, <code>cv2.fitEllipse</code>, <code>cv2.connectedComponentsWithStats</code>) for warping and segmentation; Otsu's method (Otsu 1979) for automatic thresholding; the orthographic sphere-to-disk projection is standard computer graphics; the red/cyan luminance anaglyph convention follows mainstream 3D-glasses practice; Plotly for the interactive 3D exports (via CDN); the equirectangular texture mapping is the standard spherical-image convention used across every 3D rendering engine.
+</div>
+
+</body>
+</html>

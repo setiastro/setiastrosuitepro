@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Image Peeker</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>Image Peeker</h1>
+<p class="sub">Science-grade optical diagnostics for your telescope and sensor — grid-mosaic star inspection, physical FWHM² tilt paraboloid, focal-plane heatmaps, SIP distortion grid.</p>
+
+<div class="pub">
+<b>Diagnostic tooling with a thesis.</b> Image Peeker exists to answer four specific questions about your optical train with the same frame you took last night: <i>are my corners sharp</i> (grid mosaic), <i>is my sensor tilted</i> (physical paraboloid FWHM² fit), <i>is my focal plane flat</i> (per-position FWHM / ellipticity / orientation heatmaps), and <i>is my field well-corrected</i> (SIP astrometric distortion grid with per-star residual histogram). Each analysis trades the usual guessing for a measured, defensible number — tilt reported in µm, FWHM in µm, distortion in arcseconds — so you can tell whether that soft corner is a tilted sensor, a decentred corrector, poor seeing, or just a bad sub. Original work by <b>Franklin Marek</b> for SetiAstro Suite Pro, with substantial recent upgrades to the tilt model (see §8.2).
+</div>
+
+<h2>1. Overview</h2>
+
+<p>Image Peeker opens on the active document and shows a <b>grid-mosaic preview</b>: it samples a <i>grid × grid</i> array of equally-spaced panels across the full frame and tiles them in the preview with a configurable separation gap. This single view lets you look at corners, edges, and center at full native resolution without panning around a multi-megapixel frame — the fastest way to spot asymmetric star elongation that signals tilt or decentring.</p>
+
+<p>From the top of the preview you can run one of three analyses (described in §4-§6), each of which pops a dedicated results dialog without closing the Peeker. Below the preview, a parameters panel controls both the mosaic layout and the physical constants (pixel size, focal length, aperture) that the analyses need in order to report real-world numbers.</p>
+
+<h2>2. The grid-mosaic preview</h2>
+
+<p>The preview tiles a square grid of equally-spaced panels pulled from across the frame. Three controls shape it:</p>
+
+<ul>
+  <li><b>Grid size</b> — how many panels per side, from 2×2 up to 10×10. For most focus/tilt checks, 3×3 is the sweet spot: center plus eight edges and corners.</li>
+  <li><b>Panel size</b> — pixel width of each tile (32-512). A 256 px panel at an arcsecond-per-pixel scale gives you ~4 arcminutes of sky per tile, enough to show a handful of stars in each corner.</li>
+  <li><b>Separation</b> — the gutter (0-50 px) between tiles. A visible gutter makes it immediately obvious which stars live in which tile.</li>
+</ul>
+
+<div class="keys">
+<b>Preview controls.</b>
+<br><b>Left-click drag</b> — pan the mosaic inside the scroll area.
+<br><b>Zoom slider</b> — continuous zoom (1-400%).
+<br><b>Zoom In / Zoom Out</b> — step zoom.
+<br><b>Fit to Preview</b> — reset to fit the viewport.
+<br><b>AutoStretch</b> — display-only stretch so faint stars are visible; never affects measurements.
+</div>
+
+<p>The AutoStretch button operates on the stored high-bit-depth source (not on the 8-bit display buffer), so when you toggle it on you see a correctly-stretched preview of the full linear data range, not a stretch of an already-quantized version. The underlying measurement path for the analyses runs on the linear float32 image regardless of the stretch state.</p>
+
+<h2>3. Setting your physical constants</h2>
+
+<p>Three values let the analyses report real-world units. Each lives in the parameters panel and is remembered across sessions.</p>
+
+<ul>
+  <li><b>Pixel size (µm)</b> — your sensor's pixel pitch. Needed for FWHM in µm, tilt magnitudes in µm, and distortion in arcseconds when WCS is absent.</li>
+  <li><b>Focal length (mm)</b> — your telescope's focal length. Combined with aperture, this gives the f-number N for the tilt paraboloid model.</li>
+  <li><b>Aperture (mm)</b> — your telescope's clear aperture. Needed only for the tilt model (which uses N = f/D).</li>
+</ul>
+
+<div class="tip">
+<b>These matter.</b> The tilt analysis uses the f-number directly in the paraboloid blur equation. If you have the wrong focal length or aperture here, you'll get the right <i>pattern</i> of tilt (which corners are high vs low) but the wrong <i>magnitude</i> (how many µm). Common pitfall: a focal reducer changes the effective focal length; punch in the reduced value, not the native OTA.
+</div>
+
+<h2>4. Analysis — Focal Plane</h2>
+
+<p>Pick <b>Focal Plane Analysis</b> from the Analysis dropdown and press <b>Analyze</b>. The analysis runs on a background thread (the status line reports progress) and produces <b>three heatmap windows</b> covering the whole frame:</p>
+
+<ul>
+  <li><b>FWHM Heatmap (µm)</b> — fitted FWHM surface across the frame, in physical microns. Uniform = flat and well-corrected; a bowl or saddle shape reveals field curvature or tilt.</li>
+  <li><b>Ellipticity Map (1 − b/a)</b> — fitted star-shape surface. Zero means circular stars; higher values mean elongated. Radial elongation increasing toward corners points at coma or field curvature; one-directional elongation points at tilt or guiding error.</li>
+  <li><b>Orientation Map</b> — fitted direction of star elongation (hue). Uniform orientation means an elongation that's the same everywhere (guiding, periodic error); a radial pattern that rotates around the center points at coma or decentring.</li>
+</ul>
+
+<p>Each window shows the heatmap under a colormap (viridis for FWHM, magma for ellipticity, hsv for orientation) with a vertical colorbar and a span readout showing the real min and max values on the frame. All three windows persist until you close them, so you can tile them for side-by-side inspection.</p>
+
+<div class="tip">
+<b>Reading the three maps together.</b> A flat telescope at good focus with no tilt and good seeing looks like: FWHM uniform at your seeing-limited value (2-4 µm at typical scales), ellipticity near zero, orientation random. A perfectly-collimated but curved field: FWHM bowl-shaped (minimum at center, highest at corners), ellipticity rising toward corners with radial direction. Pure tilt: FWHM ridge across the frame (one diagonal sharp, the other soft), ellipticity oriented along the tilt axis. Coma: FWHM rising toward one direction more than the others, orientation rotating around a decentered point.
+</div>
+
+<h2>5. Analysis — Tilt</h2>
+
+<p>Pick <b>Tilt Analysis</b> and press <b>Analyze</b>. The tool fits a physical defocus model to the per-star FWHM across the frame and pops a results dialog showing the fitted sensor plane with:</p>
+
+<ul>
+  <li>The <b>signed defocus plane</b> as a color-ramped heatmap over the image.</li>
+  <li><b>Corner Δ µm table</b> — defocus at each corner relative to the frame center, in microns.</li>
+  <li><b>Tilt span</b> — the peak-to-peak corner difference, which is the single number you'd report as "my tilt is X µm."</li>
+  <li><b>Fit diagnostics</b> — baseline FWHM (seeing + optics floor), star count used, f-number assumed, and RMS residual of the FWHM² fit.</li>
+</ul>
+
+<p>If the paraboloid model turns out ill-conditioned on your frame (not enough stars, or the fit's quadratic coefficients come out negative, which is physically impossible for a real paraboloid), the dialog falls back to a linear FWHM-vs-position plane fit and tells you clearly in an orange note: "paraboloid model is ill-conditioned, showing linear fallback, consider a longer sub." You still get a tilt estimate; it's just less reliable than the paraboloid version.</p>
+
+<div class="warn">
+<b>The sign of tilt is intrinsically ambiguous from one image.</b> A sensor tilted so that the top-left corner is high (closer to the objective) produces exactly the same blur pattern as one tilted so the top-left corner is low — because defocus blur depends only on <i>magnitude</i> of out-of-focus distance, not its sign. The dialog reports consistent corner magnitudes and a signed plane, but there's a global sign flip that can't be resolved from one frame. If you need to know which direction to shim, take a through-focus sequence (two or three frames at different focuser positions) and compare the blur patterns.
+</div>
+
+<h2>6. Analysis — Astrometric Distortion</h2>
+
+<p>Pick <b>Astrometric Distortion Analysis</b> and press <b>Analyze</b>. This analysis has three stages:</p>
+
+<ol>
+  <li><b>Plate-solve</b> — if the image doesn't already have a WCS header, the tool runs ASTAP first and falls back to Astrometry.net if ASTAP fails. The resulting header (with SIP distortion terms) is stored back onto the document.</li>
+  <li><b>Verify SIP terms exist</b> — if the solve succeeded but produced a WCS without A_i_j / B_i_j SIP coefficients, you get a dialog asking you to re-solve with distortion fitting enabled in ASTAP. A plain WCS without SIP tells you nothing about optical distortion.</li>
+  <li><b>Open the Distortion Grid dialog</b> — a visualization with:
+    <ul>
+      <li><b>Warped grid overlay</b> — a straight 10×10 grid of lines is warped by the SIP solution with a user-adjustable amplification slider (0-200×). At 1× the deformation would be invisible on most well-corrected optics; 20-60× is a readable default.</li>
+      <li><b>Per-intersection labels</b> — each grid node shows the true (un-amplified) residual in arcseconds. The label position tracks the warped node position so you can see which grid line matches which number.</li>
+      <li><b>Residual histogram</b> — distribution of per-star distortion in arcseconds across the top 1000 brightest well-shaped stars.</li>
+      <li><b>Unwarp This Image button</b> — opens the Unwarp dialog, which resamples the image onto a distortion-free grid using this SIP solution.</li>
+    </ul>
+  </li>
+</ol>
+
+<div class="tip">
+<b>What distortion looks like.</b> A pincushion pattern (grid bulges inward at corners) is the signature of positive distortion, common in short-focal refractors without a dedicated corrector. Barrel distortion (grid bulges outward) is less common but appears in some reducers. Asymmetric patterns point at tilt or decentre on top of the distortion. Residuals under 0.5 arcsec per corner on a modern well-corrected imaging train are typical; several arcseconds point at an uncorrected system and will cost you star shape in stacks.
+</div>
+
+<h2>7. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Fast focus / tilt check on a single sub.</b> Load the sub, open Image Peeker, set grid 3×3 and panel 256. Toggle AutoStretch on if the sub is dark. Scan the nine tiles: are stars round in all nine, or elongated in some? If every corner shows the same elongation direction, suspect guiding or periodic error (not optics). If corners elongate radially outward, suspect field curvature. If one diagonal is sharp and the other soft, run the Tilt analysis.
+</div>
+
+<div class="workflow">
+<b>Diagnosing a tilt problem.</b> After a 3×3 grid mosaic suggests tilt, run Tilt Analysis. Record the corner Δ µm values and the peak-to-peak span. A clean train usually shows &lt; 20 µm peak-to-peak at typical imaging scales; 50 µm starts to visibly cost star shape; 100 µm or more needs mechanical correction (shim the sensor, re-tension the focuser, check the connection between corrector and OTA). After each adjustment, re-image and re-run Tilt Analysis to confirm you're trending the right direction. Remember the sign ambiguity: your first shim might go the wrong way, so swap sides on the second iteration if the magnitude didn't improve.
+</div>
+
+<div class="workflow">
+<b>Confirming a correction fix.</b> After installing a corrector/reducer/field flattener, image a star-rich field (a globular cluster or an open cluster works well), run Focal Plane Analysis, and inspect the FWHM and ellipticity maps. A properly-matched corrector produces uniformly-coloured heatmaps with no obvious radial trend. Edge-rising FWHM or ellipticity means the corrector-to-sensor distance is off (back-focus) — adjust spacers and repeat.
+</div>
+
+<div class="workflow">
+<b>Measuring real distortion for stacking.</b> If stars at the corners of a stack look like streaks or doubles, the stack is suffering from distortion the registration couldn't match. Run Astrometric Distortion Analysis on a representative sub, confirm non-trivial residuals (several arcseconds), and use the Unwarp button to produce a distortion-free version of the full stack. Stack again from the unwarped subs for clean corner stars.
+</div>
+
+<div class="workflow">
+<b>Seeing-limited vs optics-limited diagnosis.</b> On the same frame, run Focal Plane Analysis. If the FWHM map is uniform across the frame but sits at 4+ µm at a typical scale, your seeing is the limit — chasing optics will not help. If the center FWHM is low (seeing-limited) but corners climb sharply, your optics are the limit. The tilt baseline FWHM₀ from the Tilt dialog is the clean separation of these two: it's the FWHM you would have had if the sensor were perfectly placed, i.e. seeing + residual OTA aberration.
+</div>
+
+<h2>8. Technical details</h2>
+<p class="tech-lead">The math and algorithm choices behind every number the tool reports.</p>
+
+<h3>8.1 Star detection and the descending-sigma waterfall</h3>
+
+<p>Every analysis starts with a star catalog. The tool runs SEP's background estimator once (that's the expensive step) and then re-extracts with progressively lower sigma thresholds — <b>100 → 50 → 25 → 12 → 6 → 3</b> — stopping as soon as the quality-filtered catalog has at least 1000 well-shaped stars.</p>
+
+<p>The quality filter is strict: a detection is kept only if (a) SEP's blend/truncation/saturation flag is zero, (b) the pixel count is above a minimum, and (c) the shape ellipse is well-formed with major axis a &gt; 0, minor axis b &gt; 0, and b ≤ a. The surviving catalog is used across all surface fits so one SEP call powers the whole analysis.</p>
+
+<p>The waterfall idea is a performance choice. On a rich field, SEP at 3σ can produce 30,000+ detections, most of which fail the shape quality filter anyway (they're noise, hot pixels, or faint stars whose ellipse measurements are too uncertain to constrain a smooth surface). Starting high and descending stops as soon as there are enough high-SNR stars to constrain the fit, which is usually after 2-3 extractions on a well-populated frame.</p>
+
+<h3>8.2 FWHM from SExtractor second moments</h3>
+
+<p>Each detection's shape is characterized by its second moments: semi-major axis <b>a</b>, semi-minor axis <b>b</b>, and orientation θ, all in pixels. The physically-correct Gaussian FWHM in microns is:</p>
+
+<div class="matheq">\mathrm{FWHM} = 2\sqrt{2 \ln 2}\, \sqrt{a\,b}\, \cdot p_s</div>
+
+<p>where p<sub>s</sub> is the pixel size in µm. The numerical factor evaluates to:</p>
+
+<div class="matheq">\mathrm{FWHM} \approx 2.3548\, \sqrt{a\,b}\, \cdot p_s</div>
+
+<p>The <b>geometric mean</b> √(a·b) is used instead of just a because an elongated star's FWHM in the equivalent circular-gaussian sense is set by the product of its axes, not the longer one alone. The older convention of FWHM ≈ 2·a that appears in some astronomical tools systematically underestimates the physical FWHM for round stars (which have a = b) by a factor of 1.18, and distorts the comparison between round and elongated stars. The tool uses the correct Gaussian conversion everywhere.</p>
+
+<h3>8.3 Ellipticity</h3>
+
+<p>The reported ellipticity is the PixInsight / SExtractor convention:</p>
+
+<div class="matheq">e = 1 - \frac{b}{a}</div>
+
+<p>which is zero for a circular star and approaches 1 for extremely elongated ones. The alternative definition e = √(1 - b²/a²) (astronomical eccentricity) produces larger numbers for the same shape and is not what this tool reports; "0.1" from this tool means the star's minor axis is 90% of the major axis, which is a mild elongation.</p>
+
+<h3>8.4 Orientation surface and the double-angle trick</h3>
+
+<p>Fitting a smooth orientation surface θ(x,y) directly from per-star θ values runs into the ambiguity that θ and θ + π describe the same ellipse — a star elongated east-west is the same shape whether you call its angle 0 or π. Averaging raw angles across stars near that wraparound would produce nonsense (two stars at angles slightly above and below π average to π/2, pointing north-south instead).</p>
+
+<p>The fix is to fit the <b>double-angle</b> sine and cosine as independent smooth surfaces (both continuous across the wraparound because sin(2θ) and sin(2θ + 2π) are identical), then recover the orientation via atan2:</p>
+
+<div class="matheq">\theta(x,y) = \frac{1}{2}\arctan 2\!\left(\overline{\sin 2\theta}(x,y),\ \overline{\cos 2\theta}(x,y)\right)</div>
+
+<p>The resulting θ wraps correctly over [-π/2, π/2], which maps directly to a hue over [0, 1] for display. The hsv colormap used for the orientation map is cyclic, so stars whose fitted angle lies near either edge of the range appear in similar colors, preserving the natural wraparound.</p>
+
+<h3>8.5 Tilt — the physical FWHM² paraboloid model</h3>
+
+<p>The core improvement in the current tilt pipeline is the move from an older "fit a plane to blur" approach to a physical paraboloid model. Here's why the old approach was broken and the new one isn't.</p>
+
+<p><b>The physics.</b> For a sensor tilted relative to the focal plane, the distance-from-best-focus at pixel (x,y) is a plane:</p>
+
+<div class="matheq">dz(x,y) = p\,x + q\,y + r</div>
+
+<p>where p and q are the tilt slopes in µm per pixel and r is the overall defocus at the frame origin. The defocus blur caused by this at f-number N is <i>|dz|/N</i>, so the measured FWHM is the quadrature sum of a baseline (seeing + residual optics) FWHM₀ and the geometric defocus blur:</p>
+
+<div class="matheq">\mathrm{FWHM}^2 = \mathrm{FWHM}_0^2 + \frac{(p\,x + q\,y + r)^2}{N^2}</div>
+
+<p>where:</p>
+
+<div class="matheq">N = \frac{f_{\mathrm{focal}}}{D_{\mathrm{aperture}}}</div>
+
+<p>is your focal ratio. This is a true <b>paraboloid</b> in (x, y): a bowl whose minimum lies along the line px + qy + r = 0 (the "focus ridge") and that rises symmetrically on either side.</p>
+
+<p><b>Why the old plane-fit-to-blur was broken.</b> The old pipeline treated the measured FWHM itself as approximately linear in position and fit a plane. The problem: blur depends on <i>|dz|</i> not dz, so on a tilted sensor where the focus ridge crosses the frame, one side has positive dz and the other negative, but both sides have positive blur. The plane-fit then has to compromise between the positive-blur-on-the-left and positive-blur-on-the-right and <i>collapses toward zero</i> — reporting almost no tilt even when the real tilt is substantial. The old approach only recovered tilt correctly for the extreme case where the whole frame was defocused with the same sign (focus ridge off the sensor).</p>
+
+<p><b>The paraboloid fit.</b> The new pipeline expands the paraboloid as a general 2D quadratic in (x, y):</p>
+
+<div class="matheq">\mathrm{FWHM}^2 = c_{00} + c_{10}x + c_{01}y + c_{20}x^2 + c_{11}xy + c_{02}y^2</div>
+
+<p>and fits the six coefficients by iterated-sigma-clipped linear least squares on z = FWHM² treated as the dependent variable. Because dz enters squared, this is a linear problem in the c<sub>ij</sub> even though the underlying model is quadratic in position.</p>
+
+<p>Once the coefficients are known, the physical defocus parameters come back directly:</p>
+
+<div class="matheq">p = N\sqrt{c_{20}}, \quad q = \pm N\sqrt{c_{02}}</div>
+
+<p>The sign of q is pinned by the cross-term c<sub>11</sub> (negative c<sub>11</sub> means p and q have opposite signs). The constant r comes out of the linear terms c<sub>10</sub> or c<sub>01</sub>, and the baseline FWHM is extracted from the constant c<sub>00</sub>:</p>
+
+<div class="matheq">\mathrm{FWHM}_0 = \sqrt{c_{00} - \frac{r^2}{N^2}}</div>
+
+<p><b>Sign ambiguity.</b> The paraboloid is symmetric under the sign flip (p, q, r) → (-p, -q, -r) — physically, you cannot distinguish "sensor tipped so top-left is high" from "sensor tipped so top-left is low" from the blur pattern alone. By convention the tool pins r ≥ 0, so corner Δ µm values are reported consistently relative to the center but there's a global sign flip that only through-focus data can resolve.</p>
+
+<p><b>Well-defined vs ill-conditioned.</b> A valid paraboloid has both c<sub>20</sub> &gt; 0 and c<sub>02</sub> &gt; 0 (FWHM² is bounded below and grows away from best focus). When the fit returns negative values — because of noise, insufficient stars, or a frame that just doesn't have a clean paraboloidal pattern — the model is "ill-conditioned" and the tool falls back to a linear FWHM-vs-position plane fit, flagging the fallback in the dialog with an orange note so the user knows the number is less reliable.</p>
+
+<h3>8.6 Corner Δ µm reporting</h3>
+
+<p>Once (p, q, r) are known, the defocus at any pixel relative to the center (x₀, y₀) = (W/2, H/2) is:</p>
+
+<div class="matheq">\Delta z_{\mathrm{corner}} = p\,(x_c - x_0) + q\,(y_c - y_0)</div>
+
+<p>Evaluated at each of the four corners, these are the numbers shown in the corner Δ µm table. The peak-to-peak span (max minus min) is the single-number tilt magnitude.</p>
+
+<h3>8.7 Scattered-data surface fitting</h3>
+
+<p>The focal-plane analysis needs smooth surfaces for FWHM, ellipticity, and sin/cos(2θ) over the full image, from scattered per-star measurements. The tool fits a 2D polynomial of degree d:</p>
+
+<div class="matheq">z(x,y) = \sum_{i+j \leq d} c_{ij}\, x^i\, y^j</div>
+
+<p>by iterated 3σ-clipped linear least squares. The default degree is 3 for FWHM and ellipticity (enough shape to capture bowl, saddle, and radial-dominant patterns) and 1-2 for orientation (which varies smoothly across the frame for pure tilt or decentre).</p>
+
+<p>The number of free parameters is (d+1)(d+2)/2 — 10 for degree 3 — so with 1000 well-shaped stars the fit is heavily overdetermined and robust against outliers. If a frame produces fewer than that many detections, the tool automatically reduces the fit degree so the polynomial remains well-posed.</p>
+
+<p><b>Fast rendering.</b> Full-resolution evaluation of a degree-3 polynomial on a multi-megapixel grid is wasted work: the fitted surface is smooth by construction, so values an integer pixel apart are nearly identical. The tool evaluates the polynomial on a coarse 128×128 grid and <b>bilinearly upsamples</b> to the full (H, W) size with scipy's ndimage.zoom. The result is visually identical to a full-resolution evaluation and roughly 1000× faster on a 24-megapixel frame — the difference between an interactive tool and a two-minute wait.</p>
+
+<h3>8.8 SIP astrometric distortion</h3>
+
+<p>The Simple Imaging Polynomial (SIP) convention stores astrometric distortion as two forward polynomials <b>A</b> and <b>B</b>, defined so that the distortion correction in pixels at image pixel (x, y) is:</p>
+
+<div class="matheq">u = x - \mathrm{CRPIX}_1, \quad v = y - \mathrm{CRPIX}_2</div>
+<div class="matheq">\Delta x = \sum_{i+j \leq o} A_{ij}\, u^i\, v^j</div>
+<div class="matheq">\Delta y = \sum_{i+j \leq o} B_{ij}\, u^i\, v^j</div>
+
+<p>where o is the polynomial order (typically 2-5) and (u, v) are pixel offsets from the SIP reference pixel CRPIX. The distortion grid dialog evaluates (Δx, Δy) at each node of a 10×10 line grid, amplifies by the user's slider setting for visibility, and draws the warped grid lines; the per-star residuals shown in the histogram are |Δx, Δy| converted to arcseconds using the WCS pixel scale.</p>
+
+<p>The pixel scale is extracted from the solved WCS by taking the determinant of the CD matrix:</p>
+
+<div class="matheq">s = \sqrt{|CD_{11}\, CD_{22} - CD_{12}\, CD_{21}|} \cdot 3600</div>
+
+<p>which gives arcseconds per pixel directly. If the WCS uses the modern PC+CDELT representation instead, the CD matrix is reconstructed as CD = PC × diag(CDELT) first. If no WCS exists at all, the tool falls back to the user-supplied pixel size and focal length via s = 206.265 × (p<sub>s</sub> / f<sub>mm</sub>).</p>
+
+<p>A WCS without A_i_j / B_i_j terms describes only the linear astrometric transformation (position, scale, rotation) and says nothing about optical distortion. The tool detects this case and tells you to re-solve with distortion fitting enabled in ASTAP rather than silently returning a flat grid.</p>
+
+<h3>8.9 Threaded execution</h3>
+
+<p>Focal Plane and Tilt analyses both run in a background QThread (<code>_AnalysisWorker</code>) that posts progress updates and results back to the GUI thread via signals. SEP's extract call plus the paraboloid or polynomial fit takes a few seconds on a typical multi-megapixel frame; running it on the GUI thread would freeze the whole app during that time. The background worker emits the "Detecting stars..." status, then the result dictionary (or None on failure, with a specific message in the error signal). The GUI thread picks up the result and opens the result dialogs.</p>
+
+<p>The Astrometric Distortion analysis is <i>not</i> threaded because it may need to open a modal plate-solve dialog and mutate the document's metadata, both of which require main-thread execution. On a frame that already has a SIP solve, it's effectively instantaneous.</p>
+
+<div class="credit">
+<b>Credits.</b> Image Peeker — the grid mosaic workflow, the three-heatmap focal-plane analysis, the FWHM² paraboloid tilt model, the SIP distortion grid with amplification slider and per-intersection labels, and the Unwarp hand-off — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to the community: SEP (Source Extractor in Python) by Barbary (2016) for source detection and background estimation; the SIP distortion convention from Shupe et al. (2005); the WCS plate-solving via ASTAP (Han Kleijn) and Astrometry.net (Lang et al. 2010); the SExtractor second-moment / FWHM conversion from Bertin & Arnouts (1996); the double-angle orientation averaging is a standard technique in circular statistics (Mardia & Jupp). PreviewPane display uses SASpro's canonical <code>stretch_mono_image</code> / <code>stretch_color_image</code> pipeline. Surface rendering uses scipy's ndimage.zoom for bilinear upsampling.
+</div>
+
+</body>
+</html>

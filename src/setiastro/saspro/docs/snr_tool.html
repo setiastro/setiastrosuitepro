@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Object SNR Tool</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>Object SNR Tool</h1>
+<p class="sub">Honest, regional signal-to-noise measurement — pick the structure you care about, pick a background, get a per-channel SNR of <i>that</i> region. No "global image SNR" lies.</p>
+
+<div class="pub">
+<b>SASpro-exclusive, scientifically-honest SNR.</b> This tool is original work by <b>Franklin Marek</b>, built on the principle that <i>there is no such thing as "the SNR of an image."</i> Any tool that gives you a single global number is lying. SNR varies spatially — the background of your frame has very low SNR, a bright galaxy core has very high SNR, a faint outer halo sits somewhere in between — and the only meaningful question is: <i>what is the SNR of this specific region I care about, measured against a specific background?</i> This tool answers exactly that question, nothing more, nothing less.
+</div>
+
+<div class="warn">
+<b>Why "global SNR" numbers are meaningless.</b> A typical deep-sky frame contains pixel SNRs that span three or more orders of magnitude — from near 0 in sparse background sky, to 10-50 in extended nebular emission, to 1000+ in bright star cores. Any single "image SNR" number collapses that entire distribution to one scalar, usually by taking the mean brightness over the noise floor of the whole frame. The result tracks how much of your frame is bright: a frame full of nebula will "score higher" than one with a small object on empty sky, even if their <i>interesting-structure</i> SNRs are identical. This is why side-by-side global-SNR comparisons between stacks or processing steps are usually comparing composition, not quality. The Object SNR tool exists so you can ask the right question instead.
+</div>
+
+<h2>1. The two-step workflow</h2>
+
+<div class="workflow">
+<b>Step 1 — Select a target region.</b> Open the region picker and draw a Box, Ellipse, or Freehand lasso around the structure you want to measure (a faint arm, an outer halo, a dust lane, a galaxy core). The tool auto-places a background rectangle elsewhere on the frame.
+<br><b>Step 2 — Calculate SNR.</b> One click. The tool reports per-channel signal, background, noise, net signal, and SNR in both linear and dB. The right panel updates three plots: distributions (object vs background histograms), a bar chart of per-channel SNR, and a cropped preview of your region with the masks drawn in.
+</div>
+
+<h2>2. Step 1 — Picking a target region</h2>
+
+<p>Click <b>Select Target Region</b>. The picker opens on your active image with the auto-background box drawn in gold.</p>
+
+<p>Three selection modes are available from the dropdown at the top:</p>
+<ul>
+  <li><b>Box</b> — click-drag a rectangle. Finalizes in red on release.</li>
+  <li><b>Ellipse</b> — click-drag an ellipse. Same interaction.</li>
+  <li><b>Freehand</b> — click-drag a lasso around any shape. Closes automatically when you release the mouse.</li>
+</ul>
+
+<p>Changing the drawing mode or starting a new drag clears the previous selection — you always have exactly one target region.</p>
+
+<div class="keys">
+<b>Picker controls.</b>
+<br><b>Left-click drag</b> — draw a selection.
+<br><b>Mouse wheel</b> — zoom under the cursor.
+<br><b>Zoom In / Out / Fit / 1:1</b> toolbar — explicit zoom controls.
+<br><b>Enable/Disable Auto-Stretch</b> — toggle a display-only stretch to see dim regions. Never affects the measurement.
+<br><b>Find Background</b> — re-trigger the automatic background box placement, useful after you've moved the view or want to re-roll the placement.
+<br><b>Use Target</b> — commit the selection and return to the main dialog.
+</div>
+
+<p>The automatic background is a 50×50 pixel source-free box found by scanning the image for the darkest, flattest region a safe distance (100 px by default) from the edges. The box is drawn in gold so you can see where it landed and judge whether it represents a reasonable "nothing-there" background for your target. If it landed somewhere unrepresentative (another faint nebula, a star glow, inside your region of interest), zoom out, click Find Background again (which re-runs the search), or build a more deliberate workflow around the Magnitude tool's four-quadrant verification if you need that level of control over placement.</p>
+
+<div class="tip">
+<b>Choosing a good target region.</b> This is the whole game. The region you draw <i>defines what SNR means</i> for this measurement. If you draw a huge box that catches both nebula and empty sky, the median brightness drops toward the sky level and the SNR number falls — not because the nebula got worse, but because you averaged it with noise. If you draw a tight region on a bright star core, the SNR will be enormous and completely uninformative about anything else in the frame. For meaningful numbers, draw regions that match the structure you actually care about: a loose polygon around the whole dim arm, a tight box inside the faint outer halo you want to compare between stacks, a lasso of the darkest dust lane you want to characterize.
+</div>
+
+<h2>3. Step 2 — Calculating SNR</h2>
+
+<p>Click <b>Calculate SNR</b>. The tool reads the native image (mono stays mono, RGB stays RGB — nothing is converted), masks it with your target region and the auto-placed background box, and reports per channel:</p>
+
+<ul>
+  <li><b>Stotal(med)</b> — median pixel value inside the target region.</li>
+  <li><b>B(med)</b> — median pixel value in the background box.</li>
+  <li><b>noise(std)</b> — sample standard deviation of the background box's pixels. This is the measured noise level.</li>
+  <li><b>So</b> — net signal above background, clamped at zero: <i>max(Stotal − B, 0)</i>.</li>
+  <li><b>SNR</b> — the ratio <i>S<sub>o</sub> / noise</i>, as a pure number.</li>
+  <li><b>SNR in dB</b> — the same ratio expressed in decibels, <i>10 log<sub>10</sub>(SNR)</i>.</li>
+</ul>
+
+<p>For a mono image you get one line labeled <b>L</b>. For an RGB image you get three lines, <b>R</b>, <b>G</b>, <b>B</b>. The results text area is selectable and the <b>Copy Results</b> button sends everything to the clipboard for pasting into a processing log.</p>
+
+<h3>3.1 Interpreting the number</h3>
+
+<p>The SNR number is a direct answer to the question "how many standard deviations above the sky background does my target sit?" A few reference points:</p>
+
+<table>
+<tr><th>SNR (linear)</th><th>dB</th><th>What it means</th></tr>
+<tr><td>&lt; 2</td><td>&lt; 3</td><td>Buried in noise. Not reliably detectable.</td></tr>
+<tr><td>3</td><td>4.77</td><td>Marginal detection. Visible with averaging/binning.</td></tr>
+<tr><td>5</td><td>7.0</td><td>Rose criterion for reliable visual detection.</td></tr>
+<tr><td>10</td><td>10.0</td><td>Clean detection. Comfortable for publication.</td></tr>
+<tr><td>30-50</td><td>14.8-17.0</td><td>Strong signal. Fine structure visible.</td></tr>
+<tr><td>100+</td><td>20+</td><td>Core / bright-star territory. Essentially noise-free.</td></tr>
+</table>
+
+<p>The dB value doubles for every tenfold increase in linear SNR (power ratio convention): 10× SNR is +10 dB, 100× is +20 dB. The dB axis is more convenient for comparing processing steps on log-scale structures.</p>
+
+<h2>4. The three plot tabs</h2>
+
+<p>The right-hand panel has a channel selector at the top and three tabs below.</p>
+
+<h3>4.1 Distributions</h3>
+
+<p>A pair of overlaid histograms showing the pixel-value distribution inside the <b>Background</b> region (blue) and the <b>Object</b> region (orange), normalised to density so they're directly comparable regardless of area. The channel selector picks which plane to plot (L for mono; R, G, or B for color). The bins span from the 0.5th to 99.5th percentile of the combined data, so outliers don't crush the useful range.</p>
+
+<p>What to look for:</p>
+<ul>
+  <li><b>Well-separated peaks</b> — the object histogram sits cleanly to the right of the background. This is the visual confirmation that your SNR number is meaningful.</li>
+  <li><b>Overlapping peaks</b> — the two distributions sit on top of each other. SNR will be very low; the object is at or below the noise floor for this background region.</li>
+  <li><b>Bimodal object histogram</b> — your target region contains both the structure of interest and something else (sky, a star, a brighter neighbour). Redraw tighter.</li>
+  <li><b>Fat-tailed background</b> — your background box isn't clean. Re-roll Find Background, or redraw to avoid stars/faint nebula.</li>
+</ul>
+
+<h3>4.2 SNR Chart</h3>
+
+<p>A bar chart with per-channel SNR on the left y-axis (linear) and dB on the right y-axis (same bars, different scale). For mono images one bar; for RGB three bars (R, G, B). Fast visual comparison across channels — if your blue SNR sits well below red and green, that's a nudge toward spending more sub-exposure time in blue next session.</p>
+
+<h3>4.3 ROI Preview</h3>
+
+<p>A cropped view of your target region (expanded by 40 px of context on each side) with the target mask drawn as a translucent red overlay and the background box as a gold tint. Serves one purpose: confirmation that the numbers you're seeing came from where you think they did. The display is autostretched for visibility — it doesn't affect the measurement, which operates on the linear pixels.</p>
+
+<h2>5. Choosing a good background</h2>
+
+<p>The measured SNR is <i>only as meaningful as the background it's measured against</i>. Three guidelines:</p>
+
+<ul>
+  <li><b>Representative of your target's local sky.</b> If you're measuring a faint arm on one side of a galaxy, your background should ideally sit on the same side of the frame — gradients across the frame are real, and comparing arm brightness to sky on the far side can bias both your signal (if the gradient varies under the target) and your noise (if the far side has a different texture).</li>
+  <li><b>Source-free.</b> The automatic placement does a decent job finding a dark, flat spot but it's not infallible. If stars or faint nebular wisps leaked into the box, the measured noise will be <i>too high</i> (that extra structure adds to the standard deviation) and your SNR will be artificially suppressed. Click Find Background to re-roll; or if automation fails on a complicated frame, zoom in and visually confirm the gold box sits on actual nothing.</li>
+  <li><b>Big enough.</b> The tool rejects background regions smaller than 25 pixels as too small to characterize noise. The default 50×50 (2500 pixels) is plenty for stable statistics. If you reduce the primary tool's background box size, keep it above ~20×20.</li>
+</ul>
+
+<h2>6. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Before-and-after denoising comparison.</b> This is the strongest use case. Open your image, pick a representative region of a structure you care about (not a star, not pure background — a faint arm or a dust lane). Calculate SNR, record the number. Run your denoiser or NR step. Recalculate on the same region. Honest NR raises SNR by a factor of 1.5-3× on faint extended structure, often more on background-adjacent regions. "Honest NR" is also the <i>only</i> kind — a filter that increases SNR by blurring away the signal <i>will not</i> show gains here because So drops in step with σ. The tool is calibrated to call this out.
+</div>
+
+<div class="workflow">
+<b>Comparing stacks.</b> Load stack A, pick a region, record SNR. Load stack B of the same object (same cropping/scale), pick the <i>same</i> region visually, record SNR. The ratio tells you honestly which stack has more signal in that region. √N scaling applies — if B has 4× the integration time of A, you should see roughly 2× the SNR; if you see less, something in the longer stack is going wrong (bad calibration, gradient from one night, drift in guiding).
+</div>
+
+<div class="workflow">
+<b>Deciding where to stop stretching.</b> Pick a region in your faintest structure of interest while the image is still linear. Record SNR. Apply your stretch. If the SNR on that region didn't change meaningfully, your stretch preserved the information — the structure is still as detectable as it was. If SNR dropped a lot, the stretch is burying your faint structure in the noise, consider a different stretch strategy.
+</div>
+
+<div class="workflow">
+<b>Per-channel integration planning.</b> Measure SNR on an RGB stack and check the three bars. Channels with much lower SNR than the others deserve more sub-exposures next time. For narrowband palettes this is how you decide whether an extra night on [O III] is more valuable than more Hα.
+</div>
+
+<h2>7. Technical details</h2>
+<p class="tech-lead">The math behind every number the tool reports.</p>
+
+<h3>7.1 Signal estimation</h3>
+
+<p>The signal estimator is the <b>median</b> of pixel values inside the target mask:</p>
+
+<div class="matheq">S = \mathrm{median}\{I_p : p \in \Omega_{\mathrm{obj}}\}</div>
+
+<p>Median is used instead of mean because real target regions almost always contain some contamination — a star within the lasso, a hot pixel residual, a diffraction spike. The mean is pulled by those outliers; the median shrugs them off, so the number you get reflects the <i>typical</i> brightness of your structure, not whatever the brightest hot pixel happened to be. For a well-chosen region on a smoothly-varying nebula or galaxy arm, median and mean agree to within ~1%; for a region containing even a single star the median is dramatically more honest.</p>
+
+<p>The same median estimator is applied to the background region:</p>
+
+<div class="matheq">B = \mathrm{median}\{I_p : p \in \Omega_{\mathrm{bg}}\}</div>
+
+<p>and the net signal above background is clamped non-negative:</p>
+
+<div class="matheq">S_o = \max(S - B,\, 0)</div>
+
+<p>The clamp exists because a region can legitimately be fainter than the background box (a dust lane in front of a nebula, for example), which would yield a negative S<sub>o</sub> and a negative SNR number that doesn't mean anything useful. In that case the tool reports SNR = 0 and the right conclusion is "this region is at or below the measured sky level" — the chart will show it as absent rather than inverted.</p>
+
+<h3>7.2 Noise estimation</h3>
+
+<p>The noise estimator is the <b>sample standard deviation</b> of the background pixels, using the Bessel-corrected (N-1) denominator:</p>
+
+<div class="matheq">\bar{I} = \frac{1}{N}\sum_{p \in \Omega_{\mathrm{bg}}} I_p</div>
+<div class="matheq">\sigma = \sqrt{\frac{1}{N-1}\sum_{p \in \Omega_{\mathrm{bg}}}\!\left(I_p - \bar{I}\right)^2}</div>
+
+<p>Standard deviation (not MAD or any other robust estimator) is used here deliberately. In a cleanly-chosen source-free background box, the pixel-value distribution is dominated by Gaussian read-plus-shot noise, and standard deviation is the right estimator of its scale. If stars have leaked in, standard deviation will reflect that — which is <i>correct</i> behavior for an SNR measurement, because those stars are part of what competes with your signal in that part of the frame. A robust MAD estimator would hide the problem and give you an overconfident SNR number; the tool deliberately uses the honest estimator and leaves you to notice (via the distribution plot or the ROI preview) when your background box is dirty.</p>
+
+<p>The Bessel correction (1/(N-1) rather than 1/N) is the unbiased estimator for a sample from a larger population — the usual choice when you're estimating the underlying noise distribution's spread rather than describing the exact pixel population inside the box.</p>
+
+<h3>7.3 The SNR definition and the decibel convention</h3>
+
+<p>The signal-to-noise ratio is reported as:</p>
+
+<div class="matheq">\mathrm{SNR} = \frac{S_o}{\sigma}</div>
+
+<p>This is the ratio of the net signal (median above background) to the noise standard deviation — essentially, "how many σ above the sky is my structure?" It's the same quantity underlying the Rose criterion of visibility (<i>SNR ≥ 5</i>), underlying detection significance claims in astronomy ("3σ detection" means SNR = 3), and underlying every statement about faint-source photometric uncertainty.</p>
+
+<p>The decibel version uses the <b>power-ratio</b> convention:</p>
+
+<div class="matheq">\mathrm{SNR}_{\mathrm{dB}} = 10 \log_{10}(\mathrm{SNR})</div>
+
+<p>This gives +10 dB per factor-of-10 improvement in linear SNR. Equivalently:</p>
+
+<div class="matheq">\mathrm{SNR} = 10^{\mathrm{SNR}_{\mathrm{dB}}/10}</div>
+
+<p>which inverts the dB value back to a plain ratio. Some image-quality tools use the <i>amplitude-ratio</i> convention <i>20</i> log<sub>10</sub>(SNR) instead; that convention doubles every dB number compared to this tool, so if you're comparing SNR_dB from another tool, verify which convention it uses before concluding anything about relative quality.</p>
+
+<h3>7.4 Why SNR varies spatially (and why this tool is honest about that)</h3>
+
+<p>The underlying truth every pixel's SNR obeys is:</p>
+
+<div class="matheq">\mathrm{SNR}(x,y) = \frac{I(x,y) - B}{\sigma}</div>
+
+<p>Both the signal and the noise are properties of <i>a region</i>, not of the whole frame. In a deep-sky frame the quantities take on wildly different values depending on where you look:</p>
+
+<ul>
+  <li><b>Background sky</b>: I(x,y) ≈ B, so SNR ≈ 0. The sky background is, by definition, where SNR is zero.</li>
+  <li><b>Faint outer halo of a galaxy</b>: I(x,y) sits a fraction above B, SNR ∈ [1, 10].</li>
+  <li><b>Spiral arm</b>: I(x,y) sits several σ above B, SNR ∈ [10, 50].</li>
+  <li><b>Galaxy core</b>: I(x,y) ≫ B, SNR in the hundreds or thousands.</li>
+  <li><b>Star</b>: typically SNR in the thousands or ten-thousands, approaching the detector's full-well regime.</li>
+</ul>
+
+<p>A single-number "global SNR" that collapses this to one value will always be dominated by whichever brightness regime occupies the largest number of pixels in the frame — usually the background, sometimes a bright extended object. The number it produces tracks <i>how bright your frame is on average</i>, which is not what you want to know; you want to know how well-detected the structure you care about is.</p>
+
+<p>By asking you to pick the region <i>and</i> the background, this tool keeps both terms of the SNR definition under your control. The number it returns is the real-and-specific SNR of the thing you asked about, measured against a specific reference. That's the only kind of SNR number that means anything.</p>
+
+<h3>7.5 Per-channel handling</h3>
+
+<p>Each channel is treated as an independent image. A mono image yields one SNR number labeled L; an RGB image yields three independent SNR numbers labeled R, G, B. The tool does not combine channels into a single "colour SNR" (no such concept exists cleanly — color SNR depends on luminance weighting choices and on perceptual-vs-scientific intent). You get three honest numbers, one per channel, and compare them yourself.</p>
+
+<p>For narrowband palettes where each channel is a different line (SHO, HOO, etc.), per-channel SNR is directly interpretable as the detection quality of each emission line and feeds straight into integration-time planning.</p>
+
+<h3>7.6 Stacking and the √N scaling</h3>
+
+<p>For reference, in the Poisson/Gaussian noise regime that governs deep-sky stacks, SNR grows with the square root of the number of co-added subs:</p>
+
+<div class="matheq">\mathrm{SNR}_{\mathrm{stack}} \propto \sqrt{N_{\mathrm{sub}}}</div>
+
+<p>So doubling your integration gives a √2 ≈ 1.41× SNR improvement (+1.5 dB); quadrupling it doubles the SNR (+3 dB). If you measure SNR on two stacks of the same object with the same cropping and your observed ratio falls meaningfully short of this prediction, something is wrong with the longer stack — bad calibration, drifting guiding, poor rejection of outliers in integration, or a gradient contaminating one of the nights. This tool is the right instrument to diagnose that.</p>
+
+<div class="credit">
+<b>Credits.</b> The Object SNR Tool — the regional-SNR framing, the picker, the three-plot layout, and the autostretch-safe measurement path — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to the community: the SNR definition and the Rose criterion follow Rose (1948) and standard imaging-science textbooks; the Bessel-corrected sample standard deviation is textbook statistics; the decibel power-ratio convention is standard practice in signal processing. The automatic background-box placement reuses SASpro's <code>auto_rect_box</code> utility (the same source-free scanner that serves the Background Neutralization and Magnitude tools), and the display stretching uses SASpro's canonical <code>stretch_color_image</code> pipeline (preview-only; never baked into measurements).
+</div>
+
+</body>
+</html>

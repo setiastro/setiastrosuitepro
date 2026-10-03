@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Planetary Stacker Viewer</h1>
+<p class="sub">The front door to SASpro's planetary stacking pipeline &mdash; opens SER, AVI, MP4/MOV/MKV videos and image sequences, scrubs through frames, defines the ROI and surface anchor, previews debayering and tone adjustments, and hands off to the Stacker or the Batch processor. Nothing is stacked here &mdash; this is the setup stage.</p>
+
+<div class="pub">
+<b>SASpro-exclusive tool.</b> The Planetary Stacker Viewer is an original <b>SetiAstro Suite Pro</b> implementation by <b>Franklin Marek</b>. The multi-format source abstraction, the FFT-based automatic Bayer-pattern detection, the ROI-space anchor system that stays coherent when ROI is toggled on/off, the brightness/gamma preview tone pipeline that doesn't affect centroid detection, the overlay system drawing live COM crosshairs for planetary tracking and anchor boxes for surface tracking, and the trim-to-SER export are all original work. Downstream the <b>Planetary Stacker</b> dialog handles the stacking pipeline (see its own help page); <b>Batch Planetary Stacker</b> runs the same pipeline across many files.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Open</b> a planetary video or image sequence &rarr; scrub the slider to pick a representative frame &rarr; <b>Shift+drag</b> to set an ROI around the subject &rarr; pick a <b>Tracking</b> mode (Planetary/Surface/Off) &rarr; for Surface, <b>Ctrl+Shift+drag</b> to set an anchor patch &rarr; preview looks good &rarr; <b>Open Stacker&hellip;</b> for one file, or <b>Batch Stack&hellip;</b> to queue many at the same settings.
+</div>
+
+<h2>1. Opening a source</h2>
+<p>Click <b>Open SER/AVI/Frames&hellip;</b> and either pick a single video file or multi-select images to load as a sorted sequence. Supported formats:</p>
+<table>
+  <tr><th>Category</th><th>Extensions</th><th>Notes</th></tr>
+  <tr><td>SER video</td><td><code>.ser</code></td><td>Native planetary format; carries pixel depth, color ID, timestamps.</td></tr>
+  <tr><td>Other video</td><td><code>.avi</code>, <code>.mp4</code>, <code>.mov</code>, <code>.mkv</code></td><td>Decoded frame-by-frame. For AVIs an FFT-based auto-detect looks at frame&nbsp;0 and warns if it finds a Bayer mosaic (see &sect;6).</td></tr>
+  <tr><td>Image sequence</td><td>Any mix of <code>.tif</code>, <code>.tiff</code>, <code>.fit</code>, <code>.fits</code>, <code>.png</code>, <code>.jpg</code>, <code>.jpeg</code>, <code>.bmp</code>, <code>.webp</code></td><td>Multi-select in the dialog, sorted alphabetically. Treated as sequential frames.</td></tr>
+</table>
+<p>After loading, the info strip across the top shows the file name, dimensions, frame count, bit depth, color name and whether SER timestamps are present. The last-used folder is remembered via <code>QSettings</code> so the next <b>Open</b> starts there.</p>
+
+<h2>2. The preview area</h2>
+<p>The right half of the window is a <code>QGraphicsView</code> showing the current frame with full continuous zoom and pan.</p>
+<div class="keys">
+<b>Zoom &amp; pan:</b><br>
+🖱️ <b>Drag</b> &mdash; pan.<br>
+🖱️ <b>Ctrl+Wheel</b> &mdash; zoom in/out at the cursor.<br>
+<b>Zoom-out</b> / <b>Zoom-in</b> / <b>1:1</b> / <b>Fit</b> toolbar buttons (centred below the preview).<br>
+Zoom range is 5% to 2000%.
+</div>
+<p>On the first opened frame the view auto-fits; after that your current zoom and pan are preserved as you scrub, so you can zoom in on a feature and watch it drift across frames.</p>
+
+<h2>3. Scrubbing and playback</h2>
+<p>The <b>frame slider</b> under the top toolbar lets you jump to any frame; the <code>N / Total</code> label on the right shows which frame you're on (1-indexed). <b>Play</b> cycles through at roughly 30&nbsp;fps and loops at the end; press again to pause. Scrubbing redraws immediately with all current preview options applied (debayer, ROI crop, autostretch, brightness, gamma, overlays).</p>
+
+<h2>4. Trimming to a shorter SER</h2>
+<p>The <b>Trim</b> panel on the right lets you keep only a contiguous frame range as a new SER file.</p>
+<ul>
+  <li>Set <b>Start frame</b> and <b>End frame</b> (End is auto-clamped to be &ge; Start).</li>
+  <li>Click <b>Save Trimmed SER&hellip;</b> and pick a destination.</li>
+  <li>The export runs on a background thread with a progress dialog; <b>Cancel</b> stops at the next frame boundary and no partial file is left behind.</li>
+  <li>If the current debayer selection is a specific Bayer pattern (not AUTO), the output is written as a <i>raw Bayer SER</i> at that pattern. Otherwise the output is RGB.</li>
+  <li>When the export finishes, the dialog asks if you want to open the saved file &mdash; useful for inspecting a trimmed subset before running the Stacker.</li>
+</ul>
+<p>Trim is useful for cutting out satellite-passing frames, dropped-sync frames at session boundaries, or breaking a huge SER into manageable chunks before stacking.</p>
+
+<h2>5. Region of Interest (ROI)</h2>
+<p>The ROI is the crop that gets passed down to the Stacker. Define it two ways:</p>
+<ol>
+  <li><b>Shift+drag</b> a rectangle on the preview &mdash; a bright green rubber-band shows the selection. On release, the X/Y/W/H spinboxes populate and <b>Use ROI</b> auto-enables.</li>
+  <li>Type values directly into the X/Y/W/H spinboxes and tick <b>Use ROI (crop for preview)</b>.</li>
+</ol>
+<p>All ROI coordinates are forced to even values (both origin and size) to preserve the Bayer phase &mdash; cropping a Bayer SER on an odd boundary would scramble the RGGB mosaic. See &sect;13.3 for the exact clamping rule.</p>
+<div class="tip"><b>ROI inside an ROI.</b> If ROI is already enabled and you Shift+drag again inside the preview, the new rectangle is interpreted in ROI-space and <i>converted back to full-frame coordinates</i>, so dragging a smaller area inside your current crop simply narrows it rather than overwriting with a tiny box in the wrong place.</div>
+
+<h2>6. Debayering</h2>
+<p>If the source is a raw Bayer mosaic (common for mono planetary cameras shot with an OSC-style Bayer filter), SASpro debayers it on the fly for preview. Controls:</p>
+<ul>
+  <li><b>Debayer (Bayer SER)</b> &mdash; master toggle. If off, mosaicked frames show as the raw grayscale checkerboard.</li>
+  <li><b>Bayer pattern</b> &mdash; <code>AUTO</code>, <code>RGGB</code>, <code>GRBG</code>, <code>GBRG</code>, <code>BGGR</code>. For SER, the pattern comes from the file header. For AVI/MP4, the SER header isn't there, so AUTO defaults to RGGB after an FFT check.</li>
+</ul>
+
+<h3>Automatic Bayer detection for AVI (FFT ratio)</h3>
+<p>When an AVI/MP4/MOV/MKV is loaded with Bayer pattern <code>AUTO</code>, SASpro examines frame&nbsp;0 to decide if it's a raw mosaic. The test compares the FFT energy at the four Nyquist corners (which a Bayer checkerboard concentrates energy at) against the rest of the spectrum. If the ratio is high, the file is flagged as Bayered and the dropdown is defaulted to RGGB with an amber warning: &ldquo;Bayer pattern detected &mdash; defaulting to RGGB. If colours look wrong, change the Bayer pattern dropdown to match your camera sensor.&rdquo; See &sect;13.2 for the math.</p>
+
+<h2>7. Preview tone (autostretch, brightness, gamma)</h2>
+<p>Three preview-only controls make the frame actually visible &mdash; they <b>do not affect what gets passed to the Stacker</b> and, importantly, they do not affect the planetary centroid detection either (see &sect;10).</p>
+<ul>
+  <li><b>Autostretch preview (linked)</b> &mdash; pulls the frame to <code>target_median = 0.25</code> via SASpro's shared linked autostretch (mono or RGB). Useful for faint deep-sky-adjacent planetary subjects or for seeing noise structure during focus checks.</li>
+  <li><b>Brightness</b> (-100 to +100) &mdash; adds a flat offset in <code>[-0.25, +0.25]</code>, clipped.</li>
+  <li><b>Gamma</b> (30 to 300) &mdash; power curve in <code>[0.30, 3.00]</code>; 1.00 = no change.</li>
+</ul>
+<p>The order is autostretch (if on) &rarr; brightness &rarr; gamma. The result is clipped to <code>[0, 1]</code> and shown.</p>
+
+<h2>8. Tracking mode</h2>
+<p>Pick how the Stacker will align frames downstream:</p>
+<table>
+  <tr><th>Mode</th><th>What it tracks</th><th>Use for</th></tr>
+  <tr><td><b>Planetary</b></td><td>The brightness centroid of pixels above a threshold.</td><td>Planetary discs on a dark sky (Jupiter, Saturn, Mars, Venus, lunar craters at high mag).</td></tr>
+  <tr><td><b>Surface</b></td><td>A user-picked anchor patch via NCC + phase correlation.</td><td>The Moon, Sun, or any object filling a large fraction of the frame where no clean disc edge exists.</td></tr>
+  <tr><td><b>Off</b></td><td>No alignment &mdash; frames are stacked where they land.</td><td>Pre-aligned data (e.g., an aligned SER exported from a previous Stacker run) or static test cases.</td></tr>
+</table>
+<p>Changing modes updates the preview overlays and the anchor-label status immediately. Surface mode without an anchor shows a red <b>REQUIRED</b> warning until you set one.</p>
+
+<h2>9. Setting the surface anchor</h2>
+<p>Surface tracking needs an anchor &mdash; a small, high-contrast patch (a crater rim, a prominent sunspot, a filament tip) that SASpro can lock onto across every frame. To set it:</p>
+<p><b>Ctrl+Shift+drag</b> a rectangle on the preview (on macOS: <b>⌃⇧-drag</b> &mdash; the Control key, not Command). A blue rubber-band distinguishes the anchor from the green ROI rectangle. On release, the anchor's position and size are stored in <i>ROI-space</i>, and the anchor label at the bottom-right turns green with <code>x, y, w, h</code>.</p>
+<p>While Surface mode is active, the anchor is drawn as a translucent blue outlined rectangle on top of the live preview so you can see what's actually being tracked. If you move the ROI, the anchor overlay still renders correctly &mdash; see &sect;13.4 for how ROI-space is defined.</p>
+<div class="warn"><b>macOS mouse gestures.</b> macOS Qt swaps Control↔Meta, and AppKit delivers Ctrl+LeftClick as RightButton. SASpro accepts <b>⌃⇧-drag</b> (physical Control+Shift), <b>⌘⇧-drag</b> (Command+Shift), and <b>Shift + right-drag</b> as equivalent anchor gestures, so whichever your muscle memory produces will work.</div>
+
+<h2>10. Planetary centroid preview</h2>
+<p>In Planetary mode, SASpro draws a bright yellow crosshair at the live-computed centroid of the current frame, so you can see <i>exactly</i> what the tracker thinks the planet's centre is before you commit to stacking. If the crosshair is on the wrong feature or wandering, your detection parameters need tweaking:</p>
+<ul>
+  <li><b>Threshold</b> slider (0.00 to 1.00, default 0.05) &mdash; brightness level above which pixels count toward the centroid. Lower = include dimmer limbs; higher = planet core only. The paired spin box lets you type an exact value.</li>
+  <li><b>Normalize image before detection</b> &mdash; rescales the frame to <code>[0, 1]</code> before thresholding. Useful for very dim subjects where the raw signal never approaches the default threshold. Leave off for typical bright targets.</li>
+</ul>
+<p>The crosshair is drawn on the pre-tone (pre-brightness, pre-gamma) image, so the tracker's centroid is independent of your preview settings &mdash; cranking gamma for viewing doesn't shift the lock point. These same values are passed to the Stacker when you open it (&sect;12).</p>
+
+<h2>11. Keep %</h2>
+<p>The <b>Keep %</b> spinbox (0.1 to 100, default 20) tells the Stacker what fraction of frames to actually integrate, ranked by the quality metric. 20&ndash;30% is typical for planetary; higher for well-tracked sessions on steady nights. This value is forwarded to the Stacker and shown on its quality graph &mdash; you can still adjust it there by dragging the vertical cutoff line.</p>
+
+<h2>12. Opening the Stacker and Batch dialogs</h2>
+<ul>
+  <li><b>Open Stacker&hellip;</b> opens the <b>Planetary Stacker</b> dialog for the currently loaded file, pre-populated with your ROI, surface anchor, debayer settings, tracking mode, keep&nbsp;%, and planetary detection parameters. The viewer stays open so you can re-scrub and re-pick an anchor; its ROI/anchor state syncs to the Stacker on each window activation.</li>
+  <li><b>Batch Stack&hellip;</b> opens the <b>Batch Planetary Stacker</b> dialog, which lets you queue many files to be processed with these same settings. If the viewer currently has a video open, that file is pre-added to the batch list.</li>
+</ul>
+
+<h2>13. Technical details</h2>
+<p class="tech-lead">The preview and I/O pipeline, in order.</p>
+
+<h3>13.1 The source abstraction</h3>
+<p>SER, AVI/MP4/MOV/MKV and image sequences all go through a single <code>PlanetaryFrameSource</code> interface returned by <code>open_planetary_source</code>. The interface exposes a <code>meta</code> block (width, height, frames, pixel depth, color name, source kind, optional timestamp flag) and a <code>get_frame(idx, roi=&hellip;, debayer=&hellip;, to_float01=&hellip;, force_rgb=&hellip;, bayer_pattern=&hellip;)</code> method. The frame cache is sized by the <code>cache_items</code> argument; 10 is the default, which is enough for smooth scrubbing without burning RAM.</p>
+
+<h3>13.2 Automatic Bayer detection (FFT)</h3>
+<p>For AVI-family files loaded with Bayer pattern <code>AUTO</code>, SASpro reads frame&nbsp;0, takes a centred 256&times;256 crop, subtracts its mean (removes DC), and computes the 2D FFT magnitude:</p>
+<div class="matheq">\rho = \frac{\overline{|\hat{I}|}\,\mathrm{corners}}{\overline{|\hat{I}|}\,\mathrm{rest}}</div>
+<p>where the four Nyquist corners of the shifted spectrum are averaged (3-pixel neighbourhood each), the DC region (8-pixel neighbourhood around centre) is excluded from the &ldquo;rest&rdquo;, and the ratio <code>&rho;</code> is thresholded at <b>2.5</b>. A raw RGGB mosaic concentrates energy at those corners due to the alternating-pixel grid; a true colour (already debayered) frame does not. Values above the threshold trigger the warning and default-to-RGGB behaviour described in &sect;6.</p>
+
+<h3>13.3 Even-ROI enforcement</h3>
+<p>Both the ROI origin and size are bitwise-ANDed with <code>~1</code> to force even values, and the ROI is clamped to lie entirely inside the source image. Minimum size is 2&times;2. This preservation of the Bayer phase is critical: an odd-pixel crop would make the top-left pixel of the ROI a different filter colour than the top-left of the full frame, and the debayerer would produce the wrong colours. The clamp runs on any manual spinbox edit <i>and</i> on every rubber-band release.</p>
+
+<h3>13.4 ROI-space, full-frame space, and the surface anchor</h3>
+<p>The surface anchor is always stored in <b>ROI-space</b> coordinates (0 to ROI&nbsp;width &times; 0 to ROI&nbsp;height). When ROI is enabled, the displayed image is already the cropped region, so the anchor rectangle is drawn directly on it. When ROI is disabled, ROI-space is equal to full-frame space, so the same coordinates still render correctly. This means toggling ROI on and off never invalidates the anchor &mdash; it stays locked on the same real-world feature.</p>
+<p>Internally, the gesture coordinates come from the viewport, are translated through the preview widget's position to displayed-image pixel coordinates, and then (if ROI is on and the drag was for a new ROI) back-converted to full-frame coordinates for the ROI spinboxes. Anchors never need that back-conversion because they stay in ROI-space.</p>
+
+<h3>13.5 Preview tone pipeline</h3>
+<p>The preview tone sequence is autostretch (optional) &rarr; brightness offset &rarr; gamma power, with a final clip to <code>[0, 1]</code>:</p>
+<div class="matheq">y = \mathrm{clip}\!\left(\mathrm{clip}(x + b,\,0,\,1)^\gamma,\;0,\;1\right)</div>
+<p>with <code>b</code> the brightness offset (-0.25 to +0.25 scaled from the slider) and <code>&gamma;</code> the gamma (0.30 to 3.00 scaled from the slider). The pre-tone image is stashed in <code>_last_disp_arr</code> for use by the centroid overlay, so a tweak to brightness or gamma updates the display but doesn't move the yellow crosshair.</p>
+
+<h3>13.6 Planetary centroid (preview overlay)</h3>
+<p>In Planetary mode, SASpro computes the centroid on the <i>pre-tone</i> ROI-cropped mono image via the shared <code>compute_planet_center</code>:</p>
+<div class="matheq">M = \{(x,y)\;:\;I(x,y) > \tau\}</div>
+<div class="matheq">x_c = \frac{\sum_{(x,y)\in M} x\,I(x,y)}{\sum_{(x,y)\in M} I(x,y)}</div>
+<div class="matheq">y_c = \frac{\sum_{(x,y)\in M} y\,I(x,y)}{\sum_{(x,y)\in M} I(x,y)}</div>
+<p>where <code>&tau;</code> is the threshold slider (as a fraction of max intensity after an optional pre-normalize), and the image is pre-smoothed with a Gaussian of <code>&sigma; = 1.5</code> to suppress single-pixel hot spikes. The resulting <code>(x_c, y_c)</code> is mapped from image coordinates back to pixmap coordinates for drawing the 10-pixel yellow crosshair.</p>
+
+<h3>13.7 Camera-RAW decoding and image sequences</h3>
+<p>FITS, TIFF, PNG, JPEG, BMP and WebP go through SASpro's <code>load_image</code> helper directly. When loaded as an image sequence, the files are sorted alphabetically; the viewer treats each file as one frame of a virtual video. For FITS files that are also Bayer mosaics (via the <code>BAYERPAT</code> header), debayering follows the usual Bayer pattern dropdown.</p>
+
+<h3>13.8 Preview overlays</h3>
+<p>Overlays are drawn <i>after</i> the pixmap is scaled to the current zoom, so the crosshair size and anchor rectangle thickness stay constant on screen regardless of zoom level &mdash; which keeps the crosshair readable at both 1:1 and 1600%. The surface anchor is drawn as a 3&nbsp;px blue outlined rectangle with a 30/255 alpha fill; the planetary centroid as a 10&nbsp;px yellow crosshair with a 2&times;2 pixel centre dot.</p>
+
+<div class="credit">
+<b>Credits.</b> Planetary Stacker Viewer &mdash; the source abstraction, multi-format loader (SER/AVI/MP4/MOV/MKV/sequence), FFT-based Bayer auto-detect, even-ROI enforcement, ROI-space surface anchor system, preview tone pipeline that leaves centroid detection untouched, live COM crosshair and anchor-box overlays with zoom-independent thickness, trim-to-SER export with threaded cancel, and the whole UI &mdash; is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to community: the SER file format is the Lumenera SER v3 convention; <b>OpenCV</b> provides the demosaic kernels (<code>COLOR_BayerRG2RGB</code> et al.), resampling routines, warp and FFT-magnitude operations used in both preview rendering and the Bayer auto-detect; <b>FFmpeg</b> (via SASpro's platform decoder) decodes AVI/MP4/MOV/MKV container frames; the SER reader is SASpro's own implementation of the Lumenera SER v3 spec. <b>NumPy</b> provides the array engine and <b>PyQt6</b> / <b>Qt QGraphicsView</b> the UI framework and interactive preview. The Planetary Stacker and Batch Planetary Stacker, which this viewer feeds, are documented separately.
+</div>
+
+</body>
+</html>

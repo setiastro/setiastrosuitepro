@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Image Combine</h1>
+<p class="sub">A quick two-image blender &mdash; pick <b>A</b> and <b>B</b> from your open views, choose a blend mode, drag the opacity, and the result overwrites A. A compact alternative to the full Layers editor for the common case of &ldquo;just combine these two images.&rdquo;</p>
+
+<div class="pub">
+<b>SASpro-exclusive tool.</b> Image Combine is an original <b>SetiAstro Suite Pro</b> implementation by <b>Franklin Marek</b>. The views-based dispatcher, mask-aware application, live downsampled preview with red mask-overlay visualization, luminance-only mode routed through SASpro's chroma-preserving recombiner, and the per-dialog session persistence are all built for SASpro's document model. The individual blend operators themselves are the classical compositing operators credited at the bottom.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+Pick <b>Source A</b> and <b>Source B</b> &rarr; choose a <b>Mode</b> &rarr; drag <b>Opacity</b> &rarr; (optionally) tick <b>Combine luminance only</b> &rarr; <b>Apply</b> &mdash; the result replaces A in place.
+</div>
+
+<h2>1. Loading images</h2>
+<p>Both <b>Source A</b> and <b>Source B</b> dropdowns list every open document with an image. The dropdowns repopulate every time the dialog is shown, so loading a new view and reopening Image Combine always picks it up. The first time you open the dialog it auto-selects the currently active document as A and the next available document as B.</p>
+<p>A and B <b>must have the same width and height</b>. If they don't match, the preview area shows <code>Images must be the same size.</code> and Apply refuses with a warning. Channel count may differ: a mono B blended into an RGB A applies the same mono value to all three channels of A, and vice versa.</p>
+
+<h2>2. Blend mode &amp; opacity</h2>
+<p>Nine blend modes are available in the <b>Mode</b> dropdown. The <b>Opacity</b> slider (0&ndash;100%) controls how strongly the mode's result replaces A. The exact mapping differs by mode:</p>
+<table>
+  <tr><th>Mode</th><th>What it does</th><th>Opacity meaning</th></tr>
+  <tr><td><b>Average</b></td><td>Equal-weight mix of A and B.</td><td><i>Ignored.</i> Always 50/50.</td></tr>
+  <tr><td><b>Blend</b></td><td>Straight alpha mix between A and B.</td><td>0&nbsp;=&nbsp;A only; 100&nbsp;=&nbsp;B only.</td></tr>
+  <tr><td><b>Add</b></td><td>A &#43; B, clipped to [0,&nbsp;1].</td><td>Fades the sum back toward A.</td></tr>
+  <tr><td><b>Subtract</b></td><td>A &minus; B, clipped to [0,&nbsp;1].</td><td>Fades the difference back toward A.</td></tr>
+  <tr><td><b>Multiply</b></td><td>A &times; B &mdash; always darkens.</td><td>Fades toward A.</td></tr>
+  <tr><td><b>Divide</b></td><td>A &divide; (B&nbsp;+&nbsp;&epsilon;), clipped &mdash; often used for flat-fielding style corrections.</td><td>Fades toward A.</td></tr>
+  <tr><td><b>Screen</b></td><td>Standard screen compositing &mdash; always brightens.</td><td>Fades toward A.</td></tr>
+  <tr><td><b>Overlay</b></td><td>Combines multiply (shadows) and screen (highlights) at A's midpoint &mdash; classical contrast-enhancing blend.</td><td>Fades toward A.</td></tr>
+  <tr><td><b>Difference</b></td><td>Absolute difference <code>|A &minus; B|</code> &mdash; useful for change-detection or aligning subs.</td><td>Fades toward A.</td></tr>
+</table>
+<p>In short, <b>Blend</b> and <b>Average</b> interpolate <i>between</i> A and B; every other mode computes a blend result and then fades <i>from A toward that result</i> as Opacity rises. See &sect;7.1 for the exact mix formula.</p>
+
+<h2>3. Combine luminance only</h2>
+<p>Tick <b>Combine luminance only (keep A's color)</b> to apply the chosen blend mode to the <i>luminance</i> of A and B while preserving A's colour balance. A must be RGB (the mode is refused on mono A with a message in the preview area). The pipeline is:</p>
+<ol>
+  <li>Extract Rec.&nbsp;709 luma from A and B.</li>
+  <li>Combine the two luma channels via the chosen mode and opacity.</li>
+  <li>Recombine the mixed luma with A's original chroma using SASpro's linear-scale luminance recombiner, so A's hue and saturation are preserved exactly.</li>
+</ol>
+<p>This is the right mode for things like <b>synthetic luminance</b> (screen a mono H&alpha; or luma-stacked frame into an RGB without colour-shifting), <b>sharpening via a sharper luma layer</b>, or <b>denoised-luma overlay</b>.</p>
+
+<h2>4. Masking</h2>
+<p>If <b>Source A</b> has an active mask, Image Combine respects it automatically &mdash; the blend result is let through where the mask is 1 and A is held intact where the mask is 0, following SASpro's standard mask convention. No per-tool mask picker is needed; whatever mask is active on A is the mask you get. Tick <b>Invert mask</b> to flip that behaviour.</p>
+
+<h3>Mask overlay (visualization)</h3>
+<p>Tick <b>Show mask overlay</b> to render a translucent red wash over the preview wherever A is <i>protected</i> (mask value near 0). The <b>Overlay opacity</b> slider (5&ndash;95%) controls how strong the wash is. This is a preview-only aid &mdash; the overlay is <i>not</i> baked into the Apply output. Use it to confirm your mask is doing what you expect before committing.</p>
+<p>If no mask is active on A, the overlay checkbox is a no-op; the preview and the Apply result both come straight from the blend.</p>
+
+<h2>5. Preview area &amp; zoom</h2>
+<p>The preview updates live as you change any control. A short debounce keeps slider interaction smooth.</p>
+<div class="keys">
+<b>Zoom &amp; pan:</b><br>
+🖱️ <b>Drag</b> &mdash; pan the preview around.<br>
+<b>Zoom-out</b> / <b>Fit</b> / <b>Zoom-in</b> toolbar buttons &mdash; 1.25&times; steps for in/out; Fit scales the preview to fit the viewport (capped at 1:1 so a tiny image doesn't blow up pixelated).<br>
+Zoom range is 5% to 1600%.
+</div>
+
+<h2>6. Applying</h2>
+<p><b>Apply</b> commits the current preview to <b>Source A</b> in place via <code>A.set_image(result, step_name="Image Combine: &lt;mode&gt;")</code>. The operation is recorded in A's undo history under that name, so you can roll it back from History and the step shows up in Replay. <b>B is never modified.</b></p>
+<p><b>Close</b> dismisses the dialog without applying. The dialog is non-modal, so you can leave it open and keep working in SASpro; it will pick up new views on next show.</p>
+<div class="tip"><b>Tip.</b> Image Combine remembers everything about its last session: window geometry, which views you had selected (by name &mdash; so it still works after reopening the same project), mode, opacity, luma flag, mask overlay settings and zoom level. Reopen it and your last setup is right there.</div>
+
+<h2>7. Technical details</h2>
+<p class="tech-lead">The compositor, in order of application.</p>
+
+<h3>7.1 Opacity mix formula</h3>
+<p>Modes other than Average and Blend compute a blend result <code>f(A,&nbsp;B)</code> and then interpolate between A and that result by Opacity:</p>
+<div class="matheq-hero">R = A\,(1-\alpha) + f(A,\,B)\cdot \alpha</div>
+<p>with <code>&alpha;</code> in <code>[0,&nbsp;1]</code> from the Opacity slider. At <code>&alpha; = 0</code> the output is A unchanged; at <code>&alpha; = 1</code> the output is the full mode's result. <b>Average</b> ignores &alpha; entirely:</p>
+<div class="matheq">R = \frac{1}{2}(A + B)</div>
+<p>and <b>Blend</b> uses &alpha; as the direct interpolation parameter between A and B themselves:</p>
+<div class="matheq">R = A\,(1-\alpha) + B\,\alpha</div>
+
+<h3>7.2 The seven arithmetic modes</h3>
+<p>Each produces the <code>f(A,&nbsp;B)</code> used in the mix formula above. All operate per-channel in float32 with inputs clipped to <code>[0,&nbsp;1]</code>.</p>
+
+<p><b>Add</b> and <b>Subtract</b> &mdash; linear combination, clipped:</p>
+<div class="matheq">f(A,B) = \mathrm{clip}(A + B,\;0,\;1)</div>
+<div class="matheq">f(A,B) = \mathrm{clip}(A - B,\;0,\;1)</div>
+
+<p><b>Multiply</b> &mdash; darkening operator (no clip needed since inputs are already in <code>[0,&nbsp;1]</code>):</p>
+<div class="matheq">f(A,B) = A \cdot B</div>
+
+<p><b>Divide</b> &mdash; brightening/correcting operator with a small <code>&epsilon; = 10<sup>-6</sup></code> guard against division by zero:</p>
+<div class="matheq">f(A,B) = \mathrm{clip}\!\left(\frac{A}{B + \varepsilon},\;0,\;1\right)</div>
+
+<p><b>Screen</b> &mdash; classical screen compositing (complement of multiplicative darkening):</p>
+<div class="matheq">f(A,B) = 1 - (1 - A)(1 - B)</div>
+
+<p><b>Difference</b> &mdash; absolute per-pixel residual:</p>
+<div class="matheq">f(A,B) = |A - B|</div>
+
+<p><b>Overlay</b> is piecewise &mdash; multiply in the shadows of A, screen in the highlights, hinged at A's midpoint. For <code>A &le; 0.5</code>:</p>
+<div class="matheq">f(A,B) = 2\,A\,B</div>
+<p>and for <code>A &gt; 0.5</code>:</p>
+<div class="matheq">f(A,B) = 1 - 2\,(1 - A)(1 - B)</div>
+<p>The hinge at 0.5 means Overlay preserves the midtone of A while compressing shadows (into multiply) and expanding highlights (into screen), producing the familiar contrast-boosting look.</p>
+
+<h3>7.3 Luminance-only pipeline</h3>
+<p>With <b>Combine luminance only</b> ticked, A must be RGB. Both images are reduced to Rec.&nbsp;709 luminance:</p>
+<div class="matheq">Y = 0.2126\,R + 0.7152\,G + 0.0722\,B</div>
+<p>The chosen mode is then applied to the two luma channels at the chosen opacity:</p>
+<div class="matheq">Y_{\mathrm{mix}} = f(Y_A,\,Y_B,\,\alpha)</div>
+<p>and the result is re-combined with A's original colour using SASpro's linear-scale luminance recombiner (shared with LRGB combination, EZ Soft Stretch and the colour-preserving stretch tools):</p>
+<div class="matheq">R_{\mathrm{out}} = \mathrm{Recombine}(I_A,\,Y_{\mathrm{mix}})</div>
+<p>The recombiner scales A's RGB vector at each pixel so its new luminance equals <code>Y<sub>mix</sub></code> while preserving its chromaticity &mdash; so hue and saturation stay exactly as they were in A, and only the brightness distribution reflects B.</p>
+
+<h3>7.4 Mask application</h3>
+<p>If A has an active mask <code>m</code> (values in <code>[0,&nbsp;1]</code>, resized to the image via nearest-neighbour and expanded to the right channel count), the final blend is further gated by:</p>
+<div class="matheq-hero">R = r\,m + A\,(1 - m)</div>
+<p>where <code>r</code> is the mode's blended result (post-opacity) and A is the unmodified source. By convention, <code>m = 1</code> means &ldquo;full effect&rdquo; and <code>m = 0</code> means &ldquo;protected&rdquo;; <b>Invert mask</b> swaps that. The mask is pulled from the destination document (A) first; if A has no per-document mask, SASpro falls back to the globally applied mask on the Image Manager if one is set.</p>
+<p>In luma-only mode the mask gates <code>Y<sub>mix</sub></code> against <code>Y<sub>A</sub></code> before the recombine, so protected pixels end up with A's original luminance and chroma untouched.</p>
+
+<h3>7.5 Red overlay visualization</h3>
+<p>The optional red overlay shows A's <i>protected</i> region (where the blend will <i>not</i> take effect):</p>
+<div class="matheq">v = 1 - m</div>
+<div class="matheq">R = I_{\mathrm{blend}}(1 - v\,\omega) + \mathbf{r}\,(v\,\omega)</div>
+<p>with <code>&omega;</code> the Overlay opacity (5&ndash;95%) and <code>r</code> = pure red (R=1, G=B=0). Mono previews are first promoted to RGB so the wash is visible. The overlay is applied <i>after</i> the mask-gated blend, so what you see as a red wash is &ldquo;here the output is A unchanged&rdquo; &mdash; useful for spotting unexpected mask leakage before committing.</p>
+
+<h3>7.6 Resampling, preview and persistence</h3>
+<p>Masks whose resolution doesn't match the image are resampled with nearest-neighbour interpolation (<code>cv2.resize</code> with <code>INTER_NEAREST</code> when OpenCV is available, otherwise a NumPy index-map fallback) &mdash; the preview and Apply paths use the same resampler, so what you see is what gets committed. The preview itself uses Qt's smooth scaled pixmap for display, scaled on demand when the zoom changes rather than re-rendering the blend. Session state (geometry, selections by document name, mode, opacity, flags, overlay settings and zoom) is persisted via <code>QSettings</code> under the <code>image_combine/</code> key, written on slider-release and on close.</p>
+
+<div class="credit">
+<b>Credits.</b> Image Combine &mdash; the dialog, dispatch, mask-aware application, red-overlay visualization, luma-only routing, and preview/persistence engineering &mdash; is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. The individual blend operators are classical compositing operators credited to community: the Screen operator is standard digital compositing (Porter &amp; Duff 1984, &ldquo;Compositing Digital Images&rdquo;); Overlay (hinged multiply/screen at 0.5) is a standard imaging convention; arithmetic operators (Add, Subtract, Multiply, Divide, Difference, Average) are textbook pixel arithmetic. Rec.&nbsp;709 luma weights (0.2126, 0.7152, 0.0722) follow ITU-R&nbsp;BT.709. The chroma-preserving luminance recombination is SASpro's own <b>linear-scale recombiner</b> (shared with LRGB and the colour-preserving stretch tools). <b>OpenCV</b> is credited as an optional backend used only for nearest-neighbour mask resampling &mdash; the compositor runs identically without it. <b>NumPy</b> provides the array engine, and <b>PyQt6</b> the UI framework.
+</div>
+
+</body>
+</html>

@@ -26,7 +26,7 @@ try:
 except Exception:
     pass
 import math
-
+from setiastro.saspro.help_support import make_help_button
 
 _N_WORKERS = max(2, (os.cpu_count() or 4))
 
@@ -754,6 +754,9 @@ class MultiscaleDecompDialog(QDialog):
         btn_row.addWidget(self.btn_detail_new)
         btn_row.addWidget(self.btn_split_layers)
         btn_row.addWidget(self.btn_close)
+        btn_row.addStretch(1)
+        btn_row.addWidget(self.preset_drag_handle)
+        btn_row.addWidget(make_help_button("multiscale_decomp", self))
         right.addLayout(btn_row)
 
         self.splitter.addWidget(left_widget)

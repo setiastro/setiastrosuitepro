@@ -22,7 +22,7 @@ from setiastro.saspro.widgets.image_utils import (
     to_float01 as _to_float01,
     extract_mask_from_document as _active_mask_array_from_doc
 )
-
+from setiastro.saspro.help_support import make_help_button
 
 # ─── image helpers ────────────────────────────────────────────────────────────
 
@@ -767,6 +767,8 @@ class FXDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            self.btn_help = make_help_button("fx", self)
+            drag_row.addWidget(self.btn_help)            
             left.addLayout(drag_row)
         except Exception:
             pass

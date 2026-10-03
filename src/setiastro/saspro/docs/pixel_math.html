@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b7e4d6; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; width: 100%; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .fn td:first-child { white-space:nowrap; font-family:Consolas,"DejaVu Sans Mono",monospace;
+                       color:#9fe0cf; width: 1%; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Pixel Math</h1>
+<p class="sub">An expression language for combining images arithmetically.
+Write an expression using <code>img</code> (the active view), the identifiers
+for any other open views, and the built-in function library; the expression
+is evaluated per-pixel and the result replaces the active image or opens as a
+new document. Think of it as a scratchpad where every pixel in your image is
+a variable, and every open view is in scope.</p>
+
+<p>PixelMath is the most flexible tool in SASpro by a wide margin, which is
+also what makes it the hardest to approach cold. This document lays it all
+out: the two modes, the variables, the operators and broadcasting rules,
+every function in the library, the common recipes, and the mechanics of the
+dialog itself.</p>
+
+<h2>1. The two modes</h2>
+<p>At the top of the editor column, two radio buttons pick the mode:</p>
+<ul>
+  <li><b>Single Expression</b> (default) &mdash; one expression produces the
+      whole result. If the expression returns a 2-D array (or a scalar),
+      the result is mono; if it returns a 3-D array shaped
+      <code>(H,&nbsp;W,&nbsp;3)</code>, the result is RGB. SASpro infers
+      mono vs RGB automatically. Most work happens here.</li>
+  <li><b>Separate (R / G / B)</b> &mdash; three editor tabs, one expression
+      per output channel. Each expression must return a 2-D plane (or an
+      RGB array, from which the matching channel is auto-selected). The
+      three planes stack into the final RGB result.</li>
+</ul>
+
+<h2>2. The dialog at a glance</h2>
+<p>Left column (controls, scrollable):</p>
+<ul>
+  <li><b>Variables</b> list &mdash; one row per open view. The row shows the
+      window title and the sanitised identifier that references it in your
+      expression. Double-click a row to insert its identifier into the
+      current editor at the cursor.</li>
+  <li><b>Output</b> &mdash; Overwrite active (replace the current document's
+      image on Apply) or Create new view (open the result as a new
+      document).</li>
+  <li><b>Mode</b> &mdash; Single Expression / Separate (R / G / B).</li>
+  <li><b>Expression editor</b> &mdash; multi-line text editor for the
+      current mode. Supports <code>Ctrl + wheel</code> for standard text
+      scrolling.</li>
+  <li><b>Glossary&hellip;</b> button opens a searchable function reference
+      (&sect;&nbsp;9).</li>
+  <li><b>Examples</b> dropdown inserts a ready-made recipe (&sect;&nbsp;11).</li>
+  <li><b>Favorites</b> dropdown + Save as Favorite / Delete Favorite
+      buttons persist your own expressions across sessions.</li>
+  <li><b>OK / Cancel / Help</b> at the bottom.</li>
+  <li>Draggable splitter between the two columns.</li>
+</ul>
+<p>Right column (preview):</p>
+<ul>
+  <li><b>Preview</b> button runs the current expression and shows the result
+      without committing.</li>
+  <li><b>Auto-stretch</b> button is a toggle with a dropdown menu for the
+      preview's display stretch (&sect;&nbsp;6). Non-destructive &mdash;
+      affects only what you see.</li>
+  <li><b>Zoom In / Zoom Out / 1:1 / Fit</b> buttons; the preview also
+      supports left-drag pan and <code>Ctrl + wheel</code> cursor-anchored
+      zoom.</li>
+  <li>Preview area itself is a QGraphicsView showing the computed result.</li>
+</ul>
+
+<h2>3. Variables</h2>
+<p>Every open view is in scope. The dialog auto-generates a Python-safe
+identifier for each one from its window title:</p>
+<ul>
+  <li><code>img</code> &mdash; always refers to the active view, regardless
+      of its title.</li>
+  <li>Every other open view gets an identifier derived from its title
+      (non-alphanumeric characters become underscores, leading digits get
+      a leading underscore). If two titles would collide, the second gets
+      a numeric suffix (<code>andromeda</code>,
+      <code>andromeda_2</code>).</li>
+  <li>You can also write the <i>raw title</i> directly in your expression
+      &mdash; PixelMath rewrites it to the identifier before evaluation.
+      So <code>andromeda.png</code> works even though the sanitised name is
+      <code>andromeda_png</code>.</li>
+</ul>
+<p>Three other sets of names are always available:</p>
+<ul>
+  <li><b>Dimensions</b> &mdash; <code>H</code>, <code>W</code>,
+      <code>C</code>, and <code>shape</code> (a tuple).</li>
+  <li><b>Coordinate grids</b> &mdash; <code>X</code> and <code>Y</code>,
+      both <code>(H,&nbsp;W)</code> arrays ramping linearly from 0 to 1
+      across the frame. Use these for position-dependent effects
+      (gradients, radial masks, horizontal fades).</li>
+  <li><b>Constants</b> &mdash; <code>pi</code>, <code>e</code>,
+      <code>EPS</code> (= 10&#8315;&#8312;).</li>
+</ul>
+
+<h2>4. Operators</h2>
+<table>
+  <tr><th>Operator</th><th>Meaning</th><th>Example</th></tr>
+  <tr><td><code>+ &minus; * /</code></td><td>Standard arithmetic (element-wise)</td>
+      <td><code>(img + bias) / 2</code></td></tr>
+  <tr><td><code>**</code> or <code>^</code></td><td>Power. Both syntaxes work.</td>
+      <td><code>img ^ 0.5</code></td></tr>
+  <tr><td><code>~</code></td><td>Invert: <code>~x</code> means
+      <code>1&nbsp;&minus;&nbsp;x</code>.</td>
+      <td><code>~img</code> (negative)</td></tr>
+  <tr><td><code>&lt; &lt;= == != &gt;= &gt;</code></td>
+      <td>Comparisons. Return boolean arrays; feed them to
+          <code>iff</code>.</td>
+      <td><code>iff(img &lt; 0.1, 0, img)</code></td></tr>
+  <tr><td><code>view[i]</code></td>
+      <td>Channel indexing. <code>img[0]</code> is R, <code>[1]</code> is G,
+          <code>[2]</code> is B &mdash; each as a 2-D plane.</td>
+      <td><code>img[0] + img[2]</code></td></tr>
+</table>
+
+<p class="tip"><b>Mono-friendly indexing.</b> On a mono image,
+<i>any</i> channel index returns the mono plane itself. So
+<code>L[2]</code> on a mono <code>L</code> is just <code>L</code>. This
+means LRGB recipes work regardless of whether <code>L</code> is a mono
+or RGB document &mdash; you can write <code>img * (L[0]
+/ (luma(img) + EPS))</code> and it does the right thing in both cases.</p>
+
+<p class="warn"><b>Caret note.</b> In standard Python, <code>^</code> is
+XOR. PixelMath rebinds it to power for astro-user convenience, so
+<code>img ^ 0.5</code> is the square root. Mixing <code>^</code> with
+Python code expectations trips people up; stick with <code>**</code> if
+that bothers you.</p>
+
+<h2>5. Broadcasting rules</h2>
+<p>Mono and RGB values mix freely. The usual case:</p>
+<ul>
+  <li>A mono value <code>(H,&nbsp;W)</code> and an RGB value
+      <code>(H,&nbsp;W,&nbsp;3)</code> combine with the mono broadcast to
+      all three channels. So <code>rgb * mono_mask</code> dims
+      every channel of <code>rgb</code> by the same per-pixel factor.</li>
+  <li>A scalar combines with anything, applied uniformly.</li>
+  <li>Two RGB values combine channel-wise.</li>
+</ul>
+<p>Reducer functions (<code>med</code>, <code>mean</code>,
+<code>min</code>, <code>max</code>, <code>std</code>, <code>mad</code>)
+return <i>per-channel</i> scalars for RGB input, shaped
+<code>(1,&nbsp;1,&nbsp;C)</code>. These broadcast transparently so
+<code>img&nbsp;&minus;&nbsp;med(img)</code> subtracts each channel's own
+median from itself.</p>
+<p>PixelMath auto-crops to the common size if two images are mismatched
+by &le;&nbsp;4&nbsp;px in height or width (common after warps or
+reprojections that round pixel dimensions differently). Larger
+mismatches raise a shape error.</p>
+
+<h2>6. Preview and auto-stretch</h2>
+<p>The <b>Preview</b> button runs the current expression and shows the
+result in the right-hand panel without committing. Everything you see is
+exactly what Apply will produce.</p>
+<p>The <b>Auto-stretch</b> button beside Preview toggles a non-destructive
+display stretch on the preview panel &mdash; it's only for making the
+preview readable, especially for linear data. It never changes what
+Apply writes. The dropdown menu offers:</p>
+<ul>
+  <li><b>Enable Auto-stretch</b> &mdash; same as clicking the button
+      itself. Mirrors state.</li>
+  <li><b>Target median</b> &mdash; 0.18 (soft), 0.25 (default), or 0.35
+      (brighter). Controls how aggressive the stretch is; low values show
+      your data closer to its linear state.</li>
+  <li><b>Black-point sigma</b> &mdash; &sigma;=2.5, 3 (default), or 4.
+      Controls how deeply the black point is pulled below the MAD-based
+      noise floor; higher sigma leaves more foot room for faint signal.</li>
+  <li><b>Linked channels</b> &mdash; when on, uses image luminance to
+      derive one stretch applied to all three channels (colour-preserving).
+      When off, each channel stretches independently (equivalent to a
+      white-balance step but may change colour cast).</li>
+  <li><b>Use 16-bit stats</b> &mdash; computes the stretch histogram at
+      16-bit precision rather than the default. Slower but better for very
+      high dynamic range data.</li>
+</ul>
+<p>All these preferences persist across sessions via QSettings. If a
+preview is on screen and you change any auto-stretch setting, the preview
+is re-rendered automatically.</p>
+
+<h2>7. Output routing</h2>
+<p>The <b>Output</b> group picks what happens when you click OK:</p>
+<ul>
+  <li><b>Overwrite active</b> (default) &mdash; the result replaces the
+      active document's image as an undoable edit named
+      &ldquo;Pixel Math&rdquo;.</li>
+  <li><b>Create new view</b> &mdash; the result opens as a new document
+      titled <i>&ldquo;&lt;source&gt; &mdash; Pixel Math&rdquo;</i>, with
+      the source document's metadata carried over. Useful when you want
+      to keep the original around while comparing with the derived
+      image.</li>
+</ul>
+
+<h2>8. Mask integration</h2>
+<p>If the active document carries a mask, the result of your expression
+is <i>automatically</i> blended with the untouched source through that
+mask on Apply &mdash; the pixels outside the mask stay untouched, the
+pixels inside receive the computed result, and feathered mask regions
+get a proportional blend.</p>
+<p>You can also control masking explicitly with the <code>mask()</code>
+and <code>apply_mask(base,&nbsp;out,&nbsp;m)</code> helpers:</p>
+<div class="eq">base = img
+sh   = unsharp(img, sigma=1.2, amount=0.8)
+m    = smoothstep(0.1, 0.6, luma(img))
+apply_mask(base, sh, m)</div>
+<p>This computes a sharpened version, builds a smoothstep weight based
+on luminance (sharpen only midtones), and blends via <code>apply_mask</code>
+&mdash; which is just
+<code>base&nbsp;&middot;&nbsp;(1&minus;m)&nbsp;+&nbsp;out&nbsp;&middot;&nbsp;m</code>.
+This computed-in-expression mask composes with the document's own mask
+if one exists.</p>
+
+<h2>9. The Glossary dialog</h2>
+<p>The <b>Glossary&hellip;</b> button opens a searchable list of every
+available function with its signature and a one-line description. Type
+in the search box to filter; double-click an entry to insert its
+signature at the cursor in whichever editor is active. Covers the
+entire function library in &sect;&nbsp;10.</p>
+
+<h2>10. Function reference</h2>
+
+<h3>10.1 Element-wise math</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>clamp(x, lo=0, hi=1)</td>
+      <td>Limit values to <code>[lo..hi]</code> (NumPy clip).</td></tr>
+  <tr><td>rescale(x, a, b, lo=0, hi=1)</td>
+      <td>Linear map from input range <code>[a..b]</code> to output
+          range <code>[lo..hi]</code>. Values outside <code>[a..b]</code>
+          are extrapolated &mdash; wrap in <code>clamp</code> if you want
+          hard bounds.</td></tr>
+  <tr><td>gamma(x, g)</td>
+      <td>Gamma curve: <code>clip(x, 0, 1) ** g</code>. Values below 1
+          brighten midtones; above 1 darken.</td></tr>
+  <tr><td>pow_safe(x, p)</td>
+      <td>Power with an <code>EPS</code> floor on the base, so
+          <code>pow_safe(0, 0.5)</code> doesn't blow up.</td></tr>
+  <tr><td>abs(x), absf(x)</td><td>Absolute value.</td></tr>
+  <tr><td>exp(x), expf(x)</td><td>Exponential.</td></tr>
+  <tr><td>sqrt(x), sqrtf(x)</td>
+      <td>Square root; input clipped to &ge;&nbsp;0 first.</td></tr>
+  <tr><td>arcsin(x)</td>
+      <td>Inverse sine (radians), input clipped to
+          <code>[&minus;1,&nbsp;1]</code>.</td></tr>
+</table>
+
+<h3>10.2 Logs and hyperbolics</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>log(x), ln(x)</td>
+      <td>Natural log (base <code>e</code>) with <code>EPS</code> floor
+          so <code>log(0)</code> is a large negative, not
+          <code>&minus;Inf</code>.</td></tr>
+  <tr><td>log10(x)</td><td>Base-10 log with <code>EPS</code> floor.</td></tr>
+  <tr><td>log2(x)</td><td>Base-2 log with <code>EPS</code> floor.</td></tr>
+  <tr><td>asinh(x)</td>
+      <td>Inverse hyperbolic sine. Useful for astro stretches
+          &mdash; preserves sign, behaves like <code>log</code> for large
+          positive values and like <code>x</code> near zero.</td></tr>
+  <tr><td>sinh(x), cosh(x), tanh(x)</td>
+      <td>Hyperbolic sine, cosine, tangent.</td></tr>
+</table>
+
+<h3>10.3 Reducers (per-channel on RGB)</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>med(x)</td>
+      <td>Median. Returns a scalar for mono, per-channel
+          <code>(1,&nbsp;1,&nbsp;C)</code> for RGB (so arithmetic
+          broadcasts).</td></tr>
+  <tr><td>mean(x)</td><td>Arithmetic mean (per-channel on RGB).</td></tr>
+  <tr><td>std(x)</td><td>Standard deviation (per-channel on RGB).</td></tr>
+  <tr><td>mad(x)</td>
+      <td>Median absolute deviation (per-channel on RGB). Robust noise
+          estimator.</td></tr>
+  <tr><td>percentile(x, p)</td>
+      <td>Per-channel <code>p</code>-th percentile, returned as a full-size
+          constant image for easy use in subsequent arithmetic.</td></tr>
+  <tr><td>avg(a, b, &hellip;)</td>
+      <td>Element-wise mean of any number of images or scalars (variadic).
+          Not a reducer in the above sense &mdash; this averages between
+          multiple arguments, not within one image.</td></tr>
+</table>
+
+<h3>10.4 Element-wise min / max</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>min(x)</td>
+      <td>Reduce: scalar for mono, per-channel for RGB.</td></tr>
+  <tr><td>min(a, b)</td>
+      <td>Element-wise minimum of two values (broadcasts).</td></tr>
+  <tr><td>max(x), max(a, b)</td>
+      <td>Same, maximum.</td></tr>
+  <tr><td>minimum(a, b), maximum(a, b)</td>
+      <td>Explicit element-wise names &mdash; use these if you want
+          unambiguity.</td></tr>
+</table>
+
+<h3>10.5 Smooth curves</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>sigmoid(x, k=10, mid=0.5)</td>
+      <td>S-curve centred at <code>mid</code> with steepness
+          <code>k</code>. See &sect;&nbsp;14.3.</td></tr>
+  <tr><td>smoothstep(e0, e1, x)</td>
+      <td>Cubic ramp from 0 at <code>x&nbsp;=&nbsp;e0</code> to 1 at
+          <code>x&nbsp;=&nbsp;e1</code>, with zero derivative at both
+          endpoints. Classical shader primitive.</td></tr>
+  <tr><td>lerp(a, b, t), mix(a, b, t)</td>
+      <td>Linear interpolation: <code>(1&minus;t)&middot;a + t&middot;b</code>.
+          Both names work.</td></tr>
+</table>
+
+<h3>10.6 Statistics / normalisation</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>normalize01(x)</td>
+      <td>Per-channel rescale to [0,&nbsp;1]:
+          <code>(x&nbsp;&minus;&nbsp;min)&nbsp;/&nbsp;(max&nbsp;&minus;&nbsp;min)</code>.</td></tr>
+  <tr><td>zscore(x)</td>
+      <td>Per-channel standardisation:
+          <code>(x&nbsp;&minus;&nbsp;mean)&nbsp;/&nbsp;std</code>.
+          Not clipped.</td></tr>
+</table>
+
+<h3>10.7 Channels and colour</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>ch(x, i)</td>
+      <td>Extract channel <code>i</code> (0 = R, 1 = G, 2 = B) as a 2-D
+          plane. <code>x[i]</code> syntax does the same.</td></tr>
+  <tr><td>luma(x)</td>
+      <td>Rec. 709 luminance as 2-D plane:
+          <code>0.2126R + 0.7152G + 0.0722B</code>. Mono input passes through.</td></tr>
+  <tr><td>compose(R, G, B)</td>
+      <td>Stack three 2-D planes into an RGB array.</td></tr>
+  <tr><td>lumarecom(rgb, L, clip=True)</td>
+      <td>Rec. 709 LRGB recombination: rescale each channel of
+          <code>rgb</code> so the result's luminance equals <code>L</code>,
+          preserving hue. See &sect;&nbsp;14.4.</td></tr>
+</table>
+
+<h3>10.8 Masks</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>mask()</td>
+      <td>Returns the document's active mask as a 2-D array in
+          <code>[0,&nbsp;1]</code>, resized to the current image. All zeros
+          if there is no active mask.</td></tr>
+  <tr><td>apply_mask(base, out, m)</td>
+      <td>Standard blend:
+          <code>base&nbsp;&middot;&nbsp;(1&minus;m)&nbsp;+&nbsp;out&nbsp;&middot;&nbsp;m</code>.
+          Accepts 2-D or 3-D masks.</td></tr>
+</table>
+
+<h3>10.9 Filters</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>boxblur(x, k=3)</td>
+      <td>Box blur with kernel size <code>k</code>. OpenCV when available.</td></tr>
+  <tr><td>gauss(x, sigma=1.0)</td>
+      <td>Gaussian blur with the given <code>sigma</code>.</td></tr>
+  <tr><td>median(x, k=3)</td>
+      <td>Median filter; <code>k</code> rounded up to odd.</td></tr>
+  <tr><td>unsharp(x, sigma=1.5, amount=1.0)</td>
+      <td>Classic unsharp mask:
+          <code>x + amount&middot;(x &minus; gauss(x,&nbsp;sigma))</code>.</td></tr>
+</table>
+
+<h3>10.10 Astro-specific</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>mtf(x, m)</td>
+      <td>Midtones Transfer Function (same curve as in Levels / Curves).
+          See &sect;&nbsp;14.2.</td></tr>
+</table>
+
+<h3>10.11 Conditional</h3>
+<table class="fn">
+  <tr><th>Signature</th><th>Description</th></tr>
+  <tr><td>iff(cond, a, b)</td>
+      <td>Element-wise <code>where</code>: pick <code>a</code> where
+          <code>cond</code> is true, <code>b</code> otherwise. Accepts
+          scalar or array <code>a</code>/<code>b</code> and broadcasts.</td></tr>
+  <tr><td>iif(cond, a, b)</td>
+      <td>Alias for <code>iff</code> &mdash; both spellings supported
+          because nobody remembers which one it is.</td></tr>
+</table>
+
+<h2>11. Example recipes</h2>
+<p>The <b>Examples</b> dropdown in the dialog has these pre-filled recipes
+ready to insert. Here they are with brief explanations &mdash; a mental
+model of what each one does helps when you want to adapt them.</p>
+
+<h3>11.1 Basic combinations</h3>
+<ul>
+  <li><b>Average two views</b> &mdash;
+      <code>(img + other) / 2</code>. The naive stack of two
+      aligned frames.</li>
+  <li><b>Difference (A &minus; B)</b> &mdash; <code>img - other</code>.
+      Useful for frame-to-frame comparison, dark-frame subtraction,
+      spotting what changed.</li>
+  <li><b>Invert active</b> &mdash; <code>~img</code> (equivalent to
+      <code>1 - img</code>).</li>
+  <li><b>Subtract median (bias remove)</b> &mdash;
+      <code>img - med(img)</code>. Zero-centres the median; useful before
+      operations that assume zero-mean data.</li>
+  <li><b>Zero-centre by mean</b> &mdash; <code>img - mean(img)</code>.
+      Same idea with mean instead of median; less robust to outliers but
+      preserves additive constants.</li>
+  <li><b>Min + Max combine</b> &mdash; <code>min(img) + max(img)</code>.
+      Simple statistical constant image, used mostly for diagnostics.</li>
+</ul>
+
+<h3>11.2 Transforms</h3>
+<ul>
+  <li><b>Log transform</b> &mdash; <code>log(img + 1e-6)</code>.
+      Compresses dynamic range; classical for displaying linear data.</li>
+  <li><b>Midtones transform m=0.25</b> &mdash; <code>mtf(img, 0.25)</code>.
+      Shift midtones down (brighten); the lower <code>m</code>, the more
+      aggressive the midpoint shift.</li>
+  <li><b>Gamma 0.6</b> &mdash; <code>gamma(img, 0.6)</code>. Brightens
+      midtones with a power curve.</li>
+  <li><b>Sigmoid contrast</b> &mdash;
+      <code>sigmoid(img, k=12, mid=0.4)</code>. Add contrast around the
+      midpoint 0.4 with slope 12. Steeper <code>k</code> gives sharper
+      transition.</li>
+  <li><b>Normalize to 0&ndash;1</b> &mdash; <code>normalize01(img)</code>.
+      Each channel's min becomes 0, max becomes 1. Can clip faint signal
+      if your image has hot pixels &mdash; use the percentile variant
+      instead.</li>
+</ul>
+
+<h3>11.3 Thresholding and masks</h3>
+<ul>
+  <li><b>Binarise at median</b> &mdash;
+      <code>iff(img &lt; med(img), 0, 1)</code>. Simple threshold mask.</li>
+  <li><b>Horizontal gradient blend</b> &mdash;
+      <code>lerp(img, other, X)</code>. The frame transitions from
+      <code>img</code> on the left to <code>other</code> on the right
+      because <code>X</code> ramps 0 to 1 across the width.</li>
+  <li><b>Apply active mask to blend A&nbsp;&rarr;&nbsp;B</b> &mdash;
+      <code>apply_mask(img, other, mask())</code>. The document's active
+      mask drives the blend.</li>
+  <li><b>Masked unsharp (luma-based)</b> &mdash; multiline:
+      <div class="eq">base = img
+sh   = unsharp(img, sigma=1.2, amount=0.8)
+m    = smoothstep(0.10, 0.60, luma(img))
+apply_mask(base, sh, m)</div>
+      Compute a sharpened version, build a smoothstep mask that activates
+      only on midtones, blend. The last line is what gets returned.</li>
+</ul>
+
+<h3>11.4 Multi-view calibration</h3>
+<ul>
+  <li><b>Match medians of A to B</b> &mdash;
+      <code>img * (med(other) / med(img))</code>. Multiplicative rescale
+      so <code>img</code>'s median equals <code>other</code>'s.</li>
+  <li><b>Safe divide</b> &mdash;
+      <code>img / maximum(other, 1e-6)</code>. Avoids division by zero in
+      the denominator view.</li>
+  <li><b>Percentile stretch 0.5&ndash;99.5%</b> &mdash; multiline:
+      <div class="eq">lo = percentile(img, 0.5)
+hi = percentile(img, 99.5)
+clamp((img - lo) / (hi - lo), 0, 1)</div>
+      Robust alternative to <code>normalize01</code> that ignores
+      extreme-tail pixels.</li>
+</ul>
+
+<h3>11.5 Per-channel operations</h3>
+<p>(Single Expression mode &mdash; channel indexing with <code>[i]</code>.)</p>
+<ul>
+  <li><b>Luma to all channels</b> (desaturate to greyscale) &mdash;
+      <code>compose(luma(img), luma(img), luma(img))</code> or in Separate
+      mode <code>luma(img)</code> in each tab.</li>
+  <li><b>Swap R&harr;B</b> &mdash; Separate mode:
+      <code>img[2]</code> / <code>img[1]</code> / <code>img[0]</code>.</li>
+  <li><b>Build RGB from three sources</b> &mdash; Separate mode:
+      <code>a[0]</code> / <code>b[1]</code> / <code>c[2]</code>. Takes the
+      red channel from one view, green from another, blue from a third.</li>
+</ul>
+
+<h3>11.6 Small filters</h3>
+<ul>
+  <li><b>Gaussian blur &sigma;=2</b> &mdash;
+      <code>gauss(img, sigma=2.0)</code>.</li>
+  <li><b>Median filter k=3</b> &mdash;
+      <code>median(img, k=3)</code>.</li>
+</ul>
+
+<h3>11.7 LRGB recombination</h3>
+<p>The classical LRGB workflow: pair a stretched luminance (shot through
+a clear or L filter) with a stretched colour image (RGB) by using the L
+for structure and the RGB for hue. The <code>lumarecom</code> helper
+does exactly this:</p>
+<div class="eq">lumarecom(rgb_view, L_view)</div>
+<p>which rescales each channel of <code>rgb_view</code> so the result's
+Rec. 709 luminance equals <code>L_view</code>, preserving the R/G and
+B/G hue ratios. See &sect;&nbsp;14.4 for the math.</p>
+
+<h2>12. Favorites</h2>
+<p>The <b>Save as Favorite</b> button saves whatever is in the current
+editor to the Favorites dropdown. Favorites persist across sessions
+(stored in QSettings), so recipes you use often don't need to be
+rebuilt or remembered. In Separate mode the three channel expressions
+are stored together with <code>[R]</code>, <code>[G]</code>,
+<code>[B]</code> tags; selecting a saved Separate recipe repopulates all
+three tabs. Right-click any favorite to delete it (also available via
+the Delete Favorite button).</p>
+
+<h2>13. Multiline expressions</h2>
+<p>Both Single and Separate modes let you write multi-line expressions
+with intermediate variables:</p>
+<div class="eq">A = med(img)
+B = img - A
+B * 2.0</div>
+<p>Every line except the last is executed for its side effects (variable
+assignment). The <i>last</i> line is the <b>returned result</b> and
+must be an expression, not an assignment. Writing
+<code>C&nbsp;=&nbsp;B&nbsp;*&nbsp;2.0</code> as the last line returns
+nothing &mdash; the error message is a cue that you need to drop the
+<code>C&nbsp;=</code> part. (Or add a bare <code>C</code> as the final
+line.)</p>
+<p>The namespace used inside multi-line expressions is a safe
+subset &mdash; no file I/O, no imports, no builtins. Only the functions
+in &sect;&nbsp;10 and the variables in &sect;&nbsp;3 are available.</p>
+
+<h2>14. Technical details</h2>
+<p class="tech-lead">All processing on float32 in [0, 1]. The expression
+is parsed and evaluated by Python's <code>exec</code> / <code>eval</code>
+in a sandboxed namespace with no built-ins. Operator overloading happens
+through a lightweight <code>PixelImage</code> wrapper that routes
+arithmetic to NumPy with the broadcasting / coercion rules described
+in &sect;&nbsp;5.</p>
+
+<h3>14.1 The PixelImage wrapper</h3>
+<p>Every image variable is wrapped in a <code>PixelImage</code> object
+that:</p>
+<ul>
+  <li>Overrides <code>__add__</code>, <code>__sub__</code>,
+      <code>__mul__</code>, <code>__truediv__</code>, <code>__pow__</code>
+      to coerce shapes before the NumPy operation (so mono + RGB works
+      without surprise).</li>
+  <li>Overrides <code>__invert__</code> to compute
+      <code>1&nbsp;&minus;&nbsp;x</code> instead of bitwise NOT.</li>
+  <li>Overrides <code>__xor__</code> to delegate to <code>__pow__</code>
+      so <code>^</code> means power. (NumPy bitwise XOR is still
+      available through <code>np.bitwise_xor</code>.)</li>
+  <li>Supports <code>__getitem__</code> for the channel-indexing syntax
+      with the mono-friendly fallback (&sect;&nbsp;4).</li>
+  <li>Sets <code>__array_priority__ = 10&nbsp;000</code> so NumPy defers
+      to the wrapper's dunder methods when the two interoperate.</li>
+</ul>
+
+<h3>14.2 Midtones Transfer Function</h3>
+<p>The classical PixInsight MTF, usable both as a tonal transform and as
+the engine behind Levels and Curves' midtones:</p>
+<div class="matheq-hero">\mathrm{mtf}(x,\,m) \;=\; \frac{(m - 1)\,x}{(2m - 1)\,x \;-\; m}</div>
+<p>with <code>m&nbsp;=&nbsp;0.5</code> giving the identity, lower values
+brightening midtones (shifting the mid-level up), higher values darkening
+them. Fixed points: <code>mtf(0,&nbsp;m)&nbsp;=&nbsp;0</code> and
+<code>mtf(1,&nbsp;m)&nbsp;=&nbsp;1</code>.</p>
+
+<h3>14.3 Sigmoid, smoothstep, lerp</h3>
+<p>Standard tone-shaping primitives:</p>
+<div class="matheq-hero">\mathrm{sigmoid}(x,\,k,\,m) \;=\; \frac{1}{1 \;+\; \exp\!\left(-k\,(x - m)\right)}</div>
+<div class="matheq-hero">\mathrm{smoothstep}(e_0,\,e_1,\,x) \;=\; t^2(3 - 2t)\,,\qquad t = \mathrm{clip}\!\left(\frac{x - e_0}{e_1 - e_0},\;0,\;1\right)</div>
+<div class="matheq">\mathrm{lerp}(a,\,b,\,t) \;=\; (1 - t)\,a \;+\; t\,b</div>
+<p>Sigmoid is the logistic function: smooth S-curve with centre
+<code>m</code> and slope <code>k</code> at the centre. Smoothstep is a
+cubic ramp with zero derivatives at both endpoints &mdash; the standard
+no-visible-transition weight function. Lerp is just the linear blend.</p>
+
+<h3>14.4 Rec. 709 LRGB recombination</h3>
+<p>Classical LRGB combines a sharp mono L with a soft RGB C so the
+result has L's luminance and C's chroma. The implementation computes
+Rec. 709 luma of the current RGB:</p>
+<div class="matheq">Y(\mathrm{rgb}) \;=\; 0.2126\,R \;+\; 0.7152\,G \;+\; 0.0722\,B</div>
+<p>then rescales every channel uniformly by the ratio of target to
+source luminance:</p>
+<div class="matheq-hero">\mathrm{rgb}' \;=\; \mathrm{rgb} \,\cdot\, \frac{L_{\mathrm{new}}}{Y(\mathrm{rgb}) + \varepsilon}</div>
+<p>which preserves the R:G:B ratios of each pixel (so hue and saturation
+are unchanged) and only shifts overall brightness. The
+<code>&epsilon;</code> floor avoids division by zero on pure-black
+pixels. The result is optionally clipped to [0, 1] (parameter
+<code>clip=True</code> by default); turn clipping off if you want to
+preserve above-unity excess for further processing. Alpha channels
+pass through untouched.</p>
+
+<h3>14.5 Reducer broadcast shapes</h3>
+<p>Reducers return the smallest broadcastable representation of their
+result:</p>
+<div class="matheq-hero">\mathrm{med}(X) \;:\; (H, W, C) \;\longmapsto\; (1, 1, C)</div>
+<p>which still broadcasts identically to the full-size tiled output you
+would get from <code>np.full_like(x, med(x))</code>, but a 4000&times;6000
+RGB median drops from ~288&nbsp;MB of memory to 12 bytes. For mono input,
+the result is a plain Python float.</p>
+
+<h3>14.6 Unsharp mask</h3>
+<div class="matheq-hero">\mathrm{unsharp}(x,\,\sigma,\,a) \;=\; x \;+\; a\,(x - G_{\sigma}(x))</div>
+<p>Classical form: subtract the Gaussian-blurred image from itself to
+isolate detail above spatial scale &sigma;, add it back scaled by
+<code>a</code>. The result is clipped to [0, 1].</p>
+
+<h3>14.7 Normalisation primitives</h3>
+<div class="matheq">\mathrm{normalize01}(x) \;=\; \frac{x - \min_c(x)}{\max_c(x) - \min_c(x)}</div>
+<div class="matheq">\mathrm{zscore}(x) \;=\; \frac{x - \mu_c(x)}{\sigma_c(x)}</div>
+<p>Both operate per-channel on RGB inputs (<code>min<sub>c</sub></code>,
+<code>&mu;<sub>c</sub></code>, etc. means per-channel). Not clipped by
+default &mdash; <code>zscore</code> in particular will produce values
+outside [0, 1] and typically needs <code>sigmoid</code> or
+<code>clamp</code> downstream.</p>
+
+<h3>14.8 Rescale</h3>
+<div class="matheq-hero">\mathrm{rescale}(x,\,a,\,b,\,l,\,h) \;=\; l \;+\; (h - l)\,\frac{x - a}{b - a}</div>
+<p>Linear re-mapping. Extrapolates outside <code>[a,&nbsp;b]</code>;
+wrap in <code>clamp</code> for hard bounds. Useful for display
+calibration (<code>rescale(x,&nbsp;0.1,&nbsp;0.9,&nbsp;0,&nbsp;1)</code>
+stretches the 0.1&ndash;0.9 range of the input to full dynamic range).</p>
+
+<h3>14.9 Expression safety</h3>
+<p>User expressions run in a namespace with <code>__builtins__</code>
+explicitly set to <code>None</code>, so <code>open</code>,
+<code>__import__</code>, <code>exec</code>, and the rest of the standard
+library are not reachable. Only the functions in &sect;&nbsp;10, the
+variables in &sect;&nbsp;3, and the mapped view identifiers are available.
+This is a soft sandbox &mdash; sufficient to prevent accidental damage,
+not a hard security boundary &mdash; so don't paste arbitrary expressions
+from untrusted sources.</p>
+
+<h3>14.10 Mono vs RGB result handling</h3>
+<p>In Single mode on a mono source, if your expression returns an RGB
+array whose three channels are identical (to float32 tolerance), the
+result is collapsed back to mono. If the three channels differ (you
+explicitly built an RGB from a mono source), the mono source gets
+promoted to RGB and the output is RGB &mdash; so <code>compose(L, L, L)
++ small_perturbation</code> on a mono L correctly produces an RGB
+output.</p>
+
+<p>In Separate mode on any source, each per-channel expression must
+produce a 2-D plane. If an expression returns an RGB array, the matching
+channel is auto-selected (the R tab takes <code>[0]</code>, G takes
+<code>[1]</code>, B takes <code>[2]</code>).</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>Midtones Transfer Function</b> is Pleiades
+Astrophoto's PixInsight formulation; the family of M&ouml;bius-style
+tonal curves it belongs to is classical. <b>Rec. 709 luminance
+coefficients</b> are from ITU-R Recommendation BT.709.
+<b>Sigmoid</b>, <b>smoothstep</b>, and <b>lerp</b> are standard
+shader-language primitives (OpenGL / GLSL / HLSL). <b>Unsharp mask</b>
+is a classical darkroom photographic technique formalised digitally in
+the 1980s. The <b>Gaussian</b>, <b>box</b>, and <b>median</b> blur
+kernels come from <b>OpenCV</b> when available, with pure-NumPy
+fallbacks. SASpro's own contributions are the <code>PixelImage</code>
+wrapper with its mono/RGB broadcasting rules, the mono-friendly
+channel-indexing fallback, the per-channel reducer broadcast shapes,
+the Rec. 709 <code>lumarecom</code> helper with its hue-preserving
+scale factor, the active-view / open-views variable namespace with
+title-to-identifier rewriting, the multiline expression evaluator, the
+non-destructive auto-stretch preview, the examples / favorites /
+glossary dialogs, and the per-document mask integration.
+</div>
+
+</body>
+</html>

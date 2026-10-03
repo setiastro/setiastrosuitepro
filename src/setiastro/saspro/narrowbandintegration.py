@@ -26,6 +26,7 @@ except Exception:
         btn.setFixedSize(28, 28)
         return btn
 
+from setiastro.saspro.help_support import make_help_button
 
 # ---------------------------------------------------------------------------
 # Wavelength → approximate HSV hue (degrees)
@@ -849,6 +850,12 @@ class NarrowbandIntegrationDialog(QDialog):
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_apply_new)
         btn_row.addWidget(self.btn_reset)
+
+        # In-tool documentation button, flush right of Reset
+        btn_row.addStretch(1)
+        self.btn_help = make_help_button("narrowband_integration", self)
+        btn_row.addWidget(self.btn_help)
+
         left_outer.addLayout(btn_row)
 
         # ── RIGHT PANE ─────────────────────────────────────────────────────

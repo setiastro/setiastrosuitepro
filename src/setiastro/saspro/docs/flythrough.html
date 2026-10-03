@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Nebula Flythrough</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>Nebula Flythrough</h1>
+<p class="sub">Turn one still astro image into a cinematic MP4 flythrough — no video software required.</p>
+
+<div class="pub">
+<b>Video software for people who don't want to learn video software.</b> This tool takes your starless and stars images, animates a zoom-and-pan "camera" through them, composites them with blend modes, applies motion effects like warp-speed streaks, chromatic aberration, and depth parallax, and exports a finished MP4. No DaVinci Resolve, no Filmora, no After Effects, no keyframe timelines — three panels of controls and a Preview window. GPU-accelerated when a GPU is available, falls back to CPU otherwise.
+</div>
+
+<h2>1. What the tool does</h2>
+
+<p>You give it between one and three images (starless is required, mid layer is optional, stars layer is optional). For each layer you configure a "camera move" — where the camera starts, where it ends, how fast it zooms, how it eases between the two. On export, the tool renders every frame at your target resolution and FPS, composites the layers together, and writes an MP4.</p>
+
+<p>Because each layer can have its own zoom speed, you get parallax for free: zoom the starless layer from 1× to 6× and the stars layer from 1× to 4×, and the stars appear to drift <i>behind</i> the nebula as you fly through it. Add the "Nebula depth warp" effect and bright structures actually come forward on the Z axis.</p>
+
+<h2>2. The three-layer system</h2>
+
+<table>
+<tr><th>Layer</th><th>What it is</th><th>Where it sits</th></tr>
+<tr><td><b>Starless</b> (required)</td><td>Your nebula image with stars removed. Usually from GraXpert, StarXTerminator, or the SASpro Remove Stars tool.</td><td>Bottom. The base of the composite.</td></tr>
+<tr><td><b>Mid</b> (optional)</td><td>Any extra image you want blended in — a narrowband channel, a different stretch of the same data, a second nebula, text overlay, anything.</td><td>Middle. Composited over the starless layer using the Blend mode and Opacity you pick.</td></tr>
+<tr><td><b>Stars</b> (optional)</td><td>The stars-only output from your star removal step.</td><td>Top. Composited over the mid+starless result, usually using Screen so stars glow through.</td></tr>
+</table>
+
+<p>Each layer has independent zoom, center, easing, lens effects, blend mode, and opacity. The compositing order is fixed:</p>
+
+<div class="eq">base   = blend( starless, mid, mid_blend, mid_opacity )
+final  = blend( base, stars, stars_blend, stars_opacity )</div>
+
+<h2>3. Common workflow</h2>
+
+<ol>
+  <li><b>Prepare your images in SASpro.</b> Open your fully-processed nebula shot, then run a star-removal step (Remove Stars tool) to produce a starless view and a stars-only view. Both now exist as docs in SASpro.</li>
+  <li><b>Open Nebula Flythrough</b> from the Tools menu.</li>
+  <li><b>Pick sources</b> for each layer from the three Source dropdowns. Starless is required; Mid is "-- none --" by default; Stars is "-- select --".</li>
+  <li><b>Set the camera for the starless layer</b>: Zoom start 1.0, Zoom end 6.0 is a reliable "fly in" setting. Click a point on the picker image to set the Start center, then click somewhere else for the End center (or just leave both at 0.5).</li>
+  <li><b>Set the camera for the stars layer</b>: usually a slower zoom (e.g. 1.0 to 3.0) and the same center points. The zoom difference creates parallax.</li>
+  <li><b>Set the output size, FPS, and duration</b> in the Output panel. 1920×1080 at 30 fps for 10 s is a solid default (300 frames).</li>
+  <li><b>Scrub the preview slider</b> to inspect intermediate frames. Hit Play Preview to see the whole motion at low res.</li>
+  <li><b>Enable effects</b> as desired: Nebula depth warp for 3D feel, Zoom blur for warp speed, Chromatic aberration for sci-fi vibe.</li>
+  <li><b>Click Export Video...</b> and pick an MP4 destination. The tool renders at full source resolution (not the working preview resolution) and shows per-frame progress.</li>
+</ol>
+
+<h2>4. Camera controls per layer</h2>
+
+<div class="keys">
+<b>Each layer panel has the same core controls.</b>
+<br><b>Zoom x: Start / End</b> — zoom factor at t=0 and t=1. 1.0 means "fit the frame to source"; higher values zoom in. Range 1.0 to 50.0.
+<br><b>center start / end</b> — fractional image coordinates (0.0 to 1.0) for the zoom center at t=0 and t=1. Panning is implicit: if start center = end center, the camera stays locked and only zooms. If they differ, the camera pans.
+<br><b>Easing</b> — Linear, Ease In (slow start, fast end), Ease Out (fast start, slow end), Ease In-Out (slow both ends, fast middle — most cinematic).
+<br><b>Pick Start / End center</b> — click one of these buttons, then click a point on the big preview image on the left to set that center. Right-click the picker to cancel. Only one layer at a time can be in "pick mode"; selecting another layer's pick button cancels the current one.
+<br><b>Blend mode</b> (mid and stars) — how this layer combines with the layers beneath. Screen is the default for stars; Soft Light / Overlay are nice for mid.
+<br><b>Opacity</b> (mid and stars) — 0.0 to 1.0 blend of this layer into the composite.
+</div>
+
+<h2>5. Lens effects</h2>
+
+<p>Each layer has an identical "Lens Effects" box with four optional effects, plus a master "Ramp effects with zoom" checkbox that controls when they kick in.</p>
+
+<table>
+<tr><th>Effect</th><th>What it does</th><th>Good for</th></tr>
+<tr><td><b>Nebula depth warp</b></td><td>Treats image luminance as a 3D height field and shifts bright pixels toward you as you zoom. Includes separate Depth blur (smooth the heightmap) and Invert depth (dark = closer) controls.</td><td>Any nebula where the bright structures should feel "in front of" the dim backdrop. Dusty structures become visibly volumetric.</td></tr>
+<tr><td><b>Radial edge stretch</b></td><td>Pincushion / barrel distortion. Positive values stretch the edges outward; negative values compress them inward.</td><td>Fisheye-ish immersion, exaggerating the "flying through a tunnel" sensation.</td></tr>
+<tr><td><b>Zoom blur</b></td><td>Multi-sample streaking along the radial direction from the zoom center.</td><td>Warp-speed stars. Pair with high zoom and Ease In for a dramatic acceleration.</td></tr>
+<tr><td><b>Chromatic aberration</b></td><td>Shifts the red channel inward and blue channel outward, each by a few percent per unit strength.</td><td>Sci-fi aesthetic, lens-realism look, "cheap telescope" feel. Subtle values (0.1-0.3) sell it; higher is comic-book.</td></tr>
+</table>
+
+<div class="tip">
+<b>Ramp effects with zoom.</b> With this checkbox on (default), the effects scale with the <i>velocity</i> of the camera's zoom, not the elapsed time. So an effect at full strength only hits when the camera is at its fastest point — meaning Ease In-Out gives you a lovely accelerate-then-decelerate warp arc, while Linear keeps the effect pinned at the strength you dialed in. Turn this off if you want the effect at constant strength throughout.
+</div>
+
+<h2>6. Blend modes</h2>
+
+<p>Twelve blend modes are available for the mid and stars layers:</p>
+
+<table>
+<tr><th>Mode</th><th>When to use</th></tr>
+<tr><td><b>Screen</b></td><td>Default for the stars layer. Preserves star brightness, invisible on black backgrounds. Also good for additive glow effects on mid.</td></tr>
+<tr><td><b>Add</b></td><td>Harder than Screen — can blow out highlights. Use for intentionally burning in a layer.</td></tr>
+<tr><td><b>Average</b></td><td>Simple arithmetic mean. A gentle 50/50 blend.</td></tr>
+<tr><td><b>Max / Lighten</b></td><td>Keep the brighter pixel per channel. Alternative to Screen for stars.</td></tr>
+<tr><td><b>Multiply</b></td><td>Darken-only. Good for burning in dust lanes or shadow layers.</td></tr>
+<tr><td><b>Overlay</b></td><td>Contrast boost — multiplies darks, screens lights. Classic "pop" blend for mid.</td></tr>
+<tr><td><b>Soft Light</b></td><td>Gentle contrast boost. Pleasant for subtle enhancements.</td></tr>
+<tr><td><b>Hard Light</b></td><td>Aggressive contrast boost — like Overlay but condition is on the top layer.</td></tr>
+<tr><td><b>Difference</b></td><td>Shows where layers disagree. Useful for debugging alignment, less for aesthetics.</td></tr>
+<tr><td><b>Color Dodge</b></td><td>Brightens based on top layer. Very intense; use sparingly.</td></tr>
+<tr><td><b>Darken</b></td><td>Keep the darker pixel per channel.</td></tr>
+<tr><td><b>Threshold Mask</b></td><td>Pixels brighter than Threshold sit on top of the base; dimmer pixels are transparent. Great for using stars as a cutout. Threshold and Feather sliders appear when this mode is selected.</td></tr>
+</table>
+
+<h2>7. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Classic nebula flythrough with parallax.</b> Starless zoom 1 → 6, Stars zoom 1 → 3.5, both centered on the same bright region. Easing: Ease In-Out. Stars blend: Screen. Duration 12 s at 30 fps. The 1.7× zoom gap between layers creates genuine parallax — stars appear to drift behind the nebula as you dive in.
+</div>
+
+<div class="workflow">
+<b>Warp-speed hyperdrive.</b> Starless zoom 1 → 30 (yes, really), Stars zoom 1 → 20, both centered on the same point. Easing: Ease In (slow start, violent acceleration). Enable Zoom blur on both at ~0.6 strength and Chromatic aberration at ~0.3. Enable "Ramp effects with zoom" so the streaks only appear once the camera starts moving fast. Duration 5-8 s. The Star Wars jump to hyperspace, built from your Orion image.
+</div>
+
+<div class="workflow">
+<b>Volumetric nebula with depth warp.</b> Starless layer only (or very low-opacity stars). Enable Nebula depth warp at strength 0.5, depth blur 10, inverted off (so bright = closer). Zoom 1 → 4 slow Ease In-Out. The bright structures of the nebula actually come forward relative to the background during the zoom — adds a strong 3D feel without needing a stereo pair.
+</div>
+
+<div class="workflow">
+<b>Three-layer comparison video.</b> Starless on bottom, your Ha-OIII-SII palette on the mid layer (blend: Overlay at 0.5 opacity), stars on top (Screen at 1.0). As you zoom in, you reveal both the palette and the stars at once. Great for before/after storytelling.
+</div>
+
+<div class="workflow">
+<b>Stars-as-cutout effect.</b> Mid layer = a nebulosity image (perhaps a different band or a more aggressive stretch); Stars blend set to Threshold Mask with threshold 0.15 and feather 0.08. Where the stars are bright, they punch through to the mid layer underneath; everywhere else the base nebula shows through. Produces a dreamy "stars twinkling through dust" look.
+</div>
+
+<div class="workflow">
+<b>Slow drift reveal.</b> Both layers at zoom 1.5 → 2.0 (barely any zoom), with Start center at one point and End center at a different point. Easing: Linear. Duration 20 s. This is a gentle pan across your image, revealing it slowly — perfect for YouTube video intros or background B-roll in observing videos. Add light depth warp (0.2) for subtle motion.
+</div>
+
+<div class="workflow">
+<b>Opening or closing a video with zoom-out from constellation.</b> Starless and Stars at zoom 10 → 1 (zoom <i>out</i>), centered on the brightest nebula region. Easing: Ease Out. Starts tight on a nebula, pulls back to reveal the full constellation / wide field over 8-10 s. Classic documentary intro-opening shot.
+</div>
+
+<h2>8. Preview vs. export resolution</h2>
+
+<p>The <b>Working res</b> dropdown (in the Output panel) controls the resolution used for the live preview — SD, HD, 2K, 4K, or Full. Smaller working resolutions make the preview more responsive and depth-map calculations faster, especially for very large source images.</p>
+
+<div class="warn">
+<b>Export always uses full source resolution.</b> The working resolution only affects the on-screen preview. When you hit Export, the renderer reaches back to the original full-size images and crops from them, so a 32 megapixel source produces 32-megapixel-fidelity crops regardless of your working-res pick. This means a flythrough at 1920×1080 output stays sharp even at 10× zoom — the pixels are drawn from the original data, not from a downsampled copy.
+</div>
+
+<h2>9. GPU vs. CPU rendering</h2>
+
+<p>If PyTorch is installed and a CUDA GPU or Apple Silicon MPS device is available, rendering runs on the GPU automatically. The status line during export shows <code>[GPU]</code> or <code>[CPU]</code> per frame so you can confirm which backend is active. The pipeline silently falls back to CPU if GPU rendering fails on any frame — your render will finish either way, just slower on CPU for high resolutions.</p>
+
+<p>Typical speedup from GPU: 5-15× on a modern discrete card, 3-5× on Apple Silicon. For a 10-second 1080p30 render (300 frames), that's the difference between coffee-break and an entire movie.</p>
+
+<h2>10. Technical details</h2>
+<p class="tech-lead">The easing curves, the torus-wrapped zoom crop, the depth-aware parallax, the blend-mode math, the motion-coupled effect ramp, and the GPU grid-sample pipeline.</p>
+
+<h3>10.1 Easing functions</h3>
+
+<p>Four easing curves map normalized time t ∈ [0, 1] to an eased t ∈ [0, 1]:</p>
+
+<div class="matheq">\text{Linear: } f(t) = t</div>
+<div class="matheq">\text{Ease In: } f(t) = t^3</div>
+<div class="matheq">\text{Ease Out: } f(t) = 1 - (1 - t)^3</div>
+<div class="matheq">\text{Ease In-Out: } f(t) = 4t^3 \text{ for } t < 0.5, \quad f(t) = 1 - \frac{(2 - 2t)^3}{2} \text{ for } t \geq 0.5</div>
+
+<p>Each layer picks its own curve independently — a common technique is Ease In for the starless layer and Linear for the stars layer, which makes the nebula accelerate forward while the starfield slides past at constant speed, selling parallax more strongly.</p>
+
+<h3>10.2 Zoom crop with torus wrap</h3>
+
+<p>Given a zoom factor z and center (c<sub>x</sub>, c<sub>y</sub>) in fractional image coordinates, the crop window dimensions are:</p>
+
+<div class="matheq">W_{\mathrm{crop}} = W / z, \quad H_{\mathrm{crop}} = H / z</div>
+
+<p>The window spans:</p>
+
+<div class="matheq">x \in [c_x - W_{\mathrm{crop}}/2, \; c_x + W_{\mathrm{crop}}/2]</div>
+
+<p>and samples are taken on a regular grid interpolated into an output of size (out_h, out_w). When the crop window extends beyond the image boundary — common at high zoom near the edge — the coordinates wrap modulo (W, H):</p>
+
+<div class="matheq">x_{\mathrm{src}} = x \; \mathrm{mod} \; W, \quad y_{\mathrm{src}} = y \; \mathrm{mod} \; H</div>
+
+<p>This is a <b>torus wrap</b> boundary mode — the image is treated as a seamlessly tileable texture. Unlike reflect or clamp modes, it never produces visible edge streaks or mirror reflections at the frame boundary, which was a visual flaw of earlier approaches. OpenCV's <code>cv2.remap</code> with <code>BORDER_WRAP</code> handles this on the CPU path; on GPU, normalized coordinates are folded with a custom modulo on [-1, 1].</p>
+
+<h3>10.3 Depth-aware parallax zoom</h3>
+
+<p>With Nebula depth warp enabled, each output pixel's source location is perturbed radially based on local luminance. The pipeline:</p>
+
+<ol>
+  <li>Build a depth map from the source: luminance Y = 0.299R + 0.587G + 0.114B, Gaussian-blurred by σ (default 8 px) to avoid noise, optionally inverted (dark = closer), then normalized to [0, 1].</li>
+  <li>For each output pixel (u, v) in normalized grid coordinates u, v ∈ [-0.5, 0.5], compute the base source location (x₀, y₀) using the zoom crop math above.</li>
+  <li>Compute the radial direction from the zoom center:
+    <div class="matheq">(n_x, n_y) = \left(\frac{dx}{\sqrt{dx^2 + dy^2}}, \frac{dy}{\sqrt{dx^2 + dy^2}}\right)</div>
+    where (dx, dy) = (u · W<sub>crop</sub>, v · H<sub>crop</sub>).</li>
+  <li>Sample the depth map at the base source location to get d, and center around 0.5:
+    <div class="matheq">d_c = d - 0.5</div>
+  </li>
+  <li>Compute the parallax shift in pixels, scaled by both the user strength s<sub>d</sub> and the current zoom:
+    <div class="matheq">p = d_c \cdot s_d \cdot (z - 1) \cdot 2</div>
+    The (z - 1) factor means parallax activates only during zoom — at z = 1 (fit to frame), the effect contributes nothing. The factor of 2 is a visual calibration constant.
+  </li>
+  <li>Apply the shift radially:
+    <div class="matheq">(x_s, y_s) = (x_0 - n_x p, \; y_0 - n_y p)</div>
+    Bright regions (d &gt; 0.5) move toward the camera center as you zoom in, appearing closer; dark regions move outward, appearing further.
+  </li>
+  <li>Sample the source image at (x<sub>s</sub>, y<sub>s</sub>) with torus wrap.</li>
+</ol>
+
+<p>The result is per-pixel differential zoom — the nebula's brightest arcs lean forward during the fly-in, dust lanes recede, all without a true 3D model.</p>
+
+<h3>10.4 Blend-mode math</h3>
+
+<p>All blend modes operate pixelwise, per channel, on float32 values in [0, 1]. a is the base (lower) layer, b is the layer being blended on top:</p>
+
+<div class="matheq">\mathrm{Screen}(a, b) = 1 - (1 - a)(1 - b)</div>
+<div class="matheq">\mathrm{Add}(a, b) = \mathrm{clip}(a + b, 0, 1)</div>
+<div class="matheq">\mathrm{Multiply}(a, b) = a \cdot b</div>
+<div class="matheq">\mathrm{Overlay} = 2ab \text{ if } a < 0.5, \text{ else } 1 - 2(1-a)(1-b)</div>
+<div class="matheq">\mathrm{SoftLight}(a, b) = (1 - 2b)\,a^2 + 2ab</div>
+<div class="matheq">\mathrm{Difference}(a, b) = |a - b|</div>
+<div class="matheq">\mathrm{ColorDodge}(a, b) = \min\left(\frac{a}{1 - b}, 1\right)</div>
+
+<p>Hard Light swaps the condition in Overlay to test <i>b</i> &lt; 0.5 instead of <i>a</i>. Max/Lighten take <code>max(a, b)</code>; Darken takes <code>min(a, b)</code>; Average is <code>(a + b)/2</code>. The Soft Light formula is the Pegtop variant — simpler and more stable than the Photoshop recipe, and visually indistinguishable for typical use.</p>
+
+<p>After the blend, opacity α interpolates between base and blended:</p>
+
+<div class="matheq">\mathrm{out} = a + \alpha \cdot (\mathrm{blend}(a,b) - a)</div>
+
+<h3>10.5 Threshold Mask (special blend mode)</h3>
+
+<p>Threshold Mask is an alpha composite rather than a pixelwise blend. Luminance of the top layer m drives a per-pixel alpha:</p>
+
+<div class="matheq">Y_m = 0.2126\, R_m + 0.7152\, G_m + 0.0722\, B_m</div>
+<div class="matheq">\alpha = \mathrm{clip}\!\left(\frac{Y_m - \tau}{\sigma}, 0, 1\right)</div>
+
+<p>where τ is the Threshold slider and σ is the Feather slider. The final result is a straight over-composite:</p>
+
+<div class="matheq">\mathrm{out} = a (1 - \alpha) + m \cdot \alpha</div>
+
+<p>This gives you a clean mask that fades smoothly within a σ-wide luminance band around τ. For a stars layer, setting τ ≈ 0.15 and σ ≈ 0.08 makes the stars sit cleanly on top of the base while the dark gaps between stars reveal the layers beneath.</p>
+
+<h3>10.6 Radial edge stretch</h3>
+
+<p>For each pixel at offset (dx, dy) from the zoom center, with half-diagonal of the frame as the normalizing length, the normalized radius is:</p>
+
+<div class="matheq">r = \frac{\sqrt{dx^2 + dy^2}}{\mathrm{half\_diag}}</div>
+
+<p>and the source sample location becomes:</p>
+
+<div class="matheq">(x_s, y_s) = (x - dx \cdot k \cdot r^2, \; y - dy \cdot k \cdot r^2)</div>
+
+<p>where k is the strength slider. The r² factor means the center is unaffected while edges distort most — standard radial distortion. Positive k gives barrel distortion (edges pushed outward); negative k gives pincushion (edges pulled inward). Range of the strength slider is [-0.5, 0.5].</p>
+
+<h3>10.7 Zoom blur (warp-speed streaks)</h3>
+
+<p>Zoom blur is implemented as a multi-sample accumulation at progressive zoom levels. For N samples (default 12):</p>
+
+<div class="matheq">z_i = 1 + (z_{\max} - 1) \cdot \frac{i}{N - 1}</div>
+<div class="matheq">w_i = 1 - \frac{i}{N - 1} \cdot 0.6</div>
+
+<p>where z<sub>max</sub> = 1 + 0.25 · s. The samples are weighted so the undistorted (i=0) sample has weight 1 and the most-zoomed sample has weight 0.4, giving a trailing look rather than a smeared one. The weighted average is blended into the original image at blend factor 0.7 · s:</p>
+
+<div class="matheq">\mathrm{acc} = \frac{\sum_i w_i \cdot \mathrm{crop}_i}{\sum_i w_i}</div>
+<div class="matheq">\mathrm{out} = (1 - \beta) \cdot \mathrm{img} + \beta \cdot \mathrm{acc}, \quad \beta = 0.7 s</div>
+
+<p>Visually: stars become radial streaks pointing away from the zoom center, with the streak length controlled by the strength slider.</p>
+
+<h3>10.8 Chromatic aberration</h3>
+
+<p>Red and blue channels are independently zoomed with a small offset relative to green:</p>
+
+<div class="matheq">\Delta_{\max} = 0.03 \cdot s</div>
+<div class="matheq">z_R = 1 - \Delta_{\max}, \quad z_B = 1 + \Delta_{\max}</div>
+
+<p>Red zooms in (shifts inward toward center), blue zooms out (shifts outward toward edges). The green channel is left unchanged. This mimics the way real refractors with imperfect correction spread colors radially at the edges of the field, giving a lens-realism feel. At s = 1 (max slider), the shift is 3% — enough to see at the frame edges, invisible near center.</p>
+
+<h3>10.9 Motion-coupled effect ramp</h3>
+
+<p>With "Ramp effects with zoom" enabled, each effect's strength is modulated by the current <i>zoom velocity</i>, not by elapsed time. For eased time function f(t), the velocity at time t is approximated by a small central difference:</p>
+
+<div class="matheq">v(t) = \frac{f(t + \varepsilon) - f(t - \varepsilon)}{2\varepsilon}</div>
+
+<p>normalized to a visual ramp:</p>
+
+<div class="matheq">\mathrm{ramp}(t) = \mathrm{clip}\!\left(\frac{v(t)}{3}, 0, 1\right)</div>
+
+<p>with ε = 0.005. The effect strength the user set in the slider is then multiplied by ramp(t) before being applied. For an Ease In curve, v(0) ≈ 0 and v(1) is maximum — so chromatic aberration and zoom blur both ease in with the camera's acceleration. For Linear, v is constant and the effects stay pinned at their slider values. The divisor 3 is empirical: it means Ease In-Out and Linear end up at roughly the same peak effect strength despite having very different velocity curves.</p>
+
+<h3>10.10 Compositing order</h3>
+
+<p>The final frame is built in two steps:</p>
+
+<div class="matheq">\mathrm{base} = \mathrm{blend}(\mathrm{starless}, \mathrm{mid}, \mathrm{mode}, \alpha)</div>
+<div class="matheq">\mathrm{final} = \mathrm{blend}(\mathrm{base}, \mathrm{stars}, \mathrm{mode}, \alpha)</div>
+
+<p>When the mid layer is absent, step 1 is skipped and base = starless. When the stars layer is absent, step 2 is skipped and the final frame is base. The default stars blend is Screen with opacity 1.0, which reproduces the classic "stars-plus-nebula" composite you'd otherwise do manually.</p>
+
+<h3>10.11 GPU acceleration via grid_sample</h3>
+
+<p>When PyTorch is available with a CUDA or MPS backend, the zoom crop, radial stretch, zoom blur, chromatic aberration, and depth warp are all implemented via <code>torch.nn.functional.grid_sample</code> operating on NCHW tensors. The GPU-side torus wrap is implemented by folding normalized grid coordinates into [-1, 1]:</p>
+
+<div class="eq">def _wrap_norm_coords(coords):
+    return ((coords + 1.0) % 2.0) - 1.0</div>
+
+<p>which is equivalent to the modulo wrap in image space. The GPU path uses <code>padding_mode="zeros"</code> because the wrap already keeps all coordinates inside [-1, 1], so the zero-padding fallback is never actually triggered.</p>
+
+<p>Depth maps are uploaded once per render to a (1, 1, H, W) tensor, then sampled on-GPU each frame. Images are stored on-GPU as (1, 3, H, W) float32. Each layer composite is a Python function call that returns a tensor, so blend modes can chain without any CPU round-trip — only the final (1, 3, out_h, out_w) frame is pulled back to numpy and converted to BGR uint8 for the OpenCV MP4 writer.</p>
+
+<div class="credit">
+<b>Credits.</b> Nebula Flythrough — the three-layer compositor with mid-layer blend modes, the motion-coupled effect ramp, the torus-wrapped zoom crop, the luminance-driven depth-parallax warp, the warp-speed zoom blur, the Threshold Mask alpha-cutout mode, the preview-vs-export resolution system, and the unified CPU/GPU render pipeline — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to the community: OpenCV (<code>cv2.remap</code> with <code>BORDER_WRAP</code>, <code>cv2.VideoWriter</code> with mp4v FOURCC) for CPU warping and video output; PyTorch (<code>grid_sample</code>) for GPU warping with CUDA / MPS backends; the cubic easing curves (Ease In / Out / In-Out) are the standard animation-industry formulas; the Pegtop Soft Light formula is widely used as a more stable alternative to the Photoshop recipe; the Rec.709 luminance weights (0.2126, 0.7152, 0.0722) are the standard color-space constants; chromatic aberration via per-channel radial zoom is a classical lens-simulation approach.
+</div>
+
+</body>
+</html>

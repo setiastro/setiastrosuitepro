@@ -1517,6 +1517,10 @@ class SERStackerDialog(QDialog):
         row.addWidget(self.btn_stack)
         row.addWidget(self.btn_close)
 
+        # Help button
+        from setiastro.saspro.help_support import make_help_button
+        row.addWidget(make_help_button("planetary_stacker", self))
+
         left.addLayout(row, 0)
 
         # --- Progress ---
