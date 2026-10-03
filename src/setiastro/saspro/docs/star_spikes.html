@@ -1,0 +1,191 @@
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color:#e6e6e6; background:#1b1b1b; padding:10px 14px; line-height:1.45; }
+h1 { margin: 0 0 10px 0; font-size: 20px; color:#9ad; }
+h2 { margin-top: 16px; color:#cfd; font-size:16px; border-bottom:1px solid #333; padding-bottom:3px; }
+h3 { color:#9bd; margin-top:14px; margin-bottom:6px; font-size:14px; }
+code { background:#2a2a2a; padding:1px 4px; border-radius:3px; }
+.eq { background:#232323; border-left:3px solid #4caf50; padding:6px 10px; margin:6px 0; font-family:monospace; }
+.hero { background:#1f2a1f; border-left:3px solid #4caf50; padding:10px 12px; margin:10px 0; border-radius:3px; }
+.matheq { margin: 8px 14px; text-align:left; }
+.matheq-hero { margin: 10px 0; text-align:center; }
+.tip { background:#1f2a1f; border-left:3px solid #4caf50; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.warn { background:#2a241f; border-left:3px solid #c0892b; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.credit { background:#2a251c; border-left:3px solid #c7a24a; padding:8px 12px; margin:12px 0 6px 0; border-radius:3px; font-size:13px; color:#dcd3b8; }
+.keys { background:#1f2630; border-left:3px solid #4a9eff; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.workflow { background:#1f2630; border-left:3px solid #4a9eff; padding:8px 12px; margin:10px 0; border-radius:3px; }
+ul { margin: 6px 0 10px 0; padding-left:22px; }
+li { margin: 3px 0; }
+p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Diffraction Spikes</h1>
+
+<div class="hero">
+<b>The fun one.</b> Add synthetic diffraction spikes to the stars in an image — the dramatic X-pattern from a refractor's spider vanes, the hexagonal six-point burst from JWST, or whatever custom spider geometry you want to invent. This is a <b>real physics simulation</b>, not a cheap overlay: a pupil mask is built, Fourier-transformed to a PSF, color-separated across three wavelengths, and composited onto every detected star with per-star color and flux-dependent sizing. The result looks right because it <i>is</i> right — just borrowed from a telescope you don't own.
+</div>
+
+<p>Nothing in this tool is scientifically necessary — a star with no spikes is a more honest star. But a Trapezium with four long diamond-sharp spikes, or M42 given the full JWST hexagonal treatment, is a lot of fun to make, and the physics underneath makes it look convincing instead of pasted on.</p>
+
+<h2>1. What it does</h2>
+<p>Every real telescope produces diffraction spikes because <i>something</i> partially blocks the incoming light before it reaches the sensor. A Newtonian's spider vanes make four spikes. A three-vane spider makes six spikes (each vane produces two). JWST's segmented hexagonal primary plus support struts makes the signature six-point burst with secondary rays. The pattern you see is the Fourier transform of the pupil shape — that's the physics, and it's what this tool simulates.</p>
+<p>You give it a pupil (circular with vanes, or a JWST pupil image), it computes the PSF via FFT, and then at every detected star it places a scaled, color-weighted copy of that PSF on top of the existing stellar signal. Brighter stars get larger, more intense spikes; the star's own color biases the spike color; the three color channels each use a slightly different wavelength scaling so the spikes have the subtle red-outside / blue-inside chromatic edge you'd see in a real refractor.</p>
+
+<h2>2. The two pupil modes</h2>
+
+<h3>Circular with vanes (classic refractor / Newtonian look)</h3>
+<p>The default. You design a pupil directly:</p>
+<ul>
+<li><b>Pupil Radius</b> — the size of the aperture in the simulated pupil image (in pixels of the 1024×1024 pupil frame). Larger = sharper, longer spikes in the resulting PSF. Default 128.</li>
+<li><b>Obstruction</b> — fractional radius of the central obstruction (0.0 = refractor, 0.3 = typical SCT secondary, 0.5+ = reflector with large secondary). Doesn't produce spikes by itself but affects PSF ring structure. Default 0.2.</li>
+<li><b>Number of Vanes</b> — 2 to 8. Note: <b>N vanes make 2N spikes</b> (each vane produces a spike in both directions). 2 vanes = 4 spikes (classic Newtonian), 3 vanes = 6 spikes (common on larger reflectors), 4 vanes = 8 spikes.</li>
+<li><b>Vane Width</b> — how thick each vane is, in pixels of the pupil frame. Thicker vanes make brighter, more concentrated spikes. Default 4.0.</li>
+<li><b>Rotation (deg)</b> — rotates the vane pattern. Changes which direction the spikes point. Default 0.</li>
+</ul>
+
+<h3>JWST pupil (hexagonal segmented mirror)</h3>
+<p>Toggle the <code>Circular</code> button to <code>JWST</code> and the circular-pupil controls disappear. The tool loads an actual image of the JWST pupil (18 hexagonal mirror segments, secondary support struts, central hole) and uses it directly. The result is the famous six-point burst with the characteristic small secondary rays between the main spikes.</p>
+<p>Only <b>Rotation</b> remains active in this mode — it rotates the whole JWST pupil, which rotates all the spikes together.</p>
+
+<div class="tip">
+<b>Why "N vanes → 2N spikes".</b> A single straight vane is a line passing through the pupil. The Fourier transform of a line is another line, perpendicular to the first, extending <i>both ways</i> — one spike up, one spike down, from the same vane. So 2 vanes crossed at 90° give you a four-pointed star; 3 vanes at 60° give you six spikes; and so on. The in-tool "Aperture Help" button has a visual explainer.
+</div>
+
+<h2>3. Star Detection group</h2>
+<p>SEP (Source Extractor as Python) finds stars to spike:</p>
+<ul>
+<li><b>Flux Min</b> — minimum integrated star flux. Below this, no spike is drawn. Raise this to spike only the brightest stars (which is usually what looks best).</li>
+<li><b>Detection Threshold (σ)</b> — SEP sigma threshold above the measured background noise. Default 5.0. Raise for noisy images or dense fields.</li>
+</ul>
+
+<div class="warn">
+<b>The 1000-star guardrail.</b> If detection returns more than 1000 stars, a dialog pops up asking whether to raise the threshold (with a suggested value), continue anyway, or cancel. Spiking 5000 stars rarely looks good — the image turns into one giant interference pattern. Up to two auto-retries are allowed before the dialog gives up.
+</div>
+
+<h2>4. PSF &amp; Synthesis group</h2>
+<ul>
+<li><b>Spike Boost</b> — overall intensity multiplier applied to every spike. 1.0 is subtle, 1.5 is the default, 3.0+ is dramatic. The right value depends on how bright your stars already are.</li>
+<li><b>PSF Blur Sigma</b> — Gaussian blur applied to the simulated PSF, in pixels of the PSF image. Lower = sharper, pixel-crisp spikes; higher = softer, cinematic glow around the spikes. Default 2.0.</li>
+</ul>
+
+<h2>5. Preview, apply, and iterate</h2>
+<p>Press <b>Generate Spikes</b> to run detection and compositing. The result shows in the preview on the right (which has <b>Zoom In</b>, <b>Zoom Out</b>, and <b>Fit to Preview</b> controls — drag to pan). If you like it, press <b>Apply to Active Document</b> to commit it as a document edit (undoable from the history panel). If you don't, tweak settings and press Generate Spikes again.</p>
+<p>The dialog is non-modal — you can keep working elsewhere while it's open — and <b>Apply to Active Document</b> leaves the dialog open so you can iterate further on top of the result if you want layered effects (e.g., first pass with the circular pupil for the main spikes, second pass with a wider blur for atmospheric diffusion).</p>
+
+<h2>6. Mask protection</h2>
+<p>If the active document has an active mask, it's respected automatically: <b>white = apply spikes</b>, <b>black = protect the original</b>. Useful for keeping spikes off galaxies and nebulosity, or confining them to one quadrant of the field. The blend happens <i>after</i> the full spike synthesis — the un-masked region gets the fully-spiked result, the masked region gets the untouched input.</p>
+
+<div class="warn">
+<b>Protection semantics.</b> Mask value 1.0 (white) means "apply the effect here"; 0.0 (black) means "keep the original pixel." If your mask is inverted from what you want, use the mask's Invert operation before running Diffraction Spikes.
+</div>
+
+<h2>7. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Classic refractor look (two vanes, four long spikes).</b> Number of Vanes = 2, Vane Width = 4, Pupil Radius = 128, Obstruction = 0, Spike Boost = 1.5, PSF Blur Sigma = 2.0. This is the default and it gives you the clean four-point burst that looks right on nebulae and star clusters alike.
+</div>
+
+<div class="workflow">
+<b>Hexagonal six-point (JWST homage without the JWST pupil).</b> Number of Vanes = 3, Vane Width = 3, Rotation = 30°. Six spikes evenly spaced at 60° — the look of a large reflector with a three-vane spider. If you want the actual JWST signature with its secondary rays, use the JWST pupil mode instead.
+</div>
+
+<div class="workflow">
+<b>Full JWST treatment.</b> Toggle Circular → JWST, Rotation = 0, Spike Boost = 2.0, PSF Blur Sigma = 1.5. The six main spikes plus the smaller secondary rays between them, with the hexagonal segment-edge diffraction pattern around each star. Looks great on a bright Trapezium, Orion's belt stars, or any wide-field with a few dominant luminaries.
+</div>
+
+<div class="workflow">
+<b>Dense cluster — tasteful restraint.</b> Flux Min = 200, Detection Threshold = 8.0, Spike Boost = 1.2. Spiking every star in M11 or NGC 3532 ruins the cluster; raising flux and threshold limits spikes to the dozen brightest stars, which gives the field drama without turning it into a kaleidoscope.
+</div>
+
+<div class="workflow">
+<b>Many-vane spider (6 vanes, 12 spikes).</b> Number of Vanes = 6, Vane Width = 2 (thinner, since you have twelve of them to add up), Rotation = 15°, Spike Boost = 1.8. Not representative of any real telescope, but it looks like a snowflake and the physics simulation handles it just fine.
+</div>
+
+<div class="workflow">
+<b>Only the brightest.</b> Flux Min = 1000, Detection Threshold = 10.0. For an image where you want exactly one star to get the full treatment (a bright central star in a planetary nebula, or Vega in a wide field) and everything else untouched. Combine with a mask if you want finer control than flux-based selection gives you.
+</div>
+
+<h2>8. Credits</h2>
+<div class="credit">
+Diffraction Spikes was developed by Franklin Marek as part of <a href="https://setiastro.com">SetiAstro Suite</a>. The pupil-mask → FFT → PSF approach is a direct application of Fraunhofer diffraction theory; the three-wavelength chromatic rendering is a nod to the dispersion visible in real refractor spikes. The JWST pupil image is from NASA's publicly released JWST documentation. Star detection uses <b>SEP</b> (Barbary 2016; implementation of Source Extractor, Bertin &amp; Arnouts 1996). Image processing uses <b>scipy.ndimage</b> and (when available) <b>OpenCV</b> for the critical fast paths.
+</div>
+
+<h2 style="margin-top:28px;">Technical details</h2>
+
+<h3>9.1. The pupil mask (circular)</h3>
+<p>The pupil is a 1024×1024 image built from an aperture (circle of radius R), an optional central obstruction (circle of radius Rε blocked out), and N vane strips passing through the center at evenly spaced angles.</p>
+<div class="matheq">P(x,y) = \mathbb{1}\{r \leq R\} \cdot \mathbb{1}\{r \geq R \cdot \varepsilon\}</div>
+<div class="matheq">r = \sqrt{x^2 + y^2}</div>
+<p>where ε is the obstruction fraction and the coordinates (x, y) are measured from the pupil-image center. For each vane k, pixels within distance w (vane width in pixels) of the line through the origin at angle θ_k are set to zero:</p>
+<div class="matheq">V_k(x,y) = \mathbb{1}\{|x \cos\theta_k + y \sin\theta_k| < w\}</div>
+<div class="matheq">\theta_k = \phi + k \cdot \pi / N, \quad k = 0, 1, \dots, N-1</div>
+<p>where φ is the user-set rotation angle in radians. The final pupil is <code>P</code> with every <code>V_k</code> region zeroed out. Note the angles span [0, π) rather than [0, 2π) — this is the "N vanes → 2N spikes" fact at the implementation level: a single vane is already a line passing through the center in <i>both</i> directions, so you only need to place N of them to get 2N spikes.</p>
+
+<h3>9.2. The pupil mask (JWST mode)</h3>
+<p>If JWST mode is active, the pupil is loaded directly from a PNG file (shipped with the application): the 18 hexagonal primary-mirror segments, the secondary mirror obscuration, and the three secondary support struts, all in their correct geometric arrangement. The image is loaded as grayscale, normalized to [0, 1], and resized to 1024×1024. Rotation is applied via <code>cv2.warpAffine</code> with an affine rotation matrix. All other pupil controls (radius, obstruction, vane count/width) are hidden because the pupil geometry is fixed by the image.</p>
+
+<h3>9.3. Fraunhofer diffraction → PSF</h3>
+<p>Under the Fraunhofer (far-field) approximation, the amplitude point spread function at the image plane is the Fourier transform of the pupil function, and the intensity PSF is its squared magnitude. The implementation first applies a small Gaussian blur to the pupil (to tame aliasing from the discretization) and then takes the squared magnitude of the shifted FFT:</p>
+<div class="matheq-hero">\mathrm{PSF}(k_x, k_y) = |\mathcal{F}\{G_\sigma \ast P\}(k_x, k_y)|^2</div>
+<p>followed by a normalization pass:</p>
+<div class="matheq">\widetilde{\mathrm{PSF}} = \mathrm{PSF} / \max(\mathrm{PSF})</div>
+<p>and then a user-tunable Gaussian blur (the <b>PSF Blur Sigma</b> control) applied to the resulting intensity to soften pixel edges in the spike pattern. Both blur steps use <code>cv2.GaussianBlur</code> when OpenCV is available, falling back to <code>scipy.ndimage.gaussian_filter</code> otherwise.</p>
+
+<h3>9.4. Three-wavelength chromatic rendering</h3>
+<p>Real diffraction spikes are chromatic — the PSF scales linearly with wavelength, so red light produces a slightly larger diffraction pattern than blue. The tool models this by computing three separate PSFs with wavelength scale factors:</p>
+<div class="matheq-hero">\lambda_R / \lambda_G = 1.15, \quad \lambda_B / \lambda_G = 0.85</div>
+<p>Implementation-wise, each channel's PSF is computed, then the final intensity map is resampled by the channel's wavelength scale factor:</p>
+<div class="matheq">\mathrm{PSF}_c(x, y) = \mathrm{PSF}(x / s_c, y / s_c)</div>
+<p>where s_c is the wavelength scale for channel c (1.15, 1.00, or 0.85). Longer-wavelength (red) PSFs are physically larger; shorter-wavelength (blue) PSFs are smaller and more concentrated. When the three channels are recombined, this gives the characteristic red-fringe-outside / blue-core-inside look that real refractor spikes have.</p>
+
+<h3>9.5. Star detection with SEP</h3>
+<p>Detection uses SEP's background estimator and extractor against a <b>luminance proxy</b> computed from an un-stretched version of the image. The un-stretch applies the midtones transfer function (next section) with m = 0.95 to approximate the original linear data:</p>
+<div class="matheq">L = 0.2126\, R + 0.7152\, G + 0.0722\, B</div>
+<p>This is the Rec. 709 luminance weighting. SEP runs on L with the user-configured <b>Detection Threshold (σ)</b> above <code>bkg.globalrms</code>. Detected objects are filtered by flux and shape:</p>
+<ul>
+<li>Flux ≥ <code>flux_min</code> (user control)</li>
+<li>max(a, b) ≥ 1.0 (where a, b are the SEP semi-axes) — rejects single-pixel detections that are usually noise</li>
+</ul>
+<p>Each surviving object contributes a tuple (x, y, flux, a, b) to the star list used in the compositing stage.</p>
+
+<h3>9.6. Midtones transfer function</h3>
+<p>Astronomical data lives in linear space, but display requires stretching. The midtones transfer function M(x, m) is applied twice in this tool — once with m = 0.95 to <i>un-stretch</i> the input for detection and compositing (so star fluxes make sense), and once with m = 0.05 at the end to <i>re-stretch</i> the result for display:</p>
+<div class="matheq-hero">M(x, m) = \frac{(m - 1) \cdot x}{(2m - 1) \cdot x - m}</div>
+<p>with the limiting cases M(0, m) = 0, M(1, m) = 1, and M(m, m) = 0.5 handled explicitly to avoid division by zero. The m = 0.95 pass flattens the display stretch so SEP sees star fluxes that reflect their actual relative brightness; the m = 0.05 pass re-applies a conventional display stretch to the spiked result.</p>
+
+<h3>9.7. Per-star color sampling</h3>
+<p>For each detected star, the tool samples a small patch around the star's position (default radius 3 pixels, so a 7×7 window) and computes the per-channel mean color. The channel means are normalized by the maximum so the brightest channel always has ratio 1.0:</p>
+<div class="matheq">(r, g, b) = (\bar{R}, \bar{G}, \bar{B}) / \max(\bar{R}, \bar{G}, \bar{B})</div>
+<p>A red star gets (1.0, ~0.6, ~0.4); a blue star gets (~0.4, ~0.7, 1.0). These ratios multiply the corresponding channel PSFs, so the synthetic spikes inherit the star's color — red giants get red spikes, hot blue stars get blue spikes, white stars get neutral ones. For monochrome input, all ratios are 1.0 and the spikes come out neutral.</p>
+
+<h3>9.8. Brightness, boost, and shrink</h3>
+<p>The intensity and size of each star's spike depend on its flux. The intensity (brightness) scales logarithmically with flux and is clamped to a reasonable range:</p>
+<div class="matheq">\beta = \mathrm{clip}(\log(1 + f) / 8,\; 0.1,\; 3.0)</div>
+<p>The size and brightness are then interpolated via a normalized flux coordinate α (linear in flux, clipped at flux_min and flux_max):</p>
+<div class="matheq">\alpha = (f - f_{\min}) / (f_{\max} - f_{\min})</div>
+<div class="matheq">B_{\mathrm{scale}} = b_{\min} + \alpha \cdot (b_{\max} - b_{\min})</div>
+<div class="matheq">S_{\mathrm{factor}} = s_{\max} - \alpha \cdot (s_{\max} - s_{\min})</div>
+<p>Note the inversion: B_scale grows with flux (brighter stars get a bigger intensity multiplier), while S_factor <i>shrinks</i> with flux (brighter stars get a smaller "shrink", which means the PSF tile is resampled larger — bigger spikes). The defaults are b in [10, 30] and s in [1, 5], meaning a maximum-flux star gets a 30× intensity boost and 5× smaller shrink factor than a minimum-flux one.</p>
+
+<h3>9.9. Tile synthesis and placement</h3>
+<p>For each star, three per-channel PSF tiles are extracted from the center of the simulated PSF image at a tile size that scales with brightness (base 256 px, up to 768 px for very bright stars). Each tile is multiplied by brightness, color ratio, and the global spike boost:</p>
+<div class="matheq">T_c(x, y) = \widetilde{\mathrm{PSF}}_c(x, y) \cdot \beta \cdot c_{\mathrm{ratio}} \cdot B_{\mathrm{boost}}</div>
+<p>The three channel tiles are then resampled by the per-star B_scale (zoom in by that factor) and 1/S_factor (shrink by the inverse of the shrink factor), using <code>cv2.resize</code> with bilinear interpolation when OpenCV is available (which is dramatically faster for large tiles) and <code>ndi.zoom</code> otherwise. The resampled R, G, B tiles are stacked into a three-channel patch and additively deposited onto a canvas at the star's position, with correct bounds handling for stars near image edges (partially off-canvas spikes are clipped to the valid region).</p>
+<p>The whole per-star computation runs in a thread pool so a thousand stars don't become a thousand serial PSF resamples.</p>
+
+<h3>9.10. Composite onto the input image</h3>
+<p>After all stars are placed, the canvas C holds the sum of all per-star spike patches. For a color image, the canvas is three-channel and simply added:</p>
+<div class="matheq-hero">I_{\mathrm{out}} = \mathrm{clip}(I_{\mathrm{in}} + C,\; 0,\; 1)</div>
+<p>For a monochrome image, the canvas is collapsed to a single channel using the same Rec. 709 luminance weighting (0.2126 R + 0.7152 G + 0.0722 B) before adding. The addition happens in the un-stretched (linear-like) space, which is why the midtones un-stretch pass at the start matters — adding synthetic flux to an already-stretched image would otherwise saturate highlights disproportionately.</p>
+
+<h3>9.11. Mask-based blending</h3>
+<p>If the document has an active mask M (values in [0, 1]), the final output is a linear blend between the fully spiked image and the untouched original:</p>
+<div class="matheq-hero">I_{\mathrm{final}} = I_{\mathrm{spiked}} \cdot M + I_{\mathrm{orig}} \cdot (1 - M)</div>
+<p>So white mask pixels (M = 1) show the full effect, black pixels (M = 0) show the original, and gray pixels give a weighted blend. This happens <i>after</i> the full compositing and re-stretch, so the blend is between two display-space images and reads correctly in the preview.</p>
+
+</body>
+</html>

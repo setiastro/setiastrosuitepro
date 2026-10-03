@@ -27,7 +27,7 @@ from setiastro.saspro.star_alignment import PolyGradientRemoval
 from setiastro.saspro import minorbodycatalog as mbc
 from setiastro.saspro.plate_solver import PlateSolverDialog as PlateSolver
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.plate_solver import (
     _solve_numpy_with_fallback,
     _as_header,
@@ -458,7 +458,10 @@ class SupernovaAsteroidHunterDialog(QDialog):
             self.tr("Process (Cosmetic Correction, Preprocess, and Search)"), self
         )
         self.process_button.clicked.connect(self.process)
-        layout.addWidget(self.process_button)
+        process_row = QHBoxLayout()
+        process_row.addWidget(self.process_button, 1)
+        process_row.addWidget(make_help_button("supernova_asteroid_hunter", self))
+        layout.addLayout(process_row)
 
         # --- Progress Labels ---
         self.preprocess_progress_label = QLabel(self.tr("Preprocessing progress: 0 / 0"), self)

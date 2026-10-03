@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QInputDialog,
 )
-
+from setiastro.saspro.help_support import make_help_button
 WORKFLOW_MIME = "application/x-saspro-workflow-command"
 WORKFLOW_SCHEMA_VERSION = 2
 
@@ -957,6 +957,7 @@ class WorkflowDialog(QDialog):
         bottom.addSpacing(16)
         bottom.addWidget(self.btn_run_mini)
         bottom.addStretch(1)
+        bottom.addWidget(make_help_button("workflow_assistant", self))
 
         root.addLayout(bottom)
     # ------------------------------------------------------------------
@@ -1950,6 +1951,8 @@ class MiniWorkflowDialog(QDialog):
         nav.addWidget(self.btn_next)
         nav.addStretch(1)
         nav.addWidget(self.btn_reset)
+        nav.addSpacing(8)
+        nav.addWidget(make_help_button("workflow_assistant", self))
         root.addLayout(nav)
 
     # ------------------------------------------------------------------

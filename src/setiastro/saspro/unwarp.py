@@ -74,6 +74,7 @@ try:
 except Exception:                       # pragma: no cover
     unwarp_path = None
 
+from setiastro.saspro.help_support import make_help_button
 # Command id used by the shortcuts / replay system for this tool.
 UNWARP_COMMAND_ID = "unwarp"
 _STEP_NAME = "Unwarp (remove SIP)"
@@ -820,6 +821,7 @@ class UnwarpDialog(QDialog):
         else:
             self.preset_drag_handle = None
         grip_row.addStretch(1)          # push the grip hard to the left
+        grip_row.addWidget(make_help_button("unwarp", self))
         v.addLayout(grip_row)
 
         if not (_HAS_ASTROPY and _HAS_SCIPY):

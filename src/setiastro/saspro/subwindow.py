@@ -79,7 +79,7 @@ from matplotlib.figure import Figure
 
 from setiastro.saspro.autostretch import autostretch, autostretch_with_lut, apply_autostretch_lut
 from .layers import BLEND_MODES, ImageLayer, composite_stack, _resize_like
-
+from setiastro.saspro.help_support import make_help_button
 
 def _layer_profile_log(msg: str):
     """Append a layer-compositing timing line to <temp>/sas_layers_profile.log."""
@@ -818,6 +818,7 @@ class ImageSubWindow(QWidget):
         row.addSpacing(6)
 
         row.addStretch(1)
+        row.addWidget(make_help_button("image_view", self), 0, Qt.AlignmentFlag.AlignRight)
         lyt.addLayout(row)
 
         # QTabWidget that hosts "Full" (real viewer) + any Preview tabs (placeholder widgets)

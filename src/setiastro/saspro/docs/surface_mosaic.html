@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Surface Mosaic</h1>
+<p class="sub">Texture-based mosaic builder for lunar, solar and planetary surface panels &mdash; the kind of mosaic PTGui is traditionally used for, now native to SASpro. Unlike Mosaic Master (which uses WCS and stars), there's nothing to plate-solve here, so tiles are registered by their surface texture directly. Includes a four-tier alignment ladder (ORB &rarr; SIFT &rarr; patch-slide correlation &rarr; shared-disk geometry), a ghost-proof overlap NCC gate, matching-only multiscale structure enhancement for soft stacks, a global shared-disk solution that links limb-bearing tiles even when they don't overlap, a radial limb-darkening photometric model that couples brightness equalisation across topology, per-tile quadratic gradient-surface fitting, and confined local seam warping with double-gated AP shifts.</p>
+
+<div class="pub">
+<b>Original work for SetiAstro Suite Pro.</b> The entire texture mosaic pipeline is new work by <b>Franklin Marek</b>, with edge-case robustness shaped by extensive test data contributed by the SetiAstro Discord community. SASpro-exclusive content: the <b>four-tier alignment ladder</b> (ORB corner features &rarr; SIFT blob features for soft texture &rarr; multi-scale patch-slide correlation search with grid dispatch &rarr; global shared-disk geometry) with a <b>ghost-proof overlap NCC gate</b> applied at every tier; the <b>matching-only multiscale structure boost</b> (reuses SASpro's multiscale decomposition to amplify mid-band detail layers 2&ndash;3 at ~2&ndash;4&nbsp;px structure that sits above the per-pixel noise which dominates layer 1 on soft stacks, so even unsharpened panels register, never touching output pixels); the <b>shared-disk solution</b> for solar and lunar panels (percentile-threshold limb extraction robust to 98%-disk tiles where Otsu silently splits inside the disk, Kasa best-conditioned hub fit for the shared radius <code>R</code>, Gauss-Newton fixed-radius centre refit from a <b>geometric seed</b> &ldquo;arc midpoint + R toward disk-mask centroid&rdquo; so a sliver arc nearly tangent to the disk can't put the centre on the wrong side); the <b>global limb edges</b> that link limb-bearing tiles through the shared disk centre <i>regardless of mutual overlap</i>; the <b>gain-only sky-safe photometry</b> (no bias term anywhere &mdash; <code>g&middot;0 = 0</code> so the sky can never be lifted, with bright-threshold masking so glint and background pedestal never enter the fit); the <b>radial limb-darkening photometric model</b> (per-bin ratio-of-medians against a global <code>&mu;(r/R)</code> profile which couples brightness equalisation across tiles with zero mutual overlap, iterated weighted-median solve robust to glint-corrupted bins); the <b>per-tile log-domain quadratic gradient-surface fit</b> (6-coefficient polynomial per tile solved jointly from overlapping bright pixel samples via block-diagonal normal equations, ridge-pinned at the gauge, limb-masked so no sky or near-limb pixel enters, multiplicative so the sky still cannot be lifted); the <b>spanning-tree pose seeding</b> for the robust similarity solve (composes pairwise transforms as proper 2D similarities with <code>t_j = t_i + R(&theta;_i)d</code>, so rotated tiles land near their final pose before the robust-loss refine); the <b>confined local seam warp</b> (structure gate on local HF std, response gate on phase-corr strength, median-shift guard, seam-band confinement so one edge's correction cannot reach another, boundary feathering so non-overlap pixels are never displaced); the <b>multiband winner-take-all compositing</b> with <b>no-data fill</b> (prevents Laplacian-pyramid dark-cliff bleed at tile rectangles); the <b>pre-warp parallel + sequential blend</b> pipeline architecture; the <b>pose-aware per-tile bounding-box warping</b> with 2-pixel pad against INTER_LINEAR edge darkening; and the connected-component unplaced-tile reporting are all original work.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Add views</b> &mdash; stack each panel of your lunar/solar/planetary surface mosaic to completion in SASpro first, then open the Surface Mosaic dialog and check off the finished stacks you want to mosaic. <b>Pick options</b> &mdash; usually just leave the defaults; the ladder self-selects which tier solves each pair. <b>Build Mosaic</b>. The result opens in a new SASpro view.
+</div>
+
+<div class="hero">
+<p>The signature property of the entire photometric pipeline: everywhere a brightness correction is applied, it's a <b>pure gain</b>, no bias term, so the sky can never be lifted:</p>
+<div class="matheq-hero">I_{\mathrm{out}} = g_i \cdot I_i,\quad g_i \cdot 0 = 0</div>
+<p>Lunar and solar panels sit on near-black sky even after stacking; a photometric model with a bias term can equalise the surface brightness perfectly and leave each tile with a different sky level, which bleeds visible rectangles when the tiles get composited. Gain-only means a corrected sky pixel is still a sky pixel. The same property holds for the radial model (&sect;9.14), the per-tile gradient surface (&sect;9.15), and compositing: &sect;9.14 explains why that was more work than it sounds like.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. What it's for</a><br>
+<a href="#s2">2. Dialog layout</a><br>
+<a href="#s3">3. Picking tiles from open views</a><br>
+<a href="#s4">4. Main options</a><br>
+<a href="#s5">5. Advanced panel</a><br>
+<a href="#s6">6. Build Mosaic</a><br>
+<a href="#s7">7. Tile layout overview</a><br>
+<a href="#s8">8. Unplaced tiles</a><br>
+<a href="#s9">9. Technical details</a><br>
+<a href="#s9_1">9.1 Pipeline overview</a><br>
+<a href="#s9_2">9.2 Matching enhancement</a><br>
+<a href="#s9_3">9.3 ORB feature matching</a><br>
+<a href="#s9_4">9.4 SIFT fallback</a><br>
+<a href="#s9_5">9.5 Patch-slide correlation search</a><br>
+<a href="#s9_6">9.6 Overlap NCC ghost gate</a><br>
+<a href="#s9_7">9.7 Pair subpixel refine</a><br>
+<a href="#s9_8">9.8 Limb extraction</a><br>
+<a href="#s9_9">9.9 Shared-disk solution</a><br>
+<a href="#s9_10">9.10 Fixed-radius centre fit</a><br>
+<a href="#s9_11">9.11 Limb edges</a><br>
+<a href="#s9_12">9.12 Translation-only bundle</a><br>
+<a href="#s9_13">9.13 Similarity bundle</a><br>
+<a href="#s9_14">9.14 Overlap photometry (gain-only)</a><br>
+<a href="#s9_15">9.15 Radial limb-darkening model</a><br>
+<a href="#s9_16">9.16 Per-tile gradient surface</a><br>
+<a href="#s9_17">9.17 Compose pipeline</a><br>
+<a href="#s9_18">9.18 Local seam warp</a><br>
+<a href="#s9_19">9.19 Blend modes</a><br>
+<a href="#s9_20">9.20 Multiband no-data fill</a><br>
+<a href="#s9_21">9.21 BBox warping</a><br>
+<a href="#s9_22">9.22 Parallelisation</a>
+</div>
+
+<h2 id="s1">1. What it's for</h2>
+<p>Lunar, solar and planetary surface mosaics &mdash; the use case for which astrophotographers typically reach for <b>PTGui</b> or similar panoramic stitchers. Each panel is already a finished high-resolution stack (from SASpro's Planetary Stacker or anywhere else), and the mosaic job is to lay those panels down into one seamless surface image. Nothing to plate-solve against: there are no stars, no WCS, just texture.</p>
+<p>Typical input: 4&ndash;20 lunar panels covering a terminator region, or a full-disk solar mosaic from an etalon rig at native resolution, or a Jupiter/Saturn mosaic merging separate rotation-compensated stacks of different disk regions. The tool is designed to handle all three without the user telling it which case they're in &mdash; the shared-disk / radial-model path activates automatically when a disk edge is found, otherwise the pipeline runs in texture-only mode.</p>
+
+<h2 id="s2">2. Dialog layout</h2>
+<p>Two columns. The left column holds the view-selection list, four option checkboxes, the blend-type dropdown, progress bar, status label, and <b>Build Mosaic</b> / <b>Advanced&hellip;</b> buttons. The right column shows a schematic <b>Tile layout</b> overview that updates after each run &mdash; translucent rectangles for every tile, match-graph edges between overlapping pairs with thickness scaled by confidence, per-tile labels, and a star marker on the anchor tile. A dashed outline frames the whole mosaic canvas.</p>
+
+<h2 id="s3">3. Picking tiles from open views</h2>
+<p>Tiles are always open SASpro views &mdash; never files. The view list shows every open view with image data; checkboxes let you tick each panel to include. Buttons:</p>
+<ul>
+  <li><b>Refresh views</b> &mdash; rescans open views; use if you've opened or closed panels since launching the dialog.</li>
+  <li><b>Select all</b> / <b>Select none</b> &mdash; toggles depending on current state.</li>
+</ul>
+<p>At least two tiles must be checked for the Build button to do anything.</p>
+
+<h2 id="s4">4. Main options</h2>
+
+<h3>Solve rotation</h3>
+<p>Off by default. Lets the global bundle adjustment solve each tile's rotation in addition to its translation. Needed when your panels came from different sessions or different rotator angles. Requires SciPy for the robust nonlinear solve (&sect;9.13); without SciPy, SASpro falls back to the spanning-tree seed, which already places rotated tiles but can't close long loops as cleanly. Leave off for the common case of a single-session mosaic where all panels share orientation.</p>
+
+<h3>Equalise brightness</h3>
+<p>On by default. Runs the gain-only photometric equalisation (&sect;9.14), with the radial limb-darkening model (&sect;9.15) taking over automatically when a disk is detected. Also enables the per-tile gradient-surface fit (&sect;9.16) when solving in translation-only mode. Leave on &mdash; the gain-only property means it can only help.</p>
+
+<h3>Local seam warp</h3>
+<p>On by default. Measures a non-rigid seam correction between each new tile and the already-composited neighbours, confined to a band around each seam (&sect;9.18). This fixes residual mis-registration from imperfect stacks or atmospheric seeing differences between panels without warping the panel interiors. Guard-gated so a soft or structureless seam keeps the global placement rather than getting a confident-but-wrong local correction.</p>
+
+<h3>Blend Type</h3>
+<p>Dropdown with two choices:</p>
+<ul>
+  <li><b>Feather</b> (default) &mdash; distance-transform feather weights with optional quality boost. Fast, simple, visually clean on well-equalised data.</li>
+  <li><b>MultiBandBlender</b> &mdash; OpenCV's Laplacian-pyramid blender (<code>cv2.detail_MultiBandBlender</code>), run in winner-take-all mode where each pixel is owned by exactly one tile. Hides residual brightness differences across seams better than feather can. Requires the <code>opencv-contrib-python</code> extras; falls back to Feather with a console warning if the module isn't available in your build.</li>
+</ul>
+
+<h2 id="s5">5. Advanced panel</h2>
+<p>Click <b>Advanced&hellip;</b> to open the parameter editor. Groups:</p>
+
+<h3>Matching enhancement</h3>
+<ul>
+  <li><b>Enable structure boost for matching</b> (on by default) &mdash; applies the multiscale detail boost (&sect;9.2) to the images that go into the feature detector and correlation search. The mosaic is always composited from the <i>original</i> pixels, so this can be aggressive without harming output fidelity.</li>
+  <li><b>Decomposition layers</b> (default 4) &mdash; number of multiscale detail bands.</li>
+  <li><b>Layer gains</b> &mdash; per-band amplification. Defaults boost layers 2 and 3 (~2&nbsp;px and 4&nbsp;px structure) at 6&times; while leaving layer 1 (per-pixel noise) and layer 4 (coarse) at 1&times;. If a soft-stack mosaic refuses to register, raise layer 2 or 3 before touching anything else.</li>
+</ul>
+
+<h3>Registration</h3>
+<ul>
+  <li><b>ORB features</b> (default 4000) &mdash; feature cap per tile.</li>
+  <li><b>Feature detect max dim</b> (default 1600 px) &mdash; features are detected on a downscale this big to keep ORB fast; keypoints are scaled back to full-res for refinement.</li>
+  <li><b>Lowe ratio</b> (default 0.75) &mdash; nearest/second-nearest descriptor ratio for match acceptance (standard Lowe's test). Raise to loosen matching on sparse texture.</li>
+  <li><b>Min inliers</b> (default 12) &mdash; RANSAC inlier floor; pairs below this are rejected.</li>
+  <li><b>RANSAC threshold</b> (default 3.0 px, at detection scale) &mdash; reprojection error inlier gate.</li>
+  <li><b>Min overlap for refine</b> (default 48 px) &mdash; smallest overlap side length where phase-correlation refinement is still trusted.</li>
+  <li><b>Min overlap NCC</b> (default 0.15) &mdash; ghost gate: every candidate must correlate at least this well across the implied overlap after a bandpass (&sect;9.6).</li>
+  <li><b>SIFT feature fallback</b> (on) &mdash; retry pairs with SIFT when ORB finds nothing. SIFT uses DoG blob detection, which is far better than corners on soft lunar mottling.</li>
+  <li><b>Correlation-search fallback</b> (on) &mdash; patch-slide NCC search when neither feature detector bites (&sect;9.5).</li>
+  <li><b>Limb fallback</b> (on, rotation off only) &mdash; use the shared-disk geometric solve to link limb-bearing tiles that never got a feature or correlation match (&sect;9.11).</li>
+</ul>
+
+<h3>Seam / local warp</h3>
+<ul>
+  <li><b>Local-warp min shift</b> (default 0.5 px) &mdash; skip the local warp if the median AP shift is below this. On a tile that's already well-placed, the per-AP phase shifts are just sub-pixel wobble; baking that into a dense field adds noise without fixing anything.</li>
+</ul>
+
+<h3>Brightness / Blending</h3>
+<ul>
+  <li><b>Multiband bands</b> (default 5) &mdash; Laplacian pyramid levels when MultiBand blending is selected.</li>
+  <li><b>Radial disk brightness model</b> (on) &mdash; when a disk is detected, equalise against the global limb-darkening profile (&sect;9.15) instead of pairwise overlap medians. The decoupling is the point: tiles with zero mutual overlap are still constrained by the shared profile.</li>
+  <li><b>Per-tile gradient surface fit</b> (on) &mdash; after the single-gain solve, fit a smooth quadratic gain surface per tile to match seams across panel-level gradients from etalon sweet-spots or vignetting (&sect;9.16).</li>
+</ul>
+
+<h3>Don't touch unless you know what you're doing</h3>
+<ul>
+  <li><b>Seam-warp patch size</b> (default 64 px) &mdash; AP window size for the local seam warp. Larger averages over more pixels; smaller tracks local distortion more aggressively but gets noisier.</li>
+  <li><b>Quality-weighted seam</b> (on) &mdash; sharper tiles (higher stack quality score) get more weight at the seam midline. The default is almost always right.</li>
+</ul>
+
+<h2 id="s6">6. Build Mosaic</h2>
+<p>Launches the alignment ladder, global bundle solve, photometric equalisation, and compositing in a background worker thread. Progress bar + status text update per phase (&ldquo;Matching tiles&rdquo;, &ldquo;Solving global placement&rdquo;, &ldquo;Equalising brightness&rdquo;, &ldquo;Warping tiles&rdquo;, &ldquo;Compositing&rdquo;). The dialog stays responsive; you can watch the Tile layout panel update at the end.</p>
+<p>The finished mosaic opens as a brand-new SASpro view, exactly as if you'd loaded a file &mdash; it has no attached WCS header (there is nothing to attach), and goes into the view manager with the title &ldquo;Surface Mosaic&rdquo;.</p>
+
+<h2 id="s7">7. Tile layout overview</h2>
+<p>After every successful build, the right-hand panel draws a schematic of the solved layout:</p>
+<ul>
+  <li><b>Translucent rectangles</b> &mdash; one per tile, coloured from an 8-colour palette. Alpha stacking means overlaps darken naturally, so you can see where tiles share sky at a glance.</li>
+  <li><b>Match-graph edges</b> &mdash; a line between every pair of tiles that produced a validated overlap match. Line thickness scales with the pair's confidence (<code>pair.conf</code>, 0 to 1).</li>
+  <li><b>Centre dots and names</b> &mdash; one dot per tile at its warped centre, with its view name (truncated to 18 characters).</li>
+  <li><b>Anchor marker</b> &mdash; a star symbol beside the name of the tile pinned as the gauge origin.</li>
+  <li><b>Canvas outline</b> &mdash; dashed rectangle showing the full mosaic bounds.</li>
+</ul>
+
+<h2 id="s8">8. Unplaced tiles</h2>
+<p>If one or more tiles couldn't be matched to the connected set rooted at the anchor, SASpro excludes them from the mosaic entirely rather than drop them at some arbitrary offset. A warning dialog then lists them by name and suggests remedies (more overlap, sharper stacks, matching-boost in Advanced).</p>
+<p>This is a deliberate design choice: a &ldquo;mosaic&rdquo; with a floating stray tile shoved into a corner is worse than one with the problem panel honestly left out. The ladder has already given up on every tier for that pair; a fifth tier of guessed placement wouldn't be reliable.</p>
+
+<h2 id="s9">9. Technical details</h2>
+<p class="tech-lead">The four-tier alignment ladder, bundle adjustment, photometric equalisation, and compositing pipeline, in order.</p>
+
+<h3 id="s9_1">9.1 Pipeline overview</h3>
+<p>End-to-end flow:</p>
+<ol>
+  <li><b>Pre-compute tile caches</b> &mdash; sharpened match mono (&sect;9.2), ORB keypoints, SIFT keypoints, correlation-search proxy. One job per tile, so each cache has a single writer and the subsequent matching phase is thread-safe.</li>
+  <li><b>Pairwise alignment ladder</b> &mdash; for every tile pair, try ORB (&sect;9.3) &rarr; SIFT (&sect;9.4) &rarr; patch-slide correlation (&sect;9.5), stopping at the first tier that produces a candidate passing the overlap NCC gate (&sect;9.6). Pairwise is <code>O(n&sup2;)</code> but every pair is independent, so matching runs across threads.</li>
+  <li><b>Shared-disk global stage</b> (if the limb fallback is on and rotation is off): extract limb points from every tile (&sect;9.8), solve the shared disk (&sect;9.9), emit hub-to-tile edges for every limb-bearing tile not already connected by a texture match (&sect;9.11).</li>
+  <li><b>Global bundle adjustment</b> &mdash; translation-only weighted LS (&sect;9.12), or robust similarity solve with scipy (&sect;9.13). Unplaced tiles (not reachable from the anchor through the overlap graph) are set aside.</li>
+  <li><b>Photometric equalisation</b> &mdash; radial limb-darkening model if a disk was found (&sect;9.15), otherwise overlap gain fit (&sect;9.14).</li>
+  <li><b>Gradient surface fit</b> (translation-only solves) &mdash; per-tile quadratic log-domain correction (&sect;9.16).</li>
+  <li><b>Compose</b> &mdash; parallel pre-warp into per-tile bounding boxes, sequential seam measurement and blend (&sect;9.17&ndash;&sect;9.21).</li>
+</ol>
+
+<h3 id="s9_2">9.2 Matching enhancement</h3>
+<p>Soft or lightly-processed stacks (common from solar etalons, or lunar panels straight out of AutoStakkert without the usual wavelet pass) have most of their structure buried below the per-pixel noise. ORB and SIFT both detect on the finest-scale content, which on soft data is noise &mdash; they return zero matches not because there's nothing to match but because the matcher is looking at the wrong scale.</p>
+<p>SASpro boosts mid-scale structure using its shared multiscale decomposition (the same code behind SASpro's Multiscale Decomposition tool). The image is decomposed into detail bands plus a residual:</p>
+<div class="matheq">I = \sum_{\ell=1}^{N} D_{\ell} + R_{N}</div>
+<p>and reconstructed with per-layer gains:</p>
+<div class="matheq">I_{\mathrm{match}} = \sum_{\ell=1}^{N} g_{\ell} \cdot D_{\ell} + R_{N}</div>
+<p>Defaults: 4 layers, gains <code>(1.0, 6.0, 6.0, 1.0)</code>. Layer 1 (~1&nbsp;px) is where per-pixel noise lives &mdash; left alone. Layers 2 and 3 (~2&nbsp;px and ~4&nbsp;px structure) sit above the noise floor on soft data but are too faint to drive feature detection unaided &mdash; boosted at 6&times;. Layer 4 (~8&nbsp;px and coarser) is already strong enough naturally and would just add haze if boosted.</p>
+<p>Crucial property: this is <b>matching-only</b>. The mosaic is always composited from the original tile pixels, so the enhancement can be as aggressive as needed to make the ladder work without compromising output fidelity. The sharpened proxy is cached on every tile under <code>_match</code> and reused by every alignment measurement (ORB, SIFT, correlation search, subpixel refine, local seam warp).</p>
+
+<h3 id="s9_3">9.3 ORB feature matching</h3>
+<p>Tier 1a of the ladder, for crisp texture (craters with sharp rims, prominent granulation). ORB (Rublee et al. 2011) detects FAST corner keypoints and describes them with rotation-invariant binary BRIEF descriptors.</p>
+<ol>
+  <li>Downscale the sharpened match mono to <code>feature_max_dim</code> (default 1600 px) and contrast-normalise (1st to 99.5th percentile stretch to [0, 255] uint8).</li>
+  <li>Detect ORB keypoints and descriptors (<code>cv2.ORB_create(nfeatures=4000)</code>).</li>
+  <li>Scale keypoints back to full-resolution tile coordinates for the subsequent subpixel refinement.</li>
+</ol>
+<p>Pair matching: brute-force Hamming between tile <code>j</code>'s descriptors and tile <code>i</code>'s descriptors with Lowe's ratio test. For each query descriptor, keep its two nearest matches in the training set; accept the better match only if:</p>
+<div class="matheq">\frac{\|d_1\|}{\|d_2\|} < \tau_{\mathrm{Lowe}}</div>
+<p>with default <code>&tau; = 0.75</code>. The accepted matches feed <code>cv2.estimateAffinePartial2D(method=RANSAC)</code> for a similarity transform (rotation + uniform scale + translation) with inlier threshold <code>ransac_thresh</code> (default 3 px at detection scale). The transform's translation is <code>(dx, dy)</code> for the pair; the rotation is extracted via <code>atan2(M[1,0], M[0,0])</code>.</p>
+
+<h3 id="s9_4">9.4 SIFT fallback</h3>
+<p>Tier 1b: ORB can't see what isn't a corner. On smooth lunar mottling (lava-plain lowlands with gentle albedo variation) or on soft granulation, SIFT's DoG blob detector (Lowe 2004) finds plenty of keypoints where ORB finds none.</p>
+<p>Same pipeline as ORB: detect on the enhanced match mono downscale, scale keypoints back, Lowe-ratio match (now against <code>cv2.NORM_L2</code> because SIFT descriptors are floats, not binary), RANSAC similarity fit.</p>
+<p>Only tried if ORB returned no validated pair. The matcher pays the SIFT cost (slower than ORB by a few&times;) only on the pairs that actually need it.</p>
+
+<h3 id="s9_5">9.5 Patch-slide correlation search</h3>
+<p>Tier 2: when neither feature detector returns anything, SASpro falls back to a feature-free exhaustive translation search. The naive version &mdash; full-frame phase correlation between the two tiles &mdash; assumes both frames image the same scene, which is wrong for mosaic panels that only partially overlap.</p>
+<p>SASpro's approach: slide small patches extracted from tile <code>j</code> over tile <code>i</code> using normalised cross-correlation template matching (<code>cv2.matchTemplate(TM_CCOEFF_NORMED)</code>). Partial overlap is handled by construction &mdash; a patch cut from the edge of <code>j</code> only needs to find its sibling patch within <code>i</code>, wherever it lives.</p>
+<p>Grid: a 3&times;3 dispatch of patch anchor positions (0%, 39%, 78% in each axis) at two patch sizes:</p>
+<ul>
+  <li><b>40% patches</b> (coarse) &mdash; good when the overlap is wide, uses more context per patch.</li>
+  <li><b>22% patches</b> (fine) &mdash; small enough to fit entirely inside a thin ~25% overlap strip.</li>
+</ul>
+<p>Patches with standard deviation below 25% of the global proxy std are discarded as too flat to localise reliably. Surviving patches contribute their peak position to a candidate list. Full-frame phase correlation is also tried (sometimes it works). All candidates are dedup'd (3-px bins at proxy scale) and scored by coarse overlap NCC; the winner proceeds to the subpixel refine, then the overlap gate.</p>
+<p>The correlation proxy itself: tile mono blurred by &sigma; = 1 (denoise) then high-passed by subtracting a 16&sigma; blur (so the smooth illumination profile &mdash; disk falloff, limb-darkening &mdash; is removed but structure at every finer scale survives). A narrower bandpass would sit below some soft data's natural scale and leave only noise; 16&sigma; is wide enough to preserve 8&nbsp;px structure while killing the slow sweep across the disk.</p>
+
+<h3 id="s9_6">9.6 Overlap NCC ghost gate</h3>
+<p>Every candidate from every tier must pass one final test before SASpro accepts it: measure the normalised cross-correlation of the <i>actual</i> overlap pixels after applying the candidate transform, and require:</p>
+<div class="matheq">\mathrm{NCC}(A, B) = \frac{\sum (A - \bar{A})(B - \bar{B})}{\sqrt{\sum (A - \bar{A})^2 \cdot \sum (B - \bar{B})^2}}</div>
+<div class="matheq">\mathrm{NCC}(A, B) \geq \tau_{\mathrm{NCC}}</div>
+<p>with default <code>&tau;_NCC = 0.15</code>. Measurement is on bandpassed match images (narrow Gaussian minus wide Gaussian, source-content bandpass rather than Hann-windowed, so the warp's zero border doesn't taint the blur) &mdash; critical for solar/lunar data, because a smooth bright disk would correlate at almost any offset and would validate a ghost on raw pixel values. The true overlap only stands out in high-frequency structure.</p>
+<p>Why it matters: all three alignment tiers can produce confident-looking wrong answers on textureless input. RANSAC with few inliers can lock onto a lucky coincidence of descriptor matches; patch-slide correlation on a nearly-flat tile can peak on noise. The overlap NCC gate rejects every such ghost by measuring the actual thing you care about: does the content agree where you placed it?</p>
+
+<h3 id="s9_7">9.7 Pair subpixel refine</h3>
+<p>Candidates from any tier are refined using the SASpro planetary stacker's primitives on the pair's integer overlap crop:</p>
+<ol>
+  <li><b>Bandpass</b> each overlap crop (Hann-windowed, illumination-robust) via <code>_bandpass</code>.</li>
+  <li><b>Phase correlation</b> for subpixel translation residual (<code>_phase_corr_shift</code>):</li>
+</ol>
+<div class="matheq">P(u, v) = \mathcal{F}^{-1}\!\left[\frac{F_A \cdot \overline{F_B}}{|F_A \cdot \overline{F_B}|}\right]</div>
+<p>Normalising to unit magnitude in the Fourier domain makes the peak location (which is the translation) independent of the overlap's local brightness, following Kuglin &amp; Hines (1975).</p>
+<p>3. <b>Gradient-SSD polish</b> (<code>_refine_shift_ssd</code>) &mdash; a few Gauss-Newton steps against image gradients to drive sub-sub-pixel residuals to zero. 4. <b>Fourier-Mellin rotation</b> (<code>_estimate_rotation_fm</code>) when rotation refinement is enabled: log-polar transform the two bandpassed overlaps and phase-correlate the result to recover the rotation angle, following De Castro &amp; Morandi (1987):</p>
+<div class="matheq">(x, y) \to (\rho, \phi) = (\log r, \arctan(y / x))</div>
+<p>Pairs with coarse rotation &gt; 3&deg; skip the integer-overlap refinement entirely &mdash; the overlap crop would compare rotated against unrotated content, confusing phase correlation; SASpro trusts the ORB similarity fit (which used the whole overlap rotation-invariantly) and lets the local seam warp clean up residual at compose time.</p>
+
+<h3 id="s9_8">9.8 Limb extraction</h3>
+<p>For solar and lunar mosaics, extracting the disk edge turns the mosaic into a <b>global</b> problem: every limb-bearing tile lies on the <i>same</i> disk, so the disk centre is a shared reference. The extraction, per tile:</p>
+<ol>
+  <li><b>Threshold</b> the mono tile at a percentile midpoint: <code>thr = p_{0.2} + 0.35 &middot; (p_{99.5} - p_{0.2})</code>. Percentile, not Otsu &mdash; and this matters: Otsu assumes a bimodal histogram, which fails on tiles that are 98% disk with a sliver of sky in one corner, where the histogram is unimodal and Otsu silently splits <i>within</i> the disk. The 0.2th percentile samples the sky whenever it covers at least 0.2% of the frame, so even a corner sliver yields a clean disk / sky split.</li>
+  <li><b>Morphology</b>: open-close with a 5&times;5 kernel to clean small artefacts.</li>
+  <li><b>Gradient</b> of the disk mask gives the inner edge of the disk; dilate the sky mask and AND with the gradient to keep only pixels on the disk edge adjacent to sky (not internal mask artefacts).</li>
+  <li><b>Edge-exclude</b> a 3-pixel border so the frame cut doesn't contribute false boundary points.</li>
+  <li>Return the surviving pixels <code>(xs, ys)</code> as the limb arc, plus the disk-mask centroid <code>(c_x^{disk}, c_y^{disk})</code>.</li>
+</ol>
+<p>The disk-mask centroid is critical for the fixed-radius centre fit (&sect;9.10): it tells SASpro which side of the arc the disk centre physically lies on, even when the arc itself is nearly straight.</p>
+
+<h3 id="s9_9">9.9 Shared-disk solution</h3>
+<p>With limb arcs extracted from every tile that showed one, SASpro solves the shared disk globally:</p>
+<ol>
+  <li><b>Hub selection</b>: for each tile with a successful free-arc fit (Kasa algebraic least-squares), score as <code>len(arc) / (1 + rms)</code>. Pick the tile with the highest score as the hub.</li>
+  <li><b>Shared radius</b> <code>R</code>: the hub's free-fit radius.</li>
+  <li><b>Sanity</b>: reject if <code>R &lt; 0.2 &middot; min(tile_dim)</code> or <code>R &gt; 200 &middot; max(tile_dim)</code>.</li>
+  <li><b>Per-tile centre refit</b> at <i>fixed</i> <code>R</code> (&sect;9.10).</li>
+</ol>
+<p>Kasa's algebraic circle fit:</p>
+<div class="matheq">(x - c_x)^2 + (y - c_y)^2 = r^2</div>
+<p>linearises to:</p>
+<div class="matheq">2 c_x \cdot x + 2 c_y \cdot y + c = x^2 + y^2</div>
+<p>with <code>c = R&sup2; - c_x&sup2; - c_y&sup2;</code>, solvable by one LS solve. The hub needs this because its radius seeds every other tile; the other tiles use fixed-R Gauss-Newton instead because a free Kasa fit on a short arc is unstable.</p>
+
+<h3 id="s9_10">9.10 Fixed-radius centre fit</h3>
+<p>Each non-hub tile's limb arc is refit at the shared radius <code>R</code> fixed. The arc might be a tiny crescent &mdash; nearly a straight line &mdash; and an unconstrained fit on nearly-collinear points puts the centre at a chord perpendicular bisector, which is only loosely constrained along the line of the chord and can land on the <i>wrong side</i> of the arc (making the disk centre look like it's outside the tile when it should be inside, or vice versa).</p>
+<p>SASpro seeds the fit <i>geometrically</i>, using the disk-mask centroid to pick the correct side:</p>
+<div class="matheq">\mathbf{c}_{\mathrm{seed}} = \mathbf{m}_{\mathrm{arc}} + R \cdot \frac{\mathbf{c}_{\mathrm{disk}} - \mathbf{m}_{\mathrm{arc}}}{\|\mathbf{c}_{\mathrm{disk}} - \mathbf{m}_{\mathrm{arc}}\|}</div>
+<p>where <code>m_arc</code> is the arc midpoint and <code>c_disk</code> is the disk-mask centroid. The seed starts <code>R</code> away from the arc midpoint in the direction of the disk interior &mdash; which is where the centre has to be. Gauss-Newton then minimises:</p>
+<div class="matheq">r_i = \sqrt{(x_i - c_x)^2 + (y_i - c_y)^2} - R</div>
+<p>on this seed and lands in the right basin. 30-iteration cap with early stop at update &lt; 10&sup{-3} px. Final RMS gated at <code>max(3, 0.05&middot;R)</code>; a tile whose points don't lie on a circle of radius <code>R</code> is dropped from the solution.</p>
+
+<h3 id="s9_11">9.11 Limb edges</h3>
+<p>The shared disk gives every limb-bearing tile a <b>position</b> &mdash; the tile centre in mosaic coordinates is <code>(hub_centre - tile_centre_in_tile_coords)</code>. SASpro emits hub-to-tile edges from this, but only after validating each:</p>
+<ul>
+  <li>If the hub and the tile <i>do</i> share overlap pixels, measure the overlap NCC. Accept at full strength if NCC passes the usual gate (confidence-weighted up); otherwise drop.</li>
+  <li>If the overlap is too small to measure NCC meaningfully (NCC sentinel), accept only when both tiles' fixed-R centre fits are tight (RMS below <code>max(2.5, 0.03&middot;R)</code>). This is the magic case: two tiles that don't overlap each other at all but both sit on the same disk get a position relationship through the disk centre, with no overlap NCC check possible, trusted on geometric tightness alone.</li>
+</ul>
+<p>This is what lets the lunar mosaic tool stitch panels that cover opposite sides of the disk without sharing any sky between them &mdash; a case where every other technique (feature matching, correlation search, WCS reprojection) has nothing to work with.</p>
+
+<h3 id="s9_12">9.12 Translation-only bundle</h3>
+<p>With pairs collected, SASpro solves tile poses globally by weighted least squares. Each pair contributes two constraints:</p>
+<div class="matheq">t_{x,j} - t_{x,i} = d_{x,ij}</div>
+<p>(symmetric for <code>y</code>) with weight <code>w_ij</code>. The joint objective:</p>
+<div class="matheq">\min_{\mathbf{t}} \sum_{(i, j) \in \mathcal{P}} w_{ij} \cdot \|(\mathbf{t}_j - \mathbf{t}_i) - \mathbf{d}_{ij}\|^2</div>
+<p>has independent closed-form solutions for <code>x</code> and <code>y</code> (both are linear). The anchor tile is pinned at <code>(0, 0)</code> by zeroing its row and setting <code>A[anchor, anchor] = 1</code>, <code>b[anchor] = 0</code> &mdash; the gauge-fixing step.</p>
+<p>The normal equations are <code>n&times;n</code> for <code>n</code> tiles, which is small (dozens to a few hundred for even very large mosaics), so direct <code>np.linalg.solve</code> is fine; the <code>lstsq</code> path is a safety net for singular configurations.</p>
+
+<h3 id="s9_13">9.13 Similarity bundle</h3>
+<p>When rotation is on and SciPy is available, SASpro solves the joint <code>(t_x, t_y, &theta;)</code> system robustly. Two parts:</p>
+
+<h4>Spanning-tree pose seeding</h4>
+<p>Propagate pairwise transforms out from the anchor along a spanning tree of the overlap graph, composing the transforms as real 2D similarities:</p>
+<div class="matheq">\mathbf{t}_j = \mathbf{t}_i + R(\theta_i) \cdot \mathbf{d}_{ij}</div>
+<div class="matheq">\theta_j = \theta_i + \Delta\theta_{ij}</div>
+<p>with</p>
+<div class="matheq">R(\theta) \cdot \mathbf{d} = (\cos\theta \cdot d_x - \sin\theta \cdot d_y,\;\sin\theta \cdot d_x + \cos\theta \cdot d_y)</div>
+<p>Rotating the pairwise translation <code>d_ij</code> through <code>&theta;_i</code> is the step a naive translation sum would skip &mdash; without it a rotated tile seeded off a rotated anchor lands at the wrong position. BFS from the anchor; tiles not reachable through the graph get <code>(0, 0, 0)</code>.</p>
+
+<h4>Robust nonlinear refine</h4>
+<p>Pack each tile's free pose (every tile except the anchor) into a 3-vector <code>(t_x, t_y, &theta;)</code>, build pairwise residuals:</p>
+<div class="matheq">r_{ij} = w_{ij} \cdot \left[ (\mathbf{t}_j - \mathbf{t}_i) - R(\theta_i)\,\mathbf{d}_{ij} \right]</div>
+<div class="matheq">r_{\theta} = w_{ij} \cdot k \cdot \mathrm{wrap}(\theta_j - \theta_i - \Delta\theta_{ij})</div>
+<p>and solve via <code>scipy.optimize.least_squares</code> with <code>soft_l1</code> loss:</p>
+<div class="matheq">\rho(r) = 2 \left( \sqrt{1 + r^2} - 1 \right)</div>
+<p>which grows roughly linearly for large <code>r</code> instead of quadratically. A single pair with a bad match therefore can't drag the solution the way plain LS would. The scale factor <code>k</code> on the angular residual puts rotation in pixel-equivalent units (<code>k = (image_diag) / 2</code>, so a 1-rad angular error produces about one tile-radius of edge misalignment) &mdash; otherwise mixing radians and pixels in one cost function gives whatever units dominated the raw numbers all the weight.</p>
+<p>If SciPy isn't installed, the spanning-tree seed is kept as-is. It can't close long loops the way the robust refine does, but it's dramatically better than translation-only (which ignores rotation entirely).</p>
+
+<h3 id="s9_14">9.14 Overlap photometry (gain-only)</h3>
+<p>With poses solved, every tile gets a single scalar gain <code>g_i</code>. Equal-sky property first:</p>
+<div class="matheq">g \cdot I_{\mathrm{sky}} \approx g \cdot 0 = 0</div>
+<p>No bias term anywhere. For each overlapping pair:</p>
+<ol>
+  <li>Measure median bright content on both sides of the overlap. &ldquo;Bright&rdquo; is <code>I &gt; 0.3 &middot; p_{95}(I)</code>, so sky and glint are excluded:</li>
+</ol>
+<div class="matheq">\mathcal{M}_{\mathrm{bright}} = \{(x, y) : I_i > 0.3 \cdot p_{95}(I_i) \;\wedge\; I_j > 0.3 \cdot p_{95}(I_j)\}</div>
+<p>2. Constrain the log-gain ratio by the median bright levels: <code>g_i &middot; med_a = g_j &middot; med_b</code>, i.e.:</p>
+<div class="matheq">\log g_i - \log g_j = \log\!\left(\frac{\tilde{I}_j}{\tilde{I}_i}\right)</div>
+<p>3. Collect all pair constraints into a weighted LS system in <code>log g</code>, with a prior toward <code>log g = 0</code> (gain of 1) controlled by <code>&sigma;_g</code>. Solve. Centre the solution around its median (remove the overall brightness drift, keep only the relative corrections). Exponentiate and clamp each gain to <code>[0.2, 5.0]</code>.</p>
+
+<h3 id="s9_15">9.15 Radial limb-darkening model</h3>
+<p>For solar and lunar mosaics, overlap-pair equalisation has an obvious limitation: tiles that don't overlap each other get no direct brightness constraint, and any brightness drift propagates along the overlap graph only.</p>
+<p>The physical truth is that limb-darkening is a <b>radial profile</b> shared by every tile on the disk. SASpro leverages the shared-disk solution (&sect;9.9) to equalise against this global profile instead of against neighbours. The procedure:</p>
+<ol>
+  <li>Downsample each tile to 384 px (fast binning) and compute <code>r/R</code> for every pixel using the shared disk centre.</li>
+  <li>Bin pixels by <code>r/R</code> into 96 bins over <code>[0, 1]</code>, taking per-tile per-bin medians <code>I_k(&rho;_b)</code>.</li>
+  <li>Initialise <code>g_k = 1</code> for every tile.</li>
+  <li>Build the global profile as a count-weighted mean of gain-corrected per-tile medians:</li>
+</ol>
+<div class="matheq">\mu(\rho) = \mathrm{median}\{g_k \cdot I_k(x, y) : r_k(x, y) / R \in [\rho, \rho + \Delta\rho]\}</div>
+<p>5. Re-solve each tile's gain as the count-weighted median of per-bin ratios between the profile and the tile's own bins:</p>
+<div class="matheq">g_k = \mathrm{wmedian}\!\left(\frac{\mu(\rho_b)}{\tilde{I}_k(\rho_b)}\right)</div>
+<p>6. Iterate twice. Centre by median. Clamp to <code>[0.2, 5.0]</code>.</p>
+<p>Weighted median (not weighted mean) is deliberate: a few bins contaminated by glint, residual stacking artefacts or near-limb saturation would drag a least-squares fit; the median shrugs them off. Only pixels inside the disk and above <code>I &gt; 0.05</code> are considered, so sky never enters the profile.</p>
+<p>The decoupling is the point: the model couples brightness across tiles with <i>zero mutual overlap</i>, because the physical radial profile is the same for both. A nine-tile Sun mosaic laid out as a 3&times;3 grid gets every tile equalised correctly even when only the centre tile overlaps all eight neighbours.</p>
+
+<h3 id="s9_16">9.16 Per-tile gradient surface</h3>
+<p>Solar and lunar panels often carry smooth per-panel brightness gradients from etalon sweet-spots, vignetting, or imperfect flats. A single scalar gain per tile can't compensate &mdash; neighbouring tiles' gradients disagree across the seam, and the mosaic shows seams where the gradients differ.</p>
+<p>SASpro fits a <b>per-tile quadratic correction surface</b> in the log domain, over normalised tile coordinates <code>(u, v) &in; [-1, 1]</code>:</p>
+<div class="matheq">\mathrm{poly}(u, v) = c_0 + c_1 u + c_2 v + c_3 u^2 + c_4 uv + c_5 v^2</div>
+<p>applied multiplicatively:</p>
+<div class="matheq">s(x, y) = \exp(\mathrm{poly}(u, v)),\quad I_{\mathrm{out}} = s(x, y) \cdot I_{\mathrm{in}}</div>
+<p>Still multiplicative, so the sky stays at zero. The six coefficients per tile are solved jointly across all tiles via block-diagonal normal equations. Each overlap contributes a linear constraint:</p>
+<div class="matheq">\mathrm{poly}_i(u_i, v_i) - \mathrm{poly}_j(u_j, v_j) = \log\!\left(\frac{I_j}{I_i}\right)</div>
+<p>at every sampled bright pixel in the overlap. Why quadratic and not plane: an interior tile with four neighbours needs to agree with all four at once, which a single linear tilt cannot do &mdash; curvature is required to bend down on one side and up on the other. On linear-gradient data, the quadratic solve just lands with <code>c_3 &asymp; c_4 &asymp; c_5 &asymp; 0</code> and behaves like a plane.</p>
+<p>Ridge prior pins the gauge (<code>c_0</code>) and keeps curvature coefficients smooth. Samples are limb-masked (<code>r &lt; 0.98R</code>) and bright-in-both, so no sky or near-limb pixel enters the fit. Solved only in translation-only mode (gated on <code>!solve_rotation</code>) &mdash; the full similarity solve plus a per-tile 6-parameter gain surface would be an under-constrained joint problem on typical overlap counts.</p>
+
+<h3 id="s9_17">9.17 Compose pipeline</h3>
+<p>Two phases, with the division of labour chosen to maximise parallelism:</p>
+
+<h4>Phase A &mdash; pre-warp (parallel)</h4>
+<p>For every placed tile, independently (no shared state):</p>
+<ol>
+  <li>Compute the tile's canvas-space bounding box (<code>_tile_bbox</code>) with a 2-px pad.</li>
+  <li>Apply <code>g_i</code> and the gradient surface <code>s_i(x, y)</code> to the original tile.</li>
+  <li>Warp the original, a valid-pixel mask, and the sharpened match copy into the bounding box via <code>cv2.warpAffine(INTER_LINEAR)</code>.</li>
+</ol>
+<p>Each tile produces a small buffer, keyed by its bounding-box origin on the mosaic canvas. Memory scales with footprint rather than canvas size, which matters for large mosaics (a 20&times;20 lunar mosaic has one tile's worth of pixels at any point in Phase A).</p>
+
+<h4>Phase B &mdash; sequential seam + blend</h4>
+<p>Tiles are composited in <b>brightest-first</b> order (highest <code>quality_score</code> first) so the local seam warp always has a well-stacked reference to measure against. For each tile in turn:</p>
+<ol>
+  <li>Measure the local seam warp (&sect;9.18) against the running mosaic (restricted to this tile's bounding box).</li>
+  <li>Apply the dense displacement field to both the warped tile and its match proxy.</li>
+  <li>Compute the feather weight (distance transform of the valid mask) and optionally multiply by the quality score.</li>
+  <li>Depending on blend mode: feather-accumulate (<code>sum += I &middot; w</code>, <code>wsum += w</code>) or deposit into the multiband blender store.</li>
+  <li>Update the running match canvas (max of existing content and new tile) for the next tile's seam measurement.</li>
+</ol>
+
+<h3 id="s9_18">9.18 Local seam warp</h3>
+<p>Even with WCS-free global poses solved perfectly, individual stacked panels can carry residual local distortion from seeing differences or imperfect stacking. The local seam warp fits a non-rigid dense displacement field per tile.</p>
+<p>Measurement runs on the sharpened match images (so phase correlation sees enough structure), and the recovered field is applied to the original pixels. Procedure:</p>
+<ol>
+  <li><b>Autoplace APs</b> over the overlap between this tile and the already-composited running mosaic (grid at <code>ap_spacing</code>, size <code>ap_size</code>, over pixels where <code>cur &amp; ref</code> both have data).</li>
+  <li><b>Gate 1 &mdash; structure</b>: compute local high-pass std inside each AP window; drop APs whose structure is below 50% of the median structure. Low-structure APs can't localise reliably and would just add noise.</li>
+  <li><b>Phase correlation per AP</b> (<code>_ap_phase_shifts_per_ap</code>) &mdash; returns each AP's local shift and response strength.</li>
+  <li><b>Gate 2 &mdash; response</b>: drop APs with response below <code>ap_min_response</code> (default 0.30) or flagged by MAD z-score outlier rejection (<code>_reject_ap_outliers</code>).</li>
+  <li><b>Guard &mdash; well-placed</b>: if the median AP shift magnitude is below <code>local_warp_min_shift</code> (default 0.5 px), skip the warp. The APs are measuring sub-pixel noise, not real distortion.</li>
+  <li><b>Confined dense field</b>: for every point on a grid over the tile, interpolate from the <i>nearby</i> APs only, with Gaussian weighting:</li>
+</ol>
+<div class="matheq">w_{\mathrm{AP}}(x, y) = r_{\mathrm{AP}} \cdot \exp\!\left(-\frac{\|(x, y) - \mathbf{c}_{\mathrm{AP}}\|^2}{2 \sigma^2}\right)</div>
+<p>and</p>
+<div class="matheq">\mathbf{s}(x, y) = \frac{\sum_k w_k(x, y) \cdot \mathbf{s}_k}{\sum_k w_k(x, y)}</div>
+<p>Band width <code>&sigma; = 2 &middot; ap_size</code> (default; configurable via <code>seam_band_mult</code>). A pixel with no AP support within <code>~&sigma;</code> gets <i>zero</i> displacement, not an extrapolation from a distant edge's APs. This confines each seam's correction to a band around that seam, so a big pull on one edge cannot propagate across the tile and disturb the opposite edge.</p>
+<p>7. <b>Boundary feather</b>: compute the distance transform of the overlap mask and feather the field linearly to zero at the overlap boundary (over <code>ap_size</code> pixels). Non-overlap pixels can't be measured, so they get the global placement rather than an extrapolated local correction.</p>
+<p>8. Apply the dense field via <code>cv2.remap</code> to both the pixel data and the match proxy.</p>
+
+<h3 id="s9_19">9.19 Blend modes</h3>
+
+<h4>Feather (default)</h4>
+<p>Distance-transform feather weights:</p>
+<div class="matheq">w(x, y) = \frac{d_{\partial\mathcal{M}}(x, y)}{\max\, d_{\partial\mathcal{M}}}</div>
+<p>normalised per tile to a <code>[0, 1]</code> range. Optionally multiplied by the tile's quality score (sharper tiles get stronger weight near the seam midline). Accumulated: <code>sum += I &middot; w</code>, <code>W += w</code>, final <code>mosaic = sum / W</code>. Fast and visually clean when photometric equalisation has done its job.</p>
+
+<h4>MultiBand</h4>
+<p>OpenCV's Laplacian-pyramid blender (<code>cv2.detail_MultiBandBlender</code>, available with <code>opencv-contrib-python</code>). SASpro drives it in <b>winner-take-all</b> mode: each pixel gets owned by exactly one tile (the one with the highest <code>feather &times; quality</code> weight), and the blender does the cross-band smoothing across those hard ownership transitions.</p>
+<p>At each pyramid level <code>&ell;</code>, the output Laplacian is:</p>
+<div class="matheq">L_{\ell}^{\mathrm{out}} = \sum_i W_i^{\ell} \cdot L_i^{\ell}</div>
+<p>with the owner mask low-passed down through the pyramid levels so finer details hand off at the exact seam while coarser bands smooth out across a wide crossover zone. Final collapse of the output pyramid back to full resolution.</p>
+<p>Why winner-take-all masks instead of soft masks: feeding the multiband blender soft (overlapping) masks confuses its weight normalisation across pyramid levels and ghosts the output. Hard ownership + per-level smoothing is the standard way to drive this blender for mosaic work and is what Brown &amp; Lowe (2007) describe in their panorama stitching paper.</p>
+
+<h4>None</h4>
+<p>Binary ownership, no feather at all. Debug mode &mdash; useful when inspecting where tiles disagree.</p>
+
+<h3 id="s9_20">9.20 Multiband no-data fill</h3>
+<p>Multiband blending has an issue with tile rectangles: at the tile edge, a Laplacian pyramid sees a hard cliff from zero (border fill) to actual content, and that cliff bleeds down through the coarse pyramid levels, printing a thin dark ring along the seam even when the ownership masks are correct.</p>
+<p>SASpro fixes this by replacing the no-data region with a smooth extension of the tile's own content before feeding the blender. For each tile buffer:</p>
+<ol>
+  <li>Gaussian-blur the whole tile (sigma = 8).</li>
+  <li>At valid pixels, use the original value; at invalid pixels, use the blurred value.</li>
+  <li>Iterate 5 times.</li>
+</ol>
+<p>This grows a soft extension of the tile's content outward into the no-data region. Far no-data (way outside the tile) is still smooth junk, but the blender's winner-take-all mask excludes those pixels from the output anyway. What matters is that there's no longer a hard cliff at the tile boundary for the pyramid to carry down.</p>
+
+<h3 id="s9_21">9.21 BBox warping</h3>
+<p>Warping each tile into its own bounding box (rather than the full mosaic canvas) is important for memory on large mosaics. The bounding box is computed from the pose-rotated tile corners in canvas coordinates, with a 2-pixel pad on each side.</p>
+<p>The pad fixes a subtle issue: <code>cv2.warpAffine(INTER_LINEAR)</code> interpolates against the zero border, which darkens the outermost row and column of the warped output by a fraction. If the bounding box were tight, this darkened edge would land exactly at the bbox boundary and print a thin seam line (one pixel wide, a few percent darker). The pad pushes the interpolation seam outside the valid-pixel mask, where the blend masks exclude it from the output. Same effect as the old full-canvas warp used to get naturally from neighbouring tiles covering those edge pixels.</p>
+
+<h3 id="s9_22">9.22 Parallelisation</h3>
+<p>Threading strategy:</p>
+<ul>
+  <li><b>Pre-cache phase</b>: one job per tile for match-mono enhancement, feature detection, correlation proxy. Each cache has a single writer, so no locking needed; the subsequent matching phase is read-only.</li>
+  <li><b>Matching phase</b>: one job per tile pair across a thread pool. OpenCV calls release the GIL so threads give real speedup. OpenCV's own per-call thread pool is set to 1 during the phase (via <code>cv2.setNumThreads(1)</code>) to avoid oversubscription; it's restored afterwards.</li>
+  <li><b>Compose pre-warp phase</b>: one job per tile across the thread pool, same OpenCV thread settings as above.</li>
+  <li><b>Compose sequential phase</b>: single-threaded by necessity (reads and updates the running match canvas), but gets the full OpenCV thread pool back for the warping and blending operations within each tile.</li>
+</ul>
+
+<div class="credit">
+<b>Credits.</b> The entire Surface Mosaic pipeline is new work by <b>Franklin Marek</b> for SetiAstro Suite Pro, with edge-case robustness shaped by extensive test-data contributions from the <b>SetiAstro Discord community</b>. SASpro-exclusive content: the <b>four-tier alignment ladder</b> (ORB &rarr; SIFT &rarr; patch-slide correlation &rarr; shared-disk geometry) with the <b>overlap NCC ghost gate</b> uniformly applied; the <b>matching-only multiscale structure boost</b> (reuses SASpro's shared multiscale decomposition infrastructure to amplify mid-band detail layers 2&ndash;3 at ~2&ndash;4&nbsp;px structure so soft/unsharpened stacks register, strictly matching-only so output pixels are untouched); the <b>shared-disk solution</b> (percentile-threshold limb extraction robust to 98%-disk tiles where Otsu silently splits inside the disk, Kasa hub fit for the shared radius, Gauss-Newton fixed-radius centre refit from a geometric seed &ldquo;arc midpoint plus R toward disk-mask centroid&rdquo; so a sliver arc cannot put the centre on the wrong side); the <b>global limb edges</b> that link limb-bearing tiles through the shared disk centre regardless of mutual overlap; the <b>gain-only sky-safe photometry</b>; the <b>radial limb-darkening photometric model</b> (iterated weighted-median solve against a global <code>&mu;(r/R)</code> profile with limb and sky masking, decoupling equalisation from overlap topology); the <b>per-tile log-domain quadratic gradient-surface fit</b> (6-coefficient polynomial per tile, block-diagonal normal equations, ridge-pinned gauge, limb-masked bright samples, multiplicative so still sky-safe); the <b>spanning-tree pose seeding</b> for the robust similarity solve (composes pairwise transforms as proper 2D similarities <code>t_j = t_i + R(&theta;_i)d</code>); the <b>confined local seam warp</b> (double-gated AP shifts on structure and response, median-shift guard, seam-band confinement, boundary feathering); the <b>multiband winner-take-all compositing</b> with no-data fill; the <b>pre-warp parallel + sequential blend</b> architecture; and the <b>pose-aware bounding-box warping</b> with 2-pixel INTER_LINEAR edge-dark pad.
+<br><br>
+Reused SASpro planetary-stacker primitives (also original SASpro work, cross-credited here because they are called directly in this module): the Hann-windowed bandpass match-image generator (<code>_bandpass</code>), the Fourier-Mellin rotation estimator (<code>_estimate_rotation_fm</code>), the gradient-SSD subpixel polish (<code>_refine_shift_ssd</code>), the AP autoplacement over signal (<code>_autoplace_aps</code>), the per-AP phase-correlation shift extractor (<code>_ap_phase_shifts_per_ap</code>), the AP outlier rejector (<code>_reject_ap_outliers</code>), the sparse-to-dense displacement-field constructor (<code>_dense_field_from_ap_shifts</code>), and the quality score (<code>_quality_score</code>).
+<br><br>
+External algorithms and tools: <b>ORB</b> is <b>Rublee et al. (2011, ICCV)</b>; <b>SIFT</b> is <b>Lowe (2004, IJCV 60:91)</b>, which also contributes the Lowe ratio test used by both feature matchers; <b>RANSAC</b> is <b>Fischler &amp; Bolles (1981, Comm. ACM 24(6):381)</b>; <b>phase correlation</b> is <b>Kuglin &amp; Hines (1975, IEEE)</b>; <b>Fourier-Mellin registration</b> is <b>De Castro &amp; Morandi (1987, IEEE PAMI 9(5):700)</b>; <b>algebraic circle fit</b> is <b>Kasa (1976, IEEE Trans. Instrum. Meas. 25(1):8)</b>; <b>Laplacian pyramid blending</b> is <b>Burt &amp; Adelson (1983, ACM TOG 2(4):217)</b>, with the panorama-stitching-specific multiband application (hard-ownership masks + per-level pyramid smoothing) following <b>Brown &amp; Lowe (2007, IJCV 74:59)</b>'s AutoStitch work; <b>normalised cross-correlation template matching</b> follows the standard formulation implemented in OpenCV's <code>matchTemplate</code> (<code>TM_CCOEFF_NORMED</code>); <b>distance transform</b> follows <b>Felzenszwalb &amp; Huttenlocher (2004, Theory of Computing)</b>'s linear-time algorithm as implemented in OpenCV.
+<br><br>
+Libraries: <b>OpenCV</b> (<code>cv2</code>) provides ORB and SIFT detection, descriptor matching, RANSAC via <code>estimateAffinePartial2D</code> and <code>findHomography</code>, warp operations (<code>warpAffine</code>, <code>remap</code>), template matching, distance transform, morphology, Gaussian blur, and <code>detail_MultiBandBlender</code> (requires <code>opencv-contrib-python</code>). <b>NumPy</b> provides the array engine and the linear-algebra solves (<code>linalg.solve</code>, <code>linalg.lstsq</code>). <b>SciPy</b> is an optional dependency for the robust similarity solve (<code>optimize.least_squares</code> with <code>soft_l1</code> loss); the pipeline falls back cleanly to the spanning-tree seed when SciPy is unavailable. <b>PyQt6</b> provides the UI framework (worker thread, dialog, custom <code>TileLayoutView</code> painter).
+</div>
+
+</body>
+</html>

@@ -31,7 +31,7 @@ try:
 except Exception:
     stretch_mono_image = None
     stretch_color_image = None
-
+from setiastro.saspro.help_support import make_help_button
 _NONFITS_META_KEYS = {
     "FILE_PATH",
     "FITS_HEADER",
@@ -4331,6 +4331,7 @@ class PlateSolverDialog(QDialog):
         )
         btn_row.addWidget(self.btn_apply_vbundle)
         btn_row.addStretch(1)
+        btn_row.addWidget(make_help_button("plate_solver", self))
         self.btn_go = QPushButton(self.tr("Start"), self)
         self.btn_close = QPushButton(self.tr("Close"), self)
         btn_row.addWidget(self.btn_go)

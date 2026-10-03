@@ -26,7 +26,7 @@ from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_
 from setiastro.saspro.resources import get_icons
 
 from setiastro.saspro.cosmicclarity_engines.sharpen_engine import sharpen_rgb01
-
+from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.cosmicclarity_engines.denoise_engine import denoise_rgb01
 from setiastro.saspro.cosmicclarity_engines.superres_engine import superres_rgb01
 from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
@@ -814,6 +814,7 @@ class CosmicClarityDialogPro(QDialog):
         b_close.clicked.connect(self.reject)
         row.addWidget(self.btn_clear_cache)
         row.addStretch(1)
+        row.addWidget(make_help_button("cosmic_clarity", self))
         row.addWidget(b_run)
         row.addWidget(b_close)
         outer.addLayout(row)
@@ -2033,6 +2034,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
         self.btn_out = QPushButton("Select Output Folder"); self.btn_out.clicked.connect(self._choose_output)
         row_io.addWidget(self.btn_in)
         row_io.addWidget(self.btn_out)
+        row_io.addWidget(make_help_button("cosmic_clarity_satellite", self))
         left.addLayout(row_io)
 
         left.addWidget(QLabel("Use GPU Acceleration:"))

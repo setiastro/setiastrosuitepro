@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>RGB Align</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>RGB Align</h1>
+<p class="sub">Align Red and Blue channels onto Green — correcting chromatic aberration, atmospheric dispersion, and sensor-level channel misalignment with five modes including two algorithms unique to SASpro.</p>
+
+<div class="hero">
+<b>The channel-registration problem.</b> Chromatic aberration smears each color channel into a slightly different spatial pattern — worst at the frame corners (lens CA) or across the whole frame (atmospheric dispersion in planetary imaging). The standard fix is "align the channels" — but <i>which</i> alignment algorithm matters enormously. A single stars-across-the-whole-field fit is dominated by central stars where there's no CA to correct, leaving the corners as badly misaligned as before. A rigid translation fits ADC color offsets perfectly but can't handle lens CA. This tool offers five modes — three standard (Homography, Affine, Poly 3/4) plus two developed specifically for cases nothing else handles well: <b>EDGE</b> for corner-dominant lens CA and <b>Planet Centroid (ADC)</b> for atmospheric dispersion on planetary imagery. Plus a manual nudge mode for the final 1-pixel polish.
+</div>
+
+<h2>1. The basic idea</h2>
+
+<p>Every mode in this tool does the same high-level thing: find the geometric relationship between each channel and the Green channel, then warp Red and Blue so they land on Green's pixel grid. Green itself is never changed — it's the reference frame. The output is a new RGB image where R, G, and B are pixel-aligned.</p>
+
+<p>This matters because almost every color-processing step downstream — saturation enhancement, white balance, star color extraction, luminance recombination — assumes the three channels are already aligned. If they aren't, you get color fringing, star halos with cyan/magenta edges, and desaturated star cores. RGB Align is the fix-it step that goes between calibration/stretching and color-aware processing.</p>
+
+<h2>2. The five modes</h2>
+
+<table>
+<tr><th>Mode</th><th>What it fits</th><th>Use for</th></tr>
+<tr><td><b>Planet Centroid (ADC)</b></td><td>Rigid translation (shift only) based on planet disc centroid matching.</td><td>Planetary imaging with atmospheric dispersion. Jupiter / Saturn / Mars from any ground-based rig where you weren't using (or your ADC wasn't perfectly tuned for) atmospheric dispersion correction.</td></tr>
+<tr><td><b>EDGE</b></td><td>Homography (or affine fallback) fit to outer-ring stars only — center stars are deliberately excluded.</td><td>Corner-dominant lens chromatic aberration. Fast astrographs (f/2-f/4), camera lenses, or any optical system where CA is strongly radial and worst at the edges.</td></tr>
+<tr><td><b>Homography</b></td><td>Standard 8-DOF projective fit across all detected stars via astroalign.</td><td>General-purpose. Works well for mild uniform CA across the whole frame.</td></tr>
+<tr><td><b>Affine</b></td><td>6-DOF affine fit (shift + scale + rotate + shear) across all detected stars.</td><td>When channels are mostly parallel with minor shift/scale differences. Simpler, more constrained than homography.</td></tr>
+<tr><td><b>Poly 3 / Poly 4</b></td><td>Polynomial residual (order 3 or 4) on top of a base fit.</td><td>Strong nonlinear distortion. Order 4 only when 3 isn't enough; needs plenty of matched stars to avoid over-fitting.</td></tr>
+</table>
+
+<div class="pub">
+<b>Original to SASpro.</b> The <b>EDGE</b> algorithm (outer-ring star selection with inner-field exclusion) and the <b>Planet Centroid ADC</b> mode (two-pass intensity-weighted centroid + SSD gradient refinement with quadratic subpixel polish) are both original contributions. Other tools offer the standard affine/homography fit; neither of these two targeted modes exists anywhere else that I'm aware of. The EDGE approach specifically addresses the "central stars dominate the fit" problem that leaves corner CA uncorrected in any whole-field solver.
+</div>
+
+<h2>3. EDGE mode — fixing corner chromatic aberration</h2>
+
+<p>Standard astroalign-based color alignment detects stars everywhere, builds triangle matches, solves for the best transform. Because central stars outnumber corner stars (there's more area in the middle of a frame than at the edges, geometrically), the fit is biased toward the center. Central stars have zero CA (they're on the optical axis) so they fit a near-identity transform perfectly, and the resulting whole-field solution leaves corner stars with as much CA as they started with.</p>
+
+<p>EDGE flips this on its head: throw out the central stars entirely and solve only on outer-ring stars where the CA actually lives. Specifically:</p>
+
+<ol>
+  <li>Run SEP star detection on both the source channel (R or B) and the reference channel (G).</li>
+  <li>Compute each star's distance from frame center.</li>
+  <li>Keep only stars where r ≥ 0.38 × R<sub>max</sub> (the outer 62% of the radial range). The inner 38% is thrown out — those stars have little or no CA to measure.</li>
+  <li>Require at least 6 stars in the outer 55-100% ring (the "very edge" region). If this isn't met, EDGE declines and falls back to astroalign.</li>
+  <li>Match outer-ring source stars to outer-ring reference stars via nearest-neighbour with a 10-px tolerance (generous enough for ordinary CA but tight enough to avoid false matches).</li>
+  <li>Fit a homography (RANSAC, 2.5-px reprojection threshold) — homography is used because it can capture the radial trapezoidal distortion typical of lens CA. If homography fails, fall back to affine. If affine also fails, fall back to standard whole-field astroalign.</li>
+</ol>
+
+<p>The result: a transform that fits the corner misalignment where it matters, at the cost of being potentially less-perfect in the (nearly-zero-CA) center. Since the center starts near-perfect anyway, this trade is almost always correct.</p>
+
+<div class="warn">
+<b>When EDGE doesn't help.</b> If your CA is uniform across the frame (common with mild stacking misalignment, slight collimation issues, or filter-stack color-shift), EDGE will produce the same answer as the standard Homography mode because outer and inner stars demand the same transform. The payoff for EDGE is specifically on frames with <i>radial</i> CA — where the pattern of misalignment increases with distance from center. For uniform CA, standard Homography is simpler and just as good.
+</div>
+
+<h2>4. Planet Centroid (ADC) mode — fixing atmospheric dispersion</h2>
+
+<p>Atmospheric dispersion separates light by wavelength as it refracts through the atmosphere — a planet imaged low on the horizon shows its Red, Green, and Blue images shifted vertically by a few pixels relative to each other. Hardware ADC prisms correct this at capture time; this mode corrects it in post. There are no stars to match on a planet image, so the standard star-matching approaches fail. Planet Centroid uses the planet disc itself:</p>
+
+<p><b>Pass 1: Intensity-weighted centroid.</b> For each channel, normalize to [0, 1] via percentile stretch, mask pixels above the signal floor threshold (default 0.05), and compute the mass-center of the resulting weighted disc. The centroid shift between R-and-G and between B-and-G gives the coarse per-channel offset. This is robust to limb darkening (bright limbs dominate the mass), hot pixels (negligible mass contribution), and degrades gracefully as the planet fills the frame — no morphological cleanup needed.</p>
+
+<p><b>Pass 2: SSD gradient refinement.</b> The centroid pass gets within a pixel or two but can't do sub-pixel accuracy — the planet's internal brightness distribution varies between channels (methane bands in R vs G on Jupiter, for example), biasing a pure brightness-centroid. Pass 2 fixes this by comparing <i>structure</i> instead of brightness: compute the Sobel gradient magnitude of both channels, normalize each to zero-mean and unit-variance, then brute-force search over a ±8-px window for the shift that minimizes the sum-of-squared-differences between the two gradient images. A quadratic polish on the SSD surface gives the final sub-pixel offset.</p>
+
+<div class="tip">
+<b>Why gradient matching works for ADC.</b> Properly ADC-corrected R, G, and B channels of a planet show the same cloud bands, the same polar cap outlines, the same ring edges — the <i>spatial structure</i> is identical even when the brightness values differ by channel-dependent factors. This is the grey-world hypothesis applied locally: real surface features are achromatic in position even when they're chromatic in intensity. Matching on gradients (where brightness differences cancel) finds the geometric alignment that makes those features sit on top of each other, independent of per-channel brightness or color response.
+</div>
+
+<p>Output is a rigid translation (dx, dy) per channel — no rotation, no scale. Appropriate for ADC because the dispersion is a pure shift, not a warp.</p>
+
+<h2>5. Standard modes — Homography, Affine, Poly 3/4</h2>
+
+<p>These use astroalign (triangle-invariant matching + RANSAC) on all detected stars, then re-fit the transform in the chosen model's degrees of freedom:</p>
+
+<ul>
+  <li><b>Homography</b> — 8 DOF projective. The default for general-purpose CA. Captures translation, rotation, scale, shear, and keystone perspective.</li>
+  <li><b>Affine</b> — 6 DOF linear. Dropping the perspective terms. Appropriate when channels are known to differ by rigid-plus-scale geometry (sensor-level channel misalignment, say).</li>
+  <li><b>Poly 3 / Poly 4</b> — Polynomial residual on top of a base homography. Order 3 fits mild residual nonlinear distortion; order 4 fits stronger. Both need lots of well-distributed matched stars.</li>
+</ul>
+
+<p>All three run a "hungry" fallback pass if the first solve returns stars too clustered in the center: lower sigma (3.0 instead of 5.0), smaller min_area (3 instead of 5), higher max control points (120 instead of 50). This usually fixes the "central cluster" bias on the standard-mode solvers (the EDGE mode addresses it structurally instead).</p>
+
+<h2>6. The SEP sigma control and Trial Detect</h2>
+
+<p>EDGE and the standard star-matching modes need SEP to detect stars first. The <b>SEP sigma</b> spinbox sets the detection threshold:</p>
+
+<div class="keys">
+<b>SEP sigma</b> — detection threshold in sigmas above background. Default 5. Lower (3) catches more stars but may include noise; higher (10-20) only keeps bright stars but risks too few matches on sparse fields.
+<br><b>Trial detect stars</b> — runs SEP on the green channel with the current sigma, reports total stars found and how many are in the EDGE outer ring. Perfect for pre-flight tuning without committing to a full alignment run.
+</div>
+
+<p>Trial Detect output reads like <code>sigma = 5.0, total stars (green): 342, outer-ring stars (used by EDGE): 61</code>. If outer-ring count is below 20 for EDGE mode, lower sigma. If total count exceeds 10,000, raise it (dense star fields confuse the triangle matcher).</p>
+
+<h2>7. Signal floor (Planet Centroid mode)</h2>
+
+<p>When Planet Centroid mode is selected, the SEP controls are hidden and the Signal floor spinbox appears instead:</p>
+
+<div class="keys">
+<b>Signal floor (0..1)</b> — the normalized-brightness threshold above which pixels are considered part of the planet disc for centroid calculation. Default 0.05. Lower (0.02-0.03) catches more of a dim limb; higher (0.10-0.15) ignores faint halos and noise on bright targets.
+</div>
+
+<p>Lower values make the centroid pull more weight from the dim outer limb; higher values ignore it entirely. For Jupiter, 0.05 is usually right. For Mars, 0.08-0.10 (the disc is small and bright). For Saturn with rings, 0.05-0.07 (lower includes the dim ring edges, which can bias the centroid vertically — raise if Saturn is giving odd results).</p>
+
+<h2>8. Manual mode — pixel-exact nudging with live preview</h2>
+
+<p>The <b>Manual…</b> button opens a secondary dialog with two direction pads (one for Red offset, one for Blue offset) and a live preview showing the current result. Each pad has arrow keys (↑↓←→) for 1-pixel nudges and a center ⟲ button for reset. The preview updates on a 60ms debounce — nudge rapidly and the preview catches up when you stop.</p>
+
+<p>For planet alignment, the preview automatically centers on the planet (detected via the Green channel centroid, with a ROI sized to roughly 3.2× the disc radius). For deep-sky, it shows a center crop of ~45% of the frame width.</p>
+
+<div class="tip">
+<b>When to use Manual mode.</b> After running an automatic mode, if a star or planet edge still shows a 1-pixel color fringe you can't shake, open Manual and nudge the problem channel 1 pixel in the needed direction. Manual mode's output is a pure translation (no rotation or scale), so it's a top-up correction, not a substitute for the automatic modes. For ADC where the correction is already a pure shift, Manual can be used standalone — just open it, nudge until the preview looks clean, apply.
+</div>
+
+<h2>9. Output and delivery</h2>
+
+<p><b>Create new document (keep original)</b> checkbox controls whether the result replaces the current view's pixels or opens as a new document. Default is new document — safer for exploratory work, lets you compare before and after. Uncheck for in-place application that goes through the normal edit-history / undo stack.</p>
+
+<p>The <b>summary box</b> below the progress bar shows the actual transforms applied:</p>
+
+<div class="eq">Red → Green:
+  points: 61 (edge: 42 ≥55%Rmax)
+  model: homography
+     0.999821  -0.001203    1.432
+     0.001194   0.999896   -0.521
+     0.000001  -0.000000    1.000
+
+Blue → Green:
+  points: 58 (edge: 39 ≥55%Rmax)
+  model: homography
+     1.000134   0.000841   -1.847
+    -0.000852   1.000076    0.623
+    -0.000001   0.000001    1.000</div>
+
+<p>For Planet Centroid mode, the summary reads as pure shifts (dx, dy) instead of matrices. For Manual mode it reads the applied offsets. The summary is also forwarded to the main window's log panel if available.</p>
+
+<h2>10. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Lens CA on wide-field stacks.</b> You've stacked a wide-field frame from a fast astrograph and the corner stars have visible cyan/red fringing. Model: <b>EDGE</b>. SEP sigma: start at 5, Trial Detect, aim for 30+ outer-ring stars. Run Align. Create new document checked, so you can inspect corners side-by-side. If the corner fringes are gone, apply. If some corners improved more than others, try EDGE again with sigma 3 to catch more stars.
+</div>
+
+<div class="workflow">
+<b>Jupiter from stacked AVI frames.</b> You've stacked a lucky-imaging run from near the horizon and Jupiter shows the classic R-above-B dispersion smear. Model: <b>Planet Centroid (ADC)</b>. Signal floor: 0.05. Run Align. Summary should show R and B shifts of a few pixels in opposite directions. If the shift looks wrong (zero, or weirdly huge), raise the signal floor to 0.10 — the moons or background noise may be biasing the centroid. If the result still has residual fringing on the limb, follow up with Manual mode for a 1-pixel nudge.
+</div>
+
+<div class="workflow">
+<b>General mild CA on broadband stacks.</b> You've got a deep-sky integration with mild uniform channel misalignment. Model: <b>Homography</b> (the default). Run Align. For most ordinary CA this is enough and finishes in seconds. If homography is overfitting (saturated stars develop faint secondary PSFs), try <b>Affine</b> instead for a more constrained fit.
+</div>
+
+<div class="workflow">
+<b>Saturn with rings.</b> Saturn is special because the rings can bias a disc-only centroid vertically. Model: <b>Planet Centroid (ADC)</b>, but start with Signal floor 0.08 to ignore the fainter outer ring edges. If the alignment looks over-corrected (the rings now show reverse fringing), go even higher — 0.12 to keep only the disc proper. If under-corrected, lower to 0.05 and accept that the rings have some influence.
+</div>
+
+<div class="workflow">
+<b>Camera lens shots of the Milky Way.</b> DSLR or mirrorless camera-lens shots almost always have strong radial CA, worst at the corners. Model: <b>EDGE</b>. The lens-corner CA is exactly what this mode was built for. Trial Detect first — camera lens frames usually have thousands of stars; sigma 10-15 catches the brightest few hundred, which is plenty.
+</div>
+
+<h2>11. Headless use</h2>
+
+<p>The tool exposes <code>align_rgb_array(img, model, sep_sigma)</code> as a direct function call for scripting: pass a 3-channel NumPy array, get back the aligned result. Model strings are <code>planet-centroid</code>, <code>edge-sep</code>, <code>homography</code>, <code>affine</code>, <code>poly3</code>, <code>poly4</code>. There's also a <code>run_rgb_align_headless(main_window, document, preset)</code> entry point for shortcut-system integration where the preset carries <code>{"model": "...", "sep_sigma": N, "new_doc": true/false}</code>.</p>
+
+<h2>12. Technical details</h2>
+<p class="tech-lead">The intensity-weighted centroid math, Sobel-SSD refinement with quadratic subpixel polish, EDGE ring geometry, and the hungry fallback.</p>
+
+<h3>12.1 Intensity-weighted centroid (planet mode, Pass 1)</h3>
+
+<p>Normalize the channel to [0, 1] via a robust percentile stretch (p<sub>0.5</sub>, p<sub>99.5</sub>) so hot pixels don't dominate the normalization:</p>
+
+<div class="matheq">\tilde{I}(x,y) = \frac{I(x,y) - I_{0.5}}{I_{99.5} - I_{0.5}}</div>
+
+<p>Build a signal mask by thresholding at the signal floor φ (user-controlled, default 0.05):</p>
+
+<div class="matheq">M(x,y) = \mathbb{1}\{\tilde{I}(x,y) > \phi\}</div>
+
+<p>Compute the intensity-weighted centroid over the mask:</p>
+
+<div class="matheq">c_x = \frac{\sum_{x,y} \tilde{I}(x,y) \cdot M(x,y) \cdot x}{\sum_{x,y} \tilde{I}(x,y) \cdot M(x,y)}</div>
+
+<div class="matheq">c_y = \frac{\sum_{x,y} \tilde{I}(x,y) \cdot M(x,y) \cdot y}{\sum_{x,y} \tilde{I}(x,y) \cdot M(x,y)}</div>
+
+<p>The coarse per-channel shift is the centroid difference:</p>
+
+<div class="matheq">(\Delta x_0, \Delta y_0) = (c_x^{\mathrm{ref}} - c_x^{\mathrm{src}}, \; c_y^{\mathrm{ref}} - c_y^{\mathrm{src}})</div>
+
+<p>A minimum of 16 signal pixels is required; below that the mode fails over to astroalign. Compared to a bounding-box geometric center (naive approach), the intensity-weighted centroid handles limb darkening (brighter limb pixels pull the centroid toward the actual disc center) and remains stable as the planet grows to fill most of the frame — the geometric center would snap to the frame center when the disc touches multiple edges, which is useless.</p>
+
+<h3>12.2 Sobel SSD refinement (planet mode, Pass 2)</h3>
+
+<p>After applying the coarse shift, pre-warp the source channel by (Δx<sub>0</sub>, Δy<sub>0</sub>). Compute Sobel gradient magnitude of both the shifted source and the reference:</p>
+
+<div class="matheq">G = \sqrt{G_x^2 + G_y^2}</div>
+
+<p>Normalize each gradient image to zero mean and unit variance:</p>
+
+<div class="matheq">\hat{G} = \frac{G - \langle G \rangle}{\sigma_G + \varepsilon}</div>
+
+<p>This normalization is critical for the planet-color-balance robustness — it removes any channel-dependent intensity response and leaves only spatial structure. The SSD on normalized gradients then measures geometric alignment independent of per-channel brightness.</p>
+
+<p>Crop the inner 80% of each gradient image (10% border on each side) to avoid Sobel edge-effects at the frame boundary from the warpAffine's REPLICATE border mode. Then compute SSD over all displacements in a ±r window (default r = 8 px):</p>
+
+<div class="matheq">\mathrm{SSD}(\Delta x, \Delta y) = \frac{1}{N} \sum_{(x,y)} \left(\hat{G}_{\mathrm{ref}}(x,y) - \hat{G}_{\mathrm{src}}(x + \Delta x, y + \Delta y)\right)^2</div>
+
+<div class="matheq">(\Delta x^*, \Delta y^*) = \arg\min_{\Delta x, \Delta y \in [-r, r]} \mathrm{SSD}(\Delta x, \Delta y)</div>
+
+<p>Brute-force search is used because the window is small (17 × 17 = 289 samples), the SSD surface is well-behaved near the minimum, and the overhead of a smarter optimizer isn't justified at this problem size. Each SSD evaluation uses only the overlapping portion of the shifted images (clipped at the crop boundaries) to avoid padding artifacts.</p>
+
+<h3>12.3 Quadratic subpixel polish</h3>
+
+<p>The brute-force search returns an integer-pixel minimum. To get sub-pixel accuracy, fit a parabola to the SSD values at (Δx<sup>*</sup> - 1, Δx<sup>*</sup>, Δx<sup>*</sup> + 1) and solve for the vertex. Standard three-point quadratic minimum formula with v<sub>-</sub>, v<sub>0</sub>, v<sub>+</sub> as the three SSD values:</p>
+
+<div class="matheq">\delta = \mathrm{clip}\!\left(\frac{v_- - v_+}{2(v_- - 2v_0 + v_+)}, \; -0.75, \; 0.75\right)</div>
+
+<p>The clip to [-0.75, +0.75] prevents the subpixel correction from exceeding one pixel's worth of adjustment, which would indicate the parabolic fit has broken down (the true minimum is outside the ±1-pixel neighborhood). Applied separably in x and y, giving final sub-pixel shifts added to the integer brute-force result.</p>
+
+<p>Total translation output = coarse centroid shift + brute-force integer SSD minimum + quadratic sub-pixel polish. Typical accuracy on a well-exposed planet is ~0.1 px, limited by image noise and gradient computation sensitivity rather than the algorithm itself.</p>
+
+<h3>12.4 EDGE ring geometry</h3>
+
+<p>Frame center and corner radius:</p>
+
+<div class="matheq">\mathbf{c} = (W/2, H/2)</div>
+
+<div class="matheq">R_{\max} = \sqrt{(W/2)^2 + (H/2)^2}</div>
+
+<p>Per-star distance from center:</p>
+
+<div class="matheq">r_i = \sqrt{(x_i - c_x)^2 + (y_i - c_y)^2}</div>
+
+<p>Two radial thresholds govern EDGE behavior. The inner cutoff drops stars from the central zone (where CA is near-zero):</p>
+
+<div class="matheq">\text{keep } p_i \text{ if } r_i \geq 0.38 \cdot R_{\max}</div>
+
+<p>The coverage gate ensures enough stars reach the very edge, where CA is strongest:</p>
+
+<div class="matheq">n_{\mathrm{edge}} = |\{i : r_i > 0.55 \cdot R_{\max}\}| \geq 6</div>
+
+<p>If fewer than 6 stars pass the outer threshold, EDGE declines (there's not enough edge signal to fit a reliable transform) and the pipeline falls back to standard astroalign on all stars. These two thresholds — 0.38 inner, 0.55 outer — are tunable constants (<code>EDGE_INNER_FRAC</code> and <code>EDGE_FRAC</code> in the worker class) chosen empirically to balance "throw away the useless center" against "keep enough stars to fit".</p>
+
+<h3>12.5 Nearest-neighbor matching</h3>
+
+<p>Rather than running triangle matching on just the outer-ring subset (which would be expensive and often fail with few points), EDGE pairs source and reference stars by proximity. For each reference outer-ring star, find its nearest neighbor in the source star set:</p>
+
+<div class="matheq">j^* = \arg\min_j \|\mathbf{p}_j^{\mathrm{src}} - \mathbf{p}_i^{\mathrm{ref}}\|</div>
+
+<p>Accept the pair if the distance is below the tolerance τ = 10 px:</p>
+
+<div class="matheq">\|\mathbf{p}_{j^*}^{\mathrm{src}} - \mathbf{p}_i^{\mathrm{ref}}\| \leq \tau</div>
+
+<p>The 10-px tolerance is generous enough to accommodate ordinary chromatic aberration (typically 1-5 px) but tight enough to reject false matches between distinct stars. Setting τ too low (3-4 px) would reject legitimate CA-shifted matches; setting it too high (30+ px) would introduce bad pairs that would then poison the RANSAC fit.</p>
+
+<p>Matched pairs feed into <code>cv2.findHomography</code> (RANSAC, 2.5-px inlier threshold, 2000 iterations, 0.999 confidence). If homography fails to solve or returns a degenerate matrix, fall back to <code>cv2.estimateAffine2D</code> with the same settings. If both fail, fall through to standard astroalign on the full star set.</p>
+
+<h3>12.6 Astroalign hungry fallback</h3>
+
+<p>Standard-mode solves (Homography / Affine / Poly) start with astroalign at sigma 5.0, min_area 5, max_control_points 50 — tuned for typical fields. If the resulting matched points are too clustered in the center (checked via the same radial geometry as EDGE: fewer than 6 points at &gt; 0.55 × R<sub>max</sub>), astroalign re-runs with "hungry" settings: sigma 3.0, min_area 3, max_control_points 120. The hungry pass catches dimmer stars at the edges that the tighter default missed. If the hungry pass improves coverage, its results are used; otherwise the first pass's results stand.</p>
+
+<p>This two-stage approach keeps the common case fast (default settings succeed on most frames) while automatically recovering on sparse or center-dominated fields.</p>
+
+<h3>12.7 Transform application</h3>
+
+<p>Each channel is warped onto Green's pixel grid using OpenCV's Lanczos-4 interpolation with constant-zero border fill:</p>
+
+<ul>
+  <li><b>translate</b> (Planet Centroid output) — <code>cv2.warpAffine</code> with a 2×3 translation matrix.</li>
+  <li><b>affine</b> — <code>cv2.warpAffine</code> with the fitted 2×3 affine matrix.</li>
+  <li><b>homography</b> — <code>cv2.warpPerspective</code> with the fitted 3×3 homography.</li>
+  <li><b>poly3 / poly4</b> — custom warp via <code>cv2.remap</code> using map arrays computed by evaluating the polynomial on every output pixel's normalized coordinates.</li>
+</ul>
+
+<p>The warp is applied only to R and B. G is unchanged (it's the reference). The output image stacks the warped R, original G, and warped B into a new 3-channel array matching the input dtype. The simpler single-pass warp here (unlike the <a href="star_alignment.html">Stellar Alignment</a> anti-ring blend) is appropriate because RGB alignment shifts are small (typically &lt; 5 px) — Lanczos ringing is minimal and the sharpness benefit is worth more than ring suppression at this scale.</p>
+
+<h3>12.8 Manual mode ROI detection</h3>
+
+<p>When Manual mode opens on a planet image, the preview ROI auto-centers on the planet. Detection uses the same intensity-weighted centroid as Planet Centroid mode, run on the Green channel. The planet's effective radius is estimated from the signal pixel count (assuming a circular disc):</p>
+
+<div class="eq">r_planet = sqrt(n_signal / π)
+ROI_size = clip(3.2 × r_planet, 160, 900)</div>
+
+<p>The 3.2× multiplier gives roughly 3 planet-radii of context around the disc, enough to show the limb clearly without wasting preview space on empty sky. The clip bounds prevent the ROI from being either too small (hard to see fringing) or too large (slow preview updates). For deep-sky images or when planet detection fails, the ROI defaults to a 45%-of-frame center crop.</p>
+
+<div class="credit">
+<b>Credits.</b> SASpro RGB Align — the <b>EDGE</b> algorithm (inner-radius exclusion with outer-ring NN matching for corner-dominant lens CA), the <b>Planet Centroid (ADC)</b> mode (two-pass intensity-weighted centroid + Sobel gradient SSD refinement + quadratic subpixel polish), the hungry astroalign fallback for center-clustered matches, and the auto-ROI manual mode with planet-centroid-based framing — are original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components: astroalign (Beroiz, Cabral &amp; Sanchez 2020) for triangle-invariant matching in the Homography / Affine / Poly modes; SEP (Barbary 2016, Python port of Source Extractor by Bertin &amp; Arnouts 1996) for star detection; OpenCV for warp, Sobel, findHomography, estimateAffine2D, and remap; scikit-image's <code>PolynomialTransform</code> for the poly3/poly4 modes.
+</div>
+
+</body>
+</html>

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+  .glyph { font-size:17px; color:#9fe0cf; font-weight:bold; }
+</style>
+</head>
+<body>
+
+<h1>The Image View</h1>
+<p class="sub">The window your image lives in is a tool in its own right &mdash; it does much more than hold a pixmap. The top-bar glyphs are shortcuts to duplicate the view, link it live to other views, copy astrometric solutions between images, apply any image as a mask (including the image as a mask of itself for an instant lightness mask), create preview regions for testing compute-heavy operations before committing to the full image, replay single steps or whole histories from a preview onto the base, overlay a WCS grid, and probe individual pixels. This page covers everything the view can do and the modifier keys that unlock each mode.</p>
+
+
+
+<div class="workflow"><b>Workflow</b><br>
+Everything in the view is <b>already there</b> &mdash; no mode switch, no preference, no menu to arm. Grab the top-left <span class="glyph">⧉</span> to duplicate, link, copy-WCS, or apply-as-mask (modifier key chooses which). Click <span class="glyph">⟂</span> and drag a rectangle to make a preview tab, run compute-heavy tools on it, then click <span class="glyph">⟳</span> to replay the last step on the full image &mdash; or use <span class="glyph">⟳</span>'s dropdown to replay any specific step from the preview's history. Hold <b>Space</b> and click/drag to probe pixel values with a loupe (RGB/K + RA/Dec if a WCS exists). Right-click anywhere in the view for the full menu: rename, send to shelf, open the layers panel for this view, mask controls, and more.
+</div>
+
+<div class="hero">
+<p>The signature idea is that <b>every view is also a document connector</b>. The <span class="glyph">⧉</span> drag tab at the top-left looks like a window-manager grab handle, but what you drop it on, and what modifier you hold while dragging, decides what happens: no modifier opens a new window with a duplicate of the image; Alt makes the two views pan and zoom together live; Ctrl copies the astrometric solution from this image to the one you drop on; Shift turns this image into a mask of that one. And the self-mask trick &mdash; Shift+drag the handle back onto its own view &mdash; is the fastest way to get a lightness mask: no mask-creation dialog, no settings, just an instant mask from the luminance of the image itself. Combine that with the preview tabs (any rectangular ROI becomes its own tab with its own undo stack) and the <span class="glyph">⟳</span> replay button (push any step from the preview onto the full image when you like what you see), and the view stops being a passive container &mdash; it's where the whole workflow is coordinated.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. Top-bar buttons at a glance</a><br>
+<a href="#s2">2. The drag tab &mdash; four modes</a><br>
+<a href="#s3">3. Preview tabs</a><br>
+<a href="#s4">4. The replay button</a><br>
+<a href="#s5">5. Pixel readout and loupe</a><br>
+<a href="#s6">6. WCS grid overlay</a><br>
+<a href="#s7">7. Zoom and pan</a><br>
+<a href="#s8">8. Autostretch</a><br>
+<a href="#s9">9. Linked views in detail</a><br>
+<a href="#s10">10. Masks</a><br>
+<a href="#s11">11. Right-click context menu</a><br>
+<a href="#s12">12. Technical details</a><br>
+</div>
+
+<h2 id="s1">1. Top-bar buttons at a glance</h2>
+<p>Across the top of every view, left to right:</p>
+<table>
+<tr><th>Button</th><th>Function</th></tr>
+<tr><td><span class="glyph">⧉</span></td><td>Drag tab &mdash; duplicate / link / copy WCS / apply as mask (see &sect;2)</td></tr>
+<tr><td><span class="glyph">⟂</span></td><td>Create Preview &mdash; click, then drag a rectangle on the image (see &sect;3)</td></tr>
+<tr><td><span class="glyph">↶</span></td><td>Undo (this view's active document &mdash; Full tab or active preview)</td></tr>
+<tr><td><span class="glyph">↷</span></td><td>Redo (this view's active document)</td></tr>
+<tr><td><span class="glyph">⟳</span></td><td>Replay last preview action on the base image (click), or pick from preview history (dropdown arrow) (see &sect;4)</td></tr>
+<tr><td><span class="glyph">⌗</span></td><td>Toggle WCS grid overlay (see &sect;6)</td></tr>
+<tr><td><i>right side</i></td><td>Current zoom % readout; inline view title (when the window is maximised)</td></tr>
+</table>
+<p>The undo/redo buttons are <b>per-view</b> and <b>per-tab</b>: on the Full tab they walk the base document's history; on a preview tab they walk <i>that preview's</i> isolated history. See &sect;3 for how preview history works.</p>
+
+<h2 id="s2">2. The drag tab &mdash; four modes</h2>
+<p>The <span class="glyph">⧉</span> handle at the top-left of every view is a shape-shifting drag source. The modifier key you're holding <i>when the drag starts</i> decides which of four payloads it carries:</p>
+<table>
+<tr><th>Modifier</th><th>What happens when you drop</th></tr>
+<tr><td><i>(none)</i></td><td><b>Duplicate</b>. Dropping onto the MDI background opens a new window with a duplicate of this image &mdash; a fully independent copy with its own undo history. Great for keeping an untouched reference while you process a second copy.</td></tr>
+<tr><td><b>Alt</b></td><td><b>Link views</b>. Dropping onto another image's view links the two for live pan and zoom sync. You can link any number of views into a group &mdash; a third drop joins all three, a fourth makes it four, and so on. Unlink from the right-click menu (see &sect;9).</td></tr>
+<tr><td><b>Ctrl</b></td><td><b>Copy astrometric solution</b>. Dropping onto another image's view copies this image's WCS onto that one. Useful if you've plate-solved one frame and want to seed the solution onto a crop, a re-processed version, or a frame that lost its solve.</td></tr>
+<tr><td><b>Shift</b></td><td><b>Apply as mask</b>. Dropping onto another image's view sets this image as that image's active mask. A <span class="glyph">■</span> badge appears in the target's title; <code>Ctrl+K</code> toggles the mask overlay visualisation, <code>Ctrl+Shift+I</code> inverts it.</td></tr>
+</table>
+<div class="tip"><b>The self-mask trick.</b> Shift+drag the <span class="glyph">⧉</span> handle back <i>onto its own view</i>. The image becomes a mask of itself &mdash; which is exactly a lightness mask. Bright regions are selected, dim regions are protected. Combine with <code>Ctrl+Shift+I</code> to flip it: now the dim regions are selected and the brights are protected. Any subsequent operation (curves, denoise, saturation) will respect the mask. This is the fastest way to a lightness mask in SASpro, with no mask-creation dialog in the way.</div>
+
+<h2 id="s3">3. Preview tabs</h2>
+<p>Preview tabs let you try out compute-heavy processing on a small part of an image before committing to the full version. Click the <span class="glyph">⟂</span> button, then drag a rectangle on the image. A new tab appears beside <b>Full</b> labelled <i>Preview 1 (<span style="font-family:Consolas,monospace">W&times;H</span>)</i>, and the view switches to showing just that cropped region at full data resolution.</p>
+<p>Create as many previews as you like. Each one gets its own tab, its own <b>isolated undo/redo stack</b>, and its own ROI-synthesized WCS (so pixel readout still gives correct RA/Dec inside the preview). The <span class="glyph">↶</span> and <span class="glyph">↷</span> buttons on the top bar switch automatically between the Full document's history and the active preview's history as you change tabs.</p>
+<p>What you do with a preview:</p>
+<ul>
+<li><b>Experiment</b> &mdash; run Cosmic Clarity Denoise, Sharpen, star removal, morphological operations, texture / clarity enhancement, curves, or anything else at a fraction of the compute cost. Tweak settings, undo, try again.</li>
+<li><b>Replay on base</b> &mdash; once you're happy, hit <span class="glyph">⟳</span> to apply the last operation to the full image, or use its dropdown to replay a specific step from the preview's history. See &sect;4.</li>
+<li><b>Promote</b> &mdash; grab the <span class="glyph">⧉</span> handle on the preview tab and drag it off onto the MDI background. The preview becomes a brand-new, independent document with its own view, ready to go into insets, montages, or further processing.</li>
+<li><b>Close</b> &mdash; the tab has a close button; closing it discards the preview and its history. The Full tab can't be closed.</li>
+</ul>
+<p>A preview's WCS is derived from the base image's WCS by shifting <code>CRPIX1</code> and <code>CRPIX2</code> by the ROI origin, so the preview's own pixel-to-world mapping stays accurate. If the base image was already a crop (SASpro detects this via header hints &mdash; <code>SASKIND=ROI-CROP</code>, <code>CROPX</code>/<code>CROPY</code>, or the ROI being plainly outside the parent's <code>NAXIS</code>), the shift is skipped so the preview's WCS doesn't get corrected twice.</p>
+
+<h2 id="s4">4. The replay button</h2>
+<p>The <span class="glyph">⟳</span> button has two parts:</p>
+<ul>
+<li><b>Main click area</b> &mdash; left-click to replay the <i>last</i> operation you committed on the active preview onto the base (Full) image. Fast one-click promotion of &ldquo;I like this result, apply it for real.&rdquo;</li>
+<li><b>Dropdown arrow</b> &mdash; opens a menu listing every step committed on the active preview, newest first. Pick any one of them to replay that specific step on the base image. You can also go step-by-step: replay step 1, replay step 2, replay step 3, until the base matches the preview.</li>
+</ul>
+<p>Replay doesn't just re-run the operation &mdash; it replays the <i>exact preset</i> that was used. SASpro keeps a headless-command history in the main window; the replay logic counts command-id occurrences in the preview's own step list to find the Nth matching entry in that history, pulls the preset from that entry, and routes it through the main window's base-image replay path. If a step was &ldquo;Cosmic Clarity Denoise at strength 0.7, luminance only,&rdquo; the replay runs with strength 0.7, luminance only &mdash; not with defaults.</p>
+<div class="tip">The button is only enabled when a preview tab is active and that preview has committed steps. On the Full tab, or on a preview that hasn't been edited yet, it's greyed out.</div>
+
+<h2 id="s5">5. Pixel readout and loupe</h2>
+<p>Hold <b>Space</b> and click or drag anywhere on the image to probe individual pixels. Two things happen:</p>
+<ul>
+<li><b>Status bar readout</b> &mdash; the bottom status bar shows the pixel coordinate (<code>x</code>, <code>y</code>), the pixel value (RGB for colour images, K for mono), and if the image has a valid WCS, the RA and Dec in HMS/DMS format.</li>
+<li><b>Loupe window</b> &mdash; a small translucent window follows the cursor (offset so it doesn't cover the pixel you're probing) showing a nearest-neighbour-scaled zoom of the pixel neighbourhood. Individual source pixels are rendered as crisp blocks, with a red crosshair marking the exact pixel being sampled. An optional readout strip underneath repeats the RGB/K values and shortened RA/Dec (<code>&alpha;</code> HMS, <code>&delta;</code> DMS).</li>
+</ul>
+<p>Drag with Space still held to probe continuously. Release the mouse to stop; the loupe hides. Space can be released without ending the probe &mdash; it's the mouse release that ends it.</p>
+<div class="tip"><b>On reject-count layers after stacking.</b> If the active view is the per-pixel reject-count layer from a stack integration, the readout automatically shows the <i>actual integer</i> N of frames rejected at that pixel (not the internal normalised float that would be meaningless). This is how you check how many frames contributed to any given pixel after a sigma-clipping stack.</div>
+<p>Loupe sizing and the readout strip are configurable from <b>Preferences &rarr; Pixel Readout</b> (patch size, zoom size, info font point size, show/hide the readout strip). Changes apply to views opened after the setting is changed.</p>
+
+<h2 id="s6">6. WCS grid overlay</h2>
+<p>If the image has a valid astrometric solution (plate-solved, or inherited via a Ctrl+drag copy), click <span class="glyph">⌗</span> to overlay a celestial coordinate grid directly on the image. RA lines are labelled in HMS at the top edge, Dec lines in DMS at the left edge, with a thin white grid in between.</p>
+<p>Grid spacing is <b>automatic by default</b> &mdash; the step is chosen to keep roughly eight grid lines across the field of view. You can switch to a fixed step from <b>Preferences &rarr; WCS Grid</b> (choose degrees or arcminutes, set the value). The grid is baked into the display pixmap only when the view is <i>settled</i> (not actively zooming or panning), so interaction stays snappy.</p>
+<p>The toggle is per-view and resets to off on every new view. If the image has no WCS, clicking the button turns the state on but nothing visible changes (there's nothing to overlay).</p>
+
+<h2 id="s7">7. Zoom and pan</h2>
+<p>Standard interactions:</p>
+<ul>
+<li><b>Mouse wheel</b> &mdash; zoom in / out, anchored at the cursor (so what's under your mouse stays under your mouse). Fine-grained for trackpads with pixel deltas; stepped for traditional wheels.</li>
+<li><b>Ctrl + mouse wheel</b> &mdash; slightly stronger zoom step. Both plain and Ctrl+wheel zoom work.</li>
+<li><b>Trackpad pinch (macOS)</b> &mdash; two-finger pinch zoom with damping for a natural feel.</li>
+<li><b>Left-click + drag</b> &mdash; pan (standard click-and-drag; the whole image moves with the cursor).</li>
+<li><b>Zoom percentage</b> &mdash; shown at the top-right of the view. Always truthful: when a very large mosaic hits the internal render cap, the displayed % reflects the <i>effective</i> scale actually on screen (see &sect;12).</li>
+</ul>
+<p>The scale range is <b>2% to 500%</b>. There's no fit-to-window button on the view itself (the main window has <b>Zoom &rarr; Fit</b>), but the mouse wheel plus a click to centre is usually faster.</p>
+
+<h2 id="s8">8. Autostretch</h2>
+<p>Toggle autostretch for the view: <b>Ctrl+Space</b> or <b>Alt+Shift+A</b>. Autostretch is a display-only non-destructive transformation &mdash; the stored pixel data is untouched; only what's drawn changes. Turn it off and you're back to looking at the raw linear data.</p>
+<p>Two profiles, switchable from the main-window toolbar or Preferences:</p>
+<ul>
+<li><b>Normal</b> &mdash; target median 0.3, sigma 5. Softer stretch; good for background-dominated DSO data where you want to retain some darkness.</li>
+<li><b>Hard</b> &mdash; target median 0.5, sigma 2. Stronger stretch; good for seeing faint structure quickly.</li>
+</ul>
+<p>Autostretch can be <b>linked across channels</b> (one LUT applied to all three RGB channels equally &mdash; preserves colour balance) or <b>unlinked</b> (each channel gets its own LUT &mdash; neutralises colour cast but can shift hue). The linked / unlinked choice is per-view and lives in Preferences.</p>
+<div class="tip">Autostretch does not alter the file, the processing history, or any downstream computation. It only changes what you see on screen. All tools (stacking, calibration, masks, measurements) operate on the raw data regardless of whether autostretch is on.</div>
+
+<h2 id="s9">9. Linked views in detail</h2>
+<p>Alt+drag the <span class="glyph">⧉</span> handle from one view onto another to link them. Once linked:</p>
+<ul>
+<li>Panning either view pans the other to the matching image coordinate.</li>
+<li>Zooming either view zooms the other to the same scale.</li>
+<li>A <span class="glyph" style="font-size:14px">🔗</span> badge appears in the title bars of both views.</li>
+<li>Linking is <b>transitive</b> &mdash; link A to B, then B to C, and now A, B, and C are all linked as a group. All three move together.</li>
+</ul>
+<p>Linked views don't need to be the same size. If you link a 400&times;300 preview window to a 1920&times;1200 main image, they still track together &mdash; each view works out from its own viewport which image coordinate should be centred and nudges its own scrollbars accordingly. The sync is live during the drag, not just at drag end.</p>
+<p>To unlink: right-click &rarr; <b>Unlink from Linked Views</b>. This removes the current view from the group entirely; the other members stay linked to each other.</p>
+
+<h2 id="s10">10. Masks</h2>
+<p>Any image can be a mask of any other. The mechanics:</p>
+<ul>
+<li><b>Shift+drag the <span class="glyph">⧉</span> handle</b> from one view onto another &rarr; the dragged image becomes the target's active mask. A <span class="glyph">■</span> badge appears in the target's title bar.</li>
+<li><b>Shift+drag onto the <i>same</i> view</b> &rarr; self-mask (instant lightness mask). See &sect;2.</li>
+<li><b>Ctrl+K</b> &rarr; toggle the mask overlay visualisation (red tint on protected areas). This is a <i>display</i> toggle; the mask is still active either way.</li>
+<li><b>Ctrl+Shift+I</b> &rarr; invert the mask. Protected and selected areas swap.</li>
+<li><b>Right-click &rarr; Mask</b> &rarr; show / hide overlay, invert, remove. The menu's mask items are only enabled when a mask is applied.</li>
+</ul>
+<p>Masks are shape-matched to the target's dimensions at apply time (if the mask image is a different size, it's resampled). Operations run on the target image are modulated by the mask: fully-selected pixels (mask value 1.0) receive the full effect; fully-protected pixels (mask value 0.0) are untouched; intermediate values blend proportionally.</p>
+<p>For richer mask creation (shape masks, content masks, star masks, Gaia-calibrated star radii), use the dedicated <b>Mask Creation</b> tool &mdash; the shift-drag path here is the quick route for the common case of using an existing image as a mask.</p>
+
+<h2 id="s11">11. Right-click context menu</h2>
+<p>Right-click anywhere in the view for the full menu. The items (grouped by section):</p>
+<ul>
+<li><b>Rename Document&hellip;</b> (F2) &mdash; change the document's display name. Updates everywhere it appears: subwindow title, layers panel, workflow steps, etc.</li>
+<li><b>Send to Shelf</b> &mdash; hide the view without closing the document. The entry goes to the window shelf (main window's bottom-left area), from which it can be retrieved. Activates a neighbouring view so focus flows naturally.</li>
+<li><b>Reset Document Name&hellip;</b> &mdash; if the file was loaded from disk, this restores the name to the original file stem (shown as a text-input default so you can accept or edit).</li>
+<li><b>Unlink from Linked Views</b> &mdash; removes this view from any link group it's a member of (see &sect;9).</li>
+<li><b>Show pixel/WCS readout hint</b> &mdash; shows the status-bar hint reminding you that Space + click/drag probes pixels. Mostly for discoverability.</li>
+<li><b>Create Preview (drag rectangle)</b> &mdash; same as clicking the <span class="glyph">⟂</span> button (see &sect;3).</li>
+<li><b>Open Layers Panel for This View</b> &mdash; opens the layers dock and selects this view's document in its view selector. Useful when you have many views open and want the layers panel to point at a specific one.</li>
+<li><b>Mask &rarr; Show Mask Overlay / Invert Mask / Remove Mask</b> &mdash; direct access to mask actions. All three are only enabled when a mask is applied. See &sect;10.</li>
+</ul>
+
+<h2 id="s12">12. Technical details</h2>
+<p class="tech-lead">Implementation notes, numbered continuing from the usage sections.</p>
+
+<h3>13. Drag-tab payloads and MIME types</h3>
+<p>Each of the drag tab's four modes produces a different MIME type on the drag payload, so drop targets can unambiguously identify what's being offered:</p>
+<ul>
+<li><code>MIME_VIEWSTATE</code> &mdash; plain drag. Payload includes the source view's id, scale, scrollbar values, autostretch state, and document identity hints (doc pointer, UID, file path, base doc UID). Dropping on the MDI background makes a duplicate; dropping on another view applies the view transform.</li>
+<li><code>MIME_LINKVIEW</code> &mdash; Alt+drag. Minimal payload (just the source view id); the drop handler looks up the source in the subwindow registry and establishes the link both ways.</li>
+<li><code>MIME_ASTROMETRY</code> &mdash; Ctrl+drag. Payload is the source document pointer and name. The main window's drop handler resolves it and copies the WCS.</li>
+<li><code>MIME_MASK</code> &mdash; Shift+drag. Payload is a mask-doc pointer plus mode (<code>replace</code>), invert flag, and feather radius (reserved for future). The main window's mask-drop handler applies it to the target document.</li>
+</ul>
+<p>Modifier state is read at the moment the drag threshold is crossed (Manhattan distance &gt; 6px from the press point), not at drag-start, so the user can decide what mode they want after they grab.</p>
+
+<h3>14. Resolution-independent view linking</h3>
+<p>When a view's pan or zoom changes, it emits a <code>viewTransformChanged(scale, h, v)</code> signal. Instead of relaying raw scrollbar values (which would require all linked views to have identical pixmap sizes), the relay computes the image <b>fraction</b> currently under the sender's viewport centre:</p>
+<div class="eq">lbl = sender.label
+vp  = sender.scroll.viewport()
+p   = lbl.mapFrom(vp, QPoint(vp.width()//2, vp.height()//2))
+fx  = p.x() / lbl.width()
+fy  = p.y() / lbl.height()</div>
+<p>Each linked peer then applies <code>scale</code> and places the fraction <code>(fx, fy)</code> at <i>its own</i> viewport centre, computing its own scrollbar values from its own label dimensions. Windows of different sizes stay in sync without one dictating the other's layout.</p>
+<p>The relay is guarded by <code>_suppress_link_emit</code> during the apply so echoes don't bounce back and create infinite recursion. During live panning, the normal 100ms debounce is bypassed and every mouse-move emits immediately, so linked views track the drag in real time rather than catching up after it ends.</p>
+
+<h3>15. Preview-to-base replay routing</h3>
+<p>Each preview tab keeps a list of committed operations on its backing document: <code>doc._preview_commands</code>, each entry a dict with <code>command_id</code> and the step name. The main window keeps a parallel <code>_headless_history</code> that records every command and its full preset.</p>
+<p>When the user clicks a step in the <span class="glyph">⟳</span> dropdown, the replay logic:</p>
+<ol>
+<li>Counts how many times this step's <code>command_id</code> appears in <code>_preview_commands</code> up to and including the clicked index &rarr; <code>occurrence = N</code>.</li>
+<li>Walks <code>_headless_history</code>, counting entries whose normalised cid matches, and selects the Nth one &rarr; this is the entry that corresponds to the clicked step.</li>
+<li>Builds a payload <code>{command_id, preset}</code> from that history entry, swaps it into the main window's <code>_last_headless_command</code>, calls <code>replay_last_action_on_base(target_sw)</code>, then restores the previous <code>_last_headless_command</code> so a subsequent Ctrl+Shift+R still means &ldquo;the actual last action.&rdquo;</li>
+</ol>
+<p>If a matching history entry can't be found, the fallback is to use whatever's in <code>_last_headless_command</code> if its cid matches; otherwise the replay is skipped with a console warning.</p>
+
+<h3>16. Space-hold readout mechanics</h3>
+<p>Holding Space sets <code>_space_down = True</code>. The next left-click press (anywhere on the viewport or label) is intercepted before the normal pan handler: the viewport position is mapped to image coordinates, the pixel is sampled from the source document (not the display buffer, so values are raw and uncorrupted by autostretch or mask overlay), the loupe is positioned to the right / below the cursor (or above / left if that would go off-screen), and the status bar is updated. Mouse-move events while <code>_readout_dragging</code> is set continue this.</p>
+<p>Releasing the mouse ends the readout drag and hides the loupe. Releasing Space does <i>not</i> end the drag &mdash; the user can start probing with Space held, then release Space while continuing to drag. Only the mouse release ends it. This matches how PixInsight-style readout tools work and avoids the frustration of accidentally releasing the probe key.</p>
+
+<h3>17. Loupe window</h3>
+<p>The loupe is a frameless always-on-top <code>Qt.Tool</code> window with <code>WA_ShowWithoutActivating</code> and <code>WindowTransparentForInput</code>, so it floats above the view without stealing focus or intercepting mouse events. Patch sampling takes the configured number of source pixels around the probe location (default 17, forced to odd so the crosshair bisects the centre pixel), with edge-aware padding when the probe is near the image boundary &mdash; the padded canvas stays the full patch size, with the real pixels inset by however much the probe was away from the edge, so the crosshair still points at the correct source pixel.</p>
+<p>The patch is scaled to the display size (default 161, also forced odd) with <code>Qt.FastTransformation</code> (nearest-neighbour) so individual source pixels render as crisp uniform-colour blocks rather than a smeared gradient. The optional readout strip below picks the largest monospace point size (down to 7pt) at which all lines fit within the loupe width, so RGB with 4-decimal precision and shortened RA/Dec strings all fit without truncation on any configured size.</p>
+
+<h3>18. ROI-synthesized WCS for preview tabs</h3>
+<p>When a preview tab is active, the view's <code>_get_celestial_wcs()</code> prefers (in order):</p>
+<ol>
+<li>The ROI backing document's own WCS, if DocManager has materialised a separate ROI doc for this preview.</li>
+<li>A synthesized WCS built from the base image's header plus the preview's ROI, computed by <code>_compute_cropped_wcs(hdr, x, y, w, h)</code>: deep-copy the base header, subtract the ROI origin from <code>CRPIX1</code> / <code>CRPIX2</code>, update <code>NAXIS1</code> / <code>NAXIS2</code> to the ROI size, and tag it <code>SASKIND=ROI-CROP</code>.</li>
+</ol>
+<p>Before shifting CRPIX, the function checks whether the base header looks like it's <i>already</i> a crop:</p>
+<ul>
+<li><b>Case A</b>: parent's <code>NAXIS1</code>/<code>NAXIS2</code> exactly equal the ROI size but the ROI origin is non-zero &rarr; this is a crop-of-a-crop; skip the shift.</li>
+<li><b>Case B</b>: ROI falls outside the parent's <code>NAXIS</code> dimensions &rarr; also already cropped; skip the shift.</li>
+</ul>
+<p>Both cases return a copy of the parent header marked as ROI-CROP but without a double CRPIX shift. The synthesized WCS is cached on the base document's metadata keyed by the preview id, so repeated reads don't re-synthesize.</p>
+
+<h3>19. Viewport-sized render pipeline</h3>
+<p>The view never builds a full-resolution 8-bit copy of the source image. The render pipeline rasterises the display buffer at the current zoom scale, capped at 8192 pixels on each side:</p>
+<ul>
+<li>Below 100% zoom &mdash; buffer size is <code>src &times; scale</code>.</li>
+<li>At 100% and above &mdash; buffer size is clamped to <code>src</code> (zoom-past-100% is done by Qt upscaling the pixmap, not by numpy upsampling, since replicating pixels in numpy would just waste memory for no visual gain).</li>
+<li>Buffer size capped at 8192 per side &mdash; a 20000&times;20000 mosaic at 100% would otherwise need 1.2 GB for the 8-bit RGB buffer alone.</li>
+</ul>
+<p>When the cap engages, the <i>effective</i> scale the buffer represents is below what the user asked for. The view tracks this honestly as <code>_pm_src_scale</code>, which is used by the present-scaled call to size the label widget correctly and by all coordinate conversions (loupe, pixel readout, view-state drops, linked views) so they stay in sync with what's actually on screen. The zoom-% readout likewise reports the honest effective scale, not the requested scale.</p>
+<p>When the user zooms in and the cached buffer becomes under-resolved for the current zoom, a 500ms debounced settle re-rasterises the buffer at the newer scale (<code>_zoom_settle_needs_rebuild</code> detects when the current buffer is below what a rebuild could produce and when a rebuild would improve matters, i.e. the current scale isn't already at the 8192 cap). A small translucent overlay in the viewport's bottom-left reads &ldquo;Recalculating display stretch&hellip;&rdquo; while the settle runs.</p>
+
+<h3>20. Autostretch LUT caching</h3>
+<p>Autostretch builds a lookup table indexed by input value and reads output through it. The cache key is <code>(is_mono, linked, target_median, sigma, no_black_clip, input_shape)</code>; when all six match, the previously-built LUT is reused and only the per-pixel apply runs. When any changes (profile switch, linked/unlinked toggle, no-black-clip change, image replaced), the key mismatches and a fresh LUT is built from a stride-subsampled slice of the input (step chosen so the sample is around 65k pixels &mdash; sufficient for the median/sigma statistics, orders of magnitude faster than sampling every pixel).</p>
+<p>LUT size is 4096 entries (12-bit) by default, or 16,777,216 entries (24-bit) if the user has enabled 24-bit stretch in Preferences for maximum tonal precision. The apply function auto-detects which size was built from the LUT's length and dispatches to the matching lookup path, so changing the preference after a LUT was built doesn't crash the apply.</p>
+
+<h3>21. Per-doc apply with per-view refresh</h3>
+<p>Edit application always targets the <b>specific document</b> passed in &mdash; never &ldquo;the active document&rdquo; by position. This matters for the headless and scripted paths, which may apply an edit to a document that isn't currently in focus.</p>
+<p>The refresh walks the MDI subwindow list looking for the one whose <code>widget().document</code> is identically the target doc, and calls that view's <code>refresh_pixmap_from_document</code> / <code>refresh_view</code> / <code>update_from_doc</code> hook if any exists, falling back to plain <code>update()</code> on both the view and its subwindow. The currently-active subwindow isn't changed, so the user's focus stays where it was &mdash; even if an edit was just applied to a different view.</p>
+
+<div class="pub">
+<b>Original work for SetiAstro Suite Pro.</b> The Image View is the primary interaction surface in SASpro; the little window is where every tool meets the user. Qt (PyQt6) handles window chrome, scrolling, and base rendering; everything that makes the view an active tool rather than a pixmap holder is new work by <b>Franklin Marek</b>. SASpro-exclusive content: the <b>four-modifier drag-tab affordance</b> (<span class="glyph">⧉</span> at the top-left) that routes to four different outcomes from one grab &mdash; plain drag duplicates the view into a new document, Alt+drag starts a live view-link, Ctrl+drag copies the astrometric solution to another image, Shift+drag applies the image as a mask to another &mdash; with modifier state read at the moment the drag threshold is crossed so the user can decide after they grab; the <b>self-mask shortcut</b>, where Shift+dragging the drag tab back onto its own view applies the image as its own mask, giving an instant lightness mask with no mask-creation dialog; the <b>preview-tab system</b> where any rectangular ROI becomes a tab beside <i>Full</i> with its own isolated undo/redo stack, its own ROI-synthesized WCS (CRPIX shifted by the crop origin, with double-crop detection so a BOTTOM-UP already-cropped file doesn't get CRPIX corrected twice), and its own history of preview-committed operations; the <b>replay-to-base button</b> (<span class="glyph">⟳</span>) that offers a left-click action (replay the last preview step on the full image) and a dropdown menu listing every step committed on the active preview, with a lookup that counts command-id occurrences in the main window's headless history to find the exact preset that was used for each step and restores it in-place for the replay; the <b>resolution-independent linked views</b> system that forwards pan and zoom between any number of windows as a (scale, image-fraction-under-centre) tuple so linked views don't have to share size or zoom-cap state &mdash; one window at 400&times;300 can be linked to another at 1920&times;1200 and both will stay centred on the same image feature as either is panned; the <b>Space-hold pixel-readout mode</b> that turns the normal left-click pan into a per-pixel probe without changing the cursor or tool state, feeding both the status bar (pixel, RGB/K, RA/Dec in HMS/DMS) and a translucent loupe window (nearest-neighbour-scaled 17-px source neighbourhood scaled up to a 161-px display with crosshair, plus an inline readout strip beneath it); the <b>count-layer-aware readout</b> that detects when the active document is a stacking reject-count layer and reports an actual integer N (frames rejected at this pixel) instead of a meaningless normalised float; the <b>viewport-sized render pipeline</b> that never builds a full-resolution 8-bit copy of a mosaic &mdash; it rasterises at display size with an 8192-per-side cap, tracks an honest <code>effective_scale</code> so the zoom-% readout and all coord math stay truthful even when the cap engages, caches the autostretch LUT keyed on (is_mono, linked, target, sigma, no-black-clip, shape), and settles to a full-resolution re-rasterise after the zoom-in gesture stops; the <b>ROWORDER-aware pixel readout</b> that honours the orientation flip done by the mosaic debayer upstream so (x,&nbsp;y) coordinates reported to the user match the file-on-disk coordinates no matter which way the data was stored; the <b>double-drop MIME system</b> (<code>MIME_VIEWSTATE</code> / <code>MIME_LINKVIEW</code> / <code>MIME_MASK</code> / <code>MIME_ASTROMETRY</code> / <code>MIME_CMD</code>) that lets the drag tab produce typed drag payloads and lets any view accept them without ambiguity; the <b>MDI subwindow registry</b> keyed by <code>id()</code> through a <code>WeakValueDictionary</code> so cross-view operations (link-to, copy-wcs-to, apply-as-mask-to) resolve the target view by identity without lifetime leaks; the <b>per-doc apply with view refresh</b> that always targets the specific document and walks the MDI list to repaint only the subwindow bound to it, without stealing the active view's focus; the <b>context-menu mask control cluster</b> that exposes show-overlay / invert / remove inline when a mask is applied, in addition to Ctrl+K to toggle overlay visibility and Ctrl+Shift+I to invert; the <b>MDI-maximised inline title</b> that moves the view's name into the top bar when the subwindow is maximised so the user doesn't lose track of which document is open; and the <b>send-to-shelf</b> action that cleanly hides a view without closing its document, activates a neighbouring view so focus flows naturally, and leaves the entry retrievable from the window shelf.
+</div>
+
+<h2>Credits</h2>
+<div class="credit">
+<b>The Image View</b> is original SASpro work by <b>Franklin Marek</b> &mdash; the four-modifier drag-tab affordance, self-mask shortcut, preview-tab system with isolated history, replay-to-base button with preset-aware history replay, resolution-independent view linking, Space-hold pixel-readout mode with configurable loupe, count-layer-aware readout, viewport-sized render pipeline with honest effective-scale tracking, autostretch LUT caching, ROI-synthesized WCS, MDI subwindow registry, per-doc apply with view refresh, and all the context-menu, keyboard-shortcut, and drag-and-drop wiring that holds it together.
+<br><br>
+<b>External libraries:</b>
+<ul>
+<li><b>PyQt6</b> / <b>Qt</b> &mdash; window chrome, QScrollArea for scrolling, QMdiSubWindow for the MDI framework, QDrag / QMimeData for drag-and-drop, QRubberBand for preview rectangle selection, QPainter for the WCS grid overlay, QTimer for the debounced zoom settle, pinch-gesture handling for macOS trackpad zoom. The Qt Company &amp; Riverbank Computing.</li>
+<li><b>astropy</b> &mdash; FITS header parsing (<code>astropy.io.fits.Header</code>) and WCS pixel-to-world conversion (<code>astropy.wcs.WCS</code>, <code>proj_plane_pixel_scales</code>) used for the WCS grid overlay and the pixel-readout RA/Dec. Astropy Collaboration (2013, 2018, 2022).</li>
+<li><b>NumPy</b> &mdash; array operations throughout. Harris et al. (2020), <i>Nature</i> 585, 357&ndash;362.</li>
+<li><b>matplotlib</b> &mdash; used in the sister <b>Table View</b> for plotting table columns (not in the Image View itself). Hunter (2007), <i>Computing in Science &amp; Engineering</i> 9(3), 90&ndash;95.</li>
+</ul>
+</div>
+
+</body>
+</html>

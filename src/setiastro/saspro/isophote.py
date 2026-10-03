@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (
 
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 
 # ===========================
 #  UI Helpers / Components
@@ -536,7 +536,10 @@ class IsophoteModelerDialog(QDialog):
         form.addRow(self.hq_interp)
         form.addRow(self.preview_blend)
         form.addRow(self.quick_preview)
-        form.addRow(run_btn)
+        run_row = QWidget(self); _rl = QHBoxLayout(run_row); _rl.setContentsMargins(0, 0, 0, 0)
+        _rl.addWidget(run_btn, 1)
+        _rl.addWidget(make_help_button("glimr", self))
+        form.addRow(run_row)
 
         self.save_resid_shifted = QCheckBox("Shift residuals to ≥ 0 on save")
         self.save_resid_shifted.setChecked(True)

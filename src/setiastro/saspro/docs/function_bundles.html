@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Function Bundles</h1>
+<p class="sub">A reusable, ordered sequence of SASpro commands &mdash; each with its own preset &mdash; that can be applied in one gesture to the active view, fanned out across every view in a <b>View Bundle</b>, or packed into a chip on the shortcut canvas. Bundles are built by dragging shortcut tiles into the dialog; each tile dropped becomes a step. The dialog remembers your bundles between sessions and persists the chip layout on the canvas across restarts.</p>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Open Function Bundles</b>. <b>Create a bundle</b> (New) and give it a name (F2 or double-click to rename). <b>Drop shortcut tiles</b> from the canvas onto the Steps list &mdash; each drop appends a step with that command's current preset. <b>Reorder</b> with the arrow buttons or by dragging within the list; <b>edit a preset</b> by double-clicking a step or using the Edit Preset button. <b>Apply to Active View</b> runs the whole bundle on the focused doc; <b>Apply to View Bundle&hellip;</b> fans it out across every view (and every file path) in a saved view bundle. <b>Compress to Chip</b> drops a purple chip on the shortcut canvas &mdash; drag it onto any view to apply, or Alt-drag it elsewhere to pass the bundle as a drop payload.
+</div>
+
+<div class="hero">
+<p>The signature behaviour of this tool is <b>synchronous step chaining across asynchronous SASpro commands</b>. Many SASpro tools (Statistical Stretch, GraXpert, Cosmic Clarity, RC-Astro, etc.) return from their drop handler immediately and continue processing in a background worker &mdash; so a naive sequence would run step N+1 against step N's unmodified image. The bundle runner solves this by <b>arming a document-change watcher before every step</b>, then blocking the next step until the document reports a change (either via its <code>changed</code> signal or via a bumped edit counter), with a special indefinite wait when Cosmic Clarity's headless flag is set. The result is a reliable, order-preserving pipeline that respects each tool's real completion.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. The bundle concept</a><br>
+<a href="#s2">2. Building a bundle</a><br>
+<a href="#s3">3. Editing steps</a><br>
+<a href="#s4">4. The preset editor</a><br>
+<a href="#s5">5. Running a bundle</a><br>
+<a href="#s6">6. The function-bundle chip</a><br>
+<a href="#s7">7. Progress and step status</a><br>
+<a href="#s8">8. Script-level entry point</a><br>
+<a href="#s9">9. Technical details</a><br>
+</div>
+
+<h2 id="s1">1. The bundle concept</h2>
+<p>A <b>Function Bundle</b> is a named, ordered list of <b>steps</b>. Each step is a dictionary with at least a <code>command_id</code> (the id of a SASpro command, e.g. <code>stretch_statistical</code>, <code>graxpert_bg</code>, <code>cosmic_clarity_sharpen</code>) and an optional <code>preset</code> dictionary carrying that command's parameters. Steps are shaped exactly like the payloads a shortcut tile drops onto a view, which is why building a bundle is literally &ldquo;dragging shortcut tiles into a list.&rdquo;</p>
+<p>A single SASpro session can hold any number of bundles, each with its own name. Bundle data lives in QSettings under the key <code>functionbundles/v1</code> as a JSON array, so bundles survive restart and can be included in <code>.sass</code> shortcut-export files for sharing.</p>
+<div class="eq">step = {
+    "command_id": "stretch_statistical",
+    "preset":     { "target_median": 0.25, "linked": false },
+}
+
+bundle = {
+    "name":  "Linear &rarr; Stretched",
+    "steps": [ step_1, step_2, &hellip; ],
+}</div>
+<p>The two panes of the dialog mirror this: the left pane lists bundles, the right pane shows the steps of the currently selected bundle. Everything you can do to a bundle (new, duplicate, delete, rename) is on the left; everything you can do to its steps (reorder, remove, clear, edit preset) is on the right.</p>
+
+<h2 id="s2">2. Building a bundle</h2>
+<p>Three ways to add steps to the currently selected bundle:</p>
+<ul>
+<li><b>Drop a shortcut tile</b> from the shortcut canvas onto the Steps list or the dialog background. The tile's command id and current preset are appended as a step.</li>
+<li><b>Drop another function bundle</b> onto the Steps list. The nested bundle is <b>expanded in place</b> &mdash; its steps are appended one by one, not stored as an opaque reference. If you later edit the source bundle, this bundle's copy of those steps won't change.</li>
+<li><b>Internal reorder</b>: once steps are in the list, drag within the list to reorder them. The list is set to <code>InternalMove</code> mode so you can't drop arbitrary items from outside Qt, only reorder existing ones.</li>
+</ul>
+<div class="tip">Dragging a shortcut tile captures the preset <b>at the moment of the drop</b>. If you later change that tile's preset on the canvas, the bundle still runs with the preset you dropped. Rebuild the step (remove and redrop) if you want the new preset, or edit the step's preset in place with the preset editor.</div>
+<p>A newly created bundle gets a placeholder name like &ldquo;Function Bundle 3&rdquo;; rename it with F2 or by double-clicking the entry. Duplicates get a &ldquo;&nbsp;(copy)&rdquo; suffix. The badge on the chip (if any) updates automatically to reflect the current step count.</p>
+
+<h2 id="s3">3. Editing steps</h2>
+<p>Each step shows as a row <code>command_id &mdash; preset_label</code>. The preset label is derived automatically: if the preset has a <code>name</code> or <code>label</code> field, that string is shown; otherwise a compact summary of its first three keys (<code>{k1, k2, k3&hellip;}</code>) is used. Hover a row to see the full line as a tooltip (useful when the row elides).</p>
+<p>Available step actions:</p>
+<ul>
+<li><b>Move Up / Move Down</b> buttons &mdash; reorder the selected rows (works with multi-select).</li>
+<li><b>Remove Selected</b> &mdash; deletes the selected rows.</li>
+<li><b>Clear Steps</b> &mdash; empties the whole bundle (keeps the bundle, drops all its steps).</li>
+<li><b>Edit Preset&hellip;</b> &mdash; opens the preset editor for the currently selected single row (enabled only when exactly one row is selected).</li>
+<li><b>Context menu</b> (right-click a step): Edit Preset, Clear Preset, Duplicate Step, Remove Step.</li>
+</ul>
+<div class="keys"><b>Shortcuts in the Steps list</b><br>
+<code>Delete</code> / <code>Backspace</code> &mdash; remove the selected rows.<br>
+<code>Ctrl+A</code> &mdash; select every step.<br>
+<code>Return</code> / <code>Enter</code> &mdash; open the preset editor on the selected step.<br>
+<code>Ctrl+drag</code> within the list &mdash; reorder (standard Qt internal-move DnD).<br>
+<br>
+<b>Shortcuts in the Bundle list</b><br>
+<code>F2</code> &mdash; rename the current bundle.<br>
+Right-click a bundle &rarr; <b>Rename&hellip;</b>
+</div>
+
+<h2 id="s4">4. The preset editor</h2>
+<p>When you edit a step's preset, SASpro tries the step command's <b>bespoke preset editor</b> first &mdash; the same editor you'd see if you right-clicked that command's shortcut tile and chose &ldquo;Edit Preset&hellip;&rdquo;. These editors know what parameters the command accepts, their ranges, their units, and their validation rules. Not every command has a bespoke editor (particularly third-party plug-ins); for those, the editor falls back to a plain JSON text editor.</p>
+<p><b>Fallback behaviour matters:</b> if a bespoke editor exists and the user cancels it, <i>nothing changes</i> &mdash; the fallback JSON editor is NOT opened. Cancelling a rich UI means &ldquo;I don't want to change this preset,&rdquo; not &ldquo;show me the raw JSON instead.&rdquo; The JSON editor only appears when the command has no bespoke editor at all.</p>
+<p>The JSON editor is a plain multiline text box seeded with the current preset in indented JSON. On OK, the text is parsed; if parsing fails, the error is shown and nothing changes. An empty text box commits a <code>None</code> preset (equivalent to clearing it).</p>
+
+<h2 id="s5">5. Running a bundle</h2>
+<p>Three apply targets at the bottom of the right pane:</p>
+<ul>
+<li><b>Apply to Active View</b> &mdash; runs the bundle on whichever MDI subwindow is currently focused. If no view is active, the button reports the condition and does nothing.</li>
+<li><b>Apply to View Bundle&hellip;</b> &mdash; opens a picker listing every saved <b>View Bundle</b>. Pick one and the function bundle fans out across every view in it, step by step, sequentially. (See the View Bundles doc for the file-path path &mdash; a View Bundle can carry disk files too.)</li>
+<li><b>Compress to Chip</b> &mdash; see &sect;6.</li>
+</ul>
+<p>During a run, each step logs its index, command id, payload, and completion reason (<code>signal</code>, <code>count</code>, <code>signal_sync</code>, <code>count_sync</code>, <code>timeout</code>, or <code>noop</code>) via the main window's <code>_log</code> hook plus stdout. Cosmic Clarity steps get their own <code>&gt;&gt;&gt; BEGIN CC</code> / <code>&lt;&lt;&lt; END CC</code> markers so they're easy to spot in long logs.</p>
+<div class="warn">An error raised by a single step <b>does not stop the bundle</b>. The error is captured, the next step runs anyway, and all errors are summarised in a single message box at the end. This is deliberate &mdash; a bundle run against twenty views shouldn't abort because one view hit a transient issue &mdash; but it means you should check the log and the status label after a run completes.</div>
+
+<h2 id="s6">6. The function-bundle chip</h2>
+<p><b>Compress to Chip</b> spawns a small purple widget &mdash; the <b>function-bundle chip</b> &mdash; on SASpro's shortcut canvas. The chip stays live for the whole session (and re-appears next launch); the dialog itself can be closed without destroying the chip.</p>
+<p>Chip behaviours:</p>
+<ul>
+<li><b>Drop a shortcut tile on the chip</b> &rarr; append that step to the bundle (same semantics as dropping into the dialog). A function bundle dropped onto a chip is expanded step-by-step into the bundle, same as in the dialog.</li>
+<li><b>Alt+drag</b> the chip &rarr; starts an external drag with the bundle as a <code>function_bundle</code> payload (<code>{"command_id": "function_bundle", "steps": [&hellip;], "inherit_target": true}</code>). Drop it on a view, a view bundle chip, or any other drop target that handles bundle payloads.</li>
+<li><b>Left-drag</b> the chip &rarr; move it within the canvas; position is clamped to the canvas bounds and saved on release.</li>
+<li><b>Double-click</b> the chip &rarr; reopen the Function Bundles dialog and focus this bundle.</li>
+<li><b>Right-click</b> the chip &rarr; context menu with Delete Chip (removes the chip only; the bundle itself stays).</li>
+<li><b>Delete / Backspace</b> while the chip is focused &rarr; same as context-menu Delete Chip.</li>
+</ul>
+<p>The number badge on the chip shows the current step count and recolours (purple when the bundle has steps, grey when it's empty). The chip's title tracks the bundle's name; rename the bundle and the chip updates automatically.</p>
+<p>Multiple chips can live on the canvas at once (one per bundle). On launch they're placed in a staggered row near the upper-right so view-bundle chips (which land upper-centre) don't collide with them.</p>
+
+<h2 id="s7">7. Progress and step status</h2>
+<p>Below the Steps list sits a status label and progress bar. During a run:</p>
+<ul>
+<li>The status label reads <b>&ldquo;Running step N/total: command_id &mdash; preset_label&rdquo;</b>, so you can see which step is executing.</li>
+<li>The progress bar advances per step (0% at start, N/total&nbsp;&times;&nbsp;100% as each step completes).</li>
+<li>When a sub-step runs indefinitely (Cosmic Clarity sub-workflow, long external worker), the progress bar switches to indeterminate (marquee) mode and the status label describes what's being waited on.</li>
+<li>A busy cursor is set for the duration of the run and restored on completion or error.</li>
+<li>On completion the label reads <b>&ldquo;Done.&rdquo;</b> and the bar snaps to 100%; errors (if any) are summarised in a dialog.</li>
+</ul>
+<p>If you run the bundle against a View Bundle, the status covers one view at a time &mdash; so you see progress through step N/total for view 1, then view 2, and so on.</p>
+
+<h2 id="s8">8. Script-level entry point</h2>
+<p>Function Bundles also integrates with SASpro's command/script system via the CommandSpec id <code>function_bundle</code>. Scripts can call it two ways:</p>
+<ul>
+<li><b>By name</b>: pass a saved bundle's name as <code>preset["bundle_name"]</code> and the runner looks it up in the same QSettings store the dialog uses.</li>
+<li><b>Inline</b>: pass <code>preset["steps"]</code> as a list of step dicts directly. Legacy keys <code>cid</code> and <code>id</code> are accepted as aliases for <code>command_id</code>, so bundles exported from older SASpro versions still run.</li>
+</ul>
+<p>Optional preset keys:</p>
+<ul>
+<li><code>inherit_target</code> (default <code>True</code>) &mdash; if true, every step runs against the same target; if false, each step is dispatched on its own and can retarget.</li>
+<li><code>targets</code> &mdash; either <code>"all_open"</code> or an explicit list of doc pointers. When present, the bundle fans out exactly as the UI path does; <code>target_sw</code> is set to <code>None</code> and the main-window drop handler does the dispatch.</li>
+</ul>
+<p>The runner does <b>not</b> step through <code>ctx.run_command</code> itself; it synthesises a single <code>function_bundle</code> payload and hands it to <code>MainWindow._handle_command_drop</code>, which is the same path a UI drop takes. This keeps script execution and UI execution bit-for-bit identical.</p>
+
+<h2 id="s9">9. Technical details</h2>
+<p class="tech-lead">Internal mechanisms numbered continuing from the usage sections.</p>
+
+<h3>10. Payload shape and normalisation</h3>
+<p>The internal step payload accepted by <code>_handle_command_drop</code> looks like:</p>
+<div class="eq">{
+    "command_id":    "stretch_statistical",   # required
+    "preset":        { &hellip; },                   # optional, per-command schema
+    "on_base":       true,                     # optional, apply to base layer only
+    "label":         "First stretch",          # optional, for logging
+    &hellip;                                          # any extra keys pass through
+}</div>
+<p>Bundles saved from older SASpro versions sometimes stored the command id under <code>cid</code> or <code>id</code> instead of <code>command_id</code>. The script runner's <code>_normalize_steps_for_hcd</code> accepts all three (in order of preference) and rewrites each step into the canonical shape before dispatch. Unknown extra keys pass through unchanged, so new per-command fields don't break old bundles.</p>
+
+<h3>11. Doc-change wait mechanism</h3>
+<p>The core of the sequential runner. For each step, the runner follows the <b>arm &rarr; run &rarr; wait</b> cycle:</p>
+<div class="eq"># 1) ARM — before the step runs
+handle = arm_doc_change_watcher(sw)
+#   captures: doc, edit_count_0, connects 'changed' signal
+
+# 2) RUN — synchronous call into main-window dispatcher
+mw._handle_command_drop(step, target_sw=sw)
+
+# 3) WAIT — until one of these is true:
+#      a) the 'changed' signal has fired, OR
+#      b) edit_count(doc) &gt; edit_count_0, OR
+#      c) elapsed &gt;= timeout_ms AND Cosmic Clarity is NOT running
+reason = wait_for_doc_change(mw, sw, cid, handle, timeout_ms=120_000)</div>
+<p><b>Arming before running</b> is essential. Many SASpro tools apply synchronously inside their drop handler and emit <code>changed</code> before the dispatcher returns &mdash; if the watcher connected <i>after</i> the dispatch, that fire would be missed and the wait would time out even though the step had completed. The watcher connects first, the dispatch happens, and any synchronous signal reaches the listener.</p>
+<p>The edit counter is a resilience hedge: not every doc class in SASpro's history has emitted <code>changed</code> consistently. The waiter looks for a counter on each of these attribute names in order: <code>edit_count</code>, <code>_edit_count</code>, <code>revision</code>, <code>_revision</code>, <code>version</code>; failing all of those, it falls back to <code>len(history)</code> / <code>len(_history)</code> / <code>len(undo_stack)</code>. Callables are invoked. If none of them exist, the counter check is skipped and the wait depends on the signal alone.</p>
+<p>The wait loop pumps Qt events every 25&nbsp;ms with a sleep in between, so the UI stays responsive &mdash; the progress bar updates, status label refreshes, and buttons stay clickable (though their actions queue until the wait returns). On timeout, the wait returns <code>timeout</code> as the completion reason and the runner moves on; the per-step error list stays empty unless the dispatch itself raised.</p>
+
+<h3>12. No-op exemptions</h3>
+<p>Some steps intentionally don't modify the image &mdash; saves, exports, viewers, inspectors. Waiting for a document change after one of these would always hit timeout. The waiter maintains an explicit no-op set:</p>
+<div class="eq">_NOOP_CIDS = {
+    "checkpoint_save", "save_project",
+    "save_active", "save_active_as",
+    "export_fits", "export_fits_bundle",
+    "plate_solve",      # writes header, may or may not emit 'changed'
+    "psf_viewer", "image_peeker",
+}</div>
+<p>For any step whose <code>command_id</code> is in this set, the wait is skipped entirely and the runner moves immediately to the next step. <code>plate_solve</code> is in this set because it writes WCS cards into the header without necessarily emitting <code>changed</code> &mdash; keeping it here means plate solving in the middle of a bundle doesn't stall for two minutes before timing out.</p>
+
+<h3>13. Cosmic Clarity wait</h3>
+<p>Cosmic Clarity is SASpro's AI noise reduction and sharpening tool; it runs as a separate headless process and can take minutes on large images. The bundle runner knows about it specifically.</p>
+<p>While a Cosmic Clarity run is in progress, two flags indicate it:</p>
+<ul>
+<li><code>mw._cosmicclarity_headless_running</code> on the main window (set at process launch, cleared on exit).</li>
+<li><code>cc/headless_in_progress</code> in QSettings (same lifecycle, visible across process boundaries).</li>
+</ul>
+<p>If either is true during the per-step wait loop, the <b>120&nbsp;second timeout is bypassed</b> &mdash; the loop keeps polling as long as CC is running, up to an upper bound of two hours. After CC's flag clears, a secondary <code>_wait_for_cosmicclarity</code> pass runs to make sure the subprocess has fully exited before the next step begins. This two-stage guard means a long CC call followed by Statistical Stretch never races the stretch against a mid-flight CC write.</p>
+
+<h3>14. Chip persistence</h3>
+<p>Chip positions are saved to QSettings under <code>functionbundles/chips_v1</code> as a JSON array of <code>{ "index": &hellip;, "x": &hellip;, "y": &hellip; }</code> records. Writes happen on every chip-drag release and on bundle delete, so the layout is always current.</p>
+<p>Restore runs at dialog construction time: for each saved record, the matching bundle is looked up by index (chips bind to bundle positions, so reordering the bundle list without reassigning chips can produce stale bindings &mdash; this is why bundle delete explicitly removes the chip for that index). A missing or out-of-range index silently skips. If the shortcut canvas isn't available yet (startup race), the restore is a no-op &mdash; it'll run again the next time the dialog is opened.</p>
+<p>Chip restore at app startup is driven by <code>restore_function_bundle_chips(parent)</code>, which constructs the dialog singleton with <code>auto_spawn_only=True</code> &mdash; the dialog itself stays hidden, but its chips land on the canvas as if the dialog had just been opened.</p>
+
+<h3>15. Preset editor dispatch</h3>
+<p>Bespoke preset editors live under <code>setiastro.saspro.shortcuts</code> and are discovered via two lazy imports: <code>_has_preset_editor_for_command(cid)</code> checks whether an editor exists; <code>_open_preset_editor_for_command(parent, cid, preset)</code> opens it. The import is lazy so the Function Bundles module stays independent of the shortcuts module's own circular-import constraints.</p>
+<p>If the shortcuts module fails to import or has no editor for the step's command id, the JSON editor fallback runs directly in <code>_edit_preset_dialog</code> &mdash; it's a plain <code>QPlainTextEdit</code> seeded with <code>json.dumps(current, indent=2)</code> and accepted only when the content parses as valid JSON.</p>
+
+<h3>16. Import / export in .sass files</h3>
+<p>Function bundles ride along with SASpro's shortcut-export files (<code>.sass</code>). The export side is <code>export_function_bundles_payload()</code>, which reads both the bundle definitions and the chip layout from QSettings and returns them as a <code>{ "bundles": [&hellip;], "chips": [&hellip;] }</code> dict.</p>
+<p>The import side is <code>import_function_bundles_payload(payload, parent, replace_existing=False)</code>:</p>
+<ul>
+<li>With <code>replace_existing=True</code> the current bundles and chip layout are overwritten.</li>
+<li>With <code>replace_existing=False</code> (default) new bundles are appended, and chip indices in the imported payload are <b>offset by the current bundle count</b> so each chip still points to its own bundle after the merge.</li>
+</ul>
+<p>After the import, any live dialog is refreshed via <code>reload_from_settings_after_import()</code>; if no dialog exists, chip restore runs so the imported chips land immediately on the canvas.</p>
+
+<h2>Credits</h2>
+<div class="credit">
+<b>Function Bundles</b> is a workflow tool for SetiAstro Suite Pro by <b>Franklin Marek</b>. It builds on standard SASpro machinery: the shortcut MIME protocol (<code>MIME_CMD</code>), the main-window drop dispatcher (<code>_handle_command_drop</code>), the document model's <code>changed</code> signal, and the shortcut-canvas chip layer. There are no external algorithmic references &mdash; this tool orchestrates SASpro's existing commands rather than introducing new image-processing primitives. Qt and PyQt6 provide the UI framework, drag-and-drop infrastructure, and QSettings persistence.
+</div>
+
+</body>
+</html>

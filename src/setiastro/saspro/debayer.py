@@ -23,7 +23,7 @@ from setiastro.saspro.bayer_utils import (
     normalize_bayer_token as _normalize_bayer_token,
     roworder_is_bottom_up as _roworder_is_bottom_up,
 )
-
+from setiastro.saspro.help_support import make_help_button
 
 _RAW_EXTS = (".raf", ".raw", ".rw2", ".arw", ".nef", ".cr2", ".cr3", ".dng", ".orf", ".pef")
 
@@ -472,6 +472,7 @@ class DebayerDialog(QDialog):
         self.combo_method.setCurrentIndex(0)
         hm.addWidget(self.combo_method)
         hm.addStretch(1)
+        hm.addWidget(make_help_button("debayer", self))
         v.addWidget(self.method_group)
 
         # progress + buttons

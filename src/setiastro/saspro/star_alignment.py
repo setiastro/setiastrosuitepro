@@ -6,7 +6,7 @@ import math
 import random
 import sys
 from PyQt6.QtCore import QByteArray
-
+from setiastro.saspro.help_support import make_help_button
 def _qs_raw(settings, key, default=None):
     try:
         return settings.value(key, default)
@@ -1166,9 +1166,12 @@ class StellarAlignmentDialog(QDialog):
         controls.addWidget(xform_box)
 
         # run + status
+        run_row = QHBoxLayout()
         self.btn_run = QPushButton("Run Alignment")
         self.btn_run.clicked.connect(self.run_alignment)
-        controls.addWidget(self.btn_run)
+        run_row.addWidget(self.btn_run, 1)
+        run_row.addWidget(make_help_button("star_alignment", self))
+        controls.addLayout(run_row)
 
         self.status_label = QLabel("Status: Ready")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
@@ -4626,8 +4629,11 @@ class StarRegistrationWindow(QWidget):
         main_layout.addWidget(self.tree_widget)
         main_layout.addLayout(tree_buttons_layout)
         main_layout.addLayout(output_layout)
+        start_row = QHBoxLayout()
+        start_row.addWidget(self.start_button, 1)
+        start_row.addWidget(make_help_button("star_registration", self))
         main_layout.addWidget(self.progress_label)
-        main_layout.addWidget(self.start_button)
+        main_layout.addLayout(start_row)
 
     def _enqueue_progress(self, message: str) -> None:
         # Save only the latest message; start the coalescing timer
