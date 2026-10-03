@@ -950,6 +950,7 @@ class CosmeticCorrectionDialog(QDialog):
         if not self._tuning_mode:
             try:
                 from setiastro.saspro.shortcuts import PresetDragHandle
+                from setiastro.saspro.help_support import make_help_button
                 from PyQt6.QtGui import QIcon
                 try:
                     from setiastro.saspro.resources import cosmeticcorrection_path
@@ -968,6 +969,8 @@ class CosmeticCorrectionDialog(QDialog):
                 )
                 drag_row.addWidget(self.preset_drag_handle)
                 drag_row.addStretch(1)
+                self.btn_help = make_help_button("cosmetic_correction", self)
+                drag_row.addWidget(self.btn_help)
                 root.addLayout(drag_row)
             except Exception:
                 pass

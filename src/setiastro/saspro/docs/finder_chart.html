@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Finder Chart</h1>
+<p class="sub">Generates a labelled finder chart for the current field by fetching a cutout of a published sky survey (DSS2, Pan-STARRS, SDSS, DESI Legacy, 2MASS, Gaia DR3, or SIMG's Northern-Sky Narrowband Survey) through the CDS <code>hips2fits</code> service, overlaying the user's own doc with a WCS-correct perspective warp, and annotating with bright-star names, deep-sky catalogue objects, an N/E compass, a scale bar, and optionally the imaging train's field-of-view rectangle. Two entry points: driven from an open SASpro doc (uses the doc's WCS to compute the chart's centre and FOV), or driven directly from RA/Dec (used by object-search workflows where no image exists yet).</p>
+
+<div class="pub">
+<b>Original work for SetiAstro Suite Pro.</b> The finder-chart orchestration, caching, overlay system, and UI are new work by <b>Franklin Marek</b> &mdash; the actual HiPS survey tiles are published by third-party surveys and are fetched through CDS's <code>hips2fits</code> HTTP service (see Credits), SASpro's job is to pick the right cutout, blend it with the user's data, and annotate it. SASpro-exclusive content: the <b>multi-survey HiPS dispatcher</b> with a canonical label &rarr; HiPS-ID map covering optical broadband (DSS2 color/red/blue/IR, Pan-STARRS DR1, SDSS9 color-alt, DESI Legacy DR10), infrared (2MASS J/H), Gaia DR3 flux-color, and the <b>Northern-Sky Narrowband Survey</b> (NSNS; TC8 true-colour, H&alpha; DR0.1/DR0.2, [OIII] DR0.2, [SII] DR0.2) &mdash; the NSNS surveys are not on CDS, so SASpro routes them through hips2fits by passing the <code>simg.de</code> base URL directly as the <code>hips</code> parameter rather than using a CDS catalogue ID; the <b>overfetch-and-crop</b> strategy (fetch at <code>&radic;2 &middot; 1.02</code> larger FOV and resolution so a doc at any orientation is covered by the cutout, then centre-crop with the WCS adjusted by <code>CRPIX' = CRPIX - (x_0, y_0)</code>); the <b>three-tier cache</b> (HiPS raster cache keyed on survey+resolution+centre+FOV, base-raster cache for the composed HiPS+doc overlay keyed on HiPS-key+opacity+doc-identity, geometry cache for the doc's WCS/corners/centre/FOV); the <b>debounced render pipeline</b> that distinguishes <i>fetch-triggers</i> (survey, FOV, output size &mdash; immediate refetch) from <i>render-triggers</i> (grid, star names, deep-sky overlay, compass, scale bar, FOV box &mdash; 150&nbsp;ms debounce, no network); the <b>WCS-correct doc overlay</b> that projects the user's doc through its own WCS to the sky and through the background WCS back to pixels, derives the <code>cv2.getPerspectiveTransform</code> from the four corner correspondences, warps the doc into the background, and alpha-blends on the warped-content mask; the <b>deep-sky catalogue loader</b> that merges a packaged <code>celestial_catalog.csv</code> covering Messier/NGC/IC/Abell/Sharpless2/LBN/LDN/PN-G with multi-encoding tolerance (latin-1 &rarr; UTF-8-BOM &rarr; UTF-8 &rarr; cp1252 fallback chain), BOM-tolerant column lookup, and <b>catalogue code canonicalisation</b> that collapses the five Sharpless variants (<code>SH2-</code>, <code>SH2 </code>, <code>SH-2</code>, <code>SH 2</code>, <code>SH_2</code>) and four PN-G variants (<code>PNG</code>, <code>PN-G</code>, <code>PN G</code>, <code>PN_G</code>) to canonical codes before filtering; the <b>grid-cell declutter</b> algorithm for both star and DSO labels (34&nbsp;px cells for DSOs, 28&nbsp;px cells for stars, first-in-cell wins after brightness-first sorting); the <b>in-bounds label placer</b> that places the label, measures its bounding box in display coordinates via <code>get_window_extent(renderer)</code>, computes the shift needed to stay inside the plot area, re-measures to confirm, and <i>drops</i> the label if a second measurement still exceeds the bounds rather than letting it clip at the edge; the <b>DSO size-circle renderer</b> that parses the Info field with the <code>&quot;6.0x4.0&quot;</code> arcmin-dimension regex and draws a cyan outline circle at the major-axis diameter in pixel scale; the <b>N/E compass</b> that constructs the North and East direction vectors by stepping a small sky offset from the field centre and projecting both to pixels (with <code>cos(&delta;)</code> compensation on the East step so it's a real arc-length step at the given declination); the <b>FOV-dependent scale bar</b> with four bar-length tiers (30&prime; / 20&prime; / 10&prime; / 5&prime;) selected on the fetched FOV, pixel scale derived from <code>proj_plane_pixel_scales</code>, and the arcsec/pixel reported alongside the bar label; the <b>imaging-train FOV box</b> with angular half-sizes <code>atan(pitch &middot; N / (2 &middot; f))</code> computed per axis, four corners constructed in (East, North) offset space, rotated clockwise from north by the user's rotation angle, converted to RA/Dec with <code>cos(&delta;)</code> compensation on the East offset so the box lands correctly away from the equator, and projected to the chart's pixel coordinates; the <b>live FOV readout</b> that recomputes the width&prime; &times; height&prime; display whenever any of focal length / pitch / sensor dimensions changes; the <b>WCS recovery chain</b> that walks four fallback paths (prebuilt <code>wcs</code> object &rarr; nested <code>original_header</code>/<code>fits_header</code>/<code>header</code>/<code>FITS Header</code>/<code>FITS_HEADER</code> &rarr; flattened <code>FITS Header.KEY</code> export-style keys &rarr; return <code>None</code>) with non-FITS metadata key stripping and SIP-presence CTYPE patching; and the full QSettings-based persistence of every control for next-launch recall.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Open the Finder Chart dialog</b> on a plate-solved SASpro view, or launch the coord variant from an object-search dialog. <b>Pick a survey</b> &mdash; DSS2 color is a safe default; swap to narrowband NSNS if the field is nebular. <b>Pick a scale</b> &mdash; 2&times; / 4&times; / 8&times; the current doc's FOV. <b>Toggle overlays</b> &mdash; bright stars, deep-sky objects, compass, scale bar, grid, imaging-train FOV box. <b>Save PNG</b> or <b>Send to New Document</b> to open the finished chart as a brand-new SASpro view.
+</div>
+
+<div class="hero">
+<p>The signature move is the <b>WCS-correct perspective warp</b> of your own data onto the published survey:</p>
+<div class="matheq-hero">(x_{\mathrm{doc}}, y_{\mathrm{doc}}) \overset{\mathrm{WCS}_{\mathrm{doc}}}{\to} (\alpha, \delta) \overset{\mathrm{WCS}_{\mathrm{bg}}}{\to} (x_{\mathrm{bg}}, y_{\mathrm{bg}})</div>
+<p>Your doc's four corners are projected through its own WCS to sky coordinates, then those sky coordinates are projected through the background's WCS back to pixels in the finder chart. The four corner correspondences give the homography, OpenCV warps the whole doc into the background frame, and an alpha-blend composite shows your image at any requested opacity. The result: the published survey tile and your own data occupy the same arcseconds of sky at the same pixel resolution, so your target lands exactly where you shot it &mdash; useful for publication figures (&ldquo;here's my image, here's where it sits in the DSS&rdquo;), for cross-checking a plate solve against a known survey, or for annotating your field with catalogue objects you can navigate.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. What it's for</a><br>
+<a href="#s2">2. Two entry points</a><br>
+<a href="#s3">3. Survey selection</a><br>
+<a href="#s4">4. Size / FOV</a><br>
+<a href="#s5">5. Output resolution</a><br>
+<a href="#s6">6. Image opacity</a><br>
+<a href="#s7">7. Bright-star labels</a><br>
+<a href="#s8">8. Deep-sky overlay</a><br>
+<a href="#s9">9. Compass and scale bar</a><br>
+<a href="#s10">10. Grid</a><br>
+<a href="#s11">11. Imaging-train FOV box</a><br>
+<a href="#s12">12. Save and send</a><br>
+<a href="#s13">13. Technical details</a><br>
+<a href="#s13_1">13.1 WCS recovery</a><br>
+<a href="#s13_2">13.2 Footprint and FOV estimation</a><br>
+<a href="#s13_3">13.3 HiPS fetch</a><br>
+<a href="#s13_4">13.4 NSNS narrowband path</a><br>
+<a href="#s13_5">13.5 Overfetch + square crop</a><br>
+<a href="#s13_6">13.6 Three-tier cache</a><br>
+<a href="#s13_7">13.7 Debounced render pipeline</a><br>
+<a href="#s13_8">13.8 Doc overlay perspective warp</a><br>
+<a href="#s13_9">13.9 Deep-sky catalogue loader</a><br>
+<a href="#s13_10">13.10 Catalogue code canonicalisation</a><br>
+<a href="#s13_11">13.11 Angular + magnitude filters</a><br>
+<a href="#s13_12">13.12 Declutter algorithm</a><br>
+<a href="#s13_13">13.13 In-bounds label placer</a><br>
+<a href="#s13_14">13.14 DSO size circles</a><br>
+<a href="#s13_15">13.15 Bright-star overlay</a><br>
+<a href="#s13_16">13.16 Compass construction</a><br>
+<a href="#s13_17">13.17 Scale bar</a><br>
+<a href="#s13_18">13.18 FOV box math</a>
+</div>
+
+<h2 id="s1">1. What it's for</h2>
+<p>Finder charts have three main uses in astrophotography:</p>
+<ul>
+  <li><b>Publication figures</b> &mdash; showing your image in context next to or on top of a well-known survey (DSS2) so viewers can locate the target in the sky.</li>
+  <li><b>Target annotation</b> &mdash; labelling the catalogue objects visible in your field, so the viewer knows what each thing is.</li>
+  <li><b>Pre-session planning / cross-checking</b> &mdash; verifying that a plate-solved field actually corresponds to what the catalogue says is there, or planning a composition from a known RA/Dec before any data has been captured.</li>
+</ul>
+<p>SASpro's Finder Chart handles all three. It pulls a cutout of a published sky survey centred on your field, overlays your own image onto it with the correct WCS alignment, and annotates with bright-star names, deep-sky objects, compass direction, pixel scale, and (optionally) the FOV rectangle of your imaging train.</p>
+
+<h2 id="s2">2. Two entry points</h2>
+
+<h3>From an open doc (FinderChartDialog)</h3>
+<p>Opens with the current SASpro view's WCS as the reference. The chart's centre is the view's centre pixel projected to sky; the chart's FOV is derived from the view's four corners. Scale is a multiple of the doc's own FOV: 2&times;, 4&times;, or 8&times;. The doc image is overlaid onto the background at user-configurable opacity.</p>
+
+<h3>From RA/Dec (FinderChartFromCoordDialog)</h3>
+<p>Driven by a (name, RA, Dec) tuple instead of a doc. Used by SASpro's object-search workflows (WIMS) where the user is browsing a catalogue and wants to see what a candidate target looks like before loading any data. No doc overlay &mdash; just the survey background and overlays. FOV is picked from a dropdown of standard values (0.25&deg; to 10&deg;).</p>
+
+<h2 id="s3">3. Survey selection</h2>
+<p>Dropdown with 13 published surveys plus 5 NSNS narrowband bands, grouped by wavelength:</p>
+
+<table>
+<tr><th>Group</th><th>Survey</th><th>Notes</th></tr>
+<tr><td rowspan="4">Optical broadband</td><td>DSS2 (Color / Red / Blue / IR)</td><td>Second-generation Digitized Sky Survey from STScI, the universal all-sky baseline. Depth ~21 mag, native scale ~1.7&prime;&prime;/px.</td></tr>
+<tr><td>Pan-STARRS DR1 (Color)</td><td>Northern sky, ~0.25&prime;&prime;/px native. Much deeper than DSS2 but limited to <code>&delta; &gt; -30&deg;</code>.</td></tr>
+<tr><td>SDSS9 (Color Alt)</td><td>Sloan Digital Sky Survey, high-latitude strips. Great for galaxy work.</td></tr>
+<tr><td>DESI Legacy DR10 (Color)</td><td>Dark Energy Spectroscopic Instrument imaging surveys. Very deep (~24 mag), broad sky coverage.</td></tr>
+<tr><td rowspan="2">Infrared</td><td>2MASS (J)</td><td>Two Micron All-Sky Survey, J band (1.25 &micro;m). Useful for dust-penetrating views.</td></tr>
+<tr><td>2MASS (H)</td><td>H band (1.65 &micro;m).</td></tr>
+<tr><td>Gaia</td><td>Gaia DR3 (Flux Color)</td><td>Not a classical image survey &mdash; a synthesised false-colour image from Gaia DR3 BP/RP flux ratios. Perfect for sanity-checking star fields.</td></tr>
+<tr><td rowspan="5">NSNS narrowband</td><td>DR0.1 True Color (TC8)</td><td>SIMG's Northern-Sky Narrowband Survey. Visually arresting narrowband at modest resolution.</td></tr>
+<tr><td>DR0.1 / DR0.2 H&alpha;</td><td>Hydrogen-alpha emission &mdash; the shape of HII regions, SNRs, planetary nebula halos.</td></tr>
+<tr><td>DR0.2 [OIII]</td><td>Doubly-ionised oxygen &mdash; planetary nebula bodies, hot stellar winds.</td></tr>
+<tr><td>DR0.2 [SII]</td><td>Singly-ionised sulphur &mdash; shock fronts, SNR filaments.</td></tr>
+</table>
+
+<p>Changing the survey triggers an immediate refetch (not debounced) because every pixel of the chart changes.</p>
+
+<h2 id="s4">4. Size / FOV</h2>
+<p><b>Doc-driven dialog</b>: <b>Size</b> dropdown with three multipliers of the current doc's FOV &mdash; 2&times; (zoom in, context around the frame), 4&times; (default, generous surround), 8&times; (wide context).</p>
+<p><b>Coord dialog</b>: <b>FOV</b> dropdown with ten absolute values from 0.25&deg; to 10&deg;. Default 4&deg;.</p>
+<p>Changes trigger a refetch because the request to the HiPS service has to be redone at the new angular size.</p>
+
+<h2 id="s5">5. Output resolution</h2>
+<p><b>Output px</b> spinbox (300 to 2400, step 100, default 900): the pixel size of the finished chart. The HiPS service is asked for this many pixels on a side; your doc gets resampled through the perspective warp to match. Higher is sharper but slower to fetch and heavier to save. For saving at publication quality, 1800&ndash;2400 px is typical.</p>
+
+<h2 id="s6">6. Image opacity</h2>
+<p>(Doc-driven dialog only.) Slider from 0% to 100%, default 35%. Controls how much of your own data is blended onto the background:</p>
+<ul>
+  <li><b>0%</b> &mdash; pure survey background. Useful when you want a plain reference finder chart with your field outlined.</li>
+  <li><b>35%</b> &mdash; your data gently layered onto the survey. Useful for &ldquo;this is my shot, here's its context&rdquo; style figures.</li>
+  <li><b>100%</b> &mdash; your data at full strength over the survey. The survey still shows outside your frame as context.</li>
+</ul>
+<p>Slider movements debounce the render (no refetch) and are additionally gated on <code>sliderReleased</code> for the final high-quality render.</p>
+
+<h2 id="s7">7. Bright-star labels</h2>
+<p>Check <b>Star names</b> to label every bright star in the chart's area. Two parameters:</p>
+<ul>
+  <li><b>Star &le;</b> magnitude limit (-2.0 to 8.0, default 5.0). Dimmer stars are not labelled.</li>
+  <li><b>Max</b> label count (5 to 200, default 30). After radius and magnitude filtering, the brightest-first list is capped at this count.</li>
+</ul>
+<p>The source is SASpro's packaged bright-star table (same used by other SASpro tools). Labels are placed with a gold dot marker and the star's common name (Vega, Altair, Betelgeuse, &hellip;). Decluttering keeps nearby bright stars from stacking their labels on top of each other.</p>
+
+<h2 id="s8">8. Deep-sky overlay</h2>
+<p>Check <b>Deep-sky</b> to annotate the catalogued objects in the field. Three parameters:</p>
+<ul>
+  <li><b>Catalogue</b> dropdown: &ldquo;All (DSO)&rdquo;, Messier, NGC, IC, Abell, SH2 (Sharpless 2), LBN (Lynds Bright Nebulae), LDN (Lynds Dark Nebulae), PN-G (Planetary Nebula Galactic).</li>
+  <li><b>Mag &le;</b> magnitude limit (-2.0 to 30.0, default 12.0).</li>
+  <li><b>Max</b> label count (5 to 300, default 30).</li>
+</ul>
+<p>DSOs get a cyan square marker, a label, and &mdash; where the catalogue entry includes a size &mdash; a cyan outline circle at the object's major-axis diameter in sky arcminutes converted through the chart's pixel scale. The circle gives a visual sense of how big the object is in your field.</p>
+
+<h2 id="s9">9. Compass and scale bar</h2>
+<p>Check <b>Compass</b> to draw N/E direction arrows in the bottom-right corner. The arrows are built from the actual background WCS by stepping a small sky offset and projecting it to pixels, so they correctly point to true north and east on the chart including any rotation or near-polar distortion.</p>
+<p>Check <b>Scale bar</b> to draw a labelled scale bar in the bottom-left corner. The bar's physical length is chosen from the FOV (30&prime; / 20&prime; / 10&prime; / 5&prime;), and the label shows that length plus the pixel scale as <code>arcsec/px</code>.</p>
+
+<h2 id="s10">10. Grid</h2>
+<p>Check <b>Show grid</b> to overlay an RA/Dec grid using Astropy's <code>WCSAxes</code>. The grid uses the background's WCS so it draws correctly curved near the poles and projects straight along the equator; tick labels are RA and Dec in standard decimal format.</p>
+
+<h2 id="s11">11. Imaging-train FOV box</h2>
+<p>Check <b>Show FOV box</b> to draw a labelled rectangle showing where a specific imaging train would frame the field. Five parameters:</p>
+<ul>
+  <li><b>Focal length (mm)</b> &mdash; your scope's focal length.</li>
+  <li><b>Pixel pitch (&micro;m)</b> &mdash; your camera's pixel pitch.</li>
+  <li><b>Sensor (px W&times;H)</b> &mdash; your sensor's dimensions in pixels.</li>
+  <li><b>Rotation (&deg;CW)</b> &mdash; the camera rotation measured clockwise from north. 0&deg; = sensor's long axis along east-west.</li>
+</ul>
+<p>As you adjust any parameter, a live FOV readout appears next to the controls showing the resulting width &times; height in arcminutes. The box itself updates on the chart on debounce (no network required). Useful for pre-session planning: dial in different scope/camera combinations and see which gives you the composition you want.</p>
+
+<h2 id="s12">12. Save and send</h2>
+
+<h3>Save PNG&hellip;</h3>
+<p>Writes the current chart as a PNG at the full output resolution. The last-used directory is remembered across launches.</p>
+
+<h3>Send to New Document (doc-driven dialog only)</h3>
+<p>Opens the chart as a brand-new SASpro view, complete with metadata recording how it was generated (survey, scale multiplier, grid state, output resolution, overlay opacity). Useful when you want to further process the chart (annotate manually, crop, export at a different size).</p>
+
+<h2 id="s13">13. Technical details</h2>
+<p class="tech-lead">WCS recovery, HiPS fetch and cache, overlay warp, and the overlay-rendering pipeline in order.</p>
+
+<h3 id="s13_1">13.1 WCS recovery</h3>
+<p>SASpro's metadata model stores WCS information in several possible forms depending on how a doc was created, so the Finder Chart walks a four-tier fallback chain:</p>
+<ol>
+  <li>A prebuilt <code>astropy.wcs.WCS</code> object under <code>meta["wcs"]</code> (fastest path &mdash; the Plate Solver stores one here after a successful solve).</li>
+  <li>A nested <code>astropy.io.fits.Header</code> under <code>meta["original_header"]</code>, <code>meta["fits_header"]</code>, <code>meta["header"]</code>, <code>meta["FITS Header"]</code>, or <code>meta["FITS_HEADER"]</code>.</li>
+  <li>Flattened keys like <code>"FITS Header.CTYPE1" = "RA---TAN-SIP"</code> coming from CSV-exported metadata &mdash; SASpro rebuilds a <code>Header</code> from these by stripping the prefix.</li>
+  <li>Return <code>None</code> &mdash; the finder chart renders with no WCS, which falls back to a plain pixel grid and no catalogue overlays.</li>
+</ol>
+<p>When a header is reconstructed, SASpro strips a set of non-FITS metadata keys that are sometimes stored alongside real cards (<code>FILE_PATH</code>, <code>FITS_HEADER</code>, <code>BIT_DEPTH</code>, <code>WCS_HEADER</code>, etc.) so the resulting <code>WCS()</code> construction doesn't blow up on invalid keywords. The <code>celestial</code> subspace of the WCS is used when the full WCS has extra axes (spectral, polarisation).</p>
+
+<h3 id="s13_2">13.2 Footprint and FOV estimation</h3>
+<p>Given a WCS and image dimensions, the four corner pixels <code>(0.5, 0.5), (W-0.5, 0.5), (W-0.5, H-0.5), (0.5, H-0.5)</code> are projected to sky through <code>pixel_to_world</code>, giving a SkyCoord array of corners and the centre pixel. Angular separations across opposite edges give the width and height:</p>
+<div class="matheq">\cos\sigma = \sin\delta_1 \sin\delta_2 + \cos\delta_1 \cos\delta_2 \cos(\alpha_1 - \alpha_2)</div>
+<p>Width is the average of top-edge and bottom-edge separations; height is the average of left-edge and right-edge separations. The final FOV used for the fetch is <code>max(width, height) &times; scale_mult</code>, so a highly rectangular doc still gets a square cutout that covers its longer dimension at the chosen scale.</p>
+
+<h3 id="s13_3">13.3 HiPS fetch</h3>
+<p>SASpro fetches survey cutouts from CDS's <code>hips2fits</code> HTTP service, which renders HiPS-format sky tiles into a flat FITS cutout at the requested projection, FOV, and resolution. The request URL encodes the HiPS catalogue identifier, the output dimensions, the FOV, the TAN projection, ICRS coordinate system, the centre RA/Dec, and <code>format=fits</code>. Response is a FITS file in bytes; SASpro opens it from memory with <code>astropy.io.fits.open(BytesIO(data))</code>, extracts the first HDU's data and header, and builds a WCS from the header.</p>
+<p>Data normalisation: NaN/inf scrubbed, converted to RGB (grey &rarr; grey&times;3, channel-first &rarr; channel-last if needed), percentile-stretched to 1st/99.5th percentile and clipped to <code>[0, 1]</code> float32. The stretch is appropriate for display; the normalised data is held as <code>float01</code> for every subsequent cache and overlay operation.</p>
+
+<h3 id="s13_4">13.4 NSNS narrowband path</h3>
+<p>The Northern-Sky Narrowband Survey (NSNS) tiles live at <code>simg.de/nebulae3/...</code>, not at CDS. CDS's <code>hips2fits</code> service accepts an arbitrary HiPS base URL as the <code>hips</code> parameter, so SASpro routes NSNS fetches by handing hips2fits the <code>simg.de</code> URL directly. The internal survey ID uses an <code>SIMG/</code> prefix (<code>SIMG/simg.de/P/NSNS/DR0_1/tc8</code>, etc.) that the dispatcher detects, strips, and maps to the corresponding <code>http://www.simg.de/nebulae3/dr0_1/tc8</code> URL for the hips2fits call. From hips2fits' perspective it's a normal remote HiPS source; from the user's perspective they just picked &ldquo;NSNS DR0.2 (H&alpha;)&rdquo; from the survey dropdown and SASpro figured out the plumbing.</p>
+
+<h3 id="s13_5">13.5 Overfetch and square crop</h3>
+<p>A square cutout at exactly the requested FOV would leave the chart's corners unmapped once overlays apply any rotation or when the doc's footprint is rotated against the HiPS tile grid. SASpro overfetches at a factor of <code>&radic;2</code> plus a 2% safety margin:</p>
+<div class="matheq">s_{\mathrm{over}} = \sqrt{2} \cdot 1.02 \approx 1.44</div>
+<p>and scales both the FOV and the pixel count by this amount:</p>
+<div class="matheq">\mathrm{FOV}_{\mathrm{fetch}} = s_{\mathrm{over}} \cdot \mathrm{FOV}_{\mathrm{out}},\;\; N_{\mathrm{fetch}} = \lceil s_{\mathrm{over}} \cdot N_{\mathrm{out}} \rceil</div>
+<p>which preserves the pixel scale (arcsec/pixel) across the overfetch. Then centre-crops back to the requested output size, with the WCS adjusted by the crop origin:</p>
+<div class="matheq">\mathrm{CRPIX}' = \mathrm{CRPIX} - (x_0,\; y_0)</div>
+<p>&mdash; a plain pixel offset, since the <code>CRPIX</code> axis convention matches between FITS and the Python array slice. The crop happens on the cached full-resolution raster, so overlays that redraw don't trigger a refetch.</p>
+
+<h3 id="s13_6">13.6 Three-tier cache</h3>
+<p>Three independent caches, each keyed on exactly the parameters that invalidate it:</p>
+
+<table>
+<tr><th>Cache</th><th>Holds</th><th>Key</th><th>Invalidated by</th></tr>
+<tr><td>HiPS raster</td><td>The fetched (and crop-corrected) background image + WCS + error string</td><td>survey, output px, centre RA/Dec, fetch FOV</td><td>Survey change, resolution change, FOV change, re-centre</td></tr>
+<tr><td>Base raster</td><td>The composed <code>uint8</code> RGB array that goes into matplotlib's <code>imshow</code> &mdash; either plain background or background + warped doc overlay</td><td>HiPS cache key + opacity + doc identity</td><td>Any of the above, plus overlay opacity change or doc swap</td></tr>
+<tr><td>Doc geometry</td><td>Doc's WCS, four sky corners, centre, FOV</td><td>Image shape, WCS object id, size multiplier</td><td>Doc change, size multiplier change</td></tr>
+</table>
+
+<p>Why three tiers: a user adjusting the deep-sky magnitude slider should not retrigger an HTTP fetch and a perspective warp of their image &mdash; both expensive. The matplotlib layer (markers, labels, compass, scale bar, grid) is cheap. Separating those costs lets interactive adjustments stay snappy. Changing a different parameter down the dependency chain invalidates everything above it; the three-tier structure means the right invariant level is kept whatever the change.</p>
+
+<h3 id="s13_7">13.7 Debounced render pipeline</h3>
+<p>Each UI control is routed to one of two paths:</p>
+<ul>
+  <li><b>Fetch-trigger</b> &mdash; survey, size/FOV, output pixels. Immediate render with <code>force_refetch=True</code>, which invalidates the HiPS and base-raster caches.</li>
+  <li><b>Render-trigger</b> &mdash; grid, star names, deep-sky, compass, scale bar, FOV box, opacity. Scheduled on a 150&nbsp;ms single-shot <code>QTimer</code>, no refetch. Multiple events inside the debounce window coalesce into a single re-render.</li>
+</ul>
+<p>Opacity is a special case: the slider sends many <code>valueChanged</code> events during a drag, so SASpro additionally hooks <code>sliderReleased</code> for the final clean render once the user settles. Status label updates immediately on any debounced trigger so the user sees &ldquo;Rendering&hellip;&rdquo; feedback even before the timer fires.</p>
+
+<h3 id="s13_8">13.8 Doc overlay perspective warp</h3>
+<p>When the user wants their data visible on the chart, SASpro overlays it by projecting the doc through its own WCS to sky coordinates, then through the background WCS back to pixels. The four corner pixels of the doc are the source points; their projection to the background's pixel grid gives the destination points. OpenCV's <code>getPerspectiveTransform</code> builds a 3&times;3 homography:</p>
+<div class="matheq">\mathbf{H} \cdot \mathbf{p}_{\mathrm{src}} = \mathbf{p}_{\mathrm{dst}}</div>
+<p>that maps every doc pixel to a background pixel, and <code>warpPerspective</code> renders the warped doc into the background's shape. Alpha blend using a content-presence mask:</p>
+<div class="matheq">I_{\mathrm{out}} = (1 - \alpha \cdot M) \cdot I_{\mathrm{bg}} + \alpha \cdot M \cdot I_{\mathrm{doc,warped}}</div>
+<p>where <code>M</code> is 1 where the warped doc has content and 0 elsewhere (so no artefact in the uncovered regions, and the alpha gives the opacity in the covered ones).</p>
+<p>Why a homography and not a simple affine: the two WCS projections introduce a nonlinear plate-scale variation across the doc's footprint if either is far from the tangent point. The homography captures the first-order perspective distortion, which is what WCS projections look like locally over a few-degree FOV.</p>
+
+<h3 id="s13_9">13.9 Deep-sky catalogue loader</h3>
+<p>SASpro ships a single <code>celestial_catalog.csv</code> that merges Messier, NGC, IC, Abell, Sharpless 2, LBN, LDN, and PN-G objects into one table with a <code>Catalog</code> column identifying each row's source. The loader opens the file with a decoding ladder &mdash; <code>latin-1</code> &rarr; <code>utf-8-sig</code> &rarr; <code>utf-8</code> &rarr; <code>cp1252</code> &mdash; so it works whether the file was saved from Excel on Windows, Numbers on Mac, or exported by a Python script. BOM-tolerant column lookup walks <code>"Name"</code>, <code>"NAME"</code>, and the UTF-8 BOM-prefixed <code>"\ufeffName"</code> for every expected field, so a BOM at the start of the first column doesn't lose that column.</p>
+<p>Parsed fields per row: name, RA/Dec (degrees), magnitude (optional), Info / Diameter (optional, often contains size like &ldquo;6.0x4.0&rdquo; arcmin), Type / LongType (optional), Catalog (source), and a canonical catalogue code (see next section).</p>
+
+<h3 id="s13_10">13.10 Catalogue code canonicalisation</h3>
+<p>Users (and catalogue sources) spell catalogue codes inconsistently:</p>
+
+<table>
+<tr><th>Catalogue</th><th>Variants seen in the wild</th><th>Canonical</th></tr>
+<tr><td>Sharpless 2</td><td><code>SH2-</code>, <code>SH2 </code>, <code>SH-2</code>, <code>SH 2</code>, <code>SH_2</code>, <code>SHARPLESS</code></td><td><code>SH2</code></td></tr>
+<tr><td>Planetary Nebula Galactic</td><td><code>PNG</code>, <code>PN-G</code>, <code>PN G</code>, <code>PN_G</code></td><td><code>PN-G</code></td></tr>
+</table>
+
+<p>SASpro's <code>_canon_catalog_code</code> looks at both the <code>Catalog</code> column and the object's <code>Name</code> prefix and reduces every variant to the canonical form. The user's UI filter (dropdown with the clean canonical names) matches against this canonical code, so a mixed-source catalogue CSV filters correctly without hand-cleaning the data. Other catalogues (NGC, IC, M, Abell, LBN, LDN) are already consistent in their standard spelling and pass through unchanged.</p>
+
+<h3 id="s13_11">13.11 Angular + magnitude filters</h3>
+<p>For every DSO (and bright star) in the catalogue:</p>
+<ol>
+  <li><b>Fast cull</b>: skip if the declination differs from the chart centre by more than <code>radius + 2&deg;</code> &mdash; a cheap pre-filter that avoids computing full angular separations for most objects.</li>
+  <li><b>Angular separation</b>: compute <code>&sigma;(obj, centre)</code> and keep if:</li>
+</ol>
+<div class="matheq">\sigma(\mathrm{obj},\; \mathrm{centre}) \leq 0.75 \cdot \mathrm{FOV}</div>
+<p>The 0.75 factor restricts labels to the inner three-quarters of the chart radius, since labels near the exact edge would clip against the chart boundary.</p>
+<p>3. <b>Magnitude cut</b>:</p>
+<div class="matheq">m \leq m_{\max} \;\;\Rightarrow\;\; \mathrm{keep}</div>
+<p>Objects with no magnitude in the catalogue get a sentinel score of 99 so they sort to the end and are kept only if the user's label cap allows.</p>
+<p>4. <b>Sort by brightness</b> and keep the top <code>4 &times; max_labels</code> &mdash; a bit extra over the user's cap, so the declutter step has candidates to pick from in dense regions.</p>
+
+<h3 id="s13_12">13.12 Declutter algorithm</h3>
+<p>After brightness-sort, each candidate's chart-pixel position is reduced to a grid cell:</p>
+<div class="matheq">\mathrm{cell}(x, y) = \left( \lfloor x / c \rfloor,\; \lfloor y / c \rfloor \right),\;\; \mathrm{keep\ first\ per\ cell}</div>
+<p>with <code>c = 34</code> px for DSOs, <code>c = 28</code> px for stars. First object in each cell wins (which is the brightest, since the list was pre-sorted). This stops two bright nearby objects from stacking their labels on top of each other &mdash; the brighter one keeps the real estate, the dimmer one gets dropped. Simple, deterministic, no optimisation loop.</p>
+<p>The grid-cell approach is deliberately coarser than labels can get. In an open star cluster with a dozen 4th-magnitude stars inside a 100-pixel region, labels would otherwise form an unreadable pile; the grid gives one label per 28-px cell maximum, which comes out at a readable spacing on a 900&ndash;2400 px chart.</p>
+
+<h3 id="s13_13">13.13 In-bounds label placer</h3>
+<p>Even post-declutter, a label near the chart boundary can overflow because labels are drawn at a pixel offset from the marker and the text itself has width. SASpro's <code>_place_label_inside</code>:</p>
+<ol>
+  <li>Places the label at the default offset (6 px right, 4 px up from the marker).</li>
+  <li>Measures its bounding box in display coordinates via <code>get_window_extent(renderer)</code>.</li>
+  <li>Computes the shift needed on each axis to pull the box inside the chart with a 4-pixel padding margin.</li>
+  <li>Applies the shift.</li>
+  <li>Re-measures to confirm the result is inside.</li>
+  <li>If step 5 still shows the label outside the chart (long label that can't fit after a shift), <b>removes the label entirely</b> rather than letting it clip at the edge.</li>
+</ol>
+<p>The renderer is obtained from a <code>fig.canvas.draw()</code> call that happens once per chart render, before any label is drawn. Running this check per-label on hundreds of labels is fast because the renderer is already warm.</p>
+
+<h3 id="s13_14">13.14 DSO size circles</h3>
+<p>When the catalogue entry has an Info field with a size string like <code>"6.0x4.0"</code> or <code>"90x40"</code>, SASpro parses it as arcminute dimensions with a regex, takes the major axis as the honest diameter (since no PA information is available), converts to pixels at the chart's scale:</p>
+<div class="matheq">d_{\mathrm{px}} = \frac{d_{\mathrm{arcmin}} \cdot 60}{s}</div>
+<p>and draws a cyan outline circle at that radius centred on the object. The 60-factor converts arcminutes to arcseconds so it divides by <code>s</code> in arcsec/pixel. Circles under 4 px diameter are not drawn (would just look like a marker). The outline colour is a dark cyan (<code>#5145ff</code>) that's visible on bright and dark backgrounds alike.</p>
+
+<h3 id="s13_15">13.15 Bright-star overlay</h3>
+<p>The bright-star table is SASpro's shared <code>BRIGHT_STARS</code> list (~200 named stars with proper names, RA, Dec, V-magnitude). Same filter pipeline as DSOs: declination fast-cull, angular separation gate at 0.75&times;FOV, magnitude cut, sort by V-magnitude, cap at <code>max_labels</code>, declutter at 28-px cells, in-bounds label placement. Marker is a small amber dot (<code>#ffb000</code>) with the star name in the same amber.</p>
+<p>Default magnitude limit 5.0: catches the eye-visible stars for naked-eye-scale charts and all the named bright stars (Vega, Deneb, Altair, Betelgeuse&hellip;). For wider-field charts with less busy backgrounds, raising to 6.0 or 7.0 catches more secondary stars.</p>
+
+<h3 id="s13_16">13.16 Compass construction</h3>
+<p>The N/E arrows are built from the background WCS by stepping a small sky offset from the chart centre in two directions and projecting both to pixels:</p>
+<ol>
+  <li>Pick a step size: <code>step = max(0.01, min(0.15, FOV &times; 0.08))</code> degrees. Scales with the chart's FOV so the compass arrows always have a visible length regardless of zoom.</li>
+  <li>North endpoint: chart centre + step in Dec.</li>
+  <li>East endpoint: chart centre + <code>step / cos(dec)</code> in RA. The <code>cos(dec)</code> compensation makes it a real arc-length step on the sky at the current declination (so East looks east regardless of latitude).</li>
+  <li>Project the centre and both endpoints through the background WCS to chart pixels.</li>
+  <li>Normalise each vector to a fixed length (9% of chart width) and draw as arrow annotations.</li>
+</ol>
+<div class="matheq">\hat{\mathbf{v}}_N = \frac{\mathbf{v}_N}{\|\mathbf{v}_N\|},\;\; \hat{\mathbf{v}}_E = \frac{\mathbf{v}_E}{\|\mathbf{v}_E\|}</div>
+<p>Why not just &ldquo;up and right&rdquo;: the chart's pixel axes don't always align with sky North and East &mdash; a HiPS cutout can land rotated, and your doc's axes don't match the HiPS cutout either. Deriving the compass from the actual WCS projection guarantees correctness at any orientation.</p>
+
+<h3 id="s13_17">13.17 Scale bar</h3>
+<p>Four-tier bar length based on fetch FOV:</p>
+
+<table>
+<tr><th>FOV &ge;</th><th>Bar length</th></tr>
+<tr><td>4&deg; (240&prime;)</td><td>30&prime;</td></tr>
+<tr><td>2&deg; (120&prime;)</td><td>20&prime;</td></tr>
+<tr><td>1&deg; (60&prime;)</td><td>10&prime;</td></tr>
+<tr><td>&lt; 1&deg;</td><td>5&prime;</td></tr>
+</table>
+
+<p>Bar length in pixels is <code>bar_arcmin &times; 60 / s</code> where <code>s</code> is the pixel scale derived from <code>proj_plane_pixel_scales</code> (median of the two axis scales, in degrees per pixel, converted to arcsec):</p>
+<div class="matheq">s = \sqrt{\left| \det \mathrm{CD} \right|} \cdot 3600 \;\; [\mathrm{arcsec/pix}]</div>
+<p>Drawn as a white horizontal line with end ticks and a label showing the bar's length in arcminutes plus the pixel scale in arcsec/pixel. Example: <code>"30&prime;  (1.69&prime;&prime;/px)"</code> on a 4&deg; DSS2 chart.</p>
+
+<h3 id="s13_18">13.18 FOV box math</h3>
+<p>The imaging-train FOV rectangle is specified by focal length <code>f</code> (mm), pixel pitch <code>p</code> (&micro;m), sensor dimensions <code>N_W &times; N_H</code> (pixels), and rotation <code>&phi;</code> (degrees clockwise from north). Angular half-sizes per axis:</p>
+<div class="matheq">\frac{\theta_W}{2} = \arctan\!\left( \frac{p \cdot N_W}{2 \cdot f} \right) \;\; [\mathrm{deg}]</div>
+<p>(same for height; the <code>pitch &times; N</code> gives sensor dimension in micrometres which divided by <code>2f</code> is the half-angle tangent). The four corners in East-North offset space are <code>(&plusmn;&theta;_W/2, &plusmn;&theta;_H/2)</code>, then rotated clockwise about the field centre by <code>&phi;</code>:</p>
+<div class="matheq">\mathbf{d}'_r = (d_E \cos\phi - d_N \sin\phi,\;\; d_E \sin\phi + d_N \cos\phi)</div>
+<p>and converted to RA/Dec by compensating RA for the local cosine of declination (so East offset is a real arc-length step):</p>
+<div class="matheq">\alpha_c = \alpha_0 - \frac{d_E'}{\cos\delta_0},\quad \delta_c = \delta_0 + d_N'</div>
+<p>The minus sign on <code>d_E</code> is because +East is -RA in standard conventions. Each corner's RA/Dec is then projected through the background WCS to chart pixels, the four pixel points are connected and closed as a polygon, and the diagonal centre gets a text label showing <code>width&prime; &times; height&prime;</code> arcminutes.</p>
+<p>The <code>cos(&delta;)</code> compensation matters near the celestial poles. Without it, a 30&prime; East offset at Dec 80&deg; would be plotted as a 30&prime; shift in RA, which is actually only ~5.2&prime; of arc at that declination; the FOV box would appear squashed. With compensation the box lands correctly at any declination.</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>finder-chart orchestration, overlay system, and UI</b> are new work by <b>Franklin Marek</b> for SetiAstro Suite Pro. SASpro-exclusive content: the multi-survey HiPS dispatcher with the canonical label &rarr; HiPS-ID map; the NSNS-via-simg.de routing through hips2fits with a non-CDS URL; the overfetch-and-crop strategy at <code>&radic;2 &middot; 1.02</code>; the three-tier cache (HiPS raster, base raster with doc overlay, doc geometry) with per-tier invalidation; the debounced render pipeline distinguishing fetch-triggers from render-triggers; the WCS-correct doc overlay via <code>cv2.getPerspectiveTransform</code> on the four corner correspondences and alpha blend on the warped-content mask; the deep-sky catalogue loader with the multi-encoding fallback chain and BOM-tolerant column lookup; the catalogue code canonicalisation that collapses Sharpless-2 and PN-G variants; the grid-cell declutter algorithm; the in-bounds label placer with <code>get_window_extent</code>-based bbox measurement and automatic drop on failed shift; the DSO size-circle renderer parsing the Info field with the arcminute-dimension regex; the WCS-correct N/E compass construction via sky-step projection and the <code>cos(&delta;)</code>-compensated East step; the four-tier FOV-dependent scale bar; the imaging-train FOV box with <code>atan(pitch &middot; N / (2 &middot; f))</code> per-axis angular half-sizes, CW rotation, and <code>cos(&delta;)</code>-compensated East offset conversion to RA/Dec; the live FOV readout; the four-tier WCS recovery chain with non-FITS metadata key stripping and SIP-presence CTYPE patching; and the QSettings-based persistence of every control.
+<br><br>
+<b>The HiPS survey tiles themselves are external data</b> provided by their respective survey projects and served through <b>CDS's hips2fits HTTP API</b> at <code>alasky.cds.unistra.fr</code> (Boch et al. 2020, Astronomical Data Analysis Software and Systems XXIX). The HiPS format itself is <b>Fernique et al. (2015, A&amp;A 578:A114)</b>. Survey credits: <b>DSS2</b> is the Second-Generation Digitized Sky Survey (POSS-II/UKST plates digitised by STScI); <b>Pan-STARRS DR1</b> is <b>Chambers et al. (2016, arXiv:1612.05560)</b>; <b>SDSS DR9</b> is <b>Ahn et al. (2012, ApJS 203:21)</b>; <b>DESI Legacy Imaging Surveys DR10</b> is <b>Dey et al. (2019, AJ 157:168)</b>; <b>2MASS</b> is <b>Skrutskie et al. (2006, AJ 131:1163)</b>; <b>Gaia DR3</b> is <b>Gaia Collaboration (2023, A&amp;A 674:A1)</b>; <b>NSNS</b> (Northern-Sky Narrowband Survey) is published by <a href="http://www.simg.de">simg.de</a>.
+<br><br>
+<b>Deep-sky catalogues</b>: <b>Messier</b> catalogue (Charles Messier, 1781); <b>NGC/IC</b> (<b>Dreyer 1888, MemRAS 49:1</b> and subsequent Index Catalogue supplements of 1895 and 1908); <b>Abell</b> (<b>Abell 1958, ApJS 3:211</b>, originally a cluster catalogue; the planetary-nebula entries used here come from the companion <b>Abell 1966, ApJ 144:259</b>); <b>Sharpless 2</b> (<b>Sharpless 1959, ApJS 4:257</b>); <b>Lynds Bright Nebulae</b> (<b>Lynds 1965, ApJS 12:163</b>); <b>Lynds Dark Nebulae</b> (<b>Lynds 1962, ApJS 7:1</b>); <b>PN-G</b> designations follow the <b>Strasbourg-ESO Catalogue of Galactic Planetary Nebulae</b> (Acker et al. 1992).
+<br><br>
+Libraries: <b>Astropy</b> provides WCS construction (<code>astropy.wcs.WCS</code>, <code>celestial</code> subspace), coordinates (<code>SkyCoord</code>, degree units, angular separations), pixel-scale derivation (<code>astropy.wcs.utils.proj_plane_pixel_scales</code>), FITS I/O (<code>astropy.io.fits</code>), and the <code>WCSAxes</code> matplotlib projection used for the RA/Dec grid. <b>astroquery</b>'s <code>hips2fits</code> module is used as a fallback path for CDS surveys. <b>OpenCV</b> (<code>cv2</code>) provides the perspective transform estimation and warping for the doc overlay. <b>Matplotlib</b> handles rendering, including the Agg backend for off-screen draw and <code>patheffects.Stroke</code> for the dark text outlines that make labels readable on any background. <b>NumPy</b> provides array operations throughout. <b>PyQt6</b> provides the dialog UI, <code>QTimer</code>-based debouncing, and <code>QSettings</code> persistence.
+</div>
+
+</body>
+</html>

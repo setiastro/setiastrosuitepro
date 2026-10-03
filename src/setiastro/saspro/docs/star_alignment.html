@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Stellar Alignment</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>Stellar Alignment</h1>
+<p class="sub">Register one image onto another's pixel grid — using stars, plate solutions, or both — the engine behind Stacking Suite, Dither Analysis, Exoplanet Hunter, and every other SASpro tool that needs frames in the same coordinate system.</p>
+
+<div class="hero">
+<b>The quiet workhorse.</b> This tool solves the geometric problem of taking a target image and warping it so every pixel sees the same patch of sky as the corresponding pixel in a reference image. Standalone it's a two-image dialog with a preview; under the hood it's the same code that stacks hundreds of light frames in Stacking Suite, that measures per-frame drift in Dither Analysis, that locks a target star in place across a time-series in Exoplanet Hunter, and that solves panel-to-panel geometry in Mosaic Master. Three alignment methods (Stellar, WCS/SIP, WCS→Stellar refinement) handle everything from "two frames of the same scope on the same night" to "same object through two different telescopes with different FOVs and a meridian flip in between".
+</div>
+
+<h2>1. Picking a source and target</h2>
+
+<p>The two top boxes each hold a selector:</p>
+
+<ul>
+  <li><b>Source Image (Reference)</b> — the image whose pixel grid everything else gets aligned onto. The output image inherits its dimensions and WCS.</li>
+  <li><b>Target Image (To be Aligned)</b> — the image that gets warped. The output is a warped copy of this image, same shape as the source.</li>
+</ul>
+
+<p>Each box offers <b>From File</b> (open a FITS or image file) or <b>From View</b> (pick any open SASpro document from the dropdown). Click <b>Refresh</b> next to a view dropdown if you've opened new images since the dialog launched. Source and target can mix freely — file-against-view, view-against-view, file-against-file.</p>
+
+<h2>2. The three alignment methods</h2>
+
+<p>The <b>Method</b> dropdown at the top of the Transform / Distortion box picks the alignment strategy:</p>
+
+<table>
+<tr><th>Method</th><th>How it works</th><th>Use it when</th></tr>
+<tr><td><b>Stellar (star matching)</b></td><td>Detects stars in both frames, matches them by triangle invariants, solves for the transform. The classical approach, implemented via astroalign.</td><td>Both frames come from the same scope at (near) the same scale and orientation. Fast, no plate solve needed. Standard choice for stacking light frames from one session.</td></tr>
+<tr><td><b>WCS / SIP (plate solve, no stars)</b></td><td>Uses each image's plate-solved WCS (including SIP distortion) to reproject the target onto the reference's pixel grid. No star detection — every pixel's position is computed from the astrometric solution.</td><td>Arbitrary scale, rotation, flip, or FOV difference. Both images must be plate-solved. Needed for cross-instrument alignment, mosaic prep, or any case where star matching would fail due to a dramatically different field of view.</td></tr>
+<tr><td><b>WCS → Stellar refinement</b></td><td>WCS reprojection first (gets both onto the same grid), then a star-matching pass refines any residual sub-pixel offset. The best-of-both method.</td><td>Cross-instrument work where you want sub-pixel accuracy. Also the right pick when the plate solutions are good but you want to tighten the final alignment to the sub-pixel level that star matching provides.</td></tr>
+</table>
+
+<div class="tip">
+<b>Which to pick in practice.</b> If your frames are from one scope on one night, use <b>Stellar</b> — it's fast and the plate solutions aren't needed. If you're combining frames from different telescopes, different cameras, before and after a meridian flip, or anything with scale/rotation disagreement, use <b>WCS → Stellar refinement</b> — the WCS step handles the gross geometry, and the stellar refinement pins down the final pixel. Pure <b>WCS/SIP</b> alone is for the rare case where you have no bright stars to match (deep narrowband with a tight field, say) but you do have plate solutions.
+</div>
+
+<h2>3. Check WCS and Trial Detect</h2>
+
+<p>Two small buttons let you verify the inputs before committing to a long alignment job:</p>
+
+<div class="keys">
+<b>Check WCS</b> — reports whether the current source and target carry usable plate solutions. Green ✓ means a WCS with usable celestial coordinates was found; yellow ⚠ means no plate solve. For the WCS and WCS→Stellar methods, both frames need the ✓.
+<br><b>🔍 Trial Detect</b> — runs star detection on both frames with the current detection sigma threshold and reports how many stars each has. Green ✓ means a healthy count; yellow ⚠ means too few (lower the threshold), too many (raise it), or no detections at all. Great for calibrating detection sigma before a stacking run.
+</div>
+
+<p>Both buttons populate inline status labels — they never pop a modal — so you can tweak settings and re-check freely.</p>
+
+<h2>4. Transform models</h2>
+
+<p>Below the method, the <b>Model</b> dropdown picks the mathematical form of the final transform:</p>
+
+<table>
+<tr><th>Model</th><th>Degrees of freedom</th><th>Captures</th></tr>
+<tr><td><b>Affine (fast)</b></td><td>6</td><td>Translation, rotation, scale (x and y independently), and shear. The default — fits almost every real-world case between two frames on the same mount.</td></tr>
+<tr><td><b>Homography (projective)</b></td><td>8</td><td>Affine plus perspective (keystone). Useful when the two images were taken with different optical axis tilt, or for correcting slight focal-plane misalignment.</td></tr>
+<tr><td><b>Polynomial (order 3)</b></td><td>Many (fit to inlier residuals)</td><td>Nonlinear optical distortion on top of a base affine or homography. For very wide fields where coma, field curvature, or vignetting-induced distortion create curved rather than straight residuals.</td></tr>
+<tr><td><b>Polynomial (order 4)</b></td><td>More</td><td>Same, but higher-order terms. Only when a 3rd-order polynomial still leaves systematic residuals. Can over-fit noise if detection is sparse.</td></tr>
+</table>
+
+<p>Polynomial models always build on top of a base affine or homography — the polynomial fits only the <i>residual</i> correction after the linear model is applied. This two-pass structure gives much better stability than trying to fit a pure polynomial from scratch.</p>
+
+<h2>5. Detection and matching parameters</h2>
+
+<div class="keys">
+<b>Max control points</b> — upper bound on the number of star matches used to fit the transform. 250 is the default; 500-1000 helps on very wide fields with many stars, 100 is enough for simple affine fits.
+<br><b>Solve downsample</b> — the solve runs on a factor-N-downsampled grid for speed, then the result is lifted back to full resolution. Default 3; raise to 2 (or 1) if the solver is bimodal between meridian-flipped frames.
+<br><b>Homography RANSAC reprojection (px)</b> — the inlier threshold when fitting homography or polynomial residuals. Default 3.0 px; raise if your star PSFs are large, lower for sharp sampling.
+<br><b>Detection threshold (σ)</b> — how many sigma above background a star must stand to be detected. Default 12; lower to 5-8 on sparse fields, raise to 20+ on crowded ones. Use Trial Detect to calibrate.
+</div>
+
+<div class="tip">
+<b>Detection settings are shared with Stacking Suite.</b> The dialog shows this reminder because the solve parameters here save to the same user preference keys that Stacking Suite reads from — once you've tuned them for your rig in either tool, both apply the same settings. The common tuning path is: run Trial Detect in this dialog, pick a σ that gives you a few hundred stars on your typical frame, then those settings carry straight into your next stacking job without re-doing the calibration.
+</div>
+
+<h2>6. Running and inspecting</h2>
+
+<p><b>Run Alignment</b> kicks the job off. Status updates stream to the left panel. When it finishes, the aligned result appears in the right-panel preview. Use <b>AutoStretch: ON/OFF</b> to toggle a simple percentile stretch on the preview — doesn't modify the data, just helps you see the low-contrast detail.</p>
+
+<p>For Affine or Homography alignments, a <b>Transformation Matrix Details</b> popup shows the full matrix and derived parameters: translation (t<sub>x</sub>, t<sub>y</sub>), scale (x, y), rotation angle, and shear. When the alignment ran as WCS→Stellar refinement, the dialog notes that the matrix shown is only the residual star-refinement delta on top of the (much larger) WCS reprojection.</p>
+
+<h2>7. Delivering the result</h2>
+
+<table>
+<tr><th>Button</th><th>What it does</th></tr>
+<tr><td><b>Apply to Active View</b></td><td>Replaces the pixels of the currently active document with the aligned result. Metadata is updated with a "Stellar Alignment" step name for undo history.</td></tr>
+<tr><td><b>Create New View</b></td><td>Opens the aligned result as a new SASpro document, leaving the source and target untouched. The new view's title combines the target name with the source name (e.g. <code>M31_Ha_aligned_to_M31_RGB</code>).</td></tr>
+</table>
+
+<h2>8. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Standard two-session merge.</b> Target image = tonight's new frame, Source = your master integration. Method: Stellar. Model: Affine. Trial Detect to confirm both have 100+ stars. Run Alignment. Create New View. You now have the new session's frame on the exact same pixel grid as your running stack — ready to add to the master in whatever integration tool you prefer.
+</div>
+
+<div class="workflow">
+<b>Combining a different scope's data.</b> Target = narrowband frame from your refractor, Source = broadband integration from your astrograph. Both plate-solved. Method: WCS → Stellar refinement. Model: Affine. The WCS stage handles the different focal lengths and orientations; the stellar refinement step fine-tunes the pixel accuracy for a clean overlay. Create New View, then combine with the broadband data in a channel compositor.
+</div>
+
+<div class="workflow">
+<b>Aligning before and after a meridian flip.</b> Target = post-flip frame, Source = pre-flip reference. Method: WCS → Stellar refinement (needed because post-flip the frame is rotated 180°; pure stellar matching can struggle at that extreme). If both are plate-solved, this handles it in one pass; if not, plate-solve both first (Plate Solver → unwarp if needed) and come back.
+</div>
+
+<div class="workflow">
+<b>Wide-field with corner distortion.</b> Target = any frame from a fast astrograph (f/2-f/4) or camera lens, Source = your reference. Stars at the frame edges won't fit a pure affine. Method: Stellar. Model: Polynomial (order 3). Max control points: 500+. The affine base captures the main geometry; the polynomial fits the residual edge distortion. If edge residuals remain, try order 4.
+</div>
+
+<div class="workflow">
+<b>Calibrating detection σ for a stacking run.</b> Before you launch a big stacking job, open this dialog on your reference frame as both source and target (a self-alignment is a nonsensical operation but it exercises detection without actually running the align). Trial Detect reports exactly how many stars your current σ catches. Settle on a value that gives you a few hundred to a few thousand stars, close the dialog, launch stacking — the setting is already shared.
+</div>
+
+<h2>9. Headless / shortcut use</h2>
+
+<p>The tool integrates with SASpro's drag-grip shortcut system via a command ID of <code>star_alignment</code>. A preset payload has this shape:</p>
+
+<div class="eq">{
+  "reference": {"type": "view_name", "name": "Master"},
+  "overwrite": false,
+  "downsample": 2,
+  "title_suffix": "Aligned"
+}</div>
+
+<p>Reference types supported:</p>
+
+<ul>
+  <li><code>{"type": "active"}</code> — use whatever document is active when the drop happens.</li>
+  <li><code>{"type": "view_name", "name": "..."}</code> — match by visible document title.</li>
+  <li><code>{"type": "view_ptr", "doc_ptr": 1234}</code> — exact document pointer (for round-trippable shortcuts).</li>
+  <li><code>{"type": "file", "path": "/abs/path.fits"}</code> — load the reference from disk.</li>
+</ul>
+
+<p>Dropping the preset onto a target view runs the alignment headlessly — detect stars, solve the transform, warp, deliver — with no dialog. When <code>overwrite</code> is true the target doc is replaced in place; otherwise a new view is created. The default behavior across SASpro tools that depend on alignment (Stacking Suite, Dither, Exoplanet Hunter) is to call this engine directly rather than through the dialog, so the same math and the same tuning parameters apply everywhere.</p>
+
+<h2>10. Technical details</h2>
+<p class="tech-lead">The star detection, triangle matching, RANSAC geometry fitting, downsample lift math, multi-pass refinement, and the anti-ring warp.</p>
+
+<h3>10.1 Star detection via SEP</h3>
+
+<p>Both the standalone dialog and the batch registration engine use SEP (Barbary 2016, a Python port of Source Extractor by Bertin &amp; Arnouts 1996) for detection. The pipeline:</p>
+
+<ol>
+  <li>Compute a 64×64-cell background mesh and global RMS: <code>sep.Background(img, bw=64, bh=64)</code>.</li>
+  <li>Threshold at σ · RMS<sub>bg</sub>:
+    <div class="matheq">\text{threshold} = \sigma \cdot \mathrm{RMS}_{\mathrm{bg}}</div>
+  </li>
+  <li>Extract sources via connected-component labeling with minimum area <code>minarea</code>.</li>
+  <li>For each detected object, SEP reports flux, centroid (x, y), semi-major axis a, semi-minor axis b, and pixel count.</li>
+</ol>
+
+<p>SEP is explicitly not thread-safe at the C level, so every call runs inside a module-level lock (<code>_AA_LOCK</code>). Pixel-stack size is grown lazily if the "internal pixel buffer full" error appears — on dense fields the default 1.5M pixels isn't enough.</p>
+
+<h3>10.2 Hot pixel rejection</h3>
+
+<p>Raw SEP detections include hot pixels, cosmic ray hits, and other spurious sources that would corrupt the geometric fit. Three filters are applied:</p>
+
+<p><b>FWHM proxy</b> — from the semi-major axis a, estimate the full-width at half-maximum assuming a Gaussian PSF:</p>
+
+<div class="matheq">\mathrm{FWHM} \approx 2 \sqrt{2 \ln 2} \cdot a</div>
+
+<p>Reject detections where FWHM &lt; 1.2 px. Real stars, even undersampled, have a ≥ 1.0 px; hot pixels tend to be a ~ 0.5 px.</p>
+
+<p><b>Ellipticity</b> — from the axis ratio:</p>
+
+<div class="matheq">e = 1 - b/a</div>
+
+<p>Reject detections where e &gt; 0.6. Real stars are nearly round (e &lt; 0.3 typically). Cosmic ray streaks and satellite trails have e &gt; 0.8.</p>
+
+<p><b>Pixel count</b> — require npix ≥ minarea (default 10). Belt and suspenders with the morphological filters above; sometimes SEP's connected-component bookkeeping includes very small objects that slip past the FWHM filter.</p>
+
+<p>If all detections are rejected (a legitimate scenario on heavily under-sampled frames), the pipeline falls back to a size-only filter of npix ≥ minarea/2 — the alignment should never fail silently just because the hot-pixel filter was aggressive.</p>
+
+<h3>10.3 Uniform-grid control point selection</h3>
+
+<p>After hot-pixel rejection, the surviving detections are sorted by flux (brightest first) and allocated into a 4×4 or 6×6 grid of cells over the image. Each cell can hold up to <code>max_per_cell</code> stars (default 25); the total is capped at <code>max_total</code> (default 500). This gives a spatially uniform sample of bright stars rather than a flux-sorted cluster all in the brightest region of the frame.</p>
+
+<p>Two quality gates on the resulting set:</p>
+
+<p><b>Coverage</b> — fraction of grid cells with at least one star:</p>
+
+<div class="matheq">\mathrm{cov} = \frac{\text{occupied cells}}{\text{total cells}} \geq 0.5</div>
+
+<p>Below 0.5 triggers a log warning — the alignment may still succeed but the solution is probably biased toward one side of the frame.</p>
+
+<p><b>Spread</b> — require the 5th-95th percentile span of x (and y) to cover at least 35% of the image width (height):</p>
+
+<div class="matheq">\text{span}_x = p_{95}(x) - p_5(x) \geq f \cdot W</div>
+
+<p>and at least 6 of 9 cells in a 3×3 grid occupied. Points clustered in a small region produce ill-conditioned transforms that fit the local area perfectly but fail wildly at the edges.</p>
+
+<h3>10.4 Astroalign triangle matching</h3>
+
+<p>With control-point sets in hand, astroalign (Beroiz et al. 2020) builds Delaunay triangulations of each, then matches triangles by their shape-invariant features. For a triangle with sorted side lengths d<sub>1</sub> ≤ d<sub>2</sub> ≤ d<sub>3</sub>:</p>
+
+<div class="matheq">d_1, d_2, d_3 = \text{sorted sides}</div>
+<div class="matheq">\mathcal{I} = (d_2/d_1, \; d_3/d_1)</div>
+
+<p>The invariant is a 2D feature that's unchanged by translation, rotation, and uniform scale. Two triangles with the same invariant (within a tolerance) are candidate matches; multiple candidate matches generate a RANSAC vote for the global transform.</p>
+
+<p>If initial detection fails (not enough triangles agree), the backoff retries with progressively stricter detection σ: 15, 25, 50, 80, 120. Each stricter pass yields fewer but higher-quality stars, which can succeed where a noise-contaminated dense set didn't.</p>
+
+<h3>10.5 Center-crop solve with coordinate lift</h3>
+
+<p>The initial astroalign solve runs not on the full reference image but on a center crop at ~1.2× the target image's dimensions. This has two benefits: the crop is faster to detect in, and it avoids the "target footprint sticks outside the reference" edge case that produces zero valid matches.</p>
+
+<p>After matches are found in crop coordinates, the target-side x and y are shifted by the crop's top-left offset (x<sub>0</sub>, y<sub>0</sub>) to lift them into full-reference coordinates. The transform is then re-estimated with these lifted correspondences for maximum accuracy. If the first solve returns too few spatially-spread matches, the pipeline retries with a 3×3 grid of tiles across the reference — this gives much better coverage on frames where distortion makes a single-crop solve under-sample one quadrant.</p>
+
+<h3>10.6 Downsample affine lift</h3>
+
+<p>For performance, the solve runs on a factor-d downsampled grid. The transform returned in the downsampled coordinate system must be lifted back to full resolution. If S is the downsample scaling matrix:</p>
+
+<div class="matheq">S = \mathrm{diag}(1/d, 1/d, 1)</div>
+
+<p>then an affine A measured in downsampled space maps to full-resolution space via conjugation:</p>
+
+<div class="matheq">A_{\mathrm{full}} = S^{-1} \cdot A_{\mathrm{ds}} \cdot S</div>
+
+<p>and the inverse (used when applying an already-known full-resolution transform to a downsampled frame) is:</p>
+
+<div class="matheq">A_{\mathrm{ds}} = S \cdot A_{\mathrm{full}} \cdot S^{-1}</div>
+
+<p>The same conjugation applies to homographies (3×3). Doing the solve at d=3 is roughly 9× faster than at full resolution and loses almost no accuracy for ordinary astronomical sampling — the lifted transform is still sub-pixel accurate.</p>
+
+<h3>10.7 Similarity projection</h3>
+
+<p>A similarity transform is an affine with no shear and uniform scale (rotation + uniform scale + translation only — 4 degrees of freedom). It's useful for cases where you know the geometry is physically a rigid rotation plus zoom and want to prevent spurious shear from fitting detection noise. The nearest similarity to a given 2×3 affine is found via SVD of its 2×2 linear part M:</p>
+
+<div class="matheq">R = U V^T, \quad s = \frac{\sigma_1 + \sigma_2}{2}</div>
+
+<p>where U, V come from M = U Σ V<sup>T</sup>, R is the closest rotation (determinant corrected if needed), and s is the uniform scale (mean of the two singular values). The resulting similarity is sR with the original translation preserved. This is the operation that cleans up shear from a star-matched affine when the user has picked the Similarity model.</p>
+
+<h3>10.8 Anti-ring warp (Lanczos + bilinear blend)</h3>
+
+<p>Lanczos interpolation produces sharp, high-quality warps everywhere except around saturated stars, where its negative lobes create a visible dark ring (the "Lanczos undershoot" halo). Clipping Lanczos to a bilinear-interpolation envelope creates rosette-pattern facets around the stars from quantizing the kernel's lobes. The right solution is a blend:</p>
+
+<ol>
+  <li>Compute the full-frame bilinear warp (soft, no ring).</li>
+  <li>Compute the full-frame Lanczos warp (sharp, ring on bright stars).</li>
+  <li>Build a bright-pixel mask from the bilinear warp using robust statistics:
+    <div class="matheq">\tau = \mathrm{median}(L) + k \cdot 1.4826 \cdot \mathrm{MAD}(L)</div>
+    with k = 3.0 by default (1.4826 is the Gaussian MAD → sigma conversion).
+  </li>
+  <li>Dilate the mask by ~6 px (the Lanczos radius plus safety margin) so it covers the ring zone, not just the star core.</li>
+  <li>Feather the mask edges with a 2-px-sigma Gaussian so the seam is invisible.</li>
+  <li>Blend:
+    <div class="matheq">I_{\mathrm{out}} = I_{\mathrm{Lanczos}} \cdot (1 - m) + I_{\mathrm{bilinear}} \cdot m</div>
+  </li>
+</ol>
+
+<p>Where there's no bright star (m ≈ 0), the output is pure Lanczos — all the sharpness benefits. On and around bright stars (m ≈ 1), it's pure bilinear — no ring. The transition is smooth, imperceptible on inspection, and preserves the Lanczos quality on 99%+ of the frame.</p>
+
+<h3>10.9 Multi-pass refinement (batch registration)</h3>
+
+<p>The batch Star Registration engine (used by Stacking Suite) runs multiple refinement passes. Pass 1 solves on the original frame; subsequent passes solve on the already-partially-aligned frame, producing a small residual delta each time. The accumulated transform is updated by matrix composition:</p>
+
+<div class="matheq">T_{\mathrm{new}} = T_{\mathrm{delta}} \cdot T_{\mathrm{prev}}</div>
+
+<p>Convergence is declared when the maximum delta shift across all frames falls below a tolerance (default 0.2 px):</p>
+
+<div class="matheq">\max_i \|T_i^{(k)} - T_i^{(k-1)}\| < \varepsilon</div>
+
+<p>Frames that have already converged are skipped in later passes, concentrating work on the stragglers. Default is 3 passes maximum; in practice most frames converge after pass 2.</p>
+
+<h3>10.10 WCS reprojection pipeline</h3>
+
+<p>For the WCS and WCS→Stellar methods, the target image is reprojected onto the source grid via a two-step projection: for every output pixel (x, y) in the source grid, the source WCS forward-projects to a sky position (α, δ), then the target WCS inverse-projects back to a target pixel location (x', y'), where the image is sampled. This uses astropy's <code>all_pix2world</code> and <code>all_world2pix</code>, which honor the full SIP distortion polynomial on both ends.</p>
+
+<p>Tiled processing: the output grid is swept in 512×512 tiles rather than one monolithic allocation, giving progress feedback and bounded memory. A round-trip check — forward through the target WCS, back through the source WCS, compare to the original coordinate — rejects pixels where the SIP inverse iteration diverged, replacing them with the no-data fill value. Rejection count is logged.</p>
+
+<h3>10.11 Polynomial residual warp</h3>
+
+<p>When Polynomial (order 3 or 4) is selected, two warps are chained. The first applies the base affine or homography to get the target image onto an approximately-correct grid. The second is a polynomial correction applied via <code>skimage.transform.warp</code> with an <code>inverse_map</code> callable: for each output pixel, compute its normalized location, evaluate the polynomial to get its source location in the base-warped image, and sample. The polynomial is estimated from inlier matches (those within RANSAC threshold of the base model's prediction), normalized to the [0, 1] domain for numerical conditioning. Points per channel are matched between the color stripes to keep RGB alignment identical.</p>
+
+<h3>10.12 Parallelism</h3>
+
+<p>Batch registration dispatches per-frame solves across a process pool (ProcessPoolExecutor) on native (non-frozen) builds and spawn-aware processes on PyInstaller-frozen builds (guarded by <code>freeze_support()</code> in the entry point to catch worker re-execs). Each worker caps BLAS and OpenCV thread counts to 1 so N frames × M internal cores doesn't oversubscribe the CPU. The finalize pass (full-resolution warp + save) uses a smaller worker pool but allows each worker's OpenCV to use multiple threads — the trade-off between number of concurrent workers and threads-per-worker is scaled by core count.</p>
+
+<p>When process pool initialization fails (common on mixed-env Windows installations where child workers die on NumPy/SciPy import), the engine falls back to a thread pool so registration still completes. The thread fallback serializes astroalign calls through the global <code>_AA_LOCK</code> rather than parallelizing them.</p>
+
+<h3>10.13 Drizzle self-description stamp</h3>
+
+<p>Each aligned frame's FITS header carries a set of <code>SASDZ*</code> keywords that let the drizzle integrator reconstruct the frame's transform without needing the <code>.sasd</code> sidecar file. <code>SASDZKND</code> stores the transform kind ("affine", "homography", "poly3", "poly4"); <code>SASDZRFH</code> and <code>SASDZRFW</code> give the reference grid dimensions; <code>SASDZORG</code> gives the source basename; and for affine/homography, <code>SASDZNR</code>, <code>SASDZNC</code>, and <code>SASDZ00</code> through <code>SASDZ11</code> flatten the matrix row-major into individual FITS cards (which can only hold 8-character keyword names). Polynomial frames carry only the kind and reference dimensions, since their transforms are dense coordinate maps rather than small matrices — the drizzle integrator treats these as already-warped and deposits them on an identity canvas.</p>
+
+<div class="credit">
+<b>Credits.</b> SASpro Stellar Alignment and Star Registration — the three-method pipeline (Stellar / WCS/SIP / WCS→Stellar refinement), the hot-pixel rejection combining FWHM, ellipticity, and pixel-count filters, the uniform-grid control point allocation with coverage and spread gates, the center-crop solve with lift-to-full-resolution, the adaptive 1 vs 5 vs 3×3 tiling retries, the anti-ring Lanczos+bilinear blend, the downsample affine conjugation, the multi-pass delta-composition refinement, the drizzle self-description SASDZ keyword stamp, and the preset drag-grip headless integration — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to the community: astroalign (Beroiz, Cabral, &amp; Sanchez 2020) for the triangle-invariant matching algorithm and base <code>find_transform</code> API; SEP (Barbary 2016) as the Python port of Source Extractor (Bertin &amp; Arnouts 1996) for source detection; OpenCV for <code>warpAffine</code>, <code>warpPerspective</code>, <code>findHomography</code>, <code>estimateAffine2D</code> / <code>estimateAffinePartial2D</code>, and <code>remap</code>; scikit-image (<code>PolynomialTransform</code>, <code>warp</code>) for the polynomial residual pass; scipy (<code>Delaunay</code>, <code>KDTree</code>) for triangulation and nearest-neighbour queries; astropy (<code>WCS</code>, <code>all_pix2world</code>, <code>all_world2pix</code>) for the WCS reprojection path; and the SIP convention (Shupe et al. 2005) for distortion handling.
+</div>
+
+</body>
+</html>

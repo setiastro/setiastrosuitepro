@@ -18,7 +18,7 @@ from setiastro.saspro.widgets.image_utils import (
     blend_with_mask as _blend_with_mask
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 
 # ---------------- Core (unchanged) ----------------
 def apply_morphology(image: np.ndarray, *, operation: str = "erosion",
@@ -193,6 +193,8 @@ class MorphologyDialogPro(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            self.btn_help = make_help_button("morphology", self)
+            drag_row.addWidget(self.btn_help)            
             v.addLayout(drag_row)
         except Exception:
             pass

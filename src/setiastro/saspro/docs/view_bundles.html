@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>View Bundles</h1>
+<p class="sub">A named group of SASpro views and / or disk files that can be targeted together with a single drop: drop a shortcut tile onto a bundle and that shortcut runs against every view in the bundle; drop a Function Bundle onto the group and every step runs against every target in order. Views are added by dragging their tab onto the dialog or a chip; files are added through a file picker, a recursive directory scan, or by dropping them from the OS. Each bundle has a persistent UUID so chips survive bundle reordering, and the file-path path runs <b>headlessly</b> &mdash; no view opens, no DocManager entry is created, so you can batch-process a hundred files without touching the MDI.</p>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Open View Bundles</b>. <b>Create a bundle</b> (New Bundle) and give it a name (F2 or double-click). <b>Add targets</b> three ways: drag view tabs onto the dialog / bundle chip, click <b>Add from Open&hellip;</b> for a checkbox picker of all open views (with Select All), or use <b>Add Files&hellip;</b> / <b>Add Directory (Recursive)&hellip;</b> for disk files. <b>Drop a shortcut</b> onto the dialog, the Views list, or the bundle's chip to apply it to every target in the bundle. <b>Drop a Function Bundle</b> to apply its whole step sequence to every target. <b>Compress to Chip</b> pins the bundle as an orange chip on the shortcut canvas.
+</div>
+
+<div class="hero">
+<p>The signature behaviour of this tool is <b>mixed on-disk + in-memory targeting</b>. A single bundle can carry both open views (identified by their document pointer) and disk files (identified by path), and when a shortcut lands on the bundle, SASpro handles each kind correctly: views get the shortcut dispatched to their MDI subwindow and process in place; files are loaded headlessly into a transient <code>ImageDocument</code>, processed through the same dispatcher via a fake-subwindow shim, and saved back to disk &mdash; without ever appearing in the MDI or the DocManager. The file path is the critical bit: it lets you batch 100 raw frames through a pipeline overnight without opening 100 tabs.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. The bundle concept</a><br>
+<a href="#s2">2. Adding views</a><br>
+<a href="#s3">3. Adding files</a><br>
+<a href="#s4">4. Removing and per-item actions</a><br>
+<a href="#s5">5. Applying a shortcut</a><br>
+<a href="#s6">6. Applying a Function Bundle</a><br>
+<a href="#s7">7. The view-bundle chip</a><br>
+<a href="#s8">8. Technical details</a><br>
+</div>
+
+<h2 id="s1">1. The bundle concept</h2>
+<p>A <b>View Bundle</b> is a named group of two kinds of targets:</p>
+<ul>
+<li><b>Views</b> &mdash; identified by the Python <code>id()</code> of an open <code>ImageDocument</code>. These live in the bundle's <code>doc_ptrs</code> list and are resolved to their MDI subwindow at apply time (via DocManager's <code>resolve_doc_from_drag</code>, which handles proxies, ROI docs, and uid/path lookup).</li>
+<li><b>Files</b> &mdash; identified by absolute path. These live in the bundle's <code>file_paths</code> list and are processed headlessly on apply.</li>
+</ul>
+<p>Each bundle also has a persistent <b>UUID</b> (<code>uuid.uuid4()</code>) that identifies it independently of its name or position in the bundle list. Chips bind to the UUID, so renaming or reordering bundles never breaks a chip's binding. Bundle data lives in QSettings under <code>viewbundles/v3</code> as a JSON array; older <code>viewbundles/v2</code> and <code>viewbundles/v1</code> stores are automatically read on first launch.</p>
+<div class="eq">bundle = {
+    "uuid":       "d4f1&hellip;",                   # stable identity
+    "name":       "Narrowband set",
+    "doc_ptrs":   [ 140234567, 140234592 ],   # id(doc) for open views
+    "file_paths": [ "/data/H_1.fits", &hellip; ],   # absolute paths
+}</div>
+<p>The two panes mirror this: the left pane lists bundles, the right pane shows the targets in the currently selected bundle &mdash; views labelled <code>[view]</code> with their window title, files labelled <code>[file]</code> with their absolute path. Resolved view titles update automatically as the underlying windows are renamed.</p>
+
+<h2 id="s2">2. Adding views</h2>
+<p>Three ways to add open views to the current bundle:</p>
+<ul>
+<li><b>Drag a view tab onto the dialog</b> &mdash; the Views list immediately gains the dropped view. The tab's drag payload is the standard SASpro <code>MIME_VIEWSTATE</code> record (JSON with <code>doc_ptr</code> and <code>doc_uid</code>).</li>
+<li><b>Drag a view tab onto a bundle chip</b> &mdash; same effect, but targets that chip's bundle regardless of what's selected in the dialog.</li>
+<li><b>Add from Open&hellip;</b> button &mdash; opens a dialog listing every currently open view as a checkbox, with a top-level <b>Select all open views</b> that toggles everything at once. OK adds the checked views to the current bundle.</li>
+</ul>
+<p>Views are stored by their current <code>id()</code>. If a view is closed and reopened, its pointer changes and the old entry becomes unresolvable (shown as <code>(unresolved) [&lt;number&gt;]</code> in the list); drag the new tab in to refresh. The alternative &mdash; binding by file path &mdash; is covered by the Files path (next section), where files are explicitly re-loadable on demand.</p>
+<p>Duplicate adds are silently ignored: the bundle's view list dedupes on insert, preserving insertion order.</p>
+
+<h2 id="s3">3. Adding files</h2>
+<p>Files &mdash; raw calibration frames, stacked lights, masters to update &mdash; can live in a bundle without ever being opened. Three ways to add them:</p>
+<ul>
+<li><b>Add Files&hellip;</b> &mdash; file picker. Supported extensions: <code>.fits</code>, <code>.fit</code>, <code>.fts</code>, <code>.fits.gz</code>, <code>.fit.gz</code>, <code>.fz</code>, <code>.xisf</code>, <code>.tif</code>, <code>.tiff</code>, <code>.png</code>, <code>.jpg</code>, <code>.jpeg</code>.</li>
+<li><b>Add Directory (Recursive)&hellip;</b> &mdash; pick a folder; every supported file under it (depth-unbounded) is added.</li>
+<li><b>Drop file URLs</b> onto the dialog or a bundle chip &mdash; files added by path; directories dropped this way are walked recursively, same as the Add Directory button.</li>
+</ul>
+<p>Files are stored as absolute paths and deduplicated on insert. The &ldquo;last opened folder&rdquo; QSetting is updated so the next picker opens where you were.</p>
+<div class="tip">The file path is the <b>unit of persistence</b>: a bundle saved and reloaded still references the exact same file on disk, even if the file was moved between sessions. If the file no longer exists at apply time, that one target errors (reported in the summary) but doesn't stop the rest of the batch.</div>
+
+<h2 id="s4">4. Removing and per-item actions</h2>
+<p>The Views list supports multi-select and standard removal:</p>
+<ul>
+<li><b>Remove Selected</b> &mdash; removes the selected rows (views and files alike).</li>
+<li><b>Clear Views</b> &mdash; empties the bundle (both views and files).</li>
+<li><b>F2</b> or <b>right-click &rarr; Rename&hellip;</b> on a bundle &mdash; rename the current bundle.</li>
+<li><b>Right-click &rarr; Duplicate</b> on a bundle &mdash; copy the whole bundle (new UUID, &ldquo;(copy)&rdquo; suffix).</li>
+<li><b>Right-click &rarr; Delete</b> on a bundle &mdash; drop the bundle and its chip (if any).</li>
+</ul>
+<p>Per-target actions in the right pane (via right-click on a row):</p>
+<ul>
+<li><b>Open in New View</b> on a file row &mdash; opens the file in the MDI without removing it from the bundle. If several file rows are selected, each is opened in its own view.</li>
+<li><b>Focus View</b> on a view row &mdash; activates the view's subwindow in the MDI.</li>
+<li><b>Double-click</b> &mdash; same as the right-click action for that row kind (open file in new view, or focus view).</li>
+</ul>
+
+<h2 id="s5">5. Applying a shortcut</h2>
+<p>Drop a shortcut tile onto the dialog background, the Views list, or the bundle's chip. SASpro parses the payload and applies the shortcut to every target in the bundle:</p>
+<ul>
+<li><b>For each view target</b> &mdash; the view's subwindow is activated and focused, then <code>mw._handle_command_drop(payload, target_sw=sw)</code> runs the shortcut in-place against that view, exactly as if the user had dropped the tile on that view directly.</li>
+<li><b>For each file target</b> &mdash; see &sect;9 for the headless file execution path.</li>
+</ul>
+<p>Views are processed first, files second. All errors (per-view and per-file) are collected and summarised at the end in a single dialog. The summary distinguishes view errors from file errors so you can see where things went wrong.</p>
+<div class="warn">A per-target error does not stop the batch. A bundle of 50 files where 2 are corrupt will finish the remaining 48 and report the 2 errors at the end. If you need fail-fast behaviour, run the shortcut on views one at a time.</div>
+<p>Dropping a <b>nested bundle</b> payload (<code>command_id = "bundle"</code>) onto a View Bundle is <b>ignored</b> &mdash; bundle recursion isn't allowed, since the semantics (apply this bundle's views to that bundle's views?) are undefined. A function_bundle drop is the correct way to fan a multi-step sequence out across the view bundle; see the next section.</p>
+
+<h2 id="s6">6. Applying a Function Bundle</h2>
+<p>Dropping a <b>Function Bundle</b> (<code>command_id = "function_bundle"</code>) onto the dialog or chip runs its whole step sequence against every target in the view bundle, in order:</p>
+<div class="eq">for target in view_bundle.targets:        # views, then files
+    activate(target)
+    for step in function_bundle.steps:
+        apply(step, target)
+        wait_for_change()                  # (views only; see Function Bundles doc)</div>
+<p>The waiter between steps (described in the Function Bundles doc) applies to view targets but is skipped for file targets &mdash; the headless file path runs each step synchronously on the transient document, so there's no asynchronous completion to wait for.</p>
+<p>A function bundle dropped from the <b>Function Bundle Chip</b> carries its full step payload inline (the chip was designed to be a dependency-free drop target); dropping from the <b>Function Bundles dialog</b> works the same way. If the function bundle is empty, nothing happens.</p>
+
+<h2 id="s7">7. The view-bundle chip</h2>
+<p><b>Compress to Chip</b> spawns an orange widget &mdash; the <b>view-bundle chip</b> &mdash; on the shortcut canvas. The chip is bound to the bundle's UUID (not its position), so it survives bundle reordering, renaming, duplication, and <code>.sass</code> import.</p>
+<p>Chip behaviours:</p>
+<ul>
+<li><b>Drop a view tab on the chip</b> &rarr; add that view to this bundle.</li>
+<li><b>Drop files or folders from the OS</b> on the chip &rarr; add them to the bundle (directories walked recursively).</li>
+<li><b>Drop a shortcut tile</b> on the chip &rarr; apply it to every target in the bundle (same semantics as dropping into the dialog).</li>
+<li><b>Drop a Function Bundle</b> on the chip &rarr; apply its whole step sequence to every target.</li>
+<li><b>Ctrl+drag</b> the chip &rarr; starts an external drag with a <code>bundle</code> payload (<code>{"command_id": "bundle", "steps": [&hellip;], "bundle_uuid": "&hellip;"}</code>). This isn't meant to be dropped on a target to execute &mdash; it's a reference payload for chaining into other systems.</li>
+<li><b>Left-drag</b> &rarr; move the chip within the canvas; position is clamped and saved on release.</li>
+<li><b>Double-click</b> &rarr; reopen the dialog and focus this bundle.</li>
+<li><b>Right-click &rarr; Delete Chip</b> &mdash; removes the chip (the bundle stays).</li>
+<li><b>Delete</b> / <b>Backspace</b> while focused &mdash; same as Delete Chip.</li>
+</ul>
+<p>The badge shows the total target count (views + files combined) and recolours by composition: brown-orange when the bundle has open views, dark amber when it has only files, grey when empty. The title tracks the bundle's name live.</p>
+<p>Multiple chips can live on the canvas at once (one per bundle). On first spawn, chips land near the upper-centre of the canvas, offset slightly per chip, so function-bundle chips (which land upper-right) don't collide.</p>
+
+<h2 id="s8">8. Technical details</h2>
+<p class="tech-lead">Internal mechanisms numbered continuing from the usage sections.</p>
+
+<h3>9. Headless file execution</h3>
+<p>The file-path target is the technically interesting part. Rather than opening each file in the MDI (which would create a visible window, a DocManager entry, and a <code>documentAdded</code> signal cascade), SASpro runs each file through a shim chain that <b>reuses the normal command dispatcher</b> on a transient document.</p>
+<p>For each file target, the chain is:</p>
+<div class="eq">1. load_image(path)              # legacy I/O, returns (img, header, bit_depth, is_mono)
+2. ImageDocument(img, meta)      # transient — NOT registered with DocManager
+3. view  = _HeadlessView(doc, mw)         # has .document and .apply_command()
+4. sw    = _FakeSubWindow(view)           # has .widget() returning the view
+5. for step in steps:
+       mw._handle_command_drop(step, target_sw=sw)
+6. save_image(doc.image, path, &hellip;)      # legacy I/O writes back to disk</div>
+<p>The two shim classes are small by design:</p>
+<ul>
+<li><code>_HeadlessView</code> &mdash; wraps the transient <code>ImageDocument</code>. Exposes <code>.document</code> (so command handlers that read <code>sw.widget().document</code> work) and a best-effort <code>.apply_command(cid, preset)</code> fallback that calls the main-window's <code>apply_command_to_view</code> hook if the normal dispatch path isn't taken for some reason.</li>
+<li><code>_FakeSubWindow</code> &mdash; wraps a <code>_HeadlessView</code> and exposes <code>.widget()</code> and <code>.windowTitle()</code>. Any command handler that calls <code>sw.widget().document</code> gets the transient doc; any that calls <code>sw.windowTitle()</code> gets the document's display name.</li>
+</ul>
+<p>This design means nearly every SASpro command works headlessly out of the box, because they already go through the <code>target_sw</code> interface. The transient document is never added to the DocManager, so no signals fire, no UI updates, and the garbage collector can reclaim it once the save completes.</p>
+
+<h3>10. Save-back behaviour</h3>
+<p>After all steps have run against the transient document, the result is saved back to disk via the legacy <code>save_image</code> writer, which mirrors DocManager's parameter mapping:</p>
+<div class="eq">save_image(
+    img_array       = doc.image,
+    filename        = target_path,
+    original_format = ext,                           # inferred from target_path
+    bit_depth       = doc.metadata["bit_depth"],
+    original_header = doc.metadata["original_header"],
+    is_mono         = doc.metadata["is_mono"],
+    image_meta      = doc.metadata.get("image_meta"),
+    file_meta       = doc.metadata.get("file_meta"),
+)</div>
+<p>The default target path is the source path (overwrite). An alternate <code>out_dir</code> can be passed through the UI-based save path (<code>_apply_payload_to_single_file_via_ui</code>) if a non-destructive copy is wanted; the headless path currently always overwrites.</p>
+<p>Format is inferred from the target path's extension. JPEG is normalised to <code>jpg</code>. Original header, bit depth, and mono flag flow through from the loaded document's metadata so round-tripping preserves what matters.</p>
+
+<h3>11. Doc resolution for views</h3>
+<p>Views are identified by <code>id()</code>, which is specific to a particular <code>ImageDocument</code> instance. Resolving a stored <code>doc_ptr</code> back to the live doc and its subwindow goes through two layers:</p>
+<ul>
+<li><b>Preferred</b>: <code>DocManager.resolve_doc_from_drag(doc_ptr=&hellip;)</code>. The DocManager knows about proxies (undo-safe clones), ROI documents (crops of a parent), and uid / file-path lookup &mdash; so if the user closed and reopened the file, resolve can still find it by the stable uid or path.</li>
+<li><b>Fallback</b>: scan every subwindow in the MDI, comparing <code>id(sw.widget().document)</code> against the stored pointer, and also comparing the pointer against any <code>_doc</code> / <code>_document</code> / <code>_base</code> underlying attribute the doc might expose.</li>
+</ul>
+<p>If both layers fail, the view is marked <code>(unresolved)</code> in the targets list and skipped at apply time (not an error, just not applied).</p>
+
+<h3>12. Payload unwrap</h3>
+<p>Some older code paths and some third-party scripts wrap command payloads a layer too deep, like:</p>
+<div class="eq">{ "command_id": { "command_id": "stretch_statistical", "preset": &hellip; }, "preset": &hellip; }</div>
+<p>The <code>_unwrap_cmd_payload</code> helper detects this shape (outer <code>command_id</code> is itself a dict containing <code>command_id</code>) and returns the inner dict. All drop handlers run their incoming payload through unwrap first, so wrapped payloads apply correctly without changes elsewhere.</p>
+
+<h3>13. Chip persistence</h3>
+<p>Chip positions are stored in QSettings under <code>viewbundles/chips_v1</code> as a JSON array of <code>{ "uuid": &hellip;, "x": &hellip;, "y": &hellip; }</code> records. Each record is keyed by the bundle UUID (not its index), so chips survive bundle reordering and renaming.</p>
+<p>Writes happen on every drag release, bundle delete, and compress-to-chip call. Restore runs at dialog construction time: for each saved record, the matching bundle is looked up by UUID; if it still exists, a chip is spawned on the shortcut canvas with the saved position. Missing bundles (deleted outside the UI, or imported-away) are silently skipped.</p>
+<p>Startup chip restore is driven by <code>restore_view_bundle_chips(parent)</code>, which constructs the dialog singleton with <code>auto_spawn_only=True</code> &mdash; the dialog stays hidden, but its chips land on the canvas.</p>
+
+<h3>14. UUID bundle identity</h3>
+<p>Each bundle gets a <code>uuid.uuid4()</code> on creation. The UUID is what makes chips independent of bundle ordering and renaming: when a chip looks up its bundle, it does so by UUID, not by index. Duplicating a bundle generates a fresh UUID (so the duplicate gets its own chip if compressed); importing bundles from a <code>.sass</code> file preserves the saved UUIDs unless they collide with existing ones (in which case the imported bundle keeps its data but may conflict &mdash; current import does not resolve collisions, which is a known edge case for cross-user bundle sharing).</p>
+<p>The older <code>viewbundles/v2</code> and <code>viewbundles/v1</code> schemas didn't carry UUIDs; the loader back-fills a fresh UUID per bundle on first read, which is why upgrading SASpro doesn't lose existing bundles but may re-anchor any pre-existing chip layout.</p>
+
+<h2>Credits</h2>
+<div class="credit">
+<b>View Bundles</b> is a workflow tool for SetiAstro Suite Pro by <b>Franklin Marek</b>. It builds on standard SASpro machinery: the shortcut MIME protocol (<code>MIME_CMD</code>), the view-state tab-drag protocol (<code>MIME_VIEWSTATE</code>), the main-window drop dispatcher (<code>_handle_command_drop</code>), DocManager's <code>resolve_doc_from_drag</code>, the legacy image I/O (<code>load_image</code> / <code>save_image</code>), and the shortcut-canvas chip layer. The headless file-execution shim is new work for this tool; there are no external algorithmic references &mdash; this tool orchestrates SASpro's existing commands rather than introducing new image-processing primitives. Qt and PyQt6 provide the UI framework, drag-and-drop infrastructure, and QSettings persistence.
+</div>
+
+</body>
+</html>

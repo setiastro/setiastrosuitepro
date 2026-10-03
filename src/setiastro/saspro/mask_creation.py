@@ -38,7 +38,7 @@ from setiastro.saspro.imageops.diffuse_structure_mask import (
     diffuse_structure_mask,
     suggest_diffuse_structure_settings,
 )
-
+from setiastro.saspro.help_support import make_help_button
 # ---------- small utils ----------
 
 def _to_qpixmap01(img01: np.ndarray) -> QPixmap:
@@ -1211,10 +1211,12 @@ class MaskCreationDialog(QDialog):
         b_undo = QPushButton("Undo Shape"); b_undo.clicked.connect(self._undo_shape)
 
         b_clear = QPushButton("Clear Shapes");   b_clear.clicked.connect(self._clear_shapes)
-
+        rowb.addStretch(1)
         rowb.addWidget(b_preview)
         rowb.addWidget(b_undo)
         rowb.addWidget(b_clear)
+        rowb.addStretch(1)
+        rowb.addWidget(make_help_button("mask_creation", self))        
         layout.addLayout(rowb)
 
         self.status_label = QLabel("")

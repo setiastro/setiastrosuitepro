@@ -409,6 +409,7 @@ class BackgroundNeutralizationDialog(QDialog):
         # --- preset drag handle (grip) ---
         try:
             from setiastro.saspro.shortcuts import PresetDragHandle
+            from setiastro.saspro.help_support import make_help_button
             try:
                 from setiastro.saspro.resources import neutral_path
                 _grip_icon = QIcon(neutral_path)
@@ -427,6 +428,8 @@ class BackgroundNeutralizationDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)
+            self.btn_help = make_help_button("background_neutral", self)
+            drag_row.addWidget(self.btn_help)
             layout.addLayout(drag_row)
         except Exception:
             pass

@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Selective Color Correction</h1>
+<p class="sub">A hue-selective colour editor: build a mask from a
+colour range (either a preset or a custom arc on the hue wheel),
+refine it with chroma, lightness, shadows/highlights, edge blur, a
+freehand lasso region, or an imported external mask, and then push
+CMY&nbsp;/&nbsp;RGB&nbsp;/&nbsp;Luminance&nbsp;/&nbsp;Chroma&nbsp;/&nbsp;Saturation&nbsp;/&nbsp;Contrast
+adjustments through it. The whole pipeline previews live, zoomed and
+pannable, with an optional red overlay so you can see exactly what
+the mask is selecting before you commit.</p>
+
+<p>The underlying idea is classical: &ldquo;only touch the reddish
+regions&rdquo; or &ldquo;shift only the OIII blues toward cyan&rdquo;.
+What distinguishes this implementation is how many ways you can carve
+up the selection &mdash; preset hues, draggable hue-wheel handles,
+luminance gates, a freehand lasso, or an imported mask &mdash; and
+how fast the preview updates thanks to the small-preview
+downsample.</p>
+
+<h2>1. The two-pane layout</h2>
+<ul>
+  <li><b>Left pane</b> &mdash; a scrollable column holding the Mask
+      group, the three adjustment groups (CMY, RGB, LSC), live/preview
+      toggles and the action buttons. Resizable via a splitter.</li>
+  <li><b>Right pane</b> &mdash; zoom toolbar, help banner, large
+      preview area, picked-hue readout, region-mask readout.</li>
+</ul>
+<p>The dialog's size, splitter position, small-preview toggle,
+live-preview toggle, mask-overlay toggle, and current zoom are all
+persisted to QSettings under the <code>selcolor/</code> namespace.</p>
+
+<h2>2. Building a mask</h2>
+
+<h3>2.1 Preset or custom hue range</h3>
+<p>The <b>Preset</b> dropdown offers seven classical colour presets
+plus Custom. Picking any preset snaps the hue wheel handles and the
+two Hue sliders to that preset's range:</p>
+<table>
+  <tr><th>Preset</th><th>Hue range (&deg;)</th></tr>
+  <tr><td>Red</td><td>340&ndash;360 and 0&ndash;15 (wraps around)</td></tr>
+  <tr><td>Orange</td><td>15&ndash;40</td></tr>
+  <tr><td>Yellow</td><td>40&ndash;70</td></tr>
+  <tr><td>Green</td><td>70&ndash;170</td></tr>
+  <tr><td>Cyan</td><td>170&ndash;200</td></tr>
+  <tr><td>Blue</td><td>200&ndash;270</td></tr>
+  <tr><td>Magenta</td><td>270&ndash;340</td></tr>
+</table>
+<p>Any manual change to the hue wheel or either Hue slider
+automatically switches the preset to <b>Custom</b> so you don't
+accidentally wipe your range by nudging a knob.</p>
+
+<h3>2.2 The hue wheel</h3>
+<p>A compact HSV ring with two draggable white handles for the
+start and end of the hue arc. Dragging either handle updates the
+Hue Start and Hue End sliders live, and vice versa. The highlighted
+arc on the wheel is always the <i>forward</i> arc from start to end
+in the positive direction &mdash; so a start at 340&deg; and an end
+at 15&deg; selects reds wrapping across 0&deg;, not the complementary
+345&deg; wedge going the other way around.</p>
+
+<h3>2.3 Chroma and lightness gates</h3>
+<ul>
+  <li><b>Min chroma</b> (0.0&ndash;1.0, default 0.05) &mdash; drops
+      pixels below this colourfulness. Prevents grey or near-grey
+      pixels from being swept into a selection just because their
+      hue happens to be in range.</li>
+  <li><b>Lightness min / max</b> (0.0&ndash;1.0) &mdash; limits the
+      selection to a brightness band. Useful when a background sky
+      and a bright nebula share a colour but you only want one of
+      them.</li>
+</ul>
+
+<h3>2.4 Smoothness</h3>
+<p>Range 0&ndash;60&deg;, default 10&deg;. Feathers the hue band at
+both ends, so a pixel whose hue sits just outside the selected range
+still gets a partial weight. The feather is <i>local</i> &mdash; it
+only adds a ramp right after the end and right before the start, so
+widening the smoothness doesn't balloon into the whole wheel. See
+&sect;&nbsp;13.1 for the exact band formula.</p>
+
+<h3>2.5 Invert hue range</h3>
+<p>Takes the complement of the hue band on the wheel before the
+chroma and lightness gates kick in. So &ldquo;Green inverted with min
+chroma 0.1&rdquo; selects every saturated non-green pixel. The
+chroma and lightness filters still apply after the inversion.</p>
+
+<h3>2.6 Shadows / Highlights</h3>
+<p>Luminance gates that attenuate the mask outside a brightness
+range:</p>
+<ul>
+  <li><b>Shadows</b> (0.0&ndash;1.0, default 0.0) &mdash; pixels
+      <i>below</i> this luminance fade out. At 0.0 (default) nothing
+      is cut; at 0.3 the darkest 30% of the image stops being
+      selected.</li>
+  <li><b>Highlights</b> (0.0&ndash;1.0, default 1.0) &mdash; pixels
+      <i>above</i> this luminance fade out. At 1.0 (default) nothing
+      is cut; at 0.8 the brightest 20% stops being selected.</li>
+</ul>
+<p>Both gates use smoothstep ramps, not hard thresholds (see
+&sect;&nbsp;13.2).</p>
+
+<h3>2.7 Edge blur</h3>
+<p>Gaussian blur applied to the mask after all other mask steps,
+0&ndash;150&nbsp;px radius. Useful when a hard-edged selection
+produces visible seams in the adjusted preview. Set to 0 for the
+sharpest selection the hue+chroma gates give.</p>
+
+<h3>2.8 Intensity</h3>
+<p>Scalar multiplier on the final mask, range 0.0&ndash;2.0, default
+1.0. Think of it as the strength of the adjustment: 0 effectively
+disables the effect even if sliders are moved; values above 1
+over-saturate the mask (any pixel above the cap just gets clipped to
+1.0).</p>
+
+<h3>2.9 Show mask overlay</h3>
+<p>Toggles a red semi-transparent overlay over the preview showing
+exactly which pixels the current mask is selecting (and how
+strongly &mdash; alpha scales with the mask value). This is the
+single most useful control in the dialog: turn it on while tuning
+hue range and chroma/lightness, turn it off once the mask looks
+right.</p>
+
+<h3>2.10 Soft (proportional)</h3>
+<p>Switches the chroma/lightness gates from hard thresholds to
+smoothstep feathering. In soft mode the mask takes partial values
+based on how strongly a pixel matches the colour (chroma proxy
+<code>S&times;V</code>), which reduces the blobby, hard-edged look
+you get from a pure threshold. For selecting faint nebular hues
+rather than vivid dust lanes, soft mode is almost always what you
+want.</p>
+
+<h3>2.11 Imported mask</h3>
+<p>Two controls:</p>
+<ul>
+  <li><b>Pick mask from view</b> &mdash; opens a list of every
+      currently open image document and lets you choose one as a
+      mask source. The chosen image is squeezed to one channel (R if
+      RGB) and resized to the target image's dimensions.</li>
+  <li><b>Use imported mask</b> &mdash; when checked, bypasses the
+      hue-based mask entirely and uses the imported one instead.
+      All the mask-build controls above are ignored; the lasso region
+      (if any) still AND's with it.</li>
+</ul>
+<p>Use this when you've already painted a precise mask in another
+tool, or when you want to export a mask from Selective Color
+(see &sect;&nbsp;7.3) and apply the adjustments again later via the
+imported-mask path.</p>
+
+<h3>2.12 Lasso region mask</h3>
+<p>Hold <b>Alt</b> and drag in the preview to draw a freehand
+closed region. On release, the polygon is filled, converted to a
+binary mask at full resolution, and AND'd with the hue-based (or
+imported) mask. The resulting mask is only non-zero where <i>both</i>
+constraints hold: inside the lasso <i>and</i> matching the colour
+selection.</p>
+<p>While drawing, the lasso shows as a dashed orange outline with a
+soft orange fill. Once committed, the region border appears as a
+dashed orange outline over the preview; a glow underneath makes it
+visible on bright backgrounds. The region-mask readout at the
+bottom-right confirms the point count and offers the <b>&times;
+Clear Region Mask</b> button to remove it.</p>
+
+<h2>3. Preview and interaction</h2>
+
+<div class="keys">
+<b>Mouse</b>:<br>
+&bull; <b>Click</b> &mdash; sample the hue at that pixel. The wheel
+       shows a black-and-white marker at the picked hue; the readout
+       shows the numeric value.<br>
+&bull; <b>Shift&nbsp;+&nbsp;Click</b> &mdash; sample and set the hue
+       range to &plusmn;15&deg; around that hue.<br>
+&bull; <b>Ctrl&nbsp;+&nbsp;Drag</b> &mdash; pan the preview.<br>
+&bull; <b>Alt&nbsp;+&nbsp;Drag</b> &mdash; draw a lasso region mask.<br>
+&bull; <b>Mouse wheel</b> &mdash; zoom cursor-anchored (plain or
+       Ctrl, with Ctrl using a bigger step).<br>
+&bull; <b>Zoom buttons</b> &mdash; zoom in / out / 1:1 / fit.
+</div>
+
+<h3>3.1 Small-sized Preview (fast)</h3>
+<p>The toggle at the top-left of the dialog controls whether the
+preview path operates on a downsampled copy of the image (longest
+side &le; 1200&nbsp;px) or the full resolution. Small-preview mode
+is on by default and makes the mask/preview debounce feel
+instantaneous even on 24-megapixel composites. The <i>applied</i>
+output always uses the full resolution regardless of this
+toggle.</p>
+
+<h3>3.2 Preview changed image</h3>
+<p>Toggles between showing the raw image and the adjustment-applied
+image. Useful for before/after comparison without undoing anything.
+The mask overlay (&sect;&nbsp;2.9) works independently of this.</p>
+
+<h3>3.3 Colour boost mode</h3>
+<p>In the LSC group, the <b>Color boost mode</b> dropdown picks which
+of two colourfulness-shaping sliders is active:</p>
+<ul>
+  <li><b>Chroma (L-preserving)</b> &mdash; scales the RGB vector
+      around the per-pixel luminance. Preserves overall brightness
+      while making colours more or less vivid. Default. See
+      &sect;&nbsp;13.6.</li>
+  <li><b>Saturation (HSV S)</b> &mdash; scales HSV saturation
+      directly. Faster, but changes perceived brightness when colours
+      are pushed hard.</li>
+</ul>
+<p>The inactive slider is greyed out; the one you selected is
+live.</p>
+
+<h2>4. The adjustment sliders</h2>
+
+<h3>4.1 Complementary colours (CMY)</h3>
+<p>Three sliders, each in the range [&minus;0.2, +0.2]:</p>
+<ul>
+  <li><b>Cyan</b> &mdash; positive reduces red, negative increases red.</li>
+  <li><b>Magenta</b> &mdash; positive reduces green, negative
+      increases green.</li>
+  <li><b>Yellow</b> &mdash; positive reduces blue, negative
+      increases blue.</li>
+</ul>
+<p>These match the classical darkroom &ldquo;add complementary
+cyan&rdquo; convention: positive values pull a channel away from
+its primary.</p>
+
+<h3>4.2 RGB primaries</h3>
+<p>Three sliders, each in the range [&minus;0.2, +0.2]:</p>
+<ul>
+  <li><b>Red</b> &mdash; direct additive on the R channel.</li>
+  <li><b>Green</b> &mdash; direct additive on the G channel.</li>
+  <li><b>Blue</b> &mdash; direct additive on the B channel.</li>
+</ul>
+<p>Pair with CMY for a &ldquo;shift the Ha reds slightly toward
+magenta without lifting the blue&rdquo; move: set Red &rarr; &minus;0.03,
+Magenta &rarr; &minus;0.03.</p>
+
+<h3>4.3 Luminance / Chroma / Saturation / Contrast</h3>
+<p>Four sliders, range [&minus;0.2, +0.2]:</p>
+<ul>
+  <li><b>Luminance</b> &mdash; additive brightness shift.</li>
+  <li><b>Chroma (L-preserving)</b> &mdash; vivid-up or
+      desaturation that doesn't change luminance (active when the
+      Chroma mode is picked).</li>
+  <li><b>Saturation (HSV S)</b> &mdash; multiplicative scale on
+      HSV saturation (active when the Saturation mode is
+      picked).</li>
+  <li><b>Contrast</b> &mdash; multiplicative scale around 0.5
+      midtone.</li>
+</ul>
+<p>All four are gated through the mask multiplied by Intensity, so
+their effect is strictly confined to the selected region.</p>
+
+<h2>5. Reset and Clear Region Mask</h2>
+<ul>
+  <li><b>&#x21ba; Reset</b> &mdash; sets everything back to defaults:
+      preset Red, min chroma 0.05, lightness 0&ndash;1, smoothness
+      10&deg;, invert off, soft off, shadows 0, highlights 1,
+      intensity 1.0, blur 0, mask overlay off, all adjustment
+      sliders at 0.0, colour boost mode Chroma. Loaded image and
+      lasso region are preserved.</li>
+  <li><b>&times; Clear Region Mask</b> &mdash; removes any lasso
+      region constraint. Enabled only when a region is active.</li>
+</ul>
+
+<h2>6. Applying the result</h2>
+
+<h3>6.1 Apply</h3>
+<p>Runs the full pipeline at <i>full resolution</i> on the current
+<code>self.img</code>, writes the result back to the source
+document, then promotes the result to be the new working base and
+resets all control knobs to defaults. The dialog stays open so you
+can chain multiple selective passes (red first, then green, then
+blue) without reopening.</p>
+
+<h3>6.2 Apply as New Document</h3>
+<p>Same full-resolution pipeline, but opens the result as a new
+SASpro document titled <code>&lt;original name&gt; [SelectiveColor]</code>
+and switches the dialog's target to the new document. Subsequent
+Apply calls then write to the new document instead of the
+original.</p>
+
+<h3>6.3 Export Mask</h3>
+<p>Pushes the current mask (as a 3-channel grayscale image, each
+channel equal to the mask value) to a new document titled
+<code>&lt;original name&gt; [SelectiveColor MASK]</code>. The exported
+mask can be re-loaded via <b>Pick mask from view</b> on another
+Selective Color session, or fed to any other SASpro tool that
+accepts a mask input.</p>
+
+<h2>7. Technical details</h2>
+<p class="tech-lead">All images handled as float32 in [0,&nbsp;1].
+HSV conversions go through OpenCV
+(<code>cv2.cvtColor</code>, 8-bit intermediate for speed). Hue is
+measured in degrees on [0,&nbsp;360); OpenCV returns H on [0,&nbsp;180],
+and SASpro converts both ways. Core pipeline runs on the GUI thread
+with debounced timers (200&nbsp;ms for mask and adjustment paths)
+so moving a slider doesn't fire a cascade of recomputes.</p>
+
+<h3>13.1 Hue band formula</h3>
+<p>The band is defined on the circular hue axis in degrees. Let
+<code>h_s</code> be the start angle, <code>h_e</code> the end angle,
+<code>s</code> the smoothness in degrees, and
+<code>h</code> the pixel hue. First compute the forward arc length
+and the forward distance:</p>
+<div class="matheq-hero">L \;=\; (h_e - h_s) \;\mathrm{mod}\; 360</div>
+<div class="matheq-hero">d_{\mathrm{fwd}}(h) \;=\; (h - h_s) \;\mathrm{mod}\; 360</div>
+<p>and the backward distance:</p>
+<div class="matheq">d_{\mathrm{bwd}}(h) \;=\; (h_s - h) \;\mathrm{mod}\; 360</div>
+<p>The band value is 1.0 strictly inside the forward arc, with
+linear feathers of width <code>s</code> at both ends:</p>
+<div class="matheq-hero">\mathrm{band}(h) \;=\; 1,\quad\text{if } d_{\mathrm{fwd}}(h) \leq L</div>
+<div class="matheq-hero">\mathrm{band}(h) \;=\; 1 - \frac{d_{\mathrm{fwd}}(h) - L}{s},\quad L < d_{\mathrm{fwd}}(h) < L + s</div>
+<div class="matheq-hero">\mathrm{band}(h) \;=\; 1 - \frac{d_{\mathrm{bwd}}(h)}{s},\quad 0 < d_{\mathrm{bwd}}(h) < s</div>
+<p>Preset ranges that wrap (Red: 340&ndash;360 and 0&ndash;15) are
+expressed as multiple bands and max-combined. The Invert checkbox
+replaces the result with its complement before the chroma/lightness
+gates.</p>
+
+<h3>13.2 Smoothstep</h3>
+<p>Used by Soft mode and the shadows/highlights gates:</p>
+<div class="matheq-hero">t(x; e_0, e_1) \;=\; t_c^{\,2}\,(3 - 2\,t_c),\quad t_c \;=\; \mathrm{clip}\!\left(\frac{x - e_0}{e_1 - e_0},\; 0,\; 1\right)</div>
+
+<h3>13.3 Chroma / lightness gates (soft mode)</h3>
+<p>In soft mode, the chroma proxy is HSV saturation times value:</p>
+<div class="matheq-hero">C \;=\; S \cdot V</div>
+<p>and the mask is weighted by the smoothstep ramp
+<code>t(C; c_{lo}, c_{lo} + 0.35)</code>, so only vivid colour reaches
+full strength. Lightness gates use a feather width of 0.10:</p>
+<div class="matheq">w_V \;=\; t(V;\; V_{\min} - 0.10,\; V_{\min}) \cdot (1 - t(V;\; V_{\max},\; V_{\max} + 0.10))</div>
+
+<h3>13.4 Shadows / Highlights gate</h3>
+<p>With <code>s</code> = Shadows value, <code>h</code> = Highlights
+value, <code>b</code> = internal balance (default 0.5), and
+luminance <code>L</code>:</p>
+<div class="matheq-hero">f \;=\; 0.08 + 0.12\,b</div>
+<div class="matheq-hero">w_s \;=\; t(L;\; s - f,\; s)</div>
+<div class="matheq-hero">w_h \;=\; 1 - t(L;\; h,\; h + f)</div>
+<div class="matheq">\mathrm{mask}' \;=\; \mathrm{mask} \cdot w_s \cdot w_h</div>
+
+<h3>13.5 Luminance basis</h3>
+<p>Rec. BT.601 weights, used throughout for the chroma-preserving
+boost and the shadows/highlights gate:</p>
+<div class="matheq-hero">Y \;=\; 0.2989\,R + 0.5870\,G + 0.1140\,B</div>
+<p>These are the classical NTSC weights, not Rec.&nbsp;709.
+Astrophotography data doesn't particularly care which basis is
+used &mdash; the two differ by about 2% in the green weight &mdash;
+but it's worth knowing if you're exporting the mask for use with
+tools that assume one or the other.</p>
+
+<h3>13.6 Adjustment math</h3>
+<p>Let <code>m</code> be the per-pixel mask value (already multiplied
+by Intensity and clipped). All values are in [0,&nbsp;1] after the
+final clip.</p>
+
+<p><b>CMY</b> (positive values pull a channel toward its complement):</p>
+<div class="matheq-hero">R' \;=\; R + (-\,c)\,\cdot m,\quad G' \;=\; G + (-\,m_{\mathrm{mag}})\,\cdot m,\quad B' \;=\; B + (-\,y)\,\cdot m</div>
+
+<p><b>RGB primaries</b> (direct additive):</p>
+<div class="matheq">R'' \;=\; R' + r \cdot m,\quad G'' \;=\; G' + g \cdot m,\quad B'' \;=\; B' + b \cdot m</div>
+
+<p><b>Luminance</b> (additive brightness):</p>
+<div class="matheq">\mathrm{out}' \;=\; \mathrm{out} + \ell \cdot m</div>
+
+<p><b>Contrast</b> (around 0.5 midtone):</p>
+<div class="matheq-hero">x' \;=\; (x - 0.5) \cdot (1 + \kappa \cdot m) + 0.5</div>
+
+<p><b>Chroma (L-preserving)</b>:</p>
+<div class="matheq-hero">\mathrm{rgb}' \;=\; Y + (\mathrm{rgb} - Y) \cdot (1 + \chi \cdot m)</div>
+<p>Scales the colour-component vector (per pixel, around the per-pixel
+luminance) by a mask-weighted factor. At chroma = 0 this is the
+identity; at &minus;1 it collapses to grey; at +1 it doubles the
+colour deviation.</p>
+
+<p><b>Saturation (HSV S)</b>:</p>
+<div class="matheq-hero">S' \;=\; S \cdot (1 + \sigma \cdot m)</div>
+<p>Operates in HSV space, converting back to RGB via OpenCV when
+done. Changes perceived brightness because unlike the Chroma
+mode it doesn't anchor to Y.</p>
+
+<h3>13.7 Intensity scaling</h3>
+<p>The final mask handed to the adjustment code is:</p>
+<div class="matheq-hero">m_{\mathrm{eff}} \;=\; \mathrm{clip}(m \cdot I,\; 0,\; 1)</div>
+<p>where <code>I</code> is the Intensity slider value, so Intensity
+acts as a global strength on everything simultaneously.</p>
+
+<h3>13.8 Region mask composition</h3>
+<p>If a lasso region is active, the base mask (hue-based or
+imported) is multiplied element-wise by the region mask after all
+other mask steps:</p>
+<div class="matheq">\mathrm{mask}_{\mathrm{final}} \;=\; \mathrm{mask}_{\mathrm{hue/imported}} \cdot \mathrm{mask}_{\mathrm{region}}</div>
+<p>The region mask is binary at the resolution it was drawn and
+bilinearly resampled when it needs to match a different image size.
+This happens for both the live preview and the full-resolution
+apply paths, so what you see is what you get.</p>
+
+<h3>13.9 Debounced pipeline</h3>
+<p>Two QTimers coordinate the preview:</p>
+<ul>
+  <li><b>Mask timer</b> (200&nbsp;ms) &mdash; fired by any control
+      change that affects the mask (hue, chroma/lightness, shadows,
+      highlights, blur, soft, invert, imported mask toggle, intensity,
+      preset). Rebuilds the mask then calls the preview update.</li>
+  <li><b>Adjustment timer</b> (200&nbsp;ms) &mdash; fired by any
+      CMY/RGB/LSC slider or spin change. Skips the mask rebuild and
+      just repaints the preview with the new adjustment parameters.</li>
+</ul>
+<p>Slider release and spin-box editing-finished also force an immediate
+preview update so you don't have to wait after letting go of a
+knob.</p>
+
+<h3>13.10 OpenCV dependency</h3>
+<p>Selective Color requires OpenCV (<code>cv2</code>) at import time
+for the HSV conversions, lasso polygon fill, Gaussian edge blur,
+contour outline rendering for the region overlay, and image resize.
+The <code>_rgb_to_hsv01</code> helper raises <code>RuntimeError</code>
+if cv2 isn't available. A pure-NumPy fallback exists only for the
+lasso polygon fill (via <code>matplotlib.path.Path</code>) and
+for the imported-mask resize (nearest-neighbour via index arrays).</p>
+
+<div class="credit">
+<b>Credits.</b> The selective-colour-correction concept &mdash; a
+hue-selective mask coupled with CMY and RGB additives &mdash; is a
+classical darkroom technique dating to film-era colour printing and
+reproduced across many image-editing platforms. The specific
+mask-building pipeline here (local hue-band feather, HSV
+<code>S&times;V</code> chroma proxy, luminance-feathered
+shadows/highlights, lasso region AND'd with hue mask, imported-mask
+override) and the UI around it (hue wheel widget, modifier-key
+interactions, dual debounced timers, mask overlay) are Frank's
+implementation for SASpro. HSV conversions and Gaussian blur use
+<b>OpenCV</b>. The luminance-preserving chroma formula
+(<code>Y + (RGB - Y)(1 + k)</code>) is the standard
+chroma-decomposition approach used across colour-processing tools.
+</div>
+
+</body>
+</html>

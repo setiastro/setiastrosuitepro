@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6 import sip
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 import cv2
 
 
@@ -1549,6 +1549,7 @@ class PlanetProjectionDialog(QDialog):
         prev_row.addWidget(self.btn_save_still)
         prev_row.addWidget(self.btn_save_wiggle)
         prev_row.addStretch(1)
+        prev_row.addWidget(make_help_button("planet_projection", self))
         outer.addLayout(prev_row)
 
         self.btn_preview.clicked.connect(self._show_preview_window)

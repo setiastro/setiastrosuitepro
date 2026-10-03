@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Morphological Operations</h1>
+<p class="sub">The four classical mathematical-morphology operations
+&mdash; <b>Erosion</b>, <b>Dilation</b>, <b>Opening</b>, <b>Closing</b>
+&mdash; with an elliptical structuring element, live preview, and
+mask integration. Core workhorses for mask editing (grow or shrink
+a star mask, close small holes in a selection, open away speckle),
+small-feature removal, and binary-image clean-up. OpenCV engine
+underneath; everything else is the dialog, live preview, and
+document mask integration.</p>
+
+<h2>1. Opening the dialog</h2>
+<p>Runs on the active document's image. Non-modal and stays open
+after Apply so you can keep tweaking or hop to another image. Opens
+with a live preview at the default settings (Erosion, kernel 3,
+one iteration).</p>
+
+<h2>2. The four operations</h2>
+
+<h3>Erosion</h3>
+<p>Shrinks bright features by setting each pixel to the minimum
+value within its kernel neighbourhood. Thin bright structures
+(single-pixel noise, hot pixels, isolated hair-thin features)
+disappear completely when they're smaller than the kernel.</p>
+<ul>
+  <li>Use on a <b>star mask</b> to pull the mask tight around the
+      star cores, excluding diffraction spikes or soft halos.</li>
+  <li>Use on a thresholded image to <b>remove bright speckle</b>
+      smaller than the kernel size.</li>
+  <li>Use to <b>separate touching features</b> &mdash; two stars
+      that are barely merged in a mask can be split by eroding
+      with a kernel smaller than their centres but larger than
+      their junction.</li>
+</ul>
+
+<h3>Dilation</h3>
+<p>The dual of erosion: each pixel takes the maximum within the
+kernel neighbourhood, growing bright features outward. Dark gaps
+smaller than the kernel get filled in.</p>
+<ul>
+  <li>Use on a <b>star mask</b> to grow it outward so halo
+      regions are also protected during processing.</li>
+  <li>Use to <b>fill small dark holes</b> inside a selection or
+      threshold result.</li>
+  <li>Use to <b>join nearby features</b> &mdash; two mask regions
+      separated by a thin gap can be merged by dilating with a
+      kernel larger than the gap.</li>
+</ul>
+
+<h3>Opening</h3>
+<p>Erosion followed by dilation. The sequence removes bright
+features smaller than the kernel without shrinking the larger
+features that survive the erosion step.</p>
+<ul>
+  <li>Classical <b>small-object remover</b>: anything that disappears
+      during the erode doesn't come back, but features larger
+      than the kernel are restored to their original size by the
+      dilate.</li>
+  <li>Use to <b>clean up a mask</b>: isolated single-pixel noise
+      and thin spurs vanish, actual regions keep their shape.</li>
+</ul>
+
+<h3>Closing</h3>
+<p>Dilation followed by erosion. The dual of opening: fills dark
+holes smaller than the kernel without growing the already-bright
+features outward.</p>
+<ul>
+  <li>Classical <b>small-hole filler</b>: dark gaps smaller than
+      the kernel get bridged over, feature outlines return to
+      their original shape.</li>
+  <li>Use on a <b>star mask with pinhole dropouts</b> to seal them
+      without otherwise changing the mask.</li>
+  <li>Use to <b>consolidate fragmented features</b> &mdash; a
+      cluster of nearby small regions that should really be one
+      area becomes a single connected region.</li>
+</ul>
+
+<h2>3. Parameters</h2>
+
+<h3>Operation</h3>
+<p>Dropdown with the four choices above. Reset returns to Erosion.</p>
+
+<h3>Kernel size</h3>
+<p>SpinBox, 1&ndash;31, odd only (stepping by 2). The diameter of
+the elliptical structuring element in pixels. Even numbers are
+auto-rounded up to the next odd value because morphology needs a
+centre pixel to be well-defined. Larger kernels affect larger
+features but also take proportionally longer to compute.</p>
+<ul>
+  <li><b>3</b> (default) &mdash; smallest meaningful kernel. Operates
+      on 3&times;3 neighbourhoods, removes single-pixel features.</li>
+  <li><b>5&ndash;9</b> &mdash; small structures (hot pixels in groups
+      of 2&ndash;3, thin cosmic-ray streaks). This range covers most
+      star-mask cleanup use cases.</li>
+  <li><b>11&ndash;21</b> &mdash; medium structures (small dust specks,
+      faint diffraction features). Visible impact on larger star
+      halos.</li>
+  <li><b>&gt;&nbsp;21</b> &mdash; large structures. On a wide-field
+      the effect becomes dramatic quickly; usually overkill
+      except for very broad mask reshaping.</li>
+</ul>
+
+<h3>Iterations</h3>
+<p>SpinBox, 1&ndash;10. Number of times the operation is applied in
+sequence. For Erosion and Dilation this is equivalent to using a
+larger structuring element but runs faster for low iteration
+counts (two iterations of a 3&times;3 erode cover approximately
+the same reach as a single 5&times;5 erode). For Opening and
+Closing each iteration is a full open/close pair, which has a
+slightly different effect from using a bigger kernel &mdash; the
+intermediate dilate/erode steps happen at the smaller scale.</p>
+
+<h2>4. Preview, zoom, and masks</h2>
+<p>The main area shows a live preview that updates with a
+200&nbsp;ms debounce after any parameter change. Zoom In / Zoom Out
+/ Fit to Preview buttons sit above the Apply row, and the view
+supports cursor-anchored wheel zoom with the standard SASpro
+behaviour. If the active document carries a mask, the result is
+blended through it so only masked regions receive the operation
+&mdash; both in the live preview and the final Apply.</p>
+
+<h2>5. Apply / Reset / Cancel and preset grip</h2>
+<p><b>Apply</b> runs the final full-resolution computation and
+commits as an undoable edit named &ldquo;Morphology&rdquo;. All
+three slider values are recorded in the preset so Replay Last
+Action reproduces the exact run. The dialog stays open so you can
+switch to another document and apply with the same settings.</p>
+<p><b>Reset</b> returns to Erosion / kernel 3 / 1 iteration;
+<b>Cancel</b> discards. The grip at the bottom-left carries the
+current operation + kernel + iterations and can be dragged onto
+the canvas to make a shortcut tile, or dropped directly on an
+image to apply those settings headlessly. Double-clicking a
+shortcut reopens this dialog pre-seeded with the saved values.</p>
+
+<h2>6. Technical details</h2>
+<p class="tech-lead">All processing on float32 in [0, 1] with
+intermediate uint8 for OpenCV's morphology functions. Mono inputs
+operate on the single channel; RGB inputs are processed per-channel
+independently (OpenCV handles this natively).</p>
+
+<h3>6.1 The four operations as set operations</h3>
+<p>Morphology operates on grey-level images via the min/max over a
+structuring-element neighbourhood <code>K</code>. Erosion takes the
+pixelwise minimum over that neighbourhood:</p>
+<div class="matheq-hero">(I \ominus K)(x, y) \;=\; \min_{(i, j) \in K} I(x + i,\; y + j)</div>
+<p>Dilation takes the maximum:</p>
+<div class="matheq-hero">(I \oplus K)(x, y) \;=\; \max_{(i, j) \in K} I(x + i,\; y + j)</div>
+<p>Opening and Closing compose erosion and dilation in the two
+orderings:</p>
+<div class="matheq-hero">I \circ K \;=\; (I \ominus K) \oplus K</div>
+<div class="matheq-hero">I \bullet K \;=\; (I \oplus K) \ominus K</div>
+<p>Opening removes bright features smaller than the kernel because
+the initial erosion kills them completely and the following dilation
+can only grow back what's still there. Closing fills dark holes
+smaller than the kernel symmetrically &mdash; the initial dilation
+spans them, the following erosion restores the outer edges but
+leaves the newly-filled interior intact.</p>
+
+<h3>6.2 Erosion-dilation duality</h3>
+<p>The two primitives are duals under image complement: eroding an
+image is equivalent to dilating its negative (with a reflected
+kernel) and complementing back.</p>
+<div class="matheq">(I \ominus K)^c \;=\; I^c \oplus \hat{K}</div>
+<div class="matheq">(I \oplus K)^c \;=\; I^c \ominus \hat{K}</div>
+<p>The elliptical kernel used here is point-symmetric so
+<code>K&nbsp;=&nbsp;K&#770;</code>, and the duality reduces to
+&ldquo;eroding bright is the same as dilating dark&rdquo;. This is
+why Erosion grows the dark regions of your image as a side effect
+of shrinking the bright ones, and vice versa.</p>
+
+<h3>6.3 Elliptical structuring element</h3>
+<p>SASpro uses OpenCV's <code>MORPH_ELLIPSE</code> structuring
+element throughout &mdash; a filled disc inscribed in a
+<code>k&times;k</code> bounding box with radius:</p>
+<div class="matheq">r \;=\; \frac{k - 1}{2}</div>
+<div class="matheq">K \;=\; \{(i, j) \,:\, i^2 + j^2 \leq r^2\}</div>
+<p>Discs are the natural choice because they are isotropic &mdash;
+the operation has no preferred direction, so a round star stays
+round after erosion rather than becoming square or diamond-shaped
+the way it would with a rectangular kernel. OpenCV approximates the
+disc on the integer pixel grid, which is why the smallest meaningful
+kernel is 3&nbsp;px (a 1&times;1 kernel is an identity).</p>
+
+<h3>6.4 Iterations</h3>
+<p>The Iterations parameter applies the chosen operation
+<code>n</code> times in succession:</p>
+<div class="eq">I ⊖ₙ K  =  I ⊖ K ⊖ K ⊖ ... ⊖ K     (n applications)</div>
+<p>For Erosion and Dilation this is equivalent to a single
+operation with a larger structuring element &mdash; specifically,
+<code>n</code> iterations of a kernel with radius <code>r</code>
+cover approximately the same reach as a single kernel with radius
+<code>nr</code>. The multi-iteration form is faster when
+<code>r</code> is small and <code>n</code> is small, slower when
+<code>n</code> is large (because OpenCV's single-kernel morphology
+scales better than linearly). For Opening and Closing, each
+iteration is a full erode-dilate (or dilate-erode) pair, so the
+behaviour differs subtly from using a larger kernel: the
+intermediate step happens at the smaller scale, which can affect
+how features interact.</p>
+
+<h3>6.5 RGB vs mono handling</h3>
+<p>Mono inputs ((H, W) or (H, W, 1)) are flattened to a 2-D array
+and processed directly, then reshaped back to the original ndim on
+output. RGB inputs are handed to OpenCV's morphology functions as a
+single multi-channel array; OpenCV applies the operation
+independently to each channel using the same kernel. Because
+morphology is a nonlinear order-statistic operation, per-channel
+processing can produce slight colour shifts in features with narrow
+colour-channel differences &mdash; expected behaviour, not a bug;
+convert to luminance first if you want strictly colour-invariant
+morphology.</p>
+
+<h3>6.6 Document mask integration</h3>
+<p>If the active document carries a mask
+<code>m&nbsp;&isin;&nbsp;[0,&nbsp;1]</code>, the morphology result
+is blended with the untouched source through the mask:</p>
+<div class="matheq-hero">\mathrm{out} \;=\; (1 - m)\,\mathrm{src} \;+\; m\,\mathrm{morph}(I)</div>
+<p>applied after the full-image morphology computation. Both the
+live preview and the final Apply respect this mask identically. The
+mask is resampled to the processed image's dimensions if needed.
+Note that this gates where the morphology <i>applies</i>; the
+morphology itself still operates on the whole image, so a feature
+near a mask boundary can be affected by pixels across the boundary
+during the erode/dilate step before the blend restores the outside
+to its original state.</p>
+
+<div class="credit">
+<b>Credits.</b> <b>Mathematical morphology</b> is Jean Serra &amp;
+Georges Matheron's framework from the 1960s and 70s at the
+&Eacute;cole des Mines de Paris; the standard references are
+Serra's <i>Image Analysis and Mathematical Morphology</i> (Academic
+Press, 1982) and Soille's <i>Morphological Image Analysis</i>
+(Springer, 1999/2003). The <b>grey-level extension</b> from the
+original binary formulation via min/max over structuring-element
+neighbourhoods is Haralick, Sternberg &amp; Zhuang (1987). The
+implementations here are <b>OpenCV</b>'s <code>cv2.erode</code>,
+<code>cv2.dilate</code>, and <code>cv2.morphologyEx</code>, which
+use efficient van Herk-Gil-Werman separable kernels for rectangular
+and ellipse-approximate shapes. SASpro's additions are the
+mono/RGB dispatcher, the live-preview pipeline with its 200&nbsp;ms
+debouncing, the document-mask integration, and the preset
+editor and grip system.
+</div>
+
+</body>
+</html>

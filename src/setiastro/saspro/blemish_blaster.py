@@ -13,7 +13,7 @@ from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_
 
 from dataclasses import dataclass
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 
 @dataclass
 class BlemishOp:
@@ -843,6 +843,8 @@ class BlemishBlasterDialogPro(QDialog):
         self.btn_undo.setEnabled(False)
         self.btn_redo.setEnabled(False)
 
+        self.btn_help = make_help_button("blemish_blaster", self)
+        bb.addWidget(self.btn_help)
         bb.addStretch()
         bb.addWidget(self.btn_undo)
         bb.addWidget(self.btn_redo)

@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushBut
 
 from PyQt6.QtGui import QPixmap, QImage, QPainter
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 # deps
 try:
     import sep
@@ -177,6 +177,7 @@ class StarSpikesDialogPro(QDialog):
         row_actions.addWidget(self.btn_apply)
         row_actions.addWidget(self.btn_help)
         row_actions.addStretch(1)
+        row_actions.addWidget(make_help_button("star_spikes", self))
 
         # --- Status ---
         self.status = QLabel(self.tr("Ready"))

@@ -21,7 +21,7 @@ except Exception:
     _lut_color_inplace = None
 
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 
 # =============================================================================
 # Helpers
@@ -354,6 +354,8 @@ class HaloBGonDialogPro(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)   # push grip hard to the LEFT edge
+            self.btn_doc_help = make_help_button("halo_b_gon", self)
+            drag_row.addWidget(self.btn_doc_help)            
             v.addLayout(drag_row)
         except Exception:
             pass

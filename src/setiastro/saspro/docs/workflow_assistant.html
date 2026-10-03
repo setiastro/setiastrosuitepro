@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Workflow Assistant</h1>
+<p class="sub">A guided, visual process planner. Build (or load) a named sequence of SASpro commands arranged into one or more parallel <b>lanes</b> &mdash; main, starless, stars, merge, whatever structure the processing calls for &mdash; and step through them manually, one tool at a time. Each step opens its tool when you ask, with its captured preset pre-loaded if one was dragged in; marking a step complete adds a &check; prefix and advances to the next. Comes with four canned workflows for common beginner paths (OSC, mono RGB, mono narrowband, Cosmic Clarity cleanup) and a compact mini-runner for executing a workflow without the full editing UI.</p>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Open Workflow Assistant</b>. Either <b>pick a canned workflow</b> from the Add Canned Workflow menu or <b>build your own</b>: drag tools from the catalog on the left into any lane on the right, add lanes for parallel branches, drop in notes and split/merge markers to document the flow. <b>Open Step</b> (or double-click a step) launches that tool &mdash; with any captured preset pre-loaded. <b>Mark Complete</b> flags the step done and bolds the next one. <b>Save</b> stores the workflow as a named JSON file; the active workflow is autosaved on close and restored when you reopen the dialog. <b>Run Workflow</b> opens the compact mini-runner that shows the lanes without the editing controls.
+</div>
+
+<div class="hero">
+<p>Workflow Assistant complements Function Bundles rather than duplicating it. <b>Function Bundles automate</b> &mdash; a bundle runs its steps back-to-back, waiting on each one to complete before the next starts. <b>Workflow Assistant guides</b> &mdash; it shows what to do, in what order, with what settings, but each step waits for the user to actually open the tool and work it. The signature move is the <b>multi-lane layout</b>: horizontal lanes make the parallel structure of a complex workflow (process the starless masters down one lane, the stars-only masters down another, merge at the end) visible at a glance, with split and merge markers calling out exactly where branches diverge and reconverge. This is the training-wheels tool &mdash; it lets a beginner follow a trusted recipe step by step, and lets a mentor share a workflow (with specific tool settings baked in) that a student can walk through unassisted.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. The workflow concept</a><br>
+<a href="#s2">2. The tool catalog</a><br>
+<a href="#s3">3. Lanes</a><br>
+<a href="#s4">4. Adding and editing steps</a><br>
+<a href="#s5">5. Step kinds</a><br>
+<a href="#s6">6. The step details panel</a><br>
+<a href="#s7">7. Running steps and progress</a><br>
+<a href="#s8">8. The mini runner</a><br>
+<a href="#s9">9. Load, save, and autosave</a><br>
+<a href="#s10">10. Canned workflows</a><br>
+<a href="#s11">11. Technical details</a><br>
+</div>
+
+<h2 id="s1">1. The workflow concept</h2>
+<p>A <b>workflow</b> is a named, ordered sequence of <b>steps</b> grouped into one or more <b>lanes</b>. A lane is a vertical column of steps that execute in order; multiple lanes side by side represent parallel branches of the processing. Every workflow has at least one lane (named <code>main</code> by default) and can grow to any number of lanes as the processing demands.</p>
+<p>A step is either an <b>action</b> (runs a specific SASpro command when you tell it to), a <b>note</b> (📝 &mdash; instruction-only, nothing to launch), a <b>split marker</b> (⇢ &mdash; shows where processing branches into multiple lanes), or a <b>merge marker</b> (⇠ &mdash; shows where branches rejoin). Action steps can carry a <b>preset</b> &mdash; a captured dictionary of tool settings &mdash; so &ldquo;run Statistical Stretch&rdquo; can become &ldquo;run Statistical Stretch with these specific settings loaded in the dialog.&rdquo;</p>
+<p>Steps can also declare named <b>inputs</b> and <b>outputs</b> for lineage. These are free-form string tags (<code>starless</code>, <code>stars_only</code>, <code>rgb_stars</code>, <code>palette_starless</code>, &hellip;) that show up in the step details panel to document how data flows across the lanes. The runner doesn't enforce them &mdash; they're documentation, not routing &mdash; but a lineage you can see is far easier to follow than one you have to reconstruct from memory.</p>
+<p>The whole thing is a <b>visible, editable, executable checklist</b>. You open each step when you're ready, you mark it complete when the result is good, and the dialog remembers your progress and position across lanes until you reset.</p>
+
+<h2 id="s2">2. The tool catalog</h2>
+<p>The left panel lists every SASpro command that's available as a draggable step source. Three categories of entries land here automatically:</p>
+<ul>
+<li><b>Toolbar actions</b> &mdash; any <code>QAction</code> on a visible toolbar that carries a <code>command_id</code> property. These are grouped by toolbar title (Functions, Cosmic Clarity, Tools, Geometry, Star Stuff, Masks, Bundles, View, etc.) in a stable preferred order.</li>
+<li><b>User scripts</b> &mdash; everything in the ScriptManager registry, discovered recursively from <code>SASpro/scripts</code>. Scripts are shown under <b>Scripts</b> at the top level, with any group tag they declare rendered as a <code>Scripts/&lt;group&gt;</code> subcategory. The command id for a script is <code>script:&lt;script_id&gt;</code>.</li>
+<li><b>Hidden toolbars</b> are explicitly excluded (any <code>QWidget</code> whose <code>windowTitle()</code> is <code>&quot;Hidden&quot;</code> is skipped during discovery).</li>
+</ul>
+<p>Each entry carries the tool's icon, display text, and status tip for hover tooltips. The search box at the top filters by text and tooltip in real time &mdash; type a few letters and the tree collapses to matching leaves (categories with no visible children also hide).</p>
+<p>Drag any entry out of the tree onto a lane list to add it as an action step; double-click a leaf to add it to the currently active lane without having to drag.</p>
+
+<h2 id="s3">3. Lanes</h2>
+<p>Lane controls sit above the lane cards:</p>
+<ul>
+<li><b>Add Lane</b> &mdash; prompts for a name and appends a new empty lane on the right. Names must be unique; blank names are rejected.</li>
+<li><b>Rename Lane</b> &mdash; renames the current lane; every step currently in that lane gets its <code>lane</code> field updated so there's no orphaning.</li>
+<li><b>Remove Lane</b> &mdash; drops the current lane and every step in it, after a confirmation. A workflow always has at least one lane; the button refuses to delete the last one.</li>
+</ul>
+<p>Each lane is a vertical card with a header label and a step list below. The lane area scrolls horizontally when there's more lane than fits, so a four-lane narrowband workflow sits comfortably in a 1400&nbsp;px dialog.</p>
+<div class="tip"><b>Cross-lane selection is single-select across the whole dialog.</b> Clicking a step in lane B clears the selection and current item in every other lane. This keeps &ldquo;the current step&rdquo; a single, unambiguous thing &mdash; Previous Step and Next Step walk a flat sequence across all lanes in order, and the step details panel always reflects exactly one step.</div>
+
+<h2 id="s4">4. Adding and editing steps</h2>
+<p>Four ways to add an action step:</p>
+<ul>
+<li><b>Drag a catalog entry</b> onto any lane list.</li>
+<li><b>Double-click a catalog entry</b> &mdash; adds to the current lane (or <code>main</code> if nothing is selected).</li>
+<li><b>Add Selected Tool</b> button &mdash; same as double-clicking the current catalog selection.</li>
+<li><b>Drag a shortcut tile</b> from SASpro's shortcut canvas onto a lane. If the tile carries a preset, the preset lands with the step (shown as a ◆ prefix on the step label and summarised in the details panel).</li>
+</ul>
+<p>Dropping a <b>Function Bundle</b> payload onto a lane doesn't nest the bundle &mdash; it <b>expands</b> into one step per inner step. This matches how the shortcut canvas explodes bundles into their constituents, so a bundle built elsewhere can be used as a starter kit for a workflow.</p>
+<p>Three ways to add a non-action step (notes, markers):</p>
+<ul>
+<li><b>Add Note / Add Split / Add Merge</b> buttons.</li>
+<li><b>Right-click a lane</b> &rarr; Add Note Step / Add Split Marker / Add Merge Marker. These land into whichever lane you right-clicked on.</li>
+<li><b>Add Note</b> at the top-level buttons appends to the current lane.</li>
+</ul>
+<p>Editing a step (right-click on it, or use the toolbar buttons):</p>
+<ul>
+<li><b>Rename&hellip;</b> &mdash; set a custom display label (<code>label_override</code>). Blank restores the default (catalog text or preset-derived).</li>
+<li><b>Edit Preset&hellip;</b> &mdash; opens the command's bespoke preset editor via <code>_open_preset_editor_for_command</code>. Only available on action steps that have a command id.</li>
+<li><b>Edit Note</b> &mdash; multi-line note (shown in the step details panel).</li>
+<li><b>Edit Inputs / Outputs</b> &mdash; comma-separated string tags.</li>
+<li><b>Remove Step</b> &mdash; delete it; selection stays on the same row if possible.</li>
+</ul>
+<p>Reordering: drag a step within its lane or across to another lane. Qt's internal-move drag handles the heavy lifting; the workflow model is re-synced from the UI after every drop so the saved order matches what you see.</p>
+
+<h2 id="s5">5. Step kinds</h2>
+<p>Four kinds, picked by the step's <code>kind</code> field:</p>
+<table>
+<tr><th>Kind</th><th>Prefix</th><th>Purpose</th><th>Opens a tool?</th></tr>
+<tr><td><code>action</code></td><td>(none, or ◆ with preset)</td><td>Runs a specific SASpro command when opened.</td><td>Yes</td></tr>
+<tr><td><code>note</code></td><td>📝</td><td>Instruction-only step. Carries a note describing what the user should do next.</td><td>No</td></tr>
+<tr><td><code>split</code></td><td>⇢</td><td>Visual branch marker. Documents where processing diverges into multiple lanes.</td><td>No</td></tr>
+<tr><td><code>merge</code></td><td>⇠</td><td>Visual merge marker. Documents where multiple lanes come back together.</td><td>No</td></tr>
+</table>
+<p>Note, split, and merge steps can still carry <code>inputs</code> and <code>outputs</code> annotations &mdash; the narrowband canned workflow uses <code>split</code> and <code>merge</code> markers to call out the branch and the rejoin, with named outputs on the split (<code>starless</code>, <code>stars_only</code>) and named inputs on the merge (<code>starless_final</code>, <code>stars_final</code>).</p>
+<p>Opening a non-action step shows a brief information dialog that describes what kind of marker it is. In the mini runner, opening a note step shows the step's actual note text, so the mini runner can act as a &ldquo;follow this instruction&rdquo; prompt even for non-action steps.</p>
+
+<h2 id="s6">6. The step details panel</h2>
+<p>Below the lanes sits a panel that shows the full details of whichever step is currently selected:</p>
+<ul>
+<li><b>Title</b> &mdash; the step's display label (catalog text, preset-derived label, or user override).</li>
+<li><b>Lane</b> &mdash; which lane the step lives in.</li>
+<li><b>Tool status tip</b> &mdash; for action steps, the tool's own description from its QAction.</li>
+<li><b>Note</b> &mdash; the step's instruction note, if any.</li>
+<li><b>Inputs / Outputs</b> &mdash; the named lineage tags, if any.</li>
+<li><b>Preset</b> &mdash; a compact summary of the first few captured settings (routing keys like <code>family</code>, <code>auto_run</code>, <code>args</code>, <code>op</code> are hidden; booleans become <code>on</code>/<code>off</code>; long strings truncate; a tail of <code>+N more&hellip;</code> appears when the preset has more keys than fit).</li>
+<li><b>Status</b> &mdash; <code>Completed</code> or <code>Not completed</code>.</li>
+</ul>
+<p>Everything is HTML-formatted inline, so the panel reads like a short field notebook entry rather than a static form.</p>
+
+<h2 id="s7">7. Running steps and progress</h2>
+<p>Four buttons drive execution:</p>
+<ul>
+<li><b>Previous Step</b> / <b>Next Step</b> &mdash; walk a flat sequence of steps across all lanes in order (lane 1 top-to-bottom, then lane 2, &hellip;). The current step is bolded; selecting it also makes its lane the &ldquo;current lane.&rdquo;</li>
+<li><b>Open Step</b> &mdash; launches the current step's tool. For action steps:
+    <ul>
+    <li>If the step carries a preset, <code>_preset_opener_for_command</code> is called to open the tool <b>seeded with those settings</b> &mdash; the dialog pops up with every slider, dropdown, and checkbox already set.</li>
+    <li>If no preset (or no opener registered for that command), <code>_find_action_by_command_id</code> locates the QAction and triggers it directly, which usually opens the tool with its own default state.</li>
+    </ul>
+    Double-clicking a step is a shortcut for Open Step.</li>
+<li><b>Mark Complete</b> &mdash; flags the current step with a ✓ prefix on its label and sets its completion flag. In the mini runner, Mark Complete also <b>advances to the next step automatically</b>, which keeps the walkthrough moving. In the full dialog, it just marks and stays put.</li>
+<li><b>Reset Progress</b> &mdash; clears every step's completed flag across every lane. The workflow structure is untouched; only the progress state resets.</li>
+</ul>
+<div class="tip">The runner <b>does not wait</b> for the tool you opened to finish. It launches the tool and returns immediately. This is deliberate &mdash; Workflow Assistant is a guided walkthrough, not an auto-runner. You open the tool, you do the work, you Mark Complete when you're happy with the result. If you want sequential auto-execution with per-step completion waits, use <b>Function Bundles</b> instead.</div>
+<p>Completion state lives on each step as a <code>Qt.UserRole + 7</code> flag &mdash; it's a session state, not saved into the workflow JSON. Reopening a saved workflow starts everything uncompleted; completion resets on <b>New Workflow</b>, on <b>Load</b>, on <b>Clear Workflow</b>, and on <b>Reset Progress</b>.</p>
+
+<h2 id="s8">8. The mini runner</h2>
+<p>The <b>Run Workflow</b> button at the bottom of the dialog opens a <b>Mini Workflow Dialog</b> &mdash; a compact execution-only view of the current workflow. It shows the same lanes with the same steps, but strips the editing controls (no catalog panel, no lane management, no edit buttons). You get a title bar, the lanes themselves, the step details panel, and five buttons: Previous, Open Step, Mark Complete, Next, Reset Progress.</p>
+<p>The mini runner's <b>Mark Complete</b> automatically moves to the next step. This makes it feel more like a wizard than an editor &mdash; open the tool, do the work, hit Mark Complete, the next step is already highlighted and ready.</p>
+<p>The mini runner can also be launched directly without opening the full editor via <code>show_mini_workflow_dialog(main)</code>:</p>
+<ul>
+<li>If the full dialog is open and has a non-empty workflow loaded, the mini runner just reuses that workflow and its catalog.</li>
+<li>If nothing is loaded yet, a small picker appears: open the full assistant to build/edit, or launch directly into one of the canned workflows, or launch into any saved JSON file in the workflows directory.</li>
+</ul>
+<p>Only one mini runner lives at a time &mdash; opening a new one closes any existing one, so you don't accumulate instances by accident.</p>
+
+<h2 id="s9">9. Load, save, and autosave</h2>
+<p>Workflows save to the SASpro user data directory:</p>
+<div class="eq">&lt;user_data&gt;/workflows/&lt;name&gt;.json</div>
+<p>The user data directory is discovered via the main window's <code>get_user_data_dir</code>, <code>_user_data_dir</code>, or <code>user_data_dir</code> (whichever exists); if none is available, the fallback is <code>~/.setiastro/saspro/workflows/</code>. The file is a UTF-8 JSON document with the full workflow definition &mdash; name, description, lanes, every step with its preset, I/O, note, kind, and label override.</p>
+<p>Three save/load entry points:</p>
+<ul>
+<li><b>Save</b> &mdash; writes to the current workflow's name (slug-safe filename).</li>
+<li><b>Save As&hellip;</b> &mdash; file dialog in the workflows directory.</li>
+<li><b>Load&hellip;</b> &mdash; file dialog starting in the workflows directory.</li>
+</ul>
+<p>Load silently migrates legacy <b>schema v1</b> workflows (flat step list, no lanes) into the current <b>v2</b> shape by moving every step into a single <code>main</code> lane. The migrated workflow saves back in v2 shape the next time you hit Save.</p>
+<h3>Autosave</h3>
+<p>Every close of the dialog writes the current workflow to <code>_autosave_last_session.json</code> in the workflows directory. Opening the dialog restores it on the next launch &mdash; but only if there's actually something to restore (non-empty step list, or a non-default name). An empty untitled autosave is treated as a no-op so you don't end up with a stale blank workflow greeting you every launch.</p>
+<p>Autosave is deliberately silent (any exception is swallowed) so closing can never fail because of disk issues or permission problems.</p>
+
+<h2 id="s10">10. Canned workflows</h2>
+<p>The <b>Add Canned Workflow</b> dropdown offers four ready-made templates. Picking one replaces the current workflow entirely.</p>
+<ul>
+<li><b>Beginner OSC Workflow</b> &mdash; 10 steps, one lane. Crop &rarr; Pedestal &rarr; ABE &rarr; Background Neutral &rarr; White Balance &rarr; Cosmic Clarity &rarr; Statistical Stretch &rarr; Curves &rarr; CLAHE &rarr; Save As. Simple linear path for one-shot colour cameras.</li>
+<li><b>Beginner Mono RGB Workflow</b> &mdash; 11 steps, one lane. Crop &rarr; Pedestal &rarr; Linear Fit &rarr; RGB Combine &rarr; Background Neutral &rarr; White Balance &rarr; Cosmic Clarity &rarr; Statistical Stretch &rarr; Curves &rarr; CLAHE &rarr; Save As. Mono-RGB channel combination path.</li>
+<li><b>Beginner Mono Narrowband Workflow</b> &mdash; 17 steps across <b>four lanes</b> (main, starless, stars, merge). The workflow splits after <b>Remove Stars</b>, processes starless and stars-only masters down separate lanes, and merges with <b>Add Stars</b>. This is the canonical multi-lane example &mdash; it shows how split/merge markers combine with lane layout to make a complex pipeline visually obvious.</li>
+<li><b>Cosmic Clarity Cleanup</b> &mdash; 5 steps, one lane. A minimal pipeline for giving an already-processed image a Cosmic Clarity pass with cropping and gradient cleanup around it.</li>
+</ul>
+<p>All four canned workflows carry per-step notes describing what each step is for and why it's where it is. They're meant to be starting points &mdash; load one, rename it, add or remove steps as the data demands, and save under your own name.</p>
+
+<h2 id="s11">11. Technical details</h2>
+<p class="tech-lead">Internal mechanisms numbered continuing from the usage sections.</p>
+
+<h3>12. Data model and schema versions</h3>
+<p>A workflow is a <code>WorkflowDefinition</code>:</p>
+<div class="eq">WorkflowDefinition = {
+    "schema_version": 2,
+    "name":           "My Workflow",
+    "description":    "&hellip;",
+    "lanes":          [ "main", "starless", "stars", "merge" ],
+    "steps":          [ WorkflowStep, &hellip; ],
+}
+
+WorkflowStep = {
+    "id":             "a3f1b2c4d5e6",   # uuid4 hex, first 12 chars
+    "command_id":     "stretch_statistical",
+    "note":           "Stretch to non-linear.",
+    "enabled":        true,
+    "kind":           "action",          # action | note | split | merge
+    "lane":           "main",
+    "inputs":         [ "aligned" ],
+    "outputs":        [ "stretched" ],
+    "preset":         { &hellip; },             # captured tool settings
+    "label_override": "",                # user-renamed display label
+}</div>
+<p>Schema v1 was a flat step list with no lanes or I/O. The loader detects v1 by the <b>absence of a top-level <code>lanes</code> key</b> and migrates by: dropping every step into a single <code>main</code> lane, synthesising fresh step ids, forcing <code>kind = "action"</code>, dropping any inputs/outputs/presets (which v1 didn't support), and tagging the result <code>schema_version = 1</code> so the next Save upgrades it in place.</p>
+
+<h3>13. Toolbar and script catalog discovery</h3>
+<p>The tool catalog is rebuilt every time the dialog opens via two scanners:</p>
+<ul>
+<li><b>Toolbar discovery</b> walks every <code>QWidget</code> child of the main window and looks for ones that have an <code>actions()</code> method. For each action with a <code>command_id</code> property, a catalog entry is created with the action's icon, text, status tip, and the toolbar's title as the category. Toolbars whose title is literally <code>&quot;Hidden&quot;</code> are skipped; separators are ignored.</li>
+<li><b>Script discovery</b> looks up the ScriptManager (via several candidate attribute names), calls <code>load_registry()</code> if the registry is empty, and iterates every registered script. Each script becomes a catalog entry under <code>Scripts</code> or <code>Scripts/&lt;group&gt;</code> if the script declares a group. The command id is <code>script:&lt;script_id&gt;</code>. If a matching QAction already exists on the main window (via the <code>command_id</code> property), its icon and tooltip are reused; otherwise a placeholder action is created.</li>
+</ul>
+<p>Categories are sorted by a three-tier key: a preferred order list first (Functions, Cosmic Clarity, Tools, Geometry, Star Stuff, Masks, What's In My&hellip;, Bundles, View, Scripts), then <code>Scripts/*</code> subcategories alphabetically, then everything else alphabetically. The search box filters by matching both the action text and its tooltip, case-insensitive.</p>
+
+<h3>14. MIME payload types and function-bundle expansion</h3>
+<p>The lane list accepts two MIME formats:</p>
+<ul>
+<li><code>application/x-saspro-workflow-command</code> (<code>WORKFLOW_MIME</code>) &mdash; a bare UTF-8 command id, dragged from the catalog tree. Lands as an action step with an empty preset.</li>
+<li><code>application/x-saspro-command</code> (<code>MIME_CMD</code>) &mdash; the standard SASpro shortcut payload, dragged from the shortcut canvas or from Function Bundle chips. Contains a dict with <code>command_id</code> and optional <code>preset</code>.</li>
+</ul>
+<p>When the <code>MIME_CMD</code> payload has <code>command_id == "function_bundle"</code>, the drop handler walks the inner <code>steps</code> array and adds one action step per element, each with its own command id and preset. This mirrors the shortcut canvas's own bundle-expansion behaviour (<code>add_shortcut_from_payload</code> / <code>_add_shortcuts_from_steps</code>) so the UX is consistent across drop targets.</p>
+
+<h3>15. Cross-lane single-selection coordination</h3>
+<p>Qt's <code>QListWidget</code> maintains independent selection state per widget &mdash; by default, selecting an item in lane B wouldn't clear the selection in lane A. Workflow Assistant forces single-selection across all lanes with a cross-list coordinator.</p>
+<p>When any lane's selection changes, <code>_on_any_step_selected</code> walks every other lane list and clears its selection, current row, and current item &mdash; signals blocked during the clear so no recursive callbacks fire. It also clears the selection model's own cached selection and current index to be sure Qt doesn't restore the old state on a repaint.</p>
+<p>The &ldquo;current lane&rdquo; is then set to the lane whose selection just changed, and both the step details panel and the lane visual refresh (bolding the current step, applying ✓ prefixes) run against the new unique selection.</p>
+
+<h3>16. Preset-aware label derivation</h3>
+<p>Dragging a preset-bearing shortcut tile into a workflow captures both the command id and the preset. Several commands dispatch to different underlying tools based on preset content &mdash; <code>rcastro</code> runs BXT/SXT/NXT depending on <code>preset["product"]</code>; <code>cosmic_clarity</code> runs Sharpen/Denoise/Both/Super-Res based on <code>preset["mode"]</code>; <code>syqontools</code> picks between Prism Denoise / Parallax / Starless on <code>preset["family"]</code>. A plain &ldquo;RC-Astro&rdquo; step label would be useless in those cases.</p>
+<p><code>_derive_step_label</code> handles these cases explicitly:</p>
+<div class="eq">rcastro         + product=bxt         &rarr; "BlurXTerminator"
+cosmic_clarity  + mode=sharpen        &rarr; "Cosmic Clarity — Sharpen"
+syqontools      + family=denoise      &rarr; "SyQon — Prism Denoise"
+fx              + effect=soft_glow    &rarr; "FX — Soft Glow"
+remove_stars    + tool=starnet        &rarr; "Remove Stars — StarNet"</div>
+<p>The derivation runs when a preset-bearing step is added and the drop didn't come with its own explicit name. The result goes into the step's <code>label_override</code>, so it survives save/load and shows up in both the main dialog and the mini runner. A user Rename still wins &mdash; manual overrides are preserved over derived ones.</p>
+
+<h3>17. Preset-seeded step opener</h3>
+<p>When Open Step runs on a preset-bearing action step, the runner tries <code>_preset_opener_for_command(command_id)</code> from <code>setiastro.saspro.shortcuts</code> first. This returns a callable (or <code>None</code>) that knows how to open the specific tool with the preset pre-loaded &mdash; typically by constructing the dialog, iterating the preset keys, and setting the matching widget state directly.</p>
+<p>If a preset-bearing opener is registered, it's called with <code>(main_window, preset_dict)</code>. If no opener is registered (or the import fails), the runner falls back to the plain-action path: find the QAction by command id and <code>trigger()</code> it, which opens the tool with its own default state. The user then has to re-apply their saved settings manually &mdash; the preset is still visible in the step details panel so they can read it off.</p>
+
+<h3>18. Autosave and session restore</h3>
+<p>Autosave triggers on <code>closeEvent</code> of the dialog &mdash; the current workflow is synced from the UI, name and description are refreshed from the editable fields, and the whole thing serialises to <code>_autosave_last_session.json</code> in the workflows directory. The autosave is wrapped in a bare <code>try/except</code> that swallows every exception; closing the dialog must never fail because of a save issue.</p>
+<p>Session restore runs after dialog construction, in <code>_restore_autosaved_session</code>. The autosave file is read, parsed with <code>WorkflowDefinition.from_dict</code>, and the result is loaded only if it has substantive content &mdash; either a non-empty steps list or a non-default name. An untitled autosave with zero steps is treated as nothing to restore, which prevents a stale blank workflow from reappearing every launch.</p>
+<p>The autosave file lives alongside named user workflows in the workflows directory but prefixed with an underscore to sort it out of the way of the Load dialog's typical browse order.</p>
+
+<h2>Credits</h2>
+<div class="credit">
+<b>Workflow Assistant</b> is a workflow / mentoring tool for SetiAstro Suite Pro by <b>Franklin Marek</b>. It builds on standard SASpro machinery: the toolbar &amp; QAction system (every action auto-discoverable by <code>command_id</code> property), the ScriptManager registry (recursive script discovery), the SASpro shortcut MIME protocol (<code>MIME_CMD</code>) and the shortcut-canvas's preset-opener dispatch (<code>_preset_opener_for_command</code>, <code>_open_preset_editor_for_command</code>). The canned workflows are curated beginner recipes; the multi-lane visual layout, split/merge markers, and I/O lineage annotations are new design work for this tool. There are no external algorithmic references &mdash; this tool orchestrates SASpro's existing commands rather than introducing new image-processing primitives. Qt and PyQt6 provide the UI framework, drag-and-drop infrastructure, and JSON serialisation.
+</div>
+
+</body>
+</html>

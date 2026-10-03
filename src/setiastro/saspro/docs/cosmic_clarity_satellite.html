@@ -1,0 +1,206 @@
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color:#e6e6e6; background:#1b1b1b; padding:10px 14px; line-height:1.45; }
+h1 { margin: 0 0 10px 0; font-size: 20px; color:#9ad; }
+h2 { margin-top: 16px; color:#cfd; font-size:16px; border-bottom:1px solid #333; padding-bottom:3px; }
+h3 { color:#9bd; margin-top:14px; margin-bottom:6px; font-size:14px; }
+code { background:#2a2a2a; padding:1px 4px; border-radius:3px; }
+.hero { background:#1f2a1f; border-left:3px solid #4caf50; padding:10px 12px; margin:10px 0; border-radius:3px; }
+.matheq { margin: 8px 14px; text-align:left; }
+.matheq-hero { margin: 10px 0; text-align:center; }
+.tip { background:#1f2a1f; border-left:3px solid #4caf50; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.warn { background:#2a241f; border-left:3px solid #c0892b; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.credit { background:#2a251c; border-left:3px solid #c7a24a; padding:8px 12px; margin:12px 0 6px 0; border-radius:3px; font-size:13px; color:#dcd3b8; }
+.pub { background:#1f2a1f; border-left:3px solid #4caf50; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.keys { background:#1f2630; border-left:3px solid #4a9eff; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.workflow { background:#1f2630; border-left:3px solid #4a9eff; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.science { background:#2a1f2a; border-left:3px solid #c74ac7; padding:8px 12px; margin:10px 0; border-radius:3px; }
+ul { margin: 6px 0 10px 0; padding-left:22px; }
+li { margin: 3px 0; }
+p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Cosmic Clarity — Satellite Removal</h1>
+
+<div class="hero">
+<b>Per-sub satellite trail cleanup, designed for the capture folder.</b> Point the dialog at an input folder of individual subs and an output folder for the cleaned versions, pick a mode, and the AI segmenter finds satellite trails, aircraft streaks, and meteor tracks on each frame and removes them before stacking. Three run modes cover every usage pattern: <b>Single Image</b> for interactive one-off cleanup (operates on the active view or any file on disk), <b>Batch</b> for processing an entire folder of subs in one pass, and <b>Live Monitor</b> for watching the capture folder during an active session and cleaning each file as it lands. XISF, FITS, TIFF, PNG, JPEG, and all major raw camera formats are supported; XISF metadata round-trips so your stacker still gets its CFA and dark-reference info.
+</div>
+
+<div class="pub">
+<b>SetiAstro Cosmic Clarity Satellite model</b> — original neural network segmenter trained in-house by Franklin Marek on real deep-sky integration data. The model learns to distinguish linear satellite / aircraft / meteor trails from the circular, point-like signature of stars and the diffuse structure of nebulosity, outputting a soft confidence mask that drives either an AI-interpolated inpaint of the affected pixels or a straight clip-to-zero depending on your preference. Model file: <code>satelliteRemovalAI4.pth</code>, shipped with SASpro; nothing talks to a remote server.
+</div>
+
+<h2>1. The three run modes</h2>
+<p>The three buttons on the left control panel pick how the segmenter is applied:</p>
+<ul>
+<li><b>Process Single Image</b> — one file at a time, interactively. If any image views are open in SASpro, you're asked whether to process one of them or pick a file from disk. The result either replaces the active view (for view-based processing) or saves alongside the source with a <code>_satellited</code> suffix (for file-based). This mode shows a native progress dialog with a working Cancel button — use it to tune sensitivity before committing to a batch run.</li>
+<li><b>Batch Process Input Folder</b> — processes every supported image file in the input folder, in one pass. Already-processed files (anything ending <code>_satellited</code>) are skipped automatically, so you can re-run a batch to pick up new arrivals without duplicating work. Also skips files whose output already exists in the output folder — safe to interrupt and resume.</li>
+<li><b>Live Monitor Input Folder</b> — the batch path with a polling loop on top. The dialog watches the input folder for new files, processes each one as it appears, and keeps going until you Cancel. Pair this with your capture application pointing straight at the input folder, and your subs land cleaned-up in the output folder with no further action during the session.</li>
+</ul>
+
+<div class="tip">
+<b>Why per-sub, not post-stack?</b> Satellite trails hit individual sub-exposures hard but only cover one or two frames out of a hundred. A good stacker's sigma rejection catches most of them. The segmenter here handles the rest: the ones your stacker's rejection scheme missed (a very bright trail that pulled the median up, a trail that fell on a bright nebula edge where sigma thresholds are soft, meteors that are too short to look like outliers to a per-pixel rejection algorithm). Cleaning per-sub is strictly more conservative than trying to remove a trail from the final stack — you only touch the frames that have the problem.
+</div>
+
+<h2>2. Input and output folders</h2>
+<p>Two buttons at the top of the control column pick input and output folders. The button text updates to show the chosen folder's name once set; the full path is kept in QSettings and restored on next open. Both folders are tracked by a <code>QFileSystemWatcher</code>: when the OS reports a directory change (file added, removed, renamed) the matching tree view on the right refreshes automatically.</p>
+
+<p>The tree views show every supported file in each folder:</p>
+<ul>
+<li><b>Double-click</b> any entry to preview it in the standard SASpro preview dialog (with autostretch, pan, zoom).</li>
+<li><b>Right-click</b> for Delete File or Rename File — direct filesystem operations, no SASpro-level undo.</li>
+</ul>
+
+<p>Supported formats for load: PNG, TIFF (8/16/32-bit), FITS (any bit depth), XISF, and camera raws (CR2, NEF, ARW, DNG, RAF, ORF, RW2, PEF, JPG, JPEG). Output format matches the input extension — a FITS sub produces a FITS output, an XISF produces XISF with its original per-image metadata preserved, and so on. Formats SASpro's legacy saver can't write to directly default to FITS 32-bit float.</p>
+
+<h2>3. Full vs Luminance mode</h2>
+<p>The <b>Satellite Removal Mode</b> dropdown picks what the segmenter operates on:</p>
+<ul>
+<li><b>Full</b> — the segmenter runs on the full RGB input, outputting a per-channel correction. Best when the trail has a strong color cast (aircraft running lights, bright blue-white satellite reflections) that would show through a luminance-only pass.</li>
+<li><b>Luminance</b> — the segmenter runs only on the luminance channel; the correction is scaled back onto RGB preserving the original chrominance. Faster, and better for subs where the trail is primarily a brightness anomaly on an otherwise clean color background.</li>
+</ul>
+<p>Default is Full. Luminance is a good fallback when Full is over-correcting the chrominance of the surrounding sky (visible as a faint color cast where the trail was).</p>
+
+<h2>4. Sensitivity and the clip options</h2>
+<p>The segmenter's raw output is a soft confidence mask with values in [0, 1] — brighter where the model is more confident a pixel is on a trail. The <b>Clipping Sensitivity</b> slider (0.01-0.50, default 0.10) is the threshold applied to that mask:</p>
+<div class="matheq-hero">m'[i,j] = m[i,j] \cdot \mathbf{1}[m[i,j] \geq s]</div>
+<p>Mask values below the sensitivity threshold are zeroed out (treated as background); values at or above are kept. <b>Lower sensitivity = more aggressive segmentation</b> — the model catches dimmer trails but may also false-positive on bright star edges or sharp nebula structures. Higher sensitivity = more conservative; only the obvious trails are cleaned. 0.10 is a good default; drop to 0.05 for subtle trails on dim backgrounds; raise to 0.20 if you're seeing false positives on your data.</p>
+
+<p>Two checkboxes modify what happens where the mask is non-zero after thresholding:</p>
+<ul>
+<li><b>Clip Satellite Trail to 0.000</b> (default on) — pixels where the thresholded mask is non-zero are set to pure black. Simple, deterministic, obviously-correct for your stacker's rejection to further mask. The signature any downstream per-sub integration needs to recognize "there was no light here" is zero, not a smooth AI-interpolated patch that might fool a rejection step.</li>
+<li><b>Clip off</b> — pixels where the mask is non-zero are replaced with an AI-interpolated inpaint based on the surrounding sky. The segmenter effectively doubles as an inpainter. Visually smoother on a single sub, but gives the stacker a "real pixel" where there wasn't one, which may be harder to reject if the trail wasn't perfectly segmented.</li>
+</ul>
+
+<p><b>Skip Save if No Satellite Trail Detected</b> is a batch-mode optimization. The segmenter reports a boolean <code>detected</code> flag alongside the mask; if the max of the thresholded mask is zero, nothing was found and this checkbox causes the file to be skipped entirely rather than written out as a bitwise-identical copy. Useful for processing a 500-sub session where only 20 subs actually have trails — you end up with 20 output files to review, not 500. The input tree still lists all files; only the output tree shows the subset that actually needed work.</p>
+
+<div class="tip">
+<b>Pre-batch sensitivity tuning.</b> Before committing to a long batch run, use Process Single Image on one or two files you know have trails. Try sensitivity 0.10, inspect the output, nudge up or down until you catch the trails without visible false positives on stars or structure. Then run Batch with the same setting. Saves hours of "the batch finished but the sensitivity was wrong."
+</div>
+
+<h2>5. Delete Original After Saving</h2>
+<p><b>Delete Original Image After Saving</b> is the most destructive option in the dialog and is treated accordingly. When checked and before any run begins, a confirmation dialog spells out exactly what will happen:</p>
+<ul>
+<li>After each image is successfully processed and saved, its original file is permanently deleted.</li>
+<li>If satellite removal produces an unexpected result, the original sub is gone.</li>
+<li>The deletion is unconditional on successful save — not conditional on the trail-detected flag.</li>
+</ul>
+
+<p>The dialog defaults to "No" and must be explicitly confirmed with "Yes" to proceed. Cancel on this confirmation aborts the run before any files are touched.</p>
+
+<div class="warn">
+<b>Delete-original safety: the only guard.</b> SASpro checks that the input path and output path are not the same file (<code>os.path.abspath</code> comparison) before deleting. Everything else is up to you. If your output folder is the same as your input folder, the <code>_satellited</code> suffix produces a different filename and the original gets deleted. If you use delete-original with a bad sensitivity setting on a batch, you'll lose the originals of files that got over-aggressively "cleaned." Use it when you're confident, and preferably with the output folder on a different disk or in a different directory tree so the originals aren't gone forever if you ever want to re-run.
+</div>
+
+<h2>6. GPU acceleration and Compatibility Mode</h2>
+<p>The <b>Use GPU Acceleration</b> dropdown is a simple Yes/No. "Yes" picks the best available GPU backend (CUDA on NVIDIA, DirectML on Windows for Intel/AMD, MPS on Apple Silicon where available). "No" forces CPU — considerably slower, but useful for debugging or for running satellite cleanup in the background while the GPU is tied up with something else (stacking, denoise on the main Cosmic Clarity dialog, another AI task).</p>
+
+<p><b>GPU Compatibility Mode</b> is the fallback for problematic hardware — low-VRAM GPUs, older cards, certain Windows laptop configurations where the normal AI path crashes. Compatibility Mode uses a conservative inference path with reduced batching and no half-precision autocast. Slower, but survives where the default path fails. Toggle it on if the first batch run throws a GPU error or produces visibly corrupted output; leave it off otherwise.</p>
+
+<h2>7. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Session live monitor (recommended for active imaging).</b> Point your capture application at a folder. In SASpro, open Cosmic Clarity Satellite. Set Input folder to the capture folder, Output folder to a separate "cleaned" subfolder. Mode = Full, Sensitivity = 0.10, Clip Trail = on, Skip Save if None = on. Click Live Monitor. Each sub lands → gets segmented → gets cleaned (or skipped if nothing found) → appears in the output folder. End of session, your cleaned subs are already ready to stack.
+</div>
+
+<div class="workflow">
+<b>Overnight batch on last night's data.</b> After a session, point Input at last night's unprocessed subs folder. Pick an Output folder. Full mode, Sensitivity 0.10, Clip Trail on, Skip Save if None on. Batch Process. Comes back with just the trail-affected subs in the output folder. Replace those subs in your source folder before stacking.
+</div>
+
+<div class="workflow">
+<b>Sensitivity tuning pass.</b> Pick one or two subs with known trails. Process Single Image → File on Disk → pick the sub. Inspect the output. Adjust Sensitivity up or down. Repeat on the same file until the trail is cleaned without visible artifacts on stars. Then switch to Batch with that sensitivity.
+</div>
+
+<div class="workflow">
+<b>Clean a single image already in SASpro.</b> You have a view open and you spotted a trail. Open Cosmic Clarity Satellite. Click Process Single Image → Open View → pick the view. The result replaces the view's image via SASpro's normal document pipeline (undo-aware). No files written, no folders needed.
+</div>
+
+<div class="workflow">
+<b>Delete-original cleanup for storage-constrained sessions.</b> SSD is almost full. Set input and output to the same folder (saved subs land as <code>name_satellited.ext</code> alongside originals). Enable Delete Original. Confirm the warning. Batch Process. Originals get deleted as cleaned versions are saved; disk usage stays flat. Use with care.
+</div>
+
+<div class="workflow">
+<b>Hands-off aggressive cleanup.</b> Sensitivity 0.05, Full mode, Clip Trail off (use AI inpaint for smoother single-sub appearance). Fine for stacks where you want the individual subs to look clean on their own; may produce occasional false positives on bright stars, so inspect a few outputs before trusting the whole run.
+</div>
+
+<div class="workflow">
+<b>Faint narrowband with low-SNR trails.</b> Mode = Luminance (preserves chrominance on the dim nebula), Sensitivity = 0.08, Clip Trail = on. Narrowband data has low per-pixel SNR which can confuse Full-mode segmentation; luminance-only is more stable.
+</div>
+
+<h2>8. Credits</h2>
+<div class="credit">
+<b>Model and training.</b> Franklin Marek, SetiAstro — original neural network satellite trail segmenter, trained in-house on real deep-sky integration data with hand-labeled trail / no-trail examples spanning aircraft, satellites, meteors, and (false positive avoidance) bright stars, galaxy edges, nebula filaments, and diffraction spikes. Model file: <code>satelliteRemovalAI4.pth</code>.<br><br>
+
+<b>SASpro integration.</b> Dialog UI, three run modes (single / batch / live monitor), QFileSystemWatcher-driven tree view auto-refresh, per-file XISF metadata round-trip, delete-original safety confirmation and path-equality guard, GPU provider selection with Compatibility Mode fallback, progress reporting across the batch, and standard preview-dialog integration — all Franklin Marek as part of <a href="https://setiastro.com">SetiAstro Suite Pro</a>.<br><br>
+
+<b>Runtime.</b> PyTorch (<a href="https://pytorch.org">pytorch.org</a>) for neural network inference. SASpro's legacy image I/O layer handles format detection, raw camera demosaicing, and FITS/XISF/TIFF read/write.
+</div>
+
+<h2 style="margin-top:28px;">Technical details</h2>
+
+<h3>9.1. Segmenter output and sensitivity threshold</h3>
+<p>The segmenter outputs a soft confidence mask in the unit interval:</p>
+<div class="matheq-hero">m \in [0, 1]^{H \times W}</div>
+<p>Values near 1 indicate high confidence that a pixel is on a trail; values near 0 indicate background. The sensitivity threshold is a simple floor:</p>
+<div class="matheq-hero">m'[i,j] = m[i,j] \cdot \mathbf{1}[m[i,j] \geq s]</div>
+<p>where <b>1</b> is the indicator function. The thresholded mask <code>m'</code> drives the output: pixels where <code>m' = 0</code> are left as the original source; pixels where <code>m' > 0</code> are either zeroed (clip trail on) or replaced with an AI-interpolated inpaint (clip trail off).</p>
+
+<h3>9.2. Trail detection flag</h3>
+<p>The engine reports a boolean <code>detected</code> flag alongside the processed image:</p>
+<div class="matheq-hero">\mathrm{detected} = (\max_{i,j} m'[i,j]) > 0</div>
+<p>— true if any pixel survived the threshold. The Skip-Save-If-None checkbox tests this flag to decide whether to write the output file. The flag is also what the per-file log line reports ("Skip (no trail): filename" vs "Saved: filename").</p>
+
+<h3>9.3. Clip-trail output</h3>
+<p>When Clip Trail is on, the output is the source with masked pixels set to zero:</p>
+<div class="matheq-hero">\mathrm{out}[i,j] = 0 \text{ where } m'[i,j] > 0</div>
+<p>This is deterministic and visually obvious — downstream per-sub integration rejection schemes (sigma clipping, Winsorized, percentile) see pure zeros and reject them cleanly. The alternative (clip off) runs an AI inpaint over the masked region and composites:</p>
+<div class="matheq-hero">\mathrm{out} = (1 - m') \cdot \mathrm{src} + m' \cdot \mathrm{inpaint}(\mathrm{src})</div>
+<p>which gives smoother single-sub appearance but writes "real-looking" pixel values that may be harder for a stacker to reject if the segmentation was imperfect.</p>
+
+<h3>9.4. Full vs Luminance mode</h3>
+<p>Full mode runs the segmenter on the RGB input directly, producing a per-channel correction. Luminance mode first extracts a luminance channel using the standard Rec.709 weights:</p>
+<div class="matheq-hero">Y = 0.2126 R + 0.7152 G + 0.0722 B</div>
+<p>runs the segmenter on <code>Y</code> alone, and composites the result back as a luminance replacement with the original chrominance preserved:</p>
+<div class="matheq-hero">\mathrm{out}_Y = f_\mathrm{sat}(Y),\;\; \mathrm{out}_{RGB} = (\mathrm{out}_Y / Y) \cdot \mathrm{src}_{RGB}</div>
+<p>where <code>f_sat</code> is the trail-removal operation on luminance. Division is guarded against Y=0 (black pixels keep their RGB zeros). Luminance mode is ~3× faster than Full since only one channel is processed, and it preserves color in regions where the trail is primarily a brightness anomaly.</p>
+
+<h3>9.5. Live-monitor polling and set-based deduplication</h3>
+<p>Live Monitor is the Batch loop with a polling sleep at the bottom:</p>
+<div class="matheq-hero">\Delta t = \max(50,\; 1000 \cdot \mathrm{poll\_seconds})</div>
+<p>(milliseconds, default 1000ms = 1s). The thread maintains a <code>_seen</code> set of already-processed filenames; each poll pass computes <code>todo = current_files - seen</code> and processes only the new entries. Files already in the output folder (same stem + <code>_satellited</code> suffix) are logged "Exists, skipping" and marked done without re-processing — safe to restart the monitor against the same input folder without redundant work.</p>
+
+<h3>9.6. Delete-original path safety</h3>
+<p>Before unlinking an original, the engine checks:</p>
+<div class="matheq-hero">\mathrm{abspath}(\mathrm{fp}_\mathrm{in}) \neq \mathrm{abspath}(\mathrm{fp}_\mathrm{out})</div>
+<p>If the two paths resolve to the same file (input and output folder set to the same location, suffix stripping somehow produces the input name back, user manually set output path to collide with input), the delete is skipped and the original is preserved. This is the <b>only</b> protection against delete-with-same-path accidents — no undo trash, no "delete after 30 days" grace window, no SASpro-level recoverable deleted-items store. The warn callout in §5 covers the rest.</p>
+
+<h3>9.7. XISF metadata round-trip</h3>
+<p>XISF inputs carry per-image metadata (CFA layout, bayer pattern, instrument info, environmental data, calibration provenance) that stackers depend on. The load path extracts this as the <code>xisf_meta</code> field of the metadata dict; on save, SASpro passes it through to the writer as the <code>image_meta</code> parameter. If the metadata is a single dict rather than a list of dicts (XISF supports multi-image containers), it's wrapped in a one-element list before passing — the XISF writer expects a list. FITS metadata (headers) rides through on the standard header pathway independently; TIFF and PNG have no equivalent per-image metadata so the fields are passed as <code>None</code>.</p>
+
+<h3>9.8. Progress reporting</h3>
+<p>Per-batch progress is reported as:</p>
+<div class="matheq-hero">\mathrm{frac} = \mathrm{done} / \mathrm{total}</div>
+<p>where <code>done</code> is the count of files already processed (or skipped) in the current pass and <code>total</code> is the pass's todo-list size. In Live Monitor mode the total resets each poll pass; the wait dialog shows "N / M files" during active processing and "0 / 0" during idle polling. Single-image mode uses a native <code>QProgressDialog</code> instead of the batch wait dialog, with the engine's per-tile progress callback driving the bar directly.</p>
+
+<h3>9.9. Normalization and bounds</h3>
+<p>Every image loaded is normalized to float32 in [0, 1] before inference:</p>
+<div class="matheq-hero">x_{\mathrm{clip}} = \mathrm{clip}(x,\; 0,\; 1)</div>
+<p>The clip bounds the input to the model's trained range (uint16 inputs scale by 1/65535 first); the output is clipped again before save to guarantee no out-of-range values reach disk. Saves use SASpro's standard legacy writer with 32-bit float as the default bit depth for FITS and TIFF; PNG and JPEG fall back to the writer's own 8-bit encode.</p>
+
+<h3>9.10. Settings persistence</h3>
+<p>Satellite dialog settings persist under the <code>satellite/</code> QSettings prefix:</p>
+<ul>
+<li><code>satellite/input_folder</code>, <code>satellite/output_folder</code> — folder paths.</li>
+<li><code>satellite/use_gpu</code>, <code>satellite/gpu_compat</code> — GPU dropdown and compatibility checkbox.</li>
+<li><code>satellite/mode</code> — Full or Luminance.</li>
+<li><code>satellite/clip_trail</code>, <code>satellite/skip_save</code>, <code>satellite/delete_original</code> — the three behavior checkboxes.</li>
+<li><code>satellite/sensitivity</code> — slider value as integer (1-50; divided by 100 to get the float threshold).</li>
+</ul>
+<p>Settings save on <code>closeEvent</code> and on every change via the dialog's save hook; folders are also saved after each successful chooser interaction so a crash mid-session preserves the folder selection for next launch.</p>
+
+</body>
+</html>

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Texture and Clarity</h1>
+<p class="sub">Three independent sharpening passes applied in sequence
+to the luminance of an image, each isolating a different spatial
+scale: <b>Texture</b> works on the finest detail with a band-pass
+response, <b>Unsharp Mask</b> hits the small-to-medium scale with a
+classical Gaussian high-pass plus optional noise-suppressing
+threshold, and <b>Clarity</b> adds mid-scale local contrast through
+an edge-preserving bilateral filter with a midtone mask. All three
+run on Rec. 709 luminance so chroma is bit-for-bit preserved; mono
+images operate on the single channel directly. Live preview with
+instant before/after toggle; all stages fully invertible by setting
+their amount to zero.</p>
+
+<h2>1. The three stages</h2>
+<p>Each stage runs independently with its own enable condition
+(<code>|amount|&nbsp;&lt;&nbsp;0.001</code> &rarr; skip), so you can
+use just one, two, or all three. They apply in order:</p>
+<div class="eq">source  ->  Texture  ->  Unsharp Mask  ->  Clarity  ->  result</div>
+<p>which matters a little: Texture lifts the fine detail that USM
+and Clarity then operate on, so the composition is cumulative rather
+than orthogonal. Doing the same amount of sharpening in a different
+order would give subtly different results. In practice the order
+chosen here (fine &rarr; medium &rarr; broad) is the usual
+sharpening-pipeline convention and the one that tends to produce the
+most natural-looking results on astronomical imagery.</p>
+
+<h2>2. Texture</h2>
+<p>Band-pass sharpening by difference of Gaussians (DoG): the image
+is blurred at two scales (&sigma; and 2&sigma;), their difference
+isolates the frequency band between them, and that band is added
+back scaled by the amount.</p>
+<ul>
+  <li><b>Amount</b> &mdash; slider &minus;1.00 to +1.00. Negative
+      values <i>attenuate</i> fine texture (smoothing in that band)
+      rather than enhancing it. 0.3&ndash;0.6 is the usual working
+      range for enhancement; above 0.7 fine noise starts to amplify
+      visibly.</li>
+  <li><b>Radius</b> &mdash; slider 0.1 to 10.0 px. The inner Gaussian
+      &sigma; (the outer is automatically 2&sigma;). Small radii
+      target single-pixel grain and the finest nebular filaments;
+      large radii pull on broader features.</li>
+</ul>
+
+<h2>3. Unsharp Mask</h2>
+<p>The classical high-pass sharpening operation: blur the image at
+one scale, subtract to isolate the detail above that scale, add it
+back scaled by the amount. A soft threshold can suppress sharpening
+of low-amplitude differences so background noise isn't amplified
+along with real detail.</p>
+<ul>
+  <li><b>Amount</b> &mdash; slider 0.00 to 2.00. Only positive values
+      (sharpening, not blurring); 0 disables. 0.5&ndash;1.0 is a safe
+      default; above 1.5 produces visible ringing near high-contrast
+      edges (star rims, galaxy cores).</li>
+  <li><b>Radius</b> &mdash; slider 0.1 to 10.0 px. The Gaussian
+      &sigma; for the low-pass stage. Small values enhance
+      pixel-scale detail (and noise); 2&ndash;4 px is the typical
+      astronomical sweet spot for pulling on dust structure and
+      filamentary nebulosity.</li>
+  <li><b>Threshold</b> &mdash; slider 0.000 to 0.100. Differences
+      below this amplitude are not sharpened; from <code>t</code>
+      to <code>2t</code> a soft linear ramp phases the sharpening in,
+      so the transition isn't a visible edge. Set it just above the
+      amplitude of your background noise &mdash; typically
+      0.003&ndash;0.010 for a stacked astronomical frame &mdash; to
+      sharpen real features without lifting grain.</li>
+</ul>
+
+<h2>4. Clarity</h2>
+<p>Mid-scale local contrast enhancement using an edge-preserving
+bilateral filter as the base layer, with a midtone-weighted mask so
+the effect concentrates where it's most visually effective
+(mid-tones) and doesn't crush shadows or blow highlights.</p>
+<ul>
+  <li><b>Amount</b> &mdash; slider &minus;1.00 to +1.00. Positive =
+      add local contrast (the typical "clarity" direction); negative
+      = soften local contrast (a glamour / dreamy effect). 0.3&ndash;0.5
+      is the sweet spot for pulling definition into nebular shapes
+      without going cartoonish.</li>
+  <li><b>Radius</b> &mdash; slider 0.1 to 10.0, scaled internally to
+      a bilateral sigma_space of 10&times; the slider value. Larger
+      values operate on broader features (whole nebula regions)
+      rather than small detail. 2&ndash;4 is the usual starting
+      point.</li>
+</ul>
+<p>The <b>Clarity Mask</b> group below has one more slider:</p>
+<ul>
+  <li><b>Midtone strength</b> &mdash; slider 0.00 to 1.00, default
+      1.00. Blends between pure midtone-only masking (1.0, the
+      classical &ldquo;Clarity&rdquo; behaviour) and flat uniform
+      application (0.0). The default is Lightroom-style selective
+      midtone enhancement; dial it toward 0 when you want the effect
+      everywhere, which astrophotography often prefers in order to
+      pull contrast into shadow dust lanes too.</li>
+</ul>
+
+<h2>5. Before / after toggle</h2>
+<p>The <b>&#8646;&nbsp;Toggle Before&nbsp;/&nbsp;After</b> button is
+checkable: on shows the original cached pixmap, off shows the
+latest processed result. Switching is instantaneous because both
+pixmaps are cached &mdash; no re-processing happens, so you can
+flip back and forth as fast as you can click. Moving any slider
+automatically pops the button out of its &ldquo;showing original&rdquo;
+state so you see the new result immediately. The main use is
+calibrating the amount sliders: toggle a few times to see whether
+the sharpening is doing something real or just magnifying noise.</p>
+
+<h2>6. Preview panel</h2>
+<p>Right side of the dialog. Scrollable, pannable, zoomable:</p>
+<ul>
+  <li><b>Zoom buttons</b> above the preview: &minus; and + step by
+      1.25&times;, <b>Fit</b> scales to viewport.</li>
+  <li><b>Ctrl + mouse wheel</b> zooms anchored at the cursor
+      position &mdash; the pixel under the mouse stays under the
+      mouse through the zoom change, so you don't have to re-pan
+      after every zoom step.</li>
+  <li><b>Left-click drag</b> pans the preview with a
+      closed-hand cursor.</li>
+</ul>
+<p>The preview is debounced at 150&nbsp;ms &mdash; small slider nudges
+coalesce into one computation so dragging the slider doesn't queue
+up a backlog. Each computation runs on a background QThread with
+cancellation support: changing a slider mid-computation cancels the
+in-flight preview and starts a new one as soon as you stop moving.</p>
+
+<h2>7. Document mask integration</h2>
+<p>If the active document carries a mask, the processed result is
+blended with the untouched original through that mask so only
+masked regions receive the sharpening effect. The blend is standard
+<code>src&nbsp;&times;&nbsp;(1&minus;m)&nbsp;+&nbsp;out&nbsp;&times;&nbsp;m</code>,
+after all three sharpening stages have run. Both the live preview
+and the Apply result respect the mask.</p>
+
+<h2>8. Active-document tracking</h2>
+<p>The dialog listens for the main window's
+<code>currentDocumentChanged</code> signal, so switching to a
+different open image updates the preview to that image's current
+state without closing and re-opening the dialog. Slider settings
+carry across the document change &mdash; useful for applying the
+same sharpening recipe to several frames in a row.</p>
+
+<h2>9. Apply / Reset / Cancel and the preset grip</h2>
+<p><b>Apply</b> runs the final full-resolution computation and
+commits as an undoable edit named &ldquo;Texture and Clarity&rdquo;.
+All eight slider values are recorded as the preset so Replay Last
+Action reproduces the exact run. The dialog closes on Apply.
+<b>Reset</b> returns all sliders to their defaults (every amount at
+zero, radii at their defaults, mask strength at 1.0). <b>Cancel</b>
+closes without applying.</p>
+<p>The grip at the bottom-left of the controls column carries the
+current slider state and can be dragged onto the canvas to make a
+preset shortcut, or dropped directly on an image to apply those
+settings headlessly. Double-clicking the shortcut tile reopens this
+dialog with those values seeded. The dialog's window geometry is
+also persisted via QSettings so it opens where you last left it.</p>
+
+<h2>10. Technical details</h2>
+<p class="tech-lead">All processing on float32 in [0, 1]. OpenCV
+provides the Gaussian and bilateral filter kernels; everything else
+is numpy. NaN inputs are nan-safe-converted to zero at each stage
+boundary.</p>
+
+<h3>10.1 Texture: difference of Gaussians</h3>
+<p>For slider amount <code>a</code> and radius &sigma; (the inner
+Gaussian), Texture computes:</p>
+<div class="matheq-hero">T(x) \;=\; x \;+\; 2a \,\cdot\, \left(G_{\sigma}(x) - G_{2\sigma}(x)\right)</div>
+<p>where <code>G<sub>&sigma;</sub></code> is a 2-D Gaussian blur of
+sigma &sigma; (OpenCV's <code>GaussianBlur</code>). The difference
+<code>G<sub>&sigma;</sub>&nbsp;&minus;&nbsp;G<sub>2&sigma;</sub></code>
+is a band-pass response peaking at spatial scale roughly
+<code>&sigma;</code> and falling off at both finer and coarser
+scales. Multiplying by <code>2a</code> and adding back scales that
+band without touching the DC level or the frequencies below
+<code>2&sigma;</code>. The output is clipped to [0, 1] to prevent
+overshoot. The kernel sizes are set to
+<code>2&middot;round(3&sigma;)&nbsp;+&nbsp;1</code> and forced odd
+so OpenCV accepts them.</p>
+
+<h3>10.2 Unsharp Mask</h3>
+<p>Classical USM with an optional soft threshold:</p>
+<div class="matheq-hero">U(x) \;=\; x \;+\; a \,\cdot\, (x - G_{\sigma}(x))</div>
+<p>The high-pass detail <code>d&nbsp;=&nbsp;x&nbsp;&minus;&nbsp;G<sub>&sigma;</sub>(x)</code>
+isolates everything above spatial scale <code>&sigma;</code>, and
+adding it back scaled by <code>a</code> enhances those frequencies.
+When threshold <code>t&nbsp;&gt;&nbsp;0</code>, each pixel's detail
+is weighted by:</p>
+<div class="matheq-hero">w(d) \;=\; \mathrm{clip}\!\left(\frac{|d| - t}{t},\;0,\;1\right)\,,\qquad d = x - G_{\sigma}(x)</div>
+<p>so differences below <code>t</code> get zero weight (not
+sharpened), differences between <code>t</code> and <code>2t</code>
+ramp linearly from 0 to 1, and differences above <code>2t</code>
+get full sharpening. The soft ramp avoids a visible edge at the
+threshold that a hard cutoff would introduce. In practice you want
+<code>t</code> just above your background noise floor, which for a
+stacked astronomical frame is in the 0.003&ndash;0.010 range.</p>
+
+<h3>10.3 Clarity: bilateral local contrast + midtone mask</h3>
+<p>Clarity uses an edge-preserving bilateral base layer rather than
+a Gaussian, so local contrast is enhanced <i>within</i> smooth
+regions without ringing across edges (which is where USM gets ugly
+on nebula boundaries). For slider amount <code>a</code> and radius
+<code>r</code>:</p>
+<div class="matheq-hero">C(x) \;=\; x \;+\; a \,\cdot\, (x - B_{\sigma}(x)) \,\cdot\, M(x)</div>
+<p>where <code>B<sub>&sigma;</sub></code> is a bilateral filter with
+<code>sigma_space&nbsp;=&nbsp;10r</code> and
+<code>sigma_color&nbsp;=&nbsp;0.1</code> (fixed; the bilateral's
+colour sigma controls which pixels get averaged together, and 0.1
+matches typical astronomical dynamic range). The midtone mask
+<code>M(x)</code> is a parabolic window peaking at mid-grey:</p>
+<div class="matheq-hero">M(x) \;=\; \mathrm{clip}\!\left(1 - 4(x - 0.5)^2,\;0,\;1\right)</div>
+<p>which has <code>M(0)&nbsp;=&nbsp;0</code>,
+<code>M(0.5)&nbsp;=&nbsp;1</code>,
+<code>M(1)&nbsp;=&nbsp;0</code>, and smoothly interpolates between.
+The midtone strength slider blends this with a flat all-ones mask:</p>
+<div class="matheq">M'(x) \;=\; s\,M(x) \;+\; (1 - s)\,\cdot\, 1</div>
+<p>so <code>s&nbsp;=&nbsp;1</code> gives the classic Lightroom-style
+midtones-only Clarity, <code>s&nbsp;=&nbsp;0</code> applies the
+effect uniformly everywhere, and intermediate values interpolate.</p>
+
+<h3>10.4 Adaptive-resolution bilateral</h3>
+<p>The bilateral filter cost scales badly with
+<code>sigma_space</code>. For large radii (<code>sigma_space&nbsp;&gt;&nbsp;10</code>,
+i.e. slider radius &gt; 1.0), SASpro downsamples the image before
+filtering by a factor <code>scale&nbsp;=&nbsp;clip(5&nbsp;/&nbsp;sigma_space,&nbsp;0.1,&nbsp;1.0)</code>,
+applies the bilateral at the proportionally scaled sigma_space, then
+upsamples the base layer back with linear interpolation. The visual
+quality cost is negligible because the bilateral at large sigma_space
+is already smoothing finer than the downsample factor, but the
+runtime cost is cut by the square of the downscale ratio &mdash; a
+10&times; radius becomes roughly 25&times; faster.</p>
+
+<h3>10.5 Luminance-only processing with chroma preservation</h3>
+<p>For RGB inputs, SASpro computes luminance using the Rec. 709
+standard coefficients:</p>
+<div class="matheq-hero">L \;=\; 0.2126\,R \;+\; 0.7152\,G \;+\; 0.0722\,B</div>
+<p>runs all three sharpening stages on <code>L</code>, then applies
+the resulting ratio uniformly to all three channels:</p>
+<div class="matheq-hero">(R', G', B') \;=\; (R, G, B) \,\cdot\, \frac{L_{\mathrm{new}}}{L}</div>
+<p>which preserves chroma exactly &mdash; the hue and saturation of
+every pixel is bit-for-bit the same before and after, and only the
+luminance structure changes. A tiny <code>+&epsilon;</code> is added
+to the denominator to avoid division by zero on pure black pixels.
+Mono inputs skip this step entirely and run the sharpening directly
+on the single channel.</p>
+
+<h3>10.6 Document mask gating</h3>
+<p>If the active document carries a mask
+<code>m&nbsp;&isin;&nbsp;[0,&nbsp;1]</code>, the final composite is:</p>
+<div class="matheq">\mathrm{out} \;=\; (1 - m)\,\mathrm{src} \;+\; m\,\mathrm{processed}</div>
+<p>applied after all three sharpening stages. The mask is resampled
+to the processed image's dimensions by nearest-neighbour (OpenCV
+<code>INTER_NEAREST</code>) and broadcast to match channel count.
+Both the live preview and the final Apply respect this mask
+identically.</p>
+
+<h3>10.7 Threading and cancellation</h3>
+<p>Each preview computation runs on a dedicated QThread
+(<code>TextureClarityWorker</code>) that owns a cancel flag checked
+between stages. When a slider moves, the 150&nbsp;ms debounce timer
+restarts; when it fires, any still-running worker has its cancel
+flag set, is given up to 300&nbsp;ms to notice, then a fresh worker
+is spawned with the new parameters. This keeps the UI responsive
+even on 24+&nbsp;MP frames where a single pass can take over a
+second.</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>bilateral filter</b> is Tomasi &amp; Manduchi,
+<i>Bilateral Filtering for Gray and Color Images</i> (ICCV 1998);
+<b>difference-of-Gaussians</b> edge/band-pass detection traces to
+Marr &amp; Hildreth, <i>Theory of edge detection</i> (1980). The
+<b>unsharp mask</b> is older still &mdash; it was a darkroom
+photographic technique by the 1930s, formalised digitally in the
+image-processing textbooks of the 1980s and 1990s. The <b>Rec. 709
+luminance coefficients</b> are from ITU-R Recommendation BT.709.
+The implementations here are from <b>OpenCV</b>
+(<code>GaussianBlur</code>, <code>bilateralFilter</code>). SASpro's
+own contribution is the pipeline composition: the three stages in
+sequence, the luminance-ratio chroma preservation path for RGB, the
+adaptive-resolution downsample-filter-upsample path for large-radius
+bilateral, the midtone-vs-uniform mask blend slider, the soft-ramp
+USM threshold, the debounced live-preview worker with cancellation,
+and the cached before/after instant toggle.
+</div>
+
+</body>
+</html>

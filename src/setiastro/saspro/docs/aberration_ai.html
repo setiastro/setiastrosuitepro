@@ -1,0 +1,226 @@
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color:#e6e6e6; background:#1b1b1b; padding:10px 14px; line-height:1.45; }
+h1 { margin: 0 0 10px 0; font-size: 20px; color:#9ad; }
+h2 { margin-top: 16px; color:#cfd; font-size:16px; border-bottom:1px solid #333; padding-bottom:3px; }
+h3 { color:#9bd; margin-top:14px; margin-bottom:6px; font-size:14px; }
+code { background:#2a2a2a; padding:1px 4px; border-radius:3px; }
+.hero { background:#1f2a1f; border-left:3px solid #4caf50; padding:10px 12px; margin:10px 0; border-radius:3px; }
+.matheq { margin: 8px 14px; text-align:left; }
+.matheq-hero { margin: 10px 0; text-align:center; }
+.tip { background:#1f2a1f; border-left:3px solid #4caf50; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.warn { background:#2a241f; border-left:3px solid #c0892b; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.credit { background:#2a251c; border-left:3px solid #c7a24a; padding:8px 12px; margin:12px 0 6px 0; border-radius:3px; font-size:13px; color:#dcd3b8; }
+.pub { background:#1f2a1f; border-left:3px solid #4caf50; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.keys { background:#1f2630; border-left:3px solid #4a9eff; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.workflow { background:#1f2630; border-left:3px solid #4a9eff; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.science { background:#2a1f2a; border-left:3px solid #c74ac7; padding:8px 12px; margin:10px 0; border-radius:3px; }
+ul { margin: 6px 0 10px 0; padding-left:22px; }
+li { margin: 3px 0; }
+p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>R.A.'s Aberration Correction (AI)</h1>
+
+<div class="hero">
+<b>AI-powered correction of optical aberrations.</b> Runs Riccardo Alberghi's ONNX model over your image to clean up coma, astigmatism, field curvature artifacts, and other distortions that leave stars elongated, tailed, or seagulled toward the frame edges. SASpro downloads the latest published model automatically, tiles the image with Hann-windowed overlap for seamless blending, picks the best ONNX execution provider for your hardware (DirectML / CUDA / CoreML / CPU), and preserves a thin ring of original pixels at the border where the model can't see enough context. Supports custom model files, mask-blended application, and preset drag-and-drop to replay the same settings against any image.
+</div>
+
+<div class="pub">
+<b>Model and training by Riccardo Alberghi</b> (<a href="https://github.com/riccardoalberghi">github.com/riccardoalberghi</a>). SASpro integrates his published ONNX models through a hardened runner that handles automatic download, cross-platform execution-provider selection, image tiling for inputs larger than the model's native tile size, and a durable self-patch for an ONNX opset-10 incompatibility that would otherwise prevent loading on modern <code>onnxruntime</code>. The AI engine is Riccardo's work; SASpro's job is to make it reliable, fast, and usable from inside your workflow.
+</div>
+
+<h2>1. The core idea</h2>
+<p>Optical systems — refractors, Newtonians, SCTs with reducers, everything — produce field-dependent aberrations. Stars near the frame center are tight circles; stars near the corners stretch into coma tails, seagulls, or triangles depending on the system. Classical corrections (field flatteners, coma correctors) help but rarely eliminate the effect, especially with budget optics or tight integration time. Aberration AI learns the mapping from distorted field positions to corrected ones from a training set of real astrophotos, and runs that correction directly on your image.</p>
+
+<p>The model is a convolutional network that processes fixed-size patches (usually 512×512) and outputs the same-size corrected patch. SASpro's job is to feed the full image through in overlapping tiles, blend them smoothly, and bolt on the pre- and post-processing (normalization, border preservation, mask blending, provider selection) that turn a research-grade ONNX file into a reliable processing step.</p>
+
+<h2>2. First run — getting the model</h2>
+<p>Three ways to end up with a working model:</p>
+<ul>
+<li><b>Automatic download</b> — if no model exists, SASpro contacts the GitHub Releases API for Riccardo's repository on first Run, grabs the latest <code>.onnx</code> asset, and saves it to the per-user models folder. You see the progress bar jump during the download, then processing starts.</li>
+<li><b>Manual download</b> — click <b>Download latest model…</b> explicitly. Useful when you want to pre-cache before going offline or test a newer release.</li>
+<li><b>Custom model</b> — point SASpro at any ONNX file (yours, a community-published variant, an experimental version) via <b>Browse…</b> and tick <b>Use custom model file</b>. SASpro remembers both the downloaded model and the custom path independently — toggle the checkbox to switch between them without losing either.</li>
+</ul>
+
+<div class="tip">
+<b>The Browse button is smart.</b> If you pick a file that lives inside the SASpro models folder, it's registered as the "downloaded" active model. If you pick a file anywhere else, it's registered as a "custom" model and the custom checkbox flips on automatically. One button, two roles — SASpro figures out which from the file's location.
+</div>
+
+<h2>3. Provider selection</h2>
+<p>ONNX models can execute on different hardware backends. SASpro picks sensibly per platform:</p>
+<ul>
+<li><b>Windows</b> — DirectML (works on any DirectX 12 GPU, including Intel/AMD) first, CUDA (NVIDIA only) second, CPU fallback.</li>
+<li><b>Linux</b> — CUDA first (if nvidia-smi finds a GPU), CPU fallback. CoreML and DirectML aren't available here.</li>
+<li><b>macOS Intel</b> — CPU first, with CoreML optionally available. CoreML is restricted to small tile sizes (see §5), so SASpro switches back to CPU when the model needs larger tiles.</li>
+<li><b>macOS Apple Silicon (M1/M2/M3/M4)</b> — <b>CPU only, hard-locked</b>. The CoreML path on arm64 produces visible artifacts with this model class, so SASpro disables the Auto GPU checkbox entirely and forces CPU. Noticeably slower but gives correct output; it's a deliberate tradeoff.</li>
+</ul>
+
+<p>The <b>Auto GPU (if available)</b> checkbox picks whatever's best available. Uncheck it and use the <b>Provider</b> dropdown to force a specific backend — useful for debugging ("does this still fail on CPU?") or when you want to leave the GPU free for something else.</p>
+
+<div class="warn">
+<b>CUDA fallback mid-run.</b> If a CUDA session loads successfully but then fails during inference with a kernel-image or arch mismatch (common when your <code>onnxruntime-gpu</code> was built for a different CUDA toolkit than your driver), SASpro catches that error, logs it, and restarts the run on CPU automatically. You don't lose your in-progress work; the whole image reprocesses on CPU and the result lands as usual. Watch the status log for "CUDA kernel mismatch detected — falling back to CPU…".
+</div>
+
+<h2>4. Patch and overlap</h2>
+<p>Models are trained on a specific input size (currently 512×512). SASpro inspects the loaded model via the ONNX graph and <b>automatically snaps the Patch spinbox</b> to the required value if the model has a fixed input shape — you can't accidentally run a 512-trained model with 256 tiles and get degraded output.</p>
+
+<p>Overlap controls how much adjacent tiles share. The default 64 pixels at 512-tile size means each tile contributes to the final output across ~12% of its area as a weighted blend with its neighbors. Lower overlap = fewer tiles, faster run, but visible seams at tile boundaries. Higher overlap = smoother blend, slower run, more memory pressure. For large images on slow hardware, bump overlap to 128 if you can see seams; drop to 32 if you're desperate for speed on obvious aberrations where seams won't matter.</p>
+
+<h2>5. The CoreML tile-size guard</h2>
+<p>CoreML on Intel macOS has a hard practical limit on tile size — it can execute the model, but memory allocation inside the CoreML runtime starts failing above ~128 px per side. SASpro checks the model's required patch size against this limit: if the model needs 512-pixel tiles but CoreML is the only non-CPU option, SASpro falls back to CPU and logs "CoreML limited to small tiles; model requires 512px → using CPU." No crash, no partial output, just the right backend for the job.</p>
+
+<h2>6. Border preservation</h2>
+<p>After the full tiled run, SASpro copies a 10-pixel ring from the original image back over the output. This fixes the one place where the network can't see enough context: the first few pixels at the frame edge, where the model's receptive field doesn't have real pixels to feed its convolutions and tends to produce dim or washed-out borders. The ring is thin enough that you'll never notice the transition in practice; it's wide enough to swallow the artifact completely.</p>
+
+<p>If the output shape doesn't match the input (shouldn't happen, but defensively) the border copy is silently skipped.</p>
+
+<h2>7. Masks and selective correction</h2>
+<p>If the active document has a mask active, SASpro blends the AI output with the original using the mask as alpha:</p>
+<div class="matheq-hero">\mathrm{out} = m \cdot \mathrm{processed} + (1 - m) \cdot \mathrm{src}</div>
+<p>Mask values are normalized to [0, 1] (handles uint masks and float masks of any range), resampled to the output size if needed, and broadcast across channels for RGB inputs. White areas of the mask get full AI correction; black areas keep their original pixels; grays blend smoothly. Perfect for "I only want to clean up the corners, not touch the galaxy core" — paint a mask that excludes the center and apply.</p>
+
+<h2>8. Mask-aware application history</h2>
+<p>The result is applied through SASpro's normal undo-aware document pipeline (step name: "Aberration AI"), so Ctrl+Z gets you back to the original. The processing parameters block records the exact model path, patch size, overlap, provider, border width, and mask ID used for the run — so if you load the project months later you can see precisely what was done.</p>
+
+<h2>9. The preset drag handle</h2>
+<p>The small grip icon at the bottom-left of the dialog is a draggable preset handle. Drag it onto the SASpro canvas to create a shortcut button pre-wired to the Aberration AI tool with your current settings baked in. Drop it directly onto an image to run the current preset against that image headlessly — no dialog, just processing. The preset captures: model path, patch size, overlap, border width, Auto GPU setting, and (if Auto GPU is off) the specific provider.</p>
+
+<p>SASpro also registers the last run as the "Replay Last Action" command, so hitting that shortcut from anywhere in SASpro re-runs Aberration AI with your most recent settings against the current view.</p>
+
+<h2>10. The automatic ONNX TopK patch (self-healing)</h2>
+<p>This is a surprise technical highlight. Some published Aberration AI models were exported with ONNX opset 10 (or earlier), when the <code>TopK</code> operator still allowed its <code>K</code> input as a 0-dimensional scalar tensor. The ONNX specification was tightened in opset 11 to require <code>K</code> as a 1-dimensional tensor of size 1, and modern <code>onnxruntime</code> (version 1.14 and later) enforces this at graph-validation time — refusing to load the model at all, before even checking which execution provider you asked for. The failure looks the same on GPU and CPU because it happens during the parse step, not inference.</p>
+
+<p>Since the model is published by a third party, SASpro can't just re-export it. Instead, on the first failed load, SASpro's <code>_patch_topk_k_shape</code> opens the model file, finds every <code>TopK</code> node, rewrites each <code>K</code> input to a shape-[1] tensor, saves the patched file back to disk, verifies the patch actually landed, and retries the load. The fix is durable — subsequent launches load without touching the self-heal code at all.</p>
+
+<p>The patch handles every ONNX-legal way a scalar K can be encoded: initializer tensors (0-D), <code>Constant</code> nodes with <code>value</code> / <code>value_int</code> / <code>value_ints</code> / <code>value_float</code> attributes, and runtime-computed K from <code>Shape</code>/<code>Gather</code> chains (which can't be rewritten in place, so SASpro inserts a <code>Reshape([1])</code> node between the producer and the <code>TopK</code> instead). You'll see "✅ patched N TopK K input(s)" in the log on the first run after installing a new model; after that, silent success.</p>
+
+<h2>11. Workflow recipes</h2>
+
+<div class="workflow">
+<b>First-light on a new scope.</b> Load your stacked integration. Open Aberration AI, click Run. If no model is present, SASpro downloads it and processes in one go. Compare the corner stars before and after — if the correction looks right, push to the view and continue your normal workflow. If it looks over- or under-corrected, blend with a mask (next recipe).
+</div>
+
+<div class="workflow">
+<b>Partial correction via mask.</b> Create a mask that's white at the corners and transitions to black at the center (a radial gradient from a Range Mask tool, inverted). Enable the mask on the active document. Open Aberration AI, Run. Only the corners get the AI correction; the center stays as your original data. Perfect for scopes where the center is already tight and you only need help at the edges.
+</div>
+
+<div class="workflow">
+<b>Side-by-side provider comparison.</b> Run once with Auto GPU on, note the time logged in the status bar. Uncheck Auto GPU, pick "CPUExecutionProvider" from the dropdown, run again. Compare timings. On a GPU-equipped Windows or Linux box, DirectML / CUDA will be 5-20× faster than CPU for the same output. Useful for deciding whether to buy a GPU for this specific workflow.
+</div>
+
+<div class="workflow">
+<b>Custom model experiment.</b> Download a community-trained variant (someone's model for a specific scope or sensor). Browse to it. The checkbox flips on automatically. Run. Compare to the stock model's output. Toggle the checkbox back off to A/B against the original any time without re-selecting files.
+</div>
+
+<div class="workflow">
+<b>Batch across a session.</b> Open each night's stack, run Aberration AI once with the settings you like. On the second image, drag the preset grip from the bottom-left of the dialog onto the view — the correction runs headlessly with those exact settings. No dialog, no clicks beyond the drop. Or set up a shortcut button on the SASpro canvas by dropping the grip there, and click once per image.
+</div>
+
+<div class="workflow">
+<b>Replay last.</b> After the first Aberration AI run of your session, every subsequent image can get the same correction via SASpro's Replay Last Action command (your bound shortcut). SASpro remembers the model, patch, overlap, border, and provider from the last run and applies them in one keystroke.
+</div>
+
+<h2>12. Credits</h2>
+<div class="credit">
+<b>Model and training.</b> Riccardo Alberghi — <a href="https://github.com/riccardoalberghi">github.com/riccardoalberghi</a>. The ONNX model, its architecture, training data, and all weights are Riccardo's work. SASpro's integration is a thin runner around his published artifacts.<br><br>
+
+<b>SASpro integration.</b> Written by Franklin Marek as part of <a href="https://setiastro.com">SetiAstro Suite</a>. Includes: automatic model download from GitHub Releases, cross-platform ONNX execution-provider selection (DirectML / CUDA / CoreML / CPU), Hann-windowed tiled inference with mono/RGB handling, uint16 / float32 normalization, border preservation, mask-aware blending, undo-aware application via SASpro's document pipeline, preset drag-and-drop, Replay Last Action registration, and the automatic <code>TopK</code> opset-10 compatibility patch described in §10.<br><br>
+
+<b>ONNX Runtime</b> — <a href="https://onnxruntime.ai">onnxruntime.ai</a>. Execution providers: <b>DirectML</b> (Windows, DX12 GPUs), <b>CUDA</b> (NVIDIA GPUs on Windows/Linux), <b>CoreML</b> (macOS), <b>CPU</b> (universal). The <code>onnx</code> Python package handles the self-heal rewrite of the model graph.<br><br>
+
+<b>Techniques.</b> Hann windowing follows the standard overlap-add synthesis for 2D image reconstruction; the implementation is pure NumPy. ONNX graph surgery for runtime-computed K inserts a <code>Reshape</code> node from the ONNX standard operator set. GitHub Releases API consumed via the <code>requests</code> package with streamed download and configurable chunk size.
+</div>
+
+<h2 style="margin-top:28px;">Technical details</h2>
+
+<h3>13.1. Hann window blending</h3>
+<p>Each tile is multiplied by a 2D Hann (also called Hanning) window before accumulation. The 1D Hann window for N samples:</p>
+<div class="matheq-hero">w(n) = 0.5 \cdot (1 - \cos(2\pi n / (N - 1)))</div>
+<p>Peaks at 0.5 in the middle and tapers to 0 at both ends. The 2D version is the outer product:</p>
+<div class="matheq-hero">w_{2D}(i, j) = w(i) \cdot w(j)</div>
+<p>Peaks at 0.25 in the tile center and tapers to 0 at all four edges and corners. This is the standard overlap-add weighting for seamless image reconstruction — adjacent tiles' windows sum to a near-constant across the overlap region, so the weighted mean below produces a smooth result with no visible seams at tile boundaries.</p>
+
+<h3>13.2. Tile layout</h3>
+<p>For an image dimension N (height or width) and a patch size P with overlap O:</p>
+<div class="matheq-hero">\mathrm{stride} = P - O</div>
+<div class="matheq-hero">\{0,\, \mathrm{stride},\, 2 \cdot \mathrm{stride},\, \ldots\} \cup \{N - P\}</div>
+<p>Positions start at 0 and advance by stride, until the next position would push the tile past the image boundary — at which point SASpro appends a final tile anchored at <code>N - P</code> (so the last tile always ends exactly at the image edge). Duplicates (common when N is just slightly larger than a multiple of stride) are removed and the result sorted. The outer product with the per-axis positions gives the full 2D tile grid.</p>
+
+<h3>13.3. Weighted-mean reconstruction</h3>
+<p>Each tile's output is accumulated into the output buffer, multiplied by its Hann window; the window values themselves are accumulated into a weight buffer. At the end, the pixelwise ratio gives the final result:</p>
+<div class="matheq-hero">\mathrm{out}[i, j] = \frac{\sum_k \mathrm{tile}_k[i, j] \cdot w_{2D}[i_k, j_k]}{\sum_k w_{2D}[i_k, j_k]}</div>
+<p>Where tile_k is the k-th tile's model output at position (i_k, j_k) within that tile. Weight buffer values that happen to be zero (shouldn't occur with Hann and correct overlap, but defensively) are replaced with 1 to prevent division by zero. The result is the equivalent of a Hann-windowed overlap-add synthesis — standard practice in audio spectral processing, adapted here to 2D image patches.</p>
+
+<h3>13.4. Normalization and padding</h3>
+<p>The model expects float32 inputs in [0, 1]. SASpro handles conversion:</p>
+<div class="matheq-hero">x_{\mathrm{float}} = x_{\mathrm{uint16}} / 65535</div>
+<p>and the inverse on output:</p>
+<div class="matheq-hero">x_{\mathrm{uint16}} = \lfloor x_{\mathrm{float}} \cdot 65535 \rfloor</div>
+<p>Float inputs pass through directly (clipped to [0, 1] on output). Monochrome images are promoted to a (1, H, W) tensor for processing and demoted back to (H, W) at the end. RGB images are channel-separated: the network processes each channel independently with the same tile schedule, which keeps memory per inference call low and matches how the model was trained (on luminance-equivalent patches). Images smaller than the patch size are edge-padded:</p>
+<div class="matheq-hero">\mathrm{pad}_H = \max(0, P - H)</div>
+<p>with symmetric pad in W. The padding is cropped off at the end before the result is returned, so the output is exactly the input size.</p>
+
+<h3>13.5. Patch tensor shape</h3>
+<p>Each tile is reshaped into the batch-of-1, 1-channel 4D form the model expects:</p>
+<div class="matheq-hero">\mathrm{inp} \in \mathbb{R}^{1 \times 1 \times P \times P}</div>
+<p>Contiguous memory layout is forced via <code>np.ascontiguousarray</code> before the ONNX call to avoid an internal copy inside the runtime. The output is <code>np.squeeze</code>-d back to (1, P, P) for accumulation.</p>
+
+<h3>13.6. Progress tracking</h3>
+<p>Progress is reported as a fraction after each tile finishes:</p>
+<div class="matheq-hero">\mathrm{frac} = (\mathrm{tiles\_done}) / (|H| \cdot |W| \cdot C)</div>
+<p>where |H| and |W| are the number of tile positions along each axis and C is the channel count. For a 512-tile schedule with 64 overlap on an 8K monochrome image, that's ~16×16×1 = 256 tiles; the progress bar updates smoothly across the run. The automatic download path reports its own progress on the same bar, remapped to [0, 0.15] so the AI inference occupies [0.15, 1.0] when both happen.</p>
+
+<h3>13.7. Border preservation and mask blend</h3>
+<p>After the Hann accumulation and clip-to-[0,1], a 10-pixel ring from the original image overwrites the output edge:</p>
+<div class="matheq-hero">\mathrm{dst}[\mathrm{border}] = \mathrm{src}[\mathrm{border}]</div>
+<p>Border width is clamped to half the smaller image dimension so it can't exceed the image. If a mask is active, the final mask-blend step applies:</p>
+<div class="matheq-hero">\mathrm{out} = m \cdot \mathrm{processed} + (1 - m) \cdot \mathrm{src}</div>
+<p>Mask values are normalized to [0, 1] first (dividing by the dtype max for uint masks, or by the empirical max for floats above 1). Mask resolution is reconciled to the output size by nearest-neighbor subsampling if different. For RGB outputs the mask is broadcast across channels (mono mask applies to all three equally). If the mask is a different shape dimensionality than the output (mono mask + RGB output), the input is dimension-matched via channel repeat or extraction before the blend.</p>
+
+<h3>13.8. NaN safety and output clipping</h3>
+<p>The final step before returning is a combined NaN replacement and range clip:</p>
+<div class="matheq-hero">\mathrm{out} = \mathrm{clip}(\mathrm{nan\_to\_num}(x),\; 0,\; 1)</div>
+<p>Models that occasionally produce NaN values (division instabilities, overflow in intermediate activations) still produce usable output because NaN is replaced with 0 before clipping. Infinities are similarly handled by <code>np.nan_to_num</code> — <code>+inf</code> maps to a large finite value and then clips to 1.</p>
+
+<h3>13.9. The TopK auto-patch — details</h3>
+<p>The ONNX specification for <code>TopK</code> at opset 10 permitted <code>K</code> as a scalar; opset 11 changed this to require a 1-D tensor of size 1. <code>onnxruntime</code> 1.14 and later enforce the current spec during graph validation, before any provider is engaged — the error is identical on CPU and GPU. SASpro detects this error by matching on the common substrings ("TopK" plus one of "one-dimensional", "K input", or "ShapeInferenceError", since different ORT versions phrase it differently).</p>
+
+<p>On detection, <code>_patch_topk_k_shape</code> loads the model with the <code>onnx</code> Python package and walks every <code>TopK</code> node, handling five cases for the K source:</p>
+<ol>
+<li><b>Initializer tensor</b> (0-D) — rewrite the initializer in place as <code>np.array([int(scalar)], dtype=np.int64)</code>.</li>
+<li><b>Constant node with <code>value</code></b> — the attribute carries a TensorProto; if 0-D, rewrite to shape [1] int64.</li>
+<li><b>Constant node with <code>value_int</code></b> — implicit scalar int64, re-emit as a shape-[1] tensor.</li>
+<li><b>Constant node with <code>value_ints</code></b> — length 0 or 1 attribute vector, re-emit as a shape-[1] tensor.</li>
+<li><b>Constant node with <code>value_float</code></b> — implicit scalar float, cast to int64 and re-emit as shape-[1].</li>
+</ol>
+<p>Any remaining <code>TopK</code> K inputs that come from runtime computation (<code>Shape</code> → <code>Gather</code> chains, common in PyTorch exports where <code>k</code> depends on an input dimension) can't be rewritten at the source. SASpro inserts a <code>Reshape</code> node between the producer and the <code>TopK</code>:</p>
+<p style="margin-left: 20px;"><code>producer → Reshape(shape=[1]) → TopK.K</code></p>
+<p>which is a no-op if the input was already shape [1] and the required fix if it was rank 0. A shared int64 [1] initializer named <code>_saspro_topk_k_reshape_shape_</code> is added once; each new <code>Reshape</code> gets a unique output name so multiple affected TopK nodes don't collide.</p>
+
+<p>After the save, SASpro re-loads the file and verifies the patch actually landed on disk — every initializer and Constant feeding a TopK K input must now have <code>dims == [1]</code>. If verification fails, the error is surfaced to the user with both the original ORT error and the patch diagnostic so they can see exactly what was tried. Successful patches are logged with the count of fixed inputs and the file name, and the retry proceeds normally.</p>
+
+<h3>13.10. Provider selection logic</h3>
+<p>The <code>pick_providers</code> function returns an ordered list that ORT tries in sequence, falling back to the next on failure:</p>
+<ul>
+<li><b>Apple Silicon</b> → <code>[CPUExecutionProvider]</code>. Hard-coded, no override.</li>
+<li><b>Auto GPU off</b> → <code>[CPUExecutionProvider]</code> or the user's explicit dropdown choice.</li>
+<li><b>Auto GPU on</b>, intersecting the available providers with the preferred order: DirectML, CUDA, CPU, CoreML. The CoreML entry sits last so Intel macOS falls through to CPU for larger tiles (CoreML can still be forced via the Provider dropdown if desired).</li>
+</ul>
+<p>Session open uses a try/except around <code>_open_session_with_topk_fix</code>: if the preferred providers fail (missing CUDA DLL, CoreML permission error, etc.), SASpro retries with just <code>[CPUExecutionProvider]</code> and logs the fallback reason. Mid-inference CUDA kernel errors (<code>"cuda"</code> or <code>"kernel image"</code> in the message) trigger a full rerun on CPU — the session is replaced and the tiled inference restarts from tile 0 with the new session.</p>
+
+<h3>13.11. QSettings keys used</h3>
+<p>Three persisted settings control model selection:</p>
+<ul>
+<li><code>AberrationAI/model_path</code> — the active downloaded model path.</li>
+<li><code>AberrationAI/custom_model_path</code> — the active custom model path.</li>
+<li><code>AberrationAI/use_custom_model</code> — bool, which of the two is active.</li>
+</ul>
+<p>Preset drag-and-drop payloads use the resolved model path (whichever is currently active) at the moment of drag, so a shortcut created with the custom model enabled captures the custom path; a shortcut created with the downloaded model active captures that path. Headless consumers of the preset can fall back to <code>resolve_aberration_model_path</code> if the embedded path is empty — useful for shortcuts that should always use "whatever model is currently selected" rather than freezing to a specific file.</p>
+
+</body>
+</html>

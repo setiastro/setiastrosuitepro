@@ -18,14 +18,23 @@ except Exception as e:  # pragma: no cover
 else:
     _sep_import_error = None
 
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Callable, Sequence
 from .stretch import stretch_color_image
 
 # Shared utilities
 from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
 
-__all__ = ["apply_star_based_white_balance"]
+__all__ = ["apply_star_based_white_balance", "StarDetectionWorker",
+           "DEFAULT_AUTO_SIGMA_LADDER", "DEFAULT_AUTO_SIGMA_MIN_STARS"]
+
+# ── Auto-σ waterfall defaults ──────────────────────────────────────────
+# Highest σ first, stepping down to the most sensitive setting. The first
+# rung that returns ≥ DEFAULT_AUTO_SIGMA_MIN_STARS detections wins. If no
+# rung clears the bar, the last (most sensitive) rung is used so the pipeline
+# still has something to work with on genuinely sparse fields.
+DEFAULT_AUTO_SIGMA_LADDER: tuple[float, ...] = (100.0, 50.0, 25.0, 12.0, 8.0, 5.0, 3.0)
+DEFAULT_AUTO_SIGMA_MIN_STARS: int = 1200
 
 # Keep names for compatibility with any old imports / callers
 cached_star_sources: Optional[np.ndarray] = None
@@ -127,6 +136,65 @@ def _spatially_sample_sources(sources: np.ndarray, r: np.ndarray,
 
     idx = np.concatenate(keep)
     return sources[idx], r[idx]
+
+
+def _waterfall_sep_extract(
+    data_sub: np.ndarray,
+    err_val: float,
+    ladder: Sequence[float],
+    min_stars: int,
+    progress: Optional[Callable[[float, int, bool], None]] = None,
+) -> tuple[np.ndarray, float]:
+    """
+    Run sep.extract against `data_sub` at each σ in `ladder` (highest first),
+    returning the first result whose star count ≥ `min_stars`. If no rung
+    clears the bar, the result at the lowest (most sensitive) σ is returned
+    so callers still have something to work with on sparse fields.
+
+    `progress`, when provided, is called with (sigma, count, settled) after
+    every rung — `settled` is True on the one that is being returned.
+
+    Returns
+    -------
+    sources : structured ndarray from sep.extract (may be empty on truly
+              blank frames; callers must handle that case).
+    used_sigma : the σ that produced `sources`.
+    """
+    if not ladder:
+        raise ValueError("Auto-σ ladder is empty.")
+
+    last_sources: Optional[np.ndarray] = None
+    last_sigma: float = float(ladder[-1])
+
+    for i, sig in enumerate(ladder):
+        sig_f = float(sig)
+        try:
+            srcs = sep.extract(data_sub, sig_f, err=err_val)
+        except Exception:
+            # Treat a failure at this rung as "zero detections" and keep
+            # descending — some rungs can blow the pixstack on dense fields
+            srcs = np.empty(0, dtype=object)
+
+        n = 0 if srcs is None else int(len(srcs))
+        last_sources = srcs
+        last_sigma = sig_f
+
+        at_last = (i >= len(ladder) - 1)
+        hit = (n >= int(min_stars))
+
+        if progress is not None:
+            try:
+                progress(sig_f, n, bool(hit or at_last))
+            except Exception:
+                pass
+
+        if hit:
+            return srcs, sig_f
+
+    # Ladder exhausted without hitting min_stars — fall back to the last try.
+    return (last_sources if last_sources is not None
+            else sep.extract(data_sub, float(ladder[-1]), err=err_val)), last_sigma
+
 
 def _apply_color_matrix_wb(
     bg_neutral: np.ndarray,
@@ -282,6 +350,11 @@ def apply_star_based_white_balance(
     reuse_cached_sources: bool = False,
     return_star_colors: bool = False,
     use_color_matrix: bool = False,       # ← new
+    # ── Auto-σ waterfall ────────────────────────────────────────────────
+    auto_sigma: bool = False,
+    auto_sigma_min_stars: int = DEFAULT_AUTO_SIGMA_MIN_STARS,
+    auto_sigma_ladder: Sequence[float] = DEFAULT_AUTO_SIGMA_LADDER,
+    on_sigma_resolved: Optional[Callable[[float], None]] = None,
 ) -> Tuple[np.ndarray, int, np.ndarray, np.ndarray, np.ndarray] | Tuple[np.ndarray, int, np.ndarray]:
     """
     Star-based white balance using:
@@ -296,13 +369,29 @@ def apply_star_based_white_balance(
     image : np.ndarray
         RGB image (any dtype). Assumed RGB ordering.
     threshold : float
-        SEP detection threshold (in background sigma).
+        SEP detection threshold (in background sigma). Ignored if
+        `auto_sigma=True`.
     autostretch : bool
         If True, overlay is built from an autostretched BN view for visibility.
     reuse_cached_sources : bool
-        Reuse detections only if image shape and threshold match.
+        Reuse detections only if image shape and threshold match. Disabled
+        automatically when `auto_sigma=True` since the resolved σ isn't
+        known until detection runs.
     return_star_colors : bool
         If True, also returns (raw_star_pixels, after_star_pixels).
+    auto_sigma : bool
+        If True, run the σ waterfall described in `auto_sigma_ladder`,
+        picking the highest σ that yields ≥ `auto_sigma_min_stars` sources.
+        The BN pass and sep.Background estimation are performed exactly
+        once — only sep.extract itself is retried per rung — so the extra
+        cost is modest even on big frames.
+    auto_sigma_min_stars : int
+        Target star count that qualifies a σ rung as "good enough".
+    auto_sigma_ladder : Sequence[float]
+        σ values tried in order (highest first).
+    on_sigma_resolved : callable(float) | None
+        Optional callback invoked with the σ that was ultimately used.
+        Useful for UI code that wants to drive a slider to the auto value.
 
     Returns
     -------
@@ -342,8 +431,11 @@ def apply_star_based_white_balance(
 
     global cached_star_sources, cached_flux_radii, _cached_shape, _cached_threshold
 
+    # Cache logic doesn't apply when we're auto-picking σ — the "key" would
+    # be the resolved σ, which isn't known yet.
     use_cache = (
-        bool(reuse_cached_sources)
+        (not auto_sigma)
+        and bool(reuse_cached_sources)
         and cached_star_sources is not None
         and cached_flux_radii is not None
         and _cached_shape == tuple(img_rgb.shape)
@@ -354,8 +446,19 @@ def apply_star_based_white_balance(
     if use_cache:
         sources = cached_star_sources
         r = cached_flux_radii
+        used_threshold = float(threshold)
     else:
-        sources = sep.extract(data_sub, float(threshold), err=err_val)
+        if auto_sigma:
+            # σ waterfall — BN already done, so this only re-runs sep.extract
+            sources, used_threshold = _waterfall_sep_extract(
+                data_sub, err_val,
+                ladder=auto_sigma_ladder,
+                min_stars=auto_sigma_min_stars,
+            )
+        else:
+            used_threshold = float(threshold)
+            sources = sep.extract(data_sub, used_threshold, err=err_val)
+
         if sources is None or len(sources) == 0:
             raise ValueError("No sources detected for Star-Based White Balance.")
 
@@ -378,11 +481,18 @@ def apply_star_based_white_balance(
         # Spatially uniform sampling — caps total stars on dense fields
         sources, r = _spatially_sample_sources(sources, r, img_rgb.shape, grid=3, per_cell=500)
 
-        # Cache the already-filtered result
+        # Cache the already-filtered result (keyed by whatever σ actually ran)
         cached_star_sources = sources
         cached_flux_radii = r
         _cached_shape = tuple(img_rgb.shape)
-        _cached_threshold = float(threshold)
+        _cached_threshold = float(used_threshold)
+
+    # Report the σ we actually used — UI code can use this to drive a slider
+    if on_sigma_resolved is not None:
+        try:
+            on_sigma_resolved(float(used_threshold))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # 3) Sample stars as circular medians, not center pixels
@@ -532,32 +642,59 @@ def apply_star_based_white_balance(
 from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
 
 class StarDetectionWorker(QThread):
-    finished = _pyqtSignal(object, int)
+    # overlay, count, resolved_threshold
+    #   `resolved_threshold` is the σ that was actually used — identical to
+    #   the input threshold in manual mode, or the auto-picked value when
+    #   `auto_sigma=True`. Dialogs can use it to drive a slider so the user
+    #   sees what Auto chose.
+    finished = _pyqtSignal(object, int, float)
     failed   = _pyqtSignal(str)
 
-    def __init__(self, image: np.ndarray, threshold: float, autostretch: bool, parent=None):
+    def __init__(
+        self,
+        image: np.ndarray,
+        threshold: float,
+        autostretch: bool,
+        parent=None,
+        *,
+        auto_sigma: bool = False,
+        auto_sigma_min_stars: int = DEFAULT_AUTO_SIGMA_MIN_STARS,
+        auto_sigma_ladder: Sequence[float] = DEFAULT_AUTO_SIGMA_LADDER,
+    ):
         super().__init__(parent)
         self._image = np.asarray(image, dtype=np.float32)
         self._threshold = float(threshold)
         self._autostretch = bool(autostretch)
         self._cancelled = False
+        self._auto_sigma = bool(auto_sigma)
+        self._auto_sigma_min_stars = int(auto_sigma_min_stars)
+        self._auto_sigma_ladder = tuple(float(x) for x in auto_sigma_ladder)
+        # Populated by apply_star_based_white_balance via on_sigma_resolved
+        self._resolved_threshold: float = float(threshold)
 
     def cancel(self):
         self._cancelled = True
 
     def run(self):
         try:
+            def _on_resolved(sig: float):
+                self._resolved_threshold = float(sig)
+
             result = apply_star_based_white_balance(
                 self._image,
                 threshold=self._threshold,
                 autostretch=self._autostretch,
                 reuse_cached_sources=False,
                 return_star_colors=False,
+                auto_sigma=self._auto_sigma,
+                auto_sigma_min_stars=self._auto_sigma_min_stars,
+                auto_sigma_ladder=self._auto_sigma_ladder,
+                on_sigma_resolved=_on_resolved,
             )
             if self._cancelled:
                 return
             _, count, overlay = result
-            self.finished.emit(overlay, int(count))
+            self.finished.emit(overlay, int(count), float(self._resolved_threshold))
         except Exception as e:
             if not self._cancelled:
                 self.failed.emit(str(e))

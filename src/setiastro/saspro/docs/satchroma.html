@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Saturation / Chroma Tool</h1>
+<p class="sub">Hue-selective colour strength: a draggable curve over the hue
+wheel scales saturation (HSV) or chroma (CIELAB) per hue, so you can lift one
+colour and calm another independently. Split before/after preview; nothing
+touches the image until Apply.</p>
+
+<h2>1. Using the tool</h2>
+<p>The curve runs left-to-right across the hue wheel (0&deg;&ndash;360&deg;, with
+the colour strip beneath it); its height is a per-hue multiplier &mdash;
+<b>1&times; is neutral</b>, above 1 boosts that hue, below 1 mutes it, 0 removes
+its colour. Drag the curve where a hue lives to target it.</p>
+
+<h3>Shaping the hue curve</h3>
+<ul>
+  <li><b>Drag</b> a point up/down to boost or cut that hue's colour strength
+      (0&ndash;3&times;); drag left/right to move which hue it targets.</li>
+  <li><b>Click empty space</b> to add a point; <b>double-click</b> a point (or
+      right-click &rarr; Delete) to remove it.</li>
+  <li><b>Linked endpoints</b> &mdash; the first and last points are the same hue
+      (red at 0&deg; = 360&deg;), so they move together and the curve wraps
+      seamlessly around the wheel.</li>
+  <li><b>Reset Curve</b> returns every hue to 1&times; (no change).</li>
+</ul>
+
+<h3>Mode &amp; controls</h3>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Mode</td><td><b>Saturation (HSV)</b> adjusts HSV colour purity;
+      <b>Chroma (CIE Lab)</b> adjusts perceptual colour strength with less hue
+      shift (see &sect;2.2&ndash;2.3).</td></tr>
+  <tr><td>Global strength (0&ndash;3)</td><td>Scales the whole curve at once, so
+      you can dial the overall effect up or down without reshaping it.</td></tr>
+  <tr><td>Respect active mask</td><td>Confine the change to the document's active
+      mask.</td></tr>
+  <tr><td>Live preview / Preview</td><td>Update the split preview automatically
+      (debounced) or on demand.</td></tr>
+  <tr><td>Split preview</td><td>Drag the yellow split line to compare
+      before/after; wheel to zoom, drag to pan, double-click (or <b>Fit</b>) to
+      reset the view.</td></tr>
+  <tr><td>Apply to Document / Cancel</td><td>Commit a &ldquo;SatChroma&rdquo; step
+      (computed full-resolution on a worker thread) or close without
+      changes.</td></tr>
+  <tr><td>Grip (bottom-left)</td><td>Drag to the canvas to mint a SatChroma
+      shortcut with the current mode, curve, strength and mask setting, or drop
+      on an image to apply headlessly.</td></tr>
+</table>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">A hue&rarr;multiplier curve drives a per-pixel scaling of
+either HSV saturation or CIELAB chroma. Everything runs on float RGB in [0,1].</p>
+
+<h3>2.1 The hue-selective multiplier</h3>
+<p>The control points are interpolated with a monotone <b>PCHIP</b> spline into a
+4096-entry lookup table over normalised hue <code>h &isin; [0,1]</code>
+(= 0&deg;&ndash;360&deg;). The global strength scales it, giving each pixel's hue
+a multiplier:</p>
+<div class="matheq-hero">m(h)=\mathrm{strength}\cdot\mathrm{LUT}[h]\,,\qquad m\in[0,3]</div>
+<p>Because the two end control points are the same hue, the curve is periodic
+around the wheel &mdash; no seam at red.</p>
+
+<h3>2.2 Saturation mode (HSV)</h3>
+<p>The image is converted to HSV; each pixel's saturation is scaled by the
+multiplier for its hue and re-clamped:</p>
+<div class="matheq">S'=\mathrm{clip}\!\left(S\cdot m(h),\;0,\;1\right)</div>
+<p>This is fast and intuitive, but HSV saturation is not perceptually uniform
+&mdash; large boosts can drift hue and lightness. For clean colour work, prefer
+Chroma mode.</p>
+
+<h3>2.3 Chroma mode (CIELAB)</h3>
+<p>The image is converted to CIELAB. sRGB is first linearised,</p>
+<div class="matheq">\mathrm{lin}=\left(\frac{c+0.055}{1.055}\right)^{2.4}\ (c>0.04045),\qquad \mathrm{lin}=\frac{c}{12.92}\ (\mathrm{else})</div>
+<p>then taken to XYZ (D65) and to Lab with</p>
+<div class="matheq">L^{*}=116\,f\!\left(\frac{Y}{Y_n}\right)-16</div>
+<div class="matheq">a^{*}=500\left(f\!\left(\frac{X}{X_n}\right)-f\!\left(\frac{Y}{Y_n}\right)\right),\qquad b^{*}=200\left(f\!\left(\frac{Y}{Y_n}\right)-f\!\left(\frac{Z}{Z_n}\right)\right)</div>
+<div class="matheq">f(t)=t^{1/3}\ (t>0.008856),\qquad f(t)=7.787\,t+\frac{16}{116}\ (\mathrm{else})</div>
+<p>The pixel's hue is the angle of its colour in the a*&ndash;b* plane, and the
+multiplier scales the chroma radius while leaving <b>lightness and hue
+untouched</b>:</p>
+<div class="matheq">h=\frac{1}{2\pi}\,\mathrm{atan2}(b^{*},a^{*})\ \ (\mathrm{mod}\ 1)</div>
+<div class="matheq">(a^{*},b^{*})\;\to\;(a^{*},b^{*})\cdot m(h)</div>
+<p class="cap">Because only the radius changes, Chroma mode boosts colour strength
+without the hue drift or lightness shift that HSV saturation can introduce
+&mdash; the reason it's the better choice for strong, clean saturation moves.</p>
+
+<h3>2.4 Masking</h3>
+<p>With <b>Respect active mask</b> on, the result is blended back against the
+original over the mask:</p>
+<div class="matheq">\mathrm{out}=\mathrm{mask}\cdot\mathrm{out}+(1-\mathrm{mask})\cdot\mathrm{src}</div>
+
+<h3>2.5 Notes</h3>
+<ul>
+  <li>The preview runs on a downsampled ROI (longest side capped) for
+      responsiveness; Apply recomputes the full-resolution image on a worker
+      thread and never modifies the document until then.</li>
+  <li>HSV conversions use OpenCV when available (colorsys fallback); Lab uses
+      scikit-image when available (a built-in sRGB&harr;Lab fallback otherwise).</li>
+  <li>The grip/headless preset stores the mode, curve points, strength and mask
+      setting, so a dropped shortcut reproduces the exact adjustment.</li>
+</ul>
+
+</body>
+</html>

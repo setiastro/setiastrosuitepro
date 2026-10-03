@@ -20,7 +20,7 @@ from setiastro.saspro.ser_stack_config import SERStackConfig
 from setiastro.saspro.ser_stacker import analyze_ser, stack_ser, AnalyzeResult
 from setiastro.saspro.ser_stacker_dialog import _push_as_new_doc
 from setiastro.saspro.imageops.serloader import open_planetary_source
-
+from setiastro.saspro.help_support import make_help_button
 # ── Status sentinels ─────────────────────────────────────────────────────────
 _ST_PENDING = "pending"
 _ST_RUNNING = "running"
@@ -504,6 +504,11 @@ class SERBatchDialog(QDialog):
         act.addWidget(self.btn_cancel)
         act.addStretch(1)
         act.addWidget(self.btn_close)
+
+        # Help button
+        from setiastro.saspro.help_support import make_help_button
+        act.addWidget(make_help_button("planetary_batch", self))
+
         outer.addLayout(act, 0)
 
         # ── Signals ────────────────────────────────────────────────────────

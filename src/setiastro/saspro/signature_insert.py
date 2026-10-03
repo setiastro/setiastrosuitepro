@@ -14,6 +14,8 @@ from PyQt6.QtWidgets import (
     QGraphicsPixmapItem, QGraphicsEllipseItem, QGraphicsRectItem, QSpinBox, QScrollArea, QToolButton, QSizePolicy
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.help_support import make_help_button
+
 
 def _qcolor_to_rgba(c: QColor) -> str:
     # store as "#AARRGGBB" so alpha is preserved if you ever want it
@@ -972,6 +974,7 @@ class SignatureInsertDialogPro(QDialog):
         zg.addWidget(b_fit)
         zg.addStretch(1)
 
+
         # ---- Apply / Clear -------------------------------------------------
         apply_grp = QGroupBox("Apply / Clear")
         self.grp_apply = apply_grp
@@ -995,6 +998,7 @@ class SignatureInsertDialogPro(QDialog):
             self._collapsible_sections[key] = sec
             col.addWidget(sec)
 
+
         add_sec("load", "Load / Add", self.grp_load, True)
         add_sec("text", "Text", self.grp_text, False)
         add_sec("tech", "Technical Card", self.grp_tech_card, False)
@@ -1004,7 +1008,8 @@ class SignatureInsertDialogPro(QDialog):
         add_sec("position", "Send to Position", self.grp_position, False)
         add_sec("zoom", "Zoom", self.grp_zoom, False)
         add_sec("apply", "Apply / Clear", self.grp_apply, True)
-
+        self.btn_doc_help = make_help_button("signature_insert", self)
+        col.addWidget(self.btn_doc_help)
         col.addStretch(1)
 
         left = QWidget()

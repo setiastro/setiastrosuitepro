@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .gpu { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Frequency Separation</h1>
+<p class="sub">Split an image into Low Frequency (smooth tones, gradients,
+nebulosity) and High Frequency (fine details, edges, stars, noise)
+components, process each independently, and recombine. CUDA-accelerated
+end-to-end when a GPU is available, with a clean fallback to CPU on
+systems without one.</p>
+
+<p>The idea is older than digital photography. Blur the image and
+you've got the low-frequency component; subtract that blur from the
+original and you've got the high-frequency component. Everything that
+makes an image look &ldquo;sharp&rdquo; or &ldquo;noisy&rdquo; lives
+in the HF layer; everything that makes it look &ldquo;smooth&rdquo;
+or &ldquo;milky&rdquo; lives in the LF layer. Decoupling them lets
+you sharpen details without touching nebular smoothness, denoise
+small-scale noise without softening gradients, or boost structure at
+a specific spatial scale with a wavelet pass &mdash; moves that
+would be destructive if applied to the composite.</p>
+
+<h2>1. The split: method, radius, tolerance</h2>
+
+<h3>1.1 Method</h3>
+<p>Three blur kernels for the LF generation:</p>
+<ul>
+  <li><b>Gaussian</b> &mdash; isotropic smooth blur, the standard
+      choice. Radius sets the kernel sigma. Best for general
+      sharpening, denoising, and most astrophotography work.</li>
+  <li><b>Median</b> &mdash; preserves edges while smoothing. Kernel
+      size is forced odd (<code>K&nbsp;=&nbsp;2 &lfloor;r/2&rfloor;
+      + 1</code>). Good when you want HF to carry small-scale noise
+      but <i>not</i> star cores or sharp galaxy edges.</li>
+  <li><b>Bilateral</b> &mdash; edge-aware; smooths flat regions
+      while protecting intensity boundaries. The Tolerance slider
+      becomes active here &mdash; see below.</li>
+</ul>
+
+<h3>1.2 Radius</h3>
+<p>The slider maps non-linearly from 1&ndash;100 to a radius in
+0.1&ndash;100 pixels, in three regimes for fine control at small
+radii:</p>
+<div class="matheq">r(p) \;=\; 0.1 + \frac{p}{10} \cdot 0.9,\quad 0 \leq p \leq 10</div>
+<div class="matheq">r(p) \;=\; 1 + \frac{p - 10}{40} \cdot 9,\quad 10 < p \leq 50</div>
+<div class="matheq">r(p) \;=\; 10 + \frac{p - 50}{50} \cdot 90,\quad 50 < p \leq 100</div>
+<p>The upshot:</p>
+<ul>
+  <li><b>Small radius (0.1&ndash;2)</b> &mdash; only the very finest
+      details go to HF. Subtle sharpening; fine noise mostly in HF.</li>
+  <li><b>Medium radius (5&ndash;20)</b> &mdash; typical astroimaging
+      range. Stars and small structure in HF; nebula glow and
+      gradients in LF.</li>
+  <li><b>Large radius (30&ndash;100)</b> &mdash; large-scale
+      structure captured in HF too. Useful for aggressive detail
+      enhancement where you want nebular filaments in the HF layer.</li>
+</ul>
+
+<h3>1.3 Tolerance (Bilateral only)</h3>
+<p>Range 0&ndash;100%, default 50%. Controls the bilateral filter's
+edge-sensitivity sigma:</p>
+<div class="matheq-hero">\sigma \;=\; 50 \cdot \frac{\mathrm{tol}}{100}</div>
+<ul>
+  <li><b>Low (0&ndash;25%)</b> &mdash; strong edge preservation; the
+      bilateral refuses to smooth across intensity jumps. HF ends
+      up carrying mostly flat-region texture.</li>
+  <li><b>High (75&ndash;100%)</b> &mdash; approaches a plain Gaussian;
+      edges less protected.</li>
+</ul>
+
+<h3>1.4 Apply - Split HF &amp; LF</h3>
+<p>Runs the chosen blur and the subtraction. The two previews on
+the right update when it finishes. The arrow button next to Apply
+is <b>Undo Split</b> &mdash; it restores the LF/HF from before the
+most recent split, with a history up to the capacity of your memory.
+Useful for comparing two radius settings quickly.</p>
+
+<h2>2. HF enhancements</h2>
+
+<p>Everything in this group operates on the HF buffer only. The LF
+is never touched by any enhancement. All three enhancements can be
+combined in one Apply pass, or applied in several passes with Undo
+in between.</p>
+
+<h3>2.1 Sharpen Scale</h3>
+<p>Simple multiplicative gain on HF. Range 0.10&ndash;3.00, default
+1.00. The checkbox enables or disables it:</p>
+<div class="matheq-hero">\mathrm{HF}' \;=\; s \cdot \mathrm{HF}</div>
+<p>Values below 1 soften; above 1 sharpen. Because HF is signed and
+roughly centred on zero, scaling it symmetrically brightens dark
+and bright details equally &mdash; which is what you want for
+detail enhancement.</p>
+
+<h3>2.2 Wavelet Sharpening</h3>
+<p>Multi-scale enhancement using a <b>db2</b> (Daubechies-2) wavelet
+decomposition. Two parameters:</p>
+<ul>
+  <li><b>Wavelet Level</b> (1&ndash;5) &mdash; number of
+      decomposition levels. Higher levels capture larger spatial
+      scales.</li>
+  <li><b>Wavelet Boost</b> (0.50&ndash;3.00, default 1.20) &mdash;
+      multiplier applied to the detail coefficients
+      (<code>cH</code>, <code>cV</code>, <code>cD</code>) at every
+      level simultaneously.</li>
+</ul>
+<p>The decomposition and reconstruction use the
+<code>periodization</code> mode. The level is auto-clamped to the
+maximum supported by the image dimensions, so a very small image
+with Level=5 won't crash. Wavelet sharpening runs on each colour
+channel independently.</p>
+
+<p class="tip"><b>Why wavelet over simple scale?</b> Scale lifts
+all HF content uniformly. Wavelet lifts detail at every spatial
+scale (as decomposed) but leaves the approximation untouched. The
+result is less halo-prone and more musically balanced than a plain
+HF multiplier.</p>
+
+<h3>2.3 HF Denoise</h3>
+<p>Non-Local Means denoise applied to the HF layer only. Because
+HF is signed, the implementation shifts it by +0.5 to fit in [0,1],
+runs the denoise, then shifts back:</p>
+<div class="matheq-hero">\mathrm{HF}_{\mathrm{u8}} \;=\; \mathrm{round}(255 \cdot (\mathrm{HF} + 0.5))</div>
+<div class="matheq">\mathrm{HF}_{\mathrm{out}} \;=\; \frac{\mathrm{HF}_{\mathrm{denoised}}}{255} - 0.5</div>
+<p>Strength range 0&ndash;5, default 3. Uses OpenCV's
+<code>fastNlMeansDenoising</code> (grayscale) or
+<code>fastNlMeansDenoisingColored</code> (RGB), block size 7, search
+window 21.</p>
+
+<p>Because the LF layer is untouched, this is a clean way to denoise
+without the usual &ldquo;plasticky&rdquo; look &mdash; nebular
+gradients are preserved exactly, and only fine-scale noise in HF
+gets smoothed.</p>
+
+<h3>2.4 Apply HF Enhancements</h3>
+<p>Runs scale &rarr; wavelet &rarr; denoise in that order on the
+current HF, overwriting it. The Undo button next to it rolls back
+to the previous HF state, with a history for repeated applications.</p>
+
+<h2>3. Load and push</h2>
+
+<h3>3.1 Load Source Image</h3>
+<p>Pick any currently open SASpro view as the source. The dialog
+remembers which document you loaded from so <b>Combine &rarr; Update</b>
+later writes back there, regardless of what's active now.</p>
+
+<h3>3.2 Push LF / Push HF</h3>
+<p>Opens the current LF or HF buffer as a new SASpro document
+titled &ldquo;LF&rdquo; or &ldquo;HF&rdquo;. The HF push preserves
+the signed values (it does <i>not</i> add the +0.5 display offset),
+so you can round-trip it back in without losing information. Useful
+for processing one layer through another tool and bringing it
+back.</p>
+
+<h3>3.3 Load LF (View) / Load HF (View)</h3>
+<p>Replaces the current LF or HF layer with an image from another
+open view. SASpro reconciles channels automatically &mdash; mono
+input stacks to RGB if the base is colour, RGB input averages to
+mono if the base is mono &mdash; and refuses size mismatches with
+a clear error. This is the other half of the round-trip workflow:
+push HF out, process it elsewhere, load it back.</p>
+
+<h2>4. Combining</h2>
+
+<p>Two paths for the final combine:</p>
+<ul>
+  <li><b>Combine &rarr; Update</b> &mdash; writes the combined
+      result back to the <i>source</i> document (tracked at load
+      time), using <code>apply_edit</code> if available (with
+      history + metadata recorded as &ldquo;Frequency Separation
+      (Combine HF+LF)&rdquo;). Falls back through several document
+      methods before giving up with a clear error.</li>
+  <li><b>Combine &rarr; New</b> &mdash; opens the result as a new
+      SASpro document titled &ldquo;Combined&rdquo;. Source is
+      untouched.</li>
+</ul>
+<p>Both run the same math:</p>
+<div class="matheq-hero">I' \;=\; \mathrm{clip}(\mathrm{LF} + \mathrm{HF},\; 0,\; 1)</div>
+
+<h3>4.1 Preview Combined</h3>
+<p>Toggle at the bottom of the left panel. When on, the HF preview
+hides and the LF panel shows the combined result instead. Lets you
+check the final look before committing, without having to apply.
+Combined pixmap is cached, so toggling it is instant after the
+first paint.</p>
+
+<h3>4.2 Mask integration</h3>
+<p>If the source document has an active mask, Combine blends the
+new result against the original source using the mask:</p>
+<div class="matheq-hero">I_{\mathrm{out}} \;=\; m \cdot I_{\mathrm{proc}} \;+\; (1 - m) \cdot I_{\mathrm{src}}</div>
+<p>So the frequency-separated edit is confined to wherever the mask
+is active, and un-processed source pixels fill the rest. The mask
+is nearest-neighbour resampled if its dimensions don't match the
+target. Metadata records that the output was masked, with the mask
+ID and name preserved.</p>
+
+<h2>5. Preview and interaction</h2>
+
+<p>Two side-by-side scroll areas. HF left, LF right &mdash; or just
+the combined preview on the left if Preview Combined is on.</p>
+
+<ul>
+  <li><b>Mouse wheel</b> &mdash; zoom cursor-anchored on whichever
+      panel you're hovering, both panels zoom together to the same
+      factor.</li>
+  <li><b>Left-click-drag</b> on either panel &mdash; pan both panels
+      in sync. The other scroll area's bars update to match.</li>
+  <li><b>Zoom In / Zoom Out / Fit</b> buttons in the toolbar above
+      the previews.</li>
+  <li>Zoom range 0.05&times; to 8&times;.</li>
+</ul>
+
+<p>Scaled pixmaps are cached per panel at the current zoom, so
+panning is cheap &mdash; the rescale only happens when the zoom
+changes or the underlying buffer changes.</p>
+
+<p class="tip"><b>HF displayed with +0.5 offset.</b> HF is a signed
+difference image centred near zero. To make it viewable, the
+preview adds 0.5 before converting to display. This affects the
+preview only; the actual HF buffer is signed and all math uses it
+as such.</p>
+
+<h2>6. GPU acceleration</h2>
+
+<div class="gpu">
+<b>CUDA path.</b> When OpenCV is built with CUDA and a compatible
+GPU is present (detected at tool startup; shown in the GPU
+checkbox tooltip), the following run on the GPU:
+<ul>
+  <li>LF split: Gaussian, Median, Bilateral blur.</li>
+  <li>HF scale: multiplication.</li>
+  <li>HF denoise: Non-Local Means.</li>
+</ul>
+<b>CPU-only</b> regardless of GPU: wavelet sharpening (PyWavelets
+has no CUDA back-end).
+</div>
+
+<p>GPU is only used when the image is at least 500,000 pixels
+(roughly 700&times;700) &mdash; below that, PCIe transfer overhead
+costs more than the compute saves. The checkbox lets you force CPU
+if you want to compare timings or if something CUDA-specific
+misbehaves.</p>
+
+<p class="tip"><b>CUDA warm-up on first show.</b> Opening the tool
+runs a few dummy GPU operations to initialise the CUDA context, so
+the first real Apply doesn't suffer the usual multi-second
+first-call delay. The first HF denoise is special-cased to run
+synchronously on the main thread the first time, because OpenCV's
+CUDA NLM has a crash-on-background-thread bug the first time it's
+called in a process.</p>
+
+<h2>7. Other controls</h2>
+<ul>
+  <li><b>Reset All</b> &mdash; returns all parameters to defaults
+      (Gaussian, radius 10, tolerance 50%, sharpen 1.00, wavelet
+      Level 2 Boost 1.20, denoise 3.00 off), clears both HF and
+      split history, and re-runs the separation. Loaded image
+      stays loaded.</li>
+  <li>Spinner during background work; action buttons disabled.</li>
+</ul>
+
+<h2>8. Fun applications</h2>
+<p>A few things this decomposition unlocks that are hard without
+it:</p>
+<ul>
+  <li><b>Noise reduction without smoothing nebulosity</b> &mdash;
+      split with Gaussian radius ~5, HF denoise strength 2&ndash;3,
+      combine. Fine noise gone; faint nebular gradients unchanged
+      because they live entirely in LF.</li>
+  <li><b>Stars-only sharpening</b> &mdash; split with Median radius
+      ~8 (preserves star edges in LF less than Gaussian would), set
+      Wavelet Level 1 Boost 1.5. Stars tighten; large structure
+      doesn't gain crunchy halos.</li>
+  <li><b>Push HF through another tool</b> &mdash; split, Push HF,
+      run deconvolution or CLAHE on the HF-only document, then
+      Load HF (View) back here, Combine. Lets you apply any tool
+      that's noisy on the full composite to just the HF layer where
+      noise is contained.</li>
+  <li><b>Masked combine</b> &mdash; make a mask on the galaxy core,
+      split, enhance HF with wavelet, Combine &rarr; Update. Only
+      the galaxy core gets the sharpening; the surrounding sky is
+      left exactly as it was.</li>
+</ul>
+
+<h2>9. Technical details</h2>
+
+<p class="tech-lead">Everything in float32. HF stored signed, roughly
+in [&minus;0.5, 0.5]. All processing runs in a QThread with a
+spinner on the main thread. CUDA path uses OpenCV's cv2.cuda API;
+CPU path uses regular OpenCV + NumPy. Wavelet transform via
+PyWavelets.</p>
+
+<h3>12.1 Split formulas</h3>
+<p>Core decomposition and recomposition:</p>
+<div class="matheq-hero">\mathrm{LF} \;=\; \mathrm{Blur}_{\sigma}(I)</div>
+<div class="matheq-hero">\mathrm{HF} \;=\; I - \mathrm{LF}</div>
+<div class="matheq-hero">I' \;=\; \mathrm{clip}(\mathrm{LF} + \mathrm{HF},\; 0,\; 1)</div>
+<p>When no HF enhancement has been applied, <code>I'&nbsp;=&nbsp;I</code>
+exactly (the split is lossless up to floating-point round-off).</p>
+
+<h3>12.2 Gaussian kernel sizing</h3>
+<p>OpenCV's Gaussian kernel is sized relative to sigma:</p>
+<div class="matheq-hero">K \;=\; 6\sigma \;+\; 1</div>
+<p>(rounded up to the nearest odd integer). The CPU path lets OpenCV
+pick <code>K</code> automatically by passing <code>(0,&nbsp;0)</code>
+for the kernel size; the CUDA path requires an explicit size.</p>
+
+<h3>12.3 Median kernel sizing</h3>
+<p>Odd-integer kernel from the radius:</p>
+<div class="matheq-hero">K \;=\; 2 \cdot \lfloor r/2 \rfloor + 1</div>
+<p>Minimum 1 (identity).</p>
+
+<h3>12.4 Iterative CUDA passes for large kernels</h3>
+<p>OpenCV's CUDA Gaussian and Bilateral filters have a maximum
+kernel size of 31. For sigmas that would require a bigger kernel,
+the implementation uses the Gaussian-stacking identity: applying
+the same Gaussian blur <code>N</code> times with per-pass sigma
+<code>&sigma;_pass</code> is equivalent to a single blur of
+sigma:</p>
+<div class="matheq-hero">\sigma_{\mathrm{total}} \;=\; \sqrt{N} \cdot \sigma_{\mathrm{pass}}</div>
+<p>So for a target sigma, SASpro picks:</p>
+<div class="matheq-hero">N \;=\; \left\lceil \left(\frac{\sigma_{\mathrm{total}}}{\sigma_{\max}}\right)^{2} \right\rceil,\quad \sigma_{\mathrm{pass}} \;=\; \frac{\sigma_{\mathrm{total}}}{\sqrt{N}}</div>
+<p>with <code>&sigma;_max&nbsp;=&nbsp;(31-1)/6&nbsp;=&nbsp;5</code>.
+Up to 25 passes are allowed; beyond that it falls back to the CPU
+path. Bilateral and Median use the same multi-pass technique with
+<code>&sigma;_pass&nbsp;=&nbsp;&sigma;/&radic;N</code> and a per-pass
+kernel chosen to stay under the CUDA cap, with a 10-pass ceiling
+before falling back.</p>
+
+<p class="tip"><b>Why this works for Gaussian.</b> The convolution
+of two Gaussians with sigmas <code>&sigma;_1</code> and
+<code>&sigma;_2</code> is a Gaussian with sigma
+<code>&radic;(&sigma;_1&sup2; + &sigma;_2&sup2;)</code>. Repeating
+<code>N</code> times with equal sigmas gives
+<code>&sigma;_total = &radic;N &middot; &sigma;_pass</code>. The
+identity is exact for Gaussian; it's an approximation for Bilateral
+and Median but close enough in practice.</p>
+
+<h3>12.5 Bilateral tolerance mapping</h3>
+<p>Tolerance slider percentage maps to the bilateral spatial sigma
+and colour sigma (both set equal in this implementation):</p>
+<div class="matheq-hero">\sigma \;=\; 50 \cdot \frac{\mathrm{tol}}{100}</div>
+<p>The filter diameter <code>d</code> is taken directly from the
+radius slider.</p>
+
+<h3>12.6 Wavelet decomposition</h3>
+<p>Using PyWavelets' <code>wavedec2</code> at the chosen level
+with the <code>db2</code> wavelet and <code>periodization</code>
+mode. The decomposition expresses the image as an approximation
+plus a sum of detail coefficient triplets at each scale:</p>
+<div class="matheq-hero">I \;=\; A_{N} + \sum_{k=1}^{N} (c^{H}_{k} + c^{V}_{k} + c^{D}_{k})</div>
+<p>where <code>A_N</code> is the lowest-resolution approximation and
+<code>c^H, c^V, c^D</code> are horizontal, vertical, and diagonal
+detail coefficients at each level <code>k</code>. The boost
+multiplier scales all three detail planes at every level
+uniformly:</p>
+<div class="matheq-hero">(c^{H}_{k}, c^{V}_{k}, c^{D}_{k}) \;\to\; (b \cdot c^{H}_{k},\; b \cdot c^{V}_{k},\; b \cdot c^{D}_{k})</div>
+<p>The approximation <code>A_N</code> is left unchanged, so the
+mean level of the HF is preserved. If the chosen Level exceeds
+<code>dwt_max_level</code> for the image size, SASpro clamps it
+silently.</p>
+
+<h3>12.7 HF Non-Local Means denoise</h3>
+<p>OpenCV's NLM operates on 8-bit input, so the signed HF is
+shifted and scaled:</p>
+<div class="matheq-hero">\mathrm{HF}_{\mathrm{u8}} \;=\; \mathrm{round}(255 \cdot (\mathrm{HF} + 0.5))</div>
+<p>runs through <code>fastNlMeansDenoising</code> (grayscale) or
+<code>fastNlMeansDenoisingColored</code> (RGB) at the user's
+strength <code>h</code>, template window 7, search window 21:</p>
+<div class="matheq">\mathrm{HF}_{\mathrm{out}} \;=\; \frac{\mathrm{HF}_{\mathrm{denoised}}}{255} - 0.5</div>
+<p>The quantisation to 8-bit limits precision slightly (one 8-bit
+code value equals &plusmn;0.004 in HF space), which is below the
+noise floor for virtually every real astroimage.</p>
+
+<h3>12.8 Mask blend</h3>
+<p>With an active mask <code>m</code> in [0,&nbsp;1]:</p>
+<div class="matheq-hero">I_{\mathrm{out}} \;=\; m \cdot I_{\mathrm{proc}} \;+\; (1 - m) \cdot I_{\mathrm{src}}</div>
+<p>Mask is nearest-neighbour resampled if its dimensions don't
+match. Integer-type masks are rescaled to [0,&nbsp;1] by their
+dtype max; float masks with max &gt; 1 are rescaled by the maximum.
+The source image for the blend is read fresh from the document, so
+if someone edited it between load and Combine the blend uses the
+current version.</p>
+
+<h3>12.9 CUDA threshold and warm-up</h3>
+<p>GPU is used only when the image has at least 500,000 pixels. The
+threshold is a measured cross-over &mdash; smaller images spend
+more time on PCIe transfer than they save on the GPU compute. On
+first show, SASpro runs a few dummy upload/download/Gaussian passes
+to initialise the CUDA context, so the first user-triggered
+operation doesn't hit the usual multi-second JIT delay. HF denoise
+is special-cased: the first time any CUDA NLM is run in a process,
+it must run on the main thread, because the OpenCV CUDA NLM has a
+reliable crash when first invoked from a QThread. SASpro tracks
+this with a module-level <code>_CUDA_DENOISE_INITIALIZED</code>
+flag.</p>
+
+<h3>12.10 Caching</h3>
+<p>Three layers of cache keep the preview snappy:</p>
+<ul>
+  <li><b>Base pixmap cache</b> &mdash; one QPixmap per layer (LF,
+      HF with +0.5 offset, Combined), rebuilt only when the
+      underlying buffer changes.</li>
+  <li><b>Scaled pixmap cache</b> &mdash; one scaled QPixmap per
+      layer at the current zoom. Dropped and rebuilt when zoom
+      changes.</li>
+  <li><b>Combined image cache</b> &mdash; the clipped sum
+      <code>LF + HF</code>, invalidated whenever either layer or
+      an HF enhancement is applied.</li>
+</ul>
+<p>Pan has no cache impact at all: only scroll bar values change,
+not the pixmap.</p>
+
+<div class="credit">
+<b>Credits.</b> The frequency-separation technique (Gaussian or
+median blur as LF, subtraction for HF, independent processing, sum
+to recombine) is a classical image-processing method predating
+astroimaging &mdash; it's standard in portrait retouching and in
+PixInsight's own HDRMultiscaleTransform and ATrousWaveletTransform
+tools. OpenCV supplies the Gaussian, Median, Bilateral, and NLM
+denoise kernels on both CPU and CUDA paths; the CUDA iterative-pass
+trick for sigmas beyond kernel size 31 is Frank's implementation
+for this tool. PyWavelets provides the db2 wavelet decomposition
+and reconstruction. The dual-pane synced-pan preview, the
+pixmap-level caching strategy, the first-call CUDA NLM main-thread
+workaround, the warm-up handshake, the mask integration via
+<code>_blend_with_active_mask</code>, and the UI around all of it
+are Frank's work for SASpro.
+</div>
+
+</body>
+</html>

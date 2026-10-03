@@ -29,6 +29,7 @@ from setiastro.saspro.imageops.narrowband_normalization import normalize_narrowb
 
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
 from setiastro.saspro.widgets.image_utils import extract_mask_from_document as _active_mask_array_from_doc
+from setiastro.saspro.help_support import make_help_button
 
 # Real SCNR core (green / colour channel suppression)
 from setiastro.saspro.remove_green import _apply_scnr_rgb
@@ -220,6 +221,8 @@ class NarrowbandNormalization(QWidget):
         tools.addWidget(self.btn_zoom_in)
         tools.addWidget(self.btn_fit)
         tools.addStretch(1)
+        self.btn_doc_help = make_help_button("nb_normalization", self)
+        tools.addWidget(self.btn_doc_help)
         right.addLayout(tools)
 
         self.scroll = QScrollArea(self)

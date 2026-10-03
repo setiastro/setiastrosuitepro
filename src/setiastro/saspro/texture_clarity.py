@@ -19,6 +19,7 @@ from setiastro.saspro.widgets.image_utils import (
     extract_mask_from_document as _active_mask_array_from_doc
 )
 
+from setiastro.saspro.help_support import make_help_button
 
 # ─── image helpers ────────────────────────────────────────────────────────────
 
@@ -428,6 +429,8 @@ class TextureClarityDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)
+            self.btn_help = make_help_button("texture_clarity", self)
+            drag_row.addWidget(self.btn_help)            
             left.addLayout(drag_row)
         except Exception:
             pass

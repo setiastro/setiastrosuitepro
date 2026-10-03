@@ -13,6 +13,7 @@ from PyQt6.QtGui import QPixmap, QImage, QIcon
 # Shared utilities (same helpers Star Stretch relies on)
 from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 from setiastro.saspro.shortcuts import PresetDragHandle
+from setiastro.saspro.help_support import make_help_button
 
 # Icon is optional; fall back gracefully if resources doesn't expose one yet.
 try:
@@ -285,6 +286,8 @@ class RemovePedestalDialog(QDialog):
         )
         drag_row.addWidget(self.preset_drag_handle)
         drag_row.addStretch(1)
+        self.btn_help = make_help_button("pedestal", self)
+        drag_row.addWidget(self.btn_help)
         left.addLayout(drag_row)
 
         main.addLayout(left, 0)

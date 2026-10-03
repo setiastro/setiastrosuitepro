@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b7e4d6; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>FX Module</h1>
+<p class="sub">A gallery of classical photographic effects wrapped
+in a shared live-preview dialog. Six effects at launch
+&mdash; <b>Orton Glow</b>, <b>Soft Focus</b>, <b>Bloom / Star
+Glow</b>, <b>Vignette</b>, <b>Film Grain</b>, <b>Split Tone</b>
+&mdash; each with its own parameter set and real-time preview. The
+dialog hot-swaps the controls panel when you pick a different
+effect from the dropdown. Downsampled preview buffer for fast
+interactive editing, full-resolution worker-thread apply, document
+mask integration, before/after toggle, and preset grip for every
+effect.</p>
+
+<h2>1. Workflow</h2>
+<ol>
+  <li>Open the dialog on an active image. The <b>Effect</b> dropdown
+      at the top of the controls column defaults to Orton Glow.</li>
+  <li>Pick an effect. The controls panel rebuilds for that effect's
+      parameters, the description line below the dropdown updates,
+      and a preview with the effect's defaults appears immediately.</li>
+  <li>Adjust the parameters. The preview updates with a 150&nbsp;ms
+      debounce on a background QThread so dragging a slider doesn't
+      stall the UI.</li>
+  <li>Use the <b>&#8646;&nbsp;Toggle Before&nbsp;/&nbsp;After</b>
+      button for instant A/B comparison &mdash; cached pixmaps on
+      both sides, no re-computation.</li>
+  <li><b>Apply</b> runs the full-resolution computation on another
+      worker thread (the dialog disables its controls during
+      Apply), commits as an undoable edit, records the preset for
+      Replay Last Action, and closes.</li>
+</ol>
+
+<h2>2. The six effects</h2>
+
+<h3>2.1 Orton Glow</h3>
+<p>Michael Orton's 1980s darkroom technique, digitised: sandwich a
+sharp exposure with a soft-focus brighter one and blend them
+together. The result is a dreamy, hazy luminous look that works
+especially well on nebular imagery where you want to emphasise
+glowing structure without flattening the fine detail.</p>
+<p>Parameters:</p>
+<ul>
+  <li><b>Blur radius</b> &mdash; 1.0 to 100.0 px, default 15. The
+      Gaussian &sigma; of the soft layer. Larger values produce a
+      broader halo; smaller values a tighter, more localised glow.</li>
+  <li><b>Glow brightness</b> &mdash; 0.5&times; to 3.0&times;, default
+      1.4. Multiplies the blurred layer before blending. Mirrors
+      the film-era trick of overexposing the soft exposure. Values
+      below 1.0 actually produce a smoky dark-glow variant.</li>
+  <li><b>Opacity</b> &mdash; 0.0 to 1.0, default 0.5. Overall
+      strength of the final blend.</li>
+  <li><b>Blend mode</b> &mdash; Screen / Soft Light / Lighten.
+      Screen is the classical choice (brightest, haziest); Soft
+      Light is gentler and protects shadows; Lighten gives the
+      least colour shift.</li>
+  <li><b>Highlight protection</b> &mdash; 0.0 to 1.0, default 0.5.
+      Fades the glow effect as pixels approach pure white, so a
+      bright solar disc or saturated star core doesn't blow out
+      further. Scales from luminance 0.7 to 1.0.</li>
+  <li><b>Luma recovery</b> &mdash; 0.0 to 1.0, default 0.7. See
+      &sect;&nbsp;3.3 below &mdash; Screen-blending two similar
+      images runs away in brightness; this slider rescales the
+      result back toward the two source layers' average brightness.</li>
+</ul>
+
+<h3>2.2 Soft Focus</h3>
+<p>The simplest of the six: Gaussian blur a copy, blend back at
+partial opacity. No brightening, no mode selection &mdash; just
+diffusion. Classic portrait / glamour softening, useful on
+astronomical imagery for taming overly crunchy sharpening results
+or giving a wide-field a dreamier atmosphere.</p>
+<p>Parameters:</p>
+<ul>
+  <li><b>Blur radius</b> &mdash; 1.0 to 100.0 px, default 10.
+      Softness scale.</li>
+  <li><b>Opacity</b> &mdash; 0.0 to 1.0, default 0.4. Strength of
+      the diffusion blend.</li>
+</ul>
+
+<h3>2.3 Bloom / Star Glow</h3>
+<p>Isolates just the bright highlights above a threshold, blurs
+only those, and screens them back onto the image. The result is a
+soft halo around every bright feature &mdash; stars, galaxy cores,
+planetary limbs, the bright edge of a lunar terminator &mdash;
+without touching the rest of the image. Essentially the engine
+HDR renderers use for their bloom pass.</p>
+<p>Parameters:</p>
+<ul>
+  <li><b>Highlight threshold</b> &mdash; 0.0 to 1.0, default 0.7.
+      Luminance above which pixels are treated as highlights. Lower
+      it to include more of the image in the bloom; raise it to
+      target only the very brightest features (stars).</li>
+  <li><b>Blur radius</b> &mdash; 1.0 to 100.0 px, default 20. Halo
+      size. Large radii produce wide dreamy glows on stars; small
+      radii give a tighter &ldquo;sharp bloom&rdquo; look.</li>
+  <li><b>Highlight brightness</b> &mdash; 0.5&times; to 4.0&times;,
+      default 1.5. Boost applied to the isolated highlights before
+      the Screen blend. Higher values produce more intense glows.</li>
+  <li><b>Opacity</b> &mdash; 0.0 to 1.0, default 0.6.</li>
+  <li><b>Luma recovery</b> &mdash; 0.0 to 1.0, default 0.7. Same
+      Screen-overshoot correction as Orton Glow uses.</li>
+</ul>
+
+<h3>2.4 Vignette</h3>
+<p>Radial darkening from the frame centre outward &mdash; the
+classical post-processing framing cue, drawing the eye toward the
+subject. Not just for portraits: works beautifully on
+widefield astroimages to concentrate attention on the central
+nebula or cluster.</p>
+<p>Parameters:</p>
+<ul>
+  <li><b>Amount</b> &mdash; 0.0 to 1.0, default 0.5. How much
+      darkening at the frame edges (1.0 = pure black corners).</li>
+  <li><b>Radius</b> &mdash; 0.1 to 2.0, default 1.0. Where the
+      falloff begins, measured in normalised-distance units from
+      the centre. 1.0 reaches the long-axis midpoint of the frame
+      edge, values below 1.0 pull the darkening inward, values
+      above push it past the corners.</li>
+  <li><b>Softness</b> &mdash; 0.01 to 1.5, default 0.4. Width of
+      the transition band around Radius. Low values give a hard
+      disc of brightness surrounded by dark edges; high values
+      give a smooth continuous falloff.</li>
+</ul>
+
+<h3>2.5 Film Grain</h3>
+<p>Adds organic monochrome or colour Gaussian noise. The random
+seed is fixed at 42 so the grain pattern stays stable while you
+drag sliders &mdash; you're sculpting one specific grain field,
+not watching it re-randomise on every tick. (If you want a
+different pattern, Reset and reopen.)</p>
+<p>Parameters:</p>
+<ul>
+  <li><b>Intensity</b> &mdash; 0.0 to 1.0, default 0.3. Grain
+      amplitude; scaled internally by 0.15 so even at maximum the
+      effect stays in the visually sensible range.</li>
+  <li><b>Grain size</b> &mdash; 0.0 to 5.0, default 1.0. Blur
+      &sigma; applied to the raw noise field to create grain
+      clumps. 0 is single-pixel noise (classic digital grain);
+      higher values produce chunkier texture that reads more like
+      35mm film.</li>
+  <li><b>Colour</b> &mdash; Yes / No. Yes = monochrome grain
+      (same noise applied to all three channels, so the grain is
+      colourless); No = independent noise per channel (produces
+      coloured grain, authentic to early colour film stocks).</li>
+</ul>
+
+<h3>2.6 Split Tone</h3>
+<p>Tints shadows one hue and highlights another. The classical
+example is cyan shadows / orange highlights (teal-and-orange,
+much maligned but genuinely useful on astronomical imagery for
+giving nebular glow a warm/cool contrast). Preserves luminance
+structure; only colour shifts.</p>
+<p>Parameters:</p>
+<ul>
+  <li><b>Shadow hue</b> &mdash; 0 to 360&deg;, default 220 (blue).
+      Hue applied to the shadow regions. HSV with full saturation
+      and value &mdash; the tint strength controls how much hits
+      the image.</li>
+  <li><b>Highlight hue</b> &mdash; 0 to 360&deg;, default 40
+      (warm amber).</li>
+  <li><b>Balance</b> &mdash; &minus;1.0 to +1.0, default 0. Shifts
+      the shadow/highlight split point. Positive values push more
+      of the image into &ldquo;highlight&rdquo; territory (more of
+      the warm tint); negative values push into &ldquo;shadow&rdquo;
+      (more of the cool tint).</li>
+  <li><b>Strength</b> &mdash; 0.0 to 1.0, default 0.3. Overall tint
+      intensity. 0.2&ndash;0.4 is the subtle, cinematic range;
+      above 0.6 gets stylised.</li>
+</ul>
+
+<h2>3. Shared machinery</h2>
+
+<h3>3.1 Before / after toggle</h3>
+<p>The <b>&#8646;&nbsp;Toggle Before&nbsp;/&nbsp;After</b> button is
+checkable; checked shows the original cached preview pixmap,
+unchecked shows the latest processed result. Both are cached, so
+switching is instant with no recomputation. Any slider or combo
+change automatically pops the button out of its
+&ldquo;showing-before&rdquo; state so you don't have to toggle back
+yourself.</p>
+
+<h3>3.2 Preview panel</h3>
+<p>Right side of the dialog. Supports:</p>
+<ul>
+  <li><b>Zoom buttons</b> &mdash; &minus; / + / Fit step by
+      1.25&times; or fit to viewport.</li>
+  <li><b>Ctrl + mouse wheel</b> zooms with cursor-anchored
+      behaviour &mdash; the pixel under the mouse stays stationary
+      through the zoom change.</li>
+  <li><b>Left-click drag</b> pans the preview with a closed-hand
+      cursor.</li>
+</ul>
+<p>Preview computation runs on a background QThread with
+cancellation: changing a slider mid-render cancels the in-flight
+preview and starts a new one after the 150&nbsp;ms debounce fires,
+so no backlog of stale computations builds up during a slider
+drag.</p>
+
+<h3>3.3 Downsampled preview buffer</h3>
+<p>For images larger than 1200&nbsp;px on the long side, the preview
+pipeline operates on a downsampled copy (OpenCV's INTER_AREA area
+averaging). Interactive preview on a 24&nbsp;MP frame therefore
+runs just as fast as on a 2&nbsp;MP crop &mdash; the slider-drag
+response is driven by the preview buffer size, not the full
+resolution. The final <b>Apply</b> always runs on the full
+resolution for the committed result, which is why that stage
+disables the controls and shows a &ldquo;processing
+full-resolution image&hellip;&rdquo; status line while it works.</p>
+
+<h3>3.4 Document mask integration</h3>
+<p>If the active document has a mask layer, the processed result
+is blended with the untouched original through the mask so only
+masked regions receive the effect. The mask is resampled with
+nearest-neighbour (OpenCV INTER_NEAREST) if its dimensions don't
+match. Both the live preview and the final Apply respect the mask
+identically.</p>
+
+<h3>3.5 Active-document tracking</h3>
+<p>The dialog listens for the main window's
+<code>currentDocumentChanged</code> signal and switches its
+preview target when you focus a different open image, so you can
+auditioning the same effect across several frames without
+reopening the dialog. The current effect selection and parameter
+state carry across the document change.</p>
+
+<h3>3.6 Preset grip</h3>
+<p>The handle at the bottom-left of the controls column carries
+the full state: the selected effect <i>and</i> that effect's
+current parameters. Drag it onto the canvas to make a preset
+tile that runs that specific effect with those settings
+headlessly, or drop it directly on an image for immediate apply.
+Double-clicking a shortcut tile reopens this dialog pre-seeded
+with the saved effect and parameters.</p>
+
+<h2>4. Technical details</h2>
+<p class="tech-lead">All processing on float32 in [0, 1]. OpenCV
+provides the Gaussian blurs; everything else is numpy. Blend
+formulas follow the W3C Compositing Spec where they overlap with
+Photoshop.</p>
+
+<h3>4.1 Blend mode primitives</h3>
+<p>Three blend modes are available (Orton Glow); the others use
+Screen directly.</p>
+<p><b>Screen</b> &mdash; symmetric commutative blend, inverse of
+Multiply, always lightens:</p>
+<div class="matheq-hero">S(a, b) \;=\; 1 - (1-a)(1-b) \;=\; a + b - ab</div>
+<p><b>Lighten</b> &mdash; per-pixel maximum, preserves whichever
+channel is brighter:</p>
+<div class="matheq">L(a, b) \;=\; \max(a, b)</div>
+<p><b>Soft Light</b> &mdash; the W3C Compositing Spec formulation
+that matches Photoshop's Soft Light. For base <code>a</code> and
+blend <code>b</code>, the formula is piecewise on <code>b</code>.
+When <code>b&nbsp;&le;&nbsp;0.5</code>:</p>
+<div class="matheq">d_{\mathrm{lo}} \;=\; a - (1 - 2b)\,a(1-a)\,,\qquad b \leq 0.5</div>
+<p>and when <code>b&nbsp;&gt;&nbsp;0.5</code> an auxiliary function
+<code>g(a)</code> is used that itself is piecewise on
+<code>a</code>:</p>
+<div class="eq">g(a) = ((16a - 12)a + 4)a      if a ≤ 0.25
+       √a                       if a > 0.25</div>
+<div class="matheq">d_{\mathrm{hi}} \;=\; a + (2b - 1)(g(a) - a)\,,\qquad b > 0.5</div>
+<p>This gives a dodging/burning response symmetric around
+<code>b&nbsp;=&nbsp;0.5</code> that gently steepens contrast
+without the hard breakpoints of Overlay or Hard Light.</p>
+
+<h3>4.2 Luma recovery</h3>
+<p>Screen-blending two similar images runs away in brightness: for
+identical layers, <code>S(x,&nbsp;x)&nbsp;=&nbsp;2x&nbsp;&minus;&nbsp;x&sup2;</code>,
+which is always brighter than <code>x</code> for
+<code>0&nbsp;&lt;&nbsp;x&nbsp;&lt;&nbsp;1</code> (maximum excess of
+0.25 at <code>x&nbsp;=&nbsp;0.5</code>). This matters a lot for
+Orton Glow and Bloom, where the blend layer is a brightened
+near-copy of the base. Luma recovery pulls the result back toward
+the average brightness of the two source layers.</p>
+<p>For Rec.&nbsp;709 luminance
+<code>L&nbsp;=&nbsp;0.2126R&nbsp;+&nbsp;0.7152G&nbsp;+&nbsp;0.0722B</code>,
+the recovery target is the average of the two layers' luminance:</p>
+<div class="matheq-hero">L_{\mathrm{target}} \;=\; \frac{L_a + L_b}{2}</div>
+<p>and the blend is rescaled per-pixel by the ratio:</p>
+<div class="matheq-hero">\mathrm{ratio} \;=\; \frac{L_{\mathrm{target}}}{L_{\mathrm{blended}} + \varepsilon}</div>
+<p>with the final output being a dry/wet mix of the raw blend and
+the ratio-corrected version controlled by the Luma recovery
+slider. The scale is multiplicative on all channels so chroma is
+preserved exactly &mdash; only overall brightness is tamed.</p>
+
+<h3>4.3 Orton Glow composition</h3>
+<p>End-to-end, with blur radius &sigma;, glow brightness
+<code>&beta;</code>, blend mode <code>&otimes;</code>, luma recovery
+<code>&rho;</code>, highlight protect <code>h</code>, and opacity
+<code>&alpha;</code>:</p>
+<div class="eq">boosted  = clip(β · G_σ(img), 0, 1)
+blended  = clip(img ⊗ boosted, 0, 1)
+blended' = LumaRecover(img, boosted, blended, ρ)</div>
+<p>Highlight protection fades the effect in regions already near
+white:</p>
+<div class="matheq-hero">\mathrm{protect} \;=\; 1 - h \cdot \mathrm{clip}\!\left(\frac{L - 0.7}{0.3},\;0,\;1\right)</div>
+<p>which starts at 1.0 everywhere, begins falling at
+<code>L&nbsp;=&nbsp;0.7</code>, and reaches
+<code>1&nbsp;&minus;&nbsp;h</code> at <code>L&nbsp;=&nbsp;1</code>.
+The final effective opacity is:</p>
+<div class="matheq">\alpha_{\mathrm{eff}} \;=\; \alpha \,\cdot\, \mathrm{protect}</div>
+<p>and the composite:</p>
+<div class="matheq-hero">\mathrm{out} \;=\; (1 - \alpha_{\mathrm{eff}})\,\mathrm{img} \;+\; \alpha_{\mathrm{eff}}\,\mathrm{blended}'</div>
+
+<h3>4.4 Bloom highlight mask</h3>
+<p>The threshold slider produces a soft highlight mask by linear
+ramping from zero at the threshold to one at pure white:</p>
+<div class="matheq-hero">m(x) \;=\; \mathrm{clip}\!\left(\frac{L(x) - t}{1 - t},\;0,\;1\right)</div>
+<p>The highlight-only image <code>img&nbsp;&middot;&nbsp;m</code>
+is blurred, boosted by the brightness slider, and Screen-blended
+back with the same luma-recovery pass as Orton Glow. Because the
+mask smoothly ramps rather than hard-cutting at the threshold, the
+bloom halos fade naturally into non-highlight regions instead of
+showing a visible brightness-level contour where the mask edge
+would be.</p>
+
+<h3>4.5 Vignette geometry</h3>
+<p>The vignette uses a normalised radial distance in
+unit-centred coordinates where the frame edge midpoints sit at
+distance 1.0:</p>
+<div class="matheq-hero">d(x, y) \;=\; \sqrt{\left(\frac{x - c_x}{c_x}\right)^2 \;+\; \left(\frac{y - c_y}{c_y}\right)^2}</div>
+<p>Mapping that distance through the radius/softness interval
+<code>[R&nbsp;&minus;&nbsp;S,&nbsp;R&nbsp;+&nbsp;S]</code> gives a
+smooth transition weight:</p>
+<div class="matheq">\tau(x, y) \;=\; \mathrm{clip}\!\left(\frac{d - (r - s)}{2s},\;0,\;1\right)</div>
+<p>which is zero inside the bright disc, linearly rises through
+the transition band, and clips at 1 outside. The multiplicative
+darkening factor is then:</p>
+<div class="matheq-hero">\mathrm{vig}(x, y) \;=\; 1 - A \,\cdot\, \tau(x, y)</div>
+<p>reducing to 1 (no change) inside the clean centre and to
+<code>1&nbsp;&minus;&nbsp;A</code> at the fully-vignetted edges.
+Applied by direct multiplication, broadcast to all three channels
+of RGB input.</p>
+
+<h3>4.6 Film grain</h3>
+<p>A unit-variance Gaussian noise field <code>N(0,&nbsp;1)</code>
+of the same shape as the image (or per-channel for colour grain
+mode) is generated with a fixed RandomState seed of 42, so the
+pattern stays stable while you adjust sliders. If grain size
+<code>&sigma;&nbsp;&gt;&nbsp;0.01</code>, it's Gaussian-blurred
+and renormalised to unit variance so the brightness-amplitude
+interpretation of Intensity stays consistent:</p>
+<div class="matheq">\eta \;=\; \frac{G_{\sigma} \ast N(0, 1)}{\mathrm{std}(G_{\sigma} \ast N(0, 1))}</div>
+<p>Final composite is additive with Intensity (slider value
+<code>I</code>) and a global 0.15 amplitude multiplier so even at
+Intensity&nbsp;=&nbsp;1 the effect stays in the visually sensible
+range:</p>
+<div class="matheq-hero">\mathrm{out} \;=\; \mathrm{img} \;+\; 0.15 \,\cdot\, I \,\cdot\, \eta</div>
+<p>Mono mode (default) shares the same noise field across all
+three channels so the grain is colourless &mdash; the pattern of
+brightness variation is identical in R, G, and B. Colour mode uses
+independent noise per channel, which produces visibly chromatic
+grain reminiscent of early colour film stocks.</p>
+
+<h3>4.7 Split tone</h3>
+<p>Hues are turned into pure HSV&nbsp;(h,&nbsp;1,&nbsp;1) RGB
+vectors:</p>
+<div class="matheq">\mathbf{c}_{\mathrm{shadow}}, \mathbf{c}_{\mathrm{highlight}} \;=\; \mathrm{hsv2rgb}(h/360,\;1,\;1)</div>
+<p>The shadow/highlight split is weighted by luminance, with the
+Balance slider sliding the midpoint:</p>
+<div class="matheq-hero">w_{\mathrm{hi}} \;=\; \mathrm{clip}(L + 0.5\,B,\;0,\;1)\,,\qquad w_{\mathrm{lo}} \;=\; 1 - w_{\mathrm{hi}}</div>
+<p>so Balance&nbsp;=&nbsp;0 puts the crossover at
+<code>L&nbsp;=&nbsp;0.5</code>, positive Balance shifts it darker
+(more of the image reads as highlight &rarr; more warm tint),
+negative shifts it brighter (more cool-tint shadow). The per-pixel
+tint is a weighted mix of the two hue vectors:</p>
+<div class="matheq-hero">\mathrm{tint}(x) \;=\; w_{\mathrm{lo}} \,\mathbf{c}_{\mathrm{shadow}} \;+\; w_{\mathrm{hi}} \,\mathbf{c}_{\mathrm{highlight}}</div>
+<p>and the final result is a Strength-controlled mix between the
+untouched image and the tinted version (where the tint multiplies
+the image by <code>2&middot;tint</code> to approximately preserve
+luminance when the tint averages roughly 0.5):</p>
+<div class="matheq-hero">\mathrm{out} \;=\; (1 - S)\,\mathrm{img} \;+\; S \,\cdot\, \mathrm{clip}(2\,\mathrm{img} \,\cdot\, \mathrm{tint},\;0,\;1)</div>
+
+<h3>4.8 Threading model</h3>
+<p>Two different workers handle computation:</p>
+<ul>
+  <li><b>Preview worker</b> (<code>FXWorker</code>, a QThread) runs
+      the effect on the downsampled preview buffer. Supports
+      cancellation &mdash; a new slider change cancels the
+      in-flight preview and launches a new one as soon as you
+      stop moving.</li>
+  <li><b>Apply worker</b> (<code>_FXApplyWorker</code>, a QObject
+      moved onto a QThread) runs the effect at full resolution
+      with no cancellation; the main thread does the document
+      write once it emits <code>finished</code>. Controls are
+      disabled during this run so the committed result always
+      corresponds to the exact slider values at the moment of
+      pressing Apply.</li>
+</ul>
+
+<h3>4.9 Headless API</h3>
+<p>Three module-level entry points:</p>
+<ul>
+  <li><code>fx_headless(doc, effect="orton_glow", **params)</code>
+      &mdash; convenience wrapper for scripted use with
+      keyword-style params and sensible defaults for anything
+      missing.</li>
+  <li><code>apply_fx_headless(doc, preset, main_window=None)</code>
+      &mdash; the preset-driven dispatcher used by shortcut tiles
+      and the drag-to-canvas system. The preset dict carries the
+      <code>effect</code> key plus any of that effect's own
+      parameters; missing values fall back to defaults.</li>
+  <li><code>replay_fx(main_window, target_sw=None)</code>
+      &mdash; replays the last FX operation on the current base
+      document, used by Replay Last Action.</li>
+</ul>
+
+<div class="credit">
+<b>Credits.</b> The <b>Orton effect</b> is Michael Orton's 1980s
+film darkroom technique (sandwiched transparencies, one sharp and
+one soft-focus overexposed) translated into digital compositing.
+The <b>Screen</b>, <b>Soft Light</b>, and <b>Lighten</b> blend
+formulas follow the <b>W3C Compositing and Blending Level 1</b>
+specification, which Photoshop also follows. <b>Rec.&nbsp;709
+luminance coefficients</b> are from ITU-R Recommendation BT.709.
+<b>Bloom</b> is a longstanding technique in HDR rendering and
+cinematography (the modern HDR bloom pass in game engines; the
+earlier Harris Shutter and defocus-highlight film techniques). The
+Gaussian blur, resize, and bilateral kernels come from <b>OpenCV</b>.
+HSV&nbsp;&harr;&nbsp;RGB conversion uses Python's standard
+<code>colorsys</code>. The <b>FX dialog's composition</b> &mdash;
+the hot-swapping parameter panel driven by the ParamSpec registry,
+the downsampled preview buffer with full-resolution threaded Apply,
+the per-effect luma recovery pass for Screen-overshoot
+compensation, the highlight-protect roll-off, the smooth bloom
+mask ramp, the active-document tracking, and the preset grip
+system &mdash; is SASpro-exclusive.
+</div>
+
+</body>
+</html>

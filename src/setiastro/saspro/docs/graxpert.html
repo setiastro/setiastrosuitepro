@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>GraXpert</h1>
+<p class="sub">A bridge to the external GraXpert application for AI gradient
+removal and denoising. SASpro hands your image to GraXpert's command-line
+interface, then reads the result back and applies it as an undoable step &mdash;
+your original header and WCS are preserved.</p>
+
+<div class="credit">GraXpert is a separate, independent open-source project
+(<code>graxpert.com</code>) with its own authors and licence. SASpro does not
+include or reimplement it &mdash; it drives the GraXpert program you install, and
+the gradient-removal and denoise algorithms are entirely GraXpert's.</div>
+
+<h2>1. Using the tool</h2>
+<p>Choose an operation, set its one parameter, and click OK. The run is
+non-modal and streams GraXpert's own log into a progress window; <b>Cancel</b>
+stops it. The first time you run it, SASpro asks you to locate the GraXpert
+executable and remembers it afterward.</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Remove gradient</td><td>Runs GraXpert's background extraction to model
+      and remove the sky gradient.</td></tr>
+  <tr><td>Denoise</td><td>Runs GraXpert's AI denoiser.</td></tr>
+  <tr><td>Smoothing (0&ndash;1)</td><td>Shown for <b>Remove gradient</b> (default
+      0.10) &mdash; how smooth/loose the background model is.</td></tr>
+  <tr><td>Strength (0&ndash;1)</td><td>Shown for <b>Denoise</b> (default 0.50)
+      &mdash; how aggressively noise is suppressed.</td></tr>
+  <tr><td>Denoise model</td><td>Enabled for Denoise only: <b>Latest (auto)</b> lets
+      GraXpert pick, or pin a specific AI version for reproducibility.</td></tr>
+  <tr><td>Use GPU acceleration</td><td>Toggles GPU vs CPU; remembered between
+      sessions.</td></tr>
+  <tr><td>Grip (bottom-left)</td><td>Drag to the canvas to mint a GraXpert shortcut
+      with the operation, parameter, model and GPU setting, or drop on an image to
+      run it headlessly.</td></tr>
+</table>
+<div class="tip">GraXpert must be installed separately. Point SASpro at the
+executable once (Preferences, or the file picker that appears on first run) and
+it's remembered; on macOS you can select the <code>.app</code> bundle and SASpro
+resolves the binary inside it.</div>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">SASpro acts as a front-end to the GraXpert CLI: it exports
+your image, runs the program, and imports the result &mdash; without letting
+GraXpert's file header overwrite your calibration.</p>
+
+<h3>2.1 The round-trip</h3>
+<p>On OK, SASpro writes the active image to a temporary <b>32-bit float TIFF</b>
+(clipped to [0,1]), runs GraXpert on it, then reads back the
+<code>&hellip;_GraXpert.{fits|tif|tiff|png}</code> output and applies it to the
+document. If the primary loader can't read GraXpert's output, a fallback reader
+recovers the pixels and normalises them to float32 [0,1].</p>
+
+<h3>2.2 The command</h3>
+<p>The invocation mirrors GraXpert's documented CLI &mdash; background extraction
+vs denoising, with the matching parameter:</p>
+<div class="eq">GraXpert -cmd background-extraction  input.tif -cli -gpu {true|false} -smoothing S
+GraXpert -cmd denoising             input.tif -cli -gpu {true|false} -strength S [-ai_version V] [-batch_size N]</div>
+<p><code>-ai_version</code> is sent only when you pin a model (omitted for
+&ldquo;Latest&rdquo;), and <code>-batch_size</code> is 4 on GPU, 1 on CPU. The
+process runs with a cleaned environment (SASpro's bundled-Python variables are
+stripped) so GraXpert launches against its own runtime.</p>
+
+<h3>2.3 Executable resolution</h3>
+<ul>
+  <li>Uses the stored path (<code>paths/graxpert</code>) if it exists; on macOS a
+      <code>.app</code> bundle is resolved to its inner binary and the execute bit
+      is ensured.</li>
+  <li>Otherwise falls back to a configured default, and on macOS/Linux prompts you
+      to locate it (then stores your choice). On Windows it defaults to the
+      configured path or <code>GraXpert.exe</code> on PATH.</li>
+</ul>
+
+<h3>2.4 Applying the result</h3>
+<ul>
+  <li>The imported pixels are cleaned to float32 (alpha dropped, non-finite values
+      replaced) and committed as a &ldquo;GraXpert Gradient Removal&rdquo; or
+      &ldquo;GraXpert Denoise&rdquo; step.</li>
+  <li>Your document's <b>original header and WCS are kept</b> &mdash; GraXpert's
+      own header is stored separately (as <code>graxpert_header</code>) rather than
+      replacing yours, so astrometry and calibration metadata survive.</li>
+  <li>The operation is recorded as a replayable preset
+      (<code>{op, gpu, smoothing | strength, ai_version}</code>) for the workflow
+      and grip/headless paths.</li>
+</ul>
+
+</body>
+</html>

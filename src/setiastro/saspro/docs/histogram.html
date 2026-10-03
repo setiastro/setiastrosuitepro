@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Histogram Viewer</h1>
+<p class="sub">A per-image, read-only analysis view of the intensity
+distribution, with linear/log axes and a live statistics panel. It measures the
+image; it does not modify it, so it has no drag-to-canvas grip.</p>
+
+<h2>1. Using the tool</h2>
+<p>The viewer is non-modal and bound to one document &mdash; you can keep several
+open, one per image. The left side shows the histogram; the right side a live
+statistics table.</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Zoom slider (50&ndash;1000%)</td><td>Vertical zoom of the plot &mdash;
+      amplifies the count axis so faint, low-population bins (background, faint
+      nebulosity) become visible without changing the data.</td></tr>
+  <tr><td>Toggle Log X-Axis</td><td>Switch the intensity axis between linear and
+      logarithmic, which spreads out the crowded low-intensity end typical of
+      linear astro data.</td></tr>
+  <tr><td>Toggle Log Y-Axis</td><td>Plot counts on a log scale so the faint tail
+      is visible next to a tall background peak.</td></tr>
+  <tr><td>&ldquo;?&rdquo; (sensor max)</td><td>Set your camera's true saturation
+      level (native ADU or normalized) so the <b>High Clipped</b> warning
+      reflects real sensor saturation, not just the 1.0 ceiling.</td></tr>
+  <tr><td>More Stats&hellip;</td><td>Opens a detailed per-channel table:
+      mean, variance, MAD, IQR and a full percentile set.</td></tr>
+  <tr><td>Ctrl+Click on the plot</td><td>Sends the clicked intensity as the
+      <b>pivot</b> to the Hyperbolic Stretch tool, if it's open.</td></tr>
+</table>
+
+<h3>The statistics panel</h3>
+<p>Per channel (R/G/B for colour, or a single grey column for mono): <b>Min</b>,
+<b>Max</b>, <b>Median</b>, <b>StdDev</b>, <b>MAD</b>, and <b>Low</b>/<b>High
+Clipped</b> counts with percentages. The clipped cells tint red as the fraction
+climbs (mild &ge; 0.01%, medium &ge; 0.1%, strong &ge; 1%) so over-exposure or a
+crushed black point is obvious at a glance.</p>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">What the viewer computes, and the exact statistic
+definitions in the panel.</p>
+
+<h3>2.1 Data domain &amp; channels</h3>
+<p>The image is read as float in the normalized range <code>[0, 1]</code>. A
+3-channel image is analysed as three independent channels (R, G, B); mono and
+single-channel images as one. Every statistic and histogram below is computed
+<b>per channel</b> on the full-resolution pixel array.</p>
+
+<h3>2.2 Binning</h3>
+<p>Histograms use <b>512 bins</b>, cached once per image and only redrawn (not
+recomputed) on zoom/resize. Two bin edge sets are built so the X axis can switch
+instantly:</p>
+<div class="eq">linear:  edges = linspace(0, 1, 513)
+log:     eps    = max(1e-6, min positive pixel)
+         edges  = logspace(log10(eps), log10(1), 513)</div>
+<p>Counts are <code>numpy.histogram(channel, bins=edges)</code> per channel. The
+log edge set starts at the smallest non-zero pixel value &epsilon; rather than 0,
+since <code>log(0)</code> is undefined; true-black pixels fall below the first
+log bin.</p>
+
+<h3>2.3 Axis mapping</h3>
+<p>On a log X axis, an intensity <code>v</code> is placed at horizontal fraction</p>
+<div class="matheq">x_{\mathrm{frac}}(v)=\frac{\log_{10}v-\log_{10}\epsilon}{-\log_{10}\epsilon}</div>
+<p>(since <code>log10(1) = 0</code>). Log Y maps each bin count through
+<code>log</code> before scaling to the plot height, compressing a dominant
+background peak so faint structure stays on scale. The zoom slider applies an
+additional linear gain to the count axis.</p>
+
+<h3>2.4 Statistics</h3>
+<p>For a channel's pixel values with mean <code>&mu;</code> and <code>N</code>
+samples: <b>Median</b> is <code>median(x)</code>, <b>Variance</b> is
+<code>&sigma;&sup2;</code>, and</p>
+<div class="matheq">\sigma=\sqrt{\frac{1}{N}\sum_i (x_i-\mu)^2}\quad(\mathrm{population\ }\sigma)</div>
+<div class="matheq">\mathrm{MAD}=\mathrm{median}\left(|x_i-\mathrm{median}(x)|\right)\,,\qquad \mathrm{IQR}=p_{75}-p_{25}</div>
+<p>MAD is the robust scale estimator the viewer reports because, unlike StdDev,
+it is almost unaffected by bright stars and hot pixels. For Gaussian noise it
+relates to the standard deviation by the familiar constant:</p>
+<div class="matheq-hero">\sigma_{\mathrm{robust}}\approx 1.4826\cdot\mathrm{MAD}</div>
+<p class="cap">So a background's MAD &times; 1.4826 is a clean read of its noise
+sigma, free of the star-field inflation that corrupts a plain StdDev.</p>
+
+<h3>2.5 Clipping detection</h3>
+<p>Low- and high-clipped pixels are counted against fixed thresholds
+(<code>eps = 1e-6</code>):</p>
+<div class="matheq">\mathrm{Low}=\#\{x_i\leq\epsilon\}\,/\,N\,,\qquad \mathrm{High}=\#\{x_i\geq s-\epsilon\}\,/\,N</div>
+<p>where <code>s</code> is the normalized sensor-saturation level set by the
+&ldquo;?&rdquo; control:</p>
+<div class="matheq">s=\frac{\mathrm{ADU}_{\mathrm{sat}}}{\mathrm{ADU}_{\max}}\qquad(\mathrm{default}\;s=1.0)</div>
+<p>Setting <code>s</code> below 1.0 lets the High-Clipped warning fire at your
+sensor's real full-well level even if the stored data never quite reaches 1.0.
+The cell background escalates with the clipped fraction: &ge; 0.01% mild,
+&ge; 0.1% medium, &ge; 1% strong.</p>
+
+<h3>2.6 More Stats</h3>
+<p>The detailed table adds, per channel: Mean, Variance, MAD, IQR, and the
+percentile set <code>p &isin; {0.1, 1, 5, 25, 50, 75, 95, 99, 99.9}</code>
+(<code>numpy.percentile</code>). For very large images (over 20 million pixels
+per channel) the detailed stats are computed on a fixed random subsample of 5
+million pixels (seeded for repeatability) so the dialog stays responsive; the
+main-panel stats and the histogram itself always use the full array.</p>
+
+<h3>2.7 Notes</h3>
+<ul>
+  <li>The viewer never writes to the image &mdash; there is nothing to apply, so
+      unlike the processing tools it has no preset grip.</li>
+  <li>Histogram data is cached per image; changing the view (zoom, log toggles)
+      only re-renders, it does not re-bin.</li>
+</ul>
+
+</body>
+</html>

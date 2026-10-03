@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Mask Creation</h1>
+<p class="sub">Builds a floating-point mask from a combination of hand-drawn shapes and automatic content-driven detectors (range selection, diffuse structure, lightness, chrominance, star mask, hue-channel colour masks). The hand-drawn shapes define a region of interest; the chosen detector runs inside that region to produce the final mask. The result is pushed into SASpro as a new document and, optionally, attached as a mask layer on the source document for subsequent masked tools.</p>
+
+
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Open Mask Creation</b> on a SASpro document. <b>Pick a shape mode</b> (freehand / ellipse / select-all) and draw to define the region of interest; <b>Undo Shape</b> (Ctrl+Z) and <b>Clear Shapes</b> are available. <b>Pick a mask type</b> &mdash; Binary uses the shapes directly; Range Selection, Diffuse Structure, Lightness, Chrominance, Star Mask, and the Color masks all run <i>inside</i> the shapes. <b>Toggle Display Stretch</b> on the canvas if the underlying data is linear and hard to see. <b>Tune the detector parameters</b> and watch the floating live preview update. <b>Edge Blur</b> softens the final mask edges. <b>Preview Mask</b> opens a full-resolution preview with push-as-document; <b>OK</b> generates the final mask, pushes it as a new document, and attaches it as a mask layer on the source doc.
+</div>
+
+<div class="hero">
+<p>The core idea: <b>shapes define where, detectors define what</b>. The final mask is the pixel-wise product of a binary shape mask and a content-driven floating-point mask:</p>
+<div class="matheq-hero">M_{\mathrm{final}}(x,y) = M_{\mathrm{shape}}(x,y) \cdot M_{\mathrm{content}}(x,y)</div>
+<p>If no shapes are drawn, the shape mask is zero everywhere and the final mask is zero &mdash; use <b>Select Entire Image</b> to put a shape over the whole frame when you want a content-only mask. Edge Blur is applied once, after the product, as a final Gaussian smoothing stage.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. Shape tools</a><br>
+<a href="#s2">2. Display stretch and canvas zoom</a><br>
+<a href="#s3">3. Live preview overlay</a><br>
+<a href="#s4">4. Binary mask</a><br>
+<a href="#s5">5. Range selection</a><br>
+<a href="#s6">6. Diffuse structure</a><br>
+<a href="#s7">7. Lightness and chrominance</a><br>
+<a href="#s8">8. Star mask</a><br>
+<a href="#s9">9. Color masks</a><br>
+<a href="#s10">10. Edge blur</a><br>
+<a href="#s11">11. Preview and apply</a><br>
+<a href="#s12">12. Technical details</a><br>
+</div>
+
+<h2 id="s1">1. Shape tools</h2>
+<p>The shape toolbar at the top offers three modes:</p>
+<ul>
+<li><b>Freehand</b> &mdash; click-drag to trace a polygon. The polygon is finalised on mouse release with a green fill and a 2-pixel green cosmetic pen (the pen stays 2&nbsp;px wide at every zoom level, so the shape outlines never thin out when you zoom in). Any number of polygons can be drawn and they union together into the shape mask.</li>
+<li><b>Ellipse</b> &mdash; click-drag to rubber-band an ellipse, then release to finalise. The finished ellipse becomes an <b>interactive handle item</b> with four cardinal resize handles (top, bottom, left, right) and a rotate handle 20&nbsp;px above the top edge. Drag any resize handle to reshape; drag the rotate handle to spin the ellipse around its centre. Handles are drawn at a fixed screen size (they ignore the view transform) so they stay comfortable to grab at any zoom.</li>
+<li><b>Select Entire Image</b> &mdash; drops a polygon shape covering the full frame. Use this when you want a content-driven mask (Range, Star, Colour, etc.) applied to the whole image with no spatial restriction.</li>
+</ul>
+<p>Shapes can be moved after they're drawn: click an unselected shape to select it, drag to reposition. The ellipse rotation handle is on top so it stays grabbable even when the ellipse is resized small.</p>
+<div class="keys"><b>Shortcuts</b><br>
+<code>Ctrl+Z</code> &mdash; Undo the most recently added shape (removes it from the scene and invalidates the shape-mask cache).<br>
+<code>+</code> / <code>=</code> &mdash; Zoom in on the live-preview panel (when it has focus).<br>
+<code>-</code> &mdash; Zoom out on the live-preview panel.<br>
+<code>F</code> &mdash; Fit live-preview to window.<br>
+<code>Ctrl+Wheel</code> &mdash; Zoom the drawing canvas (slower, finer step).<br>
+<code>Middle/Right-drag</code> &mdash; Pan the live-preview panel.
+</div>
+<p><b>Undo Shape</b> and <b>Clear Shapes</b> both exist as explicit buttons. Undo removes just the last shape and refreshes the live preview; Clear removes every shape and refreshes.</p>
+
+<h2 id="s2">2. Display stretch and canvas zoom</h2>
+<p>Linear astronomical data is almost black on screen &mdash; nebula structure sits in the bottom few percent of the range, and drawing a shape around an invisible target is unpleasant. The <b>Toggle Display Stretch</b> button swaps the canvas background to a stretched copy of the image so you can see what you're drawing on.</p>
+<div class="tip"><b>Display stretch does not change mask math.</b> The stretched image is only used for the on-screen pixmap. The mask generators (Range Selection, Diffuse Structure, Star Mask, Lightness, Chrominance, Colour masks) all run against the <i>original</i> floating-point data. A mask built against the stretched view is identical bit-for-bit to one built against the linear view with the same control settings.</div>
+<p>The display stretch uses SASpro's <code>stretch_color_image</code> with a target median of 0.25 and unlinked channels when the input is RGB; for mono input, it uses a simple scale-to-target-median followed by a square-root curve. The stretch is applied once when the toggle flips on, and the view transform (zoom / centre) is preserved so toggling doesn't make the view jump.</p>
+<p>Canvas zoom works three ways: the <b>Zoom In</b>, <b>Zoom Out</b>, and <b>Fit to Preview</b> buttons at the top of the dialog; <code>Ctrl+Wheel</code> over the canvas; and the <code>+</code>&nbsp;/&nbsp;<code>&minus;</code>&nbsp;/&nbsp;<code>F</code> shortcuts in the live-preview panel. The canvas uses a cosmetic pen for shape outlines, so lines stay 2&nbsp;px wide on screen at every zoom level &mdash; you don't get hair-thin lines at 800% zoom.</p>
+
+<h2 id="s3">3. Live preview overlay</h2>
+<p>When Range Selection or Diffuse Structure is active, a floating <b>Live Mask Preview</b> window opens next to the dialog. It shows the current mask as a red translucent overlay on top of the base image, so you can see at a glance which pixels will be included (red) and which won't (clear).</p>
+<p>The preview updates on a 120&nbsp;ms debounce: moving a slider schedules a re-render for 120&nbsp;ms after the last change, so dragging a slider doesn't fire a hundred renders per second. The preview runs on a downsampled copy of the image (max dimension 1000&nbsp;px) for speed; the final <b>Preview Mask</b> button renders at full resolution.</p>
+<div class="tip">The preview deliberately uses the current <i>display-stretched</i> image for its background, so what you see in the overlay matches what you see on the canvas. The red overlay itself is composited at 55% alpha against the base, so bright regions of the image still show through enough to tell you where the mask is landing.</div>
+<p>The preview is zoomable and pannable with the same controls as the drawing canvas. It auto-opens when you switch to Range Selection or Diffuse Structure, and auto-closes when you switch to a mask type that doesn't use it (Binary, Lightness, Chrominance, Star Mask, Color).</p>
+
+<h2 id="s4">4. Binary mask</h2>
+<p>The simplest mode. The final mask is just the rasterised shape mask &mdash; 1.0 inside any drawn polygon or ellipse, 0.0 outside. Edge Blur is still applied if non-zero, giving a feathered binary selection.</p>
+<p>Use Binary when you want a clean geometric region (e.g. a rectangle around a galaxy for star removal, a ring around a comet nucleus) with no content-dependent fine-tuning.</p>
+
+<h2 id="s5">5. Range selection</h2>
+<p>Selects pixels by lightness value. Four sliders control the shape of the response curve:</p>
+<ul>
+<li><b>Lower</b> and <b>Upper</b> &mdash; the lightness band to include. Pixels with lightness between Lower and Upper get a mask value of 1.0.</li>
+<li><b>Transition</b> &mdash; the width of the ramp outside the band. Pixels slightly below Lower or slightly above Upper get a mask value that ramps linearly from 0 to 1 over the Transition width. The combined response is a trapezoid: zero below Lower&minus;Transition, rising linearly through Lower, flat at 1 through Upper, falling linearly through Upper+Transition, zero above.</li>
+<li><b>Blur</b> &mdash; Gaussian smoothing applied to the trapezoid result (sigma in pixels, 1&ndash;200).</li>
+</ul>
+<p>Three checkboxes modify the behaviour:</p>
+<ul>
+<li><b>Link limits</b> &mdash; locks Upper to track Lower, so you drag one slider and both move. Useful for building a narrow-band selection by sweeping the band position.</li>
+<li><b>Screening</b> &mdash; multiplies the mask by the lightness value, so bright pixels get stronger mask values than dim ones even inside the band. The result is a mask that follows the signal: it's weaker where there's less to work with.</li>
+<li><b>Lightness</b> &mdash; always on in this build (the component used is always Rec.&nbsp;601 lightness regardless of this checkbox).</li>
+<li><b>Invert</b> &mdash; replace the final mask <code>m</code> with <code>1 &minus; m</code>, so you select pixels <i>outside</i> the chosen band instead of inside.</li>
+</ul>
+<p>The sigma slider shows &ldquo;&sigma; = N px&rdquo; in real pixels; the preview path scales this down by the preview downsample factor so the smoothing visually matches what the full-resolution mask will look like.</p>
+
+<h2 id="s6">6. Diffuse structure</h2>
+<p>Finds coherent large-scale structure &mdash; galaxy halos, nebula emission, dust lanes &mdash; using SASpro's <code>diffuse_structure_mask</code> detector. Five parameters:</p>
+<ul>
+<li><b>Profile</b> &mdash; <i>Extended structure</i> protects the detected object uniformly; <i>Brightness weighted</i> protects bright cores more strongly than halos, so nearby inter-arm regions can still be processed.</li>
+<li><b>Sensitivity</b> &mdash; higher values catch fainter connected structure (0.50&ndash;20.0). The default of 1.00 is tuned for typical galaxy and nebula fields; raise for faint extended emission, lower for crisp isolated targets.</li>
+<li><b>Feather</b> &mdash; soft-edge sigma as a percentage of the shorter image dimension (0&ndash;10&nbsp;%, step 0.25&nbsp;%). This controls how smoothly the mask transitions from protected to unprotected.</li>
+<li><b>Minimum object area</b> &mdash; drops disconnected components smaller than this percentage of the image (0.01&ndash;5&nbsp;%). This is a discrete keep-or-reject filter, not a gradient, so bumping it one notch may cause small objects to disappear entirely.</li>
+<li><b>Envelope fill</b> &mdash; dilates the detected mask into nearby dark structure and fills inward holes, up to this fraction of the image (0&ndash;25&nbsp;%). High values may bridge nearby but separate objects.</li>
+</ul>
+<p>Two toggles:</p>
+<ul>
+<li><b>Suppress compact stars</b> &mdash; filters out PSF-scale peaks during detection so stars don't inflate the mask. Leave this off if you want stars kept inside the protection, or if the image is already starless.</li>
+<li><b>Invert</b> &mdash; protect the background instead of the detected structure (useful for &ldquo;everything but the galaxy&rdquo; selections).</li>
+</ul>
+<p>The <b>Quality</b> dropdown controls the internal processing resolution:</p>
+<ul>
+<li><b>Low</b> &mdash; 700&nbsp;px shortest side (fastest).</li>
+<li><b>Medium</b> &mdash; 1400&nbsp;px shortest side (balanced; default).</li>
+<li><b>Ultra</b> &mdash; native resolution (slow, highest fidelity along the mask edge).</li>
+</ul>
+<p>The <b>Auto</b> button runs <code>suggest_diffuse_structure_settings</code> on the current image &mdash; it analyses the frame and chooses initial values for the five parameters that are usually a reasonable starting point for this image. The returned settings are mapped back onto the slider positions so you can still edit them.</p>
+
+<h2 id="s7">7. Lightness and chrominance</h2>
+<p>Two component-extraction modes. Both use the shape mask as a binary gate and project a component channel through it: pixels outside shapes are 0; pixels inside shapes get the component's value at that pixel.</p>
+<ul>
+<li><b>Lightness</b> &mdash; the Rec.&nbsp;601 weighted sum of RGB (0.2989&nbsp;R + 0.5870&nbsp;G + 0.1140&nbsp;B); on mono input it's just the image itself. Use this when you want a mask that's stronger on bright signal and dimmer on faint signal, with no explicit range gate.</li>
+<li><b>Chrominance</b> &mdash; the colour-saturation distance in YCrCb space, normalised to [0,&nbsp;1]. Grey / neutral pixels get a mask value near 0; strongly coloured pixels get a mask value near 1. Useful for selecting coloured features (star cores, nebula emission) without caring about their brightness.</li>
+</ul>
+<p>Chrominance requires RGB input; it falls back to zero on mono. Both modes apply Edge Blur if non-zero.</p>
+
+<h2 id="s8">8. Star mask</h2>
+<p>Detects stars with SEP and paints a disc for each detection into the mask. One slider plus optional Gaia augmentation:</p>
+<ul>
+<li><b>Detection Threshold (&sigma;)</b> &mdash; SEP's extraction threshold in units of background RMS, 0.5&ndash;50.0, default 3.0. Lower values find more and fainter stars but risk false positives in noisy fields; higher values find only the obvious ones.</li>
+</ul>
+<p>The <b>Trial Detect</b> button runs SEP against the current image at the current threshold and reports the detection count without generating the full mask. The result is colour-coded:</p>
+<ul>
+<li><b>Green</b> &mdash; under 20k stars (reasonable).</li>
+<li><b>Amber</b> &mdash; 20k&ndash;100k (quite high, consider raising threshold).</li>
+<li><b>Orange</b> &mdash; over 100k (threshold almost certainly too low).</li>
+<li><b>Red</b> &mdash; SEP's pixel-buffer overflowed (<code>pixstack</code> error); raise the threshold significantly.</li>
+</ul>
+<p>Each detected star gets a disc of radius <code>1.5&nbsp;&middot;&nbsp;max(a,&nbsp;b)</code> capped at 10 pixels, where <code>a</code> and <code>b</code> are the semi-major and semi-minor axes of SEP's elliptical fit. The cap keeps the mask from eating huge chunks of the image when a star saturates and SEP fits a giant ellipse to its spike structure.</p>
+
+<h3>Gaia Local DB augment</h3>
+<p>The checkbox <b>Augment with Gaia Local DB</b> fills in the stars SEP missed &mdash; typically bright saturated stars (where SEP's background estimate breaks down and no detection fires) and faint catalogued stars that didn't pass the detection threshold. Requires:</p>
+<ul>
+<li>A plate-solved image (the dialog needs the WCS to project catalogue positions to pixels). Opening Mask Creation on an unsolved doc greys the checkbox out with an explanatory tooltip.</li>
+<li>At least one installed Gaia Local DB astrometric band (configured under Settings &rarr; Gaia Local DB Library &rarr; Astrometry).</li>
+</ul>
+<p>The <b>Max G</b> spinner (6.0&ndash;20.0, default 17.0) controls how deep the catalogue query goes. 17 is a good default for most data; raise to 18&ndash;19 for very deep or narrowband imaging where the extra faint stars are worth masking.</p>
+<p>The size of the Gaia-added discs is <b>calibrated to this image's own PSF</b>. SASpro takes the SEP detections already made, ranks their radii, ranks the Gaia G magnitudes in-frame, and fits a linear <code>radius = &alpha; &middot; G + &beta;</code> model by matching percentiles: the 95th-percentile SEP radius maps to the 5th-percentile (brightest) in-frame Gaia G, and the 5th-percentile SEP radius maps to the 95th-percentile (faintest) G. The fitted radius function is then clamped to [1,&nbsp;15] pixels and used for every Gaia star added to the mask. If there are fewer than 15 SEP detections to fit against, a static fallback curve is used (10&nbsp;px at G&nbsp;=&nbsp;6, 2&nbsp;px at G&nbsp;=&nbsp;15, linear between).</p>
+<div class="tip">The augment is <b>additive</b>, not a replacement: SEP runs first, then Gaia fills in. If a Gaia star's centre pixel is already covered by a SEP mask disc (a 1-pixel check), the Gaia star is skipped &mdash; SEP's radius was based on a real measurement of that star, so no reason to paint over it with a modelled one.</div>
+
+<h2 id="s9">9. Color masks</h2>
+<p>Seven hue-based masks (Red, Orange, Yellow, Green, Cyan, Blue, Magenta). Each selects pixels whose HLS hue falls in a specific angular range on the colour wheel:</p>
+<table>
+<tr><th>Mask</th><th>Hue range (degrees)</th></tr>
+<tr><td>Red</td><td>0&deg;&ndash;10&deg; <b>and</b> 350&deg;&ndash;360&deg; (wraps across hue&nbsp;=&nbsp;0)</td></tr>
+<tr><td>Orange</td><td>10&deg;&ndash;40&deg;</td></tr>
+<tr><td>Yellow</td><td>40&deg;&ndash;70&deg;</td></tr>
+<tr><td>Green</td><td>70&deg;&ndash;170&deg;</td></tr>
+<tr><td>Cyan</td><td>170&deg;&ndash;200&deg;</td></tr>
+<tr><td>Blue</td><td>200&deg;&ndash;270&deg;</td></tr>
+<tr><td>Magenta</td><td>270&deg;&ndash;350&deg;</td></tr>
+</table>
+<p>The output is a hard 0/1 mask &mdash; a pixel is either in the hue range or it isn't. Soften the edges with Edge Blur, or combine with Range Selection via the shape layer if you need chrominance-weighted selection.</p>
+<p>Requires RGB input; falls back to zero on mono. The conversion uses OpenCV's <code>COLOR_RGB2HLS</code> and the resulting hue (0&ndash;180 in OpenCV's 8-bit encoding) is remapped to 0&ndash;360&deg; before range testing.</p>
+
+<h2 id="s10">10. Edge blur</h2>
+<p>A single slider (0&ndash;300&nbsp;px) applies a final Gaussian blur to the mask after everything else. The kernel size is <code>2&nbsp;&middot;&nbsp;blur&nbsp;+&nbsp;1</code> (always odd) and the sigma is OpenCV's auto-chosen value. Edge Blur is applied once, after both the shape mask and the content-driven mask have been combined and multiplied together.</p>
+<p>Use small values (3&ndash;10&nbsp;px) to soften hard polygon or ellipse boundaries; use larger values (30+) when the mask will drive a tool that benefits from a broad feather (noise reduction edge handling, blended star removal).</p>
+
+<h2 id="s11">11. Preview and apply</h2>
+<p><b>Preview Mask</b> renders the full-resolution mask (not the preview-sized one) and opens a dedicated <b>Mask Preview</b> window. The preview supports zoom (buttons, mouse wheel, keyboard), pan (middle- or right-drag), and a <b>Push as New Document</b> button that opens the mask as a new SASpro view directly from the preview without closing the dialog.</p>
+<p><b>OK</b> generates the final mask (progress status shown at the bottom of the dialog), pushes it as a new document named &ldquo;Mask&rdquo; (or whatever name you give at the prompt), and &mdash; when launched via <code>create_mask_and_attach()</code> &mdash; also attaches it as a mask layer on the source document with name &ldquo;Mask&rdquo;, no inversion, full opacity, affect-mode, visible. The attached layer becomes the document's active mask, so the next tool that respects masks picks it up automatically.</p>
+<p><b>Cancel</b> closes the dialog without generating anything.</p>
+
+<h2 id="s12">12. Technical details</h2>
+<p class="tech-lead">Equations and algorithms, numbered continuing from the usage sections above.</p>
+
+<h3>13. Shape rasterisation and scale</h3>
+<p>Polygons and ellipses are rasterised with OpenCV. The dialog maintains two caches: one at the full image resolution and one at the preview resolution (max 1000&nbsp;px shortest side). Both are rasterised from the same scene-coordinate shape data, scaled by:</p>
+<div class="matheq">s_{x} = \frac{W_{\mathrm{out}}}{W_{\mathrm{full}}},\quad s_{y} = \frac{H_{\mathrm{out}}}{H_{\mathrm{full}}}</div>
+<p>Polygon vertices are rounded to integer pixel coordinates and passed to <code>cv2.fillPoly</code> with value 1. Ellipses are drawn with <code>cv2.ellipse</code> using the shape's scene-coordinate centre, half-width and half-height each scaled independently (so non-uniform preview scaling is handled correctly), and the shape's rotation angle in degrees. Multiple shapes union together via consecutive fills into the same buffer. The caches invalidate when any shape is added, moved, resized, rotated, undone, or cleared.</p>
+
+<h3>14. Range-selection trapezoid</h3>
+<p>The response curve is built from two independent linear ramps multiplied together. Rising edge:</p>
+<div class="matheq">r_{1}(x) = \mathrm{clip}\!\left(\frac{x - (L - f)}{f},\ 0,\ 1\right)</div>
+<p>Falling edge:</p>
+<div class="matheq">r_{2}(x) = \mathrm{clip}\!\left(\frac{(U + f) - x}{f},\ 0,\ 1\right)</div>
+<p>Combined response (trapezoid: zero below <code>L&minus;f</code>, rising linearly through <code>L</code>, flat at 1 through <code>U</code>, falling linearly through <code>U+f</code>, zero above):</p>
+<div class="matheq">m(x) = \mathrm{clip}\!\left(r_{1}(x) \cdot r_{2}(x),\ 0,\ 1\right)</div>
+<p>With screening enabled, the output is multiplied by the lightness value itself:</p>
+<div class="matheq">m_{\mathrm{screen}}(x) = m(x) \cdot x</div>
+<p>With invert enabled, the final mask is complemented:</p>
+<div class="matheq">m_{\mathrm{inv}}(x) = 1 - m(x)</div>
+<p>The Gaussian blur is applied in-place via <code>cv2.GaussianBlur(m, (0, 0), sigma)</code> with the user's sigma; a zero kernel-size tells OpenCV to size the kernel automatically from sigma. In the preview path, the sigma is scaled by the preview-downsample factor so the softening <i>looks</i> the same as it will at full resolution.</p>
+
+<h3>15. Lightness (Rec.&nbsp;601)</h3>
+<p>The lightness component used by Range Selection and the Lightness mask type is the standard Rec.&nbsp;601 weighted sum:</p>
+<div class="matheq-hero">L = 0.2989\,R + 0.5870\,G + 0.1140\,B</div>
+<p>For mono input, <code>L</code> is simply the input image. These coefficients are the standard-definition luma weights from ITU-R BT.601 and are chosen to match human perceptual response (green is weighted highest because the eye is most sensitive to it).</p>
+
+<h3>16. Chrominance (YCrCb)</h3>
+<p>The chrominance mask converts the image to the YCrCb colour space (via OpenCV's <code>COLOR_RGB2YCrCb</code>), extracts the Cr and Cb channels, and computes the distance of each pixel from the frame's mean (Cr, Cb) point:</p>
+<div class="matheq">C(x,y) = \sqrt{\left(C_b - \overline{C_b}\right)^{2} + \left(C_r - \overline{C_r}\right)^{2}}</div>
+<p>Then normalise linearly to [0,&nbsp;1]:</p>
+<div class="matheq">C_{n} = \frac{C - \min(C)}{\max(C) - \min(C) + \varepsilon}</div>
+<p>The <code>&epsilon;</code> term guards against a divide-by-zero on a perfectly neutral image. The result is a mask that's near zero on grey pixels and near one on strongly coloured pixels, independent of brightness &mdash; a dim red star and a bright red star get similar mask values.</p>
+
+<h3>17. Color masks (HLS hue slicing)</h3>
+<p>The seven colour masks (Red, Orange, Yellow, Green, Cyan, Blue, Magenta) use OpenCV's HLS conversion (<code>COLOR_RGB2HLS</code>). OpenCV packs hue into the range 0&ndash;180 for 8-bit images; it's remapped back to 0&ndash;360&deg; before range testing. Each colour has one or two angular intervals; a pixel is in the mask if its hue falls in any interval:</p>
+<div class="matheq">H \in [h_{\mathrm{lo}},\, h_{\mathrm{hi}}) \ \mathrm{or}\ H \in [350,\, 360) \cup [0,\, 10)</div>
+<p>The wraparound case (shown on the right) only applies to Red, whose hue range straddles the <code>0&deg;&nbsp;=&nbsp;360&deg;</code> seam. All other colours have a single contiguous range and don't need the OR.</p>
+
+<h3>18. SEP star detection</h3>
+<p>Star detection uses SEP (the Python port of SExtractor's core routines). The image is converted to mono via a channel-mean if needed, a background map is estimated with <code>sep.Background</code>, the background is subtracted, and <code>sep.extract</code> runs with the user's threshold expressed as a multiple of the global background RMS:</p>
+<div class="matheq">I_{\mathrm{sub}} = I - B,\quad \mathrm{detect\ where}\ I_{\mathrm{sub}} > \sigma \cdot \mathrm{rms}(B)</div>
+<p>Before extraction, <code>sep.set_extract_pixstack(5000000)</code> raises the per-image active-pixel buffer from the default 300000 up to 5&nbsp;million &mdash; wide-field frames with many large stars will otherwise overflow the stack and <code>sep.extract</code> raises an error. Each extracted object has <code>a</code> and <code>b</code> fields for the semi-major and semi-minor Gaussian-fit axes; the mask radius is:</p>
+<div class="matheq">r = \min\!\left(10,\ \lfloor 1.5 \cdot \max(a,\,b) \rfloor \right)</div>
+<p>The 10-pixel cap is important: SEP will happily fit an elliptical model to a saturated star's diffraction spikes and report a huge <code>max(a,&nbsp;b)</code> &mdash; without the cap, a single saturated star could paint out a quarter of the frame. The <b>Trial Detect</b> button runs the same background+extract chain and counts the result; the <code>pixstack</code> overflow case is caught specifically and reported in red so the user knows to raise the threshold rather than wonder why the mask isn't generating.</p>
+
+<h3>19. Gaia augment: radius-vs-G model</h3>
+<p>When the Gaia Local DB augment is enabled, the first step is to decide how big to draw each catalogued star's mask disc. SASpro doesn't know each Gaia star's SEP radius (because SEP didn't detect it), so it fits a linear <code>radius&nbsp;=&nbsp;&alpha;&nbsp;&middot;&nbsp;G&nbsp;+&nbsp;&beta;</code> model from the SEP detections already made, by rank-matching percentiles. Let <code>r<sub>SEP</sub></code> be the array of radii from this frame's SEP detections and <code>G</code> be the array of in-frame Gaia G magnitudes:</p>
+<div class="matheq">\alpha = \frac{r_{\mathrm{lo}} - r_{\mathrm{hi}}}{G_{\mathrm{hi}} - G_{\mathrm{lo}}}</div>
+<p>where <code>r<sub>hi</sub>&nbsp;=&nbsp;P<sub>95</sub>(r<sub>SEP</sub>)</code>, <code>r<sub>lo</sub>&nbsp;=&nbsp;P<sub>5</sub>(r<sub>SEP</sub>)</code>, <code>G<sub>lo</sub>&nbsp;=&nbsp;P<sub>5</sub>(G)</code> (bright end), and <code>G<sub>hi</sub>&nbsp;=&nbsp;P<sub>95</sub>(G)</code> (faint end). The intercept pins the fit to the bright anchor:</p>
+<div class="matheq">\beta = r_{\mathrm{hi}} - \alpha \cdot G_{\mathrm{lo}}</div>
+<p>The final per-star radius is clamped to [1,&nbsp;15] pixels:</p>
+<div class="matheq-hero">r(G) = \mathrm{clip}\!\left(\alpha \cdot G + \beta,\ 1,\ 15\right)</div>
+<p>If there are fewer than 15 SEP detections, or the percentile ranges collapse (G span under 0.5 mag, or r<sub>hi</sub>&nbsp;&leq;&nbsp;r<sub>lo</sub>), a static fallback curve is used:</p>
+<div class="matheq">r_{\mathrm{fb}}(G) = 10 - (G - 6) \cdot \frac{8}{9},\quad 6 \leq G \leq 15</div>
+<p>with <code>r&nbsp;=&nbsp;10</code> for G&nbsp;&leq;&nbsp;6 and <code>r&nbsp;=&nbsp;2</code> for G&nbsp;&geq;&nbsp;15. The rank-matching approach is a pseudo-fit, not a true radius-magnitude relation &mdash; SEP's actual magnitudes aren't computed &mdash; but it gets the slope and anchor approximately right for the current image's PSF, which is what matters for visual match with the SEP-drawn discs.</p>
+
+<h3>20. Gaia augment: frame extent and duplicate guard</h3>
+<p>The Gaia query needs the frame's RA/Dec extent. SASpro projects the four image corners through the WCS to get sky coordinates and takes the min/max of each. For declination this is straightforward; for RA, the min/max can wrap across the <code>0&deg;&nbsp;=&nbsp;360&deg;</code> seam if the field straddles it. SASpro detects this with the test <code>ra_max&nbsp;&minus;&nbsp;ra_min&nbsp;&gt;&nbsp;180&deg;</code> and, when true, passes the limits in reverse order (<code>ra_hi&nbsp;=&nbsp;ra_max</code>, <code>ra_lo&nbsp;=&nbsp;ra_min</code>) because the Local DB's <code>find_stars_in_box</code> expects that convention for wraparound queries.</p>
+<p>All catalogued stars in the box are projected to pixel coordinates with <code>world_to_pixel_values</code>, and anything outside the <code>[0,&nbsp;W)&nbsp;&times;&nbsp;[0,&nbsp;H)</code> rectangle is dropped. For each remaining star, the centre pixel of the proposed Gaia disc is checked against the existing SEP mask; if that pixel is already masked (value&nbsp;&gt;&nbsp;0), the Gaia star is skipped. This 1-pixel duplicate guard is deliberately simple: SEP has an actual measurement for that star, so there's nothing to add by painting over it with the modelled radius.</p>
+
+<h3>21. Interactive ellipse rotation handle</h3>
+<p>The rotation handle sits 20&nbsp;px above the top of the ellipse's bounding box. On mouse press, it captures three pieces of state: the ellipse centre in scene coordinates, the starting angle from centre to mouse, and the ellipse's current rotation. The starting angle is computed with <code>atan2</code>:</p>
+<div class="matheq">\varphi = \mathrm{atan2}\!\left(y - c_{y},\ x - c_{x}\right)</div>
+<p>On mouse move, the current angle is recomputed from the current mouse position and the ellipse's rotation is set to:</p>
+<div class="matheq">\theta_{\mathrm{new}} = \theta_{0} + \left(\varphi_{\mathrm{curr}} - \varphi_{0}\right)</div>
+<p>The key design choice: this is an <b>absolute</b> rotation computed from the stored starting state, not a delta accumulated frame-by-frame. Frame-by-frame accumulation would drift because rounding errors would compound; capturing the start angle and start rotation once on press means the ellipse always matches the mouse angle exactly, regardless of how long or jerky the drag was. On release the state is cleared and the cursor returns to the open-hand icon.</p>
+
+<h3>22. Display stretch</h3>
+<p>The display stretch is applied only to the on-screen pixmap. When the toggle flips on, the dialog calls <code>stretch_color_image(a, 0.25, linked=False, normalize=False)</code> on RGB input &mdash; this is SASpro's standard preview stretch, targeted at a median of 0.25 with per-channel unlinked histograms. On mono input (or when the colour stretch isn't available), a simple fallback is used: compute the scale that would put the current median at 0.25, apply it, clip to [0,&nbsp;1], and take the square root:</p>
+<div class="matheq">s = \frac{0.25}{\max\!\left(\mathrm{med}(I),\ \varepsilon\right)}</div>
+<div class="matheq">I_{\mathrm{disp}} = \sqrt{\mathrm{clip}(s \cdot I,\ 0,\ 1)}</div>
+<p>When the toggle flips, the canvas records its current view transform (scale and centre), swaps the pixmap, and restores the transform &mdash; so turning display stretch on or off doesn't make the view jump or re-fit.</p>
+
+<h3>23. Preview downsample and dual-cache strategy</h3>
+<p>The preview image is a downsampled copy, created once at dialog open:</p>
+<div class="matheq">s_{\mathrm{prev}} = \frac{D_{\max}}{\max(H,\,W)}</div>
+<p>with <code>D<sub>max</sub>&nbsp;=&nbsp;1000</code>. If <code>max(H,&nbsp;W)&nbsp;&leq;&nbsp;1000</code>, the preview is the full image at scale 1.0. Resampling uses <code>cv2.INTER_AREA</code> for downscaling (correct for shrinking, avoids moir&eacute; patterns on textured data).</p>
+<p>Two separate shape-mask caches exist: one at full resolution for the final mask, one at preview resolution for the live overlay. Each is rasterised from the same scene-coordinate shape data but with its own <code>(W<sub>out</sub>,&nbsp;H<sub>out</sub>)</code>. Both caches invalidate when any shape is added, moved, resized, rotated, undone, or cleared; parameter changes (sliders, checkboxes, mask-type dropdown) do <i>not</i> invalidate them, so moving a slider refreshes only the content-driven mask portion.</p>
+<p>The live-preview re-render runs on a 120&nbsp;ms single-shot timer: a slider change restarts the timer, so dragging a slider at any speed produces at most one render per 120&nbsp;ms. The timer only fires when Range Selection or Diffuse Structure is active &mdash; other mask types either need a full-resolution computation (Star, Diffuse at Ultra) or are cheap enough that preview adds no value.</p>
+
+<h3>24. Edge blur kernel</h3>
+<p>Edge Blur applies a single Gaussian smoothing to the final mask after all other processing. The kernel size is always odd:</p>
+<div class="matheq">k = 2 \cdot \lfloor \mathrm{blur} \rfloor + 1</div>
+<p>with the sigma left for OpenCV to derive automatically from the kernel size via its internal <code>sigma&nbsp;=&nbsp;0.3&nbsp;&middot;&nbsp;((k&nbsp;&minus;&nbsp;1)&nbsp;&middot;&nbsp;0.5&nbsp;&minus;&nbsp;1)&nbsp;+&nbsp;0.8</code> formula. The blur is applied to the clipped-to-[0,&nbsp;1] mask output, so there's no range inflation on the edges.</p>
+
+<h2>Credits</h2>
+<div class="credit">
+<b>Mask Creation</b> is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. The dialog, canvas, interactive ellipse rotation handle, shape&times;content mask compositor, display-stretch toggle, dual-resolution shape caching, debounced live preview, Gaia-SEP radius calibration, Gaia duplicate guard, wraparound-aware frame-extent query, trial-detect UX, and the final-mask attach-and-push integration are new work for this suite.
+<br><br>
+<b>External libraries and references:</b>
+<ul>
+<li><b>SEP (Source Extraction and Photometry)</b> &mdash; Barbary, K. (2016). &ldquo;SEP: Source Extraction and Photometry.&rdquo; <i>Journal of Open Source Software</i>, 1(6), 58. DOI:&nbsp;10.21105/joss.00058. SEP is a Python port of core routines from SExtractor (Bertin &amp; Arnouts 1996, &ldquo;SExtractor: Software for source extraction,&rdquo; <i>A&amp;AS</i> 117, 393&ndash;404); SASpro uses it for star detection in the Star Mask path.</li>
+<li><b>OpenCV</b> &mdash; Bradski, G. (2000). &ldquo;The OpenCV Library.&rdquo; <i>Dr. Dobb's Journal of Software Tools</i>. Used for polygon and ellipse rasterisation (<code>fillPoly</code>, <code>ellipse</code>), Gaussian blurring, colour-space conversions (<code>COLOR_RGB2HLS</code>, <code>COLOR_RGB2YCrCb</code>), and image resampling.</li>
+<li><b>Gaia Data Release 3</b> &mdash; Gaia Collaboration (2023). &ldquo;Gaia Data Release 3: Summary of the content and survey properties.&rdquo; <i>A&amp;A</i> 674, A1. DOI:&nbsp;10.1051/0004-6361/202243940. The Gaia augment uses catalogue positions and G-band photometry from DR3, queried through SASpro's local Gaia DB implementation.</li>
+<li><b>ITU-R Recommendation BT.601</b> &mdash; &ldquo;Studio encoding parameters of digital television for standard 4:3 and wide-screen 16:9 aspect ratios.&rdquo; The luminance coefficients (0.2989,&nbsp;0.5870,&nbsp;0.1140) used by the Lightness component come from this standard.</li>
+<li><b>HSL/HSV colour space</b> &mdash; Smith, A. R. (1978). &ldquo;Color gamut transform pairs.&rdquo; <i>SIGGRAPH Computer Graphics</i>, 12(3), 12&ndash;19. OpenCV's <code>COLOR_RGB2HLS</code> implements the standard HLS transformation; the hue-angle slicing used by the colour masks is a direct consequence of this geometry.</li>
+<li><b>Diffuse structure detector</b> &mdash; <code>diffuse_structure_mask</code> and <code>suggest_diffuse_structure_settings</code> live in SASpro's <code>imageops</code> module; see Credits in that module for its own references.</li>
+</ul>
+</div>
+
+</body>
+</html>

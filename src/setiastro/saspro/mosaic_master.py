@@ -51,7 +51,7 @@ from setiastro.saspro.memory_utils import smart_zeros
 from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.blink_comparator_pro import CustomDoubleSpinBox, CustomSpinBox
 from setiastro.saspro.abe import _generate_sample_points as abe_generate_sample_points
-
+from setiastro.saspro.help_support import make_help_button
 try:
     from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 except Exception:
@@ -1553,6 +1553,8 @@ class MosaicMasterDialog(QDialog):
         wrench_btn.setToolTip("Mosaic Settings")
         wrench_btn.clicked.connect(self.openSettings)
         btn_layout.addWidget(wrench_btn)
+
+        btn_layout.addWidget(make_help_button("mosaic_master", self))
 
         layout.addLayout(btn_layout)
 

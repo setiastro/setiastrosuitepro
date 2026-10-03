@@ -21,7 +21,7 @@ from setiastro.saspro.legacy.image_manager import load_image as legacy_load_imag
 
 from setiastro.saspro.legacy.numba_utils import applySCNR_numba, adjust_saturation_numba
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 
 # Optional: your stretch helpers (only used if you’d like to pre-stretch inputs)
 # from imageops.stretch import stretch_mono_image, stretch_color_image
@@ -271,6 +271,9 @@ class NBtoRGBStars(QWidget):
         tools.addWidget(self.btn_zoom_in)
         tools.addWidget(self.btn_zoom_out)
         tools.addWidget(self.btn_fit)
+        tools.addStretch(1)
+        self.btn_doc_help = make_help_button("nb_rgb_stars", self)
+        tools.addWidget(self.btn_doc_help)
         right.addLayout(tools)
 
 

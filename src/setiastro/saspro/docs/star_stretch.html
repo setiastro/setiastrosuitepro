@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Star Stretch</h1>
+<p class="sub">A fast, fixed-shape non-linear stretch tuned for stars: it lifts
+faint signal and compresses highlights so star cores don't blow out &mdash; with
+optional colour boost and green removal. One slider, one curve, no statistics to
+measure.</p>
+
+<h2>1. Using the tool</h2>
+<p>Set the stretch, optionally boost colour and remove green, then
+<b>Preview</b> and <b>Apply to Document</b>. The preview runs on a background
+thread; the view supports zoom/pan.</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Stretch Amount (0&ndash;8, default 5)</td><td>The amount
+      <code>a</code> in the curve below. 0 is identity (no change); larger values
+      lift shadows/midtones harder.</td></tr>
+  <tr><td>Color Boost (0&ndash;2, default 1)</td><td>A saturation-like boost
+      (RGB only). 1.00 leaves colour unchanged; above 1 pushes each pixel's
+      channels away from their mean.</td></tr>
+  <tr><td>Remove Green via SCNR</td><td>Optional average-neutral green removal
+      to kill the green cast stars/background often pick up.</td></tr>
+  <tr><td>Preview / Apply to Document</td><td>Preview computes in the background;
+      Apply writes an undoable &ldquo;Star Stretch&rdquo; step.</td></tr>
+  <tr><td>Zoom Out / In / Fit, wheel, drag</td><td>Preview navigation.</td></tr>
+  <tr><td>Grip (bottom-left)</td><td>Drag to the canvas to mint a Star Stretch
+      shortcut with these settings, or drop on an image to apply headlessly.</td></tr>
+</table>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">One parameter, one rational curve, applied identically to
+every channel &mdash; the same midtones-transfer family as Statistical Stretch,
+but with the amount dialed in directly instead of solved from the data.</p>
+
+<h3>2.1 The core curve</h3>
+<p>The Stretch Amount is the parameter <code>a</code> of the midtones-transfer
+family; every pixel <code>x &isin; [0,1]</code> passes through:</p>
+<div class="matheq-hero">f_a(x)=\frac{3^{a}\,x}{(3^{a}-1)\,x+1}</div>
+<p>It is pinned at the endpoints and controlled entirely by <code>a</code>:</p>
+<div class="eq">f_a(0) = 0            (black stays black)
+f_a(1) = 1            (white stays white)
+a = 0  ->  identity (no stretch)
+a = 5  ->  3^5 = 243  (strong lift of faint signal)</div>
+<p>With <code>a &gt; 0</code> the curve bends above the diagonal, so shadows and
+midtones are lifted while the approach to 1.0 flattens &mdash; faint nebulosity
+and the wings of stars come up, but bright star cores compress rather than clip,
+which keeps them tight. Nothing is measured and nothing is solved: the same
+amount always gives the same curve, instantly.</p>
+
+<h3>2.2 Relationship to Statistical Stretch</h3>
+<p>This is the <b>same family</b> as Statistical Stretch &mdash; and Statistical
+Stretch is literally the <i>solution</i> of it. If you ask which amount would
+place a measured (rescaled) median <code>M</code> exactly on a target
+<code>T</code>, the answer is closed-form:</p>
+<div class="matheq">a=\frac{\ln\left(\dfrac{T}{1-T}\cdot\dfrac{1-M}{M}\right)}{\ln 3}</div>
+<p>Put that amount into <code>f_a</code> and it becomes, identically, the
+Statistical Stretch kernel:</p>
+<div class="matheq">\frac{3^{a}\,x}{(3^{a}-1)\,x+1}\;\equiv\;\frac{(M-1)\,T\,r}{M\,(T+r-1)-T\,r}</div>
+<p class="cap">So the two tools share one transfer. <b>Statistical Stretch</b>
+solves <code>a</code> from your data so the median lands analytically on a chosen
+target; <b>Star Stretch</b> sets <code>a</code> directly from the slider &mdash; a
+quick, median-agnostic lift you dial by eye, ideal for star fields where you just
+want a pleasing, repeatable curve rather than a specific background level.</p>
+
+<h3>2.3 Colour boost</h3>
+<p>An optional, HSV-free saturation boost: each pixel's channels are pushed away
+from (or toward) their own mean <code>C&#772;</code>:</p>
+<div class="matheq">C'=\bar{C}+(C-\bar{C})\cdot\mathrm{boost}</div>
+<p>A boost of 1.0 is a no-op; above 1.0 increases saturation, below 1.0
+desaturates. Applied only to RGB images, after the stretch.</p>
+
+<h3>2.4 Green removal (SCNR)</h3>
+<p>Optional average-neutral SCNR clips the green channel so it never exceeds the
+average of red and blue &mdash; removing the green cast that stars and background
+commonly show without tinting neutral tones:</p>
+<div class="matheq">G'=\min\left(G,\;\frac{1}{2}(R+B)\right)</div>
+
+<h3>2.5 Notes</h3>
+<ul>
+  <li>Works on float data in [0,1]. Mono images are expanded to 3 channels for
+      the kernel, then collapsed back to mono on output.</li>
+  <li>The curve is applied identically to all channels, so colour balance is
+      preserved (colour boost and SCNR are the only colour-altering options).</li>
+  <li>If the document has an active mask, the result is blended back against the
+      source over the mask.</li>
+  <li>Preview is computed on a worker thread; Apply records an undoable step and
+      the headless/grip path applies the same <code>{stretch_factor,
+      color_boost, scnr_green}</code> preset.</li>
+</ul>
+
+</body>
+</html>

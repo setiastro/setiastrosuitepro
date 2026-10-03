@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Planetary Stacker</h1>
+<p class="sub">The main lucky-imaging stacking engine &mdash; takes a video or image sequence loaded in the <b>Planetary Stacker Viewer</b>, scores every frame for sharpness, places alignment points automatically, aligns via multi-stage phase correlation and SSD refinement, optionally corrects atmospheric dispersion / field rotation / planetary axial derotation, and produces a drizzle-ready weighted stack of the best frames. This page documents the per-file Stacker dialog; the <b>Batch Planetary Stacker</b> runs this same engine across many files in sequence.</p>
+
+<div class="pub">
+<b>SASpro-exclusive tool.</b> The Planetary Stacker is an original <b>SetiAstro Suite Pro</b> implementation by <b>Franklin Marek</b>. The quality metric (variance of in-mask Laplacian plus feature-richness, log-compressed and half-pedestal corrected), the three-phase bootstrap-to-Welford-style transition between coarse and fine alignment, the SSD-prepared-reference hill-climb refinement with slice-overlap SSD evaluation (no warp per candidate), the reference-locked coarse surface tracking with keyframe-boundary parallel chunking that prevents frame-to-frame drift, the MAD-based AP outlier rejection with dense inverse-distance displacement fields, the two-pass hysteresis-gated field rotation search, the per-channel chromatic dispersion correction, the Export-Aligned-SER workflow for fast re-stacking, the interactive quality graph, and the Blink Keepers manual culling dialog are all built from the ground up for SASpro's planetary pipeline.
+</div>
+
+<div class="workflow"><b>Five-step workflow</b><br>
+<b>(1) Analyze</b> &mdash; score every frame, build the reference, place alignment points, compute shifts, rotation, dispersion. &rarr;
+<b>(2) Edit APs</b> (optional) &mdash; adjust the alignment-point layout manually and re-align. &rarr;
+<b>(3) Blink Keepers</b> (optional) &mdash; manually reject individual frames from the keep-% set. &rarr;
+<b>(4) Export Aligned SER</b> (optional) &mdash; bake the alignment into a new SER so you can re-stack later without re-analyzing. &rarr;
+<b>(5) Stack Now</b> &mdash; quality-weighted integration of the kept frames with optional drizzle, producing the final image.
+</div>
+
+<div class="hero">
+<p>The quality metric that drives frame ranking, computed per frame on a downsampled mono preview:</p>
+<div class="matheq-hero">Q = 0.70 \cdot \log\!\left(1 + 10^4\,\sigma_{\mathrm{lap}}^2\right) + 0.30 \cdot \frac{\overline{\|\nabla I\|}_M}{\max_M \|\nabla I\|}</div>
+<p>&mdash; variance of the in-mask Laplacian (log-compressed) for sharpness, plus the mean-over-max of the in-mask gradient magnitude for feature richness. &sect;14.1 derives it. Scores are then half-pedestal-corrected and used both for ranking (which frames to keep) and as weights at stack time.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. Dialog layout</a><br>
+<a href="#s2">2. Stack Settings</a><br>
+<a href="#s3">3. Drizzle</a><br>
+<a href="#s4">4. Planet Axial Rotation</a><br>
+<a href="#s5">5. Field Rotation</a><br>
+<a href="#s6">6. Calibration (flats)</a><br>
+<a href="#s7">7. Analyze settings</a><br>
+<a href="#s8">8. The quality graph</a><br>
+<a href="#s9">9. AP Editor</a><br>
+<a href="#s10">10. Blink Keepers</a><br>
+<a href="#s11">11. Export Aligned SER</a><br>
+<a href="#s12">12. Stacking</a><br>
+<a href="#s13">13. Output</a><br>
+<a href="#s14">14. Technical details</a><br>
+<a href="#s14_1">14.1 Quality metric</a><br>
+<a href="#s14_2">14.2 Reference frame</a><br>
+<a href="#s14_3">14.3 Alignment points</a><br>
+<a href="#s14_4">14.4 Planetary centroid tracker</a><br>
+<a href="#s14_5">14.5 Surface coarse tracking</a><br>
+<a href="#s14_6">14.6 AP phase correlation</a><br>
+<a href="#s14_7">14.7 SSD gradient refinement</a><br>
+<a href="#s14_8">14.8 Multi-scale AP combination</a><br>
+<a href="#s14_9">14.9 MAD outlier rejection</a><br>
+<a href="#s14_10">14.10 Dense displacement field</a><br>
+<a href="#s14_11">14.11 Field rotation search</a><br>
+<a href="#s14_12">14.12 Chromatic dispersion</a><br>
+<a href="#s14_13">14.13 Planet axial derotation</a><br>
+<a href="#s14_14">14.14 Drizzle</a><br>
+<a href="#s14_15">14.15 Quality-weighted stacking</a><br>
+<a href="#s14_16">14.16 Flat-field calibration</a>
+</div>
+
+<h2 id="s1">1. Dialog layout</h2>
+<p>The Stacker is a two-column dialog. The left column holds all the setup: Stack Settings, four collapsible sections (Drizzle, Planet Axial Rotation, Field Rotation, Calibration), Analyze settings, and the five action buttons at the bottom. The right column shows the live quality graph after Analyze finishes, plus a log window that narrates each phase of processing. A progress bar below the action buttons tracks the current phase.</p>
+<p>The dialog is non-modal &mdash; it stays usable while open, so you can go back to the Viewer, re-pick the ROI or surface anchor, and the Stacker syncs those changes on window activation.</p>
+
+<h2 id="s2">2. Stack Settings</h2>
+
+<h3>Tracking mode</h3>
+<p>Inherits from the Viewer but can be overridden here:</p>
+<ul>
+  <li><b>Planetary</b> &mdash; brightness-threshold centroid tracking (&sect;14.4). The usual pick for Jupiter, Saturn, Mars, Venus.</li>
+  <li><b>Surface</b> &mdash; anchor-patch tracking via NCC + phase correlation (&sect;14.5). The right pick for the Moon, Sun, and any object filling a large fraction of the frame. Requires a surface anchor set in the Viewer.</li>
+  <li><b>Off</b> &mdash; no alignment search; frames are stacked at their native positions. Use for already-aligned data (e.g., an aligned SER exported from a previous run &mdash; &sect;11) or for diagnostic stacks.</li>
+</ul>
+
+<h3>Keep %</h3>
+<p>What fraction of frames, by quality rank, actually makes it into the stack. The default is <b>20%</b>. You can set it here (0.1 to 100), by dragging the vertical yellow cutoff line on the quality graph after Analyze, or by typing a different value.</p>
+
+<h3>Debayer</h3>
+<p>Decodes a Bayer mosaic to RGB. For AVI sources opened from the Viewer, this should match whatever the Viewer's Bayer pattern dropdown is set to; for SER files, the pattern comes from the SER header automatically. Off = treat as mono.</p>
+
+<h3>Center planet in output</h3>
+<p>Only enabled in Planetary mode. If ticked, every frame is shifted so the planet's centroid lands at the <i>exact centre</i> of the output image, rather than at the position of the reference frame's centroid. Useful when the reference happens to be an off-centre frame and you'd rather have the final stack centred for crop and framing.</p>
+
+<h3>Correct atmospheric dispersion</h3>
+<p>Only enabled in Planetary mode with Debayer on. Splits each frame into R/G/B channels, finds each channel's centroid independently, and shifts R and B to align with G before the local AP warp &mdash; removing the small prismatic colour fringes that atmospheric refraction smears across a disc at low altitude. &sect;14.12 covers the maths. Leave off for sources at the zenith; it's a noticeable win below about 30&deg; altitude.</p>
+
+<h3>Surface anchor</h3>
+<p>Read-only here &mdash; shows the anchor you set in the Viewer. In Surface mode it must be set, or Analyze refuses to start. The label shows the anchor in both ROI-space and (if ROI is active) full-frame coordinates for sanity-checking.</p>
+
+<h2 id="s3">3. Drizzle (collapsible)</h2>
+<p>Drizzle (Fruchter &amp; Hook 2002) upsamples each aligned frame and &ldquo;drops&rdquo; each input pixel's value onto a finer output grid, letting a well-sampled stack of many frames recover resolution beyond the native sampling. For planetary work it's useful when your camera's pixel scale under-samples the diffraction limit.</p>
+
+<h3>Scale</h3>
+<ul>
+  <li><b>Off (1&times;)</b> &mdash; standard integration at native resolution.</li>
+  <li><b>1.5&times;</b> &mdash; output is 1.5&times; wider and taller. Compute cost ~2.25&times;.</li>
+  <li><b>2&times;</b> &mdash; 2&times; wider/taller. Compute cost ~4&times;.</li>
+  <li><b>3&times;</b> &mdash; 3&times;. Compute cost ~9&times;.</li>
+  <li><b>4&times;</b> &mdash; 4&times;. Compute cost ~16&times;. Best to have hundreds to thousands of good frames at this scale.</li>
+</ul>
+
+<h3>Pixfrac</h3>
+<p>The &ldquo;drop shrink&rdquo; factor, in <code>[0.30, 1.00]</code>, default <b>0.80</b>. Lower values make each input pixel's drop smaller on the output grid (sharper reconstruction, but can produce gaps and noise if coverage is sparse); higher values spread each drop wider (smoother coverage, slightly softer).</p>
+<p>Rule of thumb: 1.5&times; drizzle pairs well with pixfrac 0.80; 2&times; drizzle pairs well with pixfrac 0.70.</p>
+
+<h3>Kernel &amp; sigma</h3>
+<p>SASpro's drizzle uses a <b>Gaussian kernel</b> exclusively &mdash; square or circular kernels produce visible grid artefacts on planetary data. The <b>Sigma</b> field controls the Gaussian width in output pixels; 0 means &ldquo;auto&rdquo;, which sets <code>&sigma; = max(10&#8315;&sup3;, pixfrac &times; 0.5)</code>, which is a sensible default for most situations. Nudge up for smoother coverage, down for slightly sharper response.</p>
+
+<h2 id="s4">4. Planet Axial Rotation (collapsible)</h2>
+<p>For long clips of fast-rotating planets like Jupiter, the planet actually rotates <i>during the clip</i>, smearing features in the stack. SASpro's axial-derotation unwinds this by projecting each frame back to a geographic (latitude/longitude) map, shifting longitude by the known rotation rate times frame delta, and reprojecting (&sect;14.13).</p>
+
+<h3>Enable derotation</h3>
+<p>Master toggle for the feature.</p>
+
+<h3>Preset</h3>
+<p>Picks a sidereal rotation rate from a built-in table (based on standard values):</p>
+<table>
+  <tr><th>Preset</th><th>Period</th><th>Rate (deg/min)</th></tr>
+  <tr><td>Jupiter (System III)</td><td>~9.925 h</td><td>~0.6050</td></tr>
+  <tr><td>Saturn</td><td>~10.656 h</td><td>~0.5631</td></tr>
+  <tr><td>Mars</td><td>~24.623 h</td><td>~0.2437</td></tr>
+  <tr><td>Mercury</td><td>~58.646 d</td><td>~0.004264</td></tr>
+  <tr><td>Venus (retrograde)</td><td>~243.025 d</td><td>~&minus;0.001029</td></tr>
+  <tr><td>Moon</td><td>~27.321661 d</td><td>~0.009155</td></tr>
+  <tr><td>Uranus (retrograde)</td><td>~17.24 h</td><td>~&minus;0.3480</td></tr>
+  <tr><td>Neptune</td><td>~16.11 h</td><td>~0.3725</td></tr>
+  <tr><td>Custom&hellip;</td><td>&mdash;</td><td>Enter manually</td></tr>
+</table>
+
+<h3>Reverse sign</h3>
+<p>Camera orientation and sky-side-up conventions can make the default sign of the rotation worse than nothing. Tick <b>Reverse sign</b> if derotation makes smearing worse rather than better; it flips the rate.</p>
+
+<h3>Rate (deg/min)</h3>
+<p>The literal rate used, filled in by the preset or editable with Custom. Negative values are allowed (retrograde).</p>
+
+<h3>Set disk&hellip;</h3>
+<p>After Analyze completes, click this to open SASpro's planetary disk-picker on the reference frame. You pick the disk centre, radius, pole position angle and sub-observer latitude ratio (b/a). These parameters feed the longitude-shift projection in &sect;14.13. The status label shows <code>cx</code>, <code>cy</code>, <code>r</code> once set.</p>
+
+<h2 id="s5">5. Field Rotation (collapsible)</h2>
+<p>On alt-az mounts without a field rotator, the field rotates during a session. Over short clips the rotation per frame is often small enough to be absorbed into translation alignment, but over longer clips (or wider FOV) it compounds. Tick <b>Correct field rotation</b> to add a per-frame small-angle rotation search after the translation stage.</p>
+<ul>
+  <li>Rotation centre: the planet centroid (planetary) or the surface-anchor centre (surface).</li>
+  <li>Search range: <b>Max rotation (&deg;)</b> (1.0 to 45.0, default 10.0). Increase for longer clips or faster alt-az mounts.</li>
+  <li>Internal search: two-pass coarse-then-fine (2&deg; coarse step, 0.5&deg; fine step) with a hysteresis quality gate &mdash; a frame's rotation is only accepted if the SSD cost function shows a confirmed minimum well separated from its neighbours. Frames that fail the hysteresis test are not rotated and have their quality score penalised to zero so they fall out of the keep set. See &sect;14.11.</li>
+</ul>
+
+<h2 id="s6">6. Calibration (collapsible)</h2>
+<p>Divide every raw frame by a normalised master flat before stacking &mdash; the same slot you'd use in AutoStakkert for vignetting, dust motes, Newton's rings and per-pixel QE non-uniformity.</p>
+
+<h3>Flat file</h3>
+<p>Accepted formats:</p>
+<ul>
+  <li><code>.ser</code> &mdash; a flat video. Combined internally to a single flat using the <b>Combine</b> method (default Median; Mean also available for very clean runs).</li>
+  <li><code>.tif</code>, <code>.tiff</code> &mdash; a single already-averaged flat image.</li>
+  <li><code>.fit</code>, <code>.fits</code>, <code>.fits.gz</code>, <code>.fz</code> &mdash; same, FITS.</li>
+</ul>
+<p>The flat must be at the same sensor resolution, binning and ROI setting as the lights. The pipeline normalises each channel of the flat to a mean of 1.0 before dividing, so you get back frames at roughly the same brightness as uncorrected ones, just with the response flattened.</p>
+
+<h3>Apply master flat</h3>
+<p>The master toggle. If you pick a file via <b>Browse&hellip;</b> this auto-enables.</p>
+
+<h2 id="s7">7. Analyze settings</h2>
+<p>Analyze is the first (and most expensive) stage: score every frame for quality, build a reference frame, autoplace alignment points on the reference, then compute per-frame translation + optional rotation + optional dispersion in parallel.</p>
+
+<h3>Reference</h3>
+<ul>
+  <li><b>Best frame</b> &mdash; the single highest-quality frame becomes the reference. Fast; usually fine for planetary.</li>
+  <li><b>Best stack (N)</b> &mdash; the top N frames by quality are averaged to form the reference. Smoother than a single frame; sometimes improves AP matching on noisy data. Default N = 10, range 2 to 200.</li>
+</ul>
+
+<h3>AP scale</h3>
+<ul>
+  <li><b>Single</b> &mdash; AP phase correlation runs at the current AP size.</li>
+  <li><b>Multi-scale (2&times; / 1&times; / &frac12;&times;)</b> &mdash; AP phase correlation runs at three sizes and the results are combined with confidence-weighted averaging (&sect;14.8). Slower but more robust across varying feature scales, which matters when your scene has both small-scale (crater detail) and large-scale (limb) structure.</li>
+</ul>
+
+<h3>SSD refine: brute force</h3>
+<p>By default the SSD refinement uses a hill-climb search over integer offsets with a subpixel quadratic polish (fast). Ticking <b>brute force</b> switches to a full radius-5 window scan at every pixel, which is slower but can rescue tough data where the hill-climb falls into a local minimum. See &sect;14.7.</p>
+
+<h3>AP min mean (0..1)</h3>
+<p>Alignment points are only placed on patches whose mean brightness exceeds this threshold. Default <b>0.03</b>. Raise it to force APs onto the brighter central disc only; lower it to let APs populate dim limb or terminator regions as well.</p>
+
+<h3>AP size (px)</h3>
+<p>Side length of each alignment patch in reference pixels, 16 to 256, default <b>64</b>. Larger patches average over more detail (robust, but slow to update when the scene changes); smaller patches track finer detail. For planets at native resolution, 64 is a good start.</p>
+
+<h3>AP spacing (px)</h3>
+<p>Centre-to-centre spacing of the AP grid during autoplace. Default <b>48</b> &mdash; which means APs overlap (spacing &lt; size), giving good coverage. Reduce for denser grids; increase for sparser ones.</p>
+
+<h2 id="s8">8. The quality graph</h2>
+<p>After Analyze completes, the right column shows the quality graph: a bright green curve of per-frame quality <i>sorted</i> from best (left) to worst (right). Reference lines:</p>
+<ul>
+  <li><b>Dashed grey</b> &mdash; midrange: <code>(min + max) / 2</code>.</li>
+  <li><b>Dotted grey</b> &mdash; true median, labelled <b>Med</b>.</li>
+  <li><b>Yellow vertical</b> &mdash; the current Keep % cutoff. Everything to the left of it goes into the stack.</li>
+</ul>
+<p><b>Click</b> or <b>drag</b> on the graph to move the cutoff and set a new Keep % in one gesture. The Keep % spinbox stays in sync. The log reports every move so you can retrace your choices.</p>
+<p>Looking at the curve shape:</p>
+<ul>
+  <li>A long flat plateau on the left means consistent frame quality &mdash; you can safely stack a higher percentage.</li>
+  <li>A rapid decay means picking the top few percent gives a sharp result; adding more frames quickly dilutes it with mushy ones.</li>
+  <li>A knee partway through is usually where seeing broke down &mdash; set the cutoff just before the knee.</li>
+</ul>
+
+<h2 id="s9">9. AP Editor</h2>
+<p>Click <b>(2) Edit APs&hellip;</b> after Analyze to open the AP editor, a dedicated preview with every current alignment point drawn as a bright green outlined square on the reference image.</p>
+<div class="keys">
+<b>AP Editor controls:</b><br>
+🖱️ <b>Left click</b> &mdash; add an AP centred where you clicked.<br>
+🖱️ <b>Right click</b> &mdash; delete the AP nearest to the click (within ~60% of AP size).<br>
+🖱️ <b>Ctrl+Wheel</b> &mdash; zoom in/out.<br>
+<b>Zoom</b> toolbar + slider &mdash; also sets zoom (10% to 400%).<br>
+<b>Fit</b> / <b>1:1</b> buttons &mdash; snap zoom.<br>
+<b>Auto-place</b> &mdash; re-run grid autoplace with the current Size/Spacing/Min-mean values.<br>
+<b>Clear</b> &mdash; remove all APs (so you can start from scratch).
+</div>
+<p>Changing the Size, Spacing or Min-mean controls at the bottom triggers an auto-relayout after a 250&nbsp;ms debounce. On OK, SASpro automatically re-runs the alignment pass (shifts, rotation, dispersion) using the new AP layout &mdash; the quality scores and reference frame are preserved from the original Analyze run, so this is a fast operation.</p>
+<p>When to edit APs: autoplace works well for most planetary scenes but can place too few APs on faint subjects, or waste APs on completely featureless areas (uniform background sky, saturated highlights). Manual placement lets you concentrate APs where features actually are &mdash; crater rims, limb edges, cloud bands.</p>
+
+<h2 id="s10">10. Blink Keepers</h2>
+<p>Click <b>(3) Blink Keepers</b> to visually review every frame in your Keep % set and manually reject individual ones. The dialog shows one keeper at a time with its frame index and quality score; rejected frames are excluded from the stack and the final frame count on the quality graph updates.</p>
+<div class="keys">
+<b>Blink Keepers keyboard shortcuts:</b><br>
+<b>&larr;</b> / <b>&rarr;</b> &mdash; previous / next keeper.<br>
+<b>&uarr;</b> / <b>&darr;</b> &mdash; same.<br>
+<b>PgUp</b> / <b>PgDn</b> &mdash; same.<br>
+<b>R</b> or <b>Space</b> &mdash; toggle reject on the current frame and advance.<br>
+<b>Backspace</b> &mdash; toggle reject on the current frame and step back.<br>
+<b>Esc</b> &mdash; cancel without changes.<br>
+<b>Enter</b> &mdash; accept and close.
+</div>
+<p>The preview applies the same translation + field-rotation transforms that stacking will apply, so what you see is roughly what each frame will contribute to the stack. A <b>Brightness</b> slider at the bottom helps you see detail in faint frames. Rejected frames are drawn in red in the info line; the button to the right of the status also toggles reject.</p>
+<p>Blink Keepers is strictly a cull step &mdash; it never <i>adds</i> frames you already culled with Keep %, only removes ones that look bad despite scoring well (satellite streaks across a bright patch, aircraft lights, dropped-sync frames whose quality metric happens to be high).</p>
+
+<h2 id="s11">11. Export Aligned SER</h2>
+<p>A powerful workflow trick: click <b>(4) Export Aligned SER&hellip;</b> after Analyze to write a new SER file where every frame has already been translated (and optionally rotated and derotated and locally warped) into reference alignment. The exported file is uint16 at the current ROI size.</p>
+<p>The dialog lets you choose:</p>
+<ul>
+  <li><b>All frames</b> vs <b>Keep % only</b> &mdash; export the complete clip or just the keep set.</li>
+  <li><b>Apply field rotation correction</b> &mdash; bake in the per-frame rotations.</li>
+  <li><b>Apply planet axial derotation</b> &mdash; bake in the longitude-shift derotation.</li>
+  <li><b>Apply local AP warp</b> &mdash; bake in the per-AP dense displacement field (&sect;14.10).</li>
+</ul>
+<p>When would you want this?</p>
+<ul>
+  <li><b>Fast re-stacking.</b> Open the exported SER back in the Viewer with <b>Tracking = Off</b>, run Analyze (which just scores quality on the pre-aligned frames and places APs for the local warp), and Stack. All the expensive shift / rotation / dispersion work is skipped. Great for experimenting with Keep %, drizzle scale, or AP layout without redoing the alignment pass.</li>
+  <li><b>External tools.</b> Hand off aligned frames to any other software that reads SER but can't align planetary data as well as SASpro does.</li>
+  <li><b>Diagnostics.</b> Open the aligned SER in the Viewer and scrub &mdash; you can literally watch how clean (or not) the alignment is.</li>
+</ul>
+
+<h2 id="s12">12. Stacking</h2>
+<p>Click <b>(5) Stack Now</b> to run the final integration. Each kept frame is loaded, flat-corrected (if a master flat is loaded), globally translated by its analysis <code>(dx, dy)</code>, optionally rotated by its analysis angle, optionally derotated, optionally dispersion-corrected per channel, and then locally warped by the dense displacement field derived from the AP shifts. The warped frames are accumulated with quality weights (&sect;14.15) or deposited into a drizzle grid (&sect;14.14). The final result is a float32 image in <code>[0, 1]</code>.</p>
+<p>Stacking is heavily parallel: frames are warped in a thread pool whose worker count defaults to <code>min(CPU count, 48)</code>. In non-drizzle mode the warped frames are accumulated serially on the main thread with their quality weights to avoid locking overhead; in drizzle mode, deposits land into shared buffers one frame at a time (also serially, to avoid Numba GIL contention under high parallelism).</p>
+
+<h2 id="s13">13. Output</h2>
+<p>On completion, the result is pushed as a new SASpro document named <code>&lt;source-basename&gt;_stack</code> (e.g., <code>jupiter_2026_11_21_stack</code>), with full history metadata including the stacking diagnostics (frames kept vs. total, track mode, drizzle settings, worker count). The document is opened in a sub-window ready for stretch, wavelets, deconvolution, or whatever else your post-processing pipeline needs.</p>
+<p>The log window records the full run including every phase's elapsed time and the final kept-of-total count, so you have a durable record of exactly what was done.</p>
+
+<h2 id="s14">14. Technical details</h2>
+<p class="tech-lead">The analysis and stacking pipeline, in order.</p>
+
+<h3 id="s14_1">14.1 Quality metric</h3>
+<p>Every frame is downsampled to a mono preview (long axis &le; 512&nbsp;px) and scored in two components, both computed only over pixels with signal above a <b>0.05</b> floor &mdash; so empty sky, black background, and off-planet regions don't dilute the score with their uniform noise. Let:</p>
+<div class="matheq">M = \{(x,y)\;:\;I(x,y) > 0.05\}</div>
+
+<h4>Sharpness &mdash; variance of the in-mask Laplacian</h4>
+<p>Compute the Laplacian with a 5&times;5 kernel (<code>cv2.Laplacian(ksize=5)</code>, slightly more noise-resistant than 3), then take the variance over the signal mask:</p>
+<div class="matheq">\sigma_{\mathrm{lap}}^2 = \mathrm{Var}_{M}(\nabla^2 I)</div>
+<p>Variance (as opposed to mean absolute value) punishes frames where sharpness is spatially <i>inconsistent</i> &mdash; e.g., half the disc in focus while the other half is soft &mdash; which a mean-absolute metric would score the same as a uniformly-slightly-sharp frame.</p>
+<p>Variance alone has arbitrary units, so SASpro log-compresses:</p>
+<div class="matheq">S = \log\!\left(1 + 10^4\,\sigma_{\mathrm{lap}}^2\right)</div>
+<p>which keeps the dynamic range in a comfortable scoring range and prevents one extreme outlier frame from dominating.</p>
+
+<h4>Feature richness &mdash; mean-over-max gradient magnitude</h4>
+<p>Compute the gradient magnitude via Sobel operators:</p>
+<div class="matheq">\|\nabla I\| = \sqrt{(\partial_x I)^2 + (\partial_y I)^2}</div>
+<p>then take the mean over the signal mask, normalised by the in-mask maximum:</p>
+<div class="matheq">R = \frac{\overline{\|\nabla I\|}_M}{\max_M \|\nabla I\|}</div>
+<p>This rewards frames with fine detail distributed across the signal region, as opposed to a single sharp limb edge that would peg the max but leave the rest soft.</p>
+
+<h4>Combine, half-pedestal-correct, use as weight</h4>
+<p>Weighted sum (70% sharpness, 30% richness):</p>
+<div class="matheq">Q = 0.70\,S + 0.30\,R</div>
+<p>After scoring every frame, SASpro subtracts half the minimum from all scores and clips at zero:</p>
+<div class="matheq">Q' = \max(Q - 0.5\,Q_{\min},\;0)</div>
+<p>This removes the DC pedestal that the log-compression introduces and broadens the relative spread, so differences between good and bad frames are more proportionally meaningful. The adjusted scores are used for both the Keep% ranking and the per-frame weights at stack time (&sect;14.15).</p>
+
+<h3 id="s14_2">14.2 Reference frame</h3>
+<p>In Planetary mode, the reference is either the highest-quality single frame (<b>Best frame</b>) or the mean of the top <code>N</code> by quality (<b>Best stack (N)</b>). In Surface mode, the reference is always frame&nbsp;0 regardless of this setting &mdash; because the surface coarse-tracking pass locks every frame to frame&nbsp;0 as its reference anchor; using a quality-ranked frame instead would make the (0, 0) shift of the reference itself ambiguous.</p>
+
+<h3 id="s14_3">14.3 Alignment points (autoplace)</h3>
+<p>APs are placed on a regular grid over the reference frame. For each candidate position <code>(cx, cy)</code>:</p>
+<ul>
+  <li>Extract an AP-sized patch centred at that position.</li>
+  <li>If the patch fits entirely inside the image and its mean brightness &ge; <code>ap_min_mean</code>, accept it.</li>
+</ul>
+<p>Grid spacing is <code>ap_spacing</code>, which can be less than <code>ap_size</code> for overlapping tiles (recommended). If no candidate passes the brightness test (e.g., a very dim target), SASpro falls back to a single AP at the image centre.</p>
+
+<h3 id="s14_4">14.4 Planetary centroid tracker</h3>
+<p>In Planetary mode, each frame's shift is computed by finding its brightness centroid and matching it to the reference centroid. The centroid formula:</p>
+<div class="matheq">x_c = \frac{\sum_{(x,y)\in M} x\,I(x,y)}{\sum_{(x,y)\in M} I(x,y)}</div>
+<div class="matheq">y_c = \frac{\sum_{(x,y)\in M} y\,I(x,y)}{\sum_{(x,y)\in M} I(x,y)}</div>
+<p>with <code>M = {(x,y) : I(x,y) &gt; &tau;}</code> and <code>&tau;</code> the Threshold setting from the Viewer (or 0.5 default), optionally after a per-frame normalisation. The pre-threshold image is first smoothed with a Gaussian of <code>&sigma; = 1.5</code> to suppress single-pixel noise spikes that would otherwise bias the moments.</p>
+<p>Shift is then <code>(dx, dy) = (ref_cx &minus; cur_cx, ref_cy &minus; cur_cy)</code>, with a confidence from the signal strength. If confidence is &ge; 0.25, the SSD refinement pass (&sect;14.7) tightens it further.</p>
+
+<h3 id="s14_5">14.5 Surface coarse tracking (reference-locked NCC + phase correlation)</h3>
+<p>Surface mode uses a two-stage approach. First, a <b>coarse</b> pass finds each frame's offset relative to frame&nbsp;0 via template matching. Second, a <b>fine</b> SSD refinement polishes it.</p>
+
+<h4>Why reference-locked rather than frame-to-frame?</h4>
+<p>Classical approach: find frame <i>i</i>'s shift relative to frame <i>i&minus;1</i>, chain them. Problem: errors accumulate. Over a long clip, the chain drifts and the final frames end up aligned to an entirely different piece of the Moon than frame&nbsp;0.</p>
+<p>SASpro's approach: lock every frame's template search to frame&nbsp;0's template <i>directly</i>. Drift literally cannot happen because the reference never moves. The cost is a wider search window per frame (because the predicted offset for a late frame can be large), which SASpro handles with a per-frame predictor seeded by the previous frame's result.</p>
+
+<h4>The pipeline per frame</h4>
+<ol>
+  <li>Both frame&nbsp;0 and the current frame are converted to mono, downsampled by 2&times;, and bandpass-filtered to remove large-scale illumination gradients (the terminator) and tiny high-frequency noise:
+    <div class="matheq">\mathrm{BP}(I) = G_{\sigma_1}(I) - G_{\sigma_2}(I)</div>
+    with <code>&sigma;_1 = 1.2</code> and <code>&sigma;_2 = 6.0</code>, then z-normalised and Hann-windowed.</li>
+  <li>A 256&times;256 template is extracted from frame&nbsp;0 at the surface-anchor centre.</li>
+  <li>A search window of radius <code>search_radius = 96</code> pixels is centred on the predicted offset in the bandpassed current frame.</li>
+  <li><b>NCC template matching</b> (<code>cv2.matchTemplate</code> with <code>TM_CCOEFF_NORMED</code>) finds the integer-pixel best match in the window:
+    <div class="matheq">(\Delta x,\,\Delta y) = \arg\max_{(x,y)} \mathrm{NCC}(x,y)</div>
+    with confidence equal to the normalised cross-correlation score at the peak.</li>
+  <li><b>Subpixel refine</b> via <code>cv2.phaseCorrelate</code> on the matched patch:
+    <div class="matheq">R(f_1, f_2) = \mathcal{F}^{-1}\!\left\{\frac{F_1\,F_2^{*}}{|F_1\,F_2^{*}|}\right\}</div>
+    gives a subpixel shift adjustment plus a response-peak confidence.</li>
+  <li>Final confidence: <code>0.65 &times; NCC + 0.35 &times; phase-corr-response</code>.</li>
+</ol>
+
+<h4>Parallelisation</h4>
+<p>The whole clip is split into stride-16 chunks that run in parallel across a thread pool. To seed each chunk's predictor, SASpro first does a sequential keyframe-boundary pass with a <i>wider</i> search radius (2&times; the normal one), so each chunk starts from a known-good predictor. This gives near-linear speedup without the drift risk of fully-parallel chaining.</p>
+
+<h3 id="s14_6">14.6 AP phase correlation</h3>
+<p>For every AP on the reference, SASpro computes the per-AP shift that aligns the current frame's corresponding patch to the reference patch via phase correlation. Each AP:</p>
+<ol>
+  <li>Extract reference and current patches at the same location.</li>
+  <li>Downsample both to a common size (long axis &le; <code>max_dim = 512</code>).</li>
+  <li>Phase-correlate:
+    <div class="matheq">(\Delta x,\,\Delta y) = \mathrm{phaseCorrelate}(\mathrm{ref},\,\mathrm{cur})</div>
+    returns a subpixel shift and a response value.</li>
+  <li>Scale the shift back up to full ROI pixels.</li>
+</ol>
+<p>The result is per-AP arrays <code>(ap_dx, ap_dy, ap_resp)</code> that get combined into a global shift via the median (for a single global translation) or into a dense displacement field for local warping (&sect;14.10).</p>
+
+<h3 id="s14_7">14.7 SSD gradient refinement</h3>
+<p>After the coarse translation estimate (from centroid or AP phase correlation), SASpro polishes it by minimising the sum of squared differences between gradient images:</p>
+<div class="matheq">\mathrm{SSD}(\Delta x,\Delta y) = \sum_{(x,y)} \left(G_{\mathrm{ref}}(x,y) - G_{\mathrm{cur}}(x+\Delta x,\,y+\Delta y)\right)^2</div>
+<p>where <code>G</code> is the Sobel gradient magnitude (illumination-robust compared to raw intensity). The optimisation hinges on an aggressive precompute to make per-candidate SSD evaluation nearly free:</p>
+
+<h4>Prepare the reference once</h4>
+<p>The reference gradient is computed <i>once</i>, cropped to the central 80% to avoid edge artefacts, and cached.</p>
+
+<h4>Shift the current image once</h4>
+<p>The current image is shifted by the coarse <code>(dx_0, dy_0)</code> <i>once</i>, its gradient is computed once, and that cropped gradient is cached.</p>
+
+<h4>Evaluate candidates by slice-overlap SSD</h4>
+<p>For each candidate integer offset <code>(i, j)</code> in <code>[&minus;r, +r]</code>, SASpro computes SSD directly between slices of the two cached cropped gradients &mdash; no warps, no FFTs, no new gradients. Just two array views and a subtraction. This is dramatically faster than the typical &ldquo;warp-then-correlate&rdquo; approach that most planetary stackers use.</p>
+
+<h4>Hill climb or brute force</h4>
+<p>By default SASpro hill-climbs from <code>(0, 0)</code> through the 8 integer neighbours, moving to whichever lowers SSD most, until no improvement is found or 6 steps have been taken. This finds the global minimum when the SSD surface is smooth (the usual case). If <b>SSD refine: brute force</b> is ticked, the full <code>(2r+1)&sup2;</code> window is scanned instead, which is slower but robust to multiple local minima.</p>
+
+<h4>Subpixel polish</h4>
+<p>Once the best integer offset <code>(i*, j*)</code> is found, a separable quadratic fit at <code>(i*&plusmn;1, j*)</code> and <code>(i*, j*&plusmn;1)</code> gives subpixel offsets:</p>
+<div class="matheq">t = \frac{v_{-1} - v_{+1}}{2\,(v_{-1} - 2v_0 + v_{+1})}</div>
+<p>clipped to <code>[&minus;0.75, +0.75]</code>. No additional warps are needed &mdash; the four extra SSD evaluations are the same slice-overlap arithmetic as the integer search.</p>
+
+<h4>Confidence from the SSD surface</h4>
+<p>Confidence is derived from how sharp the minimum is relative to the surrounding surface:</p>
+<div class="matheq">c = \exp\!\left(-\mathrm{SSD}_{\min}\,/\,\lambda\right)</div>
+<p>with scale <code>&lambda; = 0.002</code>, clipped to <code>[0, 1]</code>. A single, very deep minimum gives high confidence; a flat surface or multiple comparable minima give low confidence, which gates downstream stages like field rotation.</p>
+
+<h3 id="s14_8">14.8 Multi-scale AP combination</h3>
+<p>When <b>AP scale = Multi-scale</b>, each AP's shift is computed at three sizes: 2&times; the base AP size, 1&times; (the base), and &frac12;&times;. Each produces its own <code>(dx_k, dy_k, c_k)</code>. These are combined into a single AP shift via confidence-weighted average with a slight bias toward the larger scales (which are more stable):</p>
+<div class="matheq">w_k = \max(c_k,\,10^{-3})\,\alpha_k</div>
+<div class="matheq">\alpha_{2\times},\,\alpha_{1\times},\,\alpha_{0.5\times} = 1.25,\,1.00,\,0.85</div>
+<div class="matheq">\Delta x = \frac{\sum_k w_k\,\Delta x_k}{\sum_k w_k}</div>
+<p>Combined confidence is the same weighted average over <code>c_k</code>. The 1.25/1.00/0.85 weighting is deliberate: large APs give more stable estimates but miss fine detail; small APs catch fine detail but can lock onto noise; the weighted combination gets you the best of both.</p>
+
+<h3 id="s14_9">14.9 MAD outlier rejection</h3>
+<p>Not every AP produces a usable shift &mdash; some may land on featureless patches, saturated highlights, or just drift. SASpro rejects outlier APs via a Median Absolute Deviation (MAD) test, which is robust to the exact kind of extreme outliers that break mean/std-based rejection.</p>
+<p>For each component (<code>dx</code>, <code>dy</code>), among APs with confidence &gt; 0.15:</p>
+<div class="matheq">\mathrm{MAD}_x = \mathrm{median}(|x_i - \mathrm{median}(x)|)</div>
+<div class="matheq">z_i = \frac{|x_i - \mathrm{median}(x)|}{\mathrm{MAD}}</div>
+<p>APs with <code>z_x &gt; 3.5</code> OR <code>z_y &gt; 3.5</code> are rejected. The surviving set drives the dense displacement field in &sect;14.10.</p>
+
+<h3 id="s14_10">14.10 Dense displacement field (inverse-distance interpolation)</h3>
+<p>After rejection, the surviving per-AP shifts need to be turned into a smooth per-pixel displacement field so the current frame can be warped into alignment with the reference. SASpro uses inverse-distance-weighted (IDW) interpolation on a coarse grid, then upsamples with cubic interpolation.</p>
+<p>At each coarse-grid point <code>p</code>, the weight contributed by AP <code>i</code> at position <code>p_i</code> is:</p>
+<div class="matheq">w_i(p) = \frac{c_i}{\|p - p_i\|^q}</div>
+<p>with power <code>q = 2</code>, confidence <code>c_i</code>, and an optional cutoff radius (3&times; AP size by default) beyond which an AP's weight is zero. The displacement at <code>p</code> is the weighted average:</p>
+<div class="matheq">\mathbf{d}(p) = \frac{\sum_i w_i(p)\,\mathbf{d}_i}{\sum_i w_i(p)}</div>
+<p>The coarse grid is 32&times;32 (adjusted for aspect ratio); the result is upsampled to full resolution with <code>cv2.resize(INTER_CUBIC)</code>. Warping is then <code>cv2.remap</code> with linear interpolation and replicate-border behaviour. This correctly handles differential seeing across the disc &mdash; one AP may say shift up-left, another may say shift down-right, and the field smoothly transitions between them without any discontinuity artefacts.</p>
+
+<h3 id="s14_11">14.11 Field rotation search</h3>
+<p>With field rotation correction enabled, each frame's post-translation residual is checked for a small-angle rotation that would further reduce SSD against the reference. The search is two-pass with a hysteresis quality gate.</p>
+
+<h4>Pass 1 &mdash; coarse scan</h4>
+<p>Sweep angles from <code>&minus;max_deg</code> to <code>+max_deg</code> in steps of <code>coarse_step</code> (default 2&deg;), with a small hysteresis extension so the fine pass can refine against neighbours that fall outside the initial range. For each angle, apply <code>cv2.getRotationMatrix2D</code> + <code>cv2.warpAffine</code> about the rotation centre (planet centroid or surface anchor), compute the gradient, compute SSD against the cached cropped reference gradient. Pick the coarse minimum.</p>
+
+<h4>Pass 2 &mdash; fine scan</h4>
+<p>Sweep angles around the coarse minimum in steps of <code>step_deg</code> (default 0.5&deg;). Keep the running minimum.</p>
+
+<h4>Centre crop for speed</h4>
+<p>Both reference and current are centre-cropped around the rotation centre to at most 640&times;640 pixels &mdash; this bounds the <code>warpAffine</code> cost without sacrificing accuracy (rotation signal is strongest near the centre anyway).</p>
+
+<h4>Hysteresis quality gate</h4>
+<p>A frame's rotation is only accepted if the SSD at the best angle is lower than both the SSD at <code>best_angle &minus; hysteresis_steps &times; step</code> and <code>best_angle + hysteresis_steps &times; step</code>, by a minimum lift of 0.2% of the best SSD. If the hysteresis check fails, the rotation is set to 0&deg; (no correction applied) and the frame's quality score is set to 0 so it falls out of the Keep set.</p>
+
+<h4>Subpixel polish</h4>
+<p>Same quadratic fit as the translation refinement, giving sub-degree angle precision.</p>
+
+<h3 id="s14_12">14.12 Chromatic dispersion correction</h3>
+<p>Atmospheric refraction depends on wavelength, so at low altitudes a planetary disc shows R and B offset from G &mdash; the classic &ldquo;chromatic fringe&rdquo;. In Planetary mode with Debayer and dispersion correction both on, SASpro corrects this before the local AP warp.</p>
+<p>For each frame (after global translation):</p>
+<ol>
+  <li>Find the G-channel centroid independently.</li>
+  <li>Find the R-channel centroid independently.</li>
+  <li>Find the B-channel centroid independently.</li>
+  <li>Compute the per-channel shift needed to align R and B centroids to G:
+    <div class="matheq">\Delta_c = (c_G - c_c),\;\; c \in \{R,\,B\}</div>
+  </li>
+  <li>Apply those shifts to the R and B planes of the frame; G is unchanged.</li>
+</ol>
+<p>This runs at analysis time, so the correction is per-frame rather than a single global offset &mdash; which matters because dispersion varies with altitude over the course of a session.</p>
+
+<h3 id="s14_13">14.13 Planet axial derotation</h3>
+<p>For long clips of Jupiter and similar fast rotators, the planet rotates measurably across the clip, smearing features in a naive stack. SASpro's derotation maps each frame to geographic coordinates on an oblate-spheroid model, shifts longitude by the known rotation rate times frame delta, and reprojects.</p>
+<p>Given disk centre <code>(cx, cy)</code>, radius <code>r</code>, pole position angle <code>&theta;_p</code>, and axis-tilt ratio <code>b/a</code> (semi-minor over semi-major), SASpro builds latitude/longitude grids for the current frame. The sub-observer latitude follows from the axis-tilt:</p>
+<div class="matheq">\varphi_{\mathrm{obs}} = \arccos(b/a)</div>
+<p>For derotation, each pixel's longitude is shifted by:</p>
+<div class="matheq">\lambda'(x,y) = \lambda(x,y) + \omega\,\Delta t</div>
+<p>with <code>&omega;</code> the rotation rate (deg/min) and <code>&Delta;t</code> the frame delta from the reference. The shifted lat/lon is then back-projected to pixel coordinates with the same oblate-spheroid model, and the frame is resampled via <code>cv2.remap</code>. Everything outside the disc is left as-is (no derotation applied).</p>
+
+<h3 id="s14_14">14.14 Drizzle</h3>
+<p>Drizzle (Fruchter &amp; Hook 2002) upsamples each input frame onto a finer output grid and deposits each input pixel's value with a kernel-weighted contribution. For planetary data, SASpro uses a Gaussian kernel exclusively:</p>
+<div class="matheq">K(r) = \exp\!\left(-\frac{r^2}{2\,\sigma^2}\right)</div>
+<p>with <code>&sigma;</code> in output-pixel units. The output sigma is scaled by the drizzle factor to maintain consistent spatial smoothing:</p>
+<div class="matheq">\sigma_{\mathrm{out}} = \sigma_{\mathrm{in}}\,\cdot\,s</div>
+<p>and defaults to <code>max(10&#8315;&sup3;, pixfrac &times; 0.5)</code> when the user's sigma is zero. Deposits accumulate into two shared buffers: a weighted data buffer <code>D</code> and a weight buffer <code>W</code>. On finalisation:</p>
+<div class="matheq">D(X,Y) = \frac{\sum_i w_i\,K(\|X - X_i\|)\,I_i}{\sum_i w_i\,K(\|X - X_i\|)}</div>
+<p>Each input pixel's weight <code>w_i</code> is its frame's quality score &mdash; so better frames contribute more, exactly as in the non-drizzle weighted stack.</p>
+<p>The implementation uses Numba JIT-compiled kernels (<code>drizzle_deposit_kernel_mono_fast</code> / <code>drizzle_deposit_kernel_color_fast</code>) shared with SASpro's Stacking Suite. A pre-allocated scratch tile is reused per frame to avoid allocation overhead at thousands-of-frames scale.</p>
+
+<h3 id="s14_15">14.15 Quality-weighted stacking</h3>
+<p>Without drizzle, the warped frames are accumulated as:</p>
+<div class="matheq">S(x,y) = \frac{\sum_i w_i\,I_i(x,y)}{\sum_i w_i}</div>
+<p>with <code>w_i</code> the half-pedestal-corrected quality score from &sect;14.1. The accumulation happens serially on the main thread (while frames are warped in parallel), which avoids the overhead of per-pixel locks and keeps the memory footprint to one accumulator plus one weight scalar.</p>
+
+<h3 id="s14_16">14.16 Flat-field calibration</h3>
+<p>If a master flat is loaded, every frame is divided by the flat before anything else:</p>
+<div class="matheq">I'(x,y) = \frac{I(x,y)}{F(x,y)}</div>
+<p>The flat is loaded once at full sensor size (via <code>load_flat_for_run</code>), then cropped to the current ROI per <code>get_frame</code> call via view-slicing (no copy). For SER-format flats with multiple frames, they're combined to a single master using the chosen method (median by default &mdash; robust to cosmic rays and satellite streaks in the flat sequence; mean for very clean runs). The resulting master is normalised to per-channel mean 1.0 before use, so the frames come out at the same brightness scale, just with the sensor's spatial response removed.</p>
+<p>Values are clipped to <code>[0, 1]</code> after division to guard against the occasional negative pixel from a very dim master flat.</p>
+
+<div class="credit">
+<b>Credits.</b> The Planetary Stacker &mdash; the quality metric (variance of in-mask Laplacian plus mean-over-max gradient richness, log-compressed and half-pedestal corrected), the SSD-prepared-reference hill-climb with slice-overlap SSD evaluation (no warp per candidate), the reference-locked parallel-chunked coarse surface tracking with keyframe seeding, the multi-scale AP combination with 1.25/1.00/0.85 confidence weighting, MAD-based AP outlier rejection, inverse-distance dense displacement field, two-pass hysteresis-gated field-rotation search with centre-crop acceleration, per-channel chromatic dispersion correction, latitude-based longitude-shift planetary derotation, the Analyze&harr;Edit APs&harr;Blink Keepers&harr;Export Aligned SER&harr;Stack workflow, the interactive quality graph with click-to-set keep cutoff, the AP editor and the Blink Keepers dialog &mdash; is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to community: drizzle resampling follows <b>Fruchter &amp; Hook (2002, PASP 114:144)</b>; phase correlation is <b>Kuglin &amp; Hines (1975)</b>; normalised cross-correlation template matching is classical pattern recognition; log-polar Fourier-Mellin rotation estimation follows <b>De Castro &amp; Morandi (1987)</b>; sigma-clipping is classical statistical outlier rejection; the MAD-based robust z-score follows the <b>Rousseeuw &amp; Croux</b> convention; sum-of-squared-differences image registration and inverse-distance-weighted interpolation are textbook methods. <b>OpenCV</b> provides phase correlation (<code>cv2.phaseCorrelate</code>), template matching (<code>cv2.matchTemplate</code>), log-polar warp (<code>cv2.warpPolar</code>), affine warp (<code>cv2.warpAffine</code>), Sobel and Laplacian operators, Gaussian blur, resampling (<code>cv2.resize</code>, <code>cv2.remap</code>) and demosaic kernels. The drizzle deposit kernels are SASpro's own <b>Numba</b> JIT-compiled implementations (shared with the Stacking Suite). <b>Astropy</b> provides FITS I/O for flats; the SER reader is SASpro's implementation of the Lumenera SER v3 specification; <b>FFmpeg</b> (via SASpro's platform decoder) handles AVI/MP4/MOV/MKV frames. <b>NumPy</b> provides the array engine, <b>PyQtGraph</b> is not used here (the quality graph is custom <code>QPainter</code>-drawn), and <b>PyQt6</b> provides the UI framework. The Planetary Stacker Viewer and Batch Planetary Stacker, which feed this engine, are documented separately.
+</div>
+
+</body>
+</html>

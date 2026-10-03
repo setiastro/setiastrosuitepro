@@ -19,7 +19,7 @@ from setiastro.saspro.autostretch import autostretch
 from setiastro.saspro.widgets.image_utils import nearest_resize_2d as _nearest_resize_2d
 from setiastro.saspro.widgets.image_utils import float_to_qimage_rgb8 as _float_to_qimage_rgb8
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 # ---- Optional accelerators from setiastro.saspro.legacy.numba_utils -------------------------
 try:
     from setiastro.saspro.legacy.numba_utils import fast_mad as _fast_mad
@@ -1389,7 +1389,14 @@ class PixelMathDialogPro(QDialog):
         btns.rejected.connect(self.reject)
         b_help = btns.addButton(self.tr("Help"), QDialogButtonBox.ButtonRole.HelpRole)
         b_help.clicked.connect(self._help)
-        left_col.addWidget(btns)
+        
+        # Wrap in a row so the doc help button sits on the left
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(0, 0, 0, 0)
+        self.btn_doc_help = make_help_button("pixel_math", self)
+        btn_row.addWidget(self.btn_doc_help)
+        btn_row.addWidget(btns, 1)
+        left_col.addLayout(btn_row)
 
         # Output group selection model
         self.out_group = QButtonGroup(self)

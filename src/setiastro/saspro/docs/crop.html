@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Crop Tool</h1>
+<p class="sub">Crop, straighten and rotate an image as a single geometric
+transform, then re-solve the astrometric calibration so the result stays
+plate-solved.</p>
+
+<h2>1. Using the tool</h2>
+<table>
+  <tr><th>Control</th><th>Effect (and how it feeds the transform)</th></tr>
+  <tr><td>Drag on image</td><td>Draws/forms the crop rectangle; handles resize,
+      drag-inside moves, rotation handle sets the angle.</td></tr>
+  <tr><td>Aspect Ratio</td><td>Constrains the rectangle to a fixed ratio
+      (reshaped about its centre).</td></tr>
+  <tr><td>Margins (px) - T/R/B/L</td><td>Trims an exact pixel count per edge; the
+      cleanest way to remove a known stacking border.</td></tr>
+  <tr><td>Angle</td><td>Rotation in degrees baked into the transform; output is
+      axis-aligned to the rotated rectangle.</td></tr>
+  <tr><td>Zoom +/-, 100%, Fit</td><td>Preview navigation only.</td></tr>
+  <tr><td>Toggle Autostretch</td><td>Screen-only stretch for framing faint data;
+      never written into the result.</td></tr>
+  <tr><td>Apply</td><td>Executes the crop and the WCS re-solve.</td></tr>
+  <tr><td>Load Previous Crop</td><td>Recalls the last rectangle, position and
+      angle to reuse identical framing.</td></tr>
+  <tr><td>Batch Crop (all open)</td><td>Applies the same transform to every open
+      image - meaningful for a registered set that shares framing; each image's
+      own WCS is re-solved independently.</td></tr>
+</table>
+
+<h3>Multi-Image Overlap</h3>
+<p>The <b>&#8862; Multi-Image Overlap</b> panel composites several open images so
+you can see their common coverage and choose a crop valid for all of them
+(mosaics, dithered sets). <b>Blend</b> sets how contributors combine;
+<b>Colorize</b> tints each so you can see which image covers which region. The
+composite is a framing aid only &mdash; the crop still applies to the real image
+data, and each image's WCS is re-solved on apply.</p>
+
+<div class="tip">Typical workflow: open your registered set &rarr; Multi-Image
+Overlap &rarr; Apply Composite Preview to see the shared region &rarr; draw a
+crop inside it &rarr; Back to Single Image &rarr; Batch Crop (all open).</div>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">The rest of this page documents exactly what the tool
+computes internally, including how the World Coordinate System (WCS) and its SIP
+distortion model are preserved.</p>
+
+<h3>2.1 The geometry is one projective transform</h3>
+<p>Everything you set in the dialog &mdash; the crop rectangle, the rotation
+<b>Angle</b>, the aspect-ratio constraint and the per-edge pixel <b>Margins</b> &mdash;
+collapses into a single 3&times;3 homography matrix <code>M</code> that maps a
+source pixel to an output pixel in homogeneous coordinates:</p>
+<div class="eq">[ x' w ]   [ m00 m01 m02 ] [ x ]
+[ y' w ] = [ m10 m11 m12 ] [ y ]
+[   w  ]   [ m20 m21 m22 ] [ 1 ]
+
+output pixel = ( x'w / w , y'w / w )</div>
+<p>A pure crop is a translation; rotation adds the usual sine/cosine block;
+rescale adds a diagonal factor. Representing all of it as one matrix means the
+WCS update below is identical whether you cropped, rotated, rescaled, or did all
+three at once &mdash; there is no special-case code per operation.</p>
+
+<h3>2.2 How the WCS is preserved</h3>
+<p>SASpro does <b>not</b> try to algebraically edit the old WCS (shift
+<code>CRPIX</code>, rotate the <code>CD</code> matrix, rotate SIP coefficients).
+That approach is fragile the moment rotation and SIP distortion are combined.
+Instead the tool <b>re-fits a brand-new WCS from resampled sky positions</b>,
+which is exact up to a measured residual. The algorithm
+(<code>wcs_update.py &rarr; update_wcs_after_crop</code>):</p>
+
+<h3>2.2.1 &mdash; Build the original WCS</h3>
+<p>The source FITS header is parsed with astropy as a TAN or TAN&ndash;SIP WCS
+(<code>relax=True</code>). If the header is 3-D (e.g. a <code>CTYPE3</code> axis),
+the axis-3 cards (<code>CRPIX3</code>, <code>CD3_</code>, <code>PC3_</code>,
+<code>PV3_</code>, &hellip;) are stripped so the solve is strictly 2-D.</p>
+
+<h3>2.2.2 &mdash; Invert the transform and sample the output</h3>
+<p>The matrix is inverted, <code>H = M&#8315;&#185;</code> (output &rarr; source),
+and a dense grid of up to <b>40&times;40</b> points is laid over the <i>output</i>
+image at pixel centres <code>0.5 &hellip; N&minus;0.5</code>. Each output grid
+point <code>(x,y)</code> is mapped back to a source pixel through the inverse
+homography, with the perspective divide:</p>
+<div class="matheq">x_{\mathrm{src}}=\frac{H_{00}x+H_{01}y+H_{02}}{H_{20}x+H_{21}y+H_{22}}</div>
+<div class="matheq">y_{\mathrm{src}}=\frac{H_{10}x+H_{11}y+H_{12}}{H_{20}x+H_{21}y+H_{22}}</div>
+
+<h3>2.2.3 &mdash; Source pixels &rarr; true sky</h3>
+<p>Those source pixels are pushed through the <b>original</b> WCS with its full
+distortion model via <code>pixel_to_world</code>. This is the crucial step: the
+celestial position of every grid point is computed with the original SIP + TAN,
+so the (output-pixel &harr; RA/Dec) correspondences carry the real distortion,
+not an approximation of it.</p>
+
+<h3>2.2.4 &mdash; Fit a new forward WCS</h3>
+<p>astropy's <code>fit_wcs_from_points</code> solves a fresh WCS from those
+correspondences:</p>
+<ul>
+  <li><b>Projection</b> <code>TAN</code>, reference point placed at the field
+      <b>centre</b> (<code>proj_point='center'</code>) &mdash; so the new
+      <code>CRVAL</code>/<code>CRPIX</code> are recomputed for the cropped frame,
+      not inherited.</li>
+  <li><b>SIP order is preserved</b> from the source: the fit uses
+      <code>sip_degree = A_ORDER</code> (default 3 if unreadable). If the source
+      had no SIP, <code>sip_degree = None</code> and a clean linear TAN is fit.</li>
+</ul>
+<p>The forward SIP convention it fits is the standard Shupe (2005) model: with
+<code>u = x &minus; CRPIX1</code>, <code>v = y &minus; CRPIX2</code>, the distortion
+polynomials are</p>
+<div class="matheq">f(u,v)=\sum A_{pq}\,u^{p}v^{q}\,,\qquad g(u,v)=\sum B_{pq}\,u^{p}v^{q}\qquad(p+q\leq A\_ORDER)</div>
+<p>which are applied and projected as</p>
+<div class="matheq">(\xi,\eta)=\mathrm{CD}\cdot(u+f(u,v),\;v+g(u,v))</div>
+<p>followed by a TAN deprojection about <code>(CRVAL1, CRVAL2)</code> to give
+<code>(RA, Dec)</code>.</p>
+
+<h3>2.2.5 &mdash; Reconstruct the inverse SIP (AP/BP)</h3>
+<p><code>fit_wcs_from_points</code> only fits the forward terms <code>A/B</code>,
+not the inverse <code>AP/BP</code> used for sky&rarr;pixel. SASpro rebuilds the
+inverse on the same grid. For each sample it asks the new forward solution where
+the sky point lands, <code>(x_fwd, y_fwd) = world_to_pixel(sky)</code>, and
+forms CRPIX-relative residuals:</p>
+<div class="eq">u_obs = x - CRPIX1          v_obs = y - CRPIX2      (target grid)
+u_fwd = x_fwd - CRPIX1      v_fwd = y_fwd - CRPIX2   (forward prediction)
+du = u_obs - u_fwd          dv = v_obs - v_fwd       (what AP/BP must add back)</div>
+<p>It then least-squares-fits two 2-D polynomials up to the SIP order to those
+residuals, <code>AP(u_fwd, v_fwd) &asymp; du</code> and
+<code>BP(&middot;) &asymp; dv</code>, via a monomial design matrix and
+<code>numpy.linalg.lstsq</code>. Non-negligible coefficients
+(<code>|c| &gt; 1e-30</code>) are written as <code>AP_p_q</code> /
+<code>BP_p_q</code> with matching <code>AP_ORDER</code>/<code>BP_ORDER</code>, so
+pixel&harr;sky round-trips stay accurate in both directions.</p>
+
+<h3>2.2.6 &mdash; Clean header rewrite</h3>
+<p>The new cards are written into a copy of the original header only after
+<b>every</b> old WCS keyword is stripped &mdash; <code>CTYPE, CUNIT, CDELT, CRPIX,
+CRVAL, PC, CD, PV, PS, LONPOLE, LATPOLE, RADESYS, EQUINOX, A_*, B_*, AP_*, BP_*,
+WCSAXES, MJDREF</code>. This guarantees no stale distortion term from the
+pre-crop solution can survive alongside the new one. <code>NAXIS1/2</code> are set
+to the output size, and the live <code>wcs</code> object plus
+<code>wcs_header</code> in the document metadata are replaced so downstream RA/Dec
+read-outs use the new solution immediately.</p>
+
+<h3>2.3 Fit quality</h3>
+<p>After fitting, the grid is round-tripped (new pixel &rarr; sky) and compared
+to the true sky positions from step 2.2.3. The angular separations give an RMS
+and the 50th/95th percentiles, in arc-seconds, recorded in the document's
+<code>__wcs_debug__</code> summary along with before/after <code>CRVAL</code>,
+<code>CRPIX</code>, pixel scale and rotation. Pixel scale and field rotation are
+read back from the CD matrix as:</p>
+<div class="matheq">\mathrm{scale}_x=3600\,\sqrt{\mathrm{CD}_{11}^{2}+\mathrm{CD}_{21}^{2}}\quad[\mathrm{arcsec/px}]</div>
+<div class="matheq">\theta=\mathrm{atan2}(-\mathrm{CD}_{21},\;\mathrm{CD}_{11})\quad[\deg]</div>
+<p class="cap">A well-behaved crop/rotate typically round-trips to well under the
+pixel scale; large residuals indicate the source solution was marginal or the
+header could not be coerced to 2-D.</p>
+
+<h3>2.4 Limitations</h3>
+<ul>
+  <li>No source WCS &rarr; nothing to preserve; the crop is purely geometric.</li>
+  <li>The new solution is a fit, accurate to the residual in 2.3 &mdash; not a
+      symbolic copy of the old coefficients. For normal plate scales this is
+      sub-pixel.</li>
+  <li>3-D headers are solved as their 2-D celestial sub-space; non-celestial
+      axis-3 metadata is dropped from the WCS.</li>
+  <li>Inverse-SIP reconstruction is best-effort: if it fails it is skipped
+      (non-fatal) and only the forward solution is written.</li>
+</ul>
+
+</body>
+</html>

@@ -1,0 +1,334 @@
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color:#e6e6e6; background:#1b1b1b; padding:10px 14px; line-height:1.45; }
+h1 { margin: 0 0 10px 0; font-size: 20px; color:#9ad; }
+h2 { margin-top: 16px; color:#cfd; font-size:16px; border-bottom:1px solid #333; padding-bottom:3px; }
+h3 { color:#9bd; margin-top:14px; margin-bottom:6px; font-size:14px; }
+code { background:#2a2a2a; padding:1px 4px; border-radius:3px; }
+.eq { background:#232323; border-left:3px solid #4caf50; padding:6px 10px; margin:6px 0; font-family:monospace; }
+.hero { background:#1f2a1f; border-left:3px solid #4caf50; padding:10px 12px; margin:10px 0; border-radius:3px; }
+.matheq { margin: 8px 14px; text-align:left; }
+.matheq-hero { margin: 10px 0; text-align:center; }
+.tip { background:#1f2a1f; border-left:3px solid #4caf50; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.warn { background:#2a241f; border-left:3px solid #c0892b; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.credit { background:#2a251c; border-left:3px solid #c7a24a; padding:8px 12px; margin:12px 0 6px 0; border-radius:3px; font-size:13px; color:#dcd3b8; }
+.pub { background:#1f2a1f; border-left:3px solid #4caf50; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.keys { background:#1f2630; border-left:3px solid #4a9eff; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.workflow { background:#1f2630; border-left:3px solid #4a9eff; padding:8px 12px; margin:10px 0; border-radius:3px; }
+ul { margin: 6px 0 10px 0; padding-left:22px; }
+li { margin: 3px 0; }
+p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Gaia DR3 Library</h1>
+
+<div class="hero">
+<b>Gaia DR3, local.</b> This dialog is four things in one: a downloader for the full Gaia DR3 XP spectral library (34 million calibrated stellar spectra), a downloader for the full Gaia DR3 astrometric catalog (1.6 <i>billion</i> stars), a 3D <b>Stellar Neighborhood Explorer</b> that puts every nearby star in its real place in galactic coordinates, and a <b>Spectrum Viewer</b> for inspecting individual XP spectra. The spectral and astrometric data power color calibration and plate solving throughout SASpro; the Neighborhood Explorer and the asterism overlay are their own payoff — a tour of what's actually out there within a few hundred parsecs of the Sun.
+</div>
+
+<div class="pub">
+<b>The scale of what you're installing.</b> The spectral library tops out at 34,414,104 XP spectra (~134 GB at full depth). The astrometric library tops out at 1,585,128,120 stars across 41 files (~184 GB at full depth). The pre-built neighborhood extract is 14,708,327 stars within 300 parsecs with precomputed galactic Cartesian positions — 2.5 GB and the fastest way to see something interesting. You do <i>not</i> need the full catalog to get value; the Bright tiers alone cover most practical use.
+</div>
+
+<div class="warn">
+<b>Honest about DR3's limits.</b> The DR3 astrometric builder did not capture <code>parallax_error</code>, so SASpro cannot do the standard <code>parallax_over_error &gt; 5</code> distance-reliability cut. It guards with (a) <code>parallax &gt; 0</code>, (b) a RUWE &lt; 1.4 cut, and (c) a hard 300 pc radius on the neighborhood extract. RUWE flags <i>bad astrometric fits</i> (unresolved binaries, blends) — it does NOT flag a clean fit whose parallax is simply too small to measure, which is why the 300 pc cap matters. Separately, Gaia saturates below G ≈ 2.2 and XP tops out at G ≈ 15, so the brightest naked-eye stars (Sirius, Vega, Alpha Cen, Procyon…) are missing entirely from the Gaia data and faint M dwarfs beyond 15 are missing from the spectra. Where it matters, this dialog says so in-line rather than hiding it. Gaia DR4 (expected late 2025) will add <code>parallax_error</code> and <code>bp_rp</code> and this whole picture gets honestly deeper.
+</div>
+
+<h2>1. The four tabs at a glance</h2>
+<ul>
+<li><b>Spectrum Library</b> — bulk XP spectra, five magnitude tiers, 220 MB (ultra-bright) up to ~73 GB (very faint). Install one tier at a time; the dialog resumes partial downloads automatically.</li>
+<li><b>Astrometry</b> — bulk gaia_source astrometry (RA, Dec, proper motion, parallax, RUWE), six tiers plus the Stellar Neighborhood extract. 2.5 GB (neighborhood only) up to ~184 GB (full depth).</li>
+<li><b>Neighborhood Explorer</b> — the 3D view. Needs the neighborhood extract installed, or falls back to a hardcoded list of naked-eye stars so you still see <i>something</i>. Supports true-color rendering if an XP spectral tier is also installed.</li>
+<li><b>Spectrum Viewer</b> — look up one star's XP spectrum by name (SIMBAD-resolved), RA/Dec, or Gaia source_id.</li>
+</ul>
+<p>Spectral and astrometric libraries live in separate folders (both configurable) because they're independent downloads — you might want all the astrometry for plate solving but only the Ultra-Bright + Bright spectral tiers for color calibration.</p>
+
+<h2>2. Spectrum Library tab — magnitude tiers</h2>
+<p>XP spectra are 343-point calibrated flux spectra from 336-1020 nm (2 nm step), extracted from Gaia's <code>xp_sampled_mean_spectrum</code> table. Sized by target magnitude range:</p>
+<ul>
+<li><b>Ultra-Bright (G &lt; 8)</b> — 54,735 spectra, ~220 MB. Arneb, Muphrid, Tania Australis, and tens of thousands of bright reference stars. <b>Recommended minimum install</b>.</li>
+<li><b>Bright (G 8-10)</b> — 385,269 spectra, ~1.5 GB. Covers most calibration stars reachable from backyard setups. <b>Recommended</b>.</li>
+<li><b>Medium (G 10-12)</b> — 2,426,887 spectra, ~9.5 GB across 4 files. Dense coverage for wide-field and narrowband imaging. <b>Recommended</b>.</li>
+<li><b>Faint (G 12-14)</b> — 12,852,953 spectra, ~50 GB across 10 files. Deep coverage for long-exposure narrowband; file sizes range 2-9 GB each.</li>
+<li><b>Very Faint (G 14-15)</b> — 18,694,260 spectra, ~73 GB across 10 files. The practical faint limit of DR3 XP.</li>
+</ul>
+
+<div class="tip">
+<b>Lookup priority.</b> Any SASpro tool that needs an XP spectrum tries (1) your installed bulk library, (2) the live download cache (<code>gaia_xp_cache.sqlite</code>), (3) the live Gaia archive. The library is first because it's instant; the archive is last because it's slow and needs internet. The practical consequence: install enough of the library that your typical frames hit (1) and never see the latency of (2) or (3).
+</div>
+
+<h2>3. Astrometry tab — magnitude tiers and the neighborhood extract</h2>
+<p>Astrometric data (RA, Dec, pmra, pmdec, parallax, G-mag, RUWE) across 41 physical files grouped into six user-facing tiers. Also hosts the pre-built Stellar Neighborhood extract that powers the 3D explorer:</p>
+<ul>
+<li><b>Stellar Neighborhood (within 300 pc)</b> — 14,708,327 stars, ~2.5 GB (one file). Precomputed galactic XYZ (Sun at origin), ready to stream straight into the 3D view. <b>Install this first</b> if you want the Neighborhood Explorer to work; it's self-contained and the single biggest payoff per gigabyte in the whole dialog.</li>
+<li><b>Bright (G &lt; 17)</b> — 139,482,635 stars, 16.9 GB across 4 files. Enough for most wide-field plate solves. <b>Recommended</b>.</li>
+<li><b>Faint (G 17-18)</b> — 129,386,971 stars, 15.7 GB across 5 files. Typical narrow-field solves.</li>
+<li><b>Very Faint (G 18-19)</b> — 239,207,768 stars, 28.9 GB across 10 files.</li>
+<li><b>Extreme (G 19-20)</b> — 420,229,783 stars, 50.4 GB across 10 files.</li>
+<li><b>Maximum Depth (G ≥ 20)</b> — 656,820,963 stars, 72.0 GB across 12 files. Full DR3 depth; the practical faint limit.</li>
+</ul>
+
+<div class="warn">
+<b>Separate library folders.</b> Spectral and astrometric libraries have independent locations (set each via the "Change Location…" button on its tab). A full astrometric install at 184 GB probably wants to live on a different drive than your system drive; the migration dialog has move / copy / switch-pointer options and shows per-file progress.
+</div>
+
+<h2>4. Install / Resume / Browse / Remove</h2>
+<p>Each tier row has four possible actions depending on state:</p>
+<ul>
+<li><b>Install</b> — download all missing files for the tier from the SetiAstro CDN. Multi-file tiers show per-file and per-tier progress bars.</li>
+<li><b>Resume</b> — appears when a tier is partially installed. Skips files already present (verified by size match) and downloads only what's missing. Interrupted downloads are safe to retry; the <code>.tmp</code> staging file prevents corrupted partials.</li>
+<li><b>Browse…</b> — point SASpro at files you already have (downloaded manually, copied from a backup, shared from another SASpro install). If one file is selected and others for the same tier sit in the same folder, SASpro asks whether to copy them all.</li>
+<li><b>Remove</b> — delete all installed files for a tier. Confirmation dialog shows the exact disk space to be freed. Removes files only; nothing else in the directory is touched.</li>
+<li><b>Cancel</b> — appears during active downloads. The partial <code>.tmp</code> is cleaned up; already-completed files stay.</li>
+</ul>
+
+<div class="tip">
+<b>Change Location migration.</b> The "Change Location…" button opens a dialog with three options for what to do with files already installed: <b>move</b> them to the new location (recommended — frees space on the old drive), <b>copy</b> them (useful for keeping a backup), or <b>switch pointer</b> only (leave files behind; they become inaccessible to SASpro until you move them manually). The move/copy uses <code>shutil.move</code>/<code>copy2</code> so cross-device transfers work, and the migration is cancellable mid-flight with no data loss.
+</div>
+
+<h2>5. The Neighborhood Explorer — 3D view of your own neighborhood</h2>
+
+<p>The headline feature. Open the tab, and you're looking at every Gaia DR3 star with a usable parallax inside the current radius, placed in galactic Cartesian coordinates with the Sun at the origin, the galactic plane in XY, and +Z toward the north galactic pole. A grid shows the midplane; three colored axes label the galactic directions; drop-lines fall from each star to the midplane so you can tell at a glance whether a bright point is far above the disk or just far from you.</p>
+
+<div class="keys">
+<b>Interaction.</b> Drag to orbit · scroll to zoom · Ctrl+drag to pan · left-click a star to select · right-click a star for an action menu (view XP spectrum, resolve in SIMBAD, open in browser, wedge-slice from here, copy source_id). The nearest-star table on the right lists up to 300 stars by distance; clicking a row selects and highlights.
+</div>
+
+<h3>5.1. Region controls</h3>
+<ul>
+<li><b>Region shape</b> — <b>Sphere (radius)</b> keeps everything within <i>r</i> of the Sun. <b>Cube (fills the grid)</b> uses an axis-aligned box of half-side <i>r</i> on each axis, which exactly matches the drawn grid and fills the corners a sphere leaves empty.</li>
+<li><b>Radius (pc)</b> — from 0.5 pc out to 750 pc. The extract itself stops at 300 pc; past that you only see the hardcoded naked-eye stars (which reach out to about 680 pc), and the status line says so.</li>
+<li><b>Preset buttons</b> — jump to 3, 10, 25, 50, 100, 300, 750 pc.</li>
+<li><b>Min dist (pc)</b> — when checked, carves a shell: everything closer than this is excluded. Use it to slice out (say) 200-220 pc and see where a structure actually lives instead of burying it under all the foreground stars.</li>
+<li><b>Max RUWE</b> — astrometric-fit-quality cut, default 1.4. See the honest caveat at the top of this doc: RUWE catches bad fits, not distant stars with weak parallax.</li>
+<li><b>Max G mag</b> — brightness cut on apparent G. Combined with the radius this is how you avoid rendering ten million faint dwarfs when you only care about O/B/A stars.</li>
+<li><b>Render cap</b> — hard limit on how many stars will be fetched, decompressed and uploaded to the GPU. Default 2 million, hard ceiling 15 million. Values above 5 million prompt a one-time confirmation; the current value is persisted across sessions.</li>
+</ul>
+
+<h3>5.2. Color-by modes</h3>
+<ul>
+<li><b>Absolute G (luminosity)</b> — default. Computes M<sub>G</sub> = G - 5·log<sub>10</sub>(d) + 5 and maps the 5th-95th percentile to a blue-white-orange ramp: blue-white = luminous, orange = dim. Not exactly temperature (a luminous red giant and a hot blue dwarf can share an absolute magnitude), but it reads like a stellar HR-diagram slice through the field.</li>
+<li><b>Apparent G</b> — maps the raw G magnitude. Shows what the sky looks like, not what the stars <i>are</i>.</li>
+<li><b>Distance</b> — maps dist_pc. Nearest = blue-white, farthest = orange. Useful for seeing structure along the line of sight.</li>
+<li><b>XP Spectrum (true colour)</b> — the real color each star emits, computed by integrating its actual XP spectrum against the CIE 1931 color matching functions and transforming to sRGB. Stars without an XP spectrum render as dim neutral grey so you can see <i>which</i> stars Gaia characterized and which it didn't. Requires at least one spectral tier installed. Capped at 20,000 spectra per load (the brightest ones are prioritized).</li>
+</ul>
+
+<div class="tip">
+<b>Why true color is slow.</b> The XP library's <code>bp_rp</code> column is NULL and its <code>synth_phot</code> table is empty in DR3 (not populated by the bulk builder), so there's no shortcut: SASpro integrates the actual 343-point spectrum against the color matching functions on demand, which costs a <code>zlib.decompress</code> plus three dot products per star. Fine for thousands, impossible for millions. The 20k cap keeps the mode usable; results are cached by source_id so re-entering the mode or reloading the same radius doesn't re-integrate. Hardcoded bright stars already carry a color from B-V and are served instantly.
+</div>
+
+<h3>5.3. Depth cues</h3>
+<ul>
+<li><b>Point size</b> slider — scales apparent brightness → pixel size. Brighter stars render bigger (log-scaled, 5th-95th percentile normalization so a few bright outliers don't flatten the curve). Default base = 4 pixels.</li>
+<li><b>Drop lines</b> — a vertical segment from each star down to the galactic midplane (z = 0), fading from the star's own color at the top to invisible at the plane. Without them a 3D scatter is genuinely ambiguous: a star high on screen could be above the plane or just distant. Capped at 20,000 stars (the nearest ones, where depth ambiguity matters most).</li>
+<li><b>Galactic axes</b> — red (toward galactic centre, l = 0°), green (direction the Sun is moving in its orbit, l = 90°), blue (galactic north, +Z). A fourth, yellow axis labeled "Sun's N pole" shows the <i>Sun's rotation axis</i> as a tilt — not a direction of motion, not perpendicular to the galactic plane; it's offset from the galactic Z by the Sun's obliquity.</li>
+<li><b>Scale ticks</b> — label each grid ring with its distance from the Sun in parsecs. Grid spacing is one fifth of the current radius; ticks appear on +X and +Y so at least one axis is always edge-on-readable.</li>
+</ul>
+
+<h3>5.4. The wedge slice</h3>
+
+<p>Right-click any star and pick <b>Wedge slice from here…</b> to open a popup that lets you cut an angular cone through the field centered on that star's galactic direction. You pick two half-angles — "along plane" (how far the wedge opens in galactic longitude, left/right along the disk) and "north-south" (how far it opens in galactic latitude, above/below the disk) — and the wedge stays active across radius and cut changes until you click <b>Clear Wedge</b>.</p>
+
+<p>This is how you isolate a moving group, a stream, or anything else elongated along a direction without rotating the camera to look edge-on. Combine with a shell (Min dist + Radius) and you can slice a thin wedge-of-a-shell: say, a 20°-wide cone through 100-150 pc. The direction locks on the <i>star's</i> galactic position, so if you later change the radius the wedge still points the same way; only Clear Wedge removes it.</p>
+
+<h3>5.5. Selection and SIMBAD</h3>
+<p>Left-click a star in the view (or a row in the nearest-star table): a cyan highlight marker appears and the info panel shows source_id, distance in parsecs and light-years, G mag, absolute M<sub>G</sub>, RUWE, RA/Dec, and galactic XYZ. For hardcoded bright stars the panel instead shows the SIMBAD identifier, spectral type, B-V-derived T<sub>eff</sub>, and flags "weak parallax" when the Hipparcos SNR is below 5.</p>
+<p><b>Resolve in SIMBAD</b> does a cone search (20″ then 60″, to accommodate Gaia-J2016 vs SIMBAD-J2000 proper motion); for hardcoded stars it uses the direct identifier. <b>Open in browser</b> opens the SIMBAD web page (sim-coo for Gaia sources — their id often won't resolve directly in SIMBAD since most faint neighborhood dwarfs are uncatalogued; sim-id for named stars).</p>
+
+<h2>6. The Asterism Explorer — constellations in true 3D</h2>
+
+<p>Pick a constellation from the <b>Asterism</b> dropdown and the Gaia layer hides itself for a tour of what the familiar shape actually looks like in three dimensions. Nine asterisms ship:</p>
+<ul>
+<li><b>Orion</b> — Betelgeuse / Bellatrix / the Belt / Rigel / Saiph / Meissa. Alnilam at ~600 pc is the far belt star; the rest of the figure sits at 77-380 pc.</li>
+<li><b>Big Dipper</b> — Dubhe and Alkaid are the group's bookends and sit at 37.7 and 31.9 pc; the inner five are a Hipparcos-confirmed moving group at ~25 pc. The handle genuinely bends in 3D.</li>
+<li><b>Leo</b> — the Sickle plus the body and tail. Regulus (24 pc) and Denebola (11 pc) are the near anchors; Eta Leo at ~550 pc is a distant supergiant hiding in plain sight.</li>
+<li><b>Scorpius</b> — Antares and the stinger. Two foreground surprises: Epsilon Sco (20 pc) and Eta Sco (22 pc) sit far in front of the ~150-180 pc main figure.</li>
+<li><b>Cygnus (Northern Cross)</b> — the depth champion. Gienah at 22 pc is a nearby wingtip; Sadr at ~560 pc is the distant chest. The cross is a nearby corner on a distant body.</li>
+<li><b>Boötes (the Kite)</b> — Arcturus and Muphrid (both ~11 pc) sit nearly on top of you; the rest of the kite floats at 26-68 pc. The bottom apex of the kite is practically in your lap.</li>
+<li><b>Taurus</b> — Aldebaran (20 pc) is a line-of-sight impostor floating in front of the Hyades V at 47 pc. The horns stretch out to 130 pc at Zeta Tau.</li>
+<li><b>Cassiopeia (the W)</b> — Caph (17 pc) is near; Gamma Cas (168 pc) sits behind. The zigzag skews hard in depth.</li>
+<li><b>Summer Triangle</b> — the single hardest depth-shock. Vega (7.68 pc), Altair (5.13 pc), Deneb (~433 pc). Three "equal-looking" first-magnitude stars spanning almost 85× in depth.</li>
+</ul>
+
+<div class="tip">
+<b>Earth View.</b> Click the <b>Earth View</b> button and the camera snaps to the Sun looking toward the asterism's centroid. The 3D lines collapse into exactly the flat pattern you see from Earth. Then drag to orbit and watch the stars pull apart in depth — the pattern breaks, usually dramatically, and you see the real geometry. This is the whole point of the tool: a working demonstration that constellations are an accident of our viewing angle, not structures.
+</div>
+
+<div class="warn">
+<b>Distances are honest about where they aren't precise.</b> RA/Dec are rock-solid (sky positions don't move at this precision). Nearby star distances are from Hipparcos/Gaia parallaxes and good to a few percent. Distant OB-star distances (Orion's belt especially, Deneb) are contested in the literature by factors of 2× and are flagged "approx" in the source. The whole point of the demo is the depth <i>spread</i>, not three-sig-fig ranges. Published values for Alnilam alone vary from 400 to 900 pc depending on the method.
+</div>
+
+<p>While an asterism is active the Gaia layer is paused and radius/cut changes don't affect the view — the asterism owns the camera. Pick "— none —" from the dropdown to clear and return to the Gaia neighborhood.</p>
+
+<h2>7. The Spectrum Viewer tab</h2>
+<p>One star at a time, three search modes:</p>
+<ul>
+<li><b>Star Name (SIMBAD)</b> — type a name, SIMBAD resolves it to a Gaia DR3 source_id (via its IDS column) or to RA/Dec. If the direct ID resolves and is in your library, it's served instantly; otherwise SASpro falls back to a positional cone search with progressively larger radii (default → 30″ → 120″ → 600″) to catch proper-motion offsets between SIMBAD's J2000 and Gaia's J2016.</li>
+<li><b>RA / Dec</b> — decimal degrees plus a search radius in arcseconds, finds the nearest star in the library.</li>
+<li><b>Gaia source_id</b> — direct lookup. Fastest if you already know the ID.</li>
+</ul>
+<p>The matplotlib plot shows BP (336-680 nm, blue fill) and RP (640-1020 nm, red fill) with a shaded flux-error band if present. The info panel below gives source_id, RA/Dec, G mag, and the peak-wavelength / flux range summary.</p>
+<p>The Neighborhood Explorer's right-click <b>View XP Spectrum</b> option opens a non-modal popup version of this viewer, so you can keep the 3D view's camera where it is and open several spectra side by side for comparison.</p>
+
+<h2>8. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Minimum useful install (color calibration + the explorer).</b> Spectrum Library → install <b>Ultra-Bright</b> (220 MB) and <b>Bright</b> (1.5 GB). Astrometry → install <b>Stellar Neighborhood (within 300 pc)</b> (2.5 GB). Total: ~4 GB. You now have offline color calibration for every reasonably bright reference star and the full 3D explorer with true-color mode. Good starting point before you commit to the big tiers.
+</div>
+
+<div class="workflow">
+<b>Full color calibration setup.</b> Spectrum Library → install <b>Ultra-Bright</b> + <b>Bright</b> + <b>Medium</b> (~11 GB). Covers calibration stars down to G 12, which is dense enough for most wide-field and narrowband work. Add <b>Faint</b> (50 GB) only if you're doing long-exposure narrowband where the medium tier runs out of reference stars.
+</div>
+
+<div class="workflow">
+<b>Full plate-solving setup.</b> Astrometry → install <b>Bright (G &lt; 17)</b> (16.9 GB) + <b>Stellar Neighborhood</b> (2.5 GB). Covers most wide-field solves and enables the explorer. Add <b>Faint (G 17-18)</b> (15.7 GB) if you do narrow-field solves below 1° FOV.
+</div>
+
+<div class="workflow">
+<b>Explore the ten nearest stars.</b> Neighborhood Explorer → set radius to 5 pc, color by <b>XP Spectrum (true colour)</b>, click <b>Reset View</b>. Alpha Centauri, Sirius, Procyon, and friends sit around the Sun; most are hardcoded naked-eye stars (Gaia saturates on them), so they get real colors from B-V and the panel shows SIMBAD identifier + spectral type. Right-click any to open its SIMBAD page.
+</div>
+
+<div class="workflow">
+<b>The Hyades edge-on.</b> Pick Taurus from the asterism dropdown, click <b>Earth View</b>, then orbit. You'll see Aldebaran break away from the Hyades V (it's a 20 pc foreground star, not a cluster member) and the Hyades themselves resolve into a compact clump at 47 pc, with the horns stretching back to 130 pc. This is the clearest demonstration of a constellation that is mostly real geometry with one impostor.
+</div>
+
+<div class="workflow">
+<b>Orion in true 3D.</b> Pick Orion from the dropdown and Earth View. The flat hourglass collapses. Now orbit: Alnilam leaps backward to ~600 pc, Bellatrix stays near at 77 pc, and Betelgeuse hangs around 168 pc. The belt is not a line, the asterism is not a plane. Press Reset View to see the Gaia neighborhood again.
+</div>
+
+<div class="workflow">
+<b>Slice a shell: what's actually at 200-220 pc?</b> Set radius 220, check Min dist and set 200, color by Distance. You see only stars in a 20-parsec-thick shell. Combined with the Scorpius-Centaurus OB association region (galactic longitude ~290-350°), this is how you expose a specific moving group without the near-field haze. The wedge slice (next recipe) narrows it further.
+</div>
+
+<div class="workflow">
+<b>The wedge trick.</b> Click a star you suspect is in a stream or association, right-click, <b>Wedge slice from here…</b>, pick a narrow along-plane half-angle (10-15°) and a tight north-south half-angle (5-10°). The field reduces to a cone of galactic directions centered on that star. Combine with a shell cut (above) and you have a parsec-thick, degree-wide slice through the local field — enough to see whether its neighbors share its distance and velocity direction.
+</div>
+
+<h2>9. Credits and citation</h2>
+<div class="credit">
+Written by Franklin Marek as part of <a href="https://setiastro.com">SetiAstro Suite</a>. Data from <b>Gaia DR3</b> (Gaia Collaboration et al., 2022, A&amp;A 649, A1; <a href="https://gea.esac.esa.int/archive/">gea.esac.esa.int/archive</a>) — XP spectra from <code>xp_sampled_mean_spectrum</code>, astrometry from <code>gaia_source</code>, calibrated by DPAC. CIE 1931 color matching functions via the Wyman, Sloan &amp; Shirley (2013, JCGT) analytical multi-lobe Gaussian fits. Hardcoded naked-eye star table draws distances from <b>Hipparcos</b> and <b>Gaia</b> parallaxes (via SIMBAD) and derives sRGB from B-V photometry through the same CIE integrator. ICRS → galactic frame transforms via <b>astropy.coordinates</b>. 3D rendering via <b>pyqtgraph.opengl</b> and <b>PyOpenGL</b>. If you publish science using data served through this dialog, cite Gaia DR3 directly and acknowledge DPAC's calibration pipeline.
+</div>
+
+<h2 style="margin-top:28px;">Technical details</h2>
+
+<h3>10.1. Data layer — bulk + cache + archive</h3>
+<p>Every XP spectrum lookup goes through a three-tier priority chain:</p>
+<ol>
+<li>Local bulk library (<code>GaiaBulkLibrary</code>) — one <code>sqlite3</code> connection per installed tier file, opened with <code>PRAGMA query_only = ON</code>. Primary-key lookup on <code>source_id</code>.</li>
+<li>Live download cache (<code>GaiaSpectraDB</code> at <code>gaia_xp_cache.sqlite</code>) — populated by the on-demand downloader as fallback hits accumulate.</li>
+<li>Live Gaia archive — only hit when neither local source has the id.</li>
+</ol>
+<p>Spectra are stored as zlib-compressed 343-element <code>float32</code> arrays:</p>
+<div class="matheq">\lambda \in [336, 1020]\ \mathrm{nm},\quad \Delta\lambda = 2\ \mathrm{nm}</div>
+<p>plus an optional per-point flux error array. The decompressed flux maps onto the shared <code>WL_GRID</code> at load time.</p>
+
+<h3>10.2. Dec-zone + RA composite index (why no R-tree)</h3>
+<p>SQLite's R-Tree extension isn't compiled into every platform's shipped SQLite — especially in frozen builds — so SASpro avoids it. Instead the astrometric builder assigns each star a <b>declination zone</b>:</p>
+<div class="matheq-hero">z = \lfloor (\delta + 90^\circ) / h_z \rfloor</div>
+<p>where h<sub>z</sub> is the zone height in degrees (stored in the file's metadata, typically 1°), and builds a composite index on <code>(dec_zone, ra)</code>. Bounding-box queries then scan only the relevant zone-slabs and the relevant RA range inside each. The exact dec filter is applied in Python at the end to tighten the coarse zone bounds. RA wraparound at 0/360° is handled by splitting the query into two ranges when ra_lo &gt; ra_hi.</p>
+
+<h3>10.3. Row-count hardcoding</h3>
+<p>Every <code>GroupDef</code> carries an exact <code>n_items</code> known from the build (54,735 for Ultra-Bright; 656,820,963 for Maximum Depth). The UI reads this directly instead of running <code>COUNT(*)</code> on multi-GB <code>WITHOUT ROWID</code> tables, which is minutes of pointless disk churn to rediscover a known number. The library objects still expose <code>get_group_status()</code> for external callers — but with a header warning that it's slow on the deep tiers.</p>
+
+<h3>10.4. Sphere vs cube with the dist_pc index</h3>
+<p>The neighborhood extract has a <code>dist_pc</code> index. The sphere query is a trivial range scan on it:</p>
+<div class="matheq">d_{\mathrm{pc}} \leq r</div>
+<p>The cube query is the interesting one. Three separate <code>BETWEEN</code> clauses on <code>x_pc</code>, <code>y_pc</code>, <code>z_pc</code> couldn't use the <code>dist_pc</code> index, forcing a full-table scan of ~14M rows. Trick: a cube of half-side e is contained in the sphere of radius e√3 (the cube's circumradius):</p>
+<div class="matheq-hero">R_{\mathrm{sph}}(e) = e\sqrt{3}</div>
+<p>So the cube query is written as all four predicates together:</p>
+<div class="matheq">|x_{\mathrm{pc}}|, |y_{\mathrm{pc}}|, |z_{\mathrm{pc}}| \leq e,\quad d_{\mathrm{pc}} \leq e\sqrt{3}</div>
+<p>The dist_pc clause prunes with the index before the per-axis test runs, turning a full-table scan into an index-range scan plus a cheap filter. Shell queries (Min dist checked) add a floor:</p>
+<div class="matheq">r_{\min} \leq d_{\mathrm{pc}} \leq r_{\max}</div>
+<p>which also rides the dist_pc index.</p>
+
+<h3>10.5. The wedge query</h3>
+<p>Angular wedges are expressed purely in galactic Cartesian coordinates — no SQL trigonometry (not guaranteed in a frozen SQLite's math extensions). Given a direction (ℓ<sub>0</sub>, b<sub>0</sub>) and half-widths (Δℓ, Δb), the latitude band becomes a z-over-dist bound:</p>
+<div class="matheq-hero">\sin(b_{\min}) \leq z_{\mathrm{pc}} / d_{\mathrm{pc}} \leq \sin(b_{\max})</div>
+<p>and the longitude band uses a dot product against the direction unit vector, with the "within Δℓ" condition expressed as a sign plus a cosine inequality:</p>
+<div class="matheq">x_{\mathrm{pc}} \cos\ell_0 + y_{\mathrm{pc}} \sin\ell_0 \geq 0</div>
+<div class="matheq">(x_{\mathrm{pc}} \cos\ell_0 + y_{\mathrm{pc}} \sin\ell_0)^2 \geq (x_{\mathrm{pc}}^2 + y_{\mathrm{pc}}^2) \cos^2(\Delta\ell)</div>
+<p>Both ride the <code>dist_pc</code> index because they coexist with the sphere/shell/cube predicates. The longitude test is skipped entirely at Δℓ ≥ 90° ("no longitude limit").</p>
+
+<h3>10.6. True color — XP spectrum to sRGB</h3>
+<p>For each star with an XP spectrum, SASpro integrates the flux against the CIE 1931 color matching functions (via the Wyman-Sloan-Shirley analytical fits — multi-lobe piecewise Gaussians, ~1% accurate, no lookup table):</p>
+<div class="matheq">X = \int_{336}^{1020} f(\lambda)\, \bar{x}(\lambda)\, d\lambda</div>
+<div class="matheq">Y = \int_{336}^{1020} f(\lambda)\, \bar{y}(\lambda)\, d\lambda</div>
+<div class="matheq">Z = \int_{336}^{1020} f(\lambda)\, \bar{z}(\lambda)\, d\lambda</div>
+<p>Luminance is normalized out — chromaticity only, because point size already encodes apparent brightness:</p>
+<div class="matheq">(x, y, z) = (X, Y, Z) / Y</div>
+<p>Then the standard D65-adapted linear sRGB transform:</p>
+<div class="matheq-hero">\mathbf{c}_{\mathrm{lin}} = \mathbf{M}_{\mathrm{D65}} \cdot (X, Y, Z)^\top</div>
+<p>with the sRGB transfer function applied in two cases:</p>
+<div class="matheq">c_{\mathrm{sRGB}} = 12.92\, c_{\mathrm{lin}} \quad \mathrm{if}\ c_{\mathrm{lin}} \leq 0.0031308</div>
+<div class="matheq">c_{\mathrm{sRGB}} = 1.055\, c_{\mathrm{lin}}^{1/2.4} - 0.055 \quad \mathrm{otherwise}</div>
+<p>Out-of-gamut negative values (common for very hot blue stars) are clipped to zero. Verified against blackbody spectra: 2500 K → deep orange, 5772 K (Sun) → near-white, 10000 K → blue, with the B/R ratio strictly increasing in temperature. Trapezoidal integration via <code>np.trapezoid</code> with a fallback to <code>np.trapz</code> for pre-NumPy-2.0 installs.</p>
+
+<h3>10.7. Distance from parallax</h3>
+<p>Classic inversion:</p>
+<div class="matheq-hero">d_{\mathrm{pc}} = 1000 / \varpi_{\mathrm{mas}}</div>
+<p>Only sources with ϖ &gt; 0 are kept at build time. Absolute magnitude from the distance modulus:</p>
+<div class="matheq">M_G = G - 5 \log_{10}(d_{\mathrm{pc}}) + 5</div>
+<p>used for the "Absolute G (luminosity)" color mode. Both values are stored precomputed in the neighborhood extract so neither per-star arithmetic nor a <code>LOG10</code> extension is needed at query time.</p>
+
+<h3>10.8. Color ramps</h3>
+<p>For the non-true-color modes (absmag, appmag, dist), SASpro computes a per-star scalar v, finds its 5th and 95th percentiles over the loaded sample, and maps:</p>
+<div class="matheq-hero">t = \mathrm{clip}((v - P_5) / (P_{95} - P_5),\; 0,\; 1)</div>
+<p>then applies a two-segment ramp: t = 0 → blue-white (luminous), t = 0.5 → warm cream, t = 1 → orange-red (dim). Percentile normalization keeps a few outliers from flattening the entire ramp. Non-finite values (unknown G) sit at t = 0.5.</p>
+
+<h3>10.9. Point sizes</h3>
+<p>Brighter stars render bigger. Normalize G by the 2nd-98th percentile:</p>
+<div class="matheq">t_G = \mathrm{clip}((G - P_2(G)) / (P_{98}(G) - P_2(G)),\; 0,\; 1)</div>
+<p>and apply a linear curve where t = 0 (brightest) gets a size multiplier of 2.6 and t = 1 (faintest) gets 0.5:</p>
+<div class="matheq-hero">s = s_{\mathrm{base}} \cdot (2.6 - 2.1\, t_G)</div>
+<p>with a minimum of 1.2 pixels so faint stars don't disappear sub-pixel. The slider sets s_base (default 4 px).</p>
+
+<h3>10.10. 3D picking via projected screen position</h3>
+<p>pyqtgraph has no built-in 3D picking, so SASpro does it directly. Transform every displayed point through the current MVP matrix:</p>
+<div class="matheq-hero">\mathbf{c}_{\mathrm{clip}} = \mathbf{M}_{\mathrm{proj}} \cdot \mathbf{M}_{\mathrm{view}} \cdot (x, y, z, 1)^\top</div>
+<p>Divide by w to get normalized device coordinates:</p>
+<div class="matheq">(x_{\mathrm{ndc}}, y_{\mathrm{ndc}}) = (c_x / c_w, c_y / c_w)</div>
+<p>Map to screen pixels (note the y-axis flip — NDC +Y is up, screen +Y is down):</p>
+<div class="matheq-hero">(x_s, y_s) = \left(\frac{1}{2}(x_{\mathrm{ndc}} + 1) \cdot W,\; \frac{1}{2}(1 - y_{\mathrm{ndc}}) \cdot H\right)</div>
+<p>The point with the smallest screen distance to the click wins, with a 12-pixel tolerance and a w &gt; 0 "in front of the camera" filter. Click vs. drag is distinguished by cursor travel: &lt; 4 pixels = click, more = orbit drag. Right-clicks that pass the click test open the context menu; left-clicks emit <code>pointPicked</code>. Cheap enough at these point counts to avoid a dedicated color-picking render pass.</p>
+
+<h3>10.11. Projection matrix across pyqtgraph versions</h3>
+<p>pyqtgraph 0.13.x's <code>projectionMatrix()</code> takes no required arguments; 0.14.0 requires both <code>region</code> and <code>viewport</code>. Calling the 0.13 form on 0.14 raises <code>TypeError</code>; the reverse works but with a region derived from the viewport. SASpro tries the 0.14 signature first, falls back to 0.13 on <code>TypeError</code>, and logs anything else — a prior bare <code>except</code> here silently returned None, which meant every click did nothing on 0.14.</p>
+
+<h3>10.12. Asterism 3D placement</h3>
+<p>Each hardcoded asterism star carries ICRS RA, Dec, and distance in parsecs. Conversion to galactic Cartesian uses astropy's frame transforms, matching the frame the neighborhood extract and the hardcoded naked-eye star table already use. The equivalent closed form (what astropy's transform produces to within precession/nutation corrections):</p>
+<div class="matheq">x = d \cos(b) \cos(\ell)</div>
+<div class="matheq">y = d \cos(b) \sin(\ell)</div>
+<div class="matheq">z = d \sin(b)</div>
+<p>where (ℓ, b) are the galactic coordinates derived from the ICRS (α, δ) by astropy's rotation. Results are cached per-asterism so switching between constellations is instant on the second visit.</p>
+
+<h3>10.13. Earth View camera math</h3>
+<p>The Earth View button for asterisms places the camera at the Sun and points it at the asterism's centroid c, so the 3D lines collapse to the familiar sky projection. From centroid position c = (c<sub>x</sub>, c<sub>y</sub>, c<sub>z</sub>) and r = |c|:</p>
+<div class="matheq">\mathrm{azimuth} = \mathrm{atan2}(-c_y, -c_x)</div>
+<div class="matheq">\mathrm{elevation} = \arcsin(-c_z / r)</div>
+<p>(the negatives come from the convention that pyqtgraph's azimuth/elevation describe the camera's look-from direction, not look-at). Distance is set to r so the near plane sits at the Sun. Orbit from there makes the depth structure obvious.</p>
+
+<h3>10.14. Hardcoded naked-eye stars</h3>
+<p>Gaia saturates below G ≈ 3, which excludes the brightest ~800 naked-eye stars entirely. SASpro ships a hardcoded table built from Hipparcos / Gaia parallaxes (via SIMBAD cross-match) with per-star SIMBAD identifier, V mag, spectral type, B-V-derived T<sub>eff</sub>, pre-computed galactic XYZ, pre-computed sRGB (from the same CIE integrator as the XP mode, applied to a B-V-indexed stellar spectrum), and a <code>plx_ok</code> flag (false when the Hipparcos parallax SNR is &lt; 5). Their source_ids are <i>negative</i> as a sentinel — any accidental Gaia lookup fails loudly instead of silently hitting the wrong star. They're folded into every neighborhood load that includes them in its radius; the one plausible overlap (Arneb, Alpha Leporis, G = 2.55, in the XP library) sits at 680 pc, well outside any routine query.</p>
+
+<h3>10.15. Lazy GL initialization and the dialog-flicker tradeoff</h3>
+<p>Constructing a <code>QOpenGLWidget</code> inside an already-visible top-level window makes Qt destroy and recreate that window's native handle. The GL view here is deliberately built in the Neighborhood Explorer tab's <code>showEvent</code>, not in the dialog's constructor. The consequence: the <i>first</i> visit to the Neighborhood Explorer tab shows a brief flicker of this dialog as its native window is rebuilt. The alternative — building the GL view at construction time — would push that flicker to SASpro's main window, which is much worse. A one-off flicker of a modal dialog is the right place to pay the cost. Subsequent visits do nothing (an idempotent <code>_gl_ready</code> flag guards against re-entry if <code>showEvent</code> is pumped during construction).</p>
+
+<h3>10.16. Non-blocking downloads and migration</h3>
+<p>Every download, every file migration, and the neighborhood load itself run on dedicated <code>QThread</code> workers. The main dialog signals through them; a <code>cancel</code> flag lets any in-flight operation stop at the next chunk boundary. The dialog's <code>closeEvent</code> cancels all workers and <code>wait()</code>s for them to settle (2-second timeout) before the dialog actually closes, so a user who hits Close during a 50-GB download gets clean file-system state (partial <code>.tmp</code> cleaned up, no orphan handles).</p>
+
+<h3>10.17. DR4 wishlist — what's being worked around</h3>
+<p>None of these are fixable without a re-fetch when Gaia DR4 lands:</p>
+<ul>
+<li><b><code>parallax_error</code></b> absent — the big one. Blocks the standard <code>parallax_over_error &gt; 5</code> cut. Mitigated with RUWE + 300 pc radius guard (both documented inline wherever they appear in the UI).</li>
+<li><b><code>bp_rp</code></b> empty in the sources table — would let every astrometric source have a real color even without an XP spectrum. Currently ~80% of the solar neighborhood renders grey in true-color mode because it has no XP spectrum.</li>
+<li><b><code>synth_phot</code></b> table empty — the schema exists but was never populated by the bulk builder. If populated at build time, true color would become three real reads instead of a <code>zlib.decompress</code> plus three CIE integrals per star.</li>
+<li><b>XP magnitude limits</b> (G 2.2 to G 15) — may extend in DR4; the tier boundaries would need revisiting.</li>
+</ul>
+<p>Everything above the DR4 line is a <i>feature</i> of the current data, documented honestly in the UI rather than fixed in post-processing. When DR4 lands, both catalogs get rebuilt and the explorer reaches farther <i>honestly</i>, not just <i>optimistically</i>.</p>
+
+</body>
+</html>

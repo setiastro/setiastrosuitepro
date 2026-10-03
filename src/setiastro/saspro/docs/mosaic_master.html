@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Mosaic Master</h1>
+<p class="sub">Stitches multiple astrophotos into one seamless image by placing every panel on a shared celestial frame using its WCS, then blending the overlaps. Handles both standard WCS-based mosaics (the usual case) and a dedicated <b>Seestar Mode</b> for images from robot smart telescopes that arrive without plate solves. Includes two reprojection engines (exact SIP-aware per-pixel inverse mapping, and a fast single-homography shortcut), a two-stage brightness normalization system (sky pedestal match + overlap gain fit with sky pivot), a mixed-tone-scale detector that catches when linear and stretched panels have been mixed by mistake, and overlap-relative distance-transform seam blending.</p>
+
+<div class="pub">
+<b>Original work for SetiAstro Suite Pro.</b> The entire mosaic pipeline is written from scratch by <b>Franklin Marek</b>: the <b>exact SIP-aware per-pixel inverse mapping</b> with tiled dispatch, forward-only footprint-bbox restriction, and quarter-pixel round-trip validation (so SIP non-convergence at the footprint edge is caught rather than silently miscomposited); the <b>destination-WCS linearization</b> decision (SIP is only valid inside its fit domain, so the mosaic canvas must be pure linear TAN while source panels keep their SIP); the <b>pedestal coverage-preservation technique</b> (add +1.0 before warping so the valid-pixel footprint survives Lanczos4 border fill, 12-px coverage erosion to clear interpolation ringing, strip pedestal before accumulation); the <b>two-stage normalization</b> (per-panel sky-level estimator with tiled sigma-clipping, then an overlap gain fit solving &ldquo;reference ~ a&times;(source&minus;p) + p + b&rdquo; pivoted on the common sky level so gain only scales signal above sky, reduced to 16&times;16 block means to escape sky-noise OLS attenuation); the <b>mixed-tone-scale detector</b> (per-panel MAD ratio flagged against the Histogram tool's reference MAD algorithm); the <b>panel ordering</b> (center-first + max pairwise overlap, deliberately not union-box which would invent overlap in L-shaped layouts); the <b>pre-blur distance-transform feathering</b> with the raised-power sharpness control that converts a global coefficient into an overlap-relative blend ratio after accumulation; the <b>SIP autodisable</b> that inspects actual A/B polynomial coefficients rather than mere keyword presence; the <b>Seestar Mode iterative pipeline</b> with center-first base selection by star count, WCS-rough and physics-rough transform fallbacks, feathered sum-and-count accumulation, and brightness-ratio pixel rejection; the <b>Add from View</b> multi-pick with WCS tagging; the <b>Reproject Mode</b> dispatcher; the <b>mosaic WCS merge</b> policy; and the ASTAP+Astrometry.net plate-solve fallback for unsolved panels. The external tools (astroalign, ASTAP, Astrometry.net, photutils) are credited separately in their sections and in the final Credits box.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Add Image</b> or <b>Add from View</b> to load panels (FITS with WCS gives the cleanest results) &mdash; pick <b>Reprojection mode</b> (<i>Exact &mdash; SIP-aware remap</i> is the default and the right choice for anything with meaningful distortion) &mdash; leave <b>Normalize images</b> on for brightness-matched seams &mdash; <b>Align and Create Mosaic</b> &mdash; preview opens with Push-to-New-View button, or use <b>Save to New View</b> directly.
+</div>
+
+<div class="hero">
+<p>The core of the normalization pipeline: once two panels have been placed on the common frame, their overlap pixels are modelled as a linear match on the common sky level <code>p</code>:</p>
+<div class="matheq-hero">\mathbf{R} \approx a \cdot (\mathbf{S} - p) + p + b</div>
+<p>Pivoting about the sky decorrelates <code>a</code> and <code>b</code>: the pedestal match earlier in the pipeline already set <code>p</code> to the reference frame's sky level, so what's left between the panels is a scale factor on signal <i>above</i> sky plus a tiny residual offset. &sect;15.11 explains why that pivot matters and &sect;15.12 explains why the fit runs on 16&times;16 block means instead of per-pixel.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. Dialog layout</a><br>
+<a href="#s2">2. Add Image / Add from View</a><br>
+<a href="#s3">3. Mode flags</a><br>
+<a href="#s4">4. Reprojection mode</a><br>
+<a href="#s5">5. Transform method</a><br>
+<a href="#s6">6. Normalize images</a><br>
+<a href="#s7">7. Autostretch previews only</a><br>
+<a href="#s8">8. Preview Selected</a><br>
+<a href="#s9">9. Align and Create Mosaic</a><br>
+<a href="#s10">10. Save to New View</a><br>
+<a href="#s11">11. Settings (wrench)</a><br>
+<a href="#s12">12. SIP auto-disable</a><br>
+<a href="#s13">13. Plate solving fallback</a><br>
+<a href="#s14">14. Seestar Mode</a><br>
+<a href="#s15">15. Technical details</a><br>
+<a href="#s15_1">15.1 Panel ordering</a><br>
+<a href="#s15_2">15.2 Mosaic WCS linearization</a><br>
+<a href="#s15_3">15.3 Output bounding box</a><br>
+<a href="#s15_4">15.4 Exact SIP-aware remap</a><br>
+<a href="#s15_5">15.5 Round-trip validation</a><br>
+<a href="#s15_6">15.6 Footprint-bbox restriction</a><br>
+<a href="#s15_7">15.7 Fast homography mode</a><br>
+<a href="#s15_8">15.8 Pedestal coverage preservation</a><br>
+<a href="#s15_9">15.9 Edge trim for Lanczos ringing</a><br>
+<a href="#s15_10">15.10 Sky pedestal match</a><br>
+<a href="#s15_11">15.11 Overlap gain fit with sky pivot</a><br>
+<a href="#s15_12">15.12 Block-mean reduction</a><br>
+<a href="#s15_13">15.13 Robust iteration</a><br>
+<a href="#s15_14">15.14 Mixed tone-scale detection</a><br>
+<a href="#s15_15">15.15 Seam feathering</a><br>
+<a href="#s15_16">15.16 Star alignment refinement</a><br>
+<a href="#s15_17">15.17 Polynomial warp</a><br>
+<a href="#s15_18">15.18 SIP coefficient detection</a><br>
+<a href="#s15_19">15.19 ASTAP integration</a><br>
+<a href="#s15_20">15.20 Astrometry.net integration</a><br>
+<a href="#s15_21">15.21 Seestar Mode internals</a>
+</div>
+
+<h2 id="s1">1. Dialog layout</h2>
+<p>The dialog is a single scrolling column: a top instruction block, a row of action buttons (Add Image, Add from View, Remove Selected, Preview Selected, Align and Create Mosaic, Save to New View, wrench for Settings), a row of mode checkboxes, several option controls, the loaded-panels list, status label, and a progress spinner that activates during alignment. It's modeless and stays on top so you can keep working with the view it feeds back to.</p>
+
+<h2 id="s2">2. Add Image / Add from View</h2>
+
+<h3>Add Image</h3>
+<p>Opens a file picker for multiple image files. Accepted formats: PNG, JPG, TIFF, FITS, FITZ, XISF, and the common DSLR raws (CR2, NEF, ARW, DNG, RAF, ORF, RW2, PEF). Each file is loaded through SASpro's shared image-I/O layer, the WCS is parsed (if present), and the panel is listed with a <code>[WCS]</code> tag when a usable solution was found.</p>
+
+<h3>Add from View</h3>
+<p>Pulls panels from any open SASpro view instead of disk. Opens a multi-select picker listing every open view that has image data, each row tagged with its size and whether it has a WCS. Buttons: <b>All</b>, <b>None</b>, and <b>Only solved</b> (checks only views that carry a WCS). Views already added to the current mosaic are shown but disabled, so you can't duplicate a panel accidentally.</p>
+<p>Pulling from views instead of disk is often faster when you've just finished a batch of plate solves &mdash; the WCS already lives in memory alongside the image.</p>
+
+<h3>Remove Selected</h3>
+<p>Removes the selected panel from the list. If you want to clear everything, select all with <code>Ctrl+A</code> and remove.</p>
+
+<h2 id="s3">3. Mode flags</h2>
+<p>Three checkboxes in a mutually-exclusive-ish row control how panels are aligned:</p>
+
+<h3>Force Blind Solve (ignore existing WCS)</h3>
+<p>Re-plate-solves every panel even if the FITS header already carries a WCS. Useful when you suspect the embedded solution is wrong or stale, or when you want to replace a low-quality solve with a fresh one. Panels without any WCS are solved anyway (whether this is checked or not).</p>
+
+<h3>Seestar Mode</h3>
+<p>Switches to the iterative robot-telescope pipeline (&sect;14, &sect;15.21). Panels are aligned by astroalign star matching with WCS-rough or physics-rough transform seeds, not by WCS reprojection. The output canvas grows outward from a chosen base panel. Designed specifically for ZWO Seestar S30/S50 and similar smart telescopes whose exports lack plate solves.</p>
+
+<h3>Disable Star Alignment (WCS placement only)</h3>
+<p>Skips the post-reprojection star-match refinement. Panels are placed by their WCS alone and blended. This is the correct choice when panels have little or no overlap but all carry a reliable plate solve (SIP-rich mosaics in particular), and it's auto-enabled by SASpro when SIP is detected on the panels (&sect;12 explains the logic).</p>
+<p>Seestar Mode and WCS-only placement are mutually exclusive &mdash; enabling one disables the other.</p>
+
+<h2 id="s4">4. Reprojection mode</h2>
+<p>Pick how each panel is warped onto the mosaic canvas:</p>
+
+<h3>Exact &mdash; SIP-aware remap (recommended)</h3>
+<p>Per-pixel inverse mapping with full SIP support on the source panel. For every destination pixel, the mosaic WCS is used to find the (RA, Dec) that pixel represents on the sky, then the source panel's WCS inverse (with its SIP polynomial) is applied to find which source pixel to sample. Resampled with Lanczos4, tiled 512&times;512 for memory and progress reporting, with every mapped coordinate validated by a forward round-trip (&sect;15.5) so SIP non-convergence at the footprint edge is caught rather than silently miscomposited. This is the right choice for any mosaic involving panels with SIP distortion solutions.</p>
+
+<h3>Fast &mdash; Homography (Global H)</h3>
+<p>Fits a single 3&times;3 homography per panel from a 9-point WCS-derived control grid, then warps with <code>cv2.warpPerspective</code>. Perfect for linear TAN panels (no SIP) because a homography can exactly represent the full gnomonic composition between two tangent-plane projections centred on nearby points. For panels with meaningful SIP distortion, a global homography cannot represent the per-pixel polynomial corrections and stars near the edges can double, so this mode is best reserved for small-field SIP-free panels.</p>
+
+<h2 id="s5">5. Transform method</h2>
+<p>Only applies to the optional star-alignment refinement that runs after WCS reprojection on panels <i>without</i> SIP (SIP-rich panels skip refinement entirely &mdash; see &sect;12). Four choices:</p>
+<ul>
+  <li><b>Partial Affine Transform</b> &mdash; translation + rotation + uniform scale (4 DOF).</li>
+  <li><b>Affine Transform</b> &mdash; adds non-uniform scale and shear (6 DOF). The default and almost always the right choice.</li>
+  <li><b>Homography Transform</b> &mdash; full projective (8 DOF). Can model keystoning but needs well-distributed inliers.</li>
+  <li><b>Polynomial Warp Based Transform</b> &mdash; degree 1&ndash;6 polynomial in x and y (&sect;15.17). Best for Seestar panels or odd blind-solve mosaics where the per-panel distortion isn't captured by any linear/projective model.</li>
+</ul>
+
+<h2 id="s6">6. Normalize images</h2>
+<p>Toggles the two-stage brightness-matching pipeline. On by default, and almost always correct to leave on. The stages:</p>
+<ul>
+  <li><b>Stage 1 &mdash; sky pedestal match (&sect;15.10):</b> For each panel, the sky level is measured by tiled sigma-clipping (darkest 15% of tiles kept, luminance-ranked so all channels sample the same sky), and the panel's sky is shifted onto the reference panel's sky. Equalizes DC offset across panels.</li>
+  <li><b>Stage 2 &mdash; overlap gain fit (&sect;15.11):</b> After reprojection, for every overlapping region, SASpro solves a linear match pivoted on the sky level (the hero equation). Gain is clamped to <code>[0.05, 20]</code> to catch pathological fits. If the overlap is too small for a reliable fit (fewer than 5000 pixels), only Stage 1 applies.</li>
+</ul>
+<p>Legacy fallback: if the sky estimator fails on the reference panel (unusual &mdash; it usually only happens with extremely low star count or heavy clipping), SASpro falls back to a simple median match using the first panel's median as the target.</p>
+
+<h2 id="s7">7. Autostretch previews only</h2>
+<p>When on, panel previews and the final mosaic preview are rendered with SASpro's shared stretch for display, while the underlying mosaic data stays linear for downstream processing. When off, previews show the raw linear values clipped to [0, 1] &mdash; useful if you want to see what the mosaic actually looks like without stretch, but most linear astronomical data appears nearly black. Default: on.</p>
+
+<h2 id="s8">8. Preview Selected</h2>
+<p>Opens a non-modal <b>Mosaic Preview</b> window for the selected panel. Shows the image with autostretch (controlled by the checkbox inside the preview window itself, independent of the main dialog's autostretch toggle), zoom buttons (In / Out / Fit to Preview), click-drag panning, mouse-wheel zoom, a Reapply Stretch button, and a <b>Push to New View</b> button that sends the current preview array into a new SASpro view.</p>
+
+<h2 id="s9">9. Align and Create Mosaic</h2>
+<p>The main entry point. Steps, in order:</p>
+<ol>
+  <li><b>Plate-solve unsolved panels</b> &mdash; or every panel if Force Blind Solve is on. ASTAP first (if its path is set in Preferences), falling back to Astrometry.net blind solve (&sect;13).</li>
+  <li><b>Order panels</b> &mdash; by proximity to the field centre and maximum overlap with already-placed panels (&sect;15.1).</li>
+  <li><b>Build the mosaic WCS</b> &mdash; take the first ordered panel's WCS, strip its SIP (destination must be linear TAN &mdash; &sect;15.2), compute the bounding box that covers all panels (&sect;15.3), shift <code>CRPIX</code> so the mosaic occupies <code>[0, W]&times;[0, H]</code>.</li>
+  <li><b>Estimate reference sky</b> &mdash; from the first panel, used as the pedestal match target.</li>
+  <li><b>Mixed-scale check</b> &mdash; compute per-panel MAD, warn if the spread between panels exceeds 8&times; (&sect;15.14).</li>
+  <li><b>For each panel:</b> apply the sky pedestal match (&sect;15.10), add the +1.0 coverage pedestal (&sect;15.8), reproject to the mosaic frame (exact or fast), compute the real footprint by eroding the pedestal coverage, strip the pedestal, apply the overlap gain fit if there's enough overlap (&sect;15.11), compute distance-transform feather weights (&sect;15.15), accumulate <code>sum += image &times; weight</code> and <code>W += weight</code>.</li>
+  <li><b>Final blend</b> &mdash; divide the accumulated sum by the weight everywhere the weight is nonzero. Pixels never covered by any panel stay at zero.</li>
+  <li><b>Preview</b> &mdash; open a Mosaic Preview window on the result.</li>
+</ol>
+<p>A modal progress dialog tracks progress per panel across four substeps (reproject, align, match brightness, blend) and can be cancelled mid-run between panels.</p>
+
+<h2 id="s10">10. Save to New View</h2>
+<p>Finalizes the mosaic and creates a new SASpro view containing it. The mosaic's WCS header (the exact astrometric solution for the output canvas, since every panel was reprojected into it) is attached under <code>metadata['original_header']</code> so the rest of SASpro (plate viewer, re-open, FITS save, Stellar Alignment, SFCC, etc.) treats the mosaic as a plate-solved image. On Seestar Mode mosaics with no WCS, a minimal header is attached instead.</p>
+
+<h2 id="s11">11. Settings (wrench)</h2>
+<p>Click the wrench button to open the Mosaic Settings dialog:</p>
+<ul>
+  <li><b>Blend sharpness (1.0&ndash;6.0, default 2.0):</b> power <code>p</code> on the distance transform. Low values (1&ndash;2) give wide gradual blends that hide brightness differences but need good registration; high values (4&ndash;6) give tight crossovers near the seam midline, safer when panels disagree slightly but more visible gradient steps. Scale-free &mdash; same feel on wide and thin overlaps.</li>
+  <li><b>Star detection FWHM (default 3.0):</b> fed to DAOStarFinder for the optional post-reprojection star refinement.</li>
+  <li><b>Star detection sigma (default 3.0):</b> detection threshold in <code>&sigma;</code> above background.</li>
+  <li><b>Polynomial degree (default 3):</b> degree of the polynomial warp (&sect;15.17) when that transform mode is used.</li>
+</ul>
+
+<h2 id="s12">12. SIP auto-disable</h2>
+<p>After every panel-set change (Add Image, Add from View, re-plate-solve), SASpro inspects the panels' WCS solutions and decides whether to default to WCS-only placement:</p>
+<ul>
+  <li><b>&ge; 80% of panels carry real SIP</b> (actual non-zero A/B polynomial coefficients, not just <code>A_ORDER</code> keywords &mdash; &sect;15.18) &rarr; auto-check <b>Disable Star Alignment</b>, label it &ldquo;SIP distortion detected (WCS placement is more accurate)&rdquo;.</li>
+  <li><b>0% have SIP</b> &rarr; auto-uncheck, label it &ldquo;no SIP; star alignment recommended&rdquo;.</li>
+  <li><b>Mixed</b> &rarr; auto-uncheck, label with the mix fraction (e.g. &ldquo;3/5 have SIP&rdquo;). This is a judgment call &mdash; try both.</li>
+</ul>
+<p>Once you click the checkbox yourself, auto-disable never fires again that session &mdash; your choice sticks.</p>
+<p>The reason: a per-pixel 4th-order SIP resample can't be reconciled by a single global affine refinement. On a corner panel, pushing it to match stars in one quadrant trades for mis-match in the opposite quadrant. Panels that are already well-solved by SIP are better left where WCS put them.</p>
+
+<h2 id="s13">13. Plate solving fallback</h2>
+<p>For panels without a usable WCS (or every panel, if Force Blind Solve is on), Mosaic Master runs the two-stage plate-solve fallback:</p>
+
+<h3>ASTAP (first attempt)</h3>
+<p>Runs Han Kleijn's <b>ASTAP</b> external program as a subprocess, writing a temporary stretched normalized FITS copy for the solve. ASTAP is called blind (<code>-r 179 -fov 0 -z 0 -wcs -sip</code>) &mdash; no RA/Dec seed assumed, SIP distortion written out. On success, the <code>.wcs</code> sidecar is merged into the solved header, numeric WCS keys are coerced to float/int, and (for on-disk FITS panels) the file is updated in-place with the new WCS.</p>
+<p>If ASTAP's path isn't set in Preferences, SASpro prompts for the executable &mdash; or, if you skip the prompt, falls back directly to Astrometry.net.</p>
+
+<h3>Astrometry.net (fallback)</h3>
+<p>If ASTAP fails or isn't configured, uploads to <code>nova.astrometry.net</code> via the web API (requires an API key from <code>api/astrometry_key</code>, prompted if missing). Login &rarr; upload &rarr; poll submission &rarr; poll calibration (up to ~15 minutes each). On success, builds a TAN WCS header from the returned RA/Dec/pixscale/orientation and merges it into the panel. The TAN construction, following the standard FITS WCS convention:</p>
+<div class="eq">CD1_1 = -s cos(&theta;)
+CD1_2 =  s sin(&theta;)
+CD2_1 = -s sin(&theta;)
+CD2_2 = -s cos(&theta;)</div>
+<p>with <code>s</code> in degrees/pixel and <code>&theta;</code> the orientation in radians. For on-disk FITS panels, the file is updated in-place; views and non-FITS sources get the WCS attached in memory only.</p>
+
+<h2 id="s14">14. Seestar Mode</h2>
+<p>Seestar Mode is a parallel pipeline designed for the <b>ZWO Seestar S30/S50</b> and similar robot smart telescopes whose exports don't include plate solves but do include enough header metadata (RA, Dec, pixel size, focal length) to seed rough transforms. See &sect;15.21 for the full internals; the user-facing picture:</p>
+<ol>
+  <li><b>Base panel selection</b> &mdash; from the panels closest to the field centre (top 5 by WCS-centre distance), pick the one with the most detected stars.</li>
+  <li><b>Grow the mosaic outward</b> &mdash; sorted by distance from the field centre, align each remaining panel against the current partial mosaic using <code>astroalign.find_transform</code>.</li>
+  <li><b>Fallback to rough transforms</b> &mdash; if astroalign fails on a panel, try a WCS-based rough transform (if the panel has one), or a physics-based one derived from RA, Dec, pixel size and focal length. If one of those works, use it as a seed and refine via overlap-restricted astroalign.</li>
+  <li><b>Expand the canvas as needed</b> &mdash; each new panel can grow the mosaic bounds; <code>mosaic_sum</code> and <code>mosaic_count</code> are re-allocated and copied into the larger canvas.</li>
+  <li><b>Accumulate with feathering and brightness rejection</b> &mdash; distance-transform feather (20-px radius) within the valid warped-ones mask, exclude pixels where the new panel is less than 90% of the mosaic's existing brightness (catches warped-image stray pixels that would show as hotspots).</li>
+  <li><b>Retry failed panels once</b> &mdash; after the first pass, re-attempt alignment of any panel that failed. Often works because the mosaic grew in the first pass and now includes more sky the panel can match.</li>
+  <li><b>Final blend</b> &mdash; <code>mosaic_sum / mosaic_count</code> everywhere the count is nonzero, final max-normalize to [0, 1].</li>
+</ol>
+<p>Each panel is also run through <b>polynomial gradient removal</b> (degree-2 fit on a downsampled copy, see &sect;15.22) before alignment so the per-panel sky is flat going in &mdash; important because Seestar panels tend to have strong vignetting that would otherwise dominate the astroalign star detection.</p>
+
+<h2 id="s15">15. Technical details</h2>
+<p class="tech-lead">Panel ordering, reprojection, normalization and blending.</p>
+
+<h3 id="s15_1">15.1 Panel ordering</h3>
+<p>Alignment is sequential &mdash; each panel is matched against the mosaic as it exists so far. The order matters: a panel with no overlap with any already-placed panel can't be star-aligned at all. SASpro orders panels so the first is near the field centre and each later one maximises overlap with the already-placed set.</p>
+<p>For every panel, sample 64 points around the perimeter in pixel space, forward through the panel's WCS (via <code>all_pix2world</code> &mdash; forward SIP is a plain polynomial evaluation, no iteration), take the resulting (RA, Dec) set as a sky bounding box. Project all boxes onto a TAN tangent plane centred on the mean sky position (RA wrap handled via unit vectors, not raw differences):</p>
+<div class="matheq">\xi = \frac{\cos\delta \sin(\alpha - \alpha_0)}{\sin\delta_0 \sin\delta + \cos\delta_0 \cos\delta \cos(\alpha - \alpha_0)}</div>
+<div class="matheq">\eta = \frac{\cos\delta_0 \sin\delta - \sin\delta_0 \cos\delta \cos(\alpha - \alpha_0)}{\sin\delta_0 \sin\delta + \cos\delta_0 \cos\delta \cos(\alpha - \alpha_0)}</div>
+<p>then compute 2D rectangles in <code>(&xi;, &eta;)</code> space and run the ordering:</p>
+<ol>
+  <li>First panel: the one whose rectangle centre is closest to <code>(0, 0)</code>.</li>
+  <li>Each next panel: the one with the largest pairwise overlap fraction against any already-placed panel:</li>
+</ol>
+<div class="matheq">f_{\mathrm{ov}}(A, B) = \frac{\mathrm{area}(A \cap B)}{\min(\mathrm{area}(A),\;\mathrm{area}(B))}</div>
+<div class="matheq">i^{*} = \arg\max_{i \notin \mathrm{placed}} \;\max_{j \in \mathrm{placed}}\; f_{\mathrm{ov}}(B_i, B_j)</div>
+<p>Taking <code>max</code> over placed panels (not <code>union</code>) is deliberate: in an L-shaped layout, the union bounding box would fill in the hollow and &ldquo;see&rdquo; overlap where there's actually no shared sky. Pairwise <code>max</code> only reports real overlap with real panels.</p>
+<p>Panels that genuinely share no sky with any already-placed panel are placed last and logged (&ldquo;shares no sky with any placed panel &mdash; WCS placement, pedestal-only sky match&rdquo;). They still get added to the mosaic via WCS placement; they just can't be star-refined.</p>
+
+<h3 id="s15_2">15.2 Mosaic WCS linearization</h3>
+<p>The mosaic's destination WCS is <b>linear TAN with no SIP</b>, even when the source panels carry SIP. The reason: SIP is a polynomial correction that's only valid inside the frame it was fit to. The mosaic canvas is much larger than any single panel, so extrapolating a panel's SIP polynomial out to the full mosaic frame would diverge badly in the corners.</p>
+<p>SASpro linearizes the destination by setting <code>wcs.sip = None</code> on a deep-copied WCS object and stripping <code>-SIP</code> from the CTYPEs. Source panels keep their SIP intact &mdash; that's what makes the inverse mapping correct per-pixel. Only the destination coordinate frame is forced linear.</p>
+
+<h3 id="s15_3">15.3 Output bounding box</h3>
+<p>With the reference WCS (first ordered panel, linearized) picked, every panel's four corners are transformed to the reference frame via <code>SkyCoord &rarr; skycoord_to_pixel</code>. The bounding box of all transformed corners gives the mosaic's extent. CRPIX of the mosaic WCS is shifted by <code>(-min_x, -min_y)</code> so the mosaic occupies <code>[0, W]&times;[0, H]</code>. The mosaic's final WCS header is then this shifted copy, which is also what gets attached to the output view.</p>
+
+<h3 id="s15_4">15.4 Exact SIP-aware remap</h3>
+<p>Per-pixel inverse mapping, tiled 512&times;512. For each tile:</p>
+<ol>
+  <li>Generate destination pixel coordinates <code>(x_d, y_d)</code> on the tile grid.</li>
+  <li>Forward through the (linear) destination WCS: <code>(&alpha;, &delta;) = wcs_dst.pix2world(x_d, y_d)</code>. Exact and cheap &mdash; no SIP to invert.</li>
+  <li>Inverse through the (SIP-rich) source WCS: <code>(x_s, y_s) = wcs_src.all_world2pix(&alpha;, &delta;)</code>. This is the iterative SIP inverse.</li>
+  <li>Reject <code>(x_s, y_s)</code> outside the source panel bounds (with 1-pixel margin for Lanczos).</li>
+  <li>Round-trip validate every surviving coordinate (&sect;15.5).</li>
+  <li>Resample the source panel at the surviving coordinates via <code>cv2.remap</code> with <code>INTER_LANCZOS4</code> and <code>borderValue=0</code>.</li>
+</ol>
+<p>Progress is reported per tile so the UI stays responsive. Astropy's non-convergence warning on <code>all_world2pix</code> is caught silently because the subsequent validation handles edge cases properly &mdash; the warning would otherwise fire noisily on every panel at footprint edges.</p>
+
+<h3 id="s15_5">15.5 Round-trip validation</h3>
+<p>A diverged SIP inverse that happens to land back inside the source frame still produces nonsense &mdash; <code>all_world2pix</code> can return a &ldquo;solution&rdquo; that doesn't actually reproject back to the sky it was asked for. SASpro validates by forward-SIP evaluating every mapped pixel and comparing to the asked-for sky position:</p>
+<div class="matheq">\|(\alpha', \delta') - (\alpha, \delta)\| < 0.25 \cdot s_{\mathrm{px}}</div>
+<p>with the comparison in angular units and <code>s_px</code> the source panel's pixel scale. The RA difference is <code>cos(&delta;)</code>-weighted so the metric is proper angular distance:</p>
+<div class="matheq">\Delta\alpha = (\alpha_2 - \alpha_1) \cdot \cos(\delta),\quad \Delta\delta = \delta_2 - \delta_1</div>
+<p>Pixels failing the quarter-pixel tolerance are marked invalid and left black (border fill). On a well-solved mosaic, rejection is near zero in the panel interior and up to a few percent at the footprint edge, where SIP non-convergence is expected behaviour. The log reports the rejection rate per panel.</p>
+
+<h3 id="s15_6">15.6 Footprint-bbox restriction</h3>
+<p>Running the exact remap over the <i>entire</i> mosaic canvas would call the SIP inverse on billions of coordinates that have no business touching the source panel. SASpro restricts the remap to a bounding box containing just the panel's footprint in the destination frame, computed forward-only (<code>all_pix2world &rarr; wcs_world2pix</code>) over 96 perimeter sample points:</p>
+<ul>
+  <li>Pad by 16 pixels on each side for Lanczos tail safety.</li>
+  <li>Clip to the mosaic bounds <code>[0, W]&times;[0, H]</code>.</li>
+  <li>Report the footprint fraction (typical: 10&ndash;30% of canvas for a 2&times;2 mosaic; 2&ndash;8% for a 4&times;4).</li>
+</ul>
+<p>Outside this box, the SIP inverse is never called, pixels stay at the border-fill value (zero), and the pedestal coverage test correctly reports them as uncovered.</p>
+
+<h3 id="s15_7">15.7 Fast homography mode</h3>
+<p>For panels without SIP, a single 3&times;3 homography is enough to represent the full gnomonic composition between the two tangent-plane projections (source panel's TAN and mosaic's TAN). SASpro samples 9 control points &mdash; corners, edge midpoints, centre &mdash; and fits the homography via <code>cv2.findHomography(method=RANSAC, ransacReprojThreshold=2.5)</code>:</p>
+<ol>
+  <li>Source pixel coords <code>(x, y)</code> &rarr; sky <code>(&alpha;, &delta;)</code> via source WCS.</li>
+  <li>Sky <code>(&alpha;, &delta;)</code> &rarr; destination pixel coords <code>(x', y')</code> via mosaic WCS.</li>
+  <li>Fit the <code>(x, y) &rarr; (x', y')</code> homography.</li>
+</ol>
+<p>Then <code>cv2.warpPerspective</code> with <code>INTER_LANCZOS4</code> for the actual warp. The result is cached per source WCS so subsequent panels reusing the same WCS object skip the fit.</p>
+<p>Correctness: exact for SIP-free TAN panels on small fields (where the tangent-plane approximation holds across the panel). For panels with real SIP distortion, the global homography collapses the per-pixel polynomial corrections into a single average linear warp, and stars near the edges can double by a few pixels.</p>
+
+<h3 id="s15_8">15.8 Pedestal coverage preservation</h3>
+<p>During warping, OpenCV fills pixels outside the source frame with <code>borderValue=0</code>. Any linear astronomical data also has values near zero in the sky background. If you tried to compute &ldquo;which pixels are inside the warped panel&rdquo; by thresholding <code>&gt; 0</code>, the sky background would be indistinguishable from border fill.</p>
+<p>SASpro's fix: add a +1.0 pedestal <i>before</i> warping, so the panel's data lives at [1.0, ~2.0] while the border fill stays at 0.0. The coverage test becomes trivial:</p>
+<div class="matheq">I' = I + P</div>
+<div class="matheq">\mathrm{coverage} = \{(x, y) : I'(x, y) > 0.995 \cdot P\}</div>
+<p>After the coverage mask is extracted (and eroded &mdash; &sect;15.9), the pedestal is stripped and any value outside the coverage region is zeroed:</p>
+<div class="matheq">I_{\mathrm{out}} = (I_{\mathrm{warped}} - P) \cdot \mathbb{1}_{\mathrm{coverage}}</div>
+<p>Astroalign and the subsequent brightness match see pedestal-free data, so they're not biased by the +1.0 offset.</p>
+
+<h3 id="s15_9">15.9 Edge trim for Lanczos ringing</h3>
+<p>Lanczos4 interpolation spans an 8&times;8 kernel. When Lanczos is applied near the border between real data and the zero border fill, it rings &mdash; overshoot pushes some pixels briefly above the pedestal threshold even though they're contaminated by the zero border. The overshoot can be larger than 0.005&middot;P, meaning the coverage test would wrongly include contaminated ring pixels.</p>
+<p>SASpro erodes the raw coverage mask by 12 pixels using an elliptical structuring element (<code>cv2.getStructuringElement(cv2.MORPH_ELLIPSE)</code>) to clear the contamination band. A 12-px erosion is a tiny loss on a typical mosaic panel (0.5% of area), well worth paying to keep the seam clean of ringing artefacts.</p>
+
+<h3 id="s15_10">15.10 Sky pedestal match</h3>
+<p>For each panel, the sky level is measured via <code>estimate_background_level()</code>:</p>
+<ol>
+  <li><b>Tile the panel</b> into a 16&times;16 grid. Each tile must contain at least 60% finite valid pixels.</li>
+  <li><b>Rank tiles by luminance median</b> and keep the darkest 15%. Luminance ranking (not per-channel) means all channels sample the same patches of sky, preserving the panel's background colour.</li>
+  <li><b>Sigma-clip the kept pixels:</b> 3 iterations of <code>&sigma; = 1.4826 &middot; MAD</code>, hard upper threshold at 2.5&sigma; (to kill stars and nebulosity), loose lower threshold at 6&middot;2.5&sigma; (to avoid clipping legitimate sky noise).</li>
+  <li>The sky level <code>&mu;_i</code> is the per-channel median of the clipped set; the sky noise <code>&sigma;_i</code> is <code>1.4826 &middot; MAD</code>.</li>
+</ol>
+<p>Applied to every panel before reprojection, with the reference panel's sky <code>&mu;_ref</code> as the common target:</p>
+<div class="matheq">I'_i = I_i - \mu_i + \mu_{\mathrm{ref}}</div>
+<p>After this step every panel has the same sky colour and the same sky level as the reference panel. Signal above sky is untouched.</p>
+
+<h3 id="s15_11">15.11 Overlap gain fit with sky pivot</h3>
+<p>Pedestal match handles DC offset but doesn't address panels taken at slightly different gains or in slightly different filters. For every overlap between the current panel and the already-accumulated mosaic (where coverage from both exists and total overlap is at least 5000 pixels), SASpro solves a linear match pivoted on the sky:</p>
+<div class="matheq">\mathbf{R} \approx a \cdot (\mathbf{S} - p) + p + b</div>
+<p>with <code>R</code> the running mosaic estimate at the overlap pixels, <code>S</code> the new panel's reprojected pixels, and <code>p</code> the common sky level (set to <code>&mu;_ref</code> because Stage 1 already shifted both to that pivot). Applied as:</p>
+<div class="matheq">\mathrm{out} = (\mathrm{src} - p) \cdot a + p + b</div>
+<p>Why pivot on sky: in a non-pivoted <code>R &asymp; a&middot;S + b</code> fit, <code>a</code> and <code>b</code> are correlated. A gain error attributed to <code>a</code> leaks into <code>b</code> and vice versa. Pivoting on the sky level separates them: <code>a</code> acts only on signal above sky (where it belongs &mdash; linear detector gain), <code>b</code> acts only on residual sky offset (where it belongs &mdash; any imperfection left from the Stage 1 pedestal match).</p>
+<p>The gain is clamped to prevent pathological fits:</p>
+<div class="matheq">a_{\mathrm{out}} = \mathrm{clip}(a,\;0.05,\;20)</div>
+<p>If the gain gets clamped, SASpro logs it. A clamped gain is almost always a sign of insufficient overlap or heavy contamination in the overlap region, and the clamp prevents a wildly wrong fit from catastrophically dimming or brightening the panel.</p>
+
+<h3 id="s15_12">15.12 Block-mean reduction</h3>
+<p>The overlap gain fit is <i>not</i> done per-pixel. A sky-dominated overlap has pathologically low signal variance &mdash; most of the pixel-to-pixel variation is read noise and sky noise, not actual signal. An OLS slope on per-pixel data is attenuated by:</p>
+<div class="eq">a_fit = a_true &middot; var(signal) / (var(signal) + var(noise))</div>
+<p>and collapses toward zero when noise dominates signal.</p>
+<p>SASpro reduces the overlap to 16&times;16 block means before fitting:</p>
+<div class="matheq">S_k = \frac{1}{|B_k|} \sum_{(x, y) \in B_k} I(x, y)</div>
+<p>Noise averages down as <code>1/block</code> (so by a factor of 16 at the pixel level, 256 in variance). Real signal doesn't average down &mdash; a star in the block stays bright, a galaxy arm stays an arm. After reduction, the signal-to-noise ratio in the fit input is improved by a factor of ~16, enough to make the fit well-conditioned.</p>
+<p>Blocks with less than 90% valid coverage (i.e. where part of the block falls outside the overlap mask) are discarded.</p>
+
+<h3 id="s15_13">15.13 Robust iteration</h3>
+<p>The block-mean fit is iterated 4 times with robust sigma-clipping on the residuals. Standard sigma clipping with the median absolute deviation estimator:</p>
+<div class="matheq">\mathrm{MAD} = \mathrm{median}(|x - \mathrm{median}(x)|)</div>
+<div class="matheq">\sigma \approx 1.4826 \cdot \mathrm{MAD}</div>
+<div class="matheq">\mathrm{keep} = \{i : |r_i - \mathrm{median}(r)| < k \cdot \sigma\}</div>
+<p>with <code>k = 2.5</code>. Blocks whose residuals fall outside this envelope (typically contaminated by diffraction spikes, cosmic rays missed by rejection, galaxy structure extending into the sky, etc.) are dropped and the fit is redone. Iteration stops early when the inlier set stops changing or drops below 16 blocks.</p>
+
+<h3 id="s15_14">15.14 Mixed tone-scale detection</h3>
+<p>Linear astronomical panels and stretched (display-scaled) panels can look the same at first glance but have wildly different pixel distributions: a linear panel's MAD is pathologically tiny (order 1e-3) because almost all pixels sit near the sky floor; a stretched panel's MAD is 1&ndash;2 orders of magnitude higher. Normalization cannot blend across those scales &mdash; a gain fit between a linear source and a stretched reference would produce a huge <code>a</code> that distorts stars.</p>
+<p>SASpro computes per-panel MAD using the exact algorithm from the Histogram tool (median absolute deviation of finite-pixel values, subsampled to 5M pixels with a seeded RNG on very large panels, averaged across colour channels). If the max/min ratio across panels exceeds 8&times;:</p>
+<div class="matheq">\frac{\max_i(\mathrm{MAD}_i)}{\min_i(\mathrm{MAD}_i)} > 8</div>
+<p>SASpro prompts the user with a plain-language warning (&ldquo;Looks like you've mixed linear and stretched panels&rdquo;), lists the panels' MAD values with the names, and asks whether to continue. The 8&times; threshold is a judgement call &mdash; consistently-stretched panel sets tend to have MADs within 2&times; of each other, so 8&times; is firmly in &ldquo;something's off&rdquo; territory.</p>
+
+<h3 id="s15_15">15.15 Seam feathering</h3>
+<p>Overlapping panels are blended by a <b>distance-transform feather</b>. For each panel's coverage mask:</p>
+<ol>
+  <li>Compute the Euclidean distance transform <code>d(x, y)</code> &mdash; distance from <code>(x, y)</code> to the nearest coverage boundary. Pixels at the centre of the panel are far from any edge; pixels right at the edge are near zero.</li>
+  <li>Apply a 15&times;15 Gaussian blur to smooth tiny boundary irregularities.</li>
+  <li>Normalize by dividing by 100 (keeps <code>d^p</code> in float32 range at high <code>p</code>).</li>
+  <li>Raise to the <b>blend sharpness</b> power <code>p</code> (settings; default 2.0):</li>
+</ol>
+<div class="matheq">w_i(x, y) = d_i(x, y)^{\,p}</div>
+<p>The weighted mosaic is accumulated as:</p>
+<div class="matheq">\mathrm{sum}(x, y) = \sum_i I_i(x, y) \cdot w_i(x, y)</div>
+<div class="matheq">W(x, y) = \sum_i w_i(x, y)</div>
+<p>and the final mosaic is <code>sum / W</code>. The elegant consequence of raising the weights to a power <i>before</i> accumulation is that the <i>ratio</i> of weights, which is what sets the actual blend, becomes:</p>
+<div class="matheq">\frac{w_i}{\sum_j w_j} = \frac{d_i^{\,p}}{\sum_j d_j^{\,p}}</div>
+<p>This ratio spans exactly the available overlap region &mdash; wide where the overlap is generous, tight where the overlap is thin. It auto-scales to the geometry of every seam without any seam-specific tuning. The power <code>p</code> controls how sharply the handoff happens within whatever overlap is available: <code>p = 1</code> gives linear ramp, higher <code>p</code> concentrates the handoff near the seam midline.</p>
+
+<h3 id="s15_16">15.16 Star alignment refinement</h3>
+<p>For panels without SIP (where WCS-only placement is accurate but not perfect), an optional star refinement runs after reprojection:</p>
+<ol>
+  <li>Compute the overlap between the newly reprojected panel's coverage and the mosaic's existing weight map (<code>coverage &amp; (W > 0)</code>).</li>
+  <li>If the overlap is smaller than 2000 pixels, skip refinement (not enough stars for a reliable match).</li>
+  <li>Otherwise, restrict both the panel and the mosaic estimate to the overlap bounding box.</li>
+  <li>Call <code>astroalign.find_transform</code> on the restricted images with a sigma backoff ladder (120 &rarr; 50 &rarr; 15 &rarr; 5): higher sigma first for isolated bright stars, lower if that fails. Serialised by a module-level lock because SEP (the backend) isn't thread-safe.</li>
+  <li>Astroalign returns a similarity transform (rotation + uniform scale + translation). SASpro extracts the 2&times;3 affine matrix.</li>
+  <li>Decompose the matrix for sanity checking &mdash; log a warning if rotation > 0.5&deg;, scale differs from 1 by > 1%, or translation > 25 px. These are large residuals for a WCS-placed panel and signal that astroalign may be fitting error that WCS didn't actually have.</li>
+  <li>Warp the panel with the affine matrix using <code>cv2.warpAffine(LANCZOS4)</code>.</li>
+  <li>If the transform mode is Homography or Polynomial Warp, run a further refinement pass that re-detects stars in the overlap and fits the higher-DOF model.</li>
+</ol>
+<p>Restricting the match to the overlap bounding box (not the whole canvas) is critical: feeding the whole canvas to astroalign spreads control points across regions that can't correspond, starving RANSAC of usable bright anchors.</p>
+
+<h3 id="s15_17">15.17 Polynomial warp</h3>
+<p>Polynomial Warp fits two polynomials of degree <code>n</code> in <code>(x, y)</code> through the matched star correspondences:</p>
+<div class="matheq">u = \sum_{i+j \leq n} a_{ij} \cdot x^i y^j</div>
+<div class="matheq">v = \sum_{i+j \leq n} b_{ij} \cdot x^i y^j</div>
+<p>Degree is set in Settings (1&ndash;6, default 3). The coefficients are solved by least squares (<code>np.linalg.lstsq</code>) over the matched points, then a dense displacement map is evaluated on the full image grid and the panel is remapped via <code>cv2.remap(INTER_LANCZOS4)</code>. Useful for Seestar panels or any blind-solved mosaic where the per-panel distortion isn't captured by any linear or projective model.</p>
+
+<h3 id="s15_18">15.18 SIP coefficient detection</h3>
+<p>The SIP auto-disable logic (&sect;12) needs to distinguish real SIP solutions from declared-but-empty SIP (ASTAP occasionally writes <code>A_ORDER</code> keywords without actual coefficients, for example). SASpro checks for genuine SIP by inspecting the WCS object's SIP structure:</p>
+<ul>
+  <li><code>wcs.sip</code> must exist.</li>
+  <li><code>sip.a_order &ge; 2</code>.</li>
+  <li>The <code>sip.a</code> and <code>sip.b</code> coefficient arrays must contain at least one non-zero value.</li>
+</ul>
+<p>Only when all three conditions are met does SASpro consider the panel &ldquo;has SIP&rdquo; for the auto-disable fraction count. Declared SIP without coefficients is treated as no SIP.</p>
+
+<h3 id="s15_19">15.19 ASTAP integration</h3>
+<p>External process via Qt's <code>QProcess</code>. SASpro writes a normalized temporary FITS copy of the panel (stretched for star visibility, same approach as the plate solver's shared <code>_normalize_for_astap</code>), invokes ASTAP as:</p>
+<div class="eq">astap -f &lt;tmp.fit&gt; -r 179 -fov 0 -z 0 -wcs -sip</div>
+<p>and waits up to 5 minutes for completion. On success, both the FITS header ASTAP wrote and any <code>.wcs</code> sidecar are parsed and merged. Numeric WCS keys (CRPIX, CRVAL, CD, SIP coefficients, orders) are coerced to proper float/int types because ASTAP occasionally writes them as strings, which trips astropy's type checks later.</p>
+<p>Required WCS keys (<code>CTYPE1</code>, <code>CTYPE2</code>, <code>RADECSYS</code>, <code>WCSAXES</code>) are added if missing with sensible defaults (<code>RA---TAN</code>, <code>DEC--TAN</code>, <code>ICRS</code>, <code>2</code>). For on-disk FITS panels, the file is saved back through SASpro's shared image-I/O with the solved header; for views and non-FITS sources, the WCS is attached in memory only.</p>
+
+<h3 id="s15_20">15.20 Astrometry.net integration</h3>
+<p>Via the Astrometry.net web API (<code>nova.astrometry.net/api</code>). The API key is read from <code>api/astrometry_key</code> and prompted via a dialog if missing. The sequence:</p>
+<ol>
+  <li><b>Login</b> &mdash; POST <code>login</code> with the API key, receive a session token.</li>
+  <li><b>Upload</b> &mdash; POST <code>upload</code> with the panel (FITS, converted via <code>generate_minimal_fits_header</code> if needed), receive a submission ID.</li>
+  <li><b>Poll submission</b> &mdash; GET <code>submissions/&lt;subid&gt;</code> every 10 seconds, up to 90 attempts (15 minutes), waiting for the job ID to appear.</li>
+  <li><b>Poll calibration</b> &mdash; GET <code>jobs/&lt;jobid&gt;/calibration/</code> every 10 seconds, up to 90 attempts, waiting for the calibration dict with <code>ra</code>, <code>dec</code>, <code>pixscale</code>, <code>orientation</code>.</li>
+  <li><b>Construct TAN WCS</b> &mdash; build the CD matrix from scale and orientation (equations in &sect;13), merge into the panel's header.</li>
+</ol>
+<p>All HTTP requests are routed through <code>robust_api_request</code>, which raises <code>HTTPError</code> on bad status, parses JSON, and prompts the user to restart on network errors or invalid responses rather than silently failing. For on-disk FITS panels, the file is updated in-place with the new WCS keys.</p>
+
+<h3 id="s15_21">15.21 Seestar Mode internals</h3>
+<p>The Seestar pipeline is a separate implementation path (<code>align_images_seestar_mode</code>) because robot smart telescopes work differently from mounted astrophotography: panels arrive one at a time from the device's slew-and-shoot sequence, each carrying its own rough RA/Dec but no plate solve.</p>
+
+<h4>Base selection</h4>
+<p>For every loaded panel that has a header, extract the image centre's world coordinates via <code>WCS.all_pix2world</code>. Average these to get the field centre. Sort panels by angular distance from the field centre. Take the top 5 closest-to-centre panels, run DAOStarFinder on each (counting detected stars at <code>5&sigma;</code> threshold with <code>fwhm = 3.0</code>), pick the one with the most stars as the base &mdash; a star-rich base gives astroalign more anchors to work with on every subsequent panel.</p>
+
+<h4>Rough transform construction</h4>
+<p>Two independent methods are tried as seeds for astroalign:</p>
+<ul>
+  <li><b>WCS-based rough transform</b> &mdash; when both the current and base panels have proper WCS, compute reference pixel centre, forward through base WCS to sky, inverse through current panel's WCS to pixel; the vector offset gives the translation, and the rotation of a unit-x vector through the same transform chain gives the rotation.</li>
+  <li><b>Physics-based rough transform (Seestar fallback)</b> &mdash; when no WCS, use RA, Dec, XPIXSZ (microns), FOCALLEN (mm) from the headers:</li>
+</ul>
+<div class="matheq">s_{\mathrm{px}} = 206265 \cdot \frac{p_{\mu m}}{f_{\mathrm{mm}}}</div>
+<p>Convert the RA/Dec difference between panels (with <code>cos(&delta;)</code> correction on RA) into pixel offsets, assemble a translation-only 2&times;3 matrix. Zero rotation (Seestar panels on the mount share orientation to within a fraction of a degree).</p>
+
+<h4>Iterative accumulation</h4>
+<p>For each panel in centre-first order:</p>
+<ol>
+  <li>Debayer if the FITS header has <code>BAYERPAT</code>.</li>
+  <li>Run polynomial gradient removal (degree 2, downsampled 5&times;) to flatten the panel's background.</li>
+  <li>Stretch to match the base panel's median.</li>
+  <li>Try <code>astroalign.find_transform</code> against the current mosaic (reduced to greyscale via mean, lightly stretched for star visibility).</li>
+  <li>If astroalign fails, fall back to one of the rough transforms, then refine via <code>refine_via_overlap</code> which runs astroalign on the overlap region only.</li>
+  <li>Compute the canvas size needed to hold both the current mosaic and the warped new panel. Allocate larger <code>mosaic_sum</code> and <code>mosaic_count</code> arrays and copy the existing mosaic into them.</li>
+  <li>Warp the new panel into the enlarged canvas with the adjusted transform.</li>
+  <li>Build three masks: border (10-px exclusion zone around the warped panel), valid (where warping found actual data via a warped ones image), brightness (where new panel &ge; 0.9 &times; mosaic estimate, to reject stray pixels from warping artefacts).</li>
+  <li>Combine the three masks, compute distance-transform feather weights (20-px radius) within the valid mask, accumulate <code>sum += warped &times; w</code> and <code>count += w</code>.</li>
+</ol>
+
+<h4>Retry pass</h4>
+<p>Panels that fail alignment on the first pass are re-attempted once, after the mosaic has grown. Often works because the mosaic now covers more sky that the failed panel can match against.</p>
+
+<h4>Final blend</h4>
+<p>Running mean per pixel: <code>mosaic = sum / count</code> where count is nonzero. Final max-normalize to [0, 1].</p>
+
+<h3 id="s15_22">15.22 Polynomial gradient removal (Seestar)</h3>
+<p>Before Seestar panels enter the alignment pipeline, SASpro flattens the per-panel background with a polynomial fit (<code>PolyGradientRemoval</code>):</p>
+<ol>
+  <li>Unlinked linear stretch (using SASpro's shared Numba stretch utility).</li>
+  <li>Downsample by 5&times; (area interpolation).</li>
+  <li>Generate ~100 sample points via the same algorithm used by SASpro's Automatic Background Extraction (ABE) tool, with an exclusion mask so stars and bright features are avoided.</li>
+  <li>At each sample point, take the median of a 15&times;15 patch (robust to outliers).</li>
+  <li>Fit a polynomial background of configurable degree (default 2) via least squares (<code>np.linalg.lstsq</code>).</li>
+  <li>Upscale the background to full size (Lanczos4) and subtract.</li>
+  <li>Re-normalize median to the original.</li>
+  <li>Unstretch back to the linear domain.</li>
+</ol>
+<p>Without this step, Seestar panels' heavy vignetting dominates astroalign's star detection and the matching rate collapses.</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>exact SIP-aware per-pixel inverse mapping</b> with tiled dispatch, forward-only footprint-bbox restriction, and quarter-pixel round-trip validation; the <b>destination-WCS linearization</b> decision; the <b>pedestal coverage-preservation technique</b> (+1.0 pedestal, 0.995 threshold, 12-px edge trim for Lanczos4 ringing); the <b>two-stage normalization</b> (per-panel tiled sigma-clipped sky estimator plus sky-pivoted overlap gain fit <code>R &asymp; a&middot;(S&minus;p) + p + b</code> reduced to 16&times;16 block means with 4-iteration robust MAD sigma-clipping and <code>[0.05, 20]</code> gain clamp); the <b>mixed tone-scale detector</b> (per-panel MAD matched to the Histogram tool's algorithm, 8&times; spread trigger); the <b>panel ordering</b> (centre-first + max pairwise overlap, deliberately not union-box); the <b>pre-blur raised-power distance-transform feathering</b> with sharpness power that converts a global coefficient into an overlap-relative blend ratio; the <b>SIP coefficient-based auto-disable</b> for the star refinement path; the <b>Seestar Mode iterative pipeline</b> with centre-first base selection by star count, WCS-rough and physics-rough transform fallbacks, feathered sum-and-count accumulation with brightness-ratio pixel rejection, canvas-expanding warping, failed-panel retry pass; the <b>Add-from-View multi-pick</b> dialog with WCS tagging; the <b>Reproject Mode dispatcher</b>; and the <b>ASTAP-first then Astrometry.net fallback</b> plate-solve chain are all original work by <b>Franklin Marek</b> for SetiAstro Suite Pro.
+<br><br>
+External tools and libraries: <b>Astroalign</b> (Beroiz, Cabral &amp; Sanchez 2020, A&amp;C 32:100384) provides the star-match transform estimation, with its own triangle invariant matcher internally driven by <b>SEP</b> (Barbary 2016, JOSS 1:58) derived from <b>Source Extractor</b> (Bertin &amp; Arnouts 1996, A&amp;AS 117:393). <b>ASTAP</b> is Han Kleijn's standalone plate solver (external process). <b>Astrometry.net</b> is <b>Lang et al. (2010, AJ 139:1782)</b> via the web API at <code>nova.astrometry.net</code>. Star detection for Seestar base selection uses <b>DAOStarFinder</b> from <b>photutils</b>, implementing <b>Stetson (1987, PASP 99:191)</b>'s DAOPHOT. The <b>Automatic Background Extraction</b> sample-point generator used by the Seestar polynomial gradient removal is SASpro's own ABE implementation. FITS WCS standards: <b>TAN gnomonic projection</b> follows <b>Greisen &amp; Calabretta (2002, A&amp;A 395:1061)</b>; <b>SIP distortion polynomial</b> follows <b>Shupe et al. (2005, ADASS XIV)</b>. <b>RANSAC</b> (used by the Fast Homography fit and all downstream OpenCV robust estimators) is <b>Fischler &amp; Bolles (1981, Comm. ACM 24(6):381)</b>. <b>OpenCV</b> provides the warp (<code>warpAffine</code>, <code>warpPerspective</code>, <code>remap</code>), homography fit (<code>findHomography</code>), distance transform, Gaussian blur, erode, and resampling filters (Lanczos4, area, cubic, nearest). <b>Astropy</b> provides FITS I/O, the <code>WCS</code> and <code>SIP</code> classes, <code>fit_wcs_from_points</code>, <code>SkyCoord</code>, <code>skycoord_to_pixel</code>, and the sigma-clipped statistics used by the sky estimator and DAOStarFinder prep. <b>NumPy</b> provides the array engine. <b>PyQt6</b> provides the UI framework (including <code>QProcess</code> for driving ASTAP). <b>requests</b> provides the HTTP transport for the Astrometry.net API.
+</div>
+
+</body>
+</html>

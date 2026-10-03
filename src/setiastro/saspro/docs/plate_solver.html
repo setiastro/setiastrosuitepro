@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Plate Solver</h1>
+<p class="sub">Finds the celestial coordinates of every pixel in an image &mdash; given a photo of the sky, it works out where the telescope was pointing, at what rotation and scale, and writes a full WCS (World Coordinate System) solution into the image's FITS header. Three solver backends run as a fallback chain: SASpro's <b>In-House Gaia DR3 solver</b> first, then <b>ASTAP</b> (seeded, then blind), and finally <b>Astrometry.net</b> (local solve-field or web API). Three operating modes: Active View, single File, and Batch directory processing.</p>
+
+<div class="pub">
+<b>SASpro-exclusive solver orchestration and in-house Gaia DR3 engine.</b> The four-pass fallback chain (Gaia DR3 &rarr; ASTAP seeded &rarr; ASTAP blind &rarr; Astrometry.net), the entire <b>In-House Gaia DR3 plate-solving engine</b> (triangle-invariant matcher with vertex voting, Hough-space translation accumulator with 3&times;3 neighbourhood merging, RANSAC similarity and full-affine consensus, spiral seed search over scale and parity variants, pixel-relative RMS quality gate, iterative WCS refinement by reprojection and nearest-neighbour re-match, SIP distortion fit with order chosen by match count, focal-length recomputation from the solved plate scale, failed-match star exclusion for retry rounds), the acquisition-header-preserving WCS merge policy, the catalog object lookup with M/NGC/IC/Sh2/PK prefix normalisation, the ASTAP seed heuristics (radius/FOV mode controls), the preset system with draggable canvas shortcuts, and the View Bundle application are all original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. External solvers (<b>ASTAP</b> by Han Kleijn and <b>Astrometry.net</b> by Lang et al.) are credited separately in their sections and in the final Credits box.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+Open an image &mdash; pick <b>Active View</b> (solve current window), <b>File</b> (load, solve, save), or <b>Batch</b> (whole folder) &mdash; set the <b>Seed mode</b> (Auto reads your header, Manual lets you type RA/Dec/scale or use <b>Lookup&hellip;</b> to search 100,000+ catalogued objects, None goes blind) &mdash; set the <b>Solver</b> preference (default: run all three in the fallback chain) &mdash; <b>Start</b>.
+</div>
+
+<div class="hero">
+<p>The in-house Gaia DR3 solver's core idea: find rotation-, scale-, and parity-invariant triangle shapes shared between detected image stars and Gaia catalog stars projected through a seed WCS. Each triangle match is encoded as an invariant pair of side ratios:</p>
+<div class="matheq-hero">\mathbf{I} = \left(\frac{s_c}{s_a},\;\frac{s_b}{s_a}\right),\quad s_a \leq s_b \leq s_c</div>
+<p>These two numbers survive any similarity transform including reflections, so a wrong CROTA2 sign, a 90&deg; rotator offset, or a mirrored optical train doesn't break them &mdash; vertex votes aggregate across matched triangles and RANSAC extracts the consensus transform. &sect;14.7 derives the full procedure.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. Dialog layout</a><br>
+<a href="#s2">2. Operating modes</a><br>
+<a href="#s3">3. Seed mode</a><br>
+<a href="#s4">4. Manual coordinates &amp; Lookup</a><br>
+<a href="#s5">5. Search radius &amp; FOV</a><br>
+<a href="#s6">6. Solver preference</a><br>
+<a href="#s7">7. The four-pass fallback chain</a><br>
+<a href="#s8">8. Active View mode</a><br>
+<a href="#s9">9. File mode</a><br>
+<a href="#s10">10. Batch mode</a><br>
+<a href="#s11">11. Apply to View Bundle</a><br>
+<a href="#s12">12. Presets &amp; drag shortcuts</a><br>
+<a href="#s13">13. Output &amp; the merged header</a><br>
+<a href="#s14">14. Technical details</a><br>
+<a href="#s14_1">14.1 Pixel scale estimation</a><br>
+<a href="#s14_2">14.2 Header merging policy</a><br>
+<a href="#s14_3">14.3 Seed WCS construction</a><br>
+<a href="#s14_4">14.4 Gaia library (astrometric vs spectral)</a><br>
+<a href="#s14_5">14.5 Star detection (SEP)</a><br>
+<a href="#s14_6">14.6 Catalog gathering</a><br>
+<a href="#s14_7">14.7 Triangle invariant matching</a><br>
+<a href="#s14_8">14.8 Hough translation vote</a><br>
+<a href="#s14_9">14.9 RANSAC consensus</a><br>
+<a href="#s14_10">14.10 TAN WCS fit</a><br>
+<a href="#s14_11">14.11 Iterative refinement</a><br>
+<a href="#s14_12">14.12 SIP distortion fit</a><br>
+<a href="#s14_13">14.13 Quality gate</a><br>
+<a href="#s14_14">14.14 Spiral seed search</a><br>
+<a href="#s14_15">14.15 Focal length recomputation</a><br>
+<a href="#s14_16">14.16 ASTAP integration</a><br>
+<a href="#s14_17">14.17 Astrometry.net integration</a>
+</div>
+
+<h2 id="s1">1. Dialog layout</h2>
+<p>The dialog has four blocks top-to-bottom: the <b>Mode</b> selector (Active View / File / Batch), a shared <b>Seeding &amp; Constraints</b> group that applies to every mode, the mode-specific controls page (file picker, batch I/O, etc.), and a status strip plus the <b>Apply to View Bundle&hellip;</b> / <b>Start</b> / <b>Close</b> buttons. A draggable preset handle in the bottom-left turns your current settings into a reusable shortcut (&sect;12).</p>
+
+<h2 id="s2">2. Operating modes</h2>
+
+<h3>Active View</h3>
+<p>Solves the image in the currently-focused SASpro document window in-place. The WCS solution is merged into the document's existing header (acquisition metadata preserved; see &sect;13 for the merge policy), and the header dock refreshes to show the new coordinates. This is the usual mode when you've just loaded a sub, want to solve it, and keep working with it.</p>
+
+<h3>File</h3>
+<p>Loads a single image file from disk (FITS, XISF, TIFF, PNG, JPEG), solves it, and prompts for a save-as path. Output is always a 32-bit float FITS with the merged header. Useful for solving images that aren't currently open in SASpro.</p>
+
+<h3>Batch</h3>
+<p>Loops over every image in an input folder, solves each, and saves <code>&lt;name&gt;_plate_solved.fits</code> into an output folder. Accepted extensions: <code>.fits</code>, <code>.fit</code>, <code>.xisf</code>, <code>.tif</code>, <code>.tiff</code>, <code>.png</code>, <code>.jpg</code>, <code>.jpeg</code>. Progress is logged in a scrolling text area; each file shows a ▶ when starting, a ✔ with the saved path on success, or a ❌ with the error on failure.</p>
+
+<h2 id="s3">3. Seed mode</h2>
+<p>Every solver works better when it starts with a rough idea of where the telescope was pointed. The <b>Seed mode</b> dropdown picks where that initial guess comes from:</p>
+<ul>
+  <li><b>Auto (from header)</b> &mdash; reads RA, Dec and pixel scale from the FITS header (CRVAL1/CRVAL2, OBJCTRA/OBJCTDEC, RA/DEC, CD matrix, CDELT, or FOCALLEN + XPIXSZ as a last resort). The usual pick when your acquisition software (NINA, SGP, ASIAIR, etc.) wrote proper mount coordinates.</li>
+  <li><b>Manual</b> &mdash; type RA, Dec and scale yourself, or use <b>Lookup&hellip;</b> to search for a catalogued object (&sect;4). Overrides any header values.</li>
+  <li><b>None (blind)</b> &mdash; no seed at all. The in-house Gaia DR3 solver <i>requires</i> a seed and will refuse this mode; ASTAP and Astrometry.net can both solve blindly but much more slowly.</li>
+</ul>
+
+<h2 id="s4">4. Manual coordinates &amp; Lookup</h2>
+<p>In Manual seed mode three fields are enabled:</p>
+<ul>
+  <li><b>RA</b> &mdash; accepts <code>HH:MM:SS[.s]</code>, decimal hours (0&ndash;24), or decimal degrees (0&ndash;360).</li>
+  <li><b>Dec</b> &mdash; accepts <code>&plusmn;DD:MM:SS[.s]</code> or decimal degrees (&minus;90 to +90).</li>
+  <li><b>Scale</b> &mdash; pixel scale in arcseconds per pixel. If you don't know it exactly, 1&ndash;2&quot;/px is typical for small refractors, 0.3&ndash;0.8&quot;/px for larger scopes under good seeing.</li>
+</ul>
+
+<h3>Lookup&hellip;</h3>
+<p>Clicking <b>Lookup&hellip;</b> opens a dialog where you type an object name. The lookup searches two sources:</p>
+<ul>
+  <li><b>Bright star list</b> &mdash; the ~1000 brightest stars with proper names (Sirius, Vega, Betelgeuse, &hellip;).</li>
+  <li><b>Celestial catalog</b> &mdash; the bundled 100,000+ object database shared with the Whats-In-My-Sky tool, including Messier, NGC, IC, UGC, PGC, Sharpless 2 (Sh2), LBN, LDN, Abell, PK/PN-G planetary nebulae, and Arp interacting-galaxy designations.</li>
+</ul>
+<p>Name normalisation handles common inconsistencies &mdash; both <code>M42</code> and <code>M 42</code> work, both <code>Sh2-155</code> and <code>Sh2 155</code> work, both <code>PK 164+31.1</code> and <code>PN-G 164.8+31.1</code> work (PK designations auto-translate to PN-G form before searching). If multiple matches turn up, a picker lets you choose. The selected object's RA, Dec and alt-name (or type/magnitude if available) populate the RA/Dec fields and the seed mode auto-switches to Manual.</p>
+
+<h2 id="s5">5. Search radius &amp; FOV</h2>
+<p>These two options only affect <b>ASTAP</b>; the in-house Gaia DR3 solver uses its own spiral search (&sect;14.14) and Astrometry.net has its own interface. If you aren't running ASTAP in your fallback chain, you can leave both on Auto.</p>
+
+<h3>Search radius</h3>
+<ul>
+  <li><b>Auto (-r 0)</b> &mdash; let ASTAP decide (default; good when the header seed is reliable).</li>
+  <li><b>Value (deg)</b> &mdash; force a specific cone radius in degrees. Use 1&ndash;5&deg; for tight searches, 10&ndash;20&deg; when the mount pointing is doubtful, 179&deg; for all-sky.</li>
+</ul>
+
+<h3>FOV</h3>
+<ul>
+  <li><b>Compute from scale</b> &mdash; derive the FOV from image height &times; pixel scale and pass it to ASTAP. The usual default when scale is available.</li>
+  <li><b>Auto (-fov 0)</b> &mdash; let ASTAP infer the field size.</li>
+  <li><b>Value (deg)</b> &mdash; force a specific vertical FOV in degrees.</li>
+</ul>
+
+<h2 id="s6">6. Solver preference</h2>
+<p>Which solvers run and in what order:</p>
+<table>
+  <tr><th>Preference</th><th>What runs</th></tr>
+  <tr><td><b>Gaia DR3 &rarr; ASTAP &rarr; Astrometry.net (all)</b></td><td>The default four-pass fallback chain (see &sect;7). Fastest overall for well-seeded data; most robust for difficult fields.</td></tr>
+  <tr><td><b>In-House Gaia DR3 only</b></td><td>Try the Gaia solver and stop. Requires a seed. Pick this when ASTAP catalogs aren't installed or you want the fastest in-house solve on good seeds.</td></tr>
+  <tr><td><b>ASTAP only</b></td><td>Try ASTAP seeded, then ASTAP blind. Classic workflow for people with ASTAP catalogs installed and no Gaia library.</td></tr>
+  <tr><td><b>Astrometry.net only</b></td><td>Try local <code>solve-field</code> if configured, else the web API. Slowest option; most useful when nothing else is available or for cross-checking a questionable solution.</td></tr>
+</table>
+
+<h2 id="s7">7. The four-pass fallback chain</h2>
+<p>With <b>Gaia DR3 &rarr; ASTAP &rarr; Astrometry.net (all)</b> selected, SASpro tries up to four passes in sequence and stops at the first that succeeds:</p>
+<ol>
+  <li><b>In-house Gaia DR3</b> &mdash; triangle/Hough + RANSAC against the local Gaia catalog. Fast when a seed is available, no external processes, handles rotation/scale/parity automatically. Skipped if no seed.</li>
+  <li><b>ASTAP seeded</b> &mdash; runs ASTAP with <code>-ra</code>, <code>-spd</code>, <code>-scale</code>, <code>-r</code> and computed <code>-fov</code> arguments. Very fast when seed is accurate.</li>
+  <li><b>ASTAP blind</b> &mdash; runs ASTAP with <code>-r 179 -fov 0 -z 0</code>, no coordinates. Slower but can solve from nothing.</li>
+  <li><b>Astrometry.net</b> &mdash; local <code>solve-field</code> if the path is configured, otherwise uploads to <code>nova.astrometry.net</code> via API. The slowest option; a lifeboat for fields the other solvers can't crack.</li>
+</ol>
+<p>Each pass's status is reported live in the dialog's status strip and (for headless scripted runs) in a floating status popup. The log records which pass actually succeeded.</p>
+
+<h2 id="s8">8. Active View mode</h2>
+<p>When you click <b>Start</b> with Mode = Active View, SASpro grabs the current document's image array and its metadata, derives a seed header, runs the fallback chain, and merges the resulting WCS into the document's header. The merge preserves everything in your acquisition header (OBJECT, EXPTIME, GAIN, FILTER, DATE-OBS, OBSERVER, telescope details, etc.) and only overwrites the WCS/SIP cards &mdash; so you don't lose metadata by solving.</p>
+<p>The document emits its <code>changed</code> signal and the header dock refreshes automatically to show the newly-written CTYPE1/CTYPE2, CRPIX1/CRPIX2, CRVAL1/CRVAL2, CD1_1&hellip;CD2_2, and (if a Gaia DR3 solve succeeded) <code>SOLVRMS</code> / <code>SOLVP95</code> / <code>SOLVNSTR</code> cards reporting fit quality.</p>
+<p>On success, a non-modal <b>Plate Solve Successful</b> popup shows:</p>
+<ul>
+  <li>Centre RA/Dec in sexagesimal.</li>
+  <li>Pixel scale in arcseconds per pixel.</li>
+  <li>Field of view (width &times; height) in degrees or arcminutes.</li>
+  <li>Focal length recomputed from the solved scale (&sect;14.15).</li>
+  <li>Rotation angle (north-up = 0&deg;).</li>
+  <li>Parity (normal vs flipped).</li>
+  <li>Offset from the seed (if a seed was used) in arcminutes.</li>
+  <li>Distortion status (SIP order and term count, or &ldquo;linear TAN&rdquo; if no SIP).</li>
+  <li>Fit RMS and matched star count (Gaia DR3 solver only &mdash; ASTAP and Astrometry.net don't report residuals).</li>
+</ul>
+
+<h2 id="s9">9. File mode</h2>
+<p>Click <b>Browse&hellip;</b> to pick a file, then <b>Start</b>. SASpro loads the image via its shared image-I/O layer (<code>legacy.load_image</code>), extracts whatever header exists as the seed, runs the fallback chain, merges the WCS, and asks where to save a plate-solved FITS copy. The original file is never modified. On successful save, the solve-summary popup appears as in Active View mode.</p>
+
+<h2 id="s10">10. Batch mode</h2>
+<p>Set <b>Input directory</b> and <b>Output directory</b> (both must exist) and click <b>Start</b>. SASpro iterates alphabetically through every image file in the input folder, applies the full fallback chain to each, and saves <code>&lt;basename&gt;_plate_solved.fits</code> into the output folder. The log pane shows progress per file:</p>
+<ul>
+  <li><code>▶ /path/to/image.fits</code> &mdash; starting this file.</li>
+  <li><code>&nbsp;&nbsp;✔ saved: /output/image_plate_solved.fits</code> &mdash; success.</li>
+  <li><code>&nbsp;&nbsp;❌ &lt;error&gt;</code> &mdash; failure (continues with the next file).</li>
+</ul>
+<p>The Qt event loop is pumped between files so the dialog stays responsive and you can watch progress live. Batch doesn't currently support mid-run cancel &mdash; close the dialog to stop between files.</p>
+
+<h2 id="s11">11. Apply to View Bundle</h2>
+<p>Click <b>Apply to View Bundle&hellip;</b> to solve <i>every</i> target in a saved SASpro View Bundle at once &mdash; both open sub-windows and on-disk files referenced by the bundle. A picker shows the bundles you've saved; selecting one and clicking OK runs the fallback chain on each target in turn, showing per-target status in the status strip and summarising any errors at the end. Open views get the WCS merged in-memory; file references get resaved to disk through <code>save_image</code> with their original format and bit depth preserved. Useful for solving a whole night's calibrated subs in one click.</p>
+
+<h2 id="s12">12. Presets &amp; drag shortcuts</h2>
+<p>Every control in the dialog (seed mode, manual RA/Dec/scale, search radius, FOV, solver preference) can be captured as a <b>preset</b> and dropped on the SASpro canvas as a reusable shortcut.</p>
+<p>Grab the drag handle in the bottom-left of the dialog and drag it to the canvas &mdash; a shortcut icon appears, pre-loaded with your current settings. Dropping an image on the shortcut (or dropping the shortcut on a View Bundle chip) runs <code>apply_plate_solve_to_doc()</code> headlessly: no dialog, no progress bar, just the fallback chain running on the dropped target with the preset's settings.</p>
+<p>Presets store nine fields: seed mode, manual RA, manual Dec, manual scale, search-radius mode, radius value, FOV mode, FOV value, and solver preference. The <code>normalize_plate_solve_preset()</code> helper validates and defaults each field so stale or partial preset dicts never crash the dialog.</p>
+
+<h2 id="s13">13. Output &amp; the merged header</h2>
+<p>Every success path produces one artefact: a FITS header containing both the original acquisition metadata and the solved WCS. The merge policy, implemented in <code>_merge_wcs_into_base_header()</code>:</p>
+<ul>
+  <li><b>Acquisition metadata wins for non-WCS keys</b> &mdash; OBJECT, EXPTIME, GAIN, OFFSET, FILTER, DATE-OBS, INSTRUME, TELESCOP, OBSERVER, SITELAT/SITELONG, etc. are preserved exactly as the camera and acquisition software wrote them.</li>
+  <li><b>Solver wins for WCS/SIP keys</b> &mdash; CTYPE1/CTYPE2, CRPIX1/CRPIX2, CRVAL1/CRVAL2, CD1_1&hellip;CD2_2, PC1_1&hellip;PC2_2, CDELT1/CDELT2, PV1_&times;/PV2_&times;, SIP coefficients (A_<i>p</i>_<i>q</i>, B_<i>p</i>_<i>q</i>, AP_<i>p</i>_<i>q</i>, BP_<i>p</i>_<i>q</i>) overwrite anything the acquisition header had.</li>
+  <li><b>SIP projection flag auto-set</b> &mdash; if any SIP coefficients are present, CTYPE1/CTYPE2 are promoted from <code>RA---TAN</code>/<code>DEC--TAN</code> to <code>RA---TAN-SIP</code>/<code>DEC--TAN-SIP</code>.</li>
+  <li><b>CROTA1/CROTA2 computed from CD matrix</b> if missing, so legacy tools that still read CROTA get a sensible value.</li>
+  <li><b>FOCALLEN recomputed</b> from the solved plate scale and the acquisition header's XPIXSZ/YPIXSZ + binning values &mdash; even if the acquisition header had FOCALLEN wrong, you get back the true effective focal length. A HISTORY card is added when the recomputed value differs from the original by &ge; 0.5&nbsp;mm. See &sect;14.15.</li>
+  <li><b>The pre-solve header is stashed once</b> under <code>meta['pre_solve_header']</code> on the first solve of a document, so re-solving never loses the original acquisition cards even after repeated solves.</li>
+</ul>
+<p>The merged header is also parsed into an <code>astropy.wcs.WCS</code> object stored at <code>meta['wcs']</code>, and a WCS-only copy (just the celestial cards, no acquisition metadata) is stored at <code>meta['wcs_header']</code>. Downstream SASpro tools (SFCC, SSSC, catalogue overlays, mosaic alignment) read from these canonical fields.</p>
+
+<h2 id="s14">14. Technical details</h2>
+<p class="tech-lead">The seeding, matching and WCS-fitting pipeline, in order.</p>
+
+<h3 id="s14_1">14.1 Pixel scale estimation</h3>
+<p>Both ASTAP's <code>-scale</code> argument and the in-house Gaia solver's seed WCS need an initial pixel scale. SASpro tries five sources in priority order:</p>
+<ol>
+  <li><b>Full WCS</b> &mdash; parse the header as an <code>astropy.wcs.WCS</code> and take <code>proj_plane_pixel_scales</code>, which handles CD, PC+CDELT, SIP all together. This is the preferred path.</li>
+  <li><b>CD matrix</b> &mdash; from <code>CD1_1</code> and <code>CD2_1</code> (degrees/pixel):
+    <div class="matheq">s_{\mathrm{px}} = 3600 \cdot \sqrt{\mathrm{CD1\_1}^2 + \mathrm{CD2\_1}^2}</div>
+    gives arcseconds per pixel. For a non-skewed rotation, this is equivalent to <code>sqrt(|det(CD)|) &times; 3600</code>.</li>
+  <li><b>PC &times; CDELT</b> &mdash; the older FITS WCS form: multiply the rotation matrix by the CDELT scale vector and apply the same magnitude formula.</li>
+  <li><b>Explicit pixel-scale keywords</b> &mdash; <code>PIXSCALE</code>, <code>SECPIX</code>, <code>SECPIX1</code>, <code>SECPIX2</code>, <code>SCALE</code>, <code>PLATESCL</code>, <code>PLTSCALE</code> (any of these, if present, is already in arcsec/px).</li>
+  <li><b>Pixel size + focal length</b> &mdash; the last-resort derivation, using XPIXSZ/YPIXSZ (pixel size in &micro;m), FOCALLEN (mm), and XBINNING/YBINNING:
+    <div class="matheq">s_{\mathrm{px}} = \frac{206.265 \cdot p_{\mu m} \cdot b}{f_{\mathrm{mm}}}</div>
+    where <code>b</code> is the mean binning factor. If both XPIXSZ and YPIXSZ are present, their mean is used.</li>
+</ol>
+<p>Every candidate is sanity-checked: values below 0.01 that look like they're in degrees get a &times;3600 rescue; values above 1000&quot;/px are rejected as implausible. Values between 0.01 and 1000 are accepted.</p>
+
+<h3 id="s14_2">14.2 Header merging policy</h3>
+<p>Covered in &sect;13 above. The implementation lives in <code>_merge_wcs_into_base_header()</code>. Key invariants:</p>
+<ul>
+  <li>Internal SASpro metadata keys (<code>FILE_PATH</code>, <code>FITS_HEADER</code>, <code>BIT_DEPTH</code>, <code>WCS_HEADER</code>, <code>__HEADER_SNAPSHOT__</code>, <code>ORIGINAL_HEADER</code>, <code>PRE_SOLVE_HEADER</code>) are stripped from any header before it's handed to FITS/WCS code &mdash; those names can hold Python objects or very long strings that trigger HIERARCH warnings or WCS failures.</li>
+  <li>Numeric WCS/SIP keys are coerced to real int/float before the merge, so ASTAP's occasional stringified values (<code>A_ORDER='2'</code>, <code>CRPIX1='1024.0'</code>) can't trip astropy's string-vs-int comparisons.</li>
+  <li>SIP order parity (<code>A_ORDER</code>/<code>B_ORDER</code>, <code>AP_ORDER</code>/<code>BP_ORDER</code>) is auto-filled if only one of a pair is present.</li>
+</ul>
+
+<h3 id="s14_3">14.3 Seed WCS construction</h3>
+<p>Given RA, Dec and pixel scale, the Gaia solver builds a TAN projection seed WCS centred at the given coordinates with CRPIX at image centre. Rotation is pulled from the first non-null of <code>ANGLE</code>, <code>POSANGLE</code>, <code>CROTA2</code>, <code>CROTA1</code>, <code>OBJCTROT</code>, <code>ROTANG</code>, <code>ROT_ANGL</code>, <code>CAMROTAN</code>. Parity (determinant sign) is tried both ways in the spiral search (&sect;14.14).</p>
+<p>The CD matrix for a rotated TAN projection with scale <code>s</code> and rotation <code>&theta;</code>:</p>
+<div class="eq">CD1_1 = -s cos(&theta;)        CD1_2 = +s sin(&theta;)
+CD2_1 = -s sin(&theta;)        CD2_2 = -s cos(&theta;)</div>
+<p>for the det&gt;0 branch, and the flipped parity equivalent for det&lt;0. &sect;14.14 explains why both are tried.</p>
+
+<h3 id="s14_4">14.4 Gaia library (astrometric vs spectral)</h3>
+<p>SASpro ships with two Gaia DR3 library formats, pulled from different ESA data products:</p>
+<ul>
+  <li><b>Astrometric tiers</b> &mdash; dense, high-completeness; sourced from Gaia's astrometric catalogue. <i>Preferred</i> for plate solving. The solver checks for installed astrometric bands first.</li>
+  <li><b>XP spectral library</b> &mdash; sparser but carries low-resolution spectra, used for Spectrophotometric Standard Star Calibration (SSSC). Falls back to this if no astrometric tiers are installed.</li>
+</ul>
+<p>Install either (or both) via <b>Settings &rarr; Gaia DR3 Library</b>. If neither is installed, the Gaia solver refuses with a clear error message pointing to the installer.</p>
+
+<h3 id="s14_5">14.5 Star detection (SEP)</h3>
+<p>The in-house Gaia solver detects stars in the input image via <b>SEP</b> (Barbary 2016), the Python port of Source Extractor. SEP is called through SASpro's shared <code>_detect_stars_uniform</code> helper, which does grid-balanced extraction so no cell of the image dominates the star list:</p>
+<ul>
+  <li><b>Sigma ladder</b> &mdash; detection runs at <code>&sigma; = 50, 25, 15, 10, 5, 3</code> in sequence. The first sigma that returns at least 1000 stars wins; if 3&sigma; still gives fewer, whatever it found is used.</li>
+  <li><b>Target range: 1000&ndash;2000 stars</b> &mdash; enough triangles for matching, not so many that the invariant tree is slow.</li>
+  <li><b>Grid balancing</b> &mdash; if detection returns more than 2000 stars, the image is divided into a 3&times;3 grid and up to <code>2000/9 &approx; 222</code> brightest-first stars are kept per cell, preventing the brightest region of the image from monopolising the match.</li>
+  <li><b>Image preprocessing</b> &mdash; normalise to [0, 1] via SASpro's <code>_normalize_for_astap</code> (which applies the shared mono/colour stretch for faint-star visibility), then collapse to float32 greyscale.</li>
+</ul>
+
+<h3 id="s14_6">14.6 Catalog gathering</h3>
+<p>For each seed candidate (centre, scale, parity &mdash; see &sect;14.14), SASpro projects the seed WCS to find the four image corners' sky coordinates, pads the resulting RA/Dec bounding box by 0.1&deg;, and queries the Gaia library for all catalog stars in that box.</p>
+<p>Candidates are then de-duplicated by Gaia <code>source_id</code>, sorted by G-band magnitude (brightest first), projected to pixel coordinates through the seed WCS, filtered to a 50-pixel margin inside the image bounds, and grid-balanced the same way as the image stars (3&times;3 grid, up to <code>1000/9</code> per cell). Match-time runs with a dense bright-first catalog subset rather than the raw box query.</p>
+
+<h3 id="s14_7">14.7 Triangle invariant matching</h3>
+<p>The core idea of the in-house solver, based on Groth (1986)'s classical star-pattern triangle method and refined following the astroalign (Beroiz, Cabral &amp; Sanchez 2020) implementation style.</p>
+
+<h4>Build triangle invariants</h4>
+<p>For every triple of stars <code>(a, b, c)</code>, measure the three side lengths <code>s_a, s_b, s_c</code> (where side <code>i</code> is opposite vertex <code>i</code>), sort them:</p>
+<div class="matheq">s_a \leq s_b \leq s_c</div>
+<p>and encode the triangle's shape as the two side ratios:</p>
+<div class="matheq">\mathbf{I} = \left(\frac{s_c}{s_a},\;\frac{s_b}{s_a}\right)</div>
+<p>Why these two numbers: the triangle's absolute size depends on scale, its orientation depends on rotation, its handedness depends on parity &mdash; but the ratios of its sides depend on <i>none</i> of those. Any similarity transform (rotation + uniform scale + reflection) maps a triangle to a congruent triangle with the same two ratios. So if the same three stars appear in both the image and the catalog projection, their invariant pair is identical regardless of the seed WCS being rotated or mirrored or wrongly scaled.</p>
+
+<h4>Prune degenerate triangles</h4>
+<p>Two filters: reject triangles with shortest side under 8&nbsp;px (centroid noise dominates), and reject triangles whose longest/shortest ratio exceeds 8 (needle-thin triangles have poor invariant stability).</p>
+
+<h4>k-NN match in invariant space</h4>
+<p>Both image-star and catalog-star triangle invariants are loaded into a <code>cKDTree</code> and image invariants are queried against the catalog tree with distance upper bound 0.05 (adimensional, since the invariants are ratios). Each matched image-triangle&harr;catalog-triangle pair implies three vertex correspondences.</p>
+
+<h4>Vertex voting</h4>
+<p>For every matched triangle pair <code>(T_s, T_r)</code>, cast a vote on each of the three vertex correspondences <code>(V_s[a], V_r[a])</code> for <code>a = 0, 1, 2</code>. True correspondences accumulate votes across many triangles; coincidental matches don't. Correspondences with at least 2 votes are kept, in descending vote order, with duplicate assignments blocked (each image vertex and each catalog vertex can match only once).</p>
+
+<h4>RANSAC full affine</h4>
+<p>From the voted correspondences, fit a 6-parameter affine transform via RANSAC:</p>
+<div class="matheq">x' = m_{11}x + m_{12}y + t_x,\quad y' = m_{21}x + m_{22}y + t_y</div>
+<p>300 iterations, 3-point minimal samples, 10-pixel inlier tolerance. The best inlier set must contain at least <code>max(6, 15% of candidates)</code> or the solve attempt is abandoned. The full-affine form (as opposed to similarity) is deliberate: it handles reflection (<code>det(M) &lt; 0</code>) correctly, which matters because the Gaia solver tries both parities and lets the matcher decide which is right.</p>
+
+<h4>Re-match the full star set at the recovered transform</h4>
+<p>With the final <code>(M_x, M_y)</code> fit from the inlier consensus, transform every image star and query the full catalog KDTree at distance 0. An iterative tolerance tighten runs 3 cycles: refit affine on current inliers, re-query, shrink the tolerance toward 4&times; the observed median residual (bounded below by 2&nbsp;px). This stops dense-field false nearest-neighbours from inflating the final RMS past the quality gate.</p>
+
+<h3 id="s14_8">14.8 Hough translation vote</h3>
+<p>If triangle matching returns too few pairs or RANSAC fails, SASpro falls back to the <b>Hough translation vote</b> &mdash; a Generalized Hough Transform (Hough 1962, Ballard 1981) restricted to pure 2D translation. This is the method used by Tabur (2007) in his fast catalog-matching routine for CCD astrometry.</p>
+
+<h4>Vote on (&Delta;x, &Delta;y)</h4>
+<p>For every image star <code>s_i</code> and every catalog star <code>c_j</code>, compute the implied translation <code>(c_j - s_i)</code> and vote in a 2D accumulator binned at 2&times; the match tolerance. The peak bin reveals the dominant translation offset:</p>
+<div class="matheq">(\Delta x,\Delta y) = \arg\max_{(b_x,b_y)}\;\#\{(i,j) : (\mathbf{c}_j - \mathbf{s}_i) \in \mathrm{bin}(b_x,b_y)\}</div>
+<p>Translations outside half the image size are rejected (no sense voting for a shift that would place every star off-screen).</p>
+
+<h4>3&times;3 neighbourhood merge</h4>
+<p>The vote is deliberately imperfect: when the seed WCS has residual rotation or scale error on top of the dominant translation, correspondences near the rotation centre vote in the peak bin but correspondences far from the centre drift into neighbouring bins. SASpro merges the 3&times;3 neighbourhood around the peak into one candidate pool, which gives the next step (similarity RANSAC) a noisier but broader set to work with.</p>
+
+<h4>RANSAC similarity transform</h4>
+<p>Fit a 4-parameter similarity transform (rotation, uniform scale, translation) over the pool:</p>
+<div class="matheq">x' = ax - by + t_x,\quad y' = bx + ay + t_y</div>
+<p>with 200 minimal 2-point samples and a tolerance of 2&times; the match tolerance. The recovered scale is <code>sqrt(a&sup2; + b&sup2;)</code> and rotation is <code>atan2(b, a)</code>, which are logged for diagnostic purposes.</p>
+
+<h4>Final affine fit</h4>
+<p>With the similarity-corrected positions, nearest-neighbour match against the catalog KDTree at <code>1.5 &times; match_tol_px</code>, then do one final 6-parameter affine fit for inlier rejection. Returns the matched pair list the same way triangle matching does.</p>
+
+<h3 id="s14_9">14.9 RANSAC consensus</h3>
+<p>Both matchers use the classical RANSAC algorithm (Fischler &amp; Bolles 1981):</p>
+<div class="matheq">\mathbf{M}^{*} = \arg\max_{\mathbf{M}}\;\#\{i : \|\mathbf{p}'_i - \mathbf{M}(\mathbf{p}_i)\| < \tau\}</div>
+<p>Over N trials, sample the minimum number of correspondences needed to fit the model (3 for affine, 2 for similarity), fit, count inliers within tolerance <code>&tau;</code>, keep the fit with the most inliers. Refit on the best inlier set for the final transform. RANSAC avoids being dragged off by false correspondences the way a plain least-squares fit over the whole noisy pool would be.</p>
+
+<h3 id="s14_10">14.10 TAN WCS fit</h3>
+<p>Once matched pairs are in hand, SASpro uses <code>astropy.wcs.utils.fit_wcs_from_points</code> to fit a <b>TAN (gnomonic) projection WCS</b> through them. The projection point is set to the mean of the matched sky coordinates; the CD matrix emerges from the least-squares fit.</p>
+<p>The gnomonic / TAN projection is the FITS WCS standard for most astronomical imaging and follows Greisen &amp; Calabretta (2002). The forward (pixel &rarr; sky) transform in the simplest case:</p>
+<div class="eq">(&xi;, &eta;) = CD &middot; (x - CRPIX1, y - CRPIX2)
+sky coordinates derived from (&xi;, &eta;) via standard gnomonic equations</div>
+<p>centred on the reference point (CRVAL1, CRVAL2).</p>
+
+<h3 id="s14_11">14.11 Iterative refinement</h3>
+<p>The initial TAN fit uses only the matched set from the triangle/Hough matcher. SASpro then iteratively refines it by re-matching against the catalog <i>through the fitted WCS</i>:</p>
+<ol>
+  <li>Project every detected image star through the current fitted WCS, giving each a sky position.</li>
+  <li>Re-query the Gaia catalog for all stars within the current field, build a fresh KDTree in pixel space.</li>
+  <li>Nearest-neighbour match image stars against the catalog with an 8-pixel tolerance.</li>
+  <li>Refit the TAN WCS on the new (larger, cleaner) correspondence set.</li>
+  <li>Compute the new RMS. If it improved by more than roughly <code>0.02</code> pixels equivalent arcseconds, iterate again; otherwise stop. Capped at 5 iterations.</li>
+</ol>
+<p>Each iteration either tightens the fit by picking up more real correspondences from the catalog's dense inner region, or exposes the current fit as being as good as it's going to get. The &ldquo;0.02 px&rdquo; convergence threshold is pixel-relative so it works equally on 0.3&quot;/px long-focal-length rigs and 7&quot;/px wide-field rigs.</p>
+
+<h3 id="s14_12">14.12 SIP distortion fit</h3>
+<p>Linear TAN cannot absorb the geometric distortion of wide-field lenses or fast astrographs. SASpro fits a <b>SIP distortion polynomial</b> on top of the TAN fit, following Shupe et al. (2005), with the polynomial order chosen by the number of matched pairs:</p>
+<ul>
+  <li>&ge; 100 pairs &rarr; SIP order 4.</li>
+  <li>&ge; 50 pairs &rarr; SIP order 3.</li>
+  <li>&ge; 20 pairs &rarr; SIP order 2.</li>
+  <li>&lt; 20 pairs &rarr; TAN only (no SIP).</li>
+</ul>
+<p>SIP adds correction polynomials to the pixel-space side of the transform:</p>
+<div class="matheq">u' = u + \sum_{p+q \leq n} A_{p,q}\,u^p v^q</div>
+<div class="matheq">v' = v + \sum_{p+q \leq n} B_{p,q}\,u^p v^q</div>
+<p>with <code>(u, v)</code> the pixel offset from CRPIX, and <code>A_{p,q}</code>, <code>B_{p,q}</code> fitted coefficients up to order <code>n</code>. CTYPE1/CTYPE2 become <code>RA---TAN-SIP</code>/<code>DEC--TAN-SIP</code> when SIP is present.</p>
+<p>SASpro fits SIP <i>before</i> the quality gate (&sect;14.13), so a distorted wide-field frame that would fail the gate on linear TAN can still pass once SIP absorbs the distortion. The RMS used by the gate is the SIP RMS when SIP improves it, else TAN.</p>
+
+<h3 id="s14_13">14.13 Quality gate</h3>
+<p>Before accepting a solve, SASpro checks fit quality. The RMS of final residuals (pair-wise angular separations):</p>
+<div class="matheq">\mathrm{RMS} = \sqrt{\frac{1}{N}\sum_{i=1}^{N} \Delta\theta_i^2}</div>
+<p>and the 95th-percentile residual:</p>
+<div class="matheq">P_{95} = \mathrm{percentile}_{95}(\Delta\theta_i)</div>
+<p>are computed where <code>&Delta;&theta;_i</code> is the great-circle angular separation between the <i>i</i>th matched star's catalog position and the position the fitted WCS puts it at.</p>
+<p>The gate is <b>pixel-relative, not raw arcseconds</b>, because a flat arcsecond threshold is wrong on both ends of the pixel-scale spectrum:</p>
+<div class="matheq">\mathrm{RMS}_{\max} = \max\!\left(\mathrm{floor}_{\mathrm{arcsec}},\;k_{\mathrm{px}} \cdot s_{\mathrm{px}}\right)</div>
+<p>with <code>k_px = 2.0</code> (two pixels equivalent) and <code>floor_arcsec = 3.0</code>&quot;. A fine-scale 0.5&quot;/px rig gets a 3.0&quot; limit (strict as it should be); a coarse 7&quot;/px rig gets a 14&quot; limit (sensible given the sampling). A flat 3.0&quot; limit would wrongly fail a sub-pixel solve on the coarse rig.</p>
+<p>Minimum pair count: 20. If the fit RMS exceeds <code>RMS_max</code>, or fewer than 20 pairs matched, the gate rejects and SASpro either retries the field with a different matcher (triangle &harr; Hough), excludes the previously-matched catalog stars and tries again, or falls back to the next solver in the chain.</p>
+
+<h3 id="s14_14">14.14 Spiral seed search</h3>
+<p>Even when the acquisition header has RA/Dec, those values can be off by many arcminutes due to mount pointing error. SASpro's Gaia solver covers this by searching a <b>spiral grid</b> of seed centres around the nominal RA/Dec:</p>
+<ul>
+  <li><b>Centre</b> &mdash; the nominal seed position (ring 0).</li>
+  <li><b>Ring 1</b> &mdash; six points at radius 0.4 &times; FOV, evenly spaced around the centre, with <code>cos(Dec)</code> correction on the RA offset.</li>
+  <li><b>Ring 2</b> &mdash; twelve points at radius 0.8 &times; FOV.</li>
+</ul>
+<p>Expressed in sky coordinates with ring radius <code>r</code> and azimuth <code>&phi;</code>:</p>
+<div class="matheq">\Delta\mathrm{RA} = \frac{r\cos\phi}{\cos(\mathrm{Dec}_0)},\quad \Delta\mathrm{Dec} = r\sin\phi</div>
+<p>For each centre, SASpro also tries <b>five scale variants</b> (<code>&times;1.00, &times;0.95, &times;1.05, &times;0.90, &times;1.10</code>) and <b>two parity variants</b> (det&gt;0 and det&lt;0 CD matrices). The parity sweep is critical because camera flip is one of the most common reasons for a solve to silently fail &mdash; and nothing in the acquisition header normally tells SASpro whether the frame is flipped.</p>
+<p>The search stops at the first (centre, scale, parity) combination that produces a matched pair set passing the quality gate. In practice the nominal centre + nominal scale + det&lt;0 is right the vast majority of the time, but the spiral cover rescues the awkward cases without the user having to intervene.</p>
+
+<h3 id="s14_15">14.15 Focal length recomputation</h3>
+<p>Once a solve succeeds and the plate scale is known accurately, SASpro back-computes the <i>true effective focal length</i> from the physical pixel size and binning:</p>
+<div class="matheq">f_{\mathrm{mm}} = \frac{206.265 \cdot p_{\mu m} \cdot b}{s_{\mathrm{px}}}</div>
+<p>and overwrites the FOCALLEN card. This matters because the user-entered FOCALLEN often disagrees with reality (incorrect for the specific flattener/reducer in use, wrong for the actual spacing, or simply never updated after a scope swap). A HISTORY card logs the before/after values when they differ by at least 0.5&nbsp;mm, so the original is still auditable. Sanity bounds: the recomputed value must fall in <code>[1, 50000]</code>&nbsp;mm to be accepted.</p>
+
+<h3 id="s14_16">14.16 ASTAP integration</h3>
+<p>Passes 2 and 3 of the fallback chain run <b>ASTAP</b>, Han Kleijn's standalone plate-solving program. SASpro drives it as an external process via <code>QProcess</code>, writing a temporary single-channel 32-bit float FITS of the current image (passed through SASpro's star-visibility stretch so dim stars show) and reading back the sidecar <code>.wcs</code> file ASTAP writes next to the input.</p>
+<p>Seeded invocation arguments (Pass 2):</p>
+<div class="eq">astap.exe -f &lt;tmp.fit&gt;
+  -ra &lt;hours&gt; -spd &lt;south-pole-distance-deg&gt; -scale &lt;arcsec-per-px&gt;
+  -r &lt;radius-deg&gt; -fov &lt;fov-deg&gt; -wcs -sip</div>
+<p>where SPD = Dec + 90&deg;, the radius comes from the Search Radius control (&sect;5), and the FOV comes from the FOV control. Blind invocation (Pass 3) drops the seed arguments and uses <code>-r 179 -fov 0 -z 0</code>.</p>
+<p>ASTAP's documented exit codes are decoded and reported in the log:</p>
+<table>
+  <tr><th>Code</th><th>Meaning</th></tr>
+  <tr><td>0</td><td>Solution found.</td></tr>
+  <tr><td>1</td><td>No solution found within the search area/scale.</td></tr>
+  <tr><td>2</td><td>Not enough stars detected in the image.</td></tr>
+  <tr><td>16</td><td>Error reading the image file.</td></tr>
+  <tr><td>17</td><td>Error reading the star reference database (catalogs missing/misconfigured).</td></tr>
+  <tr><td>32</td><td>Not enough memory.</td></tr>
+  <tr><td>33</td><td>Error writing output files (temp directory permissions).</td></tr>
+</table>
+<p>Even on exit code 0, SASpro verifies the <code>.wcs</code> sidecar was actually written and contains CRVAL1/CTYPE1 &mdash; ASTAP occasionally exits normally without producing a solution, and treating that as success would propagate a broken WCS to downstream tools.</p>
+
+<h3 id="s14_17">14.17 Astrometry.net integration</h3>
+<p>Pass 4 of the fallback chain runs <b>Astrometry.net</b> (Lang et al. 2010), either locally via <code>solve-field</code> or over the web API at <code>nova.astrometry.net</code>.</p>
+
+<h4>Local solve-field</h4>
+<p>If the Astrometry.net path is set in Preferences (<code>paths/solve_field</code> or <code>astrometry/solvefield_path</code>), SASpro runs <code>solve-field</code> as an external process with <code>--overwrite --no-remove-lines --cpulimit 300 --downsample 2 --write-wcs wcs</code>. On success, SASpro reads the <code>.wcs</code> sidecar or the <code>.new</code> FITS and extracts the WCS header for merging.</p>
+
+<h4>Web API</h4>
+<p>If local solve-field isn't configured, SASpro falls back to the web API &mdash; the API key is read from Preferences (<code>api/astrometry_key</code>, with legacy keys auto-migrated). The sequence:</p>
+<ol>
+  <li><b>Login</b> &mdash; POST to <code>api/login</code> with the API key, receive a session token.</li>
+  <li><b>Upload</b> &mdash; convert the image to 16-bit mono FITS, POST to <code>api/upload</code>, receive a submission ID.</li>
+  <li><b>Poll for job assignment</b> &mdash; GET <code>api/submissions/&lt;subid&gt;</code> every second until the job ID appears (max 15 minutes).</li>
+  <li><b>Poll for calibration</b> &mdash; GET <code>api/jobs/&lt;jobid&gt;/calibration/</code> every 1.5 seconds until the solution dict appears with <code>ra</code>, <code>dec</code>, <code>pixscale</code>, <code>orientation</code>, <code>parity</code> (max 15 minutes).</li>
+  <li><b>Download the WCS FITS</b> &mdash; GET <code>wcs_file/&lt;jobid&gt;</code> (includes SIP terms when the solve produced them). Parse into a header.</li>
+</ol>
+<p>Every request has retry-with-exponential-backoff on <code>429, 500, 502, 503, 504</code> and connection/timeout errors (up to 5 retries, 0.5&middot;2^(n-1) + jitter seconds between). File handles are rewound before each retry since <code>requests</code> consumes them on each POST attempt.</p>
+
+<p>If the WCS FITS download fails, SASpro builds a plain TAN header from the calibration dict instead:</p>
+<div class="matheq">\mathrm{CD1\_1} = -s \cos\theta \cdot p,\quad \mathrm{CD2\_2} = s \cos\theta</div>
+<p>and symmetric entries for <code>CD1_2</code>, <code>CD2_1</code>, with <code>s</code> the pixel scale in degrees, <code>&theta;</code> the orientation (positive CCW from north), and <code>p</code> the parity sign (parity > 0 means the image was mirrored, so RA axis is negated to un-mirror). Downside: no SIP, so the fit is linear only.</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>solver orchestration</b> (four-pass fallback chain with cross-solver state preservation and settings restoration), the <b>In-House Gaia DR3 engine</b> (triangle-invariant matcher with vertex-vote-and-RANSAC consensus, Hough translation-vote fallback with 3&times;3 neighbourhood merging and similarity-RANSAC refinement, spiral seed search over scale and parity variants, iterative WCS refinement with pixel-relative convergence, pixel-relative RMS quality gate, failed-match catalog-star exclusion for retry rounds, SIP-order-by-match-count fitting, focal-length recomputation from solved plate scale), the <b>acquisition-header-preserving WCS merge policy</b>, the <b>catalog object lookup</b> with M/NGC/IC/UGC/Sh2/LBN/LDN/Abell/PK/PN-G/Arp prefix normalisation and both bundled bright-star and 100 000+-object catalog search, the <b>ASTAP seed heuristics</b> (radius and FOV mode controls, scale-aware FOV computation, exit-code decoding and sidecar validation), the <b>preset system with draggable canvas shortcuts</b>, and the <b>View Bundle application</b> are all original work by <b>Franklin Marek</b> for SetiAstro Suite Pro.
+<br><br>
+Standard algorithms credited to community: triangle star-pattern matching follows <b>Groth (1986, AJ 91:1244)</b>, with the invariant-pair + vertex-vote formulation and RANSAC consensus structure following <b>Beroiz, Cabral &amp; Sanchez (2020, A&amp;C 32:100384)</b> (astroalign); Hough-transform catalog matching follows <b>Hough (1962, US Patent 3,069,654)</b> and <b>Ballard (1981, Pattern Recognition 13(2):111)</b>, with the voting-on-translation-offsets application following <b>Tabur (2007, PASA 24:189)</b>; FOCAS voting-based catalog matching is <b>Valdes et al. (1995, PASP 107:1119)</b>; RANSAC is <b>Fischler &amp; Bolles (1981, Comm. ACM 24(6):381)</b>. FITS WCS standards: TAN gnomonic projection follows <b>Greisen &amp; Calabretta (2002, A&amp;A 395:1061)</b>; SIP distortion polynomial follows <b>Shupe et al. (2005, ADASS XIV)</b>.
+<br><br>
+External tools and libraries: <b>ASTAP</b> is Han Kleijn's standalone plate solver (used as an external process; SASpro drives it with seed arguments and parses its <code>.wcs</code> sidecar); <b>Astrometry.net</b> is <b>Lang et al. (2010, AJ 139:1782)</b> with the web API at <code>nova.astrometry.net</code> and local <code>solve-field</code> both supported. <b>Gaia DR3</b> catalog data is <b>Gaia Collaboration et al. (2023, A&amp;A 674:A1)</b>, delivered through SASpro's local astrometric-tier library (preferred) or the XP-spectral library (fallback, shared with SSSC). <b>SEP</b> (Barbary 2016, JOSS 1:58) provides star detection, deriving from <b>Source Extractor</b> (Bertin &amp; Arnouts 1996, A&amp;AS 117:393). <b>Astropy</b> provides FITS I/O, the <code>WCS</code> class, <code>fit_wcs_from_points</code>, <code>proj_plane_pixel_scales</code>, and <code>SkyCoord</code>. <b>SciPy</b> provides <code>cKDTree</code> / <code>KDTree</code> for nearest-neighbour matching and <code>linalg.lstsq</code> for affine fits. <b>NumPy</b> provides the array engine, <b>PyQt6</b> provides the UI framework (including <code>QProcess</code> for driving external solvers), and <b>requests</b> provides HTTP transport for the Astrometry.net API.
+</div>
+
+</body>
+</html>

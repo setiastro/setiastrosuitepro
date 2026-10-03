@@ -24,7 +24,7 @@ from matplotlib import patheffects as pe
 from pathlib import Path
 from setiastro.saspro.resources import get_data_path
 from setiastro.saspro.bright_stars import BRIGHT_STARS
-
+from setiastro.saspro.help_support import make_help_button
 if TYPE_CHECKING:
     from astropy.wcs import WCS as AstropyWCS
     from astropy.coordinates import SkyCoord as AstropySkyCoord
@@ -1524,6 +1524,7 @@ class FinderChartFromCoordDialog(QDialog):
         row1.addWidget(self.sb_px)
 
         row1.addStretch(1)
+        row1.addWidget(make_help_button("finder_chart", self))
         self.btn_render = QPushButton("Render")
         row1.addWidget(self.btn_render)
         root.addLayout(row1)
@@ -1974,6 +1975,7 @@ class FinderChartDialog(QDialog):
         self.lbl_opacity.setFixedWidth(40)
         row1.addWidget(self.lbl_opacity)
         row1.addStretch(1)
+        row1.addWidget(make_help_button("finder_chart", self))
         self.btn_render = QPushButton("Render")
         row1.addWidget(self.btn_render)
 

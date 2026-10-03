@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from typing import Dict, Tuple, Optional
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QSettings
 from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QWidget, QGroupBox,
@@ -12,7 +12,11 @@ from PyQt6.QtWidgets import (
 )
 
 # imageops
-from setiastro.saspro.imageops.starbasedwhitebalance import apply_star_based_white_balance
+from setiastro.saspro.imageops.starbasedwhitebalance import (
+    apply_star_based_white_balance,
+    DEFAULT_AUTO_SIGMA_LADDER,
+    DEFAULT_AUTO_SIGMA_MIN_STARS,
+)
 from setiastro.saspro.imageops.stretch import stretch_color_image
 
 # Shared utilities
@@ -401,7 +405,9 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
       {
         "mode": "star" | "manual" | "auto",   # default "star"
         # star mode:
-        "threshold": float (default 50),
+        "threshold": float (default 50),      # ignored when auto_sigma=True
+        "auto_sigma": bool (default True),    # waterfall-based threshold pick
+        "auto_sigma_min_stars": int (default 1200),
         "reuse_cached_sources": bool (default True),
         # manual mode:
         "r_gain": float (default 1.0), "g_gain": float (default 1.0), "b_gain": float (default 1.0)
@@ -431,6 +437,10 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
         else:  # "star"
             thr = float(p.get("threshold", 50.0))
             use_cm = bool(p.get("use_color_matrix", False))
+            # Auto-σ waterfall is on by default — removes the manual guess
+            # and the "find too many stars" blowups at low σ.
+            auto_sig = bool(p.get("auto_sigma", True))
+            auto_min = int(p.get("auto_sigma_min_stars", DEFAULT_AUTO_SIGMA_MIN_STARS))
             out, _count, _overlay = apply_star_based_white_balance(
                 base_n,
                 threshold=thr,
@@ -438,6 +448,8 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
                 reuse_cached_sources=False,
                 return_star_colors=False,
                 use_color_matrix=use_cm,
+                auto_sigma=auto_sig,
+                auto_sigma_min_stars=auto_min,
             )
     except Exception as e:
         # Fallback: if SEP missing or star detection fails, try Auto WB
@@ -599,6 +611,29 @@ class WhiteBalanceDialog(QDialog):
         self.thr_label = QLabel("50")
         thr_row.addWidget(self.thr_slider); thr_row.addWidget(self.thr_label)
         sg.addLayout(thr_row)
+
+        # ── Auto σ waterfall ──────────────────────────────────────────
+        # Removes manual guess-and-check. The worker runs σ = 100, 50, 25,
+        # 12, 8, 5, 3 in order and stops at the first value that returns
+        # ≥ 1200 detections. The slider is driven to the chosen σ so the
+        # user can see what Auto picked (and uncheck Auto to override).
+        auto_row = QHBoxLayout()
+        self.auto_sigma_chk = QCheckBox(self.tr("Auto σ (waterfall)"))
+        self.auto_sigma_chk.setChecked(True)
+        self.auto_sigma_chk.setToolTip(self.tr(
+            "Auto σ waterfall:\n"
+            "  Tries σ = 100, 50, 25, 12, 8, 5, 3 in order and stops at the\n"
+            "  first value that yields ≥ 1200 detections. Removes the need to\n"
+            "  guess a threshold for different fields.\n\n"
+            "  Uncheck to drive the slider manually."
+        ))
+        auto_row.addWidget(self.auto_sigma_chk)
+        auto_row.addStretch(1)
+        sg.addLayout(auto_row)
+
+        # Slider disabled when Auto is on — it becomes a read-out of the
+        # resolved σ instead of an input.
+        self.thr_slider.setEnabled(not self.auto_sigma_chk.isChecked())
         self.chk_color_matrix = QCheckBox(self.tr(
             "Advanced Color Matrix WB  "
             "(cross-channel matrix aligned to blackbody locus)"
@@ -644,6 +679,7 @@ class WhiteBalanceDialog(QDialog):
         # --- preset drag handle (grip) ---
         try:
             from setiastro.saspro.shortcuts import PresetDragHandle
+            from setiastro.saspro.help_support import make_help_button
             try:
                 from setiastro.saspro.resources import whitebalance_path
                 _grip_icon = QIcon(whitebalance_path)
@@ -662,6 +698,8 @@ class WhiteBalanceDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)
+            self.btn_help = make_help_button("white_balance", self)
+            drag_row.addWidget(self.btn_help)
             self.main_layout.addLayout(drag_row)
         except Exception:
             pass
@@ -690,12 +728,36 @@ class WhiteBalanceDialog(QDialog):
         self.btn_apply.clicked.connect(self._on_apply)
         self.thr_slider.valueChanged.connect(self._on_threshold_changed)
         self.chk_autostretch_overlay.toggled.connect(lambda _=None: self._debounce.start())
+        self.auto_sigma_chk.toggled.connect(self._on_auto_sigma_toggled)
         self.finished.connect(lambda *_: self._stop_detection_worker())
+
+        # Restore last Auto σ preference (default: ON — removes guess-and-check)
+        try:
+            s = QSettings()
+            auto = s.value("WhiteBalance/AutoSigma", True, type=bool)
+            self.auto_sigma_chk.setChecked(bool(auto))
+            self.thr_slider.setEnabled(not bool(auto))
+        except Exception:
+            pass
 
 
     def _on_threshold_changed(self, v: int):
         self.thr_label.setText(str(v))
         self._debounce.start()  # restart debounce — slider still moving
+
+    def _on_auto_sigma_toggled(self, on: bool):
+        try:
+            QSettings().setValue("WhiteBalance/AutoSigma", bool(on))
+        except Exception:
+            pass
+        try:
+            # Slider is read-only (shows the auto-picked value) in auto mode,
+            # and user-driven in manual mode.
+            self.thr_slider.setEnabled(not bool(on))
+        except Exception:
+            pass
+        # Kick a fresh preview so the mode change is reflected right away.
+        self._debounce.start()
 
     def _update_mode_widgets(self):
         t = self.type_combo.currentText()
@@ -718,31 +780,40 @@ class WhiteBalanceDialog(QDialog):
         if self.type_combo.currentText() != "Star-Based":
             return
 
+        auto_sigma = bool(self.auto_sigma_chk.isChecked()) if hasattr(self, "auto_sigma_chk") else False
         thr = float(self.thr_slider.value())
-        auto = bool(self.chk_autostretch_overlay.isChecked())
+        auto_stretch = bool(self.chk_autostretch_overlay.isChecked())
 
         # If a worker is already running, cancel it and remember what we want next.
         # The _on_worker_done slot will re-fire with the pending values.
         if self._detection_worker is not None and self._detection_worker.isRunning():
             self._pending_threshold = thr
-            self._pending_autostretch = auto
+            self._pending_autostretch = auto_stretch
             self._detection_worker.cancel()
             # Don't wait — let it finish naturally and _on_worker_done will restart
             return
 
         self._pending_threshold = None
         self._pending_autostretch = None
-        self.star_count.setText(self.tr("Detecting…"))
+        if auto_sigma:
+            self.star_count.setText(self.tr("Auto σ: detecting…"))
+        else:
+            self.star_count.setText(self.tr("Detecting…"))
 
         from setiastro.saspro.imageops.starbasedwhitebalance import StarDetectionWorker
         img = _to_float01(np.asarray(self.doc.image))
-        worker = StarDetectionWorker(img, thr, auto, parent=self)
+        # In Auto mode the worker ignores `thr` and runs the σ ladder itself,
+        # emitting the resolved σ back via finished(overlay, count, used_σ).
+        worker = StarDetectionWorker(
+            img, thr, auto_stretch, parent=self,
+            auto_sigma=auto_sigma,
+        )
         worker.finished.connect(self._on_worker_done)
         worker.failed.connect(self._on_worker_failed)
         self._detection_worker = worker
         worker.start()
 
-    def _on_worker_done(self, overlay: np.ndarray, count: int):
+    def _on_worker_done(self, overlay: np.ndarray, count: int, used_sigma: float = 0.0):
         if getattr(self, "_closing", False):
             self._detection_worker = None
             return
@@ -756,7 +827,28 @@ class WhiteBalanceDialog(QDialog):
             QTimer.singleShot(0, self._update_star_preview)
             return
 
-        self.star_count.setText(self.tr("Detected {0} stars.").format(count))
+        auto_on = bool(self.auto_sigma_chk.isChecked()) if hasattr(self, "auto_sigma_chk") else False
+
+        # Drive the slider from the resolved σ when Auto picked it, so the
+        # user can see what the waterfall landed on. (Clamp into slider range.)
+        if auto_on and used_sigma > 0.0:
+            try:
+                iv = int(round(float(used_sigma)))
+                iv = max(self.thr_slider.minimum(), min(self.thr_slider.maximum(), iv))
+                self.thr_slider.blockSignals(True)
+                self.thr_slider.setValue(iv)
+                self.thr_label.setText(str(iv))
+            finally:
+                try:
+                    self.thr_slider.blockSignals(False)
+                except Exception:
+                    pass
+            self.star_count.setText(self.tr(
+                "Auto σ={0}: detected {1} stars."
+            ).format(int(round(used_sigma)), int(count)))
+        else:
+            self.star_count.setText(self.tr("Detected {0} stars.").format(int(count)))
+
         try:
             overlay8 = np.ascontiguousarray(np.clip(overlay * 255.0, 0, 255).astype(np.uint8))
             h, w, _ = overlay8.shape
@@ -801,6 +893,10 @@ class WhiteBalanceDialog(QDialog):
             "mode": "star",
             "threshold": float(self.thr_slider.value()),
             "use_color_matrix": bool(self.chk_color_matrix.isChecked()),
+            "auto_sigma": (
+                bool(self.auto_sigma_chk.isChecked())
+                if hasattr(self, "auto_sigma_chk") else True
+            ),
         }
 
     # ---- preset seed (double-click open) --------------------------------
@@ -815,6 +911,8 @@ class WhiteBalanceDialog(QDialog):
             self.r_spin, self.g_spin, self.b_spin,
             self.chk_color_matrix,
         ]
+        if hasattr(self, "auto_sigma_chk"):
+            widgets.append(self.auto_sigma_chk)
         for wdg in widgets:
             try:
                 wdg.blockSignals(True)
@@ -835,6 +933,9 @@ class WhiteBalanceDialog(QDialog):
                 self.thr_slider.setValue(iv)
                 self.thr_label.setText(str(iv))
                 self.chk_color_matrix.setChecked(bool(p.get("use_color_matrix", False)))
+                if hasattr(self, "auto_sigma_chk"):
+                    # Default: True — the whole point is to turn guess-and-check off.
+                    self.auto_sigma_chk.setChecked(bool(p.get("auto_sigma", True)))
         finally:
             for wdg in widgets:
                 try:
@@ -844,6 +945,12 @@ class WhiteBalanceDialog(QDialog):
 
         # Re-apply dependent state that the blocked signals would have set.
         self._update_mode_widgets()
+        # Re-sync slider enabled state with the restored Auto flag.
+        if hasattr(self, "auto_sigma_chk"):
+            try:
+                self.thr_slider.setEnabled(not self.auto_sigma_chk.isChecked())
+            except Exception:
+                pass
 
     # ---- apply ----------------------------------------------------------
     def _on_apply(self):
@@ -877,10 +984,23 @@ class WhiteBalanceDialog(QDialog):
                         main._log("[Replay] Recorded White Balance preset (mode=auto)")
                     else:
                         thr = float(preset.get("threshold", 50.0))
-                        main._log(
-                            f"[Replay] Recorded White Balance preset "
-                            f"(mode=star, threshold={thr:.1f})"
-                        )
+                        auto = bool(preset.get("auto_sigma", False))
+                        resolved = preset.get("resolved_threshold")
+                        if auto and resolved is not None:
+                            main._log(
+                                f"[Replay] Recorded White Balance preset "
+                                f"(mode=star, auto σ → {float(resolved):.1f})"
+                            )
+                        elif auto:
+                            main._log(
+                                f"[Replay] Recorded White Balance preset "
+                                f"(mode=star, auto σ)"
+                            )
+                        else:
+                            main._log(
+                                f"[Replay] Recorded White Balance preset "
+                                f"(mode=star, threshold={thr:.1f})"
+                            )
             except Exception:
                 # Logging/recording must never break the dialog
                 pass
@@ -910,16 +1030,27 @@ class WhiteBalanceDialog(QDialog):
             else:  # Star-Based
                 thr = float(self.thr_slider.value())
                 use_cm = bool(self.chk_color_matrix.isChecked())
+                auto_sigma = (
+                    bool(self.auto_sigma_chk.isChecked())
+                    if hasattr(self, "auto_sigma_chk") else False
+                )
 
                 preset = {
                     "mode": "star",
                     "threshold": thr,
                     "use_color_matrix": use_cm,
+                    "auto_sigma": auto_sigma,
                 }
 
                 base = _to_float01(
                     np.asarray(self.doc.image).astype(np.float32, copy=False)
                 )
+
+                # Captured by on_sigma_resolved so we can log / drive the UI
+                # with the σ the waterfall actually settled on.
+                resolved: dict = {"sigma": thr}
+                def _capture_sigma(sig: float):
+                    resolved["sigma"] = float(sig)
 
                 result = apply_star_based_white_balance(
                     base,
@@ -928,7 +1059,13 @@ class WhiteBalanceDialog(QDialog):
                     reuse_cached_sources=False,
                     return_star_colors=True,
                     use_color_matrix=use_cm,     # ← pass through
+                    auto_sigma=auto_sigma,
+                    on_sigma_resolved=_capture_sigma,
                 )
+                # Record the σ actually used — matters for Replay Last when
+                # Auto was on, so the replay reproduces the same waterfall-
+                # picked value even if the user is on a different field now.
+                preset["resolved_threshold"] = float(resolved["sigma"])
 
                 # Expected: (out, count, overlay, raw_colors, after_colors)
                 if len(result) < 5:

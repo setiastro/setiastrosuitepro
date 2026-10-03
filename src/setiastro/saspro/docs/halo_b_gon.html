@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Halo-B-Gon</h1>
+<p class="sub">Attenuates diffuse haloes around bright stars in a
+stars-only image. Built for the halo patterns typical of achromatic
+and semi-apo refractors, uncorrected spherochromatism, and dew- or
+scatter-induced glows &mdash; the big soft rings and bluish halos that
+nothing else wants to deal with.</p>
+
+<p>Halo-B-Gon is a targeted retouch, not a generic denoiser or
+deconvolution. It operates on <b>stars-only images</b> (the output of
+Remove Stars), finds concentric ring-like structure around point
+sources, and darkens it. The star cores themselves are preserved.</p>
+
+<h2>1. Where it fits in the workflow</h2>
+<p>The standard sequence is:</p>
+<ol>
+  <li><b>Remove Stars</b> on the stretched master, producing a stars-only
+      companion image and a starless image.</li>
+  <li><b>Halo-B-Gon</b> on the stars-only image to tame the halo rings.</li>
+  <li><b>Add Stars</b> to screen the retouched stars back onto the
+      finished starless image.</li>
+</ol>
+<p>Running Halo-B-Gon on a full starless+stars image is not what the
+math is tuned for &mdash; the ring-detector will fire on nebular edges
+too, and the gamma pass will darken everything. Keep it to the stars
+image.</p>
+
+<p class="tip"><b>Why it works best on refractor data.</b> Achromatic
+and semi-apo refractors can leave big, soft, often blue or violet
+rings around bright stars because secondary-spectrum focus differs
+between wavelengths. Those rings are extended light that the star
+removal step kept with the stars layer. Halo-B-Gon targets the
+concentric spatial pattern directly, so it attenuates them without
+touching the star cores.</p>
+
+<h2>2. Controls</h2>
+
+<h3>2.1 Reduction level</h3>
+<p>A slider with four discrete settings:</p>
+<ul>
+  <li><b>Extra Low</b> (0) &mdash; the lightest touch. Use for subtle
+      halos or when you only want to take the edge off the brightest
+      stars without altering others.</li>
+  <li><b>Low</b> (1) &mdash; a safer default for most apo and
+      well-corrected setups.</li>
+  <li><b>Medium</b> (2) &mdash; the sweet spot for most achromatic
+      refractor data.</li>
+  <li><b>High</b> (3) &mdash; the strongest. Use when halos are so
+      dominant they visibly colour the surrounding sky; expect noticeable
+      darkening of the mid-brightness star field as a side effect.</li>
+</ul>
+<p>Each level affects two things at once: the strength of the
+ring-detection mask that gets multiplied into the image (0.33 &times;
+level, so Extra Low = 0, Medium = 0.66), and a final darkening gamma
+curve (&gamma; = 1.2, 1.5, 1.8, 2.2 across the four levels). The two
+effects compound &mdash; stepping up from Low to Medium is a real jump,
+not a small tweak.</p>
+
+<h3>2.2 Linear data</h3>
+<p>Check this if you are running Halo-B-Gon on <i>linear</i> data (data
+that has not been stretched). The algorithm's unsharp step is
+scale-sensitive and designed for display-range intensities, so for
+linear data the dialog applies a <code>x<sup>1/5</sup></code> pre-pass
+to lift the shadows into a workable range before running the main
+pipeline. For stretched data this box stays off.</p>
+
+<h3>2.3 Apply to</h3>
+<ul>
+  <li><b>Overwrite active view</b> &mdash; replace the current image with
+      the halo-reduced version as an undoable step.</li>
+  <li><b>Create new view</b> &mdash; create a new document named
+      &ldquo;&lt;source&gt;&nbsp;[Halo-B-Gon]&rdquo; and leave the
+      original untouched. Useful when you want to compare before/after,
+      or run the tool twice at different levels and pick.</li>
+</ul>
+<p>The dialog stays open after each Apply and refreshes its preview to
+whatever document is now active, so you can keep processing other
+images without reopening the tool.</p>
+
+<h2>3. Preview</h2>
+<p>The preview panel shows the current result in real time:</p>
+<ul>
+  <li>Slider or checkbox change &rarr; the preview debounces for 180 ms
+      and re-renders.</li>
+  <li><code>Ctrl + wheel</code> &mdash; cursor-anchored zoom
+      (0.1&times; to 10&times;).</li>
+  <li>Left-drag &mdash; pan (scroll-hand cursor).</li>
+  <li><b>Zoom Out</b> / <b>Zoom In</b> / <b>Fit to View</b> toolbuttons
+      at the top of the preview.</li>
+</ul>
+<p>Preview and Apply run the same code path &mdash; what you see is
+exactly what you get.</p>
+
+<h2>4. Mask integration</h2>
+<p>If the active document has a mask active, Halo-B-Gon's output is
+blended with the untouched original through that mask on Apply: the
+halo reduction only lands where the mask is bright. This lets you
+process just one quadrant of a mosaic, or protect a nebular region
+that happens to have ring-like structure the algorithm would otherwise
+dim. The preview does not account for the mask; it shows the raw
+algorithm output.</p>
+
+<h2>5. Buttons</h2>
+<ul>
+  <li><b>Apply</b> &mdash; commit the current preview to the chosen
+      output (overwrite or new view).</li>
+  <li><b>Reset</b> &mdash; return the slider to Extra Low and clear the
+      Linear data checkbox.</li>
+  <li><b>Cancel</b> &mdash; close without applying.</li>
+</ul>
+
+<h2>6. Preset drag handle</h2>
+<p>At the lower-left corner the grip icon lets you drag the current
+settings out as a reusable preset: drop it on the shortcut bar to make
+a one-click Halo-B-Gon button with these exact parameters, or drop it
+directly onto an open image to apply them headlessly without opening
+this dialog. The preset carries reduction level and the Linear data
+flag; the output-target choice (overwrite / new view) is a
+session-level preference and is deliberately not part of the preset.</p>
+
+<h2>7. Tips</h2>
+<ul>
+  <li>Start at Low or Medium. If you can still see unwanted colour in
+      the halo after one pass, apply again at Low rather than jumping to
+      High &mdash; two Low passes are gentler on the field than one High
+      pass.</li>
+  <li>For stars that have both a core halo and a wider surrounding glow,
+      Halo-B-Gon handles the glow cleanly; if a tight core halo remains,
+      pair with a small Gaussian star reduction on the same stars image.</li>
+  <li>If the result looks right in the halos but overall too dark,
+      consider running at the next lower level, or masking out dark sky
+      regions so only star-dominated areas receive the darkening.</li>
+  <li>Linear data mode is less commonly needed in modern workflows,
+      which usually stretch first; keep it off unless you know your
+      source is unstretched.</li>
+</ul>
+
+<h2>8. Technical details</h2>
+<p class="tech-lead">Direct port of the SASv2
+<code>HaloProcessingThread.applyHaloReduction</code> implementation.
+All processing on float32 in [0,&nbsp;1]; mono stays mono, RGB stays
+RGB. Where OpenCV is used (<code>cvtColor</code>, <code>GaussianBlur</code>,
+<code>addWeighted</code>, <code>multiply</code>, <code>LUT</code>)
+Halo-B-Gon uses it &mdash; this is a tuned algorithm with specific
+numeric constants rather than a parameter-rich one.</p>
+
+<h3>8.1 Optional linear pre-pass</h3>
+<p>When Linear data is checked, the pipeline first lifts intensities
+with a strong gamma:</p>
+<div class="matheq">x' \;=\; x^{1/5}</div>
+<p>bringing shadows into the mid-range the unsharp step was tuned for.
+The rest of the pipeline then runs on <code>x'</code> and the result
+is kept in that space &mdash; there is no inverse gamma at the end,
+because Halo-B-Gon's final gamma LUT already provides shaping.</p>
+
+<h3>8.2 Lightness channel</h3>
+<p>From the (possibly pre-passed) working image, the pipeline builds a
+single-channel lightness:</p>
+<div class="matheq-hero">L \;=\; \frac{\mathrm{gray}(I)}{255}</div>
+<p>For RGB this is the OpenCV
+<code>COLOR_RGB2GRAY</code> conversion; for mono input it uses the
+plane directly. The division by 255 looks surprising on a float image
+already in [0,&nbsp;1] &mdash; the result lies in [0,&nbsp;1/255] &mdash;
+and it is <b>load-bearing</b>: the whole pipeline is calibrated around
+these small values. Changing the normalisation changes the mask
+strength and would require re-tuning the 1.66, 0.66, and 0.33
+constants below. The /255 is kept intentionally for byte-exact match
+with SASv2.</p>
+
+<h3>8.3 Unsharp mask of the lightness</h3>
+<p>Build an unsharp version of the lightness with a Gaussian
+blur:</p>
+<div class="matheq-hero">U \;=\; 1.66\,L \;-\; 0.66\,G_{\sigma}(L)</div>
+<p>where <code>G<sub>&sigma;</sub></code> is the Gaussian blur at
+<code>&sigma;&nbsp;=&nbsp;2</code>. This emphasises point-source centres
+and <i>damps smooth gradients</i> &mdash; which is exactly what you
+need to tell halo rings apart from the surrounding sky.</p>
+
+<h3>8.4 Enhanced mask (the ring detector)</h3>
+<p>The core trick:</p>
+<div class="matheq-hero">M \;=\; (1 - U) \;-\; 0.33\,k \,\cdot\, G_{\sigma}(U)</div>
+<p>where <code>k</code> is the reduction level
+(<code>0,&nbsp;1,&nbsp;2,&nbsp;3</code>). Term by term:</p>
+<ul>
+  <li><code>1 &minus; U</code> is close to 1 almost everywhere and dips
+      wherever U rose &mdash; i.e. at and around star cores.</li>
+  <li><code>G<sub>&sigma;</sub>(U)</code> smears those dips outward into
+      ring-shaped signatures with the same scale as the halos.</li>
+  <li>Subtracting <code>0.33 k &middot; G<sub>&sigma;</sub>(U)</code>
+      from <code>(1 &minus; U)</code> carves ring-shaped <i>reductions</i>
+      into the mask with amplitude controlled by the reduction level
+      <code>k</code>.</li>
+</ul>
+<p>At level 0 (<code>k = 0</code>) the mask reduces to
+<code>(1 &minus; U)</code>, so only the final gamma pass darkens the
+image. From level 1 onward, the ring-detector contribution kicks in
+and halo structure is actively suppressed.</p>
+
+<h3>8.5 Multiplicative application</h3>
+<div class="matheq">I_{\mathrm{halo}} \;=\; I \,\cdot\, M</div>
+<p>The mask broadcasts across colour channels (so all three RGB
+channels get the same spatial correction). Because the mask is close
+to 1 almost everywhere and dips at halos, multiplying leaves most of
+the image alone and darkens exactly where halos were.</p>
+
+<h3>8.6 Final gamma curve</h3>
+<p>A per-level gamma curve applied through an 8-bit LUT finishes the
+job:</p>
+<div class="matheq-hero">\mathrm{LUT}(x) \;=\; x^{\gamma_k}</div>
+<p>with <code>&gamma;</code> drawn from the fixed set
+<code>{1.2,&nbsp;1.5,&nbsp;1.8,&nbsp;2.2}</code>:
+<code>&gamma; = 1.2</code> at Extra Low, up to
+<code>&gamma; = 2.2</code> at High. Every &gamma; is &gt; 1, so the
+curve darkens mid-tones; the higher the level, the harder the darkening.
+This provides a global contrast boost on top of the ring-targeted
+reduction and is what gives the different levels their perceivable step
+in strength.</p>
+
+<h3>8.7 Final composition</h3>
+<div class="matheq-hero">I_{\mathrm{out}} \;=\; \mathrm{LUT}\!\left(I \,\cdot\, M\right)</div>
+<p>and, if a document mask is active, the result is blended back
+through it (output in the mask's bright regions, original everywhere
+else).</p>
+
+<h3>8.8 Shape preservation</h3>
+<p>Input shape round-trips exactly: a 2-D mono image comes out 2-D,
+a 3-D single-channel image (<code>H&times;W&times;1</code>) stays that
+shape, and RGB stays RGB. The mask is replicated across channels for
+RGB input; for mono it stays 2-D. The output is clipped to [0,&nbsp;1]
+and returned as float32.</p>
+
+<h3>8.9 Headless replay</h3>
+<p>The function
+<code>apply_halo_b_gon_to_doc(parent,&nbsp;doc,&nbsp;preset)</code>
+performs the entire pipeline from a preset dict:</p>
+<ul>
+  <li><code>reduction</code> &mdash; integer 0&ndash;3 (clamped if
+      out of range).</li>
+  <li><code>linear</code> &mdash; boolean flag for the linear pre-pass.</li>
+</ul>
+<p>This is what the preset drag handle registers for Replay, and what
+drops of the handle onto an image invoke directly without opening the
+dialog.</p>
+
+<div class="credit">
+<b>Credits.</b> Halo-B-Gon is <b>SASpro's own</b> algorithm, inherited
+from <b>SASv2</b> and ported byte-exactly here. The ring-detection
+approach (combine an unsharp mask of the lightness with a Gaussian-blurred
+copy of itself, then multiply the result into the image) is tuned
+numerically rather than published formally &mdash; the specific
+constants 1.66, 0.66, 0.33, and the four &gamma; values are the result
+of trial-and-error against real refractor data over multiple SASv2
+releases. The pipeline uses <b>OpenCV</b> primitives
+(<code>cvtColor</code>, <code>GaussianBlur</code>,
+<code>addWeighted</code>, <code>multiply</code>, <code>LUT</code>) for
+the heavy per-pixel work.
+</div>
+
+</body>
+</html>

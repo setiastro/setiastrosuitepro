@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Astrometric Unwarp</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>Astrometric Unwarp</h1>
+<p class="sub">Remove SIP distortion from a plate-solved image, delivering a pixel-for-pixel-correct frame with a clean linear WCS.</p>
+
+<div class="hero">
+<b>What this does.</b> Takes an image with a plate solution that includes SIP (Simple Imaging Polynomial) terms and resamples it onto a distortion-free tangent-plane grid. Every output pixel is projected to the sky through the <i>linear</i> WCS, then back into the original frame through the <i>full</i> SIP WCS, and sampled there. The canvas is expanded automatically so the corners the distortion pushes outward aren't clipped. The result is a brand-new image carrying a clean linear WCS with no SIP terms — ready for mosaicking, downstream analysis, or publication.
+</div>
+
+<h2>1. When you want to unwarp</h2>
+
+<p>SIP terms are standard output from Astrometry.net and the SASpro Plate Solver — they encode the residual distortion that a simple TAN projection can't capture, letting the solution reach sub-pixel accuracy even for wide-field or heavily aberrated optics. SIP is a mathematical description of the distortion, not a correction of it. The pixels in your image still live where they were when the sensor read them out, so if you overlay a star catalog on the raw image, the mapping involves evaluating a polynomial at every point.</p>
+
+<p>Reasons to actually bake the correction into pixels:</p>
+
+<ul>
+  <li><b>Mosaicking</b> — stitching multiple frames assumes well-behaved linear geometry. SIP terms in the input panels can create mismatches at the seams.</li>
+  <li><b>Reprojection and alignment</b> — reproject-to-common-grid routines handle linear WCS cleanly and often struggle with high-order SIP, especially when the polynomial domains disagree between frames.</li>
+  <li><b>Publication figures</b> — a clean linear WCS is more reproducible and more portable. Any FITS reader that supports basic WCS will handle the output correctly, regardless of its SIP support.</li>
+  <li><b>Cosmetic cleanup</b> — on very wide-field setups (fast astrographs, Hyperstar, camera lenses) stars near the corners are measurably distorted toward the frame edge. Unwarping actually straightens them.</li>
+  <li><b>Downstream tools</b> that assume pure linear math — photometry packages, feature detectors, machine-learning pipelines — often behave better on undistorted frames.</li>
+</ul>
+
+<h2>2. Workflow</h2>
+
+<ol>
+  <li><b>Plate solve first.</b> The image must have a WCS with SIP terms. Run the SASpro Plate Solver and leave SIP enabled (the default). Without a WCS, there's nothing to invert; without SIP, there's nothing to remove.</li>
+  <li><b>Open the Unwarp dialog.</b> The active image is selected automatically. If you have multiple images open, pick the right one from the Source dropdown.</li>
+  <li><b>Check the detected solution</b> in the info readout — SIP order, pixel scale, input and output dimensions, and growth factor.</li>
+  <li><b>Choose interpolation</b> — Bicubic (default, best quality), Bilinear (faster), or Nearest (for mask-like data where interpolation would be wrong).</li>
+  <li><b>Decide on canvas expansion</b> — leave on by default. Turn off only if you absolutely need the output to be the same size as the input and accept that distortion-corrected corners may fall outside the frame.</li>
+  <li><b>Pick fill behavior</b> — black (default) or NaN (preserves "no data" information through downstream processing).</li>
+  <li><b>Deliver.</b> Apply (in place) to overwrite the current doc with undo, New View for a side-by-side comparison, or Save FITS to write straight to disk.</li>
+</ol>
+
+<h2>3. The info readout</h2>
+
+<p>Before you commit, the dialog shows what the unwarp will do:</p>
+
+<div class="keys">
+<b>SIP order N  ·  s″/px</b> — N is the polynomial order (2 for small aberrations, 3-4 for strong wide-field distortion). s is the mean pixel scale from the linear part of the WCS.
+<br><b>input W × H</b> — your source image dimensions.
+<br><b>output W' × H'  (canvas grows ×G)</b> — the output size after unwarping. G is the area growth factor. If expansion is off, this stays the same as input and the report says "canvas unchanged".
+<br><b>⚠ large expansion</b> — if G exceeds 2.5, the dialog warns you. In practice this means the SIP polynomial is predicting very large edge distortion. It can be legitimate for extreme optics but it's also a classic sign of a bad plate solution — a polynomial that fit noise and extrapolated wildly beyond the image bounds. Worth a sanity check before you commit.
+</div>
+
+<p>After the unwarp completes, the status line reports the measured correction:</p>
+
+<div class="keys">
+<b>Peak edge-to-edge correction</b> — the maximum pixel shift observed across the border + interior sample grid, with the arcsec equivalent shown when pixel scale is known.
+<br><b>Median</b> — the typical correction. For well-behaved optics this is often small (sub-pixel to a few pixels) while the peak is at the frame corners.
+<br><b>Final line</b> — a reminder that re-solving the output should produce much smaller residuals (ideally a linear-only solution with no SIP needed).
+</div>
+
+<h2>4. Delivery modes</h2>
+
+<table>
+<tr><th>Mode</th><th>What happens</th><th>Best for</th></tr>
+<tr><td><b>Apply (in place)</b></td><td>The source image is replaced with the unwarped version. The source document's WCS and header are updated. Fully undoable.</td><td>Normal workflow — commit the correction and keep processing.</td></tr>
+<tr><td><b>New View</b></td><td>Opens the unwarped image as a new document, leaving the source untouched.</td><td>Comparing before/after, keeping the SIP-tagged version as a reference, or branching your workflow.</td></tr>
+<tr><td><b>Save FITS…</b></td><td>Writes straight to disk as a FITS file with the rewritten linear WCS. The current doc is not modified.</td><td>Exporting to another program (DS9, Aladin, AstroImageJ) or archiving a corrected frame separately.</td></tr>
+</table>
+
+<h2>5. The preset drag grip</h2>
+
+<p>Bottom-left of the dialog is the Star-Stretch-style preset drag handle. The current settings (interpolation, expand toggle, fill behavior) form a canonical three-field preset:</p>
+
+<div class="eq">{ "expand": True|False, "order": 0|1|3, "fill_nan": True|False }</div>
+
+<p>Drag this handle onto:</p>
+
+<ul>
+  <li>the <b>canvas</b> — creates a shortcut icon that remembers these exact settings. Double-click it later to reopen the dialog with the same values pre-filled.</li>
+  <li>a <b>plate-solved image</b> directly — runs the unwarp headlessly with these settings, no dialog, result delivered in place with undo.</li>
+</ul>
+
+<p>The headless path respects the same guards as the dialog: if the target has no WCS or no SIP terms, the drop is a logged no-op rather than an error — nothing is modified.</p>
+
+<h2>6. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Standard wide-field pipeline.</b> Plate solve with SIP (default order 3). Unwarp with Bicubic + Expand + black fill. Apply in place. Continue to stretching / stacking / further processing on the clean linear frame. One drag of the preset grip onto the canvas lets you repeat the exact same unwarp settings on your next frame with a double-click.
+</div>
+
+<div class="workflow">
+<b>Mosaic preparation.</b> For each panel: plate solve → unwarp → save FITS (or push through your mosaic tool directly). All panels now share a common distortion-free coordinate system, so your mosaic blender only has to handle the panel-to-panel geometry. Use NaN fill if your mosaic tool handles no-data regions.
+</div>
+
+<div class="workflow">
+<b>Sanity check a suspect plate solution.</b> If the info readout shows "⚠ large expansion" (growth factor &gt; 2.5), don't just click Apply. Re-run the Plate Solver with a lower SIP order (2 or even TAN-only), or with a different star catalog, or on a cropped region, and compare. A good solution typically produces growth under 1.15 for astrograph-class optics, under 1.5 for fast widefield, and only exceeds 2 on genuinely extreme systems.
+</div>
+
+<div class="workflow">
+<b>Comparing before and after.</b> Use New View instead of Apply. The source document keeps its SIP terms, the new view carries the clean linear WCS. Overlay a star catalog on each and visually compare how tightly the catalog positions sit on top of the stars in the corners of the frame. Catalog overlays using the unwarped image should sit nearly dead-center on every star across the entire field.
+</div>
+
+<div class="workflow">
+<b>Preserve mask data (nearest-neighbor).</b> If you're unwarping a label mask, segmentation output, or any image whose pixel values are categorical rather than continuous (e.g. 0/1/2 representing different star types or exclusion zones), set interpolation to Nearest. Bilinear or Bicubic would blend category values and produce meaningless intermediate numbers.
+</div>
+
+<h2>7. Interpolation choice</h2>
+
+<table>
+<tr><th>Method</th><th>Order</th><th>When to use</th></tr>
+<tr><td><b>Bicubic (best)</b></td><td>3</td><td>Default. Produces the sharpest, cleanest result for normal astronomical imagery. Preserves stellar PSFs without ringing on typical data.</td></tr>
+<tr><td><b>Bilinear</b></td><td>1</td><td>Faster, slightly softer. Good for very large images or quick previews. Still vastly better than Nearest for continuous data.</td></tr>
+<tr><td><b>Nearest</b></td><td>0</td><td>Only for categorical / label data (masks, segmentation). Never produces intermediate values, so categorical meaning is preserved.</td></tr>
+</table>
+
+<h2>8. Technical details</h2>
+<p class="tech-lead">The SIP polynomial, the two-step projection pipeline, the canvas-expansion math, the band-parallel resampler, and the header-rewrite rules.</p>
+
+<h3>8.1 SIP polynomial — the distortion model</h3>
+
+<p>SIP (Shupe et al. 2005) extends a standard FITS WCS with two polynomial corrections applied in pixel space before the linear transformation runs. Given a reference pixel (CRPIX1, CRPIX2), define pixel offsets:</p>
+
+<div class="matheq">u = x - \mathrm{CRPIX1}, \quad v = y - \mathrm{CRPIX2}</div>
+
+<p>SIP introduces two polynomials of order n (the SIP order shown in the info readout):</p>
+
+<div class="matheq">f(u, v) = \sum_{p+q \leq n} A_{p,q} \cdot u^p v^q</div>
+<div class="matheq">g(u, v) = \sum_{p+q \leq n} B_{p,q} \cdot u^p v^q</div>
+
+<p>The corrected (distortion-removed-in-pixel-space) position is:</p>
+
+<div class="matheq">x_{\mathrm{corr}} = u + f(u, v) + \mathrm{CRPIX1}</div>
+<div class="matheq">y_{\mathrm{corr}} = v + g(u, v) + \mathrm{CRPIX2}</div>
+
+<p>The A and B coefficients are stored in the FITS header as <code>A_i_j</code> and <code>B_i_j</code> keywords, with <code>A_ORDER</code> and <code>B_ORDER</code> giving the maximum order. For the inverse mapping (from the corrected coordinates back to raw pixel coordinates) there are optional <code>AP_i_j</code> and <code>BP_i_j</code> polynomials, which Astrometry.net typically fits alongside the forward ones. SIP order is reported as the max of A and B order:</p>
+
+<div class="matheq">n = \max(A_{\mathrm{order}}, B_{\mathrm{order}})</div>
+
+<h3>8.2 The two-step projection pipeline</h3>
+
+<p>The unwarp works by, for each pixel of the output image, finding where its sky position lives in the source image. Two WCS objects are involved:</p>
+
+<ul>
+  <li><b>Full SIP WCS</b> — the solution as plate-solved, with polynomial distortion terms.</li>
+  <li><b>Linear WCS</b> — the same solution with <code>sip = None</code> and <code>-SIP</code> stripped from the CTYPEs. This is a pure tangent-plane projection with CRPIX, CRVAL, and the CD matrix (or PC+CDELT) only.</li>
+</ul>
+
+<p>For every output pixel (x_out, y_out):</p>
+
+<p>1. Project through the <b>linear WCS forward</b> to get sky coordinates:</p>
+
+<div class="matheq">(x_{\mathrm{out}}, y_{\mathrm{out}}) \to (\alpha, \delta) \; \text{via linear WCS}</div>
+
+<p>2. Project back through the <b>full SIP WCS inverse</b> to get source pixel coordinates:</p>
+
+<div class="matheq">(\alpha, \delta) \to (x_{\mathrm{src}}, y_{\mathrm{src}}) \; \text{via full SIP WCS}</div>
+
+<p>3. Sample the source image at (x_src, y_src) using the chosen interpolation order:</p>
+
+<div class="matheq">I_{\mathrm{out}}(x_o, y_o) = I_{\mathrm{src}}(x_s, y_s)</div>
+
+<p>The result is an image where sampling at (x_out, y_out) and projecting through the output's linear WCS gives the same sky position as sampling at (x_src, y_src) and projecting through the full SIP WCS. Both WCSes agree about the sky — just with and without distortion in pixel space.</p>
+
+<h3>8.3 Canvas expansion</h3>
+
+<p>Removing distortion generally changes the shape of the image's footprint on the sky. The corners of a strongly distorted frame get pushed outward when the distortion is removed, so if the output canvas is kept the same size as the input, the corrected corners fall off the frame.</p>
+
+<p>To find the correct canvas size, the tool samples points densely around the input image border (96 samples per side) plus a coarse 24×24 interior grid, projects each through SIP forward and linear inverse, and takes the bounding box of all the resulting positions. The output canvas is sized to fit this bounding box, and CRPIX is adjusted so the new canvas is correctly aligned to the sky:</p>
+
+<div class="matheq">\mathrm{CRPIX}_{\mathrm{new}} = \mathrm{CRPIX}_{\mathrm{old}} - (x_0, y_0)</div>
+
+<p>where (x_0, y_0) is the lower-left offset of the bounding box relative to the original frame. The growth factor reported in the info readout is:</p>
+
+<div class="matheq">\mathrm{growth} = \frac{W_{\mathrm{out}} \cdot H_{\mathrm{out}}}{W_{\mathrm{in}} \cdot H_{\mathrm{in}}}</div>
+
+<p>If expansion is disabled, the canvas keeps the original dimensions and (x_0, y_0) = 0, which may clip the corrected corners.</p>
+
+<h3>8.4 Shift measurement</h3>
+
+<p>After computing the output WCS, the tool measures how far each sample point moved from its source position to its new linear-WCS position. For each sample pixel (p_x, p_y) in the source:</p>
+
+<ol>
+  <li>Project to true sky via the full SIP WCS: (α, δ) = WCS_full(p_x, p_y).</li>
+  <li>Project back into the output's linear WCS: (q_x, q_y) = LinearWCS<sup>-1</sup>(α, δ), accounting for the origin shift.</li>
+  <li>Compute the shift magnitude:</li>
+</ol>
+
+<div class="matheq">\Delta = \sqrt{(x_{\mathrm{linear}} - x_{\mathrm{source}})^2 + (y_{\mathrm{linear}} - y_{\mathrm{source}})^2}</div>
+
+<p>Then take the median across all samples (typical correction) and the maximum (peak correction, usually at the corners). The arcsec equivalent uses the plate scale:</p>
+
+<div class="matheq">\Delta_{\mathrm{arcsec}} = \Delta_{\mathrm{px}} \cdot s_{\mathrm{plate}}</div>
+
+<p>where s<sub>plate</sub> is the mean pixel scale derived from the determinant of the CD matrix:</p>
+
+<div class="matheq">s_{\mathrm{plate}} = \sqrt{|\det(\mathrm{CD})|} \cdot 3600 \; \mathrm{arcsec/px}</div>
+
+<h3>8.5 Band-parallel resampling</h3>
+
+<p>The output image is divided into horizontal bands (16-256 rows depending on frame height) and the resample is dispatched across a thread pool with worker count equal to the CPU core count. Each band builds a (y, x) meshgrid for its rows, projects the full grid through linear-forward + SIP-inverse to get source coordinates, and calls <code>scipy.ndimage.map_coordinates</code> once per output channel with the chosen interpolation order.</p>
+
+<div class="warn">
+<b>WCS objects are not thread-safe.</b> The resampler keeps a thread-local pair of deepcopied WCS objects (one linear-out, one full-SIP-in) per worker thread, created lazily on first use. Sharing a single WCS instance across threads caused silent corruption in earlier builds — the astropy WCS internals cache intermediate state during each projection call, and concurrent calls stomp on each other's cache without raising an error. The thread-local pattern avoids this at the cost of a modest memory overhead (two small Python objects per worker).
+</div>
+
+<p>Progress is reported by rows completed rather than bands dispatched, so the progress bar is monotonic even when bands finish out of order.</p>
+
+<h3>8.6 Header rewrite</h3>
+
+<p>The output's FITS header is built by starting from the source header and stripping two categories of keyword:</p>
+
+<ul>
+  <li><b>SIP keys</b>: anything matching <code>A_i_j</code>, <code>B_i_j</code>, <code>AP_i_j</code>, <code>BP_i_j</code>, <code>A_ORDER</code>, <code>B_ORDER</code>, <code>AP_ORDER</code>, <code>BP_ORDER</code>, or <code>*_DMAX</code>.</li>
+  <li><b>WCS keys</b>: <code>WCSAXES</code>, <code>CTYPE*</code>, <code>CUNIT*</code>, <code>CRPIX*</code>, <code>CRVAL*</code>, <code>CDELT*</code>, <code>CROTA*</code>, <code>CD*_*</code>, <code>PC*_*</code>, <code>PV*_*</code>, <code>LONPOLE</code>, <code>LATPOLE</code>.</li>
+</ul>
+
+<p>Then the new linear WCS is written in via <code>w_out.to_header(relax=True)</code>, which produces the full standard WCS keyword set. <code>NAXIS1</code> and <code>NAXIS2</code> are updated to the expanded canvas dimensions. A sentinel <code>SASUNWRP = True</code> is added so downstream tools can detect that this image has already been unwarped.</p>
+
+<p>All other header keywords — instrument name, exposure, filter, object, date, observation metadata — are passed through unchanged. The intent is that the output is a drop-in replacement for the input in any pipeline that cares about these, with only the geometry corrected.</p>
+
+<h3>8.7 Verification</h3>
+
+<p>After an unwarp, re-running the Plate Solver on the output should produce a solution with:</p>
+
+<ul>
+  <li>Vanishingly small SIP coefficients (or SIP disabled altogether, with a pure TAN solution converging on the same CD matrix).</li>
+  <li>Residuals (the catalog-to-image match RMS) at least as good as the original solution.</li>
+  <li>A CD matrix identical to the output's linear WCS CD matrix.</li>
+</ul>
+
+<p>This round-trip test is the ultimate check that the unwarp preserved the astrometry correctly:</p>
+
+<div class="matheq">\mathrm{residual} = \|\mathrm{WCS}^{-1}(\mathrm{WCS}(x, y)) - (x, y)\|</div>
+
+<p>should be at the level of plate-solve noise (fractions of a pixel), not systematic.</p>
+
+<div class="credit">
+<b>Credits.</b> SASpro Astrometric Unwarp — the two-step linear/SIP projection pipeline, the border-plus-grid canvas-sizing algorithm, the shift-measurement reporting, the thread-local-WCS band-parallel resampler, the three-mode delivery (Apply in place, New View, Save FITS), and the preset-drag-grip headless-apply integration — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to the community: SIP polynomial convention (Shupe, Moshir, Li, Makovoz, Narron, Hook 2005, "The SIP Convention for Representing Distortion in FITS Image Headers"); astropy for the WCS implementation (<code>wcs.WCS</code> with <code>relax=True</code> for SIP support, <code>all_pix2world</code> / <code>wcs_world2pix</code> / <code>all_world2pix</code> for the forward and inverse projections, <code>wcs.utils.proj_plane_pixel_scales</code> for pixel scale extraction); scipy for the band resampling (<code>ndimage.map_coordinates</code> with configurable spline order); the FITS WCS standard (Greisen &amp; Calabretta 2002, Calabretta &amp; Greisen 2002); and Astrometry.net (Lang et al. 2010) as the canonical producer of the SIP solutions this tool consumes.
+</div>
+
+</body>
+</html>

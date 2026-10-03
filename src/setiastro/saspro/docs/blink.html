@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .kbd { background:#2a2a2a; color:#e6e6e6; padding:1px 6px; border-radius:3px;
+         border:1px solid #444; font-family:Consolas,monospace; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Blink Comparator</h1>
+<p class="sub">A quality-assessment and culling station for a night's
+worth of sub-exposures. Load a folder, blink through the frames to
+spot clouds, trails, bad guiding, and focus drift, measure every
+frame's FWHM / eccentricity / background / star count / sensor
+temperature / background rate, drag threshold lines to auto-flag the
+losers, then hand the survivors to the Stacking Suite.</p>
+
+<p>Blink is designed around the astrophotographer's actual Monday-morning
+workflow: you shot a hundred lights last night, roughly half are usable,
+and you need to decide which half quickly. Visual blinking catches
+things the metrics miss (satellites that dodged the detector,
+a single frame with reflection ghosts); the interactive metrics catch
+things the eye misses (gradual focus drift, a quietly-rising sensor
+temperature). Both views share the same list and the same flag state.</p>
+
+<h2>1. Loading images</h2>
+<p>At the top of the left column:</p>
+<ul>
+  <li><b>Select Images</b> &mdash; file dialog for picking individual
+      frames. Supports PNG, JPG, TIFF, FITS (including <code>.fit.gz</code>,
+      <code>.fits.gz</code>, <code>.fz</code>), XISF, and raw camera
+      formats (CR2, CR3, NEF, ARW, DNG, RAF, ORF, RW2, PEF).</li>
+  <li><b>Select Directory</b> &mdash; pick a folder and Blink walks it
+      recursively, loading everything with a supported extension.</li>
+  <li><b>Add Additional</b> &mdash; append to the current session rather
+      than replacing it. Duplicates (by path) are skipped.</li>
+</ul>
+<p>Files are sorted <i>naturally</i> &mdash; <code>frame_2.fits</code>
+comes before <code>frame_10.fits</code>, not after. The last-used
+folder is remembered across sessions.</p>
+
+<h3>1.1 Load scale (1:1 / 1:2 / 1:4 / 1:8)</h3>
+<p>Choose how much to downsample on load. 1:1 keeps full resolution and
+is what you want for publishable work; 1:2, 1:4, and 1:8 progressively
+cut both dimensions in half, which cuts RAM use and makes blink / zoom
+responsive on very large sensors or long sessions. The setting
+persists across sessions. Star-size metrics still report in <i>full-
+resolution pixel units</i> &mdash; FWHM at 1:4 and FWHM at 1:1 are
+directly comparable.</p>
+
+<h3>1.2 What Blink does to each frame on load</h3>
+<p>Every frame goes through the same pipeline:</p>
+<ol>
+  <li>Load the raw image + header.</li>
+  <li>Debayer if the file is a mono mosaic (CFA pattern detected from
+      header).</li>
+  <li>Optionally downsample per load-scale setting.</li>
+  <li>Measure background on the pre-stretch linear data (SEP) and cache
+      the result &mdash; this is what the Background and Bg Rate metrics
+      report.</li>
+  <li>Auto-stretch to a target median of 0.25 (per channel for colour,
+      global for mono) for display purposes.</li>
+  <li>Convert to a storage dtype chosen from available RAM: &le;&nbsp;16&nbsp;GB
+      &rarr; uint8, &le;&nbsp;32&nbsp;GB &rarr; uint16, else float32.
+      Larger sessions on smaller machines automatically land in the
+      smaller dtype.</li>
+</ol>
+<p>Failed loads are automatically retried twice with a short delay before
+being reported as failures &mdash; useful on NAS-backed folders where
+one or two files occasionally take a moment to become readable.</p>
+
+<h2>2. The tree view</h2>
+<p>Loaded frames are grouped as <b>Object &rarr; Filter &rarr; Exposure
+&rarr; files</b>, inferred from each frame's FITS header
+(<code>OBJECT</code>, <code>FILTER</code>, <code>EXPTIME</code>). Headers
+missing a key fall back to &ldquo;Unknown&rdquo; so no file disappears.
+This hierarchy makes multi-filter LRGB sessions readable at a glance.</p>
+
+<h3>2.1 Columns</h3>
+<p>The tree has nine columns:</p>
+<ul>
+  <li><b>Image Files</b> &mdash; the filename. Flagged frames show a
+      red &#9888;&#65039; prefix.</li>
+  <li><b>Sat</b> &mdash; satellite trail detection result: &#9888; (orange)
+      if a trail was found, &#10003; (green) if the frame was checked and
+      clean, blank if detection hasn't run.</li>
+  <li><b>Stars</b> &mdash; detected star count.</li>
+  <li><b>FWHM</b> &mdash; full-width at half-maximum of the star profile
+      in full-resolution pixels.</li>
+  <li><b>Ecc</b> &mdash; median eccentricity.</li>
+  <li><b>BG</b> &mdash; pre-stretch background level [0, 1].</li>
+  <li><b>Score</b> &mdash; weighted quality score (higher is better).</li>
+  <li><b>Temp</b> &mdash; sensor temperature in &deg;C from the FITS
+      header.</li>
+  <li><b>BG/s</b> &mdash; background rate in ADU per second
+      (OFFSET-corrected).</li>
+</ul>
+<p>Column widths and order are preserved across sessions. Drag column
+dividers to resize; drag column headers to reorder.</p>
+
+<h3>2.2 Show filter</h3>
+<p>The <b>Show</b> dropdown above the tree filters what's visible:</p>
+<ul>
+  <li><b>All</b> &mdash; every loaded frame.</li>
+  <li><b>Sat Detected</b> &mdash; only frames with trails.</li>
+  <li><b>Flagged Only</b> &mdash; only frames that have been flagged.</li>
+  <li><b>Clean Only</b> &mdash; frames that are neither flagged nor
+      sat-detected.</li>
+</ul>
+<p>Group headers (Object / Filter / Exposure) auto-hide when they'd be
+empty, so the view stays tidy.</p>
+
+<h2>3. Blinking through frames</h2>
+
+<h3>3.1 Playback controls</h3>
+<p>The row of transport buttons below the Metrics / Sat buttons:</p>
+<ul>
+  <li><b>&larr;</b> &mdash; previous frame (loops at the top).</li>
+  <li><b>&#9654;</b> &mdash; start automatic playback.</li>
+  <li><b>&#9208;</b> &mdash; pause.</li>
+  <li><b>&rarr;</b> &mdash; next frame (loops at the bottom).</li>
+</ul>
+<p>The <b>Speed</b> slider and spin box set playback rate from 0.1 to
+10 FPS, synchronised to each other.</p>
+
+<h3>3.2 Keyboard shortcuts</h3>
+<p>When the file tree has focus:</p>
+<ul>
+  <li><span class="kbd">Space</span> &mdash; toggle play / pause.</li>
+  <li><span class="kbd">F</span> &mdash; flag or unflag the current
+      frame, then advance to the next. The typical blink-cull workflow
+      is &ldquo;Space to start, F whenever you see something wrong.&rdquo;</li>
+  <li><span class="kbd">&uarr;</span> / <span class="kbd">&darr;</span> &mdash;
+      next / previous (standard tree navigation).</li>
+</ul>
+
+<h2>4. Preview area</h2>
+
+<h3>4.1 Main preview</h3>
+<p>Occupies the right side of the window. The current frame is shown
+stretched for display. Controls:</p>
+<ul>
+  <li><b>Zoom In</b> / <b>Zoom Out</b> / <b>Fit to Preview</b> toolbuttons
+      at the top of the preview.</li>
+  <li><code>Ctrl + wheel</code> &mdash; cursor-anchored zoom (0.05&times;
+      to 3&times;). Also responds to trackpad pinch gestures on supported
+      platforms.</li>
+  <li>Left-click-drag &mdash; pan.</li>
+  <li>Right-click &mdash; pin the Zoom Panel's crop box here (see
+      &sect;&nbsp;4.3).</li>
+</ul>
+<p>Pan and zoom are preserved across frame switches, so blinking shows
+you the <i>same patch of sky</i> on consecutive frames &mdash; which is
+the whole point.</p>
+
+<h3>4.2 Aggressive Stretch toggle</h3>
+<p>The amber <b>Aggressive Stretch</b> button applies an extra asinh
+boost on top of the already-stretched display, revealing faint signal
+and making subtle defects (dim streaks, gradient asymmetry) obvious at
+the cost of noise and star bloat. It's purely a display setting
+&mdash; nothing is written back to the frame data. Also noticeably
+slower to render large frames; turn off when you don't need it.</p>
+
+<h3>4.3 Zoom Panel (loupe)</h3>
+<p>The right-hand pane shows a magnified crop of the current frame.
+Controls:</p>
+<ul>
+  <li><b>Zoom factor</b> dropdown: 2&times;, 4&times;, 8&times;, or
+      16&times;.</li>
+  <li><b>Lock</b> toggle &mdash; pin the loupe to a fixed position
+      instead of tracking.</li>
+  <li>Right-click on the main preview to pin the loupe to that spot
+      (automatically engages Lock).</li>
+  <li>A yellow rectangle on the main preview shows where the loupe is
+      sampling from.</li>
+  <li>Pixel coordinates of the crop centre are shown under the
+      loupe.</li>
+  <li><b>Hide Zoom Panel</b> / <b>Show Zoom Panel</b> toggle collapses
+      or restores it. Visibility is persisted.</li>
+</ul>
+<p>Drag the vertical splitter between the main preview and the loupe to
+adjust their relative widths.</p>
+
+<h2>5. Interactive Metrics &amp; Culling</h2>
+<p>Click <b>Interactive Metrics &amp; Culling</b> to open a second
+window with seven live scatter plots &mdash; one per metric &mdash;
+across every loaded frame.</p>
+
+<h3>5.1 The seven metrics</h3>
+<ul>
+  <li><b>FWHM (px)</b> &mdash; star full-width at half-maximum, in
+      full-resolution pixels. Higher = soft stars, bad seeing, defocus.</li>
+  <li><b>Eccentricity</b> &mdash; how elongated the stars are, 0 = round,
+      approaching 1 = streaks. Higher = tracking errors, periodic error,
+      wind.</li>
+  <li><b>Background</b> &mdash; mean pre-stretch background level.
+      Higher = light pollution flare, moonrise, dawn.</li>
+  <li><b>Star Count</b> &mdash; number of detected stars. Lower = clouds,
+      haze, dew.</li>
+  <li><b>Weighted Score</b> &mdash; composite that blends star count,
+      roundness, and darkness into one number (&sect;&nbsp;13.3). Higher
+      = better. This panel is larger than the others because it's often
+      the only one you need.</li>
+  <li><b>Sensor Temp (&deg;C)</b> &mdash; from the FITS header
+      (<code>CCD-TEMP</code>, <code>DET-TEMP</code>, and friends). Higher
+      = cooling slipped, dark current rising.</li>
+  <li><b>Bg Rate (ADU/s)</b> &mdash; background per second of exposure,
+      OFFSET-corrected. Compares frames across different exposure times
+      on a common scale.</li>
+</ul>
+
+<h3>5.2 Interacting with points</h3>
+<ul>
+  <li><b>Click</b> a dot to flag or unflag that frame. Flagged dots turn
+      red; the corresponding tree entry gets a red &#9888;&#65039;
+      marker.</li>
+  <li><b>Shift-click</b> a dot to pop a quick preview window of that
+      frame &mdash; useful for &ldquo;what does that outlier actually
+      look like?&rdquo; without leaving the metrics view.</li>
+</ul>
+
+<h3>5.3 Threshold lines</h3>
+<p>Each plot has a red horizontal line you can drag. Dropping a frame
+on the wrong side of the line flags it automatically:</p>
+<ul>
+  <li>For <b>FWHM, Eccentricity, Background, Sensor Temp, Bg Rate</b>
+      (higher&nbsp;=&nbsp;worse) &mdash; frames <i>above</i> the line
+      are flagged. The line parks just above the data on open; drag
+      down to begin flagging.</li>
+  <li>For <b>Star Count, Weighted Score</b> (lower&nbsp;=&nbsp;worse)
+      &mdash; frames <i>below</i> the line are flagged. The line parks
+      at zero on open; drag up.</li>
+</ul>
+<p>Thresholds are <b>per-filter</b> and persist for the session: your
+threshold for Luminance stays set when you switch to Ha. A frame is
+flagged if <i>any</i> group's threshold triggers it, which keeps the
+per-filter tuning from unflagging a frame someone else wanted gone.</p>
+
+<h3>5.4 Guide lines</h3>
+<p>The <b>Show median and &plusmn;3&sigma; guides</b> checkbox draws
+dashed horizontal guides on every plot:</p>
+<ul>
+  <li>White solid at the <b>median</b>.</li>
+  <li>Yellow at <b>&plusmn;1&sigma;</b>.</li>
+  <li>Orange at <b>&plusmn;2&sigma;</b>.</li>
+  <li>Red at <b>&plusmn;3&sigma;</b>.</li>
+</ul>
+<p>&sigma; here is the MAD-based robust estimator (&sect;&nbsp;13.5), so
+individual outliers don't skew it the way a plain standard deviation
+would.</p>
+
+<h3>5.5 Filter selector</h3>
+<p>The dropdown above the plots restricts the display to one FILTER
+value, so you can threshold Ha and OIII independently. &ldquo;All&rdquo;
+shows every frame. The status bar at the bottom reports
+&ldquo;Flagged Items X/Y (Z%)&rdquo; for whatever subset is on
+screen.</p>
+
+<h2>6. Satellite Trail Detection</h2>
+<p>The <b>Detect Satellite Trails</b> button runs the Cosmic Clarity
+ResNet detection model (a two-stage classifier) over every loaded
+image, flagging frames that likely contain a trail. See
+&sect;&nbsp;13.6 for the algorithm. Results populate the <b>Sat</b>
+column: &#9888; (orange) for detected, &#10003; (green) for clean.</p>
+<p>This is a <i>pre-pass</i>, not a verdict &mdash; it can occasionally
+false-positive on big diffraction spikes or on bright edge stars. Use
+it to narrow down what to look at, not to automatically delete.</p>
+<p>Once detection has run, right-click &rarr; <b>Flag All Satellite
+Detections</b> promotes every &#9888; to a flag in one shot.</p>
+
+<p class="tip"><b>Workflow suggestion.</b> Detect sats first, then run
+Metrics, then blink through what's left. Each stage removes an obvious
+class of problem, leaving the subtle visual-only issues for the
+blinking pass.</p>
+
+<h2>7. Stacking Suite integration</h2>
+<p>Three buttons under the metrics / sat row push the current session
+to the Stacking Suite:</p>
+<ul>
+  <li><b>&rarr; Stacking: Lights</b> &mdash; sends the selected tree
+      entries (or everything, if nothing is selected) to the Stacking
+      Suite's <b>Light</b> tab. The usual workflow: cull in Blink, then
+      send only the keepers.</li>
+  <li><b>&rarr; Stacking: Integration</b> &mdash; same, but to the
+      Image Integration tab. Use when you have calibrated frames you
+      want to integrate straight through.</li>
+  <li><b>&#9881; Stacking Settings</b> &mdash; opens the Stacking Suite's
+      preferences dialog without launching the full Stacking Suite.
+      Useful for setting the stacking directory or precision before
+      pushing frames. Changes save immediately but a running Stacking
+      Suite needs to be restarted to pick them up.</li>
+</ul>
+<p>These buttons are also in the right-click menu (&sect;&nbsp;9).</p>
+
+<h2>8. Video Export</h2>
+<p>The <b>Export Video&hellip;</b> button creates an MP4 or AVI of the
+current session, suitable for timelapses or satellite-trail
+walkthroughs:</p>
+<ul>
+  <li><b>Size</b> &mdash; 1280&times;720, 1920&times;1080, or
+      1080&times;1080. Frames are letterboxed to fit without stretching.</li>
+  <li><b>FPS</b> &mdash; 0.1 to 60.</li>
+  <li><b>Export only selected frames</b> &mdash; otherwise all frames in
+      tree order are included.</li>
+</ul>
+<p>Blink tries multiple codec combinations in order
+(mp4v, avc1, H264, MJPG, XVID) and falls back to the imageio-ffmpeg
+backend if none of them opens. The best available is used
+automatically; if nothing works, Blink says so and suggests installing
+FFmpeg.</p>
+
+<h2>9. Right-click menu</h2>
+<p>Right-clicking any leaf (file) in the tree opens a context menu with
+these actions:</p>
+<ul>
+  <li><b>Open in Document Window</b> &mdash; push this frame to the main
+      SASpro document manager as a new document, preserving the full
+      original header and metadata.</li>
+  <li><b>Rename</b> &mdash; rename this one file on disk.</li>
+  <li><b>Batch Rename Selected&hellip;</b> &mdash; add a prefix and/or
+      suffix to the filenames of every selected leaf.</li>
+  <li><b>Move Selected Items</b> &mdash; move the selected files to a
+      destination folder <i>and</i> remove them from the session.</li>
+  <li><b>Delete Selected Items</b> &mdash; permanently delete the
+      selected files from disk and remove them from the session.</li>
+  <li><b>Delete All Flagged Images</b> &mdash; the main culling hammer.
+      Permanently deletes every flagged frame.</li>
+  <li><b>Move All Flagged Images</b> &mdash; move every flagged frame to
+      a &ldquo;rejects&rdquo; folder of your choosing. The safer version
+      of Delete All Flagged.</li>
+  <li><b>Rename Flagged Images&hellip;</b> &mdash; add a prefix (default
+      <code>Bad_</code>) to every flagged frame's filename, so you can
+      cull later via a filename filter in your stacker of choice without
+      losing anything.</li>
+  <li><b>Flag All Satellite Detections</b> &mdash; convert all Sat
+      &#9888; entries to flags.</li>
+  <li><b>Send to Stacking &rarr; Lights / Integration</b> &mdash; same
+      as the main buttons.</li>
+  <li><b>Remove Selected from List</b> &mdash; drop these frames from
+      the current session without touching the files on disk.</li>
+</ul>
+
+<p class="warn"><b>Delete is permanent.</b> &ldquo;Delete Selected
+Items&rdquo; and &ldquo;Delete All Flagged Images&rdquo; both call
+<code>os.remove()</code> &mdash; there is no undo and no trash. If
+you're not sure, use the Move variants (which are reversible by moving
+the files back) or Rename Flagged (which just renames).</p>
+
+<h2>10. Other buttons</h2>
+<ul>
+  <li><b>Clear Flags</b> &mdash; unflag every frame in the session. Does
+      not touch files or metrics.</li>
+  <li><b>Remove Selected</b> &mdash; drop the selected leaves from the
+      session without touching disk. Also in the right-click menu.</li>
+  <li><b>Clear Images</b> &mdash; wipe the whole session. Prompts for
+      confirmation.</li>
+</ul>
+
+<h2>11. Persistence</h2>
+<p>Blink saves nearly everything about its state across sessions:</p>
+<ul>
+  <li>Window geometry (main window and Metrics window).</li>
+  <li>Tree column widths and order (<code>tree_header_state_v2</code>).</li>
+  <li>Main / preview splitter positions and zoom-panel splitter.</li>
+  <li>Zoom Panel visibility.</li>
+  <li>Last folder used in file dialogs
+      (<code>blink/last_folder</code>).</li>
+  <li>Load scale (1:1 / 1:2 / 1:4 / 1:8).</li>
+  <li>Thread safety mode (<code>blink/thread_safety</code>:
+      <code>auto</code>, <code>safe</code>, or <code>fast</code> &mdash;
+      see &sect;&nbsp;13.7).</li>
+</ul>
+
+<h2>12. Keyboard shortcuts summary</h2>
+<table>
+  <tr><th>Shortcut</th><th>Action</th></tr>
+  <tr><td><span class="kbd">Space</span></td>
+      <td>Toggle play / pause (when tree has focus).</td></tr>
+  <tr><td><span class="kbd">F</span></td>
+      <td>Flag or unflag the current frame, then advance.</td></tr>
+  <tr><td><span class="kbd">&uarr;</span> / <span class="kbd">&darr;</span></td>
+      <td>Previous / next frame.</td></tr>
+  <tr><td><code>Ctrl + wheel</code></td>
+      <td>Zoom the main preview around the cursor.</td></tr>
+  <tr><td>Left-drag on preview</td>
+      <td>Pan.</td></tr>
+  <tr><td>Right-click on preview</td>
+      <td>Pin the Zoom Panel to this spot.</td></tr>
+</table>
+
+<h2>13. Technical details</h2>
+<p class="tech-lead">Blink runs the metric computations in parallel
+threads using <code>ThreadPoolExecutor</code>, with
+SEP (Source Extractor Python) doing the per-frame source extraction and
+numpy / OpenCV handling the pixel-level work. The threading
+model &mdash; and specifically its interaction with numba's resolved
+threading layer &mdash; is unusually subtle and is covered in
+&sect;&nbsp;13.7.</p>
+
+<h3>13.1 Per-frame SEP pipeline</h3>
+<p>For each frame, metric computation runs on a 2&times;-downsampled
+copy of the storage image. The downsample is for speed and RAM &mdash;
+SEP's background modelling is the slow part, and a 2&times; downsample
+is enough to keep sub-pixel precision in the result. The pipeline:</p>
+<ol>
+  <li>Convert the storage image to float32 in [0, 1] (collapsing colour
+      to a mean plane). NaN/Inf are replaced with 0 / 1 / 0 before SEP
+      sees anything.</li>
+  <li>Resize to half size with <code>cv2.INTER_AREA</code>.</li>
+  <li>Build a SEP <code>Background</code> model and extract the global
+      RMS. If RMS is non-finite (uniform background, pure sky), fall
+      back to <code>None</code> and let SEP decide its own.</li>
+  <li>Try the detection threshold cascade:
+      <div class="matheq">\{\,7\sigma \text{ (minarea 4)},\; 5\sigma \text{ (4)},\; 4\sigma \text{ (3)},\; 3.5\sigma \text{ (2)}\,\}</div>
+      taking the first threshold that returns any stars. On very clean
+      frames the 7&sigma; pass finds hundreds of sources; on cloudy
+      frames the cascade drops down until something comes back. This is
+      what lets Blink continue to produce a star-count metric even on
+      bad frames.</li>
+</ol>
+
+<h3>13.2 FWHM and eccentricity</h3>
+<p>From each SEP source's second-moment axes <code>a</code> and
+<code>b</code> (semi-major and semi-minor), the sigma of an equivalent
+circular Gaussian is <code>&sigma; = sqrt(a&middot;b)</code>, and
+FWHM &asymp; 2.3548 &middot; &sigma;. Blink reports the median across
+all detected sources, scaled back to full-resolution pixel units:</p>
+<div class="matheq-hero">\mathrm{FWHM} \;=\; \mathrm{median}\!\left(2.3548\,\sqrt{a\,b}\right) \;\cdot\; 2 \;\cdot\; s_{\mathrm{load}}</div>
+<p>where the factor of 2 compensates for the 2&times; downsample and
+<code>s<sub>load</sub></code> is the load-scale factor (1 at 1:1, 2 at
+1:2, etc.), so FWHM values from any load scale compare directly.</p>
+<p>Eccentricity from the same axes:</p>
+<div class="matheq-hero">e \;=\; \sqrt{1 \;-\; (b/a)^2}</div>
+<p>reported again as the median across sources. Perfect round stars
+give 0, highly elongated streaks give values approaching 1.</p>
+
+<h3>13.3 Weighted Score</h3>
+<p>A composite built from star count, eccentricity, and background:</p>
+<div class="matheq-hero">W \;=\; N_{\star} \,\cdot\, (1 - e) \,\cdot\, \left(\frac{2}{\sqrt{\mathrm{bg}} + 1} \;-\; 1\right)</div>
+<p>interpreting as: more stars is better, round stars are better,
+dark background is better. The three terms multiply, so a bad score on
+<i>any</i> axis drags the composite down &mdash; a 500-star frame with
+e&nbsp;=&nbsp;0.6 scores worse than a 300-star frame at e&nbsp;=&nbsp;0.1.
+Background enters as a saturating curve so a very dark frame doesn't
+dominate the metric. For most sessions, thresholding on Weighted Score
+alone catches ~80% of what the other three catch individually.</p>
+
+<h3>13.4 Bg Rate (ADU per second)</h3>
+<p>Converts the cached pre-stretch background from its stored
+normalised value back to raw ADU, subtracts the sensor OFFSET pedestal
+from the header, and divides by exposure time:</p>
+<div class="matheq-hero">\mathrm{BG/s} \;=\; \frac{\mathrm{bg} \,\cdot\, (2^{B} - 1) \;-\; \mathrm{OFFSET}}{t_{\mathrm{exp}}}</div>
+<p>where <code>B</code> is the file's bit depth. OFFSET falls back to
+0 when not in the header (common on SGP captures with default
+templates, and some ASCOM drivers) &mdash; which means within-session
+<i>relative</i> ordering is preserved for culling, only the absolute
+ADU/s value is inflated by the missing pedestal / exposure. Blink
+exploits this: BG/s is used for ranking, not for calibration, so a
+missing OFFSET doesn't break the metric.</p>
+
+<h3>13.5 Robust sigma estimator for guides</h3>
+<p>The &plusmn;1&sigma;, &plusmn;2&sigma;, &plusmn;3&sigma; guides on
+the metrics plots use the median-absolute-deviation estimator:</p>
+<div class="matheq-hero">\hat{\sigma} \;=\; 1.4826 \,\cdot\, \mathrm{median}(|y - \tilde{y}|)</div>
+<p>where &ytilde; is the median. The constant 1.4826 is
+1&nbsp;/&nbsp;&Phi;&#8315;&sup1;(0.75), which makes
+<code>&sigma;&#770;</code> an unbiased estimator of the standard
+deviation for Gaussian data. The point of using MAD rather than the
+usual std is immunity to outliers: one or two really bad frames in a
+session don't push the &sigma; lines out so far that they become
+useless.</p>
+
+<h3>13.6 Satellite detection</h3>
+<p>A two-stage classifier runs on 256&times;256 interior tiles of the
+raw (linear, un-stretched) frame. A tile passes if both the first and
+second model return positive at probabilities &gt; 0.5 and &gt; 0.25
+respectively. A frame is reported as having a trail if at least two
+<i>spatially adjacent</i> tiles pass (8-connected at the tile grid's
+natural stride) &mdash; this requires a continuous linear feature, which
+is what a satellite trail is, and rejects single-tile detections
+(bright stars, diffraction spikes).</p>
+<p>A prefetch pipeline keeps CPU tile preparation one or more frames
+ahead of the GPU inference step, so the GPU rarely waits on disk I/O.
+Pool depth is 4 by default. If the GPU is not available (no PyTorch
+CUDA, no ONNX provider), inference runs on CPU and is correspondingly
+slower.</p>
+
+<h3>13.7 Thread safety and numba threading layer</h3>
+<p>Blink's parallel loader is where a notorious cross-platform hazard
+lives. SASpro's debayer path is accelerated with numba; numba's
+<i>resolved</i> threading layer varies by platform and build. On boxes
+whose numba fell back to the non-threadsafe <code>workqueue</code>
+layer (seen on some StellarMate / Linux and macOS builds), running the
+debayer kernel from several threads at once aborts the process.</p>
+<p>Blink works around this by:</p>
+<ul>
+  <li>Waiting for the background numba warmup to finish before fanning
+      out, so the threading layer is known.</li>
+  <li>Deciding serialize-vs-concurrent from the <i>resolved</i> layer:
+      <code>workqueue</code> &rarr; serialize, anything threadsafe
+      (OpenMP / TBB) &rarr; concurrent.</li>
+  <li>Falling back to serialize if warmup hasn't finished (e.g. on a
+      very slow machine) rather than guessing from the OS and
+      potentially aborting.</li>
+  <li>Exposing a <b>Thread safety</b> override under QSettings key
+      <code>blink/thread_safety</code> with values <code>auto</code>
+      (default), <code>safe</code>, or <code>fast</code> for people who
+      want to force a mode.</li>
+</ul>
+<p>Worker counts scale with the mode: safe mode caps at
+<code>min(cpus&nbsp;&minus;&nbsp;1, 8)</code>; fast mode uses
+<code>min(cpus&nbsp;&minus;&nbsp;reserved, 60)</code> with reserved =
+25% of cores (capped at 4). The SEP metric path uses its own smaller
+pool (4 to 12 workers depending on frame size) because SEP's internal
+C allocator is itself contended.</p>
+
+<h3>13.8 Header-aware exposure labels</h3>
+<p>Exposure values on the tree &mdash; the &ldquo;300s&rdquo; part &mdash;
+are canonicalised so that <code>300</code>, <code>300.0</code>,
+<code>&quot;300 s&quot;</code>, and <code>&quot;300 seconds&quot;</code>
+all end up in the same bucket. Temperature values are similarly
+tolerant of units (&ldquo;-10&nbsp;C&rdquo;, &ldquo;&#8722;10&nbsp;C&rdquo;,
+&ldquo;-10&nbsp;&deg;C&rdquo; are all recognised) and EXIF-style
+shutter fractions (&ldquo;1/125&rdquo;) are parsed as floats. The
+temperature keyword list prefers actual sensor temps (CCD-TEMP,
+DET-TEMP, SENSOR-TEMP and friends) over cooler setpoints (SET-TEMP,
+SETPOINT), matching the Stacking Suite's own precedence.</p>
+
+<h3>13.9 Push to Document</h3>
+<p>Right-click &rarr; Open in Document Window creates a new SASpro
+document from the current frame, preserving the original FITS header,
+bit depth, is-mono flag, and metadata dict. Only the numpy array is
+new &mdash; everything else that <code>load_image</code> originally
+returned rides along, so plate-solving, WCS, and any other
+header-aware tool in SASpro will see the correct metadata.</p>
+
+<div class="credit">
+<b>Credits.</b> Blink Comparator is <b>SASpro</b>'s own tool. Star
+measurement uses <b>SEP</b> (Barbary 2016), the Python port of E.
+Bertin and S. Arnouts' <b>Source Extractor</b> (SExtractor), which is
+where the <code>a</code> / <code>b</code> second-moment axes and the
+background model come from. Satellite trail detection uses
+<b>Cosmic Clarity</b>'s ResNet dual-classifier model (see the Cosmic
+Clarity suite documentation for model provenance). Image loading and
+debayering use SASpro's existing engines
+(<code>setiastro.saspro.legacy.image_manager</code> for loads,
+<code>setiastro.saspro.debayer</code> for the canonical debayer path
+shared with the Stacking Suite). The MAD-based robust-sigma guide line
+uses the classical 1.4826 Gaussian-consistency factor
+(Rousseeuw &amp; Croux 1993). Video export uses <b>OpenCV</b>'s
+VideoWriter with codec fallbacks and <b>imageio-ffmpeg</b> as a
+portable last resort.
+</div>
+
+</body>
+</html>

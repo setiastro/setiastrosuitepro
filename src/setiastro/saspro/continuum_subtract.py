@@ -36,7 +36,7 @@ from setiastro.saspro.legacy.image_manager import load_image as legacy_load_imag
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.imageops.starbasedwhitebalance import apply_star_based_white_balance
 from setiastro.saspro.legacy.numba_utils import apply_curves_numba
-
+from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 # At the top of continuum_subtract.py, with the other imports:
 try:
@@ -630,6 +630,8 @@ class ContinuumSubtractTab(QWidget):
         self.wb_diag_button.clicked.connect(self._show_wb_diagnostics)
         self.wb_diag_button.setEnabled(False)  # enabled after first result
         bottom_row.addWidget(self.wb_diag_button)
+        self.btn_help = make_help_button("continuum_subtract", self)
+        bottom_row.addWidget(self.btn_help)        
         main_layout.addLayout(top_cols)
         main_layout.addLayout(bottom_row)
         self.setLayout(main_layout)

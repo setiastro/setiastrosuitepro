@@ -38,6 +38,7 @@ from setiastro.saspro.sfcc import non_blocking_sleep  # already used in SFCC; op
 from setiastro.saspro.backgroundneutral import auto_rect_box, auto_rect_50x50
 from setiastro.saspro.imageops.stretch import stretch_color_image
 # We *intentionally* do NOT reuse SFCC pedestal-removal/clamp for photometry.
+from setiastro.saspro.help_support import make_help_button
 
 import socket
 
@@ -223,6 +224,8 @@ class SNRToolDialog(QDialog):
         row.addWidget(self.btn_calc)
         row.addWidget(self.btn_copy)
         row.addStretch(1)
+        self.btn_help = make_help_button("snr_tool", self)
+        row.addWidget(self.btn_help)
         v.addLayout(row)
 
         mid = QHBoxLayout()

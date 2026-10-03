@@ -1,0 +1,278 @@
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color:#e6e6e6; background:#1b1b1b; padding:10px 14px; line-height:1.45; }
+h1 { margin: 0 0 10px 0; font-size: 20px; color:#9ad; }
+h2 { margin-top: 16px; color:#cfd; font-size:16px; border-bottom:1px solid #333; padding-bottom:3px; }
+h3 { color:#9bd; margin-top:14px; margin-bottom:6px; font-size:14px; }
+code { background:#2a2a2a; padding:1px 4px; border-radius:3px; }
+.hero { background:#1f2a1f; border-left:3px solid #4caf50; padding:10px 12px; margin:10px 0; border-radius:3px; }
+.matheq { margin: 8px 14px; text-align:left; }
+.matheq-hero { margin: 10px 0; text-align:center; }
+.tip { background:#1f2a1f; border-left:3px solid #4caf50; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.warn { background:#2a241f; border-left:3px solid #c0892b; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.credit { background:#2a251c; border-left:3px solid #c7a24a; padding:8px 12px; margin:12px 0 6px 0; border-radius:3px; font-size:13px; color:#dcd3b8; }
+.pub { background:#1f2a1f; border-left:3px solid #4caf50; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.keys { background:#1f2630; border-left:3px solid #4a9eff; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.workflow { background:#1f2630; border-left:3px solid #4a9eff; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.science { background:#2a1f2a; border-left:3px solid #c74ac7; padding:8px 12px; margin:10px 0; border-radius:3px; }
+ul { margin: 6px 0 10px 0; padding-left:22px; }
+li { margin: 3px 0; }
+p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Cosmic Clarity</h1>
+
+<div class="hero">
+<b>The complete in-house AI processing suite for SASpro.</b> Four modes in one dialog — stellar aberration correction, stellar and non-stellar sharpening, luminance and color denoise, and super-resolution upscaling — all powered by SetiAstro's own trained neural network models. Add in sister tool Satellite Removal for frame-by-frame trail cleanup, and you have a full AI pipeline that runs entirely locally on your machine, with no cloud, no subscription, no licensing phone-home. Supports GPU acceleration across Windows (CUDA/DirectML), macOS (CPU and MPS where available), and Linux (CUDA); gracefully falls back to CPU when the GPU path breaks. Includes mask-aware blending, new-view output, preset drag-and-drop, and automatic chunk/overlap tiling for images of any size.
+</div>
+
+<div class="pub">
+<b>SetiAstro Cosmic Clarity — original neural network models by Franklin Marek</b> (<a href="https://setiastro.com">setiastro.com</a>). Every network in this dialog — the stellar aberration correction (V1 and V2), the stellar sharpening model, the non-stellar sharpening model, the standard denoise, the Lite denoise, the Walking Noise specialist, the super-resolution upscaler, and the satellite-trail segmenter — was architected, trained, and optimized in-house by SetiAstro, on datasets curated from real deep-sky integration data. The weights ship with SASpro; nothing talks to a remote server at inference time.
+</div>
+
+<h2>1. The four modes</h2>
+<p>The <b>Mode</b> dropdown selects the pipeline for this run:</p>
+<ul>
+<li><b>Sharpen</b> — stellar and/or non-stellar deconvolution-equivalent sharpening. Optionally preceded by Stellar Correction (aberration cleanup).</li>
+<li><b>Denoise</b> — luminance and chrominance noise reduction. Three model variants (Standard, Walking Noise, Lite).</li>
+<li><b>Both</b> — Sharpen followed by Denoise, with stage-weighted progress. One-click AI pass for a stacked integration.</li>
+<li><b>Super Resolution</b> — 2×/3×/4× upscaling that invents detail from a learned prior, intended for cropping into small objects or printing larger than your native resolution would allow.</li>
+</ul>
+<p>The dialog's left column holds the <b>Sharpen</b> and <b>Denoise</b> groups; the right column holds <b>Super Resolution</b> and <b>Advanced</b> (chunk, overlap, temporary-stretch assist). Only the controls relevant to the current Mode are visible; the others are hidden to keep the dialog compact.</p>
+
+<h2>2. Sharpen mode</h2>
+<p>The Sharpen group bundles two independent capabilities — stellar aberration correction and sharpening itself — behind a single Execute. The <b>Stellar Correction</b> radio row at the top of the group decides which:</p>
+<ul>
+<li><b>Correct Only</b> — run the aberration correction model and stop. Fixes elongated stars from pinched optics, coma from poorly-collimated Newtonians, chromatic smearing from refractors, and seagulls from edge-of-field aberrations. No sharpening is applied; the output looks like what your scope would produce if it were perfectly collimated and corrected. All sharpening sub-controls hide when this is selected.</li>
+<li><b>Correct + Sharpen</b> — run correction first, then sharpen the output. Best for images where stars are both misshapen <i>and</i> soft.</li>
+<li><b>Sharpen Only</b> — skip correction, go straight to the sharpening model. Use this when star shapes are already clean and you only need deconvolution-equivalent lift.</li>
+</ul>
+
+<div class="tip">
+<b>V1 vs V2 correction model.</b> The <b>Correction Model</b> dropdown appears when a correction option is selected. V2 is the latest-generation model with updated weights and improved correction quality — it's the default when installed. V1 is the original release, kept available because some users prefer its slightly milder behavior on already-good data. V2 is marked disabled in the dropdown if its weights aren't installed; use Preferences → AI Models → Download/Update to pull it. The <b>Conservative White Compression</b> checkbox below applies to correction only — it reduces tiling seams on images with extreme contrast within a single tile (bright core + black background) by compressing white points more aggressively before inference.
+</div>
+
+<p>Once correction is handled (or skipped), the sharpening controls take over:</p>
+<ul>
+<li><b>Sharpening Mode</b> — Both, Stellar Only, or Non-Stellar Only. "Both" runs the stellar network over detected stars and the non-stellar network over everything else, and blends them. "Stellar Only" leaves nebulosity and galaxy structure untouched; useful when the field is sharp but stars are soft. "Non-Stellar Only" leaves stars alone and lifts only extended structure.</li>
+<li><b>Sharpen RGB channels separately</b> — runs the mono sharpening model independently on R, G, B instead of using the color-aware path. Expensive, slower, but sometimes helpful for difficult color data where channels need different treatment.</li>
+<li><b>Auto Detect PSF</b> — the model estimates the point-spread function from the image itself and uses it to shape the non-stellar sharpening kernel. Uncheck and set the PSF manually (1.0-8.0) if you know your seeing was unusually good or bad.</li>
+<li><b>Stellar Amount</b> (0-1) — strength of the stellar sharpening blend. The equation is a linear interpolation between the input and the fully-sharpened result:
+<div class="matheq-hero">\mathrm{out} = (1 - a_s) \cdot \mathrm{src} + a_s \cdot \mathrm{sharpen}(\mathrm{src})</div>
+At 0.0 the input is unchanged; at 1.0 you get the full model output. 0.5 is a sensible default that gives visible lift without ringing or hollow cores.</li>
+<li><b>Non-Stellar Amount</b> (0-1) — same formulation, applied to the non-stellar path.</li>
+</ul>
+
+<h2>3. Denoise mode</h2>
+<p>The Denoise group has three distinct model options behind a single dropdown:</p>
+
+<ul>
+<li><b>Standard</b> — the general-purpose AI4 denoise network. Trained on a broad mix of light-polluted and dark-site data. Best default for most images.</li>
+<li><b>Walking Noise</b> — a specialist model trained specifically on <i>fixed-pattern drift streaks</i> that appear in untracked or poorly-tracked data. If you've ever seen diagonal striping across the background from polar misalignment, periodic error without guiding, or short-exposure uncorrected stacks, this is the model for that. Also handles ordinary noise, so it's safe to use even when drift isn't the main problem.</li>
+<li><b>Lite (faster)</b> — a smaller, faster variant with slightly less detail recovery. Useful on very large images or when iterating quickly.</li>
+</ul>
+
+<p>Independent of model choice, three sliders tune the output:</p>
+<ul>
+<li><b>Luminance Denoise</b> (0-1) — strength on the luminance channel. The dominant noise component in most astro data.</li>
+<li><b>Color Denoise</b> (0-1) — strength on chrominance. Chroma noise is more objectionable visually per unit; a slightly higher value here than for luminance often looks right.</li>
+<li><b>Denoise Mode</b>: <b>full</b> treats the input as RGB and processes luminance and chroma together; <b>luminance</b> extracts the luma, denoises only that, and recombines. "Luminance" preserves color detail better in regions with real chroma structure (emission nebulosity, galaxy color gradients); "full" denoises more aggressively overall.</li>
+</ul>
+
+<p><b>Denoise RGB channels separately</b> runs the mono denoise model on each of R, G, B independently. When this is enabled, Color Denoise and the full/luminance mode selector are disabled — the mono model has no concept of chroma, so those controls would do nothing. The tooltip on the greyed-out controls explains why.</p>
+
+<div class="warn">
+<b>GPU Compatibility Mode.</b> The checkbox at the bottom of the Denoise group forces conservative GPU inference: batch size 1, no tensor-cores, no half-precision autocast. Significantly slower, but survives on older GPUs, GPUs with low VRAM, and the handful of Windows laptops where the normal path crashes with cryptic kernel errors. Enable this if sharpen or denoise fails, hangs, or produces visibly corrupted output on your hardware. Compatibility Mode applies to all AI stages in this dialog, not just denoise.
+</div>
+
+<h2>4. Super Resolution mode</h2>
+<p>Super Resolution upscales the image by 2×, 3×, or 4× using a learned prior. The output size is exactly the input size multiplied by the scale:</p>
+<div class="matheq-hero">\mathrm{out} \in \mathbb{R}^{(s H) \times (s W) \times C}</div>
+<p>Unlike interpolation (bilinear, bicubic, Lanczos), the model <i>invents</i> plausible high-frequency detail based on patterns it learned during training. On stars this produces tight, round cores at the new resolution. On extended structure (nebulosity, galaxy arms, dust lanes) it produces plausible texture that reads correctly at the new scale but is not literally what a longer-focal-length scope would have captured. Use with the understanding that this is upscaling with invention, not resolution recovery — it's for printing larger, for cropping into small objects, and for making web-sized versions of large captures look pin-sharp.</p>
+
+<p>GPU is used unconditionally for Super Resolution (the models are heavy enough that CPU inference would be prohibitively slow); the GPU dropdown is hidden when this mode is selected. The sharpen and denoise sub-controls are also hidden — super-resolution runs in isolation.</p>
+
+<h2>5. Tile chunk, overlap, and temporary stretch</h2>
+<p>All AI networks process images in tiles rather than all at once (memory, mostly, and because the training patch size doesn't match arbitrary image sizes). The Advanced group exposes the two knobs that control tiling behavior:</p>
+
+<ul>
+<li><b>Chunk Size</b> — the tile size in pixels (128, 192, 256, ..., 1024). Default 256. Larger tiles are more coherent (less seam risk) but use proportionally more memory and are harder on low-VRAM GPUs. Smaller tiles use less memory but produce more seams. 256 is a good balance; drop to 192 or 128 for 4GB GPUs; raise to 384 or 512 if you have 12GB+ and want slightly better coherence.</li>
+<li><b>Overlap (% of tile)</b> — how much adjacent tiles overlap, as a percentage of the chunk size. Default 25%. The pixel overlap is computed as:
+<div class="matheq-hero">O_{\mathrm{px}} = C \cdot (\mathrm{pct} / 100)</div>
+and capped at 50% of the tile (so runtime doesn't explode): 
+<div class="matheq-hero">O_{\mathrm{px}} = \min(C/2,\; \lfloor C \cdot \mathrm{pct}/100 \rfloor)</div>
+Higher overlap = fewer visible seams at tile boundaries, at the cost of more total tiles (runtime climbs steeply above 30%). Lower overlap = fewer tiles, faster, but seams may appear on soft gradients.</li>
+</ul>
+
+<p><b>Temporary Stretch for AI (linear assist)</b> is the second major Advanced control. All of these networks were trained on data that's already been visually stretched — because that's what humans look at. If you hand the model raw linear integration data (median pixel value ~0.001, nothing above 0.05) it has nothing to work with and the output looks almost identical to the input. The temporary stretch applies an MTF stretch to the image before inference, runs the network, then reverses the stretch on the output so the result lands in your original linear space.</p>
+
+<p>The <b>Target Median</b> slider (0.01-0.50) sets what median value the stretched image should land at. 0.25 is a good default for most data. If your linear data is already somewhat stretched (bright nebulosity, little background), use a smaller target like 0.15; for very dim linear data (narrowband, short-exposure LRGB), 0.30 may give the model more to work with. The relationship between the median after stretch and the MTF stretch parameter <code>m</code> is:</p>
+<div class="matheq-hero">M(x) = \frac{(m - 1) \cdot x}{(2m - 1) \cdot x - m}</div>
+<p>where <code>M</code> is the stretch function, <code>x</code> is the input value, and <code>m</code> is solved to make <code>M(median) = T</code>. The reverse applies <code>M⁻¹</code> with the same <code>m</code>.</p>
+
+<h2>6. GPU use and provider fallback</h2>
+<p>The <b>Use GPU</b> dropdown is a simple Yes/No. "Yes" means SASpro picks the best available GPU backend (CUDA on NVIDIA, DirectML on any Windows DX12 GPU including Intel/AMD, MPS on Apple Silicon where available, otherwise CPU). "No" forces CPU for the whole run — useful when the GPU is busy with something else or when you want deterministic output for comparing results across machines.</p>
+
+<p>If GPU inference fails mid-run with a recognizable hardware error (kernel mismatch, missing library, CUDA driver mismatch), SASpro catches the exception and reports it with the exact underlying message — not a generic "please install drivers" dialog. This matters because the real error is often "torch and torchvision built against different releases" (which surfaces as <code>operator torchvision::nms does not exist</code>) or "the installed torch expects a HIP/CUDA library the driver doesn't actually support" (which surfaces as an undefined-symbol or load failure). Those are searchable strings; a generic message is not.</p>
+
+<h2>7. Mask-aware application and output targets</h2>
+<p>If the active document has a mask active when you Execute, SASpro blends the AI output with the original using the mask as alpha:</p>
+<div class="matheq-hero">\mathrm{out} = m \cdot \mathrm{processed} + (1 - m) \cdot \mathrm{src}</div>
+<p>Mask values are normalized to [0, 1] regardless of their stored dtype (uint8, uint16, float32). White areas get full AI effect; black areas keep their original pixels; grays blend smoothly. Mask size is reconciled to the output size by nearest-neighbor subsampling if different (relevant when super-resolution is active — the mask gets upsampled to the output's larger dimensions). If the mask is identically zero everywhere, the blend is skipped and the original is returned unchanged (prevents a blank mask from silently discarding the processing).</p>
+
+<p>The <b>Apply to</b> dropdown picks the output target:</p>
+<ul>
+<li><b>Overwrite active view</b> — replace the active document's image with the result. Logged as an undo-aware step with the full preset recorded in metadata.</li>
+<li><b>Create new view</b> — open a fresh document window with the result, leaving the active view untouched. The new view's title is <code>&lt;original name&gt; [Cosmic Clarity – &lt;mode&gt;]</code> so you can tell them apart.</li>
+</ul>
+
+<p>The <b>mono preservation</b> behavior deserves a note: Cosmic Clarity's networks are RGB-only (they expect 3-channel input). If the active image is mono, SASpro expands it to RGB before inference and <i>collapses the output back to a single channel</i> at the end (by averaging the three channels, which are near-identical for mono input). Your mono image stays mono.</p>
+
+<h2>8. Clear AI Cache</h2>
+<p>The <b>Clear AI Cache</b> button in the bottom-left of the dialog flushes the model weights SASpro has loaded into RAM/VRAM during the current session. The next AI run will take longer because models must reload from disk, but you free up (sometimes substantial) memory. Use when:</p>
+<ul>
+<li>You're low on RAM/VRAM and about to run a different heavy task.</li>
+<li>You're troubleshooting a model-related issue and want a clean reload.</li>
+<li>You updated the AI model files on disk and want the new weights picked up without restarting SASpro.</li>
+</ul>
+<p>The button is disabled during an active run to prevent clearing cache while a model is in use.</p>
+
+<h2>9. Preset drag and Replay Last</h2>
+<p>The grip handle at the bottom-left of the dialog captures the current UI state as a preset. Drag it onto the SASpro canvas to create a shortcut button for one-click reuse. Drop it directly onto an image to apply the current settings headlessly — no dialog, no further clicks. The preset captures every control: mode, GPU setting, sharpening amounts, denoise strengths, model variants, chunk size, overlap percentage, temporary stretch settings, super-resolution scale, mask application, and target (overwrite vs new view).</p>
+
+<p>SASpro also registers each run as the "Replay Last Action" command, so your bound shortcut (default varies by platform) re-runs Cosmic Clarity with your most recent settings against the current view.</p>
+
+<h2>10. Sister dialog — Satellite Removal</h2>
+<p>The <b>Cosmic Clarity Satellite</b> dialog is a separate tool with its own icon and menu entry, built for batch processing frame-by-frame satellite trail removal from individual subs <i>before</i> stacking. Key features:</p>
+<ul>
+<li>Input + output folder selection with live file-system watcher.</li>
+<li>Three run modes: single image (opens the active view or a file picker), batch (processes all files in input), live monitor (watches the input folder and processes files as they arrive — useful during a session).</li>
+<li>Sensitivity slider (0.01-0.50) for clip threshold — lower is more aggressive.</li>
+<li>Clip Trail to 0.000 — write segmented trail pixels as pure black (otherwise they blend with the AI-interpolated replacement).</li>
+<li>Skip Save if No Trail Detected — don't write an output file if the segmenter found nothing.</li>
+<li>Delete Original After Saving — permanent, with a one-time confirmation dialog before any run. Useful for in-session cleanup; dangerous for careless clicks.</li>
+<li>Input/output tree views with right-click delete/rename and double-click preview (opens the image in the standard SASpro preview dialog).</li>
+</ul>
+<p>The Satellite dialog has its own ❔ button and its own doc entry; this doc covers the main Sharpen/Denoise/Super Resolution dialog.</p>
+
+<h2>11. Workflow recipes</h2>
+
+<div class="workflow">
+<b>First-light AI pass on a stacked integration.</b> Open your master stack. Open Cosmic Clarity. Mode = Both. Stellar Correction = Correct + Sharpen (V2). Stellar Amount 0.5, Non-Stellar Amount 0.3. Denoise Luma 0.4, Color 0.5, Mode = full. Temp Stretch on, Target Median 0.25. Execute. One-click AI cleanup of a linear stack.
+</div>
+
+<div class="workflow">
+<b>Fix soft stars without touching nebulosity.</b> Mode = Sharpen. Stellar Correction = Sharpen Only (skip correction). Sharpening Mode = Stellar Only. Stellar Amount 0.6. Non-stellar controls hide automatically. Execute. Only star cores change; the galaxy or nebula underneath is untouched.
+</div>
+
+<div class="workflow">
+<b>Fix elongated stars from a tilt or collimation issue.</b> Mode = Sharpen. Stellar Correction = Correct Only (no sharpening pre-pass). Correction Model = V2. Execute. Stars snap into round. Then run a second pass with Sharpen Only if you want deconvolution lift on top.
+</div>
+
+<div class="workflow">
+<b>Walking-noise cleanup on untracked data.</b> Mode = Denoise. Denoise Model = Walking Noise. Luminance 0.6, Color 0.4, Mode = luminance (preserves chroma on the drift streaks). Execute. The diagonal striping is cut without flattening real nebula structure.
+</div>
+
+<div class="workflow">
+<b>Super-res a crop for printing.</b> Crop your image to the object of interest at native resolution. Open Cosmic Clarity. Mode = Super Resolution. Scale = 2x (3x and 4x work but take proportionally longer and invent more). Target = Create new view (keep the native-resolution original intact for reference). Execute. Compare the two side by side; use the super-res version for the print.
+</div>
+
+<div class="workflow">
+<b>Difficult color data (nebulae with narrowband mapping).</b> Mode = Sharpen. Correct + Sharpen (V2). Enable "Sharpen RGB channels separately" so each channel gets its own mono-model pass. Longer run, but channels that need different treatment (e.g., SII with low SNR vs Hα with strong signal) get appropriate individual sharpening.
+</div>
+
+<div class="workflow">
+<b>Localized correction with a mask.</b> Paint or generate a mask that's white only on the corners (a radial gradient inverted). Enable the mask on the document. Open Cosmic Clarity. Correct Only. Execute. Only the corner stars get touched by the correction model; the center of the frame — where stars were already clean — stays untouched.
+</div>
+
+<div class="workflow">
+<b>Troubleshooting pass on a difficult GPU.</b> First run failed with a kernel error. Enable GPU Compatibility Mode. Execute again. The slower, safer path usually survives — batch size drops to 1, half-precision autocast is off, tensor-cores are bypassed. If it still fails, switch GPU dropdown to No and re-run on CPU; the error dialog will show the underlying issue so you can fix the environment.
+</div>
+
+<h2>12. Credits</h2>
+<div class="credit">
+<b>Models and training.</b> Franklin Marek, SetiAstro — all neural network architectures, training pipelines, datasets, and weights for stellar aberration correction (V1, V2), stellar sharpening, non-stellar sharpening, standard denoise (<code>deep_denoise_mono_AI4</code>, <code>deep_denoise_color_AI4</code>), Lite denoise, Walking Noise denoise (<code>deep_denoise_*_AI4.1w</code>), super-resolution, and satellite segmentation (<code>satelliteRemovalAI4</code>). All models are developed and trained in-house at SetiAstro; the suite is marketed as <b>SetiAstro Cosmic Clarity</b> and distributed as part of SetiAstro Suite Pro.<br><br>
+
+<b>SASpro integration.</b> Dialog UI, preset system, mask blending, mono-preservation, undo-aware history, Hann-blended tiled inference wrappers, GPU provider selection with fallback, temporary-stretch linear assist, Compatibility Mode plumbing, Satellite Removal batch/live-monitor engine, and cache management — all Franklin Marek as part of <a href="https://setiastro.com">SetiAstro Suite Pro</a>.<br><br>
+
+<b>Techniques.</b> Tiled inference with Hann-windowed overlap-add synthesis is standard practice for processing large images with fixed-input-size networks. MTF (midtone transfer function) stretch for the temporary-stretch assist follows the PixInsight-style formulation with boundary conditions M(0)=0, M(m)=0.5, M(1)=1. Mask blending uses standard alpha composition.<br><br>
+
+<b>Runtime.</b> PyTorch (<a href="https://pytorch.org">pytorch.org</a>) for all neural network inference; the GPU acceleration path selects CUDA (NVIDIA) or DirectML / MPS as available on the host system, with transparent CPU fallback.
+</div>
+
+<h2 style="margin-top:28px;">Technical details</h2>
+
+<h3>13.1. Mode pipeline composition</h3>
+<p>Each mode is a stage sequence. "Both" chains Sharpen then Denoise with equal progress weighting; "Sharpen", "Denoise", and "Super Resolution" are single-stage. Progress is reported as:</p>
+<div class="matheq-hero">\mathrm{frac} = (\mathrm{stage}\_i + \mathrm{sub}\_\mathrm{frac}) / N_{\mathrm{stages}}</div>
+<p>where <code>stage_i</code> is the current stage index, <code>sub_frac</code> is the current stage's own 0-1 progress, and <code>N_stages</code> is the total count. The wait dialog's bar updates smoothly across the entire run even when it crosses stage boundaries.</p>
+
+<h3>13.2. Tiled inference with Hann overlap-add</h3>
+<p>All networks process the image in overlapping tiles blended with a 2D Hann window:</p>
+<div class="matheq-hero">w(n) = 0.5 \cdot (1 - \cos(2\pi n / (N - 1)))</div>
+<div class="matheq-hero">w_{2D}(i,j) = w(i) \cdot w(j)</div>
+<p>Tile positions along each image axis start at 0 and advance by stride = chunk − overlap pixels:</p>
+<div class="matheq-hero">\mathrm{stride} = C - O_{\mathrm{px}}</div>
+<p>with the final tile anchored at <code>N - C</code> so the last tile always ends at the image edge. The output is reconstructed as the pixelwise weighted mean:</p>
+<div class="matheq-hero">\mathrm{out}[i,j] = \frac{\sum_k \mathrm{tile}_k[i,j] \cdot w_{2D}[i_k,j_k]}{\sum_k w_{2D}[i_k,j_k]}</div>
+<p>Hann windows sum to a near-constant across the overlap region, so this is a true overlap-add synthesis — no seams, no hot spots, no edge dimming. Weight values that happen to be zero (shouldn't occur with Hann + non-zero overlap, but defensively) are replaced with 1 before the divide.</p>
+
+<h3>13.3. Overlap percentage and cap</h3>
+<p>The UI stores overlap as a percentage of chunk size for scale-invariance (so changing chunk size doesn't invisibly change the effective overlap). The pixel count is computed per run:</p>
+<div class="matheq-hero">O_{\mathrm{px}} = \min(C/2,\; \lfloor C \cdot \mathrm{pct}/100 \rfloor)</div>
+<p>The <code>C/2</code> cap exists because overlap above 50% would mean adjacent tiles overlap by more than half their area — the number of tiles explodes and the Hann windows produce diminishing returns in seam suppression. Pre-cap percentages up to 50% are allowed; higher values clamp silently. A legacy pixel-count setting from older SASpro versions is auto-migrated to a percentage at first load.</p>
+
+<h3>13.4. Temporary MTF stretch</h3>
+<p>The networks were trained on visually-stretched data. The temporary-stretch option applies a PixInsight-style midtone transfer function:</p>
+<div class="matheq-hero">M(x) = \frac{(m - 1) \cdot x}{(2m - 1) \cdot x - m}</div>
+<p>with boundary conditions M(0)=0, M(m)=0.5, M(1)=1. Given a target median T (the Target Median slider value), the midtone parameter <code>m</code> is solved to satisfy:</p>
+<div class="matheq-hero">m = \mathrm{solve}\{M(\mathrm{median}(x)) = T\}</div>
+<p>M is applied to the input, the network runs, and the output is unstretched with M⁻¹ using the same <code>m</code>. The round-trip is numerically stable as long as the input median is above zero (which real integration data always is).</p>
+
+<h3>13.5. Sharpening blend</h3>
+<p>Both stellar and non-stellar sharpening use a linear blend between the network output and the input, controlled by the Amount slider:</p>
+<div class="matheq-hero">\mathrm{out} = (1 - a_s) \cdot \mathrm{src} + a_s \cdot \mathrm{sharpen}(\mathrm{src})</div>
+<p>At a=0 the input is unchanged (the model still runs, but its output is discarded). At a=1 you get the full model output. The linear interpolation is pixelwise, so you can also mask the result after the fact if the global amount isn't quite right in some regions.</p>
+
+<h3>13.6. Mask-aware blending</h3>
+<p>When a mask is active, the pixelwise alpha composition:</p>
+<div class="matheq-hero">\mathrm{out} = m \cdot \mathrm{processed} + (1 - m) \cdot \mathrm{src}</div>
+<p>runs after all stages (including super-resolution). Mask values are normalized to [0, 1]: uint masks divide by <code>np.iinfo(dtype).max</code>, floats above 1 divide by their max, zero-valued masks skip the blend entirely to prevent silent discard. The mask is resampled to the output size via nearest-neighbor index arrays when sizes differ (relevant for super-resolution, where the output is 2-4× the mask dimensions). A final <code>np.isfinite</code> check guards against NaN propagation; a non-finite result causes the processed-only output to be returned instead.</p>
+
+<h3>13.7. Mono preservation</h3>
+<p>Cosmic Clarity's networks are RGB-only — they expect (H, W, 3) float32 input in [0, 1]. If the active image is mono (shape (H, W) or (H, W, 1)):</p>
+<ol>
+<li>The input is expanded to 3-channel by repeating the single channel.</li>
+<li>The network processes it as RGB.</li>
+<li>The output is collapsed back to mono by averaging the three channels (which are near-identical for mono input but may differ slightly due to network stochasticity).</li>
+</ol>
+<p>The <code>_orig_was_mono</code> flag records the input state at Execute time so the result handler can collapse correctly, even if the user changes the active view mid-run.</p>
+
+<h3>13.8. Compatibility Mode plumbing</h3>
+<p>GPU Compatibility Mode sets three downstream flags on the engine presets:</p>
+<ul>
+<li><code>execution_mode</code> → <code>"compatibility"</code> (vs <code>"auto"</code>) — selects a safer code path in each engine, with no half-precision autocast and no tensor-core-specific kernels.</li>
+<li><code>batch_size_override</code> → <code>1</code> (vs <code>0</code> for auto-batching) — one tile per inference call.</li>
+<li><code>sharpen_execution_mode</code> and <code>denoise_execution_mode</code> individually, so each engine knows to use its safe path.</li>
+</ul>
+<p>The cost is substantial — Compatibility Mode runs can be 3-10× slower than normal — but the safety is real: this is the path that survives on older GPUs, low-VRAM GPUs, and some problematic Windows laptops where the normal path fails cryptically.</p>
+
+<h3>13.9. Settings persistence</h3>
+<p>Every control's value is saved to QSettings on change (under the <code>cc/</code> prefix) and restored on dialog open. The load path blocks signals on every widget during setValue/setChecked to prevent a save-during-load cascade — otherwise the first widget would fire its save, which would overwrite the just-loaded values of all later widgets. Chunk size and overlap percentage have their own key pair (<code>cc/chunk_size</code>, <code>cc/overlap_pct</code>) with legacy-pixel-overlap migration on first load from older versions. Dialog geometry is saved to <code>cc/dialog_geometry</code> and restored on open, with a deferred resize via <code>QTimer.singleShot(0, ...)</code> so the restore wins over the layout engine's own sizing pass.</p>
+
+<h3>13.10. Satellite removal mechanics (summary)</h3>
+<p>The satellite segmenter is a separate network from the sharpen/denoise models. Its output is a trail mask; the dialog's Sensitivity slider sets the threshold below which mask values are treated as background:</p>
+<div class="matheq-hero">\mathrm{dst}[\mathrm{mask} < s] = 0</div>
+<p>Lower sensitivity = more aggressive segmentation (catches dim trails but may false-positive on bright stars). Default 0.10. "Clip Trail to 0.000" replaces segmented trail pixels with pure black (otherwise the AI-interpolated replacement is used, which gives smoother blending into the surrounding sky). The batch and live-monitor paths run through a dedicated QThread (<code>SatelliteEngineThread</code>) that loads models once and processes files one at a time, emitting per-file progress to the wait dialog.</p>
+
+<h3>13.11. Super-resolution output shape</h3>
+<p>For scale factor s and input shape (H, W, C):</p>
+<div class="matheq-hero">\mathrm{out} \in \mathbb{R}^{(s H) \times (s W) \times C}</div>
+<p>The channel count is preserved (RGB stays RGB; mono — after the usual expand/collapse round-trip — stays mono). Memory footprint scales as s² for the output buffer; a 4× pass on a 6000×4000 input needs ~1.1 GB just for the output float32 buffer, so the Compatibility Mode batch=1 path is often the only viable option on consumer GPUs at 4×.</p>
+
+</body>
+</html>

@@ -88,7 +88,7 @@ from datetime import datetime
 import traceback
 import sep
 from astroquery.mast import Tesscut
-
+from setiastro.saspro.help_support import make_help_button
 from lightkurve import TessTargetPixelFile
 import oktopus
 import lightkurve as lk
@@ -3492,6 +3492,8 @@ class WIMIDialog(QDialog):
         self.copy_button.setIcon(QApplication.style().standardIcon(QStyle.StandardPixmap.SP_CommandLink))
         self.copy_button.clicked.connect(self.copy_ra_dec_to_clipboard)
         button_layout.addWidget(self.copy_button)
+
+        button_layout.addWidget(make_help_button("whats_in_my_image", self))
 
         # Settings button (wrench icon)
         self.settings_button = QPushButton("⚙ Settings")

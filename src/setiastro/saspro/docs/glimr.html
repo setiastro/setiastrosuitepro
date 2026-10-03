@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+</style>
+</head>
+<body>
+
+<h1>GLIMR &mdash; GaLaxy Isophote Modeler &amp; Residual Revealer</h1>
+<p class="sub">Interactive isophote fitter and residual visualiser for galaxy images. Fits concentric elliptical isophotes to a galaxy's smooth light distribution using the Jedrzejewski (1987) algorithm via <code>photutils.isophote</code>, synthesises a model image from the fit, and shows the residual &mdash; where the smooth model has been subtracted away &mdash; alongside the input in a synced dual-view editor. The residual is where the actually-interesting galaxy structure lives: spiral arms, tidal shells, dust lanes, HII regions, stellar streams, star-forming knots, companion galaxies, boxy or discy isophote distortion, bars, rings. GLIMR adds the whole interactive workflow around photutils' fitter: Shift+click centre picking, Ctrl-drag ellipse adjustment, wedge-mask carve-out, 4&times; quick preview, adaptive ETA with ring-count cap, three-flavour residual export, and FITS save with every seed and fit parameter embedded.</p>
+
+<div class="pub">
+<b>Original work for SetiAstro Suite Pro.</b> The isophote <i>fitter</i> itself is <b>photutils.isophote</b>'s implementation of Jedrzejewski's iterative Fourier-decomposition algorithm (see Credits), and GLIMR calls into it directly rather than reimplementing it. Everything built around that fitter is new work by <b>Franklin Marek</b>: the <b>interactive dual-pane editor</b> (synced zoom and scroll between input and residual via a <code>_SyncedView</code> that mirrors both the transform and both scrollbar positions through a <code>viewChanged</code> signal); the <b>Shift+click centre picker</b> + <b>Ctrl-drag ellipse adjustment</b> for setting the seed geometry visually; the live-updating overlay set (cyan seed ellipse, dashed yellow maximum SMA boundary, dotted magenta minimum SMA boundary); the <b>wedge-mask carve-out</b> with on-canvas wedge preview, used to tell the fitter to ignore an angular range so a nearby star, a jet, or a companion galaxy doesn't bias the smooth-light fit; the <b>input normalisation path</b> that stretches linear data to a 0.25 median before fitting so the Jedrzejewski iteration behaves on linear FITS inputs rather than only on pre-stretched views; the <b>4&times; quick-preview path</b> (block-mean downsample, geometry scaling <code>c &rarr; c/d</code>, <code>a &rarr; a/d</code>, <code>&Delta; &rarr; max(&Delta;/d, 0.5)</code>, nearest-neighbour upsample of the model, full-resolution residual recomputation against the upsampled model, isolist entries rescaled back for the boundary overlay); the <b>adaptive ETA display with ring-count cap</b> (seconds-per-ring profile stored per downsample level, exponential moving average learned from each fit, cross-scale extrapolation <code>&tau;(d_1) &asymp; &tau;(d_2)&middot;(d_2/d_1)^2</code> when the other level's profile is missing, soft cap at 10&nbsp;000 rings that auto-raises the step size when the user picks too many); the <b>symmetric residual preview stretch</b> (zero maps to gray 0.5, with <code>S</code> the 99.5th percentile of <code>|R|</code> measured inside the fit boundary and the preview expressed as <code>D = 0.5 + R/(2S)</code>, so positive and negative residual deviations are visually equal); the <b>feathered elliptical blend</b> that shows the residual inside the fit boundary and the original outside it so you can see the galaxy in context; the <b>three-flavour residual push</b> (normalised min&rarr;0/max&rarr;1 with optional pre-shift so values are non-negative; <b>visible</b> variant that pushes the exact right-pane display including the blend; <b>stretched</b> variant with the symmetric zero-at-gray preview applied and the stretch scale <code>S</code> recorded in metadata); and the <b>FITS save path</b> that embeds every seed and fit parameter (<code>ISO_EPS</code>, <code>ISO_PA</code>, <code>ISO_SMA0</code>, <code>ISO_MIN</code>, <code>ISO_MAX</code>, <code>ISO_STEP</code>, <code>ISO_SCLIP</code>, <code>ISO_NCLIP</code>, <code>ISO_FXC</code>, <code>ISO_FPA</code>, <code>ISO_FEPS</code>, <code>ISO_HARM</code>, <code>ISO_WEDGE</code>, <code>ISO_WPA</code>, <code>ISO_WWID</code>, <code>ORIGMIN</code>, <code>ORIGMAX</code>, <code>PEDESTAL</code>, <code>DSFACTOR</code>) plus the pedestal offset applied when residuals are shifted to <code>&ge; 0</code> on save so a dropped FITS can be read back and inverted without guessing.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+Open a mono galaxy view in SASpro and launch GLIMR. <b>Shift+click</b> the galaxy centre in the left pane. <b>Ctrl-drag</b> the cyan ellipse (or use the sliders) to approximate the galaxy's ellipticity, PA, and bright-core radius. Set <b>min SMA</b> and <b>max SMA</b> to the range of radii you want modelled. Leave <b>Quick preview</b> ticked for the first pass. Click <b>Fit Model</b>. Inspect the residual on the right. Iterate until the fit matches the smooth light. Export the model or residual as a new SASpro view, or save as FITS.
+</div>
+
+<div class="hero">
+<p>The signature move is the <b>symmetric residual preview stretch</b> with zero at mid-gray:</p>
+<div class="matheq-hero">D(x, y) = \mathrm{clip}\!\left( 0.5 + \frac{R(x, y)}{2 S},\; 0,\; 1 \right)</div>
+<p>where <code>R = I - M</code> is the raw signed residual and <code>S</code> is the 99.5th percentile of <code>|R|</code> inside the fit boundary. Zero residual maps to gray 0.5, positive residuals (bright structure the model missed &mdash; spiral arms, HII regions, foreground stars) brighten toward white, and negative residuals (dark structure the model overshot &mdash; dust lanes, holes in the disc, model over-prediction) darken toward black. For a galaxy with real spiral structure sitting on a smooth bulge, the output is close to a two-tone etching with the arms and dust lanes clearly separated from mid-gray &mdash; much more legible than clipping either sign to zero.</p>
+</div>
+
+<h2>1. Opening GLIMR</h2>
+<p>GLIMR takes the active mono image as its input. For colour frames, convert to luminance first (or run on individual channels and composite). Linear data (direct from a stack) works but benefits from the normalisation option below; already-stretched views work directly. The dialog is non-modal, so you can keep SASpro's main window usable while GLIMR is open.</p>
+
+<h2>2. Dual-pane editor</h2>
+<p>The dialog is split: input on the left, residual preview on the right. The two views are synced &mdash; zoom with the mouse wheel on either side and the other follows exactly, drag-pan on either and the other follows. This is the one trick that makes isophote fitting actually usable: being able to put your eye on exactly the same patch of the galaxy on both sides and compare input to residual at full zoom, without constantly re-navigating.</p>
+<p>The right pane shows the input image until you've run the first fit; after that it shows the residual.</p>
+
+<h2>3. Picking the centre</h2>
+<p><b>Shift+left-click</b> anywhere in the left pane sets the fit centre to that pixel. This is the fastest way to get a good seed on a galaxy whose centre you can see &mdash; just click on it. The centre coordinates are shown as text under the sliders.</p>
+<p>Alternatively, drag the cyan ellipse itself: <b>hold Ctrl and drag</b>. The cursor turns to the move cursor while Ctrl is down to confirm you're in drag mode. Without Ctrl the ellipse ignores clicks (so you can't move it accidentally while panning the view).</p>
+
+<h2>4. Shape controls</h2>
+<ul>
+  <li><b>ellipticity &epsilon;</b> (0 to 0.95) &mdash; the ellipticity of the seed; <code>&epsilon; = 1 - b/a</code> where <code>a</code> is the semi-major axis and <code>b</code> the semi-minor. 0 = perfect circle, 0.5 = axis ratio 1:2, 0.9 = highly flattened disc.</li>
+  <li><b>PA (deg)</b> (-180 to 180) &mdash; position angle of the major axis measured in image coordinates (0&deg; = horizontal, positive counter-clockwise).</li>
+</ul>
+<p>The cyan ellipse on the left pane updates live as you move either slider, so you can see immediately whether the seed matches the galaxy's apparent shape and tilt. If the seed is good, the Jedrzejewski iteration converges quickly and the residual is clean. If the seed is wrong, the fit still usually converges but you'll see a residual signature of the seed error (quadrupole-like patterns inside the galaxy on an ellipticity error, dipole-like patterns on a centre error).</p>
+
+<h2>5. SMA range</h2>
+<p>The semi-major axis range sliders set which radii get fitted:</p>
+<ul>
+  <li><b>sma0</b> &mdash; starting SMA for the fitter. Pick near the half-light radius of the galaxy; the fitter grows and shrinks from this seed.</li>
+  <li><b>min sma</b> &mdash; smallest SMA to fit. Default 0. Below ~2 px the fit is dominated by seeing and PSF, so bumping min SMA up a few pixels can help on undersampled data.</li>
+  <li><b>max sma</b> &mdash; largest SMA to fit. Set this to just inside the galaxy's visible outer edge; fitting way beyond runs the ellipse through sky noise and produces junk entries that waste time.</li>
+  <li><b>step</b> &mdash; radial step size in pixels (default 1.0). Smaller step = finer sampling = more rings = longer fit. The <b>&asymp; N rings</b> label shows the current ring count and estimated fit time.</li>
+</ul>
+<p>Three ellipses are drawn on the left pane for visual feedback: the cyan solid ellipse at <code>sma0</code>, a yellow dashed ellipse at <code>max sma</code>, and a magenta dotted ellipse at <code>min sma</code>. All three share the ellipticity and PA.</p>
+<p>SASpro caps the ring count at 10&nbsp;000 by auto-raising the step size if your current range and step would exceed it &mdash; the fit will still complete, but at a slightly coarser radial sampling than you asked for. The ETA label will tell you.</p>
+
+<h2>6. Sigma clipping</h2>
+<p><b>&sigma;-clip (sclip)</b> (default 3.0) and <b>&sigma;-clip iters (nclip)</b> (default 1) control the clipping of outlier pixels at each isophote. Pixels more than <code>sclip &middot; &sigma;</code> away from the ring median are excluded, iterated up to <code>nclip</code> times. This matters for the fit on real galaxies: a bright foreground star inside the isophote region will drag the fit if not clipped out. Default 3&sigma; / 1 iteration handles most cases; raise iterations to 2 or 3 if you still see a bright star influencing the result.</p>
+
+<h2>7. Fix flags</h2>
+<p>Three checkboxes constrain which geometric parameters the Jedrzejewski iteration solves for at each radius:</p>
+<ul>
+  <li><b>Fix Center</b> &mdash; keep <code>(x0, y0)</code> fixed at the seed. Useful when you know the centre is accurate (bright nucleus) and don't want the fit wandering it on noisy outer rings.</li>
+  <li><b>Fix PA</b> &mdash; keep the position angle fixed at the seed. Useful on an elliptical galaxy that shouldn't twist with radius; forces the model to a true elliptical envelope.</li>
+  <li><b>Fix Ellipticity</b> &mdash; keep <code>&epsilon;</code> fixed. Only sensible when you're certain of the ellipticity (unusual).</li>
+</ul>
+<p>By default none are fixed, so the fit tracks real variations with radius &mdash; useful for diagnosing galaxy structure (isophote twists, radial PA variations).</p>
+
+<h2>8. High harmonics</h2>
+<p><b>Add a3/b3/a4/b4 in model</b> (default off): include the third- and fourth-order Fourier harmonics in the synthesised model image. The Jedrzejewski fit always measures these as byproducts &mdash; they are the departures from pure ellipticity at each radius and are important diagnostics (positive <code>a4</code> indicates discy isophotes, negative <code>a4</code> indicates boxy ones) &mdash; but by default the <b>model image</b> is built from only the pure elliptical component, so the residual will contain the a3/b3/a4/b4 structure as part of what you see.</p>
+<p>Turning this on folds the higher harmonics into the model, so the residual becomes cleaner but also hides any boxy/discy signature. Turn it on when you want the residual to show only non-elliptical, non-harmonic structure (shells, streams, companions); leave it off when you want to see everything the model couldn't capture.</p>
+
+<h2>9. Wedge mask</h2>
+<p>Check <b>Exclude wedge (deg)</b> to tell the fitter to ignore an angular wedge:</p>
+<ul>
+  <li><b>PA0</b> (-180 to 180&deg;) &mdash; central position angle of the wedge.</li>
+  <li><b>&plusmn;width/2</b> (0 to 180&deg;) &mdash; half-width of the wedge, so the full excluded arc is <code>width</code> degrees.</li>
+</ul>
+<p>A translucent dense-pattern overlay appears on the left pane showing exactly what region the fit will ignore. The excluded pixels are set to <code>numpy.ma.masked</code> before they enter the Jedrzejewski iteration, so they neither contribute to the median at any ring nor to the Fourier residuals. Use cases: a bright foreground star on one side of a galaxy, a bright jet, a nearby companion whose light contaminates one side. The wedge mask lets you fit the smooth galaxy light cleanly from the uncontaminated side only.</p>
+
+<h2>10. Normalize before fitting</h2>
+<p>Check <b>Normalize before fitting (Linear Data)</b> to apply SASpro's shared midtones-transfer stretch to a target median of 0.25 before fitting. Useful when the input is linear (direct from a stack) &mdash; the Jedrzejewski iteration converges much more reliably when the galaxy's brightness distribution is in a reasonable dynamic range than on raw linear data where the dynamic range runs from ~0 to maybe 0.02. Leave this off when the input is already stretched.</p>
+<p>Normalisation is applied to the fitting input only. The output model and residual are measured against the normalised version, so if you save the residual back to a view and expect it to be subtractable from the <i>original</i> linear data, that won't work directly &mdash; you'd need to invert the stretch, which SASpro doesn't do automatically. For most science use cases (visualisation of structure, published figures) the normalised residual is what you want anyway.</p>
+
+<h2>11. Quick preview (4&times; downsample)</h2>
+<p>Check <b>Quick preview (4&times; downsample)</b> (default on) to fit at a 4&times; downsampled resolution and upsample the model back for the residual. The fit runs 16&times; faster at the cost of a modest loss in finest-scale accuracy &mdash; the output model is a sharp 4&times;4 pixel staircase at the boundaries of each ring, visible under extreme zoom but not at normal viewing. Perfect for interactive iteration while you're dialing in the seed, PA, &epsilon;, and SMA range.</p>
+<p>Turn off for the final fit when you want the model at full input resolution. The ring estimate label updates to show the ETA at the current downsample level and tags the result &ldquo;(quick)&rdquo; or &ldquo;(full)&rdquo; so you know which you're looking at.</p>
+
+<h2>12. Fit Model</h2>
+<p>Clicks run the fit on a background thread. A modal progress dialog shows the current phase (preparing, building mask, fitting isophotes, building model, upsampling/finalizing) and the ETA based on the learned seconds-per-ring profile. When it's done, the right pane updates to show the residual preview.</p>
+<p>If photutils raises an error (empty isolist, degenerate geometry, singular matrix on a bad seed), the error is surfaced in a message box and the dialog stays usable so you can adjust and retry.</p>
+
+<h2>13. Right-pane preview</h2>
+<p>After the fit, the right pane shows the residual with the symmetric stretch applied (hero equation). The stretch scale <code>S</code> is the 99.5th percentile of <code>|R|</code> measured inside the fit boundary (the last valid isolist entry), so the normalisation is driven by the galaxy's structure rather than by sky noise or by a hot pixel at the frame corner.</p>
+<p>Check <b>Show original outside max ellipse</b> (default on) to blend the original image back into the preview outside the fit boundary. The transition is a 4%-feather elliptical alpha mask, so you see the residual inside the galaxy region and the actual image outside it &mdash; keeps context so you can navigate.</p>
+
+<h2>14. Export</h2>
+<p>Each product (model, residual) has an export row with multiple output options:</p>
+
+<h3>Save Model/Residual FITS&hellip;</h3>
+<p>Writes a 32-bit float FITS with every seed and fit parameter in the primary header. See &sect;15.14 for the full keyword set.</p>
+
+<h3>New Doc: Normalized</h3>
+<p>Pushes a new SASpro document with the array normalised min&rarr;0, max&rarr;1. For residuals, the <b>Shift residuals to &ge; 0 on save</b> checkbox adds a pedestal first so the min is non-negative before normalisation (useful for pipelines that expect non-negative images; the pedestal is recorded in the metadata and in FITS saves).</p>
+
+<h3>New Doc: Residual (visible)</h3>
+<p>Pushes exactly what the right pane is showing &mdash; symmetric stretch plus optional outside-ellipse blend, feather and all. Takes the preview buffer directly. Useful for publishing &ldquo;here's what the fit revealed&rdquo; figures.</p>
+
+<h3>New Doc: Residual (stretched)</h3>
+<p>Pushes the symmetric-stretch residual <i>without</i> the outside-ellipse blend. The whole image gets the <code>0.5 + R/(2S)</code> stretch applied, so the sky noise around the galaxy also sits at mid-gray. Useful when the structure you're looking for might extend beyond the fit boundary (shells, tidal streams).</p>
+
+<h2>15. Technical details</h2>
+<p class="tech-lead">The isophote model, Jedrzejewski fit, residual preview, and quick-preview downsample internals.</p>
+
+<h3>15.1 Isophote model</h3>
+<p>Each isophote is a parametric ellipse at semi-major axis <code>a</code> with centre <code>(c_x, c_y)</code>, ellipticity <code>&epsilon;</code>, and position angle <code>&theta;</code>. In rotated coordinates:</p>
+<div class="matheq">x_r = (x - c_x)\cos\theta + (y - c_y)\sin\theta,\;\; y_r = -(x - c_x)\sin\theta + (y - c_y)\cos\theta</div>
+<p>a point lies on the isophote when:</p>
+<div class="matheq">\left( \frac{x_r}{a} \right)^2 + \left( \frac{y_r}{b} \right)^2 = 1,\quad b = a(1 - \varepsilon)</div>
+<p>The galaxy's smooth light distribution is described by a stack of such isophotes, each at its own radius, with its own intensity <code>I_0(a)</code>, centre, ellipticity, and PA. The Jedrzejewski algorithm fits these parameters at each radius independently from the image data.</p>
+
+<h3>15.2 Jedrzejewski Fourier fit</h3>
+<p>At each radius, the Jedrzejewski (1987) algorithm samples the image around a trial ellipse and decomposes the azimuthal brightness variation into a Fourier series:</p>
+<div class="matheq">I(a, \phi) = I_0(a) + \sum_{n \geq 1} \left[ A_n(a) \cos(n\phi) + B_n(a) \sin(n\phi) \right]</div>
+<p>Four low-order coefficients drive geometric updates:</p>
+<div class="matheq">A_1, B_1: \mathrm{centre\ shift};\quad A_2: \varepsilon;\quad B_2: \mathrm{PA}</div>
+<p>Equivalently, the Jacobian relating the four parameters <code>(c_x, c_y, &epsilon;, &theta;)</code> to the four Fourier residuals is inverted to give the Newton step:</p>
+<div class="matheq">\mathbf{p}^{(k+1)} = \mathbf{p}^{(k)} + J^{-1}(A_1, B_1, A_2, B_2)</div>
+<p>and the iteration continues until the Fourier residuals drop below a convergence threshold. The output is the <b>isolist</b>: one <code>IsophoteFit</code> record per ring with the final <code>(a, I_0, c_x, c_y, &epsilon;, &theta;)</code> plus the a3/b3/a4/b4 higher-order harmonics measured against the final geometry (a3/b3 = pure three-fold distortion, a4/b4 = boxy/discy).</p>
+<p>GLIMR configures the integration mode as <code>bilinear</code> and sigma-clipping at the user settings; everything else is photutils' responsibility.</p>
+
+<h3>15.3 Model synthesis</h3>
+<p>Given an isolist, <code>photutils.isophote.build_ellipse_model</code> renders a 2D image <code>M(x, y)</code> that samples <code>I_0(a)</code> along each pixel's elliptical radius according to the isolist:</p>
+<div class="matheq">M(x, y) = \mathcal{B}\!\left[\{I_0(a_k), \varepsilon_k, \theta_k, c_k\}_{k=1}^{N}\right](x, y)</div>
+<p>Internally this interpolates between adjacent rings' <code>I_0</code> values at each pixel's elliptical radius under the ring's local geometry (centre, ellipticity, PA). When <b>Add a3/b3/a4/b4 in model</b> is on, the azimuthal variation at each ring is enriched:</p>
+<div class="matheq">I_k(\phi) = I_0(a_k) + A_3^{(k)} \cos 3\phi + B_3^{(k)} \sin 3\phi + A_4^{(k)} \cos 4\phi + B_4^{(k)} \sin 4\phi</div>
+<p>so the model includes the boxy/discy character of the isophotes. Off (default), the model is strictly pure elliptical, and the a3&hellip;b4 structure shows up as part of the residual.</p>
+
+<h3>15.4 Residual</h3>
+<p>Trivial but critical:</p>
+<div class="matheq">R(x, y) = I(x, y) - M(x, y)</div>
+<p>Signed, floating point. Positive wherever the image is brighter than the smooth model (missed structure); negative wherever the image is darker (dust lanes, over-fit). GLIMR carries <code>R</code> as float32 throughout; stretching only happens at display time.</p>
+
+<h3>15.5 Symmetric preview stretch</h3>
+<p>For display, the signed residual is linearly stretched so <code>R = 0</code> maps to mid-gray and the strongest &plusmn;residuals extend to black/white. The stretch scale <code>S</code> is the 99.5th percentile of <code>|R|</code> measured only inside the fit boundary:</p>
+<div class="matheq">S = \mathrm{percentile}_{99.5}\!\left( |R(x, y)| \right)_{(x, y) \in \mathcal{E}_{\max}}</div>
+<p>where <code>&Escr;_max</code> is the last valid isolist ellipse. Measuring <code>S</code> only inside the fit boundary means a hot pixel at the frame corner can't drive the normalisation, and the galaxy's residual structure gets the full dynamic range. The display map is the hero equation:</p>
+<div class="matheq">D(x, y) = \mathrm{clip}\!\left( 0.5 + \frac{R(x, y)}{2 S},\; 0,\; 1 \right)</div>
+<p>Why the 99.5th percentile rather than max: a single bright foreground star inside the fit boundary that the mask didn't catch would saturate the stretch and make the galaxy's actual residual structure invisible. The 99.5 cut keeps the top 0.5% of residual pixels clipped (which is where that star lives) while the rest of the structure maps linearly across the dynamic range.</p>
+
+<h3>15.6 Elliptical feather alpha</h3>
+<p>When <b>Show original outside max ellipse</b> is on, GLIMR blends the symmetric-stretched residual back into the normalised input using an elliptical feather. The elliptical radius at a pixel is:</p>
+<div class="matheq">\alpha(x, y) = \mathrm{clip}\!\left( \frac{1 - m(x, y)}{\beta},\; 0,\; 1 \right),\;\; m = \sqrt{(x_r/a)^2 + (y_r/b)^2}</div>
+<p>with <code>&beta; = 0.04</code> (4% feather width in units of normalised elliptical radius). Inside the ellipse <code>m &lt; 1</code> so <code>&alpha; = 1</code>; across the 4% band around the boundary <code>&alpha;</code> ramps smoothly to 0; outside <code>&alpha; = 0</code>. The final preview is:</p>
+<div class="matheq">D_{\mathrm{out}}(x, y) = \alpha \cdot D_{\mathrm{resid}} + (1 - \alpha) \cdot I_{\mathrm{in}}</div>
+<p>No sharp transition, no visible seam between the residual region and the context region.</p>
+
+<h3>15.7 Wedge mask</h3>
+<p>The wedge mask carves out an angular sector:</p>
+<div class="matheq">\mathcal{W}(x, y) = \mathbb{1}\!\left[ \left| \arctan\!\left( \sin(\phi - \phi_0),\; \cos(\phi - \phi_0) \right) \right| \leq \frac{w}{2} \right]</div>
+<p>where <code>&phi; = atan2(y - c_y, x - c_x)</code> is the angle from the centre to the pixel and <code>&phi;_0, w</code> are the wedge's central PA and full width. The <code>arctan2(sin, cos)</code> construction wraps the angular difference to <code>[-&pi;, &pi;]</code> correctly without a discontinuity at 180&deg;. Masked pixels become <code>numpy.ma.masked</code> entries in the fitter's input array, so they're excluded from the Fourier sum at every ring.</p>
+
+<h3>15.8 Quick-preview downsample</h3>
+<p>4&times; downsample runs the fit on an image that's 16&times; smaller in pixel count. Block-mean downsample:</p>
+<div class="matheq">I_{\downarrow}(i, j) = \frac{1}{d^2} \sum_{u=0}^{d-1} \sum_{v=0}^{d-1} I(d i + u,\; d j + v)</div>
+<p>Geometry is scaled consistently:</p>
+<div class="matheq">c_{\downarrow} = c / d,\quad a_{\downarrow} = a / d,\quad \Delta_{\downarrow} = \max(\Delta / d,\; 0.5)</div>
+<p>The <code>max(&middot;, 0.5)</code> floor on step size prevents the ring count from blowing up at the downsample level (a sub-half-pixel step on the small image is wasted; the small image can't resolve rings closer than that). The fit runs on the small image. Then the model is upsampled with nearest-neighbour to the input resolution:</p>
+<div class="matheq">M_{\uparrow}(x, y) = M_{\downarrow}\!\left( \lfloor x / d \rfloor,\; \lfloor y / d \rfloor \right)</div>
+<p>and the residual is computed at full resolution against the upsampled model (not against the downsampled image &mdash; so the residual still shows full-resolution structure, just measured against a slightly staircased smooth model). The isolist entries are rescaled back to full-res coordinates for the boundary overlays. Overall speedup: close to 16&times; on the fit itself.</p>
+
+<h3>15.9 Adaptive ETA and ring cap</h3>
+<p>Ring count estimate:</p>
+<div class="matheq">N_{\mathrm{rings}} \approx \frac{a_{\max} - a_{\min}}{\Delta}</div>
+<p>Soft cap at 10&nbsp;000 rings: if the user's settings would exceed this, the step size is bumped up:</p>
+<div class="matheq">\Delta := \max\!\left( \Delta,\;\; \frac{a_{\max} - a_{\min}}{10000} \right)</div>
+<p>Per-downsample-level seconds-per-ring profile <code>&tau;(d)</code> is stored in a dict with EMA update after each fit:</p>
+<div class="matheq">\tau_{\mathrm{new}} = \gamma \cdot \tau_{\mathrm{measured}} + (1 - \gamma) \cdot \tau_{\mathrm{prev}},\;\; \gamma = 0.35</div>
+<p>So the ETA improves with each fit at that downsample level. When the current level's profile is missing (first time running at a new downsample), SASpro extrapolates from the other level using the roughly quadratic pixel-count scaling:</p>
+<div class="matheq">\tau(d_1) \approx \tau(d_2) \cdot (d_2 / d_1)^2</div>
+<p>so if you've only ever run at 4&times; downsample and then switch off quick preview, the ETA for the full-res fit is seeded as roughly 16&times; the quick-preview per-ring time. Rough but correct order-of-magnitude. The ETA displayed on the ring label is <code>&tau; &middot; N_rings</code> plus a &ldquo;(quick)&rdquo; / &ldquo;(full)&rdquo; tag.</p>
+
+<h3>15.10 Threading model</h3>
+<p>The fit runs in a <code>QThread</code>-wrapped <code>_FitWorker</code> (QObject). Progress is reported through a <code>progress(int, str)</code> signal at five phases: Preparing, Building mask, Fitting isophotes, Building model, Upsampling / finalizing. The main thread handles only UI updates &mdash; the dialog stays responsive, the progress bar advances, you can see the status label changing. On completion, the model, residual, and isolist arrive back on the UI thread via a <code>finished</code> signal; on error, a <code>error(str)</code> signal routes to a message box. Worker and thread are both <code>deleteLater</code>'d after completion so repeated fits don't leak.</p>
+
+<h3>15.11 Input normalisation path</h3>
+<p>When <b>Normalize before fitting (Linear Data)</b> is on, GLIMR runs <code>stretch_mono_image(x, target_median=0.25)</code> before everything else &mdash; same midtones-transfer stretch as Autostretch and GHS, same code path. The normalised image is cached as <code>_in01</code> and used both for display (left pane) and as the input to the fitter. The output model and residual are therefore in the normalised domain. Off: the raw image is clipped to <code>[0, 1]</code> and used directly.</p>
+
+<h3>15.12 Preview blend reference</h3>
+<p>The outside-ellipse context is the <b>normalised input</b> (<code>_in01</code>), not the raw image. This keeps the brightness levels in the context region matched to the brightness scale of the residual stretch, which keeps the transition across the feather smooth. Mixing a raw-domain outside with a stretched-domain inside would print a visible brightness jump at the feather boundary.</p>
+
+<h3>15.13 Three push variants</h3>
+<p>The three residual push buttons emit different data arrays with different metadata:</p>
+
+<table>
+<tr><th>Variant</th><th>Data</th><th>Metadata highlights</th></tr>
+<tr><td>Normalized</td><td><code>(R - min) / (max - min)</code>, with optional pedestal if <b>Shift residuals to &ge; 0 on save</b> is on</td><td><code>push_variant: "normalized_01"</code>, <code>source_range_min</code>, <code>source_range_max</code></td></tr>
+<tr><td>Visible</td><td>Exact right-pane preview buffer</td><td><code>push_variant: "visible_preview"</code>, <code>preview_blend</code>, <code>feather_frac: 0.04</code></td></tr>
+<tr><td>Stretched</td><td>Symmetric stretch applied to the whole image (no outside blend)</td><td><code>push_variant: "preview_stretch"</code>, <code>stretch_pct: 99.5</code>, <code>stretch_scale_S</code>, <code>zero_maps_to_gray_0p5: true</code></td></tr>
+</table>
+
+<p>All three variants include the full isophote-parameter dict in metadata (<code>isophote_params</code> key), so the pushed document carries a complete record of how it was produced.</p>
+
+<h3>15.14 FITS save header</h3>
+<p>FITS saves embed the fit parameters as header keywords. Full set:</p>
+
+<table>
+<tr><th>Keyword</th><th>Meaning</th></tr>
+<tr><td><code>CREATOR</code></td><td>&ldquo;GLIMR&rdquo;</td></tr>
+<tr><td><code>PRODUCT</code></td><td>&ldquo;model&rdquo; or &ldquo;resid&rdquo;</td></tr>
+<tr><td><code>ORIGMIN</code>, <code>ORIGMAX</code></td><td>min/max of the data before any pedestal is added</td></tr>
+<tr><td><code>PEDESTAL</code></td><td>pedestal offset added if the residual was shifted to &ge; 0 at save time</td></tr>
+<tr><td><code>DSFACTOR</code></td><td>downsample factor used for the fit (then upsampled)</td></tr>
+<tr><td><code>ISO_EPS</code>, <code>ISO_PA</code>, <code>ISO_SMA0</code></td><td>seed geometry (ellipticity, position angle, initial SMA)</td></tr>
+<tr><td><code>ISO_MIN</code>, <code>ISO_MAX</code>, <code>ISO_STEP</code></td><td>SMA range and step</td></tr>
+<tr><td><code>ISO_SCLIP</code>, <code>ISO_NCLIP</code></td><td>sigma-clip settings</td></tr>
+<tr><td><code>ISO_FXC</code>, <code>ISO_FPA</code>, <code>ISO_FEPS</code></td><td>fix-flags for centre, PA, ellipticity</td></tr>
+<tr><td><code>ISO_HARM</code></td><td>true if high harmonics were folded into the model</td></tr>
+<tr><td><code>ISO_WEDGE</code>, <code>ISO_WPA</code>, <code>ISO_WWID</code></td><td>wedge mask (enabled flag, central PA, full width)</td></tr>
+</table>
+
+<p>Reading a saved residual back and inverting the pedestal to recover signed residuals: <code>R = data - PEDESTAL</code>. The <code>ORIGMIN</code> / <code>ORIGMAX</code> keywords let you confirm the original range so you can verify the inversion.</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>interactive editor and workflow</b> around photutils' isophote fitter is new work by <b>Franklin Marek</b> for SetiAstro Suite Pro: the synced dual-pane view with mirrored transforms and scrollbars; the Shift+click centre picker and Ctrl-drag ellipse adjustment; the live-updating seed/min/max ellipse overlays and the wedge-mask overlay; the input-normalisation path for linear data; the 4&times; quick-preview downsample with scaled geometry, nearest-neighbour model upsample, full-resolution residual recomputation, and isolist rescaling for the boundary overlay; the symmetric residual preview stretch with the 99.5th-percentile scale measured inside the fit boundary and the <code>0.5 + R/(2S)</code> zero-at-gray display map; the feathered elliptical blend for outside-boundary context; the three-flavour residual push (normalised, visible, stretched) with full metadata capture; the FITS save with every seed/fit parameter embedded and the pedestal-offset round-trip support; the adaptive ETA with per-downsample seconds-per-ring EMA, cross-scale extrapolation, and the 10&nbsp;000-ring soft cap that auto-raises step size; and the background-threaded fit worker with five-phase progress reporting.
+<br><br>
+<b>The isophote fitting itself is not SASpro work.</b> It is <b>photutils.isophote</b> &mdash; specifically its implementation of <b>Jedrzejewski (1987, MNRAS 226:747)</b>'s iterative Fourier-decomposition algorithm, where azimuthal brightness along each trial ellipse is decomposed into a Fourier series and the four low-order residuals <code>(A_1, B_1, A_2, B_2)</code> are inverted to update the four geometric parameters <code>(c_x, c_y, &epsilon;, &theta;)</code> until convergence. The higher-order harmonics <code>(a_3, b_3, a_4, b_4)</code> are measured as byproducts and are standard galaxy-morphology diagnostics: <code>a_4 &gt; 0</code> indicates discy isophotes, <code>a_4 &lt; 0</code> indicates boxy ones, following <b>Bender &amp; M&ouml;llenhoff (1987, A&amp;A 177:71)</b>. Model synthesis is <code>photutils.isophote.build_ellipse_model</code>, which interpolates the isolist's <code>I_0(a)</code> and (optionally) high-harmonic Fourier coefficients to produce the model image.
+<br><br>
+Reused SASpro primitives (also original SASpro work, cross-credited): the <b>midtones-transfer stretch</b> (<code>stretch_mono_image</code>, same code behind Autostretch and GHS) used by the input normalisation path.
+<br><br>
+Libraries: <b>photutils</b> provides the isophote fitter, the geometry object, and the model synthesiser (<code>photutils.isophote.Ellipse</code>, <code>EllipseGeometry</code>, <code>build_ellipse_model</code>). <b>NumPy</b> provides array operations, masked arrays (<code>numpy.ma.masked_array</code> for the wedge mask), and linear-algebra helpers for the internal auto-estimate (eigendecomposition of the 2&times;2 intensity-weighted covariance matrix via <code>linalg.eigh</code>). <b>Astropy</b> provides FITS I/O (<code>astropy.io.fits</code>) for save. <b>PyQt6</b> provides the UI: <code>QGraphicsView</code> / <code>QGraphicsScene</code> for the dual synced views, the custom <code>DraggableEllipse</code> item for the Ctrl-drag seed, the <code>_SyncedView</code> peer-mirroring, the <code>QThread</code>+<code>QObject</code> worker pattern, and the <code>QProgressDialog</code> for fit progress.
+</div>
+
+</body>
+</html>

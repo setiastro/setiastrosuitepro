@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b0e0d2; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  a { color:#8fd7c6; text-decoration:none; }
+  a:hover { color:#b7f0df; text-decoration:underline; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border:1px solid #2d6a3f; border-left:3px solid #3dbf5a;
+         padding:8px 12px; margin:10px 0; color:#cfe8d4; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .gpu { background:#1a2a22; border:1px solid #2d6a4f; border-left:3px solid #3dbf7a;
+         padding:8px 12px; margin:10px 0; color:#cfe8d8; }
+  .cap { color:#9a9a9a; font-size:11px; }
+  .toc { background:#161b1a; border:1px solid #2a3835; border-left:3px solid #3dbf9f;
+         padding:10px 14px; margin:10px 0 14px 0; }
+  .toc h3 { margin-top:0; color:#3dbf9f; font-size:13px; }
+  .toc ul { margin:0; padding-left:18px; column-count:2; column-gap:24px; }
+  .toc li { break-inside:avoid; }
+</style>
+</head>
+<body>
+
+<h1>Stacking Suite</h1>
+<p class="sub">SASpro's complete calibration-and-integration pipeline: from raw camera RAW/TIFF through master darks and flats, debayer, cosmetic correction, satellite trail masking, registration against any alignment model up to 4th-order polynomial, drizzle, up to multi-panel mosaic sets, multi-frame deconvolution, and a final rejected-and-weighted integrated master &mdash; all driven from one window, with CPU, CUDA, MPS and DirectML backends shared across every heavy stage.</p>
+
+<p>The Stacking Suite is laid out as six tabs along the top (<i>Quick Stack</i>, <i>Convert Camera RAW/TIFF</i>, <i>Darks</i>, <i>Flats</i>, <i>Lights</i>, <i>Image Integration</i>) with a header strip above them (wrench, folder path, Change&hellip;, Open Log, document) and almost every parameter you'll want to touch living in the orange-wrench <b>Stacking Settings</b> dialog. The sections below walk through each tab in the order you'll meet them, then cover the Settings dialog, then the maths and plumbing behind the scenes.</p>
+
+<div class="toc">
+<h3>Contents</h3>
+<ul>
+  <li><a href="#top-row">Top row &amp; the wrench</a></li>
+  <li><a href="#quick-stack">1. Quick Stack</a></li>
+  <li><a href="#convert">2. Convert Camera RAW/TIFF</a></li>
+  <li><a href="#darks">3. Darks</a></li>
+  <li><a href="#flats">4. Flats</a></li>
+  <li><a href="#lights">5. Lights</a></li>
+  <li><a href="#integration">6. Image Integration</a></li>
+  <li><a href="#settings">7. Stacking Settings dialog</a></li>
+  <li><a href="#profiles">8. Profiles</a></li>
+  <li><a href="#tech">9. Technical details</a></li>
+  <li><a href="#tech-calibration">&nbsp;&nbsp;9.1 Calibration pipeline</a></li>
+  <li><a href="#tech-masters">&nbsp;&nbsp;9.2 Master-frame integration</a></li>
+  <li><a href="#tech-normalize">&nbsp;&nbsp;9.3 Normalization &amp; gradient</a></li>
+  <li><a href="#tech-registration">&nbsp;&nbsp;9.4 Registration</a></li>
+  <li><a href="#tech-weights">&nbsp;&nbsp;9.5 Frame weighting</a></li>
+  <li><a href="#tech-rejection">&nbsp;&nbsp;9.6 Rejection algorithms</a></li>
+  <li><a href="#tech-drizzle">&nbsp;&nbsp;9.7 Drizzle</a></li>
+  <li><a href="#tech-mfdeconv">&nbsp;&nbsp;9.8 Multi-frame deconvolution</a></li>
+  <li><a href="#tech-sets">&nbsp;&nbsp;9.9 Registration Sets</a></li>
+  <li><a href="#tech-gpu">&nbsp;&nbsp;9.10 GPU backends</a></li>
+  <li><a href="#tech-cleanup">&nbsp;&nbsp;9.11 File layout &amp; cleanup</a></li>
+  <li><a href="#credits">Credits</a></li>
+</ul>
+</div>
+
+<a id="top-row"></a>
+<h2>Top row &amp; the wrench</h2>
+<p>A single strip sits above the tabs and stays visible at all times:</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td><b>🔧 wrench (orange)</b></td>
+      <td>Opens the <b>Stacking Settings</b> dialog &mdash; profiles, distortion/transform, alignment, performance, drizzle, MFDeconv tuning, rejection, cosmetic correction, comet, comet star removal. See &sect;7.</td></tr>
+  <tr><td><b>Current Stacking Folder</b></td>
+      <td>Live display of the folder every intermediate file and master will land in. Reads from <code>stacking/dir</code> and tooltips the full path.</td></tr>
+  <tr><td><b>Change&hellip;</b></td>
+      <td>Picks a new stacking folder. The suite creates <code>Calibrated/</code>, <code>Normalized_Images/</code>, <code>Aligned_Images/</code> and <code>Masters/</code> underneath it on demand.</td></tr>
+  <tr><td><b>Open Log</b></td>
+      <td>Raises the dockable Stacking Suite log window. Everything the suite prints is tee'd to this log <i>and</i> to <code>stacking_log.txt</code> inside the stacking folder, so you have a timestamped record of every run.</td></tr>
+  <tr><td><b>📄 document</b></td>
+      <td>This help page. Added at the far right of the row.</td></tr>
+</table>
+
+<a id="quick-stack"></a>
+<h2>1. Quick Stack</h2>
+<p>The default tab, and the easiest way to get a stack out the door. Five cards walk you top-left to bottom-right through the pipeline, each with a traffic-light indicator:</p>
+
+<div class="workflow"><b>Workflow</b><br>
+1&nbsp;Darks &rarr; 2&nbsp;Flats &rarr; 3&nbsp;Lights &rarr; 4&nbsp;Calibrate &rarr; 5&nbsp;Register + Integrate.<br>
+Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="color:#e8d987">yellow</b> when raw frames are present but no master has been built, and <b style="color:#8fd99f">green</b> when the step is complete.
+</div>
+
+<h3>1.1 Card controls</h3>
+<ul>
+  <li><b>1) Darks</b> &mdash; <i>Load Raw Darks</i>, <i>Load Master Dark</i>, <i>Build Master</i>, <i>Darks Tab</i>. Also accepts flat darks and bias frames; they are routed by IMAGETYP into the same tree.</li>
+  <li><b>2) Flats</b> &mdash; <i>Load Raw Flats</i>, <i>Load Master Flat</i>, <i>Build Master</i>, <i>Flats Tab</i>.</li>
+  <li><b>3) Lights</b> &mdash; <i>Load Lights</i> (files) or <i>Load Light Folder</i> (directory), plus <i>Lights Tab</i> to drop into the full view.</li>
+  <li><b>4) Calibration</b> &mdash; <i>Calibrate Lights</i> runs the pipeline (dark&nbsp;sub &rarr; flat&nbsp;div &rarr; cosmetic correction &rarr; optional pedestal &rarr; optional satellite masking). <i>Refresh Status</i> re-counts raw and master files.</li>
+  <li><b>5) Register + Integrate</b> &mdash; <i>Register + Integrate</i> runs the full back-half, <i>Integrate Only</i> skips re-registration if <code>_r.fit</code> files already exist, and <i>Image Integration Tab</i> hands off to the advanced view.</li>
+</ul>
+
+<h3>1.2 Pipeline buttons at the bottom</h3>
+<ul>
+  <li><b>🗑️ Clean Up Intermediate Files</b> &mdash; deletes <code>Normalized_Images/</code>, <code>Aligned_Images/</code> and loose <code>.dat</code>/<code>.npy</code>/<code>.tmp</code> inside the stacking folder to reclaim disk space between runs.</li>
+  <li><b>🚀 Run Full Pipeline</b> &mdash; chains everything: build master darks &rarr; build master flats &rarr; calibrate lights &rarr; register &amp; integrate. Honours the current traffic-light state (will skip steps you don't need) and uses the current Settings for every stage.</li>
+</ul>
+
+<a id="convert"></a>
+<h2>2. Convert Camera RAW/TIFF</h2>
+<p>A standalone batch converter from camera formats (CR2, NEF, ARW, RAF, DNG, TIFF, PNG, JPEG, &hellip; &mdash; anything <code>rawpy</code> can read, plus TIFF via tifffile) into debayered FITS. It never touches the Lights/Darks/Flats trees &mdash; the output goes to a folder you choose.</p>
+
+<ul>
+  <li><b>Add Conversion Files</b> &mdash; multi-select picker.</li>
+  <li><b>Add Conversion Directory</b> &mdash; folder picker; recurses when <i>Recurse subfolders</i> is on elsewhere.</li>
+  <li><b>Select Output Directory</b> &mdash; converted <code>.fit</code> files land here; without one set, you'll be prompted.</li>
+  <li><b>Clear List</b> &mdash; empties the tree without touching files.</li>
+  <li><b>Convert All Files to FITS</b> &mdash; runs the batch. Each file is debayered (VNG by default), gets a minimal FITS header built from EXIF, and is written as float32.</li>
+</ul>
+
+<div class="tip"><b>When to use this tab:</b> only when your lights are in DSLR raw formats and you'd rather preprocess them to FITS once than let the Lights tab decode them on every run. Modern SASpro will happily eat raw files directly through the Lights tab too, so this is primarily for mixed sessions or archival.</div>
+
+<a id="darks"></a>
+<h2>3. Darks</h2>
+<p>Groups raw dark/flat-dark/bias frames and turns them into master darks. The tab is split in two: raw darks on the left, controls on the right, and the master-dark list across the bottom.</p>
+
+<h3>3.1 Left pane: raw darks tree</h3>
+<ul>
+  <li><b>Dark Frames tree</b> &mdash; grouped by exposure (seconds) and image size; metadata column shows file count, total integration time, temperature bucket, gain and offset.</li>
+  <li><b>Add Dark Files</b>, <b>Add Dark Directory</b> &mdash; adds files or scans a folder. The directory scan honours <i>Recurse subfolders</i> and sorts by <code>IMAGETYP</code>: darks stay here, flats are routed to the Flats tab, lights to the Lights tab.</li>
+  <li><b>Recurse subfolders</b> &mdash; shared with the Flats and Lights tabs via the <code>stacking/recurse_dirs</code> setting.</li>
+  <li><b>Auto-detect session</b> &mdash; shared with Flats/Lights. For darks this is cosmetic only: masters always bucket by (exposure, size, temp, gain, offset) regardless of capture date, so your January and June darks of the same exposure can combine.</li>
+  <li><b>Clear Selection</b> &mdash; removes highlighted items from the tree only.</li>
+</ul>
+
+<h3>3.2 Right pane</h3>
+<ul>
+  <li><b>Exposure Tolerance (seconds)</b> &mdash; 0&ndash;30 s window around each exposure for grouping (default 5 s). Prevents a 299.8&nbsp;s dark being orphaned from a 300.0&nbsp;s group.</li>
+  <li><b>Turn Those Darks Into Master Darks</b> &mdash; the big yellow-bordered button. Builds one master per unique (exposure, size, temperature bucket, gain, offset) group using the <b>Calibration Rejection Algorithm</b> set in Settings (default: Winsorized Sigma Clipping).</li>
+</ul>
+
+<h3>3.3 Right-click &amp; context</h3>
+<p>Right-click any raw-dark row for <b>Set Session Tag&hellip;</b>. Darks are session-agnostic for integration (see 3.1), but the tag is preserved in the tree for your reference.</p>
+
+<h3>3.4 Master Darks list</h3>
+<p>Shows every master dark currently loaded, with its exposure and file path. <b>Load Master Dark</b> adds a pre-built master from disk; <b>Clear Selection</b> removes items from the list and persists the change.</p>
+
+<a id="flats"></a>
+<h2>4. Flats</h2>
+<p>Same shape as Darks but with filter awareness and per-group dark-override controls.</p>
+
+<h3>4.1 Left pane: raw flats tree</h3>
+<ul>
+  <li><b>Flat Frames tree</b> &mdash; four columns: Filter &amp; Exposure, Metadata, Master Dark Used, Override Dark.</li>
+  <li><b>Add Flat Files</b> / <b>Add Flat Directory</b> &mdash; same semantics as Darks.</li>
+  <li><b>Recurse subfolders</b>, <b>Auto-detect session</b> &mdash; shared toggles. When Auto-detect is off, the <b>Manual Session</b> field below applies to every new flat.</li>
+  <li><b>Manual Session</b> &mdash; freeform tag (e.g. <code>Night1</code>, <code>2025-12-13</code>, <code>SessionA</code>). Only used when Auto-detect is off, and master flats always include their session in the key.</li>
+</ul>
+
+<h3>4.2 Right pane</h3>
+<ul>
+  <li><b>Exposure Tolerance (seconds)</b> &mdash; sub-second precision (0&ndash;30&nbsp;s, step 0.01), persisted. Flats are usually short, so a tight tolerance groups 1.1&nbsp;s and 1.2&nbsp;s shots correctly.</li>
+  <li><b>Auto-Select Closest Master Dark</b> &mdash; for every flat group, scores the available master darks by exposure proximity (and GAIN/OFFSET match within 1 count) and picks the best.</li>
+  <li><b>Turn Those Flats Into Master Flats</b> &mdash; builds one master flat per (filter, size, session) group.</li>
+</ul>
+
+<h3>4.3 Right-click &amp; context</h3>
+<p>Right-click any flat group for:</p>
+<ul>
+  <li><b>Override Master Dark for this group&hellip;</b> &mdash; file picker; the chosen dark is used only for this flat group. Row's Override column turns gold.</li>
+  <li><b>Clear Dark Override for this group</b> &mdash; reverts to Auto (or None if auto-select is off).</li>
+  <li><b>No Dark Calibration for this group</b> &mdash; flats go through without any dark subtraction. Row goes red. Useful for cameras where the flat-dark pedestal is baked in.</li>
+  <li><b>Set Session Tag&hellip;</b> &mdash; retags the whole group.</li>
+</ul>
+
+<a id="lights"></a>
+<h2>5. Lights</h2>
+<p>Where you load the actual signal data, apply the calibration pipeline, and optionally hand off straight to registration.</p>
+
+<h3>5.1 Lights tree</h3>
+<p>Five columns: Filter &amp; Exposure, Metadata, Master Dark, Master Flat, Corrections. Grouped by filter at the top level and by (exposure, size) beneath. Leaves show individual frames with their status and chosen masters.</p>
+
+<ul>
+  <li><b>Add Light Files</b>, <b>Add Light Directory</b> &mdash; files or recursive folder scan.</li>
+  <li><b>Remove Selected</b> &mdash; removes highlighted leaves from the tree only.</li>
+</ul>
+
+<h3>5.2 Options row</h3>
+<ul>
+  <li><b>Recurse subfolders</b>, <b>Auto-detect session</b> &mdash; shared toggles.</li>
+  <li><b>Auto-register &amp; integrate after calibration</b> &mdash; when checked, the moment calibration finishes the suite switches to Image Integration and clicks <i>Register and Integrate Images</i> for you.</li>
+  <li><b>Interactive flat strength</b> &mdash; before saving each calibrated group, pops a side-by-side preview letting you tune &alpha; (0 = no flat, 1 = normal, 2 = doubled correction) with a live &ldquo;raw / corrected&rdquo; view. Lifesaver when your flats slightly over- or under-correct vignetting.</li>
+</ul>
+
+<p><b>Manual Session</b> field: same as Flats, shared via <code>stacking/session_keyword</code>.</p>
+
+<h3>5.3 Corrections row</h3>
+<ul>
+  <li><b>Enable Cosmetic Correction</b> &mdash; MAD-based hot/cold pixel detector with structure protection. On by default. Tuning lives in the Settings dialog (&sect;7.9); the Lights tab has a <b>🔬 Tune Cosmetic Correction &sigma;&hellip;</b> button that opens a dedicated preview dialog on your selected frame.</li>
+  <li><b>Apply Pedestal</b> &mdash; adds a small positive constant <i>before</i> dark subtraction so a near-black sky never clips at zero. <b>Pedestal (0&ndash;1000)</b> below is the DN value; divided by 65535 internally (so 50 &asymp; +0.000763 in 0&ndash;1 units).</li>
+  <li><b>Apply Bias Subtraction (For CCD Users)</b> &mdash; subtracts a scaled master bias. Modern CMOS cameras use correlated double sampling and don't need this; tooltip reminds you.</li>
+</ul>
+
+<h3>5.4 🔬 Tune Cosmetic Correction &sigma;&hellip;</h3>
+<p>Opens the standalone Cosmetic Correction dialog on your selected light (or the first available). Use the ◀ / picker / ▶ bar at the top to bounce between frames. Adjust Hot&nbsp;&sigma; and Cold&nbsp;&sigma; with the live preview until you're happy with how it handles hot pixels without eating star cores. &ldquo;Save &sigma; Settings&rdquo; writes the values back here so calibration uses them.</p>
+
+<h3>5.5 Satellite trail masking</h3>
+<ul>
+  <li><b>Remove Satellite Trails During Calibration</b> &mdash; after calibration, a CNN finds satellite trails and clips affected pixels to zero. Those pixels are then treated as no-data and excluded during integration, so trails are rejected cleanly without leaving residual bands. Because the trail is baked into the frame, it stays perfectly aligned through registration.</li>
+</ul>
+
+<h3>5.6 Overrides &amp; context</h3>
+<ul>
+  <li><b>Override Dark Frame</b>, <b>Override Flat Frame</b> &mdash; file pickers that force a specific master for selected leaves (or every leaf in a selected exposure/filter group).</li>
+  <li><b>🚀 Calibrate Light Frames 🚀</b> &mdash; the big orange button. Runs the two-phase GPU pipeline (see &sect;9.1).</li>
+  <li><b>Right-click a light</b> &mdash; same three items as the Overrides buttons plus <i>Set Session Tag&hellip;</i>. Can be applied to a whole exposure group at once.</li>
+</ul>
+
+<a id="integration"></a>
+<h2>6. Image Integration</h2>
+<p>The back half of the pipeline. The tree lists calibrated lights ready for registration + integration; the row stack below configures tolerances, output cropping, drizzle, registration sets, MFDeconv, comet/trail modes, GPU backend and the big red launch buttons.</p>
+
+<h3>6.1 Calibrated Light Frames tree</h3>
+<p>Four columns: Filter &ndash; Exposure &ndash; Size, Metadata, Drizzle (per-group indicator), Set (registration-set membership). Grouping follows filter + (exposure &plusmn; tolerance) + size, with the tolerances set below.</p>
+<ul>
+  <li><b>Add Light Files</b> &mdash; adds calibrated <code>_c.fit</code> files directly; useful if you pre-calibrated outside the suite.</li>
+  <li><b>Remove Selected</b> &mdash; drop frames from this run only.</li>
+</ul>
+
+<h3>6.2 Tolerance &amp; output row</h3>
+<ul>
+  <li><b>Exposure Tolerance (sec)</b> &mdash; 0&ndash;900, step 5. 0 = exact match.</li>
+  <li><b>Gain Tolerance</b> &mdash; 0&ndash;500, step 5 (default 10). 0 = exact match; 500 = ignore gain. Keeps high-gain and low-gain subs from being stacked together by accident.</li>
+  <li><b>Auto-crop output</b> + <b>Coverage %</b> &mdash; crops the final image to pixels covered by at least this fraction of frames (default 95%). Prevents the ragged, dark-cornered borders you get from registered mosaics.</li>
+  <li><b>Plate solve master(s) before saving</b> &mdash; runs the Gaia&nbsp;DR3 &rarr; ASTAP &rarr; Astrometry.net waterfall on the final master and merges the WCS into the saved FITS header.</li>
+  <li><b>Split dual-band OSC before integration</b> &mdash; splits one-shot narrowband data into channels (SII/OIII &rarr; R=SII, G=OIII; H&alpha;/OIII &rarr; R=H&alpha;, G=OIII). Produces two mono masters per group.</li>
+  <li><b>Advanced Dual NB Split (matrix)</b> &mdash; plate-solves a few subs per dual-band filter, fits an empirical NBExtract mixing matrix, and applies it per-frame instead of the naive R&rarr;H&alpha;/G&rarr;OIII assignment. Only applies to non-drizzle groups.</li>
+</ul>
+
+<h3>6.3 Drizzle controls</h3>
+<ul>
+  <li><b>Enable Drizzle</b> &mdash; master toggle.</li>
+  <li><b>Scale</b> &mdash; 1&times;, 2&times;, 3&times; output grid.</li>
+  <li><b>Drop Shrink</b> &mdash; the pixfrac, 0&ndash;1.0 (default 1.0). Smaller values give sharper output at the cost of noise and empty pixels.</li>
+  <li><b>CFA Drizzle</b> &mdash; maps R/G/B CFA samples directly into channels (no interpolation). Requires Enable Drizzle; the suite's native way to drizzle one-shot colour.</li>
+  <li><b>Debayer</b> &mdash; VNG (highest quality, slower) / Edge-aware / Bilinear / Strict CFA. Only used for non-drizzle OSC integration; ignored when CFA Drizzle is on.</li>
+</ul>
+
+<h3>6.4 Reference frame</h3>
+<ul>
+  <li><b>Select Reference Frame</b> &mdash; manual pick, locks the reference until you unlock.</li>
+  <li><b>Auto-accept measured reference</b> &mdash; the best-scoring frame (by the weighting criteria in &sect;9.5) is used automatically. Checking this disables the manual Select button and unlocks any previously locked reference.</li>
+</ul>
+
+<h3>6.5 Registration Sets</h3>
+<p>A full subsystem for independent references &mdash; use it for mosaic panels or completely different targets loaded in one run. See &sect;9.9 for the full logic. Controls:</p>
+<ul>
+  <li><b>Active set</b> dropdown + <b>New Set&hellip;</b> &mdash; create a named set.</li>
+  <li><b>Assign Selected &rarr; Set</b> &mdash; moves the highlighted frames (or whole groups) into the active set.</li>
+  <li><b>Reset Selected &rarr; Default</b> &mdash; unassigns.</li>
+  <li><b>Filename keyword</b> + <b>Assign from filenames</b> &mdash; looks in each filename for the keyword (default: <code>Panel</code>) followed by a separator (space, underscore, hyphen, or dot) and a tag &mdash; e.g. <code>Panel 1</code>, <code>Panel_2</code>, <code>Panel-3</code> &rarr; three sets. Unmatched frames stay in Default.</li>
+  <li><b>Reference for active set</b> &mdash; Pick&hellip; (manual) / Auto (best in set).</li>
+</ul>
+
+<div class="tip">Each registration set integrates separately into its own master, with its own reference. Unassigned frames use the Default set and the global reference above. &ldquo;Already registered&rdquo; precheck decisions are reused across every set in a single multi-set run so you only get prompted once.</div>
+
+<h3>6.6 MFDeconv &mdash; Multi-Frame Deconvolution</h3>
+<p>SASpro's multi-frame deconvolution engine, implementing the ImageMM method of Sukurdeep et al. (2025) with original engineering extensions for real astrophotography data &mdash; most notably a <b>rejection-aware MM update</b> that reuses the stacking rejection maps to exclude satellite trails, aircraft, transient defects and hot-pixel outliers from the per-iteration updates (this is exactly what the <i>Rejection Strength</i> control blends).</p>
+<div class="pub"><b>Implementation whitepaper &mdash; Franklin&nbsp;Marek (2026):</b>
+<i>&ldquo;ImageMM: Multi-Frame PSF-Aware Deconvolution &mdash; Practical Notes &amp; Implementation Diagram&rdquo;</i>, Zenodo working paper, DOI <code>10.5281/zenodo.17252270</code> (GPL&nbsp;v3). Documents SASpro's forward model, MM update, super-resolution path, and the rejection-aware extension that is original to this implementation.</div>
+<p>Controls (see &sect;9.8 for the maths):</p>
+<ul>
+  <li><b>Enable MFDeconv during integration</b> &mdash; master toggle.</li>
+  <li><b>Super Resolution</b> + <b>&times;</b> factor &mdash; reconstruct on an r&times; super-res grid using SR PSFs. Compute grows roughly as r^4, so 2&times; is practical, 3&times; is heavy, 4&times; is heroic. Drizzle usually gives better results per minute.</li>
+  <li><b>Save intermediate iterative images</b> &mdash; dumps the seed and every iteration into a subfolder next to the final output. Essential for diagnosing bad &kappa;/&delta;.</li>
+  <li><b>Iterations (max)</b>, <b>Min iters</b> &mdash; iteration bounds.</li>
+  <li><b>Update clip (&kappa;)</b> &mdash; limits per-iteration multiplicative step. &kappa;=1 means no change; 1.05&ndash;1.5 is conservative, ~2 is punchier. Tooltip walks through this.</li>
+  <li><b>Color mode</b> &mdash; <i>PerChannel</i> (RGB independently) or <i>Luma</i> (luminance only).</li>
+  <li><b>&rho; (loss)</b> &mdash; Huber or L2.</li>
+  <li><b>Huber &delta;</b> &mdash; cutoff between quadratic and linear regimes. <b>Negative values</b> mean <i>scale&times;RMS</i> (so &delta; = &minus;2 uses 2&times;RMS); smaller |&delta;| &rarr; more pixels counted as outliers.</li>
+  <li><b>Rejection Strength</b> &mdash; 0&ndash;1 blend between no-rejection and full-rejection endpoint solves (intermediate values run both and are therefore slower).</li>
+  <li><b>Auto Star Mask</b>, <b>Auto Noise Map</b> &mdash; session-only toggles (always default to on). Star masks protect stellar cores from ringing; the variance map (noise map) weights the data term per pixel.</li>
+</ul>
+
+<h3>6.7 Comet + Star-Trail row</h3>
+<ul>
+  <li><b>🌠 Create comet stack (comet-aligned)</b> &mdash; registers on the comet nucleus instead of stars. Mutually exclusive with Drizzle, MFDeconv and Star-Trail.</li>
+  <li><b>★★ Star-Trail Mode ★★ (Max-Value Stack)</b> &mdash; skip registration/alignment and use Maximum-Intensity projection for star trails. Mutually exclusive with the others.</li>
+</ul>
+
+<h3>6.8 Comet options row</h3>
+<ul>
+  <li><b>Pick comet center&hellip;</b> &mdash; opens the reference frame and lets you click the nucleus. Enabled only when comet mode is on.</li>
+  <li><b>Also output Stars+Comet blend</b> &mdash; produces a feathered blend of the star-aligned and comet-aligned stacks alongside both masters.</li>
+  <li><b>Mix</b> &mdash; 0&ndash;1 opacity of the comet layer in the blend (default 1.0).</li>
+  <li><b>Save all starless comet-aligned frames</b> &mdash; keeps every intermediate starless frame for inspection. Requires comet star removal to be enabled in Settings (&sect;7.12), otherwise greyed with a hover reason.</li>
+</ul>
+
+<h3>6.9 Output options</h3>
+<p><b>Save rejection layers with master lights</b> &mdash; when on (default), master light FITS files are saved as multi-extension FITS (MEF) with extra HDUs containing the rejection any-mask, fraction map, and count map &mdash; useful for post-mortem analysis and for feeding back into MFDeconv. Off = smaller single-HDU FITS.</p>
+
+<h3>6.10 Backend row</h3>
+<ul>
+  <li><b>Backend: &hellip;</b> &mdash; shows the currently detected acceleration backend (CUDA, MPS, DirectML, or CPU).</li>
+  <li><b>Install/Update GPU Acceleration&hellip;</b> &mdash; downloads PyTorch with the right backend for your hardware. One-time per machine; needs supported Python (3.12/3.13/3.14).</li>
+  <li><b>?</b> &mdash; help popup for &ldquo;GPU still not being used&rdquo; troubleshooting steps.</li>
+</ul>
+
+<h3>6.11 Action buttons</h3>
+<ul>
+  <li><b>🔥🚀 Register and Integrate Images 🔥🚀</b> &mdash; the full back-half: register every group against its reference, normalize, reject, weight, integrate, and save.</li>
+  <li><b>Skip Registration and Integrate</b> &mdash; integrate only. Expects <code>_r.fit</code> registered frames to already exist (from a previous run). Great for re-running integration with different rejection settings.</li>
+  <li><b>🗑️ Clean Up Temp Files</b> &mdash; same cleanup action as on the Quick Stack tab.</li>
+</ul>
+
+<a id="settings"></a>
+<h2>7. Stacking Settings dialog (🔧 wrench)</h2>
+<p>Two scrollable columns. Every parameter is live-persisted to QSettings (<code>stacking/&hellip;</code> keys), and OK triggers <code>save_stacking_settings</code> for a few derived fields. Cancel reverts the dialog's uncommitted changes but keeps anything already persisted mid-session.</p>
+
+<h3>7.1 Profiles (top strip)</h3>
+<p>Snapshot/restore your entire stacking configuration under named profiles. <b>New&hellip;</b> saves the current state under a new name; <b>Save</b> overwrites the selected profile; <b>Load</b> replaces the current configuration (and restarts the Stacking Suite dialog to force every control to re-sync); <b>Delete</b> removes a profile; <b>Export&hellip;</b> / <b>Import&hellip;</b> round-trip profiles via JSON. See &sect;8 for the detail.</p>
+
+<h3>7.2 Distortion / Transform</h3>
+<ul>
+  <li><b>Model</b> &mdash; Affine (fast), No Distortion (rotate/translate/scale), Homography (projective), Polynomial 3rd-order, Polynomial 4th-order.</li>
+  <li><b>Max control points</b> &mdash; 20&ndash;2000 (default 250). Caps the astroalign triangle set.</li>
+  <li><b>Solve grid downsample</b> &mdash; 1&ndash;8 (default 3). Lower is finer but slower &mdash; try 2 if you see double stars / bimodal registration error on high-resolution sensors, especially with meridian-flipped frames.</li>
+  <li><b>RANSAC reproj (px)</b> &mdash; 0.1&ndash;10 (default 3.0). Only used for Homography and No-Distortion models.</li>
+</ul>
+
+<h3>7.3 Alignment</h3>
+<ul>
+  <li><b>Refinement</b> &mdash; Fast (1 pass) or Accurate (3 passes).</li>
+  <li><b>Accept tolerance (px)</b> &mdash; 0.05&ndash;5.0 (default 0.2). Residual the solver must get under for success.</li>
+  <li><b>Accept max shift (px)</b> &mdash; 0&ndash;50 (default 2.0). Reject frames whose residual shift exceeds this after alignment.</li>
+  <li><b>Star detect &sigma;</b> &mdash; 0.5&ndash;50 (default 20). Detection threshold above background.</li>
+  <li><b>Auto threshold (fit Max stars on reference)</b> &mdash; tries SEP thresholds 50&rarr;25&rarr;12&rarr;6&rarr;3&sigma; on the reference and picks the lowest that does not exceed Max&nbsp;stars. Prevents oversaturation in dense fields.</li>
+  <li><b>Min star area (px)</b> &mdash; connected-pixel floor (default 10). Rejects hot pixels and noise.</li>
+  <li><b>Min star FWHM (px)</b> &mdash; 0.5&ndash;5.0 (default 1.2). Hot pixels are typically &lt;1&nbsp;px FWHM.</li>
+  <li><b>Max ellipticity</b> &mdash; 0.1&ndash;1.0 (default 0.6). Rejects cosmic rays and satellite streaks (0 = round, 1 = line).</li>
+  <li><b>Max stars</b> &mdash; 50&ndash;5000 (default 100). Astroalign <code>max_control_points</code> cap.</li>
+</ul>
+
+<h3>7.4 Performance</h3>
+<ul>
+  <li><b>Use hardware acceleration if available</b> &mdash; master GPU toggle. Falls back to CPU automatically when unsupported.</li>
+  <li><b>MFDeconv Engine</b> &mdash; three radios: <i>Normal</i>, <i>Normal (cuDNN-free)</i> (fallback for older CUDA stacks), <i>High-Octane (Let 'er rip)</i> for maximum throughput.</li>
+  <li><b>Detected backend</b> &mdash; read-only readout.</li>
+</ul>
+
+<h3>7.5 Normalization &amp; Gradient (ABE Poly&sup2;)</h3>
+<p>Optional 2nd-order background removal applied to every frame before stacking. See &sect;9.3.</p>
+<ul>
+  <li><b>Remove background gradient (ABE Poly&sup2;)</b> &mdash; master toggle (default off).</li>
+  <li><b>Mode</b> &mdash; <i>Subtract (additive)</i> for sky-glow / amp-glow residuals; <i>Divide (flat-like)</i> for multiplicative illumination issues.</li>
+  <li><b>Sample points</b> &mdash; 20&ndash;600 (default 120) ABE-style background samples.</li>
+  <li><b>Downsample (AREA)</b> &mdash; 1&ndash;16 (default 6). Scales the frame down before fitting to speed things up and smooth out small structure.</li>
+  <li><b>Patch size (small)</b> &mdash; 5&ndash;51 odd (default 15). Local median window inside each sample.</li>
+  <li><b>Skip if strength &lt;</b> &mdash; 0&ndash;0.20 (default 0.01). Range of the fitted model required to apply it; keeps noiseless skies untouched.</li>
+  <li><b>Divide gain limits</b> &mdash; <i>lo</i>/<i>hi</i> clip for the division gain map (default 0.20 / 5.0). Division mode only.</li>
+</ul>
+
+<h3>7.6 Drizzle (advanced)</h3>
+<ul>
+  <li><b>Kernel</b> &mdash; Square (pixfrac), Circular (disk), Gaussian.</li>
+  <li><b>Kernel width</b> &mdash; pixfrac/radius, 0&ndash;1 (default 1.0).</li>
+  <li><b>Gaussian &sigma; (px)</b> &mdash; 0.05&ndash;3.0, enabled only when Gaussian kernel is selected.</li>
+</ul>
+
+<h3>7.7 Multi-frame Deconvolution (tuning)</h3>
+<ul>
+  <li><b>Seed image</b> &mdash; <i>Integrated prepass image</i> uses the already rejection-cleaned master; <i>Robust &mu;&ndash;&sigma; (live stack)</i> is a running mean with sigma clipping; <i>Median (Sukhdeep et al.)</i> is a tiled median stack.</li>
+  <li><b>Star mask</b> block &mdash; Star detect &sigma;, Dilate (+px), Feather &sigma; (px), Max star radius (px), Max stars kept, Keep-floor (0=hard mask, 0.2=gentle), Ellipse scale.</li>
+  <li><b>Variance map</b> block &mdash; VarMap sample stride, VarMap smooth &sigma;, VarMap floor (log10, e.g. &minus;8 = 1e&minus;8 DN&sup2;).</li>
+  <li><b>Reset MFDeconv to Recommended</b> &mdash; restores a known-good seed+mask+varmap set in one click.</li>
+</ul>
+
+<h3>7.8 Rejection</h3>
+<ul>
+  <li><b>Algorithm</b> &mdash; 9 options:
+    <ul>
+      <li><i>Weighted Winsorized Sigma Clipping</i> (default &mdash; sigma thresholds only)</li>
+      <li><i>Kappa-Sigma Clipping</i> (sigma + kappa + iterations)</li>
+      <li><i>Simple Average (No Rejection)</i></li>
+      <li><i>Simple Median (No Rejection)</i></li>
+      <li><i>Trimmed Mean</i> (trim fraction)</li>
+      <li><i>Extreme Studentized Deviate (ESD)</i> (threshold)</li>
+      <li><i>Biweight Estimator</i> (tuning constant)</li>
+      <li><i>Modified Z-Score Clipping</i> (threshold)</li>
+      <li><i>Max Value</i> (star-trail mode internally)</li>
+    </ul>
+    Only the parameters relevant to your choice are shown.
+  </li>
+  <li><b>Frame weighting</b> &mdash; <i>Balanced</i>, <i>PSF-weighted</i>, <i>SNR-weighted</i>, <i>Star-count-weighted</i>. See &sect;9.5 for how each shifts the term exponents.</li>
+  <li><b>Sigma thresholds</b> &mdash; High / Low (0.1&ndash;10 each, default 3.0 / 2.0). Used by all sigma-based algorithms.</li>
+  <li><b>Kappa</b> &mdash; 0.1&ndash;10 (default 2.5). Used by Kappa-Sigma.</li>
+  <li><b>Iterations</b> &mdash; 1&ndash;10 (default 3).</li>
+  <li><b>ESD threshold</b>, <b>Biweight constant</b>, <b>Trim fraction</b>, <b>Modified Z threshold</b> &mdash; one row each, enabled according to the chosen algorithm.</li>
+</ul>
+
+<h3>7.9 Cosmetic Correction (Advanced)</h3>
+<ul>
+  <li><b>Enable advanced cosmetic tuning</b> &mdash; unlocks the hot/cold sigma spinboxes below. Off = defaults apply.</li>
+  <li><b>Hot &sigma;</b>, <b>Cold &sigma;</b> &mdash; 0.1&ndash;20 (default 5.0 each).</li>
+  <li><b>Protect &sigma;</b> &mdash; always applied, regardless of the advanced toggle. 2&ndash;50 (default 5.0). Patches whose local median sits this many &sigma; above background are treated as real signal (star / nebula cores) and left untouched by the hot pass. A lone hot pixel can't move a median, so it's still corrected. Lower = protect more; higher = correct more aggressively. Set very high to disable protection.</li>
+  <li><b>Restore Recommended</b> &mdash; one-click defaults.</li>
+</ul>
+
+<h3>7.10 Comet (High-Clip Percentile tuning)</h3>
+<p><b>High-clip k</b> / <b>Percentile p</b> &mdash; parameters of the High-Clip Percentile reducer used for comet nucleus stacks (defaults 1.30 / 25.0). See <code>_high_clip_percentile</code> in &sect;9.6.</p>
+
+<h3>7.11 Comet Star Removal (Optional)</h3>
+<ul>
+  <li><b>Remove stars on comet-aligned frames</b> &mdash; master toggle.</li>
+  <li><b>Tool</b> &mdash; StarNet, Cosmic Clarity DarkStar, SyQon (NAFNet), StarXTerminator.</li>
+  <li><b>Protect core radius (px)</b> &mdash; keep a disc around the nucleus from being &ldquo;destarred&rdquo; (default 22).</li>
+  <li><b>Core mask feather (px)</b> &mdash; soften the edge of that disc (default 6).</li>
+</ul>
+
+<a id="profiles"></a>
+<h2>8. Profiles</h2>
+<p>Profiles exist to let you save a complete working configuration &mdash; sigma thresholds, weighting mode, drizzle, MFDeconv tuning, cosmetic sigmas, every setting in &sect;7 &mdash; under a name, and bring it back later.</p>
+
+<ul>
+  <li>Changes made in the Settings dialog are saved <i>live</i> to QSettings. &ldquo;Loading&rdquo; a profile overwrites those keys and <b>restarts the Stacking Suite dialog</b> so every control re-reads them. Expect a brief flicker as the dialog re-opens.</li>
+  <li>Built-in profiles are seeded on first run (see <code>_ensure_builtin_stacking_profiles</code>). Your own override anything built-in with the same name.</li>
+  <li>Export writes a JSON file with just the shareable keys (nothing machine-specific like absolute paths). Import validates and merges; incompatible or old-format keys are mapped forward where possible.</li>
+</ul>
+
+<a id="tech"></a>
+<h2>9. Technical details</h2>
+<p class="tech-lead">What the suite actually does under the hood, in the order a stack passes through it.</p>
+
+<a id="tech-calibration"></a>
+<h3>9.1 Calibration pipeline</h3>
+<p>Calibration is a two-phase pipelined worker system (<code>calibrate_lights</code>):</p>
+<p><b>Phase 0 &mdash; master upload.</b> Every master dark, master flat and master bias is loaded to CPU, normalized where needed, and uploaded to the GPU exactly once. Interactive flat-strength dialogs (if enabled) are collected upfront so you can configure and walk away.</p>
+<p><b>Phase 1 &mdash; three-thread pipeline.</b> A producer thread reads raw lights from disk; a GPU thread runs dark subtraction, flat division and cosmetic correction; a consumer thread writes calibrated frames to <code>Calibrated/</code>. The three run concurrently so I/O, compute and I/O overlap. Per frame:</p>
+<div class="matheq">P &rarr; L' = \mathrm{clip}(L + P - D_{\mathrm{scaled}},\;0,\;\infty)</div>
+<div class="matheq">C = L' / F_{\mathrm{norm}}</div>
+<p>where <code>P</code> is the pedestal (if enabled), <code>D</code> is the chosen master dark (bias-scaled when a master bias is loaded), and <code>F_norm</code> is the normalized master flat (median = 1 per channel). With interactive flat strength on, the effective flat is</p>
+<div class="matheq">F_{\mathrm{eff}} = 1 + \alpha(F_{\mathrm{norm}} - 1)</div>
+<p>with your chosen &alpha;. Cosmetic correction then replaces hot and cold outliers with a 3&times;3 ring median using a MAD-based sigma estimate:</p>
+<div class="matheq">\sigma = 1.4826 \cdot \mathrm{MAD} = 1.4826 \cdot \mathrm{median}(|x - \mathrm{median}(x)|)</div>
+<div class="matheq">x_i \to \mathrm{median}(\mathrm{ring}_i)\quad \mathrm{if}\;|x_i - m_i| > k \cdot \sigma_i</div>
+<p>with <code>k</code> taken from Hot&nbsp;&sigma; / Cold&nbsp;&sigma;. Patches above the <code>protect_sigma</code> threshold are left untouched (star / nebula cores). The GPU uses <code>unfold</code> for the 3&times;3 neighbourhoods; the Numba fallback handles cold-cluster guards.</p>
+<p><b>Phase 2 &mdash; satellite trail removal.</b> After Phase 1 fully completes, every master tensor and cosmetic buffer is freed and the CUDA cache emptied, <i>then</i> the satellite CNN runs on the saved frames one at a time. Separate phases mean the CNN never competes with the calibration working set for VRAM &mdash; critical on small cards where GPU memory cannot page to host.</p>
+
+<a id="tech-masters"></a>
+<h3>9.2 Master-frame integration</h3>
+<p>Master darks group by (exposure, size, temperature bucket, gain, offset); master flats by (filter, size, session). Each group is read in row-band tiles sized for your RAM budget, stacked with the Calibration Rejection Algorithm (Winsorized Sigma Clipping by default), and written as 32-bit FITS with a header merged from the input group's representative frame.</p>
+<p>Temperature bucketing:</p>
+<div class="matheq">T_{\mathrm{bucket}} = \mathrm{round}(T / \Delta T) \cdot \Delta T</div>
+<p>with <code>&Delta;T = 1&deg;C</code> by default (<code>stacking/temp_group_step</code>). Bias scaling for CCD users:</p>
+<div class="matheq">B^{*} = B + (\mathrm{median}(L) - \mathrm{median}(B))</div>
+
+<a id="tech-normalize"></a>
+<h3>9.3 Normalization &amp; gradient</h3>
+<p>Before registration, each frame is normalized to a common target median. The method is min-offset + median-match on the luminance channel, with no clipping:</p>
+<div class="matheq">L = 0.2126\,R + 0.7152\,G + 0.0722\,B</div>
+<div class="matheq">f' = (f - \min L)\cdot \frac{m^{*}}{\mathrm{median}(L) - \min L}</div>
+<p>Rec.&nbsp;601 luminance for mono treatment of RGB, so colour balance is preserved and only the overall level is matched.</p>
+<p>Optional ABE-style poly&sup2; gradient removal fits the model</p>
+<div class="matheq">G(x,y) = a + bx + cy + dx^2 + exy + fy^2</div>
+<p>to robustly selected background sample points on a downsampled frame, then either subtracts or divides it back on the full resolution. The &ldquo;Skip if strength&nbsp;&lt;&rdquo; guard compares peak-to-peak of <code>G</code> against the frame's robust noise so clean skies pass through untouched.</p>
+
+<a id="tech-registration"></a>
+<h3>9.4 Registration</h3>
+<p>Reference selection: either you lock a frame (Pick&hellip; / Select Reference Frame), or the suite measures every candidate by its combined quality score (see &sect;9.5) and picks the best. Reference lock survives tab changes; auto-accept unlocks it.</p>
+<p>Each non-reference frame is solved against the reference with astroalign-style triangle matching on detected stars (SEP, with filters: min area, min FWHM, max ellipticity), then refined by the chosen transform model:</p>
+<ul>
+  <li><b>Affine</b> &mdash; six degrees of freedom, closed-form least-squares.</li>
+  <li><b>No Distortion</b> &mdash; four DoF (rotate / translate / isotropic scale) via RANSAC with the user's reprojection threshold.</li>
+  <li><b>Homography</b> &mdash; eight DoF, RANSAC with the user's reprojection threshold.</li>
+  <li><b>Polynomial 3rd / 4th order</b> &mdash;
+<div class="matheq">x' = \sum_{i+j \leq N} a_{ij}\,x^i\,y^j</div>
+    fitted on the dense control-point correspondence, used for wide-field or lens-distorted systems.</li>
+</ul>
+<p>Accurate mode re-runs the solve 3 times with the previous solution as warm start; shift tolerance and max shift gate acceptance. Rejected frames are logged and skipped.</p>
+
+<a id="tech-weights"></a>
+<h3>9.5 Frame weighting</h3>
+<p>Every frame gets a weight from five measured terms &mdash; detected star count (c), mean eccentricity (&epsilon;), background level (bg), FWHM proxy, and MAD-based noise estimate &mdash; combined multiplicatively with per-mode exponents:</p>
+<div class="matheq">w = c^{a_c}\,(1 - \varepsilon)^{a_e}\,b^{a_b}\,s^{a_s}\,n^{a_n}</div>
+<p>with</p>
+<div class="matheq">b = \frac{2}{\sqrt{\mathrm{bg}} + 1} - 1</div>
+<div class="matheq">s = \mathrm{clip}\!\left(\frac{\mathrm{FWHM}_{\mathrm{ref}}}{\mathrm{FWHM}},\;\frac{1}{3},\;3\right)</div>
+<div class="matheq">n = \mathrm{clip}\!\left(\frac{\mathrm{noise}_{\mathrm{ref}}}{\mathrm{noise}},\;\frac{1}{3},\;3\right)</div>
+<p>The modes change only the exponents (<i>a</i>s):</p>
+<table>
+  <tr><th>Mode</th><th>count</th><th>ecc</th><th>bg</th><th>sharp</th><th>snr</th></tr>
+  <tr><td><b>Balanced</b> (default)</td><td>1.0</td><td>1.0</td><td>1.0</td><td>1.0</td><td>0.0</td></tr>
+  <tr><td>PSF-weighted</td><td>0.5</td><td>1.0</td><td>0.5</td><td>2.0</td><td>0.0</td></tr>
+  <tr><td>SNR-weighted</td><td>0.5</td><td>0.5</td><td>1.0</td><td>0.5</td><td>2.0</td></tr>
+  <tr><td>Star-count-weighted</td><td>2.0</td><td>0.5</td><td>0.5</td><td>0.5</td><td>0.0</td></tr>
+</table>
+<p>The sharpness and SNR ratios are measured against the population median and clamped to [1/3, 3] so a single mismeasured frame can't dominate. A frame measured far tighter than the population (ratio &lt; 0.4&times; or &lt; 0.25&times;) is treated as a mismeasurement and set neutral.</p>
+
+<a id="tech-rejection"></a>
+<h3>9.6 Rejection algorithms</h3>
+<p>Rejection runs per output pixel across the registered stack, honouring per-frame weights where applicable. All reducers are implemented in NumPy (CPU) and PyTorch (GPU; cuDNN-free fallback and DirectML workarounds included). Each writes a 3-layer rejection map alongside its scalar output: <i>any-mask</i>, <i>fraction</i> (fraction of frames rejected), <i>count</i> (total frames rejected). These layers can be saved into master lights as additional FITS HDUs.</p>
+
+<h4>Weighted Winsorized Sigma Clipping (default)</h4>
+<p>The Pix&nbsp;Insight&nbsp;/ APP style: seed with median and robust sigma, Winsorize at <i>k</i> sigma, re-measure, iterate:</p>
+<div class="matheq">\mu_{\mathrm{win}} = \mathrm{mean}(\mathrm{clip}(x,\,\mu - k\sigma,\,\mu + k\sigma))</div>
+<div class="matheq">\sigma_{\mathrm{winsor}} = 1.134\,\sqrt{\mathrm{Var}(x_{\mathrm{clipped}})}</div>
+<p>The 1.134 factor is Huber's exact correction for <code>k = 1.5</code>. Outliers (satellite trails) cannot inflate &sigma;, so the rejection bounds track the clean distribution; final output is the weighted mean of survivors only.</p>
+
+<h4>Kappa-Sigma Clipping</h4>
+<div class="matheq">\mathrm{keep}_i = (\mu - \kappa\sigma \leq x_i \leq \mu + \kappa\sigma)</div>
+<p>Median center, std of the kept sample, monotone shrink (rejected pixels stay rejected across iterations), weighted mean of survivors.</p>
+
+<h4>Extreme Studentized Deviate (ESD)</h4>
+<p>Generalized ESD (Rosner), externally studentized, vectorized per pixel. Sequentially removes the most extreme remaining value and tests it against the leave-one-out mean/std of the remaining sample (defeats masking); no early stop &mdash; the outlier count is the largest step whose test passed. The critical value adjusts for sample size:</p>
+<div class="matheq">R = \frac{|x_i - \overline{x}|}{s},\quad R > \lambda_{n,\alpha}</div>
+<div class="matheq">\lambda_{n,\alpha} = t_{n-2,\,1-\alpha}</div>
+<p>so your <code>threshold</code> keeps its literal &ldquo;sigmas&rdquo; meaning on large stacks and inflates automatically on small ones (controls the false-rejection cascade a fixed cutoff would cause).</p>
+
+<h4>Biweight Estimator (Tukey)</h4>
+<div class="matheq">\hat{\mu} = M + \frac{\sum_{|u_i|<1} (x_i - M)(1-u_i^2)^2}{\sum_{|u_i|<1}(1-u_i^2)^2},\quad u_i = \frac{x_i - M}{c\,\mathrm{MAD}}</div>
+<p>with <code>c</code> from the tuning-constant setting. Smooth down-weighting of outliers, no hard clip.</p>
+
+<h4>Trimmed Mean</h4>
+<div class="matheq">\overline{x}_{\alpha} = \frac{1}{N - 2k} \sum_{i=k+1}^{N-k} x_{(i)},\quad k = \lfloor \alpha N \rfloor</div>
+<p>Drops the lowest and highest <code>&alpha;N</code> frames at each pixel before weighted averaging.</p>
+
+<h4>Modified Z-Score Clipping (Iglewicz &amp; Hoaglin)</h4>
+<div class="matheq">M_i = \frac{0.6745\,(x_i - \mathrm{median}(x))}{\mathrm{MAD}}</div>
+<p>Rejects where <code>|M_i|</code> exceeds the threshold. Robust to small samples where mean/std fail.</p>
+
+<h4>Simple Average, Simple Median, Max Value</h4>
+<p>No rejection. <i>Max Value</i> is the engine behind Star-Trail mode: per-pixel maximum across all frames.</p>
+
+<h4>Comet reducers</h4>
+<p>Specialised for comet-aligned stacks where stars become trails that must be rejected: Comet Median, Comet High-Clip Percentile (parameters k and p in &sect;7.10), Comet Lower-Trim (30%), Comet Percentile (40th). The high-clip percentile combines a percentile-centre with a sigma-style cap:</p>
+<div class="matheq">P_{40}(x_{xy}) = \mathrm{quantile}_{0.40}(x_{xy})</div>
+<div class="matheq">\mathrm{keep}: x_i \leq \mu + k\,|x_i - P_p|</div>
+
+<a id="tech-drizzle"></a>
+<h3>9.7 Drizzle</h3>
+<p>Variable-pixel linear reconstruction, after Fruchter &amp; Hook (2002):</p>
+<div class="matheq-hero">I'(X,Y) = \frac{\sum_i w_i\,A_i(X,Y)\,I_i(x_i,y_i)}{\sum_i w_i\,A_i(X,Y)}</div>
+<p>where each input pixel is &ldquo;drizzled&rdquo; onto the output grid as a kernel of area <code>A_i(X,Y)</code> centred on the warped position. The kernel is:</p>
+<ul>
+  <li><b>Square (pixfrac)</b> &mdash; a square of side <code>p &times; s</code>, where <code>p</code> is the Drop Shrink (pixfrac, 0&ndash;1) and <code>s</code> is the pixel size in output units. <code>p = 1</code> is PixInsight's &ldquo;drizzle at native scale&rdquo;; <code>p &lt; 1</code> sharpens at the cost of empty-pixel noise.</li>
+  <li><b>Circular (disk)</b> &mdash; a disc of the same radius; smoother than square for small datasets.</li>
+  <li><b>Gaussian</b> &mdash; a Gaussian with user-set &sigma;; smoothest, but weakest resolution gain.</li>
+</ul>
+<p>Scale 2&times; / 3&times; means the output grid has 4&times; / 9&times; the pixels of the input. With CFA Drizzle on, R/G/B samples from the Bayer pattern are drizzled directly into the three output channels &mdash; no interpolation step, which is the only way to <i>gain</i> resolution from one-shot colour.</p>
+
+<a id="tech-mfdeconv"></a>
+<h3>9.8 Multi-frame deconvolution</h3>
+<p>ImageMM &mdash; a majorization-minimization (MM) framework for joint multi-frame restoration and super-resolution (Sukurdeep et&nbsp;al. 2025). The latent sky image <code>I</code> is recovered by iteratively minimising a surrogate of the robust data fit across all frames, with per-frame PSFs <code>H_j</code> and per-pixel noise variances <code>v_j</code>. The multiplicative update, with your &kappa; cap and &rho; loss:</p>
+<div class="matheq-hero">I^{(k+1)} = I^{(k)} \cdot \mathrm{clip}\!\left(\frac{\sum_j H_j^{T}\!\left(\rho'(d_j)/v_j\right)}{\sum_j H_j^{T}(1/v_j)},\;\frac{1}{\kappa},\;\kappa\right)</div>
+<p>where <code>H_j</code> is the forward operator (blur + warp + down-sample) for frame <code>j</code>, <code>d_j = D_j - H_j I^{(k)}</code> is the data residual, and <code>v_j</code> is the per-pixel variance:</p>
+<div class="matheq">v_j(x,y) = g\,I_j(x,y) + \sigma_r^2</div>
+<p>Huber loss (L2 if you prefer the quadratic regime everywhere):</p>
+<div class="eq">
+  rho(d) =
+    (1/2) d^2            if |d| &lt;= delta
+    delta|d| - (1/2) delta^2  if |d|  &gt; delta
+</div>
+<p>Negative &delta; means scale&times;RMS (so &delta; = &minus;2 uses 2&times;RMS as the cutoff). Lower |&delta;| &rarr; more pixels treated as outliers.</p>
+<p>Star masks protect stellar cores from ringing by clamping update ratios near 1:</p>
+<div class="matheq">M = 1 - \mathrm{keep\_floor} \cdot (1 - M_{\mathrm{raw}})</div>
+<p>Super-resolution reconstructs <code>I</code> on an r&times; grid; each <code>H_j</code> then includes an r&times; down-sampling step. Cost scales roughly as r^4.</p>
+<p><b>Rejection-aware MM &mdash; SASpro extension (Marek 2026, DOI&nbsp;<code>10.5281/zenodo.17252270</code>).</b> Before MFDeconv runs, the suite performs its usual robust integration prepass and keeps the per-frame rejection maps that would normally live in the master light's extra FITS HDUs (any-mask, fraction, count &mdash; see &sect;9.6 and &sect;6.9). Those rejected pixels &mdash; satellite trails, aircraft, cosmic rays, transient defects, hot-pixel outliers &mdash; are then <i>excluded</i> from the forward operator for the frames that saw them, so the sums <code>&Sigma;_j H_j^T(&middot;)</code> only run over good samples per output pixel. The <b>Rejection Strength</b> control (&sect;6.6) blends between the rejection-ignoring solve (0.0) and the fully rejection-aware solve (1.0); intermediate values run both endpoints and interpolate the final image. This is why the suite recommends leaving <i>Save rejection layers with master lights</i> on when you plan to run MFDeconv &mdash; those layers are the extension's input.</p>
+
+<a id="tech-sets"></a>
+<h3>9.9 Registration Sets</h3>
+<p>A set is an orthogonal partition that sits above the filter / exposure grouping. Each set has its own reference and integrates to its own master. The queue runs sets serially, buffering the per-set summaries and flushing them as a single run report; the &ldquo;already registered&rdquo; precheck choice is remembered across all sets in one run so you aren't prompted repeatedly.</p>
+<p>Filename-based assignment uses a regex equivalent to</p>
+<div class="eq">keyword[\s_\-.]([^\s_\-.]+)</div>
+<p>so <code>M31_Panel 1_2024-01-02.fit</code>, <code>M31_Panel_02.fit</code> and <code>M31.Panel.3.fit</code> all match. Unmatched frames stay in the Default set, which keeps the global reference.</p>
+
+<a id="tech-gpu"></a>
+<h3>9.10 GPU backends</h3>
+<div class="gpu">The Stacking Suite shares one PyTorch runtime (installed via <i>Install/Update GPU Acceleration&hellip;</i>) across every heavy stage: calibration, cosmetic correction, satellite CNN, rejection reducers, MFDeconv. Backend auto-detection picks the first available of CUDA, MPS (Apple Silicon), DirectML (Windows GPUs via <code>torch-directml</code>), falling back to CPU. The <code>stacking/use_hardware_accel</code> master toggle disables the GPU path app-wide.</div>
+<p>DirectML needs a workaround for a known <code>torch-directml</code> bug: <code>nanmedian</code>/<code>nanquantile</code>/<code>nanstd</code> can return empty tensors, so those reductions are forced to CPU and the results moved back to device (one-time warning per session). CUDA uses <code>PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True</code> to reduce fragmentation between the cosmetic pass and the satellite CNN; a device-wide RLock serialises the two so they don't both resident at once (which OOMs small cards on Linux/CUDA where VRAM cannot page).</p>
+<p>Supported Python runtimes for GPU install: 3.12, 3.13, 3.14. The installer refuses older/newer versions with platform-specific tips.</p>
+
+<a id="tech-cleanup"></a>
+<h3>9.11 File layout &amp; cleanup</h3>
+<p>Inside your chosen stacking folder the suite creates:</p>
+<table>
+  <tr><th>Folder</th><th>Contents</th></tr>
+  <tr><td><code>Masters/</code></td><td>Master darks, flats, biases &mdash; keep these.</td></tr>
+  <tr><td><code>Calibrated/</code></td><td>Calibrated lights (<code>*_c.fit</code>). Delete after integration if disk is tight.</td></tr>
+  <tr><td><code>Normalized_Images/</code></td><td>Normalized, pre-registration frames. Intermediate; always deletable.</td></tr>
+  <tr><td><code>Aligned_Images/</code></td><td>Registered <code>*_r.fit</code> frames. Keep if you plan to re-integrate with different rejection.</td></tr>
+  <tr><td>loose <code>.dat</code> / <code>.npy</code> / <code>.tmp</code></td><td>Memmap scratch, transform caches, star catalogues. Always deletable.</td></tr>
+  <tr><td><code>stacking_log.txt</code></td><td>Timestamped log of every run.</td></tr>
+</table>
+<p>Both <i>Clean Up</i> buttons remove the intermediate folders and loose scratch files, but never <code>Masters/</code> or <code>Calibrated/</code>.</p>
+
+<a id="credits"></a>
+<div class="credit">
+<b>Credits.</b> SASpro's Stacking Suite is written and maintained by <b>Franklin Marek</b> (SetiAstro). It integrates many standard astronomy-image-processing conventions, which are credited to their originators here.
+<ul>
+  <li><b>Winsorized Sigma Clipping</b> &mdash; after Huber (robust statistics). Reduction formulation familiar to users of PixInsight's ImageIntegration and Astro Pixel Processor.</li>
+  <li><b>Kappa-Sigma Clipping</b> &mdash; standard astronomy convention.</li>
+  <li><b>Extreme Studentized Deviate (ESD)</b> &mdash; Rosner, B. (1983). <i>Percentage points for a generalized ESD many-outlier procedure.</i> Technometrics 25(2), 165&ndash;172.</li>
+  <li><b>Biweight Estimator</b> &mdash; Tukey, J. (1977). <i>Exploratory Data Analysis</i>.</li>
+  <li><b>Modified Z-Score</b> &mdash; Iglewicz &amp; Hoaglin (1993). <i>How to Detect and Handle Outliers.</i></li>
+  <li><b>Drizzle</b> &mdash; Fruchter, A. S. &amp; Hook, R. N. (2002). <i>Drizzle: A Method for the Linear Reconstruction of Undersampled Images.</i> PASP 114, 144&ndash;152.</li>
+  <li><b>Multi-frame deconvolution (ImageMM)</b> &mdash; method of <b>Sukurdeep,&nbsp;Y., Budavári,&nbsp;T., Connolly,&nbsp;A.&nbsp;J. &amp; Navarro,&nbsp;F.</b> (2025). <i>ImageMM: Joint multi-frame image restoration and super-resolution</i>, arXiv:2501.03002. SASpro's PyTorch implementation, PSF handling, star-mask floor, variance-map tuning, super-resolution path, and the rejection-aware extension are documented in <b>Marek,&nbsp;F.</b> (2026). <i>ImageMM: Multi-Frame PSF-Aware Deconvolution &mdash; Practical Notes &amp; Implementation Diagram</i>, Zenodo working paper, DOI&nbsp;<code>10.5281/zenodo.17252270</code> (GPL&nbsp;v3).</li>
+  <li><b>ABE Poly&sup2; gradient model</b> &mdash; follows the Automatic Background Extraction conventions popularised by PixInsight; SASpro's sample-point selector, downsampled fit and division-mode gain clip are original.</li>
+  <li><b>Rec. 601 luminance weights</b> (0.2126, 0.7152, 0.0722) &mdash; standard colorimetric convention.</li>
+  <li><b>Astroalign triangle matching</b> &mdash; Beroiz, M. (2020). SASpro supplies the pre-filter (SEP + ellipticity/FWHM gating), transform selection, and multi-pass refinement.</li>
+  <li><b>SEP (Source Extractor on Python)</b> &mdash; Barbary, K. (2016), based on Bertin &amp; Arnouts (1996). Used for star detection in reference auto-pick and alignment.</li>
+  <li><b>Satellite trail CNN</b> &mdash; third-party CNN packaged with SASpro's runtime; invoked here as a post-calibration pass.</li>
+  <li><b>Spectrophotometric Standard Star Calibration</b> work that informs the plate-solve-first master handling &mdash; Franklin Marek, DOI <code>10.5281/zenodo.23107662</code> (CC-BY 4.0).</li>
+</ul>
+Pipeline design, the quick-stack card UI, the shared GPU runtime, the three-thread calibration pipeline, Registration Sets, dual-band advanced split, the frame-weighting modes, and the per-group dark/flat overrides are original to this suite.
+</div>
+
+</body>
+</html>

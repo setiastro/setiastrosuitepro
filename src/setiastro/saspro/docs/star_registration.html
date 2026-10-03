@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Star Registration</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>Star Registration</h1>
+<p class="sub">Batch-register a stack of frames to a reference, write aligned FITS files to disk, and produce an alignment_transforms.sasd sidecar — the standalone counterpart to Stacking Suite's registration stage.</p>
+
+<div class="hero">
+<b>What this tool is for.</b> Where <b>Stellar Alignment</b> aligns two images interactively with a preview and a dialog, <b>Star Registration</b> is the file-based batch pipeline: pick a reference, drop in a folder of frames, point at an output directory, press Start. Every input frame comes out as a <code>*_n_r.fit</code> file on the reference's pixel grid, plus a single <code>alignment_transforms.sasd</code> sidecar that records every frame's transform for later drizzle integration. This is the same engine Stacking Suite uses — just exposed as a standalone step for the cases where you want aligned frames without the integration (feeding another tool, inspecting individual frames post-align, or splitting registration and integration across different sessions).
+</div>
+
+<h2>1. Picking a reference</h2>
+
+<p>The reference image defines the pixel grid every input frame will be warped onto. Two source modes:</p>
+
+<ul>
+  <li><b>From Active View</b> — use whatever document is currently active in SASpro. The path label shows "(Active View)". The reference pixel data is read when registration starts, so if you change the active view between picking and starting, you get the view that's active at Start time.</li>
+  <li><b>From File</b> — open a FITS, XISF, TIFF, PNG, or JPEG file as the reference. The chosen file name appears in the label.</li>
+</ul>
+
+<p>A reference needs to be either plate-solved (if you'll later use the <code>.sasd</code> file with WCS-aware tools downstream) or at minimum star-rich — the solver matches input frames against it, so it needs enough detectable stars to form robust triangle matches.</p>
+
+<h2>2. Adding frames to align</h2>
+
+<p>Two ways to populate the file list:</p>
+
+<div class="keys">
+<b>Select Files</b> — the standard file picker, multi-select. Pick 2, 20, or 200 frames; they all land in the tree.
+<br><b>Select Directory</b> — point at a folder; every supported image file in it is added (FITS, XISF, TIFF, PNG, JPEG). No recursion into subfolders.
+</div>
+
+<p>Both actions deduplicate against what's already in the list, so running Select Files twice on overlapping sets doesn't produce duplicates. Supported extensions: <code>.fits</code>, <code>.fit</code>, <code>.xisf</code>, <code>.tif</code>, <code>.tiff</code>, <code>.png</code>, <code>.jpg</code>, <code>.jpeg</code>.</p>
+
+<h2>3. Managing the file list</h2>
+
+<p>Files appear in a tree below the file-selection buttons, one row per file (basename only — hover for the full path). Standard tree selection behavior: click to select, Ctrl+click to multi-select, Shift+click for ranges.</p>
+
+<div class="keys">
+<b>Remove Selected</b> — drops the highlighted rows from the list.
+<br><b>Clear All</b> — empties the list entirely.
+</div>
+
+<h2>4. Output directory</h2>
+
+<p><b>Select Output Folder</b> opens a directory picker. All aligned frames and the <code>.sasd</code> sidecar land here. If the folder doesn't exist yet, create it first in your file manager — the dialog doesn't offer a "create new" option.</p>
+
+<div class="tip">
+<b>Pick a dedicated folder, not your source folder.</b> Aligned frames use the suffix <code>_n_r.fit</code>: <code>M31_light_0001.fit</code> → <code>M31_light_0001_n_r.fit</code>. These end in <code>.fit</code> regardless of input format, so a JPEG input becomes a FITS output. Writing them into the source folder mixes originals and aligned versions, which Stacking Suite and other downstream tools will then try to re-register in a subsequent run.
+</div>
+
+<h2>5. Starting registration</h2>
+
+<p><b>Start Registration</b> kicks off the pipeline. The status label updates in real time with per-pass progress, per-frame results, and running counts. The status format tracks across three phases:</p>
+
+<ol>
+  <li><b>Refinement passes</b> — <code>Refinement Pass 1/3…</code>, <code>Astroalign delta for M31_light_0012.fit: dx=1.42, dy=0.87</code>, and so on. Up to three passes by default; stops early on convergence.</li>
+  <li><b>Pass summary</b> — <code>Pass 1 delta shifts: [12.4, 8.9, 11.2, ...]</code> and <code>Within tolerance (≤ 0.20px): 42 frame(s)</code>. Frames already within tolerance are skipped in subsequent passes.</li>
+  <li><b>Finalize</b> — <code>Finalizing aligned outputs with 8 processes…</code>, then per-frame <code>Wrote M31_light_0001_n_r.fit [affine]</code>. This is the single full-resolution read + warp + write per frame.</li>
+</ol>
+
+<p>At the end, a summary box reports <code>Valid frames: X/Y</code> — how many frames produced output versus how many were in the input list. Frames whose alignment failed entirely (astroalign couldn't find enough triangles even after backoff) are reported in-log and skipped rather than written as broken outputs.</p>
+
+<h2>6. Reading the status log for problems</h2>
+
+<p>Common status-line patterns that mean something's wrong:</p>
+
+<table>
+<tr><th>Status message</th><th>What it means</th><th>What to do</th></tr>
+<tr><td><code>Astroalign failed for X: List of matching triangles exhausted</code></td><td>Even the strictest detection pass couldn't find enough shared triangles between the frame and the reference.</td><td>Check whether the frame actually overlaps the reference. Common on frames that drifted far during the session or on panels from a different mosaic region.</td></tr>
+<tr><td><code>Astroalign failed for X – skipping (no transform returned)</code></td><td>Detection worked but RANSAC couldn't find a consistent transform.</td><td>Usually indicates a frame with heavy cloud contamination, a satellite trail covering the brightest stars, or a defocused frame.</td></tr>
+<tr><td><code>low coverage src=0.37, ref=0.82 for crop solve</code></td><td>Control points on the source cover only 37% of the frame — the solution may be geometrically biased.</td><td>Usually a warning, not a failure. If downstream stacking shows one-sided bleed or rotation inconsistency, this frame may be the culprit.</td></tr>
+<tr><td><code>Within tolerance (≤ 0.20px): N frame(s)</code></td><td>N frames converged in this pass and will be skipped by the next pass.</td><td>Nothing to do — healthy progress indicator. Convergence after pass 1 is normal for well-tracked sessions.</td></tr>
+</table>
+
+<h2>7. Output files</h2>
+
+<p>Two kinds of output land in the chosen directory:</p>
+
+<ul>
+  <li><b><code>*_n_r.fit</code></b> — one aligned FITS per successful input. The <code>_n</code> suffix is retained from calibrated frames (SASpro's normalization step appends it); the <code>_r</code> is appended by registration. The result is a float32 FITS with the reference's pixel dimensions, each frame's pixels warped and resampled via the anti-ring Lanczos-plus-bilinear blend.</li>
+  <li><b><code>alignment_transforms.sasd</code></b> — a plain-text sidecar listing every file's absolute path, transform kind (affine, homography, poly3, poly4), and the full matrix (2×3, 3×3, or UNSUPPORTED for polynomial models). Format details in §12 below.</li>
+</ul>
+
+<p>Each FITS output also carries <code>SASDZ*</code> header keywords — a self-description stamp that lets drizzle integration reconstruct the frame's transform even without the <code>.sasd</code> file.</p>
+
+<h2>8. Satellite trails and no-data pixels</h2>
+
+<p>If your frames went through calibration with satellite trail rejection enabled, trail pixels are baked as NaN in the calibrated frames. Star Registration preserves this: NaN pixels bloom through the Lanczos warp (naturally covering the ring halo around the original trail), and the final file retains them as no-data markers. Integration downstream drops NaN pixels per-lane via <code>isfinite()</code>, so trails don't contaminate the stack.</p>
+
+<p>The star detector handles trail NaN by folding non-finite pixels into the SEP ignore mask on a detection-only copy. The saved frame keeps its NaN markers; only the detection pass sees a filled copy for background estimation.</p>
+
+<h2>9. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Split registration from integration.</b> You want to try two different integration methods (sigma-kappa vs winsorized clip, say) on the same registered stack. Run Star Registration once to produce the aligned frames + <code>.sasd</code>; then run Stacking Suite with "Skip Registration and Integrate" twice, once per method. Each integration reads the same aligned frames with no re-registration cost.
+</div>
+
+<div class="workflow">
+<b>Session-at-a-time pipeline.</b> You image the same target over multiple nights and want each session's frames aligned to a master reference. Pick the master as reference, add just tonight's frames, run. Each night's aligned output accumulates in the same output folder, and the <code>.sasd</code> is overwritten each run — so if you want the per-session <code>.sasd</code> preserved, rename it (<code>alignment_night3.sasd</code>) before the next session.
+</div>
+
+<div class="workflow">
+<b>Pre-aligned frames for a different tool.</b> You want to feed registered frames to a tool that doesn't integrate itself — a star removal step, a per-frame analysis script, a QA inspection pass. Star Registration produces the aligned FITS without integration. The outputs are plain float32 FITS files that any FITS-aware tool can read directly.
+</div>
+
+<div class="workflow">
+<b>Verifying alignment before a long stack.</b> You're about to kick off a big integration and want to confirm registration quality first. Run Star Registration on the frames with a tight shift_tolerance expectation. Watch the per-pass delta shifts in the log: if pass 1 shifts are &lt; 2 px and pass 2 shows most frames converged (within 0.2 px), the registration is healthy. If pass 2 still shows large deltas on many frames, something's wrong (too few stars, dramatically different FOVs, a bad reference choice).
+</div>
+
+<h2>10. Shared engine with Stacking Suite</h2>
+
+<p>The internals here are literally the same code Stacking Suite uses — see the <a href="star_alignment.html">Stellar Alignment</a> documentation for the full algorithmic treatment of star detection (SEP with hot-pixel rejection on FWHM, ellipticity, and pixel count), uniform-grid control point allocation (coverage and spread gates), triangle-invariant matching via astroalign, the center-crop solve with coordinate lift, the downsample-and-lift affine math, and the anti-ring Lanczos+bilinear warp.</p>
+
+<p>The relevant preferences live under <code>stacking/align/*</code> in SASpro's settings and are shared across every alignment-using tool: the detection threshold, max control points, downsample factor, RANSAC reprojection threshold, hot-pixel FWHM/ellipticity limits, and finalize worker count. Tune them in one tool, they apply in all of them.</p>
+
+<h2>11. Technical details</h2>
+<p class="tech-lead">The batch pipeline's structure, multi-pass refinement, progress accounting, and finalize phase.</p>
+
+<h3>11.1 Pipeline structure</h3>
+
+<p>Registration runs in two phases: the <b>refinement loop</b> and the <b>finalize pass</b>. The refinement loop iterates on downsampled grids to compute accurate transforms; the finalize pass performs the single full-resolution read + warp + save per frame. Separating them matters because the refinement loop may touch each frame several times (reading full-resolution each time would be wasteful) while the finalize pass must touch each frame exactly once (and the full-res warp is the expensive operation).</p>
+
+<h3>11.2 Multi-pass refinement model</h3>
+
+<p>Each refinement pass solves for the delta transform between the currently-warped frame and the reference. The accumulated transform is updated by matrix composition:</p>
+
+<div class="matheq">T_i^{(k)} = T_{\mathrm{delta},i}^{(k)} \cdot T_i^{(k-1)}</div>
+
+<p>Pass 0 starts from identity, so the first delta is also the initial transform. Each subsequent pass warps the original frame with the accumulated transform, solves for whatever residual drift remains, and composes it in. The scalar delta is the translation magnitude:</p>
+
+<div class="matheq">\|\Delta\mathbf{t}_i\| = \sqrt{(\Delta t_x)^2 + (\Delta t_y)^2}</div>
+
+<p>Convergence is declared frame-by-frame when the delta falls below <code>shift_tolerance</code> (default 0.2 px). Converged frames are added to a skip set and excluded from subsequent passes:</p>
+
+<p>The default maximum is 3 passes. For well-tracked sessions, most frames converge after pass 1; pass 2 handles frames with mild residual drift; pass 3 is rare and usually catches a few outliers with large initial offsets.</p>
+
+<h3>11.3 Progress accounting</h3>
+
+<p>The progress bar reports unit progress rather than wall-clock percentage. Total units for a run of N frames with P passes:</p>
+
+<div class="matheq">N_{\mathrm{total}} = N_{\mathrm{frames}} \cdot P_{\mathrm{passes}} + N_{\mathrm{finalize}}</div>
+
+<p>which simplifies to:</p>
+
+<div class="matheq">\text{total units} = N \cdot P + N</div>
+
+<p>Each refinement worker completion = 1 unit; each finalize worker completion = 1 unit. Convergence shortens the actual time by skipping already-converged frames in later passes, but the unit count stays fixed — "100% complete" means every frame has been attempted in every pass plus finalized once. Progress updates fire every 500ms via a Qt timer to avoid flooding the UI with per-frame updates.</p>
+
+<h3>11.4 Why refinement reads original frames</h3>
+
+<p>A subtle but important design choice: the refinement pass always reads the <i>original</i> input frame, not the previous pass's intermediate. The accumulated transform is applied to the original each time, giving the solver the pre-warped frame to work against. This has two benefits: no intermediate files are written during refinement (saving I/O and disk space), and no cumulative resampling error builds up across passes (each pass sees the full-resolution source pixels, not a progressively-degraded warp of a warp of a warp).</p>
+
+<p>The finalize pass is where disk writes happen — exactly once per frame, with the final accumulated transform applied at full resolution via the anti-ring warp.</p>
+
+<h3>11.5 Finalize parallelism</h3>
+
+<p>The finalize pass uses a smaller worker pool than refinement because each worker holds a full-resolution frame plus warp buffers in RAM. To keep CPU cores busy without multiplying memory, each worker allocates multiple OpenCV threads for its warp:</p>
+
+<div class="matheq">\text{threads}_{\mathrm{cv2}} = \lfloor N_{\mathrm{cores}} / N_{\mathrm{workers}} \rfloor</div>
+
+<p>Default is 8 workers × 1 cv2 thread on 8-core machines, or 4 workers × 2 cv2 threads on 8-core machines when finalize_workers is tuned down for memory reasons. The split is auto-balanced via the <code>SASPRO_FINALIZE_CV2_THREADS</code> environment variable passed to each worker process.</p>
+
+<h3>11.6 Process pool vs thread pool fallback</h3>
+
+<p>The default executor is <code>ProcessPoolExecutor</code> with spawn-mode contexts (matches both frozen builds and Qt safety requirements). On frozen (PyInstaller) builds, <code>freeze_support()</code> at the top of the entry point catches child re-execs so spawned workers don't launch new SASpro windows.</p>
+
+<p>When process pool initialization fails — common on mixed-environment Windows installations where child workers die on NumPy/SciPy import with <code>BrokenProcessPool</code> — the engine falls back to a <code>ThreadPoolExecutor</code>. The thread pool serializes astroalign calls through the global <code>_AA_LOCK</code> (SEP is not thread-safe at the C level), so parallelism is limited to the warp phase, but registration still completes rather than failing hard.</p>
+
+<h3>11.7 Cancellation</h3>
+
+<p>The pipeline polls a cancellation event between frame boundaries. In-flight worker calls finish naturally; new jobs are not dispatched after the event fires. This gives clean cancellation without corrupting partially-written output files or leaving zombie worker processes. User-visible cancellation latency is bounded by the longest in-flight frame's solve time, typically 1-3 seconds.</p>
+
+<h3>11.8 The alignment_transforms.sasd format</h3>
+
+<p>A plain-text file in a line-oriented format, UTF-8:</p>
+
+<div class="eq">REF_SHAPE: 4096, 6144
+REF_PATH: /path/to/reference.fit
+MODEL: mixed
+
+FILE: /abs/path/to/frame_0001_n_r.fit
+KIND: affine
+MATRIX:
+0.999987, -0.004521, 12.345
+0.004521, 0.999987, -8.763
+
+FILE: /abs/path/to/frame_0002_n_r.fit
+KIND: homography
+MATRIX:
+0.9998, -0.0045, 11.2
+0.0045, 0.9998, -8.1
+0.0000012, -0.0000008, 1.0</div>
+
+<p>Fields:</p>
+
+<ul>
+  <li><code>REF_SHAPE: H, W</code> — reference image dimensions in pixels</li>
+  <li><code>REF_PATH</code> — reference file path or the sentinel <code>__ACTIVE_VIEW__</code></li>
+  <li><code>MODEL: mixed</code> — informational header; actual model is per-file in each KIND block</li>
+  <li>One block per frame, separated by blank lines, with FILE (absolute path), KIND (affine, similarity, homography, poly3, poly4), and MATRIX (2 rows × 3 for affine/similarity, 3 rows × 3 for homography, or <code>UNSUPPORTED</code> for polynomial frames whose transforms are dense coordinate maps rather than small matrices)</li>
+</ul>
+
+<p>Numbers are formatted via <code>{:.16g}</code> for maximum precision without trailing zeros. Polynomial frames fall back to an affine written as <code># fallback affine from refinement</code> comment plus the 2×3 matrix, so downstream tools that only understand affine can still process poly-registered stacks (less accurately but functionally).</p>
+
+<h3>11.9 FITS header SASDZ stamp</h3>
+
+<p>Every aligned FITS carries header keywords that let drizzle integration reconstruct the frame's transform without needing the <code>.sasd</code> file:</p>
+
+<ul>
+  <li><code>SASDZ = T</code> — sentinel indicating this frame is a SASpro-aligned output</li>
+  <li><code>SASDZKND</code> — transform kind ("affine", "similarity", "homography", "poly3", "poly4")</li>
+  <li><code>SASDZRFH</code>, <code>SASDZRFW</code> — reference grid dimensions</li>
+  <li><code>SASDZORG</code> — source frame basename (full path in a COMMENT card)</li>
+  <li><code>SASDZNR</code>, <code>SASDZNC</code> — matrix row and column counts (for affine/homography kinds)</li>
+  <li><code>SASDZ00</code> through <code>SASDZ11</code> — matrix elements, flattened row-major (FITS keyword names cap at 8 characters, so a 3×3 homography packs into 9 cards from <code>SASDZ00</code> to <code>SASDZ08</code>)</li>
+</ul>
+
+<p>This stamp means a drizzle integration can be launched from a folder of aligned FITS files even if the <code>.sasd</code> has been deleted or overwritten by a later run — the drizzle integrator reads the stamp from each file's own header and reconstructs the per-frame geometry. Polynomial-registered frames carry only the kind and reference dimensions (their transforms are dense maps, not small matrices), and drizzle treats them as already-warped — deposited on an identity canvas.</p>
+
+<div class="credit">
+<b>Credits.</b> SASpro Star Registration — the two-phase refinement/finalize split, the pass-skip convergence model with frame-level composition, the progress unit accounting, the <code>.sasd</code> sidecar format, the FITS <code>SASDZ*</code> self-description stamp, and the process-vs-thread executor fallback — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. The underlying alignment math (star detection, triangle matching, RANSAC, warp) is the shared engine documented in <a href="star_alignment.html">Stellar Alignment</a>; see that document for citations to astroalign, SEP, OpenCV, scikit-image, scipy, astropy, and the SIP convention.
+</div>
+
+</body>
+</html>

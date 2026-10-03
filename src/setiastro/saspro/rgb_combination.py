@@ -13,6 +13,7 @@ try:
 except Exception:
     load_image = None
 
+from setiastro.saspro.help_support import make_help_button
 
 def _to_f01(x: np.ndarray) -> np.ndarray:
     a = np.asarray(x)
@@ -113,6 +114,8 @@ class RGBCombinationDialogPro(QDialog):
         self.btn_combine.clicked.connect(self._combine)
 
         btns = QHBoxLayout()
+        self.btn_help = make_help_button("rgb_combination", self)
+        btns.addWidget(self.btn_help)
         btns.addStretch(); btns.addWidget(self.btn_combine); btns.addWidget(self.btn_cancel)
 
         # ── layout

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtWidgets import QSizePolicy
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.help_support import make_help_button
 
 # ---------------------------------------------------------------------
 # Small helpers  (identical to SelectiveColor)
@@ -794,6 +795,8 @@ class SelectiveLuminanceCorrection(QDialog):
         for b in (self.btn_zoom_out, self.btn_zoom_in, self.btn_zoom_1, self.btn_fit):
             zoom_row.addWidget(b)
         zoom_row.addStretch(1)
+        self.btn_doc_help = make_help_button("selective_luma", self)
+        zoom_row.addWidget(self.btn_doc_help)
         right.addLayout(zoom_row)
 
         self.lbl_help = QLabel(

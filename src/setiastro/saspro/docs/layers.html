@@ -1,0 +1,365 @@
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color:#e6e6e6; background:#1b1b1b; padding:10px 14px; line-height:1.45; }
+h1 { margin: 0 0 10px 0; font-size: 20px; color:#9ad; }
+h2 { margin-top: 16px; color:#cfd; font-size:16px; border-bottom:1px solid #333; padding-bottom:3px; }
+h3 { color:#9bd; margin-top:14px; margin-bottom:6px; font-size:14px; }
+code { background:#2a2a2a; padding:1px 4px; border-radius:3px; }
+.eq { background:#232323; border-left:3px solid #4caf50; padding:6px 10px; margin:6px 0; font-family:monospace; }
+.hero { background:#1f2a1f; border-left:3px solid #4caf50; padding:10px 12px; margin:10px 0; border-radius:3px; }
+.matheq { margin: 8px 14px; text-align:left; }
+.matheq-hero { margin: 10px 0; text-align:center; }
+.tip { background:#1f2a1f; border-left:3px solid #4caf50; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.warn { background:#2a241f; border-left:3px solid #c0892b; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.credit { background:#2a251c; border-left:3px solid #c7a24a; padding:8px 12px; margin:12px 0 6px 0; border-radius:3px; font-size:13px; color:#dcd3b8; }
+.keys { background:#1f2630; border-left:3px solid #4a9eff; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.workflow { background:#1f2630; border-left:3px solid #4a9eff; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.science { background:#2a1f2a; border-left:3px solid #c74ac7; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.mode-table { margin: 8px 0; border-collapse: collapse; width:100%; }
+.mode-table th { text-align: left; padding: 4px 8px; background:#232323; border-bottom:1px solid #444; color:#9bd; font-size:12px; }
+.mode-table td { padding: 3px 8px; border-bottom:1px solid #2a2a2a; font-size:12px; vertical-align:top; }
+.mode-table td:first-child { font-weight:bold; color:#cfd; white-space:nowrap; }
+ul { margin: 6px 0 10px 0; padding-left:22px; }
+li { margin: 3px 0; }
+p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Layers Dock</h1>
+
+<div class="hero">
+<b>Non-destructive layer compositing over any open view.</b> Stack other views on top of your base image as layers, each with its own blend mode (30 to pick from), opacity, mask, transform, and per-layer levels — the base view is never touched until you explicitly merge. A floating preview window with a draggable before/after split shows the composite in real time, rendered in two tiers: an instant downsampled fast preview on the GUI thread, then a full-resolution render on a background worker. Drop another view into the dock to add it as a layer. Drop a view onto an existing layer to use it as a mask. When you're happy, merge the stack back to the view, into a new document, or just the selected layers into one baked raster.
+</div>
+
+<h2>1. The non-destructive promise</h2>
+<p>The Layers Dock is built around one rule: <b>the base view's pixels are never changed by the layer stack</b>. You can add a dozen layers, tweak their blend modes and opacities, add masks, scale and rotate them — and the view you're working on still contains the original image, untouched, with full undo intact. The composite you see lives entirely in the floating preview window. Only three operations ever write back:</p>
+<ul>
+<li><b>Merge → Push to View</b> — flattens the composite and replaces the current view's image as an undoable edit step.</li>
+<li><b>Merge → New Document</b> — flattens into a brand-new document in SASpro, leaving the source view untouched.</li>
+<li><b>Merge Selected → Single Layer</b> — bakes the selected layers into one raster layer within the stack, keeping the layers above and below intact.</li>
+</ul>
+
+<div class="warn">
+<b>Nothing is committed until you click Merge.</b> Closing the preview, switching views, or quitting SASpro throws away the composite but keeps the layer stack recorded against the view, so you can come back to it. If you want to keep the result, merge it.
+</div>
+
+<h2>2. The dock layout</h2>
+<ul>
+<li><b>Top row</b> — View selector combo (every open SASpro view appears here), and the <b>👁 Preview</b> toggle. Clicking Preview opens the floating preview window where you'll see the composite.</li>
+<li><b>Layer list</b> — one row per layer, top of the list = top of the stack. The base view appears as a greyed-out row at the bottom with its own levels controls.</li>
+<li><b>Bottom row</b> — Merge → Push to View, Merge → New Document, Merge Selected → Single Layer, Clear All Layers.</li>
+</ul>
+
+<h2>3. Adding a layer</h2>
+<p>Drag another open view's title bar (or thumbnail) into the Layers dock. A new layer appears at the top of the stack, with that view as its live source — if you later run a tool on the source view that changes its pixels, the composite re-renders automatically to pick up the new data. The layer name shows the source view's title and updates when you rename the view.</p>
+
+<p>You can also drop the same view multiple times for different roles (one copy as a blend layer, another as a mask), or drop a document that isn't open as a subwindow — SASpro resolves it by document UID, pointer, or file path depending on what the drop payload carries.</p>
+
+<h2>4. The row controls</h2>
+<p>Each layer row has four sub-rows:</p>
+
+<h3>4.1. Main controls</h3>
+<ul>
+<li><b>Visibility checkbox</b> — toggle this layer on/off without removing it.</li>
+<li><b>Layer name</b> — shows the source view's title (click the source view, rename it, and the layer label follows).</li>
+<li><b>Blend mode</b> — 30-mode dropdown (see §6).</li>
+<li><b>Opacity</b> — slider + spinbox paired bidirectionally. 0.00 to 1.00.</li>
+<li><b>Transform…</b> — opens the live-preview transform dialog (translate, rotate, scale about a pivot). Button shows an asterisk when a non-identity transform is active.</li>
+<li><b>↑ / ↓</b> — move this layer up or down in the stack.</li>
+<li><b>✕</b> — delete this layer.</li>
+</ul>
+
+<h3>4.2. Mask controls</h3>
+<p>Pick any open view from the <b>Mask</b> dropdown to use its luminance as this layer's mask. <b>Invert</b> flips the mask. <b>Clear</b> removes the mask assignment. Alternatively, drop a view directly onto an existing layer row — SASpro recognizes the mask MIME type and assigns it as this layer's mask automatically, including any invert and feather settings carried in the drop payload.</p>
+
+<div class="tip">
+<b>Luminance masks follow the layer.</b> When you transform a layer (rotate it, scale it, nudge it), its mask gets the <i>exact same transform</i> applied so the two stay registered. A galaxy mask you painted at native orientation stays aligned to the galaxy after you rotate the whole layer 45°.
+</div>
+
+<h3>4.3. Per-layer levels</h3>
+<p>Each layer has its own levels adjustment that applies <i>before</i> the blend mode runs. Enable the checkbox, set black point, midtones, and white point (0 to 1 for all three). Uses the same PixInsight-style midtones transfer function as SASpro's main Levels tool, so adjustments translate predictably if you later bake the layer. Midtones = 0.5 is neutral; lower brightens, higher darkens.</p>
+
+<p>The base view row (greyed at the bottom of the list) also has a levels block that applies to the base image before any layers are composited on top. Useful for setting a stretch on the base that you don't want to commit until you merge.</p>
+
+<h3>4.4. Sigmoid parameters</h3>
+<p>When the blend mode is set to <b>Sigmoid</b>, two extra controls appear: <b>Center</b> (0 to 1, default 0.5) and <b>Strength</b> (0.1 to 50, default 10). These control the shape of the luma-dependent blend curve — see §6 under Sigmoid.</p>
+
+<h2>5. The preview window</h2>
+<p>Click <b>👁 Preview</b> to open the floating preview window. It's non-modal, so you can keep it visible while you tweak the dock. Three controls at the top:</p>
+<ul>
+<li><b>⧉ Split Before/After</b> — toggles the vertical split line. When on, the raw base image shows on the left half and the composite on the right. Drag the yellow split line left/right to adjust the split position. When off, you see the composite full-width.</li>
+<li><b>Fit</b> — resets zoom and pan to fit the whole image in the window (double-clicking the canvas does the same).</li>
+<li><b>⟳ Refresh</b> — forces a recomposite from the current source views. Normally not needed because the preview auto-refreshes whenever a source view's pixels change, but useful if an external process modified a document.</li>
+</ul>
+
+<div class="keys">
+<b>Canvas navigation.</b> Scroll wheel to zoom in/out (centered on the mouse cursor). Click and drag to pan. Double-click empty space to reset to fit. Hover near the split line and the cursor changes to a split-horizontal cursor — click and drag to reposition.
+</div>
+
+<h2>6. Blend modes</h2>
+<p>30 modes in six categories. All operate in float32 [0,1] space with 3-channel inputs; monochrome layers are promoted to RGB first.</p>
+
+<h3>Darken family</h3>
+<table class="mode-table">
+<tr><th>Mode</th><th>Formula (base <code>a</code>, source <code>s</code>)</th><th>Use for</th></tr>
+<tr><td>Multiply</td><td><code>a·s</code></td><td>Darkening overlays, star-mask integration</td></tr>
+<tr><td>Darken</td><td><code>min(a, s)</code></td><td>Per-channel darker of the two</td></tr>
+<tr><td>Darker Color</td><td><code>s if Y_s ≤ Y_a else a</code></td><td>Pick the darker whole pixel by luminance</td></tr>
+<tr><td>Color Burn</td><td><code>1 - (1-a)/s</code></td><td>Deepen dark areas, enhance shadow contrast</td></tr>
+</table>
+
+<h3>Lighten family</h3>
+<table class="mode-table">
+<tr><th>Mode</th><th>Formula</th><th>Use for</th></tr>
+<tr><td>Screen</td><td><code>1 - (1-a)(1-s)</code></td><td>Classic stacking of light layers, nebula overlays</td></tr>
+<tr><td>Lighten</td><td><code>max(a, s)</code></td><td>Per-channel brighter of the two</td></tr>
+<tr><td>Lighter Color</td><td><code>s if Y_s ≥ Y_a else a</code></td><td>Pick the brighter whole pixel by luminance</td></tr>
+<tr><td>Color Dodge</td><td><code>a/(1-s)</code></td><td>Boost highlights, HDR-ish bloom</td></tr>
+<tr><td>Add</td><td><code>clip(a + s)</code></td><td>Linear stacking (handle with care; clips)</td></tr>
+<tr><td>Relativistic Addition</td><td><code>(a+s)/(1+a·s)</code></td><td>Non-clipping addition — bounded in [0,1] by construction</td></tr>
+</table>
+
+<div class="tip">
+<b>Relativistic Addition</b> is Frank's workhorse non-clipping alternative to Add. It's the same formula as the velocity addition rule in special relativity: two speeds under <i>c</i> compose to another speed under <i>c</i>. Here, two intensities under 1 compose to another intensity under 1. You can stack a dozen Add-mode layers at full opacity and the brightest regions still don't blow out — they asymptotically approach 1 instead of clipping to it. Perfect for integrating HII fluorescence into an SHO stack without posterizing the brightest cores.
+</div>
+
+<h3>Contrast family</h3>
+<table class="mode-table">
+<tr><th>Mode</th><th>Formula</th><th>Use for</th></tr>
+<tr><td>Overlay</td><td>Multiply where <code>a ≤ 0.5</code>, Screen above</td><td>Classic contrast boost based on base luminance</td></tr>
+<tr><td>Soft Light</td><td><code>(1-2s)·a² + 2sa</code> (W3C)</td><td>Gentler contrast; good for texture layers</td></tr>
+<tr><td>Hard Light</td><td>Multiply/Screen conditional on <code>s</code></td><td>Overlay's cousin, conditioned on source instead</td></tr>
+<tr><td>Pin Light</td><td><code>max(a, 2s-1)</code> if <code>s&gt;0.5</code>, else <code>min(a, 2s)</code></td><td>Selective shadow/highlight replacement</td></tr>
+</table>
+
+<h3>Difference family (ideal for gradient modeling)</h3>
+<table class="mode-table">
+<tr><th>Mode</th><th>Formula</th><th>Use for</th></tr>
+<tr><td>Difference</td><td><code>|a - s|</code></td><td>Alignment check, gradient reveal</td></tr>
+<tr><td>Difference (Squared)</td><td><code>(a - s)²</code></td><td>Weighted difference emphasizing larger offsets</td></tr>
+<tr><td>Exclusion</td><td><code>a + s - 2as</code></td><td>Softer Difference, less contrasty midtones</td></tr>
+<tr><td>Negation</td><td><code>1 - |1 - a - s|</code></td><td>"Bright difference" — equal pixels go white</td></tr>
+<tr><td>Subtract</td><td><code>clip(a - s)</code></td><td>Gradient / pedestal / synthetic-flat removal</td></tr>
+<tr><td>Divide</td><td><code>a/s</code></td><td>Flat-fielding, illumination correction</td></tr>
+<tr><td>Grain Extract</td><td><code>a - s + 0.5</code></td><td>Pull a gradient out as a mid-gray map for inspection</td></tr>
+<tr><td>Grain Merge</td><td><code>a + s - 0.5</code></td><td>Re-add an extracted gradient layer</td></tr>
+</table>
+
+<div class="science">
+<b>The gradient-modeling workflow.</b> Drop your image onto itself as a layer, run a strong blur on the top copy (Convolution tool), set the top layer to <b>Grain Extract</b>. The preview now shows your gradient alone, centered at mid-gray — bright where the original was brighter than the blurred version, dark where darker. Save that as a document and you have a quantitative gradient model. Combine with <b>Divide</b> (as a classical flat-field pass) or <b>Subtract</b> (for additive gradients) depending on whether your contamination is multiplicative or additive. All non-destructive; the original stays clean.
+</div>
+
+<h3>Average family</h3>
+<table class="mode-table">
+<tr><th>Mode</th><th>Formula</th><th>Use for</th></tr>
+<tr><td>Average</td><td><code>(a + s)/2</code></td><td>Simple 2-image mean (fixed opacity)</td></tr>
+<tr><td>Geometric Mean</td><td><code>√(a·s)</code></td><td>Sits between Multiply and Average; preserves zeros</td></tr>
+</table>
+
+<h3>Luminance-aware modes</h3>
+<table class="mode-table">
+<tr><th>Mode</th><th>Behavior</th><th>Use for</th></tr>
+<tr><td>Luminosity</td><td>Keep base's color, use source's luminance</td><td>LRGB combination: swap in a sharper L</td></tr>
+<tr><td>Color</td><td>Keep base's luminance, use source's color</td><td>Chromatic overlays: paint color onto a mono master</td></tr>
+<tr><td>Sigmoid</td><td>Luma-weighted blend; <code>w = 1/(1+exp(-k(Y-c)))</code></td><td>Blend only where base is bright (bright-area overlays)</td></tr>
+</table>
+
+<p>The <b>Luminosity</b> mode uses the full <code>luminancerecombine</code> pipeline (same as SASpro's Luminance Recombine tool) so highlight soft-knee and other refinements are available. The <b>Color</b> mode is its inverse: it rescales the source channels by the ratio of base luma to source luma, preserving the base's brightness distribution while replacing its hue and saturation.</p>
+
+<p><b>Sigmoid</b> is unique: the blend weight is a logistic function of the <i>base's</i> luminance, with user-controlled center and strength. At center = 0.5, strength = 10 (defaults), dark base pixels keep mostly the base, bright base pixels transition smoothly to the source. Great for pasting bright stars from a short-exposure frame onto a long-exposure stack — the sharp stars replace the bloated ones only where the base is bright.</p>
+
+<h2>7. Transforms</h2>
+<p>The <b>Transform…</b> button on each layer row opens a dialog with five numeric inputs:</p>
+<ul>
+<li><b>Translate X / Y</b> (pixels) — shift the layer. Negative values move left/up.</li>
+<li><b>Rotate</b> (degrees) — rotation about a pivot (defaults to image center).</li>
+<li><b>Scale X / Y</b> — independent horizontal and vertical scaling. Values below 1 shrink, above 1 enlarge.</li>
+</ul>
+<p>Changes apply live with a 120 ms debounce — tweak a slider and the preview catches up without a tool call per keystroke. Hitting <b>Reset</b> zeros everything. Hitting <b>Cancel</b> restores the transform that was active before you opened the dialog. Hitting <b>OK</b> commits.</p>
+
+<p>The transform applies to both the layer pixels <i>and</i> the layer's mask (if any), so a rotated galaxy stays masked correctly. The identity transform (no translation, no rotation, scale = 1,1) is detected automatically and skipped entirely — no warp pass runs when the transform is a no-op, which is the common case for most layers and keeps composites fast.</p>
+
+<h2>8. Fast preview vs full-resolution composite</h2>
+<p>WIMI composites run in two tiers (both debounced to coalesce rapid changes):</p>
+<ul>
+<li><b>Fast preview</b> — 80 ms after your last change, SASpro runs a <i>downsampled</i> composite on the GUI thread at the current preview-window pixel size (plus some padding, minimum 512 px on the longest side). This appears almost instantly even for 64-megapixel inputs. The preview label shows "Fast composite ready — rendering full resolution…".</li>
+<li><b>Full-resolution composite</b> — 350 ms after your last change, SASpro kicks off the same composite at native resolution on a background worker thread. When it finishes, the full-res result replaces the fast preview seamlessly. The label shows "Composite ready — N px".</li>
+</ul>
+
+<p>Both tiers coalesce: dragging an opacity slider across its full range in half a second produces exactly one fast render per 80-ms window and one full-res render per 350-ms window — not one per slider tick. A generation counter on the worker queue silently discards any stale full-res result that lands after you've moved on.</p>
+
+<p>While you drag transform parameters or adjust levels, you're interacting with the fast preview. When your mouse stops, the full-res catches up. If you push a long-running tool on a source view (say a 30-second deconvolution), the preview auto-refreshes once the tool completes — the dock listens to each source document's <code>changed</code> signal.</p>
+
+<h2>9. Merging</h2>
+
+<h3>Merge → Push to View</h3>
+<p>Flattens the full-resolution composite and replaces the current view's image as a standard SASpro undoable edit (step name: "Layers Merge"). The layer stack is cleared from the view. If you don't like the result, Ctrl+Z gets your original back.</p>
+
+<h3>Merge → New Document</h3>
+<p>Flattens the composite into a brand-new document. The source view is left completely untouched and its layer stack remains active. The new document's title appends "_merged" to the source view's title. Useful when you want to keep iterating on the layers while also saving a snapshot of the current state.</p>
+
+<h3>Merge Selected → Single Layer</h3>
+<p>Select two or more layer rows (Ctrl+click or Shift+click), then click this. SASpro composites just those layers against whatever's below them, bakes the result as a new raster <code>ImageLayer</code> (no source document, just pixels), and replaces the selected range with that one baked layer. Layers above and below the selection are preserved exactly. Useful for consolidating a sub-stack you've finished tweaking so later changes to other layers don't trigger expensive recomposites of the frozen sub-group.</p>
+
+<h2>10. Clear All Layers</h2>
+<p>Removes every layer from the current view's stack. The base view returns to its untouched pixels. Doesn't delete any source documents — you can drop them back in to rebuild.</p>
+
+<h2>11. Workflow recipes</h2>
+
+<div class="workflow">
+<b>LRGB combine with sharper L.</b> Load L and RGB images as separate views. In Layers Dock, select the RGB view. Drag the L view in as a layer. Set its blend mode to <b>Luminosity</b> and opacity to 1.0. The preview shows the RGB color on L's structure. Push to View to commit, or Merge → New Document to keep both.
+</div>
+
+<div class="workflow">
+<b>Starless + star layer compositing.</b> Load a starless version and the original. Drag starless onto the original as a layer. Set mode to <b>Screen</b> at 100% to re-add stars from the original (or <b>Pin Light</b> for selective replacement). Push to View.
+</div>
+
+<div class="workflow">
+<b>HII overlay without blowouts.</b> Load your SHO mix. Drag an Hα-only layer on top. Set mode to <b>Relativistic Addition</b> at full opacity. The brightest Hα cores never clip; they asymptote to pure white. Add a luminance mask from Hα to restrict the overlay to actual signal. Transform the Hα slightly if registration is off (the mask will follow automatically).
+</div>
+
+<div class="workflow">
+<b>Extract and remove a gradient.</b> Drop your light-pollution–contaminated image onto itself. On the top copy, run Convolution with a large Gaussian (σ ≈ 200 px). Set the top layer to <b>Grain Extract</b>. The preview now shows the gradient alone as a mid-gray map. Merge → New Document to save the gradient model. Switch back to the original, drop that gradient model in as a layer, set it to <b>Subtract</b>, and push.
+</div>
+
+<div class="workflow">
+<b>Multi-session stacks that don't blow highlights.</b> One view per night. Pick the deepest as the base. Drop each other session on top as a Relativistic Addition layer at 1/N opacity (N = total sessions). The composite looks like a mean-stacked frame but preserves hard-earned dynamic range in nebula cores. Merge → New Document for the final.
+</div>
+
+<div class="workflow">
+<b>Localized tweak without touching the main image.</b> Drop your working image onto itself as a layer. Set the top layer's levels to brighten (midtones down to 0.4). Drop a mask view (a painted region) onto the layer. Only the masked region brightens; the rest of the base shines through. Transform the whole layer if the mask needs rotating; both move together.
+</div>
+
+<div class="workflow">
+<b>Transform-only workflow for registration.</b> Drop a reference frame as a layer, enable only translate/rotate/scale, open the Transform dialog, nudge until features line up visually in the before/after split. The 120 ms live preview gives you instant feedback. Use the mask of your main galaxy to see only its registration, not the field.
+</div>
+
+<div class="workflow">
+<b>Freeze a sub-stack to speed up iteration.</b> You've got 8 layers, the bottom 5 are done. Select the bottom 5, click Merge Selected → Single Layer. Now there are 4 layers total (the top 3 originals plus the one baked raster), and composite recomputes are much faster. Later edits on the top 3 don't re-blend the 5 baked ones each pass.
+</div>
+
+<h2>12. Credits</h2>
+<div class="credit">
+Written by Franklin Marek as part of <a href="https://setiastro.com">SetiAstro Suite</a>.<br><br>
+
+<b>Blend modes.</b> Standard formulas follow the W3C Compositing &amp; Blending Level 1 specification and the PhotoShop blend-mode conventions as documented across the color-math literature. The Soft Light formula uses the W3C simple form. Relativistic Addition is adapted from the velocity-composition rule in special relativity. Luminosity mode delegates to the SASpro Luminance Recombine pipeline (Rec. 709 luma with highlight soft-knee support).<br><br>
+
+<b>Midtones transfer function.</b> PixInsight-equivalent MTF: <code>M(x; m) = ((m-1)x) / ((2m-1)x - m)</code> with the boundary cases <code>M(0) = 0</code>, <code>M(m) = 0.5</code>, <code>M(1) = 1</code>.<br><br>
+
+<b>Compositing engine.</b> Pure NumPy with optional <b>OpenCV</b> fast paths for resize (<code>cv2.resize</code> INTER_NEAREST) and affine warping (<code>cv2.warpAffine</code>). Falls back to NumPy mgrid/indexing when OpenCV isn't available. Transform math built from standard 3×3 affine composition.<br><br>
+
+<b>UI.</b> PyQt6 — QDockWidget host, QListWidget-of-widgets for the layer rows (so each row carries its own slider/spinbox/combo state), QDialog preview window with custom QPainter canvas for the split view and zoom/pan. Background composite worker is a plain QObject on a QThread with a generation counter to discard stale results. Live transform dialog uses a 120 ms QTimer for debounced apply.<br><br>
+
+<b>Drag &amp; drop.</b> MIME types <code>MIME_VIEWSTATE</code> (adds a layer from a view) and <code>MIME_MASK</code> (assigns a view as a mask on the hovered layer) are defined in <code>setiastro.saspro.dnd_mime</code> and shared with the SASpro view manager so any subwindow drag source works.
+</div>
+
+<h2 style="margin-top:28px;">Technical details</h2>
+
+<h3>13.1. The midtones transfer function</h3>
+<p>SASpro uses the PixInsight MTF for all levels adjustments (base and per-layer):</p>
+<div class="matheq-hero">M(x; m) = \frac{(m - 1) \cdot x}{(2m - 1) \cdot x - m}</div>
+<p>with boundary conditions enforced explicitly: <code>M(0) = 0</code>, <code>M(m) = 0.5</code>, <code>M(1) = 1</code>. Valid for midtone m in (0, 1); SASpro clamps to [1e-6, 1 - 1e-6] to avoid the singularity at m = 0.5 where the denominator would vanish for x = m. Vectorized across all channels in one pass.</p>
+
+<h3>13.2. The full levels pipeline</h3>
+<p>Per channel, in float32 [0, 1]:</p>
+<div class="matheq-hero">t = \mathrm{clip}((x - b_p) / (w_p - b_p),\; 0,\; 1)</div>
+<div class="matheq-hero">\mathrm{Levels}(x) = M(t;\, m),\quad t = \frac{x - b_p}{w_p - b_p}</div>
+<p>Black point is subtracted first, white point normalizes the result to [0, 1] with clipping, then the midtones curve applies. If the user sets wp ≤ bp (an impossibility that would blow up the normalization), SASpro silently widens wp to bp + 1e-8 so the pipeline never crashes.</p>
+
+<h3>13.3. Luminance (Rec. 709)</h3>
+<p>All luminance-aware operations (Lighter Color, Darker Color, Sigmoid, Luminosity, Color, mask luminance extraction) use Rec. 709 primaries:</p>
+<div class="matheq-hero">Y = 0.2126\,R + 0.7152\,G + 0.0722\,B</div>
+<p>Clamped to [0, 1] after weighting. Chosen because it matches the sRGB gamut primaries most users' calibrated monitors are displaying, so the perceived luma matches what you see on screen.</p>
+
+<h3>13.4. The 30 blend-mode formulas</h3>
+<p>Each mode operates per-channel on base <code>a</code> and source <code>s</code>, both in [0, 1]. The exact implementations:</p>
+
+<div class="matheq">\mathrm{Multiply}: a \cdot s</div>
+<div class="matheq">\mathrm{Screen}: 1 - (1 - a)(1 - s)</div>
+<div class="matheq">\mathrm{Overlay}: a \leq 0.5 \Rightarrow 2as,\quad a > 0.5 \Rightarrow 1 - 2(1-a)(1-s)</div>
+<div class="matheq">\mathrm{Soft\ Light}: (1 - 2s) \cdot a^2 + 2 \cdot s \cdot a</div>
+<div class="matheq">\mathrm{Hard\ Light}: s \leq 0.5 \Rightarrow 2as,\quad s > 0.5 \Rightarrow 1 - 2(1-a)(1-s)</div>
+<div class="matheq">\mathrm{Color\ Dodge}: \mathrm{clip}(a / (1 - s),\; 0,\; 1)</div>
+<div class="matheq">\mathrm{Color\ Burn}: 1 - (1 - a) / s</div>
+<div class="matheq">\mathrm{Pin\ Light}: s > 0.5 \Rightarrow \max(a,\, 2s - 1),\quad s \leq 0.5 \Rightarrow \min(a,\, 2s)</div>
+<div class="matheq">\mathrm{Relativistic}: (a + s) / (1 + a \cdot s)</div>
+<div class="matheq">\mathrm{Grain\ Extract}: a - s + 0.5</div>
+<div class="matheq">\mathrm{Grain\ Merge}: a + s - 0.5</div>
+<div class="matheq">\mathrm{Negation}: 1 - |1 - a - s|</div>
+<div class="matheq">\mathrm{Difference}: |a - s|</div>
+<div class="matheq">\mathrm{Exclusion}: a + s - 2as</div>
+<div class="matheq">\mathrm{Geometric\ Mean}: \sqrt{a \cdot s}</div>
+<div class="matheq">\mathrm{Divide}: a / \max(s,\, \varepsilon)</div>
+<div class="matheq">\mathrm{Subtract}: \mathrm{clip}(a - s,\; 0,\; 1)</div>
+<div class="matheq">\mathrm{Lighter\ Color}: Y_s \geq Y_a \Rightarrow s,\; \mathrm{else}\; a</div>
+
+<p>All division operations use <code>ε = 1e-6</code> in the denominator to guard against division by zero. All results are clipped to [0, 1] where the formula could otherwise overshoot (Color Dodge/Burn, Add, Linear Burn, Linear Light, Vivid Light, Divide). Difference and Subtract naturally stay in range; Multiply, Screen, Soft Light, and Relativistic Addition are provably bounded in [0, 1] for inputs in [0, 1] and don't need explicit clipping.</p>
+
+<h3>13.5. Sigmoid blend</h3>
+<p>Unique among the modes because the blend weight depends on the <i>base's</i> luminance:</p>
+<div class="matheq-hero">w(Y) = 1 / (1 + \exp(-k \cdot (Y - c)))</div>
+<div class="matheq-hero">\mathrm{Sigmoid}: (1 - w) \cdot a + w \cdot s</div>
+<p>Y is the Rec. 709 luminance of the base, c is the center (default 0.5), k is the strength (default 10). At the default, dark base pixels (Y &lt; 0.3) stay essentially 100% base; bright base pixels (Y &gt; 0.7) transition to essentially 100% source. The strength parameter controls how sharp the transition band is — small k gives a wide ramp, large k gives a nearly-binary mask.</p>
+
+<h3>13.6. Luminosity and Color (chrominance swap)</h3>
+<p>Luminosity delegates to the full SASpro <code>luminancerecombine</code> pipeline (compute Y_src with Rec. 709, then <code>recombine_luminance_linear_scale</code> keeps the base's chrominance). Color is the mirror operation implemented inline:</p>
+<div class="matheq-hero">\mathrm{Color}: s \cdot (Y_a / Y_s)</div>
+<p>This rescales every source channel by the ratio of base luma to source luma, which preserves the base's brightness distribution while replacing its hue and saturation with the source's.</p>
+
+<h3>13.7. Alpha composition with mask</h3>
+<p>After the blend mode produces a candidate pixel, SASpro combines it with the base using layer opacity (and mask if present):</p>
+<div class="matheq-hero">\alpha_{\mathrm{map}} = \mathrm{clip}(\mathrm{opacity} \cdot M,\; 0,\; 1)</div>
+<div class="matheq-hero">\mathrm{out} = (1 - \alpha_{\mathrm{map}}) \cdot \mathrm{base} + \alpha_{\mathrm{map}} \cdot \mathrm{blended}</div>
+<p>With no mask, M = 1 everywhere and alpha_map degenerates to the scalar opacity. When Invert is on, M becomes 1 − M before the opacity multiplication.</p>
+
+<h3>13.8. Affine transform math</h3>
+<p>The 3×3 affine matrix is built from the user's parameters as a composition of translate, pivot-translate, rotate, scale, and inverse-pivot-translate:</p>
+<div class="matheq-hero">M = T_t \cdot T_p \cdot R \cdot S \cdot T_{-p}</div>
+<p>where T_t is translation by (t_x, t_y), T_p is translation by the pivot (default = image center), R is a 2D rotation by θ, S is diagonal scale with s_x and s_y, and T_{-p} is translation by the negative pivot. The composition reads right-to-left: translate to origin, scale, rotate, translate back to the pivot, then apply the user's translation.</p>
+<p>For sampling, we invert and apply dest → source:</p>
+<div class="matheq-hero">(x_s, y_s)^T = M^{-1} \cdot (x_d, y_d, 1)^T</div>
+<p>Nearest-neighbor lookup fills the destination grid. OpenCV's <code>cv2.warpAffine</code> provides a fast C path when available; otherwise SASpro uses a vectorized NumPy implementation with explicit valid-region masking. Singular matrices (e.g. s_x = 0) are caught and return the fill color.</p>
+
+<h3>13.9. The two-tier preview architecture</h3>
+<p>Two debounced timers drive the preview:</p>
+<ul>
+<li><b>Fast preview timer</b> (80 ms) — fires on the GUI thread, runs <code>composite_stack</code> with <code>max_dim</code> set to the preview canvas longest side (minimum 512 px). The whole composite runs at preview resolution.</li>
+<li><b>Full-res composite timer</b> (350 ms) — spins up a <code>QThread</code> + <code>_CompositeWorker</code> that runs the composite at native base resolution. On completion, the worker emits a <code>done(generation, result)</code> signal.</li>
+</ul>
+<p>A <b>generation counter</b> on <code>LayersDock</code> increments every time the composite is scheduled. When a worker emits its result, SASpro compares the emitted generation to the current one — if it's older, the result is silently discarded. This cleanly handles the case where you drag an opacity slider rapidly: workers for intermediate values still finish (they can't be interrupted mid-render) but their results don't flicker on-screen because they're stale by the time they arrive.</p>
+
+<h3>13.10. Preview downscale and transform scaling</h3>
+<p>The preview downscale is a straightforward ratio against the longest edge:</p>
+<div class="matheq-hero">s = \mathrm{max\_dim} / \max(H,\, W)</div>
+<p>Transform parameters that are specified in <i>pixels</i> (translate, pivot) are scaled by this factor so geometry stays correct:</p>
+<div class="matheq-hero">(t_x',\, t_y') = s \cdot (t_x,\, t_y)</div>
+<p>Rotation and scale factors don't need adjustment — they're angles and ratios. The transform is applied to the already-resized layer canvas, not the full-res one, so a translate-200-rotate-15 transform at full-res becomes translate-50-rotate-15 at 4× downscale, producing a geometrically identical preview at ¼ the cost.</p>
+
+<h3>13.11. Identity-transform skip</h3>
+<p>Most layers have no transform active most of the time. The composite engine checks each layer's transform against a small tolerance (1e-6 on each parameter) and if everything is identity, skips the warp step entirely. This is a significant optimization: a 10-layer stack with no transforms runs ~10× faster than one with transforms on every layer, because warps on full-res 4K+ images dominate composite time.</p>
+
+<h3>13.12. Base image cache</h3>
+<p>Converting the raw base image (which can be mono, uint8, uint16, float, 1-channel, 3-channel) to the composite engine's canonical form (float32, 3-channel, [0, 1]) is non-trivial. The dock caches this conversion keyed by <code>id(base_doc.image)</code> — Python's object identity — and only rebuilds when the base document actually produces a different array object (which happens when the base is edited through SASpro's normal pipeline). Base levels adjustments apply <i>on top of</i> the cached conversion, so moving the base black-point slider doesn't re-convert the whole image.</p>
+
+<h3>13.13. Event-driven auto-refresh</h3>
+<p>While the preview window is open, the dock listens to two signals on the current view:</p>
+<ul>
+<li><code>document.changed</code> — fires when the base document's pixels change (someone pushed an edit).</li>
+<li><code>layer_sources_changed</code> — fires when any source document assigned to a layer (or its mask) changes.</li>
+</ul>
+<p>Either signal triggers <code>_force_refresh_preview</code>, which drops the cached before-image identity (so the cached conversion rebuilds) and schedules a new composite via the standard debounced timers. This means: run Curves on a view you're using as a layer, and the composite in the preview updates on its own. Switch to a different base view and the dock rewires its watchers automatically.</p>
+
+<h3>13.14. Memory discipline during preview</h3>
+<p>Three design choices keep the layer stack cheap at preview time:</p>
+<ul>
+<li>The preview downscale happens on the <i>raw</i> array before float/3-channel conversion, so an 8K mono uint16 base becomes a 1K mono uint16 before ballooning to float32×3.</li>
+<li>Each layer is similarly downscaled from its raw array first, then promoted. No layer ever allocates a full-res float32×3 copy during fast preview.</li>
+<li>Transformed layers are warped at preview resolution; the warp destination is only as big as the preview canvas, not the native image. Masks follow the same path.</li>
+</ul>
+<p>Full-resolution composites, triggered by the 350 ms timer, do run at native resolution — but on a worker thread, in the background, where even a multi-second render doesn't block the UI.</p>
+
+</body>
+</html>

@@ -627,6 +627,9 @@ def _preset_opener_for_command(command_id: str):
     (which opens a small preset-editing form). Returns None if none exists, in
     which case callers fall back to a plain QAction trigger.
     """
+    if command_id == "crop":
+        from setiastro.saspro.crop_dialog_pro import open_crop_with_preset
+        return open_crop_with_preset    
     if command_id == "abe":
         from setiastro.saspro.abe_preset import open_abe_with_preset
         return open_abe_with_preset

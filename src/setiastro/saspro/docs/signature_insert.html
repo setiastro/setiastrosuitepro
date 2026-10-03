@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+</style>
+</head>
+<body>
+
+<h1>Signature / Insert</h1>
+<p class="sub">A compositor for adding one or more overlays &mdash; images,
+text, auto-populated technical cards, callouts with connector lines &mdash;
+on top of the active document, transforming them interactively, and
+baking the result back into the image.</p>
+
+<p>The dialog is non-modal and designed around a scene / preview model:
+your overlays live as free-floating objects on a canvas on top of the
+base image, you drag, rotate, scale, and snap them until you like what
+you see, then <b>Affix Inserts</b> flattens everything into the
+document. Nothing is destructive until you affix.</p>
+
+<h2>1. Dialog layout</h2>
+<p>Two columns separated by a draggable splitter whose position is
+remembered across sessions:</p>
+<ul>
+  <li><b>Left</b> &mdash; a scrollable panel of <i>collapsible sections</i>
+      (click the arrow / title to collapse or expand): Load / Add, Text,
+      Technical Card, Transform, Bounding Box Style, Inset Callout, Send
+      to Position, Zoom, Apply / Clear.</li>
+  <li><b>Right</b> &mdash; the preview view (QGraphicsView) showing the
+      base image and your overlays. Left-drag pans; <code>Ctrl + wheel</code>
+      zooms with the cursor as the anchor. Right-click on an overlay
+      pops a 9-position snap menu.</li>
+</ul>
+<p>Most sections start collapsed; the ones expanded by default are the
+ones you reach for first (Load, Transform, Inset Callout, Apply).</p>
+
+<h2>2. Loading inserts</h2>
+<p>Three ways to add a pixmap overlay, in the Load / Add section:</p>
+<ul>
+  <li><b>Load Insert from File&hellip;</b> &mdash; file-open dialog
+      accepting PNG, JPG, TIFF. PNG alpha is preserved. This is the right
+      choice for transparent logos / signatures.</li>
+  <li><b>Load Insert from View&hellip;</b> &mdash; pick any other open
+      document from a list; its image becomes an overlay. Loaded as RGB
+      only (no alpha).</li>
+  <li><b>Create Insert from Current&hellip;</b> &mdash; crop a region of
+      the current base image, upscale by 3&times;, add it as a new
+      insert. Workflow: click the button, a dialog asks whether to also
+      create callout connector lines back to the source region; then
+      drag a rectangle on the preview to define the source. See
+      &sect;&nbsp;8 for the callout layer this produces.</li>
+</ul>
+<p class="tip"><b>Transparency hint.</b> The yellow hint at the top of
+the Load section says it plainly: use Load from File if you want to keep
+PNG alpha. Loading from an open View captures RGB only.</p>
+
+<h2>3. Transforming overlays interactively</h2>
+<p>Every overlay &mdash; pixmap, text, or technical card &mdash; is a
+free-floating scene item with the same interaction model.</p>
+
+<h3>3.1 The blue handle</h3>
+<p>A small blue dot sits on the top-right of each item's bounding box.
+Click and drag it to <b>scale and rotate</b> simultaneously, both anchored
+at the item's centre:</p>
+<ul>
+  <li>Drag away from the centre &mdash; the item scales up; its minimum
+      scale is 5% so you can't make something vanish by accident.</li>
+  <li>Drag circularly around the centre &mdash; the item rotates to
+      follow the pointer.</li>
+  <li>Combine both &mdash; the item scales and rotates together, which is
+      usually what you want for signature placement.</li>
+</ul>
+<p>Letting go leaves the item at its new scale and rotation. See
+&sect;&nbsp;11.1 for the exact math.</p>
+
+<h3>3.2 Click, drag, and select</h3>
+<ul>
+  <li><b>Click</b> an item to select it. The selection updates the
+      Text / Transform / Callout controls to show that item's current
+      values.</li>
+  <li><b>Drag</b> an item (not its handle) to reposition it.</li>
+  <li><b>Shift</b>-selection and multi-item editing: the Transform
+      sliders apply to all currently-selected items.</li>
+  <li><b>Right-click</b> an item to open the 9-position snap menu (same
+      positions as the Send to Position section).</li>
+</ul>
+
+<h3>3.3 Transform group</h3>
+<p>The Transform section gives three controls that act on whichever
+items are selected:</p>
+<ul>
+  <li><b>Rotate +90&deg;</b> button &mdash; adds 90&deg; to the item's
+      rotation.</li>
+  <li><b>Scale (%)</b> slider &mdash; 10% to 400%. Sets the item's scale
+      absolutely rather than multiplicatively, so moving the slider is
+      the fastest way to size an insert precisely.</li>
+  <li><b>Opacity (%)</b> slider &mdash; 0% to 100%.</li>
+</ul>
+
+<h2>4. Text inserts</h2>
+<p>The Text section (collapsed by default) adds freely-styled text
+overlays with optional outlines.</p>
+<ul>
+  <li><b>Add Text&hellip;</b> &mdash; opens a multi-line input dialog;
+      the text drops near the centre of the base image.</li>
+  <li><b>Edit Selected&hellip;</b> &mdash; re-opens the input dialog for
+      the currently selected text item (double-click also lets you edit
+      the text inline on the canvas).</li>
+  <li><b>Font</b> &mdash; any installed system font.</li>
+  <li><b>Size</b> &mdash; 4 to 512 pt.</li>
+  <li><b>Bold</b> / <b>Italic</b> toggles.</li>
+  <li><b>Fill Color&hellip;</b> &mdash; the text's main colour.</li>
+  <li><b>Outline Color&hellip;</b> &mdash; outline colour; takes effect
+      only when Outline width is &gt;&nbsp;0.</li>
+  <li><b>Outline (px)</b> &mdash; outline thickness in pixels. Zero means
+      no outline (fast path, draws as plain text); any positive value
+      switches to a vector-path renderer that keeps the stroke crisp at
+      any scale. Useful for making light-coloured text readable against a
+      bright nebula, or dark text against a dark sky.</li>
+</ul>
+<p>Changing any of these controls applies instantly to the current
+selection. Font, size, bold, italic, fill colour, outline colour, and
+outline width all persist to QSettings and come back the way you left
+them next session.</p>
+
+<h2>5. Technical Card</h2>
+<p>The Technical Card is a special overlay that auto-populates with FITS
+header / document metadata. It's the right tool for the little
+&ldquo;OBJECT&nbsp;/&nbsp;DATE&nbsp;/&nbsp;EXPOSURE&nbsp;/&nbsp;FILTER&rdquo;
+corner block you see on finished astrophotos.</p>
+
+<h3>5.1 Enabling the card</h3>
+<p>Toggle <b>Enable Tech Card</b> to create (or remove) the card.
+Enabling drops the card at the top-left corner, populated with your
+default field set. You can drag, scale, rotate, snap, and style it just
+like any other overlay.</p>
+
+<h3>5.2 Field catalogue</h3>
+<p>The <b>Fields</b> combo lists every available field: the actual FITS
+header keys from the current document (OBJECT, DATE-OBS, EXPTIME, FILTER,
+INSTRUME, TELESCOP, FOCALLEN, XPIXSZ, GAIN, OFFSET, BAYERPAT, &hellip;
+all of them, straight from the header SASpro loaded with the image),
+plus four computed convenience fields:</p>
+<ul>
+  <li><b>File</b> &mdash; the file's basename (not the full path).</li>
+  <li><b>Size</b> &mdash; <code>W&times;H</code>, from NAXIS1/NAXIS2 if
+      present, otherwise computed from the image shape.</li>
+  <li><b>Bit Depth</b> &mdash; from <code>doc.metadata["bit_depth"]</code>
+      if set.</li>
+  <li><b>Mono</b> &mdash; &ldquo;Yes&rdquo; / &ldquo;No&rdquo;, inferred
+      from image shape when not stored explicitly.</li>
+</ul>
+
+<h3>5.3 Building the card</h3>
+<p>The default set is OBJECT, DATE-OBS, EXPTIME, FILTER, GAIN, OFFSET,
+INSTRUME, TELESCOP, FOCALLEN, XPIXSZ, BAYERPAT, Size, Bit Depth, Mono
+&mdash; whatever subset of those actually exists in the current
+document's header. Customise with:</p>
+<ul>
+  <li><b>Add Field</b> &mdash; pick a key from Fields and add it to the
+      card's bottom.</li>
+  <li><b>Order</b> combo + <b>Up</b> / <b>Down</b> buttons &mdash; pick a
+      field already on the card, move it earlier or later in the list.</li>
+  <li><b>Remove Field</b> &mdash; drop the currently-ordered field.</li>
+  <li><b>Hide empty fields</b> &mdash; when on, keys with no value in the
+      header are omitted from the rendered card. When off, the key shows
+      with an empty value (useful if you plan to fill it in later with a
+      text overlay).</li>
+</ul>
+<p><b>Build / Update</b> re-renders the card with the current field
+list and style; most style changes also re-render live.
+<b>Reset</b> restores the whole configuration to defaults.</p>
+
+<h3>5.4 Card style</h3>
+<ul>
+  <li><b>Padding</b> (0&ndash;200 px) &mdash; space between the text and
+      the card's border.</li>
+  <li><b>BG Opacity</b> (0&ndash;100%) &mdash; translucency of the card's
+      background fill.</li>
+  <li><b>BG Color&hellip;</b> &mdash; background colour (default black).</li>
+  <li><b>Border Color&hellip;</b> &mdash; border colour (default white).</li>
+  <li><b>Border</b> toggle, <b>Width</b> (0&ndash;30 px),
+      <b>Style</b> (Solid / Dash / Dot / DashDot / DashDotDot).</li>
+</ul>
+<p>Text inside the card uses the same Font / Fill / Outline / Outline
+width controls as regular text inserts (&sect;&nbsp;4). Every setting
+here persists to QSettings, including the ordered field list.</p>
+
+<h2>6. Bounding Box Style</h2>
+<p>Pixmap inserts get a little rectangle drawn around them on screen so
+you can see where they are. The Bounding Box Style section controls this
+overlay guide (which is <i>not</i> baked into the image unless
+Draw Bounding Box is on at affix time):</p>
+<ul>
+  <li><b>Draw Bounding Box</b> toggle.</li>
+  <li><b>Color&hellip;</b>, <b>Thickness</b> (1&ndash;10 px),
+      <b>Style</b> (Solid / Dash / Dot / DashDot / DashDotDot).</li>
+</ul>
+<p>Turn Draw off when you're ready to affix if you want the final image
+without any outline around the insert.</p>
+
+<h2>7. Inset Callout</h2>
+<p>The Inset Callout section attaches a <i>source region</i> to a
+pixmap insert, drawing a rectangle around that region on the main image
+and connecting it to the insert with two straight lines. Common use:
+drop a 3&times; crop of the galaxy's core in the corner and show
+visually where it came from.</p>
+
+<h3>7.1 Setting a source region</h3>
+<ol>
+  <li>Select a pixmap insert on the canvas.</li>
+  <li>Click <b>Set Source Region</b>. The cursor becomes a crosshair; the
+      status label at the bottom of the section prompts you to drag.</li>
+  <li>Drag a rectangle on the main image to define the source. A dashed
+      cyan preview follows the pointer.</li>
+  <li>Release &mdash; the dashed preview is replaced by the callout:
+      a solid rectangle in the chosen callout colour around the source,
+      and two connector lines to the insert's bounding box.</li>
+  <li>Right-click during the drag to cancel.</li>
+</ol>
+<p><b>Clear Source Region</b> drops the callout from the selected
+insert without removing the insert itself.</p>
+
+<h3>7.2 Connector modes</h3>
+<p>The <b>Connector mode</b> combo picks which corners the two lines
+connect:</p>
+<ul>
+  <li><b>Auto</b> (default) &mdash; the dialog picks a sensible pair
+      based on where the insert sits relative to the source: insert to
+      the right &rarr; connect right-side of source to left-side of
+      insert, insert above &rarr; connect top-side to bottom-side, etc.
+      For most layouts this is what you want.</li>
+  <li><b>Left &rarr; Right</b> &mdash; source's two right corners connect
+      to insert's two left corners. Pick this when Auto chose wrong, or
+      when you specifically want the lines coming out of a particular
+      side.</li>
+  <li><b>Right &rarr; Left</b>, <b>Top &rarr; Bottom</b>, <b>Bottom &rarr; Top</b>
+      &mdash; the other three fixed directions.</li>
+</ul>
+
+<h3>7.3 Callout style</h3>
+<ul>
+  <li><b>Enable source callout</b> &mdash; master toggle for every
+      callout.</li>
+  <li><b>Show source box</b>, <b>Show connector lines</b> &mdash;
+      independent visibility. Turn off the lines if you only want the
+      source rectangle, or vice versa.</li>
+  <li><b>Line width</b> (1&ndash;20 px) and
+      <b>Line / Box Color&hellip;</b> apply to all callouts.</li>
+</ul>
+<p>Connector lines <i>auto-track</i>: moving, scaling, or rotating the
+insert redraws the lines so they always start at the source and end at
+the insert's current corners. A 16-ms refresh timer keeps this live.</p>
+
+<h2>8. Create Insert from Current</h2>
+<p>A fast way to make a zoomed inset of a feature in your own image.
+Click <b>Create Insert from Current&hellip;</b> &mdash; a dialog asks:</p>
+<ul>
+  <li><b>Yes, make callout</b> &mdash; the drawn region becomes both the
+      new insert's source material and its callout source rectangle, with
+      connector lines using the current Inset Callout settings. One
+      action, one draw, callout wired up for you.</li>
+  <li><b>No, just create insert</b> &mdash; the region becomes a new
+      insert but no callout is attached. You can attach one later with
+      Set Source Region if you want.</li>
+  <li><b>Cancel</b> &mdash; back out.</li>
+</ul>
+<p>After the choice, drag on the preview to define the source rectangle.
+The region is cropped from the base pixmap, upscaled 3&times; with
+smooth interpolation, and added as a new insert at the centre of the
+scene &mdash; drag it, snap it, scale it, position it just like any
+other insert. Right-click during the drag cancels the operation.</p>
+
+<h2>9. Send to Position</h2>
+<p>Snap the selected items to any of nine standard anchor positions,
+relative to the base image, with configurable margins.</p>
+<ul>
+  <li><b>Margin X / Margin Y</b> &mdash; pixel distance from the base
+      image's edges. Doesn't affect centre positions.</li>
+  <li><b>Top-Left / Top-Center / Top-Right</b> &mdash; snap to the top
+      row.</li>
+  <li><b>Middle-Left / Center / Middle-Right</b> &mdash; snap to the
+      middle row.</li>
+  <li><b>Bottom-Left / Bottom-Center / Bottom-Right</b> &mdash; snap to
+      the bottom row.</li>
+</ul>
+<p>These same nine positions are reachable by right-clicking any
+overlay on the canvas. The nine-position + margin model also drives the
+headless replay, so a signature placed in the top-right once with
+margins (30,&nbsp;30) can be re-applied to any other image via the
+Replay system with the same arguments.</p>
+
+<h2>10. Zoom and preview</h2>
+<p>The Zoom section has <b>&ndash;</b>, <b>+</b>, and <b>Fit</b> buttons;
+the preview also responds to <code>Ctrl + wheel</code> for cursor-anchored
+zoom (0.10&times; to 10&times;) and left-click-drag anywhere empty for
+pan.</p>
+
+<h2>11. Apply / Clear</h2>
+<p>The Apply / Clear section has three actions:</p>
+<ul>
+  <li><b>Affix Inserts</b> &mdash; the main one. Flattens every overlay
+      (pixmaps, text, tech card, visible callout rectangles and lines,
+      and bounding boxes if those are enabled) into the base image via
+      <code>QGraphicsScene.render()</code>. The result replaces the
+      active document's image as an undoable edit named
+      &ldquo;Signature / Insert&rdquo;.</li>
+  <li><b>Clear Selected</b> &mdash; remove whichever overlays are
+      currently selected, along with their handles, bounding boxes, and
+      any callouts attached to them.</li>
+  <li><b>Clear All</b> &mdash; remove every overlay, resetting the
+      canvas to just the base image.</li>
+</ul>
+<p class="tip"><b>Non-destructive until you affix.</b> Loading, moving,
+styling, deleting individual overlays, closing and reopening the
+dialog &mdash; none of that changes the document. Only Affix Inserts
+commits.</p>
+
+<p class="warn"><b>Overlays can extend past the base image.</b> If an
+insert hangs off the edge of your base image, the affixed output
+<i>grows to include it</i>. The output rectangle is the union of
+every committed item's bounding box in scene coordinates, so a
+signature placed at (&minus;20, H+30) will push the final image a few
+pixels outside the original edges. If you don't want that, keep
+overlays inside the base image bounds, or use Send to Position with
+positive margins.</p>
+
+<h2>12. Persistence</h2>
+<p>Nearly every control value is persisted to QSettings under the
+<code>signature_insert/</code> namespace and comes back next session:</p>
+<ul>
+  <li>Font family, size, bold, italic, outline width, last-picked fill
+      and outline colours.</li>
+  <li>Transform defaults: scale slider, opacity slider.</li>
+  <li>Bounding box: enabled, thickness, style, colour.</li>
+  <li>Snap margins (X and Y).</li>
+  <li>Tech card: everything &mdash; enabled, hide-empty, padding,
+      BG opacity, border toggle, width, style, all four colours, and the
+      ordered + enabled field lists.</li>
+  <li>Splitter position and window geometry.</li>
+</ul>
+<p>Changing any of these also triggers a save, so you never need to
+remember to confirm.</p>
+
+<h2>13. Technical details</h2>
+<p class="tech-lead">Signature / Insert is built on
+<code>QGraphicsScene</code> / <code>QGraphicsView</code>. The base image
+is the scene's bottom item (z = 0) and every overlay is a free-floating
+scene item above it (z = 1). Interaction model, item types, and the
+bake step are described below.</p>
+
+<h3>13.1 TransformHandle: scale + rotate from one drag</h3>
+<p>Each movable overlay carries a child <code>TransformHandle</code>
+object (small blue circle) parked on the item's top-right corner by a
+16-ms sync timer. On mouse press the handle records the vector from the
+item's centre to its own position:</p>
+<div class="matheq-hero">d \;=\; \sqrt{(x_h - x_c)^2 \,+\, (y_h - y_c)^2}</div>
+<div class="matheq-hero">\theta \;=\; \mathrm{atan2}(y_h - y_c,\;x_h - x_c)</div>
+<p>On mouse move, both are recomputed from the new handle position, and
+the item's scale and rotation are updated to:</p>
+<div class="matheq-hero">\mathrm{scale}_{\mathrm{new}} \;=\; \mathrm{scale}_{\mathrm{start}} \,\cdot\, \frac{d_{\mathrm{new}}}{d_{\mathrm{start}}}</div>
+<div class="matheq-hero">\Delta\theta \;=\; \theta_{\mathrm{new}} \;-\; \theta_{\mathrm{start}}</div>
+<p>Scale is floored at 0.05 so the item never collapses to zero size.
+Each item's transform origin is set to its own centre, so both scale
+and rotation apply around the centre (the natural pivot for signature
+placement).</p>
+
+<h3>13.2 OutlinedTextItem: dual-pass painting</h3>
+<p>Text overlays extend <code>QGraphicsTextItem</code> with an outline
+pass. When outline width is zero, painting uses the fast
+<code>QGraphicsTextItem</code> code path (plain text rendering). When
+outline width is &gt;&nbsp;0, painting switches to a vector approach:
+build a <code>QPainterPath</code> from the text's glyph outlines line by
+line, stroke it with the outline colour and width, fill with the fill
+colour. The stroke uses <code>RoundCap</code> + <code>RoundJoin</code>
+so sharp inner corners don't produce visible spikes. This path is
+rebuilt on every paint, which is cheap for the character counts
+typically on screen; the pay-off is a crisp outline at any scale and
+rotation.</p>
+
+<h3>13.3 TechCardItem: composite container</h3>
+<p>The tech card is a composite <code>QGraphicsItem</code> that owns
+three children: a background rectangle, a border rectangle, and the
+<code>OutlinedTextItem</code> for the field block. The card's padding
+determines the offset between the text and the two rectangles; its
+bounding rect is the union of all three. Rebuilding (changing padding,
+text, or style) calls <code>prepareGeometryChange()</code>, repositions
+the text at <code>(padding,&nbsp;padding)</code>, resizes bg and border
+to the new content extent, and refreshes the transform origin to the
+new centre. The item itself paints nothing &mdash; its children do.</p>
+
+<h3>13.4 Position anchoring with margins</h3>
+<p>The 9 snap positions compute the item's new top-left in base-image
+local coordinates:</p>
+<div class="matheq">x_{\mathrm{left}} \;=\; m_x</div>
+<div class="matheq">x_{\mathrm{right}} \;=\; W_{\mathrm{base}} \;-\; W_{\mathrm{item}} \;-\; m_x</div>
+<div class="matheq">x_{\mathrm{centre}} \;=\; \frac{W_{\mathrm{base}} \;-\; W_{\mathrm{item}}}{2}</div>
+<p>and the same three rules on the y axis, giving nine
+(x,&nbsp;y) combinations. The result is mapped to scene coordinates
+through the base item's transform, so the snap stays correct even if
+the view is zoomed or the base is positioned somewhere other than
+(0,&nbsp;0).</p>
+
+<h3>13.5 Callout connector geometry</h3>
+<p>Callouts connect two corners of the source rectangle to two corners
+of the insert's bounding rectangle. The direction mode selects which
+corners:</p>
+<ul>
+  <li><b>LR</b>: source TR &rarr; insert TL,
+      and source BR &rarr; insert BL.</li>
+  <li><b>RL</b>: source TL &rarr; insert TR,
+      and source BL &rarr; insert BR.</li>
+  <li><b>TB</b>: source BL &rarr; insert TL,
+      and source BR &rarr; insert TR.</li>
+  <li><b>BT</b>: source TL &rarr; insert BL,
+      and source TR &rarr; insert BR.</li>
+  <li><b>Auto</b>: let &Delta;x and &Delta;y between the two centres pick
+      the dominant direction, then apply the matching mode above.
+      <code>|&Delta;x|&nbsp;&ge;&nbsp;|&Delta;y|</code> picks LR or RL
+      depending on the sign of &Delta;x; otherwise TB or BT depending
+      on the sign of &Delta;y.</li>
+</ul>
+<p>All callout items use <i>cosmetic pens</i> so their stroke width is
+in pixels, not scene units &mdash; zooming the preview doesn't change
+how thick the lines look on screen.</p>
+
+<h3>13.6 Baking (Affix Inserts)</h3>
+<p>Flattening the scene to the output image works in these steps:</p>
+<ol>
+  <li>Deselect every item so no selection highlights paint through.
+      Collapse every text item's internal selection (the character-range
+      highlight that persists after editing) and set text-interaction to
+      None, so the final image has no editor UI leaking into it.</li>
+  <li>Enumerate the items to render: base image, pixmap inserts, text
+      overlays, tech card, visible callout rectangles and lines, and
+      bounding boxes <i>only if those are enabled</i>.</li>
+  <li>Compute the union of their scene-space bounding rectangles. This
+      is the output rectangle, which can be larger than the base image
+      (see &sect;&nbsp;11's warning).</li>
+  <li>Create an ARGB32 <code>QImage</code> sized to the union, fill with
+      transparency, and call
+      <code>scene.render(painter, target, source)</code>. Any item not in
+      the render list is temporarily hidden during the render.</li>
+  <li>Restore visibility, selection, text-interaction, and focus to
+      every item.</li>
+  <li>Drop the alpha channel, clip to [0,&nbsp;1], hand the resulting
+      RGB float32 image back to the document via <code>set_image()</code>
+      with step name &ldquo;Signature / Insert&rdquo;.</li>
+</ol>
+
+<h3>13.7 Headless replay</h3>
+<p>For scripted / replay use, <code>apply_signature_preset_to_doc(doc,
+preset)</code> performs a single-image overlay with the preset keys:</p>
+<ul>
+  <li><code>file_path</code> &mdash; path to the overlay image, PNG
+      recommended for alpha preservation.</li>
+  <li><code>position</code> &mdash; one of the nine snap keys.</li>
+  <li><code>margin_x</code>, <code>margin_y</code> &mdash; pixels from
+      the edge.</li>
+  <li><code>scale</code> &mdash; percent, default 100.</li>
+  <li><code>rotation</code> &mdash; degrees, default 0.</li>
+  <li><code>opacity</code> &mdash; percent, default 100.</li>
+</ul>
+<p>The headless path recomputes the overlay's visual bounding box after
+scale and rotation (because a rotated rectangle's axis-aligned bbox is
+larger than the original), snaps that visual bbox to the chosen anchor
+with the margins applied, draws through a QImage canvas with full alpha
+handling, and returns an RGB float32 image in [0, 1]. This is the one
+replayable through SASpro's last-command / preset system; the full
+interactive composition (multiple inserts, callouts, text, tech card)
+is not auto-replayable &mdash; use it for a quick signature stamp.</p>
+
+<div class="credit">
+<b>Credits.</b> Signature / Insert is entirely SASpro's own design. The
+interaction model (single-handle simultaneous scale + rotate, drag-to-define
+regions, right-click 9-position snap, cosmetic pens so stroke widths
+stay constant across zoom) is built on <b>Qt's QGraphics framework</b>
+(QGraphicsScene / View / Item). The outlined text renderer uses
+<b>QPainterPath</b> stroke-and-fill. The tech card header-dict builder
+accepts astropy-style <code>Header</code> objects via duck typing (no
+astropy import), as well as plain Python dicts and lists of
+(key,&nbsp;value) pairs, so it works with whatever header representation
+<b>DocManager</b> is holding for the current document.
+</div>
+
+</body>
+</html>

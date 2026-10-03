@@ -631,6 +631,7 @@ class HistogramTransformDialogPro(QDialog):
         # Placed AFTER the stretch so it pins to the lower-left corner.
         # Deferred import to avoid any shortcuts.py <-> this-module import cycle.
         from setiastro.saspro.shortcuts import PresetDragHandle
+        from setiastro.saspro.help_support import make_help_button
         try:
             from setiastro.saspro.resources import histogram_transform_path
             _lv_icon = QIcon(histogram_transform_path)
@@ -654,6 +655,8 @@ class HistogramTransformDialogPro(QDialog):
         )
         drag_row.addWidget(self.preset_drag_handle)
         drag_row.addStretch(1)
+        self.btn_help = make_help_button("levels", self)
+        drag_row.addWidget(self.btn_help)
         left.addLayout(drag_row)
 
         root.addWidget(left_host, 0)

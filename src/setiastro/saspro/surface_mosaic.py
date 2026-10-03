@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Optional, List, Tuple, Dict, Any, Callable
-
+from setiastro.saspro.help_support import make_help_button
 import numpy as np
 
 try:
@@ -2320,6 +2320,7 @@ if _HAVE_QT:
             self.btn_advanced.clicked.connect(self._open_advanced)
             run_row.addWidget(self.btn_advanced)
             run_row.addStretch(1)
+            run_row.addWidget(make_help_button("surface_mosaic", self))
             self.btn_run = QPushButton("Build Mosaic")
             self.btn_run.clicked.connect(self._on_run)
             run_row.addWidget(self.btn_run)

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Automatic (Dynamic) Background Extraction &mdash; ADBE</h1>
+<p class="sub">Models the sky background &mdash; gradients, vignetting, light
+pollution &mdash; with a polynomial plus an optional radial-basis refinement, and
+removes it while preserving star colour and linear photometry. Non-destructive:
+nothing changes until Apply.</p>
+
+<h2>1. Using the tool</h2>
+<p>Set the model parameters, optionally guide the sampling (exclude regions or
+place points by hand), <b>Preview</b>, then <b>Apply</b>. The preview is fully
+interactive; the sampling behaviour depends on whether you're in <b>Auto</b> or
+<b>Manual</b> mode.</p>
+<div class="tip">For RGB data, combine R/G/B into one colour image <i>before</i>
+running ADBE. Running it on separate mono channels can leave colour artefacts at
+saturated stars once they're recombined.</div>
+
+<h3>Model parameters</h3>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Polynomial degree (0&ndash;6)</td><td>Order of the smooth large-scale
+      background surface. Higher fits more structure but risks absorbing real
+      signal. <b>0</b> skips the polynomial entirely &rarr; RBF-only (and enables
+      RBF automatically).</td></tr>
+  <tr><td># sample points</td><td>How many background samples the automatic
+      sampler places (Auto mode only &mdash; disabled in Manual).</td></tr>
+  <tr><td>Downsample factor (4&ndash;32)</td><td>The background is fit on a shrunk
+      copy for speed. Keep it &ge; 4; factor 1 with RBF on can exhaust
+      memory.</td></tr>
+  <tr><td>Patch size (px)</td><td>The window whose <i>median</i> is taken at each
+      sample point &mdash; larger is more robust to noise and faint stars.</td></tr>
+  <tr><td>Sample mode</td><td><b>Auto</b> (ADBE chooses points) or <b>Manual</b>
+      (you place them on the preview).</td></tr>
+  <tr><td>Random seed</td><td>Makes the auto sampling reproducible; <b>-1</b> =
+      different every run.</td></tr>
+  <tr><td>RBF refinement + Smooth (&times;0.01)</td><td>Enable a second
+      multiquadric stage that models residual, irregular gradients the polynomial
+      can't; Smooth sets how loosely it fits (higher = gentler).</td></tr>
+  <tr><td>Correction mode</td><td><b>Subtract</b> (standard additive removal) or
+      <b>Divide</b> (for vignetting / multiplicative gradients).</td></tr>
+  <tr><td>Create background document</td><td>Also open the extracted gradient as
+      its own image.</td></tr>
+  <tr><td>Preview background instead of corrected</td><td>Show the model itself
+      rather than the result.</td></tr>
+</table>
+
+<h3>Sample points: Auto vs Manual</h3>
+<p>This is the key choice, and it changes what your mouse does in the preview:</p>
+<ul>
+  <li><b>Auto mode</b> &mdash; ADBE places all the sample points for you. You
+      don't place points yourself; instead you steer the sampler by drawing
+      <b>exclusion areas</b> on the preview (see below) so it stays off bright
+      signal. The <b># sample points</b> value controls how many it places.</li>
+  <li><b>Manual mode</b> &mdash; <i>you</i> place every sample point by hand on the
+      preview. Exclusion areas aren't used here (there's no auto-sampler to keep
+      out), and <b># sample points</b> is ignored.</li>
+  <li><b>Switching modes clears the other's guidance</b> &mdash; going Auto&rarr;Manual
+      drops any exclusion areas, and Manual&rarr;Auto drops your hand-placed points
+      (Auto will generate its own). So decide the mode first, then do the
+      guidance work.</li>
+</ul>
+
+<h3>Auto mode &mdash; drawing exclusion areas</h3>
+<p>Exclusion areas are regions where <b>no sample points will be placed</b> &mdash;
+draw them around bright nebulosity, a large galaxy, or anything that isn't sky
+background, so the gradient fit isn't contaminated.</p>
+<ul>
+  <li><b>Left-click-drag</b> on the preview to outline a region; it shows
+      red/dashed while you draw.</li>
+  <li><b>Release the left button</b> (or <b>right-click</b>) to close the polygon
+      &mdash; it fills green and becomes active.</li>
+  <li>Draw as many as you like; <b>Clear Exclusions</b> removes them all.</li>
+  <li>The sampler already avoids the brightest ~50% of each image quartile on its
+      own &mdash; exclusion areas are for the larger, obvious regions that
+      threshold won't catch.</li>
+</ul>
+
+<h3>Manual mode &mdash; placing points by hand</h3>
+<p>In Manual mode you drop sample points exactly where you want the background
+measured:</p>
+<ul>
+  <li><b>Left-click</b> on background to add a sample point (drawn as a yellow
+      square).</li>
+  <li><b>Right-click</b> to remove the nearest point.</li>
+</ul>
+<p>Three helpers seed a starting set and switch you to Manual so you can refine
+by hand:</p>
+<ul>
+  <li><b>Place Grid (N&times;N)</b> &mdash; drops a regular grid of points across the
+      image (skipping any that fall inside exclusion areas you'd drawn in Auto),
+      then switches to Manual.</li>
+  <li><b>Show Auto Points</b> &mdash; runs the automatic sampler and converts its
+      chosen points into editable manual points, then switches to Manual &mdash; so
+      you can start from ADBE's picks and nudge or delete individual ones.</li>
+  <li><b>Clear Sample Points</b> &mdash; removes all manual points.</li>
+</ul>
+
+<h3>Navigating the preview</h3>
+<ul>
+  <li><b>Zoom</b> &mdash; mouse wheel (anchored at the cursor; hold Ctrl for finer
+      steps), or the Zoom In / Zoom Out / Fit buttons. Wheel-zoom works even with
+      the cursor over the scrollbars.</li>
+  <li><b>Pan</b> &mdash; middle-drag, or Ctrl + left-drag (works in either mode
+      without adding points or exclusions).</li>
+  <li><b>AutoStretch</b> (toolbar toggle) &mdash; screen-stretches the preview so
+      faint gradients are visible; it never affects the data that gets
+      processed.</li>
+</ul>
+
+<h3>Running it</h3>
+<p><b>Preview</b> computes the correction without touching the document;
+<b>Apply</b> commits an &ldquo;ABE&rdquo; step (and, if asked, the background
+document); <b>Close</b> dismisses. The <b>grip</b> (bottom-left) drags to the
+canvas to mint an ADBE shortcut with these settings, or drops on an image to
+apply headlessly.</p>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">A two-stage background model is fit on a downsampled copy,
+in a stretched domain for sampling accuracy, then un-stretched and removed in
+linear space so photometry and star colour survive.</p>
+
+<h3>2.1 Two-stage background model</h3>
+<p>The smooth component is a 2-D polynomial of the chosen degree <code>d</code>,
+least-squares-fit to the sampled background values <code>z</code>:</p>
+<div class="matheq">B(x,y)=\sum_{p+q\leq d} c_{pq}\,x^{p}\,y^{q}\,,\qquad \min_{c}\;\|A\,c-z\|^{2}</div>
+<p>If RBF refinement is on, a second surface is fit to what the polynomial left
+behind, using a multiquadric radial basis over the sample points:</p>
+<div class="matheq">\phi(r)=\sqrt{r^{2}+\epsilon^{2}}\,,\qquad B_{\mathrm{rbf}}(x)=\sum_i w_i\,\phi\!\left(\|x-x_i\|\right)</div>
+<p>The RBF stage is capped at ~1 megapixel (downsampling further if needed) to
+bound memory, and its smoothing scales with the sample count so the control feels
+consistent regardless of how many points there are. The total model is
+<code>B = B_poly + B_rbf</code>.</p>
+
+<h3>2.2 Smart sample placement</h3>
+<p>In Auto mode the sampler seeds points at the <b>corners</b>, along the
+<b>borders</b>, and within each image <b>quartile</b>, then refines each one by
+<b>gradient descent to the dimmest nearby spot</b> &mdash; it repeatedly steps to
+whichever neighbour has the lowest local patch-median luminance, so samples land
+on background rather than on stars or nebulosity:</p>
+<div class="matheq">Y=0.2989\,R+0.5870\,G+0.1140\,B</div>
+<p>Within each quartile the brightest ~50% of pixels are excluded before random
+selection (bright-region avoidance), and any user exclusion polygons remove their
+pixels from the candidate pool. At every chosen point the background value is the
+<i>median</i> of the surrounding patch, which rejects stars and hot pixels.</p>
+
+<h3>2.3 Fit stretched, remove linear</h3>
+<p>Gradients are easiest to sample on stretched data, but must be removed from
+linear data to keep photometry intact. ADBE does both: it fits the model on an
+auto-stretched copy, then <b>un-stretches the background model back to linear</b>
+and removes it from the original linear image. The fitting stretch is the same
+analytic midtones transfer used by Statistical Stretch (target median 0.25):</p>
+<div class="matheq">S(x)=\frac{(M-1)\,T\,x}{M\,(T+x-1)-T\,x}\qquad(T=0.25)</div>
+<p class="cap">This &ldquo;fit in stretched space, subtract in linear space&rdquo;
+order is what preserves star colour and linear flux relationships &mdash;
+subtracting a stretched background directly would distort both.</p>
+
+<h3>2.4 Correction &amp; rescale</h3>
+<p>With the linear background model <code>B</code>, the two correction modes are:</p>
+<div class="matheq">\mathrm{subtract:}\quad \mathrm{out}=I-B+\left(\mathrm{med}(I)-\mathrm{med}(I-B)\right)</div>
+<div class="matheq">\mathrm{divide:}\quad \mathrm{out}=\frac{I}{B/\mathrm{med}(B)}\ \ (\text{re-centred on }\mathrm{med}(I))</div>
+<p>Both re-centre the result on the original median so overall brightness is
+preserved. A final <b>clip-free, median-anchored rescale</b> lifts any negatives
+and compresses the ceiling only if the data exceeds 1.0 &mdash; holding the median
+fixed &mdash; so no values are hard-clipped away.</p>
+
+<h3>2.5 Masking &amp; notes</h3>
+<ul>
+  <li>With an active mask, the correction is blended back against the source over
+      the mask (<code>m&middot;out + (1&minus;m)&middot;src</code>).</li>
+  <li>RGB is fit per channel; the background is upscaled back to full resolution
+      with Lanczos interpolation.</li>
+  <li>Preview and Apply share the same engine; Apply can additionally emit the
+      background as a separate document, and the grip/headless preset stores every
+      parameter (and manual points, when in Manual mode).</li>
+</ul>
+
+</body>
+</html>

@@ -18,6 +18,7 @@ from setiastro.saspro.legacy.image_manager import load_image as legacy_load_imag
 # (same signatures you use elsewhere)
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
+from setiastro.saspro.help_support import make_help_button
 
 class PaletteAdjustDialog(QDialog):
     adjusted_image = pyqtSignal(np.ndarray)
@@ -373,6 +374,8 @@ class PerfectPalettePicker(QWidget):
         tools.addWidget(self.btn_zoom_in)
         tools.addWidget(self.btn_fit)
         tools.addStretch(1)
+        self.btn_doc_help = make_help_button("perfect_palette_picker", self)
+        tools.addWidget(self.btn_doc_help)
         right.addLayout(tools)
 
 

@@ -24,7 +24,7 @@ from PyQt6.QtGui import (
 from setiastro.saspro.layers import LayerTransform
 from setiastro.saspro.dnd_mime import MIME_VIEWSTATE, MIME_MASK
 from setiastro.saspro.layers import composite_stack, ImageLayer, BLEND_MODES, _apply_levels, _ensure_3c, _float01
-
+from setiastro.saspro.help_support import make_help_button
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -803,6 +803,8 @@ class LayersDock(QDockWidget):
         )
         self.btn_preview.toggled.connect(self._on_preview_toggled)
         top.addWidget(self.btn_preview)
+
+        top.addWidget(make_help_button("layers", self))
 
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)

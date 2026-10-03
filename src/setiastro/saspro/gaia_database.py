@@ -134,7 +134,7 @@ try:
     HAS_MPL = True
 except ImportError:
     HAS_MPL = False
-
+from setiastro.saspro.help_support import make_help_button
 # 3D Stellar Neighborhood Explorer needs pyqtgraph's OpenGL module, which in
 # turn needs PyOpenGL. Both are optional — the tab degrades to a message if
 # either is missing (e.g. a headless box, or a frozen build missing the
@@ -4760,6 +4760,7 @@ class GaiaDatabaseDialog(QDialog):
             "letter-spacing: 1px; border: none;")
         hdr_layout.addWidget(title_lbl)
         hdr_layout.addStretch()
+        hdr_layout.addWidget(make_help_button("gaia_database", self))
         root.addWidget(hdr)
 
         # ── Tabs ──────────────────────────────────────────────────────────

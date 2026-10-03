@@ -22,6 +22,7 @@ from setiastro.saspro.widgets.image_utils import (
 )
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.luminancerecombine import recombine_luminance_linear_scale as _recombine_luma_into_rgb
+from setiastro.saspro.help_support import make_help_button
 
 _LUMA_WEIGHTS = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
@@ -158,6 +159,12 @@ class ImageCombineDialog(QDialog):
         zrow.addWidget(btnOut)
         zrow.addWidget(btnFit)
         zrow.addWidget(btnIn)
+
+        # In-tool documentation button, flush right of the zoom controls
+        zrow.addStretch(1)
+        self.btn_help = make_help_button("image_combine", self)
+        zrow.addWidget(self.btn_help)
+
         root.addLayout(zrow)
 
         # buttons

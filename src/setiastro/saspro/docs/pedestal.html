@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Remove Pedestal</h1>
+<p class="sub">Subtract a constant additive offset (a &ldquo;pedestal&rdquo;)
+from the image so the true black floor sits at zero &mdash; per channel, which
+also neutralises a flat background colour cast. Linear, non-destructive, and
+mask-aware.</p>
+
+<h2>1. Using the tool</h2>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Subtract (mode)</td><td>Chooses how the pedestal value is measured:
+      <b>Image minimum</b>, <b>Low percentile</b>, or <b>First non-zero
+      value</b> (see &sect;2.2).</td></tr>
+  <tr><td>Percentile</td><td>Active only in Low-percentile mode (0&ndash;50%,
+      default 0.1%). The pixel-value percentile to subtract.</td></tr>
+  <tr><td>Per-channel (RGB)</td><td>On: an independent pedestal for R, G and B
+      (removes a background colour cast too). Off: one shared pedestal across
+      all channels (preserves the relative channel offsets).</td></tr>
+  <tr><td>Auto display stretch (preview only)</td><td>Temporary screen stretch
+      so you can see the effect on near-black linear data. It changes the
+      preview only &mdash; never the data that gets applied.</td></tr>
+  <tr><td>Preview / Apply to Document</td><td>Preview recomputes the readout and
+      image; Apply writes the result with an undo step named
+      &ldquo;Pedestal Removal&rdquo;.</td></tr>
+  <tr><td>Zoom Out / In / Fit, wheel, drag</td><td>Preview navigation
+      (Ctrl+wheel zooms finer).</td></tr>
+  <tr><td>Grip (bottom-left)</td><td>Drag to the canvas to mint a Remove-Pedestal
+      shortcut with these settings, or drop on an image to apply headlessly.</td></tr>
+</table>
+<p>The readout under the controls reports, per channel, the exact value being
+subtracted and how many pixels that subtraction drives below zero (clamped to
+black), with a percentage &mdash; so you can see immediately if a pedestal is
+too aggressive.</p>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">What each mode measures and exactly how the subtraction is
+applied.</p>
+
+<h3>2.1 Input preparation</h3>
+<p>The image is taken as float32. Absurd out-of-range data (a maximum above 5,
+e.g. raw ADU that was never normalised) is scaled down first so a min-subtract
+behaves sensibly; already-normalised <code>[0, 1]</code> data is untouched:</p>
+<div class="eq">x = float32(img)
+if max(x) > 5:   x = x / max(x)        # else no-op</div>
+
+<h3>2.2 The pedestal value</h3>
+<p>For each channel <code>c</code> the scalar to subtract, <code>v_c</code>, is
+one of:</p>
+<div class="matheq">\mathrm{Image\ minimum}:\quad v=\min(x)</div>
+<div class="matheq">\mathrm{Low\ percentile}:\quad v=\mathrm{percentile}(x,\,p)\qquad(p\ \mathrm{in}\ \%,\ \mathrm{default}\ 0.1)</div>
+<div class="matheq">\mathrm{First\ non\text{-}zero}:\quad v=\min\left(x[x>0]\right)\qquad(0\ \mathrm{if\ none})</div>
+<p>Why three modes:</p>
+<ul>
+  <li><b>Image minimum</b> is the classic pedestal removal &mdash; it drops the
+      darkest pixel to zero.</li>
+  <li><b>Low percentile</b> exists because a handful of grossly-low cold pixels
+      can peg the minimum at (near) zero, which makes a plain min-subtract a
+      <i>no-op</i>. Subtracting, say, the 0.1th percentile steps past those
+      outliers and removes the real floor.</li>
+  <li><b>First non-zero value</b> handles data sitting on a hard zero floor where
+      genuine signal begins at a small positive offset &mdash; it subtracts that
+      offset without being fooled by the exact-zero pixels.</li>
+</ul>
+
+<h3>2.3 Applying the subtraction</h3>
+<p>The pedestal is subtracted and the result clamped to the valid range; pixels
+that would go negative are counted as clamped-to-black:</p>
+<div class="matheq">\mathrm{out}_c=\mathrm{clip}(x_c-v_c,\,0,\,1)\,,\qquad \mathrm{clamped}_c=\#\{\,x_c<v_c\,\}</div>
+<p>Because the operation is a pure constant offset per channel, it is linear and
+preserves relative pixel differences above the floor &mdash; it moves the black
+point, it does not stretch or compress the data.</p>
+
+<h3>2.4 Per-channel vs global</h3>
+<p>With <b>Per-channel</b> on, <code>v_R</code>, <code>v_G</code>,
+<code>v_B</code> are measured independently, so an uneven background (a colour
+cast where one channel's floor is higher than another's) is neutralised as a
+side effect of zeroing each channel's floor. With it off, a single
+<code>v</code> is measured across all channels and subtracted uniformly, which
+<i>preserves</i> any channel-to-channel offset &mdash; use it when the cast is
+real signal you want to keep.</p>
+
+<h3>2.5 Masking</h3>
+<p>If the document has an active mask <code>m</code> (normalised to
+<code>[0, 1]</code> and resampled to the image size), the result is blended back
+against the original so the pedestal only affects masked regions:</p>
+<div class="matheq">\mathrm{out}=m\cdot\mathrm{out}+(1-m)\cdot\mathrm{src}</div>
+
+<h3>2.6 Output &amp; preview</h3>
+<ul>
+  <li>The applied result is written as 32-bit floating point and stays
+      <b>linear</b> &mdash; the display stretch is a preview convenience only
+      (it uses a no-black-clip screen stretch so the floor's movement stays
+      visible) and is never baked in.</li>
+  <li>The headless path (grip drop / shortcut &ldquo;Run&rdquo;) applies the
+      same math from the preset <code>{mode, percentile, per_channel}</code>;
+      with no preset it defaults to the classic per-channel image-minimum
+      subtract.</li>
+</ul>
+
+</body>
+</html>

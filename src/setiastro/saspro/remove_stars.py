@@ -989,6 +989,7 @@ class SyQonStarlessDialog(QDialog):
         # --- preset drag handle (grip) ---
         try:
             from setiastro.saspro.shortcuts import PresetDragHandle
+            from setiastro.saspro.help_support import make_help_button
             try:
                 _grip_icon = QIcon(syqon_path)
             except Exception:
@@ -1006,6 +1007,8 @@ class SyQonStarlessDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)
+            self.btn_help = make_help_button("remove_stars", self)
+            drag_row.addWidget(self.btn_help)
             lay.addLayout(drag_row)
         except Exception:
             pass
@@ -3258,6 +3261,7 @@ class DarkStarConfigDialog(QDialog):
         # --- preset drag handle (grip) ---
         try:
             from setiastro.saspro.shortcuts import PresetDragHandle
+            from setiastro.saspro.help_support import make_help_button
             try:
                 _grip_icon = QIcon(starnet_path)
             except Exception:
@@ -3275,6 +3279,8 @@ class DarkStarConfigDialog(QDialog):
             )
             drag_row.addWidget(self.preset_drag_handle)
             drag_row.addStretch(1)
+            self.btn_help = make_help_button("remove_stars", self)
+            drag_row.addWidget(self.btn_help)
             layout.addLayout(drag_row)
         except Exception:
             pass

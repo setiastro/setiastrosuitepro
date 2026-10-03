@@ -1,0 +1,299 @@
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color:#e6e6e6; background:#1b1b1b; padding:10px 14px; line-height:1.45; }
+h1 { margin: 0 0 10px 0; font-size: 20px; color:#9ad; }
+h2 { margin-top: 16px; color:#cfd; font-size:16px; border-bottom:1px solid #333; padding-bottom:3px; }
+h3 { color:#9bd; margin-top:14px; margin-bottom:6px; font-size:14px; }
+code { background:#2a2a2a; padding:1px 4px; border-radius:3px; }
+.eq { background:#232323; border-left:3px solid #4caf50; padding:6px 10px; margin:6px 0; font-family:monospace; }
+.hero { background:#1f2a1f; border-left:3px solid #4caf50; padding:10px 12px; margin:10px 0; border-radius:3px; }
+.matheq { margin: 8px 14px; text-align:left; }
+.matheq-hero { margin: 10px 0; text-align:center; }
+.tip { background:#1f2a1f; border-left:3px solid #4caf50; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.warn { background:#2a241f; border-left:3px solid #c0892b; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.credit { background:#2a251c; border-left:3px solid #c7a24a; padding:8px 12px; margin:12px 0 6px 0; border-radius:3px; font-size:13px; color:#dcd3b8; }
+.pub { background:#1f2a1f; border-left:3px solid #4caf50; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.keys { background:#1f2630; border-left:3px solid #4a9eff; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.workflow { background:#1f2630; border-left:3px solid #4a9eff; padding:8px 12px; margin:10px 0; border-radius:3px; }
+ul { margin: 6px 0 10px 0; padding-left:22px; }
+li { margin: 3px 0; }
+p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>What's In My Sky</h1>
+
+<div class="hero">
+<b>Your observing planner for tonight — and the next 365 nights.</b> Enter where and when you'll be observing, pick which catalogs to search (Messier, NGC, IC, Caldwell, Abell, Sharpless, LBN, LDN, PNG/PK, Arp, plus your own), and WIMS computes a prioritized list of what's actually worth your time: altitude, azimuth, minutes to transit, degrees from the Moon, and a <b>0-100 observability score</b> that weights altitude quality, moon avoidance, and imaging window into a single number. Right-click any object for a visibility plot, SIMBAD details, planet separations, a weekly score chart, or a full-year analysis of its best observing dates.
+</div>
+
+<div class="pub">
+<b>The observability score.</b> Every object gets a score from 0 to 100 built from three weighted components: <b>40% altitude quality</b> (fraction of astronomical night above 30°), <b>35% moon avoidance</b> (combined angular separation and lunar phase), and <b>25% imaging window</b> (fraction of astronomical night above 20°). Choose "Best Nightly Score" as the sort mode and the top-ranked list is the right order to actually shoot in — a 95-score target at your meridian under a new moon beats a 60-score target low in the murk, even if the latter is "famous". Score badges go ❌ Bad &lt; 35 → 🔴 Poor &lt; 55 → 🟡 Marginal &lt; 75 → 🟢 Good &lt; 90 → ⭐ Excellent.
+</div>
+
+<h2>1. The three-panel layout</h2>
+
+<ul>
+<li><b>Left panel</b> — Location &amp; Time (lat, lon, date, time, timezone, min altitude), Catalog checkboxes, RA/Dec format toggle (decimal vs H:M:S), Local Sidereal Time readout, and a Moon widget with phase %, phase image, rise, transit, and set times.</li>
+<li><b>Middle panel</b> — Object Type filter: a scrollable checkbox list populated from the catalog's actual Type column. All/None toggle at the top, selection persists across sessions. Useful for narrowing "every PGC galaxy fainter than mag 15" out of the way.</li>
+<li><b>Right panel</b> — Toolbar (Add Object, Save CSV, Search Object, Horizon, Field Rotation, Settings), sort-mode row (Closest to Transit vs Best Nightly Score), and the results tree with 14 columns including Score and Community.</li>
+</ul>
+
+<div class="tip">
+<b>Right-click any row.</b> That's where the depth lives. The context menu offers: Altitude/Visibility plot, Weekly Observability Score chart, Full Year Analysis, SIMBAD details, Planet Separations, Finder Chart, Field Rotation (pre-filled with the row's alt/az/RA/Dec/date), Aladin, AstroBin search, and View in Seti Astro Community Atlas.
+</div>
+
+<h2>2. Location &amp; Time inputs</h2>
+
+<ul>
+<li><b>Latitude</b> — decimal degrees. Accepts suffix N/S (<code>30N</code>, <code>45.5S</code>) or signed values.</li>
+<li><b>Longitude</b> — decimal degrees, <b>East positive, West negative</b>. Accepts suffix E/W (<code>87W</code>, <code>45E</code>) or signed values.</li>
+<li><b>Date</b> — YYYY-MM-DD. Defaults to today.</li>
+<li><b>Time</b> — HH:MM local time (observing time, not now).</li>
+<li><b>Time Zone</b> — all IANA timezones (<code>America/Chicago</code>, <code>Europe/Berlin</code>, <code>Australia/Sydney</code>, etc.).</li>
+<li><b>Min Altitude</b> — floor cut in degrees; objects below this are dropped from the list. 20° is a reasonable default for imaging, 30° for serious work. Overridden per-azimuth by the custom horizon if one is defined (whichever is higher wins).</li>
+</ul>
+
+<div class="warn">
+<b>Timezone / longitude sanity check.</b> If your timezone's central meridian is more than 45° from your longitude, or they have opposite signs, WIMS warns and offers an auto-correction. The common case: you entered a bare "87" for longitude in the US and your timezone is <code>America/Chicago</code> (UTC-6, central meridian ~90°W) — WIMS flips the sign to -87 for you, since 87 would place you in Pakistan. Always double-check the status bar after Calculate if you entered longitude without an E/W suffix.
+</div>
+
+<h2>3. Catalogs and type filters</h2>
+
+<p>Check the catalogs you want to include. SASpro ships with: <b>Messier</b> (110 objects), <b>NGC</b>, <b>IC</b>, <b>Caldwell</b>, <b>Abell</b> (galaxy clusters), <b>Sharpless</b>, <b>LBN</b> (Lynds Bright Nebulae), <b>LDN</b> (Lynds Dark Nebulae), <b>PNG</b> (planetary nebulae including PK cross-reference), <b>Arp</b> (peculiar galaxies), plus <b>User</b> (your own objects).</p>
+
+<div class="tip">
+<b>PK ↔ PN-G cross-reference.</b> WIMS speaks both the modern <b>PN-G</b> galactic-coordinate designation (<code>PN-G 064.6+48.2</code>) and the older <b>Perek-Kohoutek</b> catalog name (<code>PK 064.6+48.2</code>). Type either in the search box or object name field; both resolve to the same object. SIMBAD lookups try both forms too, so a stubborn PN that resolves under PK but not PN-G still gets its details.
+</div>
+
+<p>The middle-panel <b>Object Types</b> filter further narrows by what the catalog's Type column says — Galaxy, Open Cluster, Globular Cluster, Planetary Nebula, Reflection Nebula, Emission Nebula, Supernova Remnant, Dark Nebula, and so on. The filter is additive with catalogs: checking "Messier" and type "Galaxy" gives you just M31, M51, M63, M64, M65, M66, M74, M77, M81, M82, M83, M84, M85, M86, M87, M88, M89, M90, M91, M94, M95, M96, M98, M99, M100, M101, M102, M104, M105, M106, M108, M109, M110.</p>
+
+<h2>4. Sort modes</h2>
+
+<ul>
+<li><b>Closest to Transit</b> (default) — ordered by absolute minutes to transit. Everything the sky is pointing at <i>right now</i>, roughly. Fast to compute.</li>
+<li><b>Best Nightly Score</b> — ordered by the full observability score for the full night. More expensive (one astropy coordinate transform per candidate across 144 time samples), but gives you the actually-worth-shooting ordering. The tooltip warns "Filter catalogs/types recommended — can be slow" because scoring every PGC galaxy at every timestep adds up.</li>
+</ul>
+
+<div class="tip">
+<b>Chunked parallel scoring.</b> When Best Nightly Score is active, WIMS splits the candidate list into chunks and runs them across a thread pool sized to your CPU. Each chunk builds its own astropy state (no shared SkyCoord objects, no GIL fighting) and returns a slice of the score array. For a 500-object list on a typical quad-core laptop, that's a few seconds instead of a minute.
+</div>
+
+<h2>5. The results tree</h2>
+
+<p>14 columns, sortable by any:</p>
+<ol>
+<li><b>Name</b> — primary catalog identifier.</li>
+<li><b>RA</b> — right ascension, decimal degrees or H:M:S depending on the RA/Dec format toggle.</li>
+<li><b>Dec</b> — declination, decimal degrees or D:M:S.</li>
+<li><b>Altitude</b> — degrees above horizon at the specified time.</li>
+<li><b>Azimuth</b> — compass bearing (0 = N, 90 = E, 180 = S, 270 = W).</li>
+<li><b>Min→Transit</b> — minutes until the object transits the meridian.</li>
+<li><b>B/A Transit</b> — Before or After. If After, the object is already past meridian for tonight.</li>
+<li><b>°from Moon</b> — angular separation from the Moon.</li>
+<li><b>Alt Name</b> — secondary catalog name (e.g. "Andromeda Galaxy" for M31).</li>
+<li><b>Type</b> — object type (Galaxy, Planetary Nebula, Open Cluster...).</li>
+<li><b>Magnitude</b> — visual magnitude where known.</li>
+<li><b>Size (arcmin)</b> — angular size, usually major × minor. Abell clusters show galaxy count instead.</li>
+<li><b>Score</b> — 0-100 observability score for tonight.</li>
+<li><b>Community</b> — ✓ (green) when the object falls inside a published footprint on the <b>Seti Astro Community Atlas</b> (fetched in the background from the atlas CDN; the mark appears a few seconds after Calculate finishes).</li>
+</ol>
+
+<p>Sort by any column (click the header). Size column is smart: <code>12.0 x 8.5</code> sorts by the larger dimension, <code>Num Galaxies: 51</code> sorts by galaxy count, plain numbers sort numerically.</p>
+
+<h2>6. The Weekly Score chart (right-click → Weekly Observability Score…)</h2>
+
+<p>A ±7-day chart of the object's observability score centered on your target date. Each day gets a blue bar whose height is the score (0-100), overlaid with the score as a yellow line + markers, with the moon-phase % drawn as a semi-transparent grey backdrop behind each day (new moon = transparent, full = opaque). The target date is marked with a red dashed vertical line. The subtitle names the weighting breakdown — <b>40% altitude quality · 35% moon avoidance · 25% imaging window</b> — so you can see at a glance whether a bad night is bad because the moon is up or because the object is too low.</p>
+
+<h2>7. Full Year Analysis (right-click → Full Year Analysis…)</h2>
+
+<p>The deep one. A 365-day score sweep starting from your current date, split across up to 12 parallel threads (one per month, roughly). The result opens in a 4-tab dialog:</p>
+<ul>
+<li><b>Monthly Overview</b> — bar chart of per-month average score, colored by score (red = poor, green = good), with a yellow dashed line marking the best month. A faint daily-score line overlays the whole year to show within-month variation. Best night and best month are called out in the header with badges.</li>
+<li><b>Best Night (date)</b> — altitude curve for the single best scoring date, with twilight bands, moon trace, horizon limit overlay (if a custom horizon is set), peak-altitude marker, azimuth compass labels along the track, and the imaging-window hours.</li>
+<li><b>Tonight (date)</b> — the same curve for tonight, for comparison.</li>
+<li><b>SIMBAD Details</b> — main ID, object type, V/B magnitude, spectral type, angular size, radial velocity, redshift, coordinates.</li>
+</ul>
+
+<p>Bottom buttons give you Full Visibility Dialog, Open in Aladin, Finder Chart, and Field Rotation (all pre-filled from the best night so the rotation night-curve plots immediately).</p>
+
+<h2>8. The Visibility dialog (right-click → Altitude / Visibility Plot…)</h2>
+
+<p>Full altitude curve for the selected object on the selected date, in local time with the plot running noon → midnight → noon (so a transit at 02:00 shows cleanly). Four tabs:</p>
+
+<ul>
+<li><b>Altitude &amp; Visibility</b> — the plot itself. The sky background fades through five brightness bands at the actual sun-altitude crossings: daylight → civil twilight (sun &gt; -6°) → nautical twilight (-6° to -12°) → astronomical twilight (-12° to -18°) → astronomical night (-18°). Linear interpolation between adjacent samples places the band edges exactly on the crossings, so twilight bands line up with the real transition times. Object altitude is yellow, moon altitude dashed grey. If a custom horizon is defined, the blocked zone shows as a red translucent fill overlay. Compass labels (N, NE, ENE, E…) are drawn along the object track at ~2-hour intervals.</li>
+<li><b>Rise / Transit / Set</b> — rise/transit/set times, peak altitude, imaging window in hours (above 20° during astro night), moon interference hours during the imaging window, and the night's astronomical and nautical twilight boundaries. Circumpolar objects say so; always-below-horizon objects say so.</li>
+<li><b>SIMBAD Details</b> — background query, cached. Returns main ID, type, V/B magnitude, spectral type, angular size, radial velocity, redshift. Tries multiple name variants (bare, no-space, catalog-prefix-normalized, PK↔PN-G, Abell→ACO expansion) plus a TAP ADQL fallback for anything query_object misses.</li>
+<li><b>Planet Separations</b> — angular distance from each major planet (Mars, Jupiter, Saturn, Venus, Mercury, Uranus, Neptune) at local midnight. A ⚠ close! flag appears when separation &lt; 5°.</li>
+</ul>
+
+<div class="tip">
+<b>Field Rotation integration.</b> Right-click an object → Field Rotation opens the Alt/Az Field Rotation calculator pre-filled with that object's current alt/az, RA/Dec, date, and your location/timezone. In the Full Year dialog, Field Rotation uses the <i>best</i> night at the moment of peak altitude (transit) — the worst-case single-point rotation rate for the night, which is the right number to budget your subs against.
+</div>
+
+<h2>9. The Custom Horizon Editor (🏔 Horizon…)</h2>
+
+<p>Where WIMS stops being generic and starts knowing your actual site. Opens an interactive azimuth-vs-altitude plot:</p>
+
+<div class="keys">
+<b>Interaction.</b> Left-click empty area to add a point · drag a point to move it · right-click to delete · the 0° and 360° (north) endpoints stay in sync automatically · a point placed within 5° of north snaps to 0° exactly. Buttons: <b>Reset to Flat</b> (clear everything), <b>Clear All</b>, <b>Load from File…</b>, <b>Save to File…</b>, <b>Apply &amp; Close</b>.
+</div>
+
+<p>The horizon profile linearly interpolates between your points, with wrap-around from 360° back to 0° handled correctly. Once defined, the horizon:</p>
+<ul>
+<li>Replaces the single Min Altitude threshold in Calculate — each object is only kept if its altitude at its azimuth exceeds <b>max</b>(horizon(az), min_alt).</li>
+<li>Draws as a red filled overlay in every visibility and best-night altitude plot.</li>
+<li>Changes the scoring: the "above 30°" quality bar becomes "above max(horizon(az), 30°)" at each timestep, and the "above 20°" imaging window becomes "above max(horizon(az), 20°)". A trailhead you can only see while it clears your east-facing treeline gets a lower score than a northern-circumpolar one you can see all night.</li>
+<li>Shows an "Effective above horizon" hours figure alongside the "Imaging window" figure in the Full Year altitude plots.</li>
+</ul>
+
+<div class="tip">
+<b>File formats.</b> WIMS loads and saves two formats: <b>Stellarium horizon</b> (<code>.txt</code> or <code>.hrz</code>, space-separated, # comments allowed) and <b>WIMS CSV</b> (<code>.csv</code>, comma-separated with azimuth/altitude headers). If your site has duplicate-azimuth points (a chimney edge at az 30° with heights 30° and 33°), the loader keeps the <i>maximum</i> altitude at that azimuth — because that's the blocking height the object actually has to clear.
+</div>
+
+<h2>10. The Object Search dialog (toolbar → Search Object…)</h2>
+
+<p>Full-catalog search by name, with smart matching:</p>
+<ul>
+<li>Catalog prefix normalization — <code>M42</code>, <code>M 42</code>, <code>m42</code> all match the Orion Nebula. Same for NGC, IC, UGC, PGC, ACO, LBN, LDN, SH2, PNG/PN-G, PK, Abell, Arp.</li>
+<li>Alt-name search — matches on both the primary name and the alt-name column, so <code>Andromeda Galaxy</code> finds M31, <code>Pleiades</code> finds M45, <code>Squid Nebula</code> finds OU4 (if in your catalog).</li>
+<li>Partial match — <code>abell 1242</code> matches the full "Abell 1242" entry even if the catalog spells it "ACO 1242".</li>
+<li><b>Manual RA/Dec…</b> button for objects not in any catalog. Accepts decimal degrees, <code>5h26m31.2s</code> / <code>60d03m00s</code>, or <code>5:26:31.2</code> / <code>60:03:00</code> colon-separated; Dec prefix − for south.</li>
+</ul>
+
+<p>Double-click a search result (or hit <b>Analyse Selected Object…</b>) to run the full-year sweep on it. This is the backdoor to full-year analysis for objects that aren't in your tree — you don't need to Calculate first, just search and go.</p>
+
+<h2>11. Workflow recipes</h2>
+
+<div class="workflow">
+<b>Tonight's plan.</b> Fill in location + current date and time. Check Messier, NGC, IC, Caldwell. Set Min Altitude to 30. Pick <b>Best Nightly Score</b> as the sort mode. Click Calculate. The top 10 rows are your target list, ordered by observability. Right-click the top one → Altitude / Visibility Plot to see when it transits and what the moon is doing.
+</div>
+
+<div class="workflow">
+<b>When is X best this year?</b> Click Search Object, type the name, double-click the result. The full-year sweep runs and the Monthly Overview tab tells you which month to plan the trip for. If the best month is a lunar month away from now, go check the Weekly Score chart on a few candidate dates to pick the actual night.
+</div>
+
+<div class="workflow">
+<b>Dark-sky trip planning.</b> At your home site, run Calculate for the Saturday you're leaving. Note the top five scored targets. Open each in Full Year Analysis — if "Best Month" is a different one, that target isn't the right pick for this trip. Keep the ones whose Best Month matches the trip.
+</div>
+
+<div class="workflow">
+<b>Narrowband-friendly fallback list.</b> If the Moon is up, score plummets for most broadband targets but barely moves for narrowband (the moon-separation weight hits hard, phase weight less so). Keep a second catalog filter list of just Sharpless + LBN + LDN + bright PNe. When tonight's score sheet is dominated by moon penalties, switch to that list — the top scores there will be your narrowband picks.
+</div>
+
+<div class="workflow">
+<b>Site survey — before buying property.</b> Draw up a custom horizon from a candidate observing site using the Horizon Editor (walk a 360° circle noting treeline heights). Run Full Year Analysis on your usual targets. The "Effective above horizon" figure on the Best Night plot tells you how much usable time each one actually gets at that site. Compare across sites.
+</div>
+
+<div class="workflow">
+<b>User-object round-trip.</b> Add Object → enter a name, RA, Dec. It saves to <code>~/saspro_user_objects.csv</code> and shows up under the <b>User</b> catalog filter forever. Share that CSV with a friend and they can drop it into their own saspro_user_objects.csv to inherit your target list.
+</div>
+
+<div class="workflow">
+<b>Imaging ethics: avoid stepping on recent work.</b> After Calculate finishes, wait a few seconds for the Community column to populate. A ✓ there means the Seti Astro Community Atlas already has a published image at that location. Treat it as a signal, not a stop — but it's useful context when picking what to shoot.
+</div>
+
+<h2>12. Credits</h2>
+<div class="credit">
+Written by Franklin Marek as part of <a href="https://setiastro.com">SetiAstro Suite</a>. All celestial-mechanics calculations use <b>astropy</b> (Astropy Collaboration et al.). Timezones via <b>pytz</b>. SIMBAD lookups via <b>astroquery.simbad</b>, with a TAP ADQL fallback for catalog identifiers <code>query_object</code> doesn't resolve. Plots via <b>pyqtgraph</b>. Catalog sources: NGC/IC from Dreyer / Steinicke, Caldwell from Moore, Abell / ACO from Abell &amp; Corwin, Sharpless from Sharpless (1959), LBN from Lynds (1965), LDN from Lynds (1962), PNG from the <i>Strasbourg-ESO Catalogue of Galactic Planetary Nebulae</i> with Perek-Kohoutek (1967) cross-reference. The Seti Astro Community Atlas is maintained at <code>setiastro-atlas</code> on Backblaze B2. Lunar phase images from the SetiAstro Suite icon set.
+</div>
+
+<h2 style="margin-top:28px;">Technical details</h2>
+
+<h3>13.1. The observability score</h3>
+<p>Three weighted components, each clamped to [0, 1], combined and scaled to [0, 100]:</p>
+<div class="matheq-hero">S = 100 \cdot (0.40 \cdot s_{\mathrm{alt}} + 0.35 \cdot s_{\mathrm{moon}} + 0.25 \cdot s_{\mathrm{win}})</div>
+<p>Each component is computed from a 144-sample grid spanning noon to the following noon (10-minute resolution). The <b>altitude quality</b> and <b>imaging window</b> components are both fractions of astronomical night where the object clears a given altitude:</p>
+<div class="matheq">s_{\mathrm{alt}} = |\{t : \mathrm{sun}(t) < -18^\circ \wedge \mathrm{alt}(t) \geq 30^\circ\}| \; / \; |\{t : \mathrm{sun}(t) < -18^\circ\}|</div>
+<div class="matheq">s_{\mathrm{win}} = |\{t : \mathrm{sun}(t) < -18^\circ \wedge \mathrm{alt}(t) \geq 20^\circ\}| \; / \; |\{t : \mathrm{sun}(t) < -18^\circ\}|</div>
+<p>If no astronomical night exists at the given latitude on the given date (polar summer), both components are 0 and the score is 0.</p>
+
+<h3>13.2. The moon component</h3>
+<p>Combines angular separation and lunar phase so a full moon 30° away is worse than a crescent 30° away, and a new moon anywhere is near-perfect:</p>
+<div class="matheq">\sigma = \min(1,\, \Delta_{\mathrm{moon}} / 90^\circ)</div>
+<div class="matheq">\phi = 1 - P/100</div>
+<div class="matheq-hero">s_{\mathrm{moon}} = \sigma \cdot (0.5 + 0.5 \phi)</div>
+<p>where Δ<sub>moon</sub> is the angular separation of the target from the moon (clamped at 90°; farther doesn't help) and P is lunar phase as a percentage of illumination. The (0.5 + 0.5·φ) term floors the moon contribution at half-value even for a full moon — because angular separation alone still buys you something — and ramps linearly to full value at new moon.</p>
+
+<h3>13.3. Lunar phase from solar elongation</h3>
+<p>Phase percentage is derived from the Moon-Sun elongation using the standard illumination formula:</p>
+<div class="matheq-hero">P = \mathrm{round}\left( \frac{1 - \cos(E)}{2} \cdot 100 \right)</div>
+<p>where E is the angular separation of the Moon and Sun as seen from Earth. Waxing vs waning is determined by whether the elongation is increasing or decreasing six hours later; this picks the correct phase image from the 23-image set (new, waxing/waning crescent 1-5, first/last quarter, waxing/waning gibbous 1-4, full).</p>
+
+<h3>13.4. Local sidereal time and minutes to transit</h3>
+<p>LST is computed from astropy's <code>Time.sidereal_time("apparent", lon)</code>, which accounts for nutation and precession:</p>
+<div class="matheq">\mathrm{LST} = \mathrm{GMST} + \lambda_{\mathrm{obs}}</div>
+<p>An object transits (crosses the meridian) when its RA equals the LST. The time to transit, in hours, is:</p>
+<div class="matheq-hero">\Delta t_{\mathrm{transit}} = ((\alpha / 15^\circ) - \mathrm{LST}_{\mathrm{h}}) \;\mathrm{mod}\; 24</div>
+<p>WIMS converts to minutes and splits "Before/After": if Δt &gt; 12 h, the object transited earlier and the displayed value becomes 24 − Δt (as a positive "minutes since transit"), with the B/A column marked "After":</p>
+<div class="matheq-hero">\Delta t > 12\ \mathrm{h}\;\Rightarrow\;\mathrm{After\ transit},\ \mathrm{display} = 24 - \Delta t</div>
+
+<h3>13.5. The custom horizon</h3>
+<p>Internally stored as a sorted list of (azimuth, altitude) control points. The horizon altitude at an arbitrary azimuth is linear interpolation between the two adjacent points, with wrap-around from 360° back to 0° handled by injecting an implicit point at (360°, h(0°)) if the user's rightmost point sits below 360°, and (0°, h(360°)) if the leftmost sits above 0°:</p>
+<div class="matheq-hero">h(\mathrm{az}) = \mathrm{interp}(\mathrm{az};\, \{(a_i, h_i)\})</div>
+<p>The effective minimum altitude at each azimuth is the elementwise max of the horizon and the configured min_alt floor:</p>
+<div class="matheq-hero">\mathrm{alt}_{\mathrm{eff}}(\mathrm{az}) = \max(h(\mathrm{az}),\, \mathrm{alt}_{\min})</div>
+<p>When scoring with a custom horizon, the quality and window masks become per-timestep horizon-aware:</p>
+<div class="matheq">q(t) = \mathrm{alt}(t) \geq \max(h(\mathrm{az}(t)),\, 30^\circ)</div>
+<div class="matheq">w(t) = \mathrm{alt}(t) \geq \max(h(\mathrm{az}(t)),\, 20^\circ)</div>
+<p>so a target that peaks at 45° altitude but spends most of its time behind an eastern treeline gets a lower score than its naive altitude curve would suggest.</p>
+
+<h3>13.6. Twilight thresholds</h3>
+<p>Standard astronomical definitions, used throughout the plot bands and the scoring night mask:</p>
+<div class="matheq-hero">\mathrm{sun} < -6^\circ\ \mathrm{(civil)}\quad -12^\circ\ \mathrm{(nautical)}\quad -18^\circ\ \mathrm{(astro)}</div>
+<p>Visibility plots show four distinct bands (daylight, civil, nautical, astro night) with their edges placed at the exact linear-interpolated crossing times — not sample-grid-rounded — so the bands align with the real transition moments.</p>
+
+<h3>13.7. Azimuth-to-compass labeling</h3>
+<p>Compass labels along the altitude plot's object track use 16-point rose spacing:</p>
+<div class="matheq-hero">i = \lfloor (\mathrm{az} + 11.25^\circ) / 22.5^\circ \rfloor \;\mathrm{mod}\; 16</div>
+<p>with the +11.25° shift centering each 22.5° arc on its label (so az = 0° reads "N", not "NNE"). Labels are placed every ~2 hours along the track, with a 1.5-hour minimum horizontal spacing to prevent crowding, and skipped when altitude is below −5° (object below horizon).</p>
+
+<h3>13.8. Timezone vs longitude consistency</h3>
+<p>WIMS compares your timezone's UTC offset Δt<sub>UTC</sub> against your longitude λ. The timezone's "central meridian" is:</p>
+<div class="matheq-hero">\lambda_c = 15^\circ \cdot \Delta t_{\mathrm{UTC}}</div>
+<p>A warning fires if the signs disagree or if |λ − λ<sub>c</sub>| &gt; 45°. For bare-sign-mismatch cases (user entered a bare "87" longitude without E/W suffix and the sign is wrong for their timezone), WIMS auto-flips the sign — this handles the common US-user "I put in positive 87 but I'm in Chicago" case. For other inconsistencies the warning is informational and the calculation proceeds with the entered values.</p>
+
+<h3>13.9. SIMBAD name resolution</h3>
+<p>The SIMBAD lookup tries each of these name forms until one hits:</p>
+<ol>
+<li>Primary name as-is.</li>
+<li>Primary name with whitespace removed.</li>
+<li>Primary name with catalog-prefix space-normalized (<code>NGC891</code> → <code>NGC 891</code>).</li>
+<li>Alt name variants (same three transforms).</li>
+<li>PK ↔ PN-G cross-references: <code>PN-G 064.6+48.2</code> is tried as <code>PK 064.6+48.2</code> and <code>PK064.6+48.2</code>, and vice versa.</li>
+<li>Abell → ACO expansion for Abell cluster names.</li>
+<li>If all <code>query_object</code> attempts fail, a direct TAP ADQL query against SIMBAD's basic table joined on ident catches identifiers <code>query_object</code> doesn't surface.</li>
+</ol>
+<p>Returns <code>main_id</code>, <code>otype</code>, V/B magnitude, radial velocity, redshift, spectral type, and major/minor galdim axes where available. Missing fields render as — rather than failing the whole lookup.</p>
+
+<h3>13.10. Chunked parallel scoring</h3>
+<p>For both the tonight-ranking (<i>Best Nightly Score</i> sort) and the full-year analysis, scoring is split across a thread pool. Chunk sizes are computed as:</p>
+<ul>
+<li>Workers: <code>max(4, min(cpu_count // 2, N))</code> — half the CPUs by default, floored at 4, capped at the candidate count.</li>
+<li>Chunk size: <code>max(10, ⌈N / workers⌉)</code> — big enough that per-chunk setup cost (astropy state construction) is amortized.</li>
+<li>For the 365-day sweep, chunks are per-month (31-day slices), run in up to 12 parallel threads.</li>
+</ul>
+<p>Each worker constructs its own <code>pytz</code>, <code>Time</code>, <code>EarthLocation</code>, and <code>AltAz</code> frame locally — no sharing of astropy objects between threads, which would be undefined behavior under the GIL for the C-extension bits. Results are stitched back together in deterministic order.</p>
+
+<h3>13.11. Catalog loading</h3>
+<p>Two independent sources:</p>
+<ul>
+<li><b>Bundled catalog</b> at <code>data/catalogs/celestial_catalog.csv</code>, loaded read-only. ISO-8859-1 encoding (handles accented author names in alt-name fields).</li>
+<li><b>User catalog</b> at <code>~/saspro_user_objects.csv</code>, UTF-8, created on first <b>Add Object…</b>. A one-time migration from an older in-home-dir <code>celestial_catalog.csv</code> (where user objects used to be appended into the bundled catalog) extracts rows with <code>Catalog == USER</code> and seeds this file.</li>
+</ul>
+<p>The two frames are concatenated at load time with user rows always marked <code>Catalog = "User"</code>, so the User checkbox in the UI exclusively shows your own objects regardless of what the row data said.</p>
+
+<h3>13.12. The Community Atlas footprint test</h3>
+<p>The atlas <code>catalog.json</code> is fetched in a background thread with a 3-attempt retry (1.5 s between tries, 8 s per-request timeout). Each entry carries either four corner RA/Dec points or a center + FOV width/height. For the corner form, a point (RA, Dec) is "inside" when:</p>
+<ul>
+<li><code>min(dec_corners) ≤ dec ≤ max(dec_corners)</code>, and</li>
+<li>the RA bracket contains the point, with wraparound at 0°/360° handled by checking whether the corner-span exceeds 180° (which signals a wrap-crossing footprint, where "inside" means <code>ra ≥ ra_min OR ra ≤ ra_max</code>).</li>
+</ul>
+<p>Fast enough to test thousands of catalog rows against a small atlas index per Calculate. The tick appears in the Community column a few seconds after Calculate finishes.</p>
+
+</body>
+</html>

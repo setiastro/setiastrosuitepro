@@ -62,6 +62,8 @@ from setiastro.saspro.backgroundneutral import auto_rect_box, auto_rect_50x50
 from setiastro.saspro.imageops.stretch import stretch_color_image
 # We *intentionally* do NOT reuse SFCC pedestal-removal/clamp for photometry.
 
+from setiastro.saspro.help_support import make_help_button
+
 import socket
 
 import multiprocessing as mp
@@ -2752,6 +2754,10 @@ class MagnitudeToolDialog(QDialog):
         self.btn_close = QPushButton("Close")
         self.btn_close.clicked.connect(self.reject)
         bottom.addWidget(self.btn_close)
+        bottom.addStretch(1)
+        bottom = QHBoxLayout()
+        bottom.addStretch(1)
+        bottom.addWidget(make_help_button("magnitude_tool", self))        
         root.addLayout(bottom)
  
         self._refresh_aavso_button()

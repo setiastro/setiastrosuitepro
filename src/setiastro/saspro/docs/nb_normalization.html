@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+</style>
+</head>
+<body>
+
+<h1>Narrowband Normalization</h1>
+<p class="sub">A direct port of Bill Blanshan's and Mike Cranfield's
+PixelMath narrowband normalization technique, with Bill's permission.
+Normalizes Ha&nbsp;/&nbsp;OIII&nbsp;/&nbsp;SII channels against each
+other so that classical palette mappings (SHO, HSO, HOS, HOO) land
+on balanced, controllable colour instead of whatever the raw channel
+intensities happen to produce.</p>
+
+<p class="pub"><b>Credits up front.</b> The core normalization
+algorithm &mdash; the SHO&nbsp;/&nbsp;HSO&nbsp;/&nbsp;HOS&nbsp;/&nbsp;HOO
+scenario formulas, the linear and non-linear modes, the lightness-source
+mechanism, the highlight recover/reduction curves &mdash; is the
+original PixelMath work of
+<b>Bill&nbsp;Blanshan</b>
+(<a href="https://www.youtube.com/@anotherastrochannel2173">Another
+Astro Channel</a>) and <b>Mike&nbsp;Cranfield</b>
+(<a href="https://cosmicphotons.com/">cosmicphotons.com</a>).
+This tool reproduces that algorithm in SASpro with their permission.
+What SASpro adds &mdash; linear fit integration, SCNR as a post-step,
+background neutralization, OSC synthesis, mapped-RGB view import, the
+async preview worker and the UI around it &mdash; is detailed in
+&sect;&nbsp;12.</p>
+
+<h2>1. What it does</h2>
+<p>Classic narrowband palettes (SHO, HOO, &hellip;) are a direct
+R&nbsp;/&nbsp;G&nbsp;/&nbsp;B channel-assignment: &ldquo;SII in red,
+Ha in green, OIII in blue&rdquo;, say. The visual result depends
+heavily on the relative integrated signal of each channel &mdash; a
+weak OIII makes everything look magenta; a dominant Ha drowns out
+subtle SII shock structure. Normalization reshapes each channel
+against a shared statistical baseline (minimum, median, highlight
+distribution) <i>before</i> the palette assignment, so you can
+control the final hue balance with a handful of parameters instead
+of fighting it in Curves afterward.</p>
+
+<h2>2. The three ways to load data</h2>
+
+<h3>2.1 Direct mono channels</h3>
+<p>Load Ha&nbsp;/&nbsp;OIII&nbsp;/&nbsp;SII separately from the
+<b>Narrowband channels</b> group. Each button offers <b>From View</b>
+(any open SASpro document) or <b>From File</b> (PNG, TIF, FITS,
+XISF). The label underneath turns green with the source name when
+loaded (long paths and view names are elided and shown in full on
+hover). For HOO scenarios the SII slot is hidden; for all other
+scenarios all three are required.</p>
+
+<h3>2.2 OSC extractions</h3>
+<p>From the <b>OSC extractions</b> group:</p>
+<ul>
+  <li><b>OSC1 (Ha&nbsp;/&nbsp;OIII)</b> &mdash; L-eXtreme / L-eNhance
+      / NBZ-type dual-band. Red channel is treated as Ha; the mean
+      of the green and blue channels is treated as OIII.</li>
+  <li><b>OSC2 (SII&nbsp;/&nbsp;OIII)</b> &mdash; the SII&nbsp;/&nbsp;OIII
+      dual-band variant. Red is SII; mean(G,&nbsp;B) is OIII.</li>
+</ul>
+<p>If a direct mono channel is loaded alongside the OSC, the mono
+takes priority; OSC only fills in channels that would otherwise be
+missing. This differs from Perfect Palette Picker, which averages
+them.</p>
+
+<h3>2.3 Import a mapped RGB view</h3>
+<p>The <b>Import mapped RGB view</b> group at the top of column A
+has four buttons: <b>Load SHO View</b>, <b>Load HSO View</b>,
+<b>Load HOS View</b>, <b>Load HOO View</b>. Pick one, choose any
+currently open RGB document, and SASpro inverse-splits it back into
+Ha&nbsp;/&nbsp;OIII&nbsp;/&nbsp;SII channels according to the mapping
+you selected:</p>
+<ul>
+  <li><b>SHO</b>: R &rarr; SII, G &rarr; Ha, B &rarr; OIII.</li>
+  <li><b>HSO</b>: R &rarr; Ha, G &rarr; SII, B &rarr; OIII.</li>
+  <li><b>HOS</b>: R &rarr; Ha, G &rarr; OIII, B &rarr; SII.</li>
+  <li><b>HOO</b>: R &rarr; Ha, mean(G,&nbsp;B) &rarr; OIII, no SII.</li>
+</ul>
+<p>This is the fastest way to re-normalize an existing palette image
+from Perfect Palette Picker. The source document is tracked so that
+<b>Apply to Current View</b> writes back to the <i>original</i>
+mapped composite, not the temp split channels.</p>
+
+<p class="tip"><b>Dimension mismatch</b> is detected automatically.
+If the loaded channels aren't the same pixel size, you're prompted
+once per session to resize everything to a reference frame (preferred:
+Ha, then OIII, then SII) using OpenCV's INTER_AREA / INTER_LINEAR.</p>
+
+<h2>3. Scenario</h2>
+<p>Four palette targets, selected from the <b>Scenario</b> combo.
+The normalization math changes per scenario because each one needs
+different relationships between the channels to look balanced:</p>
+<table>
+  <tr><th>Scenario</th><th>R</th><th>G</th><th>B</th><th>Needs</th></tr>
+  <tr><td>SHO</td><td>SII</td><td>Ha</td><td>OIII</td><td>Ha + OIII + SII</td></tr>
+  <tr><td>HSO</td><td>Ha</td><td>SII</td><td>OIII</td><td>Ha + OIII + SII</td></tr>
+  <tr><td>HOS</td><td>Ha</td><td>OIII</td><td>SII</td><td>Ha + OIII + SII</td></tr>
+  <tr><td>HOO</td><td>Ha</td><td>OIII</td><td>OIII</td><td>Ha + OIII only</td></tr>
+</table>
+<p>Switching scenario reshuffles which rows of the Normalization form
+are visible: HOO shows the Blend Mode and Ha Blend rows and only the
+first OIII Boost; the SHO family hides those and shows SII Boost
+plus its own OIII Boost.</p>
+
+<h2>4. Mode</h2>
+<p>Two modes, driven by the state of your input data:</p>
+<ul>
+  <li><b>Non-linear (Mode=1)</b> &mdash; your channels are already
+      stretched. This enables the <b>Lightness</b> source
+      selector.</li>
+  <li><b>Linear (Mode=0)</b> &mdash; your channels are linear
+      (straight out of integration or linear calibration). The
+      Lightness row is hidden; the normalization applies its own
+      implicit tone shaping.</li>
+</ul>
+<p>Picking the wrong mode doesn't produce an error, just a less-good
+result. If you're not sure, Non-linear is the safer default for
+anything you'd open in a stretched state.</p>
+
+<h2>5. Lightness source (non-linear only)</h2>
+<p>Controls which signal provides the final luminance of the
+normalized composite:</p>
+<ul>
+  <li><b>Off (0)</b> &mdash; no luminance override; use whatever the
+      scenario math produces.</li>
+  <li><b>Original (1)</b> &mdash; preserve the input composite's own
+      luminance (useful when importing a mapped RGB view).</li>
+  <li><b>Ha (2)</b> &mdash; drive luminance from Ha; keeps the Ha
+      structure visually dominant.</li>
+  <li><b>SII (3)</b> &mdash; drive luminance from SII (not shown in
+      HOO).</li>
+  <li><b>OIII (4)</b> &mdash; drive luminance from OIII.</li>
+</ul>
+
+<h2>6. The core knobs</h2>
+
+<h3>6.1 Blackpoint (Min &rarr; Med)</h3>
+<p>Range 0.0&ndash;1.0, default 0.25. Controls the blackpoint
+reference the normalization measures against:</p>
+<div class="matheq-hero">M \;=\; \min(C) \;+\; \mathrm{BP} \cdot (\mathrm{median}(C) - \min(C))</div>
+<p>At 0.0 the reference is the channel minimum; at 1.0 it's the
+channel median. Higher values lift the baseline (brighter
+background); lower values preserve darker blacks. The 0.25 default
+sits closer to minimum but still above pure black, which handles the
+usual case of calibrated channels with faint background sky.</p>
+
+<h3>6.2 HL Recover and HL Reduction</h3>
+<p>Both range 0.5&ndash;2.0, default 1.0 (identity). These shape the
+upper end of each channel independently:</p>
+<ul>
+  <li><b>HL Recover</b> &mdash; pulls clipped or near-clipped
+      highlights back into range. Values &gt;&nbsp;1 are more
+      aggressive.</li>
+  <li><b>HL Reduction</b> &mdash; the dual operation; compresses the
+      upper midtones to prevent new clipping when earlier steps
+      brighten the image.</li>
+</ul>
+<p>Minimum enforced value is 0.25 inside the normalization routine
+so you can't accidentally zero out highlight response.</p>
+
+<h3>6.3 Brightness</h3>
+<p>Range 0.5&ndash;2.0, default 1.0. Overall multiplicative gain
+applied after the other shaping. Also floored at 0.25 inside the
+routine.</p>
+
+<h2>7. HOO-only controls</h2>
+
+<h3>7.1 Blend Mode</h3>
+<p>How the Ha and OIII signals combine in the green and blue
+channels. Options: <b>Screen</b>, <b>Add</b>, <b>Linear Dodge</b>,
+<b>Normal</b>. Screen is a soft-light-ish layer with less clipping;
+Add and Linear Dodge produce brighter, warmer results; Normal is a
+direct blend without any additive behaviour.</p>
+
+<h3>7.2 Ha Blend</h3>
+<p>Range 0.0&ndash;1.0, default 0.6. How much Ha contributes to the
+green and blue channels in the bicolour composite. Lower values keep
+HOO looking distinctly cyan-blue; higher values warm it toward
+Ha-dominant.</p>
+
+<h3>7.3 OIII Boost (HOO)</h3>
+<p>Range 0.5&ndash;2.0, default 1.0. Independent gain on the OIII
+contribution before blending. Pair with Ha Blend to tune the
+Ha&nbsp;/&nbsp;OIII ratio without touching the input channel data.</p>
+
+<h2>8. SHO-family controls</h2>
+
+<h3>8.1 SII Boost</h3>
+<p>Range 0.5&ndash;2.0, default 1.0. Boosts (or dims) the SII
+contribution. Especially useful in SHO where the red channel is
+driven entirely by SII &mdash; a weak SII integration gives a
+magenta-looking image until you lift it with this.</p>
+
+<h3>8.2 OIII Boost (SHO family)</h3>
+<p>Range 0.5&ndash;2.0, default 1.0. Independent OIII gain for the
+SHO-family scenarios.</p>
+
+<h2>9. SCNR, Linear Fit, Background Neutralization</h2>
+
+<h3>9.1 SCNR</h3>
+<p>The <b>SCNR (reduce green cast)</b> checkbox applies subtractive
+chromatic noise reduction as a post-step after the main
+normalization. SASpro uses the same SCNR core as the Remove Green
+tool. Two sub-controls:</p>
+<ul>
+  <li><b>SCNR Amount</b> &mdash; 0.00&ndash;1.00 (default 0.80). How
+      strongly to pull green toward the average of red and blue.
+      0&nbsp;=&nbsp;off; 1&nbsp;=&nbsp;full suppression.</li>
+  <li><b>Preserve luminance</b> &mdash; after green is suppressed,
+      restore the overall luminance so the image doesn't darken.
+      Default on.</li>
+</ul>
+<p>SCNR is hidden for the HOO scenario because HOO's green channel
+is deliberately OIII-driven and shouldn't be clamped.</p>
+
+<h3>9.2 Linear Fit (highest signal)</h3>
+<p>The <b>Linear Fit (highest signal)</b> checkbox median-matches
+each channel to the one with the strongest signal before
+normalization. This evens out the input scales so the normalization
+math has a predictable starting point &mdash; particularly useful
+when one channel is noticeably weaker than the others. The reference
+is picked automatically from the loaded channels' medians (highest
+wins). See &sect;&nbsp;12.3.</p>
+
+<h3>9.3 Background Neutralization</h3>
+<p>The <b>Background Neutralization (&nabla;-descent)</b> checkbox
+applies a gradient-descent background colour balance as a post-step
+on the normalized RGB. Uses an auto-detected 50&times;50 reference
+rectangle. See &sect;&nbsp;12.4.</p>
+
+<h3>9.4 Autostretch preview</h3>
+<p>Toggle for showing the preview with a statistical stretch applied
+(target median 0.25, linked channels). The underlying result is not
+stretched; only the display is. Use this if your input channels are
+linear and you want to see what the normalization is doing without
+the preview looking black.</p>
+
+<h2>10. Preview, Apply, Push</h2>
+
+<ul>
+  <li><b>Preview</b> &mdash; runs the pipeline at reduced resolution
+      (see &sect;&nbsp;12.6) and shows the result in the right-side
+      preview. The compute is debounced at 250&nbsp;ms, so dragging
+      a slider doesn't fire a cascade of jobs. Every control change
+      schedules a new preview automatically; this button is for
+      forcing one on demand.</li>
+  <li><b>Apply to Current View</b> &mdash; re-runs the pipeline at
+      <i>full resolution</i> and writes the result back to the
+      source document. Uses <code>apply_edit</code> if the document
+      supports it (history + metadata recorded as &ldquo;Narrowband
+      Normalization&rdquo;). When channels came from a mapped RGB
+      view import, Apply writes to that original composite, not to
+      the temp split channels.</li>
+  <li><b>Push as New View</b> &mdash; same full-resolution pipeline
+      but opens the result as a new SASpro document titled
+      &ldquo;NBN &lt;scenario&gt;&rdquo;.</li>
+  <li><b>Clear</b> &mdash; wipes all loaded channels and resets the
+      session mismatch acknowledgement.</li>
+</ul>
+
+<p>While a job runs, the action buttons are disabled and the status
+line shows a percent + stage name from the worker.</p>
+
+<h2>11. Preview interaction</h2>
+<ul>
+  <li>Zoom In / Zoom Out / Fit to Preview buttons at the top of the
+      preview pane.</li>
+  <li>Mouse wheel (with or without Ctrl) zooms cursor-anchored. Range
+      0.05&times; to 6&times;.</li>
+  <li>Left-click-drag to pan.</li>
+  <li>Pan and zoom are preserved across parameter changes, so you can
+      stay zoomed in on a region of interest while tuning sliders
+      and watch the colour balance shift live.</li>
+</ul>
+
+<h2>12. Technical details</h2>
+<p class="tech-lead">Channels normalised to float32 in [0,&nbsp;1].
+Compute flows through a background QThread with sequence gating so
+stale preview workers can't overwrite newer results. The core
+normalization engine is Bill Blanshan's PixelMath formulas in Python
+(implemented in <code>imageops.narrowband_normalization</code>);
+everything else below is the SASpro wrapper around it.</p>
+
+<h3>12.1 Pipeline order</h3>
+<ol>
+  <li>Load mono channels (or synthesize from OSC, or inverse-split
+      a mapped RGB view).</li>
+  <li>Resize to reference if dimensions differ (user-approved,
+      once per session).</li>
+  <li>For preview only: downsample to the preview resolution (see
+      &sect;&nbsp;12.6).</li>
+  <li>If Linear Fit is enabled, median-match each channel to the
+      highest-signal reference (&sect;&nbsp;12.3).</li>
+  <li>Run <code>normalize_narrowband(ha, oiii, sii, params)</code>
+      &mdash; the Blanshan/Cranfield core.</li>
+  <li>If SCNR is enabled, run <code>_apply_scnr_rgb</code> with the
+      user's amount and preserve-luminance setting
+      (&sect;&nbsp;12.2).</li>
+  <li>If Background Neutralization is enabled, run the auto-rect
+      &nabla;-descent neutralization (&sect;&nbsp;12.4).</li>
+  <li>For preview display only: apply statistical stretch at target
+      median 0.25 if Autostretch is on. The underlying buffer is
+      left in its unstretched state so Apply and Push write the raw
+      normalized result.</li>
+</ol>
+
+<h3>12.2 SCNR formula</h3>
+<p>SCNR green suppression computes a per-pixel green-cap and blends
+with the amount slider:</p>
+<div class="matheq-hero">G_{\mathrm{avg}} \;=\; \min\!\left(G,\; \frac{R + B}{2}\right)</div>
+<div class="matheq-hero">G' \;=\; (1 - a)\,G \;+\; a \cdot G_{\mathrm{avg}}</div>
+<p>where <code>a</code> is the SCNR Amount. When Preserve luminance
+is enabled, the Rec. 709 luminance is computed before and after:</p>
+<div class="matheq">L \;=\; 0.2126\,R + 0.7152\,G + 0.0722\,B</div>
+<p>and the output RGB is rescaled so that <code>L</code> is
+preserved, preventing the overall image from darkening when green
+is pulled down. The relevant line in the SCNR core is
+<code>_apply_scnr_rgb(rgb, amount, mode="avg",
+preserve_lightness=True, channel="G")</code>.</p>
+
+<h3>12.3 Linear Fit integration</h3>
+<p>When enabled, SASpro picks the channel with the highest median
+value as the reference and median-matches the others to it via
+<code>linear_fit_mono_to_ref</code> from the Linear Fit module:</p>
+<div class="matheq-hero">C' \;=\; C \cdot \frac{\mathrm{median}(C_{\mathrm{ref}})}{\mathrm{median}(C)}</div>
+<p>SASpro passes <code>rescale_mode_idx=2</code> (&ldquo;leave as
+is&rdquo;) so the fit does <i>not</i> clip or renormalize &mdash; it
+just median-matches. The normalization routine downstream decides
+what to do with the resulting dynamic range.</p>
+
+<h3>12.4 Background Neutralization</h3>
+<p>Uses the same auto-rect strategy as the standalone BG
+Neutralization tool: a 50&times;50 pixel region is picked
+automatically from a dark part of the frame, and
+<code>background_neutralize_rgb</code> runs a gradient-descent fit
+that balances the per-channel offset so the measured background
+hits neutral grey. The result respects the destination document's
+active mask when running inside Apply.</p>
+
+<h3>12.5 OSC synthesis</h3>
+<p>If an OSC frame is loaded and the corresponding mono channel is
+not:</p>
+<div class="matheq-hero">\mathrm{Ha}_{\mathrm{OSC1}} \;=\; \mathrm{OSC1}[R],\quad \mathrm{OIII}_{\mathrm{OSC1}} \;=\; \frac{\mathrm{OSC1}[G] + \mathrm{OSC1}[B]}{2}</div>
+<p>and symmetrically for OSC2 (SII&nbsp;/&nbsp;OIII). Unlike Perfect
+Palette Picker, which blends 50/50 when both OSC and mono are
+present, NB Normalization gives priority to the mono channel &mdash;
+OSC is used only to fill in missing data. This is the stricter
+behaviour appropriate for a normalization step: mixing scales from
+different source types would defeat the point of normalizing.</p>
+
+<h3>12.6 Preview downsample strategy</h3>
+<p>The preview path targets &lt;&nbsp;2 megapixels and a maximum
+dimension of 1800&nbsp;px. The computed scale is quantised to one
+of five buckets &mdash; 1.00, 0.75, 0.50, 0.33, 0.25 &mdash; so a
+small zoom in or crop doesn't change the preview path across runs.
+Downsampling uses OpenCV's INTER_AREA. The chosen scale is reported
+in the status bar during preview compute.</p>
+
+<h3>12.7 Async worker and sequence gating</h3>
+<p>Preview and the full-resolution Apply/Push both run through a
+<code>_NBNWorker</code> QThread. Each job increments a
+<code>_calc_seq</code> counter; when a worker finishes, its result
+is accepted only if the sequence still matches the current one.
+Older jobs that finish after a newer one has started are silently
+dropped. Progress is reported through a <code>progress(int,
+str)</code> signal and updates the status label as
+&ldquo;&lt;stage&gt; (&lt;pct&gt;%)&rdquo;.</p>
+
+<h3>12.8 Mapped RGB view import math</h3>
+<p>For the three three-channel scenarios the inverse-split is direct:
+SHO is <code>(SII, Ha, OIII) = (R, G, B)</code>, HSO is
+<code>(Ha, SII, OIII) = (R, G, B)</code>, HOS is
+<code>(Ha, OIII, SII) = (R, G, B)</code>. For HOO the OIII channel
+is reconstructed as the average of G and B since the bicolour
+mapping doesn't preserve them separately:</p>
+<div class="matheq">\mathrm{OIII} \;=\; \frac{G + B}{2}</div>
+<p>and SII is left as None (HOO doesn't use it). This isn't a
+mathematically exact inversion when the forward mapping included
+boosts or lightness overrides &mdash; it's the right starting point
+for re-normalizing an already-assembled composite, not for round-trip
+exact reconstruction.</p>
+
+<div class="credit">
+<b>Credits.</b> The <b>narrowband normalization algorithm</b> &mdash;
+the SHO/HSO/HOS/HOO scenario math, linear and non-linear modes,
+lightness-source selection, highlight recover/reduction curves,
+blackpoint reference, Ha blend, OIII and SII boosts, and the
+PixelMath blend modes (Screen, Add, Linear Dodge, Normal) &mdash;
+is the original work of <b>Bill&nbsp;Blanshan</b>
+(<a href="https://www.youtube.com/@anotherastrochannel2173">YouTube</a>)
+and <b>Mike&nbsp;Cranfield</b>
+(<a href="https://cosmicphotons.com/">cosmicphotons.com</a>). This
+SASpro port is published with Bill's permission; the core math is
+not Frank's and credit belongs to its originators.
+<br><br>
+The SASpro wrapper is Frank's work: integration with SASpro's
+<b>Linear Fit</b> engine, SCNR as a post-step via SASpro's
+<code>remove_green</code> core, auto-rect
+<b>Background Neutralization</b> via SASpro's
+<code>backgroundneutral</code>, OSC synthesis, <b>mapped RGB view
+inverse-split import</b> for Perfect Palette Picker interop, the
+async <code>_NBNWorker</code> + sequence-gating preview, the
+scaling-bucket downsample strategy, dimension-mismatch handling, and
+the dynamic form that shows/hides HOO vs SHO-family controls.
+Image loading uses SASpro's
+<code>legacy.image_manager.load_image</code>; display stretch uses
+SASpro's <code>stretch_color_image</code>.
+</div>
+
+</body>
+</html>

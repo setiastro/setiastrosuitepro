@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b7e4d6; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#15291f; border-left:3px solid #4ebd7e; padding:10px 14px;
+         margin:12px 0; color:#cfe9d8; }
+  .pub b { color:#dcf6e4; }
+</style>
+</head>
+<body>
+
+<h1>Narrowband Channel Extractor (NBExtract)</h1>
+<p class="sub">The sister tool to SSSC, applied to a different problem.
+Where SSSC solves broadband colour calibration without published
+quantum-efficiency curves by using the stars in your own image as
+spectrophotometric references, NBExtract solves dual-band narrowband
+channel extraction the same way. Instead of relying on the
+filter&nbsp;&times;&nbsp;sensor QE product from the manufacturer's
+datasheet, it fits the empirical 3&times;2 mixing matrix directly
+from Gaia&nbsp;XP-spectrum stars in your frame, then inverts it
+per-pixel to separate the two emission lines into independent
+monochrome channels.</p>
+
+<div class="pub">
+<b>SASpro-exclusive &mdash; Franklin Marek's extraction method.</b>
+NBExtract is the dual-band narrowband counterpart to SSSC's
+spectrophotometric colour calibration. Both are built on the same
+core insight: for a well-defined linear problem (RGB&nbsp;&harr;&nbsp;emission
+lines, or RGB&nbsp;&harr;&nbsp;broadband colour), the stars in your own
+frame carry enough spectral information to fit the instrument's
+response <i>empirically</i>. Published filter and sensor QE curves
+are often promotional approximations and don't account for your
+specific optical train, filter angle-of-incidence shift, temperature,
+or dust &mdash; so NBExtract bypasses them entirely. The two tools
+share their star-fetching, SEP photometry, Gaia&nbsp;XP integration,
+and WCS infrastructure (NBExtract literally subclasses the SSSC
+dialog), differ only in what they're fitting on top of it.
+</div>
+
+<h2>1. What NBExtract does, and why it works</h2>
+<p>A dual-band narrowband filter (L-eXtreme, Antlia&nbsp;ALP-T, STC
+Duo, Optolong&nbsp;L-Ultimate, Askar&nbsp;ColorMagic, &hellip;) passes
+two emission-line windows: typically Ha (656.28&nbsp;nm) and OIII
+(500.70&nbsp;nm), sometimes SII (671.64&nbsp;nm) or H&beta;
+(486.13&nbsp;nm). Shot through a one-shot colour (OSC) sensor, the
+Ha signal lands mostly in the red channel, the OIII mostly in green
+&mdash; but <i>both</i> leak into all three channels, by amounts that
+depend on the sensor's spectral response at those specific
+wavelengths, your filter's actual passband centres, and the way the
+Bayer filters attenuate off-peak signal. The job of a channel
+extractor is to invert that leakage so you end up with two clean
+emission-line channels suitable for processing (and for recombination
+into SHO/HOO/false-colour palettes) just like separately filtered
+mono subs would be.</p>
+<p>The traditional way to do this uses published QE curves: pick a
+sensor model, pick a filter model, multiply their response curves at
+the two line wavelengths, build the mixing matrix from those numbers.
+This has three problems:</p>
+<ul>
+  <li><b>Published QE curves are often promotional approximations.</b>
+      Vendor datasheets sometimes smooth, round, or outright redraw
+      curves for presentation purposes. The real sensor response at
+      500.7&nbsp;nm vs 656.28&nbsp;nm can differ from the glossy PDF
+      by more than enough to matter for narrowband extraction.</li>
+  <li><b>Your optical train is yours.</b> A corrector, a reducer, a
+      coma corrector, UV/IR cut glass, dust on the sensor, the exact
+      angle-of-incidence through the filter, filter temperature on a
+      cold night &mdash; every one of these shifts the effective
+      filter&nbsp;&times;&nbsp;sensor product in ways no datasheet
+      can predict.</li>
+  <li><b>Narrowband filters shift with angle.</b> An f/4 cone through
+      a 3&nbsp;nm filter samples a different effective passband at
+      the edge vs the centre of the frame; a pretty curve from the
+      manufacturer doesn't know your focal ratio.</li>
+</ul>
+<p>NBExtract sidesteps all of that by fitting the mixing matrix from
+your actual data. For every star in the field that has a known Gaia
+XP low-resolution spectrum (~450 to 1050&nbsp;nm continuum sampling),
+NBExtract integrates that known spectrum over the two filter windows
+to predict how much &ldquo;line1 signal&rdquo; and &ldquo;line2
+signal&rdquo; the star should produce (even though the star isn't
+emitting those lines &mdash; its blackbody continuum passes through
+them), then compares to the actual R, G, B measured in the image. Do
+this for hundreds of stars with a wide range of spectral types and
+the mixing matrix falls out as a non-negative least squares fit.
+The system quantum efficiency uncertainty cancels out because
+you're fitting ratios against the same instrument that took the
+image.</p>
+
+<h2>2. When to use NBExtract</h2>
+<ul>
+  <li>You shot a dual-band or tri-band narrowband filter through
+      an OSC (one-shot colour) sensor and want to split it into
+      separate emission-line channels.</li>
+  <li>You want to build SHO, HOO, or custom narrowband palettes
+      from a single OSC capture without rolling out monochrome
+      filter wheels.</li>
+  <li>You're combining OSC narrowband with separately-captured mono
+      Ha or OIII and want the extracted channels on the same linear
+      intensity scale as the input.</li>
+</ul>
+<p><b>What NBExtract is not for.</b> Triband filters (Ha + OIII + SII
+in a single filter) will not be reliably separated into three lines
+by any three-equation two-unknown system; you still get two cleanly
+extracted channels but one is a blend. The dialog warns about this.
+Broadband (L-eNhance, UHC, CLS) filters are not supported &mdash;
+there is no well-defined pair of emission windows to extract.</p>
+
+<h2>3. Three-step workflow</h2>
+<p>The dialog is non-modal, so you can inspect the active document
+between steps, and it stays open after extraction so you can run on
+another sub.</p>
+<ol>
+  <li><b>Step 1 &mdash; Fetch Stars.</b> Inherited button at the top
+      of the dialog. Queries SIMBAD + Gaia for stars in the plate-solved
+      field and marks which ones have Gaia&nbsp;XP spectra available
+      for calibration. Shares its implementation with SSSC; see that
+      tool's documentation for the catalogue mechanics.</li>
+  <li><b>Step 2 &mdash; Calibrate Mixing Matrix.</b> SEP re-detects
+      stars at the configured threshold, matches them to the Gaia XP
+      catalogue, integrates each XP spectrum over the two filter
+      windows, fits the 3&times;2 mixing matrix by iterative
+      sigma-clipped NNLS (&sect;&nbsp;11.3), and auto-derives the Q
+      regularisation values from the result's condition number
+      (&sect;&nbsp;11.5).</li>
+  <li><b>Step 3 &mdash; Extract Channels.</b> Solves the per-pixel
+      inverse system (&sect;&nbsp;11.6), applies the Q-blended
+      regularisation (&sect;&nbsp;11.7), optionally matches each
+      output median to the corresponding source channel, and creates
+      two new monochrome documents (one per emission line).</li>
+</ol>
+
+<h2>4. Narrowband Filter Configuration</h2>
+
+<h3>Filter type presets</h3>
+<p>The combo at the top of the configuration group picks the
+dual-band preset:</p>
+<ul>
+  <li><b>Ha / OIII</b> &mdash; the common case (L-eXtreme,
+      Antlia&nbsp;ALP-T, STC&nbsp;Duo). Line1&nbsp;=&nbsp;Ha at
+      656.28&nbsp;nm, Line2&nbsp;=&nbsp;OIII at 500.70&nbsp;nm.</li>
+  <li><b>SII / OIII</b> &mdash; the tri-band variant where SII at
+      671.64&nbsp;nm replaces Ha in the red window.</li>
+  <li><b>SII / H&beta;</b> &mdash; uncommon but correctly handled.
+      Line2&nbsp;=&nbsp;H&beta; at 486.13&nbsp;nm.</li>
+  <li><b>Custom</b> &mdash; freely editable line names and centres
+      for anything that isn't on the preset list (NII at
+      658.3&nbsp;nm, HeI at 587.6&nbsp;nm, HeII at 468.6&nbsp;nm,
+      Na&nbsp;D at 589.0&nbsp;nm, &hellip;). The Line&nbsp;1 and
+      Line&nbsp;2 name text boxes become visible so your extracted
+      documents are named sensibly.</li>
+</ul>
+<p>Picking a named preset snaps the centre spinners to the
+canonical rest wavelengths and the bandwidth spinners to typical
+narrowband FWHM values (7&nbsp;nm for Ha/SII, 6.5&nbsp;nm for
+OIII/H&beta;); these are starting points and you should edit them
+to match your actual filter's spec sheet. Picking Custom leaves
+whatever you had set before.</p>
+
+<h3>Centre and FWHM spinners</h3>
+<p>Two rows, one per line. <b>Centre (nm)</b> is the emission line
+rest wavelength (set automatically for presets; freely edit for
+Custom). <b>Bandwidth (FWHM)</b> is the filter's full-width at
+half-maximum in nm &mdash; use the number from your filter's spec
+sheet, not the marketing &ldquo;7&nbsp;nm narrowband&rdquo; label.
+Internally these define a top-hat integration window of
+<code>centre&nbsp;&plusmn;&nbsp;FWHM/2</code> that each Gaia XP
+spectrum is integrated over to produce the per-star
+<code>S<sub>line1</sub></code> and <code>S<sub>line2</sub></code>
+predictions (&sect;&nbsp;11.2). Approximating the real filter
+transmission as top-hat is coarse but adequate: because the fit is
+empirical and ratiometric, systematic shape mismatches are absorbed
+into the fitted matrix coefficients.</p>
+
+<h3>Max calibration stars</h3>
+<p>Spinner, 6&ndash;2000, default 300. Caps the number of Gaia XP
+stars used to fit the mixing matrix. Candidates are sorted by SEP
+flux descending so the brightest 300 (which have the cleanest
+photometry and the best XP spectrum SNR) are selected. 300 is
+genuinely more than enough for a stable NNLS fit on most frames;
+increase it for very sparse fields where you don't have 300 bright
+XP stars to work with. The histogram above updates to show the
+limiting G magnitude the current cap would reach.</p>
+
+<h2>5. Action row and matrix readout</h2>
+<p>The two bold buttons &mdash; <b>Step 2: Calibrate Mixing
+Matrix</b> and <b>Step 3: Extract Channels</b> &mdash; sit beside
+the <b>Match output median to source</b> checkbox (&sect;&nbsp;8)
+and the Max cal stars spinner.</p>
+<p>After Step 2 the <b>Mixing matrix readout</b> below shows the
+calibration summary in human-readable form:</p>
+<div class="eq">Calibrated from 284 Gaia XP stars  (298 re-detected · 14 outliers clipped)
+Channel sensitivity  (Ha % | OIII %):
+  R :  87.3% Ha    4.1% OIII
+  G :  10.6% Ha   61.8% OIII
+  B :   2.1% Ha   34.1% OIII
+  Condition number : 8.42   Q₁ = 0.85  Q₂ = 0.72</div>
+<p>What to read here:</p>
+<ul>
+  <li><b>Star counts</b> &mdash; how many Gaia XP stars survived
+      SEP re-detection, then how many of those survived the fit's
+      iterative outlier rejection. 200+ stars after clipping is
+      healthy; dropping below 50 after clipping is a sign of a
+      problematic frame.</li>
+  <li><b>Per-channel sensitivity rows</b> &mdash; the percentage of
+      each channel's response that comes from each line. In a clean
+      Ha/OIII extraction R should be dominated by Ha (&gt;&nbsp;80%)
+      and G dominated by OIII (&gt;&nbsp;55%); B typically picks up
+      some OIII and little Ha. Big deviations from this pattern are
+      diagnostic of filter/sensor behaviour your QE curves wouldn't
+      have told you about.</li>
+  <li><b>Condition number</b> &mdash; separation quality, see
+      &sect;&nbsp;9.</li>
+  <li><b>Q&sub;1&sub;, Q&sub;2&sub;</b> &mdash; the automatically
+      derived regularisation blend factors, see &sect;&nbsp;7.</li>
+</ul>
+
+<h2>6. Diagnostic plots after Step 2</h2>
+<p>Step 2 draws a two-panel figure in the main area:</p>
+
+<h3>Left: Filter channel sensitivity bar chart</h3>
+<p>Two bars per RGB channel (red: line1, blue: line2), each
+<i>normalised to its own line's peak channel</i> so the plot shows
+the <i>shape</i> of each line's response across R/G/B rather than
+their absolute levels. The number above each bar is still the
+absolute percentage of that line's total sensitivity, so you can
+read both at once.</p>
+<p>What to look for:</p>
+<ul>
+  <li><b>Line1 (Ha/SII)</b> &mdash; one tall bar at R, two short
+      ones at G and B. This is what you want.</li>
+  <li><b>Line2 (OIII/H&beta;)</b> &mdash; usually a tall G and a
+      medium-tall B, with R near zero. OIII leaking into both G and
+      B is normal (and is where Q&sub;2&sub;'s row-similarity penalty
+      earns its keep, &sect;&nbsp;11.5.3).</li>
+  <li><b>Red flag</b> &mdash; if any line's three bars are close to
+      equal (all around 33%), the system has no meaningful preference
+      for a dominant channel and the extraction will be noise-limited.
+      Expect a bad condition number alongside.</li>
+</ul>
+
+<h3>Right: Fractional residual histogram</h3>
+<p>Distribution of
+<code>(measured&nbsp;&minus;&nbsp;predicted)&nbsp;/&nbsp;predicted</code>
+across every star and every channel after the matrix fit, with the
+display range set to &plusmn;3&sigma; around the median
+(uncapped so outliers appear as a natural tail rather than piling
+on the edge). The dashed vertical lines mark zero (white) and the
+median residual (red/tomato). The title shows the fit's standard
+deviation and the count of stars beyond &plusmn;3&sigma;.</p>
+<p>What to look for:</p>
+<ul>
+  <li><b>Tight symmetric peak near zero</b>, &sigma;&nbsp;&lt;&nbsp;0.15
+      &mdash; healthy fit, matrix well-constrained.</li>
+  <li><b>Offset median</b> (not at zero) &mdash; residual gradient
+      or background bias; apply ADBE before NBExtract for cleaner
+      results.</li>
+  <li><b>Wide distribution</b>, &sigma;&nbsp;&gt;&nbsp;0.3 &mdash;
+      low SNR photometry, high read noise, or a frame with lots of
+      star trails or saturated cores. Still usable but increase Max
+      cal stars.</li>
+  <li><b>Many outliers in a long tail</b> &mdash; sigma clipping
+      found and rejected them, so the fitted matrix is already
+      trimmed. But a very long tail suggests catalogue
+      cross-matching problems (double stars, bad astrometry).</li>
+</ul>
+
+<h2>7. Auto-Q and the Advanced panel</h2>
+<p>Pure NNLS extraction (Q&nbsp;=&nbsp;1) is mathematically ideal
+but noise-sensitive: when the mixing matrix is ill-conditioned, the
+inverse amplifies noise in the fainter line far more than the
+signal. The classical regularisation trick is to blend the NNLS
+result with a safer prior &mdash; in NBExtract's case, the raw
+dominant channel for each line. The blend factor Q controls where
+on the spectrum between &ldquo;perfect NNLS&rdquo; and &ldquo;just
+use R for Ha, G for OIII&rdquo; the output lands.</p>
+<p>NBExtract derives Q&sub;1&sub; and Q&sub;2&sub; <i>independently</i>
+after calibration based on how well-conditioned each line's
+direction is in the fitted matrix (&sect;&nbsp;11.5). Q&sub;1&sub;
+depends on global conditioning; Q&sub;2&sub; is additionally
+penalised when the two channels that are <i>not</i> dominant for
+line2 carry nearly identical line2 sensitivity &mdash; a common
+pathology that would otherwise amplify noise with no signal gain.
+The Advanced panel displays the auto-derived values with their
+explanation and lets you override:</p>
+<ul>
+  <li><b>Q&sub;1&sub; override</b> &mdash; blend between the raw
+      dominant channel for line1 (0.0) and the full NNLS extraction
+      (1.0). Lower it if the extracted line1 shows dark halos or
+      over-subtraction artefacts around bright stars.</li>
+  <li><b>Q&sub;2&sub; override</b> &mdash; same for line2. Lower it
+      if the extracted line2 shows dark holes in the nebula where
+      line1 is strong.</li>
+</ul>
+<p>Overriding Q doesn't require re-calibrating; the matrix fit
+stays, only the final blend changes. Press Step 3 again to see the
+new result.</p>
+
+<h2>8. Match output median to source</h2>
+<p>Checkbox in the action row, on by default. When enabled, each
+extracted channel is statistically stretched so its median matches
+the corresponding source channel's median &mdash; so the output
+documents sit at the same linear intensity level as the input and
+pair naturally with downstream Combine, Blend, or recombination
+steps. Off is for callers (like a stacker) that will do their own
+normalisation across many subs.</p>
+
+<h2>9. Condition number and three-tier fallback</h2>
+<p>Immediately after Step 2 finishes, NBExtract classifies the
+calibration by the matrix's condition number &kappa; (&sect;&nbsp;11.4)
+and either proceeds, flags a caution, or offers a fallback:</p>
+<table>
+  <tr><th>&kappa; range</th><th>Severity</th><th>Behaviour</th></tr>
+  <tr><td>&kappa;&nbsp;&lt;&nbsp;25</td><td>OK</td>
+      <td>Clean separation. Proceed to Step 3.</td></tr>
+  <tr><td>25&nbsp;&le;&nbsp;&kappa;&nbsp;&lt;&nbsp;100</td><td>Caution</td>
+      <td>Moderate channel overlap. Auto-Q is conservative; the
+      matrix label shows a warning glyph. Step 3 still enabled.</td></tr>
+  <tr><td>&kappa;&nbsp;&ge;&nbsp;100</td><td>Severe</td>
+      <td>Noise would be amplified by roughly &kappa;&sup2;. Dialog
+      offers the stellar-flux color-mixing fallback (&sect;&nbsp;11.9).</td></tr>
+</table>
+<p>The fallback uses the same star-based 3&times;3 colour-mixing
+approach that white-balance uses, then picks the dominant channel
+for each line by wavelength (&lt;&nbsp;520&nbsp;nm&nbsp;&rarr;&nbsp;B,
+&gt;&nbsp;600&nbsp;nm&nbsp;&rarr;&nbsp;R, else G). Less precise
+than NNLS extraction but far more noise-robust when the matrix is
+singular (e.g. a synthetic HOO image where G&nbsp;=&nbsp;B exactly,
+or data from a sensor where G and B pixels respond identically at
+the OIII wavelength).</p>
+
+<h2>10. Fun applications</h2>
+<ul>
+  <li><b>SHO from OSC in two steps.</b> Capture SII/OIII or Ha/OIII
+      duo subs, extract both lines, recombine with your Ha from
+      another session.</li>
+  <li><b>HOO without the compromise.</b> OSC Ha+OIII filters are
+      usually processed by picking the red channel for Ha and
+      averaging G+B for OIII; NBExtract gives a mathematically
+      cleaner separation that doesn't throw away cross-channel
+      information.</li>
+  <li><b>Isolating NII from Ha-dominated regions.</b> With a Custom
+      preset at 658.3&nbsp;nm and a narrow bandwidth, NBExtract can
+      pull apart NII from Ha in supernova remnant data (whether the
+      separation is <i>reliable</i> depends on the condition number
+      &mdash; narrow spacing means a tough matrix).</li>
+  <li><b>Diagnosing a filter.</b> The sensitivity bar chart tells
+      you exactly what fraction of each colour channel in your
+      specific setup actually comes from each emission line. If the
+      numbers are far off the vendor's QE-curve prediction, that's
+      real information about your optical train.</li>
+  <li><b>Batch processing.</b> The <code>calibrate_only</code>
+      headless API returns raw per-star photometry records that a
+      stacker can pool across many subs for a joint fit &mdash; one
+      shared mixing matrix calibrated across the full session,
+      applied to every sub.</li>
+</ul>
+
+<h2>11. Technical details</h2>
+<p class="tech-lead">All processing on float32 in [0, 1]. SEP for
+star re-detection, SciPy NNLS for the matrix fit, Gaia XP for
+spectra. NaN-safe throughout &mdash; warp borders (uniformly zero
+across RGB) and non-finite pixels are masked from both the
+background estimation and the per-pixel inversion.</p>
+
+<h3>11.1 The 3&times;2 mixing system</h3>
+<p>For a star of unknown spectral type observed through a dual-band
+filter, the three measured channel intensities should relate to the
+star's integrated flux in each emission-line window by a linear
+mixing:</p>
+<div class="matheq-hero">\mathbf{b}_{\mathrm{meas}} \;=\; A\,\mathbf{s} \;+\; \mathbf{n}</div>
+<p>where <code>b<sub>meas</sub></code> is the measured
+<code>(R,&nbsp;G,&nbsp;B)</code> triplet, <code>s</code> is the
+<code>(S<sub>1</sub>,&nbsp;S<sub>2</sub>)</code> integrated-flux
+pair for the two filter windows, <code>A</code> is the 3&times;2
+mixing matrix (the per-channel sensitivity to each line), and
+<code>n</code> is photometric noise. Three equations in two unknowns
+&mdash; overdetermined, well-conditioned when the filter actually
+<i>separates</i> the two lines, and solvable per-pixel by the
+Moore-Penrose pseudoinverse once <code>A</code> is known.</p>
+
+<h3>11.2 XP spectrum integration</h3>
+<p>For each calibration star, NBExtract loads its Gaia XP
+low-resolution spectrum (continuum flux density
+<code>f(&lambda;)</code> sampled from ~336&nbsp;nm to
+~1020&nbsp;nm), normalises it to unit total flux, and integrates
+over the two top-hat filter windows:</p>
+<div class="matheq-hero">S_i \;=\; \int_{\lambda_i - \mathrm{BW}_i/2}^{\lambda_i + \mathrm{BW}_i/2} f(\lambda)\,d\lambda\,,\quad i = 1, 2</div>
+<p>The integration is a trapezoid rule over the spectrum's
+native sampling, with linear interpolation at the window
+boundaries if they don't fall on sample points. The star is skipped
+if either integrated flux comes back zero or negative (window outside
+the XP coverage, degenerate spectrum, etc.).</p>
+
+<h3>11.3 Iterative sigma-clipped NNLS fit</h3>
+<p>Each of the three measurement channels is fitted independently by
+non-negative least squares against the per-star
+<code>(S<sub>1</sub>,&nbsp;S<sub>2</sub>)</code> design matrix:</p>
+<div class="matheq">\min_{a_c, b_c \,\geq\, 0}\;\sum_{j=1}^{N} \left(y_{c,j} - a_c S_{1,j} - b_c S_{2,j}\right)^2</div>
+<p>Design matrix columns are median-normalised before the fit so
+NNLS isn't fighting scale differences between
+<code>S<sub>1</sub></code> and <code>S<sub>2</sub></code>; the
+coefficients are rescaled back after. The three per-channel
+coefficient pairs become the rows of the 3&times;2 matrix
+<code>A</code>:</p>
+<div class="matheq-hero">\hat{A} \;=\; \arg\min_{A \,\geq\, 0} \sum_{j} \|\mathbf{y}_j - A\,\mathbf{s}_j\|^{2}</div>
+<p>After each fit, per-star mean fractional residuals are computed
+over the three channels:</p>
+<div class="matheq">r_j \;=\; \frac{1}{3}\sum_{c \in \{R,G,B\}} \frac{|y_{c,j} - \hat y_{c,j}|}{\hat y_{c,j}}</div>
+<p>and sigma-clipped at the 3&sigma; MAD level:</p>
+<div class="matheq">\mathrm{MAD} \;=\; 1.4826 \cdot \mathrm{median}\!\left(|r_j - \tilde r|\right)\,,\qquad \mathrm{keep}_j \;=\; r_j \;<\; \tilde r \;+\; 3 \cdot \mathrm{MAD}</div>
+<p>The fit is repeated with the surviving stars for up to 3
+iterations or until no star is clipped. The clip is held off if
+fewer than 6 stars would remain (NNLS becomes under-constrained
+below that count).</p>
+
+<h3>11.4 Condition number as a calibration quality metric</h3>
+<p>For the fitted 3&times;2 matrix, the condition number</p>
+<div class="matheq-hero">\kappa(A) \;=\; \frac{\sigma_1}{\sigma_2}</div>
+<p>(ratio of the largest to smallest singular value) governs how
+much noise the inversion will amplify. A condition number of 10
+means the inversion amplifies RGB measurement noise by up to
+~100&times; in the extracted lines; a condition number of 100 means
+~10&thinsp;000&times;. The three severity bands in &sect;&nbsp;9
+are chosen to match this scaling &mdash; &kappa;&nbsp;&lt;&nbsp;25
+means noise amplification capped at &lt;&nbsp;625&times;, which is
+usually swamped by nebular signal; &kappa;&nbsp;&ge;&nbsp;100 means
+noise would dominate real signal in the fainter line.</p>
+
+<h3>11.5 Auto-Q derivation</h3>
+
+<h4>11.5.1 Global baseline</h4>
+<p>The baseline Q value comes directly from the condition number
+with a logistic falloff:</p>
+<div class="matheq-hero">Q_{\mathrm{global}} \;=\; \mathrm{clip}\!\left(\frac{1}{1 + 0.1\,\kappa},\; 0.2,\; 0.9\right)</div>
+<p>which gives Q = 0.91 clipped to 0.9 at &kappa; = 1, Q = 0.5 at
+&kappa; = 10, Q = 0.33 at &kappa; = 20, and clipped to the floor
+0.2 for &kappa; &gt; 40. The clip bounds are there so the user
+always has <i>some</i> NNLS correction and never gets locked into
+100% raw-channel output.</p>
+
+<h4>11.5.2 Per-channel SVD weighting</h4>
+<p>Line1 (the more cleanly resolved line in a typical dual-band
+system &mdash; Ha in red is well-separated from OIII in green/blue)
+takes <code>Q<sub>1</sub>&nbsp;=&nbsp;Q<sub>global</sub></code>
+directly. Line2 is penalised by the second singular value's ratio
+to the first:</p>
+<div class="matheq-hero">Q_2^{\mathrm{svd}} \;=\; Q_{\mathrm{global}} \,\cdot\, \frac{\sigma_2}{\sigma_1}</div>
+<p>This captures that the second principal direction of the fitted
+matrix is less well-constrained; when
+<code>&sigma;<sub>2</sub>&nbsp;/&nbsp;&sigma;<sub>1</sub></code> is
+small, the inversion along the line2 direction is being extrapolated
+with little support.</p>
+
+<h4>11.5.3 Row-similarity penalty</h4>
+<p>The strongest noise-amplification pathology for the second line
+is <i>not</i> captured by the condition number alone: it occurs when
+the two channels that are <i>not</i> dominant for line2 carry nearly
+identical line2 sensitivity. In that case the inversion can't tell
+whether a bright line2 signal came from one or the other, and ends
+up extrapolating noise instead of measuring signal.</p>
+<p>NBExtract measures this directly by computing the row similarity
+in the non-dominant line2 column:</p>
+<div class="matheq-hero">\mathrm{sim} \;=\; 1 \;-\; \frac{|A_{i_1,2} - A_{i_2,2}|}{|A_{i_1,2}| + |A_{i_2,2}|}</div>
+<p>where <code>i<sub>1</sub></code> and <code>i<sub>2</sub></code>
+are the two non-dominant rows for line2. Similarity 0 means the
+two rows carry nothing in common; similarity 1 means they are
+identical. The final Q&sub;2&sub; applies a squared penalty that
+mirrors noise amplification physics (gain scales as
+&kappa;&sup2;):</p>
+<div class="matheq-hero">Q_2 \;=\; \mathrm{clip}\!\left(Q_2^{\mathrm{svd}} \,\cdot\, (1 \;-\; 0.8\,\mathrm{sim}^2),\; 0.2,\; 0.9\right)</div>
+<p>So sim&nbsp;=&nbsp;0.7 cuts Q&sub;2&sub; to 61% of its SVD-based
+value; sim&nbsp;=&nbsp;0.9 cuts it to 35%; sim&nbsp;=&nbsp;1.0
+drives it to the 0.2 floor. This is the single most important part
+of the auto-Q logic for the common OIII-in-dual-band case where G
+and B channels often respond almost identically to the 500.7&nbsp;nm
+window.</p>
+
+<h3>11.6 Per-pixel inversion</h3>
+<p>With <code>A</code> fitted and reduced to its Moore-Penrose
+pseudoinverse <code>A<sup>+</sup></code>, each pixel's
+<code>(R,&nbsp;G,&nbsp;B)</code> triplet gets inverted to its
+line1 and line2 contribution in a single vectorised step:</p>
+<div class="matheq-hero">\mathbf{L}(x,y) \;=\; A^{+} \;\mathbf{p}(x,y)\,,\qquad A^{+} = (A^{\top}A)^{-1}A^{\top}</div>
+<p>followed by non-negativity clipping to prevent negative-flux
+pixels from the noise-driven corners of the inversion:</p>
+<div class="matheq">L_i \;=\; \max(0,\; L_i)</div>
+<p>Pixels where any channel is non-finite come out NaN in both
+output lines (so downstream integrator NaN handling still works);
+finite-zero warp borders stay zero because
+<code>A<sup>+</sup>&nbsp;@&nbsp;[0,&nbsp;0,&nbsp;0]<sup>T</sup>&nbsp;=&nbsp;[0,&nbsp;0]<sup>T</sup></code>.</p>
+
+<h3>11.7 Q-blended regularisation</h3>
+<p>Dominant-channel priors are built from the fitted matrix itself
+rather than hardcoded:</p>
+<div class="matheq-hero">c_i \;=\; \arg\max_{c \in \{R,G,B\}} A_{c,i}</div>
+<p>If the top two channels for a line are within 5 percentage points
+of each other in their fractional sensitivity, their raw channels
+are averaged for the prior rather than one being arbitrarily
+chosen &mdash; they are genuinely tied. Otherwise the single
+dominant channel is used.</p>
+<p>The final extracted line is a linear blend between the NNLS
+inversion and the raw prior:</p>
+<div class="matheq-hero">\mathrm{line}_i \;=\; Q_i \,\cdot\, L_i^{\mathrm{NNLS}} \;+\; (1 - Q_i) \,\cdot\, \mathrm{prior}_i</div>
+<p>with Q&sub;i&sub; set to the auto-derived values from
+&sect;&nbsp;11.5 unless overridden in the Advanced panel. Both
+<code>L<sup>NNLS</sup></code> and prior are median-matched to the
+corresponding source channel before the blend when
+&ldquo;Match output median to source&rdquo; is on, so Q operates on
+consistent intensity scales.</p>
+
+<h3>11.8 Noise amplification</h3>
+<p>The pseudoinverse maps measurement noise to output noise with
+gain bounded above by:</p>
+<div class="matheq">\mathrm{noise\;gain} \;\sim\; \kappa^{\,2}</div>
+<p>which is why the Q-blend matters so much as &kappa; climbs: at
+&kappa;&nbsp;=&nbsp;30, pure NNLS extraction amplifies noise ~900&times;
+while the raw-channel prior amplifies it 1&times;. A Q value of 0.4
+means the output is dominated by the prior (noise gain ~1 from
+prior + ~145 from scaled NNLS), vs ~900 for Q = 1. The auto-Q logic
+places Q near 0.33 at &kappa;&nbsp;=&nbsp;20 and keeps falling,
+which is why extraction remains stable through the Caution band.</p>
+
+<h3>11.9 Stellar-flux colour-mixing fallback</h3>
+<p>When the NNLS matrix fit fails outright (too few surviving stars,
+genuinely singular matrix from synthetic HOO data where
+G&nbsp;=&nbsp;B exactly), or the user accepts the Severe-band
+offer, NBExtract falls back to the stellar-flux colour-mixing
+approach shared with the white-balance tool: fit a 3&times;3 colour
+transform from the same star photometry, apply it to the image,
+then pick the dominant channel for each line by wavelength
+(&lt;&nbsp;520&nbsp;nm&nbsp;&rarr;&nbsp;B,
+&gt;&nbsp;600&nbsp;nm&nbsp;&rarr;&nbsp;R, else G). The result is
+cruder than NNLS extraction but far more noise-robust under
+singular conditions and still produces two usable, correctly-named
+output documents.</p>
+
+<h3>11.10 Headless API and stacker integration</h3>
+<p>Three module-level entry points cover scripted use:</p>
+<ul>
+  <li><code>open_nbextract(doc_manager, data_path)</code> &mdash;
+      the normal interactive dialog.</li>
+  <li><code>run_nbextract_via_preset(app, doc, preset)</code>
+      &mdash; builds a hidden dialog, runs Fetch&nbsp;&rarr;&nbsp;Calibrate&nbsp;&rarr;&nbsp;Extract
+      with no modals, returns the two output documents. Dispatched
+      by the command registry.</li>
+  <li><code>calibrate_matrix_headless(doc_manager, data_path,
+      doc=..., preset=...)</code> &mdash; just the Fetch&nbsp;&rarr;&nbsp;Calibrate
+      half. Returns <code>(A, star_records, cond)</code>. The
+      <code>star_records</code> list carries raw per-star photometry
+      ready to be pooled across many subs for a joint fit.</li>
+</ul>
+<p>The stacker use case is to call <code>calibrate_matrix_headless</code>
+on each sub, pool all star records, run a single joint fit, then
+apply the one matrix to every sub via a lightweight pure-numpy call
+to <code>extract_channels_regularized</code>. This gives one
+consistent calibration across the full session rather than per-sub
+drift.</p>
+
+<div class="credit">
+<b>Credits.</b> <b>Gaia XP spectra</b> are from ESA's Gaia mission
+(DR3+); SASpro accesses them via a local bulk-library of
+pre-cached spectra. <b>SEP</b> (Source Extractor for Python,
+Barbary 2016) is used for star re-detection and aperture
+photometry. <b>SciPy</b> provides the NNLS solver
+(<code>scipy.optimize.nnls</code>). <b>SIMBAD</b> (CDS, Strasbourg)
+and the <b>Pickles stellar spectral library</b> are available as
+alternate reference paths inherited from SSSC's infrastructure.
+The <b>NBExtract algorithm itself</b> &mdash; the empirical
+3&times;2 mixing matrix fit from Gaia XP stars, the
+sigma-clipped iterative NNLS with design-matrix normalisation,
+the condition-number-based auto-Q with its SVD and row-similarity
+weightings, the matrix-driven dominant-channel detection with
+5-percentage-point tie-breaking, the Q-blended regularisation,
+the three-tier fallback with wavelength-driven channel assignment,
+and the stacker-integration <code>calibrate_only</code> API &mdash;
+is SASpro-exclusive, by Franklin Marek. It is the dual-band
+narrowband counterpart to SSSC and shares its spectrophotometric
+philosophy.
+</div>
+
+</body>
+</html>

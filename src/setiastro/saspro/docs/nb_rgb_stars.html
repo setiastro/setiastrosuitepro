@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>NB&rarr;RGB Stars</h1>
+<p class="sub">Synthesize believable broadband-looking star colours from
+narrowband data (Ha&nbsp;/&nbsp;OIII&nbsp;/&nbsp;SII mono, dual-band
+OSC, or any combination). Dedicated for the case where you want to
+spend <i>every</i> minute of a clear night collecting
+narrowband signal and nothing on separate RGB star frames, and still
+end up with a composite whose stars don't look like coloured
+dots.</p>
+
+<p>The use case is specific. If you image under a mediocre sky
+(bortle 7, hazy, half the year humid), the clear nights that produce
+real signal are too valuable to spend on broadband RGB star frames.
+NB&rarr;RGB Stars extracts an approximate but visually credible star
+colour from the narrowband data you already have, by exploiting the
+fact that star continua spill into every narrowband filter at
+different relative weights depending on their spectral type.</p>
+
+<h2>1. Workflow</h2>
+<p>This tool only makes sense inside a specific pipeline:</p>
+<div class="workflow">
+<b>1.</b> Image narrowband (Ha, OIII, and optionally SII, or a dual-band OSC)<br>
+<b>2.</b> Combine your palette (SHO, Foraxx, Dynamic Inverse, HOO&hellip;)
+         using <b>Perfect Palette Picker</b><br>
+<b>3.</b> Run <b>Remove Stars</b> on the palette image &mdash; keep both
+         the <i>starless</i> result and the <i>star-only</i> image<br>
+<b>4.</b> Also run Remove Stars on each raw NB channel; keep the
+         star-only versions of Ha, OIII, (and SII if you have it)<br>
+<b>5.</b> Open <b>NB&rarr;RGB Stars</b> &mdash; load those star-only
+         frames and build a synthetic RGB star image<br>
+<b>6.</b> Composite with <b>Add Stars</b>: starless palette + RGB-looking
+         stars from this tool &rarr; final image
+</div>
+<p>The point of step 5 is to decouple hue from the palette: your
+starless nebula can be as SHO-weird as you like, and your stars will
+still read as roughly natural-coloured.</p>
+
+<h2>2. Loading inputs</h2>
+<p>Four load slots on the left column, each with a <b>From View</b>
+or <b>From File</b> picker:</p>
+<ul>
+  <li><b>Load Ha&hellip;</b> &mdash; mono Ha star frame (required
+      for NB-only mode).</li>
+  <li><b>Load OIII&hellip;</b> &mdash; mono OIII star frame
+      (required for NB-only mode).</li>
+  <li><b>Load SII (optional)&hellip;</b> &mdash; mono SII star frame.
+      If absent, SII is treated as a clone of Ha for the red channel.</li>
+  <li><b>Load OSC stars (optional)&hellip;</b> &mdash; a 3-channel
+      star-only image from a dual-band OSC (L-eXtreme, L-eNhance, NBZ,
+      ALP-T, etc.). Can be used on its own, or alongside the mono
+      channels.</li>
+</ul>
+<p>Minimum: either an OSC stars frame, or Ha&nbsp;+&nbsp;OIII mono.
+When both are provided, OSC drives the base R / G / B and the mono
+channels are blended in. Each loaded source shows a green confirmation
+line underneath its load button.</p>
+
+<p class="tip"><b>Make these star-only images.</b> Feed this tool
+images produced by <b>Remove Stars</b> on your raw channels (not the
+full nebular channels). The combine math is tuned for star signal,
+which is relatively broadband-leaky; nebular signal is nearly pure
+emission-line and will give odd colours if treated the same way.</p>
+
+<h2>3. The Ha:OIII ratio slider</h2>
+<p>Range 0.00 to 1.00 (default 0.30). This controls how much Ha vs.
+OIII contributes to the <i>green</i> channel of the synthesized
+stars. The red channel is always a 50&nbsp;/&nbsp;50 Ha&nbsp;/&nbsp;SII
+blend, and the blue channel is always OIII; what the slider governs
+is the warm-to-cool tilt of the midtone response.</p>
+<ul>
+  <li><b>Lower values (0.0&ndash;0.2)</b> &mdash; cooler stars, OIII
+      dominates green, bluer overall look. Useful when your OIII
+      has strong signal and you want blue and white stars to read
+      distinctly.</li>
+  <li><b>Default (0.30)</b> &mdash; a middle ground that most data
+      lands cleanly on.</li>
+  <li><b>Higher values (0.5&ndash;1.0)</b> &mdash; warmer stars,
+      Ha dominates green, pushes toward yellow-white. Good for
+      Ha-heavy datasets with weak OIII.</li>
+</ul>
+
+<h2>4. Star stretch</h2>
+<p>The <b>Enable star stretch</b> checkbox toggles a bounded
+non-linear boost (midtone transfer function). The <b>Stretch
+factor</b> slider (0.00 to 8.00, default 5.00) controls the strength.</p>
+<ul>
+  <li><b>Factor 0</b> &mdash; identity (no change).</li>
+  <li><b>Factor 1&ndash;3</b> &mdash; gentle lift, keeps bright
+      cores from clipping.</li>
+  <li><b>Factor 5 (default)</b> &mdash; standard star-brightening
+      curve; most data lands here.</li>
+  <li><b>Factor 6&ndash;8</b> &mdash; aggressive; useful for very dim
+      star fields where you want tiny stars to show up at all.</li>
+</ul>
+<p>Because the curve is monotonic and bounded in <code>[0,&nbsp;1]</code>,
+it never clips or inverts; it just reshapes the midtones. See
+&sect;&nbsp;11.3.</p>
+
+<h2>5. Saturation</h2>
+<p>The <b>Saturation</b> slider (0.00&times; to 3.00&times;, default
+1.00&times;) applies a chromatic scaling against the luminance axis
+after the combine and SCNR passes. At 1.00&times; it's a no-op; at
+0.00&times; stars become grayscale; at 2.0&times;&ndash;3.0&times;
+colours get vivid for showing off hue variety across spectral types.
+Push this harder than you would for broadband data &mdash; synthetic
+NB stars are naturally a little muted.</p>
+
+<h2>6. Preview Combine</h2>
+<p><b>Preview Combine</b> runs the full pipeline (combine &rarr;
+star stretch &rarr; SCNR &rarr; saturation) and renders the result in
+the right-side preview. A spinner shows while work runs; action
+buttons are disabled during the pass to prevent re-entry on big
+images. The pipeline is lightweight &mdash; all four stages are
+NumPy or Numba, so a 32-megapixel star field previews in seconds, not
+minutes.</p>
+
+<h2>7. Reset Adjustments vs Clear Inputs</h2>
+<ul>
+  <li><b>Reset Adjustments</b> &mdash; returns the four knobs
+      (ratio, star-stretch toggle, stretch factor, saturation) to
+      defaults. Loaded images are kept. If a preview already exists,
+      it re-combines automatically with the reset values; otherwise
+      it just reports and leaves the preview alone.</li>
+  <li><b>Clear Inputs</b> &mdash; wipes all four loaded channels,
+      clears the preview and the final buffer. Use when switching
+      targets.</li>
+</ul>
+
+<h2>8. Push Final to New View</h2>
+<p>Opens the combined result as a new SASpro document titled
+&ldquo;NB&rarr;RGB Stars&rdquo;. From there, feed it into <b>Add
+Stars</b> alongside your starless palette image to produce the final
+composite. The pushed image is the exact pixels shown in the preview
+&mdash; adjust the sliders until the preview looks right, then push.</p>
+
+<h2>9. Preview interaction</h2>
+<ul>
+  <li><b>Zoom In</b> / <b>Zoom Out</b> / <b>Fit to Preview</b>
+      toolbuttons at the top of the preview.</li>
+  <li>Mouse wheel (with or without Ctrl) zooms cursor-anchored.
+      Range 0.05&times; to 20&times;.</li>
+  <li>Left-click-drag anywhere in the preview to pan.</li>
+</ul>
+
+<h2>10. Persistence</h2>
+<p>Saved to QSettings under <code>nbtorgb_stars/</code>:</p>
+<ul>
+  <li>Window geometry.</li>
+  <li>Ha:OIII ratio, star-stretch toggle, stretch factor,
+      saturation.</li>
+</ul>
+<p>Loaded images are not persisted; reopening the tool starts with
+empty slots so you can't accidentally combine stale data.</p>
+
+<h2>11. Technical details</h2>
+<p class="tech-lead">All inputs normalised to float32 in [0,&nbsp;1].
+Sizes must match across channels &mdash; if they differ the combine
+raises an error, which is why you should feed in channels already
+registered and star-extracted from the same project. The combine
+runs in NumPy; SCNR and saturation use Numba-compiled kernels from
+SASpro's <code>legacy.numba_utils</code>.</p>
+
+<h3>11.1 Why synthesis works at all</h3>
+<p>Narrowband filters are not infinitely narrow. A typical 3&nbsp;nm
+Ha filter still passes a few nanometres of continuum, and stellar
+spectra (unlike nebular emission) are dominated by continuum. So a
+star's measured brightness through each NB filter is roughly
+proportional to its spectral energy distribution integrated over
+that filter's passband, which carries real colour information:
+hot blue O/B stars have more OIII-band continuum, cool red K/M
+stars have more Ha-band continuum, and the ratio differs across the
+Hertzsprung&ndash;Russell diagram. The combine formulas below exploit
+that: they build an R / G / B triplet whose relative weights
+mirror what a Johnson B / V / R photometric system would produce,
+within the limits of the filter bandwidths.</p>
+
+<h3>11.2 Combine formulas</h3>
+<p>With <code>r</code> &equiv; the Ha:OIII ratio slider value.</p>
+
+<p><b>NB-only mode</b> (Ha + OIII required; SII optional):</p>
+<div class="matheq-hero">R \;=\; \frac{\mathrm{Ha} + \mathrm{SII}}{2}</div>
+<div class="matheq-hero">G \;=\; r \cdot \mathrm{Ha} \;+\; (1 - r) \cdot \mathrm{OIII}</div>
+<div class="matheq">B \;=\; \mathrm{OIII}</div>
+<p>If SII is not loaded, the red formula collapses to
+<code>R&nbsp;=&nbsp;Ha</code>.</p>
+
+<p><b>OSC-driven mode</b> (OSC loaded, with optional mono blending):</p>
+<div class="matheq-hero">R \;=\; 0.5 \cdot \mathrm{OSC}[R] \;+\; 0.5 \cdot \mathrm{SII}</div>
+<div class="matheq-hero">G \;=\; r \cdot \mathrm{Ha} \;+\; (1 - r) \cdot \mathrm{OSC}[G]</div>
+<div class="matheq">B \;=\; \mathrm{OIII}</div>
+<p>In OSC mode the fallbacks are: if SII is missing,
+<code>SII&nbsp;:=&nbsp;OSC[R]</code>; if Ha is missing,
+<code>Ha&nbsp;:=&nbsp;OSC[R]</code>; if OIII is missing,
+<code>OIII&nbsp;:=&nbsp;OSC[B]</code>. If a mono OSC frame was
+loaded (single-channel), it is treated as if the three channels all
+hold the same mono data; the combine still runs but the result is
+effectively monochromatic until another channel is added.</p>
+
+<h3>11.3 Star stretch (midtone transfer function)</h3>
+<p>When Star Stretch is enabled, each RGB plane is passed through
+the classical bounded rational MTF:</p>
+<div class="matheq-hero">s(x) \;=\; \frac{t \cdot x}{(t - 1)\,x \;+\; 1}, \quad\mathrm{where}\quad t = 3^{k}</div>
+<p>and <code>k</code> is the Stretch factor slider value in [0,&nbsp;8].
+Properties:</p>
+<ul>
+  <li><code>s(0)&nbsp;=&nbsp;0</code>, <code>s(1)&nbsp;=&nbsp;1</code> &mdash;
+      bounded, no clipping ever.</li>
+  <li>Monotonic increasing &mdash; no hue inversions.</li>
+  <li>At <code>k&nbsp;=&nbsp;0</code>, <code>t&nbsp;=&nbsp;1</code> and
+      <code>s(x)&nbsp;=&nbsp;x</code> (identity).</li>
+  <li>As <code>k</code> grows, the curve pulls dim pixels upward
+      faster than bright pixels &mdash; so dim stars brighten
+      proportionally more than already-bright ones, which is exactly
+      what you want for star fields.</li>
+</ul>
+<p>The exponential base of 3 is chosen so that <code>k&nbsp;=&nbsp;5</code>
+(the default) gives a visibly strong but not blown-out boost on
+typical narrowband star data (<code>t&nbsp;=&nbsp;243</code>, which
+maps <code>x&nbsp;=&nbsp;0.01</code> to roughly 0.71).</p>
+
+<h3>11.4 SCNR (green noise removal)</h3>
+<p>After combine (and star stretch if enabled), SCNR is applied via
+<code>applySCNR_numba</code>. The standard SCNR formulation suppresses
+excess green by clamping the green channel to the average of red
+and blue:</p>
+<div class="matheq-hero">G' \;=\; \min\!\left(G,\; \frac{R + B}{2}\right)</div>
+<p>This is important for NB&rarr;RGB synthesis because the green
+channel is a weighted average of Ha and OIII &mdash; both strong
+emission lines &mdash; so without SCNR synthetic stars often come out
+with an unnatural green cast. SCNR removes it without touching the
+luminance of real colour information in R or B.</p>
+
+<h3>11.5 Saturation</h3>
+<p><code>adjust_saturation_numba</code> implements the standard
+luminance-preserving saturation scaling:</p>
+<div class="matheq-hero">\mathrm{RGB}' \;=\; L + s \cdot (\mathrm{RGB} - L)</div>
+<p>where <code>s</code> is the slider factor and <code>L</code> is
+the per-pixel luminance (Rec. 709 weights
+<code>0.2126&nbsp;R&nbsp;+&nbsp;0.7152&nbsp;G&nbsp;+&nbsp;0.0722&nbsp;B</code>).
+Values below 1 desaturate toward grey; values above 1 push colour
+away from the luminance axis, bounded by the final clip to
+[0,&nbsp;1].</p>
+
+<h3>11.6 Pipeline order</h3>
+<p>The ordering matters for the final look:</p>
+<ol>
+  <li>Combine Ha / OIII / SII / OSC into R, G, B per the formulas
+      in &sect;&nbsp;11.2.</li>
+  <li>Clip to [0,&nbsp;1].</li>
+  <li>If Star Stretch is enabled, apply the MTF of &sect;&nbsp;11.3
+      to each plane independently.</li>
+  <li>Clip again.</li>
+  <li>Apply SCNR (&sect;&nbsp;11.4).</li>
+  <li>Apply saturation (&sect;&nbsp;11.5) if the slider isn't at
+      1.00&times;.</li>
+  <li>Final clip, cast back to float32.</li>
+</ol>
+<p>Star stretch happens <i>before</i> SCNR so that any green cast
+amplified by the stretch is then removed; and saturation happens
+<i>last</i> so it operates on the final luminance of the composite,
+not the raw combine.</p>
+
+<h3>11.7 Threading and spinner</h3>
+<p>The combine runs on the GUI thread but is fast enough that it
+doesn't need background threading for typical star fields. A spinner
+(resource-loaded QMovie) is shown and action buttons are disabled
+during the pass so you can't fire two combines on top of each other
+and get a corrupted preview. If future performance work moves the
+pipeline into a QThread, the spinner infrastructure is already there
+to support it.</p>
+
+<div class="credit">
+<b>Credits.</b> The specific NB&rarr;RGB combine formulas and the
+pipeline ordering (combine &rarr; star-stretch &rarr; SCNR &rarr;
+saturation) are Frank's recipe for SASpro; they're tuned on
+imaging data from Louisiana skies where the clear-night budget makes
+synthesising stars from narrowband data the pragmatic choice.
+<b>SCNR</b> (Subtractive Chromatic Noise Reduction) is the standard
+astroimaging convention for suppressing green bias; the specific
+<code>min(G, (R+B)/2)</code> variant is implemented in SASpro's
+<code>applySCNR_numba</code>. The <b>MTF rational stretch</b> is the
+classical bounded tone curve used across many astroimaging packages;
+the <code>t&nbsp;=&nbsp;3<sup>k</sup></code> parameterisation is
+SASpro's choice. Saturation uses the Rec. 709 luminance basis and is
+implemented in <code>adjust_saturation_numba</code>. Image loading
+uses SASpro's <code>legacy.image_manager.load_image</code>.
+OSC filter examples (Optolong L-eXtreme / L-eNhance, IDAS NBZ,
+Antlia ALP-T) are third-party products referenced for context.
+</div>
+
+</body>
+</html>

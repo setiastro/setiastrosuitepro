@@ -15,6 +15,7 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 from setiastro.saspro.shortcuts import PresetDragHandle
 from setiastro.saspro.resources import starstretch_path
+from setiastro.saspro.help_support import make_help_button
 
 # --- use your Numba kernels; fall back to pure numpy SCNR if needed ----
 try:
@@ -232,6 +233,8 @@ class StarStretchDialog(QDialog):
         )
         drag_row.addWidget(self.preset_drag_handle)
         drag_row.addStretch(1)
+        self.btn_help = make_help_button("star_stretch", self)
+        drag_row.addWidget(self.btn_help)
         left.addLayout(drag_row)
 
         main.addLayout(left, 0)

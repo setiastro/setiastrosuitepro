@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QIcon
 
+
 # --------------------------------------------------------------------------------------
 # Preset editor (used by Shortcuts “Edit Preset…”). Import into shortcuts.py like:
 #   from setiastro.saspro.linear_fit import _LinearFitPresetDialog
@@ -307,6 +308,7 @@ class LinearFitDialog(QDialog):
         # Deferred import: shortcuts.py imports this module at load time
         # (_LinearFitPresetDialog), so a top-level import here would cycle.
         from setiastro.saspro.shortcuts import PresetDragHandle
+        from setiastro.saspro.help_support import make_help_button
         try:
             from setiastro.saspro.resources import linearfit_path
             _lf_icon = QIcon(linearfit_path)
@@ -328,6 +330,8 @@ class LinearFitDialog(QDialog):
         )
         drag_row.addWidget(self.preset_drag_handle)
         drag_row.addStretch(1)
+        self.btn_help = make_help_button("linear_fit", self)
+        drag_row.addWidget(self.btn_help)
         v.addLayout(drag_row)
 
         # Buttons

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Continuum Subtraction</h1>
+<p class="sub">Removes broadband continuum signal (stars and reflection light) from narrowband frames, so that only true line-emission from the nebula remains. SASpro's implementation calibrates each filter against its matching continuum (or against an OSC channel) with background neutralization, MAD-matched red/green rescaling, and star-based white balance, then lets you tune the subtraction strength <code>Q</code> interactively per filter before committing the full-resolution result.</p>
+
+<div class="workflow"><b>Workflow</b><br>
+Load&nbsp;NB&nbsp;+ matching&nbsp;continuum &rarr; <b>Execute</b> &rarr; calibration runs per filter in parallel &rarr; <b>Q Preview</b> dialog opens &rarr; tune&nbsp;Q per filter against live preview &rarr; <b>Accept</b> &rarr; final subtraction + optional denoise + optional stretch &rarr; results open as new documents.
+</div>
+
+<h2>1. Using the tool</h2>
+
+<h3>Loading images</h3>
+<p>Each slot has a <b>starry</b> row (used for the WB fit) and a <b>+starless</b> row directly beneath it (optional &mdash; receives the same calibration recipe but without star detection). Two load buttons per row:</p>
+<ul>
+  <li><b>View</b> &mdash; pick an already-open document from a dropdown.</li>
+  <li><b>File</b> &mdash; browse to a FITS/XISF/TIFF/PNG on disk.</li>
+</ul>
+
+<p>Three groups of inputs:</p>
+
+<h3>Narrowband Filters</h3>
+<table>
+  <tr><th>Slot</th><th>What to load</th><th>Paired continuum</th></tr>
+  <tr><td><b>Ha</b></td><td>H&alpha; narrowband (mono)</td><td>Red (or OSC's R channel)</td></tr>
+  <tr><td><b>SII</b></td><td>SII narrowband (mono)</td><td>Red (or OSC's R channel)</td></tr>
+  <tr><td><b>OIII</b></td><td>OIII narrowband (mono)</td><td>Green (or OSC's G channel)</td></tr>
+  <tr><td><b>HaO3</b></td><td>Dual-band composite, 3-channel (R=H&alpha;, G=OIII)</td><td>auto-decomposed, see &sect;2.6</td></tr>
+  <tr><td><b>S2O3</b></td><td>Dual-band composite, 3-channel (R=SII, G=OIII)</td><td>auto-decomposed, see &sect;2.6</td></tr>
+</table>
+
+<h3>Continuum Sources</h3>
+<table>
+  <tr><th>Slot</th><th>What to load</th></tr>
+  <tr><td><b>Red</b></td><td>Red broadband (mono) &mdash; used as the continuum for H&alpha; and SII.</td></tr>
+  <tr><td><b>Green</b></td><td>Green broadband (mono) &mdash; used as the continuum for OIII.</td></tr>
+  <tr><td><b>OSC</b></td><td>One-shot colour broadband (3-channel). Replaces Red and Green together: R-channel becomes the H&alpha;/SII continuum, G-channel becomes the OIII continuum. Loading an OSC after a mono Red/Green keeps the mono choice; the selection logic prefers the explicit mono slot when present.</td></tr>
+</table>
+
+<div class="tip">You need at least one NB slot plus its matching continuum (or an OSC) for Execute to do anything. Load as many filters as you have &mdash; each one is calibrated and shown in the Q preview separately.</div>
+
+<h3>Processing Options</h3>
+<ul>
+  <li><b>Output linear only</b> &mdash; skips the non-linear finishing (&sect;2.7). The result is the raw subtracted linear data, clipped to [0,1]. Useful when you plan to stretch yourself afterwards.</li>
+  <li><b>Denoise with Cosmic Clarity</b> &mdash; runs Cosmic Clarity denoise on the <i>linear</i> subtracted result, before any stretch. The strength button (0.00&ndash;1.00, default 0.90) sets both luma and chroma denoise strength; <b>Use GPU</b> turns off GPU acceleration if your card can't fit the chunks. Denoising linear data preserves nebular structure far better than denoising after stretch.</li>
+  <li><b>Auto-stretch</b> &mdash; applies the standard colour stretch to <code>target_median = 0.25</code>. When off, the output is linear regardless of the &ldquo;Output linear only&rdquo; checkbox. When on, three sub-options:
+    <ul>
+      <li><b>Median background subtract</b> &mdash; subtracts <code>0.7&times;median</code> after stretch for a cleaner background. Default on; uncheck to preserve faint signal.</li>
+      <li><b>Curves boost</b> &mdash; gentle S-curve applied after stretch. Default off.</li>
+      <li><b>No black clip</b> &mdash; use the image minimum as the black point instead of <code>median &minus; &sigma;</code>. Default on, preserves faint background signal.</li>
+    </ul>
+  </li>
+  <li><b>Advanced &#9656;</b> &mdash; expands to show:
+    <ul>
+      <li><b>WB star detect threshold</b> &mdash; &sigma; above background for star detection in the white-balance fit (0.5&ndash;50, default 5.0). Lower = more stars (and more noise in the fit); higher = cleaner but fewer anchors.</li>
+      <li><b>Continuum Q factor</b> &mdash; the <i>default</i> Q used to open the Q Preview dialog (0.10&ndash;2.00, default 0.80). The dialog lets you override per-filter; this just sets where the slider starts.</li>
+    </ul>
+  </li>
+</ul>
+
+<h3>Execute, then the Q Preview dialog</h3>
+<p>Clicking <b>Execute</b> kicks off one calibration thread per loaded filter (background neutralization, red/green matching, star-based WB fit, downsampled preview). When all filters have calibrated, the <b>Interactive Q Preview</b> dialog opens:</p>
+<ul>
+  <li><b>Filter dropdown</b> &mdash; switch between loaded filters.</li>
+  <li><b>Q slider</b> (0.10&ndash;2.00) &mdash; moves the subtraction constant for the active filter.</li>
+  <li><b>Autostretch</b> &mdash; applies a mono stretch to the preview so you can see faint residuals clearly. Does not affect the final output; purely a display aid.</li>
+  <li><b>Zoom controls</b> &mdash; zoom-out / zoom-in / 1:1 / fit-to-view, driven by the standard SASpro ZoomableGraphicsView. First render fits; subsequent slider updates leave your zoom alone.</li>
+  <li><b>Accept &mdash; Run Final</b> &mdash; commits per-filter Q values and launches the final-subtract threads at full resolution. <b>Cancel</b> aborts without computing finals.</li>
+</ul>
+
+<div class="tip"><b>Tuning Q:</b> stars should become invisible when Q is right. If stars go <i>dark</i> (black pinholes) you've over-subtracted &mdash; reduce Q. If stars remain <i>bright</i> you've under-subtracted &mdash; increase Q. Nebular structure should sit around 0 in empty sky and above 0 where there's real emission. The preview downsamples to a max long axis of 1024&nbsp;px for responsiveness; the final subtraction runs at full resolution.</div>
+
+<h3>Results</h3>
+<p>When the final subtracts finish, each filter becomes a new document in SASpro titled <code>&lt;filter&gt;_ContSub</code> (and <code>&lt;filter&gt; (starless)_ContSub</code> if a starless partner was supplied). The original FITS header travels with the result; bit depth is 32-bit float.</p>
+
+<h3>WB Diagnostics</h3>
+<p>Enabled after the first result lands. Opens a scrollable grid, one card per filter, each with two 256&times;256 thumbnails:</p>
+<ul>
+  <li><b>scatter</b> &mdash; NB flux vs broadband flux for every detected WB star, with the best-fit line overlaid. A tight line close to the diagonal means a clean WB fit; a cloud or sloped line indicates poor star-colour statistics (bad threshold, too few stars, or heavy gradient residuals).</li>
+  <li><b>overlay</b> &mdash; the balanced image with the stars actually used in the fit marked. Lets you catch cases where the detector locked onto hot pixels, satellite trails, or saturated cores.</li>
+</ul>
+<p>Click either thumbnail to open the <b>Detail View</b> dialog &mdash; zoomable, with Autostretch and <b>Push to New Document</b> buttons so you can hand the diagnostic image onwards for inspection.</p>
+
+<h3>Clear Images</h3>
+<p>Dumps every loaded slot and resets labels. The processing options stay as you set them.</p>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">The subtraction pipeline, per filter, in order.</p>
+
+<h3>2.1 Pipeline overview</h3>
+<p>Each filter is processed as its own three-channel RGB stack with <code>R = NB</code>, <code>G = continuum</code>, <code>B = continuum</code> (B is a copy of G so the standard colour tools work unchanged). The pipeline runs in two phases separated by the Q Preview dialog:</p>
+<div class="workflow">
+<b>Phase A &mdash; calibration</b> (one QThread per filter):<br>
+&nbsp;&nbsp;background neutralization &rarr; MAD-matched R&harr;G rescale &rarr; star-based WB fit &rarr; downsampled preview + recipe stored<br>
+<b>Phase B &mdash; final subtract</b> (one QThread per filter, after Accept):<br>
+&nbsp;&nbsp;apply recipe at full-res &rarr; linear subtract with the chosen Q &rarr; optional denoise &rarr; optional stretch &rarr; emit result
+</div>
+<p>Starless partners (optional per filter) are run through the <i>same</i> recipe their starry partner produced &mdash; no independent WB fit &mdash; so the two images stay perfectly in sync and the stars cancel to the same residual in both.</p>
+
+<h3>2.2 Background neutralization</h3>
+<p>Finds the darkest reasonable patch in the frame and lifts each colour channel so that patch becomes neutral grey. 200 random 25&times;25 boxes are placed and iteratively migrated toward darker neighbours over 25 iterations (nine-cell gradient descent, picking the darkest neighbour each step). The darkest surviving box becomes the background reference; per-channel pedestals are</p>
+<div class="matheq">p_c = \max\!\left(0,\;\mathrm{median}(I_c) - \mathrm{bg}_c\right)</div>
+<p>A second pass compensates for red-stronger-than-green/blue imbalance (sky-glow bias) by lifting G and B toward the red reference:</p>
+<div class="matheq">p_c \to p_c + \max(0,\;\mathrm{bg}_R - \mathrm{bg}_c)</div>
+<p class="cap">applied to the green and blue channels only (<code>c &in; {G, B}</code>); the red reference stays unchanged.</p>
+<p>The image is then <code>clip(I + p, 0, 1)</code>.</p>
+
+<h3>2.3 MAD-matched red/green rescale</h3>
+<p>Before white balance, the NB (red) channel is linearly rescaled so its central tendency and spread match the continuum (green) channel. This gives the subsequent WB fit a scale-free problem to work with. Using mean absolute deviation</p>
+<div class="matheq">\mathrm{MAD}_{\mu}(x) = \mathrm{mean}(|x - \mathrm{mean}(x)|)</div>
+<p>the red channel is transformed to</p>
+<div class="matheq-hero">R' = \frac{\mathrm{MAD}_{\mu}(G)}{\mathrm{MAD}_{\mu}(R)}\,R + \left(\mathrm{median}(G) - \frac{\mathrm{MAD}_{\mu}(G)}{\mathrm{MAD}_{\mu}(R)}\,\mathrm{median}(R)\right)</div>
+<p>so <code>median(R') = median(G)</code> and <code>MAD(R') = MAD(G)</code>. Note that this is the <i>mean</i> absolute deviation, not the robust median-based MAD &mdash; the mean version is cheaper and the subsequent WB fit is robust enough to absorb any residual mismatch.</p>
+
+<h3>2.4 Star-based white balance</h3>
+<p>The classical move for NB continuum subtraction: stars have smooth continuum spectra, so after true white balance a star should have equal NB and broadband flux (ignoring narrowband-leak lines like [NII] in the H&alpha; filter). Measuring the actual NB vs broadband flux across many detected stars gives a per-channel linear transform</p>
+<div class="matheq">c' = a_c\,c + b_c</div>
+<p class="cap">fitted independently for each channel <code>c &in; {R, G, B}</code>.</p>
+<p>fitted by least squares against the pre- and post-WB sample pairs for each channel:</p>
+<div class="matheq">(a_c,b_c) = \arg\min_{a,b}\sum_i \left(a\,x_{c,i} + b - y_{c,i}\right)^2</div>
+<p>Star detection uses a SEP-based detector at the user-set &sigma; threshold; a cache lets subsequent runs reuse the detection on the same frame. Both the fit coefficients and the detected-star overlay are stored in the <code>recipe</code> dict and surfaced in WB Diagnostics (&sect;1 &mdash; WB Diagnostics).</p>
+
+<h3>2.5 Linear subtraction</h3>
+<p>Once calibration is done and you've chosen Q, the per-pixel subtraction is:</p>
+<div class="matheq-hero">\mathrm{NB}_{\mathrm{pure}} = \mathrm{NB} - Q\,(C - \mathrm{median}(C))</div>
+<p>or in the internal RGB representation,</p>
+<div class="matheq">R' = R - Q\,(G - \mathrm{median}(G))</div>
+<p>then clipped to [0,1]. Subtracting <code>G &minus; median(G)</code> (rather than <code>G</code> directly) means a perfectly dark continuum pixel contributes nothing, and only the pixels where continuum is <i>above</i> its own background are subtracted away. After star-based WB has set the per-pixel scale correctly, <code>Q = 1</code> is the mathematically pure value &mdash; stars cancel exactly, line-emission survives untouched. Lower Q leaves some star residual (useful if the WB fit was marginal); higher Q over-subtracts (produces dark halos around stars).</p>
+<p>The same recipe is then re-applied to the starless partner (if loaded) with the same Q, so NB-pure and NB-pure-starless share one calibration.</p>
+
+<h3>2.6 Composite OSC decomposition (HaO3, S2O3)</h3>
+<p>When a 3-channel composite is loaded into HaO3 or S2O3, SASpro splits it in-place:</p>
+<p>For an <b>HaO3</b> composite with channels <code>(R, G, B)</code>:</p>
+<div class="matheq">\mathrm{Ha} \leftarrow R,\;\;\;\mathrm{OIII} \leftarrow G</div>
+<p>For an <b>S2O3</b> composite:</p>
+<div class="matheq">\mathrm{SII} \leftarrow R,\;\;\;\mathrm{OIII} \leftarrow G</div>
+<p>The split channels populate the Ha / SII / OIII slots as if they'd been loaded there directly. When both HaO3 <i>and</i> S2O3 are loaded, their two OIII channels are averaged into the OIII slot:</p>
+<div class="matheq">\mathrm{OIII}_{\mathrm{avg}} = \frac{1}{N}\sum_{k=1}^{N} G_k</div>
+<p>and the slot label updates to <code>OIII from HaO3+S2O3</code> so you can see what's actually going into the subtraction. A manually loaded OIII overrides this; the composite-average logic only touches the slot while it's being auto-filled from composites. Starless composites decompose into starless slots the same way, keeping the two paths separate.</p>
+
+<h3>2.7 Non-linear finalization</h3>
+<p>When Auto-stretch is on and &ldquo;Output linear only&rdquo; is off, the linear subtracted result is finished with:</p>
+<ol>
+  <li><b>Color stretch</b> to <code>target_median = 0.25</code> (shared stretch core with the rest of SASpro; see Statistical Stretch doc for the stretch function itself).</li>
+  <li><b>Median background subtract</b> (optional):
+<div class="matheq">S' = S - 0.7\,\mathrm{median}(S)</div>
+  then clip to [0,1]. The 0.7 coefficient is empirically chosen to pull background down without crushing faint signal.</li>
+  <li><b>Curves boost</b> (optional) &mdash; a gentle S-curve applied through the shared <code>apply_curves_adjustment</code> helper (same curve engine as the Curves tool, run with <code>curves_boost = 0.5</code>).</li>
+</ol>
+<p>&ldquo;No black clip&rdquo; is honoured throughout &mdash; the stretch uses the image minimum as the black point rather than <code>median &minus; &sigma;</code>, which protects very faint diffuse structure that would otherwise be clipped away.</p>
+
+<h3>2.8 Cosmic Clarity denoise</h3>
+<p>When enabled, denoising runs on the <b>linear</b> subtracted image, after &sect;2.5 and before &sect;2.7. SASpro calls Cosmic Clarity headless with:</p>
+<div class="eq">mode            = denoise
+denoise_luma    = strength     (slider value, 0.0–1.0)
+denoise_color   = strength
+denoise_mode    = full
+chunk_size      = 256
+overlap         = 64
+gpu             = (checkbox)</div>
+<p>Denoising the linear data is important for continuum subtraction: after subtraction, the sky background should sit near zero, and any residual noise there turns into visible mottling after stretch. Doing the denoise before the stretch (while noise statistics are still well-behaved and Gaussian-like) gives a much cleaner final result than denoising afterwards.</p>
+
+<div class="credit">
+<b>Credits.</b> Modern narrowband continuum subtraction for amateur astroimaging was pioneered by <b>Vincent Peris</b>, <b>Edoardo Radice</b>, <b>Charles Hagen</b>, <b>Franklin Marek</b> (SetiAstro) and others &mdash; through tooling, workshops and published methods that established the star-based white-balance approach as the standard way to recover line-emission from narrowband frames contaminated by broadband sources. This tool is SASpro's take on that lineage.
+<ul>
+  <li><b>Star-based white balance for continuum calibration</b> &mdash; the core idea that stars are the correct colour anchors for an NB-vs-broadband fit, developed in the body of work above.</li>
+  <li><b>Background neutralization via iterative dark-box search</b> &mdash; SASpro's 200-box, 25-iteration implementation with nine-cell gradient descent and red-reference lift is original.</li>
+  <li><b>MAD-matched red/green rescale</b> &mdash; a pre-WB conditioning step original to this implementation.</li>
+  <li><b>Interactive per-filter Q preview</b> with downsampled live preview, parallel calibration threads and parallel final-subtract threads &mdash; SASpro's implementation.</li>
+  <li><b>Composite HaO3 / S2O3 decomposition</b> with auto-averaged OIII &mdash; SASpro's implementation.</li>
+  <li><b>Cosmic Clarity denoise</b> &mdash; third-party denoiser invoked here on the linear result.</li>
+  <li><b>Shared stretch and curves cores</b> &mdash; SASpro's Statistical Stretch and Curves engines (Franklin Marek).</li>
+</ul>
+</div>
+
+</body>
+</html>

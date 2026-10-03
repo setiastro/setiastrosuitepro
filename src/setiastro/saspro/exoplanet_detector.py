@@ -43,7 +43,7 @@ import lightkurve as lk
 # ---- project-local imports (adjust paths if needed) --------------------
 from setiastro.saspro.legacy.numba_utils import bin2x2_numba, apply_flat_division_numba
 from setiastro.saspro.imageops.stretch import stretch_mono_image, stretch_color_image
-
+from setiastro.saspro.help_support import make_help_button
 from setiastro.saspro.plate_solver import plate_solve_doc_inplace
 from setiastro.saspro.star_alignment import (
     StarRegistrationWorker,
@@ -876,6 +876,7 @@ class ExoPlanetWindow(QDialog):
         """)
         self.wrench_button.clicked.connect(self.open_settings)
         mode_layout.addWidget(self.wrench_button)
+        mode_layout.addWidget(make_help_button("exoplanet", self))
 
         # — Calibration controls (hidden in Aligned) —
         cal_layout = QHBoxLayout()

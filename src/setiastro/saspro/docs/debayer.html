@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  h4 { color:#b8e3d4; font-size:13px; margin:10px 0 3px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .toc { background:#1a1a1a; border:1px solid #333; padding:10px 14px; margin:10px 0;
+         font-size:12px; column-count:2; column-gap:28px; }
+  .toc a { color:#8fd7c6; text-decoration:none; }
+  .toc a:hover { color:#3dbf9f; text-decoration:underline; }
+</style>
+</head>
+<body>
+
+<h1>Debayer</h1>
+<p class="sub">Converts a single-channel CFA (colour-filter-array) mosaic into a 3-channel RGB image. Supports both standard 2&times;2 Bayer mosaics (RGGB, BGGR, GRBG, GBRG) via SASpro's Numba-accelerated kernels and Fujifilm X-Trans 6&times;6 mosaics via rawpy / LibRaw. The dialog auto-detects the CFA family and the Bayer phase from the header, falls back to the camera model, falls back to rawpy's ground truth, and ultimately falls back to a brute-force colour-difference-gradient score if the metadata is silent. ROWORDER handling (bottom-up FITS from NINA and similar) is built in and applied symmetrically so the output orientation always matches the input.</p>
+
+<div class="pub">
+<b>Original work for SetiAstro Suite Pro.</b> The underlying demosaic algorithms (VNG, Hamilton&ndash;Adams edge-aware, bilinear, AHD, DHT) are classical and credited below &mdash; SASpro's job is to pick the right one, pass it clean inputs, and get the orientation right. The dispatch and detection machinery, the orientation invariant, and the headless entry point are new work by <b>Franklin Marek</b>. SASpro-exclusive content: the <b>dual-family CFA dispatcher</b> that routes Bayer mosaics to the Numba kernel chain and X-Trans mosaics to a rawpy decode path from the same dialog with no user flag required; the <b>four-tier CFA-family detector</b> that walks header-blob substring match (X-TRANS / XTRANS / FUJIFILM X-TRANS) &rarr; direct Bayer-token presence (RGGB / BGGR / GRBG / GBRG / BAYER) &rarr; camera-model hint against a 15-body Fujifilm X-Trans list (X-T1&hellip;X-T5, X-E2&hellip;X-E3, X-Pro1&hellip;X-Pro3, X-H1 / X-H2S, X-S10 / X-S20, X100, X70, X30) &rarr; rawpy ground truth from the source RAW when a path is reachable; the <b>four-tier Bayer-phase detector</b> that reads an explicit header card first, then rawpy's own <code>raw_pattern</code>, then falls back to a <b>brute-force scoring auto-detect</b> that debayers under each of the four candidates and picks the one minimising the Sobel gradient energy of the <code>R&minus;G</code> and <code>B&minus;G</code> colour-difference planes (correctly debayered output has smooth colour differences because the three channels are highly correlated at normal pixel scales); the <b>once-only ROWORDER flip invariant</b> that flips the input mosaic to top-down <i>before</i> debayering when <code>ROWORDER = BOTTOM-UP</code> is set and flips the RGB result back <i>after</i>, so the Bayer phase matches the header card but output orientation matches input &mdash; and the explicit guarantee from <code>bayer_utils</code> that pattern detection never also bumps <code>yoff</code> by the height parity, so a BOTTOM-UP file never gets its orientation corrected twice; the <b>multi-source RAW path discovery</b> that walks metadata <code>raw_source_path</code> &rarr; header cards <code>RAW_PATH</code>, <code>RAWFILE</code>, <code>ORIGFILE</code>, <code>ORIGINAL</code>, <code>ORIGPATH</code>, <code>RAWORIG</code>, <code>SOURCE</code>, <code>SRCFILE</code> &rarr; the document's own <code>file_path</code> / <code>path</code> &rarr; a <b>sibling-stem RAW scan</b> in the FITS/XISF file's own folder across ten extensions (<code>.raf</code>, <code>.raw</code>, <code>.rw2</code>, <code>.arw</code>, <code>.nef</code>, <code>.cr2</code>, <code>.cr3</code>, <code>.dng</code>, <code>.orf</code>, <code>.pef</code>) so a debayered FITS saved next to its original RAW can still be re-debayered from the X-Trans source without the user re-locating the file; the <b>range-preserving mono normaliser</b> that scales integer dtypes by their native <code>iinfo.max</code> but only rescales genuine &gt;16-bit-ADU floats (<code>max &gt; 256</code>) rather than any float with maximum above 1.0 &mdash; so flat-divided linear astronomical data that legitimately runs to 2&times;&ndash;3&times; the full-scale value doesn't get crushed by an inappropriate <code>/ 65535</code>; the <b>QThread-backed worker</b> that runs the Bayer debayer off the UI thread with staged progress reporting; the <b>doc-aware application layer</b> that prefers each document's own <code>apply_edit</code> undoable-commit path when available and falls back to direct mutation with a per-doc view refresh that finds the right subwindow without changing the active one; and the <b>headless <code>debayer_array()</code> function</b> that is the single source of truth for the flip-in / debayer / flip-out orientation handling, shared by the interactive dialog, the Scripts / Presets / Replay runner, and the stacking pipeline, so the same mosaic always produces the same RGB regardless of which entry point was used.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+<b>Open Debayer</b> on a single-channel mosaic view. <b>Confirm the detected pattern</b> (shown next to the dropdown, with <code>XBAYROFF</code>, <code>YBAYROFF</code>, and <code>ROWORDER</code> from the header) or pick one explicitly. <b>Pick a method</b> &mdash; VNG is the default and the usual best choice; Edge-aware trades a bit of smoothness for sharper edges; Bilinear is fastest; Strict CFA splits channels without interpolation (half the resolution per axis, useful as a quick preview). X-Trans data is routed to rawpy automatically; pick AHD or DHT. <b>OK</b> runs the demosaic, pushes the RGB back into the same document (with undo if the doc supports it), and refreshes just that view without switching focus.
+</div>
+
+<div class="hero">
+<p>The signature move is the <b>auto-detect dispatch chain</b>. For a correctly-tagged file (<code>BAYERPAT = RGGB</code> in the header), opening Debayer and hitting OK just works. For an untagged FITS that came from a bottom-up NINA pipeline, SASpro picks up <code>ROWORDER = BOTTOM-UP</code>, flips the mosaic to top-down, debayers under the header-declared pattern (or scores the four candidates if the header has nothing), flips the RGB back, and lands the result in the right orientation. For a Fujifilm RAF opened and converted to FITS, the dialog spots the X-Trans fingerprint in the metadata, hunts for the original RAF next to the FITS if the stored path is stale, and hands the decode off to LibRaw via rawpy with AHD or DHT &mdash; because X-Trans's non-repeating 6&times;6 pattern can't be handled by the Numba Bayer kernels. One dialog, one OK button, four demosaic algorithms, two CFA families, and the orientation always matches input.</p>
+</div>
+
+<div class="toc">
+<b>Contents</b><br>
+<a href="#s1">1. What Debayer accepts</a><br>
+<a href="#s2">2. Pattern selection</a><br>
+<a href="#s3">3. Bayer methods</a><br>
+<a href="#s4">4. X-Trans path</a><br>
+<a href="#s5">5. ROWORDER handling</a><br>
+<a href="#s6">6. Applying the result</a><br>
+<a href="#s7">7. Headless and script entry points</a><br>
+<a href="#s8">8. Technical details</a><br>
+</div>
+
+<h2 id="s1">1. What Debayer accepts</h2>
+<p>The dialog opens on the active view and requires a <b>single-channel 2D mosaic</b> as input. The early checks reject anything else:</p>
+<ul>
+<li>If the active image is already 3-channel (RGB), the dialog shows a &ldquo;3 channels already&rdquo; information message and closes &mdash; nothing to demosaic.</li>
+<li>If the active image isn't 2D (e.g. a stack, a video, a weird N-D array), it shows a warning and closes.</li>
+<li>If no view is active, the dialog refuses to open from the start.</li>
+</ul>
+<p>Accepted input dtypes: any integer (<code>uint8</code>, <code>uint16</code>, <code>uint32</code>, &hellip;) or any float. Integer inputs are scaled by their dtype's native maximum (<code>iinfo.max</code>) into [0,&nbsp;1]. Float inputs stay as-is <i>unless</i> they look like unnormalised 16-bit ADU values (<code>max &gt; 256</code>), in which case they're divided by 65535. See the Technical details section on <a href="#s8">normalisation</a> for why the threshold is 256 and not 1.</p>
+
+<h2 id="s2">2. Pattern selection</h2>
+<p>The top group box lets you pick which Bayer phase the mosaic uses:</p>
+<ul>
+<li><b>Auto (from header)</b> &mdash; default. Uses whatever pattern the dialog detected on open, shown next to the dropdown as e.g. <code>Detected: RGGB (XBAYROFF=0, YBAYROFF=0, ROWORDER=TOP-DOWN)</code>. If the header had no pattern, Auto triggers the brute-force scoring fallback on OK.</li>
+<li><b>RGGB</b> / <b>BGGR</b> / <b>GRBG</b> / <b>GBRG</b> &mdash; explicit override. The four possible 2&times;2 Bayer phases.</li>
+</ul>
+<p>A Bayer phase is just the colour at the top-left of the 2&times;2 repeating tile. The four patterns correspond to the four possible rotations:</p>
+<table>
+<tr><th>Pattern</th><th>(0, 0)</th><th>(0, 1)</th><th>(1, 0)</th><th>(1, 1)</th></tr>
+<tr><td>RGGB</td><td>R</td><td>G</td><td>G</td><td>B</td></tr>
+<tr><td>BGGR</td><td>B</td><td>G</td><td>G</td><td>R</td></tr>
+<tr><td>GRBG</td><td>G</td><td>R</td><td>B</td><td>G</td></tr>
+<tr><td>GBRG</td><td>G</td><td>B</td><td>R</td><td>G</td></tr>
+</table>
+<p>The pattern dropdown is disabled when the dialog has detected X-Trans data &mdash; X-Trans doesn't have a 2&times;2 phase; the whole thing is handed off to rawpy.</p>
+
+<h2 id="s3">3. Bayer methods</h2>
+<p>Four methods for standard Bayer data, all running through SASpro's Numba-accelerated <code>debayer_fits_fast</code>:</p>
+<ul>
+<li><b>VNG (Variable Number of Gradients)</b> &mdash; the default. Chang, Cheung &amp; Pollard 1999. Computes eight directional gradients around each pixel, selects the ones below a threshold, and interpolates from only those directions. Produces excellent results on both smooth and high-detail regions; the usual best choice for astronomical data.</li>
+<li><b>Edge-aware (Numba)</b> &mdash; a Hamilton&ndash;Adams-style gradient-informed interpolation. Chooses the interpolation direction based on local gradient strength, so it preserves edges better than bilinear while being faster than VNG.</li>
+<li><b>Bilinear (Numba)</b> &mdash; simple linear interpolation. Fastest; produces slightly softer output than VNG or edge-aware. Useful when demosaicing is on the critical path of a long batch.</li>
+<li><b>Strict CFA (no interpolation)</b> &mdash; just splits the mosaic into its three channels at native CFA resolution. The output is <b>half the resolution</b> on each axis (one R, two Gs averaged, and one B per 2&times;2 block). Useful as an instant preview, or as the input to a subsequent super-resolution step that expects pre-split channels.</li>
+</ul>
+<div class="tip">For most deep-sky work, <b>VNG</b> is the right default. Switch to Edge-aware when you want tighter edges around high-contrast features (bright stars, galaxy cores); switch to Bilinear only when speed matters more than quality.</div>
+
+<h2 id="s4">4. X-Trans path</h2>
+<p>Fujifilm's X-Trans CFA is a 6&times;6 repeating pattern &mdash; much more complex than Bayer's 2&times;2 and specifically designed to break moir&eacute; without an optical low-pass filter. The Numba Bayer kernels can't handle it; demosaicing goes to <b>rawpy</b> (the Python wrapper around LibRaw) with two selectable algorithms:</p>
+<ul>
+<li><b>AHD (rawpy)</b> &mdash; Adaptive Homogeneity-Directed demosaicing (Hirakawa &amp; Parks 2005). The default X-Trans algorithm; interpolates in whichever direction has the most homogeneous result after conversion to CIELab. Good general-purpose quality.</li>
+<li><b>DHT (rawpy)</b> &mdash; An alternative LibRaw implementation (Petrusevich). Different trade-offs; sometimes cleaner on fine periodic detail.</li>
+</ul>
+<p>X-Trans demosaicing requires access to the <b>original RAW file</b>, not the derived FITS. The dialog finds it through a multi-source search:</p>
+<div class="eq">1. metadata["raw_source_path"]
+2. header cards: RAW_PATH, RAWFILE, ORIGFILE, ORIGINAL,
+                 ORIGPATH, RAWORIG, SOURCE, SRCFILE
+3. doc.file_path / doc.path / metadata["file_path"]
+4. sibling file scan: same stem, in the same folder, with
+   any of .raf / .raw / .rw2 / .arw / .nef / .cr2 / .cr3
+         / .dng / .orf / .pef extensions</div>
+<p>If every source fails, the dialog shows a message explaining that the X-Trans original couldn't be found and suggesting three fixes: open the RAF directly, embed a <code>RAW_PATH</code> card in the header, or place the RAW next to the file.</p>
+<p>rawpy runs with <code>use_camera_wb=True</code> (camera's shot white balance), <code>no_auto_bright=True</code> (no auto-brightening), gamma <code>(1.0, 1.0)</code> (linear output), 16-bit output, FBDD noise reduction off, and highlights clipped. The float32 RGB result in [0,&nbsp;1] is handed back to the apply layer the same way the Numba path's output is.</p>
+
+<h2 id="s5">5. ROWORDER handling</h2>
+<p>FITS files have no universal convention for which pixel is first. NINA and some other acquisition tools write <code>ROWORDER = BOTTOM-UP</code>, meaning row 0 of the on-disk array is the <i>bottom</i> of the sensor, not the top. The Bayer pattern header card describes the sensor's actual CFA layout &mdash; which is a top-down fact &mdash; so a bottom-up file has its mosaic rows in the opposite order from what the Bayer phase declaration implies.</p>
+<p>The fix is a <b>once-only flip</b>:</p>
+<div class="eq">I_{\mathrm{td}} = flipud(I_{\mathrm{bu}})       # flip the mosaic to top-down
+R_{\mathrm{td}} = debayer(I_{\mathrm{td}}, p)    # debayer with header-declared pattern
+R_{\mathrm{bu}} = flipud(R_{\mathrm{td}})       # flip the RGB back for display</div>
+<p>The input flip ensures the Bayer phase matches the on-disk pixel grid; the output flip restores the orientation the user expects to see.</p>
+<div class="warn">The critical invariant is that this flip and the pattern-detection logic in <code>bayer_utils</code> are <b>mutually exclusive</b> &mdash; pattern detection does not also bump the Y offset by the height parity, so a BOTTOM-UP file is never corrected twice. If the detector <i>and</i> the flip both tried to compensate for the row order, they'd stack into the wrong pattern (effectively swapping R &harr; B or shifting the phase). The invariant is enforced by the <code>bayer_utils</code> module and must be preserved by anything else that calls into this path.</div>
+
+<h2 id="s6">6. Applying the result</h2>
+<p>Once the RGB result is ready (from either the Numba worker or the rawpy path), it's pushed back to the <b>source document</b> &mdash; never to &ldquo;the active view&rdquo; by position. The apply layer walks a two-tier preference:</p>
+<ul>
+<li><b>Preferred</b>: if the document exposes <code>apply_edit(image, metadata, step_name)</code>, call it. This gives the user a proper undoable edit with a named step (<code>Debayer (RGGB)</code>, <code>Debayer (X-Trans/AHD)</code>, etc.), participates in the undo stack, and triggers any downstream notifications the doc model emits. A one-arg legacy fallback <code>apply_edit(image)</code> is also tried if the full signature isn't accepted.</li>
+<li><b>Fallback</b>: direct mutation of <code>doc.image</code> plus a metadata patch (<code>is_mono = False</code>, <code>bit_depth</code> defaults to 32-bit float), followed by an explicit view refresh.</li>
+</ul>
+<p>View refresh is done by locating the MDI subwindow bound to the specific document (not the active one) and calling its <code>refresh_pixmap_from_document</code>, <code>refresh_view</code>, or <code>update_from_doc</code> hook if present, falling back to a plain <code>update()</code> on both the view and the subwindow. The user's current window focus doesn't change.</p>
+
+<h2 id="s7">7. Headless and script entry points</h2>
+<p>Two headless entry points for scripts, presets, and the Replay Last Action system:</p>
+<ul>
+<li><code>debayer_array(mono, pattern, roworder, method, cfa_drizzle)</code> &mdash; pure function. Takes a mosaic array, returns an RGB array. No doc, no Qt, no side effects. This is the <b>single source of truth</b> for the flip-in / debayer / flip-out orientation handling &mdash; the interactive dialog, the preset runner, and the stacking pipeline all go through it, so the same mosaic always produces the same RGB regardless of which entry point was used.</li>
+<li><code>apply_debayer_preset_to_doc(dm, doc, preset)</code> &mdash; doc-aware version. Takes a preset dict (<code>{"pattern": "auto|RGGB|&hellip;", "method": "auto|vng|edge|&hellip;|AHD|DHT"}</code>), handles the CFA-family dispatch, runs the appropriate engine, applies the result to the given doc, and returns <code>(used_pattern, rgb_array)</code>.</li>
+</ul>
+<p>The command runner <code>run_debayer_via_preset(main, preset, doc=None)</code> wires both of these into SASpro's command system. It registers the invocation with the Replay Last Action buffer so Ctrl+Shift+R can repeat the same debayer with the same settings on the next image. If no explicit <code>doc</code> is passed, the active doc is used.</p>
+<p>A typical preset for scripting:</p>
+<div class="eq">preset = {
+    "pattern": "auto",      # auto | RGGB | BGGR | GRBG | GBRG
+    "method":  "vng",       # auto | vng | edge | bilinear | strict_cfa
+                            # (or AHD / DHT for X-Trans)
+}
+run_debayer_via_preset(main, preset)</div>
+
+<h2 id="s8">8. Technical details</h2>
+<p class="tech-lead">Equations and algorithms, numbered continuing from the usage sections.</p>
+
+<h3>9. CFA family auto-detection</h3>
+<p>Deciding whether a mosaic is Bayer or X-Trans runs a four-tier chain, stopping at the first positive answer:</p>
+<ol>
+<li><b>Header blob substring match</b> &mdash; serialise both the header object and the metadata dict to strings, uppercase, and search for <code>X-TRANS</code> / <code>XTRANS</code> / <code>FUJIFILM X-TRANS</code>. If any hit, return <code>XTRANS</code>. Otherwise search for <code>BAYER</code> / <code>RGGB</code> / <code>BGGR</code> / <code>GRBG</code> / <code>GBRG</code>; any hit returns <code>BAYER</code>.</li>
+<li><b>Camera model hint</b> &mdash; if <code>MAKE</code> contains <code>FUJIFILM</code> and <code>MODEL</code> matches one of 15 known X-Trans bodies (X-T1&hellip;X-T5, X-E2 / X-E2S / X-E3, X-Pro1&hellip;X-Pro3, X-H1 / X-H2S, X-S10 / X-S20, X100, X70, X30), return <code>XTRANS</code>.</li>
+<li><b>rawpy ground truth</b> &mdash; if a RAW source path is reachable, open it with rawpy and check: non-<code>None</code> <code>xtrans_pattern</code> &rarr; <code>XTRANS</code>; a 2&times;2 <code>raw_pattern</code> &rarr; <code>BAYER</code>.</li>
+<li><b>No signal</b> &mdash; return <code>None</code>, which the dialog treats as &ldquo;Bayer, no header pattern.&rdquo; The brute-force scorer then runs on OK.</li>
+</ol>
+<p>The camera-model list is conservative &mdash; it only matches bodies where X-Trans is <i>known</i> to be used, not every Fuji camera (the X100 / X70 / X30 are included because specific models in those lines are X-Trans too, but recent entries in those lines might ship a Bayer sensor and would need the rawpy check to confirm).</p>
+
+<h3>10. Bayer phase auto-detection</h3>
+<p>Within the Bayer family, picking which of the four 2&times;2 phases to use runs a parallel four-tier chain:</p>
+<ol>
+<li><b>Explicit header card</b> &mdash; a <code>BAYERPAT</code> / <code>XBAYROFF</code>+<code>YBAYROFF</code> / similar card is read and normalised to one of the four canonical tokens (<code>RGGB</code> / <code>BGGR</code> / <code>GRBG</code> / <code>GBRG</code>).</li>
+<li><b>rawpy's <code>raw_pattern</code></b> &mdash; if a RAW path is reachable, rawpy reports the actual sensor CFA.</li>
+<li><b>Brute-force scoring</b> &mdash; see &sect;11.</li>
+<li><b>Fallback</b> &mdash; if everything fails, <code>RGGB</code>. (This is the most common pattern on modern CMOS; being wrong just means the user sees R&harr;B swap or a chequerboard moir&eacute; and picks the right one explicitly.)</li>
+</ol>
+
+<h3>11. The scoring heuristic</h3>
+<p>When no header pattern and no rawpy source exist, SASpro picks the Bayer phase by actually debayering under each of the four candidates and scoring the result. The score penalises Sobel gradient energy in the colour-difference planes:</p>
+<div class="matheq">G_{x} = S_{x} \ast I,\quad G_{y} = S_{y} \ast I</div>
+<p>Here <code>S<sub>x</sub></code> and <code>S<sub>y</sub></code> are the standard 3&times;3 Sobel kernels and <code>I</code> is one channel of the candidate RGB result. The gradient energy on the R&minus;G colour-difference plane is:</p>
+<div class="matheq">E_{R-G} = \mathrm{mean}\!\left( G_{x}(R-G)^{2} + G_{y}(R-G)^{2} \right)</div>
+<p>and symmetrically for B&minus;G. The total score for a candidate pattern <code>p</code> is the sum:</p>
+<div class="matheq">S(p) = E_{R-G}(p) + E_{B-G}(p)</div>
+<p>The winning pattern is the argmin over the four candidates:</p>
+<div class="matheq-hero">p^{*} = \arg\min_{p \in \{\mathrm{RGGB},\mathrm{BGGR},\mathrm{GRBG},\mathrm{GBRG}\}}\ S(p)</div>
+<p>The intuition: in natural images (astronomical scenes included), the R, G, and B channels are highly correlated at normal pixel scales &mdash; a star is bright in all three; a nebula edge appears in all three. A <i>correctly</i>-debayered image inherits this correlation, so the colour-difference planes R&minus;G and B&minus;G are smooth. An <i>incorrectly</i>-debayered image swaps or shifts colours against the real signal, which introduces zebra artefacts and chequerboard patterns that light up the colour-difference gradient energy. Minimising that energy picks the pattern that recovers the natural correlation.</p>
+<p>The score is computed on the first time only; one of the four debayer passes is retained as the output, so there's no wasted work beyond the three losing passes. All four debayers run with <code>cfa_drizzle=False</code> through the standard Numba kernel.</p>
+
+<h3>12. Input normalisation</h3>
+<p>Debayer kernels expect float32 data in [0,&nbsp;1]. The normaliser handles integer and float inputs separately:</p>
+<p><b>Integer dtypes</b>: scale by the dtype's native maximum.</p>
+<div class="matheq">a_{f} = a\ /\ M_{\mathrm{dtype}},\quad M_{\mathrm{dtype}} = \mathrm{iinfo}(\mathrm{dtype}).\mathrm{max}</div>
+<p>So <code>uint8</code> divides by 255, <code>uint16</code> divides by 65535, etc.</p>
+<p><b>Float dtypes</b>: pass through unless the data looks like unnormalised 16-bit ADU values stored as float.</p>
+<div class="matheq">a_{f} = a\ /\ 65535\quad \mathrm{when}\quad \max(a) > 256</div>
+<div class="warn">The threshold of <b>256</b>, not <b>1</b>, is deliberate. Flat-divided linear astronomical data legitimately runs to 2&times;&ndash;3&times; the full-scale value &mdash; a bright star that saturates would show up at an ADU of 65535, but after dividing by a flat frame with a central value of around 0.3, that becomes an output value of around 2.2. A float with <code>max &gt; 1.0</code> is <i>not</i> necessarily unnormalised 16-bit data &mdash; it might be perfectly valid linear astro data with a legitimate dynamic range above full scale. Crushing it by <code>/ 65535</code> would move the whole image into the range <code>[0, 3.4e-5]</code> and effectively flatten the signal below floating-point precision at the dark end. The 256 threshold catches genuine 16-bit float storage (where values commonly run to 50000+) while leaving flat-divided linear data alone.</div>
+<p>The array is also ensured to be C-contiguous via <code>np.ascontiguousarray</code> before being handed to the Numba kernel, which assumes contiguous layout for its stride calculations.</p>
+
+<h3>13. Dialog threading model</h3>
+<p>The Bayer path runs the demosaic in a <code>QThread</code> worker (<code>_DebayerWorker</code>) so the UI stays responsive. The worker signals the dialog in three ways:</p>
+<ul>
+<li><code>progress(int, str)</code> &mdash; staged progress updates (<code>5%</code> on start, <code>96%</code> on finalisation). Drives the progress bar and status label.</li>
+<li><code>finished(np.ndarray, str)</code> &mdash; the RGB result and the pattern that was actually used (for the step name on apply).</li>
+<li><code>failed(str)</code> &mdash; any exception's string representation. The dialog shows a critical message box and the status reads &ldquo;Failed.&rdquo;</li>
+</ul>
+<p>The X-Trans path doesn't use the worker &mdash; rawpy is a C-extension call that holds the GIL for the duration of the decode, so running it in a QThread wouldn't improve responsiveness. The dialog shows a status message, calls rawpy synchronously, and reports completion.</p>
+
+<h3>14. Doc apply strategies and view refresh</h3>
+<p>The apply layer <code>_apply_result_to_doc(dm, doc, rgb, step_name)</code> always targets the <b>specific doc passed to it</b>, never &ldquo;the active doc.&rdquo; This is important for the headless and script paths, which may apply a debayer to a doc that isn't currently visible.</p>
+<p>Preference order:</p>
+<ol>
+<li><code>doc.apply_edit(rgb, metadata, step_name=&hellip;)</code> &mdash; preferred, participates in undo. Also tries the legacy two-arg and one-arg signatures as fallbacks.</li>
+<li>Direct mutation of <code>doc.image</code> and <code>doc.metadata[&quot;is_mono&quot;] = False</code>, followed by an explicit refresh.</li>
+</ol>
+<p>Refresh is done by <code>_refresh_view_for_doc</code>: it tries the doc manager's <code>refresh_subwindow_for_document</code> API first, falling back to walking the MDI subwindow list for one whose <code>widget().document</code> is identically the passed doc, calling that view's <code>refresh_pixmap_from_document</code> / <code>refresh_view</code> / <code>update_from_doc</code> hook if any exists, and finally calling plain <code>update()</code> on both the view widget and its subwindow. The active subwindow isn't changed; the user stays where they were.</p>
+
+<h2>Credits</h2>
+<div class="credit">
+<b>Debayer</b> is original SASpro work by <b>Franklin Marek</b> for the dialog, dispatch chain, CFA-family and Bayer-phase auto-detection (header &rarr; model &rarr; rawpy &rarr; scoring), ROWORDER flip invariant, multi-source RAW path discovery, range-preserving mono normaliser, QThread worker, doc-aware apply layer with view refresh, and the headless <code>debayer_array()</code> entry point. The underlying demosaic algorithms are classical:
+<br><br>
+<b>Demosaic algorithms:</b>
+<ul>
+<li><b>VNG (Variable Number of Gradients)</b> &mdash; Chang, E., Cheung, S., &amp; Pollard, D. Y. (1999). &ldquo;Color filter array recovery using a threshold-based variable number of gradients.&rdquo; <i>Proc. SPIE</i> 3650, Sensors, Cameras, and Applications for Digital Photography, 36&ndash;43.</li>
+<li><b>Edge-aware / Hamilton&ndash;Adams</b> &mdash; Hamilton, J. F. &amp; Adams, J. E. (1997). &ldquo;Adaptive color plane interpolation in single sensor color electronic camera.&rdquo; US Patent 5,629,734. The &ldquo;edge-aware&rdquo; Numba kernel in SASpro implements this family of gradient-informed interpolation.</li>
+<li><b>Bilinear interpolation</b> &mdash; classical signal processing; standard baseline for Bayer demosaicing.</li>
+<li><b>AHD (Adaptive Homogeneity-Directed)</b> &mdash; Hirakawa, K. &amp; Parks, T. W. (2005). &ldquo;Adaptive homogeneity-directed demosaicing algorithm.&rdquo; <i>IEEE Trans. on Image Processing</i> 14(3), 360&ndash;369. Used for X-Trans via rawpy / LibRaw.</li>
+<li><b>DHT</b> &mdash; Alternative demosaicing by Anton Petrusevich, implemented in LibRaw. Used for X-Trans via rawpy.</li>
+</ul>
+
+<b>Image-processing libraries:</b>
+<ul>
+<li><b>LibRaw</b> &mdash; Alex Tutubalin and contributors (<a href="https://www.libraw.org/">libraw.org</a>). The RAW decoder used for X-Trans.</li>
+<li><b>rawpy</b> &mdash; Maik Riechert and contributors; the Python wrapper around LibRaw.</li>
+<li><b>OpenCV</b> &mdash; Bradski, G. (2000). &ldquo;The OpenCV Library.&rdquo; <i>Dr. Dobb's Journal of Software Tools</i>. Used for the Sobel kernels (<code>cv2.Sobel</code>) in the scoring auto-detect.</li>
+<li><b>Numba</b> &mdash; Lam, Pitrou, &amp; Seibert (2015). &ldquo;Numba: a LLVM-based Python JIT compiler.&rdquo; LLVM-HPC2 at SC15. The Bayer demosaic kernels (<code>debayer_fits_fast</code>) are JIT-compiled with Numba for speed.</li>
+</ul>
+
+<b>Sensor technology:</b>
+<ul>
+<li><b>Bayer CFA</b> &mdash; Bayer, B. E. (1976). &ldquo;Color imaging array.&rdquo; US Patent 3,971,065.</li>
+<li><b>X-Trans CFA</b> &mdash; Fujifilm's 6&times;6 non-periodic colour filter array, designed to reduce moir&eacute; without an optical low-pass filter.</li>
+</ul>
+</div>
+
+</body>
+</html>

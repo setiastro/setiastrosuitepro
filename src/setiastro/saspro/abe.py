@@ -837,6 +837,7 @@ class ABEDialog(QDialog):
         # After the final opts.addStretch(1) → pins to the lower-left corner.
         # Deferred import avoids an abe.py <-> shortcuts.py import cycle.
         from setiastro.saspro.shortcuts import PresetDragHandle
+        from setiastro.saspro.help_support import make_help_button
         try:
             from setiastro.saspro.resources import abeicon_path
             _icon = QIcon(abeicon_path)
@@ -858,6 +859,8 @@ class ABEDialog(QDialog):
         )
         drag_row.addWidget(self.preset_drag_handle)
         drag_row.addStretch(1)
+        self.btn_help = make_help_button("abe", self)
+        drag_row.addWidget(self.btn_help)
         opts.addLayout(drag_row)
 
         # ⬇️ New right-side stack: toolbar row ABOVE the preview

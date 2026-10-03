@@ -17,7 +17,7 @@ from PyQt6.QtGui import QDrag, QCloseEvent, QCursor, QShortcut, QKeySequence
 from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.dnd_mime import MIME_CMD, MIME_VIEWSTATE
 from setiastro.saspro.doc_manager import ImageDocument
-
+from setiastro.saspro.help_support import make_help_button
 def _pin_on_top_mac(win: QDialog):
     if sys.platform == "darwin":
         # Float above normal windows, behave like a palette/tool window
@@ -659,6 +659,8 @@ class ViewBundleDialog(QDialog):
         left.addWidget(self.list, 1)
         row = QHBoxLayout()
         row.addWidget(self.btn_new); row.addWidget(self.btn_dup); row.addWidget(self.btn_del)
+        row.addStretch(1)
+        row.addWidget(make_help_button("view_bundles", self))
         left.addLayout(row)
 
         right = QVBoxLayout()

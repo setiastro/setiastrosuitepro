@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Curves Editor</h1>
+<p class="sub">Freehand transfer curves on a monotone spline, per channel &mdash;
+RGB, CIELAB (L*, a*, b*, Chroma) and Saturation &mdash; with a live
+before/after histogram, presets, and a mask-aware, instant-apply pipeline.</p>
+
+<h2>1. Using the tool</h2>
+<p>The grid is your transfer curve: the horizontal axis is input tone, the
+vertical axis is output. Each channel keeps its own curve, and the channels you
+aren't editing are drawn as dim overlays so you always see the whole transform.</p>
+
+<h3>Shaping the curve</h3>
+<ul>
+  <li><b>Add a point</b> &mdash; left-click an empty spot inside the grid; it
+      starts dragging immediately. (You can also drop one straight from the
+      image &mdash; see below.)</li>
+  <li><b>Move a point</b> &mdash; drag it. Interior points are free in output and
+      clamped in input between their two neighbours, so the curve can't fold back
+      on itself.</li>
+  <li><b>Endpoints are edge-locked</b> &mdash; the black point (bottom-left) slides
+      along the left or bottom edge, the white point (top-right) along the right
+      or top edge, so they double as black/white-point handles. They can't be
+      deleted.</li>
+  <li><b>Delete a point</b> &mdash; <b>right-click</b> it, <b>double-click</b> it,
+      or hover/select it and press <b>Delete</b>.</li>
+  <li><b>Hover a point</b> &mdash; it highlights and shows its exact
+      <code>in / out</code> values right next to it.</li>
+  <li><b>Stacked points</b> &mdash; clicking a spot where points overlap cycles
+      through them, so a handle buried under another (e.g. an endpoint pushed
+      into a corner) is still reachable on the next click.</li>
+  <li><b>Point X / Y</b> &mdash; with a point selected, type its exact input/output
+      values (0&ndash;1) into the spin-boxes.</li>
+</ul>
+
+<h3>Working from the image</h3>
+<ul>
+  <li><b>Hover the preview</b> &mdash; vertical value-lines appear on <i>both</i>
+      the curve grid and the histogram at the hovered pixel's R/G/B (or K) levels,
+      and the status line reads out the cursor position and those values. You can
+      see exactly where a feature's tones sit on your curve before you touch a
+      handle.</li>
+  <li><b>Double-click the preview</b> &mdash; drops a control point on the active
+      curve at that pixel's brightness (nudged slightly if it lands on an existing
+      point), so you can anchor the curve to a tone you picked straight off the
+      image.</li>
+  <li><b>Ctrl+click the grid</b> &mdash; sets an inflection pivot and redistributes
+      the interior handles evenly around it, a quick way to seed a symmetric
+      contrast move.</li>
+</ul>
+
+<h3>Channels, presets &amp; preview</h3>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Channel</td><td><b>K</b> (brightness / RGB linked), <b>R/G/B</b>,
+      <b>L*</b>, <b>a*</b>, <b>b*</b>, <b>Chroma</b>, or <b>Saturation</b> &mdash;
+      each with an independent curve; the inactive ones draw as dim overlays.</td></tr>
+  <tr><td>Presets</td><td>Built-in shapes (S-curves, lift/crush shadows, highlight
+      roll-off, &hellip;) plus your own saved multi-channel presets.</td></tr>
+  <tr><td>Pop Out</td><td>Detach the editor into its own resizable window
+      (position/size remembered).</td></tr>
+  <tr><td>Histogram</td><td>Before (dim) vs after (bright) for R/G/B and
+      luminance, with log scaling and x-axis zoom/pan.</td></tr>
+  <tr><td>Toggle Preview / Apply / Reset</td><td>Show the result on the canvas,
+      commit it to the document, or return every channel to the identity line.</td></tr>
+  <tr><td>Grip (bottom-left)</td><td>Drag to the canvas to mint a Curves shortcut
+      with <b>all</b> channel curves baked in, or drop on an image to apply
+      headlessly.</td></tr>
+</table>
+
+<h2>2. Technical details</h2>
+<p class="tech-lead">A curve is a monotone spline through your control points,
+baked to a lookup table and applied either per RGB channel or per colour-space
+component. Everything runs on float data in [0,1].</p>
+
+<h3>2.1 The curve: a monotone PCHIP spline</h3>
+<p>The control points are interpolated with a <b>PCHIP</b> (Piecewise Cubic
+Hermite) spline &mdash; a shape-preserving monotone cubic. Unlike a natural cubic
+it never overshoots or rings between points, so the curve does exactly what the
+handles say and the transfer stays monotone (no tonal inversions).</p>
+
+<h3>2.2 From curve to lookup table</h3>
+<p>The spline is sampled into a lookup table &mdash; 65&thinsp;536 entries for the
+final apply (256 for the live preview) &mdash; and every pixel is mapped through
+it:</p>
+<div class="matheq-hero">\mathrm{out}(x)=\mathrm{LUT}\left[\,\mathrm{round}(x\,(N-1))\,\right],\qquad N=65536</div>
+<p>Because the LUT is monotone, the before&rarr;after histogram can be remapped
+exactly by resampling the input CDF onto the output axis &mdash; mass-preserving
+and gap-free, so the displayed &ldquo;after&rdquo; histogram can't show a false
+comb where the curve expands tones.</p>
+
+<h3>2.3 Channel modes</h3>
+<p><b>RGB.</b> <b>K</b> applies one LUT to all three channels (linked brightness);
+<b>R/G/B</b> curve a single channel. When both are set, the per-channel curve is
+composed <i>after</i> K:</p>
+<div class="matheq">\mathrm{LUT}_{R}'=\mathrm{LUT}_{R}\circ\mathrm{LUT}_{K}</div>
+<p><b>CIELAB (L*, a*, b*, Chroma).</b> The image is converted sRGB&rarr;XYZ
+(D65) with</p>
+<div class="eq">[ X ]   [ 0.412456  0.357576  0.180438 ] [ R ]
+[ Y ] = [ 0.212673  0.715152  0.072175 ] [ G ]
+[ Z ]   [ 0.019334  0.119192  0.950304 ] [ B ]</div>
+<p>then XYZ&rarr;Lab about the D65 white point
+<code>(Xn, Yn, Zn) = (0.95047, 1, 1.08883)</code>:</p>
+<div class="matheq">L^{*}=116\,f\!\left(\frac{Y}{Y_n}\right)-16</div>
+<div class="matheq">a^{*}=500\left(f\!\left(\frac{X}{X_n}\right)-f\!\left(\frac{Y}{Y_n}\right)\right),\qquad b^{*}=200\left(f\!\left(\frac{Y}{Y_n}\right)-f\!\left(\frac{Z}{Z_n}\right)\right)</div>
+<div class="matheq">f(t)=\sqrt[3]{t}\ \ (t>\delta^{3}),\qquad f(t)=\frac{t}{3\delta^{2}}+\frac{4}{29}\ \ (t\leq\delta^{3}),\qquad \delta=\frac{6}{29}</div>
+<p>The selected component is normalised to [0,1], curved, and de-normalised
+(<code>L*/100</code>, <code>(a*+128)/255</code>, <code>(b*+128)/255</code>). For
+<b>Chroma</b> the curve scales the colour's radius in the a*&ndash;b* plane while
+keeping its hue:</p>
+<div class="matheq">C=\sqrt{a^{*2}+b^{*2}}\;,\qquad (a^{*},b^{*})\;\to\;(a^{*},b^{*})\cdot\frac{C_{\mathrm{new}}}{C}</div>
+<p><b>Saturation</b> curves the S channel of HSV and converts back.</p>
+
+<h3>2.4 Order of operations</h3>
+<p>When several channels are active they are applied in a fixed order so the
+result is deterministic: first the RGB stage (K composed into R/G/B), then the
+Lab stage (L*, a*, b*, Chroma via one round-trip), then Saturation (via HSV).
+<b>Mono</b> images support K (applied directly) and L* (through the Lab lightness
+nonlinearity); the colour-only channels are skipped.</p>
+
+<h3>2.5 Inflection pivot</h3>
+<p>Ctrl+clicking the grid (or double-clicking the image) sets a pivot
+<code>u</code> and redistributes the interior handles evenly on either side of it
+along the identity line &mdash; a quick way to seed a symmetric contrast curve
+around a chosen tone.</p>
+
+<h3>2.6 Masking &amp; apply</h3>
+<p>With an active mask the result is blended back against the source over the
+mask:</p>
+<div class="matheq">\mathrm{out}=\mathrm{mask}\cdot\mathrm{out}+(1-\mathrm{mask})\cdot\mathrm{src}</div>
+<ul>
+  <li>The preview runs on a downsampled copy; the full-resolution result is
+      computed in a background thread, keyed by a signature of every channel's
+      points plus the active mask, so <b>Apply</b> is usually instant (it commits
+      the already-computed result) and falls back to a synchronous compute only
+      if you apply before the worker finishes.</li>
+  <li>The grip/headless preset is <code>kind="curves_multi"</code> and carries
+      every channel's points, so a dropped shortcut reproduces the entire
+      multi-channel transform &mdash; not just the active curve.</li>
+  <li>After Apply, all curves reset to the identity line on the
+      already-transformed image so you can keep stacking adjustments.</li>
+</ul>
+
+</body>
+</html>

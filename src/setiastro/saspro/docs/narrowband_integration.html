@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#302820; border-left:3px solid #d4a037; padding:8px 12px;
+          margin:10px 0; color:#e8d9b8; }
+  .credit { background:#241f15; border:1px solid #5a4a2c; border-left:3px solid #d4af37;
+            padding:8px 12px; margin:10px 0; color:#e8dcc0; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1a222e; border:1px solid #2c4a6a; border-left:3px solid #4a9ad4;
+          padding:8px 12px; margin:10px 0; color:#cde0f0; }
+  .workflow { background:#17202a; border:1px solid #2c4860; border-left:3px solid #4aa0d4;
+              padding:8px 12px; margin:10px 0; color:#cde3f0; }
+  .cap { color:#9a9a9a; font-size:11px; }
+</style>
+</head>
+<body>
+
+<h1>Narrowband Integration</h1>
+<p class="sub">Screen one or more narrowband emission-line channels (H&alpha;, SII, OIII, and any custom wavelengths you add) into a broadband RGB image, with per-channel hue, saturation, amount and black/mid/white levels &mdash; the counterpart to Continuum Subtraction, letting you put the recovered line-emission back onto a colour image as hue-tinted luminance.</p>
+
+<div class="pub">
+<b>SASpro-exclusive tool.</b> Narrowband Integration is an original <b>SetiAstro Suite Pro</b> implementation by <b>Franklin Marek</b>. The screen compositor, per-channel hue slider with gradient preview and preset library, chevron-handle levels widget with PI-style relative midtone, saturation-to-greyscale lerp, dynamic filter rows with filename auto-matching, and the live downsampled preview with cursor-anchored zoom are all built from the ground up for SASpro's document model.
+</div>
+
+<div class="workflow"><b>Workflow</b><br>
+Pick a broadband RGB image &rarr; enable one or more NB channels &rarr; choose a source image for each &rarr; tune hue, levels, saturation and amount against the live preview &rarr; <b>Apply to Current View</b> or <b>Apply as New Document</b>.
+</div>
+
+<h2>1. The preview area</h2>
+<p>The right pane shows the live result at the current zoom. It updates automatically whenever any control changes (debounced by 300&nbsp;ms so dragging a slider stays smooth).</p>
+<div class="keys">
+<b>Zoom &amp; pan:</b><br>
+🖱️ <b>Drag</b> &mdash; pan.<br>
+🖱️ <b>Wheel</b> &mdash; zoom in/out, anchored at the cursor. Pixel-delta trackpads use a gentle 1.03&times; factor; wheel-notch mice use 1.15&times;.<br>
+Zoom toolbar: <b>zoom-out</b> / <b>zoom-in</b> (1.25&times; steps) / <b>1:1</b> (100%) / <b>fit</b> (fill the viewport).<br>
+Zoom range is 5% to 1600%.
+</div>
+<p><b>Small preview (fast)</b> below the controls downsamples the preview to a 1200&nbsp;px long axis for responsive editing. Turn it off to preview at full resolution (useful for pixel-peeping before Apply). The Apply buttons always use full resolution regardless.</p>
+
+<h2>2. Loading images</h2>
+
+<h3>Broadband RGB</h3>
+<p>Pick your base RGB image from the top dropdown. All currently open documents with an image are listed. <b>↺&nbsp;Refresh</b> re-reads the open document list without resetting your other picks &mdash; use it after you've loaded new images into SASpro.</p>
+
+<h3>The three fixed narrowband channels</h3>
+<p>H&alpha; (656&nbsp;nm), SII (672&nbsp;nm) and OIII (496/501&nbsp;nm) each have a dedicated group with:</p>
+<ul>
+  <li><b>Enable</b> &mdash; the master toggle. Disabled channels contribute nothing even if a source is set.</li>
+  <li><b>Source dropdown</b> &mdash; which open document provides this channel's signal. Colour inputs are flattened to Rec.&nbsp;601 luminance (<code>0.299R + 0.587G + 0.114B</code>) before being colorized.</li>
+  <li><b>Hue</b>, <b>Amount</b>, <b>Saturation</b>, <b>Levels</b> &mdash; see &sect;3 to &sect;5.</li>
+</ul>
+
+<h3>Filename auto-match on load</h3>
+<p>When you (re)populate the dropdowns via Refresh, SASpro scans every open document's title for narrowband markers and auto-selects the best match for each of H&alpha;, SII and OIII &mdash; and switches that channel on. Patterns matched (case-insensitive): <code>ha</code>, <code>hα</code>, <code>halpha</code>, <code>h-alpha</code> for H&alpha;; <code>sii</code>, <code>s2</code>, <code>sulfur</code> for SII; <code>oiii</code>, <code>o3</code>, <code>oxygen</code> for OIII. Matches get a higher score when the marker sits between separators (underscore, hyphen, dot, space), so <code>M8_Ha_master.fit</code> beats <code>Charlotte.fit</code> for the H&alpha; slot.</p>
+
+<h2>3. Hue</h2>
+<p>Each channel gets its own colour via the <b>hue gradient slider</b> &mdash; drag the ball along the rainbow, or type a precise value (0&ndash;359.9&deg;) in the <b>Hue</b> spin box next to it. The two stay in sync. Default hues:</p>
+<table>
+  <tr><th>Channel</th><th>Default hue</th><th>Resulting colour</th></tr>
+  <tr><td>H&alpha;</td><td>4&deg;</td><td>warm red</td></tr>
+  <tr><td>SII</td><td>0&deg;</td><td>pure/deep red</td></tr>
+  <tr><td>OIII</td><td>156&deg;</td><td>green-cyan (teal)</td></tr>
+</table>
+
+<h2>4. Levels (Black / Mid / White)</h2>
+<p>Each channel has an inline <b>Levels</b> bar with three draggable chevrons sitting under a black&harr;white gradient:</p>
+<ul>
+  <li><b>Black (blue)</b> &mdash; input level mapped to zero.</li>
+  <li><b>Mid (green)</b> &mdash; midtone control (standard PixInsight-style MTF). <i>Mid is stored as a position relative to Black and White</i>, so if you later drag Black or White, the green chevron tracks proportionally and keeps the same midtone balance.</li>
+  <li><b>White (orange)</b> &mdash; input level mapped to one.</li>
+</ul>
+<p>Hover any chevron to get the resize cursor. Grab the one you want and drag; the dragged chevron grows 20% to confirm it's the one you've got hold of. Black and White are hard-clamped to stay in order with a 0.001 minimum gap; Mid is clamped to stay strictly between them. The levels remap happens <i>before</i> colorization &mdash; see &sect;8.3 for the maths.</p>
+
+<h2>5. Amount &amp; Saturation</h2>
+<ul>
+  <li><b>Amount</b> (0.0&ndash;2.0, default 1.0) &mdash; scales the colorized layer before it's screened onto the RGB. 0 = no contribution, 1 = full screen, 2 = double weight (the colorized layer is still clipped to [0,&nbsp;1] before the screen, so values &gt;&nbsp;1 push the saturation of the screen rather than just brightening).</li>
+  <li><b>Saturation</b> (0.0&ndash;1.0, default 1.0) &mdash; blends the colorized layer toward greyscale before screening. At <code>1.0</code> you get the full hue; at <code>0.0</code> the NB signal is added as pure luminance with no hue shift, preserving every bit of signal while stripping the colour cast. Useful when you want OIII detail to boost structural luminance without turning the galaxy teal.</li>
+</ul>
+
+<h2>6. Dynamic filter rows</h2>
+<p>Click <b>&#43;&nbsp;Add Filter</b> to add a custom narrowband channel beneath the fixed three. Each dynamic row has everything the fixed channels have, plus:</p>
+<ul>
+  <li><b>Name</b> field &mdash; freeform label (becomes the group box title).</li>
+  <li><b>Preset dropdown</b> &mdash; snaps hue to a known emission wavelength. Available presets:</li>
+</ul>
+<table>
+  <tr><th>Preset</th><th>Wavelength</th><th>Default hue</th></tr>
+  <tr><td>Ha</td><td>656&nbsp;nm</td><td>4&deg;</td></tr>
+  <tr><td>SII</td><td>672&nbsp;nm</td><td>0&deg;</td></tr>
+  <tr><td>OIII</td><td>496/501&nbsp;nm</td><td>156&deg;</td></tr>
+  <tr><td>Neon</td><td>585&nbsp;nm</td><td>52&deg;</td></tr>
+  <tr><td>Argon</td><td>488&nbsp;nm</td><td>196&deg;</td></tr>
+  <tr><td>Nitrogen</td><td>658&nbsp;nm</td><td>2&deg;</td></tr>
+  <tr><td>Helium</td><td>587&nbsp;nm</td><td>51&deg;</td></tr>
+  <tr><td>Custom</td><td>&mdash;</td><td>0&deg; (edit freely)</td></tr>
+</table>
+<p>Picking a preset also renames the row to match. Pick <b>Custom</b> if you want to keep your own name while editing the hue freehand. Each row has a <b>&times;</b> button to remove it; dynamic rows render in the order you added them.</p>
+
+<h2>7. Applying</h2>
+<ul>
+  <li><b>Apply to Current View</b> &mdash; replaces the selected RGB document's pixels in place via <code>set_image()</code>. Falls back to opening a new document if the target doesn't support in-place updates.</li>
+  <li><b>Apply as New Document</b> &mdash; always opens a new document titled <code>&lt;rgb-name&gt; [NB Integration]</code>, leaving your source untouched.</li>
+  <li><b>&#8634;&nbsp;Reset</b> &mdash; disables every fixed channel, returns defaults for hue (per table in &sect;3), amount (1.0), saturation (1.0), and levels (0 / 0.5 / 1); every dynamic row is reset the same way (but not removed).</li>
+</ul>
+
+<p>Both Apply buttons compute at full input resolution regardless of the Small-preview toggle. The dialog remembers its geometry, splitter position and small-preview preference across sessions.</p>
+
+<h2>8. Technical details</h2>
+<p class="tech-lead">The compositor pipeline, per enabled channel, in order.</p>
+
+<h3>8.1 The screen blend</h3>
+<p>The core operation is standard screen compositing, applied per RGB channel:</p>
+<div class="matheq-hero">\mathrm{out} = a + b - a\,b</div>
+<p>which is the complement of multiplicative darkening: it brightens the base image by the colorized NB layer, with the result bounded in <code>[0,&nbsp;1]</code> for inputs in <code>[0,&nbsp;1]</code>. Screen is commutative and associative, so stacking multiple NB channels is order-independent (within numerical precision). The full composition for N enabled channels is:</p>
+<div class="matheq">I_{k+1} = I_k + C''_k - I_k \cdot C''_k</div>
+<p>with <code>I_0</code> the input RGB and <code>C''_k</code> the amount-scaled colorized NB layer for channel <code>k</code> (see &sect;8.5).</p>
+
+<h3>8.2 Hue colorization</h3>
+<p>The mono NB signal is converted to RGB by driving the HSV value channel while fixing saturation to 1:</p>
+<div class="matheq">C_{\mathrm{nb}}(x,y) = \mathrm{HSV2RGB}(h,\,1,\,m(x,y))</div>
+<p>where <code>h</code> is the user-set hue (0&ndash;360&deg;), saturation is held at 1.0, and value is the leveled mono signal <code>m(x,y)</code> from &sect;8.3. SASpro ships its own inline HSV&rarr;RGB sector math (six-sector piecewise linear, no library dependency), so the colorizer runs identically whether or not OpenCV is installed. OpenCV is used only to draw the hue slider's gradient preview when available &mdash; the compositor doesn't depend on it.</p>
+
+<h3>8.3 Per-channel levels (MTF)</h3>
+<p>Before colorization, the mono NB signal <code>x</code> is remapped by the channel's Levels. First a linear black-point / white-point stretch:</p>
+<div class="matheq">t = \mathrm{clip}\!\left(\frac{x - K_{\mathrm{black}}}{K_{\mathrm{white}} - K_{\mathrm{black}}},\;0,\;1\right)</div>
+<p>then a midtones transfer function (PixInsight-style MTF) using the channel's midtone balance <code>M</code>:</p>
+<div class="matheq">\mathrm{MTF}(t,\,M) = \frac{(M-1)\,t}{(2M-1)\,t - M}</div>
+<p>The result <code>m(x,y) = MTF(t, M)</code> becomes the value channel for the colorizer. The MTF implementation is the shared <code>_mtf_vect</code> from SASpro's histogram transform engine, so levels here behave identically to the Levels / Histogram Transform tool.</p>
+<p>The Mid chevron is stored as a <i>relative</i> position inside <code>[K_black, K_white]</code> rather than an absolute level, so Black and White can be moved without changing the midtone balance:</p>
+<div class="matheq">M_{\mathrm{abs}} = K_{\mathrm{black}} + M_{\mathrm{rel}}\,(K_{\mathrm{white}} - K_{\mathrm{black}})</div>
+<p>Dragging Black or White rescales <code>M_abs</code> proportionally while <code>M_rel</code> stays put. This matches PixInsight's HistogramTransformation convention and is why your midtone looks "right" after you've narrowed the black/white range.</p>
+
+<h3>8.4 Saturation lerp</h3>
+<p>Before the colorized layer is screened, Saturation linearly interpolates it toward a greyscale copy of the mono signal:</p>
+<div class="matheq">C' = s\,C_{\mathrm{nb}} + (1-s)\,M_{\mathrm{rgb}}</div>
+<p class="cap">where <code>M<sub>rgb</sub> = (m, m, m)</code> &mdash; the leveled mono signal broadcast into all three channels.</p>
+<p>At <code>s = 1</code> this is a no-op (full hue preserved). At <code>s = 0</code> the output is pure mono-into-three-channels &mdash; the signal still gets screened onto the RGB, but with no hue bias at all, so the base image's own colour balance is preserved and the NB adds luminance only. Intermediate values give a controllable &ldquo;desaturated hue&rdquo; look, useful for toning down an aggressive OIII blue in a bright galaxy core.</p>
+
+<h3>8.5 Amount scaling</h3>
+<p>Finally the layer is scaled and clipped before the screen:</p>
+<div class="matheq">C'' = \mathrm{clip}(C' \cdot \alpha,\;0,\;1)</div>
+<p>with <code>&alpha;</code> the Amount setting (0&ndash;2). Because the clip happens <i>before</i> screen, Amount&nbsp;&gt;&nbsp;1 doesn't push outputs past 1 &mdash; it saturates the colorized layer first, which in turn pushes the screen result toward the hue colour rather than toward white. This is why Amount 2 feels like a &ldquo;colour boost&rdquo; rather than a brightness boost.</p>
+
+<h3>8.6 Resampling and preview</h3>
+<p>NB sources that don't match the RGB resolution are resampled to the RGB grid with <code>cv2.resize</code> (<code>INTER_AREA</code>) when OpenCV is available; otherwise SASpro uses a nearest-neighbour index map so the pipeline still runs headless. The &ldquo;Small preview (fast)&rdquo; downsampler uses the same <code>INTER_AREA</code> path, capped at a 1200&nbsp;px long axis; Apply buttons always run on the full-resolution RGB and resize each NB source into it.</p>
+
+<h3>8.7 Live-update debounce</h3>
+<p>Every control is wired to a 300&nbsp;ms single-shot <code>QTimer</code> that coalesces rapid changes (dragging a slider, scrubbing a chevron) into one preview recompute. The result pixmap is cached and only re-scaled when the zoom changes, so slider interaction stays smooth even on large frames.</p>
+
+<div class="credit">
+<b>Credits.</b> Narrowband Integration &mdash; the compositor, UI, hue slider, dynamic filter rows, filename auto-matching, chevron levels widget, and preview engine &mdash; is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to community: the screen blend is a classical compositing operator (Porter &amp; Duff 1984, &ldquo;Compositing Digital Images&rdquo;); the midtones transfer function is the standard rational MTF popularized by PixInsight's HistogramTransformation; HSV&harr;RGB conversion is the Smith (1978) six-sector hexcone construction (SASpro ships its own inline implementation and does not depend on an external library for it); Rec.&nbsp;601 luminance weights (0.299, 0.587, 0.114) are a standard colorimetric convention. <b>OpenCV</b> is credited as an optional compute backend used for image resampling and for drawing the hue slider's gradient preview &mdash; the compositor runs identically without it. <b>NumPy</b> provides the array engine, and <b>PyQt6</b> the UI framework.
+</div>
+
+</body>
+</html>

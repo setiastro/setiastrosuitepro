@@ -49,7 +49,7 @@ from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
 )
 from setiastro.saspro.legacy.numba_utils import debayer_raw_fast, debayer_fits_fast
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.help_support import make_help_button
 
 from setiastro.saspro.star_metrics import measure_stars_sep
 
@@ -1876,7 +1876,8 @@ class BlinkTab(QWidget):
         self.zoom_panel_btn.setFixedWidth(110)
         self.zoom_panel_btn.clicked.connect(self._toggle_zoom_panel)
         zoom_controls_layout.addWidget(self.zoom_panel_btn)
-
+        self.btn_doc_help = make_help_button("blink", self)
+        zoom_controls_layout.addWidget(self.btn_doc_help)
         self.scroll_area = QScrollArea(self)
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)

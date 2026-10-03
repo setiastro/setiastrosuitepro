@@ -1,0 +1,383 @@
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color:#e6e6e6; background:#1b1b1b; padding:10px 14px; line-height:1.45; }
+h1 { margin: 0 0 10px 0; font-size: 20px; color:#9ad; }
+h2 { margin-top: 16px; color:#cfd; font-size:16px; border-bottom:1px solid #333; padding-bottom:3px; }
+h3 { color:#9bd; margin-top:14px; margin-bottom:6px; font-size:14px; }
+code { background:#2a2a2a; padding:1px 4px; border-radius:3px; }
+.eq { background:#232323; border-left:3px solid #4caf50; padding:6px 10px; margin:6px 0; font-family:monospace; }
+.hero { background:#1f2a1f; border-left:3px solid #4caf50; padding:10px 12px; margin:10px 0; border-radius:3px; }
+.matheq { margin: 8px 14px; text-align:left; }
+.matheq-hero { margin: 10px 0; text-align:center; }
+.tip { background:#1f2a1f; border-left:3px solid #4caf50; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.warn { background:#2a241f; border-left:3px solid #c0892b; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.credit { background:#2a251c; border-left:3px solid #c7a24a; padding:8px 12px; margin:12px 0 6px 0; border-radius:3px; font-size:13px; color:#dcd3b8; }
+.pub { background:#1f2a1f; border-left:3px solid #4caf50; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.keys { background:#1f2630; border-left:3px solid #4a9eff; padding:6px 10px; margin:8px 0; border-radius:3px; }
+.workflow { background:#1f2630; border-left:3px solid #4a9eff; padding:8px 12px; margin:10px 0; border-radius:3px; }
+.science { background:#2a1f2a; border-left:3px solid #c74ac7; padding:8px 12px; margin:10px 0; border-radius:3px; }
+ul { margin: 6px 0 10px 0; padding-left:22px; }
+li { margin: 3px 0; }
+p { margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>What's In My Image</h1>
+
+<div class="hero">
+<b>The exploration tool for the science in your image.</b> Load a plate-solved astronomical image (or let SASpro solve it), define a search region, and WIMI queries SIMBAD, Vizier, MAST, your local Gaia DR3 library, and a local minor-body catalog to identify every object in the field — galaxies, stars, planetary nebulae, HII regions, asteroids, comets, HST footprints, SDSS spectroscopic redshifts, GLADE+ distances, and the rest. Then the real science starts: a <b>3D distance model</b> that places every object in RA/Dec/distance space on the image plane, a <b>Hertzsprung-Russell diagram</b> built from Gaia XP synthetic photometry with Curtis 2020 Teff, a <b>collage</b> of 128×128 cutouts of every object labeled with its physical properties, and 14-column results tree with per-object SIMBAD lookup, Aladin, AstroBin and NED links on right-click.
+</div>
+
+<div class="pub">
+<b>Three pillars of exploration.</b> First: <b>identify what's in your frame</b> via five independent databases, deduplicated and merged. Second: <b>visualize the geometry</b> in 3D — see how the foreground stars sit against the background galaxies in your image plane, in light-years. Third: <b>plot the physics</b> — a real H-R diagram of every star in your field, built from Gaia XP spectra when they're available (B/V synthesized from Johnson filter curves; Teff from blackbody fits to the XP continuum or the Gaia-native Curtis 2020 BP-RP relation). This isn't a cataloging tool. It's a bridge from your image to the published science.
+</div>
+
+<h2>1. The three-panel layout</h2>
+<ul>
+<li><b>Left panel</b> — Load controls, AutoStretch, SIMBAD query button, legend, show-names and clear-results toggles, visibility filter, save CSV, advanced-search toggle, status, RA/Dec/orientation readout, mini-preview with a draggable green viewport box, lunar/sidereal info (shared with WIMS).</li>
+<li><b>Right panel</b> — Zoom controls, crosshair toggle (off/thin/outlined/gap), the main image preview, action row (Show Annotations, Push Annotated to View, Save Annotated, Save Collage, 3D Distance Model, H-R Diagram), results tree with 14 sortable columns, and the hidden annotation toolbox.</li>
+<li><b>Advanced search panel</b> (right-side docked, toggled by the Advanced Search button) — OTYPE filter tree organized by 13 categories, Save/Load List as JSON, Gaia augment checkbox, Search Defined Region vs Search Entire Image buttons, Minor Planets/Comets group, Deep Vizier Search button, MAST Search button.</li>
+</ul>
+
+<h2>2. Loading an image</h2>
+<p>Three paths in:</p>
+<ul>
+<li><b>Load Image File</b> — standard file dialog. FITS, XISF, TIFF, PNG, JPG all supported.</li>
+<li><b>Load from View ▾</b> — pick any image already open elsewhere in SASpro. The dropdown lists every active document by title; selecting one brings its pixels and metadata into WIMI without a disk round-trip.</li>
+<li><b>Drag &amp; drop</b> onto the main preview area.</li>
+</ul>
+<p>WIMI looks for a WCS solution in this order: (1) <code>wcs_header</code> in the document metadata if a solver has already written one; (2) <code>original_header</code> if it contains valid WCS keywords; (3) for XISF files, a reconstructed FITS header built from the <code>FITSKeywords</code> and <code>LinearTransformationMatrix</code> blocks; (4) finally — auto-solve via the shared plate solver (ASTAP first with any seed data, then Astrometry.net blind). The Force Blind Solve button in Settings always does step 4 regardless.</p>
+
+<div class="warn">
+<b>No usable WCS, no science.</b> SIMBAD queries, markers, measurements, 3D model, H-R diagram, minor-body search — all of it depends on being able to map pixels to sky coordinates. If auto-solve fails, SASpro says so and asks you to solve manually. A header with WCS keywords that fails sanity checks (missing <code>CTYPE</code>, SIP coefficients without matching orders, non-numeric values from a bad card parse) gets sanitized where possible or stripped of SIP if the distortion polynomial is inconsistent.
+</div>
+
+<h2>3. Defining a search region</h2>
+<p>Shift+click and drag in the main preview to define the search circle. The status bar shows center RA/Dec and radius in arcminutes as you draw. Shift+click again to redraw. This circle is what SIMBAD, Vizier, MAST, Gaia, and the minor-body search all use when "defined region" is selected. "Search Entire Image" ignores the circle and runs the query against a radius that reaches from the image center to the corner (so the whole field is covered, including edge objects).</p>
+
+<h2>4. SIMBAD identification</h2>
+<p>The <b>Query SIMBAD</b> button runs a two-step lookup against the SIMBAD TAP service at Strasbourg:</p>
+<ol>
+<li>A <b>TAP query on BASIC</b> returning RA, Dec, main_id, redshift, OTYPE, and major/minor axis + position angle for every object within the search circle. OTYPE filtering happens client-side against the Advanced Search tree selection.</li>
+<li>A second <b>sim-sam query</b> fired only against the subset classified as stars or binaries, pulling Johnson B and V flux, parallax, and spectral type. This is why star identification feels richer than galaxy identification in the results — stars get full stellar parameters appended.</li>
+</ol>
+<p>Network failures retry up to 5 times with 1-second backoff. If all five fail you get a clear dialog pointing at your network, VPN, or firewall rather than a silent empty tree.</p>
+
+<div class="tip">
+<b>Oriented ellipse markers.</b> For every SIMBAD object with major axis + minor axis + position angle (galdim_majaxis, galdim_minaxis, galdim_angle), WIMI draws a proper oriented ellipse at the sky position angle, converted through the WCS so image rotation, flip and parity are all handled. A circular galaxy stays circular; an edge-on spiral at PA = 42° shows the correct 42° on your image regardless of what your rotator was doing. Objects without PA data fall back to a fixed screen-space circle (6 pixel radius, cosmetic — same visible size no matter how far you zoom in).
+</div>
+
+<h2>5. The Advanced Search panel</h2>
+<p>OTYPE filter tree, 13 hierarchical categories expand into individual SIMBAD type codes. Each category has a swatch color that becomes the marker color on the image:</p>
+<ul>
+<li><b style="color:#ff0000;">Transient &amp; Explosive</b> — SN, SNR, GWE, GRB, novae, microlensing</li>
+<li><b style="color:#ffa500;">High-Energy / X-ray / γ-ray</b> — X-ray sources, pulsars, BH candidates</li>
+<li><b style="color:#800080;">Radio &amp; Sub-mm</b> — Radio sources, masers, HI, molecular lines</li>
+<li><b style="color:#008000;">IR / Optical / UV</b> — Band-defined sources</li>
+<li><b style="color:#da70d6;">Gravitational Lensing</b> — Lenses, lensed images, microlens events</li>
+<li><b style="color:#0000ff;">Stars &amp; Stellar</b> — All stellar objects: WD, BD, AGB, HB, pre-MS, peculiar</li>
+<li><b style="color:#ffff00;">Binaries &amp; Variables</b> — EB, CV, X-ray binaries, Cepheids, RR Lyr, Miras</li>
+<li><b style="color:#a52a2a;">Clusters &amp; Associations</b> — Open, globular, stellar streams, moving groups</li>
+<li><b style="color:#008080;">Nebulae &amp; ISM</b> — PN, HII, dark, reflection, molecular clouds, HH objects</li>
+<li><b style="color:#ff00ff;">Galaxies &amp; AGN</b> — All galaxies and active nuclei: Seyfert, QSO, blazars</li>
+<li><b style="color:#c8c8c8;">Large-Scale Structure</b> — Clusters, groups, superclusters, voids</li>
+<li><b style="color:#5f9ea0;">Regions &amp; Clouds</b> — Composite objects, defined sky regions</li>
+<li><b style="color:#808080;">Errors &amp; Artefacts</b> — Catalog errors, unknown candidates</li>
+</ul>
+<p>Click <b>Legend</b> to edit any category color — the swatch and all its markers update immediately. Use <b>Toggle All</b> / <b>Save List…</b> / <b>Load List…</b> to persist your preferred filter sets as JSON files — share them between workstations or with collaborators.</p>
+
+<p>The <b>Augment with local Gaia DR3</b> checkbox adds Gaia sources from your installed astrometric library (see Gaia DR3 Library docs) that SIMBAD doesn't return. Essential for faint fields where most of what you imaged isn't in SIMBAD. A 10″ cKDTree dedup in tangent-plane arcsec filters collisions with SIMBAD results. Local Gaia carries no color photometry (only G + parallax from the astrometric band), so these sources are flagged <code>GaiaLocal</code> and skipped by the H-R diagram when color is required.</p>
+
+<h2>6. Minor Planets &amp; Comets</h2>
+<p>WIMI ships with a local SQLite catalog of 1.4M+ asteroids and ~4,000 comets. First-run flow:</p>
+<ol>
+<li>Click <b>Download Catalog</b> — automatic download from the SetiAstro mirror (~350 MB). The ▾ menu offers Force Re-download, Install from Local File (for macOS Python builds that hit SSL cert errors), and Open Download Page in Browser.</li>
+<li>Set <b>H limits</b> — absolute magnitude cuts for asteroids and comets. Default: H ≤ 20 for asteroids, H ≤ 15 for comets. Lower limit = more objects, slower search.</li>
+<li>Set <b>Max counts</b> — ceiling on how many of each kind to compute. Even with H limits, you can cap it.</li>
+<li>(Optional) <b>Target</b> — type a designation like "584" or a name like "Semiramis" or "C/2023 A3" to search for that one object specifically. Bypasses the H and count limits.</li>
+<li>(Optional) <b>Time offset (hours)</b> — applied to observation time before computing ephemerides. Useful for sub-exposure midpoints or for scanning positions ±1 hour either side of the frame to see if an asteroid is drifting through.</li>
+<li>Click <b>Count Objects Brighter Than Limits</b> to see how many are in the global catalog at your current H settings before you run a search.</li>
+<li>Click <b>Search Minor Bodies</b>.</li>
+</ol>
+
+<div class="tip">
+<b>Where does the observation time come from?</b> WIMI reads <code>DATE-OBS</code> (+ optional <code>TIME-OBS</code>), then <code>MJD-OBS</code>, then <code>JD</code>, from the FITS header. If none are present, it prompts you with a date/time picker and a timezone selector pre-filled from your system locale. The entered time is converted to UTC and used as the Skyfield reference epoch. Minor-body positions are propagated to that instant from the catalog's orbital elements, so what shows up on your image is where the object actually was when the shutter was open.
+</div>
+
+<p>Minor-body markers are drawn in the same categorical scheme as everything else. Double-clicking or right-click → Open Website on a minor body opens the gorgeous 3d-asteroids.space page for that object (asteroids and comets go to different URL subpaths; WIMI picks the right one from the catalog kind).</p>
+
+<h2>7. Deep Vizier Search</h2>
+<p>The <b>Caution — Deep Vizier Search</b> button queries 12 catalogs in a strict priority order, keeping the first useful entry per RA/Dec and letting SDSS DR12 override Pan-STARRS when both have the same source:</p>
+<ol>
+<li><b>Spectroscopic redshift surveys first</b> (true redshifts, highest confidence): 2MRS, 6dF Galaxy Survey, SDSS DR12, 2dFGRS, GAMA DR3.</li>
+<li><b>Meta-catalogs and composites</b>: GLADE+ (gravitational-wave electromagnetic followup catalog), HyperLEDA, IRAS PSCz.</li>
+<li><b>Photometric &amp; astrometric</b>: 2MASS PSC, Gaia EDR3, UCAC4, Pan-STARRS 1.</li>
+</ol>
+<p>Redshift columns are auto-detected per catalog — <code>cz</code> in km/s gets divided by <i>c</i> to recover z, <code>zhelio</code> / <code>zcmb</code> / <code>zph</code> are used as-is. If no z is available but a <code>Plx</code> parallax is, that gets converted to a parsec distance instead. The results tree shows redshift and parallax in separate columns so you can tell at a glance which came from where.</p>
+
+<h2>8. MAST footprints</h2>
+<p>The <b>Search M.A.S.T Database</b> button performs an astroquery cone search against the Mikulski Archive for Space Telescopes — HST, JWST, Spitzer, TESS, GALEX, and the rest of the MAST holdings. Returns up to 100 observations, each with target name, instrument, and dataURL. Double-click a MAST row to open the archive portal centered on that observation. Useful for finding every published Hubble image that overlaps your frame before you spend a session on something that was already done at 10× your resolution.</p>
+
+<h2>9. The results tree</h2>
+<p>10-column sortable tree:</p>
+<ol>
+<li><b>RA</b> / <b>Dec</b> — object position in decimal degrees</li>
+<li><b>Name</b> — primary catalog identifier (SIMBAD main_id, Vizier designation, Gaia DR3 source_id, minor-body designation)</li>
+<li><b>Diameter</b> — angular size in arcminutes (galaxies, nebulae) or <code>N/A</code> for stars</li>
+<li><b>Type</b> — short OTYPE code</li>
+<li><b>Long Type</b> — human description from the SIMBAD lookup table</li>
+<li><b>Redshift (z)</b> — spectroscopic z where known, blank otherwise</li>
+<li><b>Parallax (mas)</b> — Gaia or SIMBAD parallax where known</li>
+<li><b>Distance</b> — adaptive unit (ly / kly / Mly / Gly / AU for minor bodies)</li>
+<li><b>Mag</b> — V magnitude for stars, B as fallback</li>
+</ol>
+<p>Click any column header to sort. Click a row to highlight that object's marker in green on the image. Arrow keys walk through the tree with the main preview staying in sync.</p>
+
+<h2>10. The right-click context menu (results tree)</h2>
+<p>Right-click any object (in the tree or on the image) for the full action set:</p>
+<ul>
+<li><b>Open Website</b> — launches the catalog-appropriate detail page: SIMBAD basic for Simbad hits, NED cone search for Vizier hits, MAST portal for MAST hits, 3d-asteroids.space for minor bodies, SIMBAD coord-cone for Gaia DR3 local sources (which have no reverse index in SIMBAD).</li>
+<li><b>Zoom to Object</b> — resets to 1:1, pads the scene so edge objects can center, and centers on the pixel.</li>
+<li><b>Copy Object Information</b> — RA, Dec, name, diameter, type to clipboard.</li>
+<li><b>View Gaia XP Spectrum</b> — opens the Gaia spectral viewer with the nearest XP source (3″ cone). Requires an installed Gaia XP library band.</li>
+<li><b>Delete Object</b> — removes this object from results and the marker from the image. Doesn't touch the catalog.</li>
+</ul>
+
+<h2>11. Navigation &amp; the mini-preview</h2>
+<p>The mini-preview at the bottom-left renders the whole scene (image + markers + annotations) and overlays a green rectangle showing the current main-view viewport. Drag inside the mini-preview to scroll the main view; the green box follows. Zoom controls on the main preview toolbar: zoom in, zoom out, 1:1, fit to preview. Scrolling the wheel on the main preview also zooms.</p>
+
+<div class="keys">
+<b>The crosshair toggle button</b> cycles four modes: <b>off</b> → <b>thin</b> (white single-pixel full cross) → <b>outlined</b> (yellow with gap in center + center dot) → <b>gap</b> (concentric circles at 30/60/100 px + thin crosshairs). Useful for aligning annotations, placing a text label on a specific object, or centering an object before pushing to a dedicated finder-chart tool.
+</div>
+
+<h2>12. AutoStretch</h2>
+<p>Toggle button at top-left. Applies <code>stretch_mono_image</code> (for grayscale) or <code>stretch_color_image</code> (for RGB) with target median 0.25 and no black clipping — the same stretch used by SASpro's AutoStretch tool across other dialogs. The <i>original</i> image data is cached on the first toggle, so turning AutoStretch off restores exactly what you loaded. View state (zoom, pan) is preserved across the toggle — the markers and viewport stay put while the image brightness swaps underneath.</p>
+
+<h2>13. 3D Distance Model</h2>
+<p>The headline exploration feature. Opens a Plotly interactive 3D scatter in your browser where every object with a known distance is placed in RA/Dec/distance space, with your image rendered flat as an underlying plane at the near end of the Z axis. The settings dialog offers:</p>
+<ul>
+<li><b>Image plane style</b> — Mesh RGB Scatter (small colored dots at each pixel, blends into black background) or Smooth Grayscale Image Plane (a true surface with the mean luminance mapped to a grayscale colorscale). Mesh gives you true color at the cost of a less photographic look.</li>
+<li><b>Resolution</b> — downsample the plane to N × N pixels. 500 is a good default; bump it to 1000 for a crisp image at the cost of a 4× larger HTML file.</li>
+<li><b>Z-axis range</b> — Default (0 to data max), Min-Max (data range only), or Custom (hard-code limits).</li>
+<li><b>Z-axis scale</b> — Logarithmic (default — spans foreground stars at tens of ly through background galaxies at Gly) or Linear.</li>
+<li><b>Reverse Z</b> — Flip so distance increases downward instead of upward.</li>
+<li><b>Object color</b> — Image-Based (5-pixel patch average from the image at the object's pixel, so a red galaxy looks red), Legend Color (categorical from the OTYPE map), or Solid Custom.</li>
+<li><b>Z-Axis Height</b> — aspect ratio for the vertical axis (0.1 to 10, default 0.5). Below 1 compresses the Z dimension; above 1 stretches it.</li>
+<li><b>Show Connector Lines</b> — thin gray lines from each object down to the image plane, so you can see which object is at what sky position.</li>
+</ul>
+
+<div class="science">
+<b>What this actually shows.</b> The foreground stars (parallax-measured, usually a few pc to a few kpc) cluster near the image plane. The background galaxies (redshift-measured, Mpc to Gpc) float far above or below depending on the scale choice. With log Z and the default aspect ratio, you can rotate the model and <i>see</i> the empty volume between your Milky Way foreground and the Hubble flow — the thing that's really there, that a flat image completely hides. Clicking any object in the 3D view opens its SIMBAD page. The right sidebar lists every object as a clickable link.
+</div>
+
+<p>Minor bodies are omitted from the 3D model (their AU-scale distances don't make sense on a ly axis). Objects where both parallax and redshift are unavailable are also skipped — the Z position would be undefined.</p>
+
+<h2>14. H-R Diagram</h2>
+<p>A real Hertzsprung-Russell diagram of the stars in your field. The settings dialog has the most options of any WIMI dialog because the diagram is sensitive to photometric and Teff choices:</p>
+<ul>
+<li><b>Use Gaia XP synthetic photometry</b> — when checked (default), B and V magnitudes are synthesized from Gaia XP spectra via Johnson B/V filter curves rather than taken from SIMBAD. Consistent photometry, typically 3× more stars on the diagram. Requires the Gaia XP library to be installed.</li>
+<li><b>Teff estimation</b> — Blackbody fit to XP spectrum (best, requires XP) or Ballesteros B-V formula (classic). The blackbody fit is a Planck curve least-squares against the XP continuum in 4000–8000 Å, which handles cool M dwarfs and reddened stars better than the color-only relations.</li>
+<li><b>Star color mode</b> — Realistic (blackbody temperature → sRGB via the Tanner Helland approximation), Spectral class (O/B/A/F/G/K/M color coded), or Solid Custom. Realistic looks closest to what you'd see; spectral class makes the main sequence clearly structured.</li>
+<li><b>Flag spectral outliers</b> — stars where the XP blackbody Teff and the color-derived Teff disagree by more than a factor of 2 (carbon stars, emission-line stars, peculiar atmospheres) are drawn as open triangles instead of filled dots so they stand out.</li>
+<li><b>Background</b> — the standard HR diagram reference image (so the main sequence, giants, white dwarfs are visible as background structure) or solid black.</li>
+<li><b>Axis range</b> — Default (−0.3 to 2.25 in B-V, −9 to 19 in M_V, matching the reference image) or Custom. Auto-extend widens the window if your field has stars outside the default range (brown-dwarf territory).</li>
+<li><b>Include Sun</b> — adds a gold star at B-V = 0.66, M_V = 4.8 for reference.</li>
+<li><b>3D CMD options</b> — add a button to the output that opens a 3D color-magnitude diagram (B-V, M_V, distance) in a separate window. Distance axis in parsecs or light-years, linear or log, auto range or custom.</li>
+</ul>
+
+<div class="science">
+<b>What the H-R diagram tells you.</b> Every dot is a star in your field with usable photometry and parallax. The main sequence runs diagonally from top-left (hot blue stars) to bottom-right (cool red dwarfs). Giants branch up and to the right. White dwarfs sit alone in the bottom-left. For a globular cluster field, you'll see the main-sequence turnoff that encodes the cluster's age. For a nearby open cluster, you'll see tight sequences at the cluster distance. For a random extragalactic field, mostly foreground main-sequence stars with scatter. The <b>rejected sources</b> panel below the diagram lists stars dropped because their synthesized color was bluer than any real star — usually blends, bad photometry, or reddening errors you'd want to investigate before trusting them.
+</div>
+
+<p>The 3D CMD view adds the distance dimension. Faint reference planes at round distances help orient. Rotate it to see cluster membership — a true cluster shows as a tight 2D sheet in B-V/M_V at a single Z, while field stars scatter in distance.</p>
+
+<h2>15. Save Collage of Objects</h2>
+<p>Export a grid of 128×128 pixel cutouts, one per object, each labeled with your choice of: Name, RA, Dec, Short Type, Long Type, Redshift, Parallax, Distance. Checkboxes let you pick which fields to show, and the vertical spacing between patches is computed from the field count so text never overlaps. Rendered by PIL as a PNG/JPEG/TIFF ready for publication, a talk, or just a personal keepsake of "look what's in this frame".</p>
+
+<h2>16. Annotations</h2>
+<p>Click <b>Show Annotation Tools</b> to reveal the annotation toolbox: Ellipse, Rectangle, Arrow, Freehand (lasso), Compass, Text, plus Color picker, Font picker, Undo, Clear, and Delete Selected.</p>
+<div class="keys">
+<b>Modifier keys drive annotation input.</b> Ctrl+Click starts an annotation at that point (type depends on which tool is active). Alt+Click starts a celestial distance measurement — the second click completes it with a green dashed line and a label showing the angular distance in degrees:arcminutes:arcseconds. Shift+Click still draws the search circle. Hold the left mouse button on empty space to pan.
+</div>
+
+<p>The <b>Celestial Compass</b> tool places a red N arrow and blue E arrow at the clicked point, computed from the WCS CD matrix determinant for parity and <code>CROTA2</code> or an inferred value for orientation. A WCS sanity check verifies the arrows actually point north and east by probing 3 pixels along each arrow and checking which direction Dec/RA actually increase — if the inferred direction is wrong (which happens with unusual CD matrix combinations), the arrow is flipped automatically. So the compass is correct even when the orientation value in the header is misleading.</p>
+
+<p><b>Push Annotated to View</b> sends the fully annotated image back into SASpro's document system as a new view, so you can save it in any supported format, apply further processing, or push to a project. <b>Save Annotated Image</b> writes a PNG/JPEG/TIFF file directly (full or cropped to current viewport). Both exclude the search circle from the output.</p>
+
+<h2>17. Save Plate Solved FITS</h2>
+<p>Writes a FITS file with the current WCS header merged into the original. Choose 8-bit, 16-bit, or 32-bit float. Color is preserved in the correct (plane, y, x) axis order. This is the fastest way to turn a loaded JPEG with a successful blind solve into a FITS that other astronomy software can consume.</p>
+
+<h2>18. Community Atlas banner</h2>
+<p>Right after a successful WCS load, WIMI fetches the Seti Astro Community Atlas footprint catalog in the background. If any published image overlaps your field, a green banner appears in the left panel: "🌌 N community images overlap this field". Click <b>View in Sky Atlas →</b> to open the atlas at your image's center RA/Dec. Context before you publish: see who else has imaged this region, at what depth, and whether your frame adds something new.</p>
+
+<h2>19. Workflow recipes</h2>
+
+<div class="workflow">
+<b>First light on a new target.</b> Load the image. Wait for auto-solve to finish (status bar). Shift+click &amp; drag a circle around your main subject. Pick a reasonable OTYPE filter set in Advanced Search (defaults are fine). Click Query SIMBAD. The tree populates with everything in your frame. Right-click the brightest unknown → Open Website → read the SIMBAD page.
+</div>
+
+<div class="workflow">
+<b>Faint-star science field.</b> Install the Gaia DR3 astrometric library band in Settings. In WIMI's Advanced Search, check "Augment with local Gaia DR3". Run Query SIMBAD. The tree now includes thousands of Gaia DR3 sources below the SIMBAD depth, with parallax and G magnitude. Perfect for making an H-R diagram of a sparse open cluster or for computing proper-motion-aware astrometry.
+</div>
+
+<div class="workflow">
+<b>Asteroid hunt tonight.</b> Download the minor-body catalog if you haven't. Set asteroid H ≤ 18 (bright enough to actually detect at amateur apertures). Set max asteroids 50,000. Load tonight's frame — DATE-OBS gets read automatically. Click Search Minor Bodies with scope "Entire Image". Every known asteroid at your epoch pops onto the image at its ephemeris position. Compare to the actual pixels — anything suspicious that doesn't have a marker is a candidate.
+</div>
+
+<div class="workflow">
+<b>Make a real H-R diagram.</b> Install at least the Gaia XP G ≤ 15 band in Settings. Load a cluster image. Shift+click a tight circle around the cluster. Query SIMBAD with Augment with local Gaia DR3 checked. Click H-R Diagram. Pick "Blackbody fit to XP spectrum" for Teff, "Realistic" for colors. Open the HTML — the main sequence of your cluster appears as a tight band, usually offset vertically from the reference HR image by the cluster distance modulus. The 3D CMD view shows the cluster as a sheet in distance space.
+</div>
+
+<div class="workflow">
+<b>Scientific collage for a paper.</b> SIMBAD + Deep Vizier the field. Enable Show Object Names. Save Annotated Image (Full). Save Collage of Objects with Name + Distance + Type + Redshift. Save CSV. You now have four publication-ready artifacts: the annotated image, the collage, the data table, and the WCS-stamped FITS. Add a 3D Distance Model HTML as supplementary material.
+</div>
+
+<div class="workflow">
+<b>Extragalactic field redshift check.</b> Load the image. Shift+click a wide region. Click Caution — Deep Vizier Search. Sort the tree by Redshift (z) column descending. Every object with a spectroscopic z shows up at the top. The 3D Distance Model will then span cosmological distances — ideal for a wide-field "deep look" write-up.
+</div>
+
+<div class="workflow">
+<b>Minor-body time-series check.</b> Load the frame. Set a small positive Time offset (hours), say +1. Search Minor Bodies. Note the asteroid positions. Change the offset to −1 and search again. The marker shifts show the direction of orbital motion for each — useful for confirming a candidate detection by predicting where it should be in your next frame.
+</div>
+
+<div class="workflow">
+<b>Already published?</b> Watch the Community Atlas banner after plate solve. If it says "3 community images overlap this field", open the atlas and look — maybe someone's covered this same region at your telescope's depth and you can learn from their approach. Also check MAST Search to see if HST or JWST has covered it (and at what wavelength) before planning a long integration.
+</div>
+
+<h2>20. Credits</h2>
+<div class="credit">
+Written by Franklin Marek as part of <a href="https://setiastro.com">SetiAstro Suite</a>.<br><br>
+
+<b>Catalogs &amp; databases.</b>
+Simbad astronomical database and VizieR catalogs operated by the Centre de Données astronomiques de Strasbourg (<a href="https://cds.unistra.fr">CDS</a>). TAP + sim-sam queries follow the Simbad4 and VizieR protocols. Catalog roster used by Deep Vizier Search: 2MRS (Huchra et al. 2012), 6dFGS (Jones et al. 2009), SDSS DR12 (Alam et al. 2015), 2dFGRS (Colless et al. 2001), GAMA DR3 (Baldry et al. 2018), GLADE+ (Dálya et al. 2022), HyperLEDA (Makarov et al. 2014), IRAS PSCz (Saunders et al. 2000), 2MASS PSC (Skrutskie et al. 2006), Gaia EDR3 (Gaia Collaboration 2021), UCAC4 (Zacharias et al. 2013), Pan-STARRS DR1 (Chambers et al. 2016). MAST cone search via the <a href="https://mast.stsci.edu">Mikulski Archive for Space Telescopes</a> operated by STScI.<br><br>
+
+<b>Minor bodies.</b> Orbital elements from the Minor Planet Center. Ephemeris propagation via <b>Skyfield</b> (B. Rhodes). Local SQLite catalog format and update pipeline developed for SASpro.<br><br>
+
+<b>Gaia synthetic photometry.</b> Johnson B/V filter curves after Bessell (1990), tabulated on a 1-Å grid. Gaia BP/RP effective passbands from the Gaia DR3 revised calibration. Color→Teff via Curtis et al. (2020) for Gaia BP-RP and Ballesteros (2012) for Johnson B-V. Blackbody fit uses standard Planck optics constants and a bounded scalar minimizer. Blackbody-color conversion follows the Tanner Helland sRGB approximation.<br><br>
+
+<b>Image &amp; astronomy stack.</b> <b>astropy</b> (Astropy Collaboration et al.), <b>astroquery</b>, <b>reproject</b>, <b>SEP</b> (Barbary 2016, Bertin &amp; Arnouts 1996), <b>photutils</b>, <b>scikit-image</b>, <b>numpy</b>, <b>scipy</b>, <b>OpenCV</b>, <b>pandas</b>. 3D plots via <b>Plotly</b>. Collage rendering via <b>Pillow</b>. Qt rendering via <b>PyQt6</b> with a custom <code>MarkerLayer</code> graphics item for scalable marker rendering.<br><br>
+
+<b>Reference image.</b> The default H-R diagram background is the public-domain ESO ESA/Richard Powell schematic. The Seti Astro Community Atlas is maintained at <code>setiastro-atlas</code> on Backblaze B2.
+</div>
+
+<h2 style="margin-top:28px;">Technical details</h2>
+
+<h3>21.1. Comoving distance (ΛCDM cosmology)</h3>
+<p>For every object with a redshift z, WIMI computes a comoving distance via numerical integration of the Friedmann equation. Standard cosmology constants: H₀ = 69.6 km/s/Mpc, Ω_M = 0.286, Ω_Λ = 0.714, Ω_R from the radiation density, Ω_K the curvature closure:</p>
+<div class="matheq-hero">\Omega_R = 4.165 \times 10^{-5} / (H_0/100)^2</div>
+<div class="matheq-hero">\Omega_K = 1 - \Omega_M - \Omega_\Lambda - \Omega_R</div>
+<div class="matheq-hero">a_z = 1/(1+z)</div>
+<p>The dimensionless Hubble parameter at scale factor a:</p>
+<div class="matheq-hero">\dot{a} = \sqrt{\Omega_K + \Omega_M/a + \Omega_R/a^2 + \Omega_\Lambda a^2}</div>
+<p>And the comoving radial distance by direct trapezoidal integration (n = 1000 intervals):</p>
+<div class="matheq-hero">D_{\mathrm{CMR}} = \frac{c}{H_0} \int_{a_z}^{1} \frac{da}{a \cdot \dot{a}(a)}</div>
+<p>Final conversion from Mpc to Gly via the factor 3.262 × 10⁻³. Negative z (blueshift from peculiar motion) returns None — comoving distance isn't meaningful there, so these objects omit the distance column rather than fold the sign away with abs().</p>
+
+<h3>21.2. Parallax to distance and absolute magnitude</h3>
+<p>Standard astrometric distance from parallax ϖ in milliarcseconds, converted to parsecs and then to light-years:</p>
+<div class="matheq-hero">d_{\mathrm{pc}} = 1000 / \varpi_{\mathrm{mas}}</div>
+<div class="matheq-hero">d_{\mathrm{ly}} = d_{\mathrm{pc}} \cdot 3.2616</div>
+<p>Absolute magnitude from apparent magnitude m and distance:</p>
+<div class="matheq-hero">M = m - 5(\log_{10} d_{\mathrm{pc}} - 1)</div>
+<p>Used for the H-R diagram vertical axis. Vmag comes from the catalog where available (SIMBAD) or falls back to Gaia G as approximate V. WIMI never uses the Gaia G from an XP source as its V — only catalog V — because XP-synthesized B and V come from the spectrum consistently and mixing them with catalog G would introduce zero-point offsets.</p>
+
+<h3>21.3. WCS orientation and parity</h3>
+<p>Image rotation is extracted from the CD matrix:</p>
+<div class="matheq-hero">\theta = \mathrm{atan2}(-\mathrm{CD}_{1,2},\, \mathrm{CD}_{1,1})</div>
+<p>with fallback to the PC matrix + CDELT if CD is absent. Parity (whether the image is flipped) is determined by the sign of the CD determinant:</p>
+<div class="matheq-hero">\mathrm{det}(\mathrm{CD}) = \mathrm{CD}_{1,1}\mathrm{CD}_{2,2} - \mathrm{CD}_{1,2}\mathrm{CD}_{2,1}</div>
+<p>Positive determinant means parity-flipped (mirror image, common for amateur refractors + diagonals); negative is normal. The Compass tool uses both values to point its arrows correctly, with a WCS probe fallback that moves 3 pixels along each candidate arrow direction and checks whether Dec actually increases (for North) or RA actually increases (for East). If the inferred direction is wrong, the arrow is flipped — the compass is always right regardless of what the header says.</p>
+<p>Pixel scale is the mean of the two WCS pixel-plane scale factors:</p>
+<div class="matheq-hero">\mathrm{pixscale} = \overline{|\mathrm{CD}|} \cdot 3600\ \mathrm{arcsec/px}</div>
+<p>computed from <code>astropy.wcs.utils.proj_plane_pixel_scales</code>, with a CD-matrix magnitude fallback.</p>
+
+<h3>21.4. WCS header sanitization</h3>
+<p>Headers written by other tools (and especially headers that survived a round-trip through text pickling) sometimes have numeric values stored as strings, SIP orders missing their partner, or stray <code>=</code> characters leaked from bad card parsing. WIMI's <code>_sanitize_wcs_header</code> normalizes the header by: coercing <code>NAXIS</code>, <code>A_ORDER</code>, <code>B_ORDER</code>, <code>AP_ORDER</code>, <code>BP_ORDER</code> to integers; coercing CD, PC, CDELT, CRVAL, CRPIX, CROTA, EQUINOX, EPOCH, LONPOLE, LATPOLE to floats; mirroring <code>A_ORDER</code> to <code>B_ORDER</code> if only one is present; dropping all SIP coefficients (and the <code>-SIP</code> suffix from CTYPE) if the SIP polynomial orders are still inconsistent after mirroring. The result is a header that <code>astropy.wcs.WCS</code> can always load, even when distortion is quietly turned off because it was malformed.</p>
+
+<h3>21.5. Two-step SIMBAD query</h3>
+<p>WIMI uses two SIMBAD interfaces per query to get what SIMBAD's unified APIs don't expose cleanly:</p>
+<ul>
+<li><b>Step 1: TAP on BASIC</b> — <code>SELECT ra, dec, main_id, rvz_redshift, otype, galdim_majaxis, galdim_minaxis, galdim_angle FROM basic WHERE CONTAINS(POINT(ra, dec), CIRCLE(center, radius)) = 1</code>. Returns all objects in the circle with core metadata.</li>
+<li><b>Step 2: sim-sam cone + OTYPE criteria</b> — a sim-sam VOTable request restricted to stellar OTYPES (the full <code>star_codes</code> list in WIMI), with output params including <code>FLUX(B)</code>, <code>FLUX(V)</code>, <code>PLX_VALUE</code>, <code>SP_TYPE</code>. SIMBAD doesn't expose these as native TAP columns in BASIC, so sim-sam fills the gap.</li>
+</ul>
+<p>The two sets are merged by main_id. Non-stellar objects (galaxies, nebulae, SNRs) get Step 1 metadata only. Stellar objects get both — which is why a Vega-like SIMBAD star carries a parallax, spectral type and B/V in the tree while a Virgo cluster galaxy carries only redshift and angular size. If step 2 fails, step 1 still populates and only the stellar enhancements are missing.</p>
+
+<h3>21.6. Deep Vizier catalog priority</h3>
+<p>Order matters because the first useful entry wins per RA/Dec key: spectroscopic surveys first (so a real z beats a photometric z), then meta-catalogs, then photometric surveys. One targeted override: SDSS DR12 replaces Pan-STARRS 1 at the same position because PS1 has photometry but no z. Redshift column auto-detection prefers <code>cz</code> → <code>z</code> → <code>zhelio</code> → <code>zcmb</code> → <code>zph</code>, with cz divided by <i>c</i> = 299792.458 km/s to recover z. Parallax from <code>Plx</code> is converted to parsecs if no z is available.</p>
+
+<h3>21.7. Local Gaia augment — tangent-plane dedup</h3>
+<p>With "Augment with local Gaia DR3" checked, WIMI pulls every Gaia source in a bounding box around the search circle (dec-aware RA span) from the local astrometric library, then filters against SIMBAD results using a <b>cKDTree in tangent-plane arcsec</b>:</p>
+<div class="matheq-hero">(\Delta x, \Delta y) = ((\alpha - \alpha_c) \cos\delta_c,\; \delta - \delta_c) \cdot 3600</div>
+<p>Any Gaia source within 10″ of any SIMBAD source is dropped (SIMBAD wins — the 10″ absorbs high-proper-motion stars drifting between J2000 and J2016 epochs). The remaining Gaia sources are added as <code>GaiaLocal</code> rows with parallax, G mag, and derived absolute G where parallax > 0.1 mas. A naive all-pairs loop would be O(N·M) and prohibitive for wide fields; the KDTree is O(M log N).</p>
+
+<h3>21.8. Minor-body ephemerides via Skyfield</h3>
+<p>The minor-body SQLite catalog contains orbital elements for ~1.4M asteroids and ~4,000 comets. For each candidate, WIMI's <code>MinorBodyCatalog.compute_positions_astropy</code> propagates its elements to the observation JD and returns topocentric RA/Dec. Then a cone test against the search center + radius keeps only those in the frame. The time offset from the UI is applied as a <code>timedelta</code> before conversion to JD, so a user-tweaked midpoint propagates to all computed positions. A background-threaded worker (<code>MinorBodySearchWorker</code>) runs the whole computation off the UI thread with a progress dialog.</p>
+
+<h3>21.9. Gaia XP synthetic photometry</h3>
+<p>Johnson B and V from an XP flux spectrum uses the ratio of filter integrals — the multiplicative zero-point cancels, so only an empirical constant anchors the color to the Johnson system:</p>
+<div class="matheq-hero">\langle f \rangle_T = \frac{\int f(\lambda) T(\lambda)\, d\lambda}{\int T(\lambda)\, d\lambda}</div>
+<div class="matheq-hero">B-V = -2.5 \log_{10}\left( \frac{\int f(\lambda) T_B(\lambda)\, d\lambda}{\int f(\lambda) T_V(\lambda)\, d\lambda} \right) + 0.09</div>
+<p>The filter curves are tabulated Bessell (1990) coarsely sampled, interpolated onto a 1-Å grid spanning 3000–11000 Å. The +0.09 mag Vega offset anchors B-V to the Johnson scale (a flat spectrum reads B-V ≈ 0.09 against Bessell's curves). Trapezoidal integration via <code>np.trapz</code>. XP flux below zero (edge noise) is clamped to zero before integration.</p>
+<p>Gaia BP-RP follows the same procedure with Gaia-native BP/RP effective passbands and a different anchoring offset:</p>
+<div class="matheq-hero">BP-RP = -2.5 \log_{10}(f_{BP}/f_{RP}) + 0.05</div>
+<p>BP-RP is preferred when available because Curtis 2020 is calibrated against it. B-V is kept as a fallback for catalog stars without XP.</p>
+
+<h3>21.10. Color-to-Teff relations</h3>
+<p>Two independent relations, each clamped to its calibrated domain so values outside return None:</p>
+<p><b>Curtis et al. (2020)</b> — 7th-order polynomial in Gaia (BP-RP)₀, valid 0.55 &lt; BP-RP &lt; 3.20 (Teff from 3070 to 6470 K, ~50 K precision):</p>
+<div class="matheq-hero">T_{\mathrm{eff}} = \sum_{i=0}^{7} c_i \cdot (BP-RP)^i</div>
+<p>Coefficients (ascending): −416.585, 39780.0, −84190.5, 85203.9, −48225.9, 15598.5, −2694.76, 192.865. Calibrated on dereddened BP-RP — WIMI feeds observed BP-RP so Teff is biased cool for reddened fields; no extinction handling yet.</p>
+<p><b>Ballesteros (2012)</b> — Johnson B-V to Teff, used when no BP-RP is available:</p>
+<div class="matheq-hero">T_{\mathrm{eff}} = 4600 \left( \frac{1}{0.92(B-V) + 1.7} + \frac{1}{0.92(B-V) + 0.62} \right)</div>
+<p>Has a pole near B-V ≈ −0.674 that inflates Teff to garbage. Clamp: −0.50 ≤ B-V ≤ 2.00, and Teff ceiling 60,000 K (hotter than any real O/WR star). Outside those bounds the function returns None and the star is dropped rather than plotted with a nonsense temperature.</p>
+
+<h3>21.11. Blackbody Planck fit</h3>
+<p>The best Teff estimator is a direct Planck fit to the XP continuum (restricted to 4000–8000 Å to avoid XP edge noise):</p>
+<div class="matheq-hero">B_\lambda(T) = \frac{2hc^2}{\lambda^5} \cdot \frac{1}{\exp(hc/\lambda k T) - 1}</div>
+<p>Both the measured flux and the model Planck are normalized to their maximum before comparison (so the fit is scale-independent), then:</p>
+<div class="matheq-hero">T_{\mathrm{BB}} = \arg\min_T \sum_\lambda \left( f(\lambda) - B_\lambda(T) \right)^2</div>
+<p>First a coarse grid search over T ∈ [2500, 50000] K in 500 K steps finds the broad minimum, then <code>scipy.optimize.minimize_scalar</code> refines within ±2000 K of that. Handles cool M dwarfs much better than color relations because the Wien peak sits inside the fitted window.</p>
+<p><b>Outlier flagging</b>: if the blackbody Teff and the color Teff disagree by more than a factor of 2, the star is marked as an outlier. Carbon stars (with strong C₂ Swan bands pulling the Planck fit cooler than the color suggests), emission-line stars, and peculiar atmospheres all trigger this:</p>
+<div class="matheq-hero">\mathrm{outlier\ if}\ T_{\mathrm{BB}} / T_{B-V} < 0.5\ \mathrm{or}\ > 2.0</div>
+
+<h3>21.12. HR radius iso-lines</h3>
+<p>The gray dashed curves on the H-R diagram at R = 0.01, 0.1, 1, 10, 100, 1000 R_⊙ come from Stefan-Boltzmann:</p>
+<div class="matheq-hero">L = R^2 \cdot (T/T_\odot)^4</div>
+<div class="matheq-hero">M_V = 4.83 - 2.5 \log_{10} L</div>
+<p>with M_V,⊙ = 4.83 as the Sun's absolute magnitude and T_⊙ = 5772 K. These let you read a star's size directly from the diagram: a star on the R = 10 R_⊙ line is 10× the solar radius regardless of where it sits along the main sequence or giant branch.</p>
+
+<h3>21.13. Spectral class from Teff; Tanner Helland sRGB</h3>
+<p>Spectral class assignment is the classical O/B/A/F/G/K/M split by Teff: O ≥ 30,000 K, B ≥ 10,000 K, A ≥ 7,500 K, F ≥ 6,000 K, G ≥ 5,200 K, K ≥ 3,700 K, M below. Each class gets a distinctive color (blue-white for O/B through orange-red for M) used in "Spectral class" color mode. "Realistic" color mode uses the Tanner Helland piecewise-approximation blackbody-to-sRGB formulas: Red is 255 for T ≤ 6600 K and drops as a power of (T−60) above; Green ramps logarithmically through G/K temperatures; Blue is 0 for T ≤ 1900 K, logarithmic from 1900 to 6600 K, and 255 above. Clamped to [0, 255] and emitted as a CSS <code>rgb()</code> string.</p>
+
+<h3>21.14. The MarkerLayer</h3>
+<p>Rather than adding thousands of individual QGraphicsItems to the scene (which collapses pan performance), WIMI uses a single <code>MarkerLayer</code> item that bakes every marker into one paint call. Internals:</p>
+<ul>
+<li><b>Grid index</b> — markers are bucketed into 64×64 pixel cells. <code>paint()</code> only iterates cells whose bounding rect intersects the exposed region, so a zoomed-in view with 10,000 markers only processes the ~50 visible per frame.</li>
+<li><b>Screen-space radius</b> — markers draw at a fixed screen size (6 px) by converting back from the view's current scale:</li>
+</ul>
+<div class="matheq-hero">r_{\mathrm{scene}} = r_{\mathrm{screen}} / s_{\mathrm{view}}</div>
+<p>So a star marker looks the same size whether you're at 1:1 or zoomed in 10×.</p>
+<ul>
+<li><b>Oriented ellipses</b> for objects with major axis + minor axis + PA. The PA is a sky angle in degrees (N → E) which has to be mapped to image space. WIMI probes the WCS: starts at the object pixel, moves one semi-major axis along the sky in the PA direction, converts the result back to pixel space, and takes the <code>atan2</code> of the pixel offset. That handles rotation, flip, and parity in one shot:</li>
+</ul>
+<div class="matheq-hero">\Delta\alpha \cos\delta = a \sin(\mathrm{PA}),\quad \Delta\delta = a \cos(\mathrm{PA})</div>
+<p>The resulting (Δα, Δδ) is converted to pixels through <code>wcs.world_to_pixel</code>, and the pixel-space angle of that offset is the ellipse's image rotation.</p>
+<ul>
+<li><b>DeviceCoordinateCache</b> for the paint result — Qt caches the rasterized layer at the current zoom, so pure pans don't repaint, only re-blit.</li>
+<li><b>Selection highlight</b> — the selected object draws in green instead of its category color. Changing the selection calls <code>update()</code> rather than re-adding items, so it's instant.</li>
+</ul>
+
+<h3>21.15. Haversine angular distance</h3>
+<p>The Alt+Click measurement tool computes angular distance between two sky points via the haversine formula, which is numerically stable for small separations where the law-of-cosines form loses precision:</p>
+<div class="matheq-hero">a = \sin^2(\Delta\delta/2) + \cos\delta_1 \cos\delta_2 \sin^2(\Delta\alpha/2)</div>
+<div class="matheq-hero">c = 2 \cdot \mathrm{atan2}(\sqrt{a},\, \sqrt{1-a})</div>
+<p>Result in degrees, formatted as D° MM' SS.ss″ for the label on the measurement line.</p>
+
+<h3>21.16. Community Atlas footprint test</h3>
+<p>Same algorithm as WIMS (see that doc for details). The atlas <code>catalog.json</code> is fetched in a background thread (3 retries, 8 s timeout each). Each entry's footprint is tested for containment of the image center via four-corner bounding box with RA wraparound at 0°/360° handled by checking whether the corner span exceeds 180°. The banner shows the count of overlapping footprints and provides a one-click link to the atlas centered on the image coordinates.</p>
+
+</body>
+</html>

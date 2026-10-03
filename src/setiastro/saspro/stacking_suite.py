@@ -24,6 +24,7 @@ import psutil          # used in bytes_available / compute_safe_chunk
 from typing import List
 from setiastro.saspro.legacy.numba_utils import *
 from setiastro.saspro.debayer import debayer_array
+from setiastro.saspro.help_support import make_help_button
 
 # Memory management utilities
 from setiastro.saspro.memory_utils import (
@@ -6598,6 +6599,10 @@ class StackingSuiteDialog(QDialog):
         self.log_btn.setToolTip(self.tr("Show the Stacking Suite log window"))
         self.log_btn.clicked.connect(self._show_log_window)
         header_row.addWidget(self.log_btn)
+
+        # In-tool documentation button, flush right of Open Log
+        self.btn_help = make_help_button("stacking_suite", self)
+        header_row.addWidget(self.btn_help)
 
         self.tabs.currentChanged.connect(self.on_tab_changed)
         self.tabs.currentChanged.connect(lambda *_: self._refresh_quick_stack_summary_later())

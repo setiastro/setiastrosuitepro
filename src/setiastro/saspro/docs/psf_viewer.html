@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>PSF Viewer</title>
+<style>
+  body { background:#1b1b1b; color:#dcdcdc; font-family:"Segoe UI",sans-serif;
+         font-size:13px; line-height:1.55; margin:18px; }
+  h1 { color:#3dbf9f; font-size:21px; margin:0 0 4px 0; }
+  h2 { color:#3dbf9f; font-size:16px; margin:22px 0 6px 0;
+       border-bottom:1px solid #333; padding-bottom:3px; }
+  h3 { color:#8fd7c6; font-size:14px; margin:14px 0 4px 0; }
+  p, li, td, th { color:#dcdcdc; }
+  b, strong { color:#ffffff; }
+  code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
+         font-family:Consolas,"DejaVu Sans Mono",monospace; }
+  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
+        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+        font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
+        white-space:pre-wrap; }
+  .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
+          padding:11px 14px; margin:10px 0; }
+  .eqimg { margin:2px 0; }
+  ul { margin:4px 0; } li { margin:3px 0; }
+  table { border-collapse:collapse; margin:8px 0; }
+  th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
+  th { background:#262626; color:#3dbf9f; }
+  .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
+  .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
+  .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
+         margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2d2015; border-left:3px solid #d47c3e; padding:8px 12px;
+          margin:10px 0; color:#eccda6; }
+  .credit { background:#2a2619; border-left:3px solid #d4a73e; padding:8px 12px;
+            margin:10px 0; color:#e8d9b0; font-size:12px; }
+  .pub { background:#1a2a1f; border-left:3px solid #4ea067; padding:9px 13px;
+         margin:10px 0; color:#c9e3ce; }
+  .keys { background:#1b2130; border-left:3px solid #4e78a0; padding:9px 13px;
+          margin:10px 0; color:#c9d7e3; font-size:12px; }
+  .workflow { background:#1a1f2a; border-left:3px solid #4e78a0; padding:9px 13px;
+              margin:10px 0; color:#c9d7e3; }
+</style>
+</head>
+<body>
+
+<h1>PSF Viewer</h1>
+<p class="sub">Statistical PSF analysis — HFR / FWHM / flux histograms, per-metric stats, and a two-mode median star profile widget that lets you flip between the smoothed analytic shape and the actual pixel-level data.</p>
+
+<div class="pub">
+<b>Honest star-shape statistics for the whole frame.</b> PSF Viewer measures every well-formed star in the image, reports the population medians for HFR, FWHM, eccentricity, flux and shape parameters, and renders the median star in two ways: a smooth analytic Gaussian that shows the fitted shape clearly, and a <i>real</i> median-stacked stamp assembled from the actual pixel data in the image. Click the star widget to switch between them. The real-pixel view answers a question most PSF tools cannot: <i>is the data actually sampled well enough to support what the smooth model is claiming?</i> If your FWHM reads 1.8 px, the pixel-mode stamp will show you a star spanning 2-3 image pixels at native resolution — which is undersampled, and the smooth plot is lying to you by interpolation. Original work by <b>Franklin Marek</b> for SetiAstro Suite Pro.
+</div>
+
+<h2>1. Overview</h2>
+
+<p>PSF Viewer opens on the active image and runs star detection, then reports population statistics across every detection that passed the quality filter. The window has three main regions:</p>
+
+<ul>
+  <li><b>Top-left: histogram</b> — distribution of HFR (default) or flux, with linear/log x-axis toggle and a zoom slider for close inspection of any part of the range.</li>
+  <li><b>Top-right: median star profile widget</b> — a synthetic rendering of the median star with FWHM and HFR ellipses, major/minor axis lines, cyan crosshair, and a legend. <b>Click the widget</b> to toggle to the real-pixel view, which shows a median-stacked actual-pixel stamp with the same overlays drawn at native pixel resolution.</li>
+  <li><b>Middle: stats table</b> — median, min, max, and standard deviation for HFR, FWHM, eccentricity, a, b, θ, and flux across the full detected population.</li>
+</ul>
+
+<p>Below those sits the detection threshold panel, a status line that reports what the detector did (e.g. "Auto — 1024 stars at σ=12, kept 1024/17800 at that threshold"), and the Close button.</p>
+
+<h2>2. Workflow</h2>
+
+<p>Open the viewer on your image and the detector runs automatically. Watch the status line for the "kept X/Y" summary — it tells you both how many stars contribute to the statistics (X) and how many detections SEP found before quality filtering (Y). On a well-populated frame X ≈ 1000 by default. On a sparse frame all detections survive, and X ≈ Y.</p>
+
+<div class="workflow">
+<b>Fast focus / quality check on a sub.</b> Open the viewer on a single sub. Read median FWHM from the stats table — that's your frame's seeing-plus-optics FWHM. Compare to previous subs or to your usual values. If today's median is 50% higher than normal, something changed (focus drift, worse seeing, sensor dew, cable snag). The eccentricity median tells you whether stars are elongated — above 0.5 is clearly non-round.
+</div>
+
+<div class="workflow">
+<b>Deciding whether the data is well-sampled.</b> Click the star widget to switch to pixel mode. If the median star fills 3-5 pixels, you're well-sampled; if it fills 2 pixels, you're undersampled and the smooth-mode shape is interpolation, not data. The FWHM ellipse drawn against the real pixel grid tells you directly whether your resolution claim is supported.
+</div>
+
+<div class="workflow">
+<b>Round-vs-elongated diagnosis.</b> Read the median eccentricity. Above 0.3, stars are visibly elongated. Switch to the pixel mode and look at the median stamp — the direction of elongation (red PSF-X axis vs blue PSF-Y) reveals the cause: horizontal/vertical means guiding or periodic error, radial means field curvature or coma, diagonal means tilt. For a focal-plane view across the whole frame, use Image Peeker's Focal Plane Analysis.
+</div>
+
+<div class="workflow">
+<b>Flux histogram for bimodality / outliers.</b> Click <b>Show Flux Histogram</b>. The viewer switches to log x-axis by default (flux spans huge range). A clean distribution tapers smoothly from the detection limit to the saturation ceiling. A bimodal distribution reveals two populations in your frame — common when a star cluster is embedded in a sparse field, or when two overlapping stacks were median-combined with different exposures. A sharp spike at the high end is saturated stars that you probably want to exclude from downstream photometry.
+</div>
+
+<div class="workflow">
+<b>Setting detection σ for other tools.</b> Uncheck <b>Auto</b> and move the σ slider. The histogram and stats update after a 500 ms debounce. This lets you find the σ at which your downstream tool (Magnitude, Blink, registration) will get the number of stars it needs. Then feed that σ to that tool explicitly.
+</div>
+
+<h2>3. The two-mode star widget</h2>
+
+<p>The widget starts in <b>smooth mode</b>: an analytic Gaussian with semi-major axis <i>a</i> and semi-minor axis <i>b</i> (both medians across the detected population), rotated by the median orientation θ. Overlaid on top:</p>
+
+<ul>
+  <li><b>Green FWHM ellipse</b> — drawn at diameters (FWHM<sub>a</sub>, FWHM<sub>b</sub>) scaled to match the blob rendering. This is where the fitted Gaussian falls to half its peak.</li>
+  <li><b>Orange HFR ellipse</b> — drawn at diameters (HFR<sub>a</sub>, HFR<sub>b</sub>). This is the half-flux-radius proxy (2·a) commonly used in astro imaging.</li>
+  <li><b>Red line (PSF X)</b> — the major axis direction, length 2.4·a.</li>
+  <li><b>Blue line (PSF Y)</b> — the minor axis direction, length 2.4·b, perpendicular to red.</li>
+  <li><b>Cyan crosshair</b> — image-aligned reference axes.</li>
+  <li><b>Legend</b> at top left, <b>eccentricity readout</b> at bottom left, <b>mode hint</b> at bottom right.</li>
+</ul>
+
+<p>Click the widget to switch to <b>pixel mode</b>:</p>
+
+<ul>
+  <li>The display switches to a <b>median-stacked real-pixel stamp</b> — up to 500 small cutouts of actual stars from the image, each background-subtracted from its 1-pixel edge median, peak-normalized, then median-combined pixel-by-pixel. The stamp half-size is 2.5·FWHM, clamped to the range 5-25 pixels.</li>
+  <li>Each image pixel is rendered as a crisp integer-sized screen square with nearest-neighbor scaling. A faint grid is drawn between pixels so you can count them.</li>
+  <li>The <b>same FWHM and HFR ellipses are drawn against the real pixel grid</b> at the same image-coordinate scale, so you can directly measure the FWHM claim against the data.</li>
+  <li>The header shows the stamp size in pixels and the pixel-to-screen scale factor, e.g. "True Pixels 21×21 px · 1 px → 14 px".</li>
+</ul>
+
+<div class="tip">
+<b>Why both modes exist.</b> The smooth view is the fitted model — easy to read, obvious shape, but not showing you the data. The pixel view is the data — honest about sampling, obvious when the model is interpolating. If the two views agree about where the FWHM ellipse sits, your fit is trustworthy; if the smooth FWHM ellipse looks tighter than the actual pixel-mode star profile, you're seeing the limitations of fitting a Gaussian to undersampled data. Both views are drawn with the same orientation and the same ellipse scaling, so they're directly comparable.
+</div>
+
+<h2>4. Detection modes</h2>
+
+<p>The detection panel at the bottom has a σ slider and an <b>Auto</b> checkbox.</p>
+
+<p><b>Auto (default)</b> runs the shared waterfall detector: SEP's background estimator runs once, then <code>sep.extract</code> re-runs at progressively lower sigma thresholds — 100 → 50 → 25 → 12 → 6 → 3 — stopping as soon as ~1000 quality-filtered stars are detected. On a rich field this takes 2-3 extractions; on a sparse one it descends to the bottom and keeps whatever it got.</p>
+
+<p><b>Manual</b> (uncheck Auto) uses the σ slider value as the one and only extraction threshold. The slider ranges 1-50; the current value is shown next to it. The debounce timer waits 500 ms after the last slider change before re-running the extraction, so you can scrub smoothly without triggering a burst of worker threads.</p>
+
+<p>Either way, a <b>quality filter</b> is applied before statistics are computed:</p>
+
+<ul>
+  <li>SEP's blend/truncation/saturation flag must be zero</li>
+  <li>Detection pixel count must be at least 5 (rejects hot pixels and cosmic rays)</li>
+  <li>Shape ellipse must be well-formed: a &gt; 0, b &gt; 0, b ≤ a</li>
+</ul>
+
+<p>The status line reports how many detections survived the filter, so you can see whether your extraction is noise-dominated (large Y, small X ratio) or clean (X ≈ Y).</p>
+
+<div class="keys">
+<b>Controls.</b>
+<br><b>Click the star widget</b> — toggle smooth ↔ pixel view.
+<br><b>Zoom slider</b> — scale the histogram display (50-1000%). Zoom in / out / Fit buttons for discrete steps.
+<br><b>X-Axis: Linear / Log</b> — toggle histogram x-axis scaling. Flux defaults to log; HFR defaults to linear.
+<br><b>Show Flux Histogram / Show PSF Histogram</b> — switch between HFR distribution and flux distribution.
+<br><b>Detection Threshold slider</b> — only active when Auto is unchecked. 500 ms debounce before re-extraction.
+<br><b>Auto checkbox</b> — waterfall mode (default) vs single-shot at slider value. Persists across sessions via QSettings.
+</div>
+
+<h2>5. The stats table</h2>
+
+<p>Seven columns, each with four rows (median, min, max, std):</p>
+
+<table>
+<tr><th>Column</th><th>Meaning</th><th>Units</th></tr>
+<tr><td>HFR</td><td>Half-Flux Radius proxy = 2·a</td><td>pixels</td></tr>
+<tr><td>FWHM</td><td>Full-Width Half-Max = 2.3548·a</td><td>pixels</td></tr>
+<tr><td>eccentricity</td><td>√(1 − b²/a²)</td><td>dimensionless, [0, 1)</td></tr>
+<tr><td>a</td><td>Semi-major axis from SEP second moments</td><td>pixels</td></tr>
+<tr><td>b</td><td>Semi-minor axis from SEP second moments</td><td>pixels</td></tr>
+<tr><td>theta</td><td>Orientation of the major axis</td><td>radians</td></tr>
+<tr><td>flux</td><td>Total integrated signal</td><td>ADU (image units)</td></tr>
+</table>
+
+<p>Median is the single most useful number — it's robust to outliers and is what the star-shape widget is drawn at. Min and max tell you the extremes present in the frame. StdDev tells you how homogeneous the population is: a tight StdDev on FWHM means your frame has consistent focus across the field; a wide StdDev means some corners are soft or guiding wandered during the sub.</p>
+
+<div class="warn">
+<b>Eccentricity vs ellipticity — don't mix them up.</b> This tool reports <i>eccentricity</i> e = √(1 − b²/a²), the astronomical convention. Image Peeker's Focal Plane Analysis reports <i>ellipticity</i> ε = 1 − b/a, the PixInsight / SExtractor convention. They are not the same number: a star with b/a = 0.8 has eccentricity e = 0.6 but ellipticity ε = 0.2. If you see different numbers on the same frame between PSF Viewer and Image Peeker, that's why. Both are honest, standard definitions — just pick one convention when you report.
+</div>
+
+<h2>6. Technical details</h2>
+<p class="tech-lead">The math behind every number the tool reports.</p>
+
+<h3>6.1 SEP second-moment star measurement</h3>
+
+<p>SEP (Source Extractor in Python) measures each detected source's shape via the second central moments of its pixel distribution. For a detection with centroid (x̄, ȳ) and pixel values I<sub>i</sub>:</p>
+
+<div class="matheq">a^2 = M_{20}, \quad b^2 = M_{02}</div>
+
+<p>in the principal axes frame (after rotation to diagonalize the moment matrix). The orientation that performs this diagonalization is:</p>
+
+<div class="matheq">\theta = \frac{1}{2}\arctan\!\left(\frac{2 M_{11}}{M_{20} - M_{02}}\right)</div>
+
+<p>SEP returns a, b, and θ directly as per-detection attributes. The semi-major axis a is interpreted as the equivalent Gaussian σ along the long direction of the star; b is the equivalent σ along the short direction.</p>
+
+<h3>6.2 FWHM from a</h3>
+
+<p>For a 2D Gaussian with σ along the measured direction, the Full-Width-at-Half-Maximum is:</p>
+
+<div class="matheq">\mathrm{FWHM} = 2\sqrt{2 \ln 2}\, \cdot a \approx 2.3548\, a</div>
+
+<p>evaluated in pixel units since SEP reports a in pixels. This is the proper statistical FWHM of the Gaussian model fit through the second-moment measurement; it is not the direct peak-to-half-peak distance that you would get by profile-fitting to the pixel data, but for well-sampled Gaussian-like stars the two agree to within a few percent.</p>
+
+<h3>6.3 HFR convention</h3>
+
+<p>The tool reports:</p>
+
+<div class="matheq">\mathrm{HFR} \approx 2\, a</div>
+
+<p>This is a common astro-imaging convention for "Half-Flux Radius" that is not the mathematical half-light radius. The true half-light radius for a 2D Gaussian is:</p>
+
+<div class="matheq">r_{1/2} = \sigma \sqrt{2 \ln 2} \approx 1.177\, \sigma</div>
+
+<p>which is smaller than 2σ by a factor of about 1.7. The HFR = 2·a convention is what guiding software (PHD2, SharpCap) and focus tools (SGP, N.I.N.A.) typically report, so following it keeps numbers from this tool directly comparable to those from your capture pipeline. If you need the proper mathematical half-light radius, divide the reported HFR by about 1.7.</p>
+
+<h3>6.4 Eccentricity</h3>
+
+<div class="matheq">e = \sqrt{1 - \frac{b^2}{a^2}}</div>
+
+<p>This is the standard eccentricity of the ellipse that passes through the a and b points. It ranges from 0 (circular star, b = a) to approaching 1 (highly elongated).</p>
+
+<p>For reference, the alternative convention used by Image Peeker's Focal Plane Analysis is:</p>
+
+<div class="matheq">\varepsilon = 1 - \frac{b}{a}</div>
+
+<p>which ranges from 0 (round) to approaching 1 (elongated) but has different numerical scaling. For a star with b/a = 0.8: this tool reports e = 0.6, Image Peeker reports ε = 0.2. Both are correct for their respective conventions.</p>
+
+<h3>6.5 Waterfall star detection</h3>
+
+<p>The shared <code>detect_stars_waterfall</code> function runs SEP's background estimator once (the expensive fixed cost) and then re-extracts at progressively lower sigma thresholds:</p>
+
+<p>σ-ladder: <b>100 → 50 → 25 → 12 → 6 → 3</b></p>
+
+<p>At each level, the raw detections are quality-filtered:</p>
+
+<div class="matheq">\mathrm{keep} = (\mathrm{flag} = 0) \wedge (N_{\mathrm{pix}} \geq 5) \wedge (a > 0 > b \leq a)</div>
+
+<p>where the flag check rejects saturation, blends, and truncations; the pixel-count check rejects single-pixel spikes and cosmic rays; and the shape check rejects malformed ellipses. If the surviving count reaches the target (1000 by default) the ladder stops; otherwise it descends further.</p>
+
+<p>Rationale: on a rich field, SEP at σ=3 can produce 50000+ detections (Frank's example: 53105 sources at σ=15 on one image). Fitting shape moments to that many detections wastes seconds on sources that will fail the quality filter anyway. Starting at σ=100 and only descending until a stable statistic is in hand gives the same median numbers in a fraction of the time. On sparse fields where σ=3 is needed to find anything, the ladder reaches the bottom naturally and the tool uses what it got.</p>
+
+<h3>6.6 Median star stamp assembly</h3>
+
+<p>When the widget is in pixel mode, the displayed stamp is a median stack of up to 500 real-image cutouts around detected stars. The process:</p>
+
+<ol>
+  <li><b>Choose stamp size.</b> The half-width is set from the median FWHM:
+    <div class="matheq">L_{\mathrm{stamp}} = 2 \lceil 2.5 \cdot \mathrm{FWHM} \rceil + 1</div>
+    clamped to the range 5-25 pixels so very small or very large FWHM don't produce an unusable display.
+  </li>
+  <li><b>Cut around each star.</b> Extract an (L × L) window centered on the integer-rounded centroid position (xᵢ, yᵢ). Stars whose window would overrun the image edge are skipped.</li>
+  <li><b>Background-subtract per stamp.</b> The 1-pixel edge of each stamp (top row + bottom row + two side columns) is the local sky estimate:
+    <div class="matheq">s_i' = s_i - \mathrm{median}(s_i^{\mathrm{edge}})</div>
+    This handles local sky-gradient variation across the frame without needing a global background model.
+  </li>
+  <li><b>Peak-normalize.</b> Divide by the stamp's peak value so bright stars don't dominate the median:
+    <div class="matheq">s_i'' = \frac{s_i'}{\max(s_i')}</div>
+  </li>
+  <li><b>Median-combine.</b> Stack all normalized stamps and take the per-pixel median:
+    <div class="matheq">\mathrm{PSF}_{\mathrm{stamp}} = \mathrm{median}\{s_i''\}_{i=1}^{N}</div>
+    This produces a robust representative shape that rejects individual star defects (overlapping neighbours, diffraction spikes from oversaturated stars, cosmic-ray residuals).
+  </li>
+</ol>
+
+<p>Cap at 500 stars because 500 median-stacked cutouts already give pixel-level stability well below the noise in any individual cutout; more would just cost memory and time with no visible benefit.</p>
+
+<h3>6.7 Smooth-view Gaussian rendering</h3>
+
+<p>The smooth mode renders:</p>
+
+<div class="matheq">G(x,y) = \exp\!\left(-\frac{1}{2}\!\left(\frac{x_r^2}{a^2} + \frac{y_r^2}{b^2}\right)\right)</div>
+
+<p>on a 300×300 grid with the median a, b, and θ. The rotated coordinates are:</p>
+
+<div class="matheq">x_r = x \cos\theta + y \sin\theta</div>
+<div class="matheq">y_r = -x \sin\theta + y \cos\theta</div>
+
+<p>The in-frame scaling is set so that the Gaussian occupies a comfortable fraction of the widget regardless of the star's absolute size; the ellipse overlays are scaled by the same factor so FWHM, HFR, and the axis lines match the rendered blob's extent. This is a cached QPixmap; resizing the widget just scales the pixmap, so there's no per-pixel work at resize time.</p>
+
+<h3>6.8 Threaded extraction</h3>
+
+<p>Star detection runs in a background QThread (<code>_PSFWorker</code>). The GUI thread shows a semi-transparent "Processing… extracting stars / PSFs" overlay on top of the histogram while the worker runs, and the status line updates when results arrive. A 500 ms debounce timer on the σ slider ensures that scrubbing the slider doesn't fire off a worker on every pixel of motion; the extraction only starts once the slider has been idle for half a second. The worker is cleanly stopped and replaced if a second extraction request comes in before the first completed.</p>
+
+<div class="credit">
+<b>Credits.</b> PSF Viewer — the two-mode star widget (synthetic + real-pixel median stamp), the Auto/Manual threshold dual mode, the histogram+stats+shape triple-view layout, and the SASpro-canonical visual conventions — is original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. Standard components credited to the community: SEP (Source Extractor in Python) by Barbary (2016) for source detection and the a / b / θ second-moment measurements; the Gaussian FWHM = 2√(2 ln 2) · σ conversion is standard statistics; the HFR ≈ 2·σ convention follows the astro-imaging community (PHD2, SharpCap, SGP, N.I.N.A.); the waterfall detection algorithm lives in <code>psf_utils.py</code> as a shared utility used by multiple SASpro tools.
+</div>
+
+</body>
+</html>
