@@ -892,54 +892,85 @@ class MultiscaleDecompDialog(QDialog):
     def _active_mask_id(self) -> str | None:
         return getattr(self._doc, "active_mask_id", None) or None
 
-    def _blend_with_mask(self, processed: np.ndarray) -> np.ndarray:
-        mid = self._active_mask_id()
-        if not mid:
-            return processed
+    def _active_mask_array(self) -> np.ndarray | None:
+        """
+        Fetch the active document mask as a 2D float32 array in [0, 1],
+        resized to match the current document image shape and
+        multiplied by the layer's opacity. Returns None if there is no
+        active mask or anything about it is unusable.
 
-        layer = getattr(self._doc, "masks", {}).get(mid)
-        if layer is None:
-            return processed
+        Mirrors Statistical Stretch's _active_mask_array so masks
+        behave consistently across the suite — crucially, this handles
+        both (H,W,1) and (H,W,3) stored masks (collapsing the latter
+        via Rec.709 luma) and respects layer opacity, both of which the
+        older _blend_with_mask here missed.
+        """
+        try:
+            doc = self._doc
+            mid = getattr(doc, "active_mask_id", None)
+            if not mid:
+                return None
+            layer = getattr(doc, "masks", {}).get(mid)
+            if layer is None:
+                return None
+            m = np.asarray(getattr(layer, "data", None))
+            if m is None or m.size == 0:
+                return None
 
-        m = np.asarray(getattr(layer, "data", None))
-        if m is None or m.size == 0:
-            return processed
+            # Collapse to 2D if the mask was stored as (H,W,1) or (H,W,3).
+            if m.ndim == 3 and m.shape[2] == 1:
+                m = m[..., 0]
+            elif m.ndim == 3:
+                m = (0.2126 * m[..., 0]
+                     + 0.7152 * m[..., 1]
+                     + 0.0722 * m[..., 2])
 
-        m = m.astype(np.float32)
-        if m.dtype.kind in "ui":
-            imax = float(np.iinfo(m.dtype).max)
-            m = m / imax if imax > 0 else m
+            orig = m
+            if orig.dtype.kind in "ui":
+                m = orig.astype(np.float32) / float(np.iinfo(orig.dtype).max)
+            else:
+                m = orig.astype(np.float32, copy=False)
+            m = np.clip(m, 0.0, 1.0)
+
+            # Resize to current document image size.
+            base_img = getattr(doc, "image", None)
+            if base_img is None:
+                return None
+            th, tw = base_img.shape[:2]
+            sh, sw = m.shape[:2]
+            if (sh, sw) != (th, tw):
+                yi = np.linspace(0, sh - 1, th).astype(np.int32)
+                xi = np.linspace(0, sw - 1, tw).astype(np.int32)
+                m = m[yi][:, xi]
+
+            opacity = float(getattr(layer, "opacity", 1.0) or 1.0)
+            if opacity < 1.0:
+                m = m * opacity
+
+            return m
+        except Exception:
+            return None
+
+    def _blend_with_mask(self, base: np.ndarray, out: np.ndarray,
+                         mask: np.ndarray) -> np.ndarray:
+        """
+        Standard SASpro mask blend: base * (1 - m) + out * m.
+
+        Signature matches Statistical Stretch: caller supplies base
+        (unprocessed source), out (processed result), and the 2D mask
+        in [0, 1]. For 3-channel outputs the mask is broadcast across
+        channels. Base and out must share the same shape; the caller
+        is responsible for shape reconciliation.
+        """
+        if out.ndim == 3:
+            # (H, W, 1) and (H, W, 3) both need an extra axis for broadcast.
+            m = mask[..., None]
         else:
-            mx = float(m.max()) if m.size else 0.0
-            if mx > 1.0:
-                m = m / mx
-            elif mx == 0.0:
-                return processed
-
-        m = np.clip(m, 0.0, 1.0)
-
-        mh, mw = m.shape[:2]
-        oh, ow = processed.shape[:2]
-        if (mh, mw) != (oh, ow):
-            yi = np.linspace(0, mh - 1, oh).astype(np.int32)
-            xi = np.linspace(0, mw - 1, ow).astype(np.int32)
-            m = m[yi][:, xi]
-
-        # src must match processed shape exactly
-        src = self._orig_for_mask.astype(np.float32)
-        out = processed.astype(np.float32)
-
-        if out.ndim == 3 and out.shape[2] >= 3:
-            m = m[..., None]
-            if src.ndim == 2:
-                src = np.stack([src] * 3, axis=-1)
-        elif out.ndim == 2:
-            if src.ndim == 3:
-                src = src[..., 0]
-
-        result = m * out + (1.0 - m) * src
+            m = mask
+        result = (base.astype(np.float32) * (1.0 - m)
+                  + out.astype(np.float32) * m)
         if not np.isfinite(result).all():
-            return processed
+            return out
         return result.astype(np.float32)
 
     # ---------- Preview plumbing ----------
@@ -1854,19 +1885,24 @@ class MultiscaleDecompDialog(QDialog):
                 else:
                     out_final = out[:, :, :3].astype(np.float32, copy=False)
 
-            # ← ADD: blend with active mask before applying
-            # _blend_with_mask works in 3ch space, so expand mono temporarily
-            if out_final.ndim == 2:
-                out_blend = self._blend_with_mask(
-                    np.stack([out_final] * 3, axis=-1)
-                )[:, :, 0]
-            elif out_final.ndim == 3 and out_final.shape[2] == 1:
-                out_blend = self._blend_with_mask(
-                    np.repeat(out_final, 3, axis=2)
-                )[:, :, 0:1]
-            else:
-                out_blend = self._blend_with_mask(out_final)
-            out_final = out_blend
+            # Blend with active mask before applying. The new
+            # _blend_with_mask handles both mono and 3-channel outputs
+            # natively, so no mono→3ch→back-to-mono gymnastics here.
+            # Base comes from the image we captured at dialog open —
+            # that's the exact source the decomposition was computed
+            # from, which is what we want for a correct composite.
+            mask2d = self._active_mask_array()
+            if mask2d is not None:
+                base_src = self._orig_for_mask.astype(np.float32, copy=False)
+                if out_final.ndim == 2:
+                    base_match = base_src[..., 0]
+                elif out_final.ndim == 3 and out_final.shape[2] == 1:
+                    base_match = base_src[..., 0:1]
+                else:
+                    base_match = base_src
+                out_final = self._blend_with_mask(
+                    base_match, out_final, mask2d
+                )
 
             mid = self._active_mask_id()
             meta = {
@@ -1969,7 +2005,26 @@ class MultiscaleDecompDialog(QDialog):
                     out_final = np.repeat(out[:, :, None], 3, axis=2).astype(np.float32, copy=False)
                 else:
                     out_final = out[:, :, :3].astype(np.float32, copy=False)
- 
+
+            # Respect the active mask on the SOURCE document, just as
+            # _commit_to_doc does. Without this, "Send to New Document"
+            # silently discards the mask and produces a fully processed
+            # image even when the user scoped the operation to a region.
+            # Base = the original source we captured at dialog open —
+            # the same source the decomposition was computed from.
+            mask2d = self._active_mask_array()
+            if mask2d is not None:
+                base_src = self._orig_for_mask.astype(np.float32, copy=False)
+                if out_final.ndim == 2:
+                    base_match = base_src[..., 0]
+                elif out_final.ndim == 3 and out_final.shape[2] == 1:
+                    base_match = base_src[..., 0:1]
+                else:
+                    base_match = base_src
+                out_final = self._blend_with_mask(
+                    base_match, out_final, mask2d
+                )
+
             title = "Multiscale Result"
             meta = self._build_new_doc_metadata(title, out_final)
             try:
@@ -2026,18 +2081,40 @@ class MultiscaleDecompDialog(QDialog):
                         )
                     )
 
+            # Fetch the mask once outside the loop — the same mask applies
+            # to every detail layer and the residual.
+            mask2d = self._active_mask_array()
+
             # ---- 1) Detail layers ------------------------------------------
             for i, layer in enumerate(tuned):
                 d = layer.astype(np.float32, copy=False)
                 vis = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
 
                 if self._orig_mono:
-                    mono = vis[..., 0]
+                    # multiscale_decompose returns 2D detail layers for mono
+                    # input and 3D for RGB — check before indexing a channel
+                    # (vis[..., 0] on a 2D array picks column 0, not channel
+                    # 0, giving a 1D result).
+                    if vis.ndim == 3:
+                        mono = vis[..., 0]
+                    else:
+                        mono = vis
                     if len(self._orig_shape) == 3 and self._orig_shape[2] == 1:
-                        mono = mono[:, :, None]
-                    out_final = mono.astype(np.float32, copy=False)
+                        out_final = mono[:, :, None].astype(np.float32, copy=False)
+                    else:
+                        out_final = mono.astype(np.float32, copy=False)
                 else:
                     out_final = vis
+
+                # Respect the active mask: show the detail only where the
+                # mask allows; everywhere else is flat 0.5 gray (the "zero
+                # detail" baseline that the 0.5 + d*4.0 visualization
+                # already uses for a null detail layer).
+                if mask2d is not None:
+                    neutral = np.full_like(out_final, 0.5, dtype=np.float32)
+                    out_final = self._blend_with_mask(
+                        neutral, out_final, mask2d
+                    )
 
                 title = f"Multiscale Detail Layer {i+1}"
                 meta = self._build_new_doc_metadata(title, out_final)
@@ -2060,12 +2137,37 @@ class MultiscaleDecompDialog(QDialog):
                 res_img = np.clip(res, 0.0, 1.0)
 
                 if self._orig_mono:
-                    mono = res_img[..., 0]
+                    # Same ndim guard as the detail loop: multiscale_decompose
+                    # returns a 2D residual for mono input.
+                    if res_img.ndim == 3:
+                        mono = res_img[..., 0]
+                    else:
+                        mono = res_img
                     if len(self._orig_shape) == 3 and self._orig_shape[2] == 1:
-                        mono = mono[:, :, None]
-                    res_final = mono.astype(np.float32, copy=False)
+                        res_final = mono[:, :, None].astype(np.float32, copy=False)
+                    else:
+                        res_final = mono.astype(np.float32, copy=False)
                 else:
                     res_final = res_img
+
+                # Respect the active mask: show the residual where the
+                # mask allows; outside the mask, use the ORIGINAL image
+                # (not neutral gray). This preserves the reconstruction
+                # identity — if the user re-combines these split documents
+                # as (detail_1 + ... + detail_N + residual), they get the
+                # original image outside the mask back, because the detail
+                # layers already contribute zero (mid-gray) there.
+                if mask2d is not None:
+                    base_src = self._orig_for_mask.astype(np.float32, copy=False)
+                    if res_final.ndim == 2:
+                        base_match = base_src[..., 0]
+                    elif res_final.ndim == 3 and res_final.shape[2] == 1:
+                        base_match = base_src[..., 0:1]
+                    else:
+                        base_match = base_src
+                    res_final = self._blend_with_mask(
+                        base_match, res_final, mask2d
+                    )
 
                 r_title = "Multiscale Residual Layer"
                 r_meta = self._build_new_doc_metadata(r_title, res_final)

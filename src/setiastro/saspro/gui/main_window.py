@@ -4824,8 +4824,15 @@ class AstroSuiteProMainWindow(
         w.show()
 
     def _open_multiscale_decomp(self):
-        doc = self._active_doc()
-        if not doc:
+        sw = self.mdi.activeSubWindow()
+        if not sw:
+            QMessageBox.information(self, "Multiscale Decomposition", "No active image.")
+            return
+        view = sw.widget()
+        # ROI-aware: always resolve via DocManager for THIS view
+        # (so active_mask_id / masks are attached to the doc we pass in).
+        doc = self.doc_manager.get_document_for_view(view)
+        if not doc or getattr(doc, "image", None) is None:
             QMessageBox.information(self, "Multiscale Decomposition", "No active image.")
             return
         from setiastro.saspro.multiscale_decomp import MultiscaleDecompDialog
@@ -4837,7 +4844,7 @@ class AstroSuiteProMainWindow(
         except Exception:
             pass
 
-        dlg.show()  
+        dlg.show()
 
     def _open_slap_toolkit(self):
         from setiastro.saspro.slap_toolkit import show_slap_toolkit
