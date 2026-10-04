@@ -281,6 +281,28 @@ def multiscale_reconstruct(details, residual):
         out += w
     return out
 
+def detail_only_vis(out_raw, tuned, gain: float = 4.0):
+    """
+    Mid-grey visualization of a detail-only reconstruction (residual off).
+
+    Detail layers are signed and centred near zero. Summing several of them
+    (multiscale_reconstruct on the enabled/tuned layers) stacks their
+    amplitude, so a fixed gain blows out to pure white/black once more than
+    one layer contributes. We divide the summed structure by the number of
+    CONTRIBUTING layers (those not identically zero — disabled layers are
+    passed in as zeros) before the mid-grey shift, i.e. we show the MEAN of
+    the active layers' structure times `gain`. That keeps the display in
+    range no matter how many layers are enabled, and reduces to the original
+    behaviour for a single layer.
+    """
+    n = 0
+    for w in tuned:
+        if w is not None and w.any():
+            n += 1
+    n = max(1, n)
+    d = out_raw.astype(np.float32, copy=False) / float(n)
+    return np.clip(0.5 + d * float(gain), 0.0, 1.0).astype(np.float32, copy=False)
+
 def soft_threshold(x: np.ndarray, t: float):
     a = np.abs(x)
     return np.sign(x) * np.maximum(0.0, a - t)
@@ -1255,8 +1277,7 @@ class MultiscaleDecompDialog(QDialog):
                 sel = self.combo_preview.currentData()
                 if sel is None or sel == "final":
                     if not self.residual_enabled:
-                        d = out_raw.astype(np.float32, copy=False)
-                        vis = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+                        vis = detail_only_vis(out_raw, tuned)
                         if vis.ndim == 2:
                             vis = np.repeat(vis[:, :, None], 3, axis=2)
                         self._preview_img = vis
@@ -1356,7 +1377,7 @@ class MultiscaleDecompDialog(QDialog):
             out = np.clip(residual, 0.0, 1.0).astype(np.float32, copy=False)
         else:
             if not self.residual_enabled:
-                out = np.clip(0.5 + out_raw * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+                out = detail_only_vis(out_raw, tuned)
             else:
                 out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
 
@@ -1840,7 +1861,7 @@ class MultiscaleDecompDialog(QDialog):
 
         # Match your preview rules
         if not self.residual_enabled:
-            out = np.clip(0.5 + out_raw * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+            out = detail_only_vis(out_raw, tuned)
         else:
             out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
 
@@ -1864,8 +1885,7 @@ class MultiscaleDecompDialog(QDialog):
             out_raw = multiscale_reconstruct(tuned, res)
 
             if not self.residual_enabled:
-                d = out_raw.astype(np.float32, copy=False)
-                out = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+                out = detail_only_vis(out_raw, tuned)
             else:
                 out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
 
@@ -1985,8 +2005,7 @@ class MultiscaleDecompDialog(QDialog):
             out_raw = multiscale_reconstruct(tuned, res)
  
             if not self.residual_enabled:
-                d = out_raw.astype(np.float32, copy=False)
-                out = np.clip(0.5 + d * 4.0, 0.0, 1.0).astype(np.float32, copy=False)
+                out = detail_only_vis(out_raw, tuned)
             else:
                 out = np.clip(out_raw, 0.0, 1.0).astype(np.float32, copy=False)
  

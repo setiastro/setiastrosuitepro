@@ -4895,8 +4895,12 @@ class _ABEPresetDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("ABE — Preset")
         p = dict(initial or {})
+
         form = QFormLayout(self)
-        self.degree  = QSpinBox(); self.degree.setRange(1, 6);  self.degree.setValue(int(p.get("degree", 2)))
+
+        # ---- core background model ----
+        self.degree  = QSpinBox(); self.degree.setRange(0, 6);  self.degree.setValue(int(p.get("degree", 2)))
+        self.degree.setToolTip("0 = skip polynomial (RBF-only).")
         self.samples = QSpinBox(); self.samples.setRange(20, 100000); self.samples.setSingleStep(20); self.samples.setValue(int(p.get("samples", 120)))
         self.down    = QSpinBox(); self.down.setRange(1, 64); self.down.setValue(int(p.get("downsample", 6)))
         self.patch   = QSpinBox(); self.patch.setRange(5, 151); self.patch.setSingleStep(2); self.patch.setValue(int(p.get("patch", 15)))
@@ -4906,6 +4910,7 @@ class _ABEPresetDialog(QDialog):
         self.seed.setSpecialValueText("Random (no seed)")
         self.seed.setToolTip("-1 = non-deterministic (different each run).\nAny other value = fully reproducible results.")
         self.mk_bg   = QCheckBox("Also create background document"); self.mk_bg.setChecked(bool(p.get("make_background_doc", False)))
+
         form.addRow("Polynomial degree:", self.degree)
         form.addRow("# samples:",         self.samples)
         form.addRow("Downsample:",        self.down)
@@ -4914,9 +4919,119 @@ class _ABEPresetDialog(QDialog):
         form.addRow("RBF smooth:",        self.smooth)
         form.addRow("Random seed:",       self.seed)
         form.addRow(self.mk_bg)
+
+        # ---- correction mode ----
+        _mode = str(p.get("correction_mode", "subtract")).lower()
+        self.cmb_correction = QComboBox()
+        self.cmb_correction.addItems(["Subtract", "Divide"])
+        self.cmb_correction.setCurrentText("Divide" if _mode == "divide" else "Subtract")
+        self.cmb_correction.setToolTip(
+            "Subtract: standard additive background removal.\n"
+            "Divide: for vignetting / multiplicative gradients."
+        )
+        form.addRow("Correction mode:", self.cmb_correction)
+
+        # ---- multiscale multiplicative-gradient refinement ----
+        _ms = p.get("multiscale", None) or {}
+        self.ms_enable = QCheckBox("Enable multiscale refinement")
+        self.ms_enable.setChecked(bool(_ms.get("enabled", False)))
+        self.ms_enable.setToolTip(
+            "Second pass that removes sharp multiplicative defects (dust motes,\n"
+            "reflections, filter-edge shadows) that poly/RBF can't model.\n"
+            "NOTE: headless (dropped-on-image) runs have no exclusion polygon,\n"
+            "so this flattens the whole frame with no galaxy protection."
+        )
+        form.addRow(self.ms_enable)
+
+        self.ms_darkstar = QCheckBox("Remove stars first (DarkStar)")
+        self.ms_darkstar.setChecked(bool(_ms.get("darkstar", True)))
+        self.ms_darkstar.setToolTip(
+            "Estimate the gradient on a starless copy so stars don't pollute it.\n"
+            "Stars are kept in the final output. Strongly recommended."
+        )
+        form.addRow(self.ms_darkstar)
+
+        self.ms_band_lo = QSpinBox(); self.ms_band_lo.setRange(0, 11); self.ms_band_lo.setValue(int(_ms.get("band_lo", 6)))
+        self.ms_band_hi = QSpinBox(); self.ms_band_hi.setRange(0, 11); self.ms_band_hi.setValue(int(_ms.get("band_hi", 8)))
+        self.ms_band_lo.setMaximumWidth(56); self.ms_band_hi.setMaximumWidth(56)
+        self.ms_band_lo.setToolTip("First detail layer treated as gradient (lower = finer).")
+        self.ms_band_hi.setToolTip("Last detail layer (inclusive); higher = coarser.")
+        _band_row = QHBoxLayout(); _band_row.setContentsMargins(0, 0, 0, 0)
+        _band_row.addWidget(self.ms_band_lo)
+        _band_row.addWidget(QLabel("to"))
+        _band_row.addWidget(self.ms_band_hi)
+        _band_row.addStretch(1)
+        _band_wrap = QWidget(); _band_wrap.setLayout(_band_row)
+        form.addRow("Scale band:", _band_wrap)
+
+        self.ms_residual = QCheckBox("Include coarsest residual")
+        self.ms_residual.setChecked(bool(_ms.get("include_residual", False)))
+        self.ms_residual.setToolTip(
+            "Usually OFF — the smooth background is already handled by poly/RBF;\n"
+            "including it here risks double-correcting."
+        )
+        form.addRow(self.ms_residual)
+
+        self.ms_strength = QSpinBox(); self.ms_strength.setRange(0, 100); self.ms_strength.setSuffix(" %")
+        self.ms_strength.setValue(int(round(float(_ms.get("strength", 1.0)) * 100)))
+        self.ms_strength.setToolTip("Blend strength of the correction (100% = full).")
+        form.addRow("Strength:", self.ms_strength)
+
+        self.ms_protect = QDoubleSpinBox(); self.ms_protect.setRange(1.0, 5.0); self.ms_protect.setSingleStep(0.5); self.ms_protect.setDecimals(1)
+        self.ms_protect.setValue(float(_ms.get("protect_k", 3.0)))
+        self.ms_protect.setToolTip(
+            "Signal-protection threshold (median + k·MAD).\n"
+            "k=1-2 protects aggressively, k=3 balanced, k=4-5 protects only bright cores."
+        )
+        form.addRow("Protect k (MAD):", self.ms_protect)
+
+        self.ms_smooth = QSpinBox(); self.ms_smooth.setRange(0, 10); self.ms_smooth.setSuffix(" px")
+        self.ms_smooth.setValue(int(_ms.get("smooth_px", 2)))
+        self.ms_smooth.setToolTip(
+            "Blur the gradient MAP before dividing, to strip per-pixel noise the\n"
+            "band picked up (worst at low band numbers). 0 = off; 2-3 px typical."
+        )
+        form.addRow("Smooth gradient map:", self.ms_smooth)
+
+        # keep the multiscale sub-controls disabled until the feature is on
+        def _sync_ms(on: bool):
+            for w in (self.ms_darkstar, self.ms_band_lo, self.ms_band_hi,
+                      self.ms_residual, self.ms_strength, self.ms_protect, self.ms_smooth):
+                w.setEnabled(bool(on))
+        self.ms_enable.toggled.connect(_sync_ms)
+        _sync_ms(self.ms_enable.isChecked())
+
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
         form.addRow(btns)
+
+    def values(self) -> dict:
+        """Emit the preset in the exact schema apply_abe_via_preset() reads.
+        Only includes the multiscale block when enabled, keeping legacy presets
+        byte-clean when the feature is off."""
+        out = {
+            "degree":              int(self.degree.value()),
+            "samples":             int(self.samples.value()),
+            "downsample":          int(self.down.value()),
+            "patch":               int(self.patch.value()),
+            "rbf":                 bool(self.rbf.isChecked()),
+            "rbf_smooth":          float(self.smooth.value()),
+            "seed":                int(self.seed.value()),
+            "make_background_doc": bool(self.mk_bg.isChecked()),
+            "correction_mode":     "divide" if self.cmb_correction.currentText() == "Divide" else "subtract",
+        }
+        if self.ms_enable.isChecked():
+            out["multiscale"] = {
+                "enabled":          True,
+                "darkstar":         bool(self.ms_darkstar.isChecked()),
+                "band_lo":          int(self.ms_band_lo.value()),
+                "band_hi":          int(self.ms_band_hi.value()),
+                "include_residual": bool(self.ms_residual.isChecked()),
+                "strength":         float(self.ms_strength.value()) / 100.0,
+                "protect_k":        float(self.ms_protect.value()),
+                "smooth_px":        float(self.ms_smooth.value()),
+            }
+        return out
 
     def result_dict(self) -> dict:
         return {

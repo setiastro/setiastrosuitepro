@@ -144,6 +144,25 @@ def hole_span_iters(mask, sigma):
         return 16
 
 
+def _feather_mask(mask01, feather_px, blur):
+    """
+    Soften a 0..1 protect mask's boundary by blurring it with a large Gaussian
+    (sigma = feather_px), spreading the 0->1 transition over a wide soft band
+    so the protected region dissolves into the corrected background with no
+    visible seam. feather_px <= 0 returns the mask unchanged.
+    """
+    m = np.clip(np.asarray(mask01, dtype=np.float32), 0.0, 1.0)
+    f = float(feather_px)
+    if f <= 0.0 or not (m.any() and (m < 1.0).any()):
+        return m
+    # Just blur the mask. A large Gaussian spreads the 0->1 transition over a
+    # wide, soft band so the protected region dissolves into the corrected
+    # background with no visible seam. feather_px is the blur sigma; at
+    # ~10% of the image's short side it's a few hundred px on a real frame,
+    # which is what actually looks feathered.
+    return np.clip(blur(m, max(1.0, f)), 0.0, 1.0).astype(np.float32)
+
+
 def _inpaint_fill(img2d, mask, blur, iters=12, sigma=6.0):
     """Blur-fill on a (downscaled) image. Seed holes with background median,
     then relax by repeated fast blur + hole-replace. Few iterations because
@@ -182,8 +201,21 @@ def multiscale_gradient_correct(
                               # process runs on the whole image; this is just
                               # a final composite so the protected region is
                               # taken straight from the untouched source.
+    protect_feather_px=0.0,   # Gaussian blur sigma (px) applied to the exclusion
+                              # mask so its edge dissolves into the corrected
+                              # background. 0 (default) AUTO-scales to 10% of the
+                              # image's short side (~300 px on a 4500x3000 frame),
+                              # which is what actually looks feathered — a fixed
+                              # small value is invisible at full resolution. A
+                              # positive number forces that exact blur sigma.
     estimate_downsample=1,  # 1 = full-res (REQUIRED for sharp motes/edges);
                             # >1 only for a fast coarse preview, never for apply
+    gradient_smooth_px=2.0, # final blur (px) of the gradient MAP before
+                            # dividing. A gradient is low-frequency by
+                            # definition, so smoothing the map removes any
+                            # per-pixel noise the band picked up (worst at low
+                            # band_lo) without touching the image's own detail.
+                            # 0 disables; 2-3 px is a good default.
     clamp_sigma=0.0,
     return_extras=False,
     progress_cb=None,
@@ -278,6 +310,21 @@ def multiscale_gradient_correct(
     G = _upscale_to(G_s, (H, W)) if ds > 1 else G_s
     grad_lin = np.exp(G).astype(np.float32)   # median ~1.0
 
+    # A gradient is low-frequency by definition: smooth the MAP (not the
+    # image) before dividing so any per-pixel noise the band picked up -- which
+    # gets worse as band_lo drops toward the fine, noise-dominated layers --
+    # is not divided into the result. This strips noise from the CORRECTION
+    # while leaving the image's own detail completely untouched, and re-centres
+    # to keep the median at 1.0.
+    gsm = float(gradient_smooth_px)
+    if gsm > 0.0:
+        _say("Smoothing gradient map...")
+        grad_lin = blur(grad_lin, gsm)
+        gmed = float(np.median(grad_lin))
+        if gmed > 1e-8:
+            grad_lin = grad_lin / gmed      # re-anchor map median to 1.0
+        grad_lin = grad_lin.astype(np.float32, copy=False)
+
     _say("Applying multiplicative correction...")
     g = grad_lin[..., None] if (tgt.ndim == 3 and grad_lin.ndim == 2) else grad_lin
     corrected = tgt / np.clip(g, 1e-6, None)
@@ -294,8 +341,9 @@ def multiscale_gradient_correct(
     # Apply-time protect mask: keep the ORIGINAL (target) pixels wherever the
     # mask says to. The gradient ran across the whole frame; this is purely a
     # final composite, so a hand-drawn exclusion region returns untouched no
-    # matter what the correction did there. Soft edge via a few-px feather so
-    # there's no hard seam at the polygon boundary.
+    # matter what the correction did there. The boundary is feathered over a
+    # real, controllable width so the protected region blends smoothly into the
+    # corrected background instead of showing a hard seam.
     if protect_blend_mask is not None:
         try:
             m = np.asarray(protect_blend_mask, dtype=np.float32)
@@ -307,8 +355,17 @@ def multiscale_gradient_correct(
             if mx > 1.0:
                 m = m / mx
             m = np.clip(m, 0.0, 1.0)
-            # feather the mask edge a little
-            m = np.clip(blur(m, max(1.0, float(base_sigma) * 2.0)), 0.0, 1.0)
+
+            # Resolve feather width. 0 => auto: 10% of the image's short side,
+            # e.g. ~300 px on a 4500x3000 frame. A fixed small value is
+            # invisible at full resolution; the blur sigma must scale with the
+            # image to actually look feathered. Floor at 16 px for tiny images.
+            fpx = float(protect_feather_px)
+            if fpx <= 0.0:
+                fpx = max(16.0, 0.10 * float(min(H, W)))
+            m = _feather_mask(m, fpx, blur)
+            _say(f"Feathering exclusion edge ({int(fpx)} px)...")
+
             mm = m[..., None] if (corrected.ndim == 3 and m.ndim == 2) else m
             corrected = corrected * (1.0 - mm) + tgt * mm
             _say("Protected exclusion region (kept original pixels).")

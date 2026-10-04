@@ -19,9 +19,9 @@ try:
 except Exception:  # pragma: no cover
     cv2 = None
 
-from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArray
+from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArray, QObject
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QSpinBox,
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
     QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton, QDoubleSpinBox
 )
@@ -630,6 +630,75 @@ class ABEDialog(QDialog):
     Apply commits to the document image with undo. Optionally spawns a
     background document containing the extracted gradient.
     """
+    def _make_collapsible(self, box: "QGroupBox", collapsed: bool = False):
+        """
+        Turn a QGroupBox into a collapsible section whose TITLE carries a
+        disclosure triangle (▾ open / ▸ collapsed). Clicking the title bar
+        toggles it; collapsing reclaims all of the group's vertical space so
+        the controls column fits an HD monitor.
+
+        Deliberately NOT a checkable groupbox — a checkbox would read as an
+        enable/disable switch and mislead users into thinking they can turn
+        the whole section off by unchecking it. A disclosure triangle is the
+        universal "this only folds" affordance. The group's actual behaviour
+        is never gated on fold state (Multiscale has its own 'Enable' box).
+        """
+        # Remember the plain title; we prefix an arrow glyph that we flip.
+        base_title = box.title()
+        box._base_title = base_title           # stash for the toggler
+        box._expanded = not collapsed
+
+        def _set_layout_visible(lay, visible):
+            if lay is None:
+                return
+            for i in range(lay.count()):
+                it = lay.itemAt(i)
+                w = it.widget()
+                if w is not None:
+                    w.setVisible(visible)
+                else:
+                    _set_layout_visible(it.layout(), visible)
+
+        def _apply(_box=box):
+            exp = bool(_box._expanded)
+            arrow = "\u25be " if exp else "\u25b8 "   # ▾ / ▸
+            _box.setTitle(arrow + _box._base_title)
+            _set_layout_visible(_box.layout(), exp)
+            # Shrink to just the title bar when collapsed.
+            _box.setMaximumHeight(16777215 if exp else _box.fontMetrics().height() + 18)
+
+        def _toggle(_box=box):
+            _box._expanded = not _box._expanded
+            _apply(_box)
+
+        box._toggle_collapse = _toggle   # exposed for the event filter
+
+        # Click anywhere in the title strip (top ~title-height band) toggles.
+        class _TitleClickFilter(QObject):
+            def __init__(self, gb):
+                super().__init__(gb); self._gb = gb
+            def eventFilter(self, obj, ev):
+                if ev.type() == QEvent.Type.MouseButtonRelease:
+                    # Only the title strip, so clicks on controls still work
+                    # even though contents are hidden when collapsed.
+                    title_h = self._gb.fontMetrics().height() + 10
+                    try:
+                        y = ev.position().toPoint().y()
+                    except Exception:
+                        y = ev.pos().y()
+                    if y <= title_h:
+                        self._gb._toggle_collapse()
+                        return True
+                return False
+
+        filt = _TitleClickFilter(box)
+        box.installEventFilter(filt)
+        box._collapse_filter = filt   # retain against GC
+        box.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        _apply(box)
+        return box
+
     def __init__(self, parent, document: ImageDocument):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Automatic (Dynamic) Background Extraction (ADBE)"))
@@ -744,14 +813,16 @@ class ABEDialog(QDialog):
             "Last detail layer (inclusive) treated as gradient. Higher = coarser.\n"
             "Raise toward 9-10 to also catch very broad filter-edge darkening."
         )
+        self.sp_ms_band_lo.setMaximumWidth(56)
+        self.sp_ms_band_hi.setMaximumWidth(56)
         band_row = QHBoxLayout()
-        band_row.addWidget(QLabel(self.tr("layers")))
+        band_row.setContentsMargins(0, 0, 0, 0)
         band_row.addWidget(self.sp_ms_band_lo)
         band_row.addWidget(QLabel(self.tr("to")))
         band_row.addWidget(self.sp_ms_band_hi)
         band_row.addStretch(1)
         band_wrap = QWidget(); band_wrap.setLayout(band_row)
-        ms_layout.addRow(self.tr("Gradient scale band:"), band_wrap)
+        ms_layout.addRow(self.tr("Scale band:"), band_wrap)
 
         self.chk_ms_residual = QCheckBox(self.tr("Include coarsest residual"))
         self.chk_ms_residual.setChecked(False)
@@ -765,18 +836,19 @@ class ABEDialog(QDialog):
 
         self.sp_ms_strength = QSpinBox(); self.sp_ms_strength.setRange(0, 100); self.sp_ms_strength.setValue(100)
         self.sp_ms_strength.setSuffix(" %")
+        self.sp_ms_strength.setMaximumWidth(80)
         self.sp_ms_strength.setToolTip(
             "Blend strength of the multiplicative correction.\n"
             "100% applies it fully; lower values ease it in if the full\n"
             "correction over-flattens real large-scale structure."
         )
-        ms_layout.addRow(self.tr("Strength:"), self.sp_ms_strength)
 
         self.sp_ms_protect = QDoubleSpinBox()
         self.sp_ms_protect.setRange(1.0, 5.0)
         self.sp_ms_protect.setSingleStep(0.5)
         self.sp_ms_protect.setDecimals(1)
         self.sp_ms_protect.setValue(3.0)
+        self.sp_ms_protect.setMaximumWidth(80)
         self.sp_ms_protect.setToolTip(
             "Signal-protection threshold: pixels brighter than\n"
             "    median + k · MAD\n"
@@ -788,7 +860,36 @@ class ABEDialog(QDialog):
             "  k = 4-5  protects only the brightest cores — lets more\n"
             "           extended structure into the gradient estimate"
         )
-        ms_layout.addRow(self.tr("Protect k (MAD):"), self.sp_ms_protect)
+
+        self.sp_ms_smooth = QSpinBox()
+        self.sp_ms_smooth.setRange(0, 10)
+        self.sp_ms_smooth.setValue(2)
+        self.sp_ms_smooth.setSuffix(" px")
+        self.sp_ms_smooth.setMaximumWidth(80)
+        self.sp_ms_smooth.setToolTip(
+            "Blur applied to the gradient MAP (not the image) before it's\n"
+            "divided out. A gradient is smooth by definition, so smoothing the\n"
+            "map removes per-pixel noise the band picked up — which gets worse\n"
+            "as the lower band number drops toward the fine, noise-dominated\n"
+            "layers (3 and below). This strips noise from the correction while\n"
+            "leaving your image's own detail untouched.\n\n"
+            "0 = off. 2-3 px is a good default; raise it if a low band makes the\n"
+            "background look smoothed or the exclusion area look noisy."
+        )
+
+        # Two numeric controls per row to keep the group short.
+        ms_grid = QGridLayout()
+        ms_grid.setContentsMargins(0, 0, 0, 0)
+        ms_grid.setHorizontalSpacing(8)
+        ms_grid.addWidget(QLabel(self.tr("Strength:")),     0, 0)
+        ms_grid.addWidget(self.sp_ms_strength,              0, 1)
+        ms_grid.addWidget(QLabel(self.tr("Protect k:")),    0, 2)
+        ms_grid.addWidget(self.sp_ms_protect,               0, 3)
+        ms_grid.addWidget(QLabel(self.tr("Smooth map:")),   1, 0)
+        ms_grid.addWidget(self.sp_ms_smooth,                1, 1)
+        ms_grid.setColumnStretch(4, 1)
+        ms_grid_wrap = QWidget(); ms_grid_wrap.setLayout(ms_grid)
+        ms_layout.addRow(ms_grid_wrap)
 
         self.chk_make_bg_doc = QCheckBox(self.tr("Create background document")); self.chk_make_bg_doc.setChecked(False)
         self.chk_preview_bg   = QCheckBox(self.tr("Preview background instead of corrected")); self.chk_preview_bg.setChecked(False)
@@ -893,14 +994,24 @@ class ABEDialog(QDialog):
         rbf_form.addRow(self.tr("Smooth (x0.01):"), self.sp_rbf)
         rbf_box.setLayout(rbf_form)
 
+        # Collapsible optional sections — folding these reclaims the vertical
+        # space that was pushing the dialog past an HD monitor's height. The
+        # two advanced/optional stages start collapsed; RBF (on by default)
+        # starts expanded. The groups are also wrapped in a scroll area below
+        # as a hard safety net.
+        self._make_collapsible(gb_place, collapsed=False)
+        self._make_collapsible(rbf_box,  collapsed=False)
+        self._make_collapsible(corr_box, collapsed=True)
+        self._make_collapsible(ms_box,   collapsed=True)
+
         opts = QVBoxLayout()
         opts.addLayout(params)          # degree, samples, downsample, patch, sample mode
         opts.addWidget(note_lbl)
         opts.addWidget(gb_place)        # Place Grid / Show Auto Points — part of sampling setup
         opts.addWidget(self.btn_clear_samples)
         opts.addWidget(rbf_box)         # RBF refinement
-        opts.addWidget(corr_box)   
-        opts.addWidget(ms_box)        
+        opts.addWidget(corr_box)
+        opts.addWidget(ms_box)
         opts.addWidget(self.chk_make_bg_doc)
         opts.addWidget(self.chk_preview_bg)
         row = QHBoxLayout()
@@ -909,7 +1020,6 @@ class ABEDialog(QDialog):
         row.addStretch(1)
         opts.addLayout(row)
         opts.addWidget(self.btn_clear)  # Clear Exclusions (polygon drawing tool)
-        opts.addStretch(1)
 
         # ▼ New status label
         self.status_label = QLabel("Ready")
@@ -953,8 +1063,23 @@ class ABEDialog(QDialog):
         right.addLayout(self._build_toolbar())      # Zoom In / Out / Fit / Autostretch
         right.addWidget(self.preview_scroll, 1)     # Preview below the buttons
 
+        # Wrap the controls column in a scroll area so that even fully expanded
+        # it can never exceed the window height on a small display — the user
+        # scrolls the controls instead of the dialog growing off-screen.
+        opts_container = QWidget()
+        opts_container.setLayout(opts)
+        self._opts_scroll = QScrollArea()
+        self._opts_scroll.setWidgetResizable(True)
+        self._opts_scroll.setWidget(opts_container)
+        self._opts_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._opts_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._opts_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Keep the controls column at a sensible fixed-ish width.
+        self._opts_scroll.setMinimumWidth(320)
+        self._opts_scroll.setMaximumWidth(380)
+
         main = QHBoxLayout(self)
-        main.addLayout(opts, 0)                     # Left controls
+        main.addWidget(self._opts_scroll, 0)        # Left controls (scrollable)
         main.addLayout(right, 1)                    # Right: buttons above preview
 
         self._load_settings()
@@ -991,6 +1116,7 @@ class ABEDialog(QDialog):
             self.chk_ms_residual.toggled.connect(self._save_settings)
             self.sp_ms_strength.valueChanged.connect(self._save_settings)
             self.sp_ms_protect.valueChanged.connect(self._save_settings)
+            self.sp_ms_smooth.valueChanged.connect(self._save_settings)
 
     def _load_settings(self):
         s = QSettings()
@@ -1018,7 +1144,8 @@ class ABEDialog(QDialog):
             self.sp_ms_band_hi.setValue(int(s.value("abe/ms_band_hi", 8)))
             self.chk_ms_residual.setChecked(s.value("abe/ms_residual", False, type=bool))
             self.sp_ms_strength.setValue(int(s.value("abe/ms_strength", 100)))
-            self.sp_ms_protect.setValue(float(s.value("abe/ms_protect", 3.0)))        
+            self.sp_ms_protect.setValue(float(s.value("abe/ms_protect", 3.0)))
+            self.sp_ms_smooth.setValue(int(s.value("abe/ms_smooth", 2)))        
         
         # Options
         self.chk_make_bg_doc.setChecked(bool(s.value("abe/make_bg_doc", False, type=bool)))
@@ -1046,6 +1173,7 @@ class ABEDialog(QDialog):
             s.setValue("abe/ms_residual", self.chk_ms_residual.isChecked())
             s.setValue("abe/ms_strength", self.sp_ms_strength.value())
             s.setValue("abe/ms_protect", self.sp_ms_protect.value())
+            s.setValue("abe/ms_smooth", self.sp_ms_smooth.value())
         s.setValue("abe/use_rbf", self.chk_use_rbf.isChecked())
         s.setValue("abe/rbf_smooth_x100", self.sp_rbf.value())
         s.setValue("abe/seed", self.sp_seed.value())
@@ -1399,6 +1527,7 @@ class ABEDialog(QDialog):
                 layers = max(band_hi + 1, 9)
                 strength = float(self.sp_ms_strength.value()) / 100.0
                 protect_k = float(self.sp_ms_protect.value())   # already in MAD units
+                grad_smooth = float(self.sp_ms_smooth.value())
                 include_residual = bool(self.chk_ms_residual.isChecked())
                 use_darkstar = bool(self.chk_ms_darkstar.isChecked())
 
@@ -1484,6 +1613,7 @@ class ABEDialog(QDialog):
                     protect_k=protect_k,
                     protect_grow=6,
                     protect_blend_mask=protect_blend,
+                    gradient_smooth_px=grad_smooth,
                     progress_cb=(lambda m: progress(f"Multiscale: {m}") if progress else None),
                 )
                 # sanity: how much did the stage actually change the image?
@@ -1543,6 +1673,20 @@ class ABEDialog(QDialog):
         mp = self._manual_points_array() if self._manual_mode() else None
         if mp is not None and len(mp) > 0:
             params["manual_points"] = mp.tolist()   # [[x,y],...] JSON-safe ints
+
+        # Multiscale refinement — only emitted when enabled, so a preset made
+        # with the feature off stays byte-identical to the legacy schema.
+        if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked():
+            params["multiscale"] = {
+                "enabled": True,
+                "darkstar": bool(self.chk_ms_darkstar.isChecked()),
+                "band_lo": int(self.sp_ms_band_lo.value()),
+                "band_hi": int(self.sp_ms_band_hi.value()),
+                "include_residual": bool(self.chk_ms_residual.isChecked()),
+                "strength": float(self.sp_ms_strength.value()) / 100.0,
+                "protect_k": float(self.sp_ms_protect.value()),
+                "smooth_px": float(self.sp_ms_smooth.value()),
+            }
 
         return params
 
@@ -1707,6 +1851,7 @@ class ABEDialog(QDialog):
                     "include_residual": bool(self.chk_ms_residual.isChecked()),
                     "strength": float(self.sp_ms_strength.value()) / 100.0,
                     "protect_k": float(self.sp_ms_protect.value()),
+                    "smooth_px": float(self.sp_ms_smooth.value()),
                 }
 
             # Remember for replay — do this before any close
