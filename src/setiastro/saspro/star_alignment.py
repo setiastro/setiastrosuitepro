@@ -3982,9 +3982,9 @@ class StarRegistrationThread(QThread):
             print(f"[SRT] run() started, files={len(self.original_files)}, ref={self.reference}")
             # Solve grid downsample factor, user-configurable in Stacking
             # Settings (default 3, stored in self.downsample via align_prefs).
-            # Lower values give a finer solve grid; some high-resolution
-            # sensors need ds=2 to avoid a bimodal registration lock on
-            # meridian-flipped frames.
+            # Lower values give a finer solve grid but are slower. (The
+            # double stars on meridian-flipped frames once blamed on a coarse
+            # grid were the DS->full lift error fixed in _S().)
             ds = max(1, int(self.downsample))
             self.solve_downsample = ds
 
