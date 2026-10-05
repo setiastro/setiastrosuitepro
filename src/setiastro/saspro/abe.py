@@ -14,6 +14,14 @@ from __future__ import annotations
 import os
 import numpy as np
 
+# ---------------------------------------------------------------------------
+# DEBUG: when True, an ADBE run with Multiscale Gradient Refinement enabled
+# also pushes the raw median+k*MAD signal-protection mask to a new document,
+# so you can eyeball exactly what the threshold is protecting (tune protect_k
+# against it). Flip to False for normal use. Only affects the multiscale path.
+# ---------------------------------------------------------------------------
+DEBUG = False
+
 try:
     import cv2
 except Exception:  # pragma: no cover
@@ -896,7 +904,27 @@ class ABEDialog(QDialog):
         ms_grid_wrap = QWidget(); ms_grid_wrap.setLayout(ms_grid)
         ms_layout.addRow(ms_grid_wrap)
 
-        # --- Advanced (collapsed): the two blur knobs most users never touch ---
+        # --- Advanced (collapsed): the three blur knobs most users never touch.
+        #     They act on three DIFFERENT things at three different stages:
+        #       1. Signal mask blur  -> the median+k*MAD mask, before estimate
+        #       2. Smooth gradient map -> the structure map, before dividing
+        #       3. Exclusion feather -> the drawn exclusion mask, final composite
+        self.sp_ms_sigblur = QSpinBox()
+        self.sp_ms_sigblur.setRange(0, 50)
+        self.sp_ms_sigblur.setValue(8)
+        self.sp_ms_sigblur.setSuffix(" px")
+        self.sp_ms_sigblur.setMaximumWidth(90)
+        self.sp_ms_sigblur.setToolTip(
+            "Blur applied to the median+k·MAD SIGNAL mask (after dilation),\n"
+            "before the gradient is estimated. Softens the hard-edged detections\n"
+            "so each star's full footprint is protected (not just its bright\n"
+            "core) and the mask edges don't make the inpaint + pyramid ring into\n"
+            "fake gradient.\n\n"
+            "0 = off (hard mask). 8 px is a good default; raise it to spread the\n"
+            "protection further around bright sources. Turn on the DEBUG mask\n"
+            "document to see exactly what this is doing."
+        )
+
         self.sp_ms_smooth = QSpinBox()
         self.sp_ms_smooth.setRange(0, 10)
         self.sp_ms_smooth.setValue(2)
@@ -933,10 +961,12 @@ class ABEDialog(QDialog):
         ms_adv_grid = QGridLayout()
         ms_adv_grid.setContentsMargins(0, 0, 0, 0)
         ms_adv_grid.setHorizontalSpacing(8)
-        ms_adv_grid.addWidget(QLabel(self.tr("Smooth gradient map:")), 0, 0)
-        ms_adv_grid.addWidget(self.sp_ms_smooth,                        0, 1)
-        ms_adv_grid.addWidget(QLabel(self.tr("Exclusion feather:")),    1, 0)
-        ms_adv_grid.addWidget(self.sp_ms_feather,                       1, 1)
+        ms_adv_grid.addWidget(QLabel(self.tr("Signal mask blur:")),    0, 0)
+        ms_adv_grid.addWidget(self.sp_ms_sigblur,                      0, 1)
+        ms_adv_grid.addWidget(QLabel(self.tr("Smooth gradient map:")), 1, 0)
+        ms_adv_grid.addWidget(self.sp_ms_smooth,                       1, 1)
+        ms_adv_grid.addWidget(QLabel(self.tr("Exclusion feather:")),   2, 0)
+        ms_adv_grid.addWidget(self.sp_ms_feather,                      2, 1)
         ms_adv_grid.setColumnStretch(2, 1)
 
         self._ms_adv_box = QGroupBox(self.tr("Advanced"))
@@ -1188,6 +1218,7 @@ class ABEDialog(QDialog):
             self.sp_ms_protect.valueChanged.connect(self._save_settings)
             self.sp_ms_smooth.valueChanged.connect(self._save_settings)
             self.sp_ms_feather.valueChanged.connect(self._save_settings)
+            self.sp_ms_sigblur.valueChanged.connect(self._save_settings)
 
     def _load_settings(self):
         s = QSettings()
@@ -1218,6 +1249,7 @@ class ABEDialog(QDialog):
             self.sp_ms_protect.setValue(float(s.value("abe/ms_protect", 3.0)))
             self.sp_ms_smooth.setValue(int(s.value("abe/ms_smooth", 2)))
             self.sp_ms_feather.setValue(int(s.value("abe/ms_feather", 10)))
+            self.sp_ms_sigblur.setValue(int(s.value("abe/ms_sigblur", 8)))
         
         # Options
         self.chk_make_bg_doc.setChecked(bool(s.value("abe/make_bg_doc", False, type=bool)))
@@ -1248,6 +1280,7 @@ class ABEDialog(QDialog):
             s.setValue("abe/ms_protect", self.sp_ms_protect.value())
             s.setValue("abe/ms_smooth", self.sp_ms_smooth.value())
             s.setValue("abe/ms_feather", self.sp_ms_feather.value())
+            s.setValue("abe/ms_sigblur", self.sp_ms_sigblur.value())
         s.setValue("abe/use_rbf", self.chk_use_rbf.isChecked())
         s.setValue("abe/rbf_smooth_x100", self.sp_rbf.value())
         s.setValue("abe/seed", self.sp_seed.value())
@@ -1556,6 +1589,7 @@ class ABEDialog(QDialog):
     def _run_abe(self, excl_mask: np.ndarray | None, progress=None):
         # Cleared each run; set only when multiscale + structure-doc are on.
         self._last_structure_map = None
+        self._last_mad_mask = None
         imgf = self._get_source_float()
         if imgf is None:
             return None, None
@@ -1606,6 +1640,7 @@ class ABEDialog(QDialog):
                 protect_k = float(self.sp_ms_protect.value())   # already in MAD units
                 grad_smooth = float(self.sp_ms_smooth.value())
                 excl_feather_frac = float(self.sp_ms_feather.value()) / 100.0  # % -> fraction; 0 => off
+                sig_blur = float(self.sp_ms_sigblur.value())
                 include_residual = bool(self.chk_ms_residual.isChecked())
                 use_darkstar = bool(self.chk_ms_darkstar.isChecked())
 
@@ -1682,7 +1717,9 @@ class ABEDialog(QDialog):
                 # asked for a structure document (troubleshooting output).
                 want_structure = bool(getattr(self, "chk_make_structure_doc", None)
                                       and self.chk_make_structure_doc.isChecked())
+                want_debug = bool(DEBUG)
                 self._last_structure_map = None
+                self._last_mad_mask = None     # raw median+k*MAD mask (debug)
 
                 _pre = corrected
                 _ms_result = multiscale_gradient_correct(
@@ -1696,15 +1733,33 @@ class ABEDialog(QDialog):
                     strength=strength,
                     protect_k=protect_k,
                     protect_grow=6,
+                    protect_blur_px=sig_blur,
                     protect_blend_mask=protect_blend,
                     gradient_smooth_px=grad_smooth,
                     protect_feather_frac=excl_feather_frac,
                     return_extras=want_structure,
+                    return_debug=want_debug,
                     progress_cb=(lambda m: progress(f"Multiscale: {m}") if progress else None),
                 )
-                if want_structure:
-                    # return_extras => (corrected, grad_lin, feathered_mask)
+
+                # Unpack per the (return_extras, return_debug) return shapes:
+                #   extras & debug -> (corr, grad, feather, mad)
+                #   extras only     -> (corr, grad, feather)
+                #   debug only      -> (corr, mad)
+                #   neither         ->  corr
+                _grad_map = None; _feather_m = None
+                if want_structure and want_debug:
+                    corrected, _grad_map, _feather_m, _mad = _ms_result
+                    self._last_mad_mask = _mad
+                elif want_structure:
                     corrected, _grad_map, _feather_m = _ms_result
+                elif want_debug:
+                    corrected, _mad = _ms_result
+                    self._last_mad_mask = _mad
+                else:
+                    corrected = _ms_result
+
+                if want_structure:
                     try:
                         gm = np.asarray(_grad_map, dtype=np.float32)
                         # Paint the median of the structure map inside the
@@ -1727,8 +1782,6 @@ class ABEDialog(QDialog):
                         self._last_structure_map = gm.astype(np.float32, copy=False)
                     except Exception:
                         self._last_structure_map = None
-                else:
-                    corrected = _ms_result
                 # sanity: how much did the stage actually change the image?
                 try:
                     _diff = float(np.mean(np.abs(corrected.astype(np.float32) - _pre.astype(np.float32))))
@@ -1800,6 +1853,7 @@ class ABEDialog(QDialog):
                 "protect_k": float(self.sp_ms_protect.value()),
                 "smooth_px": float(self.sp_ms_smooth.value()),
                 "feather_pct": float(self.sp_ms_feather.value()),
+                "sigblur_px": float(self.sp_ms_sigblur.value()),
             }
 
         return params
@@ -1967,6 +2021,7 @@ class ABEDialog(QDialog):
                     "protect_k": float(self.sp_ms_protect.value()),
                     "smooth_px": float(self.sp_ms_smooth.value()),
                     "feather_pct": float(self.sp_ms_feather.value()),
+                    "sigblur_px": float(self.sp_ms_sigblur.value()),
                 }
 
             # Remember for replay — do this before any close
@@ -2057,6 +2112,28 @@ class ABEDialog(QDialog):
                                           metadata=s_meta, title=f"{base}_ABE_Structure")
                     if hasattr(mw, "_spawn_subwindow_for"):
                         mw._spawn_subwindow_for(doc_s)
+
+            # DEBUG: push the raw median+k*MAD signal-protection mask so you can
+            # eyeball what the threshold caught. Controlled by the module-level
+            # DEBUG flag; only present when the multiscale stage ran.
+            mad = getattr(self, "_last_mad_mask", None)
+            if DEBUG and mad is not None:
+                self._set_status("Creating DEBUG MAD mask document…")
+                dm = getattr(mw, "docman", None)
+                if dm is not None:
+                    base = os.path.splitext(self.doc.display_name())[0]
+                    mad_view = np.clip(np.nan_to_num(np.asarray(mad, dtype=np.float32)),
+                                       0.0, 1.0).astype(np.float32, copy=False)
+                    mad_meta = {
+                        "bit_depth": "32-bit floating point",
+                        "is_mono": (mad_view.ndim == 2),
+                        "source": "ABE DEBUG median+k*MAD signal-protection mask",
+                        "original_header": self.doc.metadata.get("original_header"),
+                    }
+                    doc_mad = dm.open_array(mad_view, metadata=mad_meta,
+                                            title=f"{base}_ABE_DEBUG_MADmask")
+                    if hasattr(mw, "_spawn_subwindow_for"):
+                        mw._spawn_subwindow_for(doc_mad)
 
             # Restore autostretch on the active view
             prev_autostretch = False

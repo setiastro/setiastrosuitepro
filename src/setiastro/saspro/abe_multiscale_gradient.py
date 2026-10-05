@@ -117,16 +117,39 @@ def _upscale_to(img, out_hw):
 # ----------------------------------------------------------------------
 # Signal protection: median + k*MAD  (k in MAD-sigma units, 1..5)
 # ----------------------------------------------------------------------
-def build_signal_mask(luma, k=3.0, grow=3):
-    """True where luma > median + k*(MAD-sigma). k is in MAD-sigma units:
-    k=1 masks a lot (protects faint signal, safest), k=5 masks only the
-    brightest cores."""
+def build_signal_mask(luma, k=3.0, grow=3, blur_px=0.0, blur=None):
+    """
+    Soft signal-protection mask. Threshold at median + k*(MAD-sigma), then
+    DILATE and BLUR so the protection covers each detection's full footprint
+    with soft edges — not just hard-edged bright cores.
+
+    Why both:
+      - The raw threshold catches only a star's bright centre; its faint wings
+        fall below and would leak into the gradient estimate. Dilating grows
+        each hit outward to cover the whole stellar/structure footprint.
+      - Hard mask edges make the inpaint + Gaussian pyramid RING, turning the
+        mask's own boundaries into fake mid-scale "gradient". Blurring softens
+        the edges so the transition is smooth and nothing rings.
+
+    k is in MAD-sigma units: k=1 masks a lot (protects faint signal), k=5 only
+    the brightest cores. grow is dilation iterations (px). blur_px is the
+    Gaussian sigma applied after dilation; 0 keeps the (still boolean) mask.
+
+    Returns a float32 array in [0, 1] (soft when blurred, else 0/1).
+    """
     med = float(np.median(luma))
     sig = _robust_sigma(luma)
     mask = luma > (med + float(k) * sig)
     if grow > 0 and mask.any():
         mask = binary_dilation(mask, iterations=int(grow))
-    return mask
+    m = mask.astype(np.float32)
+    if blur_px and blur_px > 0.0 and m.any():
+        if blur is not None:
+            m = blur(m, float(blur_px))
+        else:
+            m = gaussian_filter(m, sigma=float(blur_px), mode="reflect")
+        m = np.clip(m, 0.0, 1.0).astype(np.float32)
+    return m
 
 
 def hole_span_iters(mask, sigma):
@@ -221,7 +244,12 @@ def multiscale_gradient_correct(
     eps_frac=0.01,
     strength=1.0,
     protect_k=3.0,          # MAD-sigma units (1..5 typical)
-    protect_grow=3,
+    protect_grow=3,         # dilation iterations: grow each detection out to
+                            # cover its full footprint (star wings, not just
+                            # the bright core)
+    protect_blur_px=4.0,    # Gaussian sigma to soften the protect mask after
+                            # dilation, so hard mask edges don't make the
+                            # inpaint + pyramid ring into fake gradient. 0 = off
     protect_blend_mask=None,  # bool/float HxW, True/1 = keep ORIGINAL pixels
                               # at APPLY time (e.g. a hand-drawn exclusion
                               # polygon around a galaxy). The multiscale
@@ -245,6 +273,9 @@ def multiscale_gradient_correct(
                             # 0 disables; 2-3 px is a good default.
     clamp_sigma=0.0,
     return_extras=False,
+    return_debug=False,   # when True, also return the raw median+k*MAD signal
+                          # mask (full-res, 0..1) as an extra element, for
+                          # debugging what the protection threshold catches.
     progress_cb=None,
 ):
     """
@@ -287,8 +318,29 @@ def multiscale_gradient_correct(
     _say("Downscaling for gradient estimate...")
     luma_s = _downscale(luma_full, ds)
 
-    _say("Building signal-protection mask (median + k*MAD)...")
-    sig_mask_s = build_signal_mask(luma_s, k=protect_k, grow=protect_grow)
+    _say("Building signal-protection mask (median + k*MAD, dilated + blurred)...")
+    # Soft float mask in [0,1]: threshold -> dilate (protect_grow) -> blur
+    # (protect_blur_px). Blur scales down with the estimate downsample so the
+    # softening is the same effective radius at full res.
+    sig_blur = float(protect_blur_px) / float(ds) if ds > 1 else float(protect_blur_px)
+    sig_mask_s = build_signal_mask(luma_s, k=protect_k, grow=protect_grow,
+                                   blur_px=sig_blur, blur=blur)
+    # Boolean hole set (for the inpaint + iteration estimate): anything the
+    # soft mask flags at all. A low threshold keeps the generous dilated
+    # footprint rather than shrinking it back to the hard core.
+    sig_hole_s = sig_mask_s > 0.05
+
+    # Keep a full-res copy of the (soft) MAD mask for optional debug output.
+    mad_mask_full = None
+    if return_debug:
+        try:
+            if ds > 1:
+                mad_mask_full = _upscale_to(sig_mask_s.astype(np.float32), (H, W))
+            else:
+                mad_mask_full = sig_mask_s.astype(np.float32)
+            mad_mask_full = np.clip(mad_mask_full, 0.0, 1.0).astype(np.float32)
+        except Exception:
+            mad_mask_full = None
 
     _say("Log transform...")
     L = np.log(np.clip(luma_s, 0.0, None) + eps)
@@ -301,9 +353,9 @@ def multiscale_gradient_correct(
     # across the largest holes at full resolution.
     _say("Inpainting protected regions...")
     _fill_sigma = max(2.0, float(base_sigma) * (2.0 ** max(0, int(band_hi) - 2)))
-    _fill_iters = int(np.clip(hole_span_iters(sig_mask_s, _fill_sigma), 8, 40)) \
-        if sig_mask_s.any() else 0
-    L_fill = _inpaint_fill(L, sig_mask_s, blur,
+    _fill_iters = int(np.clip(hole_span_iters(sig_hole_s, _fill_sigma), 8, 40)) \
+        if sig_hole_s.any() else 0
+    L_fill = _inpaint_fill(L, sig_hole_s, blur,
                            iters=_fill_iters, sigma=_fill_sigma)
 
     layers = int(layers)
@@ -427,5 +479,9 @@ def multiscale_gradient_correct(
                              ).astype(np.float32)
             except Exception:
                 mask_full = sig_mask_s.astype(np.float32)
+        if return_debug:
+            return corrected, grad_lin, mask_full, mad_mask_full
         return corrected, grad_lin, mask_full
+    if return_debug:
+        return corrected, mad_mask_full
     return corrected
