@@ -1,10 +1,10 @@
 {
-  "version": "1.22.0",
+  "version": "1.22.1",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.0/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.0/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.0/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.0/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.1/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.1/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.1/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.1/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro\n\nV1.22.0\nThe Documentation Update: 83 tools now have built-in offline help. Click the document icon on any dialog to open its help page with usage recipes and technical details.\n\nSee the full release notes on GitHub for the complete list."
+  "notes": "Seti Astro Suite Pro\n\nV1.22.1\nNew Feature in ADBE: Multiscale Gradient Removal. This should not be used for normal gradient removal, but when you have a dust mote, filter edge, internal reflection, or other stubborn gradientesque object that needs to be removed. Use Exclusion Zones to protect your areas you want protected and run it to remove those very stubborn objects.\n\nUpdate to BLINK to allow file list sorting by metrics columns.\n\nOther updates and bug fixes."
 }
