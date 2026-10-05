@@ -2147,25 +2147,54 @@ def _to3x3_affine(A2x3: np.ndarray) -> np.ndarray:
 def _from3x3_affine(A3: np.ndarray) -> np.ndarray:
     return np.asarray(A3, np.float64)[:2,:]
 
-def _S(ds: float) -> np.ndarray:
+def _S(ds: float, full_wh=None, ds_wh=None) -> np.ndarray:
+    """
+    Full-res -> DS pixel coordinates (3x3), matching cv2.resize's pixel-centre
+    mapping:  x_full = sx * (x_ds + 0.5) - 0.5,  sx = W / W_ds.
+
+    full_wh: (W, H) of the full-res image. ds_wh: (W_ds, H_ds) it was resized
+    to; defaults to (W // ds, H // ds). Without full_wh the scale is taken as
+    exactly ds. The true scale and the half-pixel term matter: dropping them
+    shifts frames rotated ~180° vs the reference (meridian flip) by a few px.
+    """
     ds = float(ds)
-    return np.array([[1.0/ds, 0, 0],
-                     [0, 1.0/ds, 0],
+    if full_wh is None:
+        sx = sy = ds
+    else:
+        W, H = float(full_wh[0]), float(full_wh[1])
+        if ds_wh is None:
+            ds_wh = (max(1, int(W // ds)), max(1, int(H // ds)))
+        sx, sy = W / float(ds_wh[0]), H / float(ds_wh[1])
+    return np.array([[1.0/sx, 0, 0.5/sx - 0.5],
+                     [0, 1.0/sy, 0.5/sy - 0.5],
                      [0, 0, 1]], np.float64)
 
-def lift_affine_2x3_from_ds(A_ds_2x3: np.ndarray, ds: float) -> np.ndarray:
-    S = _S(ds); Si = np.linalg.inv(S)
-    A3_full = Si @ _to3x3_affine(A_ds_2x3) @ S
+# The lift/downscale helpers take the DS transform as mapping the source DS grid
+# onto the reference DS grid. S_ref / S_src are _S() matrices for each image;
+# S_src defaults to S_ref (e.g. a delta solved between two reference-grid images).
+
+def lift_affine_2x3_from_ds(A_ds_2x3: np.ndarray, ds: float,
+                            S_ref: np.ndarray | None = None,
+                            S_src: np.ndarray | None = None) -> np.ndarray:
+    S_ref = _S(ds) if S_ref is None else S_ref
+    S_src = S_ref if S_src is None else S_src
+    A3_full = np.linalg.inv(S_ref) @ _to3x3_affine(A_ds_2x3) @ S_src
     return _from3x3_affine(A3_full)
 
-def downscale_affine_2x3_to_ds(A_full_2x3: np.ndarray, ds: float) -> np.ndarray:
-    S = _S(ds); Si = np.linalg.inv(S)
-    A3_ds = S @ _to3x3_affine(A_full_2x3) @ Si
+def downscale_affine_2x3_to_ds(A_full_2x3: np.ndarray, ds: float,
+                               S_ref: np.ndarray | None = None,
+                               S_src: np.ndarray | None = None) -> np.ndarray:
+    S_ref = _S(ds) if S_ref is None else S_ref
+    S_src = S_ref if S_src is None else S_src
+    A3_ds = S_ref @ _to3x3_affine(A_full_2x3) @ np.linalg.inv(S_src)
     return _from3x3_affine(A3_ds)
 
-def lift_homography_from_ds(H_ds: np.ndarray, ds: float) -> np.ndarray:
-    S = _S(ds); Si = np.linalg.inv(S)
-    return Si @ np.asarray(H_ds, np.float64) @ S
+def lift_homography_from_ds(H_ds: np.ndarray, ds: float,
+                            S_ref: np.ndarray | None = None,
+                            S_src: np.ndarray | None = None) -> np.ndarray:
+    S_ref = _S(ds) if S_ref is None else S_ref
+    S_src = S_ref if S_src is None else S_src
+    return np.linalg.inv(S_ref) @ np.asarray(H_ds, np.float64) @ S_src
 
 
 def compute_affine_transform_astroalign_cropped(source_img, reference_img,
@@ -2654,7 +2683,8 @@ def _solve_delta_job(args):
          ref_ds_npy, Wref_ds, Href_ds,
          resample_flag, det_sigma, limit_stars, minarea,
          model, h_reproj, ds,
-         min_fwhm, max_ellipticity) = args 
+         min_fwhm, max_ellipticity, ref_full_wh) = args
+    ref_full_wh is the full-res reference (W, H); optional (older 14-tuples).
     """
     try:
         import os
@@ -2666,7 +2696,8 @@ def _solve_delta_job(args):
          ref_ds_npy, Wref_ds, Href_ds,
          resample_flag, det_sigma, limit_stars, minarea,
          model, h_reproj, ds,
-         min_fwhm, max_ellipticity) = args 
+         min_fwhm, max_ellipticity) = args[:14]
+        ref_full_wh = tuple(args[14]) if len(args) > 14 and args[14] is not None else None
 
         try:
             cv2.setNumThreads(1)
@@ -2701,7 +2732,12 @@ def _solve_delta_job(args):
 
         # 3) pre-warp in DS space using downscaled transform
         T_prev_full = np.asarray(current_transform_2x3, np.float64).reshape(2, 3)
-        T_prev_ds = downscale_affine_2x3_to_ds(T_prev_full, ds).astype(np.float32)
+        if ds > 1:
+            S_src = _S(ds, (gray.shape[1], gray.shape[0]), (gray_ds.shape[1], gray_ds.shape[0]))
+            S_ref = _S(ds, ref_full_wh, (int(Wref_ds), int(Href_ds))) if ref_full_wh else _S(ds)
+        else:
+            S_src = S_ref = np.eye(3)
+        T_prev_ds = downscale_affine_2x3_to_ds(T_prev_full, ds, S_ref, S_src).astype(np.float32)
 
         # Warp DS source into DS ref geometry
         src_for_match_ds = cv2.warpAffine(
@@ -2747,7 +2783,7 @@ def _solve_delta_job(args):
                     f"Astroalign failed for {os.path.basename(orig_path)} – skipping (no transform returned)")
 
         # 6) lift DS delta back to full-res coords
-        T_new_full = lift_affine_2x3_from_ds(np.asarray(tform_ds, np.float64).reshape(2, 3), ds)
+        T_new_full = lift_affine_2x3_from_ds(np.asarray(tform_ds, np.float64).reshape(2, 3), ds, S_ref)
 
         return (orig_path, np.asarray(T_new_full, np.float64).reshape(2, 3), None)
 
@@ -2953,7 +2989,12 @@ def _finalize_write_job(args):
 
             src_ds0 = np.ascontiguousarray(src_ds0.astype(np.float32, copy=False))
 
-            A_prev_ds = downscale_affine_2x3_to_ds(A_prev, ds).astype(np.float32)
+            if ds > 1:
+                S_ref = _S(ds, (Wref, Href), (Wds, Hds))
+                S_src = _S(ds, (src_gray_full.shape[1], src_gray_full.shape[0]), (Wds, Hds))
+            else:
+                S_ref = S_src = np.eye(3)
+            A_prev_ds = downscale_affine_2x3_to_ds(A_prev, ds, S_ref, S_src).astype(np.float32)
             src_pre_ds = cv2.warpAffine(
                 src_ds0, A_prev_ds, (Wds, Hds),
                 flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT_101
@@ -2993,7 +3034,7 @@ def _finalize_write_job(args):
                 if H_delta_ds is None:
                     kind, X = "affine", A_prev.copy()
                 else:
-                    H_delta_full = lift_homography_from_ds(H_delta_ds, ds)
+                    H_delta_full = lift_homography_from_ds(H_delta_ds, ds, S_ref)
                     H_final = np.asarray(H_delta_full, np.float64) @ A_prev3
                     kind, X = "homography", H_final
 
@@ -3007,15 +3048,17 @@ def _finalize_write_job(args):
                 if A_delta_ds is None:
                     kind, X = "similarity", _project_to_similarity(A_prev)
                 else:
-                    A_delta_full = lift_affine_2x3_from_ds(A_delta_ds, ds)
+                    A_delta_full = lift_affine_2x3_from_ds(A_delta_ds, ds, S_ref)
                     A_final3 = _A3(A_delta_full) @ A_prev3
                     A_final = A_final3[:2, :]
                     kind, X = "similarity", _project_to_similarity(A_final)
 
             elif model in ("poly3", "poly4"):
                 order = 3 if model == "poly3" else 4
-                src_full = (np.asarray(src_xy, np.float32) * float(ds)).astype(np.float32)
-                tgt_full = (np.asarray(tgt_xy, np.float32) * float(ds)).astype(np.float32)
+                # DS -> full-res with the same pixel-centre mapping as the lifts
+                Si = np.linalg.inv(S_ref)
+                src_full = (np.asarray(src_xy, np.float64).reshape(-1, 2) * np.diag(Si)[:2] + Si[:2, 2]).astype(np.float32)
+                tgt_full = (np.asarray(tgt_xy, np.float64).reshape(-1, 2) * np.diag(Si)[:2] + Si[:2, 2]).astype(np.float32)
 
                 cx, cy = _fit_poly_xy(src_full, tgt_full, order=order)
                 map_x, map_y = _poly_eval_grid(cx, cy, Wref, Href, order=order)
@@ -4106,7 +4149,8 @@ class StarRegistrationThread(QThread):
                 refine_model, float(self.h_reproj),
                 int(ds),
                 float(self.min_fwhm),          # ← new
-                float(self.max_ellipticity),   # ← new                
+                float(self.max_ellipticity),   # ← new
+                (int(self.ref_small_full.shape[1]), int(self.ref_small_full.shape[0])),  # full-res ref (W, H)
             ))
 
         executor = _make_executor(procs)
