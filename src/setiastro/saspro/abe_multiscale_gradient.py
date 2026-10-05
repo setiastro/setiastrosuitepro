@@ -146,21 +146,48 @@ def hole_span_iters(mask, sigma):
 
 def _feather_mask(mask01, feather_px, blur):
     """
-    Soften a 0..1 protect mask's boundary by blurring it with a large Gaussian
-    (sigma = feather_px), spreading the 0->1 transition over a wide soft band
-    so the protected region dissolves into the corrected background with no
-    visible seam. feather_px <= 0 returns the mask unchanged.
+    Soften a protect mask's boundary into a smooth ramp of width ~feather_px
+    that ramps OUTWARD from the region edge — the interior stays at full
+    strength (1.0) and only the boundary fades to 0 over the feather width.
+
+    This matters: a plain Gaussian blur of a filled mask ERODES the interior
+    once the blur radius approaches the region size (a 40 px blur on a 40 px
+    disk pulls the centre down to ~0.4), so a large feather on a modest
+    exclusion would leave the protected object only partly protected. A
+    signed-distance ramp avoids that — the centre is always 1.0 no matter how
+    wide the feather, and the ramp only extends the transition at the edge.
+
+    feather_px <= 0 returns the mask unchanged.
     """
     m = np.clip(np.asarray(mask01, dtype=np.float32), 0.0, 1.0)
     f = float(feather_px)
     if f <= 0.0 or not (m.any() and (m < 1.0).any()):
         return m
-    # Just blur the mask. A large Gaussian spreads the 0->1 transition over a
-    # wide, soft band so the protected region dissolves into the corrected
-    # background with no visible seam. feather_px is the blur sigma; at
-    # ~10% of the image's short side it's a few hundred px on a real frame,
-    # which is what actually looks feathered.
-    return np.clip(blur(m, max(1.0, f)), 0.0, 1.0).astype(np.float32)
+
+    try:
+        from scipy.ndimage import distance_transform_edt
+        inside = m >= 0.5
+        if inside.all() or (~inside).all():
+            return m
+        # Distance OUTWARD from the region edge (0 inside, growing outside).
+        d_out = distance_transform_edt(~inside).astype(np.float32)
+        # Ramp: 1 inside the region, falling linearly to 0 at feather_px out.
+        ramp = np.clip(1.0 - d_out / f, 0.0, 1.0)
+        # Keep the interior hard at 1.0, only the outside gets the ramp.
+        ramp = np.where(inside, 1.0, ramp).astype(np.float32)
+        # Light smoothing (relative to the feather) rounds the discrete-EDT
+        # stair-steps and the smoothstep gives a C1-continuous edge.
+        t = ramp
+        ramp = (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+        ramp = blur(ramp, max(1.0, f * 0.15)).astype(np.float32)
+        # The blur can nibble the very-centre a hair; re-assert interior=1.
+        ramp = np.where(inside, 1.0, ramp).astype(np.float32)
+        return np.clip(ramp, 0.0, 1.0)
+    except Exception:
+        # Fallback: blur, but then restore the interior to 1.0 so we never
+        # erode the protected core.
+        b = np.clip(blur(m, max(1.0, f)), 0.0, 1.0).astype(np.float32)
+        return np.where(m >= 0.5, 1.0, b).astype(np.float32)
 
 
 def _inpaint_fill(img2d, mask, blur, iters=12, sigma=6.0):
@@ -201,13 +228,13 @@ def multiscale_gradient_correct(
                               # process runs on the whole image; this is just
                               # a final composite so the protected region is
                               # taken straight from the untouched source.
-    protect_feather_px=0.0,   # Gaussian blur sigma (px) applied to the exclusion
-                              # mask so its edge dissolves into the corrected
-                              # background. 0 (default) AUTO-scales to 10% of the
-                              # image's short side (~300 px on a 4500x3000 frame),
-                              # which is what actually looks feathered — a fixed
-                              # small value is invisible at full resolution. A
-                              # positive number forces that exact blur sigma.
+    protect_feather_frac=0.10,  # exclusion-edge feather as a FRACTION of the
+                                # image's short side. Resolution-independent: a
+                                # given percentage feathers the same visual
+                                # amount at any image size (0.10 => ~300 px on a
+                                # 4500x3000 frame, ~88 px on an 880 px frame).
+                                # This is the value the UI exposes as a percent.
+                                # 0 disables the exclusion feather (hard edge).
     estimate_downsample=1,  # 1 = full-res (REQUIRED for sharp motes/edges);
                             # >1 only for a fast coarse preview, never for apply
     gradient_smooth_px=2.0, # final blur (px) of the gradient MAP before
@@ -356,29 +383,49 @@ def multiscale_gradient_correct(
                 m = m / mx
             m = np.clip(m, 0.0, 1.0)
 
-            # Resolve feather width. 0 => auto: 10% of the image's short side,
-            # e.g. ~300 px on a 4500x3000 frame. A fixed small value is
-            # invisible at full resolution; the blur sigma must scale with the
-            # image to actually look feathered. Floor at 16 px for tiny images.
-            fpx = float(protect_feather_px)
-            if fpx <= 0.0:
-                fpx = max(16.0, 0.10 * float(min(H, W)))
-            m = _feather_mask(m, fpx, blur)
-            _say(f"Feathering exclusion edge ({int(fpx)} px)...")
+            # Resolve feather width from the fraction of the image's short side.
+            # Resolution-independent: a given percentage feathers the same
+            # visual amount at any image size (a fixed pixel value would be
+            # invisible at full resolution). 0 => hard edge; otherwise floor at
+            # a few px so a tiny percentage on a small image still softens.
+            frac = max(0.0, float(protect_feather_frac))
+            if frac <= 0.0:
+                fpx = 0.0
+            else:
+                fpx = max(4.0, frac * float(min(H, W)))
+            if fpx > 0.0:
+                m = _feather_mask(m, fpx, blur)
+                _say(f"Feathering exclusion edge ({frac*100:.0f}% = {int(fpx)} px)...")
 
             mm = m[..., None] if (corrected.ndim == 3 and m.ndim == 2) else m
             corrected = corrected * (1.0 - mm) + tgt * mm
+
+            # Expose the resolved, feathered protect mask (full-res, 2D, 0..1)
+            # so the caller can fold it into the structure map it displays —
+            # inside the exclusion the effective gradient was the median (no
+            # correction), and the structure document should show that rather
+            # than the raw estimate over a protected object.
+            self_feathered = m
             _say("Protected exclusion region (kept original pixels).")
         except Exception:
-            pass
+            self_feathered = None
+    else:
+        self_feathered = None
 
     corrected = corrected.astype(np.float32, copy=False)
+    grad_lin = grad_lin.astype(np.float32, copy=False)
     _say("Ready")
 
     if return_extras:
-        try:
-            mask_full = _upscale_to(sig_mask_s.astype(np.float32), (H, W)) > 0.5
-        except Exception:
-            mask_full = sig_mask_s
+        # mask_full: the feathered protect mask actually applied (2D, 0..1) if
+        # there was one, else the raw signal-protection mask as a fallback.
+        if self_feathered is not None:
+            mask_full = np.clip(np.asarray(self_feathered, dtype=np.float32), 0.0, 1.0)
+        else:
+            try:
+                mask_full = (_upscale_to(sig_mask_s.astype(np.float32), (H, W)) > 0.5
+                             ).astype(np.float32)
+            except Exception:
+                mask_full = sig_mask_s.astype(np.float32)
         return corrected, grad_lin, mask_full
     return corrected

@@ -84,6 +84,8 @@ def _parse_multiscale_preset(p: dict) -> dict | None:
         "include_residual": bool(_ms.get("include_residual", False)),
         "strength": float(np.clip(_ms.get("strength", 1.0), 0.0, 1.0)),
         "protect_k": float(np.clip(_ms.get("protect_k", 3.0), 1.0, 5.0)),
+        "smooth_px": float(np.clip(_ms.get("smooth_px", 2.0), 0.0, 10.0)),
+        "feather_pct": float(np.clip(_ms.get("feather_pct", 10.0), 0.0, 50.0)),  # 0 => off
     }
 
 
@@ -233,6 +235,8 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
                 strength=ms_cfg["strength"],
                 protect_k=ms_cfg["protect_k"],
                 protect_grow=6,
+                gradient_smooth_px=ms_cfg["smooth_px"],
+                protect_feather_frac=ms_cfg["feather_pct"] / 100.0,
                 progress_cb=None,
             )
         except Exception as e:
@@ -336,6 +340,10 @@ def open_abe_with_preset(main_window, preset: dict | None = None):
             dlg.chk_ms_residual.setChecked(bool(_ms.get("include_residual", False)))
             dlg.sp_ms_strength.setValue(int(np.clip(float(_ms.get("strength", 1.0)) * 100.0, 0, 100)))
             dlg.sp_ms_protect.setValue(float(np.clip(_ms.get("protect_k", 3.0), 1.0, 5.0)))
+            if hasattr(dlg, "sp_ms_smooth"):
+                dlg.sp_ms_smooth.setValue(int(np.clip(_ms.get("smooth_px", 2), 0, 10)))
+            if hasattr(dlg, "sp_ms_feather"):
+                dlg.sp_ms_feather.setValue(int(np.clip(_ms.get("feather_pct", 10), 0, 50)))
     except Exception:
         pass
 

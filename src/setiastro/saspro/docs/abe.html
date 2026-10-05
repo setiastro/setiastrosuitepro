@@ -179,7 +179,9 @@ can't both flatten the background <i>and</i> fully protect a faint extended halo
 <b>exclusion area</b> is honoured at apply time: wherever you've excluded, the
 <i>original</i> pixels are kept unchanged, no matter what the gradient did there.
 Draw a polygon around M81/M82 (or your nebula), push <code>k</code> up for a
-dead-flat field everywhere else, and the object comes back pristine.</div>
+dead-flat field everywhere else, and the object comes back pristine. The edge of
+the exclusion is feathered with a wide, image-scaled blur, so the protected
+object blends smoothly into the corrected background with no hard line.</div>
 
 <div class="tip">Workflow: run ADBE once in <b>Subtract</b> mode with multiscale
 <i>off</i> and look at the result. If sharp mottling, donuts or a darkened frame
@@ -298,9 +300,18 @@ needed.</p>
 <h3>2.7 Protecting excluded regions</h3>
 <p>The multiscale correction runs across the whole frame, but a hand-drawn
 exclusion area is honoured as a <b>final composite</b>: wherever the mask marks
-protection, the original pixels are kept, with a few-pixel feather at the
-boundary so there's no seam.</p>
+protection, the original pixels are kept.</p>
 <div class="matheq">\mathrm{out} = (1-m)\cdot\mathrm{corrected} + m\cdot I_{\mathrm{orig}}</div>
+<p>To avoid a hard seam at the polygon edge, the mask <b>m</b> is first blurred
+with a large Gaussian so its 0&rarr;1 transition is spread over a wide, soft
+band. The blur radius <b>scales with the image</b> &mdash; by default about
+<b>10% of the frame's short side</b> (roughly 300&nbsp;px on a 4500&times;3000
+image). This matters: a fixed small feather that looks fine on a screenshot is
+invisible at full resolution, leaving a visible diagonal line where the
+correction stops. Scaling the blur to the image makes the protected region
+dissolve gently into the corrected background at any resolution. A positive
+override can force an exact blur radius if a particular image wants a tighter or
+softer edge.</p>
 <p class="cap">Because this is a straight composite from the untouched source,
 whatever the gradient did inside the excluded region is irrelevant &mdash; the
 galaxy or nebula returns exactly as it was, while the background everywhere else

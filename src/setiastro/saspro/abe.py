@@ -630,7 +630,8 @@ class ABEDialog(QDialog):
     Apply commits to the document image with undo. Optionally spawns a
     background document containing the extracted gradient.
     """
-    def _make_collapsible(self, box: "QGroupBox", collapsed: bool = False):
+    def _make_collapsible(self, box: "QGroupBox", collapsed: bool = False,
+                          settings_key: str | None = None):
         """
         Turn a QGroupBox into a collapsible section whose TITLE carries a
         disclosure triangle (▾ open / ▸ collapsed). Clicking the title bar
@@ -642,11 +643,27 @@ class ABEDialog(QDialog):
         the whole section off by unchecking it. A disclosure triangle is the
         universal "this only folds" affordance. The group's actual behaviour
         is never gated on fold state (Multiscale has its own 'Enable' box).
+
+        settings_key: if given, the expanded/collapsed state is persisted to
+        QSettings under "abe/collapse/<key>" and restored here, so the user's
+        folding choices survive closing and reopening the dialog. `collapsed`
+        is only the default used when no saved state exists yet.
         """
         # Remember the plain title; we prefix an arrow glyph that we flip.
         base_title = box.title()
         box._base_title = base_title           # stash for the toggler
-        box._expanded = not collapsed
+        box._collapse_key = settings_key
+
+        # Restore saved fold state if we have a key; else use the default.
+        expanded_default = not collapsed
+        if settings_key:
+            saved = QSettings().value(f"abe/collapse/{settings_key}", None)
+            if saved is not None:
+                try:
+                    expanded_default = (str(saved).lower() in ("1", "true", "yes"))
+                except Exception:
+                    pass
+        box._expanded = expanded_default
 
         def _set_layout_visible(lay, visible):
             if lay is None:
@@ -670,6 +687,12 @@ class ABEDialog(QDialog):
         def _toggle(_box=box):
             _box._expanded = not _box._expanded
             _apply(_box)
+            key = getattr(_box, "_collapse_key", None)
+            if key:
+                try:
+                    QSettings().setValue(f"abe/collapse/{key}", bool(_box._expanded))
+                except Exception:
+                    pass
 
         box._toggle_collapse = _toggle   # exposed for the event filter
 
@@ -861,11 +884,24 @@ class ABEDialog(QDialog):
             "           extended structure into the gradient estimate"
         )
 
+        # Primary controls: Strength and Protect-k, two per row.
+        ms_grid = QGridLayout()
+        ms_grid.setContentsMargins(0, 0, 0, 0)
+        ms_grid.setHorizontalSpacing(8)
+        ms_grid.addWidget(QLabel(self.tr("Strength:")),     0, 0)
+        ms_grid.addWidget(self.sp_ms_strength,              0, 1)
+        ms_grid.addWidget(QLabel(self.tr("Protect k:")),    0, 2)
+        ms_grid.addWidget(self.sp_ms_protect,               0, 3)
+        ms_grid.setColumnStretch(4, 1)
+        ms_grid_wrap = QWidget(); ms_grid_wrap.setLayout(ms_grid)
+        ms_layout.addRow(ms_grid_wrap)
+
+        # --- Advanced (collapsed): the two blur knobs most users never touch ---
         self.sp_ms_smooth = QSpinBox()
         self.sp_ms_smooth.setRange(0, 10)
         self.sp_ms_smooth.setValue(2)
         self.sp_ms_smooth.setSuffix(" px")
-        self.sp_ms_smooth.setMaximumWidth(80)
+        self.sp_ms_smooth.setMaximumWidth(90)
         self.sp_ms_smooth.setToolTip(
             "Blur applied to the gradient MAP (not the image) before it's\n"
             "divided out. A gradient is smooth by definition, so smoothing the\n"
@@ -877,22 +913,51 @@ class ABEDialog(QDialog):
             "background look smoothed or the exclusion area look noisy."
         )
 
-        # Two numeric controls per row to keep the group short.
-        ms_grid = QGridLayout()
-        ms_grid.setContentsMargins(0, 0, 0, 0)
-        ms_grid.setHorizontalSpacing(8)
-        ms_grid.addWidget(QLabel(self.tr("Strength:")),     0, 0)
-        ms_grid.addWidget(self.sp_ms_strength,              0, 1)
-        ms_grid.addWidget(QLabel(self.tr("Protect k:")),    0, 2)
-        ms_grid.addWidget(self.sp_ms_protect,               0, 3)
-        ms_grid.addWidget(QLabel(self.tr("Smooth map:")),   1, 0)
-        ms_grid.addWidget(self.sp_ms_smooth,                1, 1)
-        ms_grid.setColumnStretch(4, 1)
-        ms_grid_wrap = QWidget(); ms_grid_wrap.setLayout(ms_grid)
-        ms_layout.addRow(ms_grid_wrap)
+        self.sp_ms_feather = QSpinBox()
+        self.sp_ms_feather.setRange(0, 50)
+        self.sp_ms_feather.setValue(10)
+        self.sp_ms_feather.setSuffix(" %")
+        self.sp_ms_feather.setSpecialValueText("Off (hard edge)")
+        self.sp_ms_feather.setMaximumWidth(140)
+        self.sp_ms_feather.setToolTip(
+            "Feather width for the EXCLUSION-AREA edge, as a PERCENTAGE of the\n"
+            "image's short side — the Gaussian blur applied to the protect mask\n"
+            "so a drawn exclusion dissolves into the corrected background with\n"
+            "no hard line.\n\n"
+            "Because it's a percentage, it feathers the same visual amount at\n"
+            "any image size (10% ≈ 300 px on a 4500×3000 frame, ≈88 px on an\n"
+            "880 px frame). 10% is a good default; lower for a tighter edge.\n"
+            "0 = off (hard edge)."
+        )
+
+        ms_adv_grid = QGridLayout()
+        ms_adv_grid.setContentsMargins(0, 0, 0, 0)
+        ms_adv_grid.setHorizontalSpacing(8)
+        ms_adv_grid.addWidget(QLabel(self.tr("Smooth gradient map:")), 0, 0)
+        ms_adv_grid.addWidget(self.sp_ms_smooth,                        0, 1)
+        ms_adv_grid.addWidget(QLabel(self.tr("Exclusion feather:")),    1, 0)
+        ms_adv_grid.addWidget(self.sp_ms_feather,                       1, 1)
+        ms_adv_grid.setColumnStretch(2, 1)
+
+        self._ms_adv_box = QGroupBox(self.tr("Advanced"))
+        _ms_adv_lay = QVBoxLayout(self._ms_adv_box)
+        _ms_adv_lay.setContentsMargins(8, 4, 8, 4)
+        _ms_adv_wrap = QWidget(); _ms_adv_wrap.setLayout(ms_adv_grid)
+        _ms_adv_lay.addWidget(_ms_adv_wrap)
+        ms_layout.addRow(self._ms_adv_box)
 
         self.chk_make_bg_doc = QCheckBox(self.tr("Create background document")); self.chk_make_bg_doc.setChecked(False)
         self.chk_preview_bg   = QCheckBox(self.tr("Preview background instead of corrected")); self.chk_preview_bg.setChecked(False)
+        self.chk_make_structure_doc = QCheckBox(self.tr("Create multiscale structure document"))
+        self.chk_make_structure_doc.setChecked(False)
+        self.chk_make_structure_doc.setToolTip(
+            "When Multiscale Gradient Refinement is on, also open the multiplicative\n"
+            "STRUCTURE map it divided out (the mote/reflection/filter-edge gradient\n"
+            "only — not the smooth poly/RBF background). Useful for troubleshooting:\n"
+            "it shows exactly what the multiscale stage thinks the defect is. The\n"
+            "regular 'Create background document' still gives the full combined\n"
+            "background from the poly/RBF stage."
+        )
         self.cmb_sample_mode = QComboBox()
         self.cmb_sample_mode.addItems(["Auto", "Manual"])
 
@@ -999,10 +1064,13 @@ class ABEDialog(QDialog):
         # two advanced/optional stages start collapsed; RBF (on by default)
         # starts expanded. The groups are also wrapped in a scroll area below
         # as a hard safety net.
-        self._make_collapsible(gb_place, collapsed=False)
-        self._make_collapsible(rbf_box,  collapsed=False)
-        self._make_collapsible(corr_box, collapsed=True)
-        self._make_collapsible(ms_box,   collapsed=True)
+        self._make_collapsible(gb_place, collapsed=False, settings_key="place")
+        self._make_collapsible(rbf_box,  collapsed=False, settings_key="rbf")
+        self._make_collapsible(corr_box, collapsed=True,  settings_key="correction")
+        self._make_collapsible(ms_box,   collapsed=True,  settings_key="multiscale")
+        if hasattr(self, "_ms_adv_box"):
+            self._make_collapsible(self._ms_adv_box, collapsed=True,
+                                   settings_key="multiscale_advanced")
 
         opts = QVBoxLayout()
         opts.addLayout(params)          # degree, samples, downsample, patch, sample mode
@@ -1013,6 +1081,7 @@ class ABEDialog(QDialog):
         opts.addWidget(corr_box)
         opts.addWidget(ms_box)
         opts.addWidget(self.chk_make_bg_doc)
+        opts.addWidget(self.chk_make_structure_doc)
         opts.addWidget(self.chk_preview_bg)
         row = QHBoxLayout()
         row.addWidget(self.btn_preview)
@@ -1100,6 +1169,7 @@ class ABEDialog(QDialog):
         self.radio_subtract.toggled.connect(self._save_settings)
         self.radio_divide.toggled.connect(self._save_settings)
         self.chk_make_bg_doc.toggled.connect(self._save_settings)
+        self.chk_make_structure_doc.toggled.connect(self._save_settings)
         self.chk_preview_bg.toggled.connect(self._save_settings)
 
         self._sample_mode_changed(self.cmb_sample_mode.currentText())
@@ -1117,6 +1187,7 @@ class ABEDialog(QDialog):
             self.sp_ms_strength.valueChanged.connect(self._save_settings)
             self.sp_ms_protect.valueChanged.connect(self._save_settings)
             self.sp_ms_smooth.valueChanged.connect(self._save_settings)
+            self.sp_ms_feather.valueChanged.connect(self._save_settings)
 
     def _load_settings(self):
         s = QSettings()
@@ -1145,10 +1216,12 @@ class ABEDialog(QDialog):
             self.chk_ms_residual.setChecked(s.value("abe/ms_residual", False, type=bool))
             self.sp_ms_strength.setValue(int(s.value("abe/ms_strength", 100)))
             self.sp_ms_protect.setValue(float(s.value("abe/ms_protect", 3.0)))
-            self.sp_ms_smooth.setValue(int(s.value("abe/ms_smooth", 2)))        
+            self.sp_ms_smooth.setValue(int(s.value("abe/ms_smooth", 2)))
+            self.sp_ms_feather.setValue(int(s.value("abe/ms_feather", 10)))
         
         # Options
         self.chk_make_bg_doc.setChecked(bool(s.value("abe/make_bg_doc", False, type=bool)))
+        self.chk_make_structure_doc.setChecked(bool(s.value("abe/make_structure_doc", False, type=bool)))
         self.chk_preview_bg.setChecked(bool(s.value("abe/preview_bg", False, type=bool)))
         self.sp_seed.setValue(int(s.value("abe/seed", 42)))
 
@@ -1174,10 +1247,12 @@ class ABEDialog(QDialog):
             s.setValue("abe/ms_strength", self.sp_ms_strength.value())
             s.setValue("abe/ms_protect", self.sp_ms_protect.value())
             s.setValue("abe/ms_smooth", self.sp_ms_smooth.value())
+            s.setValue("abe/ms_feather", self.sp_ms_feather.value())
         s.setValue("abe/use_rbf", self.chk_use_rbf.isChecked())
         s.setValue("abe/rbf_smooth_x100", self.sp_rbf.value())
         s.setValue("abe/seed", self.sp_seed.value())
         s.setValue("abe/make_bg_doc", self.chk_make_bg_doc.isChecked())
+        s.setValue("abe/make_structure_doc", self.chk_make_structure_doc.isChecked())
         s.setValue("abe/preview_bg", self.chk_preview_bg.isChecked())
 
         s.setValue("abe/preview_autostretch", bool(getattr(self, "_autostretch_on", False)))
@@ -1479,6 +1554,8 @@ class ABEDialog(QDialog):
 
     # ----- preview/applier -----
     def _run_abe(self, excl_mask: np.ndarray | None, progress=None):
+        # Cleared each run; set only when multiscale + structure-doc are on.
+        self._last_structure_map = None
         imgf = self._get_source_float()
         if imgf is None:
             return None, None
@@ -1528,6 +1605,7 @@ class ABEDialog(QDialog):
                 strength = float(self.sp_ms_strength.value()) / 100.0
                 protect_k = float(self.sp_ms_protect.value())   # already in MAD units
                 grad_smooth = float(self.sp_ms_smooth.value())
+                excl_feather_frac = float(self.sp_ms_feather.value()) / 100.0  # % -> fraction; 0 => off
                 include_residual = bool(self.chk_ms_residual.isChecked())
                 use_darkstar = bool(self.chk_ms_darkstar.isChecked())
 
@@ -1600,8 +1678,14 @@ class ABEDialog(QDialog):
                     except Exception:
                         protect_blend = None
 
+                # Capture the multiplicative STRUCTURE map too when the user
+                # asked for a structure document (troubleshooting output).
+                want_structure = bool(getattr(self, "chk_make_structure_doc", None)
+                                      and self.chk_make_structure_doc.isChecked())
+                self._last_structure_map = None
+
                 _pre = corrected
-                corrected = multiscale_gradient_correct(
+                _ms_result = multiscale_gradient_correct(
                     corrected,
                     estimate_from=estimate_from,
                     layers=layers,
@@ -1614,8 +1698,37 @@ class ABEDialog(QDialog):
                     protect_grow=6,
                     protect_blend_mask=protect_blend,
                     gradient_smooth_px=grad_smooth,
+                    protect_feather_frac=excl_feather_frac,
+                    return_extras=want_structure,
                     progress_cb=(lambda m: progress(f"Multiscale: {m}") if progress else None),
                 )
+                if want_structure:
+                    # return_extras => (corrected, grad_lin, feathered_mask)
+                    corrected, _grad_map, _feather_m = _ms_result
+                    try:
+                        gm = np.asarray(_grad_map, dtype=np.float32)
+                        # Paint the median of the structure map inside the
+                        # exclusion (feathered), exactly like a mask blend:
+                        #   struct = (1-m)*struct + m*median(struct)
+                        # so the protected region shows flat "nothingness"
+                        # instead of the raw galaxy structure — making it
+                        # visually obvious it was NOT corrected.
+                        if _feather_m is not None:
+                            m = np.asarray(_feather_m, dtype=np.float32)
+                            if m.ndim == 3:
+                                m = m[..., 0]
+                            if m.shape[:2] != gm.shape[:2]:
+                                yi = np.linspace(0, m.shape[0]-1, gm.shape[0]).astype(np.int32)
+                                xi = np.linspace(0, m.shape[1]-1, gm.shape[1]).astype(np.int32)
+                                m = m[yi][:, xi]
+                            m = np.clip(m, 0.0, 1.0)
+                            g_med = float(np.median(gm)) if gm.size else 1.0
+                            gm = gm * (1.0 - m) + g_med * m
+                        self._last_structure_map = gm.astype(np.float32, copy=False)
+                    except Exception:
+                        self._last_structure_map = None
+                else:
+                    corrected = _ms_result
                 # sanity: how much did the stage actually change the image?
                 try:
                     _diff = float(np.mean(np.abs(corrected.astype(np.float32) - _pre.astype(np.float32))))
@@ -1686,6 +1799,7 @@ class ABEDialog(QDialog):
                 "strength": float(self.sp_ms_strength.value()) / 100.0,
                 "protect_k": float(self.sp_ms_protect.value()),
                 "smooth_px": float(self.sp_ms_smooth.value()),
+                "feather_pct": float(self.sp_ms_feather.value()),
             }
 
         return params
@@ -1852,6 +1966,7 @@ class ABEDialog(QDialog):
                     "strength": float(self.sp_ms_strength.value()) / 100.0,
                     "protect_k": float(self.sp_ms_protect.value()),
                     "smooth_px": float(self.sp_ms_smooth.value()),
+                    "feather_pct": float(self.sp_ms_feather.value()),
                 }
 
             # Remember for replay — do this before any close
@@ -1899,6 +2014,49 @@ class ABEDialog(QDialog):
                     doc_bg = dm.open_array(bg.astype(np.float32, copy=False), metadata=bg_meta, title=f"{base}_ABE_BG")
                     if hasattr(mw, "_spawn_subwindow_for"):
                         mw._spawn_subwindow_for(doc_bg)
+
+            # Multiscale STRUCTURE document — the multiplicative gradient map the
+            # multiscale stage divided out (mote/reflection/filter-edge only).
+            # Separate from the full poly/RBF background above; for troubleshooting.
+            struct = getattr(self, "_last_structure_map", None)
+            if (getattr(self, "chk_make_structure_doc", None)
+                    and self.chk_make_structure_doc.isChecked()
+                    and struct is not None):
+                self._set_status("Creating multiscale structure document…")
+                dm = getattr(mw, "docman", None)
+                if dm is not None:
+                    base = os.path.splitext(self.doc.display_name())[0]
+                    # The structure map is a MULTIPLICATIVE gradient with median
+                    # ~1.0, so ~half its values exceed 1.0 (and a strong defect
+                    # spikes well past it). Dumped as-is, everything above 1.0
+                    # clips to white and the bright-side structure is lost. Scale
+                    # by its own max into [0,1] purely for viewing — this is a
+                    # troubleshooting view, not photometric data, so a display
+                    # normalization is exactly right.
+                    s_view = np.asarray(struct, dtype=np.float32)
+                    s_view = np.nan_to_num(s_view, nan=0.0, posinf=0.0, neginf=0.0)
+                    s_max = float(s_view.max()) if s_view.size else 0.0
+                    if s_max > 0.0:
+                        s_view = s_view / s_max
+                    s_view = np.clip(s_view, 0.0, 1.0).astype(np.float32, copy=False)
+                    # The normalized map sits jammed against 1.0 (a gradient is
+                    # ~flat, so after /max nearly everything is a hair below 1).
+                    # Drop it halfway down the histogram so it lands mid-range
+                    # and the viewer's autostretch has room on both sides — this
+                    # only repositions (keeps the spread), it does not stretch.
+                    s_min = float(s_view.min()) if s_view.size else 0.0
+                    s_view = (s_view - 0.5 * s_min).astype(np.float32, copy=False)
+                    s_meta = {
+                        "bit_depth": "32-bit floating point",
+                        "is_mono": (s_view.ndim == 2),
+                        "source": "ABE multiscale structure (gradient map, "
+                                  "normalized to max and offset for display)",
+                        "original_header": self.doc.metadata.get("original_header"),
+                    }
+                    doc_s = dm.open_array(s_view,
+                                          metadata=s_meta, title=f"{base}_ABE_Structure")
+                    if hasattr(mw, "_spawn_subwindow_for"):
+                        mw._spawn_subwindow_for(doc_s)
 
             # Restore autostretch on the active view
             prev_autostretch = False
