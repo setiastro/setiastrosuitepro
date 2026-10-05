@@ -14,16 +14,24 @@ from __future__ import annotations
 import os
 import numpy as np
 
+# ---------------------------------------------------------------------------
+# DEBUG: when True, an ADBE run with Multiscale Gradient Refinement enabled
+# also pushes the raw median+k*MAD signal-protection mask to a new document,
+# so you can eyeball exactly what the threshold is protecting (tune protect_k
+# against it). Flip to False for normal use. Only affects the multiscale path.
+# ---------------------------------------------------------------------------
+DEBUG = False
+
 try:
     import cv2
 except Exception:  # pragma: no cover
     cv2 = None
 
-from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArray
+from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArray, QObject
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QSpinBox,
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
-    QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton
+    QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton, QDoubleSpinBox
 )
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QIcon
 from PyQt6 import sip
@@ -35,7 +43,7 @@ from setiastro.saspro.legacy.numba_utils import build_poly_terms, evaluate_polyn
 from .autostretch import autostretch as hard_autostretch
 from setiastro.saspro.color_space_manager import tag_qimage_with_working_color_space
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
-
+from setiastro.saspro.abe_multiscale_gradient import multiscale_gradient_correct
 # =============================================================================
 #                         Headless ABE Core (poly + RBF)
 # =============================================================================
@@ -630,6 +638,98 @@ class ABEDialog(QDialog):
     Apply commits to the document image with undo. Optionally spawns a
     background document containing the extracted gradient.
     """
+    def _make_collapsible(self, box: "QGroupBox", collapsed: bool = False,
+                          settings_key: str | None = None):
+        """
+        Turn a QGroupBox into a collapsible section whose TITLE carries a
+        disclosure triangle (▾ open / ▸ collapsed). Clicking the title bar
+        toggles it; collapsing reclaims all of the group's vertical space so
+        the controls column fits an HD monitor.
+
+        Deliberately NOT a checkable groupbox — a checkbox would read as an
+        enable/disable switch and mislead users into thinking they can turn
+        the whole section off by unchecking it. A disclosure triangle is the
+        universal "this only folds" affordance. The group's actual behaviour
+        is never gated on fold state (Multiscale has its own 'Enable' box).
+
+        settings_key: if given, the expanded/collapsed state is persisted to
+        QSettings under "abe/collapse/<key>" and restored here, so the user's
+        folding choices survive closing and reopening the dialog. `collapsed`
+        is only the default used when no saved state exists yet.
+        """
+        # Remember the plain title; we prefix an arrow glyph that we flip.
+        base_title = box.title()
+        box._base_title = base_title           # stash for the toggler
+        box._collapse_key = settings_key
+
+        # Restore saved fold state if we have a key; else use the default.
+        expanded_default = not collapsed
+        if settings_key:
+            saved = QSettings().value(f"abe/collapse/{settings_key}", None)
+            if saved is not None:
+                try:
+                    expanded_default = (str(saved).lower() in ("1", "true", "yes"))
+                except Exception:
+                    pass
+        box._expanded = expanded_default
+
+        def _set_layout_visible(lay, visible):
+            if lay is None:
+                return
+            for i in range(lay.count()):
+                it = lay.itemAt(i)
+                w = it.widget()
+                if w is not None:
+                    w.setVisible(visible)
+                else:
+                    _set_layout_visible(it.layout(), visible)
+
+        def _apply(_box=box):
+            exp = bool(_box._expanded)
+            arrow = "\u25be " if exp else "\u25b8 "   # ▾ / ▸
+            _box.setTitle(arrow + _box._base_title)
+            _set_layout_visible(_box.layout(), exp)
+            # Shrink to just the title bar when collapsed.
+            _box.setMaximumHeight(16777215 if exp else _box.fontMetrics().height() + 18)
+
+        def _toggle(_box=box):
+            _box._expanded = not _box._expanded
+            _apply(_box)
+            key = getattr(_box, "_collapse_key", None)
+            if key:
+                try:
+                    QSettings().setValue(f"abe/collapse/{key}", bool(_box._expanded))
+                except Exception:
+                    pass
+
+        box._toggle_collapse = _toggle   # exposed for the event filter
+
+        # Click anywhere in the title strip (top ~title-height band) toggles.
+        class _TitleClickFilter(QObject):
+            def __init__(self, gb):
+                super().__init__(gb); self._gb = gb
+            def eventFilter(self, obj, ev):
+                if ev.type() == QEvent.Type.MouseButtonRelease:
+                    # Only the title strip, so clicks on controls still work
+                    # even though contents are hidden when collapsed.
+                    title_h = self._gb.fontMetrics().height() + 10
+                    try:
+                        y = ev.position().toPoint().y()
+                    except Exception:
+                        y = ev.pos().y()
+                    if y <= title_h:
+                        self._gb._toggle_collapse()
+                        return True
+                return False
+
+        filt = _TitleClickFilter(box)
+        box.installEventFilter(filt)
+        box._collapse_filter = filt   # retain against GC
+        box.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        _apply(box)
+        return box
+
     def __init__(self, parent, document: ImageDocument):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Automatic (Dynamic) Background Extraction (ADBE)"))
@@ -706,8 +806,188 @@ class ABEDialog(QDialog):
         corr_layout.addWidget(self.radio_subtract)
         corr_layout.addWidget(self.radio_divide)
         corr_layout.addStretch(1)
+        # --- Multiscale multiplicative-gradient refinement (dust motes,
+        #     reflections, filter-edge shadows — things poly/RBF can't model) ---
+        ms_box = QGroupBox(self.tr("Multiscale Gradient Refinement"))
+        ms_layout = QFormLayout(ms_box)
+
+        self.chk_ms_enable = QCheckBox(self.tr("Enable multiscale refinement"))
+        self.chk_ms_enable.setChecked(False)
+        self.chk_ms_enable.setToolTip(
+            "After the normal background removal, run an extra pass that models\n"
+            "SHARP-EDGED MULTIPLICATIVE defects — dust motes, internal reflections,\n"
+            "filter-edge shadows — that polynomial/RBF fits cannot represent.\n\n"
+            "Removes stars first (DarkStar) so they don't pollute the estimate,\n"
+            "decomposes in log space, extracts the selected scale band as the\n"
+            "gradient, and divides it out. Best run with Subtract mode above."
+        )
+        ms_layout.addRow(self.chk_ms_enable)
+
+        self.chk_ms_darkstar = QCheckBox(self.tr("Remove stars first (DarkStar)"))
+        self.chk_ms_darkstar.setChecked(True)
+        self.chk_ms_darkstar.setToolTip(
+            "Run CosmicClarity DarkStar to get a starless image for estimating\n"
+            "the gradient. Stars are kept in the final output — they just don't\n"
+            "contaminate the gradient model. Strongly recommended."
+        )
+        ms_layout.addRow(self.chk_ms_darkstar)
+
+        self.sp_ms_band_lo = QSpinBox(); self.sp_ms_band_lo.setRange(0, 11); self.sp_ms_band_lo.setValue(6)
+        self.sp_ms_band_hi = QSpinBox(); self.sp_ms_band_hi.setRange(0, 11); self.sp_ms_band_hi.setValue(8)
+        self.sp_ms_band_lo.setToolTip(
+            "First detail layer treated as gradient. Lower = finer structure.\n"
+            "Dust motes / reflections / filter edges live in the mid-to-coarse\n"
+            "layers. On a full-res frame, 6-8 is a good starting band; if your\n"
+            "image is downscaled, shift the band 1-2 lower."
+        )
+        self.sp_ms_band_hi.setToolTip(
+            "Last detail layer (inclusive) treated as gradient. Higher = coarser.\n"
+            "Raise toward 9-10 to also catch very broad filter-edge darkening."
+        )
+        self.sp_ms_band_lo.setMaximumWidth(56)
+        self.sp_ms_band_hi.setMaximumWidth(56)
+        band_row = QHBoxLayout()
+        band_row.setContentsMargins(0, 0, 0, 0)
+        band_row.addWidget(self.sp_ms_band_lo)
+        band_row.addWidget(QLabel(self.tr("to")))
+        band_row.addWidget(self.sp_ms_band_hi)
+        band_row.addStretch(1)
+        band_wrap = QWidget(); band_wrap.setLayout(band_row)
+        ms_layout.addRow(self.tr("Scale band:"), band_wrap)
+
+        self.chk_ms_residual = QCheckBox(self.tr("Include coarsest residual"))
+        self.chk_ms_residual.setChecked(False)
+        self.chk_ms_residual.setToolTip(
+            "Fold the coarsest (smooth) residual into the gradient too.\n"
+            "Usually leave OFF — the smooth background is already handled by\n"
+            "the poly/RBF stage above, and including it here risks double-\n"
+            "correcting. Turn ON only if a broad multiplicative falloff remains."
+        )
+        ms_layout.addRow(self.chk_ms_residual)
+
+        self.sp_ms_strength = QSpinBox(); self.sp_ms_strength.setRange(0, 100); self.sp_ms_strength.setValue(100)
+        self.sp_ms_strength.setSuffix(" %")
+        self.sp_ms_strength.setMaximumWidth(80)
+        self.sp_ms_strength.setToolTip(
+            "Blend strength of the multiplicative correction.\n"
+            "100% applies it fully; lower values ease it in if the full\n"
+            "correction over-flattens real large-scale structure."
+        )
+
+        self.sp_ms_protect = QDoubleSpinBox()
+        self.sp_ms_protect.setRange(1.0, 5.0)
+        self.sp_ms_protect.setSingleStep(0.5)
+        self.sp_ms_protect.setDecimals(1)
+        self.sp_ms_protect.setValue(3.0)
+        self.sp_ms_protect.setMaximumWidth(80)
+        self.sp_ms_protect.setToolTip(
+            "Signal-protection threshold: pixels brighter than\n"
+            "    median + k · MAD\n"
+            "are treated as signal (galaxies, nebulosity), masked out and\n"
+            "inpainted so they are NOT modeled as gradient.\n\n"
+            "k is in MAD-sigma units:\n"
+            "  k = 1-2  protects aggressively — safest for faint signal\n"
+            "  k = 3    balanced default\n"
+            "  k = 4-5  protects only the brightest cores — lets more\n"
+            "           extended structure into the gradient estimate"
+        )
+
+        # Primary controls: Strength and Protect-k, two per row.
+        ms_grid = QGridLayout()
+        ms_grid.setContentsMargins(0, 0, 0, 0)
+        ms_grid.setHorizontalSpacing(8)
+        ms_grid.addWidget(QLabel(self.tr("Strength:")),     0, 0)
+        ms_grid.addWidget(self.sp_ms_strength,              0, 1)
+        ms_grid.addWidget(QLabel(self.tr("Protect k:")),    0, 2)
+        ms_grid.addWidget(self.sp_ms_protect,               0, 3)
+        ms_grid.setColumnStretch(4, 1)
+        ms_grid_wrap = QWidget(); ms_grid_wrap.setLayout(ms_grid)
+        ms_layout.addRow(ms_grid_wrap)
+
+        # --- Advanced (collapsed): the three blur knobs most users never touch.
+        #     They act on three DIFFERENT things at three different stages:
+        #       1. Signal mask blur  -> the median+k*MAD mask, before estimate
+        #       2. Smooth gradient map -> the structure map, before dividing
+        #       3. Exclusion feather -> the drawn exclusion mask, final composite
+        self.sp_ms_sigblur = QSpinBox()
+        self.sp_ms_sigblur.setRange(0, 50)
+        self.sp_ms_sigblur.setValue(8)
+        self.sp_ms_sigblur.setSuffix(" px")
+        self.sp_ms_sigblur.setMaximumWidth(90)
+        self.sp_ms_sigblur.setToolTip(
+            "Blur applied to the median+k·MAD SIGNAL mask (after dilation),\n"
+            "before the gradient is estimated. Softens the hard-edged detections\n"
+            "so each star's full footprint is protected (not just its bright\n"
+            "core) and the mask edges don't make the inpaint + pyramid ring into\n"
+            "fake gradient.\n\n"
+            "0 = off (hard mask). 8 px is a good default; raise it to spread the\n"
+            "protection further around bright sources. Turn on the DEBUG mask\n"
+            "document to see exactly what this is doing."
+        )
+
+        self.sp_ms_smooth = QSpinBox()
+        self.sp_ms_smooth.setRange(0, 10)
+        self.sp_ms_smooth.setValue(2)
+        self.sp_ms_smooth.setSuffix(" px")
+        self.sp_ms_smooth.setMaximumWidth(90)
+        self.sp_ms_smooth.setToolTip(
+            "Blur applied to the gradient MAP (not the image) before it's\n"
+            "divided out. A gradient is smooth by definition, so smoothing the\n"
+            "map removes per-pixel noise the band picked up — which gets worse\n"
+            "as the lower band number drops toward the fine, noise-dominated\n"
+            "layers (3 and below). This strips noise from the correction while\n"
+            "leaving your image's own detail untouched.\n\n"
+            "0 = off. 2-3 px is a good default; raise it if a low band makes the\n"
+            "background look smoothed or the exclusion area look noisy."
+        )
+
+        self.sp_ms_feather = QSpinBox()
+        self.sp_ms_feather.setRange(0, 50)
+        self.sp_ms_feather.setValue(10)
+        self.sp_ms_feather.setSuffix(" %")
+        self.sp_ms_feather.setSpecialValueText("Off (hard edge)")
+        self.sp_ms_feather.setMaximumWidth(140)
+        self.sp_ms_feather.setToolTip(
+            "Feather width for the EXCLUSION-AREA edge, as a PERCENTAGE of the\n"
+            "image's short side — the Gaussian blur applied to the protect mask\n"
+            "so a drawn exclusion dissolves into the corrected background with\n"
+            "no hard line.\n\n"
+            "Because it's a percentage, it feathers the same visual amount at\n"
+            "any image size (10% ≈ 300 px on a 4500×3000 frame, ≈88 px on an\n"
+            "880 px frame). 10% is a good default; lower for a tighter edge.\n"
+            "0 = off (hard edge)."
+        )
+
+        ms_adv_grid = QGridLayout()
+        ms_adv_grid.setContentsMargins(0, 0, 0, 0)
+        ms_adv_grid.setHorizontalSpacing(8)
+        ms_adv_grid.addWidget(QLabel(self.tr("Signal mask blur:")),    0, 0)
+        ms_adv_grid.addWidget(self.sp_ms_sigblur,                      0, 1)
+        ms_adv_grid.addWidget(QLabel(self.tr("Smooth gradient map:")), 1, 0)
+        ms_adv_grid.addWidget(self.sp_ms_smooth,                       1, 1)
+        ms_adv_grid.addWidget(QLabel(self.tr("Exclusion feather:")),   2, 0)
+        ms_adv_grid.addWidget(self.sp_ms_feather,                      2, 1)
+        ms_adv_grid.setColumnStretch(2, 1)
+
+        self._ms_adv_box = QGroupBox(self.tr("Advanced"))
+        _ms_adv_lay = QVBoxLayout(self._ms_adv_box)
+        _ms_adv_lay.setContentsMargins(8, 4, 8, 4)
+        _ms_adv_wrap = QWidget(); _ms_adv_wrap.setLayout(ms_adv_grid)
+        _ms_adv_lay.addWidget(_ms_adv_wrap)
+        ms_layout.addRow(self._ms_adv_box)
+
         self.chk_make_bg_doc = QCheckBox(self.tr("Create background document")); self.chk_make_bg_doc.setChecked(False)
         self.chk_preview_bg   = QCheckBox(self.tr("Preview background instead of corrected")); self.chk_preview_bg.setChecked(False)
+        self.chk_make_structure_doc = QCheckBox(self.tr("Create multiscale structure document"))
+        self.chk_make_structure_doc.setChecked(False)
+        self.chk_make_structure_doc.setToolTip(
+            "When Multiscale Gradient Refinement is on, also open the multiplicative\n"
+            "STRUCTURE map it divided out (the mote/reflection/filter-edge gradient\n"
+            "only — not the smooth poly/RBF background). Useful for troubleshooting:\n"
+            "it shows exactly what the multiscale stage thinks the defect is. The\n"
+            "regular 'Create background document' still gives the full combined\n"
+            "background from the poly/RBF stage."
+        )
         self.cmb_sample_mode = QComboBox()
         self.cmb_sample_mode.addItems(["Auto", "Manual"])
 
@@ -809,14 +1089,29 @@ class ABEDialog(QDialog):
         rbf_form.addRow(self.tr("Smooth (x0.01):"), self.sp_rbf)
         rbf_box.setLayout(rbf_form)
 
+        # Collapsible optional sections — folding these reclaims the vertical
+        # space that was pushing the dialog past an HD monitor's height. The
+        # two advanced/optional stages start collapsed; RBF (on by default)
+        # starts expanded. The groups are also wrapped in a scroll area below
+        # as a hard safety net.
+        self._make_collapsible(gb_place, collapsed=False, settings_key="place")
+        self._make_collapsible(rbf_box,  collapsed=False, settings_key="rbf")
+        self._make_collapsible(corr_box, collapsed=True,  settings_key="correction")
+        self._make_collapsible(ms_box,   collapsed=True,  settings_key="multiscale")
+        if hasattr(self, "_ms_adv_box"):
+            self._make_collapsible(self._ms_adv_box, collapsed=True,
+                                   settings_key="multiscale_advanced")
+
         opts = QVBoxLayout()
         opts.addLayout(params)          # degree, samples, downsample, patch, sample mode
         opts.addWidget(note_lbl)
         opts.addWidget(gb_place)        # Place Grid / Show Auto Points — part of sampling setup
         opts.addWidget(self.btn_clear_samples)
         opts.addWidget(rbf_box)         # RBF refinement
-        opts.addWidget(corr_box)   
+        opts.addWidget(corr_box)
+        opts.addWidget(ms_box)
         opts.addWidget(self.chk_make_bg_doc)
+        opts.addWidget(self.chk_make_structure_doc)
         opts.addWidget(self.chk_preview_bg)
         row = QHBoxLayout()
         row.addWidget(self.btn_preview)
@@ -824,7 +1119,6 @@ class ABEDialog(QDialog):
         row.addStretch(1)
         opts.addLayout(row)
         opts.addWidget(self.btn_clear)  # Clear Exclusions (polygon drawing tool)
-        opts.addStretch(1)
 
         # ▼ New status label
         self.status_label = QLabel("Ready")
@@ -868,8 +1162,23 @@ class ABEDialog(QDialog):
         right.addLayout(self._build_toolbar())      # Zoom In / Out / Fit / Autostretch
         right.addWidget(self.preview_scroll, 1)     # Preview below the buttons
 
+        # Wrap the controls column in a scroll area so that even fully expanded
+        # it can never exceed the window height on a small display — the user
+        # scrolls the controls instead of the dialog growing off-screen.
+        opts_container = QWidget()
+        opts_container.setLayout(opts)
+        self._opts_scroll = QScrollArea()
+        self._opts_scroll.setWidgetResizable(True)
+        self._opts_scroll.setWidget(opts_container)
+        self._opts_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self._opts_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._opts_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Keep the controls column at a sensible fixed-ish width.
+        self._opts_scroll.setMinimumWidth(320)
+        self._opts_scroll.setMaximumWidth(380)
+
         main = QHBoxLayout(self)
-        main.addLayout(opts, 0)                     # Left controls
+        main.addWidget(self._opts_scroll, 0)        # Left controls (scrollable)
         main.addLayout(right, 1)                    # Right: buttons above preview
 
         self._load_settings()
@@ -890,12 +1199,26 @@ class ABEDialog(QDialog):
         self.radio_subtract.toggled.connect(self._save_settings)
         self.radio_divide.toggled.connect(self._save_settings)
         self.chk_make_bg_doc.toggled.connect(self._save_settings)
+        self.chk_make_structure_doc.toggled.connect(self._save_settings)
         self.chk_preview_bg.toggled.connect(self._save_settings)
 
         self._sample_mode_changed(self.cmb_sample_mode.currentText())
 
         self.cmb_sample_mode.currentTextChanged.connect(self._sample_mode_changed)
         self.cmb_sample_mode.currentTextChanged.connect(self._save_settings)
+
+        # Multiscale refinement controls — persist on change
+        if hasattr(self, "chk_ms_enable"):
+            self.chk_ms_enable.toggled.connect(self._save_settings)
+            self.chk_ms_darkstar.toggled.connect(self._save_settings)
+            self.sp_ms_band_lo.valueChanged.connect(self._save_settings)
+            self.sp_ms_band_hi.valueChanged.connect(self._save_settings)
+            self.chk_ms_residual.toggled.connect(self._save_settings)
+            self.sp_ms_strength.valueChanged.connect(self._save_settings)
+            self.sp_ms_protect.valueChanged.connect(self._save_settings)
+            self.sp_ms_smooth.valueChanged.connect(self._save_settings)
+            self.sp_ms_feather.valueChanged.connect(self._save_settings)
+            self.sp_ms_sigblur.valueChanged.connect(self._save_settings)
 
     def _load_settings(self):
         s = QSettings()
@@ -915,8 +1238,22 @@ class ABEDialog(QDialog):
         if hasattr(self, "radio_divide"):
             self.radio_divide.setChecked(divide)
             self.radio_subtract.setChecked(not divide)
+
+        if hasattr(self, "chk_ms_enable"):
+            self.chk_ms_enable.setChecked(s.value("abe/ms_enable", False, type=bool))
+            self.chk_ms_darkstar.setChecked(s.value("abe/ms_darkstar", True, type=bool))
+            self.sp_ms_band_lo.setValue(int(s.value("abe/ms_band_lo", 6)))
+            self.sp_ms_band_hi.setValue(int(s.value("abe/ms_band_hi", 8)))
+            self.chk_ms_residual.setChecked(s.value("abe/ms_residual", False, type=bool))
+            self.sp_ms_strength.setValue(int(s.value("abe/ms_strength", 100)))
+            self.sp_ms_protect.setValue(float(s.value("abe/ms_protect", 3.0)))
+            self.sp_ms_smooth.setValue(int(s.value("abe/ms_smooth", 2)))
+            self.sp_ms_feather.setValue(int(s.value("abe/ms_feather", 10)))
+            self.sp_ms_sigblur.setValue(int(s.value("abe/ms_sigblur", 8)))
+        
         # Options
         self.chk_make_bg_doc.setChecked(bool(s.value("abe/make_bg_doc", False, type=bool)))
+        self.chk_make_structure_doc.setChecked(bool(s.value("abe/make_structure_doc", False, type=bool)))
         self.chk_preview_bg.setChecked(bool(s.value("abe/preview_bg", False, type=bool)))
         self.sp_seed.setValue(int(s.value("abe/seed", 42)))
 
@@ -933,11 +1270,22 @@ class ABEDialog(QDialog):
         s.setValue("abe/patch_size", self.sp_patch.value())
         s.setValue("abe/sample_mode", self.cmb_sample_mode.currentText())
         s.setValue("abe/correction_divide", self.radio_divide.isChecked())
-
+        if hasattr(self, "chk_ms_enable"):
+            s.setValue("abe/ms_enable", self.chk_ms_enable.isChecked())
+            s.setValue("abe/ms_darkstar", self.chk_ms_darkstar.isChecked())
+            s.setValue("abe/ms_band_lo", self.sp_ms_band_lo.value())
+            s.setValue("abe/ms_band_hi", self.sp_ms_band_hi.value())
+            s.setValue("abe/ms_residual", self.chk_ms_residual.isChecked())
+            s.setValue("abe/ms_strength", self.sp_ms_strength.value())
+            s.setValue("abe/ms_protect", self.sp_ms_protect.value())
+            s.setValue("abe/ms_smooth", self.sp_ms_smooth.value())
+            s.setValue("abe/ms_feather", self.sp_ms_feather.value())
+            s.setValue("abe/ms_sigblur", self.sp_ms_sigblur.value())
         s.setValue("abe/use_rbf", self.chk_use_rbf.isChecked())
         s.setValue("abe/rbf_smooth_x100", self.sp_rbf.value())
         s.setValue("abe/seed", self.sp_seed.value())
         s.setValue("abe/make_bg_doc", self.chk_make_bg_doc.isChecked())
+        s.setValue("abe/make_structure_doc", self.chk_make_structure_doc.isChecked())
         s.setValue("abe/preview_bg", self.chk_preview_bg.isChecked())
 
         s.setValue("abe/preview_autostretch", bool(getattr(self, "_autostretch_on", False)))
@@ -1239,6 +1587,9 @@ class ABEDialog(QDialog):
 
     # ----- preview/applier -----
     def _run_abe(self, excl_mask: np.ndarray | None, progress=None):
+        # Cleared each run; set only when multiscale + structure-doc are on.
+        self._last_structure_map = None
+        self._last_mad_mask = None
         imgf = self._get_source_float()
         if imgf is None:
             return None, None
@@ -1256,7 +1607,7 @@ class ABEDialog(QDialog):
         manual_pts = self._manual_points_array() if self._manual_mode() else None
         correction_mode = "divide" if self.radio_divide.isChecked() else "subtract"
 
-        return abe_run(
+        corrected, bg = abe_run(
             imgf,
             degree=deg,
             num_samples=npts,
@@ -1271,6 +1622,189 @@ class ABEDialog(QDialog):
             correction_mode=correction_mode,
             rng=rng,
         )
+
+        # --- Stage 2: optional multiscale multiplicative-gradient refinement ---
+        # Runs AFTER the normal (additive/smooth) background removal. Removes
+        # stars first for a clean estimate, extracts the selected scale band as
+        # a multiplicative gradient, and divides it out. Applied to the already-
+        # corrected image so both stages compose.
+        if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked() \
+                and corrected is not None:
+            try:
+                band_lo = int(self.sp_ms_band_lo.value())
+                band_hi = int(self.sp_ms_band_hi.value())
+                if band_hi < band_lo:
+                    band_lo, band_hi = band_hi, band_lo
+                layers = max(band_hi + 1, 9)
+                strength = float(self.sp_ms_strength.value()) / 100.0
+                protect_k = float(self.sp_ms_protect.value())   # already in MAD units
+                grad_smooth = float(self.sp_ms_smooth.value())
+                excl_feather_frac = float(self.sp_ms_feather.value()) / 100.0  # % -> fraction; 0 => off
+                sig_blur = float(self.sp_ms_sigblur.value())
+                include_residual = bool(self.chk_ms_residual.isChecked())
+                use_darkstar = bool(self.chk_ms_darkstar.isChecked())
+
+                # Estimate on a starless copy when DarkStar is available/enabled.
+                estimate_from = corrected
+                if use_darkstar:
+                    if progress: progress("Multiscale: removing stars (DarkStar)…")
+                    try:
+                        from setiastro.saspro.remove_stars import darkstar_starless_from_array
+                    except Exception as e:
+                        import traceback
+                        msg = f"Multiscale: DarkStar import FAILED: {e}"
+                        if progress: progress(msg)
+                        mw = self.parent()
+                        if mw is not None and hasattr(mw, "_log"):
+                            mw._log(msg + "\n" + traceback.format_exc())
+                        darkstar_starless_from_array = None
+
+                    if darkstar_starless_from_array is not None:
+                        try:
+                            est_in = np.clip(np.asarray(corrected, dtype=np.float32), 0.0, 1.0)
+                            _mw = self.parent()
+                            def _ds_status(msg, _mw=_mw):
+                                if progress:
+                                    try: progress(f"Multiscale/DarkStar: {msg}")
+                                    except Exception: pass
+                                if _mw is not None and hasattr(_mw, "_log"):
+                                    try: _mw._log(f"[Multiscale/DarkStar] {msg}")
+                                    except Exception: pass
+                            def _ds_prog(done, total, stage="", _p=progress):
+                                if _p:
+                                    try: _p(f"Multiscale/DarkStar: {stage} {done}/{total}")
+                                    except Exception: pass
+                                return True
+
+                            starless, _stars, _mono = darkstar_starless_from_array(
+                                est_in,
+                                use_gpu=True,
+                                progress_cb=_ds_prog,
+                                status_cb=_ds_status,
+                            )
+                            if starless is not None:
+                                estimate_from = starless
+                                if progress: progress("Multiscale: DarkStar starless ready.")
+                                mw = self.parent()
+                                if mw is not None and hasattr(mw, "_log"):
+                                    mw._log("[Multiscale] DarkStar star removal succeeded; "
+                                            "estimating gradient on starless image.")
+                            else:
+                                if progress: progress("Multiscale: DarkStar returned None; "
+                                                      "estimating on corrected image.")
+                        except Exception as e:
+                            import traceback
+                            msg = f"Multiscale: DarkStar run FAILED: {e}"
+                            if progress: progress(msg)
+                            mw = self.parent()
+                            if mw is not None and hasattr(mw, "_log"):
+                                mw._log(msg + "\n" + traceback.format_exc())
+
+                # Exclusion polygons protect their region at APPLY time only:
+                # the gradient runs everywhere, but these pixels are composited
+                # straight from the original. ABE excl_mask is True=sample /
+                # False=excluded, so the keep-original region is ~excl_mask.
+                protect_blend = None
+                if excl_mask is not None:
+                    try:
+                        protect_blend = (~np.asarray(excl_mask, dtype=bool)).astype(np.float32)
+                        if not protect_blend.any():
+                            protect_blend = None
+                    except Exception:
+                        protect_blend = None
+
+                # Capture the multiplicative STRUCTURE map too when the user
+                # asked for a structure document (troubleshooting output).
+                want_structure = bool(getattr(self, "chk_make_structure_doc", None)
+                                      and self.chk_make_structure_doc.isChecked())
+                want_debug = bool(DEBUG)
+                self._last_structure_map = None
+                self._last_mad_mask = None     # raw median+k*MAD mask (debug)
+
+                _pre = corrected
+                _ms_result = multiscale_gradient_correct(
+                    corrected,
+                    estimate_from=estimate_from,
+                    layers=layers,
+                    base_sigma=1.0,
+                    band_lo=band_lo,
+                    band_hi=band_hi,
+                    include_residual=include_residual,
+                    strength=strength,
+                    protect_k=protect_k,
+                    protect_grow=6,
+                    protect_blur_px=sig_blur,
+                    protect_blend_mask=protect_blend,
+                    gradient_smooth_px=grad_smooth,
+                    protect_feather_frac=excl_feather_frac,
+                    return_extras=want_structure,
+                    return_debug=want_debug,
+                    progress_cb=(lambda m: progress(f"Multiscale: {m}") if progress else None),
+                )
+
+                # Unpack per the (return_extras, return_debug) return shapes:
+                #   extras & debug -> (corr, grad, feather, mad)
+                #   extras only     -> (corr, grad, feather)
+                #   debug only      -> (corr, mad)
+                #   neither         ->  corr
+                _grad_map = None; _feather_m = None
+                if want_structure and want_debug:
+                    corrected, _grad_map, _feather_m, _mad = _ms_result
+                    self._last_mad_mask = _mad
+                elif want_structure:
+                    corrected, _grad_map, _feather_m = _ms_result
+                elif want_debug:
+                    corrected, _mad = _ms_result
+                    self._last_mad_mask = _mad
+                else:
+                    corrected = _ms_result
+
+                if want_structure:
+                    try:
+                        gm = np.asarray(_grad_map, dtype=np.float32)
+                        # Paint the median of the structure map inside the
+                        # exclusion (feathered), exactly like a mask blend:
+                        #   struct = (1-m)*struct + m*median(struct)
+                        # so the protected region shows flat "nothingness"
+                        # instead of the raw galaxy structure — making it
+                        # visually obvious it was NOT corrected.
+                        if _feather_m is not None:
+                            m = np.asarray(_feather_m, dtype=np.float32)
+                            if m.ndim == 3:
+                                m = m[..., 0]
+                            if m.shape[:2] != gm.shape[:2]:
+                                yi = np.linspace(0, m.shape[0]-1, gm.shape[0]).astype(np.int32)
+                                xi = np.linspace(0, m.shape[1]-1, gm.shape[1]).astype(np.int32)
+                                m = m[yi][:, xi]
+                            m = np.clip(m, 0.0, 1.0)
+                            g_med = float(np.median(gm)) if gm.size else 1.0
+                            gm = gm * (1.0 - m) + g_med * m
+                        self._last_structure_map = gm.astype(np.float32, copy=False)
+                    except Exception:
+                        self._last_structure_map = None
+                # sanity: how much did the stage actually change the image?
+                try:
+                    _diff = float(np.mean(np.abs(corrected.astype(np.float32) - _pre.astype(np.float32))))
+                    _mw = self.parent()
+                    if _mw is not None and hasattr(_mw, "_log"):
+                        _mw._log(
+                            f"[Multiscale] stage applied: band={band_lo}-{band_hi}, "
+                            f"strength={strength:.2f}, protect_k={protect_k:.1f}, "
+                            f"residual={include_residual}, "
+                            f"mean|Δ|={_diff:.6g} "
+                            f"(estimate={'starless' if estimate_from is not _pre else 'corrected'})"
+                        )
+                except Exception:
+                    pass
+            except Exception as e:
+                import traceback
+                msg = f"Multiscale refinement FAILED: {e}"
+                if progress: progress(msg + " — using base ABE result.")
+                mw = self.parent()
+                if mw is not None and hasattr(mw, "_log"):
+                    mw._log(msg + "\n" + traceback.format_exc())
+
+        return corrected, bg
 
     def _abe_params(self) -> dict:
         """
@@ -1305,6 +1839,22 @@ class ABEDialog(QDialog):
         mp = self._manual_points_array() if self._manual_mode() else None
         if mp is not None and len(mp) > 0:
             params["manual_points"] = mp.tolist()   # [[x,y],...] JSON-safe ints
+
+        # Multiscale refinement — only emitted when enabled, so a preset made
+        # with the feature off stays byte-identical to the legacy schema.
+        if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked():
+            params["multiscale"] = {
+                "enabled": True,
+                "darkstar": bool(self.chk_ms_darkstar.isChecked()),
+                "band_lo": int(self.sp_ms_band_lo.value()),
+                "band_hi": int(self.sp_ms_band_hi.value()),
+                "include_residual": bool(self.chk_ms_residual.isChecked()),
+                "strength": float(self.sp_ms_strength.value()) / 100.0,
+                "protect_k": float(self.sp_ms_protect.value()),
+                "smooth_px": float(self.sp_ms_smooth.value()),
+                "feather_pct": float(self.sp_ms_feather.value()),
+                "sigblur_px": float(self.sp_ms_sigblur.value()),
+            }
 
         return params
 
@@ -1458,6 +2008,22 @@ class ABEDialog(QDialog):
                 "manual_sample_count": len(self._manual_points),
             }
 
+            # Multiscale refinement params (only when enabled, so existing
+            # presets stay byte-identical when the feature is off).
+            if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked():
+                params["multiscale"] = {
+                    "enabled": True,
+                    "darkstar": bool(self.chk_ms_darkstar.isChecked()),
+                    "band_lo": int(self.sp_ms_band_lo.value()),
+                    "band_hi": int(self.sp_ms_band_hi.value()),
+                    "include_residual": bool(self.chk_ms_residual.isChecked()),
+                    "strength": float(self.sp_ms_strength.value()) / 100.0,
+                    "protect_k": float(self.sp_ms_protect.value()),
+                    "smooth_px": float(self.sp_ms_smooth.value()),
+                    "feather_pct": float(self.sp_ms_feather.value()),
+                    "sigblur_px": float(self.sp_ms_sigblur.value()),
+                }
+
             # Remember for replay — do this before any close
             mw = self.parent()
             try:
@@ -1503,6 +2069,71 @@ class ABEDialog(QDialog):
                     doc_bg = dm.open_array(bg.astype(np.float32, copy=False), metadata=bg_meta, title=f"{base}_ABE_BG")
                     if hasattr(mw, "_spawn_subwindow_for"):
                         mw._spawn_subwindow_for(doc_bg)
+
+            # Multiscale STRUCTURE document — the multiplicative gradient map the
+            # multiscale stage divided out (mote/reflection/filter-edge only).
+            # Separate from the full poly/RBF background above; for troubleshooting.
+            struct = getattr(self, "_last_structure_map", None)
+            if (getattr(self, "chk_make_structure_doc", None)
+                    and self.chk_make_structure_doc.isChecked()
+                    and struct is not None):
+                self._set_status("Creating multiscale structure document…")
+                dm = getattr(mw, "docman", None)
+                if dm is not None:
+                    base = os.path.splitext(self.doc.display_name())[0]
+                    # The structure map is a MULTIPLICATIVE gradient with median
+                    # ~1.0, so ~half its values exceed 1.0 (and a strong defect
+                    # spikes well past it). Dumped as-is, everything above 1.0
+                    # clips to white and the bright-side structure is lost. Scale
+                    # by its own max into [0,1] purely for viewing — this is a
+                    # troubleshooting view, not photometric data, so a display
+                    # normalization is exactly right.
+                    s_view = np.asarray(struct, dtype=np.float32)
+                    s_view = np.nan_to_num(s_view, nan=0.0, posinf=0.0, neginf=0.0)
+                    s_max = float(s_view.max()) if s_view.size else 0.0
+                    if s_max > 0.0:
+                        s_view = s_view / s_max
+                    s_view = np.clip(s_view, 0.0, 1.0).astype(np.float32, copy=False)
+                    # The normalized map sits jammed against 1.0 (a gradient is
+                    # ~flat, so after /max nearly everything is a hair below 1).
+                    # Drop it halfway down the histogram so it lands mid-range
+                    # and the viewer's autostretch has room on both sides — this
+                    # only repositions (keeps the spread), it does not stretch.
+                    s_min = float(s_view.min()) if s_view.size else 0.0
+                    s_view = (s_view - 0.5 * s_min).astype(np.float32, copy=False)
+                    s_meta = {
+                        "bit_depth": "32-bit floating point",
+                        "is_mono": (s_view.ndim == 2),
+                        "source": "ABE multiscale structure (gradient map, "
+                                  "normalized to max and offset for display)",
+                        "original_header": self.doc.metadata.get("original_header"),
+                    }
+                    doc_s = dm.open_array(s_view,
+                                          metadata=s_meta, title=f"{base}_ABE_Structure")
+                    if hasattr(mw, "_spawn_subwindow_for"):
+                        mw._spawn_subwindow_for(doc_s)
+
+            # DEBUG: push the raw median+k*MAD signal-protection mask so you can
+            # eyeball what the threshold caught. Controlled by the module-level
+            # DEBUG flag; only present when the multiscale stage ran.
+            mad = getattr(self, "_last_mad_mask", None)
+            if DEBUG and mad is not None:
+                self._set_status("Creating DEBUG MAD mask document…")
+                dm = getattr(mw, "docman", None)
+                if dm is not None:
+                    base = os.path.splitext(self.doc.display_name())[0]
+                    mad_view = np.clip(np.nan_to_num(np.asarray(mad, dtype=np.float32)),
+                                       0.0, 1.0).astype(np.float32, copy=False)
+                    mad_meta = {
+                        "bit_depth": "32-bit floating point",
+                        "is_mono": (mad_view.ndim == 2),
+                        "source": "ABE DEBUG median+k*MAD signal-protection mask",
+                        "original_header": self.doc.metadata.get("original_header"),
+                    }
+                    doc_mad = dm.open_array(mad_view, metadata=mad_meta,
+                                            title=f"{base}_ABE_DEBUG_MADmask")
+                    if hasattr(mw, "_spawn_subwindow_for"):
+                        mw._spawn_subwindow_for(doc_mad)
 
             # Restore autostretch on the active view
             prev_autostretch = False

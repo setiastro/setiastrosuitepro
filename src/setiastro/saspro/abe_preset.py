@@ -4,6 +4,7 @@ import os
 import numpy as np
 
 from .abe import abe_run  # core engine
+from .abe_multiscale_gradient import multiscale_gradient_correct
 
 # ---------- mask helpers (match ABEDialog semantics) ----------
 def _active_mask_layer(doc):
@@ -59,11 +60,46 @@ def _doc_image_float01(doc) -> np.ndarray | None:
         return (arr.astype(np.float32) / np.iinfo(arr.dtype).max).clip(0.0, 1.0)
     return np.clip(arr.astype(np.float32, copy=False), 0.0, 1.0)
 
+
+# ---------- multiscale preset parsing ----------
+def _parse_multiscale_preset(p: dict) -> dict | None:
+    """
+    Pull the multiscale config out of a preset dict, sanitized, or None when
+    the feature is absent/disabled. Declarative (read straight from the
+    preset), so it's available BEFORE abe_run runs — which is what lets us
+    record it in the Replay params up front.
+    """
+    _ms = p.get("multiscale", None)
+    if not isinstance(_ms, dict) or not bool(_ms.get("enabled", False)):
+        return None
+    band_lo = int(np.clip(_ms.get("band_lo", 6), 0, 11))
+    band_hi = int(np.clip(_ms.get("band_hi", 8), 0, 11))
+    if band_hi < band_lo:
+        band_lo, band_hi = band_hi, band_lo
+    return {
+        "enabled": True,
+        "darkstar": bool(_ms.get("darkstar", True)),
+        "band_lo": band_lo,
+        "band_hi": band_hi,
+        "include_residual": bool(_ms.get("include_residual", False)),
+        "strength": float(np.clip(_ms.get("strength", 1.0), 0.0, 1.0)),
+        "protect_k": float(np.clip(_ms.get("protect_k", 3.0), 1.0, 5.0)),
+        "smooth_px": float(np.clip(_ms.get("smooth_px", 2.0), 0.0, 10.0)),
+        "feather_pct": float(np.clip(_ms.get("feather_pct", 10.0), 0.0, 50.0)),  # 0 => off
+        "sigblur_px": float(np.clip(_ms.get("sigblur_px", 8.0), 0.0, 50.0)),
+    }
+
+
 # ---------- headless apply (NO EXCLUSION AREA) ----------
 def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
     """
     Run ABE headlessly (no exclusion polygons; exclusion_mask=None) using preset params.
     Blends with the active mask layer (m*out + (1-m)*src) before committing.
+
+    Optionally runs the multiscale multiplicative-gradient refinement as a
+    second stage (mirrors ABEDialog._run_abe). Headless has no exclusion
+    polygon, so there is no galaxy-protection composite — a dropped preset
+    flattens the whole frame.
     """
     p = dict(preset or {})
     # NOTE: allow degree 0 (RBF-only) to match ABEDialog
@@ -78,6 +114,10 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
     correction_mode = str(p.get("correction_mode", "subtract")).lower()
     if correction_mode not in ("subtract", "divide"):
         correction_mode = "subtract"
+
+    # Multiscale config (declarative — known before abe_run so we can store it
+    # in the Replay params up front). None when disabled/absent.
+    ms_cfg = _parse_multiscale_preset(p)
 
     src01 = _doc_image_float01(doc)
     if src01 is None:
@@ -101,7 +141,7 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
             mp_arr = mp_arr[keep]
             manual_points = mp_arr if len(mp_arr) > 0 else None
 
-    # Sanitize params we actually used (this is what we’ll store for Replay)
+    # Sanitize params we actually used (this is what we'll store for Replay)
     params = {
         "degree": degree,
         "samples": num_samples,
@@ -117,6 +157,10 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
         # so shortcut round-trip keeps exact points; "replay last" auto-samples.
         "manual_sample_count": int(len(manual_points)) if manual_points is not None else 0,
     }
+    # Carry multiscale config into the Replay record when enabled (keeps legacy
+    # presets byte-identical when off).
+    if ms_cfg is not None:
+        params["multiscale"] = dict(ms_cfg)
 
     # 🔁 Remember this as the last headless command for Replay
     try:
@@ -152,6 +196,59 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
         rng=rng,
     )
 
+    # --- Optional multiscale multiplicative-gradient refinement (headless) ---
+    # Mirrors ABEDialog._run_abe's Stage 2. Headless has NO exclusion polygon,
+    # so there is no protect_blend_mask here — the galaxy-protection composite
+    # is a dialog-only feature (a dropped preset flattens the whole frame).
+    if ms_cfg is not None and corrected is not None:
+        try:
+            layers = max(ms_cfg["band_hi"] + 1, 9)
+
+            estimate_from = corrected
+            if ms_cfg["darkstar"]:
+                try:
+                    from .remove_stars import darkstar_starless_from_array
+                    est_in = np.clip(np.asarray(corrected, dtype=np.float32), 0.0, 1.0)
+                    starless, _s, _m = darkstar_starless_from_array(
+                        est_in,
+                        use_gpu=True,
+                        progress_cb=(lambda d, t, s="": True),
+                        status_cb=(lambda m: None),
+                    )
+                    if starless is not None:
+                        estimate_from = starless
+                except Exception as e:
+                    try:
+                        if hasattr(main_window, "_log"):
+                            main_window._log(f"[ABE/Multiscale] DarkStar unavailable headless ({e}); "
+                                             f"estimating on corrected image.")
+                    except Exception:
+                        pass
+
+            corrected = multiscale_gradient_correct(
+                corrected,
+                estimate_from=estimate_from,
+                layers=layers,
+                base_sigma=1.0,
+                band_lo=ms_cfg["band_lo"],
+                band_hi=ms_cfg["band_hi"],
+                include_residual=ms_cfg["include_residual"],
+                strength=ms_cfg["strength"],
+                protect_k=ms_cfg["protect_k"],
+                protect_grow=6,
+                gradient_smooth_px=ms_cfg["smooth_px"],
+                protect_feather_frac=ms_cfg["feather_pct"] / 100.0,
+                protect_blur_px=ms_cfg["sigblur_px"],
+                progress_cb=None,
+            )
+        except Exception as e:
+            try:
+                if hasattr(main_window, "_log"):
+                    main_window._log(f"[ABE/Multiscale] headless refinement failed ({e}); "
+                                     f"using base ABE result.")
+            except Exception:
+                pass
+
     # Preserve mono vs color wrt original doc
     out = corrected
     if (
@@ -178,6 +275,7 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
             "correction_mode": correction_mode,
             "manual_sample_count": int(len(manual_points)) if manual_points is not None else 0,
             "exclusion": "none",  # explicit marker for audit/history
+            "multiscale": params.get("multiscale"),  # None when disabled
         },
         "masked": bool(mid),
         "mask_id": mid,
@@ -232,6 +330,24 @@ def open_abe_with_preset(main_window, preset: dict | None = None):
         dlg.radio_divide.setChecked(_mode == "divide")
         dlg.radio_subtract.setChecked(_mode != "divide")
         # polygons intentionally untouched (== none)
+
+        # Multiscale refinement — seed the widgets if the preset carries them
+        # and the dialog has the controls (guards against older builds).
+        _ms = p.get("multiscale", None)
+        if _ms is not None and hasattr(dlg, "chk_ms_enable"):
+            dlg.chk_ms_enable.setChecked(bool(_ms.get("enabled", False)))
+            dlg.chk_ms_darkstar.setChecked(bool(_ms.get("darkstar", True)))
+            dlg.sp_ms_band_lo.setValue(int(np.clip(_ms.get("band_lo", 6), 0, 11)))
+            dlg.sp_ms_band_hi.setValue(int(np.clip(_ms.get("band_hi", 8), 0, 11)))
+            dlg.chk_ms_residual.setChecked(bool(_ms.get("include_residual", False)))
+            dlg.sp_ms_strength.setValue(int(np.clip(float(_ms.get("strength", 1.0)) * 100.0, 0, 100)))
+            dlg.sp_ms_protect.setValue(float(np.clip(_ms.get("protect_k", 3.0), 1.0, 5.0)))
+            if hasattr(dlg, "sp_ms_smooth"):
+                dlg.sp_ms_smooth.setValue(int(np.clip(_ms.get("smooth_px", 2), 0, 10)))
+            if hasattr(dlg, "sp_ms_feather"):
+                dlg.sp_ms_feather.setValue(int(np.clip(_ms.get("feather_pct", 10), 0, 50)))
+            if hasattr(dlg, "sp_ms_sigblur"):
+                dlg.sp_ms_sigblur.setValue(int(np.clip(_ms.get("sigblur_px", 8), 0, 50)))
     except Exception:
         pass
 

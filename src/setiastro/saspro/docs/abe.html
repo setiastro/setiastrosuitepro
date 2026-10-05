@@ -28,6 +28,8 @@
   .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
   .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
          margin:10px 0; color:#cfe8e0; }
+  .new { background:#15211e; border-left:3px solid #c7a24a; padding:8px 12px;
+         margin:10px 0; color:#e8ddc0; }
   .cap { color:#9a9a9a; font-size:11px; }
 </style>
 </head>
@@ -36,7 +38,9 @@
 <h1>Automatic (Dynamic) Background Extraction &mdash; ADBE</h1>
 <p class="sub">Models the sky background &mdash; gradients, vignetting, light
 pollution &mdash; with a polynomial plus an optional radial-basis refinement, and
-removes it while preserving star colour and linear photometry. Non-destructive:
+removes it while preserving star colour and linear photometry. An optional
+multiscale stage additionally removes sharp multiplicative defects (dust motes,
+reflections, filter-edge shadows) that smooth fits can't model. Non-destructive:
 nothing changes until Apply.</p>
 
 <h2>1. Using the tool</h2>
@@ -107,6 +111,10 @@ background, so the gradient fit isn't contaminated.</p>
       own &mdash; exclusion areas are for the larger, obvious regions that
       threshold won't catch.</li>
 </ul>
+<div class="tip">Exclusion areas do double duty when <b>Multiscale Gradient
+Refinement</b> is on: the same polygons that keep the sampler off your galaxy
+also protect that galaxy from the multiscale correction (see below), so you can
+draw once and both stages respect it.</div>
 
 <h3>Manual mode &mdash; placing points by hand</h3>
 <p>In Manual mode you drop sample points exactly where you want the background
@@ -127,6 +135,59 @@ by hand:</p>
       you can start from ADBE's picks and nudge or delete individual ones.</li>
   <li><b>Clear Sample Points</b> &mdash; removes all manual points.</li>
 </ul>
+
+<h3>Multiscale Gradient Refinement (optional)</h3>
+<p>The polynomial and RBF stages model <i>smooth</i> background. They cannot
+represent <b>sharp-edged, multiplicative</b> defects in the imaging train &mdash;
+<b>dust motes</b> (soft dark donuts), <b>internal reflections / ghosts</b>, and
+<b>filter-edge shadows</b> (coarse frame darkening). These are throughput losses:
+light that should have landed is attenuated by some factor less than one. A smooth
+surface fit just slides underneath them; multiscale refinement is built to catch
+them.</p>
+<p>When enabled, it runs <b>after</b> the normal background removal, on the
+already-flattened result:</p>
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td>Enable multiscale refinement</td><td>Turns the whole stage on. Off by
+      default &mdash; existing ADBE behaviour is unchanged until you tick it.</td></tr>
+  <tr><td>Remove stars first (DarkStar)</td><td>Runs CosmicClarity DarkStar to get
+      a starless image for <i>estimating</i> the gradient, so stars don't pollute
+      the model. Stars are kept in the final output &mdash; they just don't
+      contaminate the estimate. Strongly recommended.</td></tr>
+  <tr><td>Gradient scale band (layers lo&ndash;hi)</td><td>Which spatial scales to
+      treat as gradient. Dust motes, reflections and filter edges live in the
+      mid-to-coarse layers; <b>6&ndash;8</b> is a good starting band on a full-size
+      frame. Lower the band for finer structure, raise the top toward 9&ndash;10 for
+      very broad filter-edge darkening.</td></tr>
+  <tr><td>Include coarsest residual</td><td>Folds the smoothest (coarsest) scale
+      into the gradient too. Usually leave <b>off</b> &mdash; that smooth component
+      is already handled by poly/RBF, and including it risks double-correcting.</td></tr>
+  <tr><td>Strength (%)</td><td>Blend strength of the correction. 100% applies it
+      fully; lower eases it in if the full correction over-flattens real
+      large-scale structure.</td></tr>
+  <tr><td>Protect k (MAD)</td><td>Signal-protection threshold in MAD units.
+      Pixels brighter than <code>median + k&middot;MAD</code> are treated as signal,
+      masked out and interpolated across so they aren't modelled as gradient.
+      <b>k = 1&ndash;2</b> protects aggressively (safest for faint signal),
+      <b>k = 3</b> is balanced, <b>k = 4&ndash;5</b> protects only the brightest
+      cores and lets more extended structure into the estimate.</td></tr>
+</table>
+
+<div class="new"><b>Protecting a galaxy or nebula.</b> The MAD threshold alone
+can't both flatten the background <i>and</i> fully protect a faint extended halo
+&mdash; a high <code>k</code> flattens well but can eat the halo. So the drawn
+<b>exclusion area</b> is honoured at apply time: wherever you've excluded, the
+<i>original</i> pixels are kept unchanged, no matter what the gradient did there.
+Draw a polygon around M81/M82 (or your nebula), push <code>k</code> up for a
+dead-flat field everywhere else, and the object comes back pristine. The edge of
+the exclusion is feathered with a wide, image-scaled blur, so the protected
+object blends smoothly into the corrected background with no hard line.</div>
+
+<div class="tip">Workflow: run ADBE once in <b>Subtract</b> mode with multiscale
+<i>off</i> and look at the result. If sharp mottling, donuts or a darkened frame
+edge remain, tick <b>Enable multiscale refinement</b>, draw exclusion areas around
+any bright objects, set the band to 6&ndash;8, and Preview. Adjust the band and
+<code>k</code> until the background is flat and the objects are untouched.</div>
 
 <h3>Navigating the preview</h3>
 <ul>
@@ -150,7 +211,8 @@ apply headlessly.</p>
 <h2>2. Technical details</h2>
 <p class="tech-lead">A two-stage background model is fit on a downsampled copy,
 in a stretched domain for sampling accuracy, then un-stretched and removed in
-linear space so photometry and star colour survive.</p>
+linear space so photometry and star colour survive. An optional multiscale stage
+then removes sharp multiplicative defects in log space.</p>
 
 <h3>2.1 Two-stage background model</h3>
 <p>The smooth component is a 2-D polynomial of the chosen degree <code>d</code>,
@@ -196,7 +258,67 @@ preserved. A final <b>clip-free, median-anchored rescale</b> lifts any negatives
 and compresses the ceiling only if the data exceeds 1.0 &mdash; holding the median
 fixed &mdash; so no values are hard-clipped away.</p>
 
-<h3>2.5 Masking &amp; notes</h3>
+<h3>2.5 Multiscale multiplicative refinement</h3>
+<p>Optical-train defects are <i>multiplicative</i>: the observed image is the true
+scene times a spatially-varying throughput factor.</p>
+<div class="matheq">I_{\mathrm{obs}} = I_{\mathrm{true}} \cdot G(x,y)</div>
+<p>Taking logs turns that product into a sum, so an <i>additive</i> multiscale
+decomposition can separate the defect by spatial scale consistently with the
+multiplicative model &mdash; a linear decomposition would over- or under-correct
+depending on local brightness:</p>
+<div class="matheq">\log I_{\mathrm{obs}} = \log I_{\mathrm{true}} + \log G</div>
+<p>The stage runs on the already-background-corrected image. First it builds a
+<b>robust signal-protection mask</b> on the (optionally starless) luminance, so
+real signal is interpolated across rather than modelled as gradient:</p>
+<div class="matheq">\mathrm{protect} = I > \mathrm{med}(I) + k \cdot \mathrm{MAD}\,,\qquad \mathrm{MAD} = 1.4826 \cdot \mathrm{median}(|I - \mathrm{med}(I)|)</div>
+<p>It then decomposes the log-image with an <b>&agrave;-trous</b>-style pyramid
+(successive Gaussian blurs; each detail layer is the difference between
+consecutive blurs, with the blur scale doubling per layer):</p>
+<div class="matheq">d_k = c_k - \mathcal{B}_{\sigma_k}(c_k),\quad \sigma_k = \sigma_0 \cdot 2^{k}</div>
+<p>The selected band of detail layers is summed into the log-gradient, then
+re-centred to zero mean (unit median in linear space) and exponentiated back:</p>
+<div class="matheq">G_{\log} = \sum_{k=k_{lo}}^{k_{hi}} d_k\,,\qquad G_{\log} \leftarrow G_{\log} - \mathrm{median}(G_{\log})</div>
+<div class="matheq">G = \exp(G_{\log}),\qquad \mathrm{median}(G) \approx 1</div>
+<p>Finally the defect is divided out (optionally eased in by a strength blend),
+and the result is re-centred on the original median:</p>
+<div class="matheq">\mathrm{out} = (1-s)\,I + s\,(I / G)</div>
+
+<h3>2.6 Star removal &amp; estimation</h3>
+<p>Point sources would otherwise dominate the mid-scale layers and be mistaken for
+structure, so with DarkStar enabled the gradient is <b>estimated on a starless
+copy</b> &mdash; CosmicClarity DarkStar removes the stars, the band is extracted from
+that, and the resulting gradient map is applied to the original (star-bearing)
+image. The luminance used for both the protection mask and the decomposition is
+the Rec.&nbsp;709 weighting:</p>
+<div class="matheq">Y = 0.2126\,R + 0.7152\,G + 0.0722\,B</div>
+<p>The gradient is estimated on luminance and applied to all channels, because
+these throughput defects are achromatic. The decomposition reuses the same
+GPU-capable (torch) Gaussian blur as the Multiscale Decomposition tool, and only
+the layers up to the band's top are computed when the coarse residual isn't
+needed.</p>
+
+<h3>2.7 Protecting excluded regions</h3>
+<p>The multiscale correction runs across the whole frame, but a hand-drawn
+exclusion area is honoured as a <b>final composite</b>: wherever the mask marks
+protection, the original pixels are kept.</p>
+<div class="matheq">\mathrm{out} = (1-m)\cdot\mathrm{corrected} + m\cdot I_{\mathrm{orig}}</div>
+<p>To avoid a hard seam at the polygon edge, the mask <b>m</b> is first blurred
+with a large Gaussian so its 0&rarr;1 transition is spread over a wide, soft
+band. The blur radius <b>scales with the image</b> &mdash; by default about
+<b>10% of the frame's short side</b> (roughly 300&nbsp;px on a 4500&times;3000
+image). This matters: a fixed small feather that looks fine on a screenshot is
+invisible at full resolution, leaving a visible diagonal line where the
+correction stops. Scaling the blur to the image makes the protected region
+dissolve gently into the corrected background at any resolution. A positive
+override can force an exact blur radius if a particular image wants a tighter or
+softer edge.</p>
+<p class="cap">Because this is a straight composite from the untouched source,
+whatever the gradient did inside the excluded region is irrelevant &mdash; the
+galaxy or nebula returns exactly as it was, while the background everywhere else
+stays fully corrected. The same exclusion polygons drawn for the sampler are
+reused here, so one drawing protects both stages.</p>
+
+<h3>2.8 Masking &amp; notes</h3>
 <ul>
   <li>With an active mask, the correction is blended back against the source over
       the mask (<code>m&middot;out + (1&minus;m)&middot;src</code>).</li>
@@ -205,6 +327,9 @@ fixed &mdash; so no values are hard-clipped away.</p>
   <li>Preview and Apply share the same engine; Apply can additionally emit the
       background as a separate document, and the grip/headless preset stores every
       parameter (and manual points, when in Manual mode).</li>
+  <li>Multiscale refinement is off by default; when on, its parameters (band,
+      strength, protect-k, DarkStar, residual) are saved with the other ADBE
+      settings and recorded in the applied step's metadata.</li>
 </ul>
 
 </body>

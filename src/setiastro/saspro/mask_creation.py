@@ -2052,7 +2052,18 @@ class MaskCreationDialog(QDialog):
 
 # ---------- Integration helper ----------
 
-def create_mask_and_attach(parent, document) -> bool:
+def create_mask_and_attach(parent, document, *, make_active: bool = False) -> bool:
+    """
+    Open the mask-creation dialog. On OK the mask is pushed as its own "Mask"
+    document (via the dialog's auto_push) AND added to `document`'s mask list.
+
+    make_active (default False): whether the newly added mask becomes the
+    document's ACTIVE mask. This defaults to False so that merely *creating* a
+    mask does not silently cause every subsequent operation (Multiscale, Stat
+    Stretch, ABE, ...) to run masked. The user creates the mask, then activates
+    it deliberately when they actually want it. Pass make_active=True only from
+    a workflow that explicitly means "create this mask and start using it now."
+    """
     if document is None or getattr(document, "image", None) is None:
         QMessageBox.information(parent, "No image", "Open an image first.")
         return False
@@ -2092,7 +2103,10 @@ def create_mask_and_attach(parent, document) -> bool:
         QMessageBox.information(parent, "No mask", "No mask was generated.")
         return False
 
-    # since we already pushed a mask doc, just attach it quietly
+    # We already pushed a standalone "Mask" document above. Add the mask to
+    # the source document's mask list too, but DO NOT make it active unless the
+    # caller explicitly asked — otherwise simply creating a mask would silently
+    # cause every later operation to run masked (the reported bug).
     layer = MaskLayer(
         id=uuid.uuid4().hex,
         name="Mask",                     # keep it simple; matches preview default
@@ -2102,11 +2116,12 @@ def create_mask_and_attach(parent, document) -> bool:
         mode="affect",
         visible=True,
     )
-    document.add_mask(layer, make_active=True)
+    document.add_mask(layer, make_active=bool(make_active))
 
     try:
         if hasattr(parent, "_log"):
-            parent._log(f"Added mask '{layer.name}' and set active (and pushed as document).")
+            _state = "set active" if make_active else "inactive (create-only)"
+            parent._log(f"Added mask '{layer.name}' — {_state} (and pushed as document).")
     except Exception:
         pass
 

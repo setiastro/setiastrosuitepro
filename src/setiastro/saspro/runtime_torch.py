@@ -2015,6 +2015,11 @@ def import_torch(
     require_torchaudio: bool = False,
     allow_install: bool = False,
 ):
+    # Guard: callers may pass status_cb=None. Normalize to a no-op so the
+    # many status_cb(...) calls below don't crash with 'NoneType' not callable.
+    if not callable(status_cb):
+        status_cb = lambda *a, **k: None    
+
     """Return the runtime-venv torch module, installing if allow_install=True."""
     global _TORCH_CACHED
     if _TORCH_CACHED is not None:
