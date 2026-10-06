@@ -20582,7 +20582,18 @@ class StackingSuiteDialog(QDialog):
         - Then hardware/rotator keys like POSANGLE as weaker fallbacks
         - Finally derive from WCS CD/PC matrix if available
 
-        Returns float degrees or None.
+        Key families covered (expanded for NINA, APT, SharpCap, SGP,
+        Voyager, PixInsight, Astro-Physics, generic rotator drivers):
+
+          Strong (image/sky angle):
+            ANGLE, ORIENTAT, ROTSKYPA, ROTANGLE, PA, PA_ANGLE, SKY_PA,
+            POSANGL, FIELDROT, SKYPA
+          Hardware/rotator (NINA writes ROTATANG + ROTATOR for the same
+            mechanical angle; both go here):
+            POSANGLE, ROTATOR, ROTATANG, ROTANG, ROTATE, CROTA2, CROTA1,
+            MECHROT, MROTANG, OBJCTROT
+
+        Returns float degrees in [-180, 180) or None.
         """
         if hdr is None:
             return None
@@ -20599,13 +20610,27 @@ class StackingSuiteDialog(QDialog):
         def _as_float_deg(v):
             if v is None:
                 return None
+            if isinstance(v, bool):
+                # NINA emits plain True/False for a few boolean keys; a bool is
+                # never a usable angle, and bool is a subclass of int so it must
+                # be rejected explicitly BEFORE the numeric branch below.
+                return None
             if isinstance(v, (int, float, np.integer, np.floating)):
                 try:
                     return float(v)
                 except Exception:
                     return None
             try:
-                s = str(v)
+                s = str(v).strip()
+                # Reject obvious non-numeric payloads early (card comments, Y/N
+                # flags, etc.) so the regex doesn't pluck a stray digit from a
+                # unit suffix or a date fragment.
+                if not s or s.lower() in ("n/a", "na", "none", "unknown", "-"):
+                    return None
+                # Allow signed decimals; permit comma as decimal separator for
+                # locales (NINA on some locales writes "359,842" in copy/paste
+                # exports). Match the FIRST numeric substring, which handles
+                # "359.842deg", "+180", "-0.42", "180.42 (sky)" cleanly.
                 m = re.search(r"[-+]?\d+(?:[.,]\d+)?", s)
                 if not m:
                     return None
@@ -20614,23 +20639,29 @@ class StackingSuiteDialog(QDialog):
                 return None
 
         def _norm180(a):
-            """Normalize angle difference domain to [-180, 180)."""
+            """Normalize angle to [-180, 180)."""
             if a is None:
                 return None
             a = float(a)
             return ((a + 180.0) % 360.0) - 180.0
 
         # ---------------------------------------------------------
-        # 1) Strong-preference direct keys
+        # 1) Strong-preference direct keys (sky/image angle)
         # ---------------------------------------------------------
-        # ANGLE first because in your data this reflects the actual image angle
-        # after meridian flip, while POSANGLE may remain the fixed hardware angle.
+        # ANGLE first because on SGP-written data this reflects the actual
+        # image sky angle after meridian flip. ORIENTAT is the HST/STScI
+        # standard. POSANGL (no E) is Astro-Physics' plate solve angle.
         strong_keys = (
             "ANGLE",
             "ORIENTAT",
             "ROTSKYPA",
             "ROTANGLE",
             "PA",
+            "PA_ANGLE",
+            "SKY_PA",
+            "SKYPA",
+            "POSANGL",     # Astro-Physics / some PixInsight scripts
+            "FIELDROT",    # Voyager / RoboFocus
         )
         for k in strong_keys:
             ang = _as_float_deg(_get(k, None))
@@ -20659,11 +20690,26 @@ class StackingSuiteDialog(QDialog):
         # ---------------------------------------------------------
         # 3) Weaker hardware/rotator keys
         # ---------------------------------------------------------
+        # NINA writes BOTH ROTATOR and ROTATANG with the same mechanical
+        # angle (e.g. 359.842041015625). Either one is a valid signal
+        # when nothing stronger is present. Rotators on a GEM mount do
+        # change their mechanical angle by ~180° after a meridian flip
+        # if the rotator is physically on the OTA (common case) — if the
+        # rotator is on the mount side of the pier it stays fixed. In
+        # that fixed-rotator case the angle test alone can't catch the
+        # flip, which is why the PIERSIDE helper below provides an
+        # orthogonal second signal.
         weak_keys = (
             "POSANGLE",
             "ROTATOR",
+            "ROTATANG",   # NINA
+            "ROTANG",
+            "ROTATE",
             "CROTA2",
             "CROTA1",
+            "MECHROT",
+            "MROTANG",
+            "OBJCTROT",   # NINA target rotation (often 0, but non-null means it was recorded)
         )
         for k in weak_keys:
             ang = _as_float_deg(_get(k, None))
@@ -20672,23 +20718,163 @@ class StackingSuiteDialog(QDialog):
 
         return None
 
-    def _maybe_rot180(self, img, pa_cur, pa_ref, tol_deg):
+    def _extract_pierside(self, hdr):
         """
-        If |(pa_cur - pa_ref)| ≈ 180° (within tol), rotate image 180°.
+        Return a normalized pier-side string ('W' or 'E') or None.
+
+        Pier side is the gold-standard meridian-flip signal for GEM mounts:
+        it is a direct report from the mount driver about which side of
+        the pier the OTA is on, and it changes at the flip regardless of
+        whether a rotator is installed, whether the plate solve succeeded,
+        or whether an image angle key was written. Half a session before
+        the flip will carry one value, half after it the other.
+
+        Normalizes common variants from ASCOM, INDI, NINA, APT, SGP,
+        Voyager, EQMOD and homegrown drivers:
+          'West', 'EAST', 'w', 'E', 'pierWest', 'pierEast',
+          0, 1, 'OTA Pointing West', etc.
+
+        Case-insensitive, whitespace-tolerant. First-char fallback catches
+        anything that starts with 'W' or 'E' after stripping the common
+        'pier' prefix.
+
+        Returns 'W', 'E', or None (never raises).
+        """
+        if hdr is None:
+            return None
+
+        def _get(k, default=None):
+            try:
+                return self._hdr_get(hdr, k, default)
+            except Exception:
+                try:
+                    return hdr.get(k, default)
+                except Exception:
+                    return default
+
+        # Try multiple spellings; NINA uses PIERSIDE, SGP uses PIER_SIDE,
+        # some older drivers use SIDE_OF_PIER (SOP) or just SIDE.
+        for key in ("PIERSIDE", "PIER_SIDE", "SIDE_OF_PIER", "SIDEOFPIER",
+                    "SOP", "SIDE"):
+            raw = _get(key, None)
+            if raw is None:
+                continue
+            try:
+                # ASCOM numeric: 0 = pierEast, 1 = pierWest, -1 = unknown.
+                # (ASCOM.DeviceInterface.PierSide enum.) INDI uses the same.
+                if isinstance(raw, bool):
+                    # Guard — a bool here is almost certainly not meaningful.
+                    continue
+                if isinstance(raw, (int, float, np.integer, np.floating)):
+                    iv = int(raw)
+                    if iv == 0:
+                        return "E"
+                    if iv == 1:
+                        return "W"
+                    # -1 (unknown) or anything else: fall through
+                    continue
+                s = str(raw).strip()
+                if not s:
+                    continue
+                sl = s.lower()
+                # Strip common prefixes written by ASCOM-aware drivers.
+                for prefix in ("pierside=", "pier-side=", "pier ",
+                               "pier_", "pier-", "pier"):
+                    if sl.startswith(prefix):
+                        sl = sl[len(prefix):].lstrip(" :=")
+                        break
+                # Explicit words first (so "west side of pier" works).
+                if "west" in sl:
+                    return "W"
+                if "east" in sl:
+                    return "E"
+                # Single-letter / short-form.
+                c = sl[:1]
+                if c == "w":
+                    return "W"
+                if c == "e":
+                    return "E"
+            except Exception:
+                continue
+        return None
+
+    def _pierside_flip(self, ps_cur, ps_ref):
+        """
+        True iff both pier sides are known AND differ. Any 'unknown' on
+        either side returns False — never let a missing field force a
+        rotation we can't justify.
+        """
+        if ps_cur is None or ps_ref is None:
+            return False
+        if ps_cur == ps_ref:
+            return False
+        # Only valid pair at this point is {'W', 'E'}; anything else is a
+        # parser bug and should fail safe.
+        return {ps_cur, ps_ref} == {"W", "E"}
+
+    def _maybe_rot180(self, img, pa_cur, pa_ref, tol_deg,
+                      ps_cur=None, ps_ref=None):
+        """
+        Rotate image 180° if a meridian flip is detected.
+
+        Fires on EITHER signal (OR, not AND):
+          A. |pa_cur - pa_ref| ≈ 180° within tol_deg (classic angle test)
+          B. PIERSIDE values are both known AND differ (W vs E)
+
+        The pierside signal catches two important real-world cases the
+        angle test alone misses:
+          1. NINA frames with no plate solve: only ROTATOR/ROTATANG are
+             present. On a GEM where the rotator sits on the mount side
+             of the pier (not the OTA side), the mechanical angle does
+             NOT change at the flip, so pa_cur ≈ pa_ref and the angle
+             test correctly says "no change" — but the IMAGE on the
+             sensor IS rotated 180° because the OTA swung to the other
+             side of the pier. PIERSIDE catches it.
+          2. Any frame where the angle keys are missing, blank, or
+             carry a non-numeric string the parser can't recover.
+
+        If both signals disagree (angle says flip, pierside doesn't, or
+        vice versa), the OR rule errs toward flipping. The downstream
+        star_alignment check will catch and compensate if we were wrong
+        (its own meridian wrapper tests both rotation and translation
+        magnitude against the canvas), so a false positive here costs
+        one extra solve and nothing else; a false negative silently
+        corrupts the stack.
+
         Works for (H,W) or (H,W,3).
         Returns (img_out, rotated_bool).
         """
+        _flip_by_angle = False
+        _flip_by_pierside = False
 
-        if pa_cur is None or pa_ref is None:
+        if pa_cur is not None and pa_ref is not None:
+            d = self._angdiff(pa_cur, pa_ref)
+            if abs(d - 180.0) <= tol_deg:
+                _flip_by_angle = True
+
+        if self._pierside_flip(ps_cur, ps_ref):
+            _flip_by_pierside = True
+
+        if not (_flip_by_angle or _flip_by_pierside):
             return img, False
-        d = self._angdiff(pa_cur, pa_ref)
-        if abs(d - 180.0) <= tol_deg:
-            # 180° is just two 90° rotations; cheap & exact
-            # np.rot90 returns a view, make contiguous for downstream processing
-            self.update_status(self.tr(f"Flipping Image"))
-            QApplication.processEvents()
-            return np.ascontiguousarray(np.rot90(img, 2)), True
-        return img, False
+
+        # Build a status line that names which signal(s) fired. This is
+        # genuinely useful for diagnosing suspect sessions — a user seeing
+        # "pierside only" knows their rotator keys are fine but mounted
+        # on the pier side (so angle alone can't catch future flips),
+        # while "angle only" with known-equal piersides points at a
+        # rotator the mount flipped under them.
+        if _flip_by_angle and _flip_by_pierside:
+            why = "angle+pierside"
+        elif _flip_by_angle:
+            why = "angle"
+        else:
+            why = "pierside"
+        self.update_status(self.tr(f"Flipping Image ({why})"))
+        QApplication.processEvents()
+        # 180° is just two 90° rotations; cheap & exact. np.rot90 returns
+        # a view, make contiguous for downstream processing.
+        return np.ascontiguousarray(np.rot90(img, 2)), True
 
     def _sync_header_after_rot180(self, hdr, img_shape):
         """
@@ -20765,8 +20951,17 @@ class StackingSuiteDialog(QDialog):
                 a = float(a)
                 return ((a + 180.0) % 360.0) - 180.0
 
-            for k in ("ANGLE", "POSANGLE", "ROTSKYPA", "ROTANGLE",
-                      "PA", "ROTATOR", "ORIENTAT", "CROTA1", "CROTA2"):
+            # Keep this list in sync with _extract_pa_deg's strong_keys and
+            # weak_keys so a second normalize pass of the written frame sees
+            # the same angle in every variant key that was present. Also
+            # includes ROTATANG (NINA) and POSANGL (Astro-Physics) which the
+            # expanded detector reads.
+            for k in ("ANGLE", "ORIENTAT", "ROTSKYPA", "ROTANGLE",
+                      "PA", "PA_ANGLE", "SKY_PA", "SKYPA",
+                      "POSANGL", "FIELDROT",
+                      "POSANGLE", "ROTATOR", "ROTATANG", "ROTANG",
+                      "ROTATE", "CROTA1", "CROTA2",
+                      "MECHROT", "MROTANG", "OBJCTROT"):
                 try:
                     v = hdr.get(k, None)
                     if v is None:
@@ -20781,6 +20976,74 @@ class StackingSuiteDialog(QDialog):
                             continue
                         fv = float(m.group(0).replace(",", "."))
                     hdr[k] = _norm_pm180(fv + 180.0)
+                except Exception:
+                    pass
+
+            # PIERSIDE — flip W<->E in every variant spelling the detector
+            # reads, so a re-run of _normalize_one on this file sees a
+            # ref_pierside that matches the orientation we just wrote.
+            # If the key value was numeric (ASCOM: 0=East, 1=West), swap
+            # the integer; if it was a string, swap W<->E preserving case
+            # as best we can. Unknown payloads are left alone.
+            def _flip_pierside_value(raw):
+                try:
+                    if isinstance(raw, bool):
+                        return raw  # unreliable payload — leave alone
+                    if isinstance(raw, (int, float, np.integer, np.floating)):
+                        iv = int(raw)
+                        if iv == 0:
+                            return 1
+                        if iv == 1:
+                            return 0
+                        return raw
+                    s = str(raw).strip()
+                    if not s:
+                        return raw
+                    sl = s.lower()
+                    # Full-word replacements first so "WEST SIDE" -> "EAST SIDE"
+                    # with case preserved per occurrence.
+                    out = s
+                    import re as _re
+                    # Case-insensitive word swap, preserving original case
+                    # of each matched instance.
+                    def _swap(m, _pair=(("west", "east"), ("east", "west"))):
+                        w = m.group(0)
+                        wl = w.lower()
+                        if wl == "west":
+                            rep = "east"
+                        elif wl == "east":
+                            rep = "west"
+                        else:
+                            return w
+                        # Preserve case shape: ALLCAPS, Capitalized, lowercase
+                        if w.isupper():
+                            return rep.upper()
+                        if w[0].isupper():
+                            return rep.capitalize()
+                        return rep
+                    swapped = _re.sub(r"(?i)\b(west|east)\b", _swap, out)
+                    if swapped != out:
+                        return swapped
+                    # Single-letter fallbacks (common in old drivers).
+                    if sl == "w":
+                        return "E" if s.isupper() else "e"
+                    if sl == "e":
+                        return "W" if s.isupper() else "w"
+                    # pierWest / pierEast
+                    if "west" in sl:
+                        return out.replace("west", "east").replace("West", "East").replace("WEST", "EAST")
+                    if "east" in sl:
+                        return out.replace("east", "west").replace("East", "West").replace("EAST", "WEST")
+                    return raw
+                except Exception:
+                    return raw
+
+            for k in ("PIERSIDE", "PIER_SIDE", "SIDE_OF_PIER", "SIDEOFPIER",
+                      "SOP", "SIDE"):
+                try:
+                    if k in hdr:
+                        hdr[k] = (_flip_pierside_value(hdr[k]),
+                                  "Flipped by SASpro rot180 sync")
                 except Exception:
                     pass
 
@@ -22879,8 +23142,21 @@ class StackingSuiteDialog(QDialog):
             # ─────────────────────────────────────────────────────────────────────
             # PHASE 1b: Meridian flips
             # ─────────────────────────────────────────────────────────────────────
+            # Two independent signals: the parsed position angle (ANGLE /
+            # ROTATOR / ROTATANG / CD matrix / etc.) AND the pier side
+            # (PIERSIDE / PIER_SIDE / SIDE_OF_PIER). Either is enough on
+            # its own for the per-frame rot180 decision inside _normalize_one.
+            # NINA-generated frames in particular may have only ROTATOR /
+            # ROTATANG (which doesn't change at the flip if the rotator is
+            # pier-mounted) PLUS a reliable PIERSIDE — those frames need
+            # the pierside signal or the whole post-flip half silently
+            # stacks mis-oriented.
             ref_pa = self._extract_pa_deg(ref_hdr)
-            self.update_status(self.tr(f"🧭 Reference PA: {ref_pa:.2f}°" if ref_pa is not None else "🧭 Reference PA: (unknown)"))
+            ref_pierside = self._extract_pierside(ref_hdr)
+            _pa_txt = (f"{ref_pa:.2f}°" if ref_pa is not None else "(unknown)")
+            _ps_txt = (f"{ref_pierside}" if ref_pierside is not None else "(unknown)")
+            self.update_status(self.tr(
+                f"🧭 Reference PA: {_pa_txt}   |   Pier side: {_ps_txt}"))
             QApplication.processEvents()
 
             # ─────────────────────────────────────────────────────────────────────
@@ -23190,8 +23466,15 @@ class StackingSuiteDialog(QDialog):
                         try:
                             if bool(getattr(self, "auto_rot180", True)):
                                 pa_cur = self._extract_pa_deg(hdr)
+                                # PIERSIDE is the second signal — critical for
+                                # NINA frames where the rotator is on the mount
+                                # side of the pier and the parsed angle doesn't
+                                # change at the flip. See _maybe_rot180 docs.
+                                ps_cur = self._extract_pierside(hdr)
                                 tol_deg = float(getattr(self, "auto_rot180_tol_deg", 89.0))
-                                img, _pre_rotated_180 = self._maybe_rot180(img, pa_cur, ref_pa, tol_deg)
+                                img, _pre_rotated_180 = self._maybe_rot180(
+                                    img, pa_cur, ref_pa, tol_deg,
+                                    ps_cur=ps_cur, ps_ref=ref_pierside)
                                 if _pre_rotated_180:
                                     _ndbg("02b rot180", img, fp)
                                     # The CFA drizzle sparse sibling was built
