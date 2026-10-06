@@ -20,7 +20,7 @@ import numpy as np
 # so you can eyeball exactly what the threshold is protecting (tune protect_k
 # against it). Flip to False for normal use. Only affects the multiscale path.
 # ---------------------------------------------------------------------------
-DEBUG = True
+DEBUG = False
 
 try:
     import cv2
@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
     QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton, QDoubleSpinBox,
-    QSlider
+    QSlider, QProgressBar
 )
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QIcon
 from PyQt6 import sip
@@ -724,24 +724,38 @@ class _ProtectPreviewDialog(QDialog):
         self.lbl_k.setText(f"{v/10.0:.1f}")
         self._debounce.start()   # restart the debounce window
 
+    # ---- preview tunables (tweak these two) --------------------------------
+    # How much lower than the chosen k the DISPLAYED threshold is drawn. The
+    # applied mask is dilated+blurred so it covers more than the bare threshold;
+    # showing k - this makes the red footprint read closer to reality. Does NOT
+    # change the committed k (slider value / selected_k stay honest).
+    PREVIEW_K_FUDGE = 1
+    # Opacity of the red protection overlay, 0..1. ~0.9 = near-opaque.
+    PREVIEW_OVERLAY_ALPHA = 0.90
+    # ------------------------------------------------------------------------
+
     def _rebuild_mask(self):
         k = self.sld.value() / 10.0
         # Show the RAW median+k*MAD threshold (no dilate/blur): that's the part
         # k actually controls, so moving the slider gives obvious visual
         # feedback. The run-time dilate+blur is a fixed post-process and would
-        # only wash out the k response here.
+        # only wash out the k response here. The DISPLAYED threshold is nudged
+        # down by PREVIEW_K_FUDGE so the footprint approximates the applied,
+        # dilated+blurred coverage. Slider value / selected_k() stay honest.
+        k_show = max(1.0, k - self.PREVIEW_K_FUDGE)
         med = float(np.median(self._luma))
         mad = float(np.median(np.abs(self._luma - med))) * 1.4826
         if mad <= 0:
             mad = 1e-6
-        m = (self._luma > (med + k * mad)).astype(np.float32)
+        m = (self._luma > (med + k_show * mad)).astype(np.float32)
         m = np.clip(m, 0.0, 1.0)
 
-        # Composite: base image with a red tint where the mask is high.
+        # Composite: base image with a near-opaque red tint where the mask is.
         out = self._disp8.astype(np.float32)
-        a = m[..., None]  # alpha
+        alpha = float(self.PREVIEW_OVERLAY_ALPHA)
+        a = m[..., None] * alpha
         tint = np.array([230.0, 60.0, 60.0], dtype=np.float32)  # red
-        out = out * (1.0 - 0.55 * a) + tint * (0.55 * a)
+        out = out * (1.0 - a) + tint * a
         out = np.ascontiguousarray(np.clip(out, 0, 255).astype(np.uint8))
 
         h, w, _ = out.shape
@@ -2048,7 +2062,33 @@ class ABEDialog(QDialog):
         # Run the SAME ADBE the user has configured, on the small copy, so the
         # preview mask sees the flattened background the real mask will see.
         self._set_status("Preview: running ADBE for protection preview…")
+
+        # Small modal splash — the ADBE pass runs synchronously on the GUI
+        # thread and can take a few seconds, so show a "computing" dialog first
+        # (and force it to paint) so the UI doesn't look frozen.
+        splash = QDialog(self)
+        splash.setWindowTitle(self.tr("Protection preview"))
+        splash.setModal(True)
+        try:
+            splash.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        except Exception:
+            pass
+        _sv = QVBoxLayout(splash)
+        _sv.setContentsMargins(20, 18, 20, 18)
+        _lbl = QLabel(self.tr("Computing protection preview…\nRunning background extraction."))
+        _lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _sv.addWidget(_lbl)
+        _pb = QProgressBar()
+        _pb.setRange(0, 0)   # indeterminate "busy" bar
+        _pb.setTextVisible(False)
+        _sv.addWidget(_pb)
+        splash.setFixedWidth(300)
+        splash.show()
+        splash.raise_()
+        # Force the splash to actually paint before the blocking compute.
         QApplication.processEvents()
+        QApplication.processEvents()
+
         flattened = small
         try:
             deg        = int(self.sp_degree.value())
@@ -2075,7 +2115,13 @@ class ABEDialog(QDialog):
                                 f"previewing on raw image.")
             flattened = small
         finally:
+            try:
+                splash.close()
+                splash.deleteLater()
+            except Exception:
+                pass
             self._set_status("Ready")
+            QApplication.processEvents()
 
         dlg = _ProtectPreviewDialog(self, flattened, k_init=float(self.sp_ms_protect.value()),
                                     grow=6, blur_px=float(self.sp_ms_sigblur.value()))
