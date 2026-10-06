@@ -1,10 +1,10 @@
 {
-  "version": "1.22.1",
+  "version": "1.22.2",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.1/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.1/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.1/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.1/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.2/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.2/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.2/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.2/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro\n\nV1.22.1\nNew Feature in ADBE: Multiscale Gradient Removal. This should not be used for normal gradient removal, but when you have a dust mote, filter edge, internal reflection, or other stubborn gradientesque object that needs to be removed. Use Exclusion Zones to protect your areas you want protected and run it to remove those very stubborn objects.\n\nUpdate to BLINK to allow file list sorting by metrics columns.\n\nOther updates and bug fixes."
+  "notes": "Seti Astro Suite Pro\n\nV1.22.2\nUpdates to Multiscale Gradient Refinement to include a Preview Protection button to interactively help you set the right amount of protection. Updated protection algorithm.\n\nUpdates to stacking suite and stellar alignment for much more robust full image rotation alignment.\n\nUpdates to WIMI to include a limiting magnitude option in Advanced Search Section."
 }
