@@ -1457,6 +1457,57 @@ class _BlinkZoomPanel(QWidget):
         if hasattr(self, "_update_zoom_panel_to_viewport_center"):
             QTimer.singleShot(0, self._update_zoom_panel_to_viewport_center)
 
+# ---------------------------------------------------------------------------
+# Numeric-aware tree item so clicking a metric header (Star Count, FWHM,
+# Ecc, BG, Score, Temp, BG/s) sorts the tree numerically instead of
+# lexicographically. This is a purely VISUAL reorder — self.image_paths
+# and self.loaded_images stay in their canonical order; metrics are
+# resolved via UserRole on column 0, not tree row index.
+# ---------------------------------------------------------------------------
+class _BlinkSortItem(QTreeWidgetItem):
+    @staticmethod
+    def _natkey(s):
+        return [int(t) if t.isdigit() else t.lower()
+                for t in re.split(r"(\d+)", s or "")]
+
+    def _is_group(self):
+        # Non-leaf rows are the Object:/Filter:/Exposure: headers.
+        return self.childCount() > 0
+
+    def __lt__(self, other):
+        tree = self.treeWidget()
+        col = tree.sortColumn() if tree is not None else 0
+
+        # Group rows always sort by their column-0 label regardless of
+        # which column the user clicked. Keeps Object/Filter/Exposure
+        # headers in stable natural order while leaves sort by metric.
+        if self._is_group() or getattr(other, "_is_group", lambda: False)():
+            return self._natkey(self.text(0)) < self._natkey(other.text(0))
+
+        a = (self.text(col) or "").strip().lstrip("⚠️ ").strip()
+        b = (other.text(col) or "").strip().lstrip("⚠️ ").strip()
+
+        # Empty metric cells always sort to the bottom in ascending so
+        # un-measured frames don't push good ones off the top.
+        if a == "" and b == "":
+            return self._natkey(self.text(0)) < self._natkey(other.text(0))
+        if a == "":
+            return False
+        if b == "":
+            return True
+
+        # Filename (0) and the Sat flag (1) sort naturally as text.
+        if col in (0, 1):
+            return self._natkey(a) < self._natkey(b)
+
+        # Metric columns (2..8) parse as float; fall back to text
+        # natural sort if parsing fails (defensive).
+        try:
+            return float(a) < float(b)
+        except (TypeError, ValueError):
+            return self._natkey(a) < self._natkey(b)
+
+
 class BlinkTab(QWidget):
     imagesChanged = pyqtSignal(int)
     sendToStacking = pyqtSignal(list, str)
@@ -1802,7 +1853,22 @@ class BlinkTab(QWidget):
 
         # save whenever user resizes/moves columns
         hdr.sectionResized.connect(lambda *_: self._save_tree_header_state())
-        hdr.sectionMoved.connect(lambda *_: self._save_tree_header_state())        
+        hdr.sectionMoved.connect(lambda *_: self._save_tree_header_state())
+
+        # --- Clickable column sorting ---------------------------------
+        # Leaves are _BlinkSortItem; its __lt__ parses metric columns
+        # as floats so clicking Stars/FWHM/BG/etc. sorts numerically.
+        # Purely visual — master lists stay in canonical order.
+        self.fileTree.setSortingEnabled(True)
+        hdr.setSectionsClickable(True)
+        hdr.setSortIndicatorShown(True)
+        # Default to column 0 ascending (filename natural order). If the
+        # user restored a saved state with a different indicator, that
+        # wins — restoreState sets it before this line is reached.
+        if hdr.sortIndicatorSection() < 0:
+            hdr.setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        hdr.sortIndicatorChanged.connect(self._on_tree_sort_changed)
+
         left_layout.addWidget(self.fileTree)
 
         # "Clear Flags" Button
@@ -2239,6 +2305,48 @@ class BlinkTab(QWidget):
             s.setValue("blink/tree_header_state_v2", hdr.saveState())
         except Exception:
             pass
+
+    def _on_tree_sort_changed(self, *_):
+        """User clicked a column header. The tree reorders itself via
+        _BlinkSortItem.__lt__; we just need to keep the Metrics window's
+        dot order aligned with the new visual order.
+
+        Deferred to the next event-loop tick: sortIndicatorChanged can
+        fire *before* Qt's internal sort slot runs, depending on slot
+        connection order, so reading _tree_order_indices() synchronously
+        would hand the metrics panel the pre-click order. singleShot(0)
+        waits until the sort has definitely completed."""
+        try:
+            self._save_tree_header_state()
+        except Exception:
+            pass
+        QTimer.singleShot(0, self._push_tree_order_to_metrics)
+
+    def _push_tree_order_to_metrics(self):
+        if self.metrics_window and self.metrics_window.isVisible():
+            try:
+                self.metrics_window.update_metrics(
+                    self.loaded_images, order=self._tree_order_indices()
+                )
+            except Exception:
+                pass
+
+    class _TreeBulkUpdate:
+        """Context manager: pauses sorting during bulk tree mutations so
+        every setText/addChild doesn't trigger a resort. Nestable."""
+        def __init__(self, tree):
+            self._tree = tree
+            self._was = False
+        def __enter__(self):
+            self._was = self._tree.isSortingEnabled()
+            self._tree.setSortingEnabled(False)
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            self._tree.setSortingEnabled(self._was)
+            return False
+
+    def _tree_bulk_update(self):
+        return BlinkTab._TreeBulkUpdate(self.fileTree)
 
     def _aggressive_display_boost(self, x01: np.ndarray, strength: float = 3.7) -> np.ndarray:
         """
@@ -2723,34 +2831,47 @@ class BlinkTab(QWidget):
             except Exception:
                 return ""
 
-        for item in self.get_all_leaf_items():
-            idx = self._leaf_index(item)
-            if idx is None or idx < 0 or idx >= n:
-                continue
+        with self._tree_bulk_update():
+            for item in self.get_all_leaf_items():
+                idx = self._leaf_index(item)
+                if idx is None or idx < 0 or idx >= n:
+                    continue
 
-            # Sat column (1) — from sat_detected
-            if idx < len(self.loaded_images):
-                detected = self.loaded_images[idx].get("sat_detected", None)
-                if detected is True:
-                    item.setText(1, "⚠")
-                    item.setForeground(1, QBrush(QColor(255, 160, 0)))
-                    item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
-                elif detected is False:
-                    item.setText(1, "✓")
-                    item.setForeground(1, QBrush(QColor(100, 200, 100)))
-                    item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
+                # Sat column (1) — from sat_detected
+                if idx < len(self.loaded_images):
+                    detected = self.loaded_images[idx].get("sat_detected", None)
+                    if detected is True:
+                        item.setText(1, "⚠")
+                        item.setForeground(1, QBrush(QColor(255, 160, 0)))
+                        item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
+                    elif detected is False:
+                        item.setText(1, "✓")
+                        item.setForeground(1, QBrush(QColor(100, 200, 100)))
+                        item.setTextAlignment(1, Qt.AlignmentFlag.AlignCenter)
 
-            # Stars (2), FWHM (3), Ecc (4), BG (5), Score (6), Temp (7), BG/s (8)
-            item.setText(2, fmt_i(m3[idx]))
-            item.setText(3, fmt_f(m0[idx]))
-            item.setText(4, fmt_f(m1[idx]))
-            item.setText(5, fmt_f(m2[idx]))
-            item.setText(6, fmt_f(m4[idx]))
-            item.setText(7, fmt_f(m5[idx]))
-            item.setText(8, fmt_f(m6[idx]))
+                # Stars (2), FWHM (3), Ecc (4), BG (5), Score (6), Temp (7), BG/s (8)
+                item.setText(2, fmt_i(m3[idx]))
+                item.setText(3, fmt_f(m0[idx]))
+                item.setText(4, fmt_f(m1[idx]))
+                item.setText(5, fmt_f(m2[idx]))
+                item.setText(6, fmt_f(m4[idx]))
+                item.setText(7, fmt_f(m5[idx]))
+                item.setText(8, fmt_f(m6[idx]))
 
-            for c in (2, 3, 4, 5, 6, 7, 8):
-                item.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                for c in (2, 3, 4, 5, 6, 7, 8):
+                    item.setTextAlignment(c, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        # After metrics are populated, re-apply the current sort indicator
+        # so a column the user had sorted stays sorted with the new values.
+        try:
+            hdr = self.fileTree.header()
+            self.fileTree.sortItems(hdr.sortIndicatorSection(),
+                                    hdr.sortIndicatorOrder())
+        except Exception:
+            pass
+        # Defer the metrics-window order sync for the same reason as the
+        # header click: let Qt's sort pass settle before reading order.
+        QTimer.singleShot(0, self._push_tree_order_to_metrics)
     # inside BlinkTab
     def _sync_metrics_flags(self):
         if self.metrics_window:
@@ -3216,59 +3337,70 @@ class BlinkTab(QWidget):
             self.tree_filter_combo.blockSignals(True)
             self.tree_filter_combo.setCurrentIndex(0)
             self.tree_filter_combo.blockSignals(False)
-        self.fileTree.clear()
         from collections import defaultdict
 
-        grouped = defaultdict(list)
-        for entry in self.loaded_images:
-            hdr = entry.get('header', {}) or {}
-            obj = hdr.get('OBJECT', 'Unknown')
-            fil = hdr.get('FILTER', 'Unknown')
-            exp = _blink_exposure_label(hdr)
-            grouped[(obj, fil, exp)].append(entry['file_path'])
+        with self._tree_bulk_update():
+            self.fileTree.clear()
 
-        for key, paths in grouped.items():
-            paths.sort(key=lambda p: self._natural_key(os.path.basename(p)))
+            grouped = defaultdict(list)
+            for entry in self.loaded_images:
+                hdr = entry.get('header', {}) or {}
+                obj = hdr.get('OBJECT', 'Unknown')
+                fil = hdr.get('FILTER', 'Unknown')
+                exp = _blink_exposure_label(hdr)
+                grouped[(obj, fil, exp)].append(entry['file_path'])
 
-        by_object = defaultdict(lambda: defaultdict(dict))
-        for (obj, fil, exp), paths in grouped.items():
-            by_object[obj][fil][exp] = paths
+            for key, paths in grouped.items():
+                paths.sort(key=lambda p: self._natural_key(os.path.basename(p)))
 
-        for obj in sorted(by_object, key=lambda o: o.lower()):
-            obj_item = QTreeWidgetItem([self.tr("Object: {0}").format(obj)])
-            self.fileTree.addTopLevelItem(obj_item)
-            obj_item.setExpanded(True)
+            by_object = defaultdict(lambda: defaultdict(dict))
+            for (obj, fil, exp), paths in grouped.items():
+                by_object[obj][fil][exp] = paths
 
-            for fil in sorted(by_object[obj], key=lambda f: f.lower()):
-                filt_item = QTreeWidgetItem([self.tr("Filter: {0}").format(fil)])
-                obj_item.addChild(filt_item)
-                filt_item.setExpanded(True)
+            for obj in sorted(by_object, key=lambda o: o.lower()):
+                obj_item = _BlinkSortItem([self.tr("Object: {0}").format(obj)])
+                self.fileTree.addTopLevelItem(obj_item)
+                obj_item.setExpanded(True)
 
-                for exp in sorted(by_object[obj][fil], key=lambda e: str(e).lower()):
-                    exp_item = QTreeWidgetItem([self.tr("Exposure: {0}").format(exp)])
-                    filt_item.addChild(exp_item)
-                    exp_item.setExpanded(True)
+                for fil in sorted(by_object[obj], key=lambda f: f.lower()):
+                    filt_item = _BlinkSortItem([self.tr("Filter: {0}").format(fil)])
+                    obj_item.addChild(filt_item)
+                    filt_item.setExpanded(True)
 
-                    for p in by_object[obj][fil][exp]:
-                        leaf = QTreeWidgetItem([os.path.basename(p), "", "", "", "", ""])
-                        leaf.setData(0, Qt.ItemDataRole.UserRole, p)
-                        exp_item.addChild(leaf)
+                    for exp in sorted(by_object[obj][fil], key=lambda e: str(e).lower()):
+                        exp_item = _BlinkSortItem([self.tr("Exposure: {0}").format(exp)])
+                        filt_item.addChild(exp_item)
+                        exp_item.setExpanded(True)
 
-        # Re-apply flagged styling
-        RED = Qt.GlobalColor.red
-        normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
+                        for p in by_object[obj][fil][exp]:
+                            leaf = _BlinkSortItem([os.path.basename(p), "", "", "", "", ""])
+                            leaf.setData(0, Qt.ItemDataRole.UserRole, p)
+                            exp_item.addChild(leaf)
 
-        for idx, entry in enumerate(self.loaded_images):
-            item = self.get_tree_item_for_index(idx)
-            if not item:
-                continue
-            base = os.path.basename(self.image_paths[idx])
-            if entry.get("flagged", False):
-                item.setText(0, f"⚠️ {base}")
-                item.setForeground(0, QBrush(RED))
-            else:
-                item.setText(0, base)
-                item.setForeground(0, QBrush(normal))
+            # Re-apply flagged styling
+            RED = Qt.GlobalColor.red
+            normal = self.fileTree.palette().color(QPalette.ColorRole.WindowText)
+
+            for idx, entry in enumerate(self.loaded_images):
+                item = self.get_tree_item_for_index(idx)
+                if not item:
+                    continue
+                base = os.path.basename(self.image_paths[idx])
+                if entry.get("flagged", False):
+                    item.setText(0, f"⚠️ {base}")
+                    item.setForeground(0, QBrush(RED))
+                else:
+                    item.setText(0, base)
+                    item.setForeground(0, QBrush(normal))
+
+        # After re-enabling sort, metric columns may need the current
+        # sort indicator applied against freshly-rebuilt rows.
+        try:
+            hdr = self.fileTree.header()
+            self.fileTree.sortItems(hdr.sortIndicatorSection(),
+                                    hdr.sortIndicatorOrder())
+        except Exception:
+            pass
 
 
     def _after_list_changed(self, removed_indices: List[int] | None = None):
@@ -3664,25 +3796,33 @@ class BlinkTab(QWidget):
         for (obj, filt, exp), paths in grouped.items():
             by_object[obj][filt][exp] = paths
 
-        for obj in sorted(by_object, key=lambda o: o.lower()):
-            obj_item = QTreeWidgetItem([f"Object: {obj}"])
-            self.fileTree.addTopLevelItem(obj_item)
-            obj_item.setExpanded(True)
+        with self._tree_bulk_update():
+            for obj in sorted(by_object, key=lambda o: o.lower()):
+                obj_item = _BlinkSortItem([f"Object: {obj}"])
+                self.fileTree.addTopLevelItem(obj_item)
+                obj_item.setExpanded(True)
 
-            for filt in sorted(by_object[obj], key=lambda f: f.lower()):
-                filt_item = QTreeWidgetItem([f"Filter: {filt}"])
-                obj_item.addChild(filt_item)
-                filt_item.setExpanded(True)
+                for filt in sorted(by_object[obj], key=lambda f: f.lower()):
+                    filt_item = _BlinkSortItem([f"Filter: {filt}"])
+                    obj_item.addChild(filt_item)
+                    filt_item.setExpanded(True)
 
-                for exp in sorted(by_object[obj][filt], key=lambda e: str(e).lower()):
-                    exp_item = QTreeWidgetItem([f"Exposure: {exp}"])
-                    filt_item.addChild(exp_item)
-                    exp_item.setExpanded(True)
+                    for exp in sorted(by_object[obj][filt], key=lambda e: str(e).lower()):
+                        exp_item = _BlinkSortItem([f"Exposure: {exp}"])
+                        filt_item.addChild(exp_item)
+                        exp_item.setExpanded(True)
 
-                    for p in by_object[obj][filt][exp]:
-                        leaf = QTreeWidgetItem([os.path.basename(p), "", "", "", "", ""])
-                        leaf.setData(0, Qt.ItemDataRole.UserRole, p)
-                        exp_item.addChild(leaf)
+                        for p in by_object[obj][filt][exp]:
+                            leaf = _BlinkSortItem([os.path.basename(p), "", "", "", "", ""])
+                            leaf.setData(0, Qt.ItemDataRole.UserRole, p)
+                            exp_item.addChild(leaf)
+
+        try:
+            hdr = self.fileTree.header()
+            self.fileTree.sortItems(hdr.sortIndicatorSection(),
+                                    hdr.sortIndicatorOrder())
+        except Exception:
+            pass
 
         self.loading_label.setText(self.tr("Loaded {0} images.").format(len(self.loaded_images)))
         self.progress_bar.setValue(100)
@@ -3931,32 +4071,33 @@ class BlinkTab(QWidget):
         # Group images by filter and exposure time
         group_key = (object_name, filter_name, exposure_time)
 
-        # Find or create the object item
-        object_item = self.findTopLevelItemByName(f"Object: {object_name}")
-        if not object_item:
-            object_item = QTreeWidgetItem([f"Object: {object_name}"])
-            self.fileTree.addTopLevelItem(object_item)
-            object_item.setExpanded(True)
+        with self._tree_bulk_update():
+            # Find or create the object item
+            object_item = self.findTopLevelItemByName(f"Object: {object_name}")
+            if not object_item:
+                object_item = _BlinkSortItem([f"Object: {object_name}"])
+                self.fileTree.addTopLevelItem(object_item)
+                object_item.setExpanded(True)
 
-        # Find or create the filter item
-        filter_item = self.findChildItemByName(object_item, f"Filter: {filter_name}")
-        if not filter_item:
-            filter_item = QTreeWidgetItem([f"Filter: {filter_name}"])
-            object_item.addChild(filter_item)
-            filter_item.setExpanded(True)
+            # Find or create the filter item
+            filter_item = self.findChildItemByName(object_item, f"Filter: {filter_name}")
+            if not filter_item:
+                filter_item = _BlinkSortItem([f"Filter: {filter_name}"])
+                object_item.addChild(filter_item)
+                filter_item.setExpanded(True)
 
-        # Find or create the exposure item
-        exposure_item = self.findChildItemByName(filter_item, f"Exposure: {exposure_time}")
-        if not exposure_item:
-            exposure_item = QTreeWidgetItem([f"Exposure: {exposure_time}"])
-            filter_item.addChild(exposure_item)
-            exposure_item.setExpanded(True)
+            # Find or create the exposure item
+            exposure_item = self.findChildItemByName(filter_item, f"Exposure: {exposure_time}")
+            if not exposure_item:
+                exposure_item = _BlinkSortItem([f"Exposure: {exposure_time}"])
+                filter_item.addChild(exposure_item)
+                exposure_item.setExpanded(True)
 
-        # Add the file item
-        file_name = os.path.basename(file_path)
-        item = QTreeWidgetItem([file_name, "", "", "", "", ""])
-        item.setData(0, Qt.ItemDataRole.UserRole, file_path)
-        exposure_item.addChild(item)
+            # Add the file item
+            file_name = os.path.basename(file_path)
+            item = _BlinkSortItem([file_name, "", "", "", "", ""])
+            item.setData(0, Qt.ItemDataRole.UserRole, file_path)
+            exposure_item.addChild(item)
 
     def _tree_order_indices(self) -> list[int]:
         """Return the indices of loaded_images in the exact order the Tree shows."""

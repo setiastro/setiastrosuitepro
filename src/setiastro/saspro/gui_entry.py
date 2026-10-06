@@ -622,9 +622,39 @@ def _init_splash():
                 logo_y = 40
                 painter.drawPixmap(logo_x, logo_y, self.logo_pixmap)
 
-            painter.setFont(self.title_font)
-            painter.setPen(QColor(255, 255, 255))
-            painter.drawText(QRect(0, 230, w, 40), Qt.AlignmentFlag.AlignCenter, "Seti Astro Suite Pro")
+            # ─── SASPRO ASCII title ────────────────────────────────────────
+            # Four rows, each a different color — top-down gradient
+            # dim → magenta → bright magenta → white. All rows are exactly
+            # 66 characters wide so columns line up in a monospace font.
+            ascii_lines = [
+                ("┌┐ ┌┐ ┌┬┐ ∙      ┌┐ ┌┐ ┌┬┐ ┌┐ ┌┐      ┌┐ ┐┐ ∙ ┌┬┐ ┌┐      ┌┐ ┌┐ ┌┐", QColor( 85,  85, 100)),
+                ("││ ├   │  │      ├│ ││  │  ││ ││      ││ ││ │  │  ├       ││ ││ ││", QColor(170,  85, 170)),
+                ("└┐ ││  │  │      ││ └┐  │  │┘ ││      └┐ ││ │  │  ││      │┘ │┘ ││", QColor(230, 110, 240)),
+                ("└┘ └┘  ┘  ┘      ┘┘ └┘  ┘  ┘┘ └┘      └┘ └┘ ┘  ┘  └┘      ┘  ┘┘ └┘", QColor(255, 255, 255)),
+            ]
+
+            ascii_font = QFont("Consolas", 10)
+            ascii_font.setStyleHint(QFont.StyleHint.Monospace)
+            # Fallback chain so macOS / Linux builds still land on a mono
+            # font that has the Unicode box-drawing glyphs.
+            ascii_font.setFamilies(["Consolas", "Cascadia Mono", "Menlo",
+                                    "DejaVu Sans Mono", "Courier New"])
+            painter.setFont(ascii_font)
+
+            fm = painter.fontMetrics()
+            line_h = fm.height()
+            block_top = 215  # was y=230 for the one-liner; nudged up because art is 4 rows
+            for i, (line, color) in enumerate(ascii_lines):
+                painter.setPen(color)
+                text_w = fm.horizontalAdvance(line)
+                x = (w - text_w) // 2
+                y = block_top + i * line_h + fm.ascent()
+                painter.drawText(x, y, line)
+
+            # Compute subtitle y dynamically so it clears the taller title
+            # block regardless of font metrics on this platform.
+            subtitle_top = block_top + line_h * len(ascii_lines) + 8
+            # ───────────────────────────────────────────────────────────────
 
             painter.setFont(self.subtitle_font)
             painter.setPen(QColor(180, 180, 200))
@@ -634,12 +664,12 @@ def _init_splash():
                     subtitle_text += QCoreApplication.translate("Splash", "  •  Running locally from source code")
                 else:
                     subtitle_text += QCoreApplication.translate("Splash", "  •  Build {0}").format(self._build)
-            painter.drawText(QRect(0, 270, w, 25), Qt.AlignmentFlag.AlignCenter, subtitle_text)
+            painter.drawText(QRect(0, subtitle_top, w, 25), Qt.AlignmentFlag.AlignCenter, subtitle_text)
 
             if self._supporter_line:
                 painter.setFont(self.supporter_font)
                 painter.setPen(QColor(212, 175, 55))   # gold, matches the About heart
-                painter.drawText(QRect(0, 296, w, 18),
+                painter.drawText(QRect(0, subtitle_top + 26, w, 18),
                                  Qt.AlignmentFlag.AlignCenter, self._supporter_line)
 
             bar_margin = 50

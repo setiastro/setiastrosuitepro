@@ -86,6 +86,7 @@ def _parse_multiscale_preset(p: dict) -> dict | None:
         "protect_k": float(np.clip(_ms.get("protect_k", 3.0), 1.0, 5.0)),
         "smooth_px": float(np.clip(_ms.get("smooth_px", 2.0), 0.0, 10.0)),
         "feather_pct": float(np.clip(_ms.get("feather_pct", 10.0), 0.0, 50.0)),  # 0 => off
+        "sigblur_px": float(np.clip(_ms.get("sigblur_px", 8.0), 0.0, 50.0)),
     }
 
 
@@ -203,6 +204,9 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
         try:
             layers = max(ms_cfg["band_hi"] + 1, 9)
 
+            # Protection mask from the star-inclusive image (see dialog path);
+            # gradient band still estimated on the starless copy below.
+            mask_from = corrected
             estimate_from = corrected
             if ms_cfg["darkstar"]:
                 try:
@@ -227,6 +231,7 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
             corrected = multiscale_gradient_correct(
                 corrected,
                 estimate_from=estimate_from,
+                mask_from=mask_from,
                 layers=layers,
                 base_sigma=1.0,
                 band_lo=ms_cfg["band_lo"],
@@ -237,6 +242,7 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
                 protect_grow=6,
                 gradient_smooth_px=ms_cfg["smooth_px"],
                 protect_feather_frac=ms_cfg["feather_pct"] / 100.0,
+                protect_blur_px=ms_cfg["sigblur_px"],
                 progress_cb=None,
             )
         except Exception as e:
@@ -344,6 +350,8 @@ def open_abe_with_preset(main_window, preset: dict | None = None):
                 dlg.sp_ms_smooth.setValue(int(np.clip(_ms.get("smooth_px", 2), 0, 10)))
             if hasattr(dlg, "sp_ms_feather"):
                 dlg.sp_ms_feather.setValue(int(np.clip(_ms.get("feather_pct", 10), 0, 50)))
+            if hasattr(dlg, "sp_ms_sigblur"):
+                dlg.sp_ms_sigblur.setValue(int(np.clip(_ms.get("sigblur_px", 8), 0, 50)))
     except Exception:
         pass
 

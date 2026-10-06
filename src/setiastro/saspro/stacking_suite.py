@@ -20676,7 +20676,7 @@ class StackingSuiteDialog(QDialog):
         Works for (H,W) or (H,W,3).
         Returns (img_out, rotated_bool).
         """
-        
+
         if pa_cur is None or pa_ref is None:
             return img, False
         d = self._angdiff(pa_cur, pa_ref)
@@ -20687,6 +20687,126 @@ class StackingSuiteDialog(QDialog):
             QApplication.processEvents()
             return np.ascontiguousarray(np.rot90(img, 2)), True
         return img, False
+
+    def _sync_header_after_rot180(self, hdr, img_shape):
+        """
+        Update a FITS header in place so it stays consistent with pixels that
+        were just rotated 180° via np.rot90(img, 2). Without this sync the
+        header's WCS/PA keys still describe the pre-flip orientation, which
+        breaks downstream plate-solving, annotation, re-detection of the
+        meridian-flip condition, and any tool that reads ANGLE/POSANGLE from
+        the normalized file. All transformations here are exact (no
+        resampling bias).
+
+        Updates:
+        - SASROT180 : True  (sentinel, so other stages know this frame was
+                             pre-rotated during normalization)
+        - CRPIX1/2  : (NAXIS - CRPIX + 1)  (reference pixel moves to the
+                      diametrically opposite location; FITS pixel origin = 1)
+        - CDi_j     : negated (R180 = -I, so M' = R·M = -M)
+        - PCi_j     : negated (same reason, when PC/CDELT are used)
+        - CROTA1/2  : add 180 (mod 360)
+        - ANGLE / POSANGLE / ROTSKYPA / ROTANGLE / PA / ROTATOR: add 180 (mod 360)
+        - FLIPPED   : toggle if present (mount-reported pier side flag)
+
+        CRVAL1/CRVAL2 stay untouched: the sky coordinate associated with the
+        (new) CRPIX location is still that same sky point, because the pixel
+        pointing at it just moved to the opposite corner.
+
+        img_shape: shape of the ROTATED image (so NAXIS1/NAXIS2 match the
+                   file we are about to write).
+        """
+        import math as _math
+        if hdr is None:
+            return hdr
+        try:
+            # NAXIS1 = width (cols), NAXIS2 = height (rows). FITS is 1-based.
+            if len(img_shape) == 2:
+                H_rot, W_rot = int(img_shape[0]), int(img_shape[1])
+            else:
+                H_rot, W_rot = int(img_shape[0]), int(img_shape[1])
+            # Make sure NAXIS values in the header match the (rotated) image.
+            # Rotation preserves H and W, so these are the same numbers, but
+            # a prior stage may have resized the array before we got here.
+            try:
+                hdr["NAXIS1"] = int(W_rot)
+                hdr["NAXIS2"] = int(H_rot)
+            except Exception:
+                pass
+
+            # CRPIX update: ref pixel moves to the opposite corner.
+            for axis, N in (("1", W_rot), ("2", H_rot)):
+                k = f"CRPIX{axis}"
+                try:
+                    v = hdr.get(k, None)
+                    if v is not None:
+                        hdr[k] = float(N) - float(v) + 1.0
+                except Exception:
+                    pass
+
+            # CD / PC matrix: negate (R180 = -I).
+            for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2",
+                      "PC1_1", "PC1_2", "PC2_1", "PC2_2"):
+                try:
+                    v = hdr.get(k, None)
+                    if v is not None:
+                        hdr[k] = -float(v)
+                except Exception:
+                    pass
+
+            # Angle keys: add 180 (mod 360), normalized to [-180, 180).
+            # Formula: ((a + 180) mod 360) - 180 lands any real-valued
+            # angle in [-180, 180). This matches _extract_pa_deg's own
+            # _norm180 helper (same formula), so after sync a second
+            # pass of the detector sees a consistent angle representation.
+            def _norm_pm180(a):
+                a = float(a)
+                return ((a + 180.0) % 360.0) - 180.0
+
+            for k in ("ANGLE", "POSANGLE", "ROTSKYPA", "ROTANGLE",
+                      "PA", "ROTATOR", "ORIENTAT", "CROTA1", "CROTA2"):
+                try:
+                    v = hdr.get(k, None)
+                    if v is None:
+                        continue
+                    try:
+                        fv = float(v)
+                    except Exception:
+                        # some writers emit angle as a string with units
+                        import re as _re
+                        m = _re.search(r"[-+]?\d+(?:[.,]\d+)?", str(v))
+                        if not m:
+                            continue
+                        fv = float(m.group(0).replace(",", "."))
+                    hdr[k] = _norm_pm180(fv + 180.0)
+                except Exception:
+                    pass
+
+            # FLIPPED (pier side flag) — toggle only if explicitly present.
+            try:
+                if "FLIPPED" in hdr:
+                    cur = hdr["FLIPPED"]
+                    if isinstance(cur, str):
+                        s = cur.strip().lower()
+                        cur_b = s in ("1", "t", "true", "yes", "y", "on")
+                    else:
+                        cur_b = bool(cur)
+                    hdr["FLIPPED"] = (not cur_b, "Toggled by SASpro rot180 sync")
+            except Exception:
+                pass
+
+            # Sentinel: lets any downstream stage (star_alignment, drizzle,
+            # a second normalization pass, header dumps) detect that the
+            # pixels were rotated at normalization time.
+            try:
+                hdr["SASROT180"] = (True, "Pixels rotated 180 at normalize; WCS/PA synced")
+            except Exception:
+                pass
+        except Exception:
+            # Header sync is best-effort; a header we can't modify never
+            # blocks the pixel rotation that fixes alignment quality.
+            pass
+        return hdr
 
     def _ui_log(self, msg: str):
         self.update_status(self.tr(msg))  # your existing status logger
@@ -22954,7 +23074,13 @@ class StackingSuiteDialog(QDialog):
                     gain_lo      = float(self.settings.value("stacking/grad_poly2/gain_lo", 0.20, type=float))
                     gain_hi      = float(self.settings.value("stacking/grad_poly2/gain_hi", 5.0, type=float))
 
-                scaled_images = []; scaled_paths = []; scaled_hdrs = []
+                # scaled_rot180 is parallel to scaled_paths/images/hdrs; it
+                # carries the per-frame "was pre-rotated 180° at normalize"
+                # flag through to the ABE write path so _sync_header_after_rot180
+                # can be invoked there too. Without this parallel list the flag
+                # would die with its _normalize_one local scope and ABE-written
+                # frames would ship with pre-flip WCS/PA keys.
+                scaled_images = []; scaled_paths = []; scaled_hdrs = []; scaled_rot180 = []
 
                 from concurrent.futures import ThreadPoolExecutor, as_completed
                 self.update_status(self.tr(f"🌍 Loading {len(chunk)} images in parallel for normalization (up to {io_workers} threads)…"))
@@ -23021,11 +23147,73 @@ class StackingSuiteDialog(QDialog):
 
                         _ndbg("02 debayer", img, fp)
 
-                        # Meridian-flip pre-rotation removed: astroalign's asterism
-                        # matching is rotation-invariant and aligns a 180°-flipped
-                        # frame directly (the homography absorbs the flip). Pre-
-                        # rotating the pixels also desynced the WCS/PA header, which
-                        # broke downstream plate-solve/annotate. Let alignment handle it.
+                        # ─────────────────────────────────────────────────────────────
+                        # Meridian-flip pre-rotation (restored).
+                        #
+                        # Astroalign's asterism matching DOES find correct ~180°
+                        # correspondences for a meridian-flipped frame, but the
+                        # downstream similarity LS fit carries a fractional-degree
+                        # rotation residual pulled by sub-pixel centroid noise, and
+                        # the Lanczos warp of that near-180° rotation then imprints a
+                        # position-dependent PSF variation per frame that stacks into
+                        # visible ghosting on flipped halves (see m17 OIII, 2026-07-09).
+                        # A bit-exact np.rot90(img, 2) collapses the warp to a
+                        # sub-pixel residual, which the resampler handles cleanly and
+                        # uniformly across the stack.
+                        #
+                        # The reason this was removed earlier — "pre-rotating the
+                        # pixels desynced the WCS/PA header" — is handled below:
+                        # when we write the normalized frame we also run
+                        # self._sync_header_after_rot180(orig_header, img.shape),
+                        # which flips CRPIX1/2 to the opposite corner, negates the
+                        # CD/PC matrix (R180 = -I), adds 180° to ANGLE/POSANGLE/
+                        # ROTSKYPA/ROTANGLE/CROTA, toggles FLIPPED, and stamps
+                        # SASROT180=True so any later stage knows. CRVAL stays
+                        # unchanged by construction (CRPIX moved to the diametric
+                        # opposite point, which still names the same sky position).
+                        # The write stage, not the detection stage, is where the
+                        # WCS/PA desync used to leak.
+                        #
+                        # star_alignment.py has its own silent meridian-flip wrapper
+                        # (pass 0 of refinement, bit-exact rot90, composed matrix),
+                        # which handles cases where the FITS header lacks ANGLE/
+                        # POSANGLE or lies about it. Doing BOTH is safe: once we
+                        # pre-rotate here the solver sees a near-identity transform
+                        # and its own 180° branch won't trigger. This is the belt
+                        # on top of the suspenders — cheaper, header-aware, and the
+                        # right place because the normalized file written here is
+                        # also what plate-solve/annotate read from.
+                        # ─────────────────────────────────────────────────────────────
+                        _pre_rotated_180 = False
+                        try:
+                            if bool(getattr(self, "auto_rot180", True)):
+                                pa_cur = self._extract_pa_deg(hdr)
+                                tol_deg = float(getattr(self, "auto_rot180_tol_deg", 89.0))
+                                img, _pre_rotated_180 = self._maybe_rot180(img, pa_cur, ref_pa, tol_deg)
+                                if _pre_rotated_180:
+                                    _ndbg("02b rot180", img, fp)
+                                    # The CFA drizzle sparse sibling was built
+                                    # BEFORE this rotation. Rotate it too, so the
+                                    # dense (_n.fit) and sparse (_n_cfa.fit) frames
+                                    # share the same geometry — otherwise drizzle
+                                    # would deposit flipped-vs-non-flipped planes
+                                    # on this frame and smear point sources.
+                                    try:
+                                        _cfa_key = os.path.normcase(os.path.normpath(fp))
+                                        if hasattr(self, "_pending_cfa_sparse"):
+                                            _spk = self._pending_cfa_sparse.get(_cfa_key, None)
+                                            if _spk is not None:
+                                                self._pending_cfa_sparse[_cfa_key] = \
+                                                    np.ascontiguousarray(np.rot90(_spk, 2))
+                                    except Exception:
+                                        # Non-fatal — only impacts CFA drizzle users
+                                        # on this particular meridian-flipped frame.
+                                        pass
+                        except Exception as _e_rot:
+                            # Rotation is best-effort — never block normalization.
+                            self.update_status(self.tr(
+                                f"⚠️ Meridian-flip check failed for {os.path.basename(fp)}: {_e_rot}"))
+                            _pre_rotated_180 = False
 
                         # --- ONE geometry normalization path ---
                         if do_scale_norm:
@@ -23179,6 +23367,10 @@ class StackingSuiteDialog(QDialog):
                             scaled_images.append(img.astype(np.float32, copy=False))
                             scaled_paths.append(fp)
                             scaled_hdrs.append(hdr)
+                            # Carry the rot180 flag out of this worker's local
+                            # scope so the ABE write stage can sync the header
+                            # the same way the inline write path does.
+                            scaled_rot180.append(bool(_pre_rotated_180))
                         else:
                             # write out normalized FITS
                             out_path = _norm_out_name(fp, norm_dir)
@@ -23195,6 +23387,20 @@ class StackingSuiteDialog(QDialog):
                                 orig_header["DEBAYERED"] = (True, "Color debayered normalized")
                             else:
                                 orig_header["DEBAYERED"] = (False, "Mono normalized")
+
+                            # Sync the header to the rotated pixels before writing
+                            # (CRPIX / CD / PC / ANGLE / POSANGLE / FLIPPED / sentinel).
+                            # Without this, every downstream reader of the _n file
+                            # (plate solve, annotate, a second normalization pass)
+                            # would see a header still describing the pre-flip
+                            # orientation. See _sync_header_after_rot180 for details.
+                            if _pre_rotated_180:
+                                try:
+                                    self._sync_header_after_rot180(orig_header, img.shape)
+                                except Exception as _e_hdr:
+                                    self.update_status(self.tr(
+                                        f"⚠️ WCS/PA header sync after rot180 failed for "
+                                        f"{os.path.basename(fp)}: {_e_hdr}"))
 
                             from os import path
                             _key = path.normcase(path.normpath(fp))
@@ -23263,6 +23469,13 @@ class StackingSuiteDialog(QDialog):
                     _abe_paths = []
                     for i, fp in enumerate(scaled_paths):
                         img_out = scaled_images[i]; hdr = scaled_hdrs[i]
+                        # Was this frame rotated 180° at normalize time? If so,
+                        # the orig_header we just loaded from the RAW file still
+                        # describes the pre-flip orientation and needs the same
+                        # CRPIX / CD / angle sync the inline write path applies.
+                        _pre_rotated_180_i = bool(
+                            scaled_rot180[i] if i < len(scaled_rot180) else False
+                        )
                         out_path = _norm_out_name(fp, norm_dir)
 
                         try:
@@ -23274,6 +23487,14 @@ class StackingSuiteDialog(QDialog):
                             orig_header["DEBAYERED"] = (True, "Color debayered normalized")
                         else:
                             orig_header["DEBAYERED"] = (False, "Mono normalized")
+
+                        if _pre_rotated_180_i:
+                            try:
+                                self._sync_header_after_rot180(orig_header, img_out.shape)
+                            except Exception as _e_hdr:
+                                self.update_status(self.tr(
+                                    f"⚠️ WCS/PA header sync after rot180 failed (ABE) for "
+                                    f"{os.path.basename(fp)}: {_e_hdr}"))
 
                         from os import path
                         _key = path.normcase(path.normpath(fp))
