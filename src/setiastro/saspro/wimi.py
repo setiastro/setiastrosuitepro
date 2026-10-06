@@ -3801,6 +3801,69 @@ class WIMIDialog(QDialog):
             lambda on: self.settings.setValue("wimi/augment_with_gaia", bool(on)))
         self.advanced_search_panel.addWidget(self.augment_with_gaia_checkbox)
 
+        # ─────────────────────────────────────────────────────────────
+        # Magnitude limit (post-search filter)
+        #
+        # Simbad / Vizier / MinorBodies / Gaia-augment all have their own
+        # idea of which bands they return (V, B, G, H, g, k, ...), and
+        # several catalogs return rows with no magnitude at all. Rather
+        # than push a mag constraint into every per-source query (which
+        # would mean threading it through five different code paths and
+        # relying on each catalog honoring our constraint), we apply the
+        # cut once, uniformly, right where results funnel into the tree
+        # and marker layer. See _filter_results_by_magnitude.
+        #
+        # Default is OFF (no limit) so this is a strict opt-in and
+        # existing user workflows don't change. When ON, any result
+        # with no numeric magnitude in a known field is DROPPED — the
+        # user asked for a magnitude limit, so "unknown mag" is treated
+        # as "fails the test" rather than silently passing through.
+        from PyQt6.QtWidgets import QCheckBox as _QCheckBox  # local alias; QCheckBox is already in scope
+        mag_filter_row = QHBoxLayout()
+        self.mag_limit_checkbox = QCheckBox(self.tr("Limit by magnitude"))
+        self.mag_limit_checkbox.setToolTip(
+            "When checked, drop any result fainter than the magnitude\n"
+            "below from the tree, markers, and all downstream views.\n"
+            "Any result with no magnitude in a known band (Vmag / Bmag /\n"
+            "Gmag / mag / H / g / k) is also dropped — if you asked for\n"
+            "a magnitude cut, 'unknown' fails it. Default: off."
+        )
+        self.mag_limit_checkbox.setChecked(
+            self.settings.value("wimi/mag_filter_enabled", False, type=bool))
+        self.mag_limit_spinbox = QDoubleSpinBox()
+        self.mag_limit_spinbox.setDecimals(2)
+        self.mag_limit_spinbox.setRange(-5.0, 30.0)       # Sun ≈ -26.7 is irrelevant;
+                                                          # realistic apparent-mag range for
+                                                          # cataloged non-solar objects
+        self.mag_limit_spinbox.setSingleStep(0.5)
+        self.mag_limit_spinbox.setValue(
+            self.settings.value("wimi/mag_filter_limit", 18.0, type=float))
+        self.mag_limit_spinbox.setSuffix(" mag")
+        self.mag_limit_spinbox.setToolTip(
+            "Drop results with magnitude > this value.\n"
+            "Fainter stars have larger magnitudes."
+        )
+        self.mag_limit_spinbox.setEnabled(self.mag_limit_checkbox.isChecked())
+
+        def _on_mag_filter_toggled(on: bool):
+            self.settings.setValue("wimi/mag_filter_enabled", bool(on))
+            self.mag_limit_spinbox.setEnabled(bool(on))
+            # Re-filter in place so the user sees the change immediately
+            # (no need to re-run the search).
+            self._reapply_mag_filter_live()
+
+        def _on_mag_filter_value_changed(v: float):
+            self.settings.setValue("wimi/mag_filter_limit", float(v))
+            if self.mag_limit_checkbox.isChecked():
+                self._reapply_mag_filter_live()
+
+        self.mag_limit_checkbox.toggled.connect(_on_mag_filter_toggled)
+        self.mag_limit_spinbox.valueChanged.connect(_on_mag_filter_value_changed)
+
+        mag_filter_row.addWidget(self.mag_limit_checkbox)
+        mag_filter_row.addWidget(self.mag_limit_spinbox, 1)
+        self.advanced_search_panel.addLayout(mag_filter_row)
+
         search_button_layout = QHBoxLayout()
 
         self.simbad_defined_region_button = QPushButton(self.tr("Search Defined Region"))
@@ -4388,10 +4451,160 @@ class WIMIDialog(QDialog):
                 kept.append(obj)
         return kept
 
+    @staticmethod
+    def _extract_mag_from_result(obj) -> float | None:
+        """
+        Return the first usable apparent magnitude from an object dict, or None.
+
+        Different sources write different keys:
+          - Simbad       -> Vmag (preferred), Bmag
+          - MinorBodies  -> mag (comet g/k or asteroid H, pre-decided per source)
+          - Gaia augment -> Gmag or gaia_gmag
+          - Deep Vizier  -> may use lowercase 'g' / 'r' / 'i' / 'B' / 'V'
+            depending on the catalog
+          - mag_display  -> a formatted string ('17.42') that any source may
+            fill when it had a value; parse as a last resort
+
+        We check keys in rough preference order (V -> B -> G -> generic),
+        skip values that aren't finite floats, and return the first hit.
+        A pure numeric string ('17.42') or a formatted mag_display ('17.42')
+        is also accepted. None means "no usable magnitude in any known field".
+        """
+        if not isinstance(obj, dict):
+            return None
+        # Preference order: V band (reddest common), B, G, generic 'mag',
+        # minor-body H, SDSS g/r/i. Fall back to the formatted display cell
+        # which several code paths populate even when the raw keys aren't.
+        keys_in_order = (
+            "Vmag", "V", "vmag",
+            "Bmag", "B", "bmag",
+            "Gmag", "gaia_gmag", "G",
+            "mag", "magnitude",
+            "H", "magnitude_H",
+            "g", "r", "i",
+            "mag_display",
+        )
+        for k in keys_in_order:
+            if k not in obj:
+                continue
+            v = obj[k]
+            if v is None:
+                continue
+            # Catalogs frequently sentinel-fill with "N/A" / "" / NaN
+            if isinstance(v, str):
+                s = v.strip()
+                if not s or s.upper() in ("N/A", "NA", "NONE", "UNKNOWN", "-"):
+                    continue
+                try:
+                    f = float(s)
+                except ValueError:
+                    continue
+            else:
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    continue
+            if not math.isfinite(f):
+                continue
+            # 0.000 exactly is almost always a sentinel for "missing" in
+            # Simbad V/B columns (a real V=0 star is a once-in-the-sky
+            # object). Skip it like Simbad's own tooling does. If we're
+            # looking at the formatted display cell, 0.000 means a true
+            # bright object that was written with a leading zero — but
+            # the display cell is last-resort so even then skipping is
+            # the safer bet.
+            if f == 0.0:
+                continue
+            return f
+        return None
+
+    def _filter_results_by_magnitude(self, results):
+        """
+        Apply the user's magnitude limit to a result list.
+
+        When the "Limit by magnitude" checkbox is off, this is a no-op.
+        When on, drops any result whose extracted apparent magnitude is
+        either (a) missing / unparseable in every known band, or (b)
+        fainter (numerically larger) than the spinbox threshold.
+
+        See `_extract_mag_from_result` for the band-preference logic.
+        Called from `_cg_set_query_results_proxy` and from
+        `_reapply_mag_filter_live` (which re-filters the last unfiltered
+        snapshot in response to UI changes).
+        """
+        try:
+            if not bool(self.mag_limit_checkbox.isChecked()):
+                return list(results)
+            limit = float(self.mag_limit_spinbox.value())
+        except Exception:
+            # UI not yet constructed / torn down — fail open rather than
+            # silently drop every result from an edge-case code path.
+            return list(results)
+        kept = []
+        for obj in results:
+            m = self._extract_mag_from_result(obj)
+            if m is None:
+                continue
+            if m <= limit:
+                kept.append(obj)
+        return kept
+
+    def _reapply_mag_filter_live(self):
+        """
+        Re-filter the most recent unfiltered result set in-place in response
+        to the user toggling the checkbox or changing the limit. Avoids
+        re-querying every catalog just to narrow the result list.
+
+        Replays everything downstream of the fetch:
+          - rebuild self.results from the stashed unfiltered snapshot,
+            re-applying BOTH the image-bounds filter AND the magnitude cut
+          - re-tag categories/colors (same as _cg_set_query_results_proxy)
+          - refresh the markers, the tree widget, and the object counter
+
+        No-ops silently if nothing has been searched yet.
+        """
+        src = getattr(self, "_results_unfiltered", None)
+        if not src:
+            return
+        try:
+            results = self._filter_results_to_image(src)
+            results = self._filter_results_by_magnitude(results)
+            for obj in results:
+                short_type = obj.get("short_type", "")
+                category = OTYPE_TO_CATEGORY.get(short_type, "Errors & Artefacts")
+                obj["category"] = category
+                obj["color"] = CATEGORY_TO_COLOR.get(category, QColor(255, 255, 255))
+            self.results = results
+            self._ensure_marker_layer()
+            self._set_marker_points_from_results()
+            # Keep the sidebar tree and the object counter in sync too.
+            try:
+                self.update_results_tree()
+            except Exception:
+                pass
+            try:
+                self.update_object_count()
+            except Exception:
+                pass
+            QTimer.singleShot(0, self.update_green_box)
+        except Exception as e:
+            # Live re-filter failures must never corrupt state — leave the
+            # existing self.results in place and surface the error.
+            print(f"[WIMI] magnitude re-filter failed: {e}")
+
     def _cg_set_query_results_proxy(self, results):
+        # Keep an UNFILTERED snapshot so toggling the magnitude limit (or
+        # changing its value) can re-filter without re-running the search.
+        # list() makes a shallow copy — results are dicts so the per-object
+        # content is still shared, which is fine for a read-only replay.
+        self._results_unfiltered = list(results)
         # Remove anything not actually inside the image frame before it
         # populates the tree / markers / any consumer of self.results.
         results = self._filter_results_to_image(results)
+        # Apply the user's magnitude cut (no-op when the checkbox is off).
+        # Order matters: image-bounds first (cheap WCS projection), magnitude
+        # second (only pays the dict walk for objects we would keep anyway).
+        results = self._filter_results_by_magnitude(results)
         for obj in results:
             short_type = obj.get("short_type", "")
             category = OTYPE_TO_CATEGORY.get(short_type, "Errors & Artefacts")
