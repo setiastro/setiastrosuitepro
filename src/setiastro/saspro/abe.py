@@ -644,11 +644,21 @@ class _ProtectPreviewDialog(QDialog):
     rebuilt on a short timer after the last movement. OK returns the chosen k.
     """
     def __init__(self, parent, img_small: np.ndarray, *, k_init=3.0,
-                 grow=6, blur_px=8.0):
+                 grow=6, blur_px=8.0, exclusion_overlay=None):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Protection mask preview (median + k·MAD)"))
         self.setModal(True)
         self._img = np.clip(np.asarray(img_small, dtype=np.float32), 0.0, 1.0)
+        # Hand-drawn exclusion region (1 inside drawn polygons), same HxW as the
+        # preview image, composited in green. None if no polygons were drawn.
+        self._excl = None
+        if exclusion_overlay is not None:
+            try:
+                eo = np.asarray(exclusion_overlay, dtype=np.float32)
+                if eo.shape[:2] == self._img.shape[:2]:
+                    self._excl = np.clip(eo, 0.0, 1.0)
+            except Exception:
+                self._excl = None
         self._grow = int(grow)
         self._blur_px = float(blur_px)
         self._k = float(k_init)
@@ -750,12 +760,18 @@ class _ProtectPreviewDialog(QDialog):
         m = (self._luma > (med + k_show * mad)).astype(np.float32)
         m = np.clip(m, 0.0, 1.0)
 
-        # Composite: base image with a near-opaque red tint where the mask is.
+        # Composite: base image with a near-opaque red tint where the MAD mask
+        # is, then a green tint where the hand-drawn exclusion zones are (both
+        # get protected at apply time; green distinguishes the drawn regions).
         out = self._disp8.astype(np.float32)
         alpha = float(self.PREVIEW_OVERLAY_ALPHA)
         a = m[..., None] * alpha
-        tint = np.array([230.0, 60.0, 60.0], dtype=np.float32)  # red
-        out = out * (1.0 - a) + tint * a
+        red = np.array([230.0, 60.0, 60.0], dtype=np.float32)
+        out = out * (1.0 - a) + red * a
+        if self._excl is not None:
+            ag = self._excl[..., None] * alpha
+            green = np.array([60.0, 200.0, 90.0], dtype=np.float32)
+            out = out * (1.0 - ag) + green * ag
         out = np.ascontiguousarray(np.clip(out, 0, 255).astype(np.uint8))
 
         h, w, _ = out.shape
@@ -769,10 +785,16 @@ class _ProtectPreviewDialog(QDialog):
         self.lbl_img.setPixmap(pm)
 
         frac = float(m.mean()) * 100.0
-        self.lbl_stat.setText(
-            f"k = {k:.1f}  →  {frac:.1f}% of pixels protected (shown in red). "
-            f"Lower k protects more; higher k protects only the brightest cores."
-        )
+        if self._excl is not None:
+            self.lbl_stat.setText(
+                f"k = {k:.1f}  →  {frac:.1f}% protected by MAD (red). "
+                f"Drawn exclusions shown in green. Lower k protects more."
+            )
+        else:
+            self.lbl_stat.setText(
+                f"k = {k:.1f}  →  {frac:.1f}% of pixels protected (shown in red). "
+                f"Lower k protects more; higher k protects only the brightest cores."
+            )
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -2058,6 +2080,24 @@ class ABEDialog(QDialog):
             small = _downsample_area(src, scale) if scale > 1 else src
         except Exception:
             small = src
+            scale = 1
+
+        # Hand-drawn exclusion polygons are ALSO protected at apply time (they
+        # composite back from the original), so overlay them in the preview too
+        # — shown in green to distinguish from the red MAD mask. Downsample the
+        # excluded region (~excl mask) to match the preview image.
+        excl_overlay = None
+        try:
+            excl = self._build_exclusion_mask()   # True=sample / False=excluded
+            if excl is not None:
+                drawn = (~excl).astype(np.float32)  # 1 inside the drawn polygons
+                if scale > 1:
+                    drawn = _downsample_area(drawn, scale)
+                drawn = (drawn >= 0.5).astype(np.float32)
+                if drawn.any():
+                    excl_overlay = drawn
+        except Exception:
+            excl_overlay = None
 
         # Run the SAME ADBE the user has configured, on the small copy, so the
         # preview mask sees the flattened background the real mask will see.
@@ -2124,7 +2164,8 @@ class ABEDialog(QDialog):
             QApplication.processEvents()
 
         dlg = _ProtectPreviewDialog(self, flattened, k_init=float(self.sp_ms_protect.value()),
-                                    grow=6, blur_px=float(self.sp_ms_sigblur.value()))
+                                    grow=6, blur_px=float(self.sp_ms_sigblur.value()),
+                                    exclusion_overlay=excl_overlay)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             k = dlg.selected_k()
             k = max(1.0, min(5.0, float(k)))
