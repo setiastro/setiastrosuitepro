@@ -692,6 +692,24 @@ def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
         #    M2[0, 2] *= ds
         #    M2[1, 2] *= ds
 
+        # Meridian-flip pre-rotate (headless path).
+        # If the solve reports a rotation in the 180° window OR a
+        # translation large enough (|tx|>frac*W AND |ty|>frac*H) that it
+        # can only be explained by a point reflection in the canvas,
+        # physically rotate the target buffers with np.rot90(..., 2)
+        # (bit-exact) and redo the solve. The downstream warp then only
+        # resamples a sub-pixel residual instead of a full 180° rotation,
+        # which is where the per-frame PSF drift on flipped stacks comes
+        # from. src_shape of the TARGET (what we're warping) is what the
+        # test needs; tgt_gray.shape = target source canvas.
+        if _is_near_180(M2, src_shape=tgt_gray.shape[:2]):
+            tgt_img = np.ascontiguousarray(tgt_img[::-1, ::-1]) if tgt_img.ndim == 2 \
+                        else np.ascontiguousarray(tgt_img[::-1, ::-1, :])
+            tgt_gray = np.ascontiguousarray(tgt_gray[::-1, ::-1])
+            tgt_small = tgt_gray
+            transform_obj, _pts = aa_find_transform_with_backoff(tgt_small, ref_small)
+            M2 = np.array(transform_obj.params[0:2, :], dtype=np.float64)
+
         # ---------- warp target like reference size ----------
         ref_h, ref_w = ref_gray.shape[:2]
         aligned = _warp_like_ref(tgt_img, M2, (ref_h, ref_w)).astype(np.float32, copy=False)
@@ -1902,6 +1920,45 @@ class StellarAlignmentDialog(QDialog):
             src_xy = np.asarray(src_pts_s, dtype=np.float32)
             tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
 
+            # Meridian-flip pre-rotate.
+            # Astroalign finds correct ~180° correspondences for a flipped
+            # pair, but its similarity LS fit then carries a fractional-
+            # degree rotation residual pulled by sub-pixel centroid noise.
+            # The downstream Lanczos warp of that near-180° rotation is
+            # what gives the "almost right" ghosting on stacked, flipped
+            # halves. Fix: if the solve reports a rotation in the 180°
+            # window, physically rotate the target buffers with
+            # np.rot90(..., 2) (bit-exact, no interpolation) and redo the
+            # solve. The downstream warp then only resamples a sub-pixel
+            # residual.
+            try:
+                _P = np.asarray(transform_obj.params, dtype=np.float64)
+                _A = _P[:2, :3] if _P.shape == (3, 3) else np.asarray(_P, np.float64).reshape(2, 3)
+            except Exception:
+                _A = None
+            # Both signals active: rotation window OR huge translation. The
+            # second signal is what catches the case where the solver fell
+            # back to a translation-dominated solution and the rotation
+            # reading alone would miss it.
+            if _A is not None and _is_near_180(_A, src_shape=tgt_gray.shape[:2]):
+                self.status_label.setText(
+                    "Meridian flip detected — pre-rotating target 180° and re-solving…")
+                QApplication.processEvents()
+                tgt = np.ascontiguousarray(tgt[::-1, ::-1]) if tgt.ndim == 2 \
+                        else np.ascontiguousarray(tgt[::-1, ::-1, :])
+                tgt_gray = np.ascontiguousarray(tgt_gray[::-1, ::-1])
+                tgt_small = tgt_gray  # downsample stage currently off in dialog
+                try:
+                    transform_obj, (src_pts_s, tgt_pts_s) = \
+                        self.aa_find_transform_with_backoff(tgt_small, src_small)
+                except Exception as e:
+                    QMessageBox.warning(
+                        self, "Alignment Error",
+                        f"Re-solve after meridian pre-rotation failed: {e}")
+                    return
+                src_xy = np.asarray(src_pts_s, dtype=np.float32)
+                tgt_xy = np.asarray(tgt_pts_s, dtype=np.float32)
+
         src_xy, tgt_xy = _cap_points(src_xy, tgt_xy, max_cp)
 
         # If we solved on a downsampled pair, re-fit transform at full resolution for accuracy
@@ -2166,6 +2223,208 @@ def downscale_affine_2x3_to_ds(A_full_2x3: np.ndarray, ds: float) -> np.ndarray:
 def lift_homography_from_ds(H_ds: np.ndarray, ds: float) -> np.ndarray:
     S = _S(ds); Si = np.linalg.inv(S)
     return Si @ np.asarray(H_ds, np.float64) @ S
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Meridian-flip aware solve
+#
+# A GEM meridian flip is a pure 180° rotation (det=+1, no reflection).
+# Astroalign's invariants + parity-aware RANSAC find the correct
+# correspondences, but the final similarity LS fit is biased by
+# sub-pixel centroid noise: for θ≈180° the sin(θ) component is tiny
+# and gets pulled by noise, giving a fractional-degree rotation
+# residual. Lanczos resampling of a near-180° rotation then imprints
+# a per-frame PSF variation across the frame (bigger at the edges
+# than at the center), which stacks into the "almost right" ghosting
+# we see on flipped halves.
+#
+# Fix: if the solve reports a rotation in a 180° window, redo the
+# solve on np.rot90(src, 2) — a bit-exact point reflection — and
+# compose T_final = T_residual @ T_180. Astroalign then only has to
+# recover a small residual, and the finalize warp performs a single
+# sub-pixel resample instead of a full 180° rotation on top of the
+# refinement.
+# ─────────────────────────────────────────────────────────────────────
+
+# Rotation window (deg) that triggers meridian-flip pre-rotate.
+# Loose enough to catch real-world flips that come back at 178° or
+# 181° if the OTA isn't perfectly orthogonal to the mount. The cost of
+# a false trigger is one extra solve pass; the composed transform is
+# numerically identical to the direct solve, so correctness is unaffected.
+_MERIDIAN_LOW_DEG  = 150.0
+_MERIDIAN_HIGH_DEG = 210.0
+
+# Fraction of (W, H) that |tx|, |ty| must EACH exceed for the translation
+# test to flag a flip. A pure 180° point reflection in an H×W canvas
+# produces tx ≈ (W - 1) and ty ≈ (H - 1), so magnitudes close to 1.0*W/H.
+# A normal frame-to-frame drift is a few hundred px — well under 0.5
+# fractions of the canvas even on short-focal rigs. 0.5 is wide enough
+# to catch borderline cases where the solver absorbed part of the flip
+# into translation and the rotation reading is weak, and narrow enough
+# that a real wide drift (dithering, re-centering between runs) will
+# not false-trigger.
+_MERIDIAN_TRANSLATION_FRAC = 0.5
+
+
+def _rot_angle_deg_2x3(T2x3: np.ndarray) -> float:
+    """
+    Dominant rotation angle (deg, signed) of a 2x3 affine. Robust to
+    uniform scale; for a mild shear the atan2 of the (sin, cos)
+    components still returns a value close to the true orientation,
+    which is all we need for the 180° window test.
+    """
+    A = np.asarray(T2x3, np.float64).reshape(2, 3)
+    return float(np.degrees(np.arctan2(A[1, 0], A[0, 0])))
+
+
+def _translation_magnitudes(T2x3: np.ndarray) -> tuple[float, float]:
+    """Return (|tx|, |ty|) from a 2x3 affine."""
+    A = np.asarray(T2x3, np.float64).reshape(2, 3)
+    return float(abs(A[0, 2])), float(abs(A[1, 2]))
+
+
+def _is_near_180(T2x3: np.ndarray,
+                 src_shape: tuple | None = None,
+                 translation_frac: float = _MERIDIAN_TRANSLATION_FRAC) -> bool:
+    """
+    True iff T encodes a near-180° rotation OR a translation large enough
+    that it can only be explained by one.
+
+    Two orthogonal signals, OR-ed together:
+
+    1. Rotation window. |atan2(a10, a00)| in [150°, 210°] catches the
+       straightforward case: solver recovered the ~180° rotation cleanly.
+       The LS fit's sub-pixel residual on sin(θ)/cos(θ) does not move the
+       dominant angle out of this window — a near-180° result reads near
+       180° in atan2 regardless of the fractional-degree bias.
+
+    2. Translation-magnitude test (only when src_shape is provided).
+       A 2x3 that maps source pixel x -> ref pixel y via y = A·x + t,
+       applied to the image center (W/2, H/2) with a point reflection
+       (a00 ≈ -1, a11 ≈ -1), gives y_center ≈ -x_center + t, so the
+       translation vector must be roughly (W, H) in magnitude to bring
+       the reflected image back onto the ref canvas. A normal frame-pair
+       alignment has |t| of order a few hundred px even for aggressive
+       dithering — nowhere near 0.5*W or 0.5*H on real sensors.
+
+       The translation-magnitude test is the backup signal for the case
+       the user described: when the solver gets confused on a flipped
+       pair and returns something where the rotation reading is weak or
+       absorbed into translation. If |tx| > frac*W AND |ty| > frac*H
+       (both axes), it's a meridian flip and nothing else — no legitimate
+       frame-pair alignment produces that.
+
+    When src_shape is None, only the rotation window applies (back-
+    compatible with earlier call sites and with cases where we don't
+    know the canvas size for ratio-ing).
+    """
+    if T2x3 is None:
+        return False
+    try:
+        # Signal 1: rotation window
+        if _MERIDIAN_LOW_DEG <= abs(_rot_angle_deg_2x3(T2x3)) <= _MERIDIAN_HIGH_DEG:
+            return True
+        # Signal 2: translation that can only be explained by a point
+        # reflection in the canvas. Both axes must be well above the
+        # threshold — a wide one-axis drift (e.g. a mosaic step) will
+        # fail the AND and not false-trigger.
+        if src_shape is not None:
+            H = int(src_shape[0]); W = int(src_shape[1])
+            tx, ty = _translation_magnitudes(T2x3)
+            if tx > translation_frac * W and ty > translation_frac * H:
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _rot180_affine_2x3(H: int, W: int) -> np.ndarray:
+    """
+    2x3 that reproduces np.rot90(img, 2) exactly for an H×W image:
+    new_x = (W-1) - x, new_y = (H-1) - y.
+
+    This is a bit-exact point reflection — no interpolation, no bias.
+    Composing a solver's near-180° result with this inverse means the
+    downstream Lanczos warp performs a single sub-pixel resample
+    instead of a near-180° rotation that would carry per-frame PSF
+    drift across the stack.
+    """
+    return np.array([[-1.0, 0.0, float(W - 1)],
+                     [0.0, -1.0, float(H - 1)]], dtype=np.float64)
+
+
+def _compose_affine_2x3(A2x3: np.ndarray, B2x3: np.ndarray) -> np.ndarray:
+    """Return A ∘ B as 2x3 (apply B first, then A)."""
+    A3 = np.vstack([np.asarray(A2x3, np.float64).reshape(2, 3), [0, 0, 1]])
+    B3 = np.vstack([np.asarray(B2x3, np.float64).reshape(2, 3), [0, 0, 1]])
+    return (A3 @ B3)[:2, :]
+
+
+def _solve_with_meridian_check(src_gray: np.ndarray,
+                               ref_gray: np.ndarray,
+                               solver,
+                               *,
+                               log=None) -> np.ndarray | None:
+    """
+    Run `solver(src, ref) -> 2x3 or None`. If the result is a near-180°
+    rotation (meridian flip), redo the solve on np.rot90(src, 2) and
+    fold the pre-rotation back in so the returned 2x3 still maps
+    ORIGINAL src coords -> ref coords.
+
+    Rationale: the triangle+vote stage recovers the correct 180°
+    correspondences, but a least-squares similarity fit biased by
+    sub-pixel centroid noise leaves a fractional-degree rotation
+    residual. Lanczos resampling of that near-180° rotation then
+    imprints a position-dependent PSF variation per frame that stacks
+    into visible ghosting on flipped halves. Pre-rotating the source
+    with a bit-exact np.rot90 collapses the warp pass to a sub-pixel
+    residual correction, which the resampler handles cleanly and
+    uniformly across the stack.
+
+    Returns a 2x3 (same contract as `solver`) or None if both
+    attempts fail.
+    """
+    Hs, Ws = src_gray.shape[:2]
+    T = solver(src_gray, ref_gray)
+    # Pass the SOURCE canvas size so both signals (rotation AND
+    # translation-magnitude) are active. The translation test is the
+    # one that catches the case where the solver absorbed the flip
+    # into translation and the rotation reading alone is weak —
+    # for example, a huge |tx|≈W, |ty|≈H transform with a0,a00 that
+    # read closer to 0° than 180° because of RANSAC bias.
+    if T is None or not _is_near_180(T, src_shape=(Hs, Ws)):
+        return T
+
+    # Bit-exact point reflection: no kernel, no interpolation, no bias.
+    src_rot = np.ascontiguousarray(src_gray[::-1, ::-1])
+    T_resid = solver(src_rot, ref_gray)
+    if T_resid is None:
+        # Pre-rotate path couldn't find a solve at all — keep the
+        # original. We don't want to turn a solved frame into a
+        # dropped one just because the fallback path failed.
+        if log:
+            try:
+                log("[meridian-flip] detected, but pre-rotated solve "
+                    "failed; keeping original transform")
+            except Exception:
+                pass
+        return T
+
+    T_180 = _rot180_affine_2x3(Hs, Ws)
+    T_final = _compose_affine_2x3(T_resid, T_180)
+
+    if log:
+        try:
+            orig_ang  = _rot_angle_deg_2x3(T)
+            orig_tx, orig_ty = _translation_magnitudes(T)
+            resid_ang = _rot_angle_deg_2x3(T_resid)
+            log(f"[meridian-flip] detected (rot={orig_ang:+.2f}°, "
+                f"|t|=({orig_tx:.0f}, {orig_ty:.0f}) px on {Ws}x{Hs} canvas); "
+                f"residual after pre-rot = {resid_ang:+.3f}°, "
+                f"translation = ({T_resid[0,2]:+.2f}, {T_resid[1,2]:+.2f}) px")
+        except Exception:
+            pass
+    return T_final
 
 
 def compute_affine_transform_astroalign_cropped(source_img, reference_img,
@@ -2717,36 +2976,65 @@ def _solve_delta_job(args):
         # is shared across workers and only the crop is materialized downstream.
         ref_for_match_ds = np.load(ref_ds_npy, mmap_mode="r")
 
-        # 5) AA delta solve in DS space
+        # 5) AA delta solve in DS space (with meridian-flip pre-rotate).
+        #    A GEM meridian flip stacks the "near-180° residual bias" on top
+        #    of whatever this refinement pass would otherwise contribute, so
+        #    we wrap the solve call: if the solver reports a rotation in the
+        #    180° window, we redo the solve on np.rot90(src, 2) and compose
+        #    the result with a bit-exact 180° matrix. The returned 2x3 still
+        #    maps original src -> ref, so the lift-to-full-res code below
+        #    needs no change. See _solve_with_meridian_check.
         m = (model or "affine").lower()
         if m in ("no_distortion", "nodistortion"):
             m = "similarity"
 
+        _limit = int(limit_stars) if limit_stars is not None else None
+
         if m == "similarity":
-            tform_ds = compute_similarity_transform_astroalign_cropped(
-                src_for_match_ds, ref_for_match_ds,
-                limit_stars=int(limit_stars) if limit_stars is not None else None,
-                det_sigma=float(det_sigma),
-                minarea=int(minarea),
-                h_reproj=float(h_reproj),
-                min_fwhm=float(min_fwhm),
-                max_ellipticity=float(max_ellipticity),
-            )
+            def _solver(_src, _ref):
+                return compute_similarity_transform_astroalign_cropped(
+                    _src, _ref,
+                    limit_stars=_limit,
+                    det_sigma=float(det_sigma),
+                    minarea=int(minarea),
+                    h_reproj=float(h_reproj),
+                    min_fwhm=float(min_fwhm),
+                    max_ellipticity=float(max_ellipticity),
+                )
         else:
-            tform_ds = compute_affine_transform_astroalign_cropped(
-                src_for_match_ds, ref_for_match_ds,
-                limit_stars=int(limit_stars) if limit_stars is not None else None,
-                det_sigma=float(det_sigma),
-                minarea=int(minarea),
-                min_fwhm=float(min_fwhm),
-                max_ellipticity=float(max_ellipticity),
-            )
+            def _solver(_src, _ref):
+                return compute_affine_transform_astroalign_cropped(
+                    _src, _ref,
+                    limit_stars=_limit,
+                    det_sigma=float(det_sigma),
+                    minarea=int(minarea),
+                    min_fwhm=float(min_fwhm),
+                    max_ellipticity=float(max_ellipticity),
+                )
+
+        # Silent meridian-flip handling. _solve_with_meridian_check performs
+        # the solve, inspects the rotation, and if it's near-180° redoes it
+        # on a bit-exact np.rot90 of the DS source then returns the composed
+        # transform. No logging callback — the orchestrator's existing per-
+        # frame progress line (dx/dy of the delta) is what the stacking UI
+        # displays; the flip is baked into the returned 2x3 and lifted to
+        # full-res below, so the stored transform IS the complete
+        # source->ref mapping. Drizzle and the .sasd writer read this
+        # composed matrix downstream, never the pre-flip residual.
+        tform_ds = _solve_with_meridian_check(
+            src_for_match_ds, ref_for_match_ds, _solver,
+        )
 
         if tform_ds is None:
             return (orig_path, None,
                     f"Astroalign failed for {os.path.basename(orig_path)} – skipping (no transform returned)")
 
-        # 6) lift DS delta back to full-res coords
+        # 6) lift DS delta back to full-res coords. The lift is linear and
+        # preserves the composed structure: a near-180° T_resid combined
+        # with a DS-canvas T_180 lifts to a full-res matrix that encodes
+        # the same reflection in full-res source coords (ref and source
+        # canvases match in dimensions for a meridian flip on the same
+        # scope, so the DS-vs-full lift is well-defined here).
         T_new_full = lift_affine_2x3_from_ds(np.asarray(tform_ds, np.float64).reshape(2, 3), ds)
 
         return (orig_path, np.asarray(T_new_full, np.float64).reshape(2, 3), None)
@@ -2971,6 +3259,19 @@ def _finalize_write_job(args):
 
             AA_SCALE = 0.80
 
+            # Meridian-flip guard. By the time finalize runs, A_prev
+            # usually already carries any 180° composition that pass 0
+            # applied (via _solve_with_meridian_check in _solve_delta_job),
+            # so src_pre_ds is near-identity vs ref_ds. The guard still
+            # matters when refinement is disabled (max_refinement_passes=0)
+            # or if pass 0's meridian catch missed, which would leave
+            # the full 180° in src_pre_ds. We do one correspondence pass,
+            # inspect the implied rotation, and if it falls in the 180°
+            # window we pre-rotate src_pre_ds in-place with np.rot90 and
+            # retry — bit-exactly, no interpolation. The downstream RANSAC
+            # fit will then see a near-identity residual, which the Lanczos
+            # pass can resample without the position-dependent PSF drift
+            # that makes 180° warps stack poorly.
             src_xy, tgt_xy, best_P, best_xy0 = _aa_find_pairs_multitile(
                 src_pre_ds, ref_ds,
                 scale=AA_SCALE,
@@ -2980,6 +3281,41 @@ def _finalize_write_job(args):
                 max_control_points=max_cp,
                 _dbg=dbg
             )
+
+            # If the initial correspondence set implies a ~180° rotation
+            # OR a translation too big to be anything else, pre-rotate the
+            # pre-warped source and solve again. Then rewrite A_prev /
+            # A_prev3 so the composition logic below applies the 180°
+            # exactly once, as part of the delta. src_pre_ds is in ref DS
+            # canvas coords, so its shape is what the translation test
+            # ratios against.
+            _flip_applied = False
+            if (src_xy is not None and len(src_xy) >= 8
+                    and best_P is not None
+                    and _is_near_180(np.asarray(best_P)[:2, :],
+                                     src_shape=src_pre_ds.shape[:2])):
+                dbg("[finalize] near-180° detected in pre-warped src -> ref; "
+                    "applying bit-exact np.rot90 and re-solving")
+                src_pre_ds = np.ascontiguousarray(src_pre_ds[::-1, ::-1])
+                # Compose A_prev with the full-res 180° so the finalize path
+                # downstream (which composes A_prev with the recovered delta)
+                # bakes the point reflection into the stored transform.
+                Hsrc_full, Wsrc_full = src_gray_full.shape[:2]
+                T_180_full = _rot180_affine_2x3(Hsrc_full, Wsrc_full)
+                A_prev = _compose_affine_2x3(A_prev, T_180_full)
+                A_prev3 = _A3(A_prev)
+                src_xy, tgt_xy, best_P, best_xy0 = _aa_find_pairs_multitile(
+                    src_pre_ds, ref_ds,
+                    scale=AA_SCALE,
+                    tiles=1,
+                    det_sigma=float(det_sigma),
+                    minarea=int(minarea),
+                    max_control_points=max_cp,
+                    _dbg=dbg
+                )
+                _flip_applied = True
+                dbg("[finalize] re-solve after np.rot90 complete")
+
             if src_xy is None or len(src_xy) < 8:
                 raise RuntimeError("astroalign produced too few matches (finalize)")
 

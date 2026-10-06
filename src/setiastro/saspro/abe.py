@@ -31,7 +31,8 @@ from PyQt6.QtCore import Qt, QSize, QEvent, QPointF, QTimer, QSettings, QByteArr
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
-    QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton, QDoubleSpinBox
+    QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton, QDoubleSpinBox,
+    QSlider, QProgressBar
 )
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QIcon
 from PyQt6 import sip
@@ -632,6 +633,185 @@ def _asfloat32(x: np.ndarray) -> np.ndarray:
     a = np.asarray(x)                  # zero-copy view when possible
     return a if a.dtype == np.float32 else a.astype(np.float32, copy=False)
 
+
+class _ProtectPreviewDialog(QDialog):
+    """
+    Live preview of the median + k*MAD signal-protection mask.
+
+    Shows an autostretched, downsampled copy of the image with the protected
+    pixels tinted (red overlay) so the user can see exactly what each k value
+    catches. The slider is debounced so dragging stays smooth; the mask is
+    rebuilt on a short timer after the last movement. OK returns the chosen k.
+    """
+    def __init__(self, parent, img_small: np.ndarray, *, k_init=3.0,
+                 grow=6, blur_px=8.0, exclusion_overlay=None):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Protection mask preview (median + k·MAD)"))
+        self.setModal(True)
+        self._img = np.clip(np.asarray(img_small, dtype=np.float32), 0.0, 1.0)
+        # Hand-drawn exclusion region (1 inside drawn polygons), same HxW as the
+        # preview image, composited in green. None if no polygons were drawn.
+        self._excl = None
+        if exclusion_overlay is not None:
+            try:
+                eo = np.asarray(exclusion_overlay, dtype=np.float32)
+                if eo.shape[:2] == self._img.shape[:2]:
+                    self._excl = np.clip(eo, 0.0, 1.0)
+            except Exception:
+                self._excl = None
+        self._grow = int(grow)
+        self._blur_px = float(blur_px)
+        self._k = float(k_init)
+
+        # Luminance for the mask + an autostretched RGB base for display.
+        if self._img.ndim == 2:
+            self._luma = self._img
+            base = self._img
+        elif self._img.ndim == 3 and self._img.shape[2] == 1:
+            self._luma = self._img[..., 0]
+            base = self._img[..., 0]
+        else:
+            self._luma = (0.2126 * self._img[..., 0] + 0.7152 * self._img[..., 1]
+                          + 0.0722 * self._img[..., 2]).astype(np.float32)
+            base = self._img
+        try:
+            disp = hard_autostretch(base, target_median=0.5, sigma=2,
+                                    linked=False, use_24bit=True)
+            disp = np.asarray(disp, dtype=np.float32)
+        except Exception:
+            disp = np.clip(base, 0.0, 1.0)
+        if disp.ndim == 2:
+            disp = np.repeat(disp[..., None], 3, axis=2)
+        elif disp.ndim == 3 and disp.shape[2] == 1:
+            disp = np.repeat(disp, 3, axis=2)
+        self._disp8 = np.ascontiguousarray((np.clip(disp, 0, 1) * 255).astype(np.uint8))
+
+        v = QVBoxLayout(self)
+        self.lbl_img = QLabel(alignment=Qt.AlignmentFlag.AlignCenter)
+        self.lbl_img.setMinimumSize(QSize(420, 300))
+        v.addWidget(self.lbl_img, 1)
+
+        row = QHBoxLayout()
+        row.addWidget(QLabel(self.tr("Protect k (MAD):")))
+        self.sld = QSlider(Qt.Orientation.Horizontal)
+        self.sld.setRange(10, 50)          # 1.0 .. 5.0 in 0.1 steps
+        self.sld.setValue(int(round(self._k * 10)))
+        self.sld.setSingleStep(1)
+        self.sld.setPageStep(5)
+        row.addWidget(self.sld, 1)
+        self.lbl_k = QLabel(f"{self._k:.1f}")
+        self.lbl_k.setMinimumWidth(32)
+        row.addWidget(self.lbl_k)
+        v.addLayout(row)
+
+        self.lbl_stat = QLabel("")
+        self.lbl_stat.setStyleSheet("color:#888; font-size:11px;")
+        v.addWidget(self.lbl_stat)
+
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        self.btn_ok = QPushButton(self.tr("Use this k"))
+        self.btn_cancel = QPushButton(self.tr("Cancel"))
+        self.btn_ok.clicked.connect(self.accept)
+        self.btn_cancel.clicked.connect(self.reject)
+        btns.addWidget(self.btn_ok); btns.addWidget(self.btn_cancel)
+        v.addLayout(btns)
+
+        # Debounce: rebuild the mask ~120 ms after the last slider movement.
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.setInterval(120)
+        self._debounce.timeout.connect(self._rebuild_mask)
+        self.sld.valueChanged.connect(self._on_slider)
+
+        self.resize(560, 460)
+        self._rebuild_mask()   # initial render
+
+    def selected_k(self) -> float:
+        return self.sld.value() / 10.0
+
+    def _on_slider(self, v):
+        self.lbl_k.setText(f"{v/10.0:.1f}")
+        self._debounce.start()   # restart the debounce window
+
+    # ---- preview tunables (tweak these two) --------------------------------
+    # How much lower than the chosen k the DISPLAYED threshold is drawn. The
+    # applied mask is dilated+blurred so it covers more than the bare threshold;
+    # showing k - this makes the red footprint read closer to reality. Does NOT
+    # change the committed k (slider value / selected_k stay honest).
+    PREVIEW_K_FUDGE = 1
+    # Opacity of the red protection overlay, 0..1. ~0.9 = near-opaque.
+    PREVIEW_OVERLAY_ALPHA = 0.90
+    # ------------------------------------------------------------------------
+
+    def _rebuild_mask(self):
+        k = self.sld.value() / 10.0
+        # Show the RAW median+k*MAD threshold (no dilate/blur): that's the part
+        # k actually controls, so moving the slider gives obvious visual
+        # feedback. The run-time dilate+blur is a fixed post-process and would
+        # only wash out the k response here. The DISPLAYED threshold is nudged
+        # down by PREVIEW_K_FUDGE so the footprint approximates the applied,
+        # dilated+blurred coverage. Slider value / selected_k() stay honest.
+        k_show = max(1.0, k - self.PREVIEW_K_FUDGE)
+        med = float(np.median(self._luma))
+        mad = float(np.median(np.abs(self._luma - med))) * 1.4826
+        if mad <= 0:
+            mad = 1e-6
+        m = (self._luma > (med + k_show * mad)).astype(np.float32)
+        m = np.clip(m, 0.0, 1.0)
+
+        # Composite: base image with a near-opaque red tint where the MAD mask
+        # is, then a green tint where the hand-drawn exclusion zones are (both
+        # get protected at apply time; green distinguishes the drawn regions).
+        out = self._disp8.astype(np.float32)
+        alpha = float(self.PREVIEW_OVERLAY_ALPHA)
+        a = m[..., None] * alpha
+        red = np.array([230.0, 60.0, 60.0], dtype=np.float32)
+        out = out * (1.0 - a) + red * a
+        if self._excl is not None:
+            ag = self._excl[..., None] * alpha
+            green = np.array([60.0, 200.0, 90.0], dtype=np.float32)
+            out = out * (1.0 - ag) + green * ag
+        out = np.ascontiguousarray(np.clip(out, 0, 255).astype(np.uint8))
+
+        h, w, _ = out.shape
+        qimg = QImage(out.data, w, h, out.strides[0], QImage.Format.Format_RGB888)
+        self._comp8 = out  # keep ref alive
+        pm = QPixmap.fromImage(qimg)
+        # fit to the label
+        target = self.lbl_img.size()
+        pm = pm.scaled(target, Qt.AspectRatioMode.KeepAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+        self.lbl_img.setPixmap(pm)
+
+        frac = float(m.mean()) * 100.0
+        if self._excl is not None:
+            self.lbl_stat.setText(
+                f"k = {k:.1f}  →  {frac:.1f}% protected by MAD (red). "
+                f"Drawn exclusions shown in green. Lower k protects more."
+            )
+        else:
+            self.lbl_stat.setText(
+                f"k = {k:.1f}  →  {frac:.1f}% of pixels protected (shown in red). "
+                f"Lower k protects more; higher k protects only the brightest cores."
+            )
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # Re-fit the current composite to the new label size.
+        try:
+            if getattr(self, "_comp8", None) is not None:
+                out = self._comp8
+                h, w, _ = out.shape
+                qimg = QImage(out.data, w, h, out.strides[0], QImage.Format.Format_RGB888)
+                pm = QPixmap.fromImage(qimg).scaled(
+                    self.lbl_img.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+                self.lbl_img.setPixmap(pm)
+        except Exception:
+            pass
+
+
 class ABEDialog(QDialog):
     """
     Non-destructive preview with polygon exclusions and optional RBF stage.
@@ -903,6 +1083,15 @@ class ABEDialog(QDialog):
         ms_grid.setColumnStretch(4, 1)
         ms_grid_wrap = QWidget(); ms_grid_wrap.setLayout(ms_grid)
         ms_layout.addRow(ms_grid_wrap)
+
+        self.btn_ms_preview_k = QPushButton(self.tr("Preview protection…"))
+        self.btn_ms_preview_k.setToolTip(
+            "Open a live preview of the median + k·MAD protection mask overlaid\n"
+            "on a downsampled copy of the image. Drag the slider to see exactly\n"
+            "what each k value protects, then apply it back to Protect k."
+        )
+        self.btn_ms_preview_k.clicked.connect(self._open_protect_preview)
+        ms_layout.addRow(self.btn_ms_preview_k)
 
         # --- Advanced (collapsed): the three blur knobs most users never touch.
         #     They act on three DIFFERENT things at three different stages:
@@ -1644,6 +1833,14 @@ class ABEDialog(QDialog):
                 include_residual = bool(self.chk_ms_residual.isChecked())
                 use_darkstar = bool(self.chk_ms_darkstar.isChecked())
 
+                # The protection mask is built on the STAR-INCLUSIVE image
+                # (post-ADBE, pre-star-removal) so stars, star-removal residuals,
+                # and real signal are all protected regardless of how well
+                # DarkStar worked. The gradient BAND is still estimated on the
+                # starless copy below. Snapshot the star-inclusive image now,
+                # before DarkStar replaces estimate_from.
+                mask_from = corrected
+
                 # Estimate on a starless copy when DarkStar is available/enabled.
                 estimate_from = corrected
                 if use_darkstar:
@@ -1725,6 +1922,7 @@ class ABEDialog(QDialog):
                 _ms_result = multiscale_gradient_correct(
                     corrected,
                     estimate_from=estimate_from,
+                    mask_from=mask_from,
                     layers=layers,
                     base_sigma=1.0,
                     band_lo=band_lo,
@@ -1857,6 +2055,121 @@ class ABEDialog(QDialog):
             }
 
         return params
+
+    def _open_protect_preview(self):
+        """
+        Open the live median+k*MAD protection-mask preview.
+
+        Mirrors the real pipeline: the mask runs on the ADBE-flattened image,
+        so we run the normal background removal FIRST on a downsampled copy and
+        build the preview on that result. Previewing on the raw image would show
+        the mask protecting the bright side of the still-present large gradient
+        instead of the actual stars and signal.
+
+        On OK the chosen k is written back into the Protect-k control.
+        """
+        src = self._get_source_float()
+        if src is None:
+            QMessageBox.information(self, "Preview protection", "No active image.")
+            return
+
+        # Downsample for responsiveness (cap the long side ~900 px).
+        try:
+            h, w = src.shape[:2]
+            scale = max(1, int(np.ceil(max(h, w) / 900.0)))
+            small = _downsample_area(src, scale) if scale > 1 else src
+        except Exception:
+            small = src
+            scale = 1
+
+        # Hand-drawn exclusion polygons are ALSO protected at apply time (they
+        # composite back from the original), so overlay them in the preview too
+        # — shown in green to distinguish from the red MAD mask. Downsample the
+        # excluded region (~excl mask) to match the preview image.
+        excl_overlay = None
+        try:
+            excl = self._build_exclusion_mask()   # True=sample / False=excluded
+            if excl is not None:
+                drawn = (~excl).astype(np.float32)  # 1 inside the drawn polygons
+                if scale > 1:
+                    drawn = _downsample_area(drawn, scale)
+                drawn = (drawn >= 0.5).astype(np.float32)
+                if drawn.any():
+                    excl_overlay = drawn
+        except Exception:
+            excl_overlay = None
+
+        # Run the SAME ADBE the user has configured, on the small copy, so the
+        # preview mask sees the flattened background the real mask will see.
+        self._set_status("Preview: running ADBE for protection preview…")
+
+        # Small modal splash — the ADBE pass runs synchronously on the GUI
+        # thread and can take a few seconds, so show a "computing" dialog first
+        # (and force it to paint) so the UI doesn't look frozen.
+        splash = QDialog(self)
+        splash.setWindowTitle(self.tr("Protection preview"))
+        splash.setModal(True)
+        try:
+            splash.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        except Exception:
+            pass
+        _sv = QVBoxLayout(splash)
+        _sv.setContentsMargins(20, 18, 20, 18)
+        _lbl = QLabel(self.tr("Computing protection preview…\nRunning background extraction."))
+        _lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        _sv.addWidget(_lbl)
+        _pb = QProgressBar()
+        _pb.setRange(0, 0)   # indeterminate "busy" bar
+        _pb.setTextVisible(False)
+        _sv.addWidget(_pb)
+        splash.setFixedWidth(300)
+        splash.show()
+        splash.raise_()
+        # Force the splash to actually paint before the blocking compute.
+        QApplication.processEvents()
+        QApplication.processEvents()
+
+        flattened = small
+        try:
+            deg        = int(self.sp_degree.value())
+            npts       = int(self.sp_samples.value())
+            dwn        = int(self.sp_down.value())
+            patch      = int(self.sp_patch.value())
+            use_rbf    = bool(self.chk_use_rbf.isChecked())
+            rbf_smooth = float(self.sp_rbf.value()) * 0.01
+            seed       = int(self.sp_seed.value())
+            correction_mode = "divide" if self.radio_divide.isChecked() else "subtract"
+            rng = np.random.default_rng(seed if seed >= 0 else None)
+            # The small image is already downsampled; use a light internal
+            # downsample so the fit stays quick but valid.
+            flattened = abe_run(
+                small,
+                degree=deg, num_samples=npts, downsample=max(2, min(dwn, 4)),
+                patch_size=patch, use_rbf=use_rbf, rbf_smooth=rbf_smooth,
+                exclusion_mask=None, return_background=False,
+                correction_mode=correction_mode, rng=rng,
+            )
+        except Exception as e:
+            if hasattr(self._main, "_log"):
+                self._main._log(f"[Protect preview] ADBE pass failed ({e}); "
+                                f"previewing on raw image.")
+            flattened = small
+        finally:
+            try:
+                splash.close()
+                splash.deleteLater()
+            except Exception:
+                pass
+            self._set_status("Ready")
+            QApplication.processEvents()
+
+        dlg = _ProtectPreviewDialog(self, flattened, k_init=float(self.sp_ms_protect.value()),
+                                    grow=6, blur_px=float(self.sp_ms_sigblur.value()),
+                                    exclusion_overlay=excl_overlay)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            k = dlg.selected_k()
+            k = max(1.0, min(5.0, float(k)))
+            self.sp_ms_protect.setValue(k)
 
     def _degree_changed(self, v: int):
         # Make it clear what 0 means, and default RBF on (can still be unchecked)
