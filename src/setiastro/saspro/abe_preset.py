@@ -204,6 +204,9 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
         try:
             layers = max(ms_cfg["band_hi"] + 1, 9)
 
+            # Protection mask from the star-inclusive image (see dialog path);
+            # gradient band still estimated on the starless copy below.
+            mask_from = corrected
             estimate_from = corrected
             if ms_cfg["darkstar"]:
                 try:
@@ -228,6 +231,7 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
             corrected = multiscale_gradient_correct(
                 corrected,
                 estimate_from=estimate_from,
+                mask_from=mask_from,
                 layers=layers,
                 base_sigma=1.0,
                 band_lo=ms_cfg["band_lo"],

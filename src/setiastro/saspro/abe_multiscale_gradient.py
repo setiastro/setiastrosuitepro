@@ -235,7 +235,12 @@ def _inpaint_fill(img2d, mask, blur, iters=12, sigma=6.0):
 def multiscale_gradient_correct(
     target_image,
     *,
-    estimate_from=None,
+    estimate_from=None,   # image the GRADIENT BAND is estimated on (starless):
+                          # keeps point sources out of the mid-scale structure
+    mask_from=None,       # image the PROTECTION MASK is built on (star-INCLUSIVE
+                          # preferred): catches stars, star-removal residuals,
+                          # and real extended signal, so none of it leaks into
+                          # the estimate. Defaults to estimate_from, then target.
     layers=9,
     base_sigma=1.0,
     band_lo=6,
@@ -318,12 +323,32 @@ def multiscale_gradient_correct(
     _say("Downscaling for gradient estimate...")
     luma_s = _downscale(luma_full, ds)
 
+    # Luminance for the PROTECTION MASK, from mask_from (star-inclusive image)
+    # when supplied — so stars, star-removal residuals, and real signal are all
+    # caught and kept out of the estimate, independent of how well star removal
+    # worked. Falls back to the starless estimate luma if no separate mask image
+    # is given.
+    if mask_from is not None:
+        mk = np.asarray(mask_from, dtype=np.float32)
+        if mk.ndim == 2:
+            mask_luma_full = mk
+        elif mk.ndim == 3 and mk.shape[2] == 1:
+            mask_luma_full = mk[..., 0]
+        else:
+            mask_luma_full = (0.2126 * mk[..., 0] + 0.7152 * mk[..., 1]
+                              + 0.0722 * mk[..., 2]).astype(np.float32)
+        mask_luma_full = np.nan_to_num(mask_luma_full, nan=0.0, posinf=0.0,
+                                       neginf=0.0).astype(np.float32)
+        mask_luma_s = _downscale(mask_luma_full, ds)
+    else:
+        mask_luma_s = luma_s
+
     _say("Building signal-protection mask (median + k*MAD, dilated + blurred)...")
     # Soft float mask in [0,1]: threshold -> dilate (protect_grow) -> blur
     # (protect_blur_px). Blur scales down with the estimate downsample so the
     # softening is the same effective radius at full res.
     sig_blur = float(protect_blur_px) / float(ds) if ds > 1 else float(protect_blur_px)
-    sig_mask_s = build_signal_mask(luma_s, k=protect_k, grow=protect_grow,
+    sig_mask_s = build_signal_mask(mask_luma_s, k=protect_k, grow=protect_grow,
                                    blur_px=sig_blur, blur=blur)
     # Boolean hole set (for the inpaint + iteration estimate): anything the
     # soft mask flags at all. A low threshold keeps the generous dilated
