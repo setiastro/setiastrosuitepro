@@ -8646,10 +8646,8 @@ class StackingSuiteDialog(QDialog):
         self.align_downsample.setValue(self.settings.value("stacking/align/downsample", 3, type=int))
         self.align_downsample.setToolTip(
             self.tr("Solve grid downsample factor (source size / N).\n"
-            "Default 3 works for most setups. Lower (e.g. 2) gives a finer "
-            "solve grid — try this if you see double stars / a bimodal "
-            "registration error on high-resolution sensors, especially "
-            "with meridian-flipped frames. Higher values are faster but "
+            "Default 3 works for most setups. Lower gives a finer "
+            "solve grid but is slower. Higher values are faster but "
             "coarser.")
         )
         disto_form.addRow(self.tr("Solve grid downsample:"), self.align_downsample)

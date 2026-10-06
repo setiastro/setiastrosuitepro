@@ -105,7 +105,7 @@
 
 <div class="keys">
 <b>Max control points</b> — upper bound on the number of star matches used to fit the transform. 250 is the default; 500-1000 helps on very wide fields with many stars, 100 is enough for simple affine fits.
-<br><b>Solve downsample</b> — the solve runs on a factor-N-downsampled grid for speed, then the result is lifted back to full resolution. Default 3; raise to 2 (or 1) if the solver is bimodal between meridian-flipped frames.
+<br><b>Solve downsample</b> — the solve runs on a factor-N-downsampled grid for speed, then the result is lifted back to full resolution. Default 3; lower is finer but slower.
 <br><b>Homography RANSAC reprojection (px)</b> — the inlier threshold when fitting homography or polynomial residuals. Default 3.0 px; raise if your star PSFs are large, lower for sharp sampling.
 <br><b>Detection threshold (σ)</b> — how many sigma above background a star must stand to be detected. Default 12; lower to 5-8 on sparse fields, raise to 20+ on crowded ones. Use Trial Detect to calibrate.
 </div>
