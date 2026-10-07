@@ -30345,18 +30345,33 @@ class StackingSuiteDialog(QDialog):
 
         # Recover the full original path from the COMMENT sidecar if present,
         # else fall back to the stored basename (resolved against the tree later).
+        # A COMMENT card holds 72 characters, so astropy splits a longer path over
+        # consecutive COMMENT cards and strips each card's trailing spaces on read.
+        # Re-join the cards, padding each full one back to 72, until the text ends
+        # with the SASDZORG basename; never guess past it.
+        _bn = hdr.get("SASDZORG", None)
+        _bn = str(_bn).strip() if _bn else None
         orig_path = None
         try:
-            for c in hdr.get("COMMENT", []) or []:
-                cs = str(c)
-                if cs.startswith("SASDZORGPATH="):
-                    orig_path = cs.split("=", 1)[1].strip()
-                    break
+            cards = list(hdr.cards)
+            for i, card in enumerate(cards):
+                cs = str(card.value) if card.keyword == "COMMENT" else ""
+                if not cs.startswith("SASDZORGPATH="):
+                    continue
+                joined = cs
+                j = i + 1
+                while (_bn and not joined.rstrip().endswith(_bn)
+                       and j < len(cards) and cards[j].keyword == "COMMENT"):
+                    joined = joined.ljust(72 * (j - i)) + str(cards[j].value)
+                    j += 1
+                joined = joined.split("=", 1)[1].strip()
+                if _bn is None or joined.endswith(_bn):
+                    orig_path = joined
+                break
         except Exception:
             orig_path = None
         if not orig_path:
-            _bn = hdr.get("SASDZORG", None)
-            orig_path = str(_bn).strip() if _bn else None
+            orig_path = _bn
 
         # Rebuild the matrix for the small-matrix kinds.
         matrix = None
