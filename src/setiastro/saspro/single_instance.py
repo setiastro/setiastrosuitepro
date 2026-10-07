@@ -127,15 +127,25 @@ def _bucket_tag() -> str:
     Choose which "bucket" this process belongs to for the purpose of
     finding its peers. Processes in the same bucket find each other;
     different buckets stay isolated.
+
+    Policy: everything shares one bucket by default — a source launch
+    (python setiastrosuitepro.py) and the installed EXE will find each
+    other, so right-clicking a FITS and "Open with -> SASpro.exe" hands
+    off to whichever SASpro is currently running. For developer isolation,
+    use the explicit opt-outs:
+       --new-instance   (one-shot: this launch starts its own process)
+       SASPRO_NEW_INSTANCE=1   (same, as an env var — set in a dev shell)
+       SASPRO_INSTANCE=dev     (give this launch its own named bucket;
+                                future launches with the same tag find it)
     """
-    # Explicit override always wins.
+    # Explicit override always wins — this is the "give me my own bucket" knob.
     override = os.environ.get("SASPRO_INSTANCE", "").strip()
     if override:
         # Sanitize: keep it to something safe for a socket/pipe name.
         safe = "".join(ch for ch in override if ch.isalnum() or ch in "-_")
         if safe:
             return safe
-    return "source" if _running_from_source() else "installed"
+    return "shared"
 
 
 def _username_safe() -> str:
