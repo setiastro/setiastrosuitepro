@@ -32382,88 +32382,126 @@ class StackingSuiteDialog(QDialog):
 
         reduce_maps = (not collect_per_file) and (not DEBUG_INTEGRATION_ONLY)
         _ctx_instance = _safe_torch_inference_ctx() if use_gpu else contextlib.nullcontext()
-        with _ctx_instance:
-            for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
-                if self._cancelled():
-                    _abort_cleanup()
-                    log(f"⏹ Integration cancelled for group '{group_key}'.")
-                    raise StackCancelled()
-                t0 = time.perf_counter()
+        tile_idx = 0
+        try:
+            with _ctx_instance:
+                for tile_idx, (y0, y1, x0, x1) in enumerate(tiles, start=1):
+                    if self._cancelled():
+                        _abort_cleanup()
+                        log(f"⏹ Integration cancelled for group '{group_key}'.")
+                        raise StackCancelled()
+                    t0 = time.perf_counter()
 
-                fut, bidx, _ = pending.popleft()
-                th, tw = fut.result()
-                ts               = _buf_pool[bidx][:N, :th, :tw, :channels]
-                if NAN_PROBE:
-                    try:
-                        _tsv = np.asarray(ts)
-                        self._ip_nan  = getattr(self, "_ip_nan", 0)  + int(np.isnan(_tsv).sum())
-                        self._ip_zero = getattr(self, "_ip_zero", 0) + int((_tsv == 0.0).sum())
-                        self._ip_tiny = getattr(self, "_ip_tiny", 0) + int(((_tsv > 0.0) & (_tsv < 1e-4)).sum())
-                        self._ip_tot  = getattr(self, "_ip_tot", 0)  + int(_tsv.size)
-                    except Exception:
-                        pass
-                forced_mask_tile = _mask_pool[bidx][:N, :th, :tw]
+                    fut, bidx, _ = pending.popleft()
+                    th, tw = fut.result()
+                    ts               = _buf_pool[bidx][:N, :th, :tw, :channels]
+                    if NAN_PROBE:
+                        try:
+                            _tsv = np.asarray(ts)
+                            self._ip_nan  = getattr(self, "_ip_nan", 0)  + int(np.isnan(_tsv).sum())
+                            self._ip_zero = getattr(self, "_ip_zero", 0) + int((_tsv == 0.0).sum())
+                            self._ip_tiny = getattr(self, "_ip_tiny", 0) + int(((_tsv > 0.0) & (_tsv < 1e-4)).sum())
+                            self._ip_tot  = getattr(self, "_ip_tot", 0)  + int(_tsv.size)
+                        except Exception:
+                            pass
+                    forced_mask_tile = _mask_pool[bidx][:N, :th, :tw]
 
-                _submit_next()
+                    _submit_next()
 
-                if ts.size == 0 or ts.shape[1] == 0 or ts.shape[2] == 0 or ts.shape[3] == 0:
-                    tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
-                elif use_gpu:
-                    try:
-                        tile_result, tile_rej_map = _torch_reduce_tile(
-                            ts, weights_array,
-                            algo_name=algo,
-                            kappa=float(self.kappa),
-                            iterations=int(self.iterations),
-                            sigma_low=float(self.sigma_low),
-                            sigma_high=float(self.sigma_high),
-                            trim_fraction=float(self.trim_fraction),
-                            esd_threshold=float(self.esd_threshold),
-                            biweight_constant=float(self.biweight_constant),
-                            modz_threshold=float(self.modz_threshold),
-                            comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
-                            comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
-                            forced_reject_mask_np=forced_mask_tile,
-                            reduce_rej_maps=reduce_maps,
-                        )
-                        if hasattr(tile_result, "detach"):
-                            tile_result = tile_result.detach().cpu().numpy()
-                        if hasattr(tile_rej_map, "detach"):
-                            tile_rej_map = tile_rej_map.detach().cpu().numpy()
-                    except Exception as e:
-                        log(f"⚠️ GPU rejection failed on tile {tile_idx}/{total_tiles} "
-                            f"shape={ts.shape}: {e} – falling back to CPU for this and remaining tiles.")
-                        use_gpu = False
+                    if ts.size == 0 or ts.shape[1] == 0 or ts.shape[2] == 0 or ts.shape[3] == 0:
                         tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
-                else:
-                    tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
-
-                integrated_image[y0:y1, x0:x1, :] = tile_result
-
-                if not DEBUG_INTEGRATION_ONLY:
-                    if isinstance(tile_rej_map, tuple):
-                        # GPU already reduced to (any-rejected, reject-count);
-                        # copy the two small (th,tw) maps straight in.
-                        tr_any, tr_cnt = tile_rej_map
-                        rej_any[y0:y1, x0:x1]   |= tr_any
-                        rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
+                    elif use_gpu:
+                        try:
+                            tile_result, tile_rej_map = _torch_reduce_tile(
+                                ts, weights_array,
+                                algo_name=algo,
+                                kappa=float(self.kappa),
+                                iterations=int(self.iterations),
+                                sigma_low=float(self.sigma_low),
+                                sigma_high=float(self.sigma_high),
+                                trim_fraction=float(self.trim_fraction),
+                                esd_threshold=float(self.esd_threshold),
+                                biweight_constant=float(self.biweight_constant),
+                                modz_threshold=float(self.modz_threshold),
+                                comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
+                                comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                                forced_reject_mask_np=forced_mask_tile,
+                                reduce_rej_maps=reduce_maps,
+                            )
+                            if hasattr(tile_result, "detach"):
+                                tile_result = tile_result.detach().cpu().numpy()
+                            if hasattr(tile_rej_map, "detach"):
+                                tile_rej_map = tile_rej_map.detach().cpu().numpy()
+                        except MemoryError:
+                            raise  # host RAM is gone; CPU reduction needs even more
+                        except Exception as e:
+                            log(f"⚠️ GPU rejection failed on tile {tile_idx}/{total_tiles} "
+                                f"shape={ts.shape}: {e} – falling back to CPU for this and remaining tiles.")
+                            use_gpu = False
+                            tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
                     else:
-                        trm = np.asarray(tile_rej_map, dtype=bool)
-                        if trm.ndim == 4:
-                            trm = np.any(trm, axis=-1)
-                        rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
-                        rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+                        tile_result, tile_rej_map = _cpu_reduce_tile(ts, forced_mask_tile, th, tw)
 
-                        if collect_per_file:
-                            for i, fpath in enumerate(file_list):
-                                m = trm[i]
-                                if np.any(m):
-                                    per_file_rejections[fpath].append((x0, y0, m.copy()))
+                    integrated_image[y0:y1, x0:x1, :] = tile_result
 
-                dt = time.perf_counter() - t0
-                work_px = th * tw * N * channels
-                mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
-                log(f"\r  🔧 Tile {tile_idx}/{total_tiles} [{group_key}] — {mpx_s:.1f} MPx/s")
+                    if not DEBUG_INTEGRATION_ONLY:
+                        if isinstance(tile_rej_map, tuple):
+                            # GPU already reduced to (any-rejected, reject-count);
+                            # copy the two small (th,tw) maps straight in.
+                            tr_any, tr_cnt = tile_rej_map
+                            rej_any[y0:y1, x0:x1]   |= tr_any
+                            rej_count[y0:y1, x0:x1] += tr_cnt.astype(np.uint16)
+                        else:
+                            trm = np.asarray(tile_rej_map, dtype=bool)
+                            if trm.ndim == 4:
+                                trm = np.any(trm, axis=-1)
+                            rej_any[y0:y1, x0:x1]   |= np.any(trm, axis=0)
+                            rej_count[y0:y1, x0:x1] += trm.sum(axis=0).astype(np.uint16)
+
+                            if collect_per_file:
+                                for i, fpath in enumerate(file_list):
+                                    m = trm[i]
+                                    if np.any(m):
+                                        per_file_rejections[fpath].append((x0, y0, m.copy()))
+
+                    dt = time.perf_counter() - t0
+                    work_px = th * tw * N * channels
+                    mpx_s = (work_px / 1e6) / dt if dt > 0 else float("inf")
+                    log(f"\r  🔧 Tile {tile_idx}/{total_tiles} [{group_key}] — {mpx_s:.1f} MPx/s")
+        except MemoryError as e:
+            # Host RAM ran out mid-integration. Release what this pass holds and
+            # re-run the group with the seek-based reader, like the EMFILE
+            # fallback above. Wait for the prefetch reads first: they read from
+            # the sources closed below.
+            try: tp.shutdown(wait=True, cancel_futures=True)
+            except Exception: pass
+            for s in sources:
+                try: s.close()
+                except Exception: pass
+            sources.clear()
+            _buf_pool.clear()
+            _mask_pool.clear()
+            pending.clear()
+            ts = forced_mask_tile = tile_result = tile_rej_map = None
+            integrated_image = None
+            if integrated_memmap_path is not None:
+                try: cleanup_memmap(None, integrated_memmap_path)
+                except Exception: pass
+            gc.collect()
+            try:
+                _free_torch_memory()
+            except Exception:
+                pass
+            log(f"⚠️ Out of memory on tile {tile_idx}/{total_tiles} ({e}); "
+                f"retrying '{group_key}' with the Low RAM reader (slower).")
+            return self._normal_integration_low_ram(
+                group_key=group_key,
+                file_list=file_list,
+                frame_weights=frame_weights,
+                status_cb=status_cb,
+                algo_override=algo_override,
+                collect_per_file_rejections=collect_per_file_rejections,
+            )
 
         if use_gpu:
             try:

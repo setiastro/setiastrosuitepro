@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import contextlib
 import gc
 import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np  # noqa: E402
 from astropy.io import fits  # noqa: E402
 
+from setiastro.saspro import stacking_suite  # noqa: E402
 from setiastro.saspro.stacking_suite import _MMImage  # noqa: E402
 
 H, W = 10, 8
@@ -214,6 +218,140 @@ class ForcedRejectMaskTests(unittest.TestCase):
         self.assertLess(peak, expanded // 2,
                         f"peak numpy allocation {peak / 2**20:.1f} MiB; the expanded "
                         f"mask alone is {expanded / 2**20:.1f} MiB")
+
+
+class IntegrationMemoryErrorFallbackTests(unittest.TestCase):
+    """When host RAM runs out mid-integration, the group is re-run through the
+    Low RAM reader instead of failing the whole run."""
+
+    ALGO = "Weighted Windsorized Sigma Clipping"
+
+    def setUp(self):
+        from PyQt6.QtCore import QSettings
+
+        self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        rng = np.random.default_rng(0)
+        self.paths = []
+        for i in range(4):
+            p = os.path.join(self._tmp.name, f"f{i}.fit")
+            fits.PrimaryHDU(rng.random((3, 40, 24), dtype=np.float32)).writeto(p)
+            self.paths.append(p)
+        self.weights = {p: 1.0 for p in self.paths}
+        self.low_ram_calls = []
+        self.opened = []
+        self.stub = SimpleNamespace(
+            settings=QSettings(os.path.join(self._tmp.name, "s.ini"),
+                               QSettings.Format.IniFormat),
+            rejection_algorithm=self.ALGO,
+            chunk_height=16, chunk_width=24,  # 3 tiles
+            sigma_low=2.5, sigma_high=2.5, kappa=2.5, iterations=3,
+            trim_fraction=0.1, esd_threshold=3.0, biweight_constant=6.0,
+            modz_threshold=3.5,
+            _hw_accel_enabled=lambda: False,
+            _dtype=lambda: np.float32,
+            _cancelled=lambda: False,
+            _normalize_master_stem=str,
+            _normal_integration_low_ram=self._low_ram,
+        )
+
+    def tearDown(self):
+        _close_all(self.opened)
+        self._tmp.cleanup()
+
+    def _low_ram(self, **kw):
+        kw["open_sources_at_call"] = sum(not s.closed for s in self.opened)
+        self.low_ram_calls.append(kw)
+        return "LOW_RAM_RESULT", {}, None
+
+    def _recording_mmimage(self):
+        test = self
+
+        class Recording(_MMImage):
+            closed = False
+
+            def __init__(self, path):
+                super().__init__(path)
+                test.opened.append(self)
+
+            def close(self):
+                self.closed = True
+                super().close()
+
+        return Recording
+
+    def _integrate(self):
+        return stacking_suite.StackingSuiteDialog.normal_integration_with_rejection(
+            self.stub, "g", self.paths, self.weights, status_cb=lambda *_: None)
+
+    @staticmethod
+    def _fail_on_second_call(exc):
+        calls = []
+        real = stacking_suite.windsorized_sigma_clip_weighted_np
+
+        def reducer(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                raise exc
+            return real(*args, **kwargs)
+
+        return reducer
+
+    def _patch(self, name, value):
+        p = mock.patch.object(stacking_suite, name, value)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _enable_gpu(self, torch_reducer):
+        self.stub._hw_accel_enabled = lambda: True
+        self._patch("_torch_ok", lambda: True)
+        self._patch("_gpu_algo_supported", lambda algo: True)
+        self._patch("_rejection_gpu_ok", lambda status_cb=None: True)
+        self._patch("_safe_torch_inference_ctx", contextlib.nullcontext)
+        self._patch("_torch_reduce_tile", torch_reducer)
+
+    def _assert_low_ram_rerun(self, result):
+        self.assertEqual(result, ("LOW_RAM_RESULT", {}, None))
+        self.assertEqual(len(self.low_ram_calls), 1)
+        kw = self.low_ram_calls[0]
+        self.assertEqual(kw["group_key"], "g")
+        self.assertEqual(kw["file_list"], self.paths)
+        self.assertEqual(kw["frame_weights"], self.weights)
+        self.assertIsNone(kw["algo_override"])
+        self.assertFalse(kw["collect_per_file_rejections"])
+
+    def test_cpu_memory_error_reruns_with_low_ram_reader(self):
+        self._patch("windsorized_sigma_clip_weighted_np",
+                    self._fail_on_second_call(MemoryError("simulated")))
+        self._assert_low_ram_rerun(self._integrate())
+
+    def test_gpu_memory_error_skips_cpu_fallback(self):
+        def torch_oom(*args, **kwargs):
+            raise MemoryError("simulated")
+
+        def cpu_reducer(*args, **kwargs):
+            raise AssertionError("CPU reduction must not run after a host MemoryError")
+
+        self._enable_gpu(torch_oom)
+        self._patch("windsorized_sigma_clip_weighted_np", cpu_reducer)
+        self._assert_low_ram_rerun(self._integrate())
+
+    def test_other_gpu_error_still_falls_back_to_cpu(self):
+        def torch_fails(*args, **kwargs):
+            raise RuntimeError("CUDA out of memory (simulated)")
+
+        self._enable_gpu(torch_fails)
+        img, _, _ = self._integrate()
+        self.assertEqual(self.low_ram_calls, [])
+        self.assertEqual(img.shape, (40, 24, 3))
+        self.assertTrue(np.isfinite(img).all())
+
+    def test_sources_closed_before_low_ram_rerun(self):
+        self._patch("_MMImage", self._recording_mmimage())
+        self._patch("windsorized_sigma_clip_weighted_np",
+                    self._fail_on_second_call(MemoryError("simulated")))
+        self._integrate()
+        self.assertEqual(len(self.opened), len(self.paths))
+        self.assertEqual(self.low_ram_calls[0]["open_sources_at_call"], 0)
 
 
 if __name__ == "__main__":
