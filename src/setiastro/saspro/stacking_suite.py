@@ -101,6 +101,16 @@ from setiastro.saspro.legacy.image_manager import load_image, save_image, get_va
 from setiastro.saspro.calibration_io import write_calibrated_fast, MasterCache, StageTimer
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from setiastro.saspro.log_bus import LogBus
+from setiastro.saspro.stacking_calibrated_scan import (
+    CALIBRATED_EXTS,
+    CalibratedMeta,
+    CalibratedMetaCache,
+    list_folder_entries,
+    read_calibrated_metas,
+    read_fits_headers,
+    start_background_read,
+    stat_entry,
+)
 from setiastro.saspro import comet_stacking as CS
 #from setiastro.saspro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
 from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker
@@ -6366,6 +6376,8 @@ class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
     _platesolve_signal = pyqtSignal(object, object, str, dict) 
+    _cal_scan_progress = pyqtSignal(int, int, int)  # generation, done, total
+    _cal_scan_done = pyqtSignal(int)                # generation
 
     def __init__(self, parent=None, wrench_path=None, spinner_path=None, **_ignored):
         super().__init__(parent)
@@ -6474,6 +6486,14 @@ class StackingSuiteDialog(QDialog):
 
         self.manual_light_files = []
         self._reg_excluded_files = set()
+
+        # Image Integration tree: header cache and background load state
+        self._cal_meta_cache = CalibratedMetaCache()
+        self._cal_scan_gen = 0            # bumped to invalidate an in-flight scan
+        self._cal_scan_stop = None        # threading.Event while a background load runs
+        self._reg_drizzle_seed = None     # drizzle defaults for the first tree build
+        self._cal_scan_progress.connect(self._on_cal_scan_progress, Qt.ConnectionType.QueuedConnection)
+        self._cal_scan_done.connect(self._on_cal_scan_done, Qt.ConnectionType.QueuedConnection)
 
         # Show docking log window (if main window created it)
         self._ensure_log_visible_once()
@@ -6754,6 +6774,8 @@ class StackingSuiteDialog(QDialog):
             return
 
         if target == "integration":
+            # A background load would rebuild the tree over these rows later.
+            self._ensure_reg_tree_loaded()
             # treat them as calibrated lights you want to integrate
             self._ingest_paths_with_progress(
                 paths=paths,
@@ -9879,6 +9901,11 @@ class StackingSuiteDialog(QDialog):
         except Exception:
             pass
 
+        # A dialog deleted on close drops its background header scan; one that
+        # is only hidden keeps loading so its tree is complete when shown again.
+        if self.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose):
+            self._cancel_calibrated_scan()
+
         # Flush and close the stacking log file
         try:
             dock = _get_log_dock()
@@ -12219,6 +12246,7 @@ class StackingSuiteDialog(QDialog):
         if not kw:
             self.update_status(self.tr("ℹ️ Enter a filename keyword (e.g. Panel) first."))
             return
+        self._ensure_reg_tree_loaded()
         paths = self._all_reg_tree_paths()
         if not paths:
             self.update_status(self.tr("ℹ️ No frames in the registration tree to assign."))
@@ -12332,9 +12360,15 @@ class StackingSuiteDialog(QDialog):
         layout.addWidget(QLabel(self.tr("Calibrated Light Frames")))
         layout.addWidget(self.reg_tree)
 
+        # One refresh per batch of row changes: the model signals once per row,
+        # and a full-tree refresh per row made loading N frames cost O(N²).
+        self._reg_summary_timer = QTimer(self)
+        self._reg_summary_timer.setSingleShot(True)
+        self._reg_summary_timer.setInterval(0)
+        self._reg_summary_timer.timeout.connect(self._refresh_reg_tree_summaries)
         model = self.reg_tree.model()
-        model.rowsInserted.connect(lambda *_: QTimer.singleShot(0, self._refresh_reg_tree_summaries))
-        model.rowsRemoved.connect(lambda *_: QTimer.singleShot(0, self._refresh_reg_tree_summaries))
+        model.rowsInserted.connect(lambda *_: self._reg_summary_timer.start())
+        model.rowsRemoved.connect(lambda *_: self._reg_summary_timer.start())
 
         # ─────────────────────────────────────────
         # 2) Exposure tolerance + Auto-crop + Split dual-band (same row)
@@ -12974,8 +13008,11 @@ class StackingSuiteDialog(QDialog):
         # ─────────────────────────────────────────
         # 10) Init + persist bits
         # ─────────────────────────────────────────
-        self.populate_calibrated_lights()
-        self._refresh_reg_tree_summaries()
+        # The tree fills in the background. Seed its groups' drizzle state with
+        # the values the synchronous load used: the widget defaults, captured
+        # before the saved drizzle settings are restored below.
+        self._reg_drizzle_seed = self._current_drizzle_defaults()
+        self._populate_calibrated_lights_async()
         tab.setLayout(layout)
 
         self.drizzle_checkbox.setChecked(self.settings.value("stacking/drizzle_enabled", False, type=bool))
@@ -13834,10 +13871,19 @@ class StackingSuiteDialog(QDialog):
                     h, w = arr.shape[:2]
         return w, h
 
-    def _probe_fits_meta(self, fp: str):
+    def _probe_fits_meta(self, fp: str) -> CalibratedMeta:
+        """
+        Filter, exposure, size and GAIN from the primary header, plus the
+        target name from the science HDU (as _object_from_path finds it), all
+        from one open of the file.
+        """
         try:
-            hdr0 = fits.getheader(fp, ext=0)
+            hdr0, science_hdr = read_fits_headers(fp)
+        except Exception as e:
+            print(f"⚠️ Could not read FITS {fp}: {e}; treating as generic image")
+            return CalibratedMeta("Unknown", 0.0, "Unknown", None, "")
 
+        try:
             filt = self._sanitize_name(hdr0.get("FILTER", "Unknown"))
             exp_raw = hdr0.get("EXPTIME", hdr0.get("EXPOSURE", 0.0))
             try:
@@ -13848,11 +13894,49 @@ class StackingSuiteDialog(QDialog):
             w = int(hdr0.get("NAXIS1", 0) or 0)
             h = int(hdr0.get("NAXIS2", 0) or 0)
             size = f"{w}x{h}" if (w and h) else "Unknown"
-
-            return filt or "Unknown", float(exp), size
+            filt, exp = filt or "Unknown", float(exp)
         except Exception as e:
             print(f"⚠️ Could not read FITS {fp}: {e}; treating as generic image")
-            return "Unknown", 0.0, "Unknown"
+            filt, exp, size = "Unknown", 0.0, "Unknown"
+
+        gain = None
+        try:
+            g = hdr0.get("GAIN", None)
+            if g is not None:
+                gain = float(g)
+        except Exception:
+            pass
+
+        obj = ""
+        if science_hdr is not None:
+            try:
+                obj = self._object_from_header(science_hdr)
+            except Exception:
+                pass
+
+        return CalibratedMeta(filt, exp, size, gain, obj)
+
+    def _probe_calibrated_meta(self, fp: str) -> CalibratedMeta:
+        """
+        Header-only grouping metadata for one Image Integration frame.
+
+        Touches no widgets, so the background scan calls it from worker threads.
+        """
+        ext = os.path.splitext(fp)[1].lower()
+        if ext in (".fits", ".fit", ".ftz", ".fz"):
+            return self._probe_fits_meta(fp)
+        if ext == ".xisf":
+            filt, exp, size = self._probe_xisf_meta(fp)
+            return CalibratedMeta(filt, exp, size, None, self._object_from_path(fp))
+        if ext in (".tiff", ".tif"):
+            try:
+                w, h = self._get_image_size(fp)
+            except Exception as e:
+                print(f"⚠️ Cannot read image size for {fp}: {e}")
+                return CalibratedMeta("Unknown", 0.0, "Unknown", None, "", usable=False)
+            # A TIFF has no FITS header, so no OBJECT keyword either.
+            return CalibratedMeta("Unknown", 0.0, f"{w}x{h}", None, "")
+        return CalibratedMeta("Unknown", 0.0, "Unknown", None, "", usable=False)
 
 
 
@@ -13908,40 +13992,20 @@ class StackingSuiteDialog(QDialog):
             return "Unknown", 0.0, "Unknown"
 
 
-    def populate_calibrated_lights(self):
-        from PIL import Image
-
-        def _fmt(enabled, scale, drop):
-            return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}" if enabled else "Drizzle: False")
-
-        self.reg_tree.clear()
-        self.reg_tree.setColumnCount(4)
-        self.reg_tree.setHeaderLabels(["Filter - Exposure - Size", "Metadata", "Drizzle", "Set"])
-        hdr = self.reg_tree.header()
-        for col in (0, 1, 2, 3):
-            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
-
-        # only allow real image/light formats
-        allowed_exts = {".fit", ".fits", ".ftz", ".fz", ".tiff", ".tif", ".xisf"}
-
-        # gather files
+    def _calibrated_scan_entries(self) -> list:
+        """
+        Frames for the Image Integration tree: Calibrated/ plus manually added
+        files, minus frames removed this session, without duplicate paths.
+        """
         calibrated_folder = os.path.join(self.stacking_directory or "", "Calibrated")
-        files = []
-        if os.path.isdir(calibrated_folder):
-            for fn in os.listdir(calibrated_folder):
-                fp = os.path.join(calibrated_folder, fn)
-                if not os.path.isfile(fp):
-                    continue
-                ext = os.path.splitext(fn)[1].lower()
-                if ext in allowed_exts:
-                    files.append(fp)
+        entries = list_folder_entries(calibrated_folder, CALIBRATED_EXTS)
 
         # include manual files, but only if valid extension
         for fp in self.manual_light_files:
             try:
                 ext = os.path.splitext(fp)[1].lower()
-                if ext in allowed_exts:
-                    files.append(fp)
+                if ext in CALIBRATED_EXTS:
+                    entries.append(stat_entry(fp))
             except Exception:
                 pass
 
@@ -13954,65 +14018,139 @@ class StackingSuiteDialog(QDialog):
                 dead = set(self.deleted_calibrated_files)
 
         if dead:
-            files = [
-                f for f in files
-                if os.path.normcase(os.path.abspath(f)) not in dead
+            entries = [
+                e for e in entries
+                if os.path.normcase(os.path.abspath(e.path)) not in dead
             ]
 
-        files = list(dict.fromkeys(files))
-        if not files:
+        unique = {}
+        for entry in entries:
+            unique.setdefault(entry.path, entry)
+        return list(unique.values())
+
+    def _current_drizzle_defaults(self) -> tuple:
+        """(enabled, scale, drop) from the global drizzle controls."""
+        enabled = self.drizzle_checkbox.isChecked()
+        try:
+            scale = float(self.drizzle_scale_combo.currentText().replace("x", "", 1))
+        except Exception:
+            scale = 1.0
+        return enabled, scale, self.drizzle_drop_shrink_spin.value()
+
+    def _cancel_calibrated_scan(self):
+        """Stop any background header scan and drop its pending result."""
+        self._cal_scan_gen += 1
+        if self._cal_scan_stop is not None:
+            self._cal_scan_stop.set()
+            self._cal_scan_stop = None
+
+    def _populate_calibrated_lights_async(self):
+        """
+        Fill the Image Integration tree without blocking the GUI thread.
+
+        Headers missing from the cache are read on background threads, then
+        _finish_initial_reg_load builds the tree from the warm cache. Code that
+        needs the complete tree first calls _ensure_reg_tree_loaded.
+        """
+        self._cancel_calibrated_scan()
+        misses = [
+            e for e in self._calibrated_scan_entries()
+            if self._cal_meta_cache.lookup(e) is None
+        ]
+        if not misses:
+            self._finish_initial_reg_load()
             return
+
+        gen = self._cal_scan_gen
+        stop = threading.Event()
+        self._cal_scan_stop = stop
+        self.update_status(self.tr(
+            "🔎 Reading headers of {0} calibrated frame(s) in the background…"
+        ).format(len(misses)))
+
+        def _emit(signal_name, *args):
+            # Runs on scan threads; the dialog may be deleted by then.
+            try:
+                getattr(self, signal_name).emit(*args)
+            except RuntimeError:
+                pass
+
+        start_background_read(
+            misses, self._cal_meta_cache, self._probe_calibrated_meta,
+            stop=stop,
+            on_progress=lambda done, total: _emit("_cal_scan_progress", gen, done, total),
+            on_done=lambda: _emit("_cal_scan_done", gen),
+        )
+
+    def _on_cal_scan_progress(self, gen: int, done: int, total: int):
+        if gen == self._cal_scan_gen:
+            self.update_status("\r" + self.tr(
+                "🔎 Read {0}/{1} calibrated frame headers…"
+            ).format(done, total))
+
+    def _on_cal_scan_done(self, gen: int):
+        if gen == self._cal_scan_gen and self._cal_scan_stop is not None:
+            self._finish_initial_reg_load()
+
+    def _finish_initial_reg_load(self):
+        """Build the tree as the dialog's constructor used to, from the warm cache."""
+        self.populate_calibrated_lights()
+        self._refresh_reg_tree_summaries()
+        self._update_drizzle_summary_columns()
+
+    def _ensure_reg_tree_loaded(self):
+        """Finish a pending background load now, for code that needs the full tree."""
+        if self._cal_scan_stop is not None:
+            self._finish_initial_reg_load()
+
+    def populate_calibrated_lights(self):
+        """
+        Rebuild the Image Integration tree from Calibrated/ plus manual frames.
+
+        Synchronous, because registration reads the tree right after
+        calibration. Only frames missing from self._cal_meta_cache (new or
+        changed files) have their headers read.
+        """
+        def _fmt(enabled, scale, drop):
+            return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}" if enabled else "Drizzle: False")
+
+        self._cancel_calibrated_scan()
+        drizzle_seed, self._reg_drizzle_seed = self._reg_drizzle_seed, None
+
+        self.reg_tree.clear()
+        self.reg_tree.setColumnCount(4)
+        self.reg_tree.setHeaderLabels(["Filter - Exposure - Size", "Metadata", "Drizzle", "Set"])
+        hdr = self.reg_tree.header()
+        for col in (0, 1, 2, 3):
+            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+
+        scan_entries = self._calibrated_scan_entries()
+        if not scan_entries:
+            return
+        files = [e.path for e in scan_entries]
+        metas = read_calibrated_metas(scan_entries, self._cal_meta_cache, self._probe_calibrated_meta)
 
         # group by (filter, ~exposure, size) within tolerance
         grouped = {}  # key -> list of dicts: {"path", "exp", "size"}
-        tol = self.exposure_tolerance_spin.value()
+        if getattr(self, "_object_name_cache", None) is None:
+            self._object_name_cache = {}
 
         for fp in files:
-            ext = os.path.splitext(fp)[1].lower()
-            filt = "Unknown"
-            exp = 0.0
-            size = "Unknown"
-
-            if ext in (".fits", ".fit", ".ftz", ".fz"):
-                filt, exp, size = self._probe_fits_meta(fp)
-            elif ext == ".xisf":
-                filt, exp, size = self._probe_xisf_meta(fp)
-            elif ext in (".tiff", ".tif"):
-                try:
-                    w, h = self._get_image_size(fp)
-                    size = f"{w}x{h}"
-                except Exception as e:
-                    print(f"⚠️ Cannot read image size for {fp}: {e}")
-                    continue
-            else:
-                # extra safety: ignore anything unexpected
+            meta = metas.get(fp) or self._probe_calibrated_meta(fp)
+            # _auto_assign_sets_by_object reads OBJECT from here, not the file
+            self._object_name_cache[fp] = meta.obj
+            if not meta.usable:
                 continue
 
-            # Read gain from header
-            gain = None
-            try:
-                if ext in (".fits", ".fit", ".ftz", ".fz"):
-                    from astropy.io import fits as _fits
-                    hdr = _fits.getheader(fp, memmap=True)
-                    g = hdr.get("GAIN", None)
-                    if g is not None:
-                        gain = float(g)
-                elif ext == ".xisf":
-                    pass  # XISF gain would need _probe_xisf_meta extension
-            except Exception:
-                pass
-
-            key = self._find_or_make_exposure_group_key(grouped, filt, exp, size, gain=gain)
-            grouped.setdefault(key, []).append({"path": fp, "exp": exp, "size": size, "gain": gain})
+            key = self._find_or_make_exposure_group_key(grouped, meta.filt, meta.exp, meta.size, gain=meta.gain)
+            grouped.setdefault(key, []).append(
+                {"path": fp, "exp": meta.exp, "size": meta.size, "gain": meta.gain}
+            )
 
         # current global drizzle defaults
-        global_enabled = self.drizzle_checkbox.isChecked()
-        try:
-            global_scale = float(self.drizzle_scale_combo.currentText().replace("x", "", 1))
-        except Exception:
-            global_scale = 1.0
-        global_drop = self.drizzle_drop_shrink_spin.value()
+        global_enabled, global_scale, global_drop = drizzle_seed or self._current_drizzle_defaults()
 
+        tops = []
         for key, entries in grouped.items():
             paths = [d["path"] for d in entries]
             exps  = [d["exp"]  for d in entries]
@@ -14037,9 +14175,9 @@ class StackingSuiteDialog(QDialog):
                 top.setText(2, _fmt(state["enabled"], state["scale"], state["drop"]))
 
             top.setData(0, Qt.ItemDataRole.UserRole, paths)
-            self.reg_tree.addTopLevelItem(top)
 
             # leaf rows: show basename + per-file size
+            leaves = []
             for d in entries:
                 fp = d["path"]
                 leaf = QTreeWidgetItem([
@@ -14047,9 +14185,14 @@ class StackingSuiteDialog(QDialog):
                     f"Size: {d['size']}" + (f", Gain: {int(d['gain'])}" if d.get('gain') is not None else "")
                 ])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, fp)
-                top.addChild(leaf)
+                leaves.append(leaf)
+            # Attached while the group is outside the tree: no per-row model signals.
+            top.addChildren(leaves)
+            tops.append(top)
 
-            top.setExpanded(True)
+        self.reg_tree.addTopLevelItems(tops)
+        for top in tops:
+            top.setExpanded(True)  # only takes effect once the item is in the tree
 
         self._refresh_quick_stack_summary_later()
         self._auto_assign_sets_by_object(files)   # per-target Sets before the column renders
@@ -14137,6 +14280,8 @@ class StackingSuiteDialog(QDialog):
             }
 
     def _on_drizzle_param_changed(self, *_):
+        # With no selection this applies to every group, so they must all exist.
+        self._ensure_reg_tree_loaded()
         # Persist global scale/pixfrac so they survive reopen (combo defaults to 1x)
         if hasattr(self, "drizzle_scale_combo"):
             self._set_drizzle_scale(self.drizzle_scale_combo.currentText())
@@ -20323,6 +20468,7 @@ class StackingSuiteDialog(QDialog):
         - Filters non-existent paths
         - Merges groups whose exposure and gain fall within tolerance
         """
+        self._ensure_reg_tree_loaded()
         light_files: dict[str, list[str]] = {}
         total_leafs = 0
         total_paths = 0
