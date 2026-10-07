@@ -128,9 +128,29 @@ _r(r"🛰️ Satellite trail removal — (\d+ frame\(s\))", "Satellite Trails", 
 _r(r"🛰️ \d+/\d+:",                                  "Satellite Trails",  _ST_RUNNING)
 
 # ── Measurements ─────────────────────────────────────────────────────────
+# Register path opens on "📏 Phase: Measurements starting"; the integrate-
+# already-registered path uses a different opener ("📊 Found N aligned/
+# normalized frames. Measuring in parallel previews…") and finishes on
+# "✅ All chunks complete! Measured N frames total." — without these two
+# the integrate path has NO Measurements row and the elapsed time silently
+# rolls into the next phase.
 _r(r"📏 Phase: Measurements starting",              "Measurements",      _ST_RUNNING)
+_r(r"📊 Found \d+ aligned/normalized frames",       "Measurements",      _ST_RUNNING)
 _r(r"📦 Measured \d+/\d+ frames",                   "Measurements",      _ST_RUNNING)
 _r(r"📏 Phase: Measurements complete",              "Measurements",      _ST_OK)
+_r(r"✅ All chunks complete! Measured \d+ frames",   "Measurements",      _ST_OK)
+
+# ── Frame weights ────────────────────────────────────────────────────────
+# The integrate-already-registered path scores and weights frames after its
+# preview measurements complete. Without an explicit rule the terminal
+# "✅ Frame weights computed!" was being caught by the generic ^✅ catch-all
+# and spawned an orphan "Complete" row with 0s elapsed (no matching start).
+# Match the start message too so the elapsed cell actually ticks, and capture
+# the weighting mode as the group label.
+_r(r"⚖️ Computing frame weights.*?\(mode:\s*([^)]+)\)", "Frame Weights", _ST_RUNNING, 1)
+_r(r"⚖️ Computing frame weights",                   "Frame Weights",     _ST_RUNNING)
+_r(r"✅ Frame weights computed",                     "Frame Weights",     _ST_OK)
+_r(r"⚖️ Frame weights computed",                     "Frame Weights",     _ST_OK)
 
 # ── Normalization ─────────────────────────────────────────────────────────
 _r(r"📏 Phase: Normalization starting",             "Normalization",     _ST_RUNNING)
@@ -188,6 +208,9 @@ _r(r"✂️(?!.*[Ss]aved).*[Cc]rop",                    "Autocrop",          _ST
 
 # ── Astrometric solution ──────────────────────────────────────────────────
 _r(r"Transform file saved.*\.sasd \(v2\)",          "Alignment Transforms", _ST_OK)
+# The integrate-already-registered path reconstructs transforms from aligned
+# frame headers instead of solving them, so it emits a different message.
+_r(r"✅ Wrote alignment_transforms\.sasd",           "Alignment Transforms", _ST_OK)
 
 # ── MF Deconvolution ──────────────────────────────────────────────────────
 _r(r"MFDeconv launched for (\d+) group",            "MF Deconvolution",  _ST_RUNNING, 1)
@@ -294,7 +317,9 @@ _SUPPRESS = re.compile(
     r"|Image Registration Started"
     r"|🔄 Image Registration"
     r"|Measuring chunk"
-    r"|✅ All chunks complete"
+    # "✅ All chunks complete! Measured N frames total." is handled by a
+    # dedicated Measurements OK rule above (needed for the integrate-already-
+    # registered path, which has no "📏 Phase: Measurements complete").
     r"|Updated self\.light_files"
     r"|Transform file saved.*alignment_transforms\.sasd(?! \(v2\))"
     r"|_n\.fit"

@@ -101,6 +101,16 @@ from setiastro.saspro.legacy.image_manager import load_image, save_image, get_va
 from setiastro.saspro.calibration_io import write_calibrated_fast, MasterCache, StageTimer
 from setiastro.saspro.star_alignment import StarRegistrationWorker, StarRegistrationThread, IDENTITY_2x3
 from setiastro.saspro.log_bus import LogBus
+from setiastro.saspro.stacking_calibrated_scan import (
+    CALIBRATED_EXTS,
+    CalibratedMeta,
+    CalibratedMetaCache,
+    list_folder_entries,
+    read_calibrated_metas,
+    read_fits_headers,
+    start_background_read,
+    stat_entry,
+)
 from setiastro.saspro import comet_stacking as CS
 #from setiastro.saspro.remove_stars import starnet_starless_from_array, darkstar_starless_from_array
 from setiastro.saspro.mfdeconv import MultiFrameDeconvWorker
@@ -6366,6 +6376,8 @@ class StackingSuiteDialog(QDialog):
     requestRelaunch = pyqtSignal(str, str)  # old_dir, new_dir
     status_signal = pyqtSignal(str)
     _platesolve_signal = pyqtSignal(object, object, str, dict) 
+    _cal_scan_progress = pyqtSignal(int, int, int)  # generation, done, total
+    _cal_scan_done = pyqtSignal(int)                # generation
 
     def __init__(self, parent=None, wrench_path=None, spinner_path=None, **_ignored):
         super().__init__(parent)
@@ -6444,6 +6456,24 @@ class StackingSuiteDialog(QDialog):
         # values: "reuse" (skip/short-circuit existing registrations),
         # "register_all" (re-register everything), "cancel". None => ask.
         self._reg_precheck_choice = None
+        # One-shot "auto-reuse" flags set by Quick-tab Full Pipeline so both
+        # calibration and registration prechecks silently reuse existing
+        # calibrated / aligned frames instead of prompting. Each precheck
+        # consumes (clears) its own flag on first read; this is why we keep
+        # two independent latches instead of one shared bool — the register
+        # stage runs much later (after calibration completes + auto-register
+        # fires), and we want the calibration consumer not to turn the
+        # register side off before it gets its turn.
+        self._pipeline_auto_reuse_cal = False
+        self._pipeline_auto_reuse_reg = False
+        # One-shot "force clean slate" flags — the inverse of the auto-reuse
+        # latches above. Set by Quick-tab Full Pipeline when the user ticks
+        # the "Force clean slate" checkbox, these tell each precheck to
+        # silently take the full-rebuild path ("calibrate_all" / "register_all")
+        # regardless of what's already on disk. Mutually exclusive with the
+        # auto-reuse flags per Full-Pipeline invocation.
+        self._pipeline_force_recal = False
+        self._pipeline_force_rereg = False
         self._reg_queue_master_paths = []  # masters accumulated across sets for the final popup
         self.reference_frame = None
         # Set by the register-only-new shortcut so the completion handler
@@ -6456,6 +6486,14 @@ class StackingSuiteDialog(QDialog):
 
         self.manual_light_files = []
         self._reg_excluded_files = set()
+
+        # Image Integration tree: header cache and background load state
+        self._cal_meta_cache = CalibratedMetaCache()
+        self._cal_scan_gen = 0            # bumped to invalidate an in-flight scan
+        self._cal_scan_stop = None        # threading.Event while a background load runs
+        self._reg_drizzle_seed = None     # drizzle defaults for the first tree build
+        self._cal_scan_progress.connect(self._on_cal_scan_progress, Qt.ConnectionType.QueuedConnection)
+        self._cal_scan_done.connect(self._on_cal_scan_done, Qt.ConnectionType.QueuedConnection)
 
         # Show docking log window (if main window created it)
         self._ensure_log_visible_once()
@@ -6736,6 +6774,8 @@ class StackingSuiteDialog(QDialog):
             return
 
         if target == "integration":
+            # A background load would rebuild the tree over these rows later.
+            self._ensure_reg_tree_loaded()
             # treat them as calibrated lights you want to integrate
             self._ingest_paths_with_progress(
                 paths=paths,
@@ -7078,6 +7118,35 @@ class StackingSuiteDialog(QDialog):
         cleanup_btn.clicked.connect(self._cleanup_temp_files)
         root.addWidget(cleanup_btn)
 
+        # ── Full Pipeline force-clean-slate toggle ───────────────────────────
+        # Default-off opt-in override: when checked, the Full Pipeline button
+        # ignores any existing calibrated / aligned frames in the stacking
+        # directory and runs calibration + registration from scratch. The
+        # default resume-on-top-of-what's-there behavior is still what the
+        # user gets if they don't check this. State is persisted in QSettings
+        # so a user who leaves it checked keeps that behavior across sessions.
+        self.pipeline_force_clean_slate_cb = QCheckBox(self.tr(
+            "Force clean slate — recalibrate & re-register all frames"
+        ))
+        self.pipeline_force_clean_slate_cb.setToolTip(self.tr(
+            "By default, Run Full Pipeline reuses any calibrated frames in "
+            "the Calibrated folder and any aligned frames in Aligned_Images "
+            "that match the selected lights, and only processes the new "
+            "ones. Check this to force a full recalibration and full "
+            "re-registration regardless of what's already on disk."
+        ))
+        self.pipeline_force_clean_slate_cb.setChecked(
+            self.settings.value(
+                "stacking/pipeline_force_clean_slate", False, type=bool
+            )
+        )
+        self.pipeline_force_clean_slate_cb.toggled.connect(
+            lambda v: self.settings.setValue(
+                "stacking/pipeline_force_clean_slate", bool(v)
+            )
+        )
+        root.addWidget(self.pipeline_force_clean_slate_cb)
+
         # ── Full Pipeline button ─────────────────────────────────────────────
         pipeline_btn = QPushButton(self.tr("🚀 Run Full Pipeline (Darks → Flats → Calibrate → Register & Integrate)"))
         pipeline_btn.setStyleSheet("""
@@ -7175,7 +7244,49 @@ class StackingSuiteDialog(QDialog):
                 return
 
         # Step 3: calibrate lights — auto_register_after_calibration_cb
-        # will fire registration automatically when calibration finishes
+        # will fire registration automatically when calibration finishes.
+        #
+        # Full-Pipeline UX contract: if the stacking directory already holds
+        # calibrated and/or aligned twins of the selected lights, reuse them
+        # silently instead of prompting. Users running Full Pipeline want a
+        # single-click resume on top of yesterday's run, not two modal boxes.
+        # Each precheck consumes its own flag on first read, so these latches
+        # auto-clear even if the user cancels mid-pipeline (next manual run
+        # of either stage will prompt normally).
+        #
+        # The "Force clean slate" checkbox inverts the contract: when checked
+        # we pre-seed the opposite set of flags so both prechecks silently
+        # take the full-rebuild path ("calibrate_all" / "register_all")
+        # instead of reusing existing frames.
+        force_clean_slate = False
+        try:
+            if getattr(self, "pipeline_force_clean_slate_cb", None) is not None:
+                force_clean_slate = bool(
+                    self.pipeline_force_clean_slate_cb.isChecked()
+                )
+            else:
+                force_clean_slate = self.settings.value(
+                    "stacking/pipeline_force_clean_slate", False, type=bool
+                )
+        except Exception:
+            force_clean_slate = False
+
+        if force_clean_slate:
+            self._pipeline_auto_reuse_cal = False
+            self._pipeline_auto_reuse_reg = False
+            self._pipeline_force_recal = True
+            self._pipeline_force_rereg = True
+            self.update_status(self.tr(
+                "🧹 Full Pipeline: clean slate mode — forcing full "
+                "recalibration & full re-registration of every selected "
+                "light."
+            ))
+        else:
+            self._pipeline_auto_reuse_cal = True
+            self._pipeline_auto_reuse_reg = True
+            self._pipeline_force_recal = False
+            self._pipeline_force_rereg = False
+
         self.update_status(self.tr(
             "🚀 Full Pipeline: calibrating lights "
             "→ will auto-register & integrate on completion…"
@@ -7338,6 +7449,39 @@ class StackingSuiteDialog(QDialog):
             self._quick_build_master_flat()
 
         elif stage == "calibrate":
+            # Full-Pipeline UX contract (see _run_full_pipeline for the long
+            # version): by default silently reuse any existing calibrated /
+            # aligned twins; when the "Force clean slate" checkbox is on,
+            # silently force full recalibration + full re-registration
+            # instead. Each precheck consumes its own latch on first read.
+            force_clean_slate = False
+            try:
+                if getattr(self, "pipeline_force_clean_slate_cb", None) is not None:
+                    force_clean_slate = bool(
+                        self.pipeline_force_clean_slate_cb.isChecked()
+                    )
+                else:
+                    force_clean_slate = self.settings.value(
+                        "stacking/pipeline_force_clean_slate", False, type=bool
+                    )
+            except Exception:
+                force_clean_slate = False
+
+            if force_clean_slate:
+                self._pipeline_auto_reuse_cal = False
+                self._pipeline_auto_reuse_reg = False
+                self._pipeline_force_recal = True
+                self._pipeline_force_rereg = True
+                self.update_status(self.tr(
+                    "🧹 Full Pipeline: clean slate mode — forcing full "
+                    "recalibration & full re-registration."
+                ))
+            else:
+                self._pipeline_auto_reuse_cal = True
+                self._pipeline_auto_reuse_reg = True
+                self._pipeline_force_recal = False
+                self._pipeline_force_rereg = False
+
             self.update_status(self.tr(
                 "🚀 Full Pipeline: calibrating lights "
                 "→ will auto-register & integrate on completion…"
@@ -9136,6 +9280,40 @@ class StackingSuiteDialog(QDialog):
         wmode_row.addWidget(wmode_label); wmode_row.addWidget(self.weight_mode_combo, 1)
         rej_layout.addLayout(wmode_row)
 
+        # Exposure-time weighting. Scales each frame's quality score by
+        # exp/max(exp) so a 120s sub in a 300s-dominated stack carries 120/300
+        # of a comparable 300s sub's weight (regardless of weight mode). This
+        # is the correct weighting in the photon-shot-noise-dominated regime
+        # that modern CMOS sensors sit in; see the long-form note in the
+        # per-frame debug log. Default ON — mixed-exposure stacks were
+        # previously weighted as if all frames were equal exposure, which is
+        # only correct when they actually are.
+        self.exposure_weighted_cb = QCheckBox(self.tr("Scale weights by exposure time"))
+        self.exposure_weighted_cb.setToolTip(self.tr(
+            "When mixed-exposure subs are stacked together (e.g. 120s and 300s\n"
+            "frames in the same group — usually because the exposure tolerance\n"
+            "is set high enough to merge them), scales each frame's weight by\n"
+            "its exposure time relative to the longest exposure in the group.\n"
+            "\n"
+            "• 300s sub (longest) → ×1.00 of its quality score\n"
+            "• 120s sub           → ×0.40 of its quality score\n"
+            "\n"
+            "Without this, a 120s sub would carry equal weight to a 300s sub\n"
+            "of similar quality — overweighting the shorter-exposure data.\n"
+            "Linear scaling is correct in the photon-shot-noise-dominated\n"
+            "regime of modern CMOS sensors (read noise is sqrt-scaled and\n"
+            "~1-2 electrons, so the linear-exposure benefit dominates).\n"
+            "\n"
+            "No effect when every frame in a group has the same exposure."
+        ))
+        self.exposure_weighted_cb.setChecked(
+            self.settings.value("stacking/exposure_weighted", True, type=bool)
+        )
+        self.exposure_weighted_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/exposure_weighted", bool(v))
+        )
+        rej_layout.addWidget(self.exposure_weighted_cb)
+
         # Param rows as small containers we can show/hide
         def _mini_row(label_text, widget, help_text=None):
             row = QWidget()
@@ -9756,6 +9934,11 @@ class StackingSuiteDialog(QDialog):
                 self.alignment_thread.wait(1500)
         except Exception:
             pass
+
+        # A dialog deleted on close drops its background header scan; one that
+        # is only hidden keeps loading so its tree is complete when shown again.
+        if self.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose):
+            self._cancel_calibrated_scan()
 
         # Flush and close the stacking log file
         try:
@@ -12097,6 +12280,7 @@ class StackingSuiteDialog(QDialog):
         if not kw:
             self.update_status(self.tr("ℹ️ Enter a filename keyword (e.g. Panel) first."))
             return
+        self._ensure_reg_tree_loaded()
         paths = self._all_reg_tree_paths()
         if not paths:
             self.update_status(self.tr("ℹ️ No frames in the registration tree to assign."))
@@ -12210,9 +12394,15 @@ class StackingSuiteDialog(QDialog):
         layout.addWidget(QLabel(self.tr("Calibrated Light Frames")))
         layout.addWidget(self.reg_tree)
 
+        # One refresh per batch of row changes: the model signals once per row,
+        # and a full-tree refresh per row made loading N frames cost O(N²).
+        self._reg_summary_timer = QTimer(self)
+        self._reg_summary_timer.setSingleShot(True)
+        self._reg_summary_timer.setInterval(0)
+        self._reg_summary_timer.timeout.connect(self._refresh_reg_tree_summaries)
         model = self.reg_tree.model()
-        model.rowsInserted.connect(lambda *_: QTimer.singleShot(0, self._refresh_reg_tree_summaries))
-        model.rowsRemoved.connect(lambda *_: QTimer.singleShot(0, self._refresh_reg_tree_summaries))
+        model.rowsInserted.connect(lambda *_: self._reg_summary_timer.start())
+        model.rowsRemoved.connect(lambda *_: self._reg_summary_timer.start())
 
         # ─────────────────────────────────────────
         # 2) Exposure tolerance + Auto-crop + Split dual-band (same row)
@@ -12852,8 +13042,11 @@ class StackingSuiteDialog(QDialog):
         # ─────────────────────────────────────────
         # 10) Init + persist bits
         # ─────────────────────────────────────────
-        self.populate_calibrated_lights()
-        self._refresh_reg_tree_summaries()
+        # The tree fills in the background. Seed its groups' drizzle state with
+        # the values the synchronous load used: the widget defaults, captured
+        # before the saved drizzle settings are restored below.
+        self._reg_drizzle_seed = self._current_drizzle_defaults()
+        self._populate_calibrated_lights_async()
         tab.setLayout(layout)
 
         self.drizzle_checkbox.setChecked(self.settings.value("stacking/drizzle_enabled", False, type=bool))
@@ -13712,10 +13905,19 @@ class StackingSuiteDialog(QDialog):
                     h, w = arr.shape[:2]
         return w, h
 
-    def _probe_fits_meta(self, fp: str):
+    def _probe_fits_meta(self, fp: str) -> CalibratedMeta:
+        """
+        Filter, exposure, size and GAIN from the primary header, plus the
+        target name from the science HDU (as _object_from_path finds it), all
+        from one open of the file.
+        """
         try:
-            hdr0 = fits.getheader(fp, ext=0)
+            hdr0, science_hdr = read_fits_headers(fp)
+        except Exception as e:
+            print(f"⚠️ Could not read FITS {fp}: {e}; treating as generic image")
+            return CalibratedMeta("Unknown", 0.0, "Unknown", None, "")
 
+        try:
             filt = self._sanitize_name(hdr0.get("FILTER", "Unknown"))
             exp_raw = hdr0.get("EXPTIME", hdr0.get("EXPOSURE", 0.0))
             try:
@@ -13726,11 +13928,49 @@ class StackingSuiteDialog(QDialog):
             w = int(hdr0.get("NAXIS1", 0) or 0)
             h = int(hdr0.get("NAXIS2", 0) or 0)
             size = f"{w}x{h}" if (w and h) else "Unknown"
-
-            return filt or "Unknown", float(exp), size
+            filt, exp = filt or "Unknown", float(exp)
         except Exception as e:
             print(f"⚠️ Could not read FITS {fp}: {e}; treating as generic image")
-            return "Unknown", 0.0, "Unknown"
+            filt, exp, size = "Unknown", 0.0, "Unknown"
+
+        gain = None
+        try:
+            g = hdr0.get("GAIN", None)
+            if g is not None:
+                gain = float(g)
+        except Exception:
+            pass
+
+        obj = ""
+        if science_hdr is not None:
+            try:
+                obj = self._object_from_header(science_hdr)
+            except Exception:
+                pass
+
+        return CalibratedMeta(filt, exp, size, gain, obj)
+
+    def _probe_calibrated_meta(self, fp: str) -> CalibratedMeta:
+        """
+        Header-only grouping metadata for one Image Integration frame.
+
+        Touches no widgets, so the background scan calls it from worker threads.
+        """
+        ext = os.path.splitext(fp)[1].lower()
+        if ext in (".fits", ".fit", ".ftz", ".fz"):
+            return self._probe_fits_meta(fp)
+        if ext == ".xisf":
+            filt, exp, size = self._probe_xisf_meta(fp)
+            return CalibratedMeta(filt, exp, size, None, self._object_from_path(fp))
+        if ext in (".tiff", ".tif"):
+            try:
+                w, h = self._get_image_size(fp)
+            except Exception as e:
+                print(f"⚠️ Cannot read image size for {fp}: {e}")
+                return CalibratedMeta("Unknown", 0.0, "Unknown", None, "", usable=False)
+            # A TIFF has no FITS header, so no OBJECT keyword either.
+            return CalibratedMeta("Unknown", 0.0, f"{w}x{h}", None, "")
+        return CalibratedMeta("Unknown", 0.0, "Unknown", None, "", usable=False)
 
 
 
@@ -13786,40 +14026,20 @@ class StackingSuiteDialog(QDialog):
             return "Unknown", 0.0, "Unknown"
 
 
-    def populate_calibrated_lights(self):
-        from PIL import Image
-
-        def _fmt(enabled, scale, drop):
-            return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}" if enabled else "Drizzle: False")
-
-        self.reg_tree.clear()
-        self.reg_tree.setColumnCount(4)
-        self.reg_tree.setHeaderLabels(["Filter - Exposure - Size", "Metadata", "Drizzle", "Set"])
-        hdr = self.reg_tree.header()
-        for col in (0, 1, 2, 3):
-            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
-
-        # only allow real image/light formats
-        allowed_exts = {".fit", ".fits", ".ftz", ".fz", ".tiff", ".tif", ".xisf"}
-
-        # gather files
+    def _calibrated_scan_entries(self) -> list:
+        """
+        Frames for the Image Integration tree: Calibrated/ plus manually added
+        files, minus frames removed this session, without duplicate paths.
+        """
         calibrated_folder = os.path.join(self.stacking_directory or "", "Calibrated")
-        files = []
-        if os.path.isdir(calibrated_folder):
-            for fn in os.listdir(calibrated_folder):
-                fp = os.path.join(calibrated_folder, fn)
-                if not os.path.isfile(fp):
-                    continue
-                ext = os.path.splitext(fn)[1].lower()
-                if ext in allowed_exts:
-                    files.append(fp)
+        entries = list_folder_entries(calibrated_folder, CALIBRATED_EXTS)
 
         # include manual files, but only if valid extension
         for fp in self.manual_light_files:
             try:
                 ext = os.path.splitext(fp)[1].lower()
-                if ext in allowed_exts:
-                    files.append(fp)
+                if ext in CALIBRATED_EXTS:
+                    entries.append(stat_entry(fp))
             except Exception:
                 pass
 
@@ -13832,65 +14052,139 @@ class StackingSuiteDialog(QDialog):
                 dead = set(self.deleted_calibrated_files)
 
         if dead:
-            files = [
-                f for f in files
-                if os.path.normcase(os.path.abspath(f)) not in dead
+            entries = [
+                e for e in entries
+                if os.path.normcase(os.path.abspath(e.path)) not in dead
             ]
 
-        files = list(dict.fromkeys(files))
-        if not files:
+        unique = {}
+        for entry in entries:
+            unique.setdefault(entry.path, entry)
+        return list(unique.values())
+
+    def _current_drizzle_defaults(self) -> tuple:
+        """(enabled, scale, drop) from the global drizzle controls."""
+        enabled = self.drizzle_checkbox.isChecked()
+        try:
+            scale = float(self.drizzle_scale_combo.currentText().replace("x", "", 1))
+        except Exception:
+            scale = 1.0
+        return enabled, scale, self.drizzle_drop_shrink_spin.value()
+
+    def _cancel_calibrated_scan(self):
+        """Stop any background header scan and drop its pending result."""
+        self._cal_scan_gen += 1
+        if self._cal_scan_stop is not None:
+            self._cal_scan_stop.set()
+            self._cal_scan_stop = None
+
+    def _populate_calibrated_lights_async(self):
+        """
+        Fill the Image Integration tree without blocking the GUI thread.
+
+        Headers missing from the cache are read on background threads, then
+        _finish_initial_reg_load builds the tree from the warm cache. Code that
+        needs the complete tree first calls _ensure_reg_tree_loaded.
+        """
+        self._cancel_calibrated_scan()
+        misses = [
+            e for e in self._calibrated_scan_entries()
+            if self._cal_meta_cache.lookup(e) is None
+        ]
+        if not misses:
+            self._finish_initial_reg_load()
             return
+
+        gen = self._cal_scan_gen
+        stop = threading.Event()
+        self._cal_scan_stop = stop
+        self.update_status(self.tr(
+            "🔎 Reading headers of {0} calibrated frame(s) in the background…"
+        ).format(len(misses)))
+
+        def _emit(signal_name, *args):
+            # Runs on scan threads; the dialog may be deleted by then.
+            try:
+                getattr(self, signal_name).emit(*args)
+            except RuntimeError:
+                pass
+
+        start_background_read(
+            misses, self._cal_meta_cache, self._probe_calibrated_meta,
+            stop=stop,
+            on_progress=lambda done, total: _emit("_cal_scan_progress", gen, done, total),
+            on_done=lambda: _emit("_cal_scan_done", gen),
+        )
+
+    def _on_cal_scan_progress(self, gen: int, done: int, total: int):
+        if gen == self._cal_scan_gen:
+            self.update_status("\r" + self.tr(
+                "🔎 Read {0}/{1} calibrated frame headers…"
+            ).format(done, total))
+
+    def _on_cal_scan_done(self, gen: int):
+        if gen == self._cal_scan_gen and self._cal_scan_stop is not None:
+            self._finish_initial_reg_load()
+
+    def _finish_initial_reg_load(self):
+        """Build the tree as the dialog's constructor used to, from the warm cache."""
+        self.populate_calibrated_lights()
+        self._refresh_reg_tree_summaries()
+        self._update_drizzle_summary_columns()
+
+    def _ensure_reg_tree_loaded(self):
+        """Finish a pending background load now, for code that needs the full tree."""
+        if self._cal_scan_stop is not None:
+            self._finish_initial_reg_load()
+
+    def populate_calibrated_lights(self):
+        """
+        Rebuild the Image Integration tree from Calibrated/ plus manual frames.
+
+        Synchronous, because registration reads the tree right after
+        calibration. Only frames missing from self._cal_meta_cache (new or
+        changed files) have their headers read.
+        """
+        def _fmt(enabled, scale, drop):
+            return (f"Drizzle: True, Scale: {scale:g}x, Drop: {drop:.2f}" if enabled else "Drizzle: False")
+
+        self._cancel_calibrated_scan()
+        drizzle_seed, self._reg_drizzle_seed = self._reg_drizzle_seed, None
+
+        self.reg_tree.clear()
+        self.reg_tree.setColumnCount(4)
+        self.reg_tree.setHeaderLabels(["Filter - Exposure - Size", "Metadata", "Drizzle", "Set"])
+        hdr = self.reg_tree.header()
+        for col in (0, 1, 2, 3):
+            hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Interactive)
+
+        scan_entries = self._calibrated_scan_entries()
+        if not scan_entries:
+            return
+        files = [e.path for e in scan_entries]
+        metas = read_calibrated_metas(scan_entries, self._cal_meta_cache, self._probe_calibrated_meta)
 
         # group by (filter, ~exposure, size) within tolerance
         grouped = {}  # key -> list of dicts: {"path", "exp", "size"}
-        tol = self.exposure_tolerance_spin.value()
+        if getattr(self, "_object_name_cache", None) is None:
+            self._object_name_cache = {}
 
         for fp in files:
-            ext = os.path.splitext(fp)[1].lower()
-            filt = "Unknown"
-            exp = 0.0
-            size = "Unknown"
-
-            if ext in (".fits", ".fit", ".ftz", ".fz"):
-                filt, exp, size = self._probe_fits_meta(fp)
-            elif ext == ".xisf":
-                filt, exp, size = self._probe_xisf_meta(fp)
-            elif ext in (".tiff", ".tif"):
-                try:
-                    w, h = self._get_image_size(fp)
-                    size = f"{w}x{h}"
-                except Exception as e:
-                    print(f"⚠️ Cannot read image size for {fp}: {e}")
-                    continue
-            else:
-                # extra safety: ignore anything unexpected
+            meta = metas.get(fp) or self._probe_calibrated_meta(fp)
+            # _auto_assign_sets_by_object reads OBJECT from here, not the file
+            self._object_name_cache[fp] = meta.obj
+            if not meta.usable:
                 continue
 
-            # Read gain from header
-            gain = None
-            try:
-                if ext in (".fits", ".fit", ".ftz", ".fz"):
-                    from astropy.io import fits as _fits
-                    hdr = _fits.getheader(fp, memmap=True)
-                    g = hdr.get("GAIN", None)
-                    if g is not None:
-                        gain = float(g)
-                elif ext == ".xisf":
-                    pass  # XISF gain would need _probe_xisf_meta extension
-            except Exception:
-                pass
-
-            key = self._find_or_make_exposure_group_key(grouped, filt, exp, size, gain=gain)
-            grouped.setdefault(key, []).append({"path": fp, "exp": exp, "size": size, "gain": gain})
+            key = self._find_or_make_exposure_group_key(grouped, meta.filt, meta.exp, meta.size, gain=meta.gain)
+            grouped.setdefault(key, []).append(
+                {"path": fp, "exp": meta.exp, "size": meta.size, "gain": meta.gain}
+            )
 
         # current global drizzle defaults
-        global_enabled = self.drizzle_checkbox.isChecked()
-        try:
-            global_scale = float(self.drizzle_scale_combo.currentText().replace("x", "", 1))
-        except Exception:
-            global_scale = 1.0
-        global_drop = self.drizzle_drop_shrink_spin.value()
+        global_enabled, global_scale, global_drop = drizzle_seed or self._current_drizzle_defaults()
 
+        tops = []
         for key, entries in grouped.items():
             paths = [d["path"] for d in entries]
             exps  = [d["exp"]  for d in entries]
@@ -13915,9 +14209,9 @@ class StackingSuiteDialog(QDialog):
                 top.setText(2, _fmt(state["enabled"], state["scale"], state["drop"]))
 
             top.setData(0, Qt.ItemDataRole.UserRole, paths)
-            self.reg_tree.addTopLevelItem(top)
 
             # leaf rows: show basename + per-file size
+            leaves = []
             for d in entries:
                 fp = d["path"]
                 leaf = QTreeWidgetItem([
@@ -13925,9 +14219,14 @@ class StackingSuiteDialog(QDialog):
                     f"Size: {d['size']}" + (f", Gain: {int(d['gain'])}" if d.get('gain') is not None else "")
                 ])
                 leaf.setData(0, Qt.ItemDataRole.UserRole, fp)
-                top.addChild(leaf)
+                leaves.append(leaf)
+            # Attached while the group is outside the tree: no per-row model signals.
+            top.addChildren(leaves)
+            tops.append(top)
 
-            top.setExpanded(True)
+        self.reg_tree.addTopLevelItems(tops)
+        for top in tops:
+            top.setExpanded(True)  # only takes effect once the item is in the tree
 
         self._refresh_quick_stack_summary_later()
         self._auto_assign_sets_by_object(files)   # per-target Sets before the column renders
@@ -14015,6 +14314,8 @@ class StackingSuiteDialog(QDialog):
             }
 
     def _on_drizzle_param_changed(self, *_):
+        # With no selection this applies to every group, so they must all exist.
+        self._ensure_reg_tree_loaded()
         # Persist global scale/pixfrac so they survive reopen (combo defaults to 1x)
         if hasattr(self, "drizzle_scale_combo"):
             self._set_drizzle_scale(self.drizzle_scale_combo.currentText())
@@ -14308,15 +14609,16 @@ class StackingSuiteDialog(QDialog):
 
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Icon.Information)
-            msg.setWindowTitle(self.tr("Multiple Targets Detected"))
+            msg.setWindowTitle(self.tr("New Target Detected"))
             msg.setText(self.tr(
-                "The files you're adding are for <b>{0}</b>, and this stacking "
-                "directory already contains <b>{1}</b>.<br><br>"
-                "That's fine — SASpro stacks multiple targets in one run using "
-                "<b>Sets</b> in Image Integration. Frames are auto-assigned to a "
-                "Set per target, so each registers to its own reference. Just "
-                "confirm the Set assignments (and each Set's reference frame) in "
-                "the Image Integration tab before integrating."
+                "The files you're adding are for <b>{0}</b>, but this stacking "
+                "directory is currently working on <b>{1}</b>.<br><br>"
+                "SASpro will add them as a <b>new Set</b> named for the "
+                "target, with its <b>own reference frame</b>. Each Set "
+                "registers and integrates independently — the new frames "
+                "will <b>not</b> be stacked together with <b>{1}</b>.<br><br>"
+                "You can review the Set assignments and each Set's reference "
+                "frame in the Image Integration tab before integrating."
             ).format(", ".join(new_targets), ", ".join(sorted(existing))))
             msg.setInformativeText(self.tr(
                 "Prefer to keep this target in its own folder instead? {0}:<br><code>{1}</code>"
@@ -14324,7 +14626,7 @@ class StackingSuiteDialog(QDialog):
                 self.tr("Existing folder found — switch to it")
                 if resuming else self.tr("Suggested separate directory"),
                 suggested))
-            mix_btn = msg.addButton(self.tr("Add && Auto-Assign Sets"),
+            mix_btn = msg.addButton(self.tr("Add as New Set"),
                                     QMessageBox.ButtonRole.AcceptRole)
             switch_btn = msg.addButton(
                 self.tr("Use Separate Folder") if resuming
@@ -18973,6 +19275,88 @@ class StackingSuiteDialog(QDialog):
             if not self.light_files[key]:
                 del self.light_files[key]
 
+        # ── Already-calibrated pre-check ────────────────────────────────
+        # If some tree frames already have fresh calibrated twins in the
+        # Calibrated folder, offer to skip (all matched) or shortcut
+        # (calibrate only the new ones). Mirrors the pre-registration twin
+        # check in register_images(). Any wrapped exception falls through
+        # to a normal full calibration so a bug here can't block the user.
+        try:
+            _cal_decision = self._precheck_calibrated_counterparts(calibrated_dir)
+        except Exception as _e:
+            self.update_status(self.tr(f"ℹ️ Pre-calibration check skipped: {_e}"))
+            _cal_decision = None
+
+        if _cal_decision == "skip":
+            # Everything is already calibrated → nothing to do. Refresh the
+            # Image Registration tab so the existing calibrated frames show
+            # up as the ready-to-register set, then honor the
+            # auto-register-after-cal setting the same way the normal
+            # end-of-calibration path does.
+            self.update_status(self.tr(
+                f"✅ All {total_files} selected light(s) already calibrated; "
+                f"nothing to do."))
+            self.populate_calibrated_lights()
+            self._refresh_quick_stack_summary_later()
+            try:
+                if self.settings.value(
+                    "stacking/auto_register_after_cal", False, type=bool
+                ):
+                    if hasattr(self, "tabs") and self.tabs is not None:
+                        try:
+                            for idx in range(self.tabs.count()):
+                                if self.tabs.tabText(idx).lower().startswith(
+                                    "image registration"
+                                ):
+                                    self.tabs.setCurrentIndex(idx)
+                                    break
+                        except Exception:
+                            pass
+                    self.update_status(self.tr(
+                        "⚙️ Auto: starting registration & integration…"))
+                    QApplication.processEvents()
+                    if hasattr(self, "register_images_btn") \
+                            and self.register_images_btn is not None:
+                        if not getattr(self, "_registration_busy", False):
+                            self.register_images_btn.click()
+                        else:
+                            self.update_status(self.tr(
+                                "ℹ️ Registration already in progress; "
+                                "auto-run skipped."))
+                    elif hasattr(self, "register_images"):
+                        if not getattr(self, "_registration_busy", False):
+                            self.register_images()
+                        else:
+                            self.update_status(self.tr(
+                                "ℹ️ Registration already in progress; "
+                                "auto-run skipped."))
+            except Exception as _are:
+                self.update_status(self.tr(
+                    f"⚠️ Auto register/integrate failed: {_are}"))
+            return
+        if _cal_decision == "cancel":
+            self.update_status(self.tr("❌ Calibration cancelled."))
+            return
+        if _cal_decision == "calibrate_new":
+            # self.light_files has been pruned to the uncalibrated frames.
+            # Rebuild leaf_paths to match so the tree-walk below skips the
+            # already-calibrated leaves (filter at line further down:
+            # "if not light_file or light_file not in leaf_paths: continue").
+            leaf_paths = [p for lst in self.light_files.values() for p in lst]
+            total_files = len(leaf_paths)
+            if total_files == 0:
+                # Shouldn't happen (precheck returns "skip" when matched==total),
+                # but belt-and-braces: refresh and bail cleanly.
+                self.update_status(self.tr(
+                    "✅ No new frames to calibrate."))
+                self.populate_calibrated_lights()
+                self._refresh_quick_stack_summary_later()
+                return
+            self.update_status(self.tr(
+                f"▶ Calibrating {total_files} new frame(s); reusing existing "
+                f"calibrated frames for the rest."))
+        # "calibrate_all" / None → fall through to normal full calibration.
+
         interactive_flat = self.settings.value(
             "stacking/interactive_flat_strength", False, type=bool
         )
@@ -20119,6 +20503,7 @@ class StackingSuiteDialog(QDialog):
         - Filters non-existent paths
         - Merges groups whose exposure and gain fall within tolerance
         """
+        self._ensure_reg_tree_loaded()
         light_files: dict[str, list[str]] = {}
         total_leafs = 0
         total_paths = 0
@@ -21612,6 +21997,105 @@ class StackingSuiteDialog(QDialog):
         )
         return float(w), {"sharp": sharp_term, "snr": snr_term}
 
+    def _exposure_factors_for_frames(self, frames: list[str]) -> tuple[dict[str, float], float]:
+        """Compute per-frame linear exposure weighting factors over a group.
+
+        Pulls each frame's exposure from the group key it already sits under
+        in ``self.light_files`` (keys look like
+        ``("Ha - 300s (4144x2822)", session)``) — no FITS header re-reads,
+        because that information was already parsed and used to group these
+        frames in the first place. Returns ``(factors, max_exp)`` where
+        ``factors[fp] = exp(fp) / max_exp`` clamped to ``(1e-4, 1.0]``.
+
+        A frame that can't be matched back to a group — or whose group key
+        has a non-numeric exposure token like ``"Unknown"`` — maps to a
+        neutral ``1.0`` factor so a key-parsing quirk never silently zeroes
+        a frame. When every frame shares one exposure (the common single-
+        exposure stack) every factor is exactly ``1.0`` and this call is a
+        no-op mathematically.
+
+        This is the correct weighting in the photon-shot-noise-dominated
+        regime of modern CMOS sensors: variance ∝ 1/T, so the inverse-
+        variance optimal weight is proportional to T itself. Read noise
+        (which scales as √T) is a second-order correction we deliberately
+        ignore here per the UX contract on the "Scale weights by exposure
+        time" checkbox.
+
+        Returns:
+            factors : {file_path: factor_in_(1e-4, 1.0]}
+            max_exp : the longest exposure in the group (0.0 if nothing in
+                      self.light_files has a parseable exposure — caller
+                      should treat that as "no exposure info available" and
+                      skip scaling).
+        """
+        # Build a path → exposure map from self.light_files group keys.
+        # The exposure text in a key looks like "300s" / "0.5s" / "Unknown";
+        # we match the first "<number>s" token in the first element of the
+        # tuple key (filter+exposure+size string). Falls back to 0.0 on no
+        # match, which the loop below translates into a neutral 1.0 factor.
+        _light_files = getattr(self, "light_files", None) or {}
+        _exp_token = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
+
+        def _parse_exp_from_key(key) -> float:
+            try:
+                label = key[0] if isinstance(key, tuple) and key else key
+                if not isinstance(label, str):
+                    return 0.0
+                m = _exp_token.search(label)
+                if not m:
+                    return 0.0
+                v = float(m.group(1))
+                return v if math.isfinite(v) and v > 0.0 else 0.0
+            except Exception:
+                return 0.0
+
+        path_exp: dict[str, float] = {}
+        for key, paths in _light_files.items():
+            e = _parse_exp_from_key(key)
+            for p in paths or ():
+                # Last-group-wins on a duplicate path — not expected inside a
+                # single light_files snapshot, but harmless if it occurs.
+                path_exp[p] = e
+
+        # Also index by normcase(abspath) so a frame whose path differs only
+        # in case/separators (common on Windows) still matches its group.
+        path_exp_nc: dict[str, float] = {
+            os.path.normcase(os.path.normpath(p)): e for p, e in path_exp.items()
+        }
+
+        exps: dict[str, float] = {}
+        for fp in frames:
+            e = path_exp.get(fp)
+            if e is None:
+                e = path_exp_nc.get(os.path.normcase(os.path.normpath(fp)), 0.0)
+            exps[fp] = float(e) if e and e > 0.0 else 0.0
+
+        valid = [e for e in exps.values() if e > 0.0]
+        if not valid:
+            return ({fp: 1.0 for fp in frames}, 0.0)
+
+        max_exp = max(valid)
+        if max_exp <= 0.0:
+            return ({fp: 1.0 for fp in frames}, 0.0)
+
+        factors: dict[str, float] = {}
+        for fp, e in exps.items():
+            if e <= 0.0:
+                # Missing / unparseable → neutral factor (quality score stands
+                # alone); better than zeroing a frame over a key-text quirk.
+                factors[fp] = 1.0
+            else:
+                f = e / max_exp
+                # Clamp defensively — a bogus key exposure greater than the
+                # group max shouldn't be able to lift a frame above 1.0,
+                # which would perturb the mean-normalisation step downstream.
+                if f > 1.0:
+                    f = 1.0
+                elif f < 1e-4:
+                    f = 1e-4
+                factors[fp] = float(f)
+        return factors, float(max_exp)
+
     @staticmethod
     def _mad_noise(arr) -> float:
         """Robust MAD-based noise estimate, star-insensitive. Plain numpy so it
@@ -22232,8 +22716,45 @@ class StackingSuiteDialog(QDialog):
                 self._reg_queue = self._partition_light_files_by_set(self.light_files)
                 self._reg_queue_pos = 0
                 # Fresh run → forget any pre-check choice from a previous run so
-                # the first set that finds registered twins prompts again.
-                self._reg_precheck_choice = None
+                # the first set that finds registered twins prompts again. The
+                # Quick-tab Full Pipeline opts out of that reset by setting
+                # one of two latches right before it kicks off calibration:
+                #
+                #   `_pipeline_auto_reuse_reg`  → silently reuse any existing
+                #     aligned twins (pre-seed "reuse")
+                #   `_pipeline_force_rereg`     → "Force clean slate" is on,
+                #     silently re-register everything (pre-seed "register_all")
+                #
+                # Both are translated into a pre-seeded `_reg_precheck_choice`
+                # so `_precheck_registered_counterparts` takes the right path
+                # via its existing cached-choice branches instead of popping
+                # a dialog. The latches are mutually exclusive and both are
+                # consumed here so a later manual Register click (even in the
+                # same session) prompts normally again.
+                if getattr(self, "_pipeline_force_rereg", False):
+                    self._reg_precheck_choice = "register_all"
+                    self._pipeline_force_rereg = False
+                    # Clear the sibling flag too in case the pipeline somehow
+                    # set both (defensive — _run_full_pipeline sets only one).
+                    self._pipeline_auto_reuse_reg = False
+                    try:
+                        self.update_status(self.tr(
+                            "🧹 Full Pipeline (clean slate): re-registering "
+                            "every frame — ignoring any existing aligned "
+                            "frames."))
+                    except Exception:
+                        pass
+                elif getattr(self, "_pipeline_auto_reuse_reg", False):
+                    self._reg_precheck_choice = "reuse"
+                    self._pipeline_auto_reuse_reg = False
+                    try:
+                        self.update_status(self.tr(
+                            "⏭️ Full Pipeline: will reuse any existing "
+                            "aligned frames and register only the stragglers."))
+                    except Exception:
+                        pass
+                else:
+                    self._reg_precheck_choice = None
                 self._reg_queue_master_paths = []
                 if len(self._reg_queue) > 1:
                     self.update_status(self.tr(
@@ -22800,7 +23321,44 @@ class StackingSuiteDialog(QDialog):
             # Register scores borderless raw/calibrated frames (full preview),
             # while Skip Registration scores the border-stripped valid core of
             # already-aligned frames. The scoring math applied is identical.
+            # Exposure-time scaling (linear): multiply each frame's quality
+            # score by exp/max_exp *before* mean-normalisation. For a
+            # single-exposure group every factor is 1.0 (no-op). For a mixed
+            # 120s/300s group the 120s subs end up ~0.4× their quality score
+            # relative to the 300s subs, correcting the hidden "all subs are
+            # equal exposure" assumption in the mean-normalisation that
+            # follows. Mean-normalisation preserves ratios, so a 2.5× raw
+            # advantage survives it as a 2.5× normalised weight. Toggleable
+            # via the "Scale weights by exposure time" checkbox (default on);
+            # disabling it restores the legacy equal-exposure behaviour.
+            _exp_scaling_on = bool(self.settings.value(
+                "stacking/exposure_weighted", True, type=bool
+            ))
+            if _exp_scaling_on:
+                _exp_factors, _exp_max = self._exposure_factors_for_frames(measured_frames)
+            else:
+                _exp_factors, _exp_max = ({fp: 1.0 for fp in measured_frames}, 0.0)
+
             dbg = [f"\n📊 **Frame Weights Debug Log (mode: {_wmode}):**"]
+            if _exp_scaling_on and _exp_max > 0.0:
+                _n_short = sum(1 for f in _exp_factors.values() if f < 0.999)
+                if _n_short > 0:
+                    dbg.append(
+                        f"⏱️ Exposure scaling ON — max exposure in group "
+                        f"{_exp_max:g}s; {_n_short}/{len(measured_frames)} "
+                        f"frame(s) carry < max exposure and will be down-"
+                        f"weighted linearly (120s @ 300s-max → ×0.400 of its "
+                        f"quality score, etc.)."
+                    )
+            elif not _exp_scaling_on:
+                dbg.append(
+                    "⏱️ Exposure scaling OFF — frames weighted purely on "
+                    "quality terms; mixed-exposure groups will over-weight "
+                    "the shorter-exposure subs. Enable in Settings → "
+                    "Frame weighting → \"Scale weights by exposure time\" "
+                    "if that's not what you want."
+                )
+
             raw_scores = {}
             for fp in measured_frames:
                 info = star_counts.get(fp, {"count": 0, "eccentricity": 1.0})
@@ -22814,12 +23372,14 @@ class StackingSuiteDialog(QDialog):
                     count=c, ecc=ecc, bg=bg, fwhm=fwhm, noise=noise,
                     fwhm_ref=_fwhm_ref, noise_ref=_noise_ref, exps=_wexps,
                 )
-                raw_scores[fp] = raw_w
+                exp_f = float(_exp_factors.get(fp, 1.0))
+                scaled_w = raw_w * exp_f
+                raw_scores[fp] = scaled_w
                 dbg.append(
                     f"📂 {os.path.basename(fp)} → StarCount={int(c)}, Ecc={ecc:.4f}, "
                     f"Bg={bg:.4f}, FWHM~{fwhm:.2f}, "
                     f"Sharp={terms['sharp']:.3f}, SNR={terms['snr']:.3f}, "
-                    f"Weight={raw_w:.4f}"
+                    f"ExpScale={exp_f:.3f}, Weight={scaled_w:.4f}"
                 )
 
             score_vals = [v for v in raw_scores.values() if v > 0]
@@ -29504,6 +30064,226 @@ class StackingSuiteDialog(QDialog):
         ))
         return "register_new"
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # "Calibrate Lights" pre-check — already-calibrated counterpart resolution
+    #
+    # Mirrors the registered-twin pre-check above but for the calibration
+    # stage. When the user re-runs calibration after adding new raw lights
+    # to the tree (or re-opening a stacking directory), many of the selected
+    # lights usually already have a calibrated frame sitting in the shared
+    # <stacking_directory>/Calibrated folder from the previous run. Re-doing
+    # the calibration of those frames is wasted GPU/CPU time, so we offer to
+    # skip them and only calibrate the new ones.
+    #
+    # Matching is cheap and exact (no fuzzy stem logic needed) because the
+    # calibrated name is a deterministic function of the source light's
+    # directory + stem, computed by the module-level `_cal_out_name()`:
+    #   /src/dir/foo.fit    ->   {Calibrated}/{md5(/src/dir)[:6]}_foo_c.fit
+    # so we just compute the expected twin path per light and stat it. Both
+    # the GPU and CPU calibration paths write through `_cal_out_name()`, so
+    # the twin we check is byte-for-byte the one the pipeline would produce.
+    #
+    # Freshness: the twin must be at least as new as the source light
+    # (`_twin_is_fresh`, reused from the registration pre-check). This
+    # catches the "re-ingested lights" case where a user re-copies the raw
+    # files but keeps the old Calibrated folder in place.
+    # ─────────────────────────────────────────────────────────────────────────
+    def _precheck_calibrated_counterparts(self, calibrated_dir: str):
+        """
+        Run at the top of calibrate_lights (before any heavy work).
+
+        Returns one of:
+          "skip"           – every selected light has a fresh calibrated
+                             twin; caller should return without calibrating.
+          "calibrate_new"  – self.light_files has been pruned to the
+                             unmatched (uncalibrated) frames; caller
+                             calibrates only those. The tree walk inside
+                             calibrate_lights filters frame_infos by the
+                             pruned `leaf_paths`, so the matched frames
+                             are skipped cleanly.
+          "calibrate_all"  – user chose to recalibrate everything; caller
+                             proceeds with a normal full calibration (no
+                             change to self.light_files).
+          "cancel"         – user cancelled; caller should stop.
+          None             – nothing already calibrated / check unusable;
+                             caller proceeds normally.
+        """
+        light_files = getattr(self, "light_files", None)
+        if not light_files:
+            return None
+
+        # Consume the Full-Pipeline latches BEFORE any early-return path so a
+        # stale True can't leak into the user's next manual click. Full
+        # Pipeline sets exactly one of these per invocation (they're mutually
+        # exclusive); a one-shot consume here keeps the "silent reuse" /
+        # "silent force full" behavior scoped to this invocation only.
+        auto_reuse = bool(getattr(self, "_pipeline_auto_reuse_cal", False))
+        if auto_reuse:
+            self._pipeline_auto_reuse_cal = False
+        force_recal = bool(getattr(self, "_pipeline_force_recal", False))
+        if force_recal:
+            self._pipeline_force_recal = False
+
+        # Force clean slate wins over everything else — don't even bother
+        # scanning for twins. "calibrate_all" is the sentinel the caller
+        # treats as "fall through to a normal full calibration", which is
+        # exactly what clean slate wants.
+        if force_recal:
+            try:
+                self.update_status(self.tr(
+                    "🧹 Full Pipeline (clean slate): skipping already-"
+                    "calibrated check — recalibrating every selected light."
+                ))
+            except Exception:
+                pass
+            return "calibrate_all"
+
+        if not calibrated_dir or not os.path.isdir(calibrated_dir):
+            # No Calibrated folder yet → first run, nothing to match against.
+            return None
+
+        # Partition each group into matched (fresh twin) vs unmatched.
+        matched_lf, unmatched_lf = {}, {}
+        n_matched = n_unmatched = 0
+        _dbg_missing = _dbg_stale = _dbg_err = 0
+        _dbg_sample = []
+        for g, lst in light_files.items():
+            mkeep, ukeep = [], []
+            for p in lst:
+                cal = None
+                try:
+                    cal = _cal_out_name(p, calibrated_dir)
+                except Exception:
+                    _dbg_err += 1
+                    cal = None
+
+                if cal and os.path.exists(cal) and self._twin_is_fresh(p, cal):
+                    mkeep.append(p); n_matched += 1
+                else:
+                    ukeep.append(p); n_unmatched += 1
+                    if cal is None:
+                        if len(_dbg_sample) < 4:
+                            _dbg_sample.append(
+                                f"{os.path.basename(p)} → could not derive twin name"
+                            )
+                    elif not os.path.exists(cal):
+                        _dbg_missing += 1
+                        if len(_dbg_sample) < 4:
+                            _dbg_sample.append(
+                                f"{os.path.basename(p)} → no twin "
+                                f"({os.path.basename(cal)})"
+                            )
+                    else:
+                        _dbg_stale += 1
+                        try:
+                            _dt = os.path.getmtime(cal) - os.path.getmtime(p)
+                        except Exception:
+                            _dt = float("nan")
+                        if len(_dbg_sample) < 4:
+                            _dbg_sample.append(
+                                f"{os.path.basename(p)} → stale "
+                                f"(twin−light mtime = {_dt:+.0f}s)"
+                            )
+            if mkeep:
+                matched_lf[g] = mkeep
+            if ukeep:
+                unmatched_lf[g] = ukeep
+
+        n_total = n_matched + n_unmatched
+        if n_matched == 0:
+            try:
+                self.update_status(self.tr(
+                    f"🔎 cal-precheck: 0/{n_total} usable twins "
+                    f"(missing={_dbg_missing}, stale={_dbg_stale}, "
+                    f"err={_dbg_err}). "
+                    + " | ".join(_dbg_sample)))
+            except Exception:
+                pass
+            return None  # nothing already calibrated → nothing to offer
+
+        try:
+            self.update_status(self.tr(
+                f"🔎 cal-precheck: {n_matched}/{n_total} selected light(s) "
+                f"already have calibrated frames in "
+                f"{os.path.basename(calibrated_dir)}."))
+        except Exception:
+            pass
+
+        # `auto_reuse` was consumed at the top; when True, the Quick-tab
+        # Full-Pipeline button asked for a silent resume on top of what's
+        # already on disk, so both the "all matched" and "partial" branches
+        # below bypass the dialog.
+
+        # ── Case 1: everything already calibrated ───────────────────────
+        if n_unmatched == 0:
+            if auto_reuse:
+                self.update_status(self.tr(
+                    f"⏭️ Full Pipeline: all {n_total} light(s) already "
+                    f"calibrated — reusing existing calibrated frames."))
+                return "skip"
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(self.tr("Already Calibrated"))
+            box.setText(self.tr(
+                f"Found calibrated versions for all {n_total} selected "
+                f"light(s) in the Calibrated folder.\n\nSkip calibration "
+                f"and keep the existing calibrated frames?"
+            ))
+            skip_btn = box.addButton(self.tr("Skip Calibration"),
+                                     QMessageBox.ButtonRole.AcceptRole)
+            cal_btn  = box.addButton(self.tr("Recalibrate All"),
+                                     QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(skip_btn)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is skip_btn:
+                return "skip"
+            if clicked is cal_btn:
+                return "calibrate_all"
+            return "cancel"
+
+        # ── Case 2: some calibrated, some not ───────────────────────────
+        if auto_reuse:
+            self.update_status(self.tr(
+                f"⏭️ Full Pipeline: {n_matched}/{n_total} light(s) already "
+                f"calibrated — calibrating only the {n_unmatched} new "
+                f"frame(s)."))
+            # Prune self.light_files to the unmatched (uncalibrated) frames.
+            # The calibrate_lights tree-walk filters by `leaf_paths`, so the
+            # caller must also prune leaf_paths after this returns.
+            self.light_files = unmatched_lf
+            return "calibrate_new"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.tr("Partially Calibrated"))
+        box.setText(self.tr(
+            f"{n_matched} of {n_total} selected light(s) already have "
+            f"calibrated versions in the Calibrated folder.\n\n"
+            f"Calibrate only the {n_unmatched} new frame(s) and reuse "
+            f"the existing calibrated frames for the rest?"
+        ))
+        new_btn = box.addButton(
+            self.tr(f"Calibrate {n_unmatched} New Only"),
+            QMessageBox.ButtonRole.AcceptRole)
+        all_btn = box.addButton(self.tr("Recalibrate All"),
+                                QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(new_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is all_btn:
+            return "calibrate_all"
+        if clicked is not new_btn:
+            return "cancel"
+
+        # Prune self.light_files to the unmatched (uncalibrated) frames.
+        # The calibrate_lights tree-walk filters by `leaf_paths`, so the
+        # caller must also prune leaf_paths after this returns.
+        self.light_files = unmatched_lf
+        return "calibrate_new"
+
     def _read_drizzle_stamp(self, path: str) -> dict | None:
         """Reconstruct a drizzle entry from an aligned frame's SASDZ* header stamp.
 
@@ -29715,6 +30495,31 @@ class StackingSuiteDialog(QDialog):
 
             # 1) Pull files from the tree
             self.extract_light_files_from_tree()
+
+            # 1a) Multi-Set runs narrow self.light_files to the current Set in
+            # register_images (line ~22772), but extract_light_files_from_tree()
+            # above rebuilds from the WHOLE tree and discards that scoping. If
+            # we don't re-apply the Set scope here, every Set's integration
+            # pass restacks frames belonging to OTHER Sets — labeled with the
+            # current Set's prefix — producing duplicate masters (e.g. a
+            # "MasterLight_m17_SII_..." twin of a frame that belongs to the
+            # SNR set). Keep the Default (no-set) case unaffected.
+            cur_set = getattr(self, "_reg_current_set", None)
+            if cur_set and cur_set != "Default":
+                scoped_lf = {}
+                dropped = 0
+                for g, lst in self.light_files.items():
+                    kept = [p for p in lst if self._set_of_frame(p) == cur_set]
+                    if kept:
+                        scoped_lf[g] = kept
+                    dropped += (len(lst) - len(kept))
+                self.light_files = scoped_lf
+                if dropped:
+                    self.update_status(self.tr(
+                        f"🧩 Set '{cur_set}': scoped integration to this set "
+                        f"({dropped} frame(s) from other sets held back)."
+                    ))
+
             if not self.light_files:
                 self.update_status(self.tr("⚠️ No registered images found!"))
                 self._set_registration_busy(False)
@@ -30141,6 +30946,36 @@ class StackingSuiteDialog(QDialog):
             _noise_pos = [v for v in _noise_pos if v > 1e-9]
             _noise_ref = float(np.median(_noise_pos)) if _noise_pos else 0.0
 
+            # Exposure-time scaling (linear) — mirror the Register path. See
+            # the matching block there for the long-form rationale. For
+            # already-aligned frames, EXPTIME is preserved from calibration
+            # through registration, so the header lookup works for _n_r.fit
+            # inputs here just as it does for raw/calibrated inputs on the
+            # Register side.
+            _exp_scaling_on = bool(self.settings.value(
+                "stacking/exposure_weighted", True, type=bool
+            ))
+            if _exp_scaling_on:
+                _exp_factors, _exp_max = self._exposure_factors_for_frames(measured_frames)
+            else:
+                _exp_factors, _exp_max = ({fp: 1.0 for fp in measured_frames}, 0.0)
+
+            if _exp_scaling_on and _exp_max > 0.0:
+                _n_short = sum(1 for f in _exp_factors.values() if f < 0.999)
+                if _n_short > 0:
+                    dbg.append(
+                        f"⏱️ Exposure scaling ON — max exposure in group "
+                        f"{_exp_max:g}s; {_n_short}/{len(measured_frames)} "
+                        f"frame(s) carry < max exposure and will be down-"
+                        f"weighted linearly."
+                    )
+            elif not _exp_scaling_on:
+                dbg.append(
+                    "⏱️ Exposure scaling OFF — frames weighted purely on "
+                    "quality terms; mixed-exposure groups will over-weight "
+                    "the shorter-exposure subs."
+                )
+
             for fp in measured_frames:
                 c   = star_counts[fp]["count"]
                 ecc = star_counts[fp]["eccentricity"]
@@ -30157,13 +30992,15 @@ class StackingSuiteDialog(QDialog):
                     count=c, ecc=ecc, bg=bg, fwhm=fwhm, noise=noise,
                     fwhm_ref=_fwhm_ref, noise_ref=_noise_ref, exps=_wexps,
                 )
+                exp_f = float(_exp_factors.get(fp, 1.0))
+                scaled_w = raw_w * exp_f
 
-                self.frame_weights[fp] = raw_w
+                self.frame_weights[fp] = scaled_w
                 dbg.append(
                     f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, "
                     f"Bg={bg:.4f}, FWHM~{fwhm:.2f}, "
                     f"Sharp={terms['sharp']:.3f}, SNR={terms['snr']:.3f}, "
-                    f"Weight={raw_w:.4f}"
+                    f"ExpScale={exp_f:.3f}, Weight={scaled_w:.4f}"
                 )
 
             # Normalize weights the same way the Register-and-Integrate path

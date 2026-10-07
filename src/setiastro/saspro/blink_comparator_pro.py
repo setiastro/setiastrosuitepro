@@ -1266,7 +1266,10 @@ class BlinkComparatorPro(QDialog):
     def _restore_window_geometry(self):
         try:
             s = QSettings()
-            g = s.value("blink/window_geometry", None)   # unique key
+            # Dedicated key so this (unused in current wiring, but kept
+            # for legacy callers) doesn't collide with BlinkTab's
+            # top-level geometry save.
+            g = s.value("blink/dialog_window_geometry", None)
             if g is not None:
                 self.restoreGeometry(g)
         except Exception:
@@ -1275,7 +1278,7 @@ class BlinkComparatorPro(QDialog):
     def _save_window_geometry(self):
         try:
             s = QSettings()
-            s.setValue("blink/window_geometry", self.saveGeometry())
+            s.setValue("blink/dialog_window_geometry", self.saveGeometry())
         except Exception:
             pass
 
@@ -1512,7 +1515,7 @@ class BlinkTab(QWidget):
     imagesChanged = pyqtSignal(int)
     sendToStacking = pyqtSignal(list, str)
     def __init__(self, image_manager=None, doc_manager=None, parent=None):
-        super().__init__(parent)  
+        super().__init__(parent)
 
         self.image_paths = []  # Store the file paths of loaded images
         self.loaded_images = []  # Store the image objects (as numpy arrays)
@@ -1524,7 +1527,27 @@ class BlinkTab(QWidget):
         self.dragging = False  # Track whether the mouse is dragging
         self.last_mouse_pos = None  # Store the last mouse position
 
-        self.aggressive_stretch_enabled = False
+        # Restore persisted UI settings BEFORE initUI() so widgets seed
+        # from the right values.
+        _s = QSettings()
+        try:
+            self.aggressive_stretch_enabled = bool(
+                _s.value("blink/aggressive_stretch", False, type=bool)
+            )
+        except Exception:
+            self.aggressive_stretch_enabled = False
+
+        try:
+            _fps = float(_s.value("blink/play_fps", 1.0, type=float))
+        except Exception:
+            _fps = 1.0
+        self.play_fps = max(0.1, min(10.0, _fps))
+
+        try:
+            self._auto_fit = bool(_s.value("blink/auto_fit", False, type=bool))
+        except Exception:
+            self._auto_fit = False
+
         self.current_sigma = 3.7
         self.current_pixmap = None
         self._last_preview_name = None
@@ -1533,28 +1556,69 @@ class BlinkTab(QWidget):
         self._pending_preview_timer.setInterval(40)  # 40–80ms is plenty
         self._pending_preview_item = None
         self._pending_preview_timer.timeout.connect(self._do_preview_update)
-        self.play_fps = 1  # default fps (200 ms/frame)
         self._view_center_norm = None
-        self._zoom_pinned_norm = None  # (norm_cx, norm_cy) set by right-click        
+        self._zoom_pinned_norm = None  # (norm_cx, norm_cy) set by right-click
         self.initUI()
         self.init_shortcuts()
+
+        # Sync the aggressive-stretch button to the restored flag so the
+        # UI matches what we'll actually render.
+        try:
+            self.aggressive_button.blockSignals(True)
+            self.aggressive_button.setChecked(self.aggressive_stretch_enabled)
+            self.aggressive_button.blockSignals(False)
+        except Exception:
+            pass
 
         self._geom_restored = False  # <- NEW
 
     # --- NEW ---
+    def _top_level_window(self):
+        """Return the top-level window hosting this widget (dialog, MDI
+        subwindow or main window). Falls back to self when embedded weirdly.
+        Geometry save/restore must target this, not the embedded widget."""
+        try:
+            w = self.window()
+            return w if w is not None else self
+        except Exception:
+            return self
+
     def _restore_window_geometry(self):
         try:
             s = QSettings()
-            g = s.value("blink/window_geometry", None)   # unique key
+            g = s.value("blink/tab_window_geometry", None)   # widget-specific
             if g is not None:
-                self.restoreGeometry(g)
+                self._top_level_window().restoreGeometry(g)
         except Exception:
             pass
 
     def _save_window_geometry(self):
         try:
             s = QSettings()
-            s.setValue("blink/window_geometry", self.saveGeometry())
+            s.setValue("blink/tab_window_geometry",
+                       self._top_level_window().saveGeometry())
+        except Exception:
+            pass
+
+    def _save_main_splitter_state(self, *_):
+        try:
+            if hasattr(self, "main_splitter") and self.main_splitter is not None:
+                QSettings().setValue("blink/main_splitter_state",
+                                     self.main_splitter.saveState())
+        except Exception:
+            pass
+
+    def _restore_main_splitter_state(self):
+        try:
+            if not hasattr(self, "main_splitter") or self.main_splitter is None:
+                return
+            state = QSettings().value("blink/main_splitter_state", None)
+            if state is not None:
+                self.main_splitter.restoreState(state)
+                sizes = self.main_splitter.sizes()
+                # sanity fallback: don't let a bad save collapse a pane
+                if len(sizes) >= 2 and (sizes[0] < 120 or sizes[1] < 200):
+                    self.main_splitter.setSizes([300, 900])
         except Exception:
             pass
 
@@ -1581,6 +1645,7 @@ class BlinkTab(QWidget):
 
             def _after_restore():
                 self._restore_window_geometry()
+                self._restore_main_splitter_state()
 
             QTimer.singleShot(0, _after_restore)
 
@@ -1595,8 +1660,20 @@ class BlinkTab(QWidget):
         except Exception:
             pass
 
+    def hideEvent(self, ev):
+        # Persist on hide too — some hosts (MDI subwindow, custom close
+        # paths) swallow closeEvent, so leaning only on close loses state.
+        try:
+            self._save_window_geometry()
+            self._save_main_splitter_state()
+            self._save_tree_header_state()
+        except Exception:
+            pass
+        super().hideEvent(ev)
+
     def closeEvent(self, e):
         self._save_window_geometry()
+        self._save_main_splitter_state()
         self._save_tree_header_state()
 
         try:
@@ -1614,6 +1691,7 @@ class BlinkTab(QWidget):
 
         # Create a QSplitter to allow resizing between left and right panels
         splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self.main_splitter = splitter  # keep a reference so we can persist its state
 
         # Left Column for the file loading and TreeView
         left_widget = QWidget(self)
@@ -1801,6 +1879,17 @@ class BlinkTab(QWidget):
         self.tree_filter_combo.addItem(self.tr("Flagged Only"),  "flagged")
         self.tree_filter_combo.addItem(self.tr("Clean Only"),    "clean")
         self.tree_filter_combo.setFixedWidth(140)
+        # Restore previous filter selection (silently, before wiring the
+        # change handler so we don't trigger a redundant filter pass).
+        try:
+            saved_filter = QSettings().value("blink/tree_filter", "all", type=str)
+            _fi = self.tree_filter_combo.findData(saved_filter)
+            if _fi >= 0:
+                self.tree_filter_combo.blockSignals(True)
+                self.tree_filter_combo.setCurrentIndex(_fi)
+                self.tree_filter_combo.blockSignals(False)
+        except Exception:
+            pass
         self.tree_filter_combo.currentIndexChanged.connect(self._apply_tree_filter)
         filter_row.addWidget(self.tree_filter_combo)
         filter_row.addStretch(1)
@@ -1983,7 +2072,8 @@ class BlinkTab(QWidget):
 
         splitter.addWidget(left_widget)
         splitter.addWidget(right_splitter)
-        splitter.setSizes([300, 900])
+        splitter.setSizes([300, 900])  # fallback default; _restore_main_splitter_state wins
+        splitter.splitterMoved.connect(self._save_main_splitter_state)
 
         # Add the splitter to the main layout
         main_layout.addWidget(splitter)
@@ -2153,6 +2243,12 @@ class BlinkTab(QWidget):
     def _apply_tree_filter(self):
         """Show/hide leaf items based on the filter combo without touching list order."""
         mode = self.tree_filter_combo.currentData()
+
+        # Persist filter choice so it's remembered across sessions.
+        try:
+            QSettings().setValue("blink/tree_filter", mode)
+        except Exception:
+            pass
 
         for item in self.get_all_leaf_items():
             idx = self._leaf_index(item)
@@ -2724,6 +2820,12 @@ class BlinkTab(QWidget):
         if hasattr(self, "playback_timer") and self.playback_timer is not None:
             self.playback_timer.setInterval(int(round(1000.0 / fps)))  # 0.1 fps -> 10000 ms
 
+        # Persist so the choice survives across sessions.
+        try:
+            QSettings().setValue("blink/play_fps", float(fps))
+        except Exception:
+            pass
+
 
     def _on_current_item_changed_safe(self, current, previous):
         if not current:
@@ -3206,7 +3308,13 @@ class BlinkTab(QWidget):
         if self.metrics_window and self.metrics_window.isVisible():
             self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
         self._update_tree_metrics_columns()
-        self.imagesChanged.emit(len(self.loaded_images)) 
+        self.imagesChanged.emit(len(self.loaded_images))
+
+        # Honor persisted Fit preference: auto-select the first leaf
+        # (which triggers a deferred fit) so the user sees their saved
+        # view mode without having to click a frame first.
+        if getattr(self, "_auto_fit", False):
+            QTimer.singleShot(0, self._auto_select_first_leaf_after_load)
 
     def show_metrics(self):
         if self.metrics_window is None:
@@ -3830,6 +3938,12 @@ class BlinkTab(QWidget):
         if self.metrics_window and self.metrics_window.isVisible():
             self.metrics_window.update_metrics(self.loaded_images, order=self._tree_order_indices())
 
+        # Honor persisted Fit preference: auto-select the first leaf
+        # (which triggers a deferred fit) so the user sees their saved
+        # view mode without having to click a frame first.
+        if getattr(self, "_auto_fit", False):
+            QTimer.singleShot(0, self._auto_select_first_leaf_after_load)
+
 
     def findTopLevelItemByName(self, name):
         """Find a top-level item in the tree by its name."""
@@ -4182,7 +4296,25 @@ class BlinkTab(QWidget):
 
         qimage = self.convert_to_qimage(disp8)
         self.current_pixmap = QPixmap.fromImage(qimage)
-        self.apply_zoom()
+        # If the user asked for Fit (persisted) we recompute fit for this
+        # image — zoom levels don't carry sensibly between images of
+        # different pixel sizes, so fit-on-switch is what people usually
+        # want when they've clicked Fit once.
+        #
+        # On the FIRST image after Blink reopens with a persisted Fit
+        # preference, the scroll area viewport may not have reached its
+        # final restored-geometry size yet, so an inline fit would snap
+        # to the wrong ratio. We fit immediately (right ratio in the
+        # steady state) AND again on the next event-loop tick (fixes
+        # the first-open case where the viewport only settles after
+        # this call returns). The second fit is a no-op when the
+        # viewport didn't change.
+        if getattr(self, "_auto_fit", False):
+            self.fit_to_preview(_from_auto=True)
+            QTimer.singleShot(0, lambda: self.fit_to_preview(_from_auto=True)
+                              if self.current_pixmap else None)
+        else:
+            self.apply_zoom()
 
 
     def _capture_view_center_norm(self):
@@ -4271,20 +4403,59 @@ class BlinkTab(QWidget):
             event.ignore()
 
 
+    def _set_auto_fit(self, on: bool):
+        """Set the auto-fit-on-switch preference and persist it."""
+        self._auto_fit = bool(on)
+        try:
+            QSettings().setValue("blink/auto_fit", self._auto_fit)
+        except Exception:
+            pass
+
+    def _auto_select_first_leaf_after_load(self):
+        """After images finish loading, auto-select the first leaf if nothing
+        is current. Needed because Blink doesn't preview anything until the
+        user clicks a leaf, so a persisted Fit preference has no image to
+        apply to. Calling on_item_clicked (via setCurrentItem's signal path)
+        gives us the first pixmap, and that method's deferred fit then
+        settles into the correct ratio against the final viewport size."""
+        try:
+            cur = self.fileTree.currentItem()
+            if cur is not None and cur.childCount() == 0:
+                return  # user already has something selected
+            leaves = self.get_all_leaf_items()
+            if not leaves:
+                return
+            first = leaves[0]
+            self.fileTree.setCurrentItem(first)
+            # setCurrentItem routes through _on_current_item_changed_safe
+            # which uses a tiny timer, so defer our own click too to let
+            # it land, and defer the whole chain so the viewport has its
+            # final size when fit_to_preview runs.
+            QTimer.singleShot(0, lambda: self.on_item_clicked(first, 0))
+        except Exception:
+            pass
+
     def zoom_in(self):
         """Increase the zoom level and refresh the image."""
         self.zoom_level = min(self.zoom_level * 1.2, 3.0)  # Cap at 3x
+        # User took manual control — stop auto-fitting on image switch.
+        self._set_auto_fit(False)
         self.apply_zoom()
 
 
     def zoom_out(self):
         """Decrease the zoom level and refresh the image."""
         self.zoom_level = max(self.zoom_level / 1.2, 0.05)  # Cap at 0.2x
+        # User took manual control — stop auto-fitting on image switch.
+        self._set_auto_fit(False)
         self.apply_zoom()
 
 
-    def fit_to_preview(self):
-        """Adjust the zoom level so the image fits within the QScrollArea viewport."""
+    def fit_to_preview(self, _from_auto: bool = False):
+        """Adjust the zoom level so the image fits within the QScrollArea viewport.
+        When the user clicks the Fit button we also turn on auto-fit so new
+        images stay fit-sized on switch. Internal auto-fit callers pass
+        _from_auto=True so we don't flip the pref on ourselves."""
         if self.current_pixmap:
             # Get the size of the QScrollArea's viewport
             viewport_size = self.scroll_area.viewport().size()
@@ -4297,6 +4468,10 @@ class BlinkTab(QWidget):
 
             # Apply the zoom level
             self.apply_zoom()
+            # User click on Fit means "keep fitting new images too" —
+            # persist it so it sticks across sessions.
+            if not _from_auto:
+                self._set_auto_fit(True)
         else:
             print("No image loaded. Cannot fit to preview.")
             QMessageBox.warning(self, self.tr("Warning"), self.tr("No image loaded. Cannot fit to preview."))
@@ -5084,6 +5259,8 @@ class BlinkTab(QWidget):
             return
 
         self.zoom_level = new_zoom
+        # Manual zoom via wheel/trackpad — stop auto-fitting on image switch.
+        self._set_auto_fit(False)
         self.apply_zoom()
         event.accept()
 
@@ -5266,6 +5443,11 @@ class BlinkTab(QWidget):
 
     def toggle_aggressive(self):
         self.aggressive_stretch_enabled = self.aggressive_button.isChecked()
+        try:
+            QSettings().setValue("blink/aggressive_stretch",
+                                 bool(self.aggressive_stretch_enabled))
+        except Exception:
+            pass
         cur = self.fileTree.currentItem()
         if cur:
             self._last_preview_name = None
