@@ -4770,7 +4770,7 @@ class _MMImage:
     Exposes: .shape, .ndim, .read_tile(y0,y1,x0,x1), .read_full(), .close()
 
     For FITS:
-      - Try memmap=True first.
+      - Try memmap=True first, mapped read-only (see _open_fits).
       - If that fails, retry with memmap=False.
       - We let Astropy apply BZERO/BSCALE.
       - Then we apply a **fixed** normalization based on BITPIX:
@@ -4821,6 +4821,7 @@ class _MMImage:
         """
         Try memmap=True first; if anything fails while opening or accessing data,
         fall back to memmap=False for this file.
+        The memmap is read-only ('denywrite'): this class only copies data out.
         Astropy is allowed to apply BZERO/BSCALE, then we normalize to 0..1 for
         8/16-bit images.
         """
@@ -4828,7 +4829,12 @@ class _MMImage:
         from astropy.io import fits
 
         def _do_open(memmap_flag: bool):
-            hdul = fits.open(path, memmap=memmap_flag)
+            # 'denywrite' maps read-only (mmap.ACCESS_READ). astropy's default
+            # 'readonly' maps copy-on-write, which Windows charges against the
+            # commit limit for the whole file at open; integration holds every
+            # frame open, so thousands of frames exhausted RAM + pagefile.
+            extra = {"mode": "denywrite"} if memmap_flag else {}
+            hdul = fits.open(path, memmap=memmap_flag, **extra)
             try:
                 hdu = None
                 for h in hdul:
