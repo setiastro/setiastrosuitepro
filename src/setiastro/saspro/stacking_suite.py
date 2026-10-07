@@ -6444,6 +6444,24 @@ class StackingSuiteDialog(QDialog):
         # values: "reuse" (skip/short-circuit existing registrations),
         # "register_all" (re-register everything), "cancel". None => ask.
         self._reg_precheck_choice = None
+        # One-shot "auto-reuse" flags set by Quick-tab Full Pipeline so both
+        # calibration and registration prechecks silently reuse existing
+        # calibrated / aligned frames instead of prompting. Each precheck
+        # consumes (clears) its own flag on first read; this is why we keep
+        # two independent latches instead of one shared bool — the register
+        # stage runs much later (after calibration completes + auto-register
+        # fires), and we want the calibration consumer not to turn the
+        # register side off before it gets its turn.
+        self._pipeline_auto_reuse_cal = False
+        self._pipeline_auto_reuse_reg = False
+        # One-shot "force clean slate" flags — the inverse of the auto-reuse
+        # latches above. Set by Quick-tab Full Pipeline when the user ticks
+        # the "Force clean slate" checkbox, these tell each precheck to
+        # silently take the full-rebuild path ("calibrate_all" / "register_all")
+        # regardless of what's already on disk. Mutually exclusive with the
+        # auto-reuse flags per Full-Pipeline invocation.
+        self._pipeline_force_recal = False
+        self._pipeline_force_rereg = False
         self._reg_queue_master_paths = []  # masters accumulated across sets for the final popup
         self.reference_frame = None
         # Set by the register-only-new shortcut so the completion handler
@@ -7078,6 +7096,35 @@ class StackingSuiteDialog(QDialog):
         cleanup_btn.clicked.connect(self._cleanup_temp_files)
         root.addWidget(cleanup_btn)
 
+        # ── Full Pipeline force-clean-slate toggle ───────────────────────────
+        # Default-off opt-in override: when checked, the Full Pipeline button
+        # ignores any existing calibrated / aligned frames in the stacking
+        # directory and runs calibration + registration from scratch. The
+        # default resume-on-top-of-what's-there behavior is still what the
+        # user gets if they don't check this. State is persisted in QSettings
+        # so a user who leaves it checked keeps that behavior across sessions.
+        self.pipeline_force_clean_slate_cb = QCheckBox(self.tr(
+            "Force clean slate — recalibrate & re-register all frames"
+        ))
+        self.pipeline_force_clean_slate_cb.setToolTip(self.tr(
+            "By default, Run Full Pipeline reuses any calibrated frames in "
+            "the Calibrated folder and any aligned frames in Aligned_Images "
+            "that match the selected lights, and only processes the new "
+            "ones. Check this to force a full recalibration and full "
+            "re-registration regardless of what's already on disk."
+        ))
+        self.pipeline_force_clean_slate_cb.setChecked(
+            self.settings.value(
+                "stacking/pipeline_force_clean_slate", False, type=bool
+            )
+        )
+        self.pipeline_force_clean_slate_cb.toggled.connect(
+            lambda v: self.settings.setValue(
+                "stacking/pipeline_force_clean_slate", bool(v)
+            )
+        )
+        root.addWidget(self.pipeline_force_clean_slate_cb)
+
         # ── Full Pipeline button ─────────────────────────────────────────────
         pipeline_btn = QPushButton(self.tr("🚀 Run Full Pipeline (Darks → Flats → Calibrate → Register & Integrate)"))
         pipeline_btn.setStyleSheet("""
@@ -7175,7 +7222,49 @@ class StackingSuiteDialog(QDialog):
                 return
 
         # Step 3: calibrate lights — auto_register_after_calibration_cb
-        # will fire registration automatically when calibration finishes
+        # will fire registration automatically when calibration finishes.
+        #
+        # Full-Pipeline UX contract: if the stacking directory already holds
+        # calibrated and/or aligned twins of the selected lights, reuse them
+        # silently instead of prompting. Users running Full Pipeline want a
+        # single-click resume on top of yesterday's run, not two modal boxes.
+        # Each precheck consumes its own flag on first read, so these latches
+        # auto-clear even if the user cancels mid-pipeline (next manual run
+        # of either stage will prompt normally).
+        #
+        # The "Force clean slate" checkbox inverts the contract: when checked
+        # we pre-seed the opposite set of flags so both prechecks silently
+        # take the full-rebuild path ("calibrate_all" / "register_all")
+        # instead of reusing existing frames.
+        force_clean_slate = False
+        try:
+            if getattr(self, "pipeline_force_clean_slate_cb", None) is not None:
+                force_clean_slate = bool(
+                    self.pipeline_force_clean_slate_cb.isChecked()
+                )
+            else:
+                force_clean_slate = self.settings.value(
+                    "stacking/pipeline_force_clean_slate", False, type=bool
+                )
+        except Exception:
+            force_clean_slate = False
+
+        if force_clean_slate:
+            self._pipeline_auto_reuse_cal = False
+            self._pipeline_auto_reuse_reg = False
+            self._pipeline_force_recal = True
+            self._pipeline_force_rereg = True
+            self.update_status(self.tr(
+                "🧹 Full Pipeline: clean slate mode — forcing full "
+                "recalibration & full re-registration of every selected "
+                "light."
+            ))
+        else:
+            self._pipeline_auto_reuse_cal = True
+            self._pipeline_auto_reuse_reg = True
+            self._pipeline_force_recal = False
+            self._pipeline_force_rereg = False
+
         self.update_status(self.tr(
             "🚀 Full Pipeline: calibrating lights "
             "→ will auto-register & integrate on completion…"
@@ -7338,6 +7427,39 @@ class StackingSuiteDialog(QDialog):
             self._quick_build_master_flat()
 
         elif stage == "calibrate":
+            # Full-Pipeline UX contract (see _run_full_pipeline for the long
+            # version): by default silently reuse any existing calibrated /
+            # aligned twins; when the "Force clean slate" checkbox is on,
+            # silently force full recalibration + full re-registration
+            # instead. Each precheck consumes its own latch on first read.
+            force_clean_slate = False
+            try:
+                if getattr(self, "pipeline_force_clean_slate_cb", None) is not None:
+                    force_clean_slate = bool(
+                        self.pipeline_force_clean_slate_cb.isChecked()
+                    )
+                else:
+                    force_clean_slate = self.settings.value(
+                        "stacking/pipeline_force_clean_slate", False, type=bool
+                    )
+            except Exception:
+                force_clean_slate = False
+
+            if force_clean_slate:
+                self._pipeline_auto_reuse_cal = False
+                self._pipeline_auto_reuse_reg = False
+                self._pipeline_force_recal = True
+                self._pipeline_force_rereg = True
+                self.update_status(self.tr(
+                    "🧹 Full Pipeline: clean slate mode — forcing full "
+                    "recalibration & full re-registration."
+                ))
+            else:
+                self._pipeline_auto_reuse_cal = True
+                self._pipeline_auto_reuse_reg = True
+                self._pipeline_force_recal = False
+                self._pipeline_force_rereg = False
+
             self.update_status(self.tr(
                 "🚀 Full Pipeline: calibrating lights "
                 "→ will auto-register & integrate on completion…"
@@ -18973,6 +19095,88 @@ class StackingSuiteDialog(QDialog):
             if not self.light_files[key]:
                 del self.light_files[key]
 
+        # ── Already-calibrated pre-check ────────────────────────────────
+        # If some tree frames already have fresh calibrated twins in the
+        # Calibrated folder, offer to skip (all matched) or shortcut
+        # (calibrate only the new ones). Mirrors the pre-registration twin
+        # check in register_images(). Any wrapped exception falls through
+        # to a normal full calibration so a bug here can't block the user.
+        try:
+            _cal_decision = self._precheck_calibrated_counterparts(calibrated_dir)
+        except Exception as _e:
+            self.update_status(self.tr(f"ℹ️ Pre-calibration check skipped: {_e}"))
+            _cal_decision = None
+
+        if _cal_decision == "skip":
+            # Everything is already calibrated → nothing to do. Refresh the
+            # Image Registration tab so the existing calibrated frames show
+            # up as the ready-to-register set, then honor the
+            # auto-register-after-cal setting the same way the normal
+            # end-of-calibration path does.
+            self.update_status(self.tr(
+                f"✅ All {total_files} selected light(s) already calibrated; "
+                f"nothing to do."))
+            self.populate_calibrated_lights()
+            self._refresh_quick_stack_summary_later()
+            try:
+                if self.settings.value(
+                    "stacking/auto_register_after_cal", False, type=bool
+                ):
+                    if hasattr(self, "tabs") and self.tabs is not None:
+                        try:
+                            for idx in range(self.tabs.count()):
+                                if self.tabs.tabText(idx).lower().startswith(
+                                    "image registration"
+                                ):
+                                    self.tabs.setCurrentIndex(idx)
+                                    break
+                        except Exception:
+                            pass
+                    self.update_status(self.tr(
+                        "⚙️ Auto: starting registration & integration…"))
+                    QApplication.processEvents()
+                    if hasattr(self, "register_images_btn") \
+                            and self.register_images_btn is not None:
+                        if not getattr(self, "_registration_busy", False):
+                            self.register_images_btn.click()
+                        else:
+                            self.update_status(self.tr(
+                                "ℹ️ Registration already in progress; "
+                                "auto-run skipped."))
+                    elif hasattr(self, "register_images"):
+                        if not getattr(self, "_registration_busy", False):
+                            self.register_images()
+                        else:
+                            self.update_status(self.tr(
+                                "ℹ️ Registration already in progress; "
+                                "auto-run skipped."))
+            except Exception as _are:
+                self.update_status(self.tr(
+                    f"⚠️ Auto register/integrate failed: {_are}"))
+            return
+        if _cal_decision == "cancel":
+            self.update_status(self.tr("❌ Calibration cancelled."))
+            return
+        if _cal_decision == "calibrate_new":
+            # self.light_files has been pruned to the uncalibrated frames.
+            # Rebuild leaf_paths to match so the tree-walk below skips the
+            # already-calibrated leaves (filter at line further down:
+            # "if not light_file or light_file not in leaf_paths: continue").
+            leaf_paths = [p for lst in self.light_files.values() for p in lst]
+            total_files = len(leaf_paths)
+            if total_files == 0:
+                # Shouldn't happen (precheck returns "skip" when matched==total),
+                # but belt-and-braces: refresh and bail cleanly.
+                self.update_status(self.tr(
+                    "✅ No new frames to calibrate."))
+                self.populate_calibrated_lights()
+                self._refresh_quick_stack_summary_later()
+                return
+            self.update_status(self.tr(
+                f"▶ Calibrating {total_files} new frame(s); reusing existing "
+                f"calibrated frames for the rest."))
+        # "calibrate_all" / None → fall through to normal full calibration.
+
         interactive_flat = self.settings.value(
             "stacking/interactive_flat_strength", False, type=bool
         )
@@ -22232,8 +22436,45 @@ class StackingSuiteDialog(QDialog):
                 self._reg_queue = self._partition_light_files_by_set(self.light_files)
                 self._reg_queue_pos = 0
                 # Fresh run → forget any pre-check choice from a previous run so
-                # the first set that finds registered twins prompts again.
-                self._reg_precheck_choice = None
+                # the first set that finds registered twins prompts again. The
+                # Quick-tab Full Pipeline opts out of that reset by setting
+                # one of two latches right before it kicks off calibration:
+                #
+                #   `_pipeline_auto_reuse_reg`  → silently reuse any existing
+                #     aligned twins (pre-seed "reuse")
+                #   `_pipeline_force_rereg`     → "Force clean slate" is on,
+                #     silently re-register everything (pre-seed "register_all")
+                #
+                # Both are translated into a pre-seeded `_reg_precheck_choice`
+                # so `_precheck_registered_counterparts` takes the right path
+                # via its existing cached-choice branches instead of popping
+                # a dialog. The latches are mutually exclusive and both are
+                # consumed here so a later manual Register click (even in the
+                # same session) prompts normally again.
+                if getattr(self, "_pipeline_force_rereg", False):
+                    self._reg_precheck_choice = "register_all"
+                    self._pipeline_force_rereg = False
+                    # Clear the sibling flag too in case the pipeline somehow
+                    # set both (defensive — _run_full_pipeline sets only one).
+                    self._pipeline_auto_reuse_reg = False
+                    try:
+                        self.update_status(self.tr(
+                            "🧹 Full Pipeline (clean slate): re-registering "
+                            "every frame — ignoring any existing aligned "
+                            "frames."))
+                    except Exception:
+                        pass
+                elif getattr(self, "_pipeline_auto_reuse_reg", False):
+                    self._reg_precheck_choice = "reuse"
+                    self._pipeline_auto_reuse_reg = False
+                    try:
+                        self.update_status(self.tr(
+                            "⏭️ Full Pipeline: will reuse any existing "
+                            "aligned frames and register only the stragglers."))
+                    except Exception:
+                        pass
+                else:
+                    self._reg_precheck_choice = None
                 self._reg_queue_master_paths = []
                 if len(self._reg_queue) > 1:
                     self.update_status(self.tr(
@@ -29503,6 +29744,226 @@ class StackingSuiteDialog(QDialog):
             f"integrate all {n_total} once complete."
         ))
         return "register_new"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # "Calibrate Lights" pre-check — already-calibrated counterpart resolution
+    #
+    # Mirrors the registered-twin pre-check above but for the calibration
+    # stage. When the user re-runs calibration after adding new raw lights
+    # to the tree (or re-opening a stacking directory), many of the selected
+    # lights usually already have a calibrated frame sitting in the shared
+    # <stacking_directory>/Calibrated folder from the previous run. Re-doing
+    # the calibration of those frames is wasted GPU/CPU time, so we offer to
+    # skip them and only calibrate the new ones.
+    #
+    # Matching is cheap and exact (no fuzzy stem logic needed) because the
+    # calibrated name is a deterministic function of the source light's
+    # directory + stem, computed by the module-level `_cal_out_name()`:
+    #   /src/dir/foo.fit    ->   {Calibrated}/{md5(/src/dir)[:6]}_foo_c.fit
+    # so we just compute the expected twin path per light and stat it. Both
+    # the GPU and CPU calibration paths write through `_cal_out_name()`, so
+    # the twin we check is byte-for-byte the one the pipeline would produce.
+    #
+    # Freshness: the twin must be at least as new as the source light
+    # (`_twin_is_fresh`, reused from the registration pre-check). This
+    # catches the "re-ingested lights" case where a user re-copies the raw
+    # files but keeps the old Calibrated folder in place.
+    # ─────────────────────────────────────────────────────────────────────────
+    def _precheck_calibrated_counterparts(self, calibrated_dir: str):
+        """
+        Run at the top of calibrate_lights (before any heavy work).
+
+        Returns one of:
+          "skip"           – every selected light has a fresh calibrated
+                             twin; caller should return without calibrating.
+          "calibrate_new"  – self.light_files has been pruned to the
+                             unmatched (uncalibrated) frames; caller
+                             calibrates only those. The tree walk inside
+                             calibrate_lights filters frame_infos by the
+                             pruned `leaf_paths`, so the matched frames
+                             are skipped cleanly.
+          "calibrate_all"  – user chose to recalibrate everything; caller
+                             proceeds with a normal full calibration (no
+                             change to self.light_files).
+          "cancel"         – user cancelled; caller should stop.
+          None             – nothing already calibrated / check unusable;
+                             caller proceeds normally.
+        """
+        light_files = getattr(self, "light_files", None)
+        if not light_files:
+            return None
+
+        # Consume the Full-Pipeline latches BEFORE any early-return path so a
+        # stale True can't leak into the user's next manual click. Full
+        # Pipeline sets exactly one of these per invocation (they're mutually
+        # exclusive); a one-shot consume here keeps the "silent reuse" /
+        # "silent force full" behavior scoped to this invocation only.
+        auto_reuse = bool(getattr(self, "_pipeline_auto_reuse_cal", False))
+        if auto_reuse:
+            self._pipeline_auto_reuse_cal = False
+        force_recal = bool(getattr(self, "_pipeline_force_recal", False))
+        if force_recal:
+            self._pipeline_force_recal = False
+
+        # Force clean slate wins over everything else — don't even bother
+        # scanning for twins. "calibrate_all" is the sentinel the caller
+        # treats as "fall through to a normal full calibration", which is
+        # exactly what clean slate wants.
+        if force_recal:
+            try:
+                self.update_status(self.tr(
+                    "🧹 Full Pipeline (clean slate): skipping already-"
+                    "calibrated check — recalibrating every selected light."
+                ))
+            except Exception:
+                pass
+            return "calibrate_all"
+
+        if not calibrated_dir or not os.path.isdir(calibrated_dir):
+            # No Calibrated folder yet → first run, nothing to match against.
+            return None
+
+        # Partition each group into matched (fresh twin) vs unmatched.
+        matched_lf, unmatched_lf = {}, {}
+        n_matched = n_unmatched = 0
+        _dbg_missing = _dbg_stale = _dbg_err = 0
+        _dbg_sample = []
+        for g, lst in light_files.items():
+            mkeep, ukeep = [], []
+            for p in lst:
+                cal = None
+                try:
+                    cal = _cal_out_name(p, calibrated_dir)
+                except Exception:
+                    _dbg_err += 1
+                    cal = None
+
+                if cal and os.path.exists(cal) and self._twin_is_fresh(p, cal):
+                    mkeep.append(p); n_matched += 1
+                else:
+                    ukeep.append(p); n_unmatched += 1
+                    if cal is None:
+                        if len(_dbg_sample) < 4:
+                            _dbg_sample.append(
+                                f"{os.path.basename(p)} → could not derive twin name"
+                            )
+                    elif not os.path.exists(cal):
+                        _dbg_missing += 1
+                        if len(_dbg_sample) < 4:
+                            _dbg_sample.append(
+                                f"{os.path.basename(p)} → no twin "
+                                f"({os.path.basename(cal)})"
+                            )
+                    else:
+                        _dbg_stale += 1
+                        try:
+                            _dt = os.path.getmtime(cal) - os.path.getmtime(p)
+                        except Exception:
+                            _dt = float("nan")
+                        if len(_dbg_sample) < 4:
+                            _dbg_sample.append(
+                                f"{os.path.basename(p)} → stale "
+                                f"(twin−light mtime = {_dt:+.0f}s)"
+                            )
+            if mkeep:
+                matched_lf[g] = mkeep
+            if ukeep:
+                unmatched_lf[g] = ukeep
+
+        n_total = n_matched + n_unmatched
+        if n_matched == 0:
+            try:
+                self.update_status(self.tr(
+                    f"🔎 cal-precheck: 0/{n_total} usable twins "
+                    f"(missing={_dbg_missing}, stale={_dbg_stale}, "
+                    f"err={_dbg_err}). "
+                    + " | ".join(_dbg_sample)))
+            except Exception:
+                pass
+            return None  # nothing already calibrated → nothing to offer
+
+        try:
+            self.update_status(self.tr(
+                f"🔎 cal-precheck: {n_matched}/{n_total} selected light(s) "
+                f"already have calibrated frames in "
+                f"{os.path.basename(calibrated_dir)}."))
+        except Exception:
+            pass
+
+        # `auto_reuse` was consumed at the top; when True, the Quick-tab
+        # Full-Pipeline button asked for a silent resume on top of what's
+        # already on disk, so both the "all matched" and "partial" branches
+        # below bypass the dialog.
+
+        # ── Case 1: everything already calibrated ───────────────────────
+        if n_unmatched == 0:
+            if auto_reuse:
+                self.update_status(self.tr(
+                    f"⏭️ Full Pipeline: all {n_total} light(s) already "
+                    f"calibrated — reusing existing calibrated frames."))
+                return "skip"
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle(self.tr("Already Calibrated"))
+            box.setText(self.tr(
+                f"Found calibrated versions for all {n_total} selected "
+                f"light(s) in the Calibrated folder.\n\nSkip calibration "
+                f"and keep the existing calibrated frames?"
+            ))
+            skip_btn = box.addButton(self.tr("Skip Calibration"),
+                                     QMessageBox.ButtonRole.AcceptRole)
+            cal_btn  = box.addButton(self.tr("Recalibrate All"),
+                                     QMessageBox.ButtonRole.DestructiveRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(skip_btn)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is skip_btn:
+                return "skip"
+            if clicked is cal_btn:
+                return "calibrate_all"
+            return "cancel"
+
+        # ── Case 2: some calibrated, some not ───────────────────────────
+        if auto_reuse:
+            self.update_status(self.tr(
+                f"⏭️ Full Pipeline: {n_matched}/{n_total} light(s) already "
+                f"calibrated — calibrating only the {n_unmatched} new "
+                f"frame(s)."))
+            # Prune self.light_files to the unmatched (uncalibrated) frames.
+            # The calibrate_lights tree-walk filters by `leaf_paths`, so the
+            # caller must also prune leaf_paths after this returns.
+            self.light_files = unmatched_lf
+            return "calibrate_new"
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle(self.tr("Partially Calibrated"))
+        box.setText(self.tr(
+            f"{n_matched} of {n_total} selected light(s) already have "
+            f"calibrated versions in the Calibrated folder.\n\n"
+            f"Calibrate only the {n_unmatched} new frame(s) and reuse "
+            f"the existing calibrated frames for the rest?"
+        ))
+        new_btn = box.addButton(
+            self.tr(f"Calibrate {n_unmatched} New Only"),
+            QMessageBox.ButtonRole.AcceptRole)
+        all_btn = box.addButton(self.tr("Recalibrate All"),
+                                QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(new_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is all_btn:
+            return "calibrate_all"
+        if clicked is not new_btn:
+            return "cancel"
+
+        # Prune self.light_files to the unmatched (uncalibrated) frames.
+        # The calibrate_lights tree-walk filters by `leaf_paths`, so the
+        # caller must also prune leaf_paths after this returns.
+        self.light_files = unmatched_lf
+        return "calibrate_new"
 
     def _read_drizzle_stamp(self, path: str) -> dict | None:
         """Reconstruct a drizzle entry from an aligned frame's SASDZ* header stamp.
