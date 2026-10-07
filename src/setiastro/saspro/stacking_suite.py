@@ -30495,6 +30495,31 @@ class StackingSuiteDialog(QDialog):
 
             # 1) Pull files from the tree
             self.extract_light_files_from_tree()
+
+            # 1a) Multi-Set runs narrow self.light_files to the current Set in
+            # register_images (line ~22772), but extract_light_files_from_tree()
+            # above rebuilds from the WHOLE tree and discards that scoping. If
+            # we don't re-apply the Set scope here, every Set's integration
+            # pass restacks frames belonging to OTHER Sets — labeled with the
+            # current Set's prefix — producing duplicate masters (e.g. a
+            # "MasterLight_m17_SII_..." twin of a frame that belongs to the
+            # SNR set). Keep the Default (no-set) case unaffected.
+            cur_set = getattr(self, "_reg_current_set", None)
+            if cur_set and cur_set != "Default":
+                scoped_lf = {}
+                dropped = 0
+                for g, lst in self.light_files.items():
+                    kept = [p for p in lst if self._set_of_frame(p) == cur_set]
+                    if kept:
+                        scoped_lf[g] = kept
+                    dropped += (len(lst) - len(kept))
+                self.light_files = scoped_lf
+                if dropped:
+                    self.update_status(self.tr(
+                        f"🧩 Set '{cur_set}': scoped integration to this set "
+                        f"({dropped} frame(s) from other sets held back)."
+                    ))
+
             if not self.light_files:
                 self.update_status(self.tr("⚠️ No registered images found!"))
                 self._set_registration_busy(False)
