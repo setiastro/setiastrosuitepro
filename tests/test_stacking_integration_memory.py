@@ -132,5 +132,89 @@ class MMImageReadOnlyMapTests(unittest.TestCase):
                         f"of commit for {total / 2**20:.1f} MiB of files")
 
 
+class ForcedRejectMaskTests(unittest.TestCase):
+    """The GPU reducer must not expand the forced-reject mask to (F,H,W,C) on
+    the host: at thousands of frames that was the allocation that failed."""
+
+    F, H, W, C = 9, 4, 6, 3
+    ALGOS = (
+        "Weighted Windsorized Sigma Clipping",
+        "Kappa-Sigma Clipping",
+        "Simple Median (No Rejection)",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        from setiastro.saspro import torch_rejection
+
+        try:
+            torch_rejection._get_torch()  # never installs: allow_install=False
+        except Exception as e:
+            raise unittest.SkipTest(f"torch unavailable: {e}")
+        cls.tr = torch_rejection
+
+    def setUp(self):
+        rng = np.random.default_rng(3)
+        F, H, W, C = self.F, self.H, self.W, self.C
+        self.ts = rng.normal(0.5, 0.05, (F, H, W, C)).astype(np.float32)
+        self.ts[2, 1, 1, :] = 5.0  # outlier
+        self.ts[4, 0, :, 0] = 0.0  # no-data pixels
+        self.wts = rng.uniform(0.5, 1.5, F).astype(np.float32)
+        self.m3 = rng.random((F, H, W)) < 0.2
+        self.m2 = rng.random((H, W)) < 0.3
+
+    def _reduce(self, algo, mask, **kw):
+        out, rej = self.tr._torch_reduce_tile_impl(
+            self.ts, self.wts, algo_name=algo, forced_reject_mask_np=mask, **kw)
+        return np.asarray(out), np.asarray(rej)
+
+    def _assert_same(self, algo, mask, reference):
+        out, rej = self._reduce(algo, mask)
+        ref_out, ref_rej = self._reduce(algo, reference)
+        np.testing.assert_array_equal(out, ref_out)
+        np.testing.assert_array_equal(rej, ref_rej)
+
+    def _full(self, mask):
+        return np.broadcast_to(mask, (self.F, self.H, self.W, self.C)).copy()
+
+    def test_mask_shapes_match_materialised_mask(self):
+        F, H, W = self.F, self.H, self.W
+        cases = {
+            "3D": (self.m3, self._full(self.m3[..., None])),
+            "2D": (self.m2, self._full(self.m2[None, :, :, None])),
+            "(F,H,W,1)": (self.m3[..., None].copy(), self._full(self.m3[..., None])),
+            "3D non-contiguous": (np.zeros((F, H + 3, W), bool)[:, :H, :] | self.m3,
+                                  self._full(self.m3[..., None])),
+        }
+        for algo in self.ALGOS:
+            for name, (mask, reference) in cases.items():
+                with self.subTest(algo=algo, mask=name):
+                    self._assert_same(algo, mask, reference)
+
+    def test_all_false_mask_matches_no_mask(self):
+        for algo in self.ALGOS:
+            with self.subTest(algo=algo):
+                self._assert_same(algo, np.zeros((self.F, self.H, self.W), bool), None)
+
+    def test_mask_is_not_expanded_on_host(self):
+        import tracemalloc
+
+        F, H, W, C = 400, 64, 64, 3
+        ts = np.full((F, H, W, C), 0.5, np.float32)
+        mask = np.zeros((F, H, W), bool)
+        expanded = F * H * W * C
+        tracemalloc.start()
+        try:
+            self.tr._torch_reduce_tile_impl(
+                ts, np.ones(F, np.float32), algo_name="Simple Median (No Rejection)",
+                forced_reject_mask_np=mask, reduce_rej_maps=True)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertLess(peak, expanded // 2,
+                        f"peak numpy allocation {peak / 2**20:.1f} MiB; the expanded "
+                        f"mask alone is {expanded / 2**20:.1f} MiB")
+
+
 if __name__ == "__main__":
     unittest.main()

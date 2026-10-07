@@ -1000,19 +1000,17 @@ def _torch_reduce_tile_impl(
                 raise ValueError(
                     f"forced_reject_mask_np shape {frm.shape} does not match tile (H,W)=({H},{W})"
                 )
-            frm = np.broadcast_to(frm[None, :, :, None], (F, H, W, C))
+            frm = frm[None, :, :, None]
 
         elif frm.ndim == 3:
             if frm.shape != (F, H, W):
                 raise ValueError(
                     f"forced_reject_mask_np shape {frm.shape} does not match (F,H,W)=({F},{H},{W})"
                 )
-            frm = np.broadcast_to(frm[:, :, :, None], (F, H, W, C))
+            frm = frm[:, :, :, None]
 
         elif frm.ndim == 4:
-            if frm.shape == (F, H, W, 1):
-                frm = np.broadcast_to(frm, (F, H, W, C))
-            elif frm.shape != (F, H, W, C):
+            if frm.shape not in ((F, H, W, 1), (F, H, W, C)):
                 raise ValueError(
                     f"forced_reject_mask_np shape {frm.shape} does not match "
                     f"(F,H,W,1) or (F,H,W,C)=({F},{H},{W},{C})"
@@ -1022,7 +1020,10 @@ def _torch_reduce_tile_impl(
                 f"Unsupported forced_reject_mask_np ndim={frm.ndim} shape={frm.shape}"
             )
 
-        forced_reject = torch.from_numpy(np.array(frm, dtype=bool, order="C")).to(dev, dtype=torch.bool, non_blocking=False)
+        # Upload the mask at its own size: `valid & ~forced_reject` below
+        # broadcasts it on the device. Broadcasting on the host first cost
+        # F*H*W*C bytes per tile (186 MiB at 3766 frames x 16 x 1080 x 3).
+        forced_reject = torch.from_numpy(np.ascontiguousarray(frm)).to(dev, dtype=torch.bool, non_blocking=False)
 
     algo = algo_name
 
