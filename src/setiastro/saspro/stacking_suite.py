@@ -9258,6 +9258,40 @@ class StackingSuiteDialog(QDialog):
         wmode_row.addWidget(wmode_label); wmode_row.addWidget(self.weight_mode_combo, 1)
         rej_layout.addLayout(wmode_row)
 
+        # Exposure-time weighting. Scales each frame's quality score by
+        # exp/max(exp) so a 120s sub in a 300s-dominated stack carries 120/300
+        # of a comparable 300s sub's weight (regardless of weight mode). This
+        # is the correct weighting in the photon-shot-noise-dominated regime
+        # that modern CMOS sensors sit in; see the long-form note in the
+        # per-frame debug log. Default ON — mixed-exposure stacks were
+        # previously weighted as if all frames were equal exposure, which is
+        # only correct when they actually are.
+        self.exposure_weighted_cb = QCheckBox(self.tr("Scale weights by exposure time"))
+        self.exposure_weighted_cb.setToolTip(self.tr(
+            "When mixed-exposure subs are stacked together (e.g. 120s and 300s\n"
+            "frames in the same group — usually because the exposure tolerance\n"
+            "is set high enough to merge them), scales each frame's weight by\n"
+            "its exposure time relative to the longest exposure in the group.\n"
+            "\n"
+            "• 300s sub (longest) → ×1.00 of its quality score\n"
+            "• 120s sub           → ×0.40 of its quality score\n"
+            "\n"
+            "Without this, a 120s sub would carry equal weight to a 300s sub\n"
+            "of similar quality — overweighting the shorter-exposure data.\n"
+            "Linear scaling is correct in the photon-shot-noise-dominated\n"
+            "regime of modern CMOS sensors (read noise is sqrt-scaled and\n"
+            "~1-2 electrons, so the linear-exposure benefit dominates).\n"
+            "\n"
+            "No effect when every frame in a group has the same exposure."
+        ))
+        self.exposure_weighted_cb.setChecked(
+            self.settings.value("stacking/exposure_weighted", True, type=bool)
+        )
+        self.exposure_weighted_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/exposure_weighted", bool(v))
+        )
+        rej_layout.addWidget(self.exposure_weighted_cb)
+
         # Param rows as small containers we can show/hide
         def _mini_row(label_text, widget, help_text=None):
             row = QWidget()
@@ -14430,15 +14464,16 @@ class StackingSuiteDialog(QDialog):
 
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Icon.Information)
-            msg.setWindowTitle(self.tr("Multiple Targets Detected"))
+            msg.setWindowTitle(self.tr("New Target Detected"))
             msg.setText(self.tr(
-                "The files you're adding are for <b>{0}</b>, and this stacking "
-                "directory already contains <b>{1}</b>.<br><br>"
-                "That's fine — SASpro stacks multiple targets in one run using "
-                "<b>Sets</b> in Image Integration. Frames are auto-assigned to a "
-                "Set per target, so each registers to its own reference. Just "
-                "confirm the Set assignments (and each Set's reference frame) in "
-                "the Image Integration tab before integrating."
+                "The files you're adding are for <b>{0}</b>, but this stacking "
+                "directory is currently working on <b>{1}</b>.<br><br>"
+                "SASpro will add them as a <b>new Set</b> named for the "
+                "target, with its <b>own reference frame</b>. Each Set "
+                "registers and integrates independently — the new frames "
+                "will <b>not</b> be stacked together with <b>{1}</b>.<br><br>"
+                "You can review the Set assignments and each Set's reference "
+                "frame in the Image Integration tab before integrating."
             ).format(", ".join(new_targets), ", ".join(sorted(existing))))
             msg.setInformativeText(self.tr(
                 "Prefer to keep this target in its own folder instead? {0}:<br><code>{1}</code>"
@@ -14446,7 +14481,7 @@ class StackingSuiteDialog(QDialog):
                 self.tr("Existing folder found — switch to it")
                 if resuming else self.tr("Suggested separate directory"),
                 suggested))
-            mix_btn = msg.addButton(self.tr("Add && Auto-Assign Sets"),
+            mix_btn = msg.addButton(self.tr("Add as New Set"),
                                     QMessageBox.ButtonRole.AcceptRole)
             switch_btn = msg.addButton(
                 self.tr("Use Separate Folder") if resuming
@@ -21816,6 +21851,105 @@ class StackingSuiteDialog(QDialog):
         )
         return float(w), {"sharp": sharp_term, "snr": snr_term}
 
+    def _exposure_factors_for_frames(self, frames: list[str]) -> tuple[dict[str, float], float]:
+        """Compute per-frame linear exposure weighting factors over a group.
+
+        Pulls each frame's exposure from the group key it already sits under
+        in ``self.light_files`` (keys look like
+        ``("Ha - 300s (4144x2822)", session)``) — no FITS header re-reads,
+        because that information was already parsed and used to group these
+        frames in the first place. Returns ``(factors, max_exp)`` where
+        ``factors[fp] = exp(fp) / max_exp`` clamped to ``(1e-4, 1.0]``.
+
+        A frame that can't be matched back to a group — or whose group key
+        has a non-numeric exposure token like ``"Unknown"`` — maps to a
+        neutral ``1.0`` factor so a key-parsing quirk never silently zeroes
+        a frame. When every frame shares one exposure (the common single-
+        exposure stack) every factor is exactly ``1.0`` and this call is a
+        no-op mathematically.
+
+        This is the correct weighting in the photon-shot-noise-dominated
+        regime of modern CMOS sensors: variance ∝ 1/T, so the inverse-
+        variance optimal weight is proportional to T itself. Read noise
+        (which scales as √T) is a second-order correction we deliberately
+        ignore here per the UX contract on the "Scale weights by exposure
+        time" checkbox.
+
+        Returns:
+            factors : {file_path: factor_in_(1e-4, 1.0]}
+            max_exp : the longest exposure in the group (0.0 if nothing in
+                      self.light_files has a parseable exposure — caller
+                      should treat that as "no exposure info available" and
+                      skip scaling).
+        """
+        # Build a path → exposure map from self.light_files group keys.
+        # The exposure text in a key looks like "300s" / "0.5s" / "Unknown";
+        # we match the first "<number>s" token in the first element of the
+        # tuple key (filter+exposure+size string). Falls back to 0.0 on no
+        # match, which the loop below translates into a neutral 1.0 factor.
+        _light_files = getattr(self, "light_files", None) or {}
+        _exp_token = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*s", re.IGNORECASE)
+
+        def _parse_exp_from_key(key) -> float:
+            try:
+                label = key[0] if isinstance(key, tuple) and key else key
+                if not isinstance(label, str):
+                    return 0.0
+                m = _exp_token.search(label)
+                if not m:
+                    return 0.0
+                v = float(m.group(1))
+                return v if math.isfinite(v) and v > 0.0 else 0.0
+            except Exception:
+                return 0.0
+
+        path_exp: dict[str, float] = {}
+        for key, paths in _light_files.items():
+            e = _parse_exp_from_key(key)
+            for p in paths or ():
+                # Last-group-wins on a duplicate path — not expected inside a
+                # single light_files snapshot, but harmless if it occurs.
+                path_exp[p] = e
+
+        # Also index by normcase(abspath) so a frame whose path differs only
+        # in case/separators (common on Windows) still matches its group.
+        path_exp_nc: dict[str, float] = {
+            os.path.normcase(os.path.normpath(p)): e for p, e in path_exp.items()
+        }
+
+        exps: dict[str, float] = {}
+        for fp in frames:
+            e = path_exp.get(fp)
+            if e is None:
+                e = path_exp_nc.get(os.path.normcase(os.path.normpath(fp)), 0.0)
+            exps[fp] = float(e) if e and e > 0.0 else 0.0
+
+        valid = [e for e in exps.values() if e > 0.0]
+        if not valid:
+            return ({fp: 1.0 for fp in frames}, 0.0)
+
+        max_exp = max(valid)
+        if max_exp <= 0.0:
+            return ({fp: 1.0 for fp in frames}, 0.0)
+
+        factors: dict[str, float] = {}
+        for fp, e in exps.items():
+            if e <= 0.0:
+                # Missing / unparseable → neutral factor (quality score stands
+                # alone); better than zeroing a frame over a key-text quirk.
+                factors[fp] = 1.0
+            else:
+                f = e / max_exp
+                # Clamp defensively — a bogus key exposure greater than the
+                # group max shouldn't be able to lift a frame above 1.0,
+                # which would perturb the mean-normalisation step downstream.
+                if f > 1.0:
+                    f = 1.0
+                elif f < 1e-4:
+                    f = 1e-4
+                factors[fp] = float(f)
+        return factors, float(max_exp)
+
     @staticmethod
     def _mad_noise(arr) -> float:
         """Robust MAD-based noise estimate, star-insensitive. Plain numpy so it
@@ -23041,7 +23175,44 @@ class StackingSuiteDialog(QDialog):
             # Register scores borderless raw/calibrated frames (full preview),
             # while Skip Registration scores the border-stripped valid core of
             # already-aligned frames. The scoring math applied is identical.
+            # Exposure-time scaling (linear): multiply each frame's quality
+            # score by exp/max_exp *before* mean-normalisation. For a
+            # single-exposure group every factor is 1.0 (no-op). For a mixed
+            # 120s/300s group the 120s subs end up ~0.4× their quality score
+            # relative to the 300s subs, correcting the hidden "all subs are
+            # equal exposure" assumption in the mean-normalisation that
+            # follows. Mean-normalisation preserves ratios, so a 2.5× raw
+            # advantage survives it as a 2.5× normalised weight. Toggleable
+            # via the "Scale weights by exposure time" checkbox (default on);
+            # disabling it restores the legacy equal-exposure behaviour.
+            _exp_scaling_on = bool(self.settings.value(
+                "stacking/exposure_weighted", True, type=bool
+            ))
+            if _exp_scaling_on:
+                _exp_factors, _exp_max = self._exposure_factors_for_frames(measured_frames)
+            else:
+                _exp_factors, _exp_max = ({fp: 1.0 for fp in measured_frames}, 0.0)
+
             dbg = [f"\n📊 **Frame Weights Debug Log (mode: {_wmode}):**"]
+            if _exp_scaling_on and _exp_max > 0.0:
+                _n_short = sum(1 for f in _exp_factors.values() if f < 0.999)
+                if _n_short > 0:
+                    dbg.append(
+                        f"⏱️ Exposure scaling ON — max exposure in group "
+                        f"{_exp_max:g}s; {_n_short}/{len(measured_frames)} "
+                        f"frame(s) carry < max exposure and will be down-"
+                        f"weighted linearly (120s @ 300s-max → ×0.400 of its "
+                        f"quality score, etc.)."
+                    )
+            elif not _exp_scaling_on:
+                dbg.append(
+                    "⏱️ Exposure scaling OFF — frames weighted purely on "
+                    "quality terms; mixed-exposure groups will over-weight "
+                    "the shorter-exposure subs. Enable in Settings → "
+                    "Frame weighting → \"Scale weights by exposure time\" "
+                    "if that's not what you want."
+                )
+
             raw_scores = {}
             for fp in measured_frames:
                 info = star_counts.get(fp, {"count": 0, "eccentricity": 1.0})
@@ -23055,12 +23226,14 @@ class StackingSuiteDialog(QDialog):
                     count=c, ecc=ecc, bg=bg, fwhm=fwhm, noise=noise,
                     fwhm_ref=_fwhm_ref, noise_ref=_noise_ref, exps=_wexps,
                 )
-                raw_scores[fp] = raw_w
+                exp_f = float(_exp_factors.get(fp, 1.0))
+                scaled_w = raw_w * exp_f
+                raw_scores[fp] = scaled_w
                 dbg.append(
                     f"📂 {os.path.basename(fp)} → StarCount={int(c)}, Ecc={ecc:.4f}, "
                     f"Bg={bg:.4f}, FWHM~{fwhm:.2f}, "
                     f"Sharp={terms['sharp']:.3f}, SNR={terms['snr']:.3f}, "
-                    f"Weight={raw_w:.4f}"
+                    f"ExpScale={exp_f:.3f}, Weight={scaled_w:.4f}"
                 )
 
             score_vals = [v for v in raw_scores.values() if v > 0]
@@ -30602,6 +30775,36 @@ class StackingSuiteDialog(QDialog):
             _noise_pos = [v for v in _noise_pos if v > 1e-9]
             _noise_ref = float(np.median(_noise_pos)) if _noise_pos else 0.0
 
+            # Exposure-time scaling (linear) — mirror the Register path. See
+            # the matching block there for the long-form rationale. For
+            # already-aligned frames, EXPTIME is preserved from calibration
+            # through registration, so the header lookup works for _n_r.fit
+            # inputs here just as it does for raw/calibrated inputs on the
+            # Register side.
+            _exp_scaling_on = bool(self.settings.value(
+                "stacking/exposure_weighted", True, type=bool
+            ))
+            if _exp_scaling_on:
+                _exp_factors, _exp_max = self._exposure_factors_for_frames(measured_frames)
+            else:
+                _exp_factors, _exp_max = ({fp: 1.0 for fp in measured_frames}, 0.0)
+
+            if _exp_scaling_on and _exp_max > 0.0:
+                _n_short = sum(1 for f in _exp_factors.values() if f < 0.999)
+                if _n_short > 0:
+                    dbg.append(
+                        f"⏱️ Exposure scaling ON — max exposure in group "
+                        f"{_exp_max:g}s; {_n_short}/{len(measured_frames)} "
+                        f"frame(s) carry < max exposure and will be down-"
+                        f"weighted linearly."
+                    )
+            elif not _exp_scaling_on:
+                dbg.append(
+                    "⏱️ Exposure scaling OFF — frames weighted purely on "
+                    "quality terms; mixed-exposure groups will over-weight "
+                    "the shorter-exposure subs."
+                )
+
             for fp in measured_frames:
                 c   = star_counts[fp]["count"]
                 ecc = star_counts[fp]["eccentricity"]
@@ -30618,13 +30821,15 @@ class StackingSuiteDialog(QDialog):
                     count=c, ecc=ecc, bg=bg, fwhm=fwhm, noise=noise,
                     fwhm_ref=_fwhm_ref, noise_ref=_noise_ref, exps=_wexps,
                 )
+                exp_f = float(_exp_factors.get(fp, 1.0))
+                scaled_w = raw_w * exp_f
 
-                self.frame_weights[fp] = raw_w
+                self.frame_weights[fp] = scaled_w
                 dbg.append(
                     f"📂 {os.path.basename(fp)} → StarCount={c}, Ecc={ecc:.4f}, "
                     f"Bg={bg:.4f}, FWHM~{fwhm:.2f}, "
                     f"Sharp={terms['sharp']:.3f}, SNR={terms['snr']:.3f}, "
-                    f"Weight={raw_w:.4f}"
+                    f"ExpScale={exp_f:.3f}, Weight={scaled_w:.4f}"
                 )
 
             # Normalize weights the same way the Register-and-Integrate path
