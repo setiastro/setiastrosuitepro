@@ -5155,6 +5155,52 @@ class BlinkTab(QWidget):
         else:
             QMessageBox.information(self, self.tr("Move Selected Items"), self.tr("Moved and removed {0} item(s).").format(len(removed_indices)))
 
+    def _pick_focus_after_removal(self, removed_paths):
+        """Pick a leaf path to focus after `removed_paths` are deleted.
+
+        Looks at the CURRENT tree order (before rebuild), finds the first
+        surviving leaf after the last removed one, and falls back to the
+        last surviving leaf before the first removed one. Returns None if
+        the entire tree would be empty.
+        """
+        try:
+            all_leaves = self.get_all_leaf_items()
+            removed_set = set(removed_paths)
+            # Build an ordered list of (path, is_removed) in tree order.
+            ordered = []
+            for leaf in all_leaves:
+                p = leaf.data(0, Qt.ItemDataRole.UserRole)
+                if not p:
+                    # fall back to _leaf_path if UserRole isn't set
+                    p = self._leaf_path(leaf)
+                if p:
+                    ordered.append((p, p in removed_set))
+            if not ordered:
+                return None
+            # Index of the last removed one in tree order.
+            last_removed_pos = -1
+            first_removed_pos = -1
+            for i, (_, rm) in enumerate(ordered):
+                if rm:
+                    if first_removed_pos < 0:
+                        first_removed_pos = i
+                    last_removed_pos = i
+            if last_removed_pos < 0:
+                return None  # nothing to remove, caller shouldn't have called us
+            # Look for first surviving leaf AFTER the last removed one.
+            for i in range(last_removed_pos + 1, len(ordered)):
+                p, rm = ordered[i]
+                if not rm:
+                    return p
+            # Fall back: last surviving leaf BEFORE the first removed one.
+            for i in range(first_removed_pos - 1, -1, -1):
+                p, rm = ordered[i]
+                if not rm:
+                    return p
+            return None
+        except Exception:
+            return None
+
     def delete_items(self):
         """Delete selected leaf images from disk and remove them from the blink list."""
         selected_items = [it for it in self.fileTree.selectedItems() if it and it.childCount() == 0]
@@ -5187,6 +5233,19 @@ class BlinkTab(QWidget):
                 continue
             triplets.append((idx, p, it))
 
+        # Snapshot the paths we're about to remove and the scroll state,
+        # BEFORE the tree is cleared and rebuilt. _after_list_changed()
+        # calls fileTree.clear() which otherwise snaps the view to the
+        # top and loses the current item.
+        selected_paths = [p for (_, p, _) in triplets]
+        focus_target_path = self._pick_focus_after_removal(selected_paths)
+        try:
+            saved_vscroll = self.fileTree.verticalScrollBar().value()
+            saved_hscroll = self.fileTree.horizontalScrollBar().value()
+        except Exception:
+            saved_vscroll = 0
+            saved_hscroll = 0
+
         for idx, path, it in triplets:
             try:
                 os.remove(path)
@@ -5208,13 +5267,42 @@ class BlinkTab(QWidget):
             if 0 <= idx < len(self.loaded_images):
                 del self.loaded_images[idx]
 
-        # Clear preview safely
+        # Clear preview safely (we may replace it below with the new current)
         self.preview_label.clear()
         self.preview_label.setText(self.tr("No image selected."))
         self.current_pixmap = None
 
         if removed_indices:
             self._after_list_changed(removed_indices)
+
+        # Restore the view: select the next surviving neighbor (which
+        # also updates the preview), and scroll it into view. If no
+        # survivors, just restore the raw scroll position. Deferred so
+        # the rebuild's deferred metrics push and sort pass have landed.
+        def _restore_view():
+            try:
+                new_item = None
+                if focus_target_path:
+                    for leaf in self.get_all_leaf_items():
+                        p = leaf.data(0, Qt.ItemDataRole.UserRole) \
+                            or self._leaf_path(leaf)
+                        if p == focus_target_path:
+                            new_item = leaf
+                            break
+                if new_item is not None:
+                    self.fileTree.setCurrentItem(new_item)
+                    self.on_item_clicked(new_item, 0)
+                    self.fileTree.scrollToItem(
+                        new_item,
+                        QAbstractItemView.ScrollHint.PositionAtCenter,
+                    )
+                else:
+                    # Fallback: at least restore raw scroll position.
+                    self.fileTree.verticalScrollBar().setValue(saved_vscroll)
+                    self.fileTree.horizontalScrollBar().setValue(saved_hscroll)
+            except Exception:
+                pass
+        QTimer.singleShot(0, _restore_view)
 
         if failures:
             msg = self.tr("Deleted {0} file(s). {1} failed:").format(len(removed_indices), len(failures))
