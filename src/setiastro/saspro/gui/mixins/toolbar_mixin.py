@@ -1656,6 +1656,19 @@ class ToolbarMixin:
         self.act_welcome.setStatusTip(self.tr("Show the SASpro welcome screen again"))
         self.act_welcome.triggered.connect(self._show_welcome)
 
+        self.act_file_associations = QAction(
+            self.tr("File Associations..."), self
+        )
+        self.act_file_associations.setStatusTip(self.tr(
+            "Make SASpro the default handler for astronomy and image files"
+        ))
+        self.act_file_associations.setToolTip(self.tr(
+            "Register .fits, .xisf, and optionally .tif/.psd/RAW to open in SASpro"
+        ))
+        self.act_file_associations.triggered.connect(
+            self._show_file_associations_dialog
+        )
+
         # give each action a stable id and register
         def reg(cid, act):
             act.setProperty("command_id", cid)
@@ -1779,6 +1792,8 @@ class ToolbarMixin:
         reg("rcastro", self.act_rcastro)
         reg("view_bundles", self.act_view_bundles)
         reg("function_bundles", self.act_function_bundles)
+        reg("workflows", self.act_workflows)
+        reg("file_associations", self.act_file_associations)
 
     def _reset_all_toolbars_to_factory(self):
         """
@@ -2278,3 +2293,28 @@ class ToolbarMixin:
             QToolButton { color: #dcdcdc; }
             QToolButton:checked { color: #DAA520; font-weight: 600; }
         """)
+
+    def _show_file_associations_dialog(self):
+        """Open the File Associations dialog (About → File Associations…).
+
+        Registers SASpro as the default handler for astronomy/image file
+        types on Windows (HKCU, no admin) and Linux (~/.local/share/applications
+        + xdg-mime). On macOS, shows manual steps since the real association
+        story is the .app bundle's Info.plist.
+        """
+        try:
+            from setiastro.saspro.file_associations import FileAssociationsDialog
+            dlg = FileAssociationsDialog(self)
+            dlg.exec()
+        except Exception:
+            import logging
+            logging.exception("Failed to open File Associations dialog")
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, self.tr("File Associations"),
+                    self.tr("Could not open the File Associations dialog. "
+                            "See the log for details."),
+                )
+            except Exception:
+                pass

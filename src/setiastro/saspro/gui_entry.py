@@ -208,6 +208,35 @@ def _init_splash():
     QCoreApplication.setApplicationName("Seti Astro Suite Pro")
     class _SASProApplication(QApplication):
         def event(self, e):
+            # macOS: Finder "Open With" / dock-dropped files arrive as
+            # QFileOpenEvent. These can fire BEFORE the main window exists
+            # (right-click a .fits before SASpro is open -> the OS launches
+            # us and immediately sends the FileOpen event, often before our
+            # splash's event loop has ticked the main window into existence).
+            # We buffer paths on the QApplication instance; after the main
+            # window is built, main() installs _file_open_cb and drains the
+            # buffer. Any subsequent FileOpen events route through the cb
+            # directly.
+            if e.type() == QEvent.Type.FileOpen:
+                try:
+                    path = e.file()
+                    if path:
+                        pending = getattr(self, "_pending_open_paths", None)
+                        if pending is None:
+                            pending = []
+                            self._pending_open_paths = pending
+                        pending.append(path)
+
+                        cb = getattr(self, "_file_open_cb", None)
+                        if callable(cb):
+                            try:
+                                cb(path)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                return True
+
             if (
                 e.type() == QEvent.Type.ApplicationActivate
                 and platform.system() == "Darwin"
@@ -1334,6 +1363,31 @@ def main(argv: list[str] | None = None) -> int:
         _mp.set_start_method("spawn", force=True)
     except RuntimeError:
         pass
+
+    # ── Single-instance handoff ──────────────────────────────────────────────
+    # If another SASpro is already running (in the same bucket — frozen builds
+    # share one bucket, source checkouts share another; see single_instance.py
+    # for the policy) and the user did NOT pass --new-instance / set
+    # SASPRO_NEW_INSTANCE=1, hand our argv off to it and exit — BEFORE the
+    # splash paints, before OpenGL init, before heavy imports — so the user
+    # sees nothing but the existing window popping to the front with their
+    # file open in it.
+    try:
+        from setiastro.saspro.single_instance import maybe_handoff_and_exit
+        _effective_argv = argv if argv is not None else sys.argv[1:]
+        _cleaned = maybe_handoff_and_exit(_effective_argv)
+        if _cleaned is None:
+            # Primary accepted our handoff. We're done; secondary exits silently.
+            return 0
+        # Strip --new-instance / --single-instance from argv for the rest of main().
+        argv = _cleaned
+    except Exception:
+        # Single-instance failure must never block launch. Fall through and
+        # start a normal full instance.
+        import traceback as _tb
+        print("[single-instance] probe failed, launching normally:")
+        _tb.print_exc()
+
     _init_opengl_before_qapp()
     global _splash, _app, _splash_initialized
     from PyQt6.QtCore import QTimer
@@ -1481,6 +1535,73 @@ def main(argv: list[str] | None = None) -> int:
                 win.setWindowIcon(_app_icon_obj)
         except Exception:
             pass
+
+        # ── Install single-instance primary listener ─────────────────────────
+        # From now on, any secondary SASpro launch in our bucket will hand its
+        # argv to us instead of starting fresh. The handler runs on the Qt
+        # main thread, raises our window, and routes paths through the doc
+        # manager's open_path() — the same sink used by the CLI path and by
+        # macOS QFileOpenEvents, so there's one code path for "a file arrived
+        # from the outside world".
+        try:
+            from setiastro.saspro.single_instance import (
+                install_primary_listener, raise_window_to_front,
+            )
+
+            def _on_handoff(payload: dict):
+                try:
+                    handoff_argv = payload.get("argv") or []
+                    paths = _collect_open_paths(handoff_argv)
+                    logging.info(
+                        "[single-instance] handoff received: %d path(s) from pid=%s",
+                        len(paths), payload.get("pid"),
+                    )
+
+                    raise_window_to_front(win)
+
+                    if paths:
+                        dm = getattr(win, "docman", None) or getattr(win, "doc_manager", None)
+                        if dm is None:
+                            logging.warning("[single-instance] no doc manager, can't open paths")
+                            return
+                        for p in paths:
+                            try:
+                                dm.open_path(p)
+                            except Exception:
+                                logging.exception("[single-instance] open_path failed: %s", p)
+                except Exception:
+                    logging.exception("[single-instance] handoff handler crashed")
+
+            # Hang the server off the main window so GC doesn't eat it.
+            win._single_instance_server = install_primary_listener(
+                _app, _on_handoff, status_cb=lambda m: logging.info(m)
+            )
+        except Exception:
+            logging.exception("[single-instance] failed to install primary listener (continuing)")
+
+        # ── macOS QFileOpenEvent plumbing ───────────────────────────────────
+        # On macOS, Finder's "Open With -> SetiAstroSuitePro" and dock-dropped
+        # files fire QFileOpenEvent on the QApplication. _SASProApplication
+        # buffers any that arrive before the main window exists. Now that it
+        # does, install the live callback and drain whatever's queued.
+        if sys.platform == "darwin":
+            def _open_one_from_event(path: str):
+                try:
+                    raise_window_to_front(win)
+                    dm = getattr(win, "docman", None) or getattr(win, "doc_manager", None)
+                    if dm is not None:
+                        dm.open_path(path)
+                except Exception:
+                    logging.exception("[file-open-event] failed: %s", path)
+
+            try:
+                _app._file_open_cb = _open_one_from_event
+                for _p in list(getattr(_app, "_pending_open_paths", []) or []):
+                    QTimer.singleShot(0, lambda p=_p: _open_one_from_event(p))
+                _app._pending_open_paths = []
+            except Exception:
+                logging.exception("[file-open-event] failed to drain pending paths")
+
         def _kick_updates_after_splash():
             try:
                 win.raise_()
