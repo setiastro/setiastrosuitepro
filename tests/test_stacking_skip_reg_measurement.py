@@ -16,6 +16,9 @@ import sys
 import tempfile
 import types
 import unittest
+from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -252,6 +255,73 @@ class SkipRegistrationMeasurementTests(unittest.TestCase):
 
     def test_weights_dont_fall_back_to_background_proxy(self):
         self.assertNotIn("No stars detected", "\n".join(self.run_.log))
+
+
+class _InlinePool:
+    """ProcessPoolExecutor stand-in: records each job and runs it inline."""
+    submitted = []
+
+    def __init__(self, *a, **k):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def submit(self, fn, *args):
+        type(self).submitted.append((fn, args))
+        fut = Future()
+        fut.set_result(fn(*args))
+        return fut
+
+    def shutdown(self, *a, **k):
+        pass
+
+
+class _BrokenPool(_InlinePool):
+    def submit(self, fn, *args):
+        raise BrokenProcessPool("worker processes can't start")
+
+
+class SkipRegistrationProcessPoolTests(unittest.TestCase):
+    """The calibrated originals are measured in worker processes, as Register
+    and Integrate measures them: measure_file is GIL-bound, so in threads it
+    runs about 8x slower (0.20 vs 0.025 s per frame on 3318 Seestar frames)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="saspro-skippool-")
+        cls.tree = _write_dataset(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _run(self, pool_cls):
+        pool_cls.submitted = []
+        with mock.patch("concurrent.futures.ProcessPoolExecutor", pool_cls), \
+                mock.patch("setiastro.saspro.worker_env.check_process_pools"), \
+                mock.patch("setiastro.saspro.worker_env.process_pools_ok",
+                           return_value=True):
+            return _SkipRun(self.tmp, self.tree).run()
+
+    def test_originals_are_measured_in_worker_processes(self):
+        run = self._run(_InlinePool)
+        jobs = [(fn, args[0]) for fn, args in _InlinePool.submitted]
+        self.assertTrue(all(fn is measure_worker.measure_file for fn, _ in jobs), jobs)
+        self.assertEqual(sorted(p for _, p in jobs), sorted(self.tree[GROUP]))
+        counts = {k: v[0] for k, v in run.measured().items()}
+        self.assertEqual(set(counts), set(FRAMES), counts)
+        self.assertTrue(all(c > 0 for c in counts.values()), counts)
+
+    def test_falls_back_to_threads_when_processes_cant_start(self):
+        run = self._run(_BrokenPool)
+        self.assertIn("using threads instead", "\n".join(run.log))
+        counts = {k: v[0] for k, v in run.measured().items()}
+        self.assertEqual(set(counts), set(FRAMES), counts)
+        self.assertTrue(all(c > 0 for c in counts.values()), counts)
 
 
 class QuickPreviewChannelFirstTests(unittest.TestCase):

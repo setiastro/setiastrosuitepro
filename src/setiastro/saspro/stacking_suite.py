@@ -30808,6 +30808,56 @@ class StackingSuiteDialog(QDialog):
             from concurrent.futures import ThreadPoolExecutor, as_completed
             from setiastro.saspro.stacking_measure_worker import measure_file
 
+            # Registered twins are measured on their calibrated originals with
+            # measure_file. It is CPU/GIL-bound, so measure the originals up
+            # front in worker processes, the way Register and Integrate does;
+            # in threads it runs several times slower. Same function, so the
+            # numbers don't change. Anything the pool didn't measure is
+            # measured in-thread by _star_job below.
+            orig_measured = {}
+            _origs = sorted({_twin_to_tree[fp] for fp in cand if fp in _twin_to_tree})
+            try:
+                use_processes = bool(self.settings.value(
+                    "stacking/measure_use_processes", True, type=bool))
+            except Exception:
+                use_processes = True
+            try:
+                from setiastro.saspro.worker_env import (check_process_pools,
+                                                         process_pools_ok as _pp_ok)
+                check_process_pools(log_fn=self.update_status)
+            except Exception:
+                def _pp_ok():
+                    return True
+            if _origs and use_processes and _pp_ok():
+                try:
+                    import multiprocessing as _mp
+                    from concurrent.futures import ProcessPoolExecutor
+                    proc_workers = max(2, os.cpu_count() or 4)
+                    report_every = max(1, len(_origs) // 20)
+                    self.update_status(self.tr(
+                        f"\U0001F30D Measuring {len(_origs)} calibrated original(s) across "
+                        f"{proc_workers} processes…"))
+                    with ProcessPoolExecutor(max_workers=proc_workers,
+                                             mp_context=_mp.get_context("spawn")) as executor:
+                        futs = [executor.submit(measure_file, o, 1, 1) for o in _origs]
+                        for done, fut in enumerate(as_completed(futs), 1):
+                            if self._cancelled():
+                                executor.shutdown(wait=False, cancel_futures=True)
+                                raise StackCancelled()
+                            status, o, payload = fut.result()
+                            orig_measured[o] = (status, o, payload)
+                            if done == len(_origs) or done % report_every == 0:
+                                self.update_status(self.tr(
+                                    f"\U0001F4E6 Measured {done}/{len(_origs)} originals"))
+                                QApplication.processEvents()
+                except StackCancelled:
+                    raise
+                except Exception as e:
+                    self.update_status(self.tr(
+                        f"⚠️ Multi-process measurement unavailable "
+                        f"({type(e).__name__}: {e}); using threads instead."))
+                    orig_measured.clear()
+
             for idx, chunk in enumerate(chunks, 1):
                 if self._cancelled():
                     raise StackCancelled()
@@ -30903,7 +30953,8 @@ class StackingSuiteDialog(QDialog):
                         # warp border in front of the star detector.
                         orig = _twin_to_tree.get(fp)
                         if orig is not None:
-                            status, _fp, payload = measure_file(orig, 1, 1)
+                            status, _fp, payload = (orig_measured.get(orig)
+                                                    or measure_file(orig, 1, 1))
                             if status == "ok":
                                 mean_v, med, c, ecc, size, noise = payload
                                 return fp, float(mean_v), med, c, ecc, size, noise, cov, None
