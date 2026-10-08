@@ -8835,7 +8835,29 @@ class StackingSuiteDialog(QDialog):
         self.shift_tol_spin.setDecimals(2)
         self.shift_tol_spin.setSingleStep(0.05)
         self.shift_tol_spin.setValue(self.settings.value("stacking/shift_tolerance", 0.2, type=float))
-        fl_align.addRow(self.tr("Accept tolerance (px):"), self.shift_tol_spin)
+        self.shift_tol_spin.setToolTip(self.tr(
+            "Accurate mode only. The 3-pass refinement stops when the median "
+            "per-star shift between passes falls below this value, meaning "
+            "alignment has converged.\n\n"
+            "Smaller = tighter convergence, more work per frame. Larger = "
+            "stops sooner, less precise.\n\n"
+            "Has no effect in Fast mode, which runs a single pass and accepts "
+            "whatever transformation astroalign returns. To let more frames "
+            "pass alignment, raise 'Accept max shift (px)' below instead."
+        ))
+        self._shift_tol_label = QLabel(self.tr("Convergence tolerance (px):"))
+        fl_align.addRow(self._shift_tol_label, self.shift_tol_spin)
+
+        def _toggle_tol_enable():
+            # Fast mode (index 0) = single pass, no convergence loop, this
+            # value is literally never consulted. Grey it out so users don't
+            # think bumping it will relax alignment.
+            is_accurate = (self.align_passes_combo.currentIndex() >= 1)
+            self._shift_tol_label.setEnabled(is_accurate)
+            self.shift_tol_spin.setEnabled(is_accurate)
+
+        _toggle_tol_enable()
+        self.align_passes_combo.currentIndexChanged.connect(lambda _: _toggle_tol_enable())
 
         self.accept_shift_spin = QDoubleSpinBox()
         self.accept_shift_spin.setRange(0.0, 50.0)
