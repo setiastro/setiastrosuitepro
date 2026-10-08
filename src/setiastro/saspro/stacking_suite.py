@@ -21666,6 +21666,8 @@ class StackingSuiteDialog(QDialog):
                 hdr = {}
 
             a = np.asarray(img)
+            if a.ndim == 3 and a.shape[0] == 3 and a.shape[-1] != 3:
+                a = np.transpose(a, (1, 2, 0))   # FITS colour is (3, H, W) -> HWC
             if a.ndim == 3 and a.shape[-1] == 1:
                 a = a[...,0]
             # if it’s color, make a luma-like 2×2 superpixel preview; if mono/CFA, same superpixel trick
@@ -30557,8 +30559,17 @@ class StackingSuiteDialog(QDialog):
             # their registered counterparts already exist in a sibling
             # Aligned_Images / aligned_images folder, integrate *those* instead.
             # Frames with no counterpart fall back to the tree frame as-is.
+            _tree_files = self.light_files
             self.light_files, _n_swapped, _n_total, _align_matcher = \
                 self._resolve_aligned_counterparts(self.light_files)
+            # Registered twin -> the tree frame it replaced. The weights below
+            # measure that original, exactly as Register and Integrate does.
+            _twin_to_tree = {
+                twin: orig
+                for g, lst in self.light_files.items()
+                for twin, orig in zip(lst, _tree_files.get(g, []))
+                if twin != orig
+            }
             if _align_matcher is None:
                 self.update_status(self.tr(
                     f"ℹ️ No Aligned_Images folder found near the tree — "
@@ -30795,6 +30806,7 @@ class StackingSuiteDialog(QDialog):
             # For already registered images, we don’t need to rescale to a target bin.
             # We can just make small previews directly from the FITS (debayer-aware superpixel).
             from concurrent.futures import ThreadPoolExecutor, as_completed
+            from setiastro.saspro.stacking_measure_worker import measure_file
 
             for idx, chunk in enumerate(chunks, 1):
                 if self._cancelled():
@@ -30879,6 +30891,22 @@ class StackingSuiteDialog(QDialog):
                     i, fp = i_fp
                     try:
                         prev = previews[i]
+                        # coverage = fraction of finite, non-zero pixels over
+                        # the whole (pre-crop) preview → 1.0 for a
+                        # borderless reference
+                        _a = np.asarray(prev, dtype=np.float32)
+                        _valid = np.isfinite(_a) & (_a != 0.0)
+                        cov = float(_valid.mean()) if _a.size else 0.0
+                        # A registered twin is measured on the calibrated
+                        # original it replaced, with Register's own
+                        # measure_file: same frame, same numbers, and no
+                        # warp border in front of the star detector.
+                        orig = _twin_to_tree.get(fp)
+                        if orig is not None:
+                            status, _fp, payload = measure_file(orig, 1, 1)
+                            if status == "ok":
+                                mean_v, med, c, ecc, size, noise = payload
+                                return fp, float(mean_v), med, c, ecc, size, noise, cov, None
                         core, mean_v, _med_full = _valid_region_stats(prev)
                         pmin = float(np.nanmin(core))
                         c, ecc, _blind_size = _star_count_ecc_size(core - pmin)
@@ -30889,12 +30917,6 @@ class StackingSuiteDialog(QDialog):
                         size = self._measure_fwhm_halfres(core)
                         med = float(np.median(core - pmin))
                         noise = self._mad_noise(core)
-                        # coverage = fraction of finite, non-zero pixels over
-                        # the whole (pre-crop) preview → 1.0 for a
-                        # borderless reference
-                        _a = np.asarray(prev, dtype=np.float32)
-                        _valid = np.isfinite(_a) & (_a != 0.0)
-                        cov = float(_valid.mean()) if _a.size else 0.0
                         return fp, float(mean_v), med, c, ecc, size, noise, cov, None
                     except Exception as _job_e:
                         return (fp, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0,
