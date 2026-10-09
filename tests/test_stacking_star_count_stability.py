@@ -6,8 +6,8 @@ The Register path measures every calibrated light with
 for FWHM) and scores it with ``StackingSuiteDialog._score_frame_terms``.
 
 These tests feed it synthetic Seestar-like frames: 2-D GRBG CFA mosaics,
-1920x1080, with the sky level and per-CFA-site noise sampled from the user's
-calibrated subs (fdcd58_Light_Pan2_10.0s_LP_20260928-023955_c.fit), round
+1920x1080, with the sky level and per-CFA-site noise sampled from real
+calibrated Seestar S50 subs (fdcd58_Light_Pan2_10.0s_LP_20260928-023955_c.fit), round
 Gaussian stars of FWHM 4 raw px (what sep measures on the real subs) and ~60
 detectable stars (the real subs show 40-60 at 5 sigma). A star count that
 measures stars must:
@@ -34,7 +34,7 @@ from setiastro.saspro import stacking_measure_worker as measure_worker  # noqa: 
 
 H, W = 1920, 1080
 # GRBG sites: (0,0)=G (0,1)=R (1,0)=B (1,1)=G. Sky and MAD-sigma per site, from
-# the user's calibrated sub; COLOR is a plausible relative star response.
+# a real calibrated sub; COLOR is a plausible relative star response.
 SKY = {(0, 0): 0.00940, (0, 1): 0.00810, (1, 0): 0.00865, (1, 1): 0.00935}
 SIG = {(0, 0): 0.00081, (0, 1): 0.00054, (1, 0): 0.00066, (1, 1): 0.00077}
 COLOR = {(0, 0): 1.00, (0, 1): 0.80, (1, 0): 0.60, (1, 1): 1.00}
@@ -142,7 +142,7 @@ class StarCountStabilityTests(unittest.TestCase):
         # Same frame, same noise, cropped by 0..3 px. Only the sampling phase of
         # the PSFs moves, so only stars right at threshold can flip. sep at 5
         # sigma changes by <=4% here, and by 0.94-1.05x (p10-p90) between the
-        # user's real subs and their 1-px crops; 15% leaves ~3x margin.
+        # real subs and their 1-px crops; 15% leaves ~3x margin.
         rows = []
         for scene in (1, 2, 3):
             cfa = _render(_star_field(seed=scene))
@@ -181,7 +181,7 @@ class StarCountStabilityTests(unittest.TestCase):
 
 
 class StarlessFrameWeightTests(unittest.TestCase):
-    """What the user sees: the Balanced weight the Register path gives a frame
+    """End to end: the Balanced weight the Register path gives a frame
     with no stars, relative to a frame of the same sky with stars."""
 
     @classmethod
