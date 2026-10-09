@@ -95,8 +95,9 @@ def _warp(rgb, deg, dx, dy):
     return out
 
 
-def _write_dataset(root):
-    """Calibrated/<stem>_c.fit (CFA) + Aligned_Images/<hash>_<stem>_c_n_r.fit (3, H, W)."""
+def _write_dataset(root, binning=1):
+    """Calibrated/<stem>_c.fit (CFA) + Aligned_Images/<hash>_<stem>_c_n_r.fit (3, H, W).
+    binning goes into XBINNING/YBINNING; the pixels are the same either way."""
     cal_dir = os.path.join(root, "Calibrated")
     al_dir = os.path.join(root, "Aligned_Images")
     os.makedirs(cal_dir)
@@ -109,6 +110,8 @@ def _write_dataset(root):
         h["EXPTIME"] = 10.0
         h["BAYERPAT"] = "GRBG"
         h["DEBAYERED"] = (False, "Mono / CFA")
+        h["XBINNING"] = binning
+        h["YBINNING"] = binning
         cal = os.path.join(cal_dir, f"{stem}_c.fit")
         fits.PrimaryHDU(_cfa_grbg(rgb), h).writeto(cal)
         h["DEBAYERED"] = (True, "Color frame")
@@ -195,8 +198,9 @@ class _SkipRun:
         return self
 
     def measured(self):
-        """{frame name: (star count, fwhm, normalized weight)} from the weights log."""
-        pat = re.compile(r"_LP_(\w+?)_c_n_r\.fit → StarCount=(\d+),.*?FWHM~([\d.]+),"
+        """{frame name: (star count, fwhm, normalized weight)} from the weights log.
+        Skip logs the aligned twin (_c_n_r), Register the calibrated frame (_c)."""
+        pat = re.compile(r"_LP_(\w+?)_c(?:_n_r)?\.fit → StarCount=(\d+),.*?FWHM~([\d.]+),"
                          r".*?Normalized=([\d.]+)")
         out = {}
         for m in pat.finditer("\n".join(self.log)):
@@ -255,6 +259,74 @@ class SkipRegistrationMeasurementTests(unittest.TestCase):
 
     def test_weights_dont_fall_back_to_background_proxy(self):
         self.assertNotIn("No stars detected", "\n".join(self.run_.log))
+
+
+class _RegisterRun(_SkipRun):
+    """The same stand-in driving register_images, which stops right after its
+    frame weights, when it loads the reference frame."""
+
+    def __init__(self, stacking_dir, tree):
+        super().__init__(stacking_dir, tree)
+        self.reg_sets = {}
+        self.frame_set_of = {}
+        self.star_trail_mode = False
+        self._reg_queue = None
+        self.deleted_calibrated_files = []
+        self.reg_tree = types.SimpleNamespace(selectedItems=lambda: [])
+
+    def _precheck_registered_counterparts(self):
+        return "register_all"
+
+    def _maybe_warn_cfa_low_frames(self):
+        pass
+
+    def _load_image_any(self, path):
+        raise _StopAfterWeights()
+
+    def run(self):
+        try:
+            self.register_images()
+        except _StopAfterWeights:
+            pass
+        return self
+
+
+class RegisterSkipParityTests(unittest.TestCase):
+    """Register and Integrate, and Skip Registration and Integrate on its
+    output, log the same star count, FWHM and normalized weight per frame."""
+    binning = 1
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="saspro-parity-")
+        tree = _write_dataset(cls.tmp, binning=cls.binning)
+        runs = []
+        for run_cls in (_RegisterRun, _SkipRun):
+            run = run_cls(cls.tmp, tree)
+            # Same measure_file either way; threads keep the test fast.
+            run.settings._v["stacking/measure_use_processes"] = False
+            runs.append(run.run())
+        cls.reg_run, cls.skip_run = runs
+        cls.reg, cls.skip = cls.reg_run.measured(), cls.skip_run.measured()
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_both_paths_reached_their_weights(self):
+        self.assertEqual(set(self.reg), set(FRAMES), "\n".join(self.reg_run.log)[-2000:])
+        self.assertEqual(set(self.skip), set(FRAMES), "\n".join(self.skip_run.log)[-2000:])
+
+    def test_skip_logs_registers_numbers(self):
+        for name in FRAMES:
+            with self.subTest(frame=name):
+                self.assertEqual(self.skip.get(name), self.reg.get(name))
+
+
+class RegisterSkipParityBinnedTests(RegisterSkipParityTests):
+    """2x2-binned frames: Register measures at the set's smallest binning, so
+    Skip must measure the originals at that binning too."""
+    binning = 2
 
 
 class _InlinePool:

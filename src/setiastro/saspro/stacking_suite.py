@@ -30816,6 +30816,12 @@ class StackingSuiteDialog(QDialog):
             # measured in-thread by _star_job below.
             orig_measured = {}
             _origs = sorted({_twin_to_tree[fp] for fp in cand if fp in _twin_to_tree})
+            # Register measures every frame at the smallest binning in the set.
+            _bins = ([self._bin_from_header_fast_any(f)
+                      for lst in _tree_files.values() for f in lst]
+                     if _origs else [])
+            _xbin = min((b[0] for b in _bins), default=1)
+            _ybin = min((b[1] for b in _bins), default=1)
             try:
                 use_processes = bool(self.settings.value(
                     "stacking/measure_use_processes", True, type=bool))
@@ -30839,7 +30845,7 @@ class StackingSuiteDialog(QDialog):
                         f"{proc_workers} processes…"))
                     with ProcessPoolExecutor(max_workers=proc_workers,
                                              mp_context=_mp.get_context("spawn")) as executor:
-                        futs = [executor.submit(measure_file, o, 1, 1) for o in _origs]
+                        futs = [executor.submit(measure_file, o, _xbin, _ybin) for o in _origs]
                         for done, fut in enumerate(as_completed(futs), 1):
                             if self._cancelled():
                                 executor.shutdown(wait=False, cancel_futures=True)
@@ -30954,7 +30960,7 @@ class StackingSuiteDialog(QDialog):
                         orig = _twin_to_tree.get(fp)
                         if orig is not None:
                             status, _fp, payload = (orig_measured.get(orig)
-                                                    or measure_file(orig, 1, 1))
+                                                    or measure_file(orig, _xbin, _ybin))
                             if status == "ok":
                                 mean_v, med, c, ecc, size, noise = payload
                                 return fp, float(mean_v), med, c, ecc, size, noise, cov, None
