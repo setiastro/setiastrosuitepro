@@ -196,6 +196,8 @@ def _quick_preview_any(fp: str, target_xbin: int, target_ybin: int):
             hdr = {}
 
         a = np.asarray(img)
+        if a.ndim == 3 and a.shape[0] == 3 and a.shape[-1] != 3:
+            a = np.transpose(a, (1, 2, 0))   # FITS colour is (3, H, W) -> HWC
         if a.ndim == 3 and a.shape[-1] == 1:
             a = a[...,0]
         # if it's color, make a luma-like 2×2 superpixel preview; if mono/CFA, same superpixel trick
