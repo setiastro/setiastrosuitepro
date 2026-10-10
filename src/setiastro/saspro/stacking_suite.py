@@ -5115,9 +5115,19 @@ class _MMImage:
             out = np.squeeze(out, axis=-1)
         return out
 
-    def close(self):
-        """Release any open handles / buffers associated with this image."""
+    def close(self, collect: bool = True):
+        """Release any open handles / buffers associated with this image.
+
+        collect=False skips the gc.collect() below, for callers that close
+        many sources and collect once afterwards (_close_mmimages).
+        """
         import gc
+
+        released = any(
+            v is not None
+            for v in (self._fits_hdul, self._fits_data, self._xisf,
+                      self._xisf_memmap, self._xisf_arr)
+        )
 
         # Null all references BEFORE closing so GC finalizers on other threads
         # cannot race against an open handle during the close sequence.
@@ -5138,13 +5148,27 @@ class _MMImage:
         # Force immediate reclamation of the mmap file handle on Windows.
         # Without this, CPython defers finalization and the handle stays open
         # long enough for a concurrent GC sweep to fault on it.
-        gc.collect()
+        # Skipped when nothing was open: __del__ closes every source again.
+        if collect and released:
+            gc.collect()
 
     def __del__(self):
         try:
             self.close()
         except Exception:
             pass
+
+
+def _close_mmimages(sources):
+    """Close many _MMImage sources with one gc.collect() at the end.
+
+    A full collection walks every tracked object in the process; one per
+    source held the GIL for ~20 min after integrating 3,318 frames.
+    """
+    for s in sources:
+        try: s.close(collect=False)
+        except Exception: pass
+    gc.collect()
 
 
 def _open_sources_for_mfdeconv(paths, log):
@@ -21777,6 +21801,8 @@ class StackingSuiteDialog(QDialog):
                 hdr = {}
 
             a = np.asarray(img)
+            if a.ndim == 3 and a.shape[0] == 3 and a.shape[-1] != 3:
+                a = np.transpose(a, (1, 2, 0))   # FITS colour is (3, H, W) -> HWC
             if a.ndim == 3 and a.shape[-1] == 1:
                 a = a[...,0]
             # if it’s color, make a luma-like 2×2 superpixel preview; if mono/CFA, same superpixel trick
@@ -30965,18 +30991,33 @@ class StackingSuiteDialog(QDialog):
 
         # Recover the full original path from the COMMENT sidecar if present,
         # else fall back to the stored basename (resolved against the tree later).
+        # A COMMENT card holds 72 characters, so astropy splits a longer path over
+        # consecutive COMMENT cards and strips each card's trailing spaces on read.
+        # Re-join the cards, padding each full one back to 72, until the text ends
+        # with the SASDZORG basename; never guess past it.
+        _bn = hdr.get("SASDZORG", None)
+        _bn = str(_bn).strip() if _bn else None
         orig_path = None
         try:
-            for c in hdr.get("COMMENT", []) or []:
-                cs = str(c)
-                if cs.startswith("SASDZORGPATH="):
-                    orig_path = cs.split("=", 1)[1].strip()
-                    break
+            cards = list(hdr.cards)
+            for i, card in enumerate(cards):
+                cs = str(card.value) if card.keyword == "COMMENT" else ""
+                if not cs.startswith("SASDZORGPATH="):
+                    continue
+                joined = cs
+                j = i + 1
+                while (_bn and not joined.rstrip().endswith(_bn)
+                       and j < len(cards) and cards[j].keyword == "COMMENT"):
+                    joined = joined.ljust(72 * (j - i)) + str(cards[j].value)
+                    j += 1
+                joined = joined.split("=", 1)[1].strip()
+                if _bn is None or joined.endswith(_bn):
+                    orig_path = joined
+                break
         except Exception:
             orig_path = None
         if not orig_path:
-            _bn = hdr.get("SASDZORG", None)
-            orig_path = str(_bn).strip() if _bn else None
+            orig_path = _bn
 
         # Rebuild the matrix for the small-matrix kinds.
         matrix = None
@@ -31177,8 +31218,17 @@ class StackingSuiteDialog(QDialog):
             # their registered counterparts already exist in a sibling
             # Aligned_Images / aligned_images folder, integrate *those* instead.
             # Frames with no counterpart fall back to the tree frame as-is.
+            _tree_files = self.light_files
             self.light_files, _n_swapped, _n_total, _align_matcher = \
                 self._resolve_aligned_counterparts(self.light_files)
+            # Registered twin -> the tree frame it replaced. The weights below
+            # measure that original, exactly as Register and Integrate does.
+            _twin_to_tree = {
+                twin: orig
+                for g, lst in self.light_files.items()
+                for twin, orig in zip(lst, _tree_files.get(g, []))
+                if twin != orig
+            }
             if _align_matcher is None:
                 self.update_status(self.tr(
                     f"ℹ️ No Aligned_Images folder found near the tree — "
@@ -31415,6 +31465,63 @@ class StackingSuiteDialog(QDialog):
             # For already registered images, we don’t need to rescale to a target bin.
             # We can just make small previews directly from the FITS (debayer-aware superpixel).
             from concurrent.futures import ThreadPoolExecutor, as_completed
+            from setiastro.saspro.stacking_measure_worker import measure_file
+
+            # Registered twins are measured on their calibrated originals with
+            # measure_file. It is CPU/GIL-bound, so measure the originals up
+            # front in worker processes, the way Register and Integrate does;
+            # in threads it runs several times slower. Same function, so the
+            # numbers don't change. Anything the pool didn't measure is
+            # measured in-thread by _star_job below.
+            orig_measured = {}
+            _origs = sorted({_twin_to_tree[fp] for fp in cand if fp in _twin_to_tree})
+            # Register measures every frame at the smallest binning in the set.
+            _bins = ([self._bin_from_header_fast_any(f)
+                      for lst in _tree_files.values() for f in lst]
+                     if _origs else [])
+            _xbin = min((b[0] for b in _bins), default=1)
+            _ybin = min((b[1] for b in _bins), default=1)
+            try:
+                use_processes = bool(self.settings.value(
+                    "stacking/measure_use_processes", True, type=bool))
+            except Exception:
+                use_processes = True
+            try:
+                from setiastro.saspro.worker_env import (check_process_pools,
+                                                         process_pools_ok as _pp_ok)
+                check_process_pools(log_fn=self.update_status)
+            except Exception:
+                def _pp_ok():
+                    return True
+            if _origs and use_processes and _pp_ok():
+                try:
+                    import multiprocessing as _mp
+                    from concurrent.futures import ProcessPoolExecutor
+                    proc_workers = max(2, os.cpu_count() or 4)
+                    report_every = max(1, len(_origs) // 20)
+                    self.update_status(self.tr(
+                        f"\U0001F30D Measuring {len(_origs)} calibrated original(s) across "
+                        f"{proc_workers} processes…"))
+                    with ProcessPoolExecutor(max_workers=proc_workers,
+                                             mp_context=_mp.get_context("spawn")) as executor:
+                        futs = [executor.submit(measure_file, o, _xbin, _ybin) for o in _origs]
+                        for done, fut in enumerate(as_completed(futs), 1):
+                            if self._cancelled():
+                                executor.shutdown(wait=False, cancel_futures=True)
+                                raise StackCancelled()
+                            status, o, payload = fut.result()
+                            orig_measured[o] = (status, o, payload)
+                            if done == len(_origs) or done % report_every == 0:
+                                self.update_status(self.tr(
+                                    f"\U0001F4E6 Measured {done}/{len(_origs)} originals"))
+                                QApplication.processEvents()
+                except StackCancelled:
+                    raise
+                except Exception as e:
+                    self.update_status(self.tr(
+                        f"⚠️ Multi-process measurement unavailable "
+                        f"({type(e).__name__}: {e}); using threads instead."))
+                    orig_measured.clear()
 
             for idx, chunk in enumerate(chunks, 1):
                 if self._cancelled():
@@ -31499,6 +31606,23 @@ class StackingSuiteDialog(QDialog):
                     i, fp = i_fp
                     try:
                         prev = previews[i]
+                        # coverage = fraction of finite, non-zero pixels over
+                        # the whole (pre-crop) preview → 1.0 for a
+                        # borderless reference
+                        _a = np.asarray(prev, dtype=np.float32)
+                        _valid = np.isfinite(_a) & (_a != 0.0)
+                        cov = float(_valid.mean()) if _a.size else 0.0
+                        # A registered twin is measured on the calibrated
+                        # original it replaced, with Register's own
+                        # measure_file: same frame, same numbers, and no
+                        # warp border in front of the star detector.
+                        orig = _twin_to_tree.get(fp)
+                        if orig is not None:
+                            status, _fp, payload = (orig_measured.get(orig)
+                                                    or measure_file(orig, _xbin, _ybin))
+                            if status == "ok":
+                                mean_v, med, c, ecc, size, noise = payload
+                                return fp, float(mean_v), med, c, ecc, size, noise, cov, None
                         core, mean_v, _med_full = _valid_region_stats(prev)
                         pmin = float(np.nanmin(core))
                         c, ecc, _blind_size = _star_count_ecc_size(core - pmin)
@@ -31509,12 +31633,6 @@ class StackingSuiteDialog(QDialog):
                         size = self._measure_fwhm_halfres(core)
                         med = float(np.median(core - pmin))
                         noise = self._mad_noise(core)
-                        # coverage = fraction of finite, non-zero pixels over
-                        # the whole (pre-crop) preview → 1.0 for a
-                        # borderless reference
-                        _a = np.asarray(prev, dtype=np.float32)
-                        _valid = np.isfinite(_a) & (_a != 0.0)
-                        cov = float(_valid.mean()) if _a.size else 0.0
                         return fp, float(mean_v), med, c, ecc, size, noise, cov, None
                     except Exception as _job_e:
                         return (fp, 0.0, 0.0, 0, 0.0, 0.0, 0.0, 0.0,
@@ -33140,11 +33258,8 @@ class StackingSuiteDialog(QDialog):
         import threading as _threading2
         _sources_to_close = list(sources)
         sources.clear()
-        def _close_memmaps():
-            for s in _sources_to_close:
-                try: s.close()
-                except Exception: pass
-        _threading2.Thread(target=_close_memmaps, daemon=True).start()
+        _threading2.Thread(target=_close_mmimages, args=(_sources_to_close,),
+                           daemon=True).start()
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
