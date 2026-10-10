@@ -10,8 +10,11 @@ removal has already run.
 Pipeline (all AFTER the normal ABE subtract/divide stage):
   1. (caller) DarkStar star removal -> starless estimation image
   2. protect remaining signal with a robust median + k*MAD mask
-     (k is in MAD-sigma units: 1 = aggressive protection, 5 = only the
-      very brightest cores)
+     (k is in MAD-sigma units: 1 = aggressive protection, 5+ = only
+      the brightest cores; pass math.inf or any very large value to
+      disable protection entirely -- useful when the frame is
+      dominated by bright halos/reflections that out-sigma any
+      reasonable threshold and should be treated as gradient)
   3. inpaint the protected regions -- on a DOWNSAMPLED copy, because
      gradients are coarse and a full-res fill is both pointless and the
      cause of the original "stuck on inpainting" hang
@@ -27,6 +30,7 @@ numpy apply_along_axis path is never used.
 """
 from __future__ import annotations
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from scipy.ndimage import gaussian_filter, binary_dilation
 
 _MAD_NORM = 1.4826
@@ -115,7 +119,7 @@ def _upscale_to(img, out_hw):
 
 
 # ----------------------------------------------------------------------
-# Signal protection: median + k*MAD  (k in MAD-sigma units, 1..5)
+# Signal protection: median + k*MAD  (k in MAD-sigma units, 1..5+)
 # ----------------------------------------------------------------------
 def build_signal_mask(luma, k=3.0, grow=3, blur_px=0.0, blur=None):
     """
@@ -131,15 +135,27 @@ def build_signal_mask(luma, k=3.0, grow=3, blur_px=0.0, blur=None):
         mask's own boundaries into fake mid-scale "gradient". Blurring softens
         the edges so the transition is smooth and nothing rings.
 
-    k is in MAD-sigma units: k=1 masks a lot (protects faint signal), k=5 only
-    the brightest cores. grow is dilation iterations (px). blur_px is the
-    Gaussian sigma applied after dilation; 0 keeps the (still boolean) mask.
+    k is in MAD-sigma units: k=1 masks a lot (protects faint signal), k=5
+    only the brightest cores. For data dominated by bright halos or
+    reflections (anything that stays well above the sky even at k=5), pass
+    math.inf — or any very large k — to disable protection entirely and
+    let the gradient model see every pixel. grow is dilation iterations
+    (px). blur_px is the Gaussian sigma applied after dilation; 0 keeps the
+    (still boolean) mask.
 
     Returns a float32 array in [0, 1] (soft when blurred, else 0/1).
     """
+    # Short-circuit when the caller has explicitly disabled protection
+    # (k >= very large / infinite). No pixel will ever exceed med + inf*MAD,
+    # so the mask would be all-zeros anyway — skipping saves the threshold,
+    # dilation and blur passes, which on a 4500x3000 frame are not cheap.
+    k_val = float(k)
+    if not np.isfinite(k_val) or k_val >= 1e6:
+        return np.zeros_like(luma, dtype=np.float32)
+
     med = float(np.median(luma))
     sig = _robust_sigma(luma)
-    mask = luma > (med + float(k) * sig)
+    mask = luma > (med + k_val * sig)
     if grow > 0 and mask.any():
         mask = binary_dilation(mask, iterations=int(grow))
     m = mask.astype(np.float32)
@@ -230,6 +246,69 @@ def _inpaint_fill(img2d, mask, blur, iters=12, sigma=6.0):
 
 
 # ----------------------------------------------------------------------
+# Per-channel gradient estimator (shared by mono + RGB paths)
+# ----------------------------------------------------------------------
+def _estimate_channel_gradient(
+    chan_s, sig_hole_s, blur, *,
+    eps, layers, band_lo, band_hi, include_residual,
+    base_sigma, clamp_sigma, out_hw, ds,
+):
+    """
+    Estimate the multiplicative gradient map for ONE channel.
+
+    chan_s        : 2D float32, the channel at ESTIMATE (downsampled) resolution
+    sig_hole_s    : 2D bool, the signal-protection hole mask (same HxW as chan_s)
+    blur          : the fast gaussian from _get_blur()
+    eps           : floor added before log(); set per channel for correct scale
+    out_hw        : (H, W) full output resolution to upscale the result to
+    ds            : estimate_downsample (for the >1 upscale branch)
+
+    Returns a float32 2D linear gradient map at full output resolution with
+    median anchored to ~1.0, ready to divide into the channel.
+
+    Factored out so RGB inputs can call it per channel and avoid the old
+    luma-only limitation, where a colour-selective gradient (a blue halo,
+    say) weighs almost nothing in the 0.21R + 0.72G + 0.07B luminance and
+    therefore barely got touched by the division.
+    """
+    L = np.log(np.clip(chan_s, 0.0, None) + eps)
+
+    # Fill reach must match the scale we extract the gradient at, so holes
+    # are filled with smooth background at the band's scale (not just a
+    # tiny local blur that leaves a bump the mid-band then reads as
+    # "gradient").
+    _fill_sigma = max(2.0, float(base_sigma) * (2.0 ** max(0, int(band_hi) - 2)))
+    _fill_iters = int(np.clip(hole_span_iters(sig_hole_s, _fill_sigma), 8, 40)) \
+        if sig_hole_s.any() else 0
+    L_fill = _inpaint_fill(L, sig_hole_s, blur,
+                           iters=_fill_iters, sigma=_fill_sigma)
+
+    # Only compute layers we actually use. If the coarse residual is folded
+    # in, we must run the full pyramid; otherwise stop at band_hi and skip
+    # the expensive large-sigma blurs.
+    stop_layer = None if include_residual else band_hi
+
+    details, residual = _decompose_channel(
+        L_fill, layers, float(base_sigma), blur, stop_layer=stop_layer)
+
+    G_s = np.zeros_like(L)
+    for i in range(band_lo, band_hi + 1):
+        layer = details[i]
+        if clamp_sigma and clamp_sigma > 0:
+            rs = _robust_sigma(layer)
+            if rs > 0:
+                layer = np.clip(layer, -clamp_sigma * rs, clamp_sigma * rs)
+        G_s += layer
+    if include_residual:
+        G_s += residual
+
+    G_s = G_s - float(np.median(G_s))
+
+    G = _upscale_to(G_s, out_hw) if ds > 1 else G_s
+    return np.exp(G).astype(np.float32)   # median ~1.0
+
+
+# ----------------------------------------------------------------------
 # The stage
 # ----------------------------------------------------------------------
 def multiscale_gradient_correct(
@@ -248,10 +327,14 @@ def multiscale_gradient_correct(
     include_residual=False,
     eps_frac=0.01,
     strength=1.0,
-    protect_k=3.0,          # MAD-sigma units (1..5 typical)
+    protect_k=3.0,          # MAD-sigma units (1..5 typical; pass math.inf or
+                            # any very large value to disable protection
+                            # entirely, e.g. for halo-dominated frames where
+                            # no finite k catches the halos)
     protect_grow=3,         # dilation iterations: grow each detection out to
                             # cover its full footprint (star wings, not just
-                            # the bright core)
+                            # the bright core). Set to 0 to use the raw
+                            # threshold without dilation.
     protect_blur_px=4.0,    # Gaussian sigma to soften the protect mask after
                             # dilation, so hard mask edges don't make the
                             # inpaint + pyramid ring into fake gradient. 0 = off
@@ -277,6 +360,17 @@ def multiscale_gradient_correct(
                             # band_lo) without touching the image's own detail.
                             # 0 disables; 2-3 px is a good default.
     clamp_sigma=0.0,
+    channels="rgb",       # "rgb" (default): estimate per-channel so a colour-
+                          # selective gradient (bright-blue halo, red LP cast,
+                          # one-channel filter leak) is actually visible to
+                          # and removable by the band model. "luma": estimate
+                          # once from Rec.709 luminance and divide the same
+                          # 2D map into all three channels — the pre-fix
+                          # behaviour. Keep this for narrowband (where one
+                          # channel is near-empty and per-channel noise is
+                          # amplified), known-achromatic defects (dust motes,
+                          # physical baffle shadows — identical in R/G/B) or
+                          # when the 3x cost of per-channel matters.
     return_extras=False,
     return_debug=False,   # when True, also return the raw median+k*MAD signal
                           # mask (full-res, 0..1) as an extra element, for
@@ -355,6 +449,33 @@ def multiscale_gradient_correct(
     # footprint rather than shrinking it back to the hard core.
     sig_hole_s = sig_mask_s > 0.05
 
+    # Fold the user's hand-drawn exclusion polygons into the inpaint hole
+    # set too. Previously the exclusion was only honoured as a final blend-
+    # back: the gradient was still estimated with whatever structure lived
+    # inside the drawn region (a galaxy, bright nebulosity, a reflection you
+    # want preserved), which means the band saw that structure and divided
+    # it out EVERYWHERE ELSE in the frame — contaminating the correction
+    # outside the exclusion. Including it in the hole set inpaints the
+    # excluded region at estimation time, so the gradient is modelled from
+    # the smooth background alone and the blend-back is the only place the
+    # user's region matters. Done at the ESTIMATE (downsampled) scale to
+    # match sig_hole_s.
+    if protect_blend_mask is not None:
+        try:
+            em = np.asarray(protect_blend_mask, dtype=np.float32)
+            if em.ndim == 3:
+                em = em[..., 0]
+            emax = float(em.max()) if em.size else 0.0
+            if emax > 1.0:
+                em = em / emax
+            em_full = np.clip(em, 0.0, 1.0)
+            em_s = _downscale(em_full, ds) if ds > 1 else em_full
+            if em_s.shape[:2] == sig_hole_s.shape[:2]:
+                sig_hole_s = sig_hole_s | (em_s >= 0.5)
+                _say("Folded exclusion polygons into gradient-estimate hole set.")
+        except Exception:
+            pass
+
     # Keep a full-res copy of the (soft) MAD mask for optional debug output.
     mad_mask_full = None
     if return_debug:
@@ -367,52 +488,87 @@ def multiscale_gradient_correct(
         except Exception:
             mad_mask_full = None
 
-    _say("Log transform...")
-    L = np.log(np.clip(luma_s, 0.0, None) + eps)
-
-    # Fill reach must match the scale we extract the gradient at, so holes
-    # are filled with smooth background at the band's scale (not just a tiny
-    # local blur that leaves a bump the mid-band then reads as "gradient").
-    # The coarsest band layer has scale ~ base_sigma * 2**band_hi; size the
-    # fill blur to roughly that, and give enough iterations to propagate
-    # across the largest holes at full resolution.
-    _say("Inpainting protected regions...")
-    _fill_sigma = max(2.0, float(base_sigma) * (2.0 ** max(0, int(band_hi) - 2)))
-    _fill_iters = int(np.clip(hole_span_iters(sig_hole_s, _fill_sigma), 8, 40)) \
-        if sig_hole_s.any() else 0
-    L_fill = _inpaint_fill(L, sig_hole_s, blur,
-                           iters=_fill_iters, sigma=_fill_sigma)
-
+    # Clamp band range once; shared across all channels in RGB mode.
     layers = int(layers)
     band_lo = max(0, min(int(band_lo), layers - 1))
     band_hi = max(band_lo, min(int(band_hi), layers - 1))
 
-    # Only compute layers we actually use. If the coarse residual is folded
-    # in, we must run the full pyramid; otherwise stop at band_hi and skip
-    # the most expensive large-sigma blurs.
-    stop_layer = None if include_residual else band_hi
+    # Per-channel gradient estimation: previously the gradient was estimated
+    # from luminance alone, which cannot see colour-selective gradients. A
+    # bright-blue halo contributes only ~7% to Rec.709 luminance via the
+    # 0.0722 blue weight, so the luma band stayed small and the division
+    # left the halo almost untouched. Running the pipeline per channel on
+    # RGB inputs gives each channel its own gradient map, so a blue halo
+    # produces a strong gradient in the blue plane and gets divided out
+    # there; the R and G planes see very little and are barely affected.
+    # The protection mask stays single-channel (built from luma / mask_from
+    # above) — "signal regions" are brightness-defined and the same mask is
+    # the right one to protect for all three channels.
+    est_is_rgb = (est.ndim == 3 and est.shape[2] == 3)
+    tgt_is_rgb = (tgt.ndim == 3 and tgt.shape[2] == 3)
 
-    _say("Multiscale decomposition (log, torch/cv2 blur)...")
-    details, residual = _decompose_channel(
-        L_fill, layers, float(base_sigma), blur, stop_layer=stop_layer)
+    # Normalise the channels knob: anything that isn't an explicit "luma"
+    # falls back to the per-channel RGB path, which is also the only safe
+    # option for a mono input (nothing to combine). "luma" on a mono input
+    # is a no-op — the mono branch below already uses luma_s.
+    mode = str(channels or "rgb").strip().lower()
+    use_per_channel = (mode != "luma") and est_is_rgb and tgt_is_rgb
 
-    _say(f"Summing gradient band (layers {band_lo}-{band_hi})...")
-    G_s = np.zeros_like(L)
-    for i in range(band_lo, band_hi + 1):
-        layer = details[i]
-        if clamp_sigma and clamp_sigma > 0:
-            rs = _robust_sigma(layer)
-            if rs > 0:
-                layer = np.clip(layer, -clamp_sigma * rs, clamp_sigma * rs)
-        G_s += layer
-    if include_residual:
-        G_s += residual
+    if use_per_channel:
+        _say("Multiscale decomposition (R, G, B in parallel)...")
+        chans_s = []
+        for c in range(3):
+            cf = np.nan_to_num(est[..., c].astype(np.float32, copy=False),
+                               nan=0.0, posinf=0.0, neginf=0.0)
+            chans_s.append(_downscale(cf, ds))
 
-    G_s = G_s - float(np.median(G_s))
+        # Pre-compute per-channel eps on the main thread so workers only do
+        # pure CPU/GPU numeric work and don't race on anything shared.
+        # Per-channel floor matters on narrowband where one channel is
+        # mostly empty and would misbehave under the luma eps.
+        eps_per_c = [
+            max(1e-6, float(np.median(chans_s[c])) * float(eps_frac))
+            for c in range(3)
+        ]
 
-    _say("Upscaling gradient map...")
-    G = _upscale_to(G_s, (H, W)) if ds > 1 else G_s
-    grad_lin = np.exp(G).astype(np.float32)   # median ~1.0
+        def _one_channel(c):
+            # Each worker owns its own numpy allocations; sig_hole_s is only
+            # READ (never written) across threads, so no lock is needed.
+            # cv2 is thread-safe for independent inputs. For GPU torch there
+            # is some contention on the default stream — not catastrophic,
+            # and CPU backends scale cleanly 2-3x.
+            return _estimate_channel_gradient(
+                chans_s[c], sig_hole_s, blur,
+                eps=eps_per_c[c], layers=layers, band_lo=band_lo,
+                band_hi=band_hi, include_residual=include_residual,
+                base_sigma=base_sigma, clamp_sigma=clamp_sigma,
+                out_hw=(H, W), ds=ds,
+            )
+
+        # Three workers, one per channel. map() returns results in the
+        # same order as the inputs, so grads[0]=R, [1]=G, [2]=B naturally.
+        # Progress callbacks from inside workers are intentionally NOT
+        # emitted — a GUI progress_cb may not be thread-safe. The single
+        # aggregate message above is enough.
+        with ThreadPoolExecutor(max_workers=3) as _pool:
+            grads = list(_pool.map(_one_channel, range(3)))
+        grad_lin = np.stack(grads, axis=-1).astype(np.float32, copy=False)  # (H, W, 3)
+        _say("Per-channel gradients ready.")
+    else:
+        # Mono path: single channel estimated from the (luma) estimate image.
+        # Reached either for genuinely mono input or when the caller explicitly
+        # requested channels="luma" on RGB (e.g. narrowband data, achromatic
+        # defects, or a speed-sensitive preview).
+        if est_is_rgb:
+            _say("Multiscale decomposition (luma only — opt-out of per-channel)...")
+        else:
+            _say("Multiscale decomposition (log, torch/cv2 blur)...")
+        grad_lin = _estimate_channel_gradient(
+            luma_s, sig_hole_s, blur,
+            eps=eps, layers=layers, band_lo=band_lo, band_hi=band_hi,
+            include_residual=include_residual, base_sigma=base_sigma,
+            clamp_sigma=clamp_sigma, out_hw=(H, W), ds=ds,
+        )
 
     # A gradient is low-frequency by definition: smooth the MAP (not the
     # image) before dividing so any per-pixel noise the band picked up -- which
@@ -423,11 +579,24 @@ def multiscale_gradient_correct(
     gsm = float(gradient_smooth_px)
     if gsm > 0.0:
         _say("Smoothing gradient map...")
-        grad_lin = blur(grad_lin, gsm)
-        gmed = float(np.median(grad_lin))
-        if gmed > 1e-8:
-            grad_lin = grad_lin / gmed      # re-anchor map median to 1.0
-        grad_lin = grad_lin.astype(np.float32, copy=False)
+        # Handle both the mono (2D) and per-channel RGB (3D) cases. Smoothing
+        # and re-anchoring happen PER PLANE so each channel's gradient median
+        # stays at 1.0 — if we re-anchored by the combined median instead, a
+        # bright-blue halo (large blue gradient, modest red/green) would shift
+        # the global median and silently alter the colour balance.
+        if grad_lin.ndim == 3:
+            for c in range(grad_lin.shape[2]):
+                gc = blur(grad_lin[..., c], gsm)
+                gmed = float(np.median(gc))
+                if gmed > 1e-8:
+                    gc = gc / gmed
+                grad_lin[..., c] = gc.astype(np.float32)
+        else:
+            grad_lin = blur(grad_lin, gsm)
+            gmed = float(np.median(grad_lin))
+            if gmed > 1e-8:
+                grad_lin = grad_lin / gmed  # re-anchor map median to 1.0
+            grad_lin = grad_lin.astype(np.float32, copy=False)
 
     _say("Applying multiplicative correction...")
     g = grad_lin[..., None] if (tgt.ndim == 3 and grad_lin.ndim == 2) else grad_lin
@@ -437,10 +606,23 @@ def multiscale_gradient_correct(
     if s < 1.0:
         corrected = tgt * (1.0 - s) + corrected * s
 
-    tm = float(np.median(tgt))
-    cm = float(np.median(corrected))
-    if cm > 1e-8:
-        corrected = corrected * (tm / cm)
+    # Anchor each channel's output median back to its own input median.
+    # Per-channel (not combined) because the division is per-channel: a
+    # single scalar re-anchor would reintroduce any colour-balance drift
+    # the division corrected, undoing exactly what the per-channel fix is
+    # supposed to achieve. For mono this reduces to the previous behaviour.
+    if (corrected.ndim == 3 and tgt.ndim == 3
+            and corrected.shape[-1] == tgt.shape[-1]):
+        for c in range(corrected.shape[-1]):
+            tmc = float(np.median(tgt[..., c]))
+            cmc = float(np.median(corrected[..., c]))
+            if cmc > 1e-8:
+                corrected[..., c] = corrected[..., c] * (tmc / cmc)
+    else:
+        tm = float(np.median(tgt))
+        cm = float(np.median(corrected))
+        if cm > 1e-8:
+            corrected = corrected * (tm / cm)
 
     # Apply-time protect mask: keep the ORIGINAL (target) pixels wherever the
     # mask says to. The gradient ran across the whole frame; this is purely a

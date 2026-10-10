@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
     QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton, QDoubleSpinBox,
-    QSlider, QProgressBar
+    QSlider, QProgressBar, QButtonGroup
 )
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QIcon
 from PyQt6 import sip
@@ -694,7 +694,12 @@ class _ProtectPreviewDialog(QDialog):
         row = QHBoxLayout()
         row.addWidget(QLabel(self.tr("Protect k (MAD):")))
         self.sld = QSlider(Qt.Orientation.Horizontal)
-        self.sld.setRange(10, 50)          # 1.0 .. 5.0 in 0.1 steps
+        # 1.0 .. 20.0 in 0.1 steps. The ceiling was raised from 5.0 for
+        # halo-dominated frames: when bright reflections stay well above the
+        # sky even at k=5, raising k further is what lets protection respond.
+        # Beyond ~20 the MAD-sigma framing stops being meaningful; use the
+        # "Disable signal protection" switch in the main dialog instead.
+        self.sld.setRange(10, 200)
         self.sld.setValue(int(round(self._k * 10)))
         self.sld.setSingleStep(1)
         self.sld.setPageStep(5)
@@ -1012,6 +1017,32 @@ class ABEDialog(QDialog):
         )
         ms_layout.addRow(self.chk_ms_darkstar)
 
+        # "Nuclear" escape hatch for frames the signal mask can't handle no
+        # matter where k is set — bright halos / reflections / scatter that
+        # out-sigma any reasonable threshold. When checked, protection is
+        # bypassed entirely (equivalent to passing k = infinity): no pixels
+        # are masked, no dilation, no inpaint, no blur. The gradient model
+        # sees every pixel, including bright signal, so this will flatten
+        # real nebulosity as well as the halos. Only use it when there is
+        # no faint extended signal worth preserving — or when a drawn
+        # exclusion region protects what you care about at apply time.
+        self.chk_ms_disable_protect = QCheckBox(
+            self.tr("Disable signal protection (treat all pixels as gradient)")
+        )
+        self.chk_ms_disable_protect.setChecked(False)
+        self.chk_ms_disable_protect.setToolTip(
+            "Bypass the median + k·MAD signal protection entirely. The gradient\n"
+            "model then sees every pixel — stars, nebulosity, halos — and\n"
+            "divides them all out.\n\n"
+            "Use for halo-dominated frames where even Protect k = 20 can't catch\n"
+            "the bright reflections, or when you've drawn exclusion polygons\n"
+            "around anything you want preserved.\n\n"
+            "WARNING: this WILL flatten real nebulosity and faint IFN. Draw\n"
+            "exclusion polygons around any extended signal you want to keep,\n"
+            "or leave this off and raise Protect k instead."
+        )
+        ms_layout.addRow(self.chk_ms_disable_protect)
+
         self.sp_ms_band_lo = QSpinBox(); self.sp_ms_band_lo.setRange(0, 11); self.sp_ms_band_lo.setValue(6)
         self.sp_ms_band_hi = QSpinBox(); self.sp_ms_band_hi.setRange(0, 11); self.sp_ms_band_hi.setValue(8)
         self.sp_ms_band_lo.setToolTip(
@@ -1055,7 +1086,12 @@ class ABEDialog(QDialog):
         )
 
         self.sp_ms_protect = QDoubleSpinBox()
-        self.sp_ms_protect.setRange(1.0, 5.0)
+        # Ceiling raised from 5.0 → 20.0 for halo-dominated frames: bright
+        # reflections can sit 20-30σ above the sky, where even k=5 still
+        # protects (and dilates+blurs) a huge disk around them. Values above
+        # ~20 stop being meaningful in MAD-sigma units — use the "Disable
+        # signal protection" checkbox above for that nuclear case.
+        self.sp_ms_protect.setRange(1.0, 20.0)
         self.sp_ms_protect.setSingleStep(0.5)
         self.sp_ms_protect.setDecimals(1)
         self.sp_ms_protect.setValue(3.0)
@@ -1066,10 +1102,14 @@ class ABEDialog(QDialog):
             "are treated as signal (galaxies, nebulosity), masked out and\n"
             "inpainted so they are NOT modeled as gradient.\n\n"
             "k is in MAD-sigma units:\n"
-            "  k = 1-2  protects aggressively — safest for faint signal\n"
-            "  k = 3    balanced default\n"
-            "  k = 4-5  protects only the brightest cores — lets more\n"
-            "           extended structure into the gradient estimate"
+            "  k = 1-2    protects aggressively — safest for faint signal\n"
+            "  k = 3      balanced default\n"
+            "  k = 4-5    protects only the brightest cores — lets more\n"
+            "             extended structure into the gradient estimate\n"
+            "  k = 6-20   needed on halo-dominated frames where bright\n"
+            "             reflections stay above the sky at k = 5\n\n"
+            "If even k = 20 still protects the halos you want removed,\n"
+            "use the 'Disable signal protection' checkbox above."
         )
 
         # Primary controls: Strength and Protect-k, two per row.
@@ -1147,15 +1187,99 @@ class ABEDialog(QDialog):
             "0 = off (hard edge)."
         )
 
+        # How many pixels each threshold hit is dilated out before blurring.
+        # Lives here, not above, because it mostly matters for troubleshooting
+        # halo-dominated frames: the previous hard-coded 6 iterations grew
+        # each red blob ~6 px past where k alone caught it, so raising k
+        # chased a target that `grow` kept enlarging. Dropping grow to 1-2
+        # often fixes halo frames at a reasonable k; 0 uses the raw threshold.
+        # Default stays at 6 for compatibility with the IFN-protecting case.
+        self.sp_ms_grow = QSpinBox()
+        self.sp_ms_grow.setRange(0, 50)
+        self.sp_ms_grow.setValue(6)
+        self.sp_ms_grow.setSuffix(" px")
+        self.sp_ms_grow.setMaximumWidth(90)
+        self.sp_ms_grow.setToolTip(
+            "How far each threshold hit is DILATED outward (in pixels) before\n"
+            "the signal mask is blurred. Dilation grows each star / signal\n"
+            "detection to cover its full footprint — faint wings, not just the\n"
+            "bright core.\n\n"
+            "  0     use the raw median+k·MAD threshold with no growth\n"
+            "  1-2   tight — good for halo-dominated frames where the mask\n"
+            "        is otherwise too generous\n"
+            "  6     default — covers typical star footprints\n"
+            "  10+   very generous — protect extended structure around hits\n\n"
+            "If raising Protect k isn't shrinking the protected region as\n"
+            "much as you expect, this is why: each hit still grows outward\n"
+            "by this many pixels regardless of k. Lower this first."
+        )
+
+        # Opt-out from per-channel RGB gradient refinement. Default is Full
+        # RGB (the fix for colour-selective gradients like bright-blue star
+        # halos). Luma Only is the pre-fix behaviour: estimate the gradient
+        # once from Rec.709 luminance and divide the same 2D map into R, G
+        # and B. Keep it for the cases where per-channel is actually a step
+        # backwards:
+        #   1. Narrowband (SHO, HOO) where one channel is near-empty — the
+        #      log of near-noise is unstable and per-channel can divide
+        #      noise structure back into the result.
+        #   2. Known-achromatic defects — dust motes, filter-edge shadows,
+        #      baffle reflections. The gradient genuinely is wavelength-
+        #      independent; luma makes one map with sqrt(3) better SNR.
+        #   3. Speed-sensitive previews on huge frames (per-channel is 3x
+        #      the inpaint + decompose cost).
+        # The two sit next to each other in the Advanced section so the
+        # choice is visible without crowding the main controls.
+        self.radio_ms_rgb = QRadioButton(self.tr("Full RGB (per-channel)"))
+        self.radio_ms_luma = QRadioButton(self.tr("Luma only"))
+        self.radio_ms_rgb.setChecked(True)
+        self.radio_ms_rgb.setToolTip(
+            "Estimate the multiscale gradient per channel (R, G, B).\n"
+            "Required to remove any colour-selective gradient — bright-blue\n"
+            "star halos, red light-pollution cast, one-channel filter leaks."
+        )
+        self.radio_ms_luma.setToolTip(
+            "Estimate the gradient once from Rec.709 luminance and divide\n"
+            "the same 2D map into R, G and B.\n\n"
+            "Use for:\n"
+            "  • narrowband data (SHO, HOO) where a near-empty channel\n"
+            "    would amplify noise in per-channel mode\n"
+            "  • achromatic defects (dust motes, filter edges, baffles) —\n"
+            "    the gradient is the same shape in all three channels\n"
+            "  • faster previews on very large frames (per-channel is 3x\n"
+            "    the inpaint + decompose cost)\n\n"
+            "Cannot remove colour-selective gradients — those need Full RGB."
+        )
+        self._ms_channels_group = QButtonGroup(self)
+        self._ms_channels_group.addButton(self.radio_ms_rgb)
+        self._ms_channels_group.addButton(self.radio_ms_luma)
+
         ms_adv_grid = QGridLayout()
         ms_adv_grid.setContentsMargins(0, 0, 0, 0)
         ms_adv_grid.setHorizontalSpacing(8)
-        ms_adv_grid.addWidget(QLabel(self.tr("Signal mask blur:")),    0, 0)
-        ms_adv_grid.addWidget(self.sp_ms_sigblur,                      0, 1)
-        ms_adv_grid.addWidget(QLabel(self.tr("Smooth gradient map:")), 1, 0)
-        ms_adv_grid.addWidget(self.sp_ms_smooth,                       1, 1)
-        ms_adv_grid.addWidget(QLabel(self.tr("Exclusion feather:")),   2, 0)
-        ms_adv_grid.addWidget(self.sp_ms_feather,                      2, 1)
+        # Protect grow sits at the top because it's the first thing to try when
+        # k alone isn't shrinking the protected region (halo-dominated frames).
+        ms_adv_grid.addWidget(QLabel(self.tr("Protect grow:")),        0, 0)
+        ms_adv_grid.addWidget(self.sp_ms_grow,                         0, 1)
+        ms_adv_grid.addWidget(QLabel(self.tr("Signal mask blur:")),    1, 0)
+        ms_adv_grid.addWidget(self.sp_ms_sigblur,                      1, 1)
+        ms_adv_grid.addWidget(QLabel(self.tr("Smooth gradient map:")), 2, 0)
+        ms_adv_grid.addWidget(self.sp_ms_smooth,                       2, 1)
+        ms_adv_grid.addWidget(QLabel(self.tr("Exclusion feather:")),   3, 0)
+        ms_adv_grid.addWidget(self.sp_ms_feather,                      3, 1)
+        # Refine mode goes last — this is the opt-out from per-channel RGB.
+        # Default is Full RGB; narrowband + achromatic-defect users flip to
+        # Luma. Two radios share one row via an HBox so the Advanced grid
+        # stays two columns wide and the label aligns with the others.
+        _ms_channels_row = QHBoxLayout()
+        _ms_channels_row.setContentsMargins(0, 0, 0, 0)
+        _ms_channels_row.setSpacing(10)
+        _ms_channels_row.addWidget(self.radio_ms_rgb)
+        _ms_channels_row.addWidget(self.radio_ms_luma)
+        _ms_channels_row.addStretch(1)
+        _ms_channels_wrap = QWidget(); _ms_channels_wrap.setLayout(_ms_channels_row)
+        ms_adv_grid.addWidget(QLabel(self.tr("Refine mode:")),         4, 0)
+        ms_adv_grid.addWidget(_ms_channels_wrap,                       4, 1)
         ms_adv_grid.setColumnStretch(2, 1)
 
         self._ms_adv_box = QGroupBox(self.tr("Advanced"))
@@ -1400,14 +1524,26 @@ class ABEDialog(QDialog):
         if hasattr(self, "chk_ms_enable"):
             self.chk_ms_enable.toggled.connect(self._save_settings)
             self.chk_ms_darkstar.toggled.connect(self._save_settings)
+            self.chk_ms_disable_protect.toggled.connect(self._save_settings)
+            self.chk_ms_disable_protect.toggled.connect(self._protect_disabled_changed)
             self.sp_ms_band_lo.valueChanged.connect(self._save_settings)
             self.sp_ms_band_hi.valueChanged.connect(self._save_settings)
             self.chk_ms_residual.toggled.connect(self._save_settings)
             self.sp_ms_strength.valueChanged.connect(self._save_settings)
             self.sp_ms_protect.valueChanged.connect(self._save_settings)
+            self.sp_ms_grow.valueChanged.connect(self._save_settings)
             self.sp_ms_smooth.valueChanged.connect(self._save_settings)
             self.sp_ms_feather.valueChanged.connect(self._save_settings)
             self.sp_ms_sigblur.valueChanged.connect(self._save_settings)
+            # Refine mode (per-channel RGB vs luma-only). Only one radio
+            # needs its signal connected — the two share a QButtonGroup, so
+            # the other one's state is always the complement.
+            self.radio_ms_rgb.toggled.connect(self._save_settings)
+
+        # Apply initial enabled-state for protection controls (reflects
+        # whatever _load_settings restored for chk_ms_disable_protect).
+        if hasattr(self, "chk_ms_disable_protect"):
+            self._protect_disabled_changed(self.chk_ms_disable_protect.isChecked())
 
     def _load_settings(self):
         s = QSettings()
@@ -1431,14 +1567,33 @@ class ABEDialog(QDialog):
         if hasattr(self, "chk_ms_enable"):
             self.chk_ms_enable.setChecked(s.value("abe/ms_enable", False, type=bool))
             self.chk_ms_darkstar.setChecked(s.value("abe/ms_darkstar", True, type=bool))
+            # Nuclear "disable protection" default is OFF — a user who turned
+            # it on for one halo frame shouldn't quietly inherit it next
+            # session on normal data, but if they explicitly saved it on, we
+            # honour that.
+            self.chk_ms_disable_protect.setChecked(
+                s.value("abe/ms_disable_protect", False, type=bool)
+            )
             self.sp_ms_band_lo.setValue(int(s.value("abe/ms_band_lo", 6)))
             self.sp_ms_band_hi.setValue(int(s.value("abe/ms_band_hi", 8)))
             self.chk_ms_residual.setChecked(s.value("abe/ms_residual", False, type=bool))
             self.sp_ms_strength.setValue(int(s.value("abe/ms_strength", 100)))
             self.sp_ms_protect.setValue(float(s.value("abe/ms_protect", 3.0)))
+            # protect_grow was previously hard-coded to 6. Default to that so
+            # existing users see no behavioural change on upgrade.
+            self.sp_ms_grow.setValue(int(s.value("abe/ms_grow", 6)))
             self.sp_ms_smooth.setValue(int(s.value("abe/ms_smooth", 2)))
             self.sp_ms_feather.setValue(int(s.value("abe/ms_feather", 10)))
             self.sp_ms_sigblur.setValue(int(s.value("abe/ms_sigblur", 8)))
+            # Refine mode: "rgb" (default — per-channel, catches colour-
+            # selective gradients) or "luma" (opt-out for narrowband and
+            # achromatic defects). Stored as a string so the preset JSON
+            # stays readable rather than a boolean nobody can decode later.
+            _ms_ch = str(s.value("abe/ms_channels", "rgb")).strip().lower()
+            if _ms_ch == "luma":
+                self.radio_ms_luma.setChecked(True)
+            else:
+                self.radio_ms_rgb.setChecked(True)
         
         # Options
         self.chk_make_bg_doc.setChecked(bool(s.value("abe/make_bg_doc", False, type=bool)))
@@ -1462,14 +1617,18 @@ class ABEDialog(QDialog):
         if hasattr(self, "chk_ms_enable"):
             s.setValue("abe/ms_enable", self.chk_ms_enable.isChecked())
             s.setValue("abe/ms_darkstar", self.chk_ms_darkstar.isChecked())
+            s.setValue("abe/ms_disable_protect", self.chk_ms_disable_protect.isChecked())
             s.setValue("abe/ms_band_lo", self.sp_ms_band_lo.value())
             s.setValue("abe/ms_band_hi", self.sp_ms_band_hi.value())
             s.setValue("abe/ms_residual", self.chk_ms_residual.isChecked())
             s.setValue("abe/ms_strength", self.sp_ms_strength.value())
             s.setValue("abe/ms_protect", self.sp_ms_protect.value())
+            s.setValue("abe/ms_grow", self.sp_ms_grow.value())
             s.setValue("abe/ms_smooth", self.sp_ms_smooth.value())
             s.setValue("abe/ms_feather", self.sp_ms_feather.value())
             s.setValue("abe/ms_sigblur", self.sp_ms_sigblur.value())
+            s.setValue("abe/ms_channels",
+                       "luma" if self.radio_ms_luma.isChecked() else "rgb")
         s.setValue("abe/use_rbf", self.chk_use_rbf.isChecked())
         s.setValue("abe/rbf_smooth_x100", self.sp_rbf.value())
         s.setValue("abe/seed", self.sp_seed.value())
@@ -1478,6 +1637,42 @@ class ABEDialog(QDialog):
         s.setValue("abe/preview_bg", self.chk_preview_bg.isChecked())
 
         s.setValue("abe/preview_autostretch", bool(getattr(self, "_autostretch_on", False)))
+
+    def _protect_disabled_changed(self, disabled: bool):
+        """
+        React to the "Disable signal protection" checkbox: grey out every
+        control that only makes sense when the median+k·MAD mask is active,
+        so the user is not left dragging a slider that silently does nothing.
+
+        The disabled widgets keep their last values — the UI just reflects
+        that _run_abe() is going to pass protect_k=inf, protect_grow=0 and
+        protect_blur_px=0 instead of the UI values until the box is cleared
+        again. The preview button is also disabled: with no mask, there is
+        nothing to preview.
+        """
+        active = not bool(disabled)
+        for w in (
+            getattr(self, "sp_ms_protect", None),
+            getattr(self, "sp_ms_grow", None),
+            getattr(self, "sp_ms_sigblur", None),
+            getattr(self, "btn_ms_preview_k", None),
+        ):
+            if w is not None:
+                try:
+                    w.setEnabled(active)
+                except Exception:
+                    pass
+        # Give the user a line in the status strip so the state is obvious
+        # even though three controls are now greyed. Only call when the
+        # status label exists (not during __init__ before it is built).
+        if hasattr(self, "status_label") and self.status_label is not None:
+            if disabled:
+                self._set_status(
+                    "Signal protection DISABLED — all pixels, including stars "
+                    "and nebulosity, will be treated as gradient."
+                )
+            else:
+                self._set_status("Ready")
 
     def _manual_mode(self) -> bool:
         return self.cmb_sample_mode.currentText().lower() == "manual"
@@ -1826,12 +2021,33 @@ class ABEDialog(QDialog):
                     band_lo, band_hi = band_hi, band_lo
                 layers = max(band_hi + 1, 9)
                 strength = float(self.sp_ms_strength.value()) / 100.0
-                protect_k = float(self.sp_ms_protect.value())   # already in MAD units
+
+                # Signal-protection parameters. The "Disable signal protection"
+                # escape hatch overrides the UI values with the equivalent of
+                # "no mask at all" (k=inf, no dilation, no blur). This is the
+                # right fix for halo-dominated frames where even k=20 still
+                # protects — and dilates+blurs — the bright halos, keeping them
+                # out of the gradient estimate so the stage can't remove them.
+                if bool(self.chk_ms_disable_protect.isChecked()):
+                    protect_k = float("inf")
+                    protect_grow = 0
+                    sig_blur = 0.0
+                else:
+                    protect_k = float(self.sp_ms_protect.value())   # MAD units
+                    protect_grow = int(self.sp_ms_grow.value())
+                    sig_blur = float(self.sp_ms_sigblur.value())
+
                 grad_smooth = float(self.sp_ms_smooth.value())
                 excl_feather_frac = float(self.sp_ms_feather.value()) / 100.0  # % -> fraction; 0 => off
-                sig_blur = float(self.sp_ms_sigblur.value())
                 include_residual = bool(self.chk_ms_residual.isChecked())
                 use_darkstar = bool(self.chk_ms_darkstar.isChecked())
+                # Refine mode: "rgb" (default) estimates per channel so a
+                # colour-selective gradient (bright-blue halo) is actually
+                # visible to the band model; "luma" collapses to the pre-fix
+                # single-plane estimate for narrowband or achromatic-defect
+                # cases where per-channel would amplify noise.
+                channels_mode = ("luma" if self.radio_ms_luma.isChecked()
+                                 else "rgb")
 
                 # The protection mask is built on the STAR-INCLUSIVE image
                 # (post-ADBE, pre-star-removal) so stars, star-removal residuals,
@@ -1930,11 +2146,18 @@ class ABEDialog(QDialog):
                     include_residual=include_residual,
                     strength=strength,
                     protect_k=protect_k,
-                    protect_grow=6,
+                    # protect_grow was previously hard-coded to 6; it's now
+                    # a UI control (see sp_ms_grow). Lower values are the
+                    # main lever for halo-dominated frames: the former 6-px
+                    # dilation grew every red blob 6 px past where k alone
+                    # caught it, so raising k didn't shrink the protected
+                    # footprint anywhere near as much as users expected.
+                    protect_grow=protect_grow,
                     protect_blur_px=sig_blur,
                     protect_blend_mask=protect_blend,
                     gradient_smooth_px=grad_smooth,
                     protect_feather_frac=excl_feather_frac,
+                    channels=channels_mode,
                     return_extras=want_structure,
                     return_debug=want_debug,
                     progress_cb=(lambda m: progress(f"Multiscale: {m}") if progress else None),
@@ -1975,8 +2198,21 @@ class ABEDialog(QDialog):
                                 xi = np.linspace(0, m.shape[1]-1, gm.shape[1]).astype(np.int32)
                                 m = m[yi][:, xi]
                             m = np.clip(m, 0.0, 1.0)
-                            g_med = float(np.median(gm)) if gm.size else 1.0
-                            gm = gm * (1.0 - m) + g_med * m
+                            # 3D grad map (per-channel RGB correction) needs
+                            # per-plane painting: each channel has its own
+                            # median (a strong blue-halo correction has a very
+                            # different median in B than in R/G), and the 2D
+                            # feather mask would otherwise fail to broadcast
+                            # against (H, W, 3).
+                            if gm.ndim == 3:
+                                for c in range(gm.shape[2]):
+                                    g_med_c = (float(np.median(gm[..., c]))
+                                               if gm[..., c].size else 1.0)
+                                    gm[..., c] = (gm[..., c] * (1.0 - m)
+                                                  + g_med_c * m)
+                            else:
+                                g_med = float(np.median(gm)) if gm.size else 1.0
+                                gm = gm * (1.0 - m) + g_med * m
                         self._last_structure_map = gm.astype(np.float32, copy=False)
                     except Exception:
                         self._last_structure_map = None
@@ -2041,7 +2277,7 @@ class ABEDialog(QDialog):
         # Multiscale refinement — only emitted when enabled, so a preset made
         # with the feature off stays byte-identical to the legacy schema.
         if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked():
-            params["multiscale"] = {
+            ms = {
                 "enabled": True,
                 "darkstar": bool(self.chk_ms_darkstar.isChecked()),
                 "band_lo": int(self.sp_ms_band_lo.value()),
@@ -2049,10 +2285,25 @@ class ABEDialog(QDialog):
                 "include_residual": bool(self.chk_ms_residual.isChecked()),
                 "strength": float(self.sp_ms_strength.value()) / 100.0,
                 "protect_k": float(self.sp_ms_protect.value()),
+                "protect_grow": int(self.sp_ms_grow.value()),
                 "smooth_px": float(self.sp_ms_smooth.value()),
                 "feather_pct": float(self.sp_ms_feather.value()),
                 "sigblur_px": float(self.sp_ms_sigblur.value()),
             }
+            # Only emit the disable-protection flag when it's actually set,
+            # so a preset made the normal way stays schema-compatible with
+            # the pre-upgrade consumer. Headless side should treat a missing
+            # key as False.
+            if bool(self.chk_ms_disable_protect.isChecked()):
+                ms["disable_protect"] = True
+            # Likewise for the Luma opt-out: emit "channels" only when it
+            # differs from the default so a preset built with the normal
+            # (per-channel RGB) refinement stays byte-identical to one made
+            # on the previous version. Headless side should treat a missing
+            # key as "rgb".
+            if self.radio_ms_luma.isChecked():
+                ms["channels"] = "luma"
+            params["multiscale"] = ms
 
         return params
 
@@ -2068,6 +2319,19 @@ class ABEDialog(QDialog):
 
         On OK the chosen k is written back into the Protect-k control.
         """
+        # Defence in depth: the button is already greyed when protection is
+        # disabled, but a keyboard shortcut or programmatic click could still
+        # land here. Previewing a mask that will never be applied would just
+        # confuse the user.
+        if getattr(self, "chk_ms_disable_protect", None) is not None \
+                and self.chk_ms_disable_protect.isChecked():
+            QMessageBox.information(
+                self, "Preview protection",
+                "Signal protection is disabled — there is no mask to preview.\n"
+                "Uncheck 'Disable signal protection' to use Protect k."
+            )
+            return
+
         src = self._get_source_float()
         if src is None:
             QMessageBox.information(self, "Preview protection", "No active image.")
@@ -2163,12 +2427,20 @@ class ABEDialog(QDialog):
             self._set_status("Ready")
             QApplication.processEvents()
 
+        # Pass through the UI's current grow (previously hard-coded to 6).
+        # The preview itself still displays the raw threshold with a small
+        # fudge for dilation (see _ProtectPreviewDialog.PREVIEW_K_FUDGE), but
+        # the dialog records the value for completeness.
         dlg = _ProtectPreviewDialog(self, flattened, k_init=float(self.sp_ms_protect.value()),
-                                    grow=6, blur_px=float(self.sp_ms_sigblur.value()),
+                                    grow=int(self.sp_ms_grow.value()),
+                                    blur_px=float(self.sp_ms_sigblur.value()),
                                     exclusion_overlay=excl_overlay)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             k = dlg.selected_k()
-            k = max(1.0, min(5.0, float(k)))
+            # Clamp to the Protect-k spin's current range (1.0..20.0 after the
+            # halo-frame bump). The old 5.0 ceiling here silently discarded any
+            # higher k the user had chosen in the preview slider.
+            k = max(1.0, min(20.0, float(k)))
             self.sp_ms_protect.setValue(k)
 
     def _degree_changed(self, v: int):
@@ -2324,7 +2596,7 @@ class ABEDialog(QDialog):
             # Multiscale refinement params (only when enabled, so existing
             # presets stay byte-identical when the feature is off).
             if getattr(self, "chk_ms_enable", None) is not None and self.chk_ms_enable.isChecked():
-                params["multiscale"] = {
+                ms_params = {
                     "enabled": True,
                     "darkstar": bool(self.chk_ms_darkstar.isChecked()),
                     "band_lo": int(self.sp_ms_band_lo.value()),
@@ -2332,10 +2604,16 @@ class ABEDialog(QDialog):
                     "include_residual": bool(self.chk_ms_residual.isChecked()),
                     "strength": float(self.sp_ms_strength.value()) / 100.0,
                     "protect_k": float(self.sp_ms_protect.value()),
+                    "protect_grow": int(self.sp_ms_grow.value()),
                     "smooth_px": float(self.sp_ms_smooth.value()),
                     "feather_pct": float(self.sp_ms_feather.value()),
                     "sigblur_px": float(self.sp_ms_sigblur.value()),
                 }
+                if bool(self.chk_ms_disable_protect.isChecked()):
+                    ms_params["disable_protect"] = True
+                if self.radio_ms_luma.isChecked():
+                    ms_params["channels"] = "luma"
+                params["multiscale"] = ms_params
 
             # Remember for replay — do this before any close
             mw = self.parent()
