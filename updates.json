@@ -1,10 +1,10 @@
 {
-  "version": "1.22.4",
+  "version": "1.22.5.post1",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.4/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.4/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.4/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.4/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.5/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.5/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.5/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.22.5/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro\n\nV1.22.4\nSASpro is now Instance Aware. Meaning if you right click a file and say open with setiastrosuitepro it will open the file in the currently running instance of saspro. You can also now launch dedicated new instances via command line --new-instance tag.\n\nFile Associations. During windows installation there is a checkbox for file associations. For all OS in the menu About->File Associations, allows you to select various files types to be associated with saspro.\n\nStacking Suite updates to prevent OOM in your ram when stacking thousands of files (PR merge contributor)."
+  "notes": "Seti Astro Suite Pro\n\nV1.22.5\nUpdates to stacking suite to give a detailed summary which is copyable. Further updates to be smart enough to ignore calibration/registration/etc folders when adding images from a directory to not duplicate lights. Additional header logic updated. amazing updates from [takku-dev] to deal with thousands of images from seestars and dwarf, greatly improving stacking suite.\n\nADBE multiscale refinement updated to allow full 3 channel refinement or luma refinement. increased k protection max to 20. option to disable all protection masking.\n\nBlink updated so when you delete a file from the list the list doesnt reset from the top."
 }
