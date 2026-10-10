@@ -2086,32 +2086,39 @@ def fast_star_count_lite(img: np.ndarray,
 
 def compute_star_count_fast_preview(preview_2d: np.ndarray, *, return_size: bool = False):
     """
-    Middle-ground star counter for stacking suite measurement phase.
+    Star counter for stacking suite measurement phase.
 
-    2× downsample (was 4×+stride-8, giving ~256×192 on 4K) → fast_star_count
-    (OpenCV Gaussian subtract + Otsu + ellipse fitting on contours).
+    sep detection 5σ above the global background RMS (minarea 5) on the full
+    preview — the same detector registration uses (astroalign._find_sources).
+    The threshold is referenced to the noise, so the count follows the stars
+    rather than the noise: fast_star_count's percentile stretch + Otsu cut
+    sits inside the background on sparse fields and counts noise fragments.
 
-    Much better quality than fast_star_count_lite while still being fast
-    enough for parallel preview measurement across hundreds of frames.
-
-    Returns (count, ecc) by default. With return_size=True returns
-    (count, ecc, median_size), where median_size is a relative FWHM proxy in
-    downsampled-preview pixels (smaller = sharper). Only comparable across
-    frames measured through this same path — good enough for frame weighting,
-    not calibrated to arcsec.
+    Returns (count, ecc) by default; ecc is the median eccentricity. With
+    return_size=True returns (count, ecc, median_size), where median_size is
+    a relative FWHM proxy in preview pixels (smaller = sharper). Only
+    comparable across frames measured through this same path — good enough
+    for frame weighting, not calibrated to arcsec.
     """
-    # 2× downsample — on a 4K image this gives ~2K working resolution,
-    # plenty of signal for star detection vs the previous ~256px
-    tiny = _downsample_for_stars(preview_2d, factor=2)
-    return fast_star_count(
-        tiny,
-        stretch=True,
-        gamma=0.45,
-        p_lo=0.1,
-        p_hi=99.8,
-        morph_open="auto",
-        return_size=return_size,
-    )
+    import sep
+    data = np.ascontiguousarray(np.asarray(preview_2d, dtype=np.float32))
+    # Room for every pixel: a dense field must not overflow sep's buffer.
+    # Only ever raised, since other sep users share the process setting.
+    if sep.get_extract_pixstack() < data.size:
+        sep.set_extract_pixstack(int(data.size))
+    bkg = sep.Background(data)
+    cat = sep.extract(data - bkg.back(), 5.0, err=bkg.globalrms, minarea=5)
+    if len(cat) == 0:
+        return (0, 0.0, 0.0) if return_size else (0, 0.0)
+    a = np.maximum(cat["a"], 1e-12)
+    b = np.maximum(cat["b"], 0.0)
+    q = np.clip(b / a, 0.0, 1.0)
+    count = int(len(cat))
+    ecc = float(np.median(np.sqrt(1.0 - q * q)))
+    if return_size:
+        size = float(np.median(2.3548 * np.sqrt(a * b)))
+        return count, ecc, size
+    return count, ecc
 
 def compute_star_count(image):
     return fast_star_count(image)
