@@ -5115,9 +5115,19 @@ class _MMImage:
             out = np.squeeze(out, axis=-1)
         return out
 
-    def close(self):
-        """Release any open handles / buffers associated with this image."""
+    def close(self, collect: bool = True):
+        """Release any open handles / buffers associated with this image.
+
+        collect=False skips the gc.collect() below, for callers that close
+        many sources and collect once afterwards (_close_mmimages).
+        """
         import gc
+
+        released = any(
+            v is not None
+            for v in (self._fits_hdul, self._fits_data, self._xisf,
+                      self._xisf_memmap, self._xisf_arr)
+        )
 
         # Null all references BEFORE closing so GC finalizers on other threads
         # cannot race against an open handle during the close sequence.
@@ -5138,13 +5148,27 @@ class _MMImage:
         # Force immediate reclamation of the mmap file handle on Windows.
         # Without this, CPython defers finalization and the handle stays open
         # long enough for a concurrent GC sweep to fault on it.
-        gc.collect()
+        # Skipped when nothing was open: __del__ closes every source again.
+        if collect and released:
+            gc.collect()
 
     def __del__(self):
         try:
             self.close()
         except Exception:
             pass
+
+
+def _close_mmimages(sources):
+    """Close many _MMImage sources with one gc.collect() at the end.
+
+    A full collection walks every tracked object in the process; one per
+    source held the GIL for ~20 min after integrating 3,318 frames.
+    """
+    for s in sources:
+        try: s.close(collect=False)
+        except Exception: pass
+    gc.collect()
 
 
 def _open_sources_for_mfdeconv(paths, log):
@@ -33140,11 +33164,8 @@ class StackingSuiteDialog(QDialog):
         import threading as _threading2
         _sources_to_close = list(sources)
         sources.clear()
-        def _close_memmaps():
-            for s in _sources_to_close:
-                try: s.close()
-                except Exception: pass
-        _threading2.Thread(target=_close_memmaps, daemon=True).start()
+        _threading2.Thread(target=_close_mmimages, args=(_sources_to_close,),
+                           daemon=True).start()
 
         if channels == 1:
             integrated_image = integrated_image[..., 0]
