@@ -10551,6 +10551,62 @@ class StackingSuiteDialog(QDialog):
         if "light" in s or "object" in s: return "LIGHT"
         return None
 
+    # Folder-name → frame-type hints. Checked LEAF-TO-ROOT so the closest
+    # ancestor wins. Prefix match on the casefolded folder name:
+    # "Darks_2024-10", "DarkFlat_subs", "biasframes" all land in DARK;
+    # "Flats_Lum", "FlatField/" land in FLAT; "Lights", "LIGHT_curves/"
+    # land in LIGHT. Bias and darkflat frames are routed to DARK on
+    # purpose — modern CMOS has no useful bias/offset signal distinct
+    # from a short dark, and dark flats calibrate flats via the darks
+    # pipeline. "offset" is included because some older captures use it
+    # as a synonym for bias. Patterns are checked in order; the first
+    # match wins (so "darkflat" and "biasflat" hit the DARK rule before
+    # "flat").
+    _FRAME_FOLDER_PATTERNS = (
+        (re.compile(r"^(darkflat|dark_flat|biasflat|bias_flat)", re.I), "DARK"),
+        (re.compile(r"^(bias|offset)",                           re.I), "DARK"),
+        (re.compile(r"^dark",                                    re.I), "DARK"),
+        (re.compile(r"^flat",                                    re.I), "FLAT"),
+        (re.compile(r"^light",                                   re.I), "LIGHT"),
+    )
+
+    def _guess_type_from_path(self, path: str) -> str | None:
+        """Infer a frame type from folder names in `path`. Walks parent
+        directories leaf-to-root and returns the first match. Returns
+        None if nothing matches. Pure string work — never touches disk."""
+        try:
+            parts = Path(path).parts[:-1]
+        except Exception:
+            return None
+        for name in reversed(parts):
+            n = (name or "").strip()
+            if not n:
+                continue
+            for rx, kind in self._FRAME_FOLDER_PATTERNS:
+                if rx.match(n):
+                    return kind
+        return None
+
+    def _guess_frame_type(self, header, path: str) -> str | None:
+        """Preferred classifier: header first, folder-name fallback.
+
+        Lots of acquisition tools don't write IMAGETYP (SharpCap in some
+        modes, raw ASCOM dumps, decades-old FITS, user-converted files).
+        If the user organized by folder — Darks/, Flats/, Bias/, Lights/
+        — honor that so a mixed-type Add Directory doesn't dump
+        everything into whichever tab the user clicked from.
+        """
+        actual = None
+        try:
+            actual = self._guess_type_from_imagetyp(
+                header.get("IMAGETYP") if header is not None else None
+            )
+        except Exception:
+            actual = None
+        if actual is not None:
+            return actual
+        return self._guess_type_from_path(path)
+
     def _parse_exposure_from_groupkey(self, group_key: str) -> float | None:
         # expects "... - 300s (WxH)" → 300
 
@@ -14954,11 +15010,48 @@ class StackingSuiteDialog(QDialog):
 
 
     # --- Directory walking ---------------------------------------------------------
+    # Subfolder names SASpro's own pipeline writes into. If a user drops
+    # their raw lights straight into the stacking directory and then
+    # points "Add Directory" at it, a plain recursive walk pulls the raw
+    # lights AND every stage of pipeline output underneath them —
+    # effectively tripling frame counts and polluting the tree with
+    # masters and intermediates. We prune these subfolder names from the
+    # walk so only the user's source frames come in.
+    #
+    # Comparison is case-folded for cross-platform safety (NTFS/HFS+ are
+    # case-insensitive by default and the names can appear with mixed
+    # casing in different SASpro versions). Names are matched against
+    # a FOLDER'S OWN NAME only, so if someone deliberately points the
+    # file dialog at an Aligned_Images folder as the root, its files
+    # are still collected — only descended children named the same way
+    # get skipped.
+    _PIPELINE_OUTPUT_DIRS = frozenset({
+        "aligned_images",
+        "calibrated",
+        "master_calibration_files",
+        "master_lights",
+        "master_light",
+        "normalized_images",
+    })
+
     def _collect_fits_paths(self, root: str, recursive: bool = True) -> list[str]:
         exts = (".fits", ".fit", ".fts", ".fits.gz", ".fit.gz", ".fz", ".xisf")
         paths = []
+        skipped_dirs: list[str] = []
         if recursive:
-            for d, _subdirs, files in os.walk(root):
+            for d, subdirs, files in os.walk(root):
+                # Prune pipeline-output folders from this level's descent.
+                # Mutating `subdirs` in-place is the documented way to tell
+                # os.walk to skip entering those directories.
+                keep, drop = [], []
+                for name in subdirs:
+                    (drop if name.casefold() in self._PIPELINE_OUTPUT_DIRS
+                           else keep).append(name)
+                if drop:
+                    subdirs[:] = keep
+                    for n in drop:
+                        skipped_dirs.append(os.path.join(d, n))
+
                 for f in files:
                     if f.lower().endswith(exts):
                         paths.append(os.path.join(d, f))
@@ -14968,6 +15061,20 @@ class StackingSuiteDialog(QDialog):
                     paths.append(os.path.join(root, f))
         # stable order (helps reproducibility + nice UX)
         paths.sort(key=lambda p: (os.path.dirname(p).lower(), os.path.basename(p).lower()))
+
+        # Light-touch status so the user understands why counts might
+        # differ from a bare filesystem listing. Only emits when we
+        # actually pruned something; the typical "point at raw-lights
+        # folder" case stays silent.
+        if skipped_dirs:
+            try:
+                shown = ", ".join(os.path.basename(p) for p in skipped_dirs[:5])
+                more = f" (+{len(skipped_dirs) - 5} more)" if len(skipped_dirs) > 5 else ""
+                self.update_status(self.tr(
+                    "📂 Skipped SASpro pipeline output folder(s) during scan: {0}{1}"
+                ).format(shown, more))
+            except Exception:
+                pass
         return paths
 
 
@@ -15481,7 +15588,11 @@ class StackingSuiteDialog(QDialog):
             else:
                 forbidden = []
 
-            actual_type = self._guess_type_from_imagetyp(header.get("IMAGETYP"))
+            # Prefer IMAGETYP; fall back to a parent-folder-name hint
+            # (Darks/, Flats/, Bias/, DarkFlats/, Lights/) when the
+            # header is silent. This catches raw dumps and conversions
+            # that drop IMAGETYP but still live in a well-named folder.
+            actual_type = self._guess_frame_type(header, path)
             decision_key = (expected_type_u, (actual_type or "UNKNOWN"))
 
             # Legacy decision attr compatibility
@@ -22243,7 +22354,13 @@ class StackingSuiteDialog(QDialog):
         """Stash one set's integration results for a single end-of-run summary
         (used during multi-set / mosaic runs instead of prompting per set).
         Each set's .sasd is copied to a per-set name so it survives the next
-        set overwriting alignment_transforms.sasd."""
+        set overwriting alignment_transforms.sasd.
+
+        Also snapshots the current set's light_files groups so the final
+        multi-set summary can produce a per-set acquisition breakdown
+        (nights/filter/exposure) from the real headers rather than just
+        a master count.
+        """
         preserved_sasd = None
         if sasd_exists:
             try:
@@ -22260,10 +22377,26 @@ class StackingSuiteDialog(QDialog):
                 preserved_sasd = sasd_path
         if getattr(self, "_reg_summary_buffer", None) is None:
             self._reg_summary_buffer = []
+
+        # Snapshot THIS set's light_files groups so we can build an
+        # acquisition summary at the end of the run. self.light_files is
+        # narrowed to the current set during multi-set processing (see
+        # register_images → self.light_files = {g: list(p) for g, p in
+        # _set_groups.items()}), so copying it here captures exactly the
+        # files that went into the masters we just wrote.
+        try:
+            set_groups_snapshot = {
+                g: list(paths or [])
+                for g, paths in (getattr(self, "light_files", None) or {}).items()
+            }
+        except Exception:
+            set_groups_snapshot = {}
+
         self._reg_summary_buffer.append({
             "set": self._reg_current_set,
             "masters": list(master_paths or []),
             "sasd": preserved_sasd,
+            "groups": set_groups_snapshot,
         })
         self.update_status(self.tr(
             f"🧩 Set '{self._reg_current_set}' integrated — summary deferred to end of run."
@@ -22271,7 +22404,10 @@ class StackingSuiteDialog(QDialog):
 
     def _show_multiset_summary(self):
         """One prompt after all registration sets finish: open all masters,
-        every per-set dither analysis, or both. No-op if nothing was buffered."""
+        every per-set dither analysis, or both. Also presents an
+        acquisition summary (nights / filters / integration), broken out
+        per-set, built from the per-set snapshots stashed by
+        _buffer_set_summary. No-op if nothing was buffered."""
         buf = getattr(self, "_reg_summary_buffer", None)
         if not buf:
             return
@@ -22285,10 +22421,27 @@ class StackingSuiteDialog(QDialog):
         sasd_list = [e["sasd"] for e in buf
                      if e.get("sasd") and os.path.exists(e["sasd"])]
 
-        lines = [self.tr(f"All {len(buf)} registration sets complete."), ""]
+        # Build the acquisition summary from per-set snapshots.
+        sets_map = {}
         for e in buf:
-            lines.append(f"• {e['set']}: {len(e.get('masters', []))} master(s)")
-        text = "\n".join(lines)
+            set_name = e.get("set") or self.tr("Set")
+            groups = e.get("groups") or {}
+            if groups:
+                # Disambiguate accidentally-equal set names from different
+                # mosaic phases, if any — rare, but cheap to protect against.
+                if set_name in sets_map:
+                    k = 2
+                    while f"{set_name} ({k})" in sets_map:
+                        k += 1
+                    set_name = f"{set_name} ({k})"
+                sets_map[set_name] = groups
+
+        summary = None
+        try:
+            summary = self._build_acquisition_summary(sets_map)
+        except Exception as e:
+            try: self.update_status(self.tr(f"(summary skipped: {e})"))
+            except Exception: pass
 
         def _open_all_masters():
             self._open_saved_masters(all_masters)
@@ -22311,6 +22464,41 @@ class StackingSuiteDialog(QDialog):
                         self, "Dither Analysis",
                         f"Could not open Dither Analysis for {os.path.basename(sp)}:\n{ex}"
                     )
+
+        lead = self.tr("All {0} registration sets complete.").format(len(buf))
+
+        if summary and summary.get("text"):
+            # Prepend a compact per-set master count on top of the
+            # auto-generated acquisition summary — gives mosaic users a
+            # quick glance at how many masters landed per panel.
+            per_set_bits = [
+                f"  • {e['set']}: {len(e.get('masters', []))} master(s)"
+                for e in buf
+            ]
+            summary_text = (
+                "\n".join(per_set_bits)
+                + "\n\n"
+                + summary["text"]
+            )
+            actions = self._show_rich_summary_dialog(
+                title=self.tr("All Sets Complete"),
+                lead_text=lead,
+                summary_text=summary_text,
+                master_paths=all_masters,
+                sasd_paths=sasd_list,
+            )
+            if actions["open_masters"]:
+                _open_all_masters()
+            if actions["open_dither"]:
+                _open_all_dither()
+            return
+
+        # Fallback: old plain-dialog path for the (unlikely) case where
+        # no headers could be read at all.
+        lines = [lead, ""]
+        for e in buf:
+            lines.append(f"• {e['set']}: {len(e.get('masters', []))} master(s)")
+        text = "\n".join(lines)
 
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle(self.tr("All Sets Complete"))
@@ -27166,6 +27354,412 @@ class StackingSuiteDialog(QDialog):
             if p not in acc:
                 acc.append(p)
 
+    # ------------------------------------------------------------------
+    # Rich acquisition-summary helpers (used by both single- and multi-set
+    # completion popups). Reads FITS headers from the light-frame paths and
+    # builds a human-readable, copy-friendly text block covering nights,
+    # per-filter integration, and (for mosaic runs) per-set breakdowns.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        """Format a duration in seconds as e.g. '5h 42m 00s' / '42m 10s' / '45s'."""
+        try:
+            s = float(seconds or 0.0)
+        except Exception:
+            s = 0.0
+        if s <= 0:
+            return "0s"
+        hrs = int(s // 3600)
+        rem = s - hrs * 3600
+        mins = int(rem // 60)
+        secs = int(round(rem - mins * 60))
+        # roll-over if rounding bumped us past 60
+        if secs == 60:
+            secs = 0; mins += 1
+        if mins == 60:
+            mins = 0; hrs += 1
+        if hrs:
+            return f"{hrs}h {mins:02d}m {secs:02d}s"
+        if mins:
+            return f"{mins}m {secs:02d}s"
+        return f"{secs}s"
+
+    @staticmethod
+    def _fmt_exp(x: float) -> str:
+        """Format a single exposure length."""
+        try:
+            x = float(x)
+        except Exception:
+            x = 0.0
+        if abs(x - round(x)) < 1e-3:
+            return f"{int(round(x))}s"
+        return f"{x:.2f}s"
+
+    def _read_light_frame_meta(self, paths):
+        """Read FITS headers for a list of light-frame paths.
+        Returns (records, skipped) where each record is a dict with
+        set/filter/exposure/date_obs/object/path keys. Any file that
+        can't be opened as a FITS still contributes a frame record with
+        'Unknown' metadata so the total count stays honest."""
+        records = []
+        skipped = 0
+        for p in (paths or []):
+            if not p:
+                continue
+            filt = "Unknown"; exp = 0.0; dateobs = ""; obj = ""
+            try:
+                # getheader avoids memory-mapping the full data block —
+                # much cheaper than fits.open when all we want is header
+                # cards and we're walking hundreds of files.
+                h = fits.getheader(p)
+                exp = h.get("EXPTIME", h.get("EXPOSURE", 0.0))
+                try:
+                    exp = float(exp)
+                except Exception:
+                    exp = 0.0
+                filt = str(h.get("FILTER", "Unknown") or "Unknown").strip() or "Unknown"
+                dateobs = str(h.get("DATE-OBS", "") or "").strip()
+                obj = str(h.get("OBJECT", "") or "").strip()
+            except Exception:
+                skipped += 1
+            records.append({
+                "filter": filt,
+                "exposure": exp,
+                "date_obs": dateobs,
+                "object": obj,
+                "path": p,
+            })
+        return records, skipped
+
+    def _night_from_dateobs(self, date_obs: str):
+        """Return a 'YYYY-MM-DD' label for a FITS DATE-OBS, using the
+        same noon-to-noon local-night rule SASpro already applies to
+        session tags. Falls back to 'Unknown date' when the string
+        can't be parsed.
+
+        Why delegate to _session_from_dateobs_local_night + _parse_date_obs
+        rather than roll our own:
+
+        - _parse_date_obs tries dateutil first, then four strptime
+          fallbacks, including date-only strings — much more forgiving
+          than a bare datetime.fromisoformat (which pre-Python-3.11
+          chokes on 7-digit microseconds, trailing 'Z' in some combos,
+          and lots of real-world DATE-OBS values).
+
+        - _session_from_dateobs_local_night pulls the site timezone
+          from stacking/site_timezone (QSettings), not the processing
+          machine's clock. An observer imaging in US/Central who then
+          processes on a UTC workstation would otherwise see nights
+          snap on UTC midnight boundaries — i.e. the exact bug: one
+          night cut in half, the pre-midnight hours labeled one date
+          and the post-midnight hours labeled the next.
+
+        - It honors stacking/night_cutoff_hour (default 12 = noon), so
+          the "night" shown in the summary matches the SessionN tags in
+          the Lights tree the user already sees.
+
+        A fake header dict is enough to drive the helper — it only
+        reads the DATE-OBS key.
+        """
+        s = (date_obs or "").strip()
+        if not s:
+            return "Unknown date"
+        try:
+            label = self._session_from_dateobs_local_night({"DATE-OBS": s})
+        except Exception:
+            label = None
+        if label:
+            return label
+        # Last-resort fallback: just the date portion. Reaches here only
+        # if the string couldn't be parsed by any format in
+        # _parse_date_obs (dateutil + four strptime patterns).
+        return s.split("T")[0] if "T" in s else s
+
+    def _build_acquisition_summary(self, sets_map, *, title_suffix: str = ""):
+        """Compute an acquisition summary from one or more sets of light
+        files and return a dict:
+            {
+              'text':   multi-line summary ready to paste anywhere,
+              'totals': {'frames', 'integration_s', 'nights', 'filters'}
+            }
+
+        ``sets_map`` is either:
+          - {set_name: {group_key: [paths]}}  — multi-set
+          - {group_key: [paths]}              — flat (treated as 1 set)
+          - None/empty                        — returns None
+        """
+        if not sets_map:
+            return None
+
+        # Normalize to {set_name: {group_key: [paths]}}
+        first_val = next(iter(sets_map.values()))
+        if isinstance(first_val, (list, tuple)):
+            sets_map = {self.tr("Default"): sets_map}
+
+        from collections import defaultdict
+
+        # Walk every path once; carry the set tag through.
+        per_set_records = []
+        total_skipped = 0
+        n_total_files = sum(len(p or []) for g in sets_map.values() for p in g.values())
+        if n_total_files > 200:
+            try:
+                self.update_status(self.tr(
+                    "📖 Reading headers from {0} frame(s) for the summary…"
+                ).format(n_total_files))
+                QApplication.processEvents()
+            except Exception:
+                pass
+
+        for set_name, groups in sets_map.items():
+            flat_paths = []
+            for _gk, paths in (groups or {}).items():
+                flat_paths.extend(paths or [])
+            recs, skipped = self._read_light_frame_meta(flat_paths)
+            for r in recs:
+                r["set"] = set_name
+            per_set_records.append((set_name, recs))
+            total_skipped += skipped
+
+        all_records = [r for _, recs in per_set_records for r in recs]
+        if not all_records:
+            return None
+
+        for r in all_records:
+            r["night"] = self._night_from_dateobs(r["date_obs"])
+
+        # ---- aggregates ----
+        objects = sorted({r["object"] for r in all_records if r["object"]})
+        total_frames = len(all_records)
+        total_integration = sum(r["exposure"] for r in all_records)
+
+        def _blank_filter_bucket():
+            return {"count": 0, "integration": 0.0, "exposures": defaultdict(int)}
+
+        by_filter = defaultdict(_blank_filter_bucket)
+        for r in all_records:
+            b = by_filter[r["filter"]]
+            b["count"] += 1
+            b["integration"] += r["exposure"]
+            b["exposures"][round(r["exposure"], 3)] += 1
+
+        # Preserve set order from caller (OrderedDict / insertion order).
+        by_set = {}
+        for set_name, recs in per_set_records:
+            if not recs:
+                continue
+            buckets = defaultdict(_blank_filter_bucket)
+            for r in recs:
+                b = buckets[r["filter"]]
+                b["count"] += 1
+                b["integration"] += r["exposure"]
+                b["exposures"][round(r["exposure"], 3)] += 1
+            by_set[set_name] = buckets
+
+        by_night = defaultdict(lambda: {"count": 0, "integration": 0.0,
+                                        "filters": defaultdict(int)})
+        for r in all_records:
+            n = r["night"]
+            by_night[n]["count"] += 1
+            by_night[n]["integration"] += r["exposure"]
+            by_night[n]["filters"][r["filter"]] += 1
+
+        # Date-sorted, with "Unknown date" (if any) last.
+        known_nights = sorted(k for k in by_night.keys() if k != "Unknown date")
+        all_nights = known_nights + (["Unknown date"] if "Unknown date" in by_night else [])
+
+        # ---- formatting ----
+        def _exps_breakdown(info):
+            parts = []
+            for exp in sorted(info["exposures"].keys()):
+                n = info["exposures"][exp]
+                parts.append(f"{n} × {self._fmt_exp(exp)}")
+            return ", ".join(parts)
+
+        # Pad filter names so columns line up — monospace, so this prints clean.
+        filt_width = max((len(k) for k in by_filter), default=4)
+        filt_width = max(filt_width, 4)
+
+        lines = []
+        heading = self.tr("Acquisition Summary")
+        if title_suffix:
+            heading = f"{heading} — {title_suffix}"
+        lines.append(heading)
+        lines.append("─" * max(32, len(heading)))
+        lines.append("")
+
+        if objects:
+            label = self.tr("Target(s):")
+            lines.append(f"{label:<20}{', '.join(objects)}")
+
+        nights_label = self.tr("Nights of data:")
+        if known_nights:
+            lines.append(f"{nights_label:<20}{len(known_nights)}  "
+                         f"({', '.join(known_nights)})")
+        else:
+            lines.append(f"{nights_label:<20}{self.tr('(no DATE-OBS in headers)')}")
+
+        lines.append(f"{self.tr('Total frames:'):<20}{total_frames}")
+        lines.append(f"{self.tr('Total integration:'):<20}{self._fmt_duration(total_integration)}")
+        lines.append("")
+
+        # By filter
+        lines.append(self.tr("── By filter ──"))
+        for f in sorted(by_filter.keys(), key=lambda s: s.lower()):
+            info = by_filter[f]
+            lines.append(
+                f"  {f:<{filt_width}}  "
+                f"{info['count']:>4} frames,  "
+                f"{self._fmt_duration(info['integration']):>12}   "
+                f"({_exps_breakdown(info)})"
+            )
+        lines.append("")
+
+        # By set (only if more than one set has frames)
+        if len(by_set) > 1:
+            lines.append(self.tr("── By set ──"))
+            for s, buckets in by_set.items():
+                set_total = sum(info["integration"] for info in buckets.values())
+                set_count = sum(info["count"] for info in buckets.values())
+                lines.append(
+                    f"  {s}:  {set_count} frames,  "
+                    f"{self._fmt_duration(set_total)}"
+                )
+                for f in sorted(buckets.keys(), key=lambda x: x.lower()):
+                    info = buckets[f]
+                    lines.append(
+                        f"     {f:<{filt_width}} "
+                        f"{info['count']:>4} × ({_exps_breakdown(info)})  =  "
+                        f"{self._fmt_duration(info['integration'])}"
+                    )
+            lines.append("")
+
+        # By night
+        lines.append(self.tr("── By night ──"))
+        for n in all_nights:
+            info = by_night[n]
+            parts = sorted(info["filters"].items(), key=lambda kv: kv[0].lower())
+            filt_breakdown = ", ".join(f"{k} ×{v}" for k, v in parts)
+            lines.append(
+                f"  {n}:  {info['count']:>4} frames,  "
+                f"{self._fmt_duration(info['integration']):>12}   "
+                f"({filt_breakdown})"
+            )
+        lines.append("")
+
+        if total_skipped:
+            lines.append(self.tr(
+                "(Note: FITS header could not be read for {0} file(s); "
+                "those frames are counted but have 'Unknown' metadata.)"
+            ).format(total_skipped))
+
+        return {
+            "text": "\n".join(lines),
+            "totals": {
+                "frames": total_frames,
+                "integration_s": total_integration,
+                "nights": len(known_nights),
+                "filters": len(by_filter),
+            },
+        }
+
+    def _show_rich_summary_dialog(self, *, title, lead_text, summary_text,
+                                  master_paths=None, sasd_paths=None):
+        """Shared completion dialog with a copyable acquisition summary
+        plus Open Masters / Open Dither / Open Both buttons.
+
+        Returns a dict {'open_masters': bool, 'open_dither': bool}. The
+        caller does the actual opening, so this helper has no coupling
+        to the dither-analysis module.
+        """
+        master_paths = [p for p in (master_paths or []) if p]
+        sasd_paths = [p for p in (sasd_paths or []) if p and os.path.exists(p)]
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(title)
+        dlg.setMinimumSize(680, 560)
+        dlg.setWindowFlag(Qt.WindowType.Window, True)
+
+        outer = QVBoxLayout(dlg)
+
+        if lead_text:
+            lead = QLabel(lead_text, dlg)
+            lead.setWordWrap(True)
+            lead.setStyleSheet("font-weight: 600; font-size: 11pt;")
+            outer.addWidget(lead)
+
+        # Copyable monospaced summary.
+        txt = QPlainTextEdit(dlg)
+        txt.setReadOnly(True)
+        txt.setPlainText(summary_text or "")
+        try:
+            from PyQt6.QtGui import QFontDatabase
+            txt.setFont(QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont))
+        except Exception:
+            f = txt.font(); f.setFamily("Monospace"); txt.setFont(f)
+        txt.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        outer.addWidget(txt, 1)
+
+        # Row: Copy
+        cp_row = QHBoxLayout()
+        btn_copy = QPushButton(self.tr("📋  Copy Summary"), dlg)
+        cp_row.addWidget(btn_copy)
+        cp_row.addStretch(1)
+        outer.addLayout(cp_row)
+
+        def _do_copy():
+            try:
+                QApplication.clipboard().setText(txt.toPlainText())
+                btn_copy.setText(self.tr("✓  Copied"))
+                QTimer.singleShot(1500, lambda: btn_copy.setText(self.tr("📋  Copy Summary")))
+            except Exception:
+                pass
+        btn_copy.clicked.connect(_do_copy)
+
+        # Row: actions + OK
+        actions = {"open_masters": False, "open_dither": False}
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+
+        btn_masters = btn_dither = btn_both = None
+        if master_paths:
+            label = self.tr("🖼  Open Master{0} ({1})").format(
+                "s" if len(master_paths) > 1 else "", len(master_paths))
+            btn_masters = QPushButton(label, dlg)
+            btn_row.addWidget(btn_masters)
+        if sasd_paths:
+            if len(sasd_paths) > 1:
+                dlabel = self.tr("📊  Open Dither Analysis ({0})").format(len(sasd_paths))
+            else:
+                dlabel = self.tr("📊  Open Dither Analysis")
+            btn_dither = QPushButton(dlabel, dlg)
+            btn_row.addWidget(btn_dither)
+        if master_paths and sasd_paths:
+            btn_both = QPushButton(self.tr("🖼 📊  Open Both"), dlg)
+            btn_row.addWidget(btn_both)
+
+        btn_ok = QPushButton(self.tr("OK"), dlg)
+        btn_ok.setDefault(True)
+        btn_row.addWidget(btn_ok)
+        outer.addLayout(btn_row)
+
+        def _choose_masters():
+            actions["open_masters"] = True; dlg.accept()
+        def _choose_dither():
+            actions["open_dither"] = True;  dlg.accept()
+        def _choose_both():
+            actions["open_masters"] = True
+            actions["open_dither"] = True
+            dlg.accept()
+        if btn_masters is not None: btn_masters.clicked.connect(_choose_masters)
+        if btn_dither  is not None: btn_dither.clicked.connect(_choose_dither)
+        if btn_both    is not None: btn_both.clicked.connect(_choose_both)
+        btn_ok.clicked.connect(dlg.accept)
+
+        dlg.exec()
+        return actions
+
     def _show_post_alignment_complete_popup(self, message: str, master_paths: list[str]) -> None:
         sasd_path = os.path.join(self.stacking_directory, "alignment_transforms.sasd")
         sasd_exists = os.path.exists(sasd_path)
@@ -27191,44 +27785,70 @@ class StackingSuiteDialog(QDialog):
                     f"Could not open Dither Analysis:\n{e}"
                 )
 
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
-        msg_box.setText(message)
-        msg_box.setIcon(QMessageBox.Icon.Information)
+        # Build the acquisition summary from the just-stacked light frames.
+        # At this point in the pipeline self.light_files holds the aligned
+        # paths for the finished (single) set — those files retain the
+        # original FITS headers, which is what we need for DATE-OBS /
+        # FILTER / EXPTIME. If something upstream has emptied this (e.g.
+        # a partial pipeline), the summary is simply omitted.
+        summary = None
+        try:
+            summary = self._build_acquisition_summary(getattr(self, "light_files", None))
+        except Exception as e:
+            try: self.update_status(self.tr(f"(summary skipped: {e})"))
+            except Exception: pass
 
-        msg_box.addButton(QMessageBox.StandardButton.Ok)
-
-        masters_btn = None
-        if master_paths:
-            masters_btn = msg_box.addButton(
-                self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
-                QMessageBox.ButtonRole.ActionRole
+        if summary and summary.get("text"):
+            # Shrink the kernel message a bit so the big banner isn't
+            # the lead when there's a real summary to show.
+            lead = message.strip() if message else self.tr("Post-alignment complete.")
+            actions = self._show_rich_summary_dialog(
+                title=self.tr("Post-Alignment Complete"),
+                lead_text=lead,
+                summary_text=summary["text"],
+                master_paths=master_paths,
+                sasd_paths=[sasd_path] if sasd_exists else [],
             )
+            if actions["open_masters"]:
+                _open_masters()
+            if actions["open_dither"]:
+                _open_dither()
+        else:
+            # Fallback: the old plain QMessageBox path, used when we can't
+            # produce any summary (e.g. headers all unreadable).
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
+            msg_box.setText(message)
+            msg_box.setIcon(QMessageBox.Icon.Information)
+            msg_box.addButton(QMessageBox.StandardButton.Ok)
 
-        dither_btn = None
-        if sasd_exists:
-            dither_btn = msg_box.addButton(
-                self.tr("📊 Open Dither Analysis"),
-                QMessageBox.ButtonRole.ActionRole
-            )
+            masters_btn = None
+            if master_paths:
+                masters_btn = msg_box.addButton(
+                    self.tr("🖼 Open Saved Master{0}").format("s" if len(master_paths) > 1 else ""),
+                    QMessageBox.ButtonRole.ActionRole
+                )
+            dither_btn = None
+            if sasd_exists:
+                dither_btn = msg_box.addButton(
+                    self.tr("📊 Open Dither Analysis"),
+                    QMessageBox.ButtonRole.ActionRole
+                )
+            both_btn = None
+            if master_paths and sasd_exists:
+                both_btn = msg_box.addButton(
+                    self.tr("🖼 📊 Open Both"),
+                    QMessageBox.ButtonRole.ActionRole
+                )
 
-        both_btn = None
-        if master_paths and sasd_exists:
-            both_btn = msg_box.addButton(
-                self.tr("🖼 📊 Open Both"),
-                QMessageBox.ButtonRole.ActionRole
-            )
-
-        msg_box.exec()
-        clicked = msg_box.clickedButton()
-
-        if both_btn is not None and clicked == both_btn:
-            _open_masters()
-            _open_dither()
-        elif masters_btn is not None and clicked == masters_btn:
-            _open_masters()
-        elif dither_btn is not None and clicked == dither_btn:
-            _open_dither()
+            msg_box.exec()
+            clicked = msg_box.clickedButton()
+            if both_btn is not None and clicked == both_btn:
+                _open_masters(); _open_dither()
+            elif masters_btn is not None and clicked == masters_btn:
+                _open_masters()
+            elif dither_btn is not None and clicked == dither_btn:
+                _open_dither()
 
         if sasd_exists:
             try:
