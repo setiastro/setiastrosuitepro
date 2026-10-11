@@ -957,6 +957,10 @@ class ABEDialog(QDialog):
         # image-space polygons: list[list[QPointF]] in ORIGINAL IMAGE COORDS
         self._polygons: list[list[QPointF]] = []
         self._drawing_poly: list[QPointF] | None = None
+        # Loud exclusion-zone tracing (see _dbg). On while chasing the
+        # intermittent "exclusion ignored" bug; flip to False to silence
+        # all [ABE-EXCL] lines in one place.
+        self._EXCL_DEBUG = True
         self._panning = False
         self._pan_last = None
         self._preview_source_f01 = None 
@@ -1858,15 +1862,21 @@ class ABEDialog(QDialog):
         manual = self._manual_mode()
 
         if manual:
-            # Switching to Manual — clear exclusion polygons
-            # (they were drawn in Auto context and don't make sense to carry over)
-            if self._polygons or self._drawing_poly:
-                self._polygons.clear()
-                self._drawing_poly = None
+            # Switching to Manual: do NOT clear exclusion polygons. They are
+            # apply-time protection (the drawn region is composited back from
+            # the original in BOTH the polynomial and multiscale stages) and
+            # stay valid no matter which sampling mode is active — the sampler
+            # mode only governs how background sample POINTS are chosen, which
+            # is orthogonal. The only things that should ever drop exclusions
+            # are the explicit "Clear Exclusions" button and loading a
+            # genuinely different image. Commit any half-drawn polygon first so
+            # it isn't stranded, since in Manual mode left-click now places
+            # sample points instead of extending the in-progress polygon.
+            self._commit_pending_polygon()
 
         else:
-            # Switching to Auto — clear manual sample points
-            # (they were placed manually and Auto will generate its own)
+            # Switching to Auto — clear manual sample points (Auto generates
+            # its own). Exclusion polygons are left untouched.
             if self._manual_points:
                 _log = getattr(self._main, "_log", None)
                 if callable(_log):
@@ -2069,6 +2079,33 @@ class ABEDialog(QDialog):
         # No longer used — sequence moved entirely into showEvent
         pass
 
+    def _dbg(self, msg: str) -> None:
+        """
+        Loud debug trace for the exclusion-zone pipeline. Writes to BOTH:
+          - stdout (print, flushed) so it shows in the terminal/console the
+            app was launched from, and
+          - the main window's log panel (if present),
+        so the message is visible no matter where the user is looking.
+
+        Prefixed [ABE-EXCL] so the whole exclusion path can be grepped out of
+        a busy log. Kept deliberately chatty while we chase the intermittent
+        "exclusion ignored" bug; gate on _EXCL_DEBUG so it can be silenced
+        later with one flag instead of deleting call sites.
+        """
+        if not getattr(self, "_EXCL_DEBUG", True):
+            return
+        line = f"[ABE-EXCL] {msg}"
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
+        try:
+            _log = getattr(self._main, "_log", None)
+            if callable(_log):
+                _log(line)
+        except Exception:
+            pass
+
     def _set_status(self, text: str) -> None:
         try:
             lbl = getattr(self, "status_label", None)
@@ -2122,9 +2159,31 @@ class ABEDialog(QDialog):
     def _on_active_doc_changed(self, doc):
         if doc is None or getattr(doc, "image", None) is None:
             return
+
+        # CRITICAL: only reset drawn state when the active document actually
+        # changes to a DIFFERENT one. The main window re-emits
+        # currentDocumentChanged on window activation / focus churn — notably
+        # when a modal child dialog opens and then closes (the protection
+        # preview and its "computing…" splash) — carrying the SAME document.
+        # Without this guard that spurious re-fire wiped the user's exclusion
+        # polygons between drawing them and pressing Apply: the exact
+        # "draw zones → open protection preview → close it → Apply → zones
+        # ignored" bug. Re-activating the current document must be a no-op so
+        # drawn exclusions and manual sample points survive.
+        if doc is self.doc:
+            self._dbg("_on_active_doc_changed: SAME document re-activated "
+                      "(likely modal preview closing) — keeping "
+                      f"{len(self._polygons)} exclusion polygon(s) and "
+                      f"{len(self._manual_points)} sample point(s).")
+            return
+
         _log = getattr(self._main, "_log", None)
         if callable(_log):
-            _log(f"[ABE] _on_active_doc_changed: CLEARING {len(self._manual_points)} pts")
+            _log(f"[ABE] _on_active_doc_changed: NEW doc — clearing "
+                 f"{len(self._polygons)} polygon(s), {len(self._manual_points)} pt(s)")
+        self._dbg(f"_on_active_doc_changed: NEW document — clearing "
+                  f"{len(self._polygons)} exclusion polygon(s) and "
+                  f"{len(self._manual_points)} sample point(s).")
         self.doc = doc
         self._polygons.clear()
         self._drawing_poly = None
@@ -2150,6 +2209,13 @@ class ABEDialog(QDialog):
         # Cleared each run; set only when multiscale + structure-doc are on.
         self._last_structure_map = None
         self._last_mad_mask = None
+        if excl_mask is None:
+            self._dbg("_run_abe: excl_mask=None (polynomial + multiscale will "
+                      "run on the WHOLE frame, no protected zones).")
+        else:
+            self._dbg(f"_run_abe: excl_mask received, shape={np.asarray(excl_mask).shape}, "
+                      f"dtype={np.asarray(excl_mask).dtype}, "
+                      f"excluded(False)={int((~np.asarray(excl_mask, dtype=bool)).sum())} px.")
         imgf = self._get_source_float()
         if imgf is None:
             return None, None
@@ -2297,10 +2363,21 @@ class ABEDialog(QDialog):
                 if excl_mask is not None:
                     try:
                         protect_blend = (~np.asarray(excl_mask, dtype=bool)).astype(np.float32)
+                        kept = int(protect_blend.sum())
                         if not protect_blend.any():
+                            self._dbg("_run_abe/multiscale: protect_blend from excl_mask "
+                                      "is ALL ZERO (nothing to keep) → setting None.")
                             protect_blend = None
-                    except Exception:
+                        else:
+                            self._dbg(f"_run_abe/multiscale: protect_blend built — "
+                                      f"shape={protect_blend.shape}, keep-original px={kept} "
+                                      f"({100.0*kept/protect_blend.size:.2f}%).")
+                    except Exception as e:
+                        self._dbg(f"_run_abe/multiscale: protect_blend build FAILED ({e}) → None.")
                         protect_blend = None
+                else:
+                    self._dbg("_run_abe/multiscale: excl_mask is None → "
+                              "protect_blend=None (galaxy will NOT be protected in refinement).")
 
                 # Capture the multiplicative STRUCTURE map too when the user
                 # asked for a structure document (troubleshooting output).
@@ -2311,6 +2388,10 @@ class ABEDialog(QDialog):
                 self._last_mad_mask = None     # raw median+k*MAD mask (debug)
 
                 _pre = corrected
+                self._dbg(f"_run_abe/multiscale: CALLING multiscale_gradient_correct — "
+                          f"protect_blend_mask={'None' if protect_blend is None else f'{int(np.asarray(protect_blend).sum())} keep px'}, "
+                          f"feather_frac={excl_feather_frac:.3f}, channels={channels_mode}, "
+                          f"band={band_lo}-{band_hi}, protect_k={protect_k}.")
                 _ms_result = multiscale_gradient_correct(
                     corrected,
                     estimate_from=estimate_from,
@@ -2709,9 +2790,13 @@ class ABEDialog(QDialog):
             # mouse-release landed off the label (see
             # _commit_pending_polygon). Done before mask-build so the overlay
             # repaints it as a committed zone and the mask includes it.
+            self._dbg(f"_do_preview: ENTER — _polygons={len(self._polygons)}, "
+                      f"sample_mode={self.cmb_sample_mode.currentText()}")
             self._commit_pending_polygon()
             self._set_status("Building exclusion mask…")
             excl = self._build_exclusion_mask()
+            self._dbg(f"_do_preview: excl mask is "
+                      f"{'None (NO exclusions)' if excl is None else f'present ({int((~excl).sum())} excluded px)'}")
 
             self._set_status("Running ABE preview…")
             corrected, bg = self._run_abe(excl, progress=self._set_status)
@@ -2740,9 +2825,13 @@ class ABEDialog(QDialog):
             # off the label), so Apply never silently runs on the whole frame
             # when the user clearly drew an exclusion. See
             # _commit_pending_polygon.
+            self._dbg(f"_do_apply: ENTER — _polygons={len(self._polygons)}, "
+                      f"sample_mode={self.cmb_sample_mode.currentText()}")
             self._commit_pending_polygon()
             self._set_status("Building exclusion mask…")
             excl = self._build_exclusion_mask()
+            self._dbg(f"_do_apply: excl mask is "
+                      f"{'None (NO exclusions)' if excl is None else f'present ({int((~excl).sum())} excluded px)'}")
 
             self._set_status("Running ABE (apply)…")
             corrected, bg = self._run_abe(excl, progress=self._set_status)
@@ -3037,11 +3126,16 @@ class ABEDialog(QDialog):
             # so a second call is a no-op and the list isn't aliased/mutated.
             self._polygons.append(dp)
             self._drawing_poly = None
+            self._dbg(f"_commit_pending_polygon: committed a pending {len(dp)}-pt "
+                      f"polygon; _polygons now has {len(self._polygons)}.")
             try:
                 self._redraw_overlay()   # repaint so it shows as committed
             except Exception:
                 pass
             return True
+        if dp is not None:
+            self._dbg(f"_commit_pending_polygon: pending polygon had only "
+                      f"{len(dp)} pt(s) (<3) — discarding, NOT committing.")
         return False
 
     def _image_shape(self) -> tuple[int, int]:
@@ -3057,10 +3151,17 @@ class ABEDialog(QDialog):
         # _commit_pending_polygon for the full rationale).
         self._commit_pending_polygon()
 
+        self._dbg(f"_build_exclusion_mask: ENTER — _polygons={len(self._polygons)}, "
+                  f"_drawing_poly={'None' if self._drawing_poly is None else len(self._drawing_poly)}")
+
         if not self._polygons:
+            self._dbg("_build_exclusion_mask: no committed polygons → "
+                      "returning None (NO exclusions).")
             return None
 
         H, W = self._image_shape()
+        self._dbg(f"_build_exclusion_mask: image shape H={H} W={W} "
+                  f"(from self.doc.image); cv2={'present' if cv2 is not None else 'MISSING'}")
 
         # Normalise every stored polygon into an int32 (N,2) array, dropping
         # any that are degenerate (fewer than 3 distinct vertices). QPointF
@@ -3068,18 +3169,29 @@ class ABEDialog(QDialog):
         # bounds on its own, but we validate here so one bad polygon can't
         # wipe out the whole mask or raise mid-fill.
         valid_polys = []
-        for poly in self._polygons:
-            if poly is None or len(poly) < 3:
+        for i, poly in enumerate(self._polygons):
+            n = 0 if poly is None else len(poly)
+            if poly is None or n < 3:
+                self._dbg(f"  poly[{i}]: {n} pt(s) (<3) → SKIP")
                 continue
             try:
                 pts = np.array([[int(round(p.x())), int(round(p.y()))]
                                 for p in poly], dtype=np.int32)
-            except Exception:
+            except Exception as e:
+                self._dbg(f"  poly[{i}]: coord conversion FAILED ({e}) → SKIP")
                 continue
+            uniq = np.unique(pts, axis=0).shape[0]
+            xmin, ymin = int(pts[:, 0].min()), int(pts[:, 1].min())
+            xmax, ymax = int(pts[:, 0].max()), int(pts[:, 1].max())
+            in_bounds = (xmax >= 0 and ymax >= 0 and xmin < W and ymin < H)
+            self._dbg(f"  poly[{i}]: {n} pts, {uniq} unique, "
+                      f"bbox=({xmin},{ymin})-({xmax},{ymax}), "
+                      f"in_bounds={in_bounds}")
             # Need at least 3 UNIQUE points or it has zero area and fillPoly
             # paints nothing — treat that as not-a-region rather than a
             # silent no-op.
-            if np.unique(pts, axis=0).shape[0] < 3:
+            if uniq < 3:
+                self._dbg(f"  poly[{i}]: <3 unique vertices → SKIP (degenerate)")
                 continue
             valid_polys.append(pts)
 
@@ -3088,35 +3200,50 @@ class ABEDialog(QDialog):
             # documented "no exclusions" sentinel) and log it, so a future
             # recurrence is visible instead of silently processing the whole
             # frame as if nothing was drawn.
-            _log = getattr(self._main, "_log", None)
-            if callable(_log):
-                _log(f"[ABE] _build_exclusion_mask: {len(self._polygons)} "
-                     f"polygon(s) stored but none had >=3 unique vertices; "
-                     f"treating as NO exclusions.")
+            self._dbg(f"_build_exclusion_mask: {len(self._polygons)} polygon(s) "
+                      f"stored but NONE had >=3 unique vertices → returning None "
+                      f"(NO exclusions). This is the bug symptom if you drew real zones.")
             return None
 
         mask = np.ones((H, W), dtype=np.uint8)
         if cv2 is None:
             # Pure-numpy fallback (expect OpenCV in SASpro). Coarse: fills the
             # polygon's bounding box rather than the exact winding region.
+            self._dbg("_build_exclusion_mask: cv2 MISSING — using coarse "
+                      "bounding-box fallback fill.")
             for pts in valid_polys:
                 minx, maxx = np.clip([pts[:, 0].min(), pts[:, 0].max()], 0, W - 1)
                 miny, maxy = np.clip([pts[:, 1].min(), pts[:, 1].max()], 0, H - 1)
                 mask[miny:maxy + 1, minx:maxx + 1] = 0
         else:
-            cv2.fillPoly(mask, valid_polys, 0)  # 0 = excluded
+            # Fill each polygon in its OWN fillPoly call — NOT one call with the
+            # whole list. cv2.fillPoly applies an even-odd rule across all
+            # polygons passed in a single call, so where two zones OVERLAP the
+            # region is covered twice and toggles back to UN-filled — a hole.
+            # That silently un-protected exactly the overlap the user drew to
+            # be extra-safe (e.g. a second zone over a galaxy core already
+            # inside a bigger zone). Filling one at a time makes the result a
+            # true UNION: overlaps are set to 0 twice (idempotent), never
+            # cancelled. See the overlap test in commit notes.
+            for i, pts in enumerate(valid_polys):
+                cv2.fillPoly(mask, [pts], 0)  # 0 = excluded; one poly per call
 
         excluded_px = int((mask == 0).sum())
-        _log = getattr(self._main, "_log", None)
-        if callable(_log):
-            _log(f"[ABE] _build_exclusion_mask: {len(valid_polys)} zone(s), "
-                 f"{excluded_px} px excluded ({100.0*excluded_px/(H*W):.1f}%).")
+        pct = 100.0 * excluded_px / float(max(1, H * W))
+        self._dbg(f"_build_exclusion_mask: filled {len(valid_polys)} zone(s) → "
+                  f"{excluded_px} px excluded ({pct:.2f}%). "
+                  f"Convention: True=sample/keep, False=excluded-inside-polygon.")
 
         # Final guard: if, despite valid polygons, nothing actually got
         # excluded (e.g. every polygon fell entirely outside the image),
         # report None so downstream treats it as "no mask" consistently.
         if excluded_px == 0:
+            self._dbg("_build_exclusion_mask: 0 px excluded despite valid "
+                      "polygons → returning None. (Polygons likely fell outside "
+                      "the image, or coords are in the wrong space.)")
             return None
+        self._dbg("_build_exclusion_mask: RETURNING bool mask with "
+                  f"{excluded_px} excluded px.")
         return mask.astype(bool)
 
     # ----- preview rendering helpers -----

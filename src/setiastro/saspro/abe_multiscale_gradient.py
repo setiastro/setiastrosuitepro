@@ -29,11 +29,26 @@ decomposition reuse multiscale_decomp._blur_gaussian when importable
 numpy apply_along_axis path is never used.
 """
 from __future__ import annotations
+import os
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from scipy.ndimage import gaussian_filter, binary_dilation
 
 _MAD_NORM = 1.4826
+
+# Loud exclusion-zone tracing for the multiscale stage. On by default while we
+# chase the intermittent "exclusion ignored" bug; set env SASPRO_EXCL_DEBUG=0
+# to silence. Prints go to stdout (flushed) so they land in the terminal the
+# app was launched from, alongside the [ABE-EXCL] lines the dialog emits.
+_EXCL_DEBUG = os.environ.get("SASPRO_EXCL_DEBUG", "1") not in ("0", "false", "False", "")
+
+
+def _dprint(msg):
+    if _EXCL_DEBUG:
+        try:
+            print(f"[MS-EXCL] {msg}", flush=True)
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------------
@@ -401,6 +416,22 @@ def multiscale_gradient_correct(
     est = np.asarray(estimate_from if estimate_from is not None else target_image,
                      dtype=np.float32)
 
+    # --- exclusion-zone entry trace ---------------------------------------
+    if protect_blend_mask is None:
+        _dprint("multiscale_gradient_correct: protect_blend_mask=None "
+                "(NO exclusion zone passed in — refinement runs everywhere).")
+    else:
+        _pbm = np.asarray(protect_blend_mask)
+        try:
+            _keep = int((_pbm > 0.5).sum())
+        except Exception:
+            _keep = -1
+        _dprint(f"multiscale_gradient_correct: protect_blend_mask received — "
+                f"shape={_pbm.shape}, dtype={_pbm.dtype}, keep(>0.5)={_keep} px, "
+                f"feather_frac={protect_feather_frac}, channels={channels!r}.")
+    _dprint(f"multiscale_gradient_correct: target shape={tgt.shape}, "
+            f"estimate shape={est.shape}.")
+
     if est.ndim == 2:
         luma_full = est
     elif est.ndim == 3 and est.shape[2] == 1:
@@ -471,10 +502,20 @@ def multiscale_gradient_correct(
             em_full = np.clip(em, 0.0, 1.0)
             em_s = _downscale(em_full, ds) if ds > 1 else em_full
             if em_s.shape[:2] == sig_hole_s.shape[:2]:
+                _before = int(sig_hole_s.sum())
                 sig_hole_s = sig_hole_s | (em_s >= 0.5)
+                _after = int(sig_hole_s.sum())
+                _dprint(f"exclusion fold: hole set {_before} → {_after} px "
+                        f"(+{_after - _before} from exclusion), ds={ds}, "
+                        f"em_s shape={em_s.shape}.")
                 _say("Folded exclusion polygons into gradient-estimate hole set.")
-        except Exception:
-            pass
+            else:
+                _dprint(f"exclusion fold SKIPPED: shape mismatch "
+                        f"em_s={em_s.shape[:2]} vs sig_hole_s={sig_hole_s.shape[:2]}.")
+        except Exception as e:
+            _dprint(f"exclusion fold FAILED: {e!r}")
+    else:
+        _dprint("exclusion fold: protect_blend_mask is None — nothing folded.")
 
     # Keep a full-res copy of the (soft) MAD mask for optional debug output.
     mad_mask_full = None
@@ -636,11 +677,14 @@ def multiscale_gradient_correct(
             if m.ndim == 3:
                 m = m[..., 0]
             if m.shape[:2] != (H, W):
+                _dprint(f"blend-back: protect mask shape {m.shape[:2]} != image "
+                        f"(H,W)=({H},{W}) → upscaling to match.")
                 m = _upscale_to(m, (H, W))
             mx = float(m.max()) if m.size else 0.0
             if mx > 1.0:
                 m = m / mx
             m = np.clip(m, 0.0, 1.0)
+            _keep_pre = int((m > 0.5).sum())
 
             # Resolve feather width from the fraction of the image's short side.
             # Resolution-independent: a given percentage feathers the same
@@ -657,7 +701,13 @@ def multiscale_gradient_correct(
                 _say(f"Feathering exclusion edge ({frac*100:.0f}% = {int(fpx)} px)...")
 
             mm = m[..., None] if (corrected.ndim == 3 and m.ndim == 2) else m
+            _diff_before = float(np.mean(np.abs(corrected - tgt)))
             corrected = corrected * (1.0 - mm) + tgt * mm
+            _diff_after = float(np.mean(np.abs(corrected - tgt)))
+            _dprint(f"blend-back APPLIED: keep(>0.5)={_keep_pre} px pre-feather, "
+                    f"feather_px={int(fpx)}, mean|corrected-original| "
+                    f"{_diff_before:.6g} → {_diff_after:.6g} "
+                    f"(drop means exclusion restored original pixels).")
 
             # Expose the resolved, feathered protect mask (full-res, 2D, 0..1)
             # so the caller can fold it into the structure map it displays —
@@ -666,9 +716,11 @@ def multiscale_gradient_correct(
             # than the raw estimate over a protected object.
             self_feathered = m
             _say("Protected exclusion region (kept original pixels).")
-        except Exception:
+        except Exception as e:
+            _dprint(f"blend-back FAILED: {e!r} — exclusion NOT applied this run!")
             self_feathered = None
     else:
+        _dprint("blend-back: protect_blend_mask is None — no exclusion applied.")
         self_feathered = None
 
     corrected = corrected.astype(np.float32, copy=False)
