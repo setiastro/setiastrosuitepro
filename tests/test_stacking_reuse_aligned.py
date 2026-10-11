@@ -435,6 +435,22 @@ class ReuseAlignedFramesTests(unittest.TestCase):
                          f"frames handed to the integrator: "
                          f"{sorted(os.path.relpath(p, self.tmp) for p in integrated)}")
 
+    def test_register_all_drops_frame_whose_aligned_output_was_not_written(self):
+        """Related, 'Register All' button: a finalize failure must not be
+        stacked as its unaligned Normalized_Images input."""
+        for t in "ABCE":
+            self.add_calibrated(t)
+        self.add_twin("A")
+        self.add_twin("B")
+        _FakeAlignThread.finalize_fail = {"E"}
+        self.button = "Register All"
+        self.open_dialog()
+
+        integrated = self.click_register_and_integrate()
+
+        self.assertEqual(sorted(_FakeAlignThread.registered), ["A", "B", "C", "E"])
+        self.assertIntegratedExactly(integrated, ["A", "B", "C"])
+
 
 if __name__ == "__main__":
     unittest.main()
