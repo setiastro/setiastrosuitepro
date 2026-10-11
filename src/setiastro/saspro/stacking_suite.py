@@ -27459,6 +27459,25 @@ class StackingSuiteDialog(QDialog):
         accepted = [k for k in keys if _accept(k)]
         rejected = [k for k in keys if not _accept(k)]
 
+        # A solved frame whose aligned output was never written (the finalize
+        # pass failed) has no usable solution either; the output map still
+        # points at its own unaligned input.
+        _out_map = alignment_thread.file_key_to_current_path
+        unwritten = [
+            k for k in accepted
+            if os.path.normcase(os.path.normpath(_out_map.get(k, k)))
+            == os.path.normcase(os.path.normpath(k))
+        ]
+        if unwritten:
+            _unwritten = set(unwritten)
+            accepted = [k for k in accepted if k not in _unwritten]
+            self.update_status(self.tr(
+                f"🚫 Rejected {len(unwritten)} frame(s) whose aligned output "
+                f"wasn't written (finalize failed):"
+            ))
+            for rf in unwritten:
+                self.update_status(f"  ❌ {os.path.basename(rf)}")
+
         # ----------------------------
         # Persist numeric transforms we accepted (for drizzle, etc.)
         # ----------------------------
@@ -27567,7 +27586,9 @@ class StackingSuiteDialog(QDialog):
 
         # Status
         prefix = "⚡ Fast mode: " if fast_mode else ""
-        self.update_status(self.tr(f"{prefix}Alignment summary: {len(accepted)} succeeded, {len(rejected)} rejected."))
+        n_rejected = len(rejected) + len(unwritten)
+        self.update_status(self.tr(
+            f"{prefix}Alignment summary: {len(accepted)} succeeded, {n_rejected} rejected."))
         QApplication.processEvents()
         if (not fast_mode) and rejected:
             self.update_status(self.tr(f"🚨 Rejected {len(rejected)} frame(s) due to shift > {accept_thresh}px."))
