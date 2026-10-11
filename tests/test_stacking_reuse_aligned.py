@@ -277,6 +277,19 @@ class ReuseAlignedFramesTests(unittest.TestCase):
         dlg._start_after_align_worker = capture
         return dlg
 
+    def remove_from_tree(self, tags):
+        """Select the frames' rows in the Image Integration tree and click Remove Selected."""
+        tree = self.dlg.reg_tree
+        tree.clearSelection()
+        for i in range(tree.topLevelItemCount()):
+            top = tree.topLevelItem(i)
+            for j in range(top.childCount()):
+                leaf = top.child(j)
+                fp = leaf.data(0, stacking_suite.Qt.ItemDataRole.UserRole) or ""
+                if _tag(fp) in tags:
+                    leaf.setSelected(True)
+        self.dlg.clear_tree_selection_registration(tree)
+
     def click_register_and_integrate(self):
         self.integrated = None
         self.dlg.register_images()
@@ -371,6 +384,50 @@ class ReuseAlignedFramesTests(unittest.TestCase):
 
         self.assertEqual(self.prompts[0][0], "Already Registered")
         self.assertIntegratedExactly(integrated, ["A", "B"])
+
+    def test_rerun_after_cancel_does_not_stack_frame_removed_from_tree(self):
+        """Claim (b). Run 1 (Register All) is cancelled; the user then removes a
+        frame with Remove Selected and clicks Register and Integrate again. The
+        removed frame must not be stacked (today the run reuses the frame list
+        queued by the cancelled run)."""
+        for t in "ABCD":
+            self.add_calibrated(t)
+        self.add_twin("A")
+        self.add_twin("B")
+        self.button = "Register All"
+        self.open_dialog()
+
+        _FakeAlignThread.cancel = True
+        self.click_register_and_integrate()
+        _FakeAlignThread.cancel = False
+        self.remove_from_tree({"C"})
+        integrated = self.click_register_and_integrate()
+
+        self.assertEqual(len(self.prompts), 2, "the rerun didn't ask again")
+        self.assertIsNotNone(integrated, "nothing reached the integrator")
+        self.assertNotIn("C", [_tag(p) for p in integrated],
+                         f"removed frame stacked: {[os.path.basename(p) for p in integrated]}")
+
+    def test_rerun_after_no_frames_to_stack_does_not_stack_frame_removed_from_tree(self):
+        """Like the cancel case, but run 1 (Register All) ends with 'No frames to
+        stack; aborting.' because every frame failed alignment."""
+        for t in "ABCD":
+            self.add_calibrated(t)
+        self.add_twin("A")
+        self.add_twin("B")
+        self.button = "Register All"
+        self.open_dialog()
+
+        _FakeAlignThread.align_fail = set("ABCD")
+        self.assertIsNone(self.click_register_and_integrate())
+        _FakeAlignThread.align_fail = set()
+        self.remove_from_tree({"C"})
+        integrated = self.click_register_and_integrate()
+
+        self.assertEqual(len(self.prompts), 2, "the rerun didn't ask again")
+        self.assertIsNotNone(integrated, "nothing reached the integrator")
+        self.assertNotIn("C", [_tag(p) for p in integrated],
+                         f"removed frame stacked: {[os.path.basename(p) for p in integrated]}")
 
     def test_register_all_drops_frame_whose_aligned_output_was_not_written(self):
         """'Register All' button: a finalize failure must not be
