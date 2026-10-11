@@ -32518,9 +32518,10 @@ class StackingSuiteDialog(QDialog):
             # pass restacks frames belonging to OTHER Sets — labeled with the
             # current Set's prefix — producing duplicate masters (e.g. a
             # "MasterLight_m17_SII_..." twin of a frame that belongs to the
-            # SNR set). Keep the Default (no-set) case unaffected.
+            # SNR set). Default is scoped too: it holds only the frames with no
+            # Set of their own.
             cur_set = getattr(self, "_reg_current_set", None)
-            if cur_set and cur_set != "Default":
+            if cur_set:
                 scoped_lf = {}
                 dropped = 0
                 for g, lst in self.light_files.items():
