@@ -26057,6 +26057,7 @@ class StackingSuiteDialog(QDialog):
 
         except StackCancelled:
             self._abort_partial_reg_state()
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             mon = getattr(self, "_exec_monitor", None)
             if mon is not None:
@@ -27182,6 +27183,7 @@ class StackingSuiteDialog(QDialog):
         # (it's a black-box thread), but we refuse to start the next phase.
         if self._cancelled():
             self._abort_partial_reg_state()
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             self.alignment_thread = None
             mon = getattr(self, "_exec_monitor", None)
@@ -27424,6 +27426,9 @@ class StackingSuiteDialog(QDialog):
 
         if not self.valid_transforms:
             self.update_status(self.tr("⚠️ No frames to stack; aborting."))
+            # Like a cancel: the next run rebuilds from the tree and asks again.
+            self._abort_partial_reg_state()
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             return
 
@@ -31145,6 +31150,7 @@ class StackingSuiteDialog(QDialog):
 
     def _start_after_align_worker(self, aligned_light_files: dict[str, list[str]]):
         if self._cancelled():
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             mon = getattr(self, "_exec_monitor", None)
             if mon is not None:

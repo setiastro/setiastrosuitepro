@@ -417,6 +417,50 @@ class ReuseAlignedFramesTests(unittest.TestCase):
         self.assertEqual(self.prompts[0][0], "Already Registered")
         self.assertIntegratedExactly(integrated, ["A", "B"])
 
+    def test_rerun_after_cancel_does_not_stack_frame_removed_from_tree(self):
+        """Claim (b). Run 1 (Register All) is cancelled; the user then removes a
+        frame with Remove Selected and clicks Register and Integrate again. The
+        removed frame must not be stacked (today the run reuses the frame list
+        queued by the cancelled run)."""
+        for t in "ABCD":
+            self.add_calibrated(t)
+        self.add_twin("A")
+        self.add_twin("B")
+        self.button = "Register All"
+        self.open_dialog()
+
+        _FakeAlignThread.cancel = True
+        self.click_register_and_integrate()
+        _FakeAlignThread.cancel = False
+        self.remove_from_tree({"C"})
+        integrated = self.click_register_and_integrate()
+
+        self.assertEqual(len(self.prompts), 2, "the rerun didn't ask again")
+        self.assertIsNotNone(integrated, "nothing reached the integrator")
+        self.assertNotIn("C", [_tag(p) for p in integrated],
+                         f"removed frame stacked: {[os.path.basename(p) for p in integrated]}")
+
+    def test_rerun_after_no_frames_to_stack_does_not_stack_frame_removed_from_tree(self):
+        """Like the cancel case, but run 1 (Register All) ends with 'No frames to
+        stack; aborting.' because every frame failed alignment."""
+        for t in "ABCD":
+            self.add_calibrated(t)
+        self.add_twin("A")
+        self.add_twin("B")
+        self.button = "Register All"
+        self.open_dialog()
+
+        _FakeAlignThread.align_fail = set("ABCD")
+        self.assertIsNone(self.click_register_and_integrate())
+        _FakeAlignThread.align_fail = set()
+        self.remove_from_tree({"C"})
+        integrated = self.click_register_and_integrate()
+
+        self.assertEqual(len(self.prompts), 2, "the rerun didn't ask again")
+        self.assertIsNotNone(integrated, "nothing reached the integrator")
+        self.assertNotIn("C", [_tag(p) for p in integrated],
+                         f"removed frame stacked: {[os.path.basename(p) for p in integrated]}")
+
     def test_skip_registration_button_drops_frame_with_no_registered_version(self):
         """'Skip Registration and Integrate': a calibrated frame with no twin in
         Aligned_Images (never registered, or failed) must not be stacked raw."""
