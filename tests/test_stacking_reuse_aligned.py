@@ -355,6 +355,23 @@ class ReuseAlignedFramesTests(unittest.TestCase):
                                f"DEBAYERED={hdr.get('DEBAYERED')})")
         self.assertEqual(raw_cfa, [], "non-debayered frames handed to the integrator")
 
+    def test_skip_to_integrate_for_default_set_keeps_other_sets_out(self):
+        """Multi-set run (frames without OBJECT stay in 'Default', frames with
+        OBJECT get their own set). Accepting 'Skip → Integrate' for the Default
+        set must stack only that set's registered twins, not the other set's
+        unregistered frames."""
+        for t in "AB":
+            self.add_calibrated(t)
+            self.add_twin(t)
+        for t in "XY":
+            self.add_calibrated(t, obj="M42")
+        self.open_dialog()
+
+        integrated = self.click_register_and_integrate()
+
+        self.assertEqual(self.prompts[0][0], "Already Registered")
+        self.assertIntegratedExactly(integrated, ["A", "B"])
+
     def test_register_all_drops_frame_whose_aligned_output_was_not_written(self):
         """'Register All' button: a finalize failure must not be
         stacked as its unaligned Normalized_Images input."""
