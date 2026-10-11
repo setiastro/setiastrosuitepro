@@ -31240,8 +31240,9 @@ class StackingSuiteDialog(QDialog):
     # matching *registered* frames already exist in a sibling
     # "Aligned_Images"/"aligned_images" folder, we swap each tree frame for its
     # registered counterpart and integrate those instead of re-registering.
-    # Any frame with no registered counterpart falls back to the tree frame
-    # as-is, so a mixed/partly-registered tree still integrates cleanly.
+    # A frame with no registered counterpart is integrated as-is only if SASpro
+    # registered it itself (_is_saspro_registered); the rest are left out, so a
+    # frame that failed registration is never stacked raw.
     #
     # The wrinkle the caller flagged: filename *prefix keys differ* across
     # pipeline stages. A calibrated frame is  "{hashRaw}_foo_c.fit"; its
@@ -31497,6 +31498,23 @@ class StackingSuiteDialog(QDialog):
                     out.append(p)
             new_lf[g] = out
         return new_lf, matched, total, matcher
+
+    def _is_saspro_registered(self, path: str) -> bool:
+        """
+        True for a frame SASpro registered itself: it sits in an Aligned_Images
+        folder, has the _n_r name, or carries the SASDZ stamp registration
+        writes. Frames registered by other programs aren't trusted.
+        """
+        folders = os.path.normpath(os.path.dirname(path)).split(os.sep)
+        if any(f.casefold() == "aligned_images" for f in folders):
+            return True
+        if self._pipeline_stem(path).endswith("_n_r"):
+            return True
+        try:
+            hdr = _get_header_fast(path)
+        except Exception:
+            return False
+        return bool(hdr is not None and hdr.get("SASDZ", False))
 
     @staticmethod
     def _twin_is_fresh(tree_path: str, twin_path: str) -> bool:
@@ -32504,10 +32522,23 @@ class StackingSuiteDialog(QDialog):
             # 1b) PixInsight-style swap: if the tree holds calibrated frames and
             # their registered counterparts already exist in a sibling
             # Aligned_Images / aligned_images folder, integrate *those* instead.
-            # Frames with no counterpart fall back to the tree frame as-is.
-            _tree_files = self.light_files
-            self.light_files, _n_swapped, _n_total, _align_matcher = \
+            # Frames with no counterpart are kept as-is only if SASpro registered
+            # them itself; anything else (a calibrated frame that failed or never
+            # ran registration, or one registered by another program) is left out.
+            _swapped_files, _n_swapped, _n_total, _align_matcher = \
                 self._resolve_aligned_counterparts(self.light_files)
+            # Filter both lists in step: the twin -> original pairing below is
+            # by position.
+            _kept_files, _kept_tree, _dropped = {}, {}, []
+            for g, lst in _swapped_files.items():
+                for p, orig in zip(lst, self.light_files.get(g, [])):
+                    if p != orig or self._is_saspro_registered(p):
+                        _kept_files.setdefault(g, []).append(p)
+                        _kept_tree.setdefault(g, []).append(orig)
+                    else:
+                        _dropped.append(p)
+            self.light_files, _tree_files = _kept_files, _kept_tree
+            _n_as_is = sum(len(lst) for lst in self.light_files.values()) - _n_swapped
             # Registered twin -> the tree frame it replaced. The weights below
             # measure that original, exactly as Register and Integrate does.
             _twin_to_tree = {
@@ -32519,13 +32550,13 @@ class StackingSuiteDialog(QDialog):
             if _align_matcher is None:
                 self.update_status(self.tr(
                     f"ℹ️ No Aligned_Images folder found near the tree — "
-                    f"integrating the {_n_total} tree frame(s) as-is."
+                    f"integrating {_n_as_is} registered tree frame(s) as-is."
                 ))
             elif _n_swapped:
                 self.update_status(self.tr(
                     f"🔗 Matched {_n_swapped}/{_n_total} tree frame(s) to registered "
                     f"counterparts in Aligned_Images — integrating those; "
-                    f"{_n_total - _n_swapped} as-is."
+                    f"{_n_as_is} as-is."
                 ))
                 # Redirect a user-picked reference frame to its registered twin too.
                 if getattr(self, "reference_frame", None):
@@ -32535,13 +32566,29 @@ class StackingSuiteDialog(QDialog):
             else:
                 self.update_status(self.tr(
                     f"ℹ️ Found an Aligned_Images folder but no filename matches "
-                    f"for the {_n_total} tree frame(s) — integrating them as-is."
+                    f"for the {_n_total} tree frame(s) — integrating {_n_as_is} "
+                    f"registered one(s) as-is."
                 ))
+            if _dropped:
+                self.update_status(self.tr(
+                    f"🚫 Leaving out {len(_dropped)} frame(s) that SASpro hasn't "
+                    f"registered (no registered version in Aligned_Images):"
+                ))
+                for p in _dropped[:20]:
+                    self.update_status(f"  ❌ {os.path.basename(p)}")
+                if len(_dropped) > 20:
+                    self.update_status(self.tr(f"  … and {len(_dropped) - 20} more."))
 
             # Flatten
             all_files = [p for lst in self.light_files.values() for p in lst]
             if not all_files:
-                self.update_status(self.tr("⚠️ No frames found in the registration tree!"))
+                if _dropped:
+                    self.update_status(self.tr(
+                        "⚠️ None of the tree frames has been registered by SASpro; "
+                        "use Register and Integrate first."
+                    ))
+                else:
+                    self.update_status(self.tr("⚠️ No frames found in the registration tree!"))
                 self._set_registration_busy(False)
                 return
 
