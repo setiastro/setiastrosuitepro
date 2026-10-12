@@ -6182,6 +6182,360 @@ class SplitPreviewWidget(QWidget):
 # Updated FlatStrengthPreviewDialog  — uses SplitPreviewWidget
 # =============================================================================
 
+class SubRejectionDialog(QDialog):
+    """
+    Interactive sub-rejection review — one scatter plot of weighted frame
+    scores (sorted ascending) per filter, switched via a dropdown. Subs
+    whose score falls below the draggable red threshold line are rejected
+    (soft reject: weight = 0) in the subsequent integration pass.
+
+    Why per-filter: an OIII group almost always scores lower than an Hα
+    group under the same sky (fewer detectable stars, lower photon rate),
+    so lumping both into one distribution would flag "OIII" as "outliers
+    of Hα". Each filter has its own median, MAD-σ, and threshold line;
+    switching filters in the dropdown just swaps the plot — the user's
+    threshold for each filter is remembered as they navigate. Pressing
+    Apply commits every filter's current threshold.
+
+    Visual vocabulary mirrors Blink Comparator Pro's Weighted Score panel:
+      • dashed gray line at the median
+      • dashed yellow / orange / red lines at ±1σ / ±2σ / ±3σ (robust)
+      • solid red line = movable rejection threshold
+      • blue dots = kept, red dots = rejected (recolour live as the line moves)
+      • click a dot to see which sub it is
+
+    Caller supplies ``groups``: ``{filter_name: {filepath: score}}``.
+    After ``exec()`` returns ``Accepted``, call ``rejected_paths()`` for the
+    flat list of files to zero out.
+    """
+
+    def __init__(self, parent, groups: dict, sigma_k: float = 3.5):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Review Subs — Interactive Rejection"))
+        self.resize(900, 680)
+
+        import numpy as _np
+
+        self._sigma_k = float(sigma_k)
+
+        # Build per-filter cache. Groups passed in should already have
+        # passed the N≥10 / σ≥floor guards upstream; we don't re-filter.
+        self._per_filter: dict = {}
+        for fname, scores_map in (groups or {}).items():
+            if not scores_map:
+                continue
+            fps = list(scores_map.keys())
+            scores = _np.asarray(
+                [float(scores_map[fp]) for fp in fps], dtype=_np.float32
+            )
+            med, sig = self._robust_stats(scores)
+            if _np.isfinite(med) and _np.isfinite(sig) and sig > 0:
+                default_th = float(med - self._sigma_k * sig)
+            else:
+                default_th = float(_np.nanmin(scores)) - 1e-6
+            order = _np.argsort(scores, kind="stable")
+            self._per_filter[str(fname)] = {
+                "fps":        fps,
+                "scores":     scores,
+                "order":      order,
+                "med":        med,
+                "sig":        sig,
+                "default_th": default_th,
+                "threshold":  default_th,   # user-adjusted; preserved as they switch
+            }
+
+        # Stable display order (alphabetic) — users scanning a mixed stack
+        # expect filter dropdowns to be ordered the same way every time.
+        self._filter_names = sorted(self._per_filter.keys())
+        self._current_filter = self._filter_names[0] if self._filter_names else None
+
+        self._build_ui()
+        if self._current_filter:
+            self._load_filter(self._current_filter)
+
+    # ──────────────────────────────────────────────────────────────────
+    # UI build
+    # ──────────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        v = QVBoxLayout(self)
+
+        # Filter dropdown — label + combo
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel(self.tr("Filter:")))
+        self._filter_combo = QComboBox()
+        for fname in self._filter_names:
+            n = len(self._per_filter[fname]["fps"])
+            self._filter_combo.addItem(
+                self.tr("{0}  ({1} subs)").format(fname, n), userData=fname
+            )
+        self._filter_combo.currentIndexChanged.connect(self._on_filter_changed)
+        self._filter_combo.setMinimumWidth(240)
+        filter_row.addWidget(self._filter_combo)
+        filter_row.addStretch(1)
+        v.addLayout(filter_row)
+
+        instr = QLabel(self.tr(
+            "Each dot is one sub in the selected filter (x-axis = rank, "
+            "lowest-scored on the left). Drag the solid red line to set a "
+            "rejection threshold — subs below the line are excluded from the "
+            "integration (weight = 0, file untouched on disk). Thresholds are "
+            "remembered per filter; switch filters in the dropdown above. "
+            "The dashed guides are the median and ±1σ / ±2σ / ±3σ (robust MAD). "
+            "Click a dot to see which sub it is."
+        ))
+        instr.setWordWrap(True)
+        v.addWidget(instr)
+
+        self.status_label = QLabel()
+        self.status_label.setStyleSheet("font-weight: bold;")
+        v.addWidget(self.status_label)
+
+        self.plot = pg.PlotWidget()
+        self.plot.setTitle(self.tr("Weighted Score (sorted)"))
+        self.plot.setLabel("left", self.tr("Score"))
+        self.plot.setLabel("bottom", self.tr("Sub (ascending by score)"))
+        self.plot.showGrid(x=True, y=True, alpha=0.3)
+        self.plot.getPlotItem().getViewBox().setBackgroundColor(
+            self.palette().color(self.backgroundRole())
+        )
+        v.addWidget(self.plot, 1)
+
+        # Button row
+        btn_row = QHBoxLayout()
+        reset_btn = QPushButton(self.tr("Reset to Default"))
+        reset_btn.setToolTip(self.tr(
+            "Return THIS filter's threshold to median − k·σ (k from settings)."
+        ))
+        reset_btn.clicked.connect(self._reset_threshold)
+        btn_row.addWidget(reset_btn)
+
+        floor_btn = QPushButton(self.tr("Keep All (this filter)"))
+        floor_btn.setToolTip(self.tr(
+            "Park THIS filter's threshold below its lowest score so nothing "
+            "is rejected in this filter. Other filters' thresholds are "
+            "unaffected. Pressing Cancel keeps all subs across every filter."
+        ))
+        floor_btn.clicked.connect(self._park_below_min)
+        btn_row.addWidget(floor_btn)
+
+        btn_row.addStretch(1)
+
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText(self.tr("Apply"))
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        btn_row.addWidget(bb)
+        v.addLayout(btn_row)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Filter switching
+    # ──────────────────────────────────────────────────────────────────
+    def _on_filter_changed(self, idx: int):
+        # Commit the current filter's threshold before swapping, so the
+        # user doesn't lose their drag just because they clicked away.
+        if self._current_filter and hasattr(self, "_thresh_line"):
+            try:
+                self._per_filter[self._current_filter]["threshold"] = float(
+                    self._thresh_line.value()
+                )
+            except Exception:
+                pass
+
+        if idx < 0:
+            return
+        new_filter = self._filter_combo.itemData(idx)
+        if new_filter and new_filter != self._current_filter:
+            self._current_filter = str(new_filter)
+            self._load_filter(self._current_filter)
+
+    def _load_filter(self, fname: str):
+        """Swap the plot to show this filter. pyqtgraph makes rebuilding
+        the items simpler than mutating in place (sigma guide count, line
+        positions, and scatter length all change filter-to-filter)."""
+        import numpy as _np
+
+        self.plot.clear()
+        data = self._per_filter[fname]
+        scores = data["scores"]; order = data["order"]
+        med = data["med"]; sig = data["sig"]; th = data["threshold"]
+
+        y = scores[order]
+        x = _np.arange(len(y), dtype=_np.float32)
+
+        self._scat = pg.ScatterPlotItem(
+            pen=pg.mkPen(None),
+            brush=pg.mkBrush(100, 100, 255, 200),
+            size=8,
+        )
+        self._scat.setData(x=x, y=y)
+        self._scat.sigClicked.connect(self._on_point_click)
+        self.plot.addItem(self._scat)
+
+        if _np.isfinite(med):
+            med_line = pg.InfiniteLine(
+                pos=med, angle=0, movable=False,
+                pen=pg.mkPen((220, 220, 220, 170), width=1,
+                             style=Qt.PenStyle.DashLine),
+            )
+            med_line.setZValue(-10)
+            self.plot.addItem(med_line)
+
+        if _np.isfinite(sig) and sig > 0:
+            for k, color in ((1, (255, 220,  50, 120)),
+                             (2, (255, 140,   0, 120)),
+                             (3, (220,  50,  50, 120))):
+                for sign in (-1, +1):
+                    ln = pg.InfiniteLine(
+                        pos=med + sign * k * sig,
+                        angle=0, movable=False,
+                        pen=pg.mkPen(color, width=1,
+                                     style=Qt.PenStyle.DashLine),
+                    )
+                    ln.setZValue(-10)
+                    self.plot.addItem(ln)
+
+        self._thresh_line = pg.InfiniteLine(
+            pos=th, angle=0, movable=True,
+            pen=pg.mkPen((235, 60, 60, 230), width=2),
+        )
+        self._thresh_line.sigPositionChanged.connect(self._refresh_colors)
+        self.plot.addItem(self._thresh_line)
+
+        if len(y):
+            vb = self.plot.getPlotItem().getViewBox()
+            span = float(y.max() - y.min()) if y.max() > y.min() else 1.0
+            vb.setYRange(float(y.min()) - 0.1 * span,
+                         float(y.max()) + 0.1 * span)
+
+        self._refresh_colors()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Live updates
+    # ──────────────────────────────────────────────────────────────────
+    def _refresh_colors(self):
+        import numpy as _np
+        if not self._current_filter:
+            return
+        data = self._per_filter[self._current_filter]
+        y = data["scores"][data["order"]]
+        x = _np.arange(len(y), dtype=_np.float32)
+        th = float(self._thresh_line.value())
+        rej_brush = pg.mkBrush(235, 60, 60, 220)
+        keep_brush = pg.mkBrush(100, 100, 255, 200)
+        brushes = [rej_brush if yi < th else keep_brush for yi in y]
+        self._scat.setData(x=x, y=y, brush=brushes)
+
+        med = data["med"]; sig = data["sig"]
+        n_rej_this = int(_np.sum(y < th))
+        n_tot_this = int(len(y))
+
+        # Cross-filter running totals (use the live threshold for the
+        # current filter, the saved threshold for all other filters).
+        total_rej = 0
+        total_subs = 0
+        for fname, d in self._per_filter.items():
+            fth = th if fname == self._current_filter else d["threshold"]
+            total_rej += int(_np.sum(d["scores"] < fth))
+            total_subs += len(d["fps"])
+
+        if _np.isfinite(sig) and sig > 1e-12:
+            dev_sigmas = (med - th) / sig
+            sigma_note = self.tr(" — threshold at median − {0:.2f}σ").format(dev_sigmas)
+        else:
+            sigma_note = ""
+        self.status_label.setText(self.tr(
+            "[{0}] Rejecting {1} / {2} subs (threshold = {3:.4f}, "
+            "median = {4:.4f}, robust σ = {5:.4f}){6}\n"
+            "All filters: {7} / {8} subs rejected"
+        ).format(self._current_filter, n_rej_this, n_tot_this, th, med, sig,
+                 sigma_note, total_rej, total_subs))
+
+    def _reset_threshold(self):
+        if not self._current_filter:
+            return
+        self._thresh_line.setPos(self._per_filter[self._current_filter]["default_th"])
+
+    def _park_below_min(self):
+        import numpy as _np
+        if not self._current_filter:
+            return
+        data = self._per_filter[self._current_filter]
+        self._thresh_line.setPos(float(_np.nanmin(data["scores"])) - 1e-6)
+
+    def _on_point_click(self, _plot, points):
+        import os as _os
+        if not self._current_filter:
+            return
+        data = self._per_filter[self._current_filter]
+        for pt in points:
+            li = int(round(pt.pos().x()))
+            if 0 <= li < len(data["order"]):
+                gi = int(data["order"][li])
+                fp = data["fps"][gi]
+                score = float(data["scores"][gi])
+                th = float(self._thresh_line.value())
+                verdict = (self.tr("REJECTED") if score < th else self.tr("KEPT"))
+                QMessageBox.information(
+                    self,
+                    self.tr("Sub info"),
+                    self.tr(
+                        "{0}\nFilter: {1}\nScore: {2:.4f}\nStatus at current "
+                        "threshold: {3}"
+                    ).format(
+                        _os.path.basename(fp), self._current_filter, score, verdict
+                    ),
+                )
+
+    # ──────────────────────────────────────────────────────────────────
+    # Public API
+    # ──────────────────────────────────────────────────────────────────
+    def rejected_paths(self) -> list:
+        """Flat list of filepaths below each filter's current threshold.
+        Commits the current filter's threshold first so a live drag
+        doesn't go uncounted when the user presses Apply without
+        switching filters."""
+        if self._current_filter and hasattr(self, "_thresh_line"):
+            try:
+                self._per_filter[self._current_filter]["threshold"] = float(
+                    self._thresh_line.value()
+                )
+            except Exception:
+                pass
+        result = []
+        for data in self._per_filter.values():
+            th = data["threshold"]
+            for fp, s in zip(data["fps"], data["scores"]):
+                if float(s) < th:
+                    result.append(fp)
+        return result
+
+    def threshold(self, filter_name: str = None) -> float:
+        """Current threshold for the named filter (or the one being viewed)."""
+        if filter_name is None:
+            filter_name = self._current_filter
+        if filter_name in self._per_filter:
+            if filter_name == self._current_filter and hasattr(self, "_thresh_line"):
+                return float(self._thresh_line.value())
+            return float(self._per_filter[filter_name]["threshold"])
+        return 0.0
+
+    # ──────────────────────────────────────────────────────────────────
+    # Robust stats (same formulation as the auto-reject code path)
+    # ──────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _robust_stats(scores):
+        import numpy as _np
+        s = scores[_np.isfinite(scores)]
+        if s.size < 2:
+            return (float(_np.median(s)) if s.size else 0.0, 0.0)
+        med = float(_np.median(s))
+        mad = float(_np.median(_np.abs(s - med)))
+        sig = 1.4826 * mad
+        return med, sig
+
+
 class FlatStrengthPreviewDialog(QDialog):
     """
     Interactive flat-strength tuning with an in-image split before/after view.
@@ -9367,6 +9721,63 @@ class StackingSuiteDialog(QDialog):
         )
         rej_layout.addWidget(self.exposure_weighted_cb)
 
+        # ─────────────────────────────────────────────────────────────
+        # Score-outlier sub rejection — soft reject (weight = 0) applied
+        # after measurement and before integration. The per-run checkbox
+        # on the integration tab decides whether the threshold is reviewed
+        # in a dialog or auto-applied from this setting.
+        # ─────────────────────────────────────────────────────────────
+        reject_row = QHBoxLayout()
+        self.reject_outliers_cb = QCheckBox(self.tr("Reject score outliers below median − k·σ"))
+        self.reject_outliers_cb.setToolTip(self.tr(
+            "After measurement, compute median and robust MAD-σ of all frames'\n"
+            "weighted scores. Any sub whose score falls below median − k·σ is\n"
+            "soft-rejected: its weight is set to 0 so integration treats it as\n"
+            "absent, but the file itself is untouched.\n"
+            "\n"
+            "Skipped automatically when there are fewer than 10 subs (MAD\n"
+            "is too noisy) or when the score distribution is tight (σ < 0.02,\n"
+            "nothing genuinely stands out).\n"
+            "\n"
+            "Use the 'Review subs interactively' checkbox on the Image\n"
+            "Registration tab to confirm/adjust the threshold per run."
+        ))
+        self.reject_outliers_cb.setChecked(
+            self.settings.value("stacking/reject_outliers_enabled", True, type=bool)
+        )
+        reject_row.addWidget(self.reject_outliers_cb)
+
+        reject_row.addSpacing(8)
+        reject_row.addWidget(QLabel(self.tr("k:")))
+        self.reject_outliers_k_spin = QDoubleSpinBox()
+        self.reject_outliers_k_spin.setRange(1.5, 10.0)
+        self.reject_outliers_k_spin.setDecimals(2)
+        self.reject_outliers_k_spin.setSingleStep(0.1)
+        self.reject_outliers_k_spin.setValue(
+            self.settings.value("stacking/reject_outliers_sigma_k", 3.5, type=float)
+        )
+        self.reject_outliers_k_spin.setToolTip(self.tr(
+            "Rejection threshold = median − k·σ (robust).\n"
+            "• 3.0 — more aggressive (clips the lower tail sooner)\n"
+            "• 3.5 — balanced (default)\n"
+            "• 4.0+ — only cull dramatic outliers"
+        ))
+        reject_row.addWidget(self.reject_outliers_k_spin)
+
+        reject_row.addSpacing(16)
+        self.reject_outliers_interactive_cb = QCheckBox(self.tr("Default to interactive review"))
+        self.reject_outliers_interactive_cb.setToolTip(self.tr(
+            "When on, newly opened sessions initialize the Image Registration\n"
+            "tab's 'Review subs interactively before stacking' checkbox to on.\n"
+            "The per-run checkbox on that tab always wins for the current run."
+        ))
+        self.reject_outliers_interactive_cb.setChecked(
+            self.settings.value("stacking/reject_outliers_interactive", False, type=bool)
+        )
+        reject_row.addWidget(self.reject_outliers_interactive_cb)
+        reject_row.addStretch(1)
+        rej_layout.addLayout(reject_row)
+
         # Param rows as small containers we can show/hide
         def _mini_row(label_text, widget, help_text=None):
             row = QWidget()
@@ -9701,6 +10112,25 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/rejection_algorithm",  self.rejection_algorithm)
         if hasattr(self, "weight_mode"):
             self.settings.setValue("stacking/weight_mode",       self.weight_mode)
+
+        # Score-outlier sub rejection (soft reject; applied in
+        # _apply_sub_rejection after measurement, before integration).
+        if hasattr(self, "reject_outliers_cb"):
+            self.settings.setValue(
+                "stacking/reject_outliers_enabled",
+                bool(self.reject_outliers_cb.isChecked()),
+            )
+        if hasattr(self, "reject_outliers_k_spin"):
+            self.settings.setValue(
+                "stacking/reject_outliers_sigma_k",
+                float(self.reject_outliers_k_spin.value()),
+            )
+        if hasattr(self, "reject_outliers_interactive_cb"):
+            self.settings.setValue(
+                "stacking/reject_outliers_interactive",
+                bool(self.reject_outliers_interactive_cb.isChecked()),
+            )
+
         self.settings.setValue("stacking/kappa",                self.kappa)
         self.settings.setValue("stacking/iterations",           self.iterations)
         self.settings.setValue("stacking/esd_threshold",        self.esd_threshold)
@@ -13011,6 +13441,25 @@ class StackingSuiteDialog(QDialog):
             )
         )
         output_opts_row.addWidget(self.save_rejection_layers_cb)
+
+        # ─────────────────────────────────────────────────────────────
+        # Interactive sub rejection (per-run toggle; initial state comes
+        # from the sticky "default to interactive" setting, mirroring the
+        # Interactive-Flat checkbox pattern on the lights tab).
+        # ─────────────────────────────────────────────────────────────
+        self.reject_interactive_cb = QCheckBox(self.tr("Review subs interactively before stacking"))
+        self.reject_interactive_cb.setToolTip(self.tr(
+            "After measurement, show a scatter plot of each sub's weighted "
+            "score (sorted) with a draggable red threshold line. Subs below "
+            "the line are set to weight 0 and excluded from the integration.\n\n"
+            "Non-interactive auto-rejection uses median − k·σ from Settings."
+        ))
+        self.reject_interactive_cb.setChecked(
+            self.settings.value("stacking/reject_outliers_interactive", False, type=bool)
+        )
+        # Not sticky — just a per-run flag, same as Interactive Flat.
+        output_opts_row.addWidget(self.reject_interactive_cb)
+
         output_opts_row.addStretch(1)
         layout.addLayout(output_opts_row)
 
@@ -22295,6 +22744,201 @@ class StackingSuiteDialog(QDialog):
         mode = self.settings.value("stacking/weight_mode", "Balanced", type=str)
         return mode if mode in self.WEIGHT_MODES else "Balanced"
 
+    def _group_frames_by_filter(self, frames: list) -> dict:
+        """Group paths by filter name using ``self.light_files`` keys as the
+        authoritative source for filter identity (keys look like
+        ``"Ha - 300s (4144x2822)"``), avoiding a per-frame FITS header read.
+        Falls back to ``self._get_filter_name`` for any path that isn't in
+        a known group (rare — e.g. mid-session re-measurements loaded via
+        a different code path)."""
+        path_to_filter = {}
+        for key, paths in (self.light_files or {}).items():
+            try:
+                if isinstance(key, tuple) and len(key) >= 1:
+                    filter_exposure = str(key[0])
+                else:
+                    filter_exposure = str(key)
+                # Keys like "Ha - 300s (4144x2822)" → everything before
+                # the LAST " - " is the filter name (rsplit handles the
+                # rare case of a filter name that itself contains " - ").
+                filter_name = filter_exposure.rsplit(" - ", 1)[0].strip() or "Unknown"
+            except Exception:
+                filter_name = "Unknown"
+            for p in (paths or []):
+                if p:
+                    path_to_filter[p] = filter_name
+
+        groups: dict = {}
+        for fp in frames:
+            fname = path_to_filter.get(fp)
+            if not fname:
+                try:
+                    fname = self._get_filter_name(fp) or "Unknown"
+                except Exception:
+                    fname = "Unknown"
+            groups.setdefault(fname, []).append(fp)
+        return groups
+
+    def _apply_sub_rejection(self, measured_frames: list) -> int:
+        """Score-outlier rejection applied in-place to ``self.frame_weights``.
+
+        Runs PER FILTER: an OIII group almost always scores lower than an
+        Hα group under the same sky (fewer stars, lower photon rate), so
+        a single global threshold would brand an entire narrowband channel
+        as outliers of a brighter one. Each filter gets its own median,
+        robust MAD-σ, and threshold.
+
+        Rule (per filter):
+            med       = median(scores_in_filter)
+            sigma     = 1.4826 * median(|scores - med|)
+            threshold = med - k * sigma
+        with guards applied PER FILTER:
+          - skip the filter when fewer than 10 of its subs have a positive
+            weight (MAD is too noisy to call outliers below that)
+          - skip the filter when sigma < 0.02 (its scores are tightly
+            clustered — nothing stands out)
+          - skip the whole call when ``stacking/reject_outliers_enabled``
+            is False
+
+        The per-run checkbox on the integration tab
+        (``reject_interactive_cb``) decides whether the user reviews
+        thresholds in a dialog (one plot per filter, switched by a
+        dropdown) or we auto-apply.
+
+        Soft reject: rejected subs have ``self.frame_weights[fp] = 0.0``.
+        Files are untouched on disk — a later run can re-measure and
+        re-threshold without data loss. Returns the total rejection count
+        across all filters (0 is a valid result).
+        """
+        import numpy as _np
+        import os as _os
+
+        enabled = bool(self.settings.value("stacking/reject_outliers_enabled", True, type=bool))
+        if not enabled:
+            return 0
+
+        sigma_k = float(self.settings.value("stacking/reject_outliers_sigma_k", 3.5, type=float))
+
+        # Partition measured_frames by filter — authoritative lookup via
+        # self.light_files group keys (no disk I/O), with a header-read
+        # fallback for any orphan path.
+        groups_by_filter = self._group_frames_by_filter(measured_frames)
+
+        # Per-filter guards. Build the candidate_groups dict used by both
+        # the interactive dialog and the auto-apply branch so the two
+        # paths see IDENTICAL inputs.
+        candidate_groups: dict = {}      # filter_name -> {fp: score}
+        auto_thresholds: dict = {}       # filter_name -> (med, sig, threshold)
+        skipped: list = []               # (filter_name, reason) for logging
+
+        for fname, fps in groups_by_filter.items():
+            pairs = [
+                (fp, float(self.frame_weights.get(fp, 0.0)))
+                for fp in fps
+                if self.frame_weights.get(fp, 0.0) > 0.0
+            ]
+            if len(pairs) < 10:
+                skipped.append((fname, self.tr(
+                    "only {0} subs with positive weight — need ≥10"
+                ).format(len(pairs))))
+                continue
+
+            scores = _np.asarray([p[1] for p in pairs], dtype=_np.float32)
+            med = float(_np.median(scores))
+            mad = float(_np.median(_np.abs(scores - med)))
+            sig = 1.4826 * mad
+            if not (_np.isfinite(sig) and sig >= 0.02):
+                skipped.append((fname, self.tr(
+                    "σ = {0:.4f} < 0.02 (tight distribution; nothing stands out)"
+                ).format(sig)))
+                continue
+
+            candidate_groups[fname] = {fp: s for fp, s in pairs}
+            auto_thresholds[fname] = (med, sig, med - sigma_k * sig)
+
+        for fname, reason in skipped:
+            self.update_status(self.tr(
+                "ℹ️ Sub rejection skipped for filter '{0}': {1}"
+            ).format(fname, reason))
+
+        if not candidate_groups:
+            return 0
+
+        # Interactive? Per-run checkbox on the integration tab wins; fall
+        # back to the sticky setting if the tab's checkbox doesn't exist
+        # (e.g., headless invocation).
+        interactive = False
+        cb = getattr(self, "reject_interactive_cb", None)
+        if cb is not None:
+            try:
+                interactive = bool(cb.isChecked())
+            except Exception:
+                interactive = False
+        else:
+            interactive = bool(self.settings.value(
+                "stacking/reject_outliers_interactive", False, type=bool
+            ))
+
+        rejected: set = set()
+        per_filter_threshold: dict = {}
+
+        if interactive:
+            dlg = SubRejectionDialog(self, candidate_groups, sigma_k=sigma_k)
+            result = dlg.exec()
+            if result != QDialog.DialogCode.Accepted:
+                self.update_status(self.tr(
+                    "ℹ️ Sub rejection cancelled — keeping all subs."
+                ))
+                return 0
+            rejected = set(dlg.rejected_paths())
+            for fname in candidate_groups:
+                per_filter_threshold[fname] = dlg.threshold(fname)
+        else:
+            for fname, scores_map in candidate_groups.items():
+                _med, _sig, threshold = auto_thresholds[fname]
+                per_filter_threshold[fname] = threshold
+                for fp, s in scores_map.items():
+                    if s < threshold:
+                        rejected.add(fp)
+
+        total_candidates = sum(len(g) for g in candidate_groups.values())
+
+        if not rejected:
+            self.update_status(self.tr(
+                "✅ Sub rejection: no outliers across any filter — "
+                "all {0} subs kept ({1} filter group(s) considered)."
+            ).format(total_candidates, len(candidate_groups)))
+            return 0
+
+        # Soft reject + per-sub log line (always useful for a stacking log).
+        for fp in rejected:
+            prev = self.frame_weights.get(fp, 0.0)
+            self.frame_weights[fp] = 0.0
+            try:
+                self.update_status(self.tr(
+                    "🚫 Rejected sub (score outlier): {0}  (score {1:.4f})"
+                ).format(_os.path.basename(fp), float(prev)))
+            except Exception:
+                pass
+
+        # Per-filter summary: how many each filter contributed and at what
+        # threshold — makes mixed-filter stacks much easier to audit.
+        for fname, scores_map in candidate_groups.items():
+            th = per_filter_threshold.get(fname, auto_thresholds[fname][2])
+            n_rej = sum(1 for fp in scores_map if fp in rejected)
+            n_tot = len(scores_map)
+            med, sig, _auto_th = auto_thresholds[fname]
+            self.update_status(self.tr(
+                "   • [{0}]  rejected {1}/{2}  threshold={3:.4f}  "
+                "(median={4:.4f}, σ={5:.4f})"
+            ).format(fname, n_rej, n_tot, th, med, sig))
+
+        self.update_status(self.tr(
+            "🚫 Sub rejection: {0} / {1} subs rejected across {2} filter group(s) "
+            "(k = {3:.2f})."
+        ).format(len(rejected), total_candidates, len(candidate_groups), sigma_k))
+        return len(rejected)
+
     @staticmethod
     def _score_frame_terms(*, count, ecc, bg, fwhm, noise,
                            fwhm_ref, noise_ref, exps) -> tuple:
@@ -23848,7 +24492,20 @@ class StackingSuiteDialog(QDialog):
                 f"min={min(self.frame_weights.values()):.3f}, "
                 f"max={max(self.frame_weights.values()):.3f}, "
                 f"mean={float(np.mean(list(self.frame_weights.values()))):.3f}"
-            )) 
+            ))
+
+            # ─────────────────────────────────────────────────────────────
+            # Optional score-outlier sub rejection. Soft reject: rejected
+            # subs have their weight zeroed so integration treats them as
+            # absent, but the source file is untouched — re-running with a
+            # different threshold is just another measurement pass. No-ops
+            # on CPU-only runs, small groups, tightly clustered scores, or
+            # when the user disables the feature in Settings.
+            # ─────────────────────────────────────────────────────────────
+            try:
+                self._apply_sub_rejection(measured_frames)
+            except Exception as _e:
+                self.update_status(self.tr(f"⚠️ Sub rejection skipped: {_e}"))
 
             ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
             ref_count = ref_stats_meas["count"]
@@ -32003,6 +32660,14 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status(self.tr("✅ Frame weights computed!"))
             QApplication.processEvents()
+
+            # Score-outlier sub rejection (soft; see Register-and-Integrate
+            # path for the full rationale). Shares the same helper so both
+            # entry points behave identically.
+            try:
+                self._apply_sub_rejection(measured_frames)
+            except Exception as _e:
+                self.update_status(self.tr(f"⚠️ Sub rejection skipped: {_e}"))
 
             # 4) Choose reference (used for MFDeconv masks, autocrop base,
             #    display, and logging). Priority:
