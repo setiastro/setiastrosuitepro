@@ -960,7 +960,7 @@ class ABEDialog(QDialog):
         # Loud exclusion-zone tracing (see _dbg). On while chasing the
         # intermittent "exclusion ignored" bug; flip to False to silence
         # all [ABE-EXCL] lines in one place.
-        self._EXCL_DEBUG = True
+        self._EXCL_DEBUG = False
         self._panning = False
         self._pan_last = None
         self._preview_source_f01 = None 

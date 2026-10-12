@@ -40,7 +40,7 @@ _MAD_NORM = 1.4826
 # chase the intermittent "exclusion ignored" bug; set env SASPRO_EXCL_DEBUG=0
 # to silence. Prints go to stdout (flushed) so they land in the terminal the
 # app was launched from, alongside the [ABE-EXCL] lines the dialog emits.
-_EXCL_DEBUG = os.environ.get("SASPRO_EXCL_DEBUG", "1") not in ("0", "false", "False", "")
+_EXCL_DEBUG = False
 
 
 def _dprint(msg):

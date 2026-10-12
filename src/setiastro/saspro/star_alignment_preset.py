@@ -8,9 +8,29 @@ import cv2
 from setiastro.saspro import astroalign
 from PyQt6.QtWidgets import (
     QDialog, QFormLayout, QDialogButtonBox, QComboBox, QLineEdit, QCheckBox,
-    QSpinBox, QPushButton, QFileDialog, QWidget, QMessageBox
+    QSpinBox, QPushButton, QFileDialog, QWidget, QMessageBox,
+    QListWidget, QListWidgetItem, QAbstractItemView, QHBoxLayout, QVBoxLayout,
+    QLabel,
 )
 from PyQt6.QtCore import Qt
+
+
+def _find_main_window(start_widget):
+    """
+    Walk up the Qt parent chain from a dialog widget looking for the SASpro
+    main window — identified by the ``mdi`` attribute (also what
+    _iter_views_with_titles already uses as the entry point). Returns None
+    if we never find one (e.g. the preset dialog was opened from a test
+    harness without the full host wired up).
+    """
+    w = start_widget
+    for _ in range(16):  # bounded walk — Qt trees are shallow
+        if w is None:
+            return None
+        if hasattr(w, "mdi"):
+            return w
+        w = w.parent() if hasattr(w, "parent") else None
+    return None
 
 def _norm_name(s: str) -> str:
     if not isinstance(s, str):
@@ -92,6 +112,20 @@ class StarAlignmentPresetDialog(QDialog):
         self.edt_name = QLineEdit()
         self.edt_name.setPlaceholderText("Exact view title (case-insensitive)")
         self.edt_name.setText(str(init.get("ref_name", "")))
+        # Pick-from-list shortcut — the typing-only field was annoying when
+        # the view's visible title has long project-specific prefixes or
+        # unicode decorations. Clicking "Pick…" pops a chooser that lists
+        # every open view (same iterator the headless resolver walks) and
+        # fills the field with the normalised base title on commit — so the
+        # text that lands in the preset is the one the resolver's exact
+        # match will succeed on first hop. Also auto-switches ref_mode to
+        # view_name so the user doesn't have to click the combo first.
+        self.btn_pick_view = QPushButton("Pick…")
+        self.btn_pick_view.setToolTip(
+            "Pick an open view by name. Fills the text field with the view's "
+            "title and sets the reference mode to 'view_name' automatically."
+        )
+        self.btn_pick_view.clicked.connect(self._pick_view)
 
         self.edt_file = QLineEdit()
         self.edt_file.setPlaceholderText("/absolute/path/to/reference.fits|fit|xisf|tif")
@@ -114,7 +148,15 @@ class StarAlignmentPresetDialog(QDialog):
 
         lay = QFormLayout(self)
         lay.addRow("Reference mode:", self.cmb_mode)
-        lay.addRow("View name (if view_name):", self.edt_name)
+        # View-name row: text field + "Pick…" button side by side. The HBox
+        # keeps them on a single QFormLayout row with the "View name" label
+        # on the left (unlike the file row's nested-QFormLayout trick, which
+        # splits label and widget onto two visual lines).
+        row_name = QWidget()
+        rn = QHBoxLayout(row_name); rn.setContentsMargins(0, 0, 0, 0); rn.setSpacing(6)
+        rn.addWidget(self.edt_name, 1)
+        rn.addWidget(self.btn_pick_view, 0)
+        lay.addRow("View name (if view_name):", row_name)
         rowf = QWidget(); rf = QFormLayout(rowf); rf.setContentsMargins(0,0,0,0)
         rf.addRow(self.edt_file, self.btn_browse)
         lay.addRow("File (if file):", rowf)
@@ -125,13 +167,101 @@ class StarAlignmentPresetDialog(QDialog):
         btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
         lay.addRow(btns)
 
-        # enable/disable inputs per mode
+        # enable/disable inputs per mode. Pick… stays enabled in every mode:
+        # clicking it is itself a declaration "I want a view", so it auto-
+        # switches ref_mode to view_name on commit — forcing the user to
+        # change the combo first would defeat the point of the shortcut.
         def _upd():
             m = self.cmb_mode.currentText()
             self.edt_name.setEnabled(m == "view_name")
             self.edt_file.setEnabled(m == "file")
             self.btn_browse.setEnabled(m == "file")
+            # self.btn_pick_view stays enabled — see docstring above.
         self.cmb_mode.currentTextChanged.connect(_upd); _upd()
+
+    # ------------------------------------------------------------------
+    # View picker
+    # ------------------------------------------------------------------
+    def _pick_view(self):
+        """
+        Pop a single-select chooser listing every open view and, on commit,
+        write its visible title (extension stripped) into ``edt_name`` and
+        switch ``cmb_mode`` to ``view_name``. Uses the SAME iterator the
+        headless resolver walks (``_iter_views_with_titles``) so a title
+        chosen here is guaranteed to be a title the resolver would also
+        match against — no "typed name doesn't match any view" surprises.
+        """
+        app = _find_main_window(self)
+        if app is None:
+            QMessageBox.information(
+                self, "Pick View",
+                "Cannot enumerate open views from here — the preset dialog "
+                "doesn't have a path to the main window.\n\n"
+                "Type the view's exact title in the field instead."
+            )
+            return
+
+        views = [(t, d) for (t, d, _sw) in _iter_views_with_titles(app)
+                 if d is not None and getattr(d, "image", None) is not None]
+        if not views:
+            QMessageBox.information(
+                self, "No Views",
+                "No open views have image data available to use as a reference.\n\n"
+                "Open an image first, then try again."
+            )
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Pick Reference View")
+        dlg.setMinimumWidth(380)
+        vb = QVBoxLayout(dlg)
+        vb.addWidget(QLabel(
+            "Select which open view should be the reference image:"
+        ))
+
+        lst = QListWidget(dlg)
+        lst.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Pre-select the view whose title best matches whatever's already in
+        # the text field, so re-opening the picker to tweak the pick doesn't
+        # drop the current selection.
+        current_norm = _norm_name(self.edt_name.text())
+        pre_row = 0
+        for i, (title, doc) in enumerate(views):
+            item = QListWidgetItem(title)
+            # Stash the raw title so commit uses the string the resolver
+            # will see — not whatever QListWidget's display formatting did.
+            item.setData(Qt.ItemDataRole.UserRole, title)
+            lst.addItem(item)
+            if current_norm and _norm_name(title) == current_norm:
+                pre_row = i
+        lst.setCurrentRow(pre_row)
+        vb.addWidget(lst)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dlg,
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        vb.addWidget(btns)
+        # Double-click = pick + OK, matches typical QListWidget UX.
+        lst.itemDoubleClicked.connect(lambda _: dlg.accept())
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        it = lst.currentItem()
+        if it is None:
+            return
+        title = str(it.data(Qt.ItemDataRole.UserRole) or it.text())
+        # Store the base (extension-stripped) title — matches how the
+        # headless resolver's _norm_name compares, and keeps the preset JSON
+        # human-readable.
+        self.edt_name.setText(os.path.splitext(title)[0])
+        # Auto-switch mode to view_name so the picked value actually gets
+        # consumed by the headless runner; without this a Pick-then-save
+        # would silently keep "active" mode and ignore the typed name.
+        self.cmb_mode.setCurrentText("view_name")
 
     def result_dict(self) -> dict:
         return {
