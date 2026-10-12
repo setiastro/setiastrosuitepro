@@ -36,7 +36,7 @@ from setiastro.saspro.bayer_utils import effective_bayer_from_header
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor, QPalette, QPainter, QPen, QTransform, QColor, QBrush, QCursor
-from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
+from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,QRadioButton,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
                              QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox, QFrame, QSplitter, QInputDialog)
@@ -6185,7 +6185,8 @@ class SplitPreviewWidget(QWidget):
 class SubRejectionDialog(QDialog):
     """
     Interactive sub-rejection review — one scatter plot of weighted frame
-    scores (sorted ascending) per filter, switched via a dropdown. Subs
+    scores (Simple) or a 2×3 grid of per-metric plots (Advanced), switched
+    with the Advanced ▸ / ◂ Simple toggle. Subs
     whose score falls below the draggable red threshold line are rejected
     (soft reject: weight = 0) in the subsequent integration pass.
 
@@ -6209,17 +6210,52 @@ class SubRejectionDialog(QDialog):
     flat list of files to zero out.
     """
 
-    def __init__(self, parent, groups: dict, sigma_k: float = 3.5):
+    # Metric specifications — single source of truth for the dialog's
+    # per-metric panels. Order drives the Advanced-mode grid layout; the
+    # 2×3 layout places entries 0..5 at (row, col) = (idx // 3, idx % 3).
+    #
+    #   key          — stable identifier used in state dicts
+    #   display_name — panel title (translated at render time)
+    #   higher_worse — True → threshold flags values ABOVE the line (FWHM,
+    #                   Ecc, Background, Noise). False → flags values BELOW
+    #                   (Star Count, Weighted Score).
+    #   default      — "sigma": seed the line at median − k·σ (Score only).
+    #                 float frac: seed the line at (max/min) ± frac·span so
+    #                 nothing is rejected on open (user has to drag to flag).
+    _METRIC_SPECS = (
+        ("fwhm",  "FWHM (px)",       True,  0.05),
+        ("ecc",   "Eccentricity",    True,  0.05),
+        ("bg",    "Background",      True,  0.05),
+        ("count", "Star Count",      False, 0.05),
+        ("noise", "Noise",           True,  0.05),
+        ("score", "Weighted Score",  False, "sigma"),
+    )
+
+    def __init__(self, parent, groups: dict, metrics_data: dict = None,
+                 sigma_k: float = 3.5, start_in_advanced: bool = False):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Review Subs — Interactive Rejection"))
-        self.resize(900, 680)
 
         import numpy as _np
 
         self._sigma_k = float(sigma_k)
 
-        # Build per-filter cache. Groups passed in should already have
-        # passed the N≥10 / σ≥floor guards upstream; we don't re-filter.
+        # Advanced mode is only offered when the caller passed per-metric
+        # data for every filter AND every expected metric (fwhm, ecc, bg,
+        # count, noise). Partial data would make the toggle enabled but
+        # some panels empty, which is worse than hiding the toggle.
+        required_metrics = tuple(k for k, _n, _hw, _d in self._METRIC_SPECS
+                                  if k != "score")
+        self._has_advanced = bool(metrics_data) and all(
+            all(k in (metrics_data.get(fname) or {}) for k in required_metrics)
+            for fname in groups
+        )
+
+        # Build the per-filter cache. For every metric the dialog knows
+        # about we precompute: values array, sort order (ascending), robust
+        # median + σ, and the "default" threshold (sigma-seeded for Score,
+        # park-above-max / park-below-min for everything else). The user's
+        # live-adjusted threshold lives alongside in ``thresholds[key]``.
         self._per_filter: dict = {}
         for fname, scores_map in (groups or {}).items():
             if not scores_map:
@@ -6228,26 +6264,74 @@ class SubRejectionDialog(QDialog):
             scores = _np.asarray(
                 [float(scores_map[fp]) for fp in fps], dtype=_np.float32
             )
+            entry: dict = {"fps": fps, "metrics": {}, "thresholds": {}}
+
+            # ── Weighted Score (always present) ─────────────────────────
             med, sig = self._robust_stats(scores)
             if _np.isfinite(med) and _np.isfinite(sig) and sig > 0:
-                default_th = float(med - self._sigma_k * sig)
+                default_score_th = float(med - self._sigma_k * sig)
             else:
-                default_th = float(_np.nanmin(scores)) - 1e-6
-            order = _np.argsort(scores, kind="stable")
-            self._per_filter[str(fname)] = {
-                "fps":        fps,
-                "scores":     scores,
-                "order":      order,
+                default_score_th = float(_np.nanmin(scores)) - 1e-6
+            entry["metrics"]["score"] = {
+                "values":     scores,
+                "order":      _np.argsort(scores, kind="stable"),
                 "med":        med,
                 "sig":        sig,
-                "default_th": default_th,
-                "threshold":  default_th,   # user-adjusted; preserved as they switch
+                "default_th": default_score_th,
             }
+            entry["thresholds"]["score"] = default_score_th
 
-        # Stable display order (alphabetic) — users scanning a mixed stack
-        # expect filter dropdowns to be ordered the same way every time.
+            # ── Other metrics for Advanced mode (optional) ─────────────
+            if self._has_advanced:
+                mdata = (metrics_data or {}).get(fname) or {}
+                for mk, _display, higher_worse, dflt in self._METRIC_SPECS:
+                    if mk == "score":
+                        continue
+                    values_map = mdata.get(mk) or {}
+                    vals = _np.asarray(
+                        [float(values_map.get(fp, _np.nan)) for fp in fps],
+                        dtype=_np.float32,
+                    )
+                    order = _np.argsort(vals, kind="stable")
+                    m_med, m_sig = self._robust_stats(vals)
+                    finite = vals[_np.isfinite(vals)]
+                    if finite.size:
+                        vmin = float(finite.min())
+                        vmax = float(finite.max())
+                        span = (vmax - vmin) if vmax > vmin else 1.0
+                        default_th = (
+                            vmax + float(dflt) * span
+                            if higher_worse
+                            else vmin - float(dflt) * span
+                        )
+                    else:
+                        default_th = 0.0
+                    entry["metrics"][mk] = {
+                        "values":     vals,
+                        "order":      order,
+                        "med":        m_med,
+                        "sig":        m_sig,
+                        "default_th": default_th,
+                    }
+                    entry["thresholds"][mk] = default_th
+
+            self._per_filter[str(fname)] = entry
+
         self._filter_names = sorted(self._per_filter.keys())
         self._current_filter = self._filter_names[0] if self._filter_names else None
+
+        # Mode: "simple" (one Weighted Score plot) or "advanced" (2×3 grid).
+        self._mode = "advanced" if (self._has_advanced and start_in_advanced) else "simple"
+
+        # Live widget registries — repopulated on every filter/mode render.
+        # Keyed by metric key: PlotWidget, ScatterPlotItem, and the movable
+        # threshold InfiniteLine.
+        self._active_plots: dict = {}
+        self._active_scatters: dict = {}
+        self._active_lines: dict = {}
+
+        # Resize now that we know whether Advanced is available.
+        self.resize(1080, 760 if self._has_advanced else 680)
 
         self._build_ui()
         if self._current_filter:
@@ -6258,8 +6342,9 @@ class SubRejectionDialog(QDialog):
     # ──────────────────────────────────────────────────────────────────
     def _build_ui(self):
         v = QVBoxLayout(self)
+        self._v = v   # kept for replaceWidget on filter/mode changes
 
-        # Filter dropdown — label + combo
+        # Filter dropdown
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel(self.tr("Filter:")))
         self._filter_combo = QComboBox()
@@ -6274,51 +6359,38 @@ class SubRejectionDialog(QDialog):
         filter_row.addStretch(1)
         v.addLayout(filter_row)
 
-        instr = QLabel(self.tr(
-            "Each dot is one sub in the selected filter (x-axis = rank, "
-            "lowest-scored on the left). Drag the solid red line to set a "
-            "rejection threshold — subs below the line are excluded from the "
-            "integration (weight = 0, file untouched on disk). Thresholds are "
-            "remembered per filter; switch filters in the dropdown above. "
-            "The dashed guides are the median and ±1σ / ±2σ / ±3σ (robust MAD). "
-            "Click a dot to see which sub it is."
-        ))
-        instr.setWordWrap(True)
-        v.addWidget(instr)
+        # Instructions (text swapped per mode)
+        self._instr_label = QLabel()
+        self._instr_label.setWordWrap(True)
+        v.addWidget(self._instr_label)
 
+        # Status
         self.status_label = QLabel()
         self.status_label.setStyleSheet("font-weight: bold;")
         v.addWidget(self.status_label)
 
-        self.plot = pg.PlotWidget()
-        self.plot.setTitle(self.tr("Weighted Score (sorted)"))
-        self.plot.setLabel("left", self.tr("Score"))
-        self.plot.setLabel("bottom", self.tr("Sub (ascending by score)"))
-        self.plot.showGrid(x=True, y=True, alpha=0.3)
-        self.plot.getPlotItem().getViewBox().setBackgroundColor(
-            self.palette().color(self.backgroundRole())
-        )
-        v.addWidget(self.plot, 1)
+        # Plot area — a placeholder widget we .replaceWidget on each
+        # filter / mode change. Keeps layout logic trivial (no clearing
+        # nested layouts) and gives pyqtgraph a clean slate every time.
+        self._plot_area = QWidget()
+        v.addWidget(self._plot_area, 1)
 
         # Button row
         btn_row = QHBoxLayout()
-        reset_btn = QPushButton(self.tr("Reset to Default"))
-        reset_btn.setToolTip(self.tr(
-            "Return THIS filter's threshold to median − k·σ (k from settings)."
-        ))
-        reset_btn.clicked.connect(self._reset_threshold)
-        btn_row.addWidget(reset_btn)
+        self._reset_btn = QPushButton()
+        self._reset_btn.clicked.connect(self._reset_threshold)
+        btn_row.addWidget(self._reset_btn)
 
-        floor_btn = QPushButton(self.tr("Keep All (this filter)"))
-        floor_btn.setToolTip(self.tr(
-            "Park THIS filter's threshold below its lowest score so nothing "
-            "is rejected in this filter. Other filters' thresholds are "
-            "unaffected. Pressing Cancel keeps all subs across every filter."
-        ))
-        floor_btn.clicked.connect(self._park_below_min)
-        btn_row.addWidget(floor_btn)
+        self._keepall_btn = QPushButton()
+        self._keepall_btn.clicked.connect(self._park_below_min)
+        btn_row.addWidget(self._keepall_btn)
 
         btn_row.addStretch(1)
+
+        if self._has_advanced:
+            self._mode_btn = QPushButton()
+            self._mode_btn.clicked.connect(self._toggle_mode)
+            btn_row.addWidget(self._mode_btn)
 
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -6329,20 +6401,83 @@ class SubRejectionDialog(QDialog):
         btn_row.addWidget(bb)
         v.addLayout(btn_row)
 
+        self._update_mode_chrome()
+
+    def _update_mode_chrome(self):
+        """Refresh the instructions + button labels for the current mode."""
+        if self._mode == "simple":
+            self._instr_label.setText(self.tr(
+                "Each dot is one sub in the selected filter (x-axis = rank, "
+                "lowest-scored on the left). Drag the solid red line to set a "
+                "rejection threshold — subs below the line are excluded from "
+                "the integration (weight = 0, file untouched on disk). The "
+                "dashed guides are the median and ±1σ / ±2σ / ±3σ (robust MAD). "
+                "Thresholds are remembered per filter; switch filters in the "
+                "dropdown above. Click a dot to see which sub it is."
+            ))
+            self._reset_btn.setText(self.tr("Reset to Default"))
+            self._reset_btn.setToolTip(self.tr(
+                "Return THIS filter's Weighted-Score threshold to median − k·σ."
+            ))
+            self._keepall_btn.setText(self.tr("Keep All (this filter)"))
+            self._keepall_btn.setToolTip(self.tr(
+                "Park THIS filter's threshold below its lowest score so nothing "
+                "is rejected in this filter."
+            ))
+            if hasattr(self, "_mode_btn"):
+                self._mode_btn.setText(self.tr("Advanced ▸"))
+                self._mode_btn.setToolTip(self.tr(
+                    "Switch to the 2×3 grid showing FWHM, Eccentricity, "
+                    "Background, Star Count, Noise, and Weighted Score. "
+                    "Each panel gets its own draggable threshold — a sub is "
+                    "rejected if it fails ANY panel's threshold."
+                ))
+        else:
+            self._instr_label.setText(self.tr(
+                "Six scatter plots per filter: FWHM, Eccentricity, Background, "
+                "Star Count, Noise, and Weighted Score. Each panel's dots are "
+                "sorted by THAT panel's metric and get their own draggable red "
+                "threshold line. A sub is rejected if it crosses the threshold "
+                "on ANY panel (OR). Rejected subs show red on every panel so "
+                "you can trace WHY. Click a dot for its full metric read-out."
+            ))
+            self._reset_btn.setText(self.tr("Reset All (this filter)"))
+            self._reset_btn.setToolTip(self.tr(
+                "Return THIS filter's thresholds on EVERY panel to their "
+                "defaults — Score at median − k·σ, every other metric parked "
+                "so nothing is rejected on that metric."
+            ))
+            self._keepall_btn.setText(self.tr("Keep All (this filter)"))
+            self._keepall_btn.setToolTip(self.tr(
+                "Park every panel's threshold out of reach so nothing is "
+                "rejected in this filter."
+            ))
+            if hasattr(self, "_mode_btn"):
+                self._mode_btn.setText(self.tr("◂ Simple"))
+                self._mode_btn.setToolTip(self.tr(
+                    "Return to the single Weighted Score plot. Other panels' "
+                    "thresholds are remembered but do not contribute to "
+                    "rejection while in Simple mode."
+                ))
+
     # ──────────────────────────────────────────────────────────────────
-    # Filter switching
+    # Filter + mode switching
     # ──────────────────────────────────────────────────────────────────
-    def _on_filter_changed(self, idx: int):
-        # Commit the current filter's threshold before swapping, so the
-        # user doesn't lose their drag just because they clicked away.
-        if self._current_filter and hasattr(self, "_thresh_line"):
+    def _snapshot_live_thresholds(self):
+        """Copy every active threshold line's current position back into
+        ``_per_filter[current]['thresholds']``. Called on every filter
+        change, mode toggle, and before producing ``rejected_paths()``."""
+        if not self._current_filter:
+            return
+        thresholds = self._per_filter[self._current_filter]["thresholds"]
+        for mk, ln in list(self._active_lines.items()):
             try:
-                self._per_filter[self._current_filter]["threshold"] = float(
-                    self._thresh_line.value()
-                )
+                thresholds[mk] = float(ln.value())
             except Exception:
                 pass
 
+    def _on_filter_changed(self, idx: int):
+        self._snapshot_live_thresholds()
         if idx < 0:
             return
         new_filter = self._filter_combo.itemData(idx)
@@ -6350,28 +6485,106 @@ class SubRejectionDialog(QDialog):
             self._current_filter = str(new_filter)
             self._load_filter(self._current_filter)
 
+    def _toggle_mode(self):
+        if not self._has_advanced:
+            return
+        self._snapshot_live_thresholds()
+        self._mode = "advanced" if self._mode == "simple" else "simple"
+        self._update_mode_chrome()
+        if self._current_filter:
+            self._load_filter(self._current_filter)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Rendering
+    # ──────────────────────────────────────────────────────────────────
     def _load_filter(self, fname: str):
-        """Swap the plot to show this filter. pyqtgraph makes rebuilding
-        the items simpler than mutating in place (sigma guide count, line
-        positions, and scatter length all change filter-to-filter)."""
+        """Build a fresh plot-area widget for this filter + current mode
+        and swap it into the main layout."""
+        self._active_plots.clear()
+        self._active_scatters.clear()
+        self._active_lines.clear()
+
+        new_area = self._render_simple(fname) if self._mode == "simple" \
+                   else self._render_advanced(fname)
+
+        self._v.replaceWidget(self._plot_area, new_area)
+        self._plot_area.setParent(None)
+        self._plot_area.deleteLater()
+        self._plot_area = new_area
+        self._refresh_colors()
+
+    def _render_simple(self, fname: str) -> QWidget:
+        """Single Weighted Score plot — the classic one-metric view."""
+        area = QWidget()
+        inner = QVBoxLayout(area)
+        inner.setContentsMargins(0, 0, 0, 0)
+        plot = self._build_metric_panel(fname, "score", short_title=False)
+        inner.addWidget(plot)
+        return area
+
+    def _render_advanced(self, fname: str) -> QWidget:
+        """2×3 grid: FWHM | Ecc | Bg / Count | Noise | Score."""
+        area = QWidget()
+        grid = QGridLayout(area)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+        for idx, (mk, _display, _hw, _d) in enumerate(self._METRIC_SPECS):
+            r, c = idx // 3, idx % 3
+            grid.addWidget(self._build_metric_panel(fname, mk, short_title=True), r, c)
+        # Even stretch so panels resize together
+        for c in range(3): grid.setColumnStretch(c, 1)
+        for r in range(2): grid.setRowStretch(r, 1)
+        return area
+
+    def _build_metric_panel(self, fname: str, mk: str,
+                            short_title: bool = False) -> pg.PlotWidget:
+        """One scatter plot (dots sorted by this metric's value ascending)
+        with median + ±1σ/±2σ/±3σ dashed guides and a draggable red
+        threshold line. Registers itself in ``_active_*`` so refresh and
+        snapshot can find it."""
         import numpy as _np
 
-        self.plot.clear()
         data = self._per_filter[fname]
-        scores = data["scores"]; order = data["order"]
-        med = data["med"]; sig = data["sig"]; th = data["threshold"]
+        if mk not in data["metrics"]:
+            return pg.PlotWidget()      # defensive — nothing to show
 
-        y = scores[order]
+        m = data["metrics"][mk]
+        values = m["values"]; order = m["order"]
+        med = m["med"]; sig = m["sig"]
+        th = data["thresholds"].get(mk, m["default_th"])
+
+        spec = next((s for s in self._METRIC_SPECS if s[0] == mk), None)
+        display = spec[1] if spec else mk
+        higher_worse = spec[2] if spec else False
+
+        plot = pg.PlotWidget()
+        title = display if short_title else (
+            self.tr("{0} (sorted)").format(display)
+        )
+        plot.setTitle(title)
+        plot.setLabel("left", display)
+        plot.setLabel("bottom",
+                      self.tr("Sub") if short_title
+                      else self.tr("Sub (ascending)"))
+        plot.showGrid(x=True, y=True, alpha=0.3)
+        plot.getPlotItem().getViewBox().setBackgroundColor(
+            self.palette().color(self.backgroundRole())
+        )
+
+        y = values[order]
         x = _np.arange(len(y), dtype=_np.float32)
 
-        self._scat = pg.ScatterPlotItem(
+        scat = pg.ScatterPlotItem(
             pen=pg.mkPen(None),
             brush=pg.mkBrush(100, 100, 255, 200),
-            size=8,
+            size=7 if short_title else 8,
         )
-        self._scat.setData(x=x, y=y)
-        self._scat.sigClicked.connect(self._on_point_click)
-        self.plot.addItem(self._scat)
+        scat.setData(x=x, y=y)
+        scat.sigClicked.connect(
+            lambda _p, pts, _mk=mk: self._on_point_click(_mk, pts)
+        )
+        plot.addItem(scat)
 
         if _np.isfinite(med):
             med_line = pg.InfiniteLine(
@@ -6380,7 +6593,7 @@ class SubRejectionDialog(QDialog):
                              style=Qt.PenStyle.DashLine),
             )
             med_line.setZValue(-10)
-            self.plot.addItem(med_line)
+            plot.addItem(med_line)
 
         if _np.isfinite(sig) and sig > 0:
             for k, color in ((1, (255, 220,  50, 120)),
@@ -6388,138 +6601,283 @@ class SubRejectionDialog(QDialog):
                              (3, (220,  50,  50, 120))):
                 for sign in (-1, +1):
                     ln = pg.InfiniteLine(
-                        pos=med + sign * k * sig,
-                        angle=0, movable=False,
+                        pos=med + sign * k * sig, angle=0, movable=False,
                         pen=pg.mkPen(color, width=1,
                                      style=Qt.PenStyle.DashLine),
                     )
                     ln.setZValue(-10)
-                    self.plot.addItem(ln)
+                    plot.addItem(ln)
 
-        self._thresh_line = pg.InfiniteLine(
+        thresh_line = pg.InfiniteLine(
             pos=th, angle=0, movable=True,
             pen=pg.mkPen((235, 60, 60, 230), width=2),
         )
-        self._thresh_line.sigPositionChanged.connect(self._refresh_colors)
-        self.plot.addItem(self._thresh_line)
+        thresh_line.sigPositionChanged.connect(self._refresh_colors)
+        plot.addItem(thresh_line)
 
-        if len(y):
-            vb = self.plot.getPlotItem().getViewBox()
-            span = float(y.max() - y.min()) if y.max() > y.min() else 1.0
-            vb.setYRange(float(y.min()) - 0.1 * span,
-                         float(y.max()) + 0.1 * span)
+        # Fit view with padding so default-position lines don't sit flush
+        finite_y = y[_np.isfinite(y)]
+        if finite_y.size:
+            vmin = float(finite_y.min())
+            vmax = float(finite_y.max())
+            span = (vmax - vmin) if vmax > vmin else 1.0
+            # Include the threshold position so the user can SEE where it's
+            # parked (otherwise a default-parked line can be off-screen).
+            lo = min(vmin, float(th)) - 0.1 * span
+            hi = max(vmax, float(th)) + 0.1 * span
+            plot.getPlotItem().getViewBox().setYRange(lo, hi)
 
-        self._refresh_colors()
+        self._active_plots[mk] = plot
+        self._active_scatters[mk] = scat
+        self._active_lines[mk] = thresh_line
+        return plot
 
     # ──────────────────────────────────────────────────────────────────
     # Live updates
     # ──────────────────────────────────────────────────────────────────
+    def _rejected_mask_for(self, fname: str, use_live_for_current: bool = True):
+        """Boolean mask over this filter's fps: True ⇔ sub would be
+        rejected by the CURRENT thresholds. In Simple mode only Score
+        counts; in Advanced mode every metric's threshold contributes
+        (OR). ``use_live_for_current`` reads from the active InfiniteLine
+        for the currently-displayed filter (so a live drag updates the
+        count without clicking away first); any other filter reads from
+        saved thresholds."""
+        import numpy as _np
+        data = self._per_filter[fname]
+        n = len(data["fps"])
+        mask = _np.zeros(n, dtype=bool)
+
+        is_current = (fname == self._current_filter)
+        active_metrics = ("score",) if self._mode == "simple" else \
+                         tuple(s[0] for s in self._METRIC_SPECS
+                               if s[0] in data["metrics"])
+
+        for mk in active_metrics:
+            spec = next((s for s in self._METRIC_SPECS if s[0] == mk), None)
+            if spec is None:
+                continue
+            higher_worse = spec[2]
+            if is_current and use_live_for_current and mk in self._active_lines:
+                try:
+                    th = float(self._active_lines[mk].value())
+                except Exception:
+                    th = data["thresholds"].get(mk, data["metrics"][mk]["default_th"])
+            else:
+                th = data["thresholds"].get(mk, data["metrics"][mk]["default_th"])
+            values = data["metrics"][mk]["values"]
+            if higher_worse:
+                mask |= (values > th)
+            else:
+                mask |= (values < th)
+        return mask
+
     def _refresh_colors(self):
+        """Repaint dots across every active panel using the overall-
+        rejected mask (so a sub is red on every panel if it's rejected
+        on any), and update the status line."""
         import numpy as _np
         if not self._current_filter:
             return
         data = self._per_filter[self._current_filter]
-        y = data["scores"][data["order"]]
-        x = _np.arange(len(y), dtype=_np.float32)
-        th = float(self._thresh_line.value())
+        mask = self._rejected_mask_for(self._current_filter)
+
         rej_brush = pg.mkBrush(235, 60, 60, 220)
         keep_brush = pg.mkBrush(100, 100, 255, 200)
-        brushes = [rej_brush if yi < th else keep_brush for yi in y]
-        self._scat.setData(x=x, y=y, brush=brushes)
 
-        med = data["med"]; sig = data["sig"]
-        n_rej_this = int(_np.sum(y < th))
-        n_tot_this = int(len(y))
+        for mk, scat in self._active_scatters.items():
+            m = data["metrics"][mk]
+            values = m["values"]; order = m["order"]
+            y = values[order]
+            x = _np.arange(len(y), dtype=_np.float32)
+            brushes = [
+                rej_brush if bool(mask[int(gi)]) else keep_brush
+                for gi in order
+            ]
+            scat.setData(x=x, y=y, brush=brushes)
 
-        # Cross-filter running totals (use the live threshold for the
-        # current filter, the saved threshold for all other filters).
+        # Status: this-filter + cross-filter totals.
+        n_rej_this = int(mask.sum())
+        n_tot_this = int(len(mask))
+
         total_rej = 0
         total_subs = 0
-        for fname, d in self._per_filter.items():
-            fth = th if fname == self._current_filter else d["threshold"]
-            total_rej += int(_np.sum(d["scores"] < fth))
-            total_subs += len(d["fps"])
+        for fname in self._per_filter:
+            total_rej += int(self._rejected_mask_for(fname).sum())
+            total_subs += len(self._per_filter[fname]["fps"])
 
-        if _np.isfinite(sig) and sig > 1e-12:
-            dev_sigmas = (med - th) / sig
-            sigma_note = self.tr(" — threshold at median − {0:.2f}σ").format(dev_sigmas)
+        if self._mode == "simple":
+            score_m = data["metrics"]["score"]
+            med = score_m["med"]; sig = score_m["sig"]
+            th = float(self._active_lines["score"].value()) \
+                 if "score" in self._active_lines \
+                 else data["thresholds"]["score"]
+            if _np.isfinite(sig) and sig > 1e-12:
+                sigma_note = self.tr(" — threshold at median − {0:.2f}σ").format(
+                    (med - th) / sig
+                )
+            else:
+                sigma_note = ""
+            self.status_label.setText(self.tr(
+                "[{0}] Rejecting {1} / {2} subs (threshold = {3:.4f}, "
+                "median = {4:.4f}, robust σ = {5:.4f}){6}\n"
+                "All filters: {7} / {8} subs rejected"
+            ).format(self._current_filter, n_rej_this, n_tot_this, th, med, sig,
+                     sigma_note, total_rej, total_subs))
         else:
-            sigma_note = ""
-        self.status_label.setText(self.tr(
-            "[{0}] Rejecting {1} / {2} subs (threshold = {3:.4f}, "
-            "median = {4:.4f}, robust σ = {5:.4f}){6}\n"
-            "All filters: {7} / {8} subs rejected"
-        ).format(self._current_filter, n_rej_this, n_tot_this, th, med, sig,
-                 sigma_note, total_rej, total_subs))
+            # Advanced: break down by metric so the user can see which
+            # dimension is doing the work.
+            parts = []
+            for mk, _display, higher_worse, _d in self._METRIC_SPECS:
+                if mk not in data["metrics"]:
+                    continue
+                if mk in self._active_lines:
+                    th = float(self._active_lines[mk].value())
+                else:
+                    th = data["thresholds"].get(mk, data["metrics"][mk]["default_th"])
+                values = data["metrics"][mk]["values"]
+                n_m = int(((values > th) if higher_worse else (values < th)).sum())
+                parts.append(self.tr("{0}: {1}").format(mk, n_m))
+            per_metric = "  ·  ".join(parts)
+            self.status_label.setText(self.tr(
+                "[{0}] Rejecting {1} / {2} subs (OR across metrics)  "
+                "— {3}\nAll filters: {4} / {5} subs rejected"
+            ).format(self._current_filter, n_rej_this, n_tot_this,
+                     per_metric, total_rej, total_subs))
 
+    # ──────────────────────────────────────────────────────────────────
+    # Buttons
+    # ──────────────────────────────────────────────────────────────────
     def _reset_threshold(self):
+        """Reset-to-default — in Simple mode resets only Score; in
+        Advanced mode resets every metric this filter has."""
         if not self._current_filter:
             return
-        self._thresh_line.setPos(self._per_filter[self._current_filter]["default_th"])
+        data = self._per_filter[self._current_filter]
+        targets = ("score",) if self._mode == "simple" else \
+                  tuple(s[0] for s in self._METRIC_SPECS
+                        if s[0] in self._active_lines)
+        for mk in targets:
+            ln = self._active_lines.get(mk)
+            if ln is None:
+                continue
+            m = data["metrics"][mk]
+            try:
+                ln.setPos(float(m["default_th"]))
+            except Exception:
+                pass
+        self._refresh_colors()
 
     def _park_below_min(self):
+        """Keep-all — park every active threshold so this filter rejects
+        nothing. For a lower-worse metric that means "below min"; for a
+        higher-worse metric, "above max"."""
         import numpy as _np
         if not self._current_filter:
             return
         data = self._per_filter[self._current_filter]
-        self._thresh_line.setPos(float(_np.nanmin(data["scores"])) - 1e-6)
+        for mk, ln in self._active_lines.items():
+            spec = next((s for s in self._METRIC_SPECS if s[0] == mk), None)
+            if spec is None:
+                continue
+            higher_worse = spec[2]
+            values = data["metrics"][mk]["values"]
+            finite = values[_np.isfinite(values)]
+            if not finite.size:
+                continue
+            vmin, vmax = float(finite.min()), float(finite.max())
+            span = (vmax - vmin) if vmax > vmin else 1.0
+            new_pos = (vmax + 0.05 * span) if higher_worse else (vmin - 0.05 * span)
+            try:
+                ln.setPos(float(new_pos))
+            except Exception:
+                pass
+        self._refresh_colors()
 
-    def _on_point_click(self, _plot, points):
+    # ──────────────────────────────────────────────────────────────────
+    # Dot-click info popup
+    # ──────────────────────────────────────────────────────────────────
+    def _on_point_click(self, metric_key: str, points):
         import os as _os
         if not self._current_filter:
             return
         data = self._per_filter[self._current_filter]
+        if metric_key not in data["metrics"]:
+            return
+        order = data["metrics"][metric_key]["order"]
         for pt in points:
             li = int(round(pt.pos().x()))
-            if 0 <= li < len(data["order"]):
-                gi = int(data["order"][li])
-                fp = data["fps"][gi]
-                score = float(data["scores"][gi])
-                th = float(self._thresh_line.value())
-                verdict = (self.tr("REJECTED") if score < th else self.tr("KEPT"))
-                QMessageBox.information(
-                    self,
-                    self.tr("Sub info"),
-                    self.tr(
-                        "{0}\nFilter: {1}\nScore: {2:.4f}\nStatus at current "
-                        "threshold: {3}"
-                    ).format(
-                        _os.path.basename(fp), self._current_filter, score, verdict
-                    ),
-                )
+            if not (0 <= li < len(order)):
+                continue
+            gi = int(order[li])
+            fp = data["fps"][gi]
+            overall_mask = self._rejected_mask_for(self._current_filter)
+            overall_rej = bool(overall_mask[gi])
+
+            # Per-metric read-out (same lines in both modes; just more
+            # metrics in Advanced since more are populated).
+            lines = [self.tr("{0}").format(_os.path.basename(fp)),
+                     self.tr("Filter: {0}").format(self._current_filter)]
+            for mk, display, higher_worse, _d in self._METRIC_SPECS:
+                if mk not in data["metrics"]:
+                    continue
+                m = data["metrics"][mk]
+                v = float(m["values"][gi])
+                if mk in self._active_lines:
+                    th = float(self._active_lines[mk].value())
+                else:
+                    th = data["thresholds"].get(mk, m["default_th"])
+                cuts = (v > th) if higher_worse else (v < th)
+                flag = "✕" if cuts else "·"
+                lines.append(self.tr(
+                    "  {0}  {1} = {2:.4f}  (threshold {3:.4f})"
+                ).format(flag, display, v, th))
+            lines.append("")
+            lines.append(self.tr("Overall: {0}").format(
+                self.tr("REJECTED") if overall_rej else self.tr("KEPT")
+            ))
+            QMessageBox.information(
+                self, self.tr("Sub info"), "\n".join(lines)
+            )
+            return   # one popup per click, even if multiple dots coincide
 
     # ──────────────────────────────────────────────────────────────────
     # Public API
     # ──────────────────────────────────────────────────────────────────
     def rejected_paths(self) -> list:
-        """Flat list of filepaths below each filter's current threshold.
-        Commits the current filter's threshold first so a live drag
-        doesn't go uncounted when the user presses Apply without
-        switching filters."""
-        if self._current_filter and hasattr(self, "_thresh_line"):
-            try:
-                self._per_filter[self._current_filter]["threshold"] = float(
-                    self._thresh_line.value()
-                )
-            except Exception:
-                pass
+        """Flat list of filepaths rejected across every filter. Commits
+        the live thresholds first so a drag the user never 'confirmed'
+        by clicking off still counts when they press Apply."""
+        self._snapshot_live_thresholds()
         result = []
-        for data in self._per_filter.values():
-            th = data["threshold"]
-            for fp, s in zip(data["fps"], data["scores"]):
-                if float(s) < th:
+        for fname in self._per_filter:
+            mask = self._rejected_mask_for(fname, use_live_for_current=False)
+            fps = self._per_filter[fname]["fps"]
+            for i, fp in enumerate(fps):
+                if bool(mask[i]):
                     result.append(fp)
         return result
 
-    def threshold(self, filter_name: str = None) -> float:
-        """Current threshold for the named filter (or the one being viewed)."""
+    def threshold(self, filter_name: str = None,
+                  metric_key: str = "score") -> float:
+        """Current threshold for (filter, metric). Defaults to the active
+        filter's Weighted-Score threshold (used by auto-path logging)."""
         if filter_name is None:
             filter_name = self._current_filter
-        if filter_name in self._per_filter:
-            if filter_name == self._current_filter and hasattr(self, "_thresh_line"):
-                return float(self._thresh_line.value())
-            return float(self._per_filter[filter_name]["threshold"])
-        return 0.0
+        if filter_name not in self._per_filter:
+            return 0.0
+        data = self._per_filter[filter_name]
+        if (filter_name == self._current_filter
+                and metric_key in self._active_lines):
+            try:
+                return float(self._active_lines[metric_key].value())
+            except Exception:
+                pass
+        return float(data["thresholds"].get(metric_key, 0.0))
+
+    def mode(self) -> str:
+        """``"simple"`` or ``"advanced"`` — the dialog's current view."""
+        return self._mode
 
     # ──────────────────────────────────────────────────────────────────
     # Robust stats (same formulation as the auto-reject code path)
@@ -9775,6 +10133,19 @@ class StackingSuiteDialog(QDialog):
             self.settings.value("stacking/reject_outliers_interactive", False, type=bool)
         )
         reject_row.addWidget(self.reject_outliers_interactive_cb)
+
+        self.reject_outliers_advanced_cb = QCheckBox(self.tr("Start review in Advanced mode"))
+        self.reject_outliers_advanced_cb.setToolTip(self.tr(
+            "When on, the interactive-review dialog opens in Advanced mode —\n"
+            "the 2×3 grid of FWHM, Eccentricity, Background, Star Count,\n"
+            "Noise, and Weighted Score. Toggle inside the dialog switches back\n"
+            "and forth; the setting is updated to match the view you last used."
+        ))
+        self.reject_outliers_advanced_cb.setChecked(
+            self.settings.value("stacking/reject_outliers_advanced", False, type=bool)
+        )
+        reject_row.addWidget(self.reject_outliers_advanced_cb)
+
         reject_row.addStretch(1)
         rej_layout.addLayout(reject_row)
 
@@ -10129,6 +10500,11 @@ class StackingSuiteDialog(QDialog):
             self.settings.setValue(
                 "stacking/reject_outliers_interactive",
                 bool(self.reject_outliers_interactive_cb.isChecked()),
+            )
+        if hasattr(self, "reject_outliers_advanced_cb"):
+            self.settings.setValue(
+                "stacking/reject_outliers_advanced",
+                bool(self.reject_outliers_advanced_cb.isChecked()),
             )
 
         self.settings.setValue("stacking/kappa",                self.kappa)
@@ -13457,7 +13833,13 @@ class StackingSuiteDialog(QDialog):
         self.reject_interactive_cb.setChecked(
             self.settings.value("stacking/reject_outliers_interactive", False, type=bool)
         )
-        # Not sticky — just a per-run flag, same as Interactive Flat.
+        # Persist toggles immediately so this checkbox survives a tab reopen,
+        # same pattern as the Interactive Flat checkbox on the lights tab.
+        # Writes to the same QSettings key the stacking-settings dialog
+        # reads/writes, so the two touchpoints always agree.
+        self.reject_interactive_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/reject_outliers_interactive", bool(v))
+        )
         output_opts_row.addWidget(self.reject_interactive_cb)
 
         output_opts_row.addStretch(1)
@@ -22779,7 +23161,9 @@ class StackingSuiteDialog(QDialog):
             groups.setdefault(fname, []).append(fp)
         return groups
 
-    def _apply_sub_rejection(self, measured_frames: list) -> int:
+    def _apply_sub_rejection(self, measured_frames: list,
+                             star_counts: dict = None,
+                             preview_medians: dict = None) -> int:
         """Score-outlier rejection applied in-place to ``self.frame_weights``.
 
         Runs PER FILTER: an OIII group almost always scores lower than an
@@ -22883,16 +23267,65 @@ class StackingSuiteDialog(QDialog):
         per_filter_threshold: dict = {}
 
         if interactive:
-            dlg = SubRejectionDialog(self, candidate_groups, sigma_k=sigma_k)
+            # Build per-filter per-metric data for the Advanced view. Each
+            # metric maps to a {fp: value} dict that mirrors the Score dict
+            # the dialog already consumes. If any required bit is missing
+            # we just drop the metric for that filter — the dialog hides
+            # Advanced mode when ANY filter is incomplete.
+            metrics_data = None
+            if star_counts is not None and preview_medians is not None:
+                metrics_data = {}
+                for fname, scores_map in candidate_groups.items():
+                    mdict: dict = {}
+                    fwhm_d, ecc_d, bg_d, count_d, noise_d = {}, {}, {}, {}, {}
+                    import math as _math
+                    for fp in scores_map:
+                        info = (star_counts or {}).get(fp) or {}
+                        try: fwhm_d[fp]  = float(info.get("fwhm", _math.nan))
+                        except Exception: fwhm_d[fp] = float("nan")
+                        try: ecc_d[fp]   = float(info.get("eccentricity", _math.nan))
+                        except Exception: ecc_d[fp] = float("nan")
+                        try: count_d[fp] = float(info.get("count", _math.nan))
+                        except Exception: count_d[fp] = float("nan")
+                        n = info.get("noise", None)
+                        try: noise_d[fp] = float(n) if n is not None else float("nan")
+                        except Exception: noise_d[fp] = float("nan")
+                        try: bg_d[fp]    = float((preview_medians or {}).get(fp, _math.nan))
+                        except Exception: bg_d[fp] = float("nan")
+                    mdict["fwhm"]  = fwhm_d
+                    mdict["ecc"]   = ecc_d
+                    mdict["bg"]    = bg_d
+                    mdict["count"] = count_d
+                    mdict["noise"] = noise_d
+                    metrics_data[fname] = mdict
+
+            start_adv = bool(self.settings.value(
+                "stacking/reject_outliers_advanced", False, type=bool
+            ))
+            dlg = SubRejectionDialog(
+                self, candidate_groups,
+                metrics_data=metrics_data,
+                sigma_k=sigma_k,
+                start_in_advanced=start_adv,
+            )
             result = dlg.exec()
             if result != QDialog.DialogCode.Accepted:
                 self.update_status(self.tr(
                     "ℹ️ Sub rejection cancelled — keeping all subs."
                 ))
                 return 0
+            # Persist the "start in advanced?" preference so the view the
+            # user actually left in is the view they come back to.
+            try:
+                self.settings.setValue(
+                    "stacking/reject_outliers_advanced",
+                    bool(dlg.mode() == "advanced"),
+                )
+            except Exception:
+                pass
             rejected = set(dlg.rejected_paths())
             for fname in candidate_groups:
-                per_filter_threshold[fname] = dlg.threshold(fname)
+                per_filter_threshold[fname] = dlg.threshold(fname, "score")
         else:
             for fname, scores_map in candidate_groups.items():
                 _med, _sig, threshold = auto_thresholds[fname]
@@ -24503,7 +24936,11 @@ class StackingSuiteDialog(QDialog):
             # when the user disables the feature in Settings.
             # ─────────────────────────────────────────────────────────────
             try:
-                self._apply_sub_rejection(measured_frames)
+                self._apply_sub_rejection(
+                    measured_frames,
+                    star_counts=star_counts,
+                    preview_medians=preview_medians,
+                )
             except Exception as _e:
                 self.update_status(self.tr(f"⚠️ Sub rejection skipped: {_e}"))
 
@@ -32309,8 +32746,12 @@ class StackingSuiteDialog(QDialog):
                 for i in range(0, len(lst), size):
                     yield lst[i:i+size]
 
-            chunks = list(chunk_list(cand, chunk_size))
-            total_chunks = len(chunks)
+            # `chunks` is defined further down, AFTER we classify every frame
+            # as either (a) a twin of a calibrated original we've already
+            # measured in processes (just-coverage fast path) or (b) something
+            # we need to measure via a preview (slow path). Only the slow-path
+            # frames get chunked, so a run that matches every twin skips the
+            # preview-based chunk loop entirely.
 
             # For already registered images, we don’t need to rescale to a target bin.
             # We can just make small previews directly from the FITS (debayer-aware superpixel).
@@ -32372,6 +32813,115 @@ class StackingSuiteDialog(QDialog):
                         f"⚠️ Multi-process measurement unavailable "
                         f"({type(e).__name__}: {e}); using threads instead."))
                     orig_measured.clear()
+
+            # ─────────────────────────────────────────────────────────────
+            # Classify every aligned frame:
+            #   • twinned_frames   — we already measured the calibrated
+            #     original via the process pool above; every quality metric
+            #     (star count, FWHM, ecc, noise, mean, median) comes from
+            #     that measurement. The only thing we still need per aligned
+            #     frame is its coverage (fraction of non-zero, finite pixels)
+            #     — a warp-border artifact that lives on the ALIGNED frame,
+            #     not the original — so we take a cheap preview per twin
+            #     and compute cov from it. No star detection, no FWHM re-fit,
+            #     no noise re-estimate.
+            #   • untwinned_frames — anything we couldn't process-measure
+            #     (missing twin link, measure_file returned a non-ok status,
+            #     or the ProcessPoolExecutor errored and we cleared the
+            #     cache). These go through the full chunked preview-based
+            #     measurement path below.
+            # Before this split the chunk loop re-measured EVERY aligned
+            # frame on a small preview even when the originals were already
+            # processed, which produced the "⚡ Measured 245/245 originals
+            # → 📦 Measuring chunk 1/7…" double-pass the user flagged.
+            # ─────────────────────────────────────────────────────────────
+            twinned_frames = []
+            untwinned_frames = []
+            for _fp in cand:
+                _orig = _twin_to_tree.get(_fp)
+                _rec = orig_measured.get(_orig) if _orig is not None else None
+                if _rec is not None and _rec[0] == "ok":
+                    twinned_frames.append(_fp)
+                else:
+                    untwinned_frames.append(_fp)
+
+            if twinned_frames:
+                self.update_status(self.tr(
+                    "⚡ {0} aligned frame(s) carry an already-measured original "
+                    "— computing coverage only, skipping redundant preview "
+                    "measurement."
+                ).format(len(twinned_frames)))
+                QApplication.processEvents()
+
+                def _cov_job(fp: str):
+                    """Build the aligned preview and read a single stat off
+                    it: coverage. Everything else comes from the pre-measured
+                    original. One tiny preview load per frame vs. preview +
+                    valid-region stats + star detection + FWHM + MAD-noise."""
+                    try:
+                        prev = self._quick_preview_any(
+                            fp, target_xbin=1, target_ybin=1
+                        )
+                        if prev is None:
+                            return fp, 0.0, None
+                        a = np.asarray(prev, dtype=np.float32)
+                        if a.size == 0:
+                            return fp, 0.0, None
+                        valid = np.isfinite(a) & (a != 0.0)
+                        return fp, float(valid.mean()), None
+                    except Exception as _ce:
+                        return fp, 0.0, f"{type(_ce).__name__}: {_ce}"
+
+                _cov_report_every = max(1, len(twinned_frames) // 20)
+                _cov_done = 0
+                with ThreadPoolExecutor(max_workers=max_workers) as _ex:
+                    for fp, cov, err in _ex.map(_cov_job, twinned_frames):
+                        if self._cancelled():
+                            raise StackCancelled()
+                        if err is not None:
+                            # Treat it as untwinned so the slow path will
+                            # try to recover it rather than silently
+                            # dropping it with a dead-weight 0 coverage.
+                            untwinned_frames.append(fp)
+                            self.update_status(self.tr(
+                                "⚠️ Coverage read failed for {0}: {1} — "
+                                "falling back to preview measurement."
+                            ).format(os.path.basename(fp), err))
+                            continue
+                        _orig = _twin_to_tree[fp]
+                        _status, _o, payload = orig_measured[_orig]
+                        mean_v, med, c, ecc, size, noise = payload
+                        mean_values[fp]      = float(mean_v)
+                        preview_medians[fp]  = med
+                        star_counts[fp] = {
+                            "count":        int(c),
+                            "eccentricity": float(ecc),
+                            "fwhm":         float(size),
+                            "noise":        float(noise),
+                        }
+                        frame_coverage[fp]   = float(cov)
+                        measured_frames.append(fp)
+                        _cov_done += 1
+                        if _cov_done == len(twinned_frames) or \
+                                _cov_done % _cov_report_every == 0:
+                            self.update_status(self.tr(
+                                "⚡ Coverage computed {0}/{1}"
+                            ).format(_cov_done, len(twinned_frames)))
+                            QApplication.processEvents()
+                self.update_status(self.tr(
+                    "✅ {0} twinned frame(s) measured without preview "
+                    "double-pass."
+                ).format(_cov_done))
+                QApplication.processEvents()
+
+            # Only non-twinned frames need the preview-based chunk loop.
+            chunks = list(chunk_list(untwinned_frames, chunk_size))
+            total_chunks = len(chunks)
+            if not chunks:
+                self.update_status(self.tr(
+                    "⏭️ All aligned frames handled by the fast path — "
+                    "skipping chunked preview measurement."
+                ))
 
             for idx, chunk in enumerate(chunks, 1):
                 if self._cancelled():
@@ -32665,7 +33215,11 @@ class StackingSuiteDialog(QDialog):
             # path for the full rationale). Shares the same helper so both
             # entry points behave identically.
             try:
-                self._apply_sub_rejection(measured_frames)
+                self._apply_sub_rejection(
+                    measured_frames,
+                    star_counts=star_counts,
+                    preview_medians=preview_medians,
+                )
             except Exception as _e:
                 self.update_status(self.tr(f"⚠️ Sub rejection skipped: {_e}"))
 
