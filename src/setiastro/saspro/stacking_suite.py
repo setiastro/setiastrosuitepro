@@ -133,6 +133,7 @@ from setiastro.saspro.torch_rejection import (
     torch_available as _torch_ok,
     gpu_algo_supported as _gpu_algo_supported,
     torch_reduce_tile as _torch_reduce_tile,
+    release_flat_group_ctx as _release_flat_group_ctx,
     _get_torch,
     _safe_inference_ctx as _safe_inference_ctx_impl,
 )
@@ -16804,13 +16805,94 @@ class StackingSuiteDialog(QDialog):
                 master_bias = None
 
         # -------------------------------------------------------------------------
-        # Pre-count tiles with per-group safe chunk sizes
+        # Dark-resolution helpers (hoisted so the pre-pass can resolve every
+        # group's dark path up-front — mirrors image integration's PHASE 0C).
+        # -------------------------------------------------------------------------
+        def _resolve_dark_path(exposure_time, image_size, filter_name) -> str | None:
+            """Resolve the master-dark path for a flat group, honouring per-group
+            override and auto-select. Returns a filesystem path, the sentinel
+            '__NO_DARK__', or None."""
+            override_val = None
+            fdo = getattr(self, "flat_dark_override", {}) or {}
+            if fdo:
+                exp_here = float(exposure_time)
+                for k, v in fdo.items():
+                    try:
+                        f_name, sz, lo_s, hi_s = k.split("|")
+                    except Exception:
+                        continue
+                    if f_name != filter_name:
+                        continue
+                    if sz != "Unknown" and image_size != "Unknown" and sz != image_size:
+                        continue
+                    if exp_here >= 0:
+                        lo = float(lo_s); hi = float(hi_s)
+                        if not (lo - 1e-6 <= exp_here <= hi + 1e-6):
+                            continue
+                    override_val = v
+                    break
+
+            if override_val == "__NO_DARK__":
+                return "__NO_DARK__"
+            if isinstance(override_val, str):
+                if os.path.exists(override_val):
+                    return override_val
+                # override missing on disk → fall through to auto/none
+
+            if self.auto_select_dark_checkbox.isChecked():
+                best = None
+                best_diff = float("inf")
+                exp_here = float(exposure_time)
+                for key, path in (getattr(self, "master_files", {}) or {}).items():
+                    if "MasterDark" not in os.path.basename(path):
+                        continue
+                    dark_size = self.master_sizes.get(path, "Unknown")
+                    m = re.match(r"([\d.]+)s", key or "")
+                    dark_exp = float(m.group(1)) if m else float("inf")
+                    size_ok = (
+                        image_size == "Unknown"
+                        or dark_size == "Unknown"
+                        or dark_size == image_size
+                    )
+                    if not size_ok:
+                        continue
+                    diff = abs(dark_exp - exp_here)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best = path
+                return best
+            return None
+
+        def _load_dark_normalized(path):
+            """Load a dark FITS/XISF, flip ROWORDER if needed, normalise layout to
+            final HWC (color) or 2D (mono) float32 — so the per-tile loop never
+            has to reshape it. Returns (array, is_color) or (None, False)."""
+            arr, hdr, _, _is_mono = load_image(path)
+            if arr is None:
+                return None, False
+            if str((hdr or {}).get("ROWORDER", "")).strip().upper() == "TOP-DOWN":
+                arr = np.ascontiguousarray(np.flipud(arr))
+            if arr.ndim == 3:
+                if arr.shape[0] in (1, 3):           # CHW → HWC
+                    arr = arr.transpose(1, 2, 0)
+                if arr.shape[-1] == 1:               # HWC with 1 channel → 2D
+                    arr = arr[..., 0]
+            arr = np.ascontiguousarray(arr, dtype=np.float32)
+            is_color = (arr.ndim == 3 and arr.shape[-1] == 3)
+            return arr, is_color
+
+        # -------------------------------------------------------------------------
+        # Pre-pass: tile count, per-group plan (dark path, bayer, roworder),
+        # max shared-buffer dims, and the set of unique dark paths to pre-load.
         # -------------------------------------------------------------------------
         total_tiles = 0
-        group_shapes: dict[tuple[float, str, str, str], tuple[int, int, int, int, int]] = {}
+        group_plan: dict = {}
         pref_chunk_h = self.chunk_height
         pref_chunk_w = self.chunk_width
         DTYPE = np.float32
+
+        max_N = 0; max_th = 0; max_tw = 0; max_C = 1
+        unique_dark_paths: set[str] = set()
 
         for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
             if len(file_list) < 2:
@@ -16830,8 +16912,45 @@ class StackingSuiteDialog(QDialog):
             except MemoryError:
                 chunk_h, chunk_w = _band_shape(pref_chunk_h, H, W)
 
-            group_shapes[(exposure_time, image_size, filter_name, session)] = (H, W, C, chunk_h, chunk_w)
+            # Bayer + ROWORDER from the first flat's header (one read).
+            bayerpat = None
+            flat_roworder = ""
+            try:
+                hdr0, _ = get_valid_header(file_list[0])
+                bayerpat = (hdr0.get("BAYERPAT") or hdr0.get("BAYERPATN") or hdr0.get("BAYER") or None)
+                if bayerpat is not None:
+                    bayerpat = str(bayerpat).strip().upper()
+                flat_roworder = str(hdr0.get("ROWORDER") or "")
+            except Exception:
+                pass
+            is_bayer_group = (C == 1) and bool(bayerpat)
+            if is_bayer_group and bayerpat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                bayerpat = "RGGB"
+
+            # Resolve the dark path up-front so we can load each unique dark once.
+            resolved_dark = _resolve_dark_path(exposure_time, image_size, filter_name)
+            if resolved_dark and resolved_dark != "__NO_DARK__":
+                unique_dark_paths.add(resolved_dark)
+
+            group_plan[(exposure_time, image_size, filter_name, session)] = {
+                "H": H, "W": W, "C": C,
+                "chunk_h": chunk_h, "chunk_w": chunk_w,
+                "N": N, "file_list": file_list,
+                "dark_path": resolved_dark,
+                "bayerpat": bayerpat if is_bayer_group else None,
+                "flat_roworder": flat_roworder,
+                "is_bayer": is_bayer_group,
+            }
+            max_N  = max(max_N,  N)
+            max_th = max(max_th, chunk_h)
+            max_tw = max(max_tw, chunk_w)
+            max_C  = max(max_C,  C)
             total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
+
+        # Kept so earlier call-sites that still check this don't KeyError. The
+        # group loop below reads from group_plan, not from group_shapes.
+        group_shapes = {k: (v["H"], v["W"], v["C"], v["chunk_h"], v["chunk_w"])
+                        for k, v in group_plan.items()}
 
         if total_tiles == 0:
             self.update_status(self.tr("⚠️ No eligible flat groups found to stack."))
@@ -16841,6 +16960,29 @@ class StackingSuiteDialog(QDialog):
             f"🧭 Total tiles to process: {total_tiles} (base chunk preference {pref_chunk_h}×{pref_chunk_w})"
         ))
         QApplication.processEvents()
+
+        # -------------------------------------------------------------------------
+        # Pre-load every unique master dark ONCE, normalised to final layout.
+        # A build with 10 flat groups all picking the same dark used to load it
+        # 10× from disk and re-shape it on every tile.
+        # -------------------------------------------------------------------------
+        dark_cache: dict = {}   # path -> (array, is_color)
+        if unique_dark_paths:
+            self.update_status(self.tr(
+                f"🌓 Pre-loading {len(unique_dark_paths)} unique master dark(s)…"
+            ))
+            QApplication.processEvents()
+            for dp in unique_dark_paths:
+                try:
+                    arr, is_color = _load_dark_normalized(dp)
+                    if arr is not None:
+                        dark_cache[dp] = (arr, is_color)
+                        self.update_status(self.tr(f"  ✓ {os.path.basename(dp)}"))
+                except Exception as e:
+                    self.update_status(self.tr(
+                        f"  ⚠️ Could not pre-load dark {os.path.basename(dp)}: {e}"
+                    ))
+            QApplication.processEvents()
 
         # -------------------------------------------------------------------------
         # Helpers (local to this function)
@@ -17081,263 +17223,210 @@ class StackingSuiteDialog(QDialog):
 
         from concurrent.futures import ThreadPoolExecutor
 
+        # Ordered list of eligible groups (filter out <2-frame groups once).
+        eligible_groups = [gk for gk, pl in group_plan.items() if pl["N"] >= 2]
+
+        # Warn once up-front about any skipped (too-small) groups so the per-group
+        # pause isn't padded with these one-liners.
+        for gk, file_list in flat_files_by_group.items():
+            if len(file_list) < 2:
+                exposure_time, image_size, filter_name, session = gk
+                self.update_status(self.tr(
+                    f"⚠️ Skipping {exposure_time}s ({image_size}) [{filter_name}] [{session}] "
+                    f"— Not enough frames to stack."
+                ))
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Background pools (the point of this refactor):
+        #   prep_pool  — opens the next group's _MMImages and estimates its
+        #                per-frame scales WHILE the current group's tile loop
+        #                runs. Removes the serial "scale-estimation + open-N-
+        #                mmaps" preamble that used to sit between every
+        #                master flat.
+        #   save_pool  — writes finished master flat FITS files in the
+        #                background so the NEXT group's tile loop isn't
+        #                blocked by the save.
+        #   tile_tp    — per-group tile-prefetch pool (same role as before).
+        # ─────────────────────────────────────────────────────────────────────
+        prep_pool = ThreadPoolExecutor(max_workers=1)
+        save_pool = ThreadPoolExecutor(max_workers=2)
+        save_futs: list = []
+
+        def _prepare_group(gk):
+            """Open the group's mmimages + estimate per-frame scales.
+            Runs on prep_pool so the preamble overlaps with the previous
+            group's tile loop. Returns {'scales', 'sources', 'dark_arr'}
+            or {'error': msg}."""
+            plan = group_plan[gk]
+            file_list = plan["file_list"]
+            dark_entry = dark_cache.get(plan["dark_path"]) if plan["dark_path"] else None
+            dark_arr = dark_entry[0] if dark_entry else None
+
+            # Scale subtractor: prefer dark; for mono/bayer, fall back to bias
+            scale_sub = dark_arr
+            if scale_sub is None and plan["is_bayer"] and master_bias is not None:
+                scale_sub = master_bias
+
+            try:
+                if plan["is_bayer"]:
+                    scales = _estimate_flat_scales_bayer(
+                        file_list, plan["H"], plan["W"], scale_sub, plan["bayerpat"]
+                    )
+                else:
+                    scales = _estimate_flat_scales(
+                        file_list, plan["H"], plan["W"], plan["C"], dark_arr
+                    )
+            except Exception as e:
+                return {"error": f"scale estimation failed: {e}"}
+
+            sources = []
+            try:
+                for p in file_list:
+                    sources.append(_MMImage(p))
+            except Exception as e:
+                for s in sources:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                return {"error": f"memmap open failed: {e}"}
+
+            return {"scales": scales, "sources": sources, "dark_arr": dark_arr}
+
+        # Prime the first group's prep so it starts running NOW; subsequent
+        # groups' prep is kicked off at the top of the previous group's loop
+        # body so it overlaps with that group's tile processing.
+        next_prep_fut = (
+            prep_pool.submit(_prepare_group, eligible_groups[0])
+            if eligible_groups else None
+        )
+
         try:
             # ---------------------------------------------------------------------
             # Per-group stacking loop
             # ---------------------------------------------------------------------
-            for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
-                if len(file_list) < 2:
-                    self.update_status(self.tr(
-                        f"⚠️ Skipping {exposure_time}s ({image_size}) [{filter_name}] [{session}] - Not enough frames to stack."
-                    ))
-                    continue
+            for gi, group_key in enumerate(eligible_groups):
                 if pd.cancelled:
                     self.update_status(self.tr("⛔ Master Flat creation cancelled."))
                     break
 
+                exposure_time, image_size, filter_name, session = group_key
+                plan = group_plan[group_key]
+                N              = plan["N"]
+                height         = plan["H"]
+                width          = plan["W"]
+                channels       = plan["C"]
+                chunk_height   = plan["chunk_h"]
+                chunk_width    = plan["chunk_w"]
+                bayerpat       = plan["bayerpat"]
+                is_bayer_group = plan["is_bayer"]
+                flat_roworder  = plan["flat_roworder"]
+                file_list      = plan["file_list"]
+
                 exp_label = f"{exposure_time}s" if exposure_time >= 0 else "Unknown"
                 self.update_status(self.tr(
-                    f"🟢 Processing {len(file_list)} flats for {exp_label} ({image_size}) "
+                    f"🟢 Processing {N} flats for {exp_label} ({image_size}) "
                     f"[{filter_name}] in session '{session}'…"
                 ))
+
+                # Per-group status for the resolved dark (resolution already
+                # happened in the pre-pass; we just report what was chosen).
+                dp = plan["dark_path"]
+                if dp == "__NO_DARK__":
+                    self.update_status(self.tr("ℹ️ This flat group: override = No Calibration."))
+                elif dp:
+                    self.update_status(self.tr(
+                        f"🌓 This flat group: dark → {os.path.basename(dp)}"
+                    ))
+                else:
+                    if self.auto_select_dark_checkbox.isChecked():
+                        self.update_status(self.tr(
+                            "ℹ️ This flat group: no matching Master Dark (size) "
+                            "— proceeding without subtraction."
+                        ))
+                    else:
+                        self.update_status(self.tr(
+                            "ℹ️ This flat group: Auto-Select is OFF and no override set "
+                            "→ No Calibration."
+                        ))
+                if is_bayer_group:
+                    self.update_status(self.tr(f"🧩 Bayer flat group detected: {bayerpat}"))
                 QApplication.processEvents()
 
-                # -----------------------------------------------------------------
-                # Select matching master dark (override / auto-select logic)
-                # -----------------------------------------------------------------
-                selected_master_dark = None
-                override_val = None
-
-                fdo = getattr(self, "flat_dark_override", {}) or {}
-                if fdo:
-                    exp_here = float(exposure_time)
-                    tol = float(self.flat_exposure_tolerance_spinbox.value())
-                    for k, v in fdo.items():
-                        # keys are stored as "filter|size|exp_lo|exp_hi"
-                        try:
-                            f_name, sz, lo_s, hi_s = k.split("|")
-                        except Exception:
-                            continue
-
-                        if f_name != filter_name:
-                            continue
-
-                        # size: treat "Unknown" as wildcard on either side
-                        if sz != "Unknown" and image_size != "Unknown" and sz != image_size:
-                            continue
-
-                        if exp_here >= 0:
-                            lo = float(lo_s); hi = float(hi_s)
-                            if not (lo - 1e-6 <= exp_here <= hi + 1e-6):
-                                continue
-
-                        override_val = v
-                        break
-
-                if override_val == "__NO_DARK__":
-                    self.update_status(self.tr("ℹ️ This flat group: override = No Calibration."))
-                elif isinstance(override_val, str):
-                    if os.path.exists(override_val):
-                        selected_master_dark = override_val
-                        self.update_status(self.tr(
-                            f"🌓 This flat group: using OVERRIDE dark → {os.path.basename(selected_master_dark)}"
-                        ))
-                    else:
-                        self.update_status(self.tr("⚠️ Override dark missing on disk; falling back to Auto/None."))
-                        override_val = None
-
-                # AUTO-SELECT when no override
-                if (override_val is None) and self.auto_select_dark_checkbox.isChecked():
-                    best_diff = float("inf")
-                    exp_here = float(exposure_time)
-
-                    for key, path in (getattr(self, "master_files", {}) or {}).items():
-                        if "MasterDark" not in os.path.basename(path):
-                            continue
-
-                        dark_size = self.master_sizes.get(path, "Unknown")
-                        m = re.match(r"([\d.]+)s", key or "")
-                        dark_exp = float(m.group(1)) if m else float("inf")
-
-                        size_ok = (
-                            image_size == "Unknown"
-                            or dark_size == "Unknown"
-                            or dark_size == image_size
-                        )
-                        if not size_ok:
-                            continue
-
-                        diff = abs(dark_exp - exp_here)
-                        if diff < best_diff:
-                            best_diff = diff
-                            selected_master_dark = path
-
-                    if selected_master_dark:
-                        self.update_status(self.tr(
-                            f"🌓 This flat group: using AUTO dark → {os.path.basename(selected_master_dark)}"
-                        ))
-                    else:
-                        self.update_status(self.tr(
-                            "ℹ️ This flat group: no matching Master Dark (size) — proceeding without subtraction."
-                        ))
-                elif (override_val is None) and (not self.auto_select_dark_checkbox.isChecked()):
-                    self.update_status(self.tr(
-                        "ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration."
-                    ))
-                # -----------------------------------------------------------------
-                # Reference shape + per-group chunk size
-                # -----------------------------------------------------------------
-                if (exposure_time, image_size, filter_name, session) in group_shapes:
-                    height, width, channels, chunk_height, chunk_width = group_shapes[
-                        (exposure_time, image_size, filter_name, session)
-                    ]
+                # Wait on THIS group's prep (ideally already done in background);
+                # then IMMEDIATELY submit next group's prep so it overlaps with
+                # this group's tile loop.
+                self.update_status(self.tr(
+                    f"⚙️ Normalizing {N} flats by per-frame medians (central patch)."
+                ))
+                QApplication.processEvents()
+                prep = next_prep_fut.result()
+                if gi + 1 < len(eligible_groups):
+                    next_prep_fut = prep_pool.submit(
+                        _prepare_group, eligible_groups[gi + 1]
+                    )
                 else:
-                    ref_data, _, _, _ = load_image(file_list[0])
-                    if ref_data is None:
-                        self.update_status(self.tr(
-                            f"❌ Failed to load reference {os.path.basename(file_list[0])}"
-                        ))
-                        continue
-                    height, width = ref_data.shape[:2]
-                    channels = 1 if ref_data.ndim == 2 else 3
-                    channels = max(1, channels)
-                    N_tmp = len(file_list)
-                    try:
-                        chunk_height, chunk_width = compute_safe_chunk(
-                            height, width, N_tmp, channels, DTYPE,
-                            pref_chunk_h, pref_chunk_w
-                        )
-                    except MemoryError:
-                        chunk_height, chunk_width = _band_shape(pref_chunk_h, height, width)
+                    next_prep_fut = None
 
-                channels = max(1, channels)
-                N = len(file_list)
-                # Load the chosen dark if any
-                if selected_master_dark:
-                    dark_data, _dark_hdr, _, _ = load_image(selected_master_dark)
-                    if dark_data is not None:
-                        # Match the raw flats' on-disk (bottom-up) orientation for the
-                        # in-build subtraction (see the bias note above).
-                        if str((_dark_hdr or {}).get("ROWORDER", "")).strip().upper() == "TOP-DOWN":
-                            dark_data = np.ascontiguousarray(np.flipud(dark_data))
-                        if dark_data.ndim == 3 and dark_data.shape[-1] == 3:
-                            # keep HWC
-                            dark_data = dark_data.astype(np.float32, copy=False)
-                        elif dark_data.ndim == 3 and dark_data.shape[0] in (1, 3):
-                            dark_data = dark_data.transpose(1, 2, 0).astype(np.float32, copy=False)
-                        else:
-                            dark_data = dark_data.astype(np.float32, copy=False)
-
-                        # ── Shape mismatch check ──────────────────────────────────
-                        flat_is_color = (channels == 3)
-                        dark_is_color = (dark_data.ndim == 3 and (
-                            dark_data.shape[-1] == 3 or dark_data.shape[0] == 3
-                        ))
-                        if flat_is_color != dark_is_color:
-                            flat_desc = "color (debayered)" if flat_is_color else "mono/Bayer"
-                            dark_desc = "color (debayered)" if dark_is_color else "mono/Bayer"
-                            self.update_status(self.tr(
-                                f"❌ FLAT CALIBRATION ERROR: Flat group is {flat_desc} but "
-                                f"Master Dark is {dark_desc}. Skipping dark subtraction for this group.\n"
-                                f"  Dark: {os.path.basename(selected_master_dark)}"
-                            ))
-                            QMessageBox.warning(
-                                self,
-                                "Dark/Flat Mismatch",
-                                f"Cannot apply dark subtraction to flat group:\n\n"
-                                f"Flat frames are {flat_desc}\n"
-                                f"Master Dark is {dark_desc}\n\n"
-                                f"Dark: {os.path.basename(selected_master_dark)}\n\n"
-                                f"Continuing without dark subtraction for this flat group."
-                            )
-                            dark_data = None
-                        # ─────────────────────────────────────────────────────────
-                else:
-                    dark_data = None
-
-
-
-                # -----------------------------------------------------------------
-                # Detect Bayer (only meaningful when channels==1)
-                # -----------------------------------------------------------------
-                bayerpat = None
-                flat_roworder = ""   # sensor readout direction of the source flats
-                try:
-                    hdr0, _ = get_valid_header(file_list[0])
-                    bayerpat = (hdr0.get("BAYERPAT") or hdr0.get("BAYERPATN") or hdr0.get("BAYER") or None)
-                    if bayerpat is not None:
-                        bayerpat = str(bayerpat).strip().upper()
-                    flat_roworder = str(hdr0.get("ROWORDER") or "")
-                except Exception:
-                    bayerpat = None
-                is_bayer_group = (channels == 1) and bool(bayerpat)
-
-                if is_bayer_group:
-                    if bayerpat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
-                        bayerpat = "RGGB"
-                    self.update_status(self.tr(f"🧩 Bayer flat group detected: {bayerpat}"))
+                if "error" in prep:
+                    self.update_status(self.tr(f"❌ {prep['error']} — skipping group."))
                     QApplication.processEvents()
+                    continue
 
-                # -----------------------------------------------------------------
-                # Reducer selection & per-frame normalization scales
-                # -----------------------------------------------------------------
+                sources  = prep["sources"]
+                scales   = prep["scales"]
+                dark_arr = prep["dark_arr"]
+
+                # ── Shape mismatch check (dark vs flat color) ──────────────
+                # dark_cache stored the dark in final HWC-or-2D layout, so the
+                # check is a one-liner now.
+                if dark_arr is not None:
+                    flat_is_color = (channels == 3)
+                    dark_is_color = (dark_arr.ndim == 3 and dark_arr.shape[-1] == 3)
+                    if flat_is_color != dark_is_color:
+                        flat_desc = "color (debayered)" if flat_is_color else "mono/Bayer"
+                        dark_desc = "color (debayered)" if dark_is_color else "mono/Bayer"
+                        self.update_status(self.tr(
+                            f"❌ FLAT CALIBRATION ERROR: Flat group is {flat_desc} but "
+                            f"Master Dark is {dark_desc}. Skipping dark subtraction for this group.\n"
+                            f"  Dark: {os.path.basename(dp or '')}"
+                        ))
+                        QMessageBox.warning(
+                            self,
+                            "Dark/Flat Mismatch",
+                            f"Cannot apply dark subtraction to flat group:\n\n"
+                            f"Flat frames are {flat_desc}\n"
+                            f"Master Dark is {dark_desc}\n\n"
+                            f"Dark: {os.path.basename(dp or '')}\n\n"
+                            f"Continuing without dark subtraction for this flat group."
+                        )
+                        dark_arr = None
+
+                # Choose tile-time subtractor (same precedence as before:
+                # dark preferred, bias fallback for mono/bayer).
+                tile_subtractor = dark_arr
+                if tile_subtractor is None and is_bayer_group and master_bias is not None:
+                    tile_subtractor = master_bias
+
+                # Reducer selection
                 algo_name, params, cpu_label = _select_reducer("flat", N)
                 use_gpu = (bool(self._hw_accel_enabled()) and _torch_ok()
                            and _gpu_algo_supported(algo_name) and _rejection_gpu_ok())
-
-                # For flat scaling estimation: subtract dark if present, else subtract bias if we have one (mono case)
-                scale_subtractor = dark_data
-                if scale_subtractor is None and is_bayer_group and master_bias is not None:
-                    # only use bias this way for mono/bayer flats
-                    scale_subtractor = master_bias
-
-                self.update_status(self.tr(f"⚙️ Normalizing {N} flats by per-frame medians (central patch)."))
-                QApplication.processEvents()
-
-                if is_bayer_group:
-                    scales = _estimate_flat_scales_bayer(file_list, height, width, scale_subtractor, bayerpat)
-                else:
-                    scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)
-
                 self.update_status(self.tr(
                     f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} "
                     f"({ 'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})"
                 ))
                 QApplication.processEvents()
 
-                # -----------------------------------------------------------------
-                # Open all flats as memmapped sources (once per group)
-                # -----------------------------------------------------------------
-                sources = []
-                try:
-                    for p in file_list:
-                        sources.append(_MMImage(p))
-                except Exception as e:
-                    for s in sources:
-                        try:
-                            s.close()
-                        except Exception:
-                            pass
-                    self.update_status(self.tr(f"❌ Failed to memmap flat frames: {e}"))
-                    QApplication.processEvents()
-                    continue
-
-                # Temporary memmap for the master stack
-                memmap_path = os.path.join(
-                    master_dir,
-                    f"temp_flat_{session}_{exposure_time}_{image_size}_{filter_name}.dat",
-                )
-                self.update_status(self.tr(
-                    f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} "
-                    f"(shape={height}×{width}×{channels}, dtype=float32)"
-                ))
-                QApplication.processEvents()
-                final_stacked = np.memmap(
-                    memmap_path,
-                    dtype=np.float32,
-                    mode="w+",
-                    shape=(height, width, channels),
-                )
+                # ─────────────────────────────────────────────────────────────
+                # Output buffer: plain RAM array. The old code wrote this to a
+                # temp memmap file and immediately read it back with np.asarray
+                # before deleting the file — pure disk round-trip for ~250 MB
+                # (mono) / ~750 MB (color) per master flat. One master-flat
+                # output easily fits in RAM; the per-stack working set
+                # (buf0+buf1) was already far bigger.
+                # ─────────────────────────────────────────────────────────────
+                final_stacked = np.empty((height, width, channels), dtype=np.float32)
 
                 tiles = _tile_grid(height, width, chunk_height, chunk_width)
                 total_tiles_group = len(tiles)
@@ -17347,7 +17436,7 @@ class StackingSuiteDialog(QDialog):
                 ))
                 QApplication.processEvents()
 
-                # Allocate max-chunk buffers
+                # Allocate max-chunk buffers for this group
                 buf0 = np.empty(
                     (N, chunk_height, chunk_width, channels),
                     dtype=np.float32,
@@ -17355,29 +17444,86 @@ class StackingSuiteDialog(QDialog):
                 )
                 buf1 = np.empty_like(buf0)
 
-                # Helper: read one tile into the given buffer from all memmapped sources
-                def _read_tile_into(buf, y0, y1, x0, x1):
+                # ─────────────────────────────────────────────────────────────
+                # Multi-reader tile prefetch: the old loop read N files
+                # serially inside the single-worker prefetcher — one source
+                # at a time, each waiting on disk I/O. We fan the per-source
+                # reads out over `read_workers` threads so a tile's N file
+                # slices load concurrently, which is a straight win on SSD /
+                # NVMe and still safe on HDD (each _MMImage holds its own
+                # independent read-only mmap, so there's no shared state to
+                # race on). Capped at min(N, 4) by default; the setting is
+                # exposed so an HDD user can dial it back to 2.
+                # ─────────────────────────────────────────────────────────────
+                read_workers = int(self.settings.value(
+                    "stacking/tile_read_workers", 4, type=int
+                ))
+                read_workers = max(1, min(read_workers, N))
+                read_pool = ThreadPoolExecutor(
+                    max_workers=read_workers,
+                    thread_name_prefix="flatRead",
+                )
+
+                def _read_tile_into(buf, y0, y1, x0, x1,
+                                    _sources=sources, _N=N, _C=channels,
+                                    _pool=read_pool):
                     th = y1 - y0
                     tw = x1 - x0
-                    ts = buf[:N, :th, :tw, :channels]
-                    for i, src in enumerate(sources):
-                        src.read_tile_into(ts[i], y0, y1, x0, x1, channels)
+                    ts = buf[:_N, :th, :tw, :_C]
+                    futs = [
+                        _pool.submit(
+                            _sources[i].read_tile_into,
+                            ts[i], y0, y1, x0, x1, _C,
+                        )
+                        for i in range(_N)
+                    ]
+                    for f in futs:
+                        f.result()
                     return th, tw
 
-                tp = ThreadPoolExecutor(max_workers=1)
+                tile_tp = ThreadPoolExecutor(max_workers=1)
 
                 # Prime first read
                 (y0, y1, x0, x1) = tiles[0]
-                fut = tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
+                fut = tile_tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
                 use0 = True
 
                 self.update_status(self.tr(
-                    f"▶️ Starting tile processing for group '{filter_name}' ({exposure_time}s, {image_size}, session '{session}')"
+                    f"▶️ Starting tile processing for group '{filter_name}' "
+                    f"({exposure_time}s, {image_size}, session '{session}') "
+                    f"— {read_workers} reader thread(s)"
                 ))
                 QApplication.processEvents()
 
                 weights_np = np.ones((N,), dtype=np.float32)
                 cancelled_group = False
+
+                # tile_subtractor is already in final HWC-or-2D layout (either
+                # from dark_cache or from the bias load above); the only
+                # possible per-tile shape work is "repeat 2D mono to 3 chans".
+                sub_is_2d_to_rgb = (
+                    tile_subtractor is not None
+                    and tile_subtractor.ndim == 2
+                    and channels == 3
+                )
+
+                # ─────────────────────────────────────────────────────────────
+                # GPU calibration-prep hand-off:
+                # When the reducer runs on the GPU, we hand it the FULL dark
+                # frame + per-frame scales ONCE (keyed by group_key, so the
+                # upload happens on the first tile call) and let it fuse
+                # dark-sub + clip + per-frame scale into one device-side pass
+                # right after it uploads ts. The CPU prep below is then
+                # skipped. For the CPU reducer we still run the CPU prep —
+                # there's no device to defer it to.
+                # ─────────────────────────────────────────────────────────────
+                gpu_group_key = (
+                    f"flat::{session}::{exposure_time}::{image_size}::{filter_name}"
+                    if use_gpu else None
+                )
+                gpu_dark_np   = tile_subtractor if use_gpu else None
+                gpu_scales_np = scales          if use_gpu else None
+                gpu_bayer_pat = bayerpat        if (use_gpu and is_bayer_group) else None
 
                 # -----------------------------------------------------------------
                 # Tile loop
@@ -17393,42 +17539,20 @@ class StackingSuiteDialog(QDialog):
                     # Prefetch next
                     if t_idx < total_tiles_group:
                         ny0, ny1, nx0, nx1 = tiles[t_idx]
-                        fut = tp.submit(
+                        fut = tile_tp.submit(
                             _read_tile_into,
                             (buf1 if use0 else buf0),
                             ny0, ny1, nx0, nx1,
                         )
 
-                    pd.set_label(f"[{filter_name}] {session} — tile {t_idx}/{total_tiles_group} y:{y0}-{y1} x:{x0}-{x1}")
+                    pd.set_label(
+                        f"[{filter_name}] {session} — tile {t_idx}/{total_tiles_group} "
+                        f"y:{y0}-{y1} x:{x0}-{x1}"
+                    )
 
-                    # ---- per-tile subtractor (HWC), BEFORE normalization ----
-                    # Prefer flat-dark; else for mono/bayer, fall back to master bias to avoid bias imprint in flats.
-                    subtractor = dark_data
-                    if subtractor is None and is_bayer_group and master_bias is not None:
-                        subtractor = master_bias
-
-                    if subtractor is not None:
-                        dsub = subtractor
-                        if isinstance(dsub, np.ndarray):
-                            if dsub.ndim == 3 and dsub.shape[0] in (1, 3):  # CHW → HWC
-                                dsub = dsub.transpose(1, 2, 0)
-                            # If bias/dark is 2D, keep 2D
-                            if dsub.ndim == 3 and dsub.shape[2] == 1:
-                                dsub = dsub[:, :, 0]
-                        d_tile = dsub[y0:y1, x0:x1].astype(np.float32, copy=False)
-                        if d_tile.ndim == 2 and channels == 3:
-                            d_tile = np.repeat(d_tile[..., None], 3, axis=2)
-                        _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
-                        # Clip negatives before normalisation and stacking
-                        np.clip(ts_np, 0.0, None, out=ts_np)
-                    # ---- fast per-frame normalization ----
-                    if is_bayer_group:
-                        _apply_bayer_scales_stack_inplace(ts_np, scales, bayerpat, y0, x0)
-                    else:
-                        ts_np *= scales.reshape(N, 1, 1, 1)
-
-                    # ---- reduction (GPU or CPU) ----
                     if use_gpu:
+                        # Dark-sub + clip + per-frame scale happen on-device
+                        # inside the reducer; nothing to do on the CPU side.
                         tile_result, _ = _torch_reduce_tile(
                             ts_np,
                             weights_np,
@@ -17443,8 +17567,31 @@ class StackingSuiteDialog(QDialog):
                             modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
                             comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
                             comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                            # ─── On-device calibration prep ───
+                            dark_full_np=gpu_dark_np,
+                            pedestal=0.0,
+                            scales_np=gpu_scales_np,
+                            bayer_pattern=gpu_bayer_pat,
+                            tile_origin=(y0, x0),
+                            group_key=gpu_group_key,
                         )
                     else:
+                        # CPU path: do dark-sub + clip + per-frame scale on
+                        # the host before the CPU reducer sees the stack.
+                        if tile_subtractor is not None:
+                            d_tile = tile_subtractor[y0:y1, x0:x1]
+                            if sub_is_2d_to_rgb:
+                                d_tile = np.repeat(d_tile[..., None], 3, axis=2)
+                            if d_tile.dtype != np.float32:
+                                d_tile = d_tile.astype(np.float32, copy=False)
+                            _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
+                            np.clip(ts_np, 0.0, None, out=ts_np)
+
+                        if is_bayer_group:
+                            _apply_bayer_scales_stack_inplace(ts_np, scales, bayerpat, y0, x0)
+                        else:
+                            ts_np *= scales.reshape(N, 1, 1, 1)
+
                         if cpu_label == "median":
                             tile_result = _cpu_tile_median(ts_np)
                         elif cpu_label == "trimmed":
@@ -17457,6 +17604,7 @@ class StackingSuiteDialog(QDialog):
                                 ts_np,
                                 float(params.get("kappa", 3.0)),
                             )
+
                     # Ensure tile_result has correct shape (th, tw, channels)
                     if tile_result.ndim == 2:
                         tile_result = tile_result[:, :, None]
@@ -17475,8 +17623,21 @@ class StackingSuiteDialog(QDialog):
                     use0 = not use0
 
                 try:
-                    tp.shutdown(wait=True)
+                    tile_tp.shutdown(wait=True)
                 finally:
+                    try:
+                        read_pool.shutdown(wait=True)
+                    except Exception:
+                        pass
+                    # Release the per-group GPU calibration tensors (dark +
+                    # scales) so the next group's dark can slot in without
+                    # the previous one lingering in VRAM. Safe on CPU-only
+                    # runs — gpu_group_key is None there.
+                    try:
+                        if gpu_group_key is not None:
+                            _release_flat_group_ctx(gpu_group_key)
+                    except Exception:
+                        pass
                     for s in sources:
                         try:
                             s.close()
@@ -17484,27 +17645,11 @@ class StackingSuiteDialog(QDialog):
                             pass
 
                 if cancelled_group:
-                    self.update_status(self.tr("⛔ Master Flat creation cancelled; cleaning up temporary files."))
-                    try:
-                        del final_stacked
-                    except Exception:
-                        pass
-                    try:
-                        os.remove(memmap_path)
-                    except Exception:
-                        pass
+                    self.update_status(self.tr("⛔ Master Flat creation cancelled."))
                     break
 
-                # Convert memmap to regular array, free file
-                master_flat_data = np.asarray(final_stacked, dtype=np.float32)
-                del final_stacked
-                gc.collect()
-                try:
-                    os.remove(memmap_path)
-                except Exception:
-                    pass
-
-                # If mono, squeeze to 2D (prevents accidental “(H,W,1)” weirdness later)
+                # If mono, squeeze to 2D (prevents accidental "(H,W,1)" weirdness later)
+                master_flat_data = final_stacked
                 if channels == 1 and master_flat_data.ndim == 3 and master_flat_data.shape[2] == 1:
                     master_flat_data = master_flat_data[:, :, 0]
 
@@ -17549,20 +17694,43 @@ class StackingSuiteDialog(QDialog):
                 # maze, and dust/vignetting misaligns.
                 if flat_roworder:
                     header["ROWORDER"] = flat_roworder
-                save_image(
+
+                # ─────────────────────────────────────────────────────────────
+                # Async save: hand the finished master to save_pool and move
+                # straight into the next group's tile loop. Cap in-flight saves
+                # at 2 so RAM stays bounded even on slow disks (each pending
+                # save holds one master_flat_data buffer alive).
+                # ─────────────────────────────────────────────────────────────
+                save_futs.append(save_pool.submit(
+                    save_image,
                     master_flat_data,
                     master_flat_path,
                     "fit",
                     "32-bit floating point",
                     header,
                     is_mono=(channels == 1),
-                )
+                ))
+                while len(save_futs) > 2:
+                    try:
+                        save_futs.pop(0).result()
+                    except Exception as _se:
+                        self.update_status(self.tr(f"⚠️ Master-flat save failed: {_se}"))
 
                 self.master_sizes[master_flat_path] = image_size
                 self.add_master_flat_to_tree(filter_name, master_flat_path)
-                self.update_status(self.tr(f"✅ Master Flat saved: {master_flat_path}"))
+                self.update_status(self.tr(
+                    f"✅ Master Flat queued: {os.path.basename(master_flat_path)}"
+                ))
                 QApplication.processEvents()
                 self.save_master_paths_to_settings()
+
+            # Drain remaining in-flight saves before wrap-up
+            for _fs in save_futs:
+                try:
+                    _fs.result()
+                except Exception as _se:
+                    self.update_status(self.tr(f"⚠️ Master-flat save failed: {_se}"))
+            save_futs.clear()
 
             # Final wrap-up
             self.assign_best_master_dark()
@@ -17570,6 +17738,31 @@ class StackingSuiteDialog(QDialog):
             self._refresh_quick_stack_summary_later()
 
         finally:
+            # Shut down pipeline pools first so no background work outlives the
+            # method. prep_pool: the next-group preamble may still be running
+            # if we broke out of the loop early — let it finish (its sources
+            # would otherwise leak file descriptors). save_pool: ensure every
+            # queued FITS write lands before we release resources.
+            try:
+                prep_pool.shutdown(wait=True)
+            except Exception:
+                pass
+            try:
+                save_pool.shutdown(wait=True)
+            except Exception:
+                pass
+            # Any sources opened by a prep that never ran as a group (early
+            # cancel) are owned by `next_prep_fut`'s result; drain and close.
+            try:
+                if next_prep_fut is not None:
+                    _leftover = next_prep_fut.result()
+                    for _s in (_leftover or {}).get("sources", []):
+                        try:
+                            _s.close()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             try:
                 _free_torch_memory()
             except Exception as e:

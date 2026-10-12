@@ -342,6 +342,80 @@ def _upload_calibration_frame(torch, dev, arr: np.ndarray):
     return torch.from_numpy(a).to(dev, dtype=torch.float32, non_blocking=True)
 
 
+# ---------------------------------------------------------------------------
+# Flat-build GPU calibration prep
+# ---------------------------------------------------------------------------
+# The stacking suite's master-flat tile loop used to do three big CPU passes
+# over the (N, th, tw, C) stack right before uploading it to the GPU reducer:
+#   1. dark subtract (in-place)
+#   2. clip at 0
+#   3. per-frame scale multiply (one scalar per frame, or 4 per frame for Bayer)
+#
+# All three run perfectly well on the device while ts is resident. The hook
+# below lets the caller push a group-level dark + per-frame scales ONCE, keyed
+# by `group_key`; subsequent tiles pass the same key and skip the CPU prep.
+# The device-side prep runs inline in _torch_reduce_tile_impl right after the
+# ts upload, so the reducer never sees the "raw" stack — it sees the fully
+# calibrated one.
+# ---------------------------------------------------------------------------
+
+_FLAT_GROUP_CTX: dict = {}   # group_key -> {"dark_t", "scales_t", "bayer_pattern", "p2i"}
+_FLAT_GROUP_LOCK = threading.RLock()
+
+
+def _bayer_p2i(pat: str):
+    """CFA parity → index into the (R, G1, G2, B) scales lane.
+    Matches _apply_bayer_scales_stack_inplace in stacking_suite.py."""
+    pat = (pat or "RGGB").strip().upper()
+    if pat == "RGGB":
+        return [[0, 1], [2, 3]]
+    if pat == "BGGR":
+        return [[3, 1], [2, 0]]
+    if pat == "GRBG":
+        return [[1, 0], [3, 2]]
+    return [[1, 3], [0, 2]]   # GBRG
+
+
+def _build_flat_group_ctx(torch, dev, dark_full_np, scales_np, bayer_pattern):
+    """Upload per-group calibration data once; each tile call then slices
+    the dark on-device and multiplies by the per-frame scale."""
+    ctx = {}
+    if dark_full_np is not None:
+        # Reuse _upload_calibration_frame's layout handling: it always
+        # returns a (C, H_full, W_full) float32 device tensor.
+        ctx["dark_t"] = _upload_calibration_frame(torch, dev, dark_full_np)
+    if scales_np is not None:
+        s = np.ascontiguousarray(np.asarray(scales_np, dtype=np.float32))
+        ctx["scales_t"] = torch.from_numpy(s).to(dev, dtype=torch.float32, non_blocking=False)
+    pat = None
+    if bayer_pattern:
+        pat = (bayer_pattern or "").strip().upper()
+        if pat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+            pat = "RGGB"
+    ctx["bayer_pattern"] = pat
+    if pat:
+        ctx["p2i"] = _bayer_p2i(pat)
+    return ctx
+
+
+def release_flat_group_ctx(group_key):
+    """Drop a group's cached device tensors. The stacking suite calls this
+    once after a flat group's final tile so the next group's dark can slot
+    in without the previous one holding onto VRAM. A follow-up
+    torch.cuda.empty_cache() is cheap and keeps the small-card headroom
+    the integrator and cosmetic pass both depend on."""
+    if group_key is None:
+        return
+    with _FLAT_GROUP_LOCK:
+        _FLAT_GROUP_CTX.pop(group_key, None)
+    try:
+        torch = _TORCH
+        if torch is not None and hasattr(torch, "cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def calibration_pipeline_gpu(
     light_np: np.ndarray,
     dark_t,                          # (C,H,W) tensor on GPU or None
@@ -893,6 +967,21 @@ def _torch_reduce_tile_impl(
     ignore_zero_pixels: bool = True,
     forced_reject_mask_np: np.ndarray | None = None,
     reduce_rej_maps: bool = False,
+    # ─── Optional GPU calibration pre-steps (master-flat build) ───────────
+    # When these are supplied, the reducer runs:
+    #   ts = ((ts - dark[y0:y0+H, x0:x0+W]) + pedestal).clamp_min(0) * scales
+    # on the DEVICE copy of ts, fusing the three CPU passes the master-flat
+    # tile loop used to do into one device-side pass. All five kwargs are
+    # ignored unless group_key is also set — that key names a per-group
+    # cache, so the dark + scales upload happens exactly once per group.
+    # Callers that don't need calibration (master dark build, image
+    # integration) pass nothing and get the original behaviour.
+    dark_full_np: np.ndarray | None = None,
+    pedestal: float = 0.0,
+    scales_np: np.ndarray | None = None,
+    bayer_pattern: str | None = None,
+    tile_origin: tuple = (0, 0),
+    group_key=None,
 ) -> tuple[np.ndarray, np.ndarray]:
 
     torch = _get_torch(prefer_cuda=True)
@@ -950,6 +1039,60 @@ def _torch_reduce_tile_impl(
         raise ValueError(f"torch_reduce_tile received input with C={C} channels (shape={ts_np.shape}). Expected C >= 1.")
 
     ts = torch.from_numpy(ts_np).to(dev, dtype=torch.float32, non_blocking=True)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Optional: on-device calibration prep (dark-sub + clip + per-frame
+    # scale). Caller passes dark_full_np + scales_np + group_key the FIRST
+    # time it hits this group; subsequent tiles can keep passing them (the
+    # cache ignores them if ctx is already built) or pass None — the ctx
+    # keyed by group_key is what matters. release_flat_group_ctx(group_key)
+    # frees the device tensors after the group's final tile.
+    # ─────────────────────────────────────────────────────────────────────
+    if group_key is not None:
+        with _FLAT_GROUP_LOCK:
+            ctx = _FLAT_GROUP_CTX.get(group_key)
+            if ctx is None and (dark_full_np is not None or scales_np is not None):
+                ctx = _build_flat_group_ctx(torch, dev, dark_full_np, scales_np, bayer_pattern)
+                _FLAT_GROUP_CTX[group_key] = ctx
+        if ctx is not None:
+            y0_g = int(tile_origin[0])
+            x0_g = int(tile_origin[1])
+            with _safe_inference_ctx(torch), _no_amp_ctx(torch, dev):
+                dark_t = ctx.get("dark_t")
+                if dark_t is not None:
+                    # dark_t: (Cd, H_full, W_full); slice the tile view, no copy.
+                    d_slice = dark_t[:, y0_g:y0_g + H, x0_g:x0_g + W]
+                    if d_slice.shape[0] == 1 and C == 3:
+                        d_slice = d_slice.expand(3, H, W)
+                    # Reshape to (1, H, W, Cd) so it broadcasts over the F axis of ts.
+                    # In-place subtract keeps peak VRAM at 1× the stack size — a
+                    # non-in-place `ts = ts - d_bcast` would briefly hold two
+                    # copies, which OOMs the small cards the cosmetic pass also
+                    # has to share VRAM with.
+                    d_bcast = d_slice.permute(1, 2, 0).unsqueeze(0)
+                    ts.sub_(d_bcast)
+                    if pedestal != 0.0:
+                        ts.add_(float(pedestal))
+                    ts.clamp_min_(0.0)
+
+                st = ctx.get("scales_t")
+                if st is not None:
+                    if ctx.get("bayer_pattern"):
+                        # Bayer: one scale per CFA plane. Apply as 4 strided
+                        # in-place multiplies on the (F,H,W,1) stack — cheaper
+                        # than building a per-pixel scale tensor (which would
+                        # cost F*H*W*4 bytes of extra VRAM per tile).
+                        p2i = ctx["p2i"]
+                        ry = y0_g & 1
+                        rx = x0_g & 1
+                        # st shape: (F, 4)  ← one lane per [R, G1, G2, B]
+                        for py in (0, 1):
+                            for px in (0, 1):
+                                lane = p2i[(py + ry) & 1][(px + rx) & 1]
+                                ts[:, py::2, px::2, 0].mul_(st[:, lane].view(F, 1, 1))
+                    else:
+                        # non-Bayer: scales shape (F,) — per-frame scalar.
+                        ts.mul_(st.view(F, 1, 1, 1))
 
     weights_np = np.asarray(weights_np, dtype=np.float32)
     if weights_np.ndim == 0:
