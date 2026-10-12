@@ -405,20 +405,119 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
 # both images carry a usable plate solve.
 # ---------------------------------------------------------------------
 
+def _coerce_to_fits_header(obj) -> "Header | None":
+    """
+    Normalise anything SASpro might store as "a header" into an
+    astropy.io.fits.Header. Accepts a Header (passed through), a dict
+    (built into cards), a FITS-serialized string (what shows up in
+    metadata['wcs_header']), or None. Returns None when nothing usable
+    can be built.
+
+    Pulled out because both the WCS-building path (_wcs_from_header) and
+    the view-spill writer (_write_view_to_fits) need the same tolerant
+    conversion; keeping it in one place means a user whose live view only
+    carries wcs_header gets the WCS preserved through both paths.
+    """
+    if obj is None:
+        return None
+    if isinstance(obj, Header):
+        return obj
+    if isinstance(obj, dict):
+        hdr = Header()
+        for k, v in obj.items():
+            try:
+                hdr[k] = v
+            except Exception:
+                pass
+        return hdr if len(hdr) else None
+    if isinstance(obj, (str, bytes)):
+        s = obj.decode() if isinstance(obj, bytes) else obj
+        s = s.strip()
+        if not s:
+            return None
+        try:
+            # Header.fromstring is strict about 80-column records; pad to
+            # multiple of 80 when a stored string got trimmed on a
+            # whitespace boundary.
+            if "\n" not in s and len(s) % 80 != 0:
+                s = s + " " * (80 - (len(s) % 80))
+            return Header.fromstring(s)
+        except Exception:
+            try:
+                # Fallback for human-formatted multi-line dumps.
+                return Header.fromstring("\n".join(s.splitlines()), sep="\n")
+            except Exception:
+                return None
+    return None
+
+
 def _wcs_from_header(header):
     """Sanitize + build a usable WCS (SIP kept) or None. The header parsing
     lives in mosaic_master; import it lazily so there's no import cycle
-    (mosaic_master imports qs_*/ASTROMETRY_API_URL back from here)."""
-    if header is None:
+    (mosaic_master imports qs_*/ASTROMETRY_API_URL back from here).
+
+    Accepts an astropy.io.fits.Header, a dict of card name → value, or a
+    raw FITS header string (what SASpro stores under meta['wcs_header']).
+    All of those get normalised to Header first via _coerce_to_fits_header
+    so get_wcs_from_header sees the shape it expects — the previous version
+    silently returned None for the string form, which is why a view with a
+    plate solve stored only under 'wcs_header' surfaced as "no WCS".
+    """
+    hdr = _coerce_to_fits_header(header)
+    if hdr is None:
         return None
     try:
         from setiastro.saspro.mosaic_master import get_wcs_from_header
     except Exception:
         return None
     try:
-        return get_wcs_from_header(header)
+        return get_wcs_from_header(hdr)
     except Exception:
         return None
+
+
+def _doc_header_or_wcs(doc) -> "object | None":
+    """
+    Pull a usable FITS header off a SASpro document, checking every key
+    the codebase has been seen to use. Returns None if nothing resembling
+    a header is on the doc.
+
+    Keys tried, in priority order:
+      - metadata['original_header']   (the full FITS header, preferred)
+      - metadata['header']            (older naming)
+      - metadata['fits_header']       (even older naming)
+      - metadata['wcs_header']        (WCS-only slice, what dumping shows
+                                       on live SASpro views — valid for
+                                       WCS-based tooling even though it
+                                       drops the imaging cards)
+      - doc.header / doc.fits_header  (attribute fallback — some doc
+                                       implementations attach the header
+                                       directly rather than through meta)
+
+    This matches StellarAlignmentDialog._doc_header's intent but extends
+    it with 'wcs_header' and the attribute fallbacks, which the WCS
+    registration path needs — views carrying only wcs_header previously
+    looked like "no plate solve".
+    """
+    if doc is None:
+        return None
+    try:
+        meta = (doc.get_metadata() if hasattr(doc, "get_metadata")
+                and callable(doc.get_metadata)
+                else getattr(doc, "metadata", {}) or {})
+    except Exception:
+        meta = {}
+    if isinstance(meta, dict):
+        for k in ("original_header", "header", "fits_header", "wcs_header"):
+            v = meta.get(k)
+            if v:
+                return v
+    # Attribute-level fallback — some doc shapes carry the header directly.
+    for attr in ("header", "fits_header", "original_header"):
+        v = getattr(doc, attr, None)
+        if v:
+            return v
+    return None
 
 
 def _wcs_align_footprint_bbox(tgt_shape, tgt_wcs, ref_wcs, out_shape, pad=16, n=96):
@@ -845,6 +944,148 @@ def _doc_image(doc):
     return img
 
 
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_filename_base(name: str) -> str:
+    """
+    Reduce a display name to a safe filesystem basename (no extension).
+    Collapses runs of unusual characters to a single underscore, trims
+    leading/trailing dots & underscores, and falls back to "view" if the
+    result is empty. Used when spilling views to temp FITS so the output
+    filename stays recognisably tied to the view name.
+    """
+    if not name:
+        return "view"
+    s = _SAFE_NAME_RE.sub("_", str(name)).strip("._")
+    return s or "view"
+
+
+def _read_aligned_fits(path: str) -> tuple[np.ndarray, "Header | None"]:
+    """
+    Read an aligned FITS the worker wrote so we can route it back into a
+    SASpro document. Converts the data to float32 and preserves the FITS
+    header (WCS, filter, etc.) so overwritten / newly-opened docs don't
+    lose that metadata. Matches the integer-normalisation the rest of
+    SASpro uses (uint16/255-scale).
+    """
+    with fits.open(path, memmap=False) as hdul:
+        data = hdul[0].data
+        hdr = hdul[0].header.copy() if hdul[0].header is not None else None
+    if data is None:
+        raise RuntimeError(f"FITS at {path} has no data")
+    arr = np.asarray(data)
+    if arr.dtype == np.uint16:
+        arr = arr.astype(np.float32) / 65535.0
+    elif arr.dtype == np.uint8:
+        arr = arr.astype(np.float32) / 255.0
+    elif arr.dtype != np.float32:
+        arr = arr.astype(np.float32, copy=False)
+    return arr, hdr
+
+
+def _apply_aligned_to_doc(doc, aligned_img: np.ndarray,
+                          aligned_hdr: "Header | None") -> None:
+    """
+    Overwrite a doc's pixels with the aligned result and nudge its
+    metadata so WCS/filter stay in sync. Prefers doc.set_image() (which
+    gives SASpro a hook for undo and change notification); falls back to
+    direct attribute assignment the way _push_image_to_active_view does.
+    """
+    if hasattr(doc, "set_image"):
+        try:
+            # Pass a step_name so the history tracks what happened.
+            doc.set_image(aligned_img, step_name="Star Registration")
+        except TypeError:
+            doc.set_image(aligned_img)
+    else:
+        doc.image = aligned_img
+
+    # Merge header into doc.metadata['original_header'] when the doc holds
+    # a dict-shaped metadata (SASpro convention). Don't invent one — a doc
+    # that doesn't carry metadata stays as-is.
+    md = getattr(doc, "metadata", None)
+    if isinstance(md, dict) and aligned_hdr is not None:
+        md["original_header"] = aligned_hdr
+        md["step_name"] = "Star Registration"
+
+    # Nudge any observers watching the doc.
+    try:
+        if hasattr(doc, "changed"):
+            doc.changed.emit()
+    except Exception:
+        pass
+
+
+def _open_aligned_as_new_doc(parent_window, dm,
+                             aligned_img: np.ndarray,
+                             aligned_hdr: "Header | None",
+                             source_title: str) -> None:
+    """
+    Create a new SASpro document for the aligned result, using the same
+    pattern the stellar-alignment headless path uses: dm.open_array +
+    parent._spawn_subwindow_for.
+    """
+    title = f"{source_title} [Registered]"
+    meta = {
+        "step_name": "Star Registration",
+        "description": f"Aligned from view: {source_title}",
+        "is_mono": bool(aligned_img.ndim == 2 or
+                        (aligned_img.ndim == 3 and aligned_img.shape[2] == 1)),
+    }
+    if aligned_hdr is not None:
+        meta["original_header"] = aligned_hdr
+    newdoc = dm.open_array(aligned_img, metadata=meta, title=title)
+    if parent_window is not None and hasattr(parent_window, "_spawn_subwindow_for"):
+        try:
+            parent_window._spawn_subwindow_for(newdoc)
+        except Exception:
+            pass
+
+
+def _write_view_to_fits(doc, img, out_path: str) -> None:
+    """
+    Write a view's in-memory image to a FITS file for the registration
+    workers to read. Preserves the original header when the doc carries
+    one (so WCS, filter, exposure etc. survive into the aligned output)
+    and normalises the pixel layout to what astroalign/the solve path
+    expects (mono: HxW; RGB: HxWxC, native astropy order).
+
+    This runs on the GUI thread briefly — intentional: the thread/worker
+    processes only consume paths, so the spill has to happen before the
+    thread starts. For typical frame sizes the write is well under a
+    second; for very large stacks it's a few seconds and the progress
+    label already says "Status: Running…" by then.
+    """
+    arr = np.asarray(img)
+    if arr.dtype == np.uint16:
+        arr = arr.astype(np.float32) / 65535.0
+    elif arr.dtype == np.uint8:
+        arr = arr.astype(np.float32) / 255.0
+    elif arr.dtype != np.float32:
+        arr = arr.astype(np.float32, copy=False)
+
+    # Preserve whatever header the doc carries so downstream WCS lookups
+    # work on the aligned output. Uses the same multi-key resolver the
+    # WCS registration path uses — original_header → header → fits_header
+    # → wcs_header (as a string) → attribute fallback. Converts non-Header
+    # shapes to Header via _coerce_to_fits_header. Previously only
+    # original_header was tried; views whose plate solve was stored as the
+    # 'wcs_header' string lost their WCS at spill time, making the
+    # downstream WCS registration refuse the target.
+    hdr = None
+    try:
+        raw_hdr = _doc_header_or_wcs(doc)
+        hdr = _coerce_to_fits_header(raw_hdr)
+    except Exception:
+        hdr = None
+
+    hdu = fits.PrimaryHDU(data=arr, header=hdr)
+    # overwrite=True so a stale spill from a crashed previous run can't
+    # block this write.
+    hdu.writeto(out_path, overwrite=True)
+
+
 def _active_doc_from_parent(parent) -> object | None:
     """Try your helpers to get the active document (same pattern as Plate Solver)."""
     if hasattr(parent, "_active_doc"):
@@ -1191,6 +1432,51 @@ class StellarAlignmentDialog(QDialog):
         run_row.addWidget(make_help_button("star_alignment", self))
         controls.addLayout(run_row)
 
+        # Drag-to-canvas grip (PI-style "new instance"). Deferred import
+        # avoids an import cycle (shortcuts.py imports things back from this
+        # file). Lives on its own row at the bottom of the controls column
+        # so it's unmistakably a drag handle, not a run button. Dropping on
+        # empty canvas creates a shortcut carrying the dialog's current
+        # settings; dropping on an image view runs the tool headlessly
+        # against that view, same wiring every other tool uses.
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            # Icon comes from the shared resources module via staralign_path
+            # — same pattern ABE, Stat Stretch, etc. use (abeicon_path /
+            # statstretchicon_path). Wrapped in try/except because an older
+            # SASpro install that predates the staralign asset shouldn't
+            # crash the dialog; the grip just falls back to its default
+            # glyph when the icon can't be loaded.
+            try:
+                from setiastro.saspro.resources import staralign_path
+                _grip_icon = QIcon(staralign_path)
+                if _grip_icon.isNull():
+                    _grip_icon = QIcon()
+            except Exception:
+                _grip_icon = QIcon()
+
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "star_align",
+                self._collect_preset_for_grip,
+                icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Star Alignment shortcut\n"
+                    "with these exact settings.\n"
+                    "Drop directly on an image view to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            controls.addLayout(drag_row)
+        except Exception:
+            # If shortcuts.py isn't importable in this host (e.g. test
+            # harness), silently skip the grip — the rest of the dialog
+            # still works.
+            pass
+
         self.status_label = QLabel("Status: Ready")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         controls.addWidget(self.status_label)
@@ -1226,6 +1512,111 @@ class StellarAlignmentDialog(QDialog):
 
         # populate combos initially
         self._populate_view_combos()
+
+    def _collect_preset_for_grip(self) -> dict:
+        """
+        Snapshot the dialog's current UI into the preset dict the headless
+        runner (star_alignment_preset.run_star_alignment_via_preset) expects.
+        Called by the PresetDragHandle at drag-start time, so the shortcut /
+        headless apply uses whatever the user has set up THIS SESSION — not
+        a stale saved preset.
+
+        Reference-side mapping (Stellar Alignment is a two-image dialog but
+        the preset model is single-reference → dropped-target):
+          source_from_file_radio checked → ref_mode="file",  ref_file=<path>
+          source_from_view_radio checked → ref_mode="view_name", ref_name=<combo title>
+        When From-View is checked but the combo is empty, fall back to
+        "active" so the headless resolver uses whatever view is active at
+        drop time (safer than emitting an unresolvable view name).
+        """
+        # Reference mapping -------------------------------------------------
+        ref_mode = "active"
+        ref_name = ""
+        ref_file = ""
+        try:
+            if getattr(self, "source_from_file_radio", None) is not None and \
+                    self.source_from_file_radio.isChecked():
+                ref_mode = "file"
+                ref_file = str(getattr(self, "source_file_path", "") or "")
+            elif getattr(self, "source_from_view_radio", None) is not None and \
+                    self.source_from_view_radio.isChecked():
+                title = ""
+                try:
+                    title = str(self.source_view_combo.currentText() or "").strip()
+                except Exception:
+                    title = ""
+                if title:
+                    ref_mode = "view_name"
+                    ref_name = title
+                else:
+                    ref_mode = "active"
+        except Exception:
+            pass
+
+        # Advanced mapping — read directly off the xf_* widgets since those
+        # are the live source of truth, and the two combos (method, model)
+        # are indexed the same way the headless runner's _IDX_TO_* arrays
+        # are.
+        try:
+            method = ("stellar", "wcs", "wcs_stellar")[self.xf_method.currentIndex()]
+        except Exception:
+            method = "stellar"
+        try:
+            model = ("affine", "homography", "poly3", "poly4")[self.xf_model.currentIndex()]
+        except Exception:
+            model = "affine"
+
+        try:
+            det_sigma = float(self.xf_det_sigma.value())
+        except Exception:
+            det_sigma = 12.0
+        try:
+            max_cp = int(self.xf_maxcp.value())
+        except Exception:
+            max_cp = 250
+        try:
+            downsample = int(self.xf_downsample.value())
+        except Exception:
+            downsample = 2
+        try:
+            h_reproj = float(self.xf_h_reproj.value())
+        except Exception:
+            h_reproj = 3.0
+
+        # min_area, limit_stars, min_fwhm, max_ellipticity aren't exposed as
+        # dialog widgets (they live only in the stacking/align/* QSettings
+        # path). Pull them from the live settings so a shortcut carries the
+        # user's current defaults, not hard-coded 10/500/1.2/0.6 placeholders.
+        try:
+            prefs = _align_prefs(self.settings) if hasattr(self, "settings") else _align_prefs(QSettings())
+        except Exception:
+            prefs = {}
+        min_area        = int(prefs.get("minarea",         10))
+        limit_stars     = int(prefs.get("limit_stars",     500))
+        min_fwhm        = float(prefs.get("min_fwhm",        1.2))
+        max_ellipticity = float(prefs.get("max_ellipticity", 0.6))
+
+        return {
+            # Reference + output
+            "ref_mode":   ref_mode,
+            "ref_name":   ref_name,
+            "ref_file":   ref_file,
+            # Default a drag-born preset to Overwrite = False (safer — the
+            # user can toggle it by right-clicking the shortcut and editing
+            # the preset). Matches other tools' grip-born defaults.
+            "overwrite":  False,
+            "downsample": downsample,
+            # Advanced — full set the preset dialog can also edit later.
+            "method":              method,
+            "model":               model,
+            "det_sigma":           det_sigma,
+            "min_area":            min_area,
+            "max_control_points":  max_cp,
+            "h_reproj":            h_reproj,
+            "limit_stars":         limit_stars,
+            "min_fwhm":            min_fwhm,
+            "max_ellipticity":     max_ellipticity,
+        }
 
     def _doc_header(self, doc):
         try:
@@ -4911,23 +5302,303 @@ def _compose_with_ref_translation_homography(H_3x3, x0, y0):
 
 
 # ---------------------------------------------------------------------
+# WCS-based registration thread (plate-solve based, optional stellar refine)
+# ---------------------------------------------------------------------
+# Lives alongside StarRegistrationThread (which is astroalign-only). The dialog
+# dispatches to this thread when the Advanced panel's Method combo is set to
+# "WCS" or "WCS → Stellar refine". The literal implementation is what the user
+# asked for: iterate targets, call the SAME wcs_reproject_align helper that
+# the StellarAlignmentDialog's single-shot WCS button already uses. No new
+# alignment code — just a loop over frames with signalling + file I/O to match
+# StarRegistrationThread's interface so the dialog can swap one for the other
+# transparently (same signals, same file_key_to_current_path mapping, so view
+# routing and the completion dialog work unchanged).
+#
+# "WCS → Stellar" additionally runs a single astroalign.find_transform step on
+# the already-reprojected result against the reference, then a cv2.warpAffine
+# with the correction. That's the same two-pass pattern Stellar Alignment's
+# "wcs_stellar" method uses, done per-frame here.
+class WCSRegistrationThread(QThread):
+    progress_update = pyqtSignal(str)
+    registration_complete = pyqtSignal(bool, str)
+    progress_step = pyqtSignal(int, int)
+
+    def __init__(self, reference_image_path_or_view, files_to_align,
+                 output_directory, method: str = "wcs",
+                 parent_window=None, align_prefs: dict | None = None):
+        """
+        reference_image_path_or_view: path string OR "__ACTIVE_VIEW__".
+        method: "wcs" (reproject only) or "wcs_stellar" (reproject + astroalign refine).
+        """
+        super().__init__()
+        self.reference = reference_image_path_or_view
+        self.parent_window = parent_window
+        self._cancel_event = (getattr(parent_window, "_cancel_event", None)
+                              if parent_window is not None else None)
+        self.original_files = [os.path.normpath(f) for f in files_to_align]
+        self.files_to_align = self.original_files.copy()
+        self.output_directory = os.path.normpath(output_directory)
+        self.method = (method or "wcs").strip().lower()
+        if self.method not in ("wcs", "wcs_stellar"):
+            self.method = "wcs"
+        self.align_prefs = align_prefs or _align_prefs(QSettings())
+        # Same bookkeeping StarRegistrationThread exposes so the dialog's
+        # _route_view_outputs_to_docs() can match aligned outputs back to
+        # view-sourced inputs without caring which thread class produced them.
+        self.file_key_to_current_path = {f: f for f in self.original_files}
+        self.drizzle_xforms = {}
+        self._done = 0
+        self._total = len(self.original_files)
+
+    def _is_cancelled(self) -> bool:
+        try:
+            return bool(self._cancel_event is not None and self._cancel_event.is_set())
+        except Exception:
+            return False
+
+    def _load_ref(self) -> tuple[np.ndarray | None, "object | None"]:
+        """
+        Return (ref_image, ref_header) for the chosen reference. For a
+        view-sourced reference the header comes from the live doc via
+        _doc_header_or_wcs — which tries original_header FIRST but also
+        falls back to the 'wcs_header' key SASpro commonly stores for a
+        plate-solved view. Views previously surfaced as "no plate solve"
+        here when the full FITS header wasn't in the metadata dict but a
+        parsed WCS string was.
+        """
+        if isinstance(self.reference, str) and self.reference == "__ACTIVE_VIEW__":
+            doc = _active_doc_from_parent(self.parent_window)
+            img = _doc_image(doc)
+            hdr = _doc_header_or_wcs(doc)
+            return img, hdr
+        try:
+            img, hdr, _, _ = load_image(self.reference)
+            return img, hdr
+        except Exception:
+            return None, None
+
+    def _out_path_for(self, orig_path: str) -> str:
+        """
+        Mirror _finalize_write_job's output-naming convention (<base>_n_r.fit)
+        so a view spill coming out of this thread lands at the same place the
+        stellar-path output would, and the dialog's view-routing lookup keys
+        on paths identically.
+        """
+        base = os.path.basename(orig_path)
+        name, _ = os.path.splitext(base)
+        if name.endswith("_n"):
+            name = name[:-2]
+        if not name.endswith("_n_r"):
+            name += "_n_r"
+        return os.path.join(self.output_directory, f"{name}.fit")
+
+    def _stellar_refine(self, aligned: np.ndarray, ref2d: np.ndarray) -> np.ndarray:
+        """
+        One-shot astroalign correction on an already-reprojected result.
+        Reuses the same library (and tuning knobs) the stellar path uses —
+        no new algorithm invented. Returns the refined image, or the input
+        unchanged if the correction can't be found (we'd rather keep the
+        WCS result than drop the frame).
+        """
+        try:
+            from setiastro.saspro import astroalign as aa
+            src_gray = (np.mean(aligned, axis=2) if aligned.ndim == 3
+                        else aligned).astype(np.float32)
+            src_gray = np.ascontiguousarray(src_gray)
+            ref_gray = np.ascontiguousarray(ref2d.astype(np.float32))
+            det_sigma = float(self.align_prefs.get("det_sigma", 12.0))
+            minarea   = int(self.align_prefs.get("minarea", 10))
+            tform, _ = aa.find_transform(
+                src_gray, ref_gray,
+                detection_sigma=det_sigma, min_area=minarea,
+            )
+            M = np.asarray(tform.params, dtype=np.float64)[:2, :]
+            H, W = ref2d.shape[:2]
+            if aligned.ndim == 3:
+                refined = np.zeros_like(aligned)
+                for c in range(aligned.shape[2]):
+                    refined[..., c] = cv2.warpAffine(
+                        aligned[..., c], M, (W, H),
+                        flags=cv2.INTER_LANCZOS4,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+                    )
+                return refined
+            return cv2.warpAffine(
+                aligned, M, (W, H),
+                flags=cv2.INTER_LANCZOS4,
+                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+            )
+        except Exception as e:
+            self.progress_update.emit(
+                f"⚠ Stellar refine skipped (keeping WCS result): {e}"
+            )
+            return aligned
+
+    def run(self):
+        try:
+            ref_img, ref_hdr = self._load_ref()
+            if ref_img is None:
+                self.registration_complete.emit(
+                    False, "WCS registration: reference image failed to load.")
+                return
+            ref_wcs = _wcs_from_header(ref_hdr)
+            if ref_wcs is None:
+                self.registration_complete.emit(
+                    False, "WCS registration: reference image has no usable "
+                           "plate solve. Plate-solve it first.")
+                return
+
+            H, W = ref_img.shape[:2]
+            ref2d = (np.mean(ref_img, axis=2) if ref_img.ndim == 3
+                     else ref_img).astype(np.float32, copy=False)
+
+            self._total = len(self.original_files)
+            self._done = 0
+            self.progress_step.emit(self._done, self._total)
+            self.progress_update.emit(
+                f"WCS registration started — method={self.method}, "
+                f"{self._total} frames."
+            )
+
+            os.makedirs(self.output_directory, exist_ok=True)
+
+            n_ok = 0
+            n_fail = 0
+            n_no_wcs = 0
+
+            for orig in self.original_files:
+                if self._is_cancelled():
+                    self.registration_complete.emit(False, "Cancelled by user.")
+                    return
+                k = os.path.normpath(orig)
+                base = os.path.basename(orig)
+                try:
+                    img, hdr, _, _ = load_image(orig)
+                    if img is None:
+                        self.progress_update.emit(f"⚠ {base}: failed to load; skipping.")
+                        n_fail += 1
+                        self._done += 1
+                        self.progress_step.emit(self._done, self._total)
+                        continue
+
+                    tgt_wcs = _wcs_from_header(hdr)
+                    if tgt_wcs is None:
+                        self.progress_update.emit(
+                            f"⚠ {base}: no usable WCS; skipping (plate-solve it first)."
+                        )
+                        n_no_wcs += 1
+                        self._done += 1
+                        self.progress_step.emit(self._done, self._total)
+                        continue
+
+                    self.progress_update.emit(f"WCS reproject: {base}…")
+                    aligned = wcs_reproject_align(
+                        img, tgt_wcs, ref_wcs, (H, W),
+                        tile=512,
+                        progress_cb=None,
+                        log=lambda s: None,
+                    )
+
+                    if self.method == "wcs_stellar":
+                        self.progress_update.emit(f"Stellar refine: {base}…")
+                        aligned = self._stellar_refine(aligned, ref2d)
+
+                    # Write out matching _finalize_write_job's naming scheme
+                    # so downstream (view routing, drizzle sidecars) sees a
+                    # path shaped like the stellar path would have produced.
+                    out_path = self._out_path_for(orig)
+                    out_hdr = hdr.copy() if isinstance(hdr, Header) else Header()
+                    # Record which method produced this frame for later audit.
+                    try:
+                        out_hdr["SASREGMD"] = (self.method.upper(),
+                                               "SASpro registration method")
+                    except Exception:
+                        pass
+                    fits.PrimaryHDU(
+                        data=np.asarray(aligned, dtype=np.float32),
+                        header=out_hdr,
+                    ).writeto(out_path, overwrite=True)
+
+                    self.file_key_to_current_path[k] = out_path
+                    n_ok += 1
+                except Exception as e:
+                    import traceback
+                    self.progress_update.emit(f"⚠ {base}: {e}")
+                    try:
+                        print(traceback.format_exc())
+                    except Exception:
+                        pass
+                    n_fail += 1
+
+                self._done += 1
+                self.progress_step.emit(self._done, self._total)
+
+            parts = [f"WCS registration complete."]
+            parts.append(f"{n_ok}/{self._total} frames written")
+            if n_no_wcs:
+                parts.append(f"{n_no_wcs} skipped (no WCS)")
+            if n_fail:
+                parts.append(f"{n_fail} failed")
+            self.registration_complete.emit(True, " · ".join(parts) + ".")
+
+        except Exception as e:
+            self.registration_complete.emit(False, f"Error: {e}")
+
+
+# ---------------------------------------------------------------------
 # Optional simple batch UI (file-based) — no slots
 # ---------------------------------------------------------------------
 class StarRegistrationWindow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.reference_image = None
-        self.reference_image_path = None  # or "__ACTIVE_VIEW__"
-        self.files_to_align = []
+        # One of:
+        #   None                              — nothing selected yet
+        #   "<path>"                          — a FITS/image file on disk
+        #   "__VIEW__"                        — a chosen SASpro view
+        #                                       (actual doc in self._reference_doc)
+        #   "__ACTIVE_VIEW__" (deprecated)    — the live active view;
+        #                                       kept as a sentinel the thread
+        #                                       layer still understands for
+        #                                       back-compat with callers that
+        #                                       set it directly.
+        self.reference_image_path = None
+        # Set only when reference_image_path == "__VIEW__". The dialog spills
+        # this doc's pixels to a temp FITS at start_registration time (so WCS
+        # headers survive and the thread sees a plain file path), rather than
+        # relying on "active view" at run-time, which would race with the user
+        # clicking other views between selection and Start.
+        self._reference_doc = None
+        # Mixed-target list. Each entry is either a path (str) OR a dict
+        # {"kind": "view", "doc": <doc>, "title": <display name>}. The dialog
+        # keeps this shape; start_registration spills every view entry to a
+        # temp FITS file (feeding the multiprocess workers the same way
+        # file-path entries do) and the thread only ever sees paths.
+        self.files_to_align: list = []
+        # Scratch directory holding view-spill FITS files for one run. Set
+        # in start_registration, torn down in registration_finished so a
+        # cancelled or crashed run doesn't leak gigabytes of spill images.
+        self._view_spill_dir: str | None = None
+        # Per-run bookkeeping: {spill_input_path_normcased: {"doc": <doc>,
+        # "title": <str>, "spill_path": <str>}}. Lets registration_finished
+        # match each aligned output file back to the source doc so the
+        # pixels can be pushed into it (or opened as a new doc) and the
+        # on-disk output file deleted — no "final files" leak into user
+        # folders from view-sourced targets.
+        self._view_spill_by_input: dict[str, dict] = {}
+        # True while the current run's output_directory is the view-spill
+        # scratch dir (no file targets at all). Lets registration_finished
+        # drop the whole dir without worrying about user files.
+        self._output_dir_is_scratch: bool = False
         self.output_directory = None
         self.thread = None
         self.parent_window = parent
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
-            self.setWindowFlag(Qt.WindowType.Tool, True)  
+            self.setWindowFlag(Qt.WindowType.Tool, True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)        
+        #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.initUI()
 
         self._prog_timer = QTimer(self)
@@ -4948,31 +5619,59 @@ class StarRegistrationWindow(QWidget):
         self.ref_path_label = QLabel("No reference selected")
         self.ref_path_label.setWordWrap(True)
 
-        self.select_ref_active_button = QPushButton("From Active View")
-        self.select_ref_active_button.clicked.connect(self.select_reference_from_active_view)
+        self.select_ref_view_button = QPushButton("From View…")
+        self.select_ref_view_button.setToolTip(
+            "Pick any open view as the reference image. Replaced the former\n"
+            "'From Active View' shortcut so you can choose a specific view "
+            "without having to activate it first — matches the target-side\n"
+            "'From Views…' chooser."
+        )
+        self.select_ref_view_button.clicked.connect(self.select_reference_from_view)
 
         self.select_ref_file_button = QPushButton("From File")
         self.select_ref_file_button.clicked.connect(self.select_reference_from_file)
 
         ref_layout.addWidget(self.ref_label)
         ref_layout.addWidget(self.ref_path_label)
-        ref_layout.addWidget(self.select_ref_active_button)
+        ref_layout.addWidget(self.select_ref_view_button)
         ref_layout.addWidget(self.select_ref_file_button)
 
-        # File selection
+        # File selection — plus "From Views" so the user can register images
+        # that are open as documents in SASpro but have never been saved to
+        # disk (a freshly stacked combination, a work-in-progress). Views
+        # are spilled to temp FITS at start-registration time so the
+        # downstream multiprocess workers can read them exactly like any
+        # file-path target.
         file_selection_layout = QHBoxLayout()
         self.add_files_button = QPushButton("Select Files")
         self.add_files_button.clicked.connect(self.select_files_to_align)
         self.add_directory_button = QPushButton("Select Directory")
         self.add_directory_button.clicked.connect(self.select_directory_to_align)
+        self.add_views_button = QPushButton("From Views…")
+        self.add_views_button.setToolTip(
+            "Add one or more open views as alignment targets.\n"
+            "The view's current pixels are used (not whatever is on disk).\n"
+            "Each selected view is spilled to a temp FITS at run time and "
+            "aligned like any other target. The aligned result is routed "
+            "back into SASpro (overwrite the source view OR open as a new "
+            "view, see 'View output' below) — nothing is left behind on disk."
+        )
+        self.add_views_button.clicked.connect(self.select_views_to_align)
         file_selection_layout.addWidget(self.add_files_button)
         file_selection_layout.addWidget(self.add_directory_button)
+        file_selection_layout.addWidget(self.add_views_button)
 
-        # Tree of files
+        # Tree of files + views to align. Column 0 is the display label,
+        # column 1 is a tiny "Source" badge ("File" / "View") so the user
+        # can tell at a glance which entries are open-doc targets.
         self.tree_widget = QTreeWidget()
-        self.tree_widget.setColumnCount(1)
-        self.tree_widget.setHeaderLabels(["Files to Align"])
+        self.tree_widget.setColumnCount(2)
+        self.tree_widget.setHeaderLabels(["Targets to Align", "Source"])
         self.tree_widget.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        try:
+            self.tree_widget.setColumnWidth(1, 60)
+        except Exception:
+            pass
 
         tree_buttons_layout = QHBoxLayout()
         self.remove_selected_button = QPushButton("Remove Selected")
@@ -4982,7 +5681,10 @@ class StarRegistrationWindow(QWidget):
         tree_buttons_layout.addWidget(self.remove_selected_button)
         tree_buttons_layout.addWidget(self.clear_tree_button)
 
-        # Output directory
+        # Output directory. Required when there are FILE targets (the
+        # aligned files land here). When every target is a view it becomes
+        # optional — a per-run scratch dir takes its place and nothing is
+        # written to a user folder.
         output_layout = QHBoxLayout()
         self.output_label = QLabel("Output Directory:")
         self.output_path_label = QLabel("No directory selected")
@@ -4992,6 +5694,310 @@ class StarRegistrationWindow(QWidget):
         output_layout.addWidget(self.output_label)
         output_layout.addWidget(self.output_path_label)
         output_layout.addWidget(self.select_output_button)
+
+        # ---- Advanced alignment settings --------------------------------
+        # Mirror the knobs the sibling Stellar Alignment dialog exposes, so
+        # a Registration user can tune per-run without opening Stacking
+        # Suite's prefs panel. Values are seeded from _align_prefs() (same
+        # loader every other tool uses — stacking/align/* with legacy
+        # align/* fallback), and get WRITTEN BACK to stacking/align/* on
+        # Start so changes propagate to the rest of the suite — matching
+        # Stellar Alignment's save-on-run behaviour. A small italic note
+        # calls that out so a user editing here doesn't think it's dialog-
+        # local.
+        _prefs = _align_prefs(QSettings())
+
+        self.advanced_group = QGroupBox("Advanced — Alignment Settings")
+        self.advanced_group.setCheckable(True)
+        self.advanced_group.setChecked(False)   # collapsed by default
+        _adv = QFormLayout(self.advanced_group)
+        _adv.setContentsMargins(10, 6, 10, 6)
+        _adv.setVerticalSpacing(4)
+
+        # Method — same three choices as Stellar Alignment, same persistence
+        # key (stacking/align/method). Dispatches which thread runs:
+        #   stellar       → StarRegistrationThread (astroalign, N-pass)
+        #   wcs           → WCSRegistrationThread (reproject only)
+        #   wcs_stellar   → WCSRegistrationThread (reproject + astroalign refine)
+        # The two WCS methods require every target AND the reference to have
+        # a valid plate solve in their FITS header — the thread refuses the
+        # frame when WCS isn't there, and reports the skipped count in the
+        # completion message.
+        self.cmb_adv_method = QComboBox()
+        self.cmb_adv_method.addItems([
+            "Stellar (astroalign)",
+            "WCS (plate-solve reproject)",
+            "WCS → Stellar refine",
+        ])
+        _saved_method = str(QSettings().value("stacking/align/method", "stellar")).lower()
+        self.cmb_adv_method.setCurrentIndex(
+            {"stellar": 0, "wcs": 1, "wcs_stellar": 2}.get(_saved_method, 0)
+        )
+        self.cmb_adv_method.setToolTip(
+            "How frames get aligned to the reference:\n"
+            "  • Stellar: fast, uses detected stars (astroalign). No WCS needed.\n"
+            "  • WCS: reprojects each frame via its own plate solve (SIP\n"
+            "    preserved) onto the reference pixel grid. Requires every\n"
+            "    frame + reference to be plate-solved.\n"
+            "  • WCS → Stellar: WCS first for the coarse alignment, then one\n"
+            "    astroalign correction pass on top. Best accuracy when WCS\n"
+            "    is available but imperfect."
+        )
+        _adv.addRow("Method:", self.cmb_adv_method)
+
+        # Transform model — same wording and index order as Stellar
+        # Alignment so a user who learned the names there isn't surprised.
+        self.cmb_adv_model = QComboBox()
+        self.cmb_adv_model.addItems([
+            "Affine (fast)",
+            "Homography (projective)",
+            "Polynomial (order 3)",
+            "Polynomial (order 4)",
+        ])
+        _MODEL_TO_IDX = {"affine": 0, "homography": 1, "poly3": 2, "poly4": 3}
+        self.cmb_adv_model.setCurrentIndex(_MODEL_TO_IDX.get(_prefs["model"], 0))
+        self.cmb_adv_model.setToolTip(
+            "Transform model used for final warp.\n"
+            " • Affine: fast; good for well-matched optics.\n"
+            " • Homography: handles perspective shear (e.g. meridian flips)\n"
+            " • Polynomial 3/4: fits radial / mild field distortion."
+        )
+        _adv.addRow("Model:", self.cmb_adv_model)
+
+        self.sp_adv_downsample = QSpinBox()
+        self.sp_adv_downsample.setRange(1, 8)
+        self.sp_adv_downsample.setValue(int(_prefs["downsample"]))
+        self.sp_adv_downsample.setToolTip(
+            "Downsample factor used ONLY for the solve step. Lower = finer\n"
+            "grid, slower; higher = faster but less precise."
+        )
+        _adv.addRow("Solve downsample:", self.sp_adv_downsample)
+
+        self.sp_adv_detsigma = QDoubleSpinBox()
+        self.sp_adv_detsigma.setRange(1.0, 200.0)
+        self.sp_adv_detsigma.setDecimals(1)
+        self.sp_adv_detsigma.setSingleStep(1.0)
+        self.sp_adv_detsigma.setValue(float(_prefs["det_sigma"]))
+        self.sp_adv_detsigma.setToolTip(
+            "Star detection threshold (σ above background). Lower = more\n"
+            "stars (may include noise). Higher = only bright stars."
+        )
+        _adv.addRow("Detection threshold (σ):", self.sp_adv_detsigma)
+
+        self.sp_adv_limitstars = QSpinBox()
+        self.sp_adv_limitstars.setRange(50, 5000)
+        self.sp_adv_limitstars.setSingleStep(50)
+        self.sp_adv_limitstars.setValue(int(_prefs["limit_stars"]))
+        self.sp_adv_limitstars.setToolTip(
+            "Hard cap on stars used for matching per frame. 500 is enough\n"
+            "for most fields; crowded fields may benefit from more."
+        )
+        _adv.addRow("Max stars (limit):", self.sp_adv_limitstars)
+
+        self.sp_adv_minarea = QSpinBox()
+        self.sp_adv_minarea.setRange(1, 100)
+        self.sp_adv_minarea.setValue(int(_prefs["minarea"]))
+        self.sp_adv_minarea.setToolTip(
+            "Minimum connected-pixel area for a star detection. Smaller\n"
+            "numbers include faint/undersampled stars; larger numbers\n"
+            "reject noise and hot pixels."
+        )
+        _adv.addRow("Min area (px):", self.sp_adv_minarea)
+
+        self.sp_adv_minfwhm = QDoubleSpinBox()
+        self.sp_adv_minfwhm.setRange(0.1, 10.0)
+        self.sp_adv_minfwhm.setDecimals(2)
+        self.sp_adv_minfwhm.setSingleStep(0.1)
+        self.sp_adv_minfwhm.setValue(float(_prefs["min_fwhm"]))
+        self.sp_adv_minfwhm.setToolTip(
+            "Reject detections narrower than this FWHM — filters out\n"
+            "hot pixels and cosmic ray hits that imitate point sources."
+        )
+        _adv.addRow("Min FWHM (px):", self.sp_adv_minfwhm)
+
+        self.sp_adv_maxellip = QDoubleSpinBox()
+        self.sp_adv_maxellip.setRange(0.0, 1.0)
+        self.sp_adv_maxellip.setDecimals(2)
+        self.sp_adv_maxellip.setSingleStep(0.05)
+        self.sp_adv_maxellip.setValue(float(_prefs["max_ellipticity"]))
+        self.sp_adv_maxellip.setToolTip(
+            "Reject detections more elliptical than this (1 - b/a).\n"
+            "Lower = strict (rejects slightly trailed stars); 0.6 is a\n"
+            "forgiving default that keeps most real stars."
+        )
+        _adv.addRow("Max ellipticity:", self.sp_adv_maxellip)
+
+        self.sp_adv_hreproj = QDoubleSpinBox()
+        self.sp_adv_hreproj.setRange(0.1, 10.0)
+        self.sp_adv_hreproj.setDecimals(2)
+        self.sp_adv_hreproj.setSingleStep(0.1)
+        self.sp_adv_hreproj.setValue(float(_prefs["h_reproj"]))
+        self.sp_adv_hreproj.setToolTip(
+            "RANSAC inlier threshold (px) used ONLY when Model = Homography."
+        )
+        _adv.addRow("Homog. RANSAC reproj (px):", self.sp_adv_hreproj)
+
+        self.sp_adv_timeout = QSpinBox()
+        self.sp_adv_timeout.setRange(30, 3600)
+        self.sp_adv_timeout.setSingleStep(30)
+        self.sp_adv_timeout.setValue(int(_prefs["timeout_per_job_sec"]))
+        self.sp_adv_timeout.setSuffix(" s")
+        self.sp_adv_timeout.setToolTip(
+            "Hard timeout for a single per-frame solve job. Raise for very\n"
+            "large frames (6000+ px wide) or crowded fields where solving\n"
+            "legitimately takes longer; a stuck frame is still killed."
+        )
+        _adv.addRow("Per-frame timeout:", self.sp_adv_timeout)
+
+        # Trial Detect — same spirit as the Stellar Alignment dialog's but
+        # adapted to Registration's N-target model: runs sep detection with
+        # the CURRENT Detection σ against the REFERENCE and the FIRST target
+        # (file or view), so the user can dial σ in before kicking off a
+        # long batch run. If either count is way off (0, or tens of
+        # thousands), the colour-coded label makes it obvious — same taxonomy
+        # of warnings Stellar Alignment uses so the UX is consistent.
+        _trial_row = QHBoxLayout()
+        self.btn_trial_detect = QPushButton("🔍 Trial Detect")
+        self.btn_trial_detect.setFixedHeight(26)
+        self.btn_trial_detect.setToolTip(
+            "Run star detection on both the reference and the FIRST target "
+            "with the current Detection σ, and report how many stars were "
+            "found in each. A quick way to sanity-check σ before starting "
+            "a long batch run."
+        )
+        self.btn_trial_detect.clicked.connect(self._run_trial_detect)
+        self._lbl_trial_result = QLabel("")
+        self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
+        self._lbl_trial_result.setWordWrap(True)
+        _trial_row.addWidget(self.btn_trial_detect)
+        _trial_row.addWidget(self._lbl_trial_result, 1)
+        _adv.addRow("", _trial_row)
+
+        # Reset-to-defaults + stacking-suite share note
+        _adv_btn_row = QHBoxLayout()
+        self.btn_adv_reset = QPushButton("Reset to Stacking Suite Defaults")
+        self.btn_adv_reset.setToolTip(
+            "Re-read the Stacking Suite's current alignment settings and\n"
+            "load them into these fields. Does NOT save — Start Registration\n"
+            "is what persists any further edits back to Stacking Suite."
+        )
+        self.btn_adv_reset.clicked.connect(self._adv_reload_defaults)
+        _adv_btn_row.addWidget(self.btn_adv_reset)
+        _adv_btn_row.addStretch(1)
+        _adv.addRow("", _adv_btn_row)
+
+        _adv_note = QLabel(
+            "ℹ  These settings are shared with Stacking Suite and the Stellar "
+            "Alignment dialog. Starting Registration also saves changes back."
+        )
+        _adv_note.setStyleSheet("color:#888;font-size:10px;font-style:italic;")
+        _adv_note.setWordWrap(True)
+        _adv.addRow("", _adv_note)
+
+        # Enable/disable H.-RANSAC-reproj by Model = Homography. Matches
+        # Stellar Alignment's behaviour so the UI feels the same.
+        def _adv_toggle_hreproj():
+            is_h = (self.cmb_adv_model.currentIndex() == 1)
+            self.sp_adv_hreproj.setEnabled(is_h)
+            try:
+                lab = _adv.labelForField(self.sp_adv_hreproj)
+                if lab is not None:
+                    lab.setEnabled(is_h)
+            except Exception:
+                pass
+        _adv_toggle_hreproj()
+        self.cmb_adv_model.currentIndexChanged.connect(lambda _ : _adv_toggle_hreproj())
+
+        # Enable/disable the stellar-only knobs based on Method. For a pure
+        # WCS run none of the astroalign tuning applies, so grey those out
+        # instead of letting the user tweak values that will be ignored.
+        # For "WCS → Stellar refine", det_sigma + minarea DO apply (the refine
+        # step uses them), so those stay enabled.
+        _STELLAR_ONLY_WIDGETS = (
+            self.cmb_adv_model, self.sp_adv_downsample,
+            self.sp_adv_limitstars, self.sp_adv_minfwhm,
+            self.sp_adv_maxellip, self.sp_adv_hreproj,
+            self.sp_adv_timeout,
+        )
+        _STELLAR_REFINE_WIDGETS = (self.sp_adv_detsigma, self.sp_adv_minarea)
+
+        def _adv_toggle_method():
+            idx = self.cmb_adv_method.currentIndex()
+            uses_stellar_tuning = (idx == 0)  # Stellar only
+            uses_refine_tuning  = (idx == 2)  # WCS → Stellar
+            for w in _STELLAR_ONLY_WIDGETS:
+                w.setEnabled(uses_stellar_tuning)
+                try:
+                    lab = _adv.labelForField(w)
+                    if lab is not None:
+                        lab.setEnabled(uses_stellar_tuning)
+                except Exception:
+                    pass
+            # det_sigma + minarea stay active for Stellar OR WCS→Stellar.
+            for w in _STELLAR_REFINE_WIDGETS:
+                enabled = uses_stellar_tuning or uses_refine_tuning
+                w.setEnabled(enabled)
+                try:
+                    lab = _adv.labelForField(w)
+                    if lab is not None:
+                        lab.setEnabled(enabled)
+                except Exception:
+                    pass
+            # Re-apply the H-RANSAC rule within the Stellar case so the
+            # Homography-only field stays disabled unless both conditions hold.
+            if uses_stellar_tuning:
+                _adv_toggle_hreproj()
+        _adv_toggle_method()
+        self.cmb_adv_method.currentIndexChanged.connect(lambda _ : _adv_toggle_method())
+
+        # Collapse the group when unchecked so it visually gets out of the
+        # way. Qt's checkable QGroupBox already disables child widgets on
+        # uncheck; we hide them too so the dialog shrinks.
+        def _adv_toggle_visible(checked: bool):
+            for i in range(_adv.rowCount()):
+                lab_item = _adv.itemAt(i, QFormLayout.ItemRole.LabelRole)
+                fld_item = _adv.itemAt(i, QFormLayout.ItemRole.FieldRole)
+                for it in (lab_item, fld_item):
+                    if it is None:
+                        continue
+                    w = it.widget()
+                    lay = it.layout()
+                    if w is not None:
+                        w.setVisible(checked)
+                    elif lay is not None:
+                        for j in range(lay.count()):
+                            sw = lay.itemAt(j).widget()
+                            if sw is not None:
+                                sw.setVisible(checked)
+        _adv_toggle_visible(False)
+        self.advanced_group.toggled.connect(_adv_toggle_visible)
+
+        # View-output mode — only meaningful when at least one view target is
+        # on the list. Overwrite replaces the source view's pixels in place
+        # (fast, no new document clutter); New view opens the aligned result
+        # as a fresh document (keeps the original intact for comparison). The
+        # group is shown or hidden by _refresh_view_output_group as the user
+        # adds/removes view targets, so it never appears for pure file runs.
+        self.view_output_group = QGroupBox("View output (how aligned views are returned to SASpro)")
+        _vo_lay = QHBoxLayout(self.view_output_group)
+        self.radio_view_overwrite = QRadioButton("Overwrite source view")
+        self.radio_view_newdoc    = QRadioButton("Open as new view")
+        self.radio_view_overwrite.setChecked(True)
+        self.radio_view_overwrite.setToolTip(
+            "Replace the source view's pixels with the aligned result.\n"
+            "Fast and in-place — the original view is modified. Use when\n"
+            "you don't need the pre-aligned pixels any more."
+        )
+        self.radio_view_newdoc.setToolTip(
+            "Open the aligned result as a new view, leaving the original\n"
+            "untouched. Use when you want to compare before/after or keep\n"
+            "the pre-aligned version around."
+        )
+        _vo_lay.addWidget(self.radio_view_overwrite)
+        _vo_lay.addWidget(self.radio_view_newdoc)
+        _vo_lay.addStretch(1)
+        # Hidden until a view target is added.
+        self.view_output_group.setVisible(False)
 
         # Progress + start
         self.progress_label = QLabel("Status: Waiting…")
@@ -5007,6 +6013,8 @@ class StarRegistrationWindow(QWidget):
         main_layout.addWidget(self.tree_widget)
         main_layout.addLayout(tree_buttons_layout)
         main_layout.addLayout(output_layout)
+        main_layout.addWidget(self.advanced_group)
+        main_layout.addWidget(self.view_output_group)
         start_row = QHBoxLayout()
         start_row.addWidget(self.start_button, 1)
         start_row.addWidget(make_help_button("star_registration", self))
@@ -5034,9 +6042,72 @@ class StarRegistrationWindow(QWidget):
 
 
     # Reference selection (no slots)
-    def select_reference_from_active_view(self):
-        self.reference_image_path = "__ACTIVE_VIEW__"
-        self.ref_path_label.setText("(Active View)")
+    def select_reference_from_view(self):
+        """
+        Pop a single-select chooser listing every open view and let the
+        user pick which one is the reference. Replaces the former "From
+        Active View" shortcut: more explicit, and avoids the subtle bug
+        where the user clicks the button, switches to a different view to
+        inspect a target, then presses Start — "Active View" would resolve
+        to whatever happened to be active at Start, not what they intended.
+
+        The chosen doc is remembered on self._reference_doc so a run-time
+        active-view switch can't change what gets registered against.
+        """
+        docs = self._enumerate_open_docs()
+        docs = [(t, d) for (t, d) in docs if _doc_image(d) is not None]
+        if not docs:
+            QMessageBox.information(
+                self, "No Views",
+                "No open views have image data available to use as a reference.\n\n"
+                "Open one or more images first, then try again."
+            )
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Pick Reference View")
+        dlg.setMinimumWidth(360)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Select the reference view (every target is aligned to this one):"))
+        lst = QListWidget(dlg)
+        lst.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        # Pre-select the currently-active view when possible so a quick OK
+        # with no clicking reproduces the old "From Active View" behaviour.
+        active = _active_doc_from_parent(self.parent_window)
+        pre_row = 0
+        for i, (title, doc) in enumerate(docs):
+            item = QListWidgetItem(title + ("  (active)" if doc is active else ""))
+            item.setData(Qt.ItemDataRole.UserRole, doc)
+            lst.addItem(item)
+            if doc is active:
+                pre_row = i
+        lst.setCurrentRow(pre_row)
+        lay.addWidget(lst)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dlg,
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        # Double-click = pick + OK, matches typical QListWidget UX.
+        lst.itemDoubleClicked.connect(lambda _: dlg.accept())
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        it = lst.currentItem()
+        if it is None:
+            return
+        doc = it.data(Qt.ItemDataRole.UserRole)
+        if doc is None:
+            return
+
+        title = _fmt_doc_title(doc)
+        self.reference_image_path = "__VIEW__"
+        self._reference_doc = doc
+        self.ref_path_label.setText(f"View: {title}")
 
     def select_reference_from_file(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -5045,9 +6116,260 @@ class StarRegistrationWindow(QWidget):
         )
         if file_path:
             self.reference_image_path = file_path
+            self._reference_doc = None  # file supersedes any prior view pick
             self.ref_path_label.setText(os.path.basename(file_path))
 
     # File selection
+    def _add_file_entry(self, file_path: str) -> bool:
+        """Append a file-path target to the tree if not already present.
+        Returns True if a new row was added."""
+        # Dedup against the string paths currently in the list; view entries
+        # are dicts and never match a file-path lookup.
+        for existing in self.files_to_align:
+            if isinstance(existing, str) and existing == file_path:
+                return False
+        self.files_to_align.append(file_path)
+        item = QTreeWidgetItem([os.path.basename(file_path), "File"])
+        item.setToolTip(0, file_path)
+        self.tree_widget.addTopLevelItem(item)
+        self._refresh_view_output_group()
+        return True
+
+    def _has_view_targets(self) -> bool:
+        return any(isinstance(e, dict) and e.get("kind") == "view"
+                   for e in self.files_to_align)
+
+    def _has_file_targets(self) -> bool:
+        return any(isinstance(e, str) for e in self.files_to_align)
+
+    def _refresh_view_output_group(self):
+        """
+        Show the View-output radios only when at least one view target is
+        on the list — pure file runs don't need the extra UI and seeing it
+        with no bearing on the run would be confusing.
+        """
+        try:
+            self.view_output_group.setVisible(self._has_view_targets())
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # Advanced alignment settings
+    # ------------------------------------------------------------------
+    _ADV_IDX_TO_MODEL = ("affine", "homography", "poly3", "poly4")
+
+    def _collect_align_prefs(self) -> dict:
+        """
+        Snapshot the Advanced panel into the dict shape that
+        StarRegistrationThread (and _align_prefs) expects. Values returned
+        here are also what gets written back to QSettings on Start, so this
+        is the one place that defines "what the UI is currently set to."
+        """
+        return {
+            "model":       self._ADV_IDX_TO_MODEL[self.cmb_adv_model.currentIndex()],
+            "max_cp":      250,  # unused by registration; keep key for schema parity
+            "downsample":  int(self.sp_adv_downsample.value()),
+            "h_reproj":    float(self.sp_adv_hreproj.value()),
+            "det_sigma":   float(self.sp_adv_detsigma.value()),
+            "limit_stars": int(self.sp_adv_limitstars.value()),
+            "minarea":     int(self.sp_adv_minarea.value()),
+            "timeout_per_job_sec": int(self.sp_adv_timeout.value()),
+            "min_fwhm":        float(self.sp_adv_minfwhm.value()),
+            "max_ellipticity": float(self.sp_adv_maxellip.value()),
+        }
+
+    def _adv_reload_defaults(self):
+        """
+        Repopulate the Advanced fields from whatever _align_prefs() reads
+        off QSettings right now. Used by the Reset button and when the
+        dialog opens. Also re-reads the Method key (stacking/align/method)
+        and refreshes the enabled-fields gating accordingly.
+        """
+        p = _align_prefs(QSettings())
+        _MODEL_TO_IDX = {"affine": 0, "homography": 1, "poly3": 2, "poly4": 3}
+        self.cmb_adv_model.setCurrentIndex(_MODEL_TO_IDX.get(p["model"], 0))
+        self.sp_adv_downsample.setValue(int(p["downsample"]))
+        self.sp_adv_hreproj.setValue(float(p["h_reproj"]))
+        self.sp_adv_detsigma.setValue(float(p["det_sigma"]))
+        self.sp_adv_limitstars.setValue(int(p["limit_stars"]))
+        self.sp_adv_minarea.setValue(int(p["minarea"]))
+        self.sp_adv_timeout.setValue(int(p["timeout_per_job_sec"]))
+        self.sp_adv_minfwhm.setValue(float(p["min_fwhm"]))
+        self.sp_adv_maxellip.setValue(float(p["max_ellipticity"]))
+        _saved_method = str(QSettings().value("stacking/align/method", "stellar")).lower()
+        self.cmb_adv_method.setCurrentIndex(
+            {"stellar": 0, "wcs": 1, "wcs_stellar": 2}.get(_saved_method, 0)
+        )
+
+    _ADV_IDX_TO_METHOD = ("stellar", "wcs", "wcs_stellar")
+
+    def _current_method(self) -> str:
+        idx = self.cmb_adv_method.currentIndex()
+        return self._ADV_IDX_TO_METHOD[idx] if 0 <= idx < 3 else "stellar"
+
+    def _save_align_prefs(self, prefs: dict) -> None:
+        """
+        Write the Advanced panel back to QSettings under stacking/align/*
+        — same keys the Stellar Alignment dialog and Stacking Suite use.
+        Called on Start so Registration edits propagate to the rest of the
+        suite (matches Stellar Alignment's save-on-run).
+        """
+        s = QSettings()
+        s.setValue("stacking/align/method",      self._current_method())
+        s.setValue("stacking/align/model",       str(prefs["model"]))
+        s.setValue("stacking/align/downsample",  int(prefs["downsample"]))
+        s.setValue("stacking/align/h_reproj",    float(prefs["h_reproj"]))
+        s.setValue("stacking/align/det_sigma",   float(prefs["det_sigma"]))
+        s.setValue("stacking/align/limit_stars", int(prefs["limit_stars"]))
+        s.setValue("stacking/align/minarea",     int(prefs["minarea"]))
+        s.setValue("stacking/align/timeout_per_job_sec",
+                   int(prefs["timeout_per_job_sec"]))
+        s.setValue("stacking/align/min_fwhm",        float(prefs["min_fwhm"]))
+        s.setValue("stacking/align/max_ellipticity", float(prefs["max_ellipticity"]))
+
+    # ------------------------------------------------------------------
+    # Trial detect
+    # ------------------------------------------------------------------
+    def _load_trial_image_from_reference(self) -> tuple[np.ndarray | None, str]:
+        """
+        Return (ref_image_2D_or_3D, label) for whatever reference the user
+        currently has selected. Three branches, matching how
+        start_registration resolves the reference:
+          - "__VIEW__"        : chosen doc (self._reference_doc, pixels read live)
+          - "__ACTIVE_VIEW__" : deprecated — resolves to the currently active doc
+          - "<path>"          : a FITS/image file on disk
+        """
+        rp = self.reference_image_path
+        if rp == "__VIEW__" and self._reference_doc is not None:
+            img = _doc_image(self._reference_doc)
+            title = _fmt_doc_title(self._reference_doc)
+            return img, f"Reference view ({title})"
+        if rp == "__ACTIVE_VIEW__":
+            img, _, _ = _get_image_from_active_view(self.parent_window)
+            return img, "Reference (active view)"
+        if isinstance(rp, str) and rp:
+            try:
+                img, _, _, _ = load_image(rp)
+                return img, f"Reference ({os.path.basename(rp)})"
+            except Exception:
+                return None, "Reference"
+        return None, "Reference"
+
+    def _load_trial_image_from_first_target(self) -> tuple[np.ndarray | None, str]:
+        """
+        Return (target_image, label) for the FIRST target on the list.
+        Views don't need spilling here — detection just needs numpy pixels
+        and _doc_image gives us that directly. File entries get loaded via
+        load_image, same as the thread would.
+        """
+        if not self.files_to_align:
+            return None, "First target"
+
+        first = self.files_to_align[0]
+        if isinstance(first, dict) and first.get("kind") == "view":
+            doc = first.get("doc")
+            img = _doc_image(doc)
+            title = first.get("title") or "view"
+            return img, f"First target ({title})"
+
+        if isinstance(first, str):
+            try:
+                img, _, _, _ = load_image(first)
+                return img, f"First target ({os.path.basename(first)})"
+            except Exception:
+                return None, f"First target ({os.path.basename(first)})"
+
+        return None, "First target"
+
+    def _run_trial_detect(self):
+        """
+        Run sep-based star detection on the reference and the first target
+        with the CURRENT Advanced-panel σ, and show counts in the little
+        label next to the button. The warning taxonomy (0 stars, very high
+        counts, pixstack exhaustion) is copied from Stellar Alignment's
+        trial detect so the two tools report problems the same way.
+
+        Pure-WCS runs don't use star detection, so Trial Detect would be
+        meaningless for them; return a short info note instead of running.
+        """
+        if self._current_method() == "wcs":
+            self._lbl_trial_result.setStyleSheet("color:#888;font-size:10px;")
+            self._lbl_trial_result.setText(
+                "Trial detect doesn't apply to pure WCS alignment "
+                "(no stars are detected — reprojection uses the plate solve)."
+            )
+            return
+
+        import sep
+        thresh = float(self.sp_adv_detsigma.value())
+
+        self.btn_trial_detect.setEnabled(False)
+        self._lbl_trial_result.setText("Detecting…")
+        QApplication.processEvents()
+
+        try:
+            ref_img, ref_label = self._load_trial_image_from_reference()
+            tgt_img, tgt_label = self._load_trial_image_from_first_target()
+        except Exception as e:
+            self._lbl_trial_result.setText(f"⚠ Could not load images: {e}")
+            self.btn_trial_detect.setEnabled(True)
+            return
+
+        if ref_img is None and tgt_img is None:
+            self._lbl_trial_result.setText(
+                "⚠ Select a reference and at least one target first."
+            )
+            self.btn_trial_detect.setEnabled(True)
+            return
+
+        def _count_stars(img):
+            if img is None:
+                return None, None
+            gray = (np.mean(img, axis=2).astype(np.float32)
+                    if img.ndim == 3 else img.astype(np.float32))
+            gray = np.ascontiguousarray(gray)
+            try:
+                sep.set_extract_pixstack(5000000)
+                bkg = sep.Background(gray)
+                objs = sep.extract(gray - bkg.back(),
+                                   thresh * float(bkg.globalrms))
+                return len(objs), None
+            except Exception as e:
+                err = str(e)
+                if "pixel buffer full" in err or "pixstack" in err.lower():
+                    return None, f"too many pixels at σ={thresh:.1f} — raise threshold"
+                return None, err
+
+        def _fmt(label, n, err):
+            if err:
+                return f"⚠ {label}: {err}"
+            if n is None:
+                return f"{label}: —"
+            if n == 0:
+                return f"⚠ {label}: 0 stars — lower threshold"
+            if n > 50000:
+                return f"⚠ {label}: {n:,} (very high — raise threshold)"
+            if n > 10000:
+                return f"⚠ {label}: {n:,} (high — consider raising threshold)"
+            return f"✓ {label}: {n:,} stars"
+
+        ref_n, ref_err = _count_stars(ref_img)
+        tgt_n, tgt_err = _count_stars(tgt_img)
+
+        parts = []
+        if ref_img is not None:
+            parts.append(_fmt(ref_label, ref_n, ref_err))
+        if tgt_img is not None:
+            parts.append(_fmt(tgt_label, tgt_n, tgt_err))
+
+        msg = "  |  ".join(parts) if parts else "(no images to test)"
+        has_warning = "⚠" in msg
+        self._lbl_trial_result.setStyleSheet(
+            f"color:{'#ffc107' if has_warning else '#4caf50'};font-size:10px;"
+        )
+        self._lbl_trial_result.setText(msg)
+        self.btn_trial_detect.setEnabled(True)
+
     def select_files_to_align(self):
         files, _ = QFileDialog.getOpenFileNames(
             self, "Select Files to Align", "",
@@ -5055,9 +6377,7 @@ class StarRegistrationWindow(QWidget):
         )
         if files:
             for file in files:
-                if file not in self.files_to_align:
-                    self.files_to_align.append(file)
-                    self.tree_widget.addTopLevelItem(QTreeWidgetItem([os.path.basename(file)]))
+                self._add_file_entry(file)
 
     def select_directory_to_align(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Directory", "")
@@ -5065,25 +6385,130 @@ class StarRegistrationWindow(QWidget):
             exts = ('.png', '.jpg', '.jpeg', '.tif', '.tiff', '.fits', '.fit', '.xisf')
             new_files = [os.path.join(directory, f) for f in os.listdir(directory) if f.lower().endswith(exts)]
             for file in new_files:
-                if file not in self.files_to_align:
-                    self.files_to_align.append(file)
-                    self.tree_widget.addTopLevelItem(QTreeWidgetItem([os.path.basename(file)]))
+                self._add_file_entry(file)
+
+    def select_views_to_align(self):
+        """
+        Pop a chooser listing every open document and add the user's picks
+        as view-targets. The view's CURRENT pixels are what gets aligned —
+        this reads the live doc, not whatever file the doc may have been
+        loaded from, so a stacked combination that hasn't been saved to
+        disk aligns correctly.
+
+        Uses parent._list_open_docs when available, falling back to the
+        same MDI-scraping helper the Stellar Alignment dialog already uses
+        (_list_open_docs_fallback), so the same set of views appears here
+        as in the sibling tools.
+        """
+        docs = self._enumerate_open_docs()
+        # Filter to docs that actually have image data to align — a doc
+        # with doc.image is None is useless as a target and showing it in
+        # the chooser just invites confusion.
+        docs = [(t, d) for (t, d) in docs if _doc_image(d) is not None]
+        if not docs:
+            QMessageBox.information(
+                self, "No Views",
+                "No open views have image data available to align.\n\n"
+                "Open one or more images first, then use 'From Views…' again."
+            )
+            return
+
+        # Dedup against views already on the list — matching by doc identity,
+        # not by title (two docs can share a title; the user still means two
+        # distinct inputs).
+        already = {id(e["doc"]) for e in self.files_to_align
+                   if isinstance(e, dict) and e.get("kind") == "view"}
+
+        # Build the chooser dialog. QListWidget with multi-select is enough
+        # here; a tree would be overkill for a flat list of docs.
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add Views as Alignment Targets")
+        dlg.setMinimumWidth(360)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("Select one or more open views to add as targets:"))
+        lst = QListWidget(dlg)
+        lst.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        for title, doc in docs:
+            item = QListWidgetItem(title + (" (already added)" if id(doc) in already else ""))
+            # Stash the doc on the item so we don't have to re-match by title.
+            item.setData(Qt.ItemDataRole.UserRole, doc)
+            if id(doc) in already:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable
+                              & ~Qt.ItemFlag.ItemIsEnabled)
+            lst.addItem(item)
+        lay.addWidget(lst)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            parent=dlg,
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        for item in lst.selectedItems():
+            doc = item.data(Qt.ItemDataRole.UserRole)
+            if doc is None or id(doc) in already:
+                continue
+            title = _fmt_doc_title(doc)
+            self.files_to_align.append({
+                "kind": "view",
+                "doc": doc,
+                "title": title,
+            })
+            # Row label shows the view name, column 1 is a "View" badge so
+            # mixed lists (files + views) stay unambiguous at a glance.
+            tree_item = QTreeWidgetItem([title, "View"])
+            tree_item.setToolTip(0, f"Open view: {title} "
+                                    f"(pixels taken from the live doc at run time)")
+            self.tree_widget.addTopLevelItem(tree_item)
+        self._refresh_view_output_group()
+
+    def _enumerate_open_docs(self) -> list[tuple[str, object]]:
+        """
+        Return [(title, doc), ...] for every open view the host exposes.
+        Prefers parent._list_open_docs (used by other SASpro tools) and
+        falls back to walking the MDI area — same two-tier pattern as
+        _list_open_docs_fallback.
+        """
+        pw = self.parent_window
+        for attr in ("_list_open_docs", "list_open_docs"):
+            fn = getattr(pw, attr, None)
+            if callable(fn):
+                try:
+                    out = fn()
+                    if out:
+                        return [(str(t), d) for (t, d) in out]
+                except Exception:
+                    pass
+        return _list_open_docs_fallback(pw)
 
     # Manage tree
     def remove_selected_files(self):
+        """
+        Remove highlighted rows. Rows are matched to backing entries by the
+        tree's visual index (not by text) so files and views with similar
+        display names, or two files with the same basename in different
+        folders, remove the correct entry.
+        """
         selected_items = self.tree_widget.selectedItems()
-        for item in selected_items:
-            file_name = item.text(0)
-            for file_path in list(self.files_to_align):
-                if os.path.basename(file_path) == file_name:
-                    self.files_to_align.remove(file_path)
-                    break
-            index = self.tree_widget.indexOfTopLevelItem(item)
-            self.tree_widget.takeTopLevelItem(index)
+        # Collect indices first so popping doesn't shift later indices
+        indices = sorted(
+            {self.tree_widget.indexOfTopLevelItem(it) for it in selected_items},
+            reverse=True,
+        )
+        for idx in indices:
+            if 0 <= idx < len(self.files_to_align):
+                del self.files_to_align[idx]
+            self.tree_widget.takeTopLevelItem(idx)
+        self._refresh_view_output_group()
 
     def clear_tree(self):
         self.tree_widget.clear()
         self.files_to_align.clear()
+        self._refresh_view_output_group()
 
     def select_output_directory(self):
         directory = QFileDialog.getExistingDirectory(self, "Select Output Directory", "")
@@ -5097,21 +6522,116 @@ class StarRegistrationWindow(QWidget):
             QMessageBox.warning(self, "Missing Reference", "Please select a reference image (file or active view).")
             return
         if not self.files_to_align:
-            QMessageBox.warning(self, "No Files", "Please add files to align before starting.")
+            QMessageBox.warning(self, "No Targets", "Please add files or views to align before starting.")
             return
-        if not self.output_directory:
-            QMessageBox.warning(self, "No Output Directory", "Please select an output directory before starting.")
+
+        # Output directory is only REQUIRED when there are file targets —
+        # those have to land somewhere the user can find them. A view-only
+        # run routes everything back into SASpro documents, so the user
+        # shouldn't have to pick a folder just to see nothing land in it.
+        if self._has_file_targets() and not self.output_directory:
+            QMessageBox.warning(self, "No Output Directory",
+                                "Please select an output directory for the file targets.")
             return
+
+        # Resolve mixed file + view targets into a flat list of file paths
+        # for the thread (which only speaks paths — see spill rationale on
+        # self._view_spill_dir). Any view that fails to spill is skipped
+        # with a user-visible message rather than silently dropped.
+        try:
+            resolved_paths = self._spill_views_and_resolve_paths()
+        except Exception as e:
+            QMessageBox.critical(
+                self, "View Spill Failed",
+                f"Could not prepare open views for registration:\n{e}"
+            )
+            self._cleanup_view_spill()
+            return
+
+        if not resolved_paths:
+            QMessageBox.warning(
+                self, "No Targets",
+                "After resolving views, no targets remained to align."
+            )
+            self._cleanup_view_spill()
+            return
+
+        # Resolve a "__VIEW__" reference by spilling the chosen doc's pixels
+        # to a FITS in the same per-run scratch dir the targets use. The
+        # thread then sees a plain file path and loads WCS via load_image /
+        # _wcs_from_header exactly as it would for a file reference. The
+        # scratch dir is created on-demand if no target views exist yet.
+        effective_reference = self.reference_image_path
+        if effective_reference == "__VIEW__":
+            if self._reference_doc is None:
+                QMessageBox.warning(
+                    self, "Missing Reference",
+                    "Please pick a reference view again — the previous "
+                    "selection is no longer available."
+                )
+                self._cleanup_view_spill()
+                return
+            try:
+                effective_reference = self._spill_reference_view()
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Reference Spill Failed",
+                    f"Could not prepare the reference view for registration:\n{e}"
+                )
+                self._cleanup_view_spill()
+                return
+
+        # Pick the output directory the thread will use. For a view-only
+        # run we hand it the scratch dir — the aligned FITS land there,
+        # registration_finished routes them into docs, then the whole
+        # scratch dir is nuked. No files leak into user folders.
+        if self.output_directory:
+            effective_output_dir = self.output_directory
+            self._output_dir_is_scratch = False
+        else:
+            # View-only run; scratch dir doubles as output dir.
+            effective_output_dir = self._view_spill_dir
+            self._output_dir_is_scratch = True
+
+        # Snapshot the Advanced panel into an align_prefs dict and
+        # persist it back to QSettings so other tools see the user's
+        # choices (matches Stellar Alignment's save-on-run). The thread
+        # gets the same dict directly, so a change here affects THIS run
+        # even if QSettings somehow races.
+        active_prefs = self._collect_align_prefs()
+        try:
+            self._save_align_prefs(active_prefs)
+        except Exception as e:
+            # Non-fatal — the run still has active_prefs in hand.
+            self._enqueue_progress(f"Note: couldn't persist alignment settings: {e}")
 
         self.progress_label.setText("Status: Running…")
         self.progress_label.setStyleSheet("color: green; font-weight: bold;")
 
-        self.thread = StarRegistrationThread(
-            self.reference_image_path,
-            self.files_to_align,
-            self.output_directory,
-            parent_window=self.parent_window
-        )
+        # Dispatch to the right thread for the chosen Method. Both threads
+        # expose the same signals (progress_update / registration_complete /
+        # progress_step) and populate self.thread.file_key_to_current_path
+        # with the same convention, so _route_view_outputs_to_docs,
+        # _enqueue_progress and registration_finished are oblivious to
+        # which one actually ran.
+        method = self._current_method()
+        if method in ("wcs", "wcs_stellar"):
+            self.thread = WCSRegistrationThread(
+                effective_reference,
+                resolved_paths,
+                effective_output_dir,
+                method=method,
+                parent_window=self.parent_window,
+                align_prefs=active_prefs,
+            )
+        else:
+            self.thread = StarRegistrationThread(
+                effective_reference,
+                resolved_paths,
+                effective_output_dir,
+                parent_window=self.parent_window,
+                align_prefs=active_prefs,
+            )
         self.thread.progress_update.connect(self._enqueue_progress)
         self.thread.registration_complete.connect(self.registration_finished)
         self.thread.start()
@@ -5120,13 +6640,285 @@ class StarRegistrationWindow(QWidget):
         self.progress_label.setText(f"Status: {message}")
 
     def registration_finished(self, success, message):
+        # On success, route any view-sourced aligned outputs back into
+        # SASpro documents BEFORE cleaning the spill scratch. The user
+        # explicitly asked for no "final files" to be left behind for
+        # view-sourced targets; this is where that promise is kept.
+        view_report = ""
+        if success and self._view_spill_by_input:
+            try:
+                view_report = self._route_view_outputs_to_docs()
+            except Exception as e:
+                # Don't swallow — tell the user something went wrong,
+                # but still clean up spills so disk isn't leaked.
+                view_report = (
+                    f"\n\nAligned view routing FAILED: {e}\n"
+                    f"The aligned files remain in the output directory "
+                    f"you can import them manually."
+                )
+
+        # Clean up spill scratch + output-dir-is-scratch. If output_directory
+        # was the scratch dir (view-only run) the aligned files live there
+        # and we're about to delete them — but _route_view_outputs_to_docs
+        # above has already consumed them into docs, so this is correct.
+        self._cleanup_view_spill()
+
+        full_msg = message + view_report
         color = "green" if success else "red"
         self.progress_label.setText(f"Status: {message}")
         self.progress_label.setStyleSheet(f"color: {color}; font-weight: bold;")
         if success:
-            QMessageBox.information(self, "Registration Complete", message)
+            QMessageBox.information(self, "Registration Complete", full_msg)
         else:
-            QMessageBox.warning(self, "Registration Error", message)
+            QMessageBox.warning(self, "Registration Error", full_msg)
+
+    # ------------------------------------------------------------------
+    # View-target spill helpers
+    # ------------------------------------------------------------------
+    def _spill_views_and_resolve_paths(self) -> list[str]:
+        """
+        Walk self.files_to_align and return a flat list of file paths for
+        the thread. File-path entries pass through unchanged. View entries
+        are written to temp FITS files in a per-run scratch directory so
+        the downstream multiprocess workers can read them like any other
+        FITS input.
+
+        Also populates self._view_spill_by_input, mapping the normalised
+        spill-input path to the originating doc so registration_finished
+        can route the aligned output back into SASpro (overwrite the view
+        or open as new) and then delete the on-disk aligned output. No
+        "final files" are left on the user's disk for view-sourced targets.
+        """
+        resolved: list[str] = []
+        self._view_spill_by_input = {}
+        view_entries = [e for e in self.files_to_align
+                        if isinstance(e, dict) and e.get("kind") == "view"]
+
+        if view_entries:
+            # One scratch dir per run so cleanup is a single rmtree.
+            self._view_spill_dir = tempfile.mkdtemp(prefix="sas_reg_views_")
+
+        for entry in self.files_to_align:
+            if isinstance(entry, str):
+                resolved.append(entry)
+                continue
+            if not (isinstance(entry, dict) and entry.get("kind") == "view"):
+                # Unknown shape — skip and warn instead of crashing the run.
+                self._enqueue_progress(f"Skipping unknown target entry: {entry!r}")
+                continue
+
+            doc = entry.get("doc")
+            img = _doc_image(doc)
+            if img is None:
+                self._enqueue_progress(
+                    f"View '{entry.get('title', '?')}' has no image data; skipping."
+                )
+                continue
+
+            # Sanitise the display name into a filesystem-safe basename.
+            # Multiple views sharing a title get a numeric suffix so writes
+            # don't trample each other.
+            safe = _safe_filename_base(entry.get("title") or "view")
+            idx = 0
+            while True:
+                candidate = os.path.join(
+                    self._view_spill_dir,
+                    f"{safe}.fits" if idx == 0 else f"{safe}_{idx}.fits",
+                )
+                if not os.path.exists(candidate):
+                    break
+                idx += 1
+
+            try:
+                _write_view_to_fits(doc, img, candidate)
+            except Exception as e:
+                self._enqueue_progress(
+                    f"Failed to spill view '{entry.get('title', '?')}' to temp FITS: {e}; skipping."
+                )
+                continue
+
+            # Record mapping so routing can find the doc for this aligned
+            # output after the thread finishes. Key is normcased path (as
+            # the thread also normalises its keys).
+            key = os.path.normcase(os.path.normpath(candidate))
+            self._view_spill_by_input[key] = {
+                "doc": doc,
+                "title": entry.get("title") or "view",
+                "spill_path": candidate,
+            }
+            resolved.append(candidate)
+
+        return resolved
+
+    def _route_view_outputs_to_docs(self) -> str:
+        """
+        For every view-sourced target, read the aligned output written by
+        the worker, push it back into the source doc (overwrite) or open
+        it as a new doc, then delete the on-disk aligned file so nothing
+        leaks into the user's output folder. Returns a short summary
+        string to append to the completion dialog.
+        """
+        if not self._view_spill_by_input:
+            return ""
+
+        overwrite = bool(self.radio_view_overwrite.isChecked())
+        mw = self.parent_window
+        dm = (getattr(mw, "docman", None) or getattr(mw, "doc_manager", None)) if mw else None
+
+        if not overwrite and dm is None:
+            # Can't open a new doc — fall back to overwrite with a notice.
+            self._enqueue_progress(
+                "Document manager unavailable — overwriting source views instead "
+                "of opening new ones."
+            )
+            overwrite = True
+
+        # Build reverse lookup from the thread's file_key_to_current_path.
+        # file_key_to_current_path maps "normpath(original_input)" ->
+        # "aligned_output_path" (or the original if alignment failed).
+        key_to_out = {}
+        try:
+            key_to_out = dict(self.thread.file_key_to_current_path)
+        except Exception:
+            pass
+
+        pushed = 0
+        failed = 0
+        skipped = 0
+
+        for norm_input, info in self._view_spill_by_input.items():
+            doc = info["doc"]
+            title = info["title"]
+            spill_path = info["spill_path"]
+
+            # The thread's keys are built with os.path.normpath without
+            # normcase; match either form.
+            out_path = key_to_out.get(os.path.normpath(spill_path))
+            if out_path is None:
+                # Case-insensitive fallback
+                for k, v in key_to_out.items():
+                    if os.path.normcase(k) == norm_input:
+                        out_path = v
+                        break
+
+            # If the worker never wrote an output (alignment failed), the
+            # file_key_to_current_path still points at the SPILL input.
+            # Skip those — the source doc stays untouched.
+            if (not out_path) or os.path.normcase(os.path.normpath(out_path)) == norm_input:
+                self._enqueue_progress(
+                    f"View '{title}': alignment produced no output, source view unchanged."
+                )
+                skipped += 1
+                continue
+
+            if not os.path.exists(out_path):
+                self._enqueue_progress(
+                    f"View '{title}': aligned output missing at {out_path}; skipping."
+                )
+                skipped += 1
+                continue
+
+            try:
+                aligned_img, aligned_hdr = _read_aligned_fits(out_path)
+            except Exception as e:
+                self._enqueue_progress(
+                    f"View '{title}': failed to read aligned output: {e}"
+                )
+                failed += 1
+                continue
+
+            try:
+                if overwrite:
+                    _apply_aligned_to_doc(doc, aligned_img, aligned_hdr)
+                else:
+                    _open_aligned_as_new_doc(mw, dm, aligned_img, aligned_hdr,
+                                             source_title=title)
+                pushed += 1
+            except Exception as e:
+                self._enqueue_progress(
+                    f"View '{title}': failed to route aligned result into SASpro: {e}"
+                )
+                failed += 1
+                continue
+
+            # Delete the on-disk aligned file now that it's safely in a doc.
+            # No "final files" linger for view-sourced targets. For a scratch
+            # output_directory the whole dir gets rmtree'd shortly anyway;
+            # the per-file unlink here matters for the mixed case where the
+            # output_directory is a real user folder shared with file targets.
+            try:
+                os.remove(out_path)
+            except Exception:
+                pass
+
+        bits = []
+        if pushed:
+            bits.append(f"{pushed} view(s) {'overwritten' if overwrite else 'opened as new doc'}")
+        if failed:
+            bits.append(f"{failed} view routing failure(s)")
+        if skipped:
+            bits.append(f"{skipped} view(s) skipped (no aligned output)")
+        if not bits:
+            return ""
+        return "\n\n" + " · ".join(bits) + "."
+
+    def _spill_reference_view(self) -> str:
+        """
+        Write the chosen reference doc's pixels to a FITS in the per-run
+        view-spill scratch dir and return the path. Reuses
+        _write_view_to_fits so WCS stored under 'wcs_header' / an
+        attribute / etc. is preserved into the FITS header via
+        _doc_header_or_wcs — the same resolver the WCS path uses to find
+        plate solves on live views.
+
+        If no scratch dir exists yet (view-only runs may spill the
+        reference before any target views), create one on demand. The
+        shared cleanup in _cleanup_view_spill drops this file along with
+        the target spills.
+        """
+        doc = self._reference_doc
+        if doc is None:
+            raise RuntimeError("No reference view selected.")
+        img = _doc_image(doc)
+        if img is None:
+            raise RuntimeError("Reference view has no image data.")
+
+        if self._view_spill_dir is None:
+            self._view_spill_dir = tempfile.mkdtemp(prefix="sas_reg_views_")
+
+        safe = _safe_filename_base(_fmt_doc_title(doc) or "reference")
+        # Prefix "_ref_" so it's trivially distinguishable from target spills
+        # in the scratch dir during a crash-dump debug session, and so it
+        # never collides with a target view that happens to share the title.
+        idx = 0
+        while True:
+            candidate = os.path.join(
+                self._view_spill_dir,
+                f"_ref_{safe}.fits" if idx == 0 else f"_ref_{safe}_{idx}.fits",
+            )
+            if not os.path.exists(candidate):
+                break
+            idx += 1
+
+        _write_view_to_fits(doc, img, candidate)
+        return candidate
+
+    def _cleanup_view_spill(self):
+        """
+        Remove the per-run view-spill scratch directory and reset trackers.
+        Safe to call multiple times and when no spill occurred.
+        """
+        d = self._view_spill_dir
+        self._view_spill_dir = None
+        self._view_spill_by_input = {}
+        self._output_dir_is_scratch = False
+        if not d:
+            return
+        try:
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------

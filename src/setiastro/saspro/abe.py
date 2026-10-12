@@ -32,7 +32,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGridLayout, QLabel, QSpinBox,
     QCheckBox, QPushButton, QScrollArea, QWidget, QMessageBox, QComboBox,
     QGroupBox, QApplication, QToolBar, QToolButton, QRadioButton, QDoubleSpinBox,
-    QSlider, QProgressBar, QButtonGroup
+    QSlider, QProgressBar, QButtonGroup, QSplitter, QSizePolicy
 )
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QIcon
 from PyQt6 import sip
@@ -957,6 +957,10 @@ class ABEDialog(QDialog):
         # image-space polygons: list[list[QPointF]] in ORIGINAL IMAGE COORDS
         self._polygons: list[list[QPointF]] = []
         self._drawing_poly: list[QPointF] | None = None
+        # Loud exclusion-zone tracing (see _dbg). On while chasing the
+        # intermittent "exclusion ignored" bug; flip to False to silence
+        # all [ABE-EXCL] lines in one place.
+        self._EXCL_DEBUG = False
         self._panning = False
         self._pan_last = None
         self._preview_source_f01 = None 
@@ -1369,10 +1373,24 @@ class ABEDialog(QDialog):
         self.btn_apply   = QPushButton(self.tr("Apply"))
         self.btn_close   = QPushButton(self.tr("Close"))
         self.btn_clear   = QPushButton(self.tr("Clear Exclusions"))
+        # Reset all controls to their shipped defaults. Lives on the same row
+        # as Clear Exclusions because both are destructive-ish housekeeping
+        # buttons the user reaches for occasionally, not every run — keeping
+        # them side-by-side and away from Preview/Apply reduces the chance of
+        # a mis-click clobbering tuned settings mid-session.
+        self.btn_reset   = QPushButton(self.tr("Reset to Defaults"))
+        self.btn_reset.setToolTip(
+            "Restore every ADBE control to its shipped default value "
+            "(polynomial degree, sample count, multiscale refinement\n"
+            "parameters, output options — everything on this dialog).\n"
+            "Does NOT clear your drawn exclusion polygons; use "
+            "'Clear Exclusions' for that."
+        )
         self.btn_preview.clicked.connect(self._do_preview)
         self.btn_apply.clicked.connect(self._do_apply)
         self.btn_close.clicked.connect(self.close)
         self.btn_clear.clicked.connect(self._clear_polys)
+        self.btn_reset.clicked.connect(self._reset_to_defaults)
 
         # Layout
         params = QFormLayout()
@@ -1426,12 +1444,26 @@ class ABEDialog(QDialog):
         opts.addWidget(self.chk_make_bg_doc)
         opts.addWidget(self.chk_make_structure_doc)
         opts.addWidget(self.chk_preview_bg)
-        row = QHBoxLayout()
-        row.addWidget(self.btn_preview)
-        row.addWidget(self.btn_apply)
-        row.addStretch(1)
-        opts.addLayout(row)
-        opts.addWidget(self.btn_clear)  # Clear Exclusions (polygon drawing tool)
+
+        # Housekeeping row — Clear Exclusions + Reset to Defaults — sits
+        # ABOVE Preview/Apply by request. The common run flow is scroll down
+        # → Preview → Apply, so Preview/Apply want to be the LAST buttons the
+        # eye lands on; Clear/Reset are rarer and shouldn't be between
+        # inspection controls and the fire button.
+        housekeeping_row = QHBoxLayout()
+        housekeeping_row.addWidget(self.btn_clear)
+        housekeeping_row.addWidget(self.btn_reset)
+        housekeeping_row.addStretch(1)
+        opts.addLayout(housekeeping_row)
+
+        # Preview / Apply — the "do the thing" row, kept together and placed
+        # directly above the status label so progress/completion messages
+        # appear right under the buttons that triggered them.
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.btn_preview)
+        action_row.addWidget(self.btn_apply)
+        action_row.addStretch(1)
+        opts.addLayout(action_row)
 
         # ▼ New status label
         self.status_label = QLabel("Ready")
@@ -1470,8 +1502,11 @@ class ABEDialog(QDialog):
         drag_row.addWidget(self.btn_help)
         opts.addLayout(drag_row)
 
-        # ⬇️ New right-side stack: toolbar row ABOVE the preview
-        right = QVBoxLayout()
+        # ⬇️ Right-side stack: toolbar row ABOVE the preview. Wrapped in its
+        # own QWidget so the main QSplitter below can treat it as one pane.
+        right_container = QWidget()
+        right = QVBoxLayout(right_container)
+        right.setContentsMargins(0, 0, 0, 0)
         right.addLayout(self._build_toolbar())      # Zoom In / Out / Fit / Autostretch
         right.addWidget(self.preview_scroll, 1)     # Preview below the buttons
 
@@ -1484,15 +1519,54 @@ class ABEDialog(QDialog):
         self._opts_scroll.setWidgetResizable(True)
         self._opts_scroll.setWidget(opts_container)
         self._opts_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        self._opts_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Horizontal scroll bar needs to be ALLOWED now that the user can
+        # drag the controls column NARROWER than the inner form. Previously
+        # the column was fixed between 320-380 px so no horizontal overflow
+        # was possible; with the splitter the user can go anywhere above the
+        # minimum, and a long tooltip-driven row could still clip.
+        self._opts_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._opts_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        # Keep the controls column at a sensible fixed-ish width.
-        self._opts_scroll.setMinimumWidth(320)
-        self._opts_scroll.setMaximumWidth(380)
+        # Keep a sane minimum (narrower than 320 would clip spinboxes) but
+        # DROP the hard maximum — that was the whole reason the user asked
+        # for a splitter: when the vertical scrollbar appears it eats enough
+        # width to cut off text in the collapsed-header labels and tooltips.
+        # The splitter below starts the pane at the previous ~360 px width
+        # so existing users see no immediate change, but can drag outward.
+        self._opts_scroll.setMinimumWidth(280)
+
+        # Replace the fixed QHBoxLayout with a QSplitter so the user can
+        # drag the boundary between the controls column and the preview.
+        # Rationale: when deeply-nested collapsibles expand, the controls
+        # column grows a vertical scrollbar; that scrollbar steals pixels
+        # from the inner form width and clips tooltips / long labels. With
+        # a splitter the user can give the column a few more pixels on
+        # demand instead of being stuck at the old 380 px ceiling.
+        self._main_splitter = QSplitter(Qt.Orientation.Horizontal, self)
+        self._main_splitter.addWidget(self._opts_scroll)
+        self._main_splitter.addWidget(right_container)
+        # Collapse-prevention: the preview pane can shrink to its minimum
+        # but not vanish entirely (nobody wants a one-pixel preview column
+        # from an accidental drag). The controls pane is already protected
+        # by its own minimum width above.
+        self._main_splitter.setCollapsible(0, False)
+        self._main_splitter.setCollapsible(1, False)
+        # Stretch factors: when the WINDOW is resized, the preview grows
+        # and the controls stay roughly their current width. The user's
+        # explicit drag is what moves the boundary.
+        self._main_splitter.setStretchFactor(0, 0)
+        self._main_splitter.setStretchFactor(1, 1)
+        # Initial sizes match the pre-splitter default (~360 px controls,
+        # the rest preview). Qt scales these to the actual window width,
+        # so the ratio is what matters, not the absolute numbers.
+        self._main_splitter.setSizes([360, 1000])
+        # Make the handle visibly draggable — the default 1-px line is
+        # almost invisible, and users typically don't discover splitters
+        # they can't see. 6 px is wide enough for a comfortable grab.
+        self._main_splitter.setHandleWidth(6)
 
         main = QHBoxLayout(self)
-        main.addWidget(self._opts_scroll, 0)        # Left controls (scrollable)
-        main.addLayout(right, 1)                    # Right: buttons above preview
+        main.setContentsMargins(0, 0, 0, 0)
+        main.addWidget(self._main_splitter)
 
         self._load_settings()
 
@@ -1544,6 +1618,112 @@ class ABEDialog(QDialog):
         # whatever _load_settings restored for chk_ms_disable_protect).
         if hasattr(self, "chk_ms_disable_protect"):
             self._protect_disabled_changed(self.chk_ms_disable_protect.isChecked())
+
+    def _reset_to_defaults(self):
+        """
+        Restore every control on the dialog to its shipped default. The
+        defaults mirror what _load_settings falls back to when a key is
+        missing from QSettings — they are the authoritative "fresh install"
+        values, not whatever happens to be in the user's registry right
+        now.
+
+        Approach: wipe every ``abe/…`` key out of QSettings and then call
+        _load_settings. The getters there already encode every default; a
+        second source of truth here would just drift. Confirms with the
+        user first because this clobbers tuned multiscale params that may
+        have taken a while to dial in.
+
+        Does NOT clear drawn exclusion polygons (that is Clear Exclusions'
+        job) or touch window geometry, so a reset doesn't yank the dialog
+        back to a tiny default size while the user is working.
+        """
+        reply = QMessageBox.question(
+            self, self.tr("Reset ADBE to defaults?"),
+            self.tr(
+                "Reset every control on this dialog to its default value?\n\n"
+                "This affects polynomial degree, sample count, RBF settings, "
+                "correction mode, multiscale refinement, and output options.\n\n"
+                "Your drawn exclusion polygons will NOT be cleared "
+                "(use 'Clear Exclusions' for that), and the preview "
+                "window size is unchanged."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        s = QSettings()
+        # Enumerate every abe/… key and remove it, so missing-key fallbacks
+        # in _load_settings become the only source of values. Using remove()
+        # on the group prefix clears nested keys in one shot.
+        s.beginGroup("abe")
+        for k in s.allKeys():
+            s.remove(k)
+        s.endGroup()
+        s.sync()
+
+        # Block the per-widget valueChanged/toggled signals during the
+        # reload so we don't fire _save_settings 20 times (each write would
+        # repopulate the key we just cleared with the DEFAULT, which is
+        # harmless but wasteful) and so _protect_disabled_changed sees the
+        # final state exactly once at the end.
+        widgets_to_block = [
+            getattr(self, name, None) for name in (
+                "sp_degree", "sp_samples", "sp_down", "sp_patch",
+                "cmb_sample_mode", "sp_seed",
+                "chk_use_rbf", "sp_rbf",
+                "radio_subtract", "radio_divide",
+                "chk_make_bg_doc", "chk_make_structure_doc", "chk_preview_bg",
+                "chk_ms_enable", "chk_ms_darkstar", "chk_ms_disable_protect",
+                "sp_ms_band_lo", "sp_ms_band_hi", "chk_ms_residual",
+                "sp_ms_strength", "sp_ms_protect", "sp_ms_grow",
+                "sp_ms_smooth", "sp_ms_feather", "sp_ms_sigblur",
+                "radio_ms_rgb", "radio_ms_luma",
+            )
+        ]
+        prev_blocked = []
+        for w in widgets_to_block:
+            if w is None:
+                continue
+            try:
+                prev_blocked.append((w, w.blockSignals(True)))
+            except Exception:
+                pass
+        try:
+            self._load_settings()
+            # Re-apply the sample-mode-dependent UI gating (clears or
+            # restores manual points vs auto, etc.) that
+            # _sample_mode_changed normally runs on text-changed.
+            try:
+                self._sample_mode_changed(self.cmb_sample_mode.currentText())
+            except Exception:
+                pass
+            # Re-apply the protection-disabled greyout state based on the
+            # just-reloaded (default: unchecked) checkbox.
+            if hasattr(self, "_protect_disabled_changed") and \
+                    hasattr(self, "chk_ms_disable_protect"):
+                try:
+                    self._protect_disabled_changed(
+                        self.chk_ms_disable_protect.isChecked())
+                except Exception:
+                    pass
+        finally:
+            for w, was in prev_blocked:
+                try:
+                    w.blockSignals(was)
+                except Exception:
+                    pass
+
+        # One canonical save at the end so the cleared keys get rewritten
+        # with their default values and the next session loads them without
+        # waiting for the first change.
+        try:
+            self._save_settings()
+        except Exception:
+            pass
+
+        self._set_status(self.tr("Reset to defaults."))
 
     def _load_settings(self):
         s = QSettings()
@@ -1682,15 +1862,21 @@ class ABEDialog(QDialog):
         manual = self._manual_mode()
 
         if manual:
-            # Switching to Manual — clear exclusion polygons
-            # (they were drawn in Auto context and don't make sense to carry over)
-            if self._polygons or self._drawing_poly:
-                self._polygons.clear()
-                self._drawing_poly = None
+            # Switching to Manual: do NOT clear exclusion polygons. They are
+            # apply-time protection (the drawn region is composited back from
+            # the original in BOTH the polynomial and multiscale stages) and
+            # stay valid no matter which sampling mode is active — the sampler
+            # mode only governs how background sample POINTS are chosen, which
+            # is orthogonal. The only things that should ever drop exclusions
+            # are the explicit "Clear Exclusions" button and loading a
+            # genuinely different image. Commit any half-drawn polygon first so
+            # it isn't stranded, since in Manual mode left-click now places
+            # sample points instead of extending the in-progress polygon.
+            self._commit_pending_polygon()
 
         else:
-            # Switching to Auto — clear manual sample points
-            # (they were placed manually and Auto will generate its own)
+            # Switching to Auto — clear manual sample points (Auto generates
+            # its own). Exclusion polygons are left untouched.
             if self._manual_points:
                 _log = getattr(self._main, "_log", None)
                 if callable(_log):
@@ -1893,6 +2079,33 @@ class ABEDialog(QDialog):
         # No longer used — sequence moved entirely into showEvent
         pass
 
+    def _dbg(self, msg: str) -> None:
+        """
+        Loud debug trace for the exclusion-zone pipeline. Writes to BOTH:
+          - stdout (print, flushed) so it shows in the terminal/console the
+            app was launched from, and
+          - the main window's log panel (if present),
+        so the message is visible no matter where the user is looking.
+
+        Prefixed [ABE-EXCL] so the whole exclusion path can be grepped out of
+        a busy log. Kept deliberately chatty while we chase the intermittent
+        "exclusion ignored" bug; gate on _EXCL_DEBUG so it can be silenced
+        later with one flag instead of deleting call sites.
+        """
+        if not getattr(self, "_EXCL_DEBUG", True):
+            return
+        line = f"[ABE-EXCL] {msg}"
+        try:
+            print(line, flush=True)
+        except Exception:
+            pass
+        try:
+            _log = getattr(self._main, "_log", None)
+            if callable(_log):
+                _log(line)
+        except Exception:
+            pass
+
     def _set_status(self, text: str) -> None:
         try:
             lbl = getattr(self, "status_label", None)
@@ -1946,9 +2159,31 @@ class ABEDialog(QDialog):
     def _on_active_doc_changed(self, doc):
         if doc is None or getattr(doc, "image", None) is None:
             return
+
+        # CRITICAL: only reset drawn state when the active document actually
+        # changes to a DIFFERENT one. The main window re-emits
+        # currentDocumentChanged on window activation / focus churn — notably
+        # when a modal child dialog opens and then closes (the protection
+        # preview and its "computing…" splash) — carrying the SAME document.
+        # Without this guard that spurious re-fire wiped the user's exclusion
+        # polygons between drawing them and pressing Apply: the exact
+        # "draw zones → open protection preview → close it → Apply → zones
+        # ignored" bug. Re-activating the current document must be a no-op so
+        # drawn exclusions and manual sample points survive.
+        if doc is self.doc:
+            self._dbg("_on_active_doc_changed: SAME document re-activated "
+                      "(likely modal preview closing) — keeping "
+                      f"{len(self._polygons)} exclusion polygon(s) and "
+                      f"{len(self._manual_points)} sample point(s).")
+            return
+
         _log = getattr(self._main, "_log", None)
         if callable(_log):
-            _log(f"[ABE] _on_active_doc_changed: CLEARING {len(self._manual_points)} pts")
+            _log(f"[ABE] _on_active_doc_changed: NEW doc — clearing "
+                 f"{len(self._polygons)} polygon(s), {len(self._manual_points)} pt(s)")
+        self._dbg(f"_on_active_doc_changed: NEW document — clearing "
+                  f"{len(self._polygons)} exclusion polygon(s) and "
+                  f"{len(self._manual_points)} sample point(s).")
         self.doc = doc
         self._polygons.clear()
         self._drawing_poly = None
@@ -1974,6 +2209,13 @@ class ABEDialog(QDialog):
         # Cleared each run; set only when multiscale + structure-doc are on.
         self._last_structure_map = None
         self._last_mad_mask = None
+        if excl_mask is None:
+            self._dbg("_run_abe: excl_mask=None (polynomial + multiscale will "
+                      "run on the WHOLE frame, no protected zones).")
+        else:
+            self._dbg(f"_run_abe: excl_mask received, shape={np.asarray(excl_mask).shape}, "
+                      f"dtype={np.asarray(excl_mask).dtype}, "
+                      f"excluded(False)={int((~np.asarray(excl_mask, dtype=bool)).sum())} px.")
         imgf = self._get_source_float()
         if imgf is None:
             return None, None
@@ -2121,10 +2363,21 @@ class ABEDialog(QDialog):
                 if excl_mask is not None:
                     try:
                         protect_blend = (~np.asarray(excl_mask, dtype=bool)).astype(np.float32)
+                        kept = int(protect_blend.sum())
                         if not protect_blend.any():
+                            self._dbg("_run_abe/multiscale: protect_blend from excl_mask "
+                                      "is ALL ZERO (nothing to keep) → setting None.")
                             protect_blend = None
-                    except Exception:
+                        else:
+                            self._dbg(f"_run_abe/multiscale: protect_blend built — "
+                                      f"shape={protect_blend.shape}, keep-original px={kept} "
+                                      f"({100.0*kept/protect_blend.size:.2f}%).")
+                    except Exception as e:
+                        self._dbg(f"_run_abe/multiscale: protect_blend build FAILED ({e}) → None.")
                         protect_blend = None
+                else:
+                    self._dbg("_run_abe/multiscale: excl_mask is None → "
+                              "protect_blend=None (galaxy will NOT be protected in refinement).")
 
                 # Capture the multiplicative STRUCTURE map too when the user
                 # asked for a structure document (troubleshooting output).
@@ -2135,6 +2388,10 @@ class ABEDialog(QDialog):
                 self._last_mad_mask = None     # raw median+k*MAD mask (debug)
 
                 _pre = corrected
+                self._dbg(f"_run_abe/multiscale: CALLING multiscale_gradient_correct — "
+                          f"protect_blend_mask={'None' if protect_blend is None else f'{int(np.asarray(protect_blend).sum())} keep px'}, "
+                          f"feather_frac={excl_feather_frac:.3f}, channels={channels_mode}, "
+                          f"band={band_lo}-{band_hi}, protect_k={protect_k}.")
                 _ms_result = multiscale_gradient_correct(
                     corrected,
                     estimate_from=estimate_from,
@@ -2529,8 +2786,17 @@ class ABEDialog(QDialog):
             from PyQt6 import sip
             if sip.isdeleted(self):
                 return
+            # Commit any polygon the user just finished drawing but whose
+            # mouse-release landed off the label (see
+            # _commit_pending_polygon). Done before mask-build so the overlay
+            # repaints it as a committed zone and the mask includes it.
+            self._dbg(f"_do_preview: ENTER — _polygons={len(self._polygons)}, "
+                      f"sample_mode={self.cmb_sample_mode.currentText()}")
+            self._commit_pending_polygon()
             self._set_status("Building exclusion mask…")
             excl = self._build_exclusion_mask()
+            self._dbg(f"_do_preview: excl mask is "
+                      f"{'None (NO exclusions)' if excl is None else f'present ({int((~excl).sum())} excluded px)'}")
 
             self._set_status("Running ABE preview…")
             corrected, bg = self._run_abe(excl, progress=self._set_status)
@@ -2555,8 +2821,17 @@ class ABEDialog(QDialog):
 
     def _do_apply(self):
         try:
+            # Commit a finished-but-uncommitted polygon first (mouse-release
+            # off the label), so Apply never silently runs on the whole frame
+            # when the user clearly drew an exclusion. See
+            # _commit_pending_polygon.
+            self._dbg(f"_do_apply: ENTER — _polygons={len(self._polygons)}, "
+                      f"sample_mode={self.cmb_sample_mode.currentText()}")
+            self._commit_pending_polygon()
             self._set_status("Building exclusion mask…")
             excl = self._build_exclusion_mask()
+            self._dbg(f"_do_apply: excl mask is "
+                      f"{'None (NO exclusions)' if excl is None else f'present ({int((~excl).sum())} excluded px)'}")
 
             self._set_status("Running ABE (apply)…")
             corrected, bg = self._run_abe(excl, progress=self._set_status)
@@ -2762,6 +3037,13 @@ class ABEDialog(QDialog):
             
     def closeEvent(self, ev):
         self._closing = True
+        # Release any mouse grab still held from an in-progress polygon drag
+        # so it can't outlive the dialog (Qt usually auto-releases on hide,
+        # but be explicit).
+        try:
+            self.preview_label.releaseMouse()
+        except Exception:
+            pass
         try:
             if self._connected_current_doc_changed and hasattr(self._main, "currentDocumentChanged"):
                 self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
@@ -2814,6 +3096,48 @@ class ABEDialog(QDialog):
         # ✅ redraw from the clean base
         self._redraw_overlay()
 
+    def _commit_pending_polygon(self) -> bool:
+        """
+        Fold any in-progress polygon (``_drawing_poly``) into the committed
+        list if it has enough points to be a real region (>= 3 vertices).
+
+        This closes the intermittent "my exclusion zone was ignored" bug.
+        A polygon only ever reached ``_polygons`` from inside the
+        ``obj is self.preview_label`` branch of the event filter (on
+        right-click or left-button *release*). If the cursor drifted off the
+        label before the button came up — a fast drag that ended past the
+        image edge, a release over a scrollbar, a flick that left the widget
+        — that release was delivered to a different widget and the commit
+        never ran. The polygon then sat in ``_drawing_poly`` forever: still
+        PAINTED (as a dashed outline, so the user saw it) but invisible to
+        ``_build_exclusion_mask``, which only read ``_polygons``. Result:
+        ~1 run in 4, the mask came back empty and refinement ran on the
+        whole frame.
+
+        Calling this at mask-build time (and at the top of Preview/Apply)
+        guarantees a finished-but-uncommitted polygon is honoured. A
+        sub-3-point scrap is discarded, matching the release handler.
+
+        Returns True if a polygon was committed.
+        """
+        dp = self._drawing_poly
+        if dp is not None and len(dp) >= 3:
+            # Hand the live list off to _polygons, then null the pending slot
+            # so a second call is a no-op and the list isn't aliased/mutated.
+            self._polygons.append(dp)
+            self._drawing_poly = None
+            self._dbg(f"_commit_pending_polygon: committed a pending {len(dp)}-pt "
+                      f"polygon; _polygons now has {len(self._polygons)}.")
+            try:
+                self._redraw_overlay()   # repaint so it shows as committed
+            except Exception:
+                pass
+            return True
+        if dp is not None:
+            self._dbg(f"_commit_pending_polygon: pending polygon had only "
+                      f"{len(dp)} pt(s) (<3) — discarding, NOT committing.")
+        return False
+
     def _image_shape(self) -> tuple[int, int]:
         src = np.asarray(self.doc.image)
         if src.ndim == 2:
@@ -2821,24 +3145,105 @@ class ABEDialog(QDialog):
         return src.shape[0], src.shape[1]
 
     def _build_exclusion_mask(self) -> np.ndarray | None:
+        # Safety net: fold a finished-but-uncommitted polygon in before we
+        # read _polygons, so a release that landed off the label can never
+        # silently drop the user's last-drawn zone (see
+        # _commit_pending_polygon for the full rationale).
+        self._commit_pending_polygon()
+
+        self._dbg(f"_build_exclusion_mask: ENTER — _polygons={len(self._polygons)}, "
+                  f"_drawing_poly={'None' if self._drawing_poly is None else len(self._drawing_poly)}")
+
         if not self._polygons:
+            self._dbg("_build_exclusion_mask: no committed polygons → "
+                      "returning None (NO exclusions).")
             return None
+
         H, W = self._image_shape()
+        self._dbg(f"_build_exclusion_mask: image shape H={H} W={W} "
+                  f"(from self.doc.image); cv2={'present' if cv2 is not None else 'MISSING'}")
+
+        # Normalise every stored polygon into an int32 (N,2) array, dropping
+        # any that are degenerate (fewer than 3 distinct vertices). QPointF
+        # coords are in ORIGINAL IMAGE space; cv2.fillPoly clips to the mask
+        # bounds on its own, but we validate here so one bad polygon can't
+        # wipe out the whole mask or raise mid-fill.
+        valid_polys = []
+        for i, poly in enumerate(self._polygons):
+            n = 0 if poly is None else len(poly)
+            if poly is None or n < 3:
+                self._dbg(f"  poly[{i}]: {n} pt(s) (<3) → SKIP")
+                continue
+            try:
+                pts = np.array([[int(round(p.x())), int(round(p.y()))]
+                                for p in poly], dtype=np.int32)
+            except Exception as e:
+                self._dbg(f"  poly[{i}]: coord conversion FAILED ({e}) → SKIP")
+                continue
+            uniq = np.unique(pts, axis=0).shape[0]
+            xmin, ymin = int(pts[:, 0].min()), int(pts[:, 1].min())
+            xmax, ymax = int(pts[:, 0].max()), int(pts[:, 1].max())
+            in_bounds = (xmax >= 0 and ymax >= 0 and xmin < W and ymin < H)
+            self._dbg(f"  poly[{i}]: {n} pts, {uniq} unique, "
+                      f"bbox=({xmin},{ymin})-({xmax},{ymax}), "
+                      f"in_bounds={in_bounds}")
+            # Need at least 3 UNIQUE points or it has zero area and fillPoly
+            # paints nothing — treat that as not-a-region rather than a
+            # silent no-op.
+            if uniq < 3:
+                self._dbg(f"  poly[{i}]: <3 unique vertices → SKIP (degenerate)")
+                continue
+            valid_polys.append(pts)
+
+        if not valid_polys:
+            # Polygons existed but none were real regions. Return None (the
+            # documented "no exclusions" sentinel) and log it, so a future
+            # recurrence is visible instead of silently processing the whole
+            # frame as if nothing was drawn.
+            self._dbg(f"_build_exclusion_mask: {len(self._polygons)} polygon(s) "
+                      f"stored but NONE had >=3 unique vertices → returning None "
+                      f"(NO exclusions). This is the bug symptom if you drew real zones.")
+            return None
+
         mask = np.ones((H, W), dtype=np.uint8)
         if cv2 is None:
-            # very slow pure-numpy fallback: fill polygon by bounding-box rasterization
-            # (expect OpenCV to be available in SASpro)
-            for poly in self._polygons:
-                pts = np.array([[int(p.x()), int(p.y())] for p in poly], dtype=np.int32)
-                minx, maxx = np.clip([pts[:,0].min(), pts[:,0].max()], 0, W-1)
-                miny, maxy = np.clip([pts[:,1].min(), pts[:,1].max()], 0, H-1)
-                for y in range(miny, maxy+1):
-                    for x in range(minx, maxx+1):
-                        # winding test approx omitted -> treat as box (coarse)
-                        mask[y, x] = 0
+            # Pure-numpy fallback (expect OpenCV in SASpro). Coarse: fills the
+            # polygon's bounding box rather than the exact winding region.
+            self._dbg("_build_exclusion_mask: cv2 MISSING — using coarse "
+                      "bounding-box fallback fill.")
+            for pts in valid_polys:
+                minx, maxx = np.clip([pts[:, 0].min(), pts[:, 0].max()], 0, W - 1)
+                miny, maxy = np.clip([pts[:, 1].min(), pts[:, 1].max()], 0, H - 1)
+                mask[miny:maxy + 1, minx:maxx + 1] = 0
         else:
-            polys = [np.array([[int(p.x()), int(p.y())] for p in poly], dtype=np.int32) for poly in self._polygons]
-            cv2.fillPoly(mask, polys, 0)  # 0 = excluded
+            # Fill each polygon in its OWN fillPoly call — NOT one call with the
+            # whole list. cv2.fillPoly applies an even-odd rule across all
+            # polygons passed in a single call, so where two zones OVERLAP the
+            # region is covered twice and toggles back to UN-filled — a hole.
+            # That silently un-protected exactly the overlap the user drew to
+            # be extra-safe (e.g. a second zone over a galaxy core already
+            # inside a bigger zone). Filling one at a time makes the result a
+            # true UNION: overlaps are set to 0 twice (idempotent), never
+            # cancelled. See the overlap test in commit notes.
+            for i, pts in enumerate(valid_polys):
+                cv2.fillPoly(mask, [pts], 0)  # 0 = excluded; one poly per call
+
+        excluded_px = int((mask == 0).sum())
+        pct = 100.0 * excluded_px / float(max(1, H * W))
+        self._dbg(f"_build_exclusion_mask: filled {len(valid_polys)} zone(s) → "
+                  f"{excluded_px} px excluded ({pct:.2f}%). "
+                  f"Convention: True=sample/keep, False=excluded-inside-polygon.")
+
+        # Final guard: if, despite valid polygons, nothing actually got
+        # excluded (e.g. every polygon fell entirely outside the image),
+        # report None so downstream treats it as "no mask" consistently.
+        if excluded_px == 0:
+            self._dbg("_build_exclusion_mask: 0 px excluded despite valid "
+                      "polygons → returning None. (Polygons likely fell outside "
+                      "the image, or coords are in the wrong space.)")
+            return None
+        self._dbg("_build_exclusion_mask: RETURNING bool mask with "
+                  f"{excluded_px} excluded px.")
         return mask.astype(bool)
 
     # ----- preview rendering helpers -----
@@ -3116,6 +3521,20 @@ class ABEDialog(QDialog):
                     if img_pt is not None:
                         if self._drawing_poly is None:
                             self._drawing_poly = [img_pt]
+                            # Grab the mouse for the duration of the freehand
+                            # drag so the eventual MouseButtonRelease is
+                            # ALWAYS delivered back to preview_label — even if
+                            # the cursor leaves the widget (off the image
+                            # edge, over a scrollbar, off the window). Without
+                            # this, a release outside the label never ran the
+                            # commit branch and the finished polygon was
+                            # stranded in _drawing_poly (the intermittent
+                            # "exclusion ignored" bug). _commit_pending_polygon
+                            # is the safety net; this is the root-cause fix.
+                            try:
+                                self.preview_label.grabMouse()
+                            except Exception:
+                                pass
                         else:
                             self._drawing_poly.append(img_pt)
                         self._redraw_overlay()
@@ -3139,6 +3558,14 @@ class ABEDialog(QDialog):
                         return True
 
             elif ev.type() == QEvent.Type.MouseButtonRelease:
+                # Always release any mouse grab we took when drawing started,
+                # before anything else — grabbing is a global state and must
+                # not outlive the drag no matter which branch handles release.
+                try:
+                    self.preview_label.releaseMouse()
+                except Exception:
+                    pass
+
                 # finish panning
                 if getattr(self, "_panning", False):
                     self._panning = False
