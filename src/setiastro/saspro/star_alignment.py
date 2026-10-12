@@ -1432,6 +1432,51 @@ class StellarAlignmentDialog(QDialog):
         run_row.addWidget(make_help_button("star_alignment", self))
         controls.addLayout(run_row)
 
+        # Drag-to-canvas grip (PI-style "new instance"). Deferred import
+        # avoids an import cycle (shortcuts.py imports things back from this
+        # file). Lives on its own row at the bottom of the controls column
+        # so it's unmistakably a drag handle, not a run button. Dropping on
+        # empty canvas creates a shortcut carrying the dialog's current
+        # settings; dropping on an image view runs the tool headlessly
+        # against that view, same wiring every other tool uses.
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            # Icon comes from the shared resources module via staralign_path
+            # — same pattern ABE, Stat Stretch, etc. use (abeicon_path /
+            # statstretchicon_path). Wrapped in try/except because an older
+            # SASpro install that predates the staralign asset shouldn't
+            # crash the dialog; the grip just falls back to its default
+            # glyph when the icon can't be loaded.
+            try:
+                from setiastro.saspro.resources import staralign_path
+                _grip_icon = QIcon(staralign_path)
+                if _grip_icon.isNull():
+                    _grip_icon = QIcon()
+            except Exception:
+                _grip_icon = QIcon()
+
+            drag_row = QHBoxLayout()
+            drag_row.setContentsMargins(0, 0, 0, 0)
+            self.preset_drag_handle = PresetDragHandle(
+                "star_align",
+                self._collect_preset_for_grip,
+                icon=_grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Star Alignment shortcut\n"
+                    "with these exact settings.\n"
+                    "Drop directly on an image view to apply them headlessly."
+                ),
+                parent=self,
+            )
+            drag_row.addWidget(self.preset_drag_handle)
+            drag_row.addStretch(1)
+            controls.addLayout(drag_row)
+        except Exception:
+            # If shortcuts.py isn't importable in this host (e.g. test
+            # harness), silently skip the grip — the rest of the dialog
+            # still works.
+            pass
+
         self.status_label = QLabel("Status: Ready")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         controls.addWidget(self.status_label)
@@ -1467,6 +1512,111 @@ class StellarAlignmentDialog(QDialog):
 
         # populate combos initially
         self._populate_view_combos()
+
+    def _collect_preset_for_grip(self) -> dict:
+        """
+        Snapshot the dialog's current UI into the preset dict the headless
+        runner (star_alignment_preset.run_star_alignment_via_preset) expects.
+        Called by the PresetDragHandle at drag-start time, so the shortcut /
+        headless apply uses whatever the user has set up THIS SESSION — not
+        a stale saved preset.
+
+        Reference-side mapping (Stellar Alignment is a two-image dialog but
+        the preset model is single-reference → dropped-target):
+          source_from_file_radio checked → ref_mode="file",  ref_file=<path>
+          source_from_view_radio checked → ref_mode="view_name", ref_name=<combo title>
+        When From-View is checked but the combo is empty, fall back to
+        "active" so the headless resolver uses whatever view is active at
+        drop time (safer than emitting an unresolvable view name).
+        """
+        # Reference mapping -------------------------------------------------
+        ref_mode = "active"
+        ref_name = ""
+        ref_file = ""
+        try:
+            if getattr(self, "source_from_file_radio", None) is not None and \
+                    self.source_from_file_radio.isChecked():
+                ref_mode = "file"
+                ref_file = str(getattr(self, "source_file_path", "") or "")
+            elif getattr(self, "source_from_view_radio", None) is not None and \
+                    self.source_from_view_radio.isChecked():
+                title = ""
+                try:
+                    title = str(self.source_view_combo.currentText() or "").strip()
+                except Exception:
+                    title = ""
+                if title:
+                    ref_mode = "view_name"
+                    ref_name = title
+                else:
+                    ref_mode = "active"
+        except Exception:
+            pass
+
+        # Advanced mapping — read directly off the xf_* widgets since those
+        # are the live source of truth, and the two combos (method, model)
+        # are indexed the same way the headless runner's _IDX_TO_* arrays
+        # are.
+        try:
+            method = ("stellar", "wcs", "wcs_stellar")[self.xf_method.currentIndex()]
+        except Exception:
+            method = "stellar"
+        try:
+            model = ("affine", "homography", "poly3", "poly4")[self.xf_model.currentIndex()]
+        except Exception:
+            model = "affine"
+
+        try:
+            det_sigma = float(self.xf_det_sigma.value())
+        except Exception:
+            det_sigma = 12.0
+        try:
+            max_cp = int(self.xf_maxcp.value())
+        except Exception:
+            max_cp = 250
+        try:
+            downsample = int(self.xf_downsample.value())
+        except Exception:
+            downsample = 2
+        try:
+            h_reproj = float(self.xf_h_reproj.value())
+        except Exception:
+            h_reproj = 3.0
+
+        # min_area, limit_stars, min_fwhm, max_ellipticity aren't exposed as
+        # dialog widgets (they live only in the stacking/align/* QSettings
+        # path). Pull them from the live settings so a shortcut carries the
+        # user's current defaults, not hard-coded 10/500/1.2/0.6 placeholders.
+        try:
+            prefs = _align_prefs(self.settings) if hasattr(self, "settings") else _align_prefs(QSettings())
+        except Exception:
+            prefs = {}
+        min_area        = int(prefs.get("minarea",         10))
+        limit_stars     = int(prefs.get("limit_stars",     500))
+        min_fwhm        = float(prefs.get("min_fwhm",        1.2))
+        max_ellipticity = float(prefs.get("max_ellipticity", 0.6))
+
+        return {
+            # Reference + output
+            "ref_mode":   ref_mode,
+            "ref_name":   ref_name,
+            "ref_file":   ref_file,
+            # Default a drag-born preset to Overwrite = False (safer — the
+            # user can toggle it by right-clicking the shortcut and editing
+            # the preset). Matches other tools' grip-born defaults.
+            "overwrite":  False,
+            "downsample": downsample,
+            # Advanced — full set the preset dialog can also edit later.
+            "method":              method,
+            "model":               model,
+            "det_sigma":           det_sigma,
+            "min_area":            min_area,
+            "max_control_points":  max_cp,
+            "h_reproj":            h_reproj,
+            "limit_stars":         limit_stars,
+            "min_fwhm":            min_fwhm,
+            "max_ellipticity":     max_ellipticity,
+        }
 
     def _doc_header(self, doc):
         try:
