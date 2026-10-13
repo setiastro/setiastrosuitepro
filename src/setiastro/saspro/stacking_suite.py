@@ -6628,8 +6628,16 @@ class SubRejectionDialog(QDialog):
             size=7 if short_title else 8,
         )
         scat.setData(x=x, y=y)
+        # pyqtgraph's sigClicked signature changed from (plot, points) to
+        # (plot, points, ev) somewhere around 0.13 — a lambda that took
+        # two positional args + a default-captured _mk would see the mouse
+        # event overwrite _mk when pyqtgraph emits three, and the click
+        # handler would silently exit on the metric_key-not-in-dict guard.
+        # The *_args splat ignores whatever positional count pyqtgraph
+        # emits, and _mk= stays the keyword default we actually set.
         scat.sigClicked.connect(
-            lambda _p, pts, _mk=mk: self._on_point_click(_mk, pts)
+            lambda *_args, _mk=mk: self._on_point_click(_mk, _args[1])
+            if len(_args) >= 2 else None
         )
         plot.addItem(scat)
 
