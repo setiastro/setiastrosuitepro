@@ -302,6 +302,59 @@ class ReuseAlignedFramesTests(unittest.TestCase):
                          f"unregistered frames handed to the integrator: {names}")
 
     # ── tests ─────────────────────────────────────────────────────────────
+    def test_register_new_then_integrate_drops_frame_that_failed_alignment(self):
+        """Accepting 'Register N New → Integrate All': a new frame that fails
+        alignment must not be stacked (today its raw calibrated file is, as-is)."""
+        for t in "ABCD":
+            self.add_calibrated(t)
+        self.add_twin("A")
+        self.add_twin("B")
+        _FakeAlignThread.align_fail = {"D"}
+        self.open_dialog()
+
+        integrated = self.click_register_and_integrate()
+
+        self.assertEqual(self.prompts[0][0], "Partially Registered")
+        self.assertEqual(sorted(_FakeAlignThread.registered), ["C", "D"])
+        self.assertIntegratedExactly(integrated, ["A", "B", "C"])
+
+    def test_register_new_then_integrate_drops_frame_whose_aligned_output_was_not_written(self):
+        """Accepting 'Register N New → Integrate All': a frame whose transform was
+        solved but whose aligned output failed to write must not be stacked."""
+        for t in "ABCE":
+            self.add_calibrated(t)
+        self.add_twin("A")
+        self.add_twin("B")
+        _FakeAlignThread.finalize_fail = {"E"}
+        self.open_dialog()
+
+        integrated = self.click_register_and_integrate()
+
+        self.assertEqual(self.prompts[0][0], "Partially Registered")
+        self.assertIntegratedExactly(integrated, ["A", "B", "C"])
+
+    def test_register_new_then_integrate_hands_only_debayered_frames_to_integrator(self):
+        """Claim (c): nothing that reaches the integrator may still be a 2-D CFA mosaic."""
+        for t in "ABCDE":
+            self.add_calibrated(t)
+        self.add_twin("A")
+        self.add_twin("B")
+        _FakeAlignThread.align_fail = {"D"}
+        _FakeAlignThread.finalize_fail = {"E"}
+        self.open_dialog()
+
+        integrated = self.click_register_and_integrate()
+
+        self.assertIsNotNone(integrated, "nothing reached the integrator")
+        raw_cfa = []
+        for p in integrated:
+            hdr = fits.getheader(p)
+            if hdr["NAXIS"] != 3 or not hdr.get("DEBAYERED", False):
+                raw_cfa.append(f"{os.path.relpath(p, self.tmp)} (NAXIS={hdr['NAXIS']}, "
+                               f"BAYERPAT={hdr.get('BAYERPAT')}, "
+                               f"DEBAYERED={hdr.get('DEBAYERED')})")
+        self.assertEqual(raw_cfa, [], "non-debayered frames handed to the integrator")
+
     def test_register_all_drops_frame_whose_aligned_output_was_not_written(self):
         """'Register All' button: a finalize failure must not be
         stacked as its unaligned Normalized_Images input."""

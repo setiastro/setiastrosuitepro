@@ -27899,6 +27899,13 @@ class StackingSuiteDialog(QDialog):
 
             # --- Restore the full tree and hand off to integrate ---
             self.light_files = {g: list(lst) for g, lst in _full_tree.items()}
+            # The new frames that failed this run have no registered twin;
+            # tell integration to leave them out rather than stack them as-is.
+            _registered = {os.path.normcase(k) for k in self.valid_transforms}
+            self._integrate_leave_out = {
+                k for k, norm in self._orig2norm.items()
+                if os.path.normcase(os.path.normpath(norm)) not in _registered
+            }
             self.update_status(self.tr(
                 "🔗 New frames registered. Integrating the full set "
                 "(existing + newly registered)…"
@@ -32653,6 +32660,9 @@ class StackingSuiteDialog(QDialog):
         Integrate frames that are already aligned (and typically normalized).
         We only do fast measurements for weights; no re-normalization, no re-alignment.
         """
+        # Set only by the "Register N New → Integrate All" hand-off.
+        _leave_out = getattr(self, "_integrate_leave_out", None) or set()
+        self._integrate_leave_out = None
         if getattr(self, "_registration_busy", False):
             self.update_status(self.tr("⏸ Another job is running; ignoring extra click."))
             return
@@ -32688,6 +32698,21 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(self.tr(
                         f"🧩 Set '{cur_set}': scoped integration to this set "
                         f"({dropped} frame(s) from other sets held back)."
+                    ))
+
+            # 1a') After "Register N New → Integrate All": leave out the new
+            # frames that failed registration in that run.
+            if _leave_out:
+                _n_before = sum(len(lst) for lst in self.light_files.values())
+                self.light_files = {
+                    g: [p for p in lst
+                        if os.path.normcase(os.path.normpath(p)) not in _leave_out]
+                    for g, lst in self.light_files.items()
+                }
+                _n_left_out = _n_before - sum(len(lst) for lst in self.light_files.values())
+                if _n_left_out:
+                    self.update_status(self.tr(
+                        f"🚫 Leaving out {_n_left_out} new frame(s) that failed registration."
                     ))
 
             if not self.light_files:
