@@ -23334,6 +23334,101 @@ class StackingSuiteDialog(QDialog):
             groups.setdefault(fname, []).append(fp)
         return groups
 
+    def _make_weight_resolver(self, weights: dict = None):
+        """Return a callable ``resolve(path) -> float`` that looks up a
+        frame's effective weight across the aligned→original path chain.
+        Factored out so ``_count_contributing_frames`` and the acquisition
+        summary filter use the SAME lookup, guaranteeing their counts
+        agree."""
+        import os as _os
+        if weights is None:
+            weights = getattr(self, "frame_weights", None) or {}
+        if not weights:
+            return lambda _p: 1.0
+
+        fw_norm = {}
+        for k, v in weights.items():
+            try:
+                fw_norm[_os.path.normcase(_os.path.normpath(k))] = float(v)
+            except Exception:
+                fw_norm[_os.path.normcase(_os.path.normpath(k))] = 1.0
+
+        _orig_by_aligned = getattr(self, "orig_by_aligned", {}) or {}
+        _orig2norm       = getattr(self, "_orig2norm", {}) or {}
+        _norm2orig_nc = {}
+        for orig_nc, norm_np in _orig2norm.items():
+            try:
+                _norm2orig_nc[_os.path.normpath(norm_np)] = orig_nc
+            except Exception:
+                pass
+
+        def _resolve(fp) -> float:
+            try:
+                p_nc = _os.path.normcase(_os.path.normpath(fp))
+            except Exception:
+                return 1.0
+            if p_nc in fw_norm:
+                return fw_norm[p_nc]
+            try:
+                p_np = _os.path.normpath(fp)
+            except Exception:
+                return 1.0
+            norm_path = _orig_by_aligned.get(p_np)
+            if norm_path:
+                orig_nc = _norm2orig_nc.get(_os.path.normpath(norm_path))
+                if orig_nc and orig_nc in fw_norm:
+                    return fw_norm[orig_nc]
+            return 1.0
+
+        return _resolve
+
+    def _count_contributing_frames(self, file_list, weights: dict = None) -> int:
+        """How many frames in ``file_list`` will actually contribute photons
+        to the integrated master. Soft-rejected subs — those whose score was
+        forced to 0 by ``_apply_sub_rejection`` — don't contribute even
+        though they're still in ``file_list`` for bookkeeping. The stacked
+        count that goes into the filename, ``NCOMBINE`` header, and status
+        summary should name the number of contributing frames, not the
+        pre-rejection pool size.
+
+        Registration failures DO NOT reach this method: aligned_light_files
+        is filtered against ``self.valid_transforms`` upstream (around line
+        27617) so a reg-failed frame is already absent from ``file_list``
+        by the time we count. The only drop reason this method consults is
+        soft rejection (weight = 0). Combined effect: 100 subs, 2 soft-
+        rejected (A, B), 2 reg-failed (A, C) → ``file_list`` arrives with
+        98 entries (A, C already gone), one has weight 0 (B), the returned
+        count is 97. A sub rejected by both routes (A) is subtracted once,
+        which is the correct accounting.
+
+        **Lookup chain** mirrors ``_resolve_weight`` inside the
+        integrators because ``file_list`` at this point holds ALIGNED
+        paths (Aligned_Images/...) but ``self.frame_weights`` is keyed by
+        the CALIBRATED/original paths the measurement pass saw:
+
+          aligned path  →  ``orig_by_aligned`` → normalized intermediate
+                        →  ``_orig2norm`` reverse → original (normcase)
+                        →  ``frame_weights`` → weight
+
+        Without this chain the direct ``weights.get(aligned_path, 1.0)``
+        would always return 1.0 and the Register-and-Integrate path would
+        silently count every frame as contributing. Any lookup that falls
+        off the chain defaults to 1.0 (contributing) so pipelines without
+        a weighting pass still produce an all-frames count — no regression.
+
+        ``weights`` can be an explicit dict (the prepass passes its own
+        captured copy for isolation); if omitted, falls back to
+        ``self.frame_weights``."""
+        resolve = self._make_weight_resolver(weights)
+        n = 0
+        for fp in file_list:
+            try:
+                if resolve(fp) > 0.0:
+                    n += 1
+            except Exception:
+                n += 1
+        return n
+
     def _apply_sub_rejection(self, measured_frames: list,
                              star_counts: dict = None,
                              preview_medians: dict = None) -> int:
@@ -27977,6 +28072,12 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 group_rej_maps = {}
 
+            # Store the EFFECTIVE frame count — soft-rejected (weight=0)
+            # subs are still in file_list for bookkeeping but don't
+            # contribute to the integrated master. Everything downstream
+            # that stamps "N stacked" into the filename or NCOMBINE
+            # header reads from this field.
+            effective_n = self._count_contributing_frames(file_list, frame_weights)
             prepass["groups"][group_key] = {
                 "group_key": group_key,
                 "file_list": list(file_list),
@@ -27984,14 +28085,18 @@ class StackingSuiteDialog(QDialog):
                 "rejection_map": rejection_map,
                 "ref_header": ref_header,
                 "rej_maps": group_rej_maps,
-                "n_frames": len(file_list),
+                "n_frames": effective_n,
+                "n_total": len(file_list),  # pre-rejection count, for logs
             }
 
             dt = perf_counter() - t0
+            rejected_here = len(file_list) - effective_n
+            rej_note = (f" ({rejected_here} soft-rejected)" if rejected_here else "")
             line = (
                 f"Prepass '{group_key}': "
                 f"{integrated_image.shape[1]}×{integrated_image.shape[0]}, "
-                f"{len(file_list)} frame(s), {dt:.1f}s"
+                f"{effective_n}/{len(file_list)} frame(s) contributing{rej_note}, "
+                f"{dt:.1f}s"
             )
             prepass["summary_lines"].append(line)
             log(f"✅ {line}")
@@ -28115,9 +28220,18 @@ class StackingSuiteDialog(QDialog):
             hdr_orig["CREATOR"] = "SetiAstroSuite"
             hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
 
-            n_frames_group = len(file_list)
-            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+            # Effective count = frames with weight > 0 (sub rejection may
+            # have zeroed some). Reflect that in the filename AND header
+            # so a 245-frame set that soft-rejected 3 says "242" in both.
+            n_frames_group = self._count_contributing_frames(file_list)
+            n_frames_pool  = len(file_list)
+            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined (weight > 0)")
             hdr_orig["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+            if n_frames_pool != n_frames_group:
+                hdr_orig["NPOOL"] = (int(n_frames_pool),
+                                     "Pre-rejection frame pool size (SetiAstro)")
+                hdr_orig["NREJECT"] = (int(n_frames_pool - n_frames_group),
+                                       "Frames soft-rejected (weight=0) by score outlier pass")
 
             # Correct header fields if frames were upscaled during normalization
             # (e.g. bin2 RGB upscaled to match bin1 L — binning, pixscale, CRPIX all wrong otherwise)
@@ -28250,13 +28364,22 @@ class StackingSuiteDialog(QDialog):
                     scale=1.0,
                     rect_override=group_rect if group_rect is not None else global_rect
                 )
-                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+                # Cropped master uses the SAME contributing frames as the
+                # full master (crop is spatial-only); carry the same
+                # NCOMBINE/NPOOL/NREJECT values across so both files tell
+                # the same story.
+                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined (weight > 0)")
                 hdr_crop["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+                if n_frames_pool != n_frames_group:
+                    hdr_crop["NPOOL"]   = (int(n_frames_pool),
+                                           "Pre-rejection frame pool size (SetiAstro)")
+                    hdr_crop["NREJECT"] = (int(n_frames_pool - n_frames_group),
+                                           "Frames soft-rejected (weight=0) by score outlier pass")
                 if upscale_map and file_list:
                     rep_key = os.path.normcase(os.path.normpath(file_list[0]))
                     uf = upscale_map.get(rep_key)
                     if uf and (abs(uf[0] - 1.0) > 1e-4 or abs(uf[1] - 1.0) > 1e-4):
-                        hdr_crop = self._fix_header_for_upscale(hdr_crop, uf[0], uf[1])                
+                        hdr_crop = self._fix_header_for_upscale(hdr_crop, uf[0], uf[1])
                 is_mono_crop = (cropped_img.ndim == 2)
                 hdr_crop = self._maybe_plate_solve_master(
                     cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
@@ -28987,7 +29110,23 @@ class StackingSuiteDialog(QDialog):
         # Walk every path once; carry the set tag through.
         per_set_records = []
         total_skipped = 0
-        n_total_files = sum(len(p or []) for g in sets_map.values() for p in g.values())
+        # Reuse the same aligned→original resolver the stacked-count helper
+        # uses so the summary ALWAYS reports the same number as the
+        # filename/NCOMBINE header. Two separate direct-lookup codepaths
+        # would silently disagree the first time Register-and-Integrate
+        # ran — frame_weights there is keyed by original (not aligned)
+        # paths, and self.light_files can be either.
+        _resolve_summary_w = self._make_weight_resolver()
+        def _effective_in(paths):
+            n = 0
+            for p in (paths or []):
+                try:
+                    if _resolve_summary_w(p) > 0.0:
+                        n += 1
+                except Exception:
+                    n += 1
+            return n
+        n_total_files = sum(_effective_in(p) for g in sets_map.values() for p in g.values())
         if n_total_files > 200:
             try:
                 self.update_status(self.tr(
@@ -28997,10 +29136,20 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
+        # Honour soft rejection: a sub whose frame_weights was zeroed by
+        # the score-outlier pass didn't contribute to the integrated
+        # master, so it must not inflate the "N frames / M hours" numbers.
+        # Uses the same aligned→original resolver as the count above.
+        def _contributes(fp):
+            try:
+                return _resolve_summary_w(fp) > 0.0
+            except Exception:
+                return True
+
         for set_name, groups in sets_map.items():
             flat_paths = []
             for _gk, paths in (groups or {}).items():
-                flat_paths.extend(paths or [])
+                flat_paths.extend(p for p in (paths or []) if _contributes(p))
             recs, skipped = self._read_light_frame_meta(flat_paths)
             for r in recs:
                 r["set"] = set_name
@@ -30074,9 +30223,18 @@ class StackingSuiteDialog(QDialog):
             hdr_orig["CREATOR"]  = "SetiAstroSuite"
             hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
 
-            n_frames_group = len(file_list)
-            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+            # Count soft-rejected (weight = 0) subs out of the stacked
+            # tally so the filename and NCOMBINE header reflect only
+            # the frames that actually contributed photons.
+            n_frames_group = self._count_contributing_frames(file_list)
+            n_frames_pool  = len(file_list)
+            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined (weight > 0)")
             hdr_orig["NSTACK"]   = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+            if n_frames_pool != n_frames_group:
+                hdr_orig["NPOOL"]   = (int(n_frames_pool),
+                                       "Pre-rejection frame pool size (SetiAstro)")
+                hdr_orig["NREJECT"] = (int(n_frames_pool - n_frames_group),
+                                       "Frames soft-rejected (weight=0) by score outlier pass")
 
             is_mono_orig = (integrated_image.ndim == 2)
             if is_mono_orig:
@@ -30091,7 +30249,8 @@ class StackingSuiteDialog(QDialog):
                 hdr_orig["NAXIS2"] = integrated_image.shape[0]
                 hdr_orig["NAXIS3"] = integrated_image.shape[2]
 
-            n_frames_group = len(file_list)
+            # Already computed above; keep variable in scope for the
+            # filename stem construction a few lines below.
             H, W = integrated_image.shape[:2]
             display_group = self._label_with_dims(group_key, W, H)
             _set_pref = (f"{self._reg_current_set_slug}_"
@@ -30209,8 +30368,13 @@ class StackingSuiteDialog(QDialog):
                     scale=1.0,
                     rect_override=group_rect if group_rect is not None else global_rect
                 )
-                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined (weight > 0)")
                 hdr_crop["NSTACK"]   = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+                if n_frames_pool != n_frames_group:
+                    hdr_crop["NPOOL"]   = (int(n_frames_pool),
+                                           "Pre-rejection frame pool size (SetiAstro)")
+                    hdr_crop["NREJECT"] = (int(n_frames_pool - n_frames_group),
+                                           "Frames soft-rejected (weight=0) by score outlier pass")
                 # ── NEW: plate solve the cropped master separately (geometry/CRPIX differ) ──
                 hdr_crop = self._maybe_plate_solve_master(
                     cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
@@ -34181,7 +34345,14 @@ class StackingSuiteDialog(QDialog):
         _set_pref = (f"{self._reg_current_set_slug}_"
                      if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
                      else "")
-        base_stem = f"MasterLight_{_set_pref}{display_group_driz}_{len(file_list)}stacked_drizzle"
+        # Effective count = frames with weight > 0 (soft rejection may
+        # have zeroed some). Drizzle filename and header reflect only
+        # those; the pre-rejection pool size is kept in NPOOL/NREJECT
+        # if any sub was rejected.
+        n_frames      = int(self._count_contributing_frames(file_list))
+        n_frames_pool = int(len(file_list))
+
+        base_stem = f"MasterLight_{_set_pref}{display_group_driz}_{n_frames}stacked_drizzle"
         base_stem = self._normalize_master_stem(base_stem)
         out_path_orig = self._build_out(self._master_light_dir(), base_stem, "fit")
         out_path_orig = self._dedupe_out_path(out_path_orig)
@@ -34193,9 +34364,13 @@ class StackingSuiteDialog(QDialog):
         hdr_orig["CREATOR"] = "SetiAstroSuite"
         hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
 
-        n_frames = int(len(file_list))
-        hdr_orig["NCOMBINE"] = (n_frames, "Number of frames combined")
+        hdr_orig["NCOMBINE"] = (n_frames, "Number of frames combined (weight > 0)")
         hdr_orig["NSTACK"] = (n_frames, "Alias of NCOMBINE (SetiAstro)")
+        if n_frames_pool != n_frames:
+            hdr_orig["NPOOL"]   = (n_frames_pool,
+                                   "Pre-rejection frame pool size (SetiAstro)")
+            hdr_orig["NREJECT"] = (n_frames_pool - n_frames,
+                                   "Frames soft-rejected (weight=0) by score outlier pass")
 
         if final_drizzle.ndim == 2:
             hdr_orig["NAXIS"] = 2
@@ -34233,15 +34408,20 @@ class StackingSuiteDialog(QDialog):
                 scale=float(scale_factor),
                 rect_override=rect_override
             )
-            hdr_crop["NCOMBINE"] = (n_frames, "Number of frames combined")
+            hdr_crop["NCOMBINE"] = (n_frames, "Number of frames combined (weight > 0)")
             hdr_crop["NSTACK"] = (n_frames, "Alias of NCOMBINE (SetiAstro)")
+            if n_frames_pool != n_frames:
+                hdr_crop["NPOOL"]   = (n_frames_pool,
+                                       "Pre-rejection frame pool size (SetiAstro)")
+                hdr_crop["NREJECT"] = (n_frames_pool - n_frames,
+                                       "Frames soft-rejected (weight=0) by score outlier pass")
 
             is_mono_crop = (cropped_drizzle.ndim == 2)
             display_group_driz_crop = self._label_with_dims(group_key, cropped_drizzle.shape[1], cropped_drizzle.shape[0])
             _set_pref = (f"{self._reg_current_set_slug}_"
                          if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
                          else "")
-            base_crop = f"MasterLight_{_set_pref}{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
+            base_crop = f"MasterLight_{_set_pref}{display_group_driz_crop}_{n_frames}stacked_drizzle_autocrop"
             base_crop = self._normalize_master_stem(base_crop)
             out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
             out_path_crop = self._dedupe_out_path(out_path_crop)
