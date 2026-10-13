@@ -6231,6 +6231,41 @@ class SubRejectionDialog(QDialog):
         ("score", "Weighted Score",  False, "sigma"),
     )
 
+    # Physical lower/upper bounds on each metric — thresholds are clamped
+    # to these on both the default/park computations AND on the user's
+    # drag (via InfiniteLine ``bounds=``). ``None`` means unbounded on
+    # that side.
+    #
+    # Why: on a wide-spread Score distribution med − k·σ can land at a
+    # negative number, which parks the red threshold bar at y < 0 — off
+    # the visible plot — and the user has to scroll down to find it.
+    # Scores (and star counts, FWHM, noise) can't physically be negative,
+    # so clamping the bar to the physical floor keeps it visible AND
+    # preserves the "nothing is actually below this threshold" semantics:
+    # reject(value < 0) is just as unachievable as reject(value < −∞).
+    # Eccentricity and background are additionally bounded above (1.0).
+    _METRIC_BOUNDS = {
+        "fwhm":  (0.0, None),
+        "ecc":   (0.0, 1.0),
+        "bg":    (0.0, 1.0),
+        "count": (0.0, None),
+        "noise": (0.0, None),
+        "score": (0.0, None),
+    }
+
+    @classmethod
+    def _bounds_for(cls, mk):
+        return cls._METRIC_BOUNDS.get(mk, (None, None))
+
+    @staticmethod
+    def _clamp(x, lo, hi):
+        x = float(x)
+        if lo is not None and x < float(lo):
+            x = float(lo)
+        if hi is not None and x > float(hi):
+            x = float(hi)
+        return x
+
     def __init__(self, parent, groups: dict, metrics_data: dict = None,
                  sigma_k: float = 3.5, start_in_advanced: bool = False):
         super().__init__(parent)
@@ -6272,6 +6307,13 @@ class SubRejectionDialog(QDialog):
                 default_score_th = float(med - self._sigma_k * sig)
             else:
                 default_score_th = float(_np.nanmin(scores)) - 1e-6
+            # Keep the default threshold at or above the metric's
+            # physical floor (0 for Score) so a wide-spread σ doesn't
+            # park the red bar off the bottom of the plot. Semantics are
+            # unchanged — reject(score < 0) is unreachable, same as
+            # reject(score < −∞) — but the line is visible on open.
+            _slo, _shi = self._bounds_for("score")
+            default_score_th = self._clamp(default_score_th, _slo, _shi)
             entry["metrics"]["score"] = {
                 "values":     scores,
                 "order":      _np.argsort(scores, kind="stable"),
@@ -6306,6 +6348,11 @@ class SubRejectionDialog(QDialog):
                         )
                     else:
                         default_th = 0.0
+                    # Clamp default to physical bounds so e.g. the
+                    # "park above max" seed for Ecc caps at 1.0 and the
+                    # "park below min" seed for Star Count caps at 0.
+                    _mlo, _mhi = self._bounds_for(mk)
+                    default_th = self._clamp(default_th, _mlo, _mhi)
                     entry["metrics"][mk] = {
                         "values":     vals,
                         "order":      order,
@@ -6608,9 +6655,14 @@ class SubRejectionDialog(QDialog):
                     ln.setZValue(-10)
                     plot.addItem(ln)
 
+        # Constrain the drag range so the user can't park the threshold
+        # at physically impossible values (e.g. Score < 0 or Ecc > 1).
+        _plo, _phi = self._bounds_for(mk)
         thresh_line = pg.InfiniteLine(
-            pos=th, angle=0, movable=True,
+            pos=self._clamp(th, _plo, _phi),
+            angle=0, movable=True,
             pen=pg.mkPen((235, 60, 60, 230), width=2),
+            bounds=[_plo, _phi],
         )
         thresh_line.sigPositionChanged.connect(self._refresh_colors)
         plot.addItem(thresh_line)
@@ -6788,6 +6840,11 @@ class SubRejectionDialog(QDialog):
             vmin, vmax = float(finite.min()), float(finite.max())
             span = (vmax - vmin) if vmax > vmin else 1.0
             new_pos = (vmax + 0.05 * span) if higher_worse else (vmin - 0.05 * span)
+            # Clamp to physical bounds — Keep-All for Star Count must not
+            # park at a negative value (invisible below y=0), and for Ecc
+            # must not go above 1.
+            _lo, _hi = self._bounds_for(mk)
+            new_pos = self._clamp(new_pos, _lo, _hi)
             try:
                 ln.setPos(float(new_pos))
             except Exception:
