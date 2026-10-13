@@ -36,7 +36,7 @@ from setiastro.saspro.bayer_utils import effective_bayer_from_header
 
 from PyQt6.QtCore import Qt, QTimer, QSettings, pyqtSignal, QObject, pyqtSlot, QThread, QEvent, QPoint, QSize, QEventLoop, QCoreApplication, QRectF, QPointF, QMetaObject
 from PyQt6.QtGui import QIcon, QImage, QPixmap, QAction, QIntValidator, QDoubleValidator, QFontMetrics, QTextCursor, QPalette, QPainter, QPen, QTransform, QColor, QBrush, QCursor
-from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
+from PyQt6.QtWidgets import (QDialog, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout, QLineEdit, QTreeWidget, QHeaderView, QTreeWidgetItem, QProgressBar, QProgressDialog,
                              QFormLayout, QDialogButtonBox, QToolBar, QToolButton, QFileDialog, QTabWidget, QAbstractItemView, QSpinBox, QDoubleSpinBox, QGroupBox,QRadioButton,
                              QSizePolicy, QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QApplication, QScrollArea, QTextEdit, QMenu, QPlainTextEdit, QGraphicsEllipseItem,
                              QMessageBox, QSlider, QCheckBox, QInputDialog, QComboBox, QFrame, QSplitter, QInputDialog)
@@ -133,6 +133,7 @@ from setiastro.saspro.torch_rejection import (
     torch_available as _torch_ok,
     gpu_algo_supported as _gpu_algo_supported,
     torch_reduce_tile as _torch_reduce_tile,
+    release_flat_group_ctx as _release_flat_group_ctx,
     _get_torch,
     _safe_inference_ctx as _safe_inference_ctx_impl,
 )
@@ -6181,6 +6182,775 @@ class SplitPreviewWidget(QWidget):
 # Updated FlatStrengthPreviewDialog  — uses SplitPreviewWidget
 # =============================================================================
 
+class SubRejectionDialog(QDialog):
+    """
+    Interactive sub-rejection review — one scatter plot of weighted frame
+    scores (Simple) or a 2×3 grid of per-metric plots (Advanced), switched
+    with the Advanced ▸ / ◂ Simple toggle. Subs
+    whose score falls below the draggable red threshold line are rejected
+    (soft reject: weight = 0) in the subsequent integration pass.
+
+    Why per-filter: an OIII group almost always scores lower than an Hα
+    group under the same sky (fewer detectable stars, lower photon rate),
+    so lumping both into one distribution would flag "OIII" as "outliers
+    of Hα". Each filter has its own median, MAD-σ, and threshold line;
+    switching filters in the dropdown just swaps the plot — the user's
+    threshold for each filter is remembered as they navigate. Pressing
+    Apply commits every filter's current threshold.
+
+    Visual vocabulary mirrors Blink Comparator Pro's Weighted Score panel:
+      • dashed gray line at the median
+      • dashed yellow / orange / red lines at ±1σ / ±2σ / ±3σ (robust)
+      • solid red line = movable rejection threshold
+      • blue dots = kept, red dots = rejected (recolour live as the line moves)
+      • click a dot to see which sub it is
+
+    Caller supplies ``groups``: ``{filter_name: {filepath: score}}``.
+    After ``exec()`` returns ``Accepted``, call ``rejected_paths()`` for the
+    flat list of files to zero out.
+    """
+
+    # Metric specifications — single source of truth for the dialog's
+    # per-metric panels. Order drives the Advanced-mode grid layout; the
+    # 2×3 layout places entries 0..5 at (row, col) = (idx // 3, idx % 3).
+    #
+    #   key          — stable identifier used in state dicts
+    #   display_name — panel title (translated at render time)
+    #   higher_worse — True → threshold flags values ABOVE the line (FWHM,
+    #                   Ecc, Background, Noise). False → flags values BELOW
+    #                   (Star Count, Weighted Score).
+    #   default      — "sigma": seed the line at median − k·σ (Score only).
+    #                 float frac: seed the line at (max/min) ± frac·span so
+    #                 nothing is rejected on open (user has to drag to flag).
+    _METRIC_SPECS = (
+        ("fwhm",  "FWHM (px)",       True,  0.05),
+        ("ecc",   "Eccentricity",    True,  0.05),
+        ("bg",    "Background",      True,  0.05),
+        ("count", "Star Count",      False, 0.05),
+        ("noise", "Noise",           True,  0.05),
+        ("score", "Weighted Score",  False, "sigma"),
+    )
+
+    # Physical lower/upper bounds on each metric — thresholds are clamped
+    # to these on both the default/park computations AND on the user's
+    # drag (via InfiniteLine ``bounds=``). ``None`` means unbounded on
+    # that side.
+    #
+    # Why: on a wide-spread Score distribution med − k·σ can land at a
+    # negative number, which parks the red threshold bar at y < 0 — off
+    # the visible plot — and the user has to scroll down to find it.
+    # Scores (and star counts, FWHM, noise) can't physically be negative,
+    # so clamping the bar to the physical floor keeps it visible AND
+    # preserves the "nothing is actually below this threshold" semantics:
+    # reject(value < 0) is just as unachievable as reject(value < −∞).
+    # Eccentricity and background are additionally bounded above (1.0).
+    _METRIC_BOUNDS = {
+        "fwhm":  (0.0, None),
+        "ecc":   (0.0, 1.0),
+        "bg":    (0.0, 1.0),
+        "count": (0.0, None),
+        "noise": (0.0, None),
+        "score": (0.0, None),
+    }
+
+    @classmethod
+    def _bounds_for(cls, mk):
+        return cls._METRIC_BOUNDS.get(mk, (None, None))
+
+    @staticmethod
+    def _clamp(x, lo, hi):
+        x = float(x)
+        if lo is not None and x < float(lo):
+            x = float(lo)
+        if hi is not None and x > float(hi):
+            x = float(hi)
+        return x
+
+    def __init__(self, parent, groups: dict, metrics_data: dict = None,
+                 sigma_k: float = 3.5, start_in_advanced: bool = False):
+        super().__init__(parent)
+        self.setWindowTitle(self.tr("Review Subs — Interactive Rejection"))
+
+        import numpy as _np
+
+        self._sigma_k = float(sigma_k)
+
+        # Advanced mode is only offered when the caller passed per-metric
+        # data for every filter AND every expected metric (fwhm, ecc, bg,
+        # count, noise). Partial data would make the toggle enabled but
+        # some panels empty, which is worse than hiding the toggle.
+        required_metrics = tuple(k for k, _n, _hw, _d in self._METRIC_SPECS
+                                  if k != "score")
+        self._has_advanced = bool(metrics_data) and all(
+            all(k in (metrics_data.get(fname) or {}) for k in required_metrics)
+            for fname in groups
+        )
+
+        # Build the per-filter cache. For every metric the dialog knows
+        # about we precompute: values array, sort order (ascending), robust
+        # median + σ, and the "default" threshold (sigma-seeded for Score,
+        # park-above-max / park-below-min for everything else). The user's
+        # live-adjusted threshold lives alongside in ``thresholds[key]``.
+        self._per_filter: dict = {}
+        for fname, scores_map in (groups or {}).items():
+            if not scores_map:
+                continue
+            fps = list(scores_map.keys())
+            scores = _np.asarray(
+                [float(scores_map[fp]) for fp in fps], dtype=_np.float32
+            )
+            entry: dict = {"fps": fps, "metrics": {}, "thresholds": {}}
+
+            # ── Weighted Score (always present) ─────────────────────────
+            med, sig = self._robust_stats(scores)
+            if _np.isfinite(med) and _np.isfinite(sig) and sig > 0:
+                default_score_th = float(med - self._sigma_k * sig)
+            else:
+                default_score_th = float(_np.nanmin(scores)) - 1e-6
+            # Keep the default threshold at or above the metric's
+            # physical floor (0 for Score) so a wide-spread σ doesn't
+            # park the red bar off the bottom of the plot. Semantics are
+            # unchanged — reject(score < 0) is unreachable, same as
+            # reject(score < −∞) — but the line is visible on open.
+            _slo, _shi = self._bounds_for("score")
+            default_score_th = self._clamp(default_score_th, _slo, _shi)
+            entry["metrics"]["score"] = {
+                "values":     scores,
+                "order":      _np.argsort(scores, kind="stable"),
+                "med":        med,
+                "sig":        sig,
+                "default_th": default_score_th,
+            }
+            entry["thresholds"]["score"] = default_score_th
+
+            # ── Other metrics for Advanced mode (optional) ─────────────
+            if self._has_advanced:
+                mdata = (metrics_data or {}).get(fname) or {}
+                for mk, _display, higher_worse, dflt in self._METRIC_SPECS:
+                    if mk == "score":
+                        continue
+                    values_map = mdata.get(mk) or {}
+                    vals = _np.asarray(
+                        [float(values_map.get(fp, _np.nan)) for fp in fps],
+                        dtype=_np.float32,
+                    )
+                    order = _np.argsort(vals, kind="stable")
+                    m_med, m_sig = self._robust_stats(vals)
+                    finite = vals[_np.isfinite(vals)]
+                    if finite.size:
+                        vmin = float(finite.min())
+                        vmax = float(finite.max())
+                        span = (vmax - vmin) if vmax > vmin else 1.0
+                        default_th = (
+                            vmax + float(dflt) * span
+                            if higher_worse
+                            else vmin - float(dflt) * span
+                        )
+                    else:
+                        default_th = 0.0
+                    # Clamp default to physical bounds so e.g. the
+                    # "park above max" seed for Ecc caps at 1.0 and the
+                    # "park below min" seed for Star Count caps at 0.
+                    _mlo, _mhi = self._bounds_for(mk)
+                    default_th = self._clamp(default_th, _mlo, _mhi)
+                    entry["metrics"][mk] = {
+                        "values":     vals,
+                        "order":      order,
+                        "med":        m_med,
+                        "sig":        m_sig,
+                        "default_th": default_th,
+                    }
+                    entry["thresholds"][mk] = default_th
+
+            self._per_filter[str(fname)] = entry
+
+        self._filter_names = sorted(self._per_filter.keys())
+        self._current_filter = self._filter_names[0] if self._filter_names else None
+
+        # Mode: "simple" (one Weighted Score plot) or "advanced" (2×3 grid).
+        self._mode = "advanced" if (self._has_advanced and start_in_advanced) else "simple"
+
+        # Live widget registries — repopulated on every filter/mode render.
+        # Keyed by metric key: PlotWidget, ScatterPlotItem, and the movable
+        # threshold InfiniteLine.
+        self._active_plots: dict = {}
+        self._active_scatters: dict = {}
+        self._active_lines: dict = {}
+
+        # Resize now that we know whether Advanced is available.
+        self.resize(1080, 760 if self._has_advanced else 680)
+
+        self._build_ui()
+        if self._current_filter:
+            self._load_filter(self._current_filter)
+
+    # ──────────────────────────────────────────────────────────────────
+    # UI build
+    # ──────────────────────────────────────────────────────────────────
+    def _build_ui(self):
+        v = QVBoxLayout(self)
+        self._v = v   # kept for replaceWidget on filter/mode changes
+
+        # Filter dropdown
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel(self.tr("Filter:")))
+        self._filter_combo = QComboBox()
+        for fname in self._filter_names:
+            n = len(self._per_filter[fname]["fps"])
+            self._filter_combo.addItem(
+                self.tr("{0}  ({1} subs)").format(fname, n), userData=fname
+            )
+        self._filter_combo.currentIndexChanged.connect(self._on_filter_changed)
+        self._filter_combo.setMinimumWidth(240)
+        filter_row.addWidget(self._filter_combo)
+        filter_row.addStretch(1)
+        v.addLayout(filter_row)
+
+        # Instructions (text swapped per mode)
+        self._instr_label = QLabel()
+        self._instr_label.setWordWrap(True)
+        v.addWidget(self._instr_label)
+
+        # Status
+        self.status_label = QLabel()
+        self.status_label.setStyleSheet("font-weight: bold;")
+        v.addWidget(self.status_label)
+
+        # Plot area — a placeholder widget we .replaceWidget on each
+        # filter / mode change. Keeps layout logic trivial (no clearing
+        # nested layouts) and gives pyqtgraph a clean slate every time.
+        self._plot_area = QWidget()
+        v.addWidget(self._plot_area, 1)
+
+        # Button row
+        btn_row = QHBoxLayout()
+        self._reset_btn = QPushButton()
+        self._reset_btn.clicked.connect(self._reset_threshold)
+        btn_row.addWidget(self._reset_btn)
+
+        self._keepall_btn = QPushButton()
+        self._keepall_btn.clicked.connect(self._park_below_min)
+        btn_row.addWidget(self._keepall_btn)
+
+        btn_row.addStretch(1)
+
+        if self._has_advanced:
+            self._mode_btn = QPushButton()
+            self._mode_btn.clicked.connect(self._toggle_mode)
+            btn_row.addWidget(self._mode_btn)
+
+        bb = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        bb.button(QDialogButtonBox.StandardButton.Ok).setText(self.tr("Apply"))
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        btn_row.addWidget(bb)
+        v.addLayout(btn_row)
+
+        self._update_mode_chrome()
+
+    def _update_mode_chrome(self):
+        """Refresh the instructions + button labels for the current mode."""
+        if self._mode == "simple":
+            self._instr_label.setText(self.tr(
+                "Each dot is one sub in the selected filter (x-axis = rank, "
+                "lowest-scored on the left). Drag the solid red line to set a "
+                "rejection threshold — subs below the line are excluded from "
+                "the integration (weight = 0, file untouched on disk). The "
+                "dashed guides are the median and ±1σ / ±2σ / ±3σ (robust MAD). "
+                "Thresholds are remembered per filter; switch filters in the "
+                "dropdown above. Click a dot to see which sub it is."
+            ))
+            self._reset_btn.setText(self.tr("Reset to Default"))
+            self._reset_btn.setToolTip(self.tr(
+                "Return THIS filter's Weighted-Score threshold to median − k·σ."
+            ))
+            self._keepall_btn.setText(self.tr("Keep All (this filter)"))
+            self._keepall_btn.setToolTip(self.tr(
+                "Park THIS filter's threshold below its lowest score so nothing "
+                "is rejected in this filter."
+            ))
+            if hasattr(self, "_mode_btn"):
+                self._mode_btn.setText(self.tr("Advanced ▸"))
+                self._mode_btn.setToolTip(self.tr(
+                    "Switch to the 2×3 grid showing FWHM, Eccentricity, "
+                    "Background, Star Count, Noise, and Weighted Score. "
+                    "Each panel gets its own draggable threshold — a sub is "
+                    "rejected if it fails ANY panel's threshold."
+                ))
+        else:
+            self._instr_label.setText(self.tr(
+                "Six scatter plots per filter: FWHM, Eccentricity, Background, "
+                "Star Count, Noise, and Weighted Score. Each panel's dots are "
+                "sorted by THAT panel's metric and get their own draggable red "
+                "threshold line. A sub is rejected if it crosses the threshold "
+                "on ANY panel (OR). Rejected subs show red on every panel so "
+                "you can trace WHY. Click a dot for its full metric read-out."
+            ))
+            self._reset_btn.setText(self.tr("Reset All (this filter)"))
+            self._reset_btn.setToolTip(self.tr(
+                "Return THIS filter's thresholds on EVERY panel to their "
+                "defaults — Score at median − k·σ, every other metric parked "
+                "so nothing is rejected on that metric."
+            ))
+            self._keepall_btn.setText(self.tr("Keep All (this filter)"))
+            self._keepall_btn.setToolTip(self.tr(
+                "Park every panel's threshold out of reach so nothing is "
+                "rejected in this filter."
+            ))
+            if hasattr(self, "_mode_btn"):
+                self._mode_btn.setText(self.tr("◂ Simple"))
+                self._mode_btn.setToolTip(self.tr(
+                    "Return to the single Weighted Score plot. Other panels' "
+                    "thresholds are remembered but do not contribute to "
+                    "rejection while in Simple mode."
+                ))
+
+    # ──────────────────────────────────────────────────────────────────
+    # Filter + mode switching
+    # ──────────────────────────────────────────────────────────────────
+    def _snapshot_live_thresholds(self):
+        """Copy every active threshold line's current position back into
+        ``_per_filter[current]['thresholds']``. Called on every filter
+        change, mode toggle, and before producing ``rejected_paths()``."""
+        if not self._current_filter:
+            return
+        thresholds = self._per_filter[self._current_filter]["thresholds"]
+        for mk, ln in list(self._active_lines.items()):
+            try:
+                thresholds[mk] = float(ln.value())
+            except Exception:
+                pass
+
+    def _on_filter_changed(self, idx: int):
+        self._snapshot_live_thresholds()
+        if idx < 0:
+            return
+        new_filter = self._filter_combo.itemData(idx)
+        if new_filter and new_filter != self._current_filter:
+            self._current_filter = str(new_filter)
+            self._load_filter(self._current_filter)
+
+    def _toggle_mode(self):
+        if not self._has_advanced:
+            return
+        self._snapshot_live_thresholds()
+        self._mode = "advanced" if self._mode == "simple" else "simple"
+        self._update_mode_chrome()
+        if self._current_filter:
+            self._load_filter(self._current_filter)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Rendering
+    # ──────────────────────────────────────────────────────────────────
+    def _load_filter(self, fname: str):
+        """Build a fresh plot-area widget for this filter + current mode
+        and swap it into the main layout."""
+        self._active_plots.clear()
+        self._active_scatters.clear()
+        self._active_lines.clear()
+
+        new_area = self._render_simple(fname) if self._mode == "simple" \
+                   else self._render_advanced(fname)
+
+        self._v.replaceWidget(self._plot_area, new_area)
+        self._plot_area.setParent(None)
+        self._plot_area.deleteLater()
+        self._plot_area = new_area
+        self._refresh_colors()
+
+    def _render_simple(self, fname: str) -> QWidget:
+        """Single Weighted Score plot — the classic one-metric view."""
+        area = QWidget()
+        inner = QVBoxLayout(area)
+        inner.setContentsMargins(0, 0, 0, 0)
+        plot = self._build_metric_panel(fname, "score", short_title=False)
+        inner.addWidget(plot)
+        return area
+
+    def _render_advanced(self, fname: str) -> QWidget:
+        """2×3 grid: FWHM | Ecc | Bg / Count | Noise | Score."""
+        area = QWidget()
+        grid = QGridLayout(area)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(6)
+        for idx, (mk, _display, _hw, _d) in enumerate(self._METRIC_SPECS):
+            r, c = idx // 3, idx % 3
+            grid.addWidget(self._build_metric_panel(fname, mk, short_title=True), r, c)
+        # Even stretch so panels resize together
+        for c in range(3): grid.setColumnStretch(c, 1)
+        for r in range(2): grid.setRowStretch(r, 1)
+        return area
+
+    def _build_metric_panel(self, fname: str, mk: str,
+                            short_title: bool = False) -> pg.PlotWidget:
+        """One scatter plot (dots sorted by this metric's value ascending)
+        with median + ±1σ/±2σ/±3σ dashed guides and a draggable red
+        threshold line. Registers itself in ``_active_*`` so refresh and
+        snapshot can find it."""
+        import numpy as _np
+
+        data = self._per_filter[fname]
+        if mk not in data["metrics"]:
+            return pg.PlotWidget()      # defensive — nothing to show
+
+        m = data["metrics"][mk]
+        values = m["values"]; order = m["order"]
+        med = m["med"]; sig = m["sig"]
+        th = data["thresholds"].get(mk, m["default_th"])
+
+        spec = next((s for s in self._METRIC_SPECS if s[0] == mk), None)
+        display = spec[1] if spec else mk
+        higher_worse = spec[2] if spec else False
+
+        plot = pg.PlotWidget()
+        title = display if short_title else (
+            self.tr("{0} (sorted)").format(display)
+        )
+        plot.setTitle(title)
+        plot.setLabel("left", display)
+        plot.setLabel("bottom",
+                      self.tr("Sub") if short_title
+                      else self.tr("Sub (ascending)"))
+        plot.showGrid(x=True, y=True, alpha=0.3)
+        plot.getPlotItem().getViewBox().setBackgroundColor(
+            self.palette().color(self.backgroundRole())
+        )
+
+        y = values[order]
+        x = _np.arange(len(y), dtype=_np.float32)
+
+        scat = pg.ScatterPlotItem(
+            pen=pg.mkPen(None),
+            brush=pg.mkBrush(100, 100, 255, 200),
+            size=7 if short_title else 8,
+        )
+        scat.setData(x=x, y=y)
+        scat.sigClicked.connect(
+            lambda _p, pts, _mk=mk: self._on_point_click(_mk, pts)
+        )
+        plot.addItem(scat)
+
+        if _np.isfinite(med):
+            med_line = pg.InfiniteLine(
+                pos=med, angle=0, movable=False,
+                pen=pg.mkPen((220, 220, 220, 170), width=1,
+                             style=Qt.PenStyle.DashLine),
+            )
+            med_line.setZValue(-10)
+            plot.addItem(med_line)
+
+        if _np.isfinite(sig) and sig > 0:
+            for k, color in ((1, (255, 220,  50, 120)),
+                             (2, (255, 140,   0, 120)),
+                             (3, (220,  50,  50, 120))):
+                for sign in (-1, +1):
+                    ln = pg.InfiniteLine(
+                        pos=med + sign * k * sig, angle=0, movable=False,
+                        pen=pg.mkPen(color, width=1,
+                                     style=Qt.PenStyle.DashLine),
+                    )
+                    ln.setZValue(-10)
+                    plot.addItem(ln)
+
+        # Constrain the drag range so the user can't park the threshold
+        # at physically impossible values (e.g. Score < 0 or Ecc > 1).
+        _plo, _phi = self._bounds_for(mk)
+        thresh_line = pg.InfiniteLine(
+            pos=self._clamp(th, _plo, _phi),
+            angle=0, movable=True,
+            pen=pg.mkPen((235, 60, 60, 230), width=2),
+            bounds=[_plo, _phi],
+        )
+        thresh_line.sigPositionChanged.connect(self._refresh_colors)
+        plot.addItem(thresh_line)
+
+        # Fit view with padding so default-position lines don't sit flush
+        finite_y = y[_np.isfinite(y)]
+        if finite_y.size:
+            vmin = float(finite_y.min())
+            vmax = float(finite_y.max())
+            span = (vmax - vmin) if vmax > vmin else 1.0
+            # Include the threshold position so the user can SEE where it's
+            # parked (otherwise a default-parked line can be off-screen).
+            lo = min(vmin, float(th)) - 0.1 * span
+            hi = max(vmax, float(th)) + 0.1 * span
+            plot.getPlotItem().getViewBox().setYRange(lo, hi)
+
+        self._active_plots[mk] = plot
+        self._active_scatters[mk] = scat
+        self._active_lines[mk] = thresh_line
+        return plot
+
+    # ──────────────────────────────────────────────────────────────────
+    # Live updates
+    # ──────────────────────────────────────────────────────────────────
+    def _rejected_mask_for(self, fname: str, use_live_for_current: bool = True):
+        """Boolean mask over this filter's fps: True ⇔ sub would be
+        rejected by the CURRENT thresholds. In Simple mode only Score
+        counts; in Advanced mode every metric's threshold contributes
+        (OR). ``use_live_for_current`` reads from the active InfiniteLine
+        for the currently-displayed filter (so a live drag updates the
+        count without clicking away first); any other filter reads from
+        saved thresholds."""
+        import numpy as _np
+        data = self._per_filter[fname]
+        n = len(data["fps"])
+        mask = _np.zeros(n, dtype=bool)
+
+        is_current = (fname == self._current_filter)
+        active_metrics = ("score",) if self._mode == "simple" else \
+                         tuple(s[0] for s in self._METRIC_SPECS
+                               if s[0] in data["metrics"])
+
+        for mk in active_metrics:
+            spec = next((s for s in self._METRIC_SPECS if s[0] == mk), None)
+            if spec is None:
+                continue
+            higher_worse = spec[2]
+            if is_current and use_live_for_current and mk in self._active_lines:
+                try:
+                    th = float(self._active_lines[mk].value())
+                except Exception:
+                    th = data["thresholds"].get(mk, data["metrics"][mk]["default_th"])
+            else:
+                th = data["thresholds"].get(mk, data["metrics"][mk]["default_th"])
+            values = data["metrics"][mk]["values"]
+            if higher_worse:
+                mask |= (values > th)
+            else:
+                mask |= (values < th)
+        return mask
+
+    def _refresh_colors(self):
+        """Repaint dots across every active panel using the overall-
+        rejected mask (so a sub is red on every panel if it's rejected
+        on any), and update the status line."""
+        import numpy as _np
+        if not self._current_filter:
+            return
+        data = self._per_filter[self._current_filter]
+        mask = self._rejected_mask_for(self._current_filter)
+
+        rej_brush = pg.mkBrush(235, 60, 60, 220)
+        keep_brush = pg.mkBrush(100, 100, 255, 200)
+
+        for mk, scat in self._active_scatters.items():
+            m = data["metrics"][mk]
+            values = m["values"]; order = m["order"]
+            y = values[order]
+            x = _np.arange(len(y), dtype=_np.float32)
+            brushes = [
+                rej_brush if bool(mask[int(gi)]) else keep_brush
+                for gi in order
+            ]
+            scat.setData(x=x, y=y, brush=brushes)
+
+        # Status: this-filter + cross-filter totals.
+        n_rej_this = int(mask.sum())
+        n_tot_this = int(len(mask))
+
+        total_rej = 0
+        total_subs = 0
+        for fname in self._per_filter:
+            total_rej += int(self._rejected_mask_for(fname).sum())
+            total_subs += len(self._per_filter[fname]["fps"])
+
+        if self._mode == "simple":
+            score_m = data["metrics"]["score"]
+            med = score_m["med"]; sig = score_m["sig"]
+            th = float(self._active_lines["score"].value()) \
+                 if "score" in self._active_lines \
+                 else data["thresholds"]["score"]
+            if _np.isfinite(sig) and sig > 1e-12:
+                sigma_note = self.tr(" — threshold at median − {0:.2f}σ").format(
+                    (med - th) / sig
+                )
+            else:
+                sigma_note = ""
+            self.status_label.setText(self.tr(
+                "[{0}] Rejecting {1} / {2} subs (threshold = {3:.4f}, "
+                "median = {4:.4f}, robust σ = {5:.4f}){6}\n"
+                "All filters: {7} / {8} subs rejected"
+            ).format(self._current_filter, n_rej_this, n_tot_this, th, med, sig,
+                     sigma_note, total_rej, total_subs))
+        else:
+            # Advanced: break down by metric so the user can see which
+            # dimension is doing the work.
+            parts = []
+            for mk, _display, higher_worse, _d in self._METRIC_SPECS:
+                if mk not in data["metrics"]:
+                    continue
+                if mk in self._active_lines:
+                    th = float(self._active_lines[mk].value())
+                else:
+                    th = data["thresholds"].get(mk, data["metrics"][mk]["default_th"])
+                values = data["metrics"][mk]["values"]
+                n_m = int(((values > th) if higher_worse else (values < th)).sum())
+                parts.append(self.tr("{0}: {1}").format(mk, n_m))
+            per_metric = "  ·  ".join(parts)
+            self.status_label.setText(self.tr(
+                "[{0}] Rejecting {1} / {2} subs (OR across metrics)  "
+                "— {3}\nAll filters: {4} / {5} subs rejected"
+            ).format(self._current_filter, n_rej_this, n_tot_this,
+                     per_metric, total_rej, total_subs))
+
+    # ──────────────────────────────────────────────────────────────────
+    # Buttons
+    # ──────────────────────────────────────────────────────────────────
+    def _reset_threshold(self):
+        """Reset-to-default — in Simple mode resets only Score; in
+        Advanced mode resets every metric this filter has."""
+        if not self._current_filter:
+            return
+        data = self._per_filter[self._current_filter]
+        targets = ("score",) if self._mode == "simple" else \
+                  tuple(s[0] for s in self._METRIC_SPECS
+                        if s[0] in self._active_lines)
+        for mk in targets:
+            ln = self._active_lines.get(mk)
+            if ln is None:
+                continue
+            m = data["metrics"][mk]
+            try:
+                ln.setPos(float(m["default_th"]))
+            except Exception:
+                pass
+        self._refresh_colors()
+
+    def _park_below_min(self):
+        """Keep-all — park every active threshold so this filter rejects
+        nothing. For a lower-worse metric that means "below min"; for a
+        higher-worse metric, "above max"."""
+        import numpy as _np
+        if not self._current_filter:
+            return
+        data = self._per_filter[self._current_filter]
+        for mk, ln in self._active_lines.items():
+            spec = next((s for s in self._METRIC_SPECS if s[0] == mk), None)
+            if spec is None:
+                continue
+            higher_worse = spec[2]
+            values = data["metrics"][mk]["values"]
+            finite = values[_np.isfinite(values)]
+            if not finite.size:
+                continue
+            vmin, vmax = float(finite.min()), float(finite.max())
+            span = (vmax - vmin) if vmax > vmin else 1.0
+            new_pos = (vmax + 0.05 * span) if higher_worse else (vmin - 0.05 * span)
+            # Clamp to physical bounds — Keep-All for Star Count must not
+            # park at a negative value (invisible below y=0), and for Ecc
+            # must not go above 1.
+            _lo, _hi = self._bounds_for(mk)
+            new_pos = self._clamp(new_pos, _lo, _hi)
+            try:
+                ln.setPos(float(new_pos))
+            except Exception:
+                pass
+        self._refresh_colors()
+
+    # ──────────────────────────────────────────────────────────────────
+    # Dot-click info popup
+    # ──────────────────────────────────────────────────────────────────
+    def _on_point_click(self, metric_key: str, points):
+        import os as _os
+        if not self._current_filter:
+            return
+        data = self._per_filter[self._current_filter]
+        if metric_key not in data["metrics"]:
+            return
+        order = data["metrics"][metric_key]["order"]
+        for pt in points:
+            li = int(round(pt.pos().x()))
+            if not (0 <= li < len(order)):
+                continue
+            gi = int(order[li])
+            fp = data["fps"][gi]
+            overall_mask = self._rejected_mask_for(self._current_filter)
+            overall_rej = bool(overall_mask[gi])
+
+            # Per-metric read-out (same lines in both modes; just more
+            # metrics in Advanced since more are populated).
+            lines = [self.tr("{0}").format(_os.path.basename(fp)),
+                     self.tr("Filter: {0}").format(self._current_filter)]
+            for mk, display, higher_worse, _d in self._METRIC_SPECS:
+                if mk not in data["metrics"]:
+                    continue
+                m = data["metrics"][mk]
+                v = float(m["values"][gi])
+                if mk in self._active_lines:
+                    th = float(self._active_lines[mk].value())
+                else:
+                    th = data["thresholds"].get(mk, m["default_th"])
+                cuts = (v > th) if higher_worse else (v < th)
+                flag = "✕" if cuts else "·"
+                lines.append(self.tr(
+                    "  {0}  {1} = {2:.4f}  (threshold {3:.4f})"
+                ).format(flag, display, v, th))
+            lines.append("")
+            lines.append(self.tr("Overall: {0}").format(
+                self.tr("REJECTED") if overall_rej else self.tr("KEPT")
+            ))
+            QMessageBox.information(
+                self, self.tr("Sub info"), "\n".join(lines)
+            )
+            return   # one popup per click, even if multiple dots coincide
+
+    # ──────────────────────────────────────────────────────────────────
+    # Public API
+    # ──────────────────────────────────────────────────────────────────
+    def rejected_paths(self) -> list:
+        """Flat list of filepaths rejected across every filter. Commits
+        the live thresholds first so a drag the user never 'confirmed'
+        by clicking off still counts when they press Apply."""
+        self._snapshot_live_thresholds()
+        result = []
+        for fname in self._per_filter:
+            mask = self._rejected_mask_for(fname, use_live_for_current=False)
+            fps = self._per_filter[fname]["fps"]
+            for i, fp in enumerate(fps):
+                if bool(mask[i]):
+                    result.append(fp)
+        return result
+
+    def threshold(self, filter_name: str = None,
+                  metric_key: str = "score") -> float:
+        """Current threshold for (filter, metric). Defaults to the active
+        filter's Weighted-Score threshold (used by auto-path logging)."""
+        if filter_name is None:
+            filter_name = self._current_filter
+        if filter_name not in self._per_filter:
+            return 0.0
+        data = self._per_filter[filter_name]
+        if (filter_name == self._current_filter
+                and metric_key in self._active_lines):
+            try:
+                return float(self._active_lines[metric_key].value())
+            except Exception:
+                pass
+        return float(data["thresholds"].get(metric_key, 0.0))
+
+    def mode(self) -> str:
+        """``"simple"`` or ``"advanced"`` — the dialog's current view."""
+        return self._mode
+
+    # ──────────────────────────────────────────────────────────────────
+    # Robust stats (same formulation as the auto-reject code path)
+    # ──────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _robust_stats(scores):
+        import numpy as _np
+        s = scores[_np.isfinite(scores)]
+        if s.size < 2:
+            return (float(_np.median(s)) if s.size else 0.0, 0.0)
+        med = float(_np.median(s))
+        mad = float(_np.median(_np.abs(s - med)))
+        sig = 1.4826 * mad
+        return med, sig
+
+
 class FlatStrengthPreviewDialog(QDialog):
     """
     Interactive flat-strength tuning with an in-image split before/after view.
@@ -9366,6 +10136,76 @@ class StackingSuiteDialog(QDialog):
         )
         rej_layout.addWidget(self.exposure_weighted_cb)
 
+        # ─────────────────────────────────────────────────────────────
+        # Score-outlier sub rejection — soft reject (weight = 0) applied
+        # after measurement and before integration. The per-run checkbox
+        # on the integration tab decides whether the threshold is reviewed
+        # in a dialog or auto-applied from this setting.
+        # ─────────────────────────────────────────────────────────────
+        reject_row = QHBoxLayout()
+        self.reject_outliers_cb = QCheckBox(self.tr("Reject score outliers below median − k·σ"))
+        self.reject_outliers_cb.setToolTip(self.tr(
+            "After measurement, compute median and robust MAD-σ of all frames'\n"
+            "weighted scores. Any sub whose score falls below median − k·σ is\n"
+            "soft-rejected: its weight is set to 0 so integration treats it as\n"
+            "absent, but the file itself is untouched.\n"
+            "\n"
+            "Skipped automatically when there are fewer than 10 subs (MAD\n"
+            "is too noisy) or when the score distribution is tight (σ < 0.02,\n"
+            "nothing genuinely stands out).\n"
+            "\n"
+            "Use the 'Review subs interactively' checkbox on the Image\n"
+            "Registration tab to confirm/adjust the threshold per run."
+        ))
+        self.reject_outliers_cb.setChecked(
+            self.settings.value("stacking/reject_outliers_enabled", True, type=bool)
+        )
+        reject_row.addWidget(self.reject_outliers_cb)
+
+        reject_row.addSpacing(8)
+        reject_row.addWidget(QLabel(self.tr("k:")))
+        self.reject_outliers_k_spin = QDoubleSpinBox()
+        self.reject_outliers_k_spin.setRange(1.5, 10.0)
+        self.reject_outliers_k_spin.setDecimals(2)
+        self.reject_outliers_k_spin.setSingleStep(0.1)
+        self.reject_outliers_k_spin.setValue(
+            self.settings.value("stacking/reject_outliers_sigma_k", 3.5, type=float)
+        )
+        self.reject_outliers_k_spin.setToolTip(self.tr(
+            "Rejection threshold = median − k·σ (robust).\n"
+            "• 3.0 — more aggressive (clips the lower tail sooner)\n"
+            "• 3.5 — balanced (default)\n"
+            "• 4.0+ — only cull dramatic outliers"
+        ))
+        reject_row.addWidget(self.reject_outliers_k_spin)
+
+        reject_row.addSpacing(16)
+        self.reject_outliers_interactive_cb = QCheckBox(self.tr("Default to interactive review"))
+        self.reject_outliers_interactive_cb.setToolTip(self.tr(
+            "When on, newly opened sessions initialize the Image Registration\n"
+            "tab's 'Review subs interactively before stacking' checkbox to on.\n"
+            "The per-run checkbox on that tab always wins for the current run."
+        ))
+        self.reject_outliers_interactive_cb.setChecked(
+            self.settings.value("stacking/reject_outliers_interactive", False, type=bool)
+        )
+        reject_row.addWidget(self.reject_outliers_interactive_cb)
+
+        self.reject_outliers_advanced_cb = QCheckBox(self.tr("Start review in Advanced mode"))
+        self.reject_outliers_advanced_cb.setToolTip(self.tr(
+            "When on, the interactive-review dialog opens in Advanced mode —\n"
+            "the 2×3 grid of FWHM, Eccentricity, Background, Star Count,\n"
+            "Noise, and Weighted Score. Toggle inside the dialog switches back\n"
+            "and forth; the setting is updated to match the view you last used."
+        ))
+        self.reject_outliers_advanced_cb.setChecked(
+            self.settings.value("stacking/reject_outliers_advanced", False, type=bool)
+        )
+        reject_row.addWidget(self.reject_outliers_advanced_cb)
+
+        reject_row.addStretch(1)
+        rej_layout.addLayout(reject_row)
+
         # Param rows as small containers we can show/hide
         def _mini_row(label_text, widget, help_text=None):
             row = QWidget()
@@ -9700,6 +10540,30 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/rejection_algorithm",  self.rejection_algorithm)
         if hasattr(self, "weight_mode"):
             self.settings.setValue("stacking/weight_mode",       self.weight_mode)
+
+        # Score-outlier sub rejection (soft reject; applied in
+        # _apply_sub_rejection after measurement, before integration).
+        if hasattr(self, "reject_outliers_cb"):
+            self.settings.setValue(
+                "stacking/reject_outliers_enabled",
+                bool(self.reject_outliers_cb.isChecked()),
+            )
+        if hasattr(self, "reject_outliers_k_spin"):
+            self.settings.setValue(
+                "stacking/reject_outliers_sigma_k",
+                float(self.reject_outliers_k_spin.value()),
+            )
+        if hasattr(self, "reject_outliers_interactive_cb"):
+            self.settings.setValue(
+                "stacking/reject_outliers_interactive",
+                bool(self.reject_outliers_interactive_cb.isChecked()),
+            )
+        if hasattr(self, "reject_outliers_advanced_cb"):
+            self.settings.setValue(
+                "stacking/reject_outliers_advanced",
+                bool(self.reject_outliers_advanced_cb.isChecked()),
+            )
+
         self.settings.setValue("stacking/kappa",                self.kappa)
         self.settings.setValue("stacking/iterations",           self.iterations)
         self.settings.setValue("stacking/esd_threshold",        self.esd_threshold)
@@ -13010,6 +13874,31 @@ class StackingSuiteDialog(QDialog):
             )
         )
         output_opts_row.addWidget(self.save_rejection_layers_cb)
+
+        # ─────────────────────────────────────────────────────────────
+        # Interactive sub rejection (per-run toggle; initial state comes
+        # from the sticky "default to interactive" setting, mirroring the
+        # Interactive-Flat checkbox pattern on the lights tab).
+        # ─────────────────────────────────────────────────────────────
+        self.reject_interactive_cb = QCheckBox(self.tr("Review subs interactively before stacking"))
+        self.reject_interactive_cb.setToolTip(self.tr(
+            "After measurement, show a scatter plot of each sub's weighted "
+            "score (sorted) with a draggable red threshold line. Subs below "
+            "the line are set to weight 0 and excluded from the integration.\n\n"
+            "Non-interactive auto-rejection uses median − k·σ from Settings."
+        ))
+        self.reject_interactive_cb.setChecked(
+            self.settings.value("stacking/reject_outliers_interactive", False, type=bool)
+        )
+        # Persist toggles immediately so this checkbox survives a tab reopen,
+        # same pattern as the Interactive Flat checkbox on the lights tab.
+        # Writes to the same QSettings key the stacking-settings dialog
+        # reads/writes, so the two touchpoints always agree.
+        self.reject_interactive_cb.toggled.connect(
+            lambda v: self.settings.setValue("stacking/reject_outliers_interactive", bool(v))
+        )
+        output_opts_row.addWidget(self.reject_interactive_cb)
+
         output_opts_row.addStretch(1)
         layout.addLayout(output_opts_row)
 
@@ -16804,13 +17693,94 @@ class StackingSuiteDialog(QDialog):
                 master_bias = None
 
         # -------------------------------------------------------------------------
-        # Pre-count tiles with per-group safe chunk sizes
+        # Dark-resolution helpers (hoisted so the pre-pass can resolve every
+        # group's dark path up-front — mirrors image integration's PHASE 0C).
+        # -------------------------------------------------------------------------
+        def _resolve_dark_path(exposure_time, image_size, filter_name) -> str | None:
+            """Resolve the master-dark path for a flat group, honouring per-group
+            override and auto-select. Returns a filesystem path, the sentinel
+            '__NO_DARK__', or None."""
+            override_val = None
+            fdo = getattr(self, "flat_dark_override", {}) or {}
+            if fdo:
+                exp_here = float(exposure_time)
+                for k, v in fdo.items():
+                    try:
+                        f_name, sz, lo_s, hi_s = k.split("|")
+                    except Exception:
+                        continue
+                    if f_name != filter_name:
+                        continue
+                    if sz != "Unknown" and image_size != "Unknown" and sz != image_size:
+                        continue
+                    if exp_here >= 0:
+                        lo = float(lo_s); hi = float(hi_s)
+                        if not (lo - 1e-6 <= exp_here <= hi + 1e-6):
+                            continue
+                    override_val = v
+                    break
+
+            if override_val == "__NO_DARK__":
+                return "__NO_DARK__"
+            if isinstance(override_val, str):
+                if os.path.exists(override_val):
+                    return override_val
+                # override missing on disk → fall through to auto/none
+
+            if self.auto_select_dark_checkbox.isChecked():
+                best = None
+                best_diff = float("inf")
+                exp_here = float(exposure_time)
+                for key, path in (getattr(self, "master_files", {}) or {}).items():
+                    if "MasterDark" not in os.path.basename(path):
+                        continue
+                    dark_size = self.master_sizes.get(path, "Unknown")
+                    m = re.match(r"([\d.]+)s", key or "")
+                    dark_exp = float(m.group(1)) if m else float("inf")
+                    size_ok = (
+                        image_size == "Unknown"
+                        or dark_size == "Unknown"
+                        or dark_size == image_size
+                    )
+                    if not size_ok:
+                        continue
+                    diff = abs(dark_exp - exp_here)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best = path
+                return best
+            return None
+
+        def _load_dark_normalized(path):
+            """Load a dark FITS/XISF, flip ROWORDER if needed, normalise layout to
+            final HWC (color) or 2D (mono) float32 — so the per-tile loop never
+            has to reshape it. Returns (array, is_color) or (None, False)."""
+            arr, hdr, _, _is_mono = load_image(path)
+            if arr is None:
+                return None, False
+            if str((hdr or {}).get("ROWORDER", "")).strip().upper() == "TOP-DOWN":
+                arr = np.ascontiguousarray(np.flipud(arr))
+            if arr.ndim == 3:
+                if arr.shape[0] in (1, 3):           # CHW → HWC
+                    arr = arr.transpose(1, 2, 0)
+                if arr.shape[-1] == 1:               # HWC with 1 channel → 2D
+                    arr = arr[..., 0]
+            arr = np.ascontiguousarray(arr, dtype=np.float32)
+            is_color = (arr.ndim == 3 and arr.shape[-1] == 3)
+            return arr, is_color
+
+        # -------------------------------------------------------------------------
+        # Pre-pass: tile count, per-group plan (dark path, bayer, roworder),
+        # max shared-buffer dims, and the set of unique dark paths to pre-load.
         # -------------------------------------------------------------------------
         total_tiles = 0
-        group_shapes: dict[tuple[float, str, str, str], tuple[int, int, int, int, int]] = {}
+        group_plan: dict = {}
         pref_chunk_h = self.chunk_height
         pref_chunk_w = self.chunk_width
         DTYPE = np.float32
+
+        max_N = 0; max_th = 0; max_tw = 0; max_C = 1
+        unique_dark_paths: set[str] = set()
 
         for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
             if len(file_list) < 2:
@@ -16830,8 +17800,45 @@ class StackingSuiteDialog(QDialog):
             except MemoryError:
                 chunk_h, chunk_w = _band_shape(pref_chunk_h, H, W)
 
-            group_shapes[(exposure_time, image_size, filter_name, session)] = (H, W, C, chunk_h, chunk_w)
+            # Bayer + ROWORDER from the first flat's header (one read).
+            bayerpat = None
+            flat_roworder = ""
+            try:
+                hdr0, _ = get_valid_header(file_list[0])
+                bayerpat = (hdr0.get("BAYERPAT") or hdr0.get("BAYERPATN") or hdr0.get("BAYER") or None)
+                if bayerpat is not None:
+                    bayerpat = str(bayerpat).strip().upper()
+                flat_roworder = str(hdr0.get("ROWORDER") or "")
+            except Exception:
+                pass
+            is_bayer_group = (C == 1) and bool(bayerpat)
+            if is_bayer_group and bayerpat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                bayerpat = "RGGB"
+
+            # Resolve the dark path up-front so we can load each unique dark once.
+            resolved_dark = _resolve_dark_path(exposure_time, image_size, filter_name)
+            if resolved_dark and resolved_dark != "__NO_DARK__":
+                unique_dark_paths.add(resolved_dark)
+
+            group_plan[(exposure_time, image_size, filter_name, session)] = {
+                "H": H, "W": W, "C": C,
+                "chunk_h": chunk_h, "chunk_w": chunk_w,
+                "N": N, "file_list": file_list,
+                "dark_path": resolved_dark,
+                "bayerpat": bayerpat if is_bayer_group else None,
+                "flat_roworder": flat_roworder,
+                "is_bayer": is_bayer_group,
+            }
+            max_N  = max(max_N,  N)
+            max_th = max(max_th, chunk_h)
+            max_tw = max(max_tw, chunk_w)
+            max_C  = max(max_C,  C)
             total_tiles += _count_tiles(H, W, chunk_h, chunk_w)
+
+        # Kept so earlier call-sites that still check this don't KeyError. The
+        # group loop below reads from group_plan, not from group_shapes.
+        group_shapes = {k: (v["H"], v["W"], v["C"], v["chunk_h"], v["chunk_w"])
+                        for k, v in group_plan.items()}
 
         if total_tiles == 0:
             self.update_status(self.tr("⚠️ No eligible flat groups found to stack."))
@@ -16841,6 +17848,29 @@ class StackingSuiteDialog(QDialog):
             f"🧭 Total tiles to process: {total_tiles} (base chunk preference {pref_chunk_h}×{pref_chunk_w})"
         ))
         QApplication.processEvents()
+
+        # -------------------------------------------------------------------------
+        # Pre-load every unique master dark ONCE, normalised to final layout.
+        # A build with 10 flat groups all picking the same dark used to load it
+        # 10× from disk and re-shape it on every tile.
+        # -------------------------------------------------------------------------
+        dark_cache: dict = {}   # path -> (array, is_color)
+        if unique_dark_paths:
+            self.update_status(self.tr(
+                f"🌓 Pre-loading {len(unique_dark_paths)} unique master dark(s)…"
+            ))
+            QApplication.processEvents()
+            for dp in unique_dark_paths:
+                try:
+                    arr, is_color = _load_dark_normalized(dp)
+                    if arr is not None:
+                        dark_cache[dp] = (arr, is_color)
+                        self.update_status(self.tr(f"  ✓ {os.path.basename(dp)}"))
+                except Exception as e:
+                    self.update_status(self.tr(
+                        f"  ⚠️ Could not pre-load dark {os.path.basename(dp)}: {e}"
+                    ))
+            QApplication.processEvents()
 
         # -------------------------------------------------------------------------
         # Helpers (local to this function)
@@ -17081,263 +18111,210 @@ class StackingSuiteDialog(QDialog):
 
         from concurrent.futures import ThreadPoolExecutor
 
+        # Ordered list of eligible groups (filter out <2-frame groups once).
+        eligible_groups = [gk for gk, pl in group_plan.items() if pl["N"] >= 2]
+
+        # Warn once up-front about any skipped (too-small) groups so the per-group
+        # pause isn't padded with these one-liners.
+        for gk, file_list in flat_files_by_group.items():
+            if len(file_list) < 2:
+                exposure_time, image_size, filter_name, session = gk
+                self.update_status(self.tr(
+                    f"⚠️ Skipping {exposure_time}s ({image_size}) [{filter_name}] [{session}] "
+                    f"— Not enough frames to stack."
+                ))
+
+        # ─────────────────────────────────────────────────────────────────────
+        # Background pools (the point of this refactor):
+        #   prep_pool  — opens the next group's _MMImages and estimates its
+        #                per-frame scales WHILE the current group's tile loop
+        #                runs. Removes the serial "scale-estimation + open-N-
+        #                mmaps" preamble that used to sit between every
+        #                master flat.
+        #   save_pool  — writes finished master flat FITS files in the
+        #                background so the NEXT group's tile loop isn't
+        #                blocked by the save.
+        #   tile_tp    — per-group tile-prefetch pool (same role as before).
+        # ─────────────────────────────────────────────────────────────────────
+        prep_pool = ThreadPoolExecutor(max_workers=1)
+        save_pool = ThreadPoolExecutor(max_workers=2)
+        save_futs: list = []
+
+        def _prepare_group(gk):
+            """Open the group's mmimages + estimate per-frame scales.
+            Runs on prep_pool so the preamble overlaps with the previous
+            group's tile loop. Returns {'scales', 'sources', 'dark_arr'}
+            or {'error': msg}."""
+            plan = group_plan[gk]
+            file_list = plan["file_list"]
+            dark_entry = dark_cache.get(plan["dark_path"]) if plan["dark_path"] else None
+            dark_arr = dark_entry[0] if dark_entry else None
+
+            # Scale subtractor: prefer dark; for mono/bayer, fall back to bias
+            scale_sub = dark_arr
+            if scale_sub is None and plan["is_bayer"] and master_bias is not None:
+                scale_sub = master_bias
+
+            try:
+                if plan["is_bayer"]:
+                    scales = _estimate_flat_scales_bayer(
+                        file_list, plan["H"], plan["W"], scale_sub, plan["bayerpat"]
+                    )
+                else:
+                    scales = _estimate_flat_scales(
+                        file_list, plan["H"], plan["W"], plan["C"], dark_arr
+                    )
+            except Exception as e:
+                return {"error": f"scale estimation failed: {e}"}
+
+            sources = []
+            try:
+                for p in file_list:
+                    sources.append(_MMImage(p))
+            except Exception as e:
+                for s in sources:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+                return {"error": f"memmap open failed: {e}"}
+
+            return {"scales": scales, "sources": sources, "dark_arr": dark_arr}
+
+        # Prime the first group's prep so it starts running NOW; subsequent
+        # groups' prep is kicked off at the top of the previous group's loop
+        # body so it overlaps with that group's tile processing.
+        next_prep_fut = (
+            prep_pool.submit(_prepare_group, eligible_groups[0])
+            if eligible_groups else None
+        )
+
         try:
             # ---------------------------------------------------------------------
             # Per-group stacking loop
             # ---------------------------------------------------------------------
-            for (exposure_time, image_size, filter_name, session), file_list in flat_files_by_group.items():
-                if len(file_list) < 2:
-                    self.update_status(self.tr(
-                        f"⚠️ Skipping {exposure_time}s ({image_size}) [{filter_name}] [{session}] - Not enough frames to stack."
-                    ))
-                    continue
+            for gi, group_key in enumerate(eligible_groups):
                 if pd.cancelled:
                     self.update_status(self.tr("⛔ Master Flat creation cancelled."))
                     break
 
+                exposure_time, image_size, filter_name, session = group_key
+                plan = group_plan[group_key]
+                N              = plan["N"]
+                height         = plan["H"]
+                width          = plan["W"]
+                channels       = plan["C"]
+                chunk_height   = plan["chunk_h"]
+                chunk_width    = plan["chunk_w"]
+                bayerpat       = plan["bayerpat"]
+                is_bayer_group = plan["is_bayer"]
+                flat_roworder  = plan["flat_roworder"]
+                file_list      = plan["file_list"]
+
                 exp_label = f"{exposure_time}s" if exposure_time >= 0 else "Unknown"
                 self.update_status(self.tr(
-                    f"🟢 Processing {len(file_list)} flats for {exp_label} ({image_size}) "
+                    f"🟢 Processing {N} flats for {exp_label} ({image_size}) "
                     f"[{filter_name}] in session '{session}'…"
                 ))
+
+                # Per-group status for the resolved dark (resolution already
+                # happened in the pre-pass; we just report what was chosen).
+                dp = plan["dark_path"]
+                if dp == "__NO_DARK__":
+                    self.update_status(self.tr("ℹ️ This flat group: override = No Calibration."))
+                elif dp:
+                    self.update_status(self.tr(
+                        f"🌓 This flat group: dark → {os.path.basename(dp)}"
+                    ))
+                else:
+                    if self.auto_select_dark_checkbox.isChecked():
+                        self.update_status(self.tr(
+                            "ℹ️ This flat group: no matching Master Dark (size) "
+                            "— proceeding without subtraction."
+                        ))
+                    else:
+                        self.update_status(self.tr(
+                            "ℹ️ This flat group: Auto-Select is OFF and no override set "
+                            "→ No Calibration."
+                        ))
+                if is_bayer_group:
+                    self.update_status(self.tr(f"🧩 Bayer flat group detected: {bayerpat}"))
                 QApplication.processEvents()
 
-                # -----------------------------------------------------------------
-                # Select matching master dark (override / auto-select logic)
-                # -----------------------------------------------------------------
-                selected_master_dark = None
-                override_val = None
-
-                fdo = getattr(self, "flat_dark_override", {}) or {}
-                if fdo:
-                    exp_here = float(exposure_time)
-                    tol = float(self.flat_exposure_tolerance_spinbox.value())
-                    for k, v in fdo.items():
-                        # keys are stored as "filter|size|exp_lo|exp_hi"
-                        try:
-                            f_name, sz, lo_s, hi_s = k.split("|")
-                        except Exception:
-                            continue
-
-                        if f_name != filter_name:
-                            continue
-
-                        # size: treat "Unknown" as wildcard on either side
-                        if sz != "Unknown" and image_size != "Unknown" and sz != image_size:
-                            continue
-
-                        if exp_here >= 0:
-                            lo = float(lo_s); hi = float(hi_s)
-                            if not (lo - 1e-6 <= exp_here <= hi + 1e-6):
-                                continue
-
-                        override_val = v
-                        break
-
-                if override_val == "__NO_DARK__":
-                    self.update_status(self.tr("ℹ️ This flat group: override = No Calibration."))
-                elif isinstance(override_val, str):
-                    if os.path.exists(override_val):
-                        selected_master_dark = override_val
-                        self.update_status(self.tr(
-                            f"🌓 This flat group: using OVERRIDE dark → {os.path.basename(selected_master_dark)}"
-                        ))
-                    else:
-                        self.update_status(self.tr("⚠️ Override dark missing on disk; falling back to Auto/None."))
-                        override_val = None
-
-                # AUTO-SELECT when no override
-                if (override_val is None) and self.auto_select_dark_checkbox.isChecked():
-                    best_diff = float("inf")
-                    exp_here = float(exposure_time)
-
-                    for key, path in (getattr(self, "master_files", {}) or {}).items():
-                        if "MasterDark" not in os.path.basename(path):
-                            continue
-
-                        dark_size = self.master_sizes.get(path, "Unknown")
-                        m = re.match(r"([\d.]+)s", key or "")
-                        dark_exp = float(m.group(1)) if m else float("inf")
-
-                        size_ok = (
-                            image_size == "Unknown"
-                            or dark_size == "Unknown"
-                            or dark_size == image_size
-                        )
-                        if not size_ok:
-                            continue
-
-                        diff = abs(dark_exp - exp_here)
-                        if diff < best_diff:
-                            best_diff = diff
-                            selected_master_dark = path
-
-                    if selected_master_dark:
-                        self.update_status(self.tr(
-                            f"🌓 This flat group: using AUTO dark → {os.path.basename(selected_master_dark)}"
-                        ))
-                    else:
-                        self.update_status(self.tr(
-                            "ℹ️ This flat group: no matching Master Dark (size) — proceeding without subtraction."
-                        ))
-                elif (override_val is None) and (not self.auto_select_dark_checkbox.isChecked()):
-                    self.update_status(self.tr(
-                        "ℹ️ This flat group: Auto-Select is OFF and no override set → No Calibration."
-                    ))
-                # -----------------------------------------------------------------
-                # Reference shape + per-group chunk size
-                # -----------------------------------------------------------------
-                if (exposure_time, image_size, filter_name, session) in group_shapes:
-                    height, width, channels, chunk_height, chunk_width = group_shapes[
-                        (exposure_time, image_size, filter_name, session)
-                    ]
+                # Wait on THIS group's prep (ideally already done in background);
+                # then IMMEDIATELY submit next group's prep so it overlaps with
+                # this group's tile loop.
+                self.update_status(self.tr(
+                    f"⚙️ Normalizing {N} flats by per-frame medians (central patch)."
+                ))
+                QApplication.processEvents()
+                prep = next_prep_fut.result()
+                if gi + 1 < len(eligible_groups):
+                    next_prep_fut = prep_pool.submit(
+                        _prepare_group, eligible_groups[gi + 1]
+                    )
                 else:
-                    ref_data, _, _, _ = load_image(file_list[0])
-                    if ref_data is None:
-                        self.update_status(self.tr(
-                            f"❌ Failed to load reference {os.path.basename(file_list[0])}"
-                        ))
-                        continue
-                    height, width = ref_data.shape[:2]
-                    channels = 1 if ref_data.ndim == 2 else 3
-                    channels = max(1, channels)
-                    N_tmp = len(file_list)
-                    try:
-                        chunk_height, chunk_width = compute_safe_chunk(
-                            height, width, N_tmp, channels, DTYPE,
-                            pref_chunk_h, pref_chunk_w
-                        )
-                    except MemoryError:
-                        chunk_height, chunk_width = _band_shape(pref_chunk_h, height, width)
+                    next_prep_fut = None
 
-                channels = max(1, channels)
-                N = len(file_list)
-                # Load the chosen dark if any
-                if selected_master_dark:
-                    dark_data, _dark_hdr, _, _ = load_image(selected_master_dark)
-                    if dark_data is not None:
-                        # Match the raw flats' on-disk (bottom-up) orientation for the
-                        # in-build subtraction (see the bias note above).
-                        if str((_dark_hdr or {}).get("ROWORDER", "")).strip().upper() == "TOP-DOWN":
-                            dark_data = np.ascontiguousarray(np.flipud(dark_data))
-                        if dark_data.ndim == 3 and dark_data.shape[-1] == 3:
-                            # keep HWC
-                            dark_data = dark_data.astype(np.float32, copy=False)
-                        elif dark_data.ndim == 3 and dark_data.shape[0] in (1, 3):
-                            dark_data = dark_data.transpose(1, 2, 0).astype(np.float32, copy=False)
-                        else:
-                            dark_data = dark_data.astype(np.float32, copy=False)
-
-                        # ── Shape mismatch check ──────────────────────────────────
-                        flat_is_color = (channels == 3)
-                        dark_is_color = (dark_data.ndim == 3 and (
-                            dark_data.shape[-1] == 3 or dark_data.shape[0] == 3
-                        ))
-                        if flat_is_color != dark_is_color:
-                            flat_desc = "color (debayered)" if flat_is_color else "mono/Bayer"
-                            dark_desc = "color (debayered)" if dark_is_color else "mono/Bayer"
-                            self.update_status(self.tr(
-                                f"❌ FLAT CALIBRATION ERROR: Flat group is {flat_desc} but "
-                                f"Master Dark is {dark_desc}. Skipping dark subtraction for this group.\n"
-                                f"  Dark: {os.path.basename(selected_master_dark)}"
-                            ))
-                            QMessageBox.warning(
-                                self,
-                                "Dark/Flat Mismatch",
-                                f"Cannot apply dark subtraction to flat group:\n\n"
-                                f"Flat frames are {flat_desc}\n"
-                                f"Master Dark is {dark_desc}\n\n"
-                                f"Dark: {os.path.basename(selected_master_dark)}\n\n"
-                                f"Continuing without dark subtraction for this flat group."
-                            )
-                            dark_data = None
-                        # ─────────────────────────────────────────────────────────
-                else:
-                    dark_data = None
-
-
-
-                # -----------------------------------------------------------------
-                # Detect Bayer (only meaningful when channels==1)
-                # -----------------------------------------------------------------
-                bayerpat = None
-                flat_roworder = ""   # sensor readout direction of the source flats
-                try:
-                    hdr0, _ = get_valid_header(file_list[0])
-                    bayerpat = (hdr0.get("BAYERPAT") or hdr0.get("BAYERPATN") or hdr0.get("BAYER") or None)
-                    if bayerpat is not None:
-                        bayerpat = str(bayerpat).strip().upper()
-                    flat_roworder = str(hdr0.get("ROWORDER") or "")
-                except Exception:
-                    bayerpat = None
-                is_bayer_group = (channels == 1) and bool(bayerpat)
-
-                if is_bayer_group:
-                    if bayerpat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
-                        bayerpat = "RGGB"
-                    self.update_status(self.tr(f"🧩 Bayer flat group detected: {bayerpat}"))
+                if "error" in prep:
+                    self.update_status(self.tr(f"❌ {prep['error']} — skipping group."))
                     QApplication.processEvents()
+                    continue
 
-                # -----------------------------------------------------------------
-                # Reducer selection & per-frame normalization scales
-                # -----------------------------------------------------------------
+                sources  = prep["sources"]
+                scales   = prep["scales"]
+                dark_arr = prep["dark_arr"]
+
+                # ── Shape mismatch check (dark vs flat color) ──────────────
+                # dark_cache stored the dark in final HWC-or-2D layout, so the
+                # check is a one-liner now.
+                if dark_arr is not None:
+                    flat_is_color = (channels == 3)
+                    dark_is_color = (dark_arr.ndim == 3 and dark_arr.shape[-1] == 3)
+                    if flat_is_color != dark_is_color:
+                        flat_desc = "color (debayered)" if flat_is_color else "mono/Bayer"
+                        dark_desc = "color (debayered)" if dark_is_color else "mono/Bayer"
+                        self.update_status(self.tr(
+                            f"❌ FLAT CALIBRATION ERROR: Flat group is {flat_desc} but "
+                            f"Master Dark is {dark_desc}. Skipping dark subtraction for this group.\n"
+                            f"  Dark: {os.path.basename(dp or '')}"
+                        ))
+                        QMessageBox.warning(
+                            self,
+                            "Dark/Flat Mismatch",
+                            f"Cannot apply dark subtraction to flat group:\n\n"
+                            f"Flat frames are {flat_desc}\n"
+                            f"Master Dark is {dark_desc}\n\n"
+                            f"Dark: {os.path.basename(dp or '')}\n\n"
+                            f"Continuing without dark subtraction for this flat group."
+                        )
+                        dark_arr = None
+
+                # Choose tile-time subtractor (same precedence as before:
+                # dark preferred, bias fallback for mono/bayer).
+                tile_subtractor = dark_arr
+                if tile_subtractor is None and is_bayer_group and master_bias is not None:
+                    tile_subtractor = master_bias
+
+                # Reducer selection
                 algo_name, params, cpu_label = _select_reducer("flat", N)
                 use_gpu = (bool(self._hw_accel_enabled()) and _torch_ok()
                            and _gpu_algo_supported(algo_name) and _rejection_gpu_ok())
-
-                # For flat scaling estimation: subtract dark if present, else subtract bias if we have one (mono case)
-                scale_subtractor = dark_data
-                if scale_subtractor is None and is_bayer_group and master_bias is not None:
-                    # only use bias this way for mono/bayer flats
-                    scale_subtractor = master_bias
-
-                self.update_status(self.tr(f"⚙️ Normalizing {N} flats by per-frame medians (central patch)."))
-                QApplication.processEvents()
-
-                if is_bayer_group:
-                    scales = _estimate_flat_scales_bayer(file_list, height, width, scale_subtractor, bayerpat)
-                else:
-                    scales = _estimate_flat_scales(file_list, height, width, channels, dark_data)
-
                 self.update_status(self.tr(
                     f"⚙️ {'GPU' if use_gpu else 'CPU'} reducer for flats — {algo_name} "
                     f"({ 'k=%.1f' % params.get('kappa', 0) if cpu_label=='kappa1' else 'trim=%.0f%%' % (params.get('trim_fraction', 0)*100) if cpu_label=='trimmed' else 'median'})"
                 ))
                 QApplication.processEvents()
 
-                # -----------------------------------------------------------------
-                # Open all flats as memmapped sources (once per group)
-                # -----------------------------------------------------------------
-                sources = []
-                try:
-                    for p in file_list:
-                        sources.append(_MMImage(p))
-                except Exception as e:
-                    for s in sources:
-                        try:
-                            s.close()
-                        except Exception:
-                            pass
-                    self.update_status(self.tr(f"❌ Failed to memmap flat frames: {e}"))
-                    QApplication.processEvents()
-                    continue
-
-                # Temporary memmap for the master stack
-                memmap_path = os.path.join(
-                    master_dir,
-                    f"temp_flat_{session}_{exposure_time}_{image_size}_{filter_name}.dat",
-                )
-                self.update_status(self.tr(
-                    f"🗂️ Creating temp memmap: {os.path.basename(memmap_path)} "
-                    f"(shape={height}×{width}×{channels}, dtype=float32)"
-                ))
-                QApplication.processEvents()
-                final_stacked = np.memmap(
-                    memmap_path,
-                    dtype=np.float32,
-                    mode="w+",
-                    shape=(height, width, channels),
-                )
+                # ─────────────────────────────────────────────────────────────
+                # Output buffer: plain RAM array. The old code wrote this to a
+                # temp memmap file and immediately read it back with np.asarray
+                # before deleting the file — pure disk round-trip for ~250 MB
+                # (mono) / ~750 MB (color) per master flat. One master-flat
+                # output easily fits in RAM; the per-stack working set
+                # (buf0+buf1) was already far bigger.
+                # ─────────────────────────────────────────────────────────────
+                final_stacked = np.empty((height, width, channels), dtype=np.float32)
 
                 tiles = _tile_grid(height, width, chunk_height, chunk_width)
                 total_tiles_group = len(tiles)
@@ -17347,7 +18324,7 @@ class StackingSuiteDialog(QDialog):
                 ))
                 QApplication.processEvents()
 
-                # Allocate max-chunk buffers
+                # Allocate max-chunk buffers for this group
                 buf0 = np.empty(
                     (N, chunk_height, chunk_width, channels),
                     dtype=np.float32,
@@ -17355,29 +18332,86 @@ class StackingSuiteDialog(QDialog):
                 )
                 buf1 = np.empty_like(buf0)
 
-                # Helper: read one tile into the given buffer from all memmapped sources
-                def _read_tile_into(buf, y0, y1, x0, x1):
+                # ─────────────────────────────────────────────────────────────
+                # Multi-reader tile prefetch: the old loop read N files
+                # serially inside the single-worker prefetcher — one source
+                # at a time, each waiting on disk I/O. We fan the per-source
+                # reads out over `read_workers` threads so a tile's N file
+                # slices load concurrently, which is a straight win on SSD /
+                # NVMe and still safe on HDD (each _MMImage holds its own
+                # independent read-only mmap, so there's no shared state to
+                # race on). Capped at min(N, 4) by default; the setting is
+                # exposed so an HDD user can dial it back to 2.
+                # ─────────────────────────────────────────────────────────────
+                read_workers = int(self.settings.value(
+                    "stacking/tile_read_workers", 4, type=int
+                ))
+                read_workers = max(1, min(read_workers, N))
+                read_pool = ThreadPoolExecutor(
+                    max_workers=read_workers,
+                    thread_name_prefix="flatRead",
+                )
+
+                def _read_tile_into(buf, y0, y1, x0, x1,
+                                    _sources=sources, _N=N, _C=channels,
+                                    _pool=read_pool):
                     th = y1 - y0
                     tw = x1 - x0
-                    ts = buf[:N, :th, :tw, :channels]
-                    for i, src in enumerate(sources):
-                        src.read_tile_into(ts[i], y0, y1, x0, x1, channels)
+                    ts = buf[:_N, :th, :tw, :_C]
+                    futs = [
+                        _pool.submit(
+                            _sources[i].read_tile_into,
+                            ts[i], y0, y1, x0, x1, _C,
+                        )
+                        for i in range(_N)
+                    ]
+                    for f in futs:
+                        f.result()
                     return th, tw
 
-                tp = ThreadPoolExecutor(max_workers=1)
+                tile_tp = ThreadPoolExecutor(max_workers=1)
 
                 # Prime first read
                 (y0, y1, x0, x1) = tiles[0]
-                fut = tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
+                fut = tile_tp.submit(_read_tile_into, buf0, y0, y1, x0, x1)
                 use0 = True
 
                 self.update_status(self.tr(
-                    f"▶️ Starting tile processing for group '{filter_name}' ({exposure_time}s, {image_size}, session '{session}')"
+                    f"▶️ Starting tile processing for group '{filter_name}' "
+                    f"({exposure_time}s, {image_size}, session '{session}') "
+                    f"— {read_workers} reader thread(s)"
                 ))
                 QApplication.processEvents()
 
                 weights_np = np.ones((N,), dtype=np.float32)
                 cancelled_group = False
+
+                # tile_subtractor is already in final HWC-or-2D layout (either
+                # from dark_cache or from the bias load above); the only
+                # possible per-tile shape work is "repeat 2D mono to 3 chans".
+                sub_is_2d_to_rgb = (
+                    tile_subtractor is not None
+                    and tile_subtractor.ndim == 2
+                    and channels == 3
+                )
+
+                # ─────────────────────────────────────────────────────────────
+                # GPU calibration-prep hand-off:
+                # When the reducer runs on the GPU, we hand it the FULL dark
+                # frame + per-frame scales ONCE (keyed by group_key, so the
+                # upload happens on the first tile call) and let it fuse
+                # dark-sub + clip + per-frame scale into one device-side pass
+                # right after it uploads ts. The CPU prep below is then
+                # skipped. For the CPU reducer we still run the CPU prep —
+                # there's no device to defer it to.
+                # ─────────────────────────────────────────────────────────────
+                gpu_group_key = (
+                    f"flat::{session}::{exposure_time}::{image_size}::{filter_name}"
+                    if use_gpu else None
+                )
+                gpu_dark_np   = tile_subtractor if use_gpu else None
+                gpu_scales_np = scales          if use_gpu else None
+                gpu_bayer_pat = bayerpat        if (use_gpu and is_bayer_group) else None
 
                 # -----------------------------------------------------------------
                 # Tile loop
@@ -17393,42 +18427,20 @@ class StackingSuiteDialog(QDialog):
                     # Prefetch next
                     if t_idx < total_tiles_group:
                         ny0, ny1, nx0, nx1 = tiles[t_idx]
-                        fut = tp.submit(
+                        fut = tile_tp.submit(
                             _read_tile_into,
                             (buf1 if use0 else buf0),
                             ny0, ny1, nx0, nx1,
                         )
 
-                    pd.set_label(f"[{filter_name}] {session} — tile {t_idx}/{total_tiles_group} y:{y0}-{y1} x:{x0}-{x1}")
+                    pd.set_label(
+                        f"[{filter_name}] {session} — tile {t_idx}/{total_tiles_group} "
+                        f"y:{y0}-{y1} x:{x0}-{x1}"
+                    )
 
-                    # ---- per-tile subtractor (HWC), BEFORE normalization ----
-                    # Prefer flat-dark; else for mono/bayer, fall back to master bias to avoid bias imprint in flats.
-                    subtractor = dark_data
-                    if subtractor is None and is_bayer_group and master_bias is not None:
-                        subtractor = master_bias
-
-                    if subtractor is not None:
-                        dsub = subtractor
-                        if isinstance(dsub, np.ndarray):
-                            if dsub.ndim == 3 and dsub.shape[0] in (1, 3):  # CHW → HWC
-                                dsub = dsub.transpose(1, 2, 0)
-                            # If bias/dark is 2D, keep 2D
-                            if dsub.ndim == 3 and dsub.shape[2] == 1:
-                                dsub = dsub[:, :, 0]
-                        d_tile = dsub[y0:y1, x0:x1].astype(np.float32, copy=False)
-                        if d_tile.ndim == 2 and channels == 3:
-                            d_tile = np.repeat(d_tile[..., None], 3, axis=2)
-                        _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
-                        # Clip negatives before normalisation and stacking
-                        np.clip(ts_np, 0.0, None, out=ts_np)
-                    # ---- fast per-frame normalization ----
-                    if is_bayer_group:
-                        _apply_bayer_scales_stack_inplace(ts_np, scales, bayerpat, y0, x0)
-                    else:
-                        ts_np *= scales.reshape(N, 1, 1, 1)
-
-                    # ---- reduction (GPU or CPU) ----
                     if use_gpu:
+                        # Dark-sub + clip + per-frame scale happen on-device
+                        # inside the reducer; nothing to do on the CPU side.
                         tile_result, _ = _torch_reduce_tile(
                             ts_np,
                             weights_np,
@@ -17443,8 +18455,31 @@ class StackingSuiteDialog(QDialog):
                             modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
                             comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
                             comet_hclip_p=float(self.settings.value("stacking/comet_hclip_p", 25.0, type=float)),
+                            # ─── On-device calibration prep ───
+                            dark_full_np=gpu_dark_np,
+                            pedestal=0.0,
+                            scales_np=gpu_scales_np,
+                            bayer_pattern=gpu_bayer_pat,
+                            tile_origin=(y0, x0),
+                            group_key=gpu_group_key,
                         )
                     else:
+                        # CPU path: do dark-sub + clip + per-frame scale on
+                        # the host before the CPU reducer sees the stack.
+                        if tile_subtractor is not None:
+                            d_tile = tile_subtractor[y0:y1, x0:x1]
+                            if sub_is_2d_to_rgb:
+                                d_tile = np.repeat(d_tile[..., None], 3, axis=2)
+                            if d_tile.dtype != np.float32:
+                                d_tile = d_tile.astype(np.float32, copy=False)
+                            _subtract_dark_stack_inplace_hwc(ts_np, d_tile, pedestal=0.0)
+                            np.clip(ts_np, 0.0, None, out=ts_np)
+
+                        if is_bayer_group:
+                            _apply_bayer_scales_stack_inplace(ts_np, scales, bayerpat, y0, x0)
+                        else:
+                            ts_np *= scales.reshape(N, 1, 1, 1)
+
                         if cpu_label == "median":
                             tile_result = _cpu_tile_median(ts_np)
                         elif cpu_label == "trimmed":
@@ -17457,6 +18492,7 @@ class StackingSuiteDialog(QDialog):
                                 ts_np,
                                 float(params.get("kappa", 3.0)),
                             )
+
                     # Ensure tile_result has correct shape (th, tw, channels)
                     if tile_result.ndim == 2:
                         tile_result = tile_result[:, :, None]
@@ -17475,8 +18511,21 @@ class StackingSuiteDialog(QDialog):
                     use0 = not use0
 
                 try:
-                    tp.shutdown(wait=True)
+                    tile_tp.shutdown(wait=True)
                 finally:
+                    try:
+                        read_pool.shutdown(wait=True)
+                    except Exception:
+                        pass
+                    # Release the per-group GPU calibration tensors (dark +
+                    # scales) so the next group's dark can slot in without
+                    # the previous one lingering in VRAM. Safe on CPU-only
+                    # runs — gpu_group_key is None there.
+                    try:
+                        if gpu_group_key is not None:
+                            _release_flat_group_ctx(gpu_group_key)
+                    except Exception:
+                        pass
                     for s in sources:
                         try:
                             s.close()
@@ -17484,27 +18533,11 @@ class StackingSuiteDialog(QDialog):
                             pass
 
                 if cancelled_group:
-                    self.update_status(self.tr("⛔ Master Flat creation cancelled; cleaning up temporary files."))
-                    try:
-                        del final_stacked
-                    except Exception:
-                        pass
-                    try:
-                        os.remove(memmap_path)
-                    except Exception:
-                        pass
+                    self.update_status(self.tr("⛔ Master Flat creation cancelled."))
                     break
 
-                # Convert memmap to regular array, free file
-                master_flat_data = np.asarray(final_stacked, dtype=np.float32)
-                del final_stacked
-                gc.collect()
-                try:
-                    os.remove(memmap_path)
-                except Exception:
-                    pass
-
-                # If mono, squeeze to 2D (prevents accidental “(H,W,1)” weirdness later)
+                # If mono, squeeze to 2D (prevents accidental "(H,W,1)" weirdness later)
+                master_flat_data = final_stacked
                 if channels == 1 and master_flat_data.ndim == 3 and master_flat_data.shape[2] == 1:
                     master_flat_data = master_flat_data[:, :, 0]
 
@@ -17549,20 +18582,43 @@ class StackingSuiteDialog(QDialog):
                 # maze, and dust/vignetting misaligns.
                 if flat_roworder:
                     header["ROWORDER"] = flat_roworder
-                save_image(
+
+                # ─────────────────────────────────────────────────────────────
+                # Async save: hand the finished master to save_pool and move
+                # straight into the next group's tile loop. Cap in-flight saves
+                # at 2 so RAM stays bounded even on slow disks (each pending
+                # save holds one master_flat_data buffer alive).
+                # ─────────────────────────────────────────────────────────────
+                save_futs.append(save_pool.submit(
+                    save_image,
                     master_flat_data,
                     master_flat_path,
                     "fit",
                     "32-bit floating point",
                     header,
                     is_mono=(channels == 1),
-                )
+                ))
+                while len(save_futs) > 2:
+                    try:
+                        save_futs.pop(0).result()
+                    except Exception as _se:
+                        self.update_status(self.tr(f"⚠️ Master-flat save failed: {_se}"))
 
                 self.master_sizes[master_flat_path] = image_size
                 self.add_master_flat_to_tree(filter_name, master_flat_path)
-                self.update_status(self.tr(f"✅ Master Flat saved: {master_flat_path}"))
+                self.update_status(self.tr(
+                    f"✅ Master Flat queued: {os.path.basename(master_flat_path)}"
+                ))
                 QApplication.processEvents()
                 self.save_master_paths_to_settings()
+
+            # Drain remaining in-flight saves before wrap-up
+            for _fs in save_futs:
+                try:
+                    _fs.result()
+                except Exception as _se:
+                    self.update_status(self.tr(f"⚠️ Master-flat save failed: {_se}"))
+            save_futs.clear()
 
             # Final wrap-up
             self.assign_best_master_dark()
@@ -17570,6 +18626,31 @@ class StackingSuiteDialog(QDialog):
             self._refresh_quick_stack_summary_later()
 
         finally:
+            # Shut down pipeline pools first so no background work outlives the
+            # method. prep_pool: the next-group preamble may still be running
+            # if we broke out of the loop early — let it finish (its sources
+            # would otherwise leak file descriptors). save_pool: ensure every
+            # queued FITS write lands before we release resources.
+            try:
+                prep_pool.shutdown(wait=True)
+            except Exception:
+                pass
+            try:
+                save_pool.shutdown(wait=True)
+            except Exception:
+                pass
+            # Any sources opened by a prep that never ran as a group (early
+            # cancel) are owned by `next_prep_fut`'s result; drain and close.
+            try:
+                if next_prep_fut is not None:
+                    _leftover = next_prep_fut.result()
+                    for _s in (_leftover or {}).get("sources", []):
+                        try:
+                            _s.close()
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             try:
                 _free_torch_memory()
             except Exception as e:
@@ -22102,6 +23183,252 @@ class StackingSuiteDialog(QDialog):
         mode = self.settings.value("stacking/weight_mode", "Balanced", type=str)
         return mode if mode in self.WEIGHT_MODES else "Balanced"
 
+    def _group_frames_by_filter(self, frames: list) -> dict:
+        """Group paths by filter name using ``self.light_files`` keys as the
+        authoritative source for filter identity (keys look like
+        ``"Ha - 300s (4144x2822)"``), avoiding a per-frame FITS header read.
+        Falls back to ``self._get_filter_name`` for any path that isn't in
+        a known group (rare — e.g. mid-session re-measurements loaded via
+        a different code path)."""
+        path_to_filter = {}
+        for key, paths in (self.light_files or {}).items():
+            try:
+                if isinstance(key, tuple) and len(key) >= 1:
+                    filter_exposure = str(key[0])
+                else:
+                    filter_exposure = str(key)
+                # Keys like "Ha - 300s (4144x2822)" → everything before
+                # the LAST " - " is the filter name (rsplit handles the
+                # rare case of a filter name that itself contains " - ").
+                filter_name = filter_exposure.rsplit(" - ", 1)[0].strip() or "Unknown"
+            except Exception:
+                filter_name = "Unknown"
+            for p in (paths or []):
+                if p:
+                    path_to_filter[p] = filter_name
+
+        groups: dict = {}
+        for fp in frames:
+            fname = path_to_filter.get(fp)
+            if not fname:
+                try:
+                    fname = self._get_filter_name(fp) or "Unknown"
+                except Exception:
+                    fname = "Unknown"
+            groups.setdefault(fname, []).append(fp)
+        return groups
+
+    def _apply_sub_rejection(self, measured_frames: list,
+                             star_counts: dict = None,
+                             preview_medians: dict = None) -> int:
+        """Score-outlier rejection applied in-place to ``self.frame_weights``.
+
+        Runs PER FILTER: an OIII group almost always scores lower than an
+        Hα group under the same sky (fewer stars, lower photon rate), so
+        a single global threshold would brand an entire narrowband channel
+        as outliers of a brighter one. Each filter gets its own median,
+        robust MAD-σ, and threshold.
+
+        Rule (per filter):
+            med       = median(scores_in_filter)
+            sigma     = 1.4826 * median(|scores - med|)
+            threshold = med - k * sigma
+        with guards applied PER FILTER:
+          - skip the filter when fewer than 10 of its subs have a positive
+            weight (MAD is too noisy to call outliers below that)
+          - skip the filter when sigma < 0.02 (its scores are tightly
+            clustered — nothing stands out)
+          - skip the whole call when ``stacking/reject_outliers_enabled``
+            is False
+
+        The per-run checkbox on the integration tab
+        (``reject_interactive_cb``) decides whether the user reviews
+        thresholds in a dialog (one plot per filter, switched by a
+        dropdown) or we auto-apply.
+
+        Soft reject: rejected subs have ``self.frame_weights[fp] = 0.0``.
+        Files are untouched on disk — a later run can re-measure and
+        re-threshold without data loss. Returns the total rejection count
+        across all filters (0 is a valid result).
+        """
+        import numpy as _np
+        import os as _os
+
+        enabled = bool(self.settings.value("stacking/reject_outliers_enabled", True, type=bool))
+        if not enabled:
+            return 0
+
+        sigma_k = float(self.settings.value("stacking/reject_outliers_sigma_k", 3.5, type=float))
+
+        # Partition measured_frames by filter — authoritative lookup via
+        # self.light_files group keys (no disk I/O), with a header-read
+        # fallback for any orphan path.
+        groups_by_filter = self._group_frames_by_filter(measured_frames)
+
+        # Per-filter guards. Build the candidate_groups dict used by both
+        # the interactive dialog and the auto-apply branch so the two
+        # paths see IDENTICAL inputs.
+        candidate_groups: dict = {}      # filter_name -> {fp: score}
+        auto_thresholds: dict = {}       # filter_name -> (med, sig, threshold)
+        skipped: list = []               # (filter_name, reason) for logging
+
+        for fname, fps in groups_by_filter.items():
+            pairs = [
+                (fp, float(self.frame_weights.get(fp, 0.0)))
+                for fp in fps
+                if self.frame_weights.get(fp, 0.0) > 0.0
+            ]
+            if len(pairs) < 10:
+                skipped.append((fname, self.tr(
+                    "only {0} subs with positive weight — need ≥10"
+                ).format(len(pairs))))
+                continue
+
+            scores = _np.asarray([p[1] for p in pairs], dtype=_np.float32)
+            med = float(_np.median(scores))
+            mad = float(_np.median(_np.abs(scores - med)))
+            sig = 1.4826 * mad
+            if not (_np.isfinite(sig) and sig >= 0.02):
+                skipped.append((fname, self.tr(
+                    "σ = {0:.4f} < 0.02 (tight distribution; nothing stands out)"
+                ).format(sig)))
+                continue
+
+            candidate_groups[fname] = {fp: s for fp, s in pairs}
+            auto_thresholds[fname] = (med, sig, med - sigma_k * sig)
+
+        for fname, reason in skipped:
+            self.update_status(self.tr(
+                "ℹ️ Sub rejection skipped for filter '{0}': {1}"
+            ).format(fname, reason))
+
+        if not candidate_groups:
+            return 0
+
+        # Interactive? Per-run checkbox on the integration tab wins; fall
+        # back to the sticky setting if the tab's checkbox doesn't exist
+        # (e.g., headless invocation).
+        interactive = False
+        cb = getattr(self, "reject_interactive_cb", None)
+        if cb is not None:
+            try:
+                interactive = bool(cb.isChecked())
+            except Exception:
+                interactive = False
+        else:
+            interactive = bool(self.settings.value(
+                "stacking/reject_outliers_interactive", False, type=bool
+            ))
+
+        rejected: set = set()
+        per_filter_threshold: dict = {}
+
+        if interactive:
+            # Build per-filter per-metric data for the Advanced view. Each
+            # metric maps to a {fp: value} dict that mirrors the Score dict
+            # the dialog already consumes. If any required bit is missing
+            # we just drop the metric for that filter — the dialog hides
+            # Advanced mode when ANY filter is incomplete.
+            metrics_data = None
+            if star_counts is not None and preview_medians is not None:
+                metrics_data = {}
+                for fname, scores_map in candidate_groups.items():
+                    mdict: dict = {}
+                    fwhm_d, ecc_d, bg_d, count_d, noise_d = {}, {}, {}, {}, {}
+                    import math as _math
+                    for fp in scores_map:
+                        info = (star_counts or {}).get(fp) or {}
+                        try: fwhm_d[fp]  = float(info.get("fwhm", _math.nan))
+                        except Exception: fwhm_d[fp] = float("nan")
+                        try: ecc_d[fp]   = float(info.get("eccentricity", _math.nan))
+                        except Exception: ecc_d[fp] = float("nan")
+                        try: count_d[fp] = float(info.get("count", _math.nan))
+                        except Exception: count_d[fp] = float("nan")
+                        n = info.get("noise", None)
+                        try: noise_d[fp] = float(n) if n is not None else float("nan")
+                        except Exception: noise_d[fp] = float("nan")
+                        try: bg_d[fp]    = float((preview_medians or {}).get(fp, _math.nan))
+                        except Exception: bg_d[fp] = float("nan")
+                    mdict["fwhm"]  = fwhm_d
+                    mdict["ecc"]   = ecc_d
+                    mdict["bg"]    = bg_d
+                    mdict["count"] = count_d
+                    mdict["noise"] = noise_d
+                    metrics_data[fname] = mdict
+
+            start_adv = bool(self.settings.value(
+                "stacking/reject_outliers_advanced", False, type=bool
+            ))
+            dlg = SubRejectionDialog(
+                self, candidate_groups,
+                metrics_data=metrics_data,
+                sigma_k=sigma_k,
+                start_in_advanced=start_adv,
+            )
+            result = dlg.exec()
+            if result != QDialog.DialogCode.Accepted:
+                self.update_status(self.tr(
+                    "ℹ️ Sub rejection cancelled — keeping all subs."
+                ))
+                return 0
+            # Persist the "start in advanced?" preference so the view the
+            # user actually left in is the view they come back to.
+            try:
+                self.settings.setValue(
+                    "stacking/reject_outliers_advanced",
+                    bool(dlg.mode() == "advanced"),
+                )
+            except Exception:
+                pass
+            rejected = set(dlg.rejected_paths())
+            for fname in candidate_groups:
+                per_filter_threshold[fname] = dlg.threshold(fname, "score")
+        else:
+            for fname, scores_map in candidate_groups.items():
+                _med, _sig, threshold = auto_thresholds[fname]
+                per_filter_threshold[fname] = threshold
+                for fp, s in scores_map.items():
+                    if s < threshold:
+                        rejected.add(fp)
+
+        total_candidates = sum(len(g) for g in candidate_groups.values())
+
+        if not rejected:
+            self.update_status(self.tr(
+                "✅ Sub rejection: no outliers across any filter — "
+                "all {0} subs kept ({1} filter group(s) considered)."
+            ).format(total_candidates, len(candidate_groups)))
+            return 0
+
+        # Soft reject + per-sub log line (always useful for a stacking log).
+        for fp in rejected:
+            prev = self.frame_weights.get(fp, 0.0)
+            self.frame_weights[fp] = 0.0
+            try:
+                self.update_status(self.tr(
+                    "🚫 Rejected sub (score outlier): {0}  (score {1:.4f})"
+                ).format(_os.path.basename(fp), float(prev)))
+            except Exception:
+                pass
+
+        # Per-filter summary: how many each filter contributed and at what
+        # threshold — makes mixed-filter stacks much easier to audit.
+        for fname, scores_map in candidate_groups.items():
+            th = per_filter_threshold.get(fname, auto_thresholds[fname][2])
+            n_rej = sum(1 for fp in scores_map if fp in rejected)
+            n_tot = len(scores_map)
+            med, sig, _auto_th = auto_thresholds[fname]
+            self.update_status(self.tr(
+                "   • [{0}]  rejected {1}/{2}  threshold={3:.4f}  "
+                "(median={4:.4f}, σ={5:.4f})"
+            ).format(fname, n_rej, n_tot, th, med, sig))
+
+        self.update_status(self.tr(
+            "🚫 Sub rejection: {0} / {1} subs rejected across {2} filter group(s) "
+            "(k = {3:.2f})."
+        ).format(len(rejected), total_candidates, len(candidate_groups), sigma_k))
+        return len(rejected)
+
     @staticmethod
     def _score_frame_terms(*, count, ecc, bg, fwhm, noise,
                            fwhm_ref, noise_ref, exps) -> tuple:
@@ -23655,7 +24982,24 @@ class StackingSuiteDialog(QDialog):
                 f"min={min(self.frame_weights.values()):.3f}, "
                 f"max={max(self.frame_weights.values()):.3f}, "
                 f"mean={float(np.mean(list(self.frame_weights.values()))):.3f}"
-            )) 
+            ))
+
+            # ─────────────────────────────────────────────────────────────
+            # Optional score-outlier sub rejection. Soft reject: rejected
+            # subs have their weight zeroed so integration treats them as
+            # absent, but the source file is untouched — re-running with a
+            # different threshold is just another measurement pass. No-ops
+            # on CPU-only runs, small groups, tightly clustered scores, or
+            # when the user disables the feature in Settings.
+            # ─────────────────────────────────────────────────────────────
+            try:
+                self._apply_sub_rejection(
+                    measured_frames,
+                    star_counts=star_counts,
+                    preview_medians=preview_medians,
+                )
+            except Exception as _e:
+                self.update_status(self.tr(f"⚠️ Sub rejection skipped: {_e}"))
 
             ref_stats_meas = star_counts.get(self.reference_frame, {"count": 0, "eccentricity": 0.0})
             ref_count = ref_stats_meas["count"]
@@ -31459,8 +32803,12 @@ class StackingSuiteDialog(QDialog):
                 for i in range(0, len(lst), size):
                     yield lst[i:i+size]
 
-            chunks = list(chunk_list(cand, chunk_size))
-            total_chunks = len(chunks)
+            # `chunks` is defined further down, AFTER we classify every frame
+            # as either (a) a twin of a calibrated original we've already
+            # measured in processes (just-coverage fast path) or (b) something
+            # we need to measure via a preview (slow path). Only the slow-path
+            # frames get chunked, so a run that matches every twin skips the
+            # preview-based chunk loop entirely.
 
             # For already registered images, we don’t need to rescale to a target bin.
             # We can just make small previews directly from the FITS (debayer-aware superpixel).
@@ -31522,6 +32870,115 @@ class StackingSuiteDialog(QDialog):
                         f"⚠️ Multi-process measurement unavailable "
                         f"({type(e).__name__}: {e}); using threads instead."))
                     orig_measured.clear()
+
+            # ─────────────────────────────────────────────────────────────
+            # Classify every aligned frame:
+            #   • twinned_frames   — we already measured the calibrated
+            #     original via the process pool above; every quality metric
+            #     (star count, FWHM, ecc, noise, mean, median) comes from
+            #     that measurement. The only thing we still need per aligned
+            #     frame is its coverage (fraction of non-zero, finite pixels)
+            #     — a warp-border artifact that lives on the ALIGNED frame,
+            #     not the original — so we take a cheap preview per twin
+            #     and compute cov from it. No star detection, no FWHM re-fit,
+            #     no noise re-estimate.
+            #   • untwinned_frames — anything we couldn't process-measure
+            #     (missing twin link, measure_file returned a non-ok status,
+            #     or the ProcessPoolExecutor errored and we cleared the
+            #     cache). These go through the full chunked preview-based
+            #     measurement path below.
+            # Before this split the chunk loop re-measured EVERY aligned
+            # frame on a small preview even when the originals were already
+            # processed, which produced the "⚡ Measured 245/245 originals
+            # → 📦 Measuring chunk 1/7…" double-pass the user flagged.
+            # ─────────────────────────────────────────────────────────────
+            twinned_frames = []
+            untwinned_frames = []
+            for _fp in cand:
+                _orig = _twin_to_tree.get(_fp)
+                _rec = orig_measured.get(_orig) if _orig is not None else None
+                if _rec is not None and _rec[0] == "ok":
+                    twinned_frames.append(_fp)
+                else:
+                    untwinned_frames.append(_fp)
+
+            if twinned_frames:
+                self.update_status(self.tr(
+                    "⚡ {0} aligned frame(s) carry an already-measured original "
+                    "— computing coverage only, skipping redundant preview "
+                    "measurement."
+                ).format(len(twinned_frames)))
+                QApplication.processEvents()
+
+                def _cov_job(fp: str):
+                    """Build the aligned preview and read a single stat off
+                    it: coverage. Everything else comes from the pre-measured
+                    original. One tiny preview load per frame vs. preview +
+                    valid-region stats + star detection + FWHM + MAD-noise."""
+                    try:
+                        prev = self._quick_preview_any(
+                            fp, target_xbin=1, target_ybin=1
+                        )
+                        if prev is None:
+                            return fp, 0.0, None
+                        a = np.asarray(prev, dtype=np.float32)
+                        if a.size == 0:
+                            return fp, 0.0, None
+                        valid = np.isfinite(a) & (a != 0.0)
+                        return fp, float(valid.mean()), None
+                    except Exception as _ce:
+                        return fp, 0.0, f"{type(_ce).__name__}: {_ce}"
+
+                _cov_report_every = max(1, len(twinned_frames) // 20)
+                _cov_done = 0
+                with ThreadPoolExecutor(max_workers=max_workers) as _ex:
+                    for fp, cov, err in _ex.map(_cov_job, twinned_frames):
+                        if self._cancelled():
+                            raise StackCancelled()
+                        if err is not None:
+                            # Treat it as untwinned so the slow path will
+                            # try to recover it rather than silently
+                            # dropping it with a dead-weight 0 coverage.
+                            untwinned_frames.append(fp)
+                            self.update_status(self.tr(
+                                "⚠️ Coverage read failed for {0}: {1} — "
+                                "falling back to preview measurement."
+                            ).format(os.path.basename(fp), err))
+                            continue
+                        _orig = _twin_to_tree[fp]
+                        _status, _o, payload = orig_measured[_orig]
+                        mean_v, med, c, ecc, size, noise = payload
+                        mean_values[fp]      = float(mean_v)
+                        preview_medians[fp]  = med
+                        star_counts[fp] = {
+                            "count":        int(c),
+                            "eccentricity": float(ecc),
+                            "fwhm":         float(size),
+                            "noise":        float(noise),
+                        }
+                        frame_coverage[fp]   = float(cov)
+                        measured_frames.append(fp)
+                        _cov_done += 1
+                        if _cov_done == len(twinned_frames) or \
+                                _cov_done % _cov_report_every == 0:
+                            self.update_status(self.tr(
+                                "⚡ Coverage computed {0}/{1}"
+                            ).format(_cov_done, len(twinned_frames)))
+                            QApplication.processEvents()
+                self.update_status(self.tr(
+                    "✅ {0} twinned frame(s) measured without preview "
+                    "double-pass."
+                ).format(_cov_done))
+                QApplication.processEvents()
+
+            # Only non-twinned frames need the preview-based chunk loop.
+            chunks = list(chunk_list(untwinned_frames, chunk_size))
+            total_chunks = len(chunks)
+            if not chunks:
+                self.update_status(self.tr(
+                    "⏭️ All aligned frames handled by the fast path — "
+                    "skipping chunked preview measurement."
+                ))
 
             for idx, chunk in enumerate(chunks, 1):
                 if self._cancelled():
@@ -31810,6 +33267,18 @@ class StackingSuiteDialog(QDialog):
 
             self.update_status(self.tr("✅ Frame weights computed!"))
             QApplication.processEvents()
+
+            # Score-outlier sub rejection (soft; see Register-and-Integrate
+            # path for the full rationale). Shares the same helper so both
+            # entry points behave identically.
+            try:
+                self._apply_sub_rejection(
+                    measured_frames,
+                    star_counts=star_counts,
+                    preview_medians=preview_medians,
+                )
+            except Exception as _e:
+                self.update_status(self.tr(f"⚠️ Sub rejection skipped: {_e}"))
 
             # 4) Choose reference (used for MFDeconv masks, autocrop base,
             #    display, and logging). Priority:
