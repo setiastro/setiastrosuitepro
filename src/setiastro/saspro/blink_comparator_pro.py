@@ -22,7 +22,7 @@ from PyQt6.QtGui import (QAction, QIcon, QImage, QPixmap, QBrush, QColor, QPalet
 from PyQt6.QtWidgets import (
     QWidget, QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QToolButton,
     QTreeWidget, QTreeWidgetItem, QFileDialog, QMessageBox, QProgressBar, QSizePolicy,
-    QAbstractItemView, QMenu, QSplitter, QStyle, QScrollArea, QSlider, QDoubleSpinBox, QProgressDialog, QComboBox, QLineEdit, QApplication, QGridLayout, QCheckBox, QInputDialog,
+    QAbstractItemView, QMenu, QSplitter, QStyle, QScrollArea, QSlider, QDoubleSpinBox, QSpinBox, QProgressDialog, QComboBox, QLineEdit, QApplication, QGridLayout, QCheckBox, QInputDialog,
     QMdiArea, QDialogButtonBox, QHeaderView, QButtonGroup, QRadioButton
 )
 from bisect import bisect_right
@@ -1806,6 +1806,18 @@ class BlinkTab(QWidget):
         self.sat_mode_combo.currentIndexChanged.connect(self._on_sat_mode_changed)
         sat_row.addWidget(self.sat_mode_combo)
 
+        # Small wrench button for advanced satellite-detection settings
+        # (edge-exclusion pixels, max worker threads).
+        self.sat_settings_btn = QToolButton(self)
+        self.sat_settings_btn.setText("🔧")
+        self.sat_settings_btn.setToolTip(self.tr(
+            "Advanced satellite detection settings — amp-glow edge filter\n"
+            "and concurrent worker count."
+        ))
+        self.sat_settings_btn.setAutoRaise(True)
+        self.sat_settings_btn.clicked.connect(self._open_sat_settings_dialog)
+        sat_row.addWidget(self.sat_settings_btn)
+
         left_layout.addLayout(sat_row)
         push_row = QHBoxLayout()
         self.send_lights_btn = QPushButton(self.tr("→ Stacking: Lights"), self)
@@ -3070,6 +3082,101 @@ class BlinkTab(QWidget):
         except Exception:
             return "fast"
 
+    def _sat_detect_workers(self) -> int:
+        """Current max concurrent satellite-detection workers."""
+        try:
+            v = int(QSettings().value(
+                "blink/sat_detect_workers",
+                int(getattr(self, "SAT_DETECT_MAX_WORKERS", 2)),
+                type=int,
+            ))
+            return max(1, min(8, v))
+        except Exception:
+            return int(getattr(self, "SAT_DETECT_MAX_WORKERS", 2))
+
+    def _open_sat_settings_dialog(self):
+        """Small popover dialog for the advanced satellite-detection knobs."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(self.tr("Satellite Detection Settings"))
+        dlg.setModal(True)
+
+        layout = QGridLayout(dlg)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setHorizontalSpacing(12)
+        layout.setVerticalSpacing(10)
+
+        # ── Edge exclusion ───────────────────────────────────────────────
+        edge_lbl = QLabel(self.tr("Ignore edges within:"), dlg)
+        edge_spin = QSpinBox(dlg)
+        edge_spin.setRange(0, 2048)
+        edge_spin.setSingleStep(16)
+        edge_spin.setSuffix(" px")
+        edge_spin.setValue(self._sat_edge_exclusion_px())
+        edge_spin.setToolTip(self.tr(
+            "Pixels from each image edge to ignore for satellite trail detection.\n"
+            "Amp glow near the sensor border reads as a bright streak that the\n"
+            "detection models often flag as a trail — widen this to suppress\n"
+            "those false positives. Default 128 px. Set to 0 to disable the\n"
+            "edge filter. Applies to both Fast and Highlight modes."
+        ))
+
+        edge_help = QLabel(self.tr(
+            "Hides amp-glow / sensor-edge false positives."
+        ), dlg)
+        edge_help.setStyleSheet("font-size: 10px; color: palette(mid);")
+        edge_help.setWordWrap(True)
+
+        layout.addWidget(edge_lbl, 0, 0)
+        layout.addWidget(edge_spin, 0, 1)
+        layout.addWidget(edge_help, 1, 0, 1, 2)
+
+        # ── Worker threads ───────────────────────────────────────────────
+        workers_lbl = QLabel(self.tr("Concurrent workers:"), dlg)
+        workers_spin = QSpinBox(dlg)
+        workers_spin.setRange(1, 8)
+        workers_spin.setValue(self._sat_detect_workers())
+        workers_spin.setToolTip(self.tr(
+            "Number of images processed in parallel on the GPU. Higher values\n"
+            "overlap more file I/O and CPU work with GPU inference, but each\n"
+            "worker holds a full-res frame in RAM and allocates its own GPU\n"
+            "activations. Default 2. Drop to 1 if you see out-of-memory errors."
+        ))
+
+        workers_help = QLabel(self.tr(
+            "2 is a good balance for most systems. Higher = faster but more memory."
+        ), dlg)
+        workers_help.setStyleSheet("font-size: 10px; color: palette(mid);")
+        workers_help.setWordWrap(True)
+
+        layout.addWidget(workers_lbl, 2, 0)
+        layout.addWidget(workers_spin, 2, 1)
+        layout.addWidget(workers_help, 3, 0, 1, 2)
+
+        # ── OK / Cancel ──────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        ok_btn = QPushButton(self.tr("OK"), dlg)
+        cancel_btn = QPushButton(self.tr("Cancel"), dlg)
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row, 4, 0, 1, 2)
+
+        dlg.setMinimumWidth(340)
+
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            try:
+                QSettings().setValue(
+                    "blink/sat_edge_exclusion_px", int(edge_spin.value())
+                )
+                QSettings().setValue(
+                    "blink/sat_detect_workers", int(workers_spin.value())
+                )
+            except Exception as e:
+                print(f"[Sat settings] Save failed: {e}")
+
     def _detect_satellite_trails(self):
         """
         Dispatcher: pick fast detection-only or full pipeline based on the
@@ -3129,20 +3236,112 @@ class BlinkTab(QWidget):
         else:
             self._run_sat_detect_fast()
 
+    # Max concurrent GPU inference workers for satellite detection. Each
+    # worker holds one full-res raw image in RAM and its own activation
+    # tensors on the GPU, so 2 is a safe balance between throughput and
+    # VRAM/RAM pressure. Bump to 3 if your GPU and RAM can take it.
+    SAT_DETECT_MAX_WORKERS = 2
+
+    # Pixels from each image edge to IGNORE for satellite trail detection.
+    # Amp glow typically lives in the outermost ring of the sensor and reads
+    # as a bright streak that both detection models love to flag. Set to 0
+    # to disable the edge filter entirely. Tunable at runtime via QSettings
+    # key "blink/sat_edge_exclusion_px" per sensor.
+    SAT_EDGE_EXCLUSION_PX = 128
+
+    def _sat_edge_exclusion_px(self) -> int:
+        """How many pixels from each image edge to ignore for satellite detection."""
+        try:
+            v = int(QSettings().value(
+                "blink/sat_edge_exclusion_px",
+                int(self.SAT_EDGE_EXCLUSION_PX),
+                type=int,
+            ))
+            return max(0, v)
+        except Exception:
+            return int(self.SAT_EDGE_EXCLUSION_PX)
+
+    @staticmethod
+    def _apply_edge_exclusion_to_mask(mask_full: np.ndarray, edge_px: int) -> np.ndarray:
+        """
+        Zero out mask pixels within edge_px of any image edge, in-place-safe.
+        Returns the (possibly modified) mask. Used in Highlight mode so amp
+        glow near the sensor edge doesn't get painted green.
+        """
+        if edge_px <= 0 or mask_full is None:
+            return mask_full
+        m = np.asarray(mask_full, dtype=bool)
+        if m.ndim != 2 or m.size == 0:
+            return m
+        H, W = m.shape
+        # Make a writable copy to avoid mutating caller's array
+        out = m.copy()
+        # Only apply if the image is large enough to leave an interior
+        if H > 2 * edge_px:
+            out[:edge_px, :] = False
+            out[-edge_px:, :] = False
+        else:
+            # Image is thinner than 2× exclusion — zero the whole thing
+            out[:, :] = False
+            return out
+        if W > 2 * edge_px:
+            out[:, :edge_px] = False
+            out[:, -edge_px:] = False
+        else:
+            out[:, :] = False
+        return out
+
+    def _sat_mask_to_display_size(self, mask_full: np.ndarray, target_hw: tuple) -> np.ndarray:
+        """
+        Downsample a full-resolution 2D bool trail mask to the stored
+        display image dimensions. OR-reduction over each block so a
+        single hot pixel still appears green at any load_scale.
+        """
+        try:
+            m = np.asarray(mask_full, dtype=bool)
+            th, tw = int(target_hw[0]), int(target_hw[1])
+            if m.ndim != 2 or th <= 0 or tw <= 0:
+                return np.zeros((th, tw), dtype=bool)
+            if m.shape == (th, tw):
+                return m
+
+            # cv2.resize on uint8 (0/255) with INTER_AREA averages blocks;
+            # any block containing a True pixel produces a non-zero result,
+            # so > 0 recovers OR-reduction.
+            src = m.astype(np.uint8) * 255
+            resized = cv2.resize(src, (tw, th), interpolation=cv2.INTER_AREA)
+            return (resized > 0)
+        except Exception as e:
+            print(f"[Sat detect] Mask downsample failed: {e}")
+            try:
+                return np.zeros((int(target_hw[0]), int(target_hw[1])), dtype=bool)
+            except Exception:
+                return None
+
     def _run_sat_detect_full(self):
         """
-        Run the full Cosmic Clarity satellite pipeline on every loaded image.
+        Run the full Cosmic Clarity satellite pipeline on every loaded image
+        with image-level concurrency.
 
-        The pipeline runs det1 + det2 on every tile and only fires NAFNet
-        removal on tiles that pass BOTH detection models, so clean frames
-        pay only detection cost. For frames with trails, the authoritative
-        clip-to-0.000 trail mask is downsampled to match the stored display
-        image and painted bright green in the preview.
+        Multiple worker threads each load one image and run
+        satellite_remove_image(return_mask=True) end-to-end. PyTorch
+        kernels serialize on the GPU's default stream, but we overlap:
+          - File I/O for image N+1 while N's inference runs
+          - CPU-side pre/post work (reflect pad, stitch, numpy conversions)
+          - PCIe transfers
+          - Qt event loop responsiveness
+        For frames with trails, the authoritative clip-to-0.000 trail mask
+        is downsampled to match the stored display image and painted bright
+        green in the preview.
         """
+        import concurrent.futures as cf
+
+        n_images = len(self.loaded_images)
+
         prog = QProgressDialog(
             self.tr("Loading satellite detection model…"),
             self.tr("Cancel"),
-            0, len(self.loaded_images),
+            0, n_images,
             self,
         )
         prog.setWindowTitle(self.tr("Satellite Trail Detection (Highlight)"))
@@ -3167,172 +3366,147 @@ class BlinkTab(QWidget):
         for entry in self.loaded_images:
             entry.pop("sat_overlay_mask", None)
 
-        # Settings for the pipeline — match CC satellite dialog defaults
+        # Pipeline settings — match CC satellite dialog defaults
         SAT_MODE = "full"
         SAT_CLIP_TRAIL = True
         SAT_SENSITIVITY = 0.10
         SAT_TEMP_STRETCH = True
         SAT_TARGET_MEDIAN = 0.25
 
-        # ── Image loader (CPU, runs in background thread) ─────────────────────
-        def _load_image_for_sat(entry):
+        # Edge-exclusion zone (amp-glow filter). Snapshot once so workers
+        # don't hit QSettings concurrently.
+        edge_excl_px = self._sat_edge_exclusion_px()
+
+        # Snapshot the file paths + stored shapes so workers never touch
+        # self.loaded_images from a background thread.
+        job_specs = []
+        for i, entry in enumerate(self.loaded_images):
+            stored = entry.get("image_data", None)
+            if stored is None:
+                job_specs.append((i, None, None))
+                continue
+            job_specs.append((i, entry["file_path"], tuple(stored.shape[:2])))
+
+        def _worker(idx: int, file_path, stored_hw):
             """
-            Load the original file fresh — linear, un-debayered-as-color — and
-            return (raw_image, stored_shape, load_scale). stored_shape and
-            load_scale let us downsample the full-res trail mask back to the
-            dimensions of entry['image_data'] after inference.
+            Load + run full satellite pipeline for one image.
+            Returns (idx, detected: bool, mask_display: ndarray|None).
+            Never raises — any error is logged and treated as 'not detected'.
             """
+            if file_path is None or stored_hw is None:
+                return (idx, False, None)
             try:
                 from setiastro.saspro.legacy.image_manager import load_image
-                raw_image, header, bit_depth, is_mono = load_image(entry["file_path"])
+                raw_image, header, bit_depth, is_mono = load_image(file_path)
                 if raw_image is None:
-                    return None
-
-                stored = entry.get("image_data", None)
-                if stored is None:
-                    return None
-                stored_h, stored_w = stored.shape[:2]
-                load_scale = int(entry.get("load_scale", 1))
-                return (raw_image, (stored_h, stored_w), load_scale)
+                    return (idx, False, None)
             except Exception as e:
-                print(f"[Sat detect] Load failed for {entry.get('file_path','?')}: {e}")
-                return None
+                print(f"[Sat detect] Load failed for {file_path}: {e}")
+                return (idx, False, None)
 
-        # ── Downsample the full-res boolean trail mask to display size ───────
-        def _downsample_mask_to(mask_full: np.ndarray, target_hw: tuple) -> np.ndarray:
-            """
-            mask_full: 2D bool array at the file's native resolution.
-            target_hw: (H, W) of the stored display image_data.
-
-            Returns a 2D bool mask of shape target_hw. OR-reduction over each
-            block so a single hot pixel still appears green at any load_scale.
-            """
             try:
-                m = np.asarray(mask_full, dtype=bool)
-                th, tw = int(target_hw[0]), int(target_hw[1])
-                if m.ndim != 2 or th <= 0 or tw <= 0:
-                    return np.zeros((th, tw), dtype=bool)
-                if m.shape == (th, tw):
-                    return m
-
-                # Use cv2.resize on uint8 (0/255) with INTER_AREA, then threshold.
-                # INTER_AREA averages blocks; any block containing a True pixel
-                # produces a non-zero result, so > 0 recovers OR-reduction.
-                src = m.astype(np.uint8) * 255
-                resized = cv2.resize(src, (tw, th), interpolation=cv2.INTER_AREA)
-                return (resized > 0)
-            except Exception as e:
-                print(f"[Sat detect] Mask downsample failed: {e}")
-                try:
-                    return np.zeros((int(target_hw[0]), int(target_hw[1])), dtype=bool)
-                except Exception:
-                    return None
-
-        # ── Prefetch pipeline ─────────────────────────────────────────────────
-        # Keep file I/O overlapped with GPU inference. We DON'T prep tiles
-        # here — satellite_remove_image owns tiling internally.
-        import concurrent.futures
-        from collections import deque
-
-        n_images = len(self.loaded_images)
-        n_detected = 0
-        PREFETCH_DEPTH = 2  # files to keep decoded ahead; keep small — full images are big
-
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=PREFETCH_DEPTH)
-        pending = deque()  # deque of (img_idx, future)
-
-        try:
-            # Seed the pipeline
-            for seed_idx in range(min(PREFETCH_DEPTH, n_images)):
-                fut = executor.submit(_load_image_for_sat, self.loaded_images[seed_idx])
-                pending.append((seed_idx, fut))
-
-            next_to_submit = PREFETCH_DEPTH
-
-            for img_idx in range(n_images):
-                if prog.wasCanceled():
-                    break
-
-                prog.setLabelText(
-                    self.tr("Checking image {0} of {1}: {2}").format(
-                        img_idx + 1, n_images,
-                        os.path.basename(self.loaded_images[img_idx]["file_path"])
-                    )
+                _out, detected, trail_mask_full = satellite_remove_image(
+                    raw_image,
+                    models=models,
+                    mode=SAT_MODE,
+                    clip_trail=SAT_CLIP_TRAIL,
+                    sensitivity=SAT_SENSITIVITY,
+                    temp_stretch=SAT_TEMP_STRETCH,
+                    target_median=SAT_TARGET_MEDIAN,
+                    return_mask=True,
+                    progress_cb=None,
+                    status_cb=lambda _m: None,
                 )
-                QApplication.processEvents()
+            except Exception as e:
+                print(f"[Sat detect] Pipeline failed on {file_path}: {e}")
+                return (idx, False, None)
 
-                current_idx, current_future = pending.popleft()
-                assert current_idx == img_idx
+            if not detected:
+                return (idx, False, None)
 
-                try:
-                    load_result = current_future.result()
-                except Exception as e:
-                    print(f"[Sat detect] Load failed for image {img_idx}: {e}")
-                    load_result = None
+            # Apply amp-glow edge exclusion to the full-res mask BEFORE we
+            # downsample. The engine's `detected` flag may be True because
+            # of edge-region detections (amp glow near the sensor border);
+            # if nothing survives the exclusion, treat the frame as clean.
+            trail_mask_full = self._apply_edge_exclusion_to_mask(
+                trail_mask_full, edge_excl_px
+            )
+            if trail_mask_full is None or not trail_mask_full.any():
+                return (idx, False, None)
 
-                # Keep the pipeline full
-                if next_to_submit < n_images and not prog.wasCanceled():
-                    fut = executor.submit(_load_image_for_sat, self.loaded_images[next_to_submit])
-                    pending.append((next_to_submit, fut))
-                    next_to_submit += 1
+            mask_display = self._sat_mask_to_display_size(trail_mask_full, stored_hw)
+            if mask_display is None or not mask_display.any():
+                # Detected and surviving at full-res, but the display-sized
+                # mask lost everything to downsample rounding — unlikely
+                # but possible. Still flag as detected so the Sat column
+                # warns, but no overlay to paint.
+                return (idx, True, None)
+            return (idx, True, mask_display)
 
-                entry = self.loaded_images[img_idx]
-                entry.pop("sat_overlay_mask", None)
+        n_detected = 0
+        completed = 0
+        max_workers = self._sat_detect_workers()
 
-                if load_result is None:
-                    entry["sat_detected"] = False
-                    prog.setValue(img_idx + 1)
-                    QApplication.processEvents()
-                    continue
+        with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {}
+            for (idx, fp, hw) in job_specs:
+                fut = ex.submit(_worker, idx, fp, hw)
+                futures[fut] = idx
 
-                raw_image, stored_hw, load_scale = load_result
+            pending = set(futures.keys())
+            try:
+                while pending:
+                    if prog.wasCanceled():
+                        for f in pending:
+                            f.cancel()
+                        break
 
-                try:
-                    # Run the full satellite pipeline. The removal model only
-                    # fires on tiles that pass det1 + det2, so clean frames
-                    # pay only detection cost.
-                    _out, detected, trail_mask_full = satellite_remove_image(
-                        raw_image,
-                        models=models,
-                        mode=SAT_MODE,
-                        clip_trail=SAT_CLIP_TRAIL,
-                        sensitivity=SAT_SENSITIVITY,
-                        temp_stretch=SAT_TEMP_STRETCH,
-                        target_median=SAT_TARGET_MEDIAN,
-                        return_mask=True,
-                        progress_cb=None,
-                        status_cb=lambda _m: None,
+                    done, pending = cf.wait(
+                        pending,
+                        timeout=0.1,
+                        return_when=cf.FIRST_COMPLETED,
                     )
-                except Exception as e:
-                    print(f"[Sat detect] Pipeline failed on {entry['file_path']}: {e}")
-                    entry["sat_detected"] = False
-                    prog.setValue(img_idx + 1)
+
+                    for fut in done:
+                        try:
+                            idx, detected, mask = fut.result()
+                        except Exception as e:
+                            print(f"[Sat detect] Worker exception: {e}")
+                            idx = futures.get(fut, -1)
+                            detected = False
+                            mask = None
+
+                        if 0 <= idx < n_images:
+                            entry = self.loaded_images[idx]
+                            entry["sat_detected"] = bool(detected)
+                            entry.pop("sat_overlay_mask", None)
+                            if detected:
+                                n_detected += 1
+                                if mask is not None:
+                                    entry["sat_overlay_mask"] = mask
+
+                        completed += 1
+
+                    prog.setValue(completed)
+                    prog.setLabelText(
+                        self.tr("Processed {0} of {1} ({2} with trails)").format(
+                            completed, n_images, n_detected
+                        )
+                    )
                     QApplication.processEvents()
-                    continue
-
-                entry["sat_detected"] = bool(detected)
-                if detected:
-                    n_detected += 1
-                    # Downsample the full-res trail mask to the stored
-                    # display image_data dimensions so the overlay lines up
-                    # with what Blink actually renders.
-                    mask_display = _downsample_mask_to(trail_mask_full, stored_hw)
-                    if mask_display is not None and mask_display.any():
-                        entry["sat_overlay_mask"] = mask_display
-
-                prog.setValue(img_idx + 1)
-                QApplication.processEvents()
-
-        finally:
-            executor.shutdown(wait=False)
+            finally:
+                # Drain any still-running futures without blocking too long.
+                # If user canceled, running jobs will finish on their own
+                # and we discard their results.
+                pass
 
         prog.close()
 
         self._update_tree_sat_column()
 
-        # If the currently-displayed frame got an overlay, re-render it so the
-        # user sees the green trail immediately without having to click away
-        # and back.
+        # If the currently-displayed frame got an overlay, re-render it so
+        # the user sees the green trail immediately without having to click
+        # away and back.
         try:
             cur = self.fileTree.currentItem()
             if cur is not None and cur.childCount() == 0:
@@ -3361,16 +3535,23 @@ class BlinkTab(QWidget):
 
     def _run_sat_detect_fast(self):
         """
-        Fast detection-only pass: runs det1 + det2 on interior tiles of every
-        image and marks `sat_detected`. Does NOT paint a green overlay — use
-        the "Highlight trails" mode for that. Any pre-existing overlays from
-        a prior Highlight run are cleared so the Sat column stays consistent
-        with what's visible.
+        Fast detection-only pass with image-level concurrency.
+
+        Multiple worker threads each load one image, prep tiles, and run
+        det1 + det2. Marks `sat_detected`. Does NOT paint a green overlay —
+        use "Highlight trails" mode for that. Any pre-existing overlays
+        from a prior Highlight run are cleared so the Sat column stays
+        consistent with what's visible.
         """
+        import concurrent.futures as cf
+        from setiastro.saspro.cosmicclarity_engines.satellite_engine import _onnx_detect as _onnx_detect_fn
+
+        n_images = len(self.loaded_images)
+
         prog = QProgressDialog(
             self.tr("Loading satellite detection model…"),
             self.tr("Cancel"),
-            0, len(self.loaded_images),
+            0, n_images,
             self,
         )
         prog.setWindowTitle(self.tr("Satellite Trail Detection (Fast)"))
@@ -3398,16 +3579,26 @@ class BlinkTab(QWidget):
         is_onnx = bool(models.get("is_onnx", False))
         chunk_size = 256
         overlap = 0
-        border_size = 16
+        # Edge-exclusion in PIXELS from each image side. Widened from the
+        # original 16 so amp-glow regions near the sensor edge are never
+        # fed to the detection models. Snapshotted once here so workers
+        # don't hit QSettings concurrently.
+        border_size = max(16, self._sat_edge_exclusion_px())
         detect_bs = 32
 
-        # ── Tile prep function (runs on CPU in background thread) ────────────
-        def _prepare_tiles(entry):
+        # Snapshot file paths — workers never touch self.loaded_images.
+        job_specs = [(i, self.loaded_images[i]["file_path"]) for i in range(n_images)]
+
+        def _worker(idx: int, file_path: str):
+            """
+            Load + prep tiles + run det1+det2 for one image.
+            Returns (idx, detected: bool).
+            """
             try:
                 from setiastro.saspro.legacy.image_manager import load_image
-                raw_image, header, bit_depth, is_mono = load_image(entry["file_path"])
+                raw_image, header, bit_depth, is_mono = load_image(file_path)
                 if raw_image is None:
-                    return None
+                    return (idx, False)
 
                 rgb01, _was_mono, _orig_min, _scale = _normalize_for_satellite(raw_image)
                 H, W = rgb01.shape[:2]
@@ -3428,142 +3619,114 @@ class BlinkTab(QWidget):
                 ]
 
                 if not interior:
-                    return None
+                    return (idx, False)
 
                 tiles_only = [t.astype(np.float32) for (t, _, _) in interior]
                 coords = [(y0, x0) for (_, y0, x0) in interior]
 
+                # Resize for the detection models (256×256 RGB)
                 if is_onnx:
-                    return tiles_only, coords
+                    prep_tiles = tiles_only
                 else:
-                    return [_resize_tile_for_detect(t) for t in tiles_only], coords
+                    prep_tiles = [_resize_tile_for_detect(t) for t in tiles_only]
 
             except Exception as e:
-                print(f"[Sat detect] Tile prep failed for {entry.get('file_path','?')}: {e}")
-                return None
+                print(f"[Sat detect] Prep failed for {file_path}: {e}")
+                return (idx, False)
 
-        # ── Inference function (runs on GPU, called from main thread) ────────
-        def _run_inference(resized_tiles, interior_tiles_coords):
-            """
-            Returns True if at least 2 spatially adjacent interior tiles both pass det1 + det2.
-            """
+            # ── Run det1 + det2 ──
             passing_coords = []
+            try:
+                if is_onnx:
+                    det1_sess = models["detection_model1"]
+                    det2_sess = models["detection_model2"]
+                    for i, tile in enumerate(prep_tiles):
+                        if _onnx_detect_fn(tile, det1_sess) and _onnx_detect_fn(tile, det2_sess):
+                            passing_coords.append(coords[i])
+                else:
+                    torch = models["torch"]
+                    device = models["device"]
+                    det1 = models["detection_model1"]
+                    det2 = models["detection_model2"]
 
-            if is_onnx:
-                det1_sess = models["detection_model1"]
-                det2_sess = models["detection_model2"]
-                for i, tile in enumerate(resized_tiles):
-                    from setiastro.saspro.cosmicclarity_engines.satellite_engine import _onnx_detect
-                    if _onnx_detect(tile, det1_sess) and _onnx_detect(tile, det2_sess):
-                        passing_coords.append(interior_tiles_coords[i])
-            else:
-                torch = models["torch"]
-                device = models["device"]
-                det1 = models["detection_model1"]
-                det2 = models["detection_model2"]
+                    for i in range(0, len(prep_tiles), detect_bs):
+                        batch_np = np.stack(prep_tiles[i:i + detect_bs], axis=0)
+                        batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
 
-                for i in range(0, len(resized_tiles), detect_bs):
-                    batch_np = np.stack(resized_tiles[i:i + detect_bs], axis=0)
-                    batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
+                        x = torch.from_numpy(batch_np)
+                        if hasattr(device, "type") and device.type == "cuda":
+                            x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+                        else:
+                            x = x.to(device=device, dtype=torch.float32)
 
-                    x = torch.from_numpy(batch_np)
-                    if hasattr(device, "type") and device.type == "cuda":
-                        x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
-                    else:
-                        x = x.to(device=device, dtype=torch.float32)
-
-                    with torch.no_grad():
-                        o1 = det1(x).flatten()
-                    keep1 = (o1 > 0.5)
-
-                    if keep1.any():
-                        idxs = keep1.nonzero(as_tuple=False).flatten()
                         with torch.no_grad():
-                            o2 = det2(x[idxs]).flatten()
-                        passing_mask = (o2 > 0.25)
-                        for j, global_i in enumerate(idxs.tolist()):
-                            if passing_mask[j]:
-                                passing_coords.append(interior_tiles_coords[i + global_i])
+                            o1 = det1(x).flatten()
+                        keep1 = (o1 > 0.5)
 
-            # Need at least 2 passing tiles that are spatially adjacent (8-connected)
-            if len(passing_coords) < 2:
-                return False
+                        if keep1.any():
+                            idxs = keep1.nonzero(as_tuple=False).flatten()
+                            with torch.no_grad():
+                                o2 = det2(x[idxs]).flatten()
+                            passing_mask = (o2 > 0.25)
+                            for j, global_i in enumerate(idxs.tolist()):
+                                if passing_mask[j]:
+                                    passing_coords.append(coords[i + global_i])
+            except Exception as e:
+                print(f"[Sat detect] Inference failed on {file_path}: {e}")
+                return (idx, False)
 
-            step = chunk_size
-            tolerance = step * 1.5
+            # One passing INTERIOR tile is enough. The wider edge-exclusion
+            # above already rejected amp-glow regions, and a single-tile
+            # detection is needed to catch geosynchronous satellites whose
+            # trails may fit in a single tile.
+            return (idx, len(passing_coords) >= 1)
 
-            for i in range(len(passing_coords)):
-                y0_a, x0_a = passing_coords[i]
-                for j in range(i + 1, len(passing_coords)):
-                    y0_b, x0_b = passing_coords[j]
-                    if abs(y0_a - y0_b) <= tolerance and abs(x0_a - x0_b) <= tolerance:
-                        return True
-
-            return False
-
-        # ── Prefetch pipeline ─────────────────────────────────────────────────
-        import concurrent.futures
-        from collections import deque
-
-        n_images = len(self.loaded_images)
         n_detected = 0
-        PREFETCH_DEPTH = 4
+        completed = 0
+        max_workers = self._sat_detect_workers()
 
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=PREFETCH_DEPTH)
-        pending = deque()
+        with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {}
+            for (idx, fp) in job_specs:
+                fut = ex.submit(_worker, idx, fp)
+                futures[fut] = idx
 
-        try:
-            for seed_idx in range(min(PREFETCH_DEPTH, n_images)):
-                fut = executor.submit(_prepare_tiles, self.loaded_images[seed_idx])
-                pending.append((seed_idx, fut))
-
-            next_to_submit = PREFETCH_DEPTH
-
-            for img_idx in range(n_images):
+            pending = set(futures.keys())
+            while pending:
                 if prog.wasCanceled():
+                    for f in pending:
+                        f.cancel()
                     break
 
+                done, pending = cf.wait(
+                    pending,
+                    timeout=0.1,
+                    return_when=cf.FIRST_COMPLETED,
+                )
+
+                for fut in done:
+                    try:
+                        idx, detected = fut.result()
+                    except Exception as e:
+                        print(f"[Sat detect] Worker exception: {e}")
+                        idx = futures.get(fut, -1)
+                        detected = False
+
+                    if 0 <= idx < n_images:
+                        entry = self.loaded_images[idx]
+                        entry["sat_detected"] = bool(detected)
+                        if detected:
+                            n_detected += 1
+
+                    completed += 1
+
+                prog.setValue(completed)
                 prog.setLabelText(
-                    self.tr("Checking image {0} of {1}: {2}").format(
-                        img_idx + 1, n_images,
-                        os.path.basename(self.loaded_images[img_idx]["file_path"])
+                    self.tr("Processed {0} of {1} ({2} with trails)").format(
+                        completed, n_images, n_detected
                     )
                 )
                 QApplication.processEvents()
-
-                current_idx, current_future = pending.popleft()
-                assert current_idx == img_idx
-
-                try:
-                    tiles = current_future.result()
-                except Exception as e:
-                    print(f"[Sat detect] Prep failed for image {img_idx}: {e}")
-                    tiles = None
-
-                if next_to_submit < n_images and not prog.wasCanceled():
-                    fut = executor.submit(_prepare_tiles, self.loaded_images[next_to_submit])
-                    pending.append((next_to_submit, fut))
-                    next_to_submit += 1
-
-                entry = self.loaded_images[img_idx]
-                if tiles is None:
-                    entry["sat_detected"] = False
-                else:
-                    try:
-                        resized_tiles, coords = tiles
-                        trail_found = _run_inference(resized_tiles, coords)
-                        entry["sat_detected"] = trail_found
-                        if trail_found:
-                            n_detected += 1
-                    except Exception as e:
-                        print(f"[Sat detect] Inference failed on {entry['file_path']}: {e}")
-                        entry["sat_detected"] = False
-
-                prog.setValue(img_idx + 1)
-                QApplication.processEvents()
-
-        finally:
-            executor.shutdown(wait=False)
 
         prog.close()
 
@@ -5965,13 +6128,6 @@ from setiastro.saspro.widgets.preview_dialogs import ImagePreviewDialog
 
 BlinkComparatorPro = BlinkTab
 
-# ⬇️ paste your SASv2 code here (exactly as you sent), then end with:
 class BlinkComparatorPro(BlinkTab):
     """Alias class so the main app can import a SASpro-named tool."""
     pass
-# --- blink QA metrics patch v1 applied ---
-# --- blink QA metrics patch v2 applied ---
-# --- blink QA metrics patch v3 applied ---
-# --- blink QA metrics patch v4 applied ---
-# --- blink QA metrics patch v5 applied ---
-# --- blink QA metrics patch v6 applied ---

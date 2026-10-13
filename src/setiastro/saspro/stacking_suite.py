@@ -12104,6 +12104,47 @@ class StackingSuiteDialog(QDialog):
         sat_layout.addWidget(self.cal_satellite_clip_checkbox)
         sat_layout.addStretch(1)
 
+        # Concurrent workers for the Phase 2 satellite trail pass. Each
+        # worker holds one calibrated frame in RAM and allocates its own
+        # GPU activations; 2 overlaps I/O and CPU work with GPU inference
+        # for a solid speedup, higher costs memory. Set to 1 for serial
+        # behavior if VRAM is tight.
+        sat_workers_lbl = QLabel(self.tr("Workers:"))
+        sat_workers_lbl.setStyleSheet("font-size: 11px; color: palette(mid);")
+        sat_workers_lbl.setToolTip(self.tr(
+            "Number of frames processed in parallel during the satellite "
+            "trail pass. Higher values overlap file I/O and CPU work with "
+            "GPU inference. Default 2. Drop to 1 if you hit VRAM OOM; raise "
+            "if your GPU and RAM can take it."
+        ))
+
+        self.cal_satellite_workers_spin = QSpinBox()
+        self.cal_satellite_workers_spin.setRange(1, 8)
+        self.cal_satellite_workers_spin.setFixedWidth(60)
+        self.cal_satellite_workers_spin.setToolTip(sat_workers_lbl.toolTip())
+        self.cal_satellite_workers_spin.setValue(
+            int(self.settings.value(
+                "stacking/calibration_satellite_workers", 2, type=int
+            ))
+        )
+        self.cal_satellite_workers_spin.valueChanged.connect(
+            lambda v: self.settings.setValue(
+                "stacking/calibration_satellite_workers", int(v)
+            )
+        )
+
+        # Gray out the Workers control when satellite removal is disabled,
+        # so the knob only lights up when it will actually be used.
+        def _sync_sat_workers_enabled(checked: bool):
+            self.cal_satellite_workers_spin.setEnabled(bool(checked))
+            sat_workers_lbl.setEnabled(bool(checked))
+
+        _sync_sat_workers_enabled(self.cal_satellite_checkbox.isChecked())
+        self.cal_satellite_checkbox.toggled.connect(_sync_sat_workers_enabled)
+
+        sat_layout.addWidget(sat_workers_lbl)
+        sat_layout.addWidget(self.cal_satellite_workers_spin)
+
         layout.addLayout(sat_layout)
         # --- RIGHT SIDE CONTROLS: Override Dark & Flat ---
         override_layout = QHBoxLayout()
@@ -21563,29 +21604,52 @@ class StackingSuiteDialog(QDialog):
             n_rewritten = 0
             n_unchanged = 0
             if sat_models is not None:
-                for s_idx, cal_path in enumerate(sat_files, 1):
-                    if self._cancelled():
-                        self.update_status(self.tr("⏹ Satellite pass cancelled."))
-                        break
+                # ── Image-level concurrency: run multiple frames through the
+                # satellite pipeline at once. PyTorch kernels serialize on the
+                # GPU's default stream, but we overlap file I/O (load + write),
+                # CPU numpy prep/post, PCIe transfers, and sync waits. Same
+                # pattern as blink_comparator_pro's Detect Satellite Trails.
+                #
+                # Each worker is independent: loads one calibrated FITS,
+                # applies satellite_remove_image, and (if a trail was found)
+                # writes it back to disk. write_calibrated_fast is already
+                # used concurrently in Phase 1 (WRITE_WORKERS=3), so parallel
+                # writes to distinct paths are safe.
+                import concurrent.futures as _cf_sat
+
+                sat_workers = max(1, int(self.settings.value(
+                    "stacking/calibration_satellite_workers", 2, type=int
+                )))
+
+                # Snapshot debug flag so workers don't call Qt-dependent
+                # status callbacks. _nan_probe is kept but sinks to print().
+                _probe_on = _nan_probe_enabled()
+
+                def _sat_worker(cal_path):
+                    """
+                    Returns (cal_path, outcome, err_msg).
+                    outcome: 'missing' | 'unchanged' | 'rewritten' | 'failed'
+                    """
                     try:
                         if not os.path.exists(cal_path):
-                            continue
+                            return (cal_path, 'missing', None)
                         sd, shdr, _sbits, s_mono = load_image(cal_path)
                         if sd is None:
-                            continue
+                            return (cal_path, 'missing', None)
                         cleaned, sat_mask = self._apply_satellite_removal_to_calibrated_light(
                             sd, is_mono=s_mono, models=sat_models
                         )
                         if not trail_mask_requires_rewrite(sat_mask):
-                            n_unchanged += 1
-                            self.update_status(self.tr(
-                                f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
-                            ))
-                            QApplication.processEvents()
-                            continue
+                            return (cal_path, 'unchanged', None)
                         cleaned = np.asarray(cleaned, dtype=np.float32)
-                        if _nan_probe_enabled():
-                            _nan_probe(f"calib(repass): post sat-removal (mem) {os.path.basename(cal_path)}", cleaned, self.update_status, force=True)
+                        if _probe_on:
+                            try:
+                                _nan_probe(
+                                    f"calib(repass): post sat-removal (mem) {os.path.basename(cal_path)}",
+                                    cleaned, print, force=True,
+                                )
+                            except Exception:
+                                pass
                         if (not s_mono) and cleaned.ndim == 3 and cleaned.shape[0] == 3:
                             cleaned = cleaned.transpose(1, 2, 0)
                         cleaned = np.nan_to_num(
@@ -21600,28 +21664,80 @@ class StackingSuiteDialog(QDialog):
                         except Exception:
                             pass
                         write_calibrated_fast(cal_path, cleaned, shdr, s_mono)
-                        if _nan_probe_enabled():
+                        if _probe_on:
                             try:
-                                _nan_probe(f"calib: reopened {os.path.basename(cal_path)}", _probe_load_first(cal_path), self.update_status, force=True)
-                            except Exception as _e:
-                                self.update_status(f"🔎 NaN-probe (reopen _c) failed: {_e}")
-                        n_rewritten += 1
-                        self.update_status(self.tr(
-                            f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
-                        ))
+                                _nan_probe(
+                                    f"calib: reopened {os.path.basename(cal_path)}",
+                                    _probe_load_first(cal_path), print, force=True,
+                                )
+                            except Exception:
+                                pass
+                        return (cal_path, 'rewritten', None)
                     except Exception as e:
-                        self.update_status(self.tr(
-                            f"⚠️ Satellite pass failed on "
-                            f"{os.path.basename(cal_path)}: {e}"
-                        ))
-                    finally:
-                        try:
-                            import torch as _torch_sat
-                            if _torch_sat.cuda.is_available():
-                                _torch_sat.cuda.empty_cache()
-                        except Exception:
-                            pass
-                    QApplication.processEvents()
+                        return (cal_path, 'failed', str(e))
+
+                completed = 0
+                with _cf_sat.ThreadPoolExecutor(max_workers=sat_workers) as _sat_ex:
+                    futures = {}
+                    for cal_path in sat_files:
+                        fut = _sat_ex.submit(_sat_worker, cal_path)
+                        futures[fut] = cal_path
+
+                    pending = set(futures.keys())
+                    cancelled_mid = False
+                    while pending:
+                        if self._cancelled():
+                            for f in pending:
+                                f.cancel()
+                            self.update_status(self.tr("⏹ Satellite pass cancelled."))
+                            cancelled_mid = True
+                            break
+
+                        done, pending = _cf_sat.wait(
+                            pending,
+                            timeout=0.1,
+                            return_when=_cf_sat.FIRST_COMPLETED,
+                        )
+
+                        for fut in done:
+                            try:
+                                cp, outcome, err = fut.result()
+                            except Exception as e:
+                                cp = futures.get(fut, '?')
+                                outcome = 'failed'
+                                err = str(e)
+
+                            completed += 1
+                            basename = os.path.basename(cp) if cp else '?'
+
+                            if outcome == 'unchanged':
+                                n_unchanged += 1
+                                self.update_status(self.tr(
+                                    f"🛰️ {completed}/{n_sat}: {basename}"
+                                ))
+                            elif outcome == 'rewritten':
+                                n_rewritten += 1
+                                self.update_status(self.tr(
+                                    f"🛰️ {completed}/{n_sat}: {basename}"
+                                ))
+                            elif outcome == 'failed':
+                                self.update_status(self.tr(
+                                    f"⚠️ Satellite pass failed on {basename}: {err}"
+                                ))
+                            # 'missing' = silent skip (matches prior behavior)
+
+                        QApplication.processEvents()
+
+                # Clear the CUDA cache ONCE after all workers finish instead
+                # of per-frame — per-frame empty_cache() while sibling
+                # workers are still mid-flight would just thrash the
+                # allocator.
+                try:
+                    import torch as _torch_sat
+                    if _torch_sat.cuda.is_available():
+                        _torch_sat.cuda.empty_cache()
+                except Exception:
+                    pass
             # honor a cancel that arrived during the satellite pass
             cancelled = cancelled or self._cancelled()
             # Give the monitor an explicit terminal signal so the dedicated
