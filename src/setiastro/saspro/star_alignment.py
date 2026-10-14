@@ -4774,7 +4774,14 @@ class StarRegistrationThread(QThread):
 
             # Summary based on our known corpus
             total_count = len(self.original_files)
-            aligned_count = sum(1 for f in self.original_files if os.path.exists(self.file_key_to_current_path.get(f, "")))
+            # A frame counts only once finalize wrote its aligned output; until
+            # then its entry still points at its own input.
+            aligned_count = 0
+            for f in self.original_files:
+                k = os.path.normpath(f)
+                cur = self.file_key_to_current_path.get(k, k)
+                if os.path.normpath(cur) != k and os.path.exists(cur):
+                    aligned_count += 1
             summary = f"Registration complete. Valid frames: {aligned_count}/{total_count}."
             self.registration_complete.emit(True, summary)
 

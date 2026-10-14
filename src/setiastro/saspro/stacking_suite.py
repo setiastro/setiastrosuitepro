@@ -26391,6 +26391,7 @@ class StackingSuiteDialog(QDialog):
 
         except StackCancelled:
             self._abort_partial_reg_state()
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             mon = getattr(self, "_exec_monitor", None)
             if mon is not None:
@@ -27516,6 +27517,7 @@ class StackingSuiteDialog(QDialog):
         # (it's a black-box thread), but we refuse to start the next phase.
         if self._cancelled():
             self._abort_partial_reg_state()
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             self.alignment_thread = None
             mon = getattr(self, "_exec_monitor", None)
@@ -27619,6 +27621,25 @@ class StackingSuiteDialog(QDialog):
 
         accepted = [k for k in keys if _accept(k)]
         rejected = [k for k in keys if not _accept(k)]
+
+        # A solved frame whose aligned output was never written (the finalize
+        # pass failed) has no usable solution either; the output map still
+        # points at its own unaligned input.
+        _out_map = alignment_thread.file_key_to_current_path
+        unwritten = [
+            k for k in accepted
+            if os.path.normcase(os.path.normpath(_out_map.get(k, k)))
+            == os.path.normcase(os.path.normpath(k))
+        ]
+        if unwritten:
+            _unwritten = set(unwritten)
+            accepted = [k for k in accepted if k not in _unwritten]
+            self.update_status(self.tr(
+                f"🚫 Rejected {len(unwritten)} frame(s) whose aligned output "
+                f"wasn't written (finalize failed):"
+            ))
+            for rf in unwritten:
+                self.update_status(f"  ❌ {os.path.basename(rf)}")
 
         # ----------------------------
         # Persist numeric transforms we accepted (for drizzle, etc.)
@@ -27728,7 +27749,9 @@ class StackingSuiteDialog(QDialog):
 
         # Status
         prefix = "⚡ Fast mode: " if fast_mode else ""
-        self.update_status(self.tr(f"{prefix}Alignment summary: {len(accepted)} succeeded, {len(rejected)} rejected."))
+        n_rejected = len(rejected) + len(unwritten)
+        self.update_status(self.tr(
+            f"{prefix}Alignment summary: {len(accepted)} succeeded, {n_rejected} rejected."))
         QApplication.processEvents()
         if (not fast_mode) and rejected:
             self.update_status(self.tr(f"🚨 Rejected {len(rejected)} frame(s) due to shift > {accept_thresh}px."))
@@ -27737,6 +27760,9 @@ class StackingSuiteDialog(QDialog):
 
         if not self.valid_transforms:
             self.update_status(self.tr("⚠️ No frames to stack; aborting."))
+            # Like a cancel: the next run rebuilds from the tree and asks again.
+            self._abort_partial_reg_state()
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             return
 
@@ -28039,6 +28065,13 @@ class StackingSuiteDialog(QDialog):
 
             # --- Restore the full tree and hand off to integrate ---
             self.light_files = {g: list(lst) for g, lst in _full_tree.items()}
+            # The new frames that failed this run have no registered twin;
+            # tell integration to leave them out rather than stack them as-is.
+            _registered = {os.path.normcase(k) for k in self.valid_transforms}
+            self._integrate_leave_out = {
+                k for k, norm in self._orig2norm.items()
+                if os.path.normcase(os.path.normpath(norm)) not in _registered
+            }
             self.update_status(self.tr(
                 "🔗 New frames registered. Integrating the full set "
                 "(existing + newly registered)…"
@@ -31585,6 +31618,7 @@ class StackingSuiteDialog(QDialog):
 
     def _start_after_align_worker(self, aligned_light_files: dict[str, list[str]]):
         if self._cancelled():
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             mon = getattr(self, "_exec_monitor", None)
             if mon is not None:
@@ -32920,6 +32954,9 @@ class StackingSuiteDialog(QDialog):
         Integrate frames that are already aligned (and typically normalized).
         We only do fast measurements for weights; no re-normalization, no re-alignment.
         """
+        # Set only by the "Register N New → Integrate All" hand-off.
+        _leave_out = getattr(self, "_integrate_leave_out", None) or set()
+        self._integrate_leave_out = None
         if getattr(self, "_registration_busy", False):
             self.update_status(self.tr("⏸ Another job is running; ignoring extra click."))
             return
@@ -32940,9 +32977,10 @@ class StackingSuiteDialog(QDialog):
             # pass restacks frames belonging to OTHER Sets — labeled with the
             # current Set's prefix — producing duplicate masters (e.g. a
             # "MasterLight_m17_SII_..." twin of a frame that belongs to the
-            # SNR set). Keep the Default (no-set) case unaffected.
+            # SNR set). Default is scoped too: it holds only the frames with no
+            # Set of their own.
             cur_set = getattr(self, "_reg_current_set", None)
-            if cur_set and cur_set != "Default":
+            if cur_set:
                 scoped_lf = {}
                 dropped = 0
                 for g, lst in self.light_files.items():
@@ -32955,6 +32993,21 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(self.tr(
                         f"🧩 Set '{cur_set}': scoped integration to this set "
                         f"({dropped} frame(s) from other sets held back)."
+                    ))
+
+            # 1a') After "Register N New → Integrate All": leave out the new
+            # frames that failed registration in that run.
+            if _leave_out:
+                _n_before = sum(len(lst) for lst in self.light_files.values())
+                self.light_files = {
+                    g: [p for p in lst
+                        if os.path.normcase(os.path.normpath(p)) not in _leave_out]
+                    for g, lst in self.light_files.items()
+                }
+                _n_left_out = _n_before - sum(len(lst) for lst in self.light_files.values())
+                if _n_left_out:
+                    self.update_status(self.tr(
+                        f"🚫 Leaving out {_n_left_out} new frame(s) that failed registration."
                     ))
 
             if not self.light_files:
