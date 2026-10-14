@@ -1,4 +1,4 @@
-#pro.stacking_suite.py
+#saspro.stacking_suite.py
 from __future__ import annotations
 import os
 import glob
@@ -7963,7 +7963,7 @@ class StackingSuiteDialog(QDialog):
         root.addWidget(self.pipeline_force_clean_slate_cb)
 
         # ── Full Pipeline button ─────────────────────────────────────────────
-        pipeline_btn = QPushButton(self.tr("🚀 Run Full Pipeline (Darks → Flats → Calibrate → Register & Integrate)"))
+        pipeline_btn = QPushButton(self.tr("🚀 Run Full Pipeline (Darks → Flats → Calibrate → Register → Integrate)"))
         pipeline_btn.setStyleSheet("""
             QPushButton {
                 background-color: #FF4500;
@@ -13218,12 +13218,25 @@ class StackingSuiteDialog(QDialog):
         return self.frame_set_of.get(self._set_key(path), "Default")
 
     def _ensure_default_set(self):
-        if "Default" not in self.reg_sets:
-            # Default set inherits the existing global reference/lock so current behavior is unchanged.
-            self.reg_sets["Default"] = {
-                "reference": (self.reference_frame if getattr(self, "_user_ref_locked", False) else None),
-                "locked": bool(getattr(self, "_user_ref_locked", False)),
-            }
+        # Always re-sync "Default" with the current global reference state.
+        #
+        # The per-set registration loop (see _run_registration_set / line
+        # ~24574) treats reg_sets["Default"]["locked"] as the single source
+        # of truth for whether to honor a user-picked reference. If we only
+        # synced on first creation, the common flow — Default set existed
+        # already (created at UI init via _rebuild_set_combo), THEN the user
+        # clicked "Select Reference" to pick a bin 1 frame — would leave
+        # reg_sets["Default"]["locked"] = False even though _user_ref_locked
+        # is True globally, and the queue loop would silently discard the
+        # user's pick and auto-select within the set (often a bin 2 frame).
+        # Re-syncing every call keeps global and Default-set state unified,
+        # so a user ref picked at any point before registration starts is
+        # honored, and reset_reference_to_auto() propagates too. Named sets
+        # (anything other than "Default") are never touched here — their
+        # per-set reference picker owns their state.
+        _locked = bool(getattr(self, "_user_ref_locked", False))
+        _ref = self.reference_frame if _locked else None
+        self.reg_sets["Default"] = {"reference": _ref, "locked": _locked}
 
     def _rebuild_set_combo(self):
         self._ensure_default_set()
@@ -25710,6 +25723,38 @@ class StackingSuiteDialog(QDialog):
             io_workers = min(8, max(2, ncpu // 2))
 
             ref_H, ref_W = ref_img.shape[:2] if ref_img.ndim == 2 else ref_img.shape[:2]
+            # When pixel-scale normalization is active, every frame (including the
+            # reference) is resampled to the hi-res target scale. _norm_target_hw
+            # is used by _force_shape_hw below to snap each normalized frame to a
+            # canonical size — if we leave it at the raw reference shape (e.g.
+            # 2822×4144 for a bin 2 ref), the correctly upscaled bin 2 frames
+            # (8288×5644 at bin 1 scale) get center-cropped back to bin 2 size
+            # and the "upscale to bin 1" step is silently reversed. Compute the
+            # post-normalization target shape by applying the ref's own gx/gy to
+            # its raw shape, using the same tol-clamp as the per-frame path so a
+            # ref that's already at target scale stays bit-stable.
+            if do_scale_norm:
+                try:
+                    _ref_psx, _ref_psy = _robust_scale_from_header(ref_hdr)
+                    if _ref_psx and _ref_psy and target_sx and target_sy:
+                        _gx_ref = float(_ref_psx) / float(target_sx)
+                        _gy_ref = float(_ref_psy) / float(target_sy)
+                        if _rel_delta(_gx_ref, 1.0) <= tol:
+                            _gx_ref = 1.0
+                        if _rel_delta(_gy_ref, 1.0) <= tol:
+                            _gy_ref = 1.0
+                        if (_gx_ref != 1.0) or (_gy_ref != 1.0):
+                            _ref_H_new = max(1, int(round(ref_H * _gy_ref)))
+                            _ref_W_new = max(1, int(round(ref_W * _gx_ref)))
+                            self.update_status(self.tr(
+                                f"📐 Normalize target shape {ref_W}×{ref_H} → "
+                                f"{_ref_W_new}×{_ref_H_new} (pixel-scale upscale)"
+                            ))
+                            ref_H, ref_W = _ref_H_new, _ref_W_new
+                except Exception as _e_thw:
+                    self.update_status(self.tr(
+                        f"⚠️ Could not derive post-normalize target shape from ref "
+                        f"({_e_thw}); using raw ref shape {ref_W}×{ref_H}."))
             self._norm_target_hw = (int(ref_H), int(ref_W))
 
             for idx, chunk in enumerate(chunks, 1):
