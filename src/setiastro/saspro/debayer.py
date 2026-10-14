@@ -1,719 +1,5217 @@
-# pro/debayer.py
-from __future__ import annotations
+#src.setiastro.saspro.legacy.numba_utils.py
 import numpy as np
-from typing import Optional, Tuple
-import cv2
+from numba import njit, prange, get_num_threads
+from numba.typed import List
+import cv2 
+import math
 import os
+import sys
+import threading
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDialogButtonBox,
-    QGroupBox, QMessageBox, QProgressBar
-)
+# ONE process-wide lock guarding EVERY entry into a numba parallel=True region.
+# numba's threading layers (the workqueue layer in particular) are NOT safe to
+# enter concurrently from multiple Python threads — doing so aborts the process
+# ("Concurrent access has been detected"). This MUST be the same lock for
+# debayer, stretch, and any other parallel kernel: two *different* parallel
+# functions entered at the same time collide just as badly as one entered twice.
+# prange still uses every core from a single call, so serializing the call costs
+# no CPU parallelism — it only stops the oversubscription that was aborting.
+# RLock (not Lock): stretch_color_image nests into stretch_mono_image, and both
+# serialize on this same lock, so the same thread must be able to re-enter.
+#
+# WHY A LAZY PROXY (not a plain RLock/no-op chosen at import time):
+# the real predictor of "will concurrent entry abort?" is numba's *resolved
+# threading layer*, not the OS. Only 'tbb' and 'omp' are threadsafe; 'workqueue'
+# is not, and numba falls back to workqueue on any box without tbb/omp — Linux
+# (StellarMate/ARM) included, not just macOS. But numba.threading_layer() is not
+# knowable until the first parallel region has run, which is usually AFTER this
+# module is imported. Deciding at import time therefore mis-guesses, and any
+# module that grabbed the lock object by reference (imageops.stretch) would be
+# frozen to that wrong guess even after a runtime swap. So we defer the
+# serialize-or-not decision to acquire time: one singleton object, never
+# rebound, that consults the resolved layer on every __enter__. Import order
+# and by-reference imports stop mattering.
 
-# fast kernels you already have
-try:
-    from setiastro.saspro.legacy.numba_utils import debayer_fits_fast
-except Exception as e:  # very unlikely in your env
-    debayer_fits_fast = None
-from setiastro.saspro.bayer_utils import (
-    VALID_BAYER_PATTERNS,
-    detect_bayer_offsets_and_roworder as _detect_bayer_offsets_and_roworder_from_meta,
-    detect_bayer_pattern,
-    normalize_bayer_token as _normalize_bayer_token,
-    roworder_is_bottom_up as _roworder_is_bottom_up,
-)
-from setiastro.saspro.help_support import make_help_button
+# Layers safe to enter concurrently from multiple Python threads.
+_THREADSAFE_LAYERS = ("tbb", "omp")
 
-_RAW_EXTS = (".raf", ".raw", ".rw2", ".arw", ".nef", ".cr2", ".cr3", ".dng", ".orf", ".pef")
+# Cache of the resolved threading-layer name (lowercased) once it's known.
+_RESOLVED_THREADING_LAYER = None            # None = not resolved yet
 
-def _find_raw_sibling(path: Optional[str]) -> Optional[str]:
-    """
-    If we only have a derived FITS/XISF path, try to locate a plausible RAW
-    with the same stem in the same folder.
-    """
-    if not path:
-        return None
-    base, _ = os.path.splitext(os.path.basename(path))
-    folder = os.path.dirname(path)
-    if not folder or not base:
-        return None
-    try:
-        for ext in _RAW_EXTS:
-            cand = os.path.join(folder, base + ext)
-            if os.path.exists(cand):
-                return cand
-    except Exception:
-        pass
-    return None
-
-# -------- helpers ------------------------------------------------------------
-_BAYER_METHODS = [
-    ("VNG (Variable Number of Gradients)", "vng"),
-    ("Edge-aware (Numba)",            "edge"),
-    ("Bilinear (Numba)",              "bilinear"),
-    ("Strict CFA (no interpolation)", "strict_cfa"),
-]
-_XTRANS_METHODS = [
-    ("AHD (rawpy)", "AHD"),
-    ("DHT (rawpy)", "DHT"),
-]
-_VALID = set(VALID_BAYER_PATTERNS)
-
-# --- Bayer offset / roworder helpers ---------------------------------------
-
-def _detect_bayer_offsets_and_roworder(doc) -> tuple[int, int, str]:
-    """
-    Returns (xoff, yoff, roworder_str). Missing values default to 0.
-    """
-    hdr, meta, _ = _extract_doc_info(doc)
-    return _detect_bayer_offsets_and_roworder_from_meta(hdr, meta)
-
-def _detect_bayer_from_header(doc) -> Optional[str]:
-    """
-    Best-effort read of a Bayer pattern from the document header/metadata.
-    Returns 'RGGB'/'BGGR'/'GRBG'/'GBRG' or None if not found.
-    """
-    hdr, meta, _ = _extract_doc_info(doc)
-    image_shape = None
-    try:
-        img = getattr(doc, "image", None)
-        if img is not None:
-            image_shape = np.asarray(img).shape
-    except Exception:
-        image_shape = None
-    return detect_bayer_pattern(hdr, meta, image_shape=image_shape)
-
-
-def _detect_cfa_family(doc) -> Optional[str]:
-    """
-    Returns 'BAYER', 'XTRANS', or None.
-    Uses header/meta hints; if a RAW path exists, asks rawpy for ground truth.
-    """
-    hdr, meta, src_path = _extract_doc_info(doc)
-
-    # Build a searchable blob of header + meta
-    def _safe_blob(x) -> str:
-        try:
-            return str(x)
-        except Exception:
-            return ""
-    blob = (_safe_blob(hdr) + " " + _safe_blob(meta)).upper()
-
-    # Direct tokens first
-    if any(k in blob for k in ("X-TRANS", "XTRANS", "FUJIFILM X-TRANS", "X TRANS")):
-        return "XTRANS"
-    if any(k in blob for k in ("BAYER", "RGGB", "BGGR", "GRBG", "GBRG")):
-        return "BAYER"
-
-    # Camera model hint
-    model = (str(meta.get("MODEL")
-              or meta.get("CameraModel")
-              or (hdr.get("MODEL") if hasattr(hdr, "get") else None)
-              or "")).upper()
-    make  = (str(meta.get("MAKE")
-              or (hdr.get("MAKE") if hasattr(hdr, "get") else None)
-              or "")).upper()
-    if "FUJIFILM" in make and any(tag in model for tag in (
-        "X-T1","X-T2","X-T3","X-T4","X-T5",
-        "X-E2","X-E2S","X-E3","X-PRO1","X-PRO2","X-PRO3",
-        "X-H1","X-H2S","X-S10","X-S20","X100","X70","X30"
-    )):
-        return "XTRANS"
-
-    # If we have a source path, ask rawpy
-    if src_path:
-        try:
-            import rawpy  # type: ignore
-            with rawpy.imread(src_path) as rp:
-                if getattr(rp, "xtrans_pattern", None) is not None:
-                    return "XTRANS"
-                pat = getattr(rp, "raw_pattern", None)
-                if pat is not None:
-                    pat = np.array(pat)
-                    if getattr(pat, "shape", None) == (2, 2):
-                        return "BAYER"
-        except Exception:
-            pass
-
-    return None
-
-
-def _score_rgb(rgb: np.ndarray) -> float:
-    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
-    def grad_energy(x):
-        gx = cv2.Sobel(x, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(x, cv2.CV_32F, 0, 1, ksize=3)
-        return float(np.mean(gx*gx + gy*gy))
-    e_rg = grad_energy(r - g)
-    e_bg = grad_energy(b - g)
-    return e_rg + e_bg
-
-def _autodetect_bayer_by_scoring(mono: np.ndarray) -> str:
-    candidates = ["RGGB", "BGGR", "GRBG", "GBRG"]
-    best_pat, best_score = None, float("inf")
-    for pat in candidates:
-        try:
-            rgb = debayer_fits_fast(mono, pat, cfa_drizzle=False)
-            rgb32 = rgb.astype(np.float32, copy=False)
-            s = _score_rgb(rgb32)
-            if s < best_score:
-                best_score, best_pat = s, pat
-        except Exception:
-            continue
-    return best_pat or "RGGB"
-
-def _debayer_xtrans_via_rawpy(src_path: str,
-                              use_cam_wb: bool = True,
-                              output_bps: int = 16,
-                              alg: str = "AHD") -> np.ndarray:
-    """
-    X-Trans demosaic via rawpy with selectable algorithm: 'AHD' or 'DHT'.
-    Returns float32 RGB in [0,1].
-    """
-    import rawpy  # type: ignore
-    alg_map = {
-        "AHD": rawpy.DemosaicAlgorithm.AHD,
-        "DHT": rawpy.DemosaicAlgorithm.DHT,
-    }
-    dem = alg_map.get((alg or "AHD").upper(), rawpy.DemosaicAlgorithm.AHD)
-    with rawpy.imread(src_path) as rp:
-        rgb16 = rp.postprocess(
-            demosaic_algorithm=dem,
-            no_auto_bright=True,
-            gamma=(1.0, 1.0),
-            output_bps=output_bps,
-            use_camera_wb=use_cam_wb,
-            fbdd_noise_reduction=rawpy.FBDDNoiseReductionMode.Off,
-            four_color_rgb=False,
-            half_size=False,
-            bright=1.0,
-            highlight_mode=rawpy.HighlightMode.Clip
-        )
-    return (rgb16.astype(np.float32) / (65535.0 if output_bps == 16 else 255.0))
-
-def _doc_is_managed(dm, doc) -> bool:
-    """Best-effort: is this document tracked by DocManager?"""
-    if dm is None or doc is None:
+# Force flag: None = auto (decide by resolved layer), True/False = forced.
+def _env_force_serialize():
+    #   SASPRO_NUMBA_SERIALIZE=1  -> always serialize (safe, slower)
+    #   SASPRO_NUMBA_SERIALIZE=0  -> never serialize (fast)
+    ev = os.environ.get("SASPRO_NUMBA_SERIALIZE", "").strip().lower()
+    if ev in ("1", "true", "yes", "on"):
+        return True
+    if ev in ("0", "false", "no", "off"):
         return False
-    # Explicit API if you have it
-    fn = getattr(dm, "is_managed_document", None)
-    if callable(fn):
-        try:
-            return bool(fn(doc))
-        except Exception:
-            pass
-    # Common internal collections
-    for attr in ("_docs", "documents", "open_documents", "all_docs"):
-        coll = getattr(dm, attr, None)
-        if isinstance(coll, (list, tuple)):
-            try:
-                return any(d is doc for d in coll)
-            except Exception:
-                continue
-    return False
+    return None
 
-def _apply_result_to_doc(dm, doc, rgb: np.ndarray, step_name: str = "Debayer"):
-    """
-    Always apply to the specific 'doc' (never assume 'active' view).
-    """
+_FORCE_SERIALIZE = _env_force_serialize()
 
-    # --- A) Best: the document can commit its own undoable edit ---
-    if hasattr(doc, "apply_edit") and callable(doc.apply_edit):
-        meta = dict(getattr(doc, "metadata", {}) or {})
-        meta["is_mono"] = False
-        meta.setdefault("bit_depth", "32-bit floating point")
-        try:
-            doc.apply_edit(rgb.copy(), metadata=meta, step_name=step_name)
-        except TypeError:
-            # older signature: (image, metadata) or (image,)
-            try: doc.apply_edit(rgb.copy(), metadata=meta)
-            except Exception: doc.apply_edit(rgb.copy())
-        _refresh_view_for_doc(dm, doc)
-        return
 
-    # --- B) Next best: mutate the doc directly, then refresh its view ---
+def record_numba_threading_layer(name) -> None:
+    """Let the startup warmup — which resolves and logs the layer — push the
+    authoritative name here. Makes the serialize decision deterministic even
+    before numba.threading_layer() would answer on its own."""
+    global _RESOLVED_THREADING_LAYER
+    if name:
+        _RESOLVED_THREADING_LAYER = str(name).strip().lower()
+
+
+def _resolved_threading_layer():
+    """Best-effort resolved layer name (lowercased), or None if not yet known.
+    numba.threading_layer() raises until a parallel region has executed once."""
+    global _RESOLVED_THREADING_LAYER
+    if _RESOLVED_THREADING_LAYER is not None:
+        return _RESOLVED_THREADING_LAYER
     try:
-        doc.image = rgb
-        meta = getattr(doc, "metadata", None)
-        if isinstance(meta, dict):
-            meta["is_mono"] = False
-            meta.setdefault("bit_depth", "32-bit floating point")
+        import numba
+        layer = str(numba.threading_layer()).strip().lower()
     except Exception:
-        pass
-    _refresh_view_for_doc(dm, doc)
-    return
-
-def _refresh_view_for_doc(dm, doc):
-    """
-    Find the subwindow that displays 'doc' and ask it to repaint,
-    without switching the active view.
-    """
-    try:
-        # Try a dedicated API if your app exposes it
-        fn = getattr(dm, "refresh_subwindow_for_document", None)
-        if callable(fn):
-            fn(doc); return
-    except Exception:
-        pass
-
-    # Generic fallback: walk MDI subwindows and update the one bound to 'doc'
-    try:
-        mw = getattr(dm, "main_window", None) or getattr(dm, "mw", None)
-        if mw is None: return
-        mdi = getattr(mw, "mdi", None)
-        if mdi is None: return
-        for sw in mdi.subWindowList():
-            w = getattr(sw, "widget", lambda: None)()
-            if getattr(w, "document", None) is doc:
-                # Common update hooks
-                upd = getattr(w, "refresh_pixmap_from_document", None) \
-                      or getattr(w, "refresh_view", None) \
-                      or getattr(w, "update_from_doc", None)
-                if callable(upd):
-                    upd(); return
-                # Absolute fallback: force a repaint
-                try:
-                    w.update(); sw.update()
-                except Exception:
-                    pass
-                return
-    except Exception:
-        pass
-
-
-# -------- worker -------------------------------------------------------------
-
-class _DebayerWorker(QThread):
-    progress = pyqtSignal(int, str)
-    failed = pyqtSignal(str)
-    finished = pyqtSignal(np.ndarray, str)  # (rgb, used_pattern)
-
-    def __init__(self, mono: np.ndarray, pattern: str, method: str = "vng"):
-        super().__init__()
-        self.mono = mono
-        self.pattern = pattern
-        self.method = (method or "vng")
-
-    def run(self):
-        try:
-            if debayer_fits_fast is None:
-                raise RuntimeError("Numba debayer kernels not available.")
-
-            # enforce kernel-friendly layout/dtype
-            img = _mono_as_float32_contig(self.mono)
-
-            if img.ndim != 2:
-                raise ValueError("Debayer expects a single-channel (mosaic) image.")
-            if self.pattern not in _VALID:
-                raise ValueError(f"Unsupported pattern: {self.pattern}")
-
-            self.progress.emit(5, f"Debayering ({self.pattern}, {self.method}) …")
-            rgb = debayer_fits_fast(img, self.pattern, cfa_drizzle=False, method=self.method)
-            self.progress.emit(96, "Finalizing …")
-            self.finished.emit(rgb, self.pattern)
-        except Exception as e:
-            self.failed.emit(str(e))
-
-def _extract_doc_info(doc) -> tuple[dict | None, dict, Optional[str]]:
-    meta = getattr(doc, "metadata", {}) or {}
-    hdr = (meta.get("original_header")
-           or meta.get("fits_header")
-           or meta.get("header")
-           or getattr(doc, "header", None))
-
-    # try multiple fields for a source path
-    def _first_nonempty(*vals):
-        for v in vals:
-            if v:
-                return v
         return None
-
-    # header cards that might store original RAW path
-    hdr_raw = None
-    try:
-        if hdr is not None:
-            for k in ("RAW_PATH","RAWFILE","ORIGFILE","ORIGINAL","ORIGPATH","RAWORIG","SOURCE","SRCFILE"):
-                v = hdr.get(k) if hasattr(hdr, "get") else hdr[k]  # may raise → caught
-                if v:
-                    hdr_raw = str(v)
-                    break
-    except Exception:
-        pass
-
-    path = _first_nonempty(
-        meta.get("raw_source_path"),
-        hdr_raw,
-        meta.get("file_path"),
-        getattr(doc, "path", None),
-        getattr(doc, "file_path", None),
-    )
-    return hdr, meta, path
-
-def _mono_as_float32_contig(arr: np.ndarray) -> np.ndarray:
-    """
-    Ensure mono mosaic is 2D, C-contiguous, float32 in [0,1] for numba kernels.
-    Scales integer inputs by their max (8/16/32 bits).
-    """
-    a = np.asarray(arr)
-    if a.ndim != 2:
-        raise RuntimeError("Debayer expects a single-channel (mosaic) image.")
-    if np.issubdtype(a.dtype, np.integer):
-        # pick a sensible scale based on dtype
-        info = np.iinfo(a.dtype)
-        a = a.astype(np.float32, copy=False) / float(info.max if info.max > 0 else 1.0)
-    else:
-        a = a.astype(np.float32, copy=False)
-        # Only rescale genuine 16-bit ADU stored as float (max approaches
-        # thousands/65535). Flat-divided linear astro data legitimately exceeds
-        # 1.0 — even 2–3× — and must NOT be crushed by /65535.
-        if a.max() > 256.0:
-            a = a / 65535.0
-    return np.ascontiguousarray(a)
+    _RESOLVED_THREADING_LAYER = layer
+    return layer
 
 
-# -------- dialog -------------------------------------------------------------
-
-class DebayerDialog(QDialog):
-    """
-    One-shot debayer UI for the active view. Uses your numba kernels.
-    If the image is already RGB, will warn and exit.
-    """
-    def __init__(self, parent, doc_manager, active_doc):
-        super().__init__(parent)
-        self.setWindowTitle(self.tr("Debayer"))
-        self.setWindowFlag(Qt.WindowType.Window, True)
-        import platform
-        if platform.system() == "Darwin":
-            self.setWindowFlag(Qt.WindowType.Tool, True)  
-        self.setWindowModality(Qt.WindowModality.NonModal)
-        self.setModal(False)
-        self.dm = doc_manager
-        self.doc = active_doc
-        self.worker: Optional[_DebayerWorker] = None
-
-        img = getattr(active_doc, "image", None)
-        if img is None:
-            raise RuntimeError("No image in active document.")
-        arr = np.asarray(img)
-
-        # Reject non-mosaic early
-        if arr.ndim == 3 and arr.shape[2] >= 3:
-            QMessageBox.information(self, "Debayer", "Image already has 3 channels.")
-            self.setEnabled(False)
-            self.close()
-            return
-        if arr.ndim != 2:
-            QMessageBox.warning(self, "Debayer", "Only single-channel mosaics can be debayered.")
-            self.setEnabled(False)
-            self.close()
-            return
-
-        # ✅ normalize for numba kernels
-        self._src = _mono_as_float32_contig(arr)
-        # --- ROWORDER handling (NINA / FITS) ---
-        xoff, yoff, roworder = _detect_bayer_offsets_and_roworder(active_doc)
-        self._roworder = roworder
-        self._xoff = xoff
-        self._yoff = yoff
-
-        # ROWORDER=BOTTOM-UP means the on-disk array is stored bottom-to-top
-        # relative to the Bayer pattern in the header. Flip once to top-down so
-        # the header pattern (e.g. RGGB) applies as-written. This is the ONLY
-        # orientation correction — detect_bayer_pattern no longer bumps yoff by
-        # height parity, so the two can't stack into a wrong pattern.
-        if _roworder_is_bottom_up(roworder):
-            self._src = np.ascontiguousarray(np.flipud(self._src))
-        # detect CFA family (BAYER/XTRANS/None)
-        self._cfa_family = _detect_cfa_family(active_doc)
-
-        v = QVBoxLayout(self)
-
-        # pattern selection
-        detected = _detect_bayer_from_header(active_doc)
-        self._detected_pattern = detected  # store for later
-
-        gb = QGroupBox(self.tr("Bayer pattern"), self)
-        h = QHBoxLayout(gb)
-        self.combo_pattern = QComboBox(self)
-        self.combo_pattern.addItems([
-            "Auto (from header)",
-            "RGGB", "BGGR", "GRBG", "GBRG",
-        ])
-        self.combo_pattern.setCurrentIndex(0)
-        self.lbl_detect = QLabel(f"Detected: {detected or '(unknown)'}  "
-                                f"(XBAYROFF={xoff}, YBAYROFF={yoff}, ROWORDER={roworder or 'n/a'})")
-        h.addWidget(self.combo_pattern, 1)
-        h.addWidget(self.lbl_detect)
-        v.addWidget(gb)
-
-        if self._cfa_family == 'XTRANS':
-            self.combo_pattern.setEnabled(False)
-            self.lbl_detect.setText("Detected: X-Trans (rawpy)")
-        else:
-            norm = _normalize_bayer_token(self._detected_pattern or "")
-            self.lbl_detect.setText(f"Detected: {norm or '(unknown)'}")
-
-        self.method_group = QGroupBox(self.tr("Method"), self)
-        hm = QHBoxLayout(self.method_group)
-        self.combo_method = QComboBox(self)
-
-        if self._cfa_family == 'XTRANS':
-            for label, _tok in _XTRANS_METHODS:
-                self.combo_method.addItem(label)
-        else:
-            for label, _tok in _BAYER_METHODS:
-                self.combo_method.addItem(label)
-
-        print(f"[Debayer] CFA family auto-detect → {self._cfa_family}  "
-            f"path={_extract_doc_info(active_doc)[2]}  "
-            f"model={getattr(active_doc, 'metadata', {}).get('MODEL')}")
-
-        self.combo_method.setCurrentIndex(0)
-        hm.addWidget(self.combo_method)
-        hm.addStretch(1)
-        hm.addWidget(make_help_button("debayer", self))
-        v.addWidget(self.method_group)
-
-        # progress + buttons
-        self.status = QLabel("")
-        self.bar = QProgressBar(self); self.bar.setRange(0, 100)
-        v.addWidget(self.status)
-        v.addWidget(self.bar)
-
-        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
-        btns.accepted.connect(self._go)
-        btns.rejected.connect(self.reject)
-        v.addWidget(btns)
+def numba_threading_layer_unsafe():
+    """True  -> resolved layer is NOT threadsafe (workqueue): must serialize.
+       False -> resolved layer is threadsafe (tbb/omp): no need to serialize.
+       None  -> not resolved yet: caller should fall back to a platform guess."""
+    layer = _resolved_threading_layer()
+    if layer is None:
+        return None
+    return layer not in _THREADSAFE_LAYERS
 
 
-    def _chosen_pattern(self) -> str:
-        if self._cfa_family == 'XTRANS':
-            return "XTRANS"
-        txt = self.combo_pattern.currentText()
-        if txt.startswith("Auto"):
-            norm = _normalize_bayer_token(self._detected_pattern or "")
-            return norm or _autodetect_bayer_by_scoring(self._src)
-        return txt
+def _effective_serialize() -> bool:
+    """The live decision: explicit force wins; otherwise trust the resolved
+    layer; while the layer is still unknown, fall back to the old OS heuristic
+    (macOS has historically resolved to workqueue too)."""
+    if _FORCE_SERIALIZE is not None:
+        return _FORCE_SERIALIZE
+    unsafe = numba_threading_layer_unsafe()
+    if unsafe is not None:
+        return unsafe
+    return sys.platform == "darwin"
 
-    def _go(self):
-        pat = self._chosen_pattern()
-        method_label = self.combo_method.currentText()
 
-        # X-Trans path
-        if pat == "XTRANS":
-            src_path = (getattr(self.doc, "file_path", None) or getattr(self.doc, "path", None)
-                        or (getattr(self.doc, "metadata", {}) or {}).get("file_path"))
-            if not src_path or not str(src_path).lower().endswith(_RAW_EXTS):
-                # try sibling RAW next to this file
-                sib = _find_raw_sibling(getattr(self.doc, "file_path", None) or (getattr(self.doc, "metadata", {}) or {}).get("file_path"))
-                if sib:
-                    src_path = sib
+# Thread-local stack recording, per nested `with`, whether THAT enter acquired
+# the RLock — so __exit__ releases exactly what __enter__ took even if the
+# effective decision were to change between them.
+_lock_tls = threading.local()
+
+
+class _LazyNumbaLock:
+    """Process-wide guard whose behavior is decided at acquire time, not import
+    time. Serializes iff _effective_serialize() says so; otherwise a no-op so
+    debayer / stretch run concurrently at full speed. Re-entrant when it does
+    serialize (stretch_color nests into stretch_mono)."""
+    __slots__ = ("_rlock",)
+
+    def __init__(self):
+        self._rlock = threading.RLock()
+
+    def __enter__(self):
+        acquired = False
+        if _effective_serialize():
+            self._rlock.acquire()
+            acquired = True
+        stack = getattr(_lock_tls, "stack", None)
+        if stack is None:
+            stack = _lock_tls.stack = []
+        stack.append(acquired)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        stack = getattr(_lock_tls, "stack", None)
+        acquired = stack.pop() if stack else False
+        if acquired:
+            self._rlock.release()
+        return False
+
+    # Kept for the rare direct acquire()/release() caller. The decision is read
+    # once here; pair these within a single serialize regime.
+    def acquire(self, *a, **k):
+        if _effective_serialize():
+            return self._rlock.acquire(*a, **k)
+        return True
+
+    def release(self):
+        try:
+            self._rlock.release()
+        except RuntimeError:
+            pass  # wasn't held (no-op regime) — nothing to release
+
+
+# Single instance, imported by name OR by reference — either is safe now.
+NUMBA_PARALLEL_LOCK = _LazyNumbaLock()
+_DEBAYER_LOCK = NUMBA_PARALLEL_LOCK
+
+
+def numba_parallel_serialized() -> bool:
+    """True when numba parallel entry is currently being serialized."""
+    return _effective_serialize()
+
+
+def set_numba_parallel_serialize(enabled) -> None:
+    """Force serialization on/off at runtime, or pass None to return to auto
+    (decide by the resolved threading layer). Because NUMBA_PARALLEL_LOCK is a
+    single lazy object that re-reads this flag on every entry, the change
+    reaches every caller — including modules that imported the lock object by
+    reference — with no rebinding needed."""
+    global _FORCE_SERIALIZE
+    _FORCE_SERIALIZE = None if enabled is None else bool(enabled)
+
+@njit(parallel=True, fastmath=True, cache=True)
+def blend_add_numba(A, B, alpha):
+    H, W, C = A.shape
+    out = np.empty_like(A)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                v = A[y,x,c] + B[y,x,c] * alpha
+                # clamp 0..1
+                if v < 0.0: v = 0.0
+                elif v > 1.0: v = 1.0
+                out[y,x,c] = v
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def blend_subtract_numba(A, B, alpha):
+    H, W, C = A.shape
+    out = np.empty_like(A)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                v = A[y,x,c] - B[y,x,c] * alpha
+                if v < 0.0: v = 0.0
+                elif v > 1.0: v = 1.0
+                out[y,x,c] = v
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def blend_multiply_numba(A, B, alpha):
+    H, W, C = A.shape
+    out = np.empty_like(A)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                v = (A[y,x,c] * (1-alpha)) + (A[y,x,c] * B[y,x,c] * alpha)
+                if v < 0.0: v = 0.0
+                elif v > 1.0: v = 1.0
+                out[y,x,c] = v
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def blend_divide_numba(A, B, alpha):
+    H, W, C = A.shape
+    out = np.empty_like(A)
+    eps = 1e-6
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                # avoid division by zero
+                b = A[y,x,c] / (B[y,x,c] + eps)
+                # clamp f(A,B)
+                if b < 0.0: b = 0.0
+                elif b > 1.0: b = 1.0
+                # mix with original
+                v = A[y,x,c] * (1.0 - alpha) + b * alpha
+                # clamp final
+                if v < 0.0: v = 0.0
+                elif v > 1.0: v = 1.0
+                out[y,x,c] = v
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def blend_screen_numba(A, B, alpha):
+    H, W, C = A.shape
+    out = np.empty_like(A)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                # Screen: 1 - (1-A)*(1-B)
+                b = 1.0 - (1.0 - A[y,x,c]) * (1.0 - B[y,x,c])
+                if b < 0.0: b = 0.0
+                elif b > 1.0: b = 1.0
+                v = A[y,x,c] * (1.0 - alpha) + b * alpha
+                if v < 0.0: v = 0.0
+                elif v > 1.0: v = 1.0
+                out[y,x,c] = v
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def blend_overlay_numba(A, B, alpha):
+    H, W, C = A.shape
+    out = np.empty_like(A)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                a = A[y,x,c]
+                b_in = B[y,x,c]
+                # Overlay: if a < .5: 2*a*b, else: 1 - 2*(1-a)*(1-b)
+                if a <= 0.5:
+                    b = 2.0 * a * b_in
                 else:
-                    QMessageBox.warning(self, "Debayer",
-                        "X-Trans detected, but original RAW path was not found.\n"
-                        "Open the RAF directly, or embed RAW_PATH in the header, or place the RAW next to the file.")
-                    return
-            # map label → rawpy alg token
-            alg = next((tok for (label, tok) in _XTRANS_METHODS if label == method_label), "AHD")
-            try:
-                self.status.setText(f"Demosaicing X-Trans via rawpy ({alg}) …")
-                self.bar.setValue(10)
-                rgb = _debayer_xtrans_via_rawpy(src_path, use_cam_wb=True, output_bps=16, alg=alg)
-                self.bar.setValue(96)
-                _apply_result_to_doc(self.dm, self.doc, rgb.astype(np.float32, copy=False),
-                                    step_name=f"Debayer (X-Trans/{alg})")
-                self.status.setText("Done.")
-                self.accept()
-            except Exception as e:
-                QMessageBox.critical(self, "Debayer", f"X-Trans demosaic failed:\n{e}")
-                self.status.setText("Failed.")
-            return
+                    b = 1.0 - 2.0 * (1.0 - a) * (1.0 - b_in)
+                if b < 0.0: b = 0.0
+                elif b > 1.0: b = 1.0
+                v = a * (1.0 - alpha) + b * alpha
+                if v < 0.0: v = 0.0
+                elif v > 1.0: v = 1.0
+                out[y,x,c] = v
+    return out
 
-        # Bayer path (Numba) with method
-        if pat not in _VALID:
-            QMessageBox.warning(self, "Debayer", "Unknown pattern (auto-detect failed). Choose a pattern explicitly.")
-            return
+@njit(parallel=True, fastmath=True, cache=True)
+def blend_difference_numba(A, B, alpha):
+    H, W, C = A.shape
+    out = np.empty_like(A)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                # Difference: |A - B|
+                b = A[y,x,c] - B[y,x,c]
+                if b < 0.0: b = -b
+                # clamp f(A,B) is redundant since abs() already ≥0; we cap above 1
+                if b > 1.0: b = 1.0
+                v = A[y,x,c] * (1.0 - alpha) + b * alpha
+                if v < 0.0: v = 0.0
+                elif v > 1.0: v = 1.0
+                out[y,x,c] = v
+    return out
 
-        bayer_method = next((tok for (label, tok) in _BAYER_METHODS if label == method_label), "vng")
-        self.status.setText(f"Debayering as {pat} ({bayer_method}) …")
-        self.bar.setValue(0)
-        self.worker = _DebayerWorker(self._src, pat, method=bayer_method)
-        self.worker.progress.connect(self._on_prog)
-        self.worker.failed.connect(self._on_fail)
-        self.worker.finished.connect(self._on_done)
-        self.worker.start()
-
-
-    def _on_prog(self, p: int, msg: str):
-        self.bar.setValue(p); self.status.setText(msg)
-
-    def _on_fail(self, err: str):
-        QMessageBox.critical(self, "Debayer", err)
-        self.status.setText("Failed.")
-
-    def _on_done(self, rgb: np.ndarray, used_pattern: str):
-        # We flipped the mosaic to top-down before debayering so the Bayer phase
-        # was correct. Flip the RGB result back so the output matches the
-        # original display orientation.
-        if _roworder_is_bottom_up(self._roworder):
-            rgb = np.ascontiguousarray(np.flipud(rgb))
-        _apply_result_to_doc(self.dm, self.doc, rgb, step_name=f"Debayer ({used_pattern})")
-        self.status.setText("Done.")
-        self.accept()
-
-
-# -------- headless (shortcut / DnD) -----------------------------------------
-
-def debayer_array(
-    mono: np.ndarray,
-    *,
-    pattern: str,
-    roworder: str = "",
-    method: str = "vng",
-    cfa_drizzle: bool = False,
-) -> np.ndarray:
+@njit(parallel=True, fastmath=True, cache=True)
+def rescale_image_numba(image, factor):
     """
-    Pure Bayer demosaic: mono mosaic array in -> RGB array out. No doc, no Qt,
-    no side effects. This is the single source of truth for the flip-in /
-    debayer / flip-out orientation handling, shared by the interactive dialog
-    and the stacking pipeline.
-
-    `pattern` must already be a resolved RGGB/BGGR/GRBG/GBRG token — this
-    function does NOT re-detect. Callers own detection so each can apply its
-    own header-reading rules.
+    Custom rescale function using bilinear interpolation optimized with numba.
+    Supports both mono (2D) and color (3D) images.
     """
-    if debayer_fits_fast is None:
-        raise RuntimeError("Numba debayer kernels not available.")
-
-    pat = (pattern or "").upper()
-    if pat not in _VALID:
-        raise ValueError(f"Unsupported Bayer pattern: {pat!r}")
-
-    m = _mono_as_float32_contig(np.asarray(mono))
-
-    # Bottom-up: flip to top-down so the Bayer phase matches `pattern`,
-    # debayer, then flip the RGB back so output orientation matches input.
-    flipped = _roworder_is_bottom_up(roworder)
-    if flipped:
-        m = np.ascontiguousarray(np.flipud(m))
-
-    meth = method if method in ("edge", "bilinear", "strict_cfa", "vng") else "vng"
-    rgb = debayer_fits_fast(m, pat, cfa_drizzle=cfa_drizzle, method=meth)
-
-    if flipped:
-        rgb = np.ascontiguousarray(np.flipud(rgb))
-    return rgb
-
-def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]:
-    """
-    preset = {
-        "pattern": "auto|RGGB|BGGR|GRBG|GBRG",
-        "method":  "auto|vng|edge|bilinear|strict_cfa|AHD|DHT"
-    }
-    Returns (used_pattern, rgb_array).
-    """
-    if getattr(doc, "image", None) is None:
-        raise RuntimeError("No image in document.")
-
-    # ✅ normalize for numba kernels & ensure 2D
-    mono_in = np.asarray(doc.image)
-    if mono_in.ndim != 2:
-        raise RuntimeError("Debayer expects a single-channel (mosaic) image.")
-    mono = _mono_as_float32_contig(mono_in)
-    xoff, yoff, roworder = _detect_bayer_offsets_and_roworder(doc)
-    # Match DebayerDialog: single flip to top-down when ROWORDER is bottom-up.
-    if _roworder_is_bottom_up(roworder):
-        mono = np.ascontiguousarray(np.flipud(mono))
-    family = _detect_cfa_family(doc)
-    want_method = str(preset.get("method", "auto"))
-
-    # X-Trans → rawpy path
-    if family == "XTRANS":
-        src_path = (getattr(doc, "file_path", None) or getattr(doc, "path", None)
-                    or (getattr(doc, "metadata", {}) or {}).get("file_path"))
-
-        if not src_path or not str(src_path).lower().endswith(_RAW_EXTS):
-            hdr, meta, _ = _extract_doc_info(doc)
-            src_path = (meta.get("raw_source_path") or
-                        (hdr.get("RAW_PATH") if hasattr(hdr, "get") else None) or
-                        _find_raw_sibling(meta.get("file_path") or getattr(doc, "file_path", None)))
-        if not src_path or not str(src_path).lower().endswith(_RAW_EXTS):
-            raise RuntimeError("X-Trans detected, but no RAW found. "
-                               "Embed RAW_PATH/raw_source_path or place the RAW next to the file.")
-        alg = want_method if want_method in ("AHD", "DHT") else "AHD"
-        rgb = _debayer_xtrans_via_rawpy(src_path, use_cam_wb=True, output_bps=16, alg=alg)
-        _apply_result_to_doc(dm, doc, rgb, step_name=f"Debayer (X-Trans/{alg})")
-        return "XTRANS", rgb
-
-    # Bayer → Numba path
-    want = str(preset.get("pattern", "auto")).upper()
-    if want == "AUTO":
-        pat = _normalize_bayer_token(_detect_bayer_from_header(doc) or "")
-        if pat not in _VALID:
-            pat = _autodetect_bayer_by_scoring(mono)
+    if image.ndim == 2:
+        height, width = image.shape
+        new_width = int(width * factor)
+        new_height = int(height * factor)
+        output = np.zeros((new_height, new_width), dtype=np.float32)
+        for y in prange(new_height):
+            for x in prange(new_width):
+                src_x = x / factor
+                src_y = y / factor
+                x0, y0 = int(src_x), int(src_y)
+                x1 = x0 + 1 if x0 + 1 < width else width - 1
+                y1 = y0 + 1 if y0 + 1 < height else height - 1
+                dx = src_x - x0
+                dy = src_y - y0
+                output[y, x] = (image[y0, x0] * (1 - dx) * (1 - dy) +
+                                image[y0, x1] * dx * (1 - dy) +
+                                image[y1, x0] * (1 - dx) * dy +
+                                image[y1, x1] * dx * dy)
+        return output
     else:
-        pat = want
-    if pat not in _VALID:
-        raise ValueError(f"Unsupported Bayer pattern: {pat}")
+        height, width, channels = image.shape
+        new_width = int(width * factor)
+        new_height = int(height * factor)
+        output = np.zeros((new_height, new_width, channels), dtype=np.float32)
+        for y in prange(new_height):
+            for x in prange(new_width):
+                src_x = x / factor
+                src_y = y / factor
+                x0, y0 = int(src_x), int(src_y)
+                x1 = x0 + 1 if x0 + 1 < width else width - 1
+                y1 = y0 + 1 if y0 + 1 < height else height - 1
+                dx = src_x - x0
+                dy = src_y - y0
+                for c in range(channels):
+                    output[y, x, c] = (image[y0, x0, c] * (1 - dx) * (1 - dy) +
+                                       image[y0, x1, c] * dx * (1 - dy) +
+                                       image[y1, x0, c] * (1 - dx) * dy +
+                                       image[y1, x1, c] * dx * dy)
+        return output
 
-    method_tok = (want_method.lower() if want_method.lower() in ("edge", "bilinear", "vng", "strict_cfa") else "vng")
-
-    if debayer_fits_fast is None:
-        raise RuntimeError("Numba debayer kernels not available.")
-
-    rgb = debayer_fits_fast(mono, pat, cfa_drizzle=False, method=method_tok)
-    # Flip back to match original orientation (see DebayerDialog._on_done).
-    if _roworder_is_bottom_up(roworder):
-        rgb = np.ascontiguousarray(np.flipud(rgb))
-    _apply_result_to_doc(dm, doc, rgb, step_name=f"Debayer ({pat}/{method_tok})")
-    return pat, rgb
-
-# -------- headless command runner (Scripts / Presets / Replay) ---------------
-
-def run_debayer_via_preset(main, preset: dict | None = None, *, doc=None):
+@njit(parallel=True, fastmath=True, cache=True)
+def bin2x2_numba(image):
     """
-    Headless Debayer runner.
-
-    preset keys:
-      - pattern: "auto" | "RGGB" | "BGGR" | "GRBG" | "GBRG"
-      - method:  "auto" | "vng" | "edge" | "bilinear" | "strict_cfa" | "AHD" | "DHT"
+    Downsample the image by 2×2 via simple averaging (“integer binning”).
+    Works on 2D (H×W) or 3D (H×W×C) arrays.  If dimensions aren’t even,
+    the last row/column is dropped.
     """
-    p = dict(preset or {})
+    h, w = image.shape[:2]
+    h2 = h // 2
+    w2 = w // 2
 
-    # ---- Register for Replay Last Action ----
-    try:
-        remember = getattr(main, "remember_last_headless_command", None) \
-                   or getattr(main, "_remember_last_headless_command", None)
-        if callable(remember):
-            remember("debayer", p, description="Debayer")
-        else:
-            setattr(main, "_last_headless_command", {
-                "command_id": "debayer",
-                "preset": dict(p),
-            })
-    except Exception:
+    # allocate output
+    if image.ndim == 2:
+        out = np.empty((h2, w2), dtype=np.float32)
+        for i in prange(h2):
+            for j in prange(w2):
+                # average 2×2 block
+                s = image[2*i  , 2*j  ] \
+                  + image[2*i+1, 2*j  ] \
+                  + image[2*i  , 2*j+1] \
+                  + image[2*i+1, 2*j+1]
+                out[i, j] = s * 0.25
+    else:
+        c = image.shape[2]
+        out = np.empty((h2, w2, c), dtype=np.float32)
+        for i in prange(h2):
+            for j in prange(w2):
+                for k in range(c):
+                    s = image[2*i  , 2*j  , k] \
+                      + image[2*i+1, 2*j  , k] \
+                      + image[2*i  , 2*j+1, k] \
+                      + image[2*i+1, 2*j+1, k]
+                    out[i, j, k] = s * 0.25
+
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _bin_NxN_numba(image, n):
+    """General integer binning by N×N averaging."""
+    h, w = image.shape[:2]
+    h2 = h // n
+    w2 = w // n
+    scale = 1.0 / (n * n)
+    if image.ndim == 2:
+        out = np.zeros((h2, w2), dtype=np.float32)
+        for i in prange(h2):
+            for j in prange(w2):
+                s = 0.0
+                for di in range(n):
+                    for dj in range(n):
+                        s += image[i*n + di, j*n + dj]
+                out[i, j] = s * scale
+    else:
+        c = image.shape[2]
+        out = np.zeros((h2, w2, c), dtype=np.float32)
+        for i in prange(h2):
+            for j in prange(w2):
+                for k in range(c):
+                    s = 0.0
+                    for di in range(n):
+                        for dj in range(n):
+                            s += image[i*n + di, j*n + dj, k]
+                    out[i, j, k] = s * scale
+    return out
+
+
+def _upsample_NxN(image: np.ndarray, n: int) -> np.ndarray:
+    """Integer upsampling by pixel repetition using numpy repeat."""
+    out = np.repeat(np.repeat(image, n, axis=0), n, axis=1)
+    return np.ascontiguousarray(out, dtype=np.float32)
+
+@njit(parallel=True, fastmath=True, cache=True)
+def flip_horizontal_numba(image):
+    """
+    Flips an image horizontally using Numba JIT.
+    Works with both mono (2D) and color (3D) images.
+    """
+    if image.ndim == 2:
+        height, width = image.shape
+        output = np.empty((height, width), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                output[y, x] = image[y, width - x - 1]
+        return output
+    else:
+        height, width, channels = image.shape
+        output = np.empty((height, width, channels), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                for c in range(channels):
+                    output[y, x, c] = image[y, width - x - 1, c]
+        return output
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def flip_vertical_numba(image):
+    """
+    Flips an image vertically using Numba JIT.
+    Works with both mono (2D) and color (3D) images.
+    """
+    if image.ndim == 2:
+        height, width = image.shape
+        output = np.empty((height, width), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                output[y, x] = image[height - y - 1, x]
+        return output
+    else:
+        height, width, channels = image.shape
+        output = np.empty((height, width, channels), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                for c in range(channels):
+                    output[y, x, c] = image[height - y - 1, x, c]
+        return output
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def rotate_90_clockwise_numba(image):
+    """
+    Rotates the image 90 degrees clockwise.
+    Works with both mono (2D) and color (3D) images.
+    """
+    if image.ndim == 2:
+        height, width = image.shape
+        output = np.empty((width, height), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                output[x, height - 1 - y] = image[y, x]
+        return output
+    else:
+        height, width, channels = image.shape
+        output = np.empty((width, height, channels), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                for c in range(channels):
+                    output[x, height - 1 - y, c] = image[y, x, c]
+        return output
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def rotate_90_counterclockwise_numba(image):
+    """
+    Rotates the image 90 degrees counterclockwise.
+    Works with both mono (2D) and color (3D) images.
+    """
+    if image.ndim == 2:
+        height, width = image.shape
+        output = np.empty((width, height), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                output[width - 1 - x, y] = image[y, x]
+        return output
+    else:
+        height, width, channels = image.shape
+        output = np.empty((width, height, channels), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                for c in range(channels):
+                    output[width - 1 - x, y, c] = image[y, x, c]
+        return output
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def invert_image_numba(image):
+    """
+    Inverts an image (1 - pixel value) using Numba JIT.
+    Works with both mono (2D) and color (3D) images.
+    """
+    if image.ndim == 2:
+        height, width = image.shape
+        output = np.empty((height, width), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                output[y, x] = 1.0 - image[y, x]
+        return output
+    else:
+        height, width, channels = image.shape
+        output = np.empty((height, width, channels), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                for c in range(channels):
+                    output[y, x, c] = 1.0 - image[y, x, c]
+        return output
+
+@njit(parallel=True, fastmath=True)
+def rotate_180_numba(image):
+    """
+    Rotates the image 180 degrees.
+    Works with both mono (2D) and color (3D) images.
+    """
+    if image.ndim == 2:
+        height, width = image.shape
+        output = np.empty((height, width), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                output[y, x] = image[height - 1 - y, width - 1 - x]
+        return output
+    else:
+        height, width, channels = image.shape
+        output = np.empty((height, width, channels), dtype=image.dtype)
+        for y in prange(height):
+            for x in prange(width):
+                for c in range(channels):
+                    output[y, x, c] = image[height - 1 - y, width - 1 - x, c]
+        return output
+
+def normalize_flat_cfa_inplace(flat2d: np.ndarray, pattern: str, *, combine_greens: bool = True) -> np.ndarray:
+    """
+    Normalize a Bayer/mosaic flat so each CFA plane has median 1.0.
+    Operates in-place on flat2d and returns it.
+
+    pattern: 'RGGB','BGGR','GRBG','GBRG'
+    combine_greens: if True, use one median for both greens (reduces checkerboard risk)
+    """
+    pat = (pattern or "RGGB").strip().upper()
+    if pat not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+        pat = "RGGB"
+
+    # map (row_parity, col_parity) -> plane key
+    # row0: even rows, row1: odd rows; col0: even cols, col1: odd cols
+    if pat == "RGGB":
+        m = {(0,0):"R",  (0,1):"G1", (1,0):"G2", (1,1):"B"}
+    elif pat == "BGGR":
+        m = {(0,0):"B",  (0,1):"G1", (1,0):"G2", (1,1):"R"}
+    elif pat == "GRBG":
+        m = {(0,0):"G1", (0,1):"R",  (1,0):"B",  (1,1):"G2"}
+    else:  # "GBRG"
+        m = {(0,0):"G1", (0,1):"B",  (1,0):"R",  (1,1):"G2"}
+
+    # build slice views
+    planes = {
+        m[(0,0)]: flat2d[0::2, 0::2],
+        m[(0,1)]: flat2d[0::2, 1::2],
+        m[(1,0)]: flat2d[1::2, 0::2],
+        m[(1,1)]: flat2d[1::2, 1::2],
+    }
+
+    def safe_median(a: np.ndarray) -> float:
+        v = a[np.isfinite(a) & (a > 0)]
+        if v.size == 0:
+            return 1.0
+        d = float(np.median(v))
+        return d if np.isfinite(d) and d > 0 else 1.0
+
+    # greens
+    if combine_greens and ("G1" in planes) and ("G2" in planes):
+        g = np.concatenate([
+            planes["G1"][np.isfinite(planes["G1"]) & (planes["G1"] > 0)].ravel(),
+            planes["G2"][np.isfinite(planes["G2"]) & (planes["G2"] > 0)].ravel(),
+        ])
+        denom_g = float(np.median(g)) if g.size else 1.0
+        if not np.isfinite(denom_g) or denom_g <= 0:
+            denom_g = 1.0
+        planes["G1"][:] = planes["G1"] / denom_g
+        planes["G2"][:] = planes["G2"] / denom_g
+    else:
+        for k in ("G1","G2"):
+            if k in planes:
+                d = safe_median(planes[k])
+                planes[k][:] = planes[k] / d
+
+    # R / B
+    for k in ("R","B"):
+        if k in planes:
+            d = safe_median(planes[k])
+            planes[k][:] = planes[k] / d
+
+    # final safety
+    np.nan_to_num(flat2d, copy=False, nan=1.0, posinf=1.0, neginf=1.0)
+    flat2d[flat2d == 0] = 1.0
+    return flat2d
+
+
+
+@njit(parallel=True, fastmath=True)
+def _flat_div_2d(img, flat):
+    h, w = img.shape
+    for y in prange(h):
+        for x in range(w):
+            f = flat[y, x]
+            if (not np.isfinite(f)) or f <= 0.0:
+                f = 1.0
+            img[y, x] = img[y, x] / f
+    return img
+
+@njit(parallel=True, fastmath=True)
+def _flat_div_hwc(img, flat):
+    h, w, c = img.shape
+    flat_is_2d = (flat.ndim == 2)
+    for y in prange(h):
+        for x in range(w):
+            if flat_is_2d:
+                f0 = flat[y, x]
+                if (not np.isfinite(f0)) or f0 <= 0.0:
+                    f0 = 1.0
+                for k in range(c):
+                    img[y, x, k] = img[y, x, k] / f0
+            else:
+                for k in range(c):
+                    f = flat[y, x, k]
+                    if (not np.isfinite(f)) or f <= 0.0:
+                        f = 1.0
+                    img[y, x, k] = img[y, x, k] / f
+    return img
+
+@njit(parallel=True, fastmath=True)
+def _flat_div_chw(img, flat):
+    c, h, w = img.shape
+    flat_is_2d = (flat.ndim == 2)
+    for y in prange(h):
+        for x in range(w):
+            if flat_is_2d:
+                f0 = flat[y, x]
+                if (not np.isfinite(f0)) or f0 <= 0.0:
+                    f0 = 1.0
+                for k in range(c):
+                    img[k, y, x] = img[k, y, x] / f0
+            else:
+                for k in range(c):
+                    f = flat[k, y, x]
+                    if (not np.isfinite(f)) or f <= 0.0:
+                        f = 1.0
+                    img[k, y, x] = img[k, y, x] / f
+    return img
+
+def apply_flat_division_numba(image, master_flat, master_bias=None):
+    """
+    Supports:
+      - 2D mono/bayer: (H,W)
+      - Color HWC:     (H,W,3)
+      - Color CHW:     (3,H,W)
+
+    NOTE: master_bias arg kept for API compatibility; do bias/dark subtraction outside.
+    """
+    if image.ndim == 2:
+        return _flat_div_2d(image, master_flat)
+
+    if image.ndim == 3:
+        # CHW common in your pipeline
+        if image.shape[0] == 3 and image.shape[-1] != 3:
+            return _flat_div_chw(image, master_flat)
+        # HWC
+        if image.shape[-1] == 3:
+            return _flat_div_hwc(image, master_flat)
+
+        # fallback: treat as HWC
+        return _flat_div_hwc(image, master_flat)
+
+    raise ValueError(f"apply_flat_division_numba: expected 2D or 3D, got shape {image.shape}")
+
+def _bayerpat_to_id(pat: str) -> int:
+    pat = (pat or "RGGB").strip().upper()
+    if pat == "RGGB": return 0
+    if pat == "BGGR": return 1
+    if pat == "GRBG": return 2
+    if pat == "GBRG": return 3
+    return 0
+
+def _bayer_plane_medians(flat2d: np.ndarray, pat: str) -> np.ndarray:
+    pat = (pat or "RGGB").strip().upper()
+    if pat == "RGGB":
+        r  = np.median(flat2d[0::2, 0::2])
+        g1 = np.median(flat2d[0::2, 1::2])
+        g2 = np.median(flat2d[1::2, 0::2])
+        b  = np.median(flat2d[1::2, 1::2])
+    elif pat == "BGGR":
+        b  = np.median(flat2d[0::2, 0::2])
+        g1 = np.median(flat2d[0::2, 1::2])
+        g2 = np.median(flat2d[1::2, 0::2])
+        r  = np.median(flat2d[1::2, 1::2])
+    elif pat == "GRBG":
+        g1 = np.median(flat2d[0::2, 0::2])
+        r  = np.median(flat2d[0::2, 1::2])
+        b  = np.median(flat2d[1::2, 0::2])
+        g2 = np.median(flat2d[1::2, 1::2])
+    else:  # GBRG
+        g1 = np.median(flat2d[0::2, 0::2])
+        b  = np.median(flat2d[0::2, 1::2])
+        r  = np.median(flat2d[1::2, 0::2])
+        g2 = np.median(flat2d[1::2, 1::2])
+
+    med4 = np.array([r, g1, g2, b], dtype=np.float32)
+    med4[~np.isfinite(med4)] = 1.0
+    med4[med4 <= 0] = 1.0
+    return med4
+
+@njit(parallel=True, fastmath=True)
+def apply_flat_division_numba_bayer_2d(image, master_flat, med4, pat_id):
+    """
+    Bayer-aware mono division. image/master_flat are (H,W).
+    med4 is [R,G1,G2,B] for that master_flat, pat_id in {0..3}.
+    """
+    # parity index = (row&1)*2 + (col&1)
+    # med4 index order: 0=R, 1=G1, 2=G2, 3=B
+
+    # tables map parity_index -> med4 index
+    # parity_index: 0:(0,0) 1:(0,1) 2:(1,0) 3:(1,1)
+    if pat_id == 0:      # RGGB:  (0,0)R (0,1)G1 (1,0)G2 (1,1)B
+        t0, t1, t2, t3 = 0, 1, 2, 3
+    elif pat_id == 1:    # BGGR:  (0,0)B (0,1)G1 (1,0)G2 (1,1)R
+        t0, t1, t2, t3 = 3, 1, 2, 0
+    elif pat_id == 2:    # GRBG:  (0,0)G1 (0,1)R (1,0)B (1,1)G2
+        t0, t1, t2, t3 = 1, 0, 3, 2
+    else:                # GBRG:  (0,0)G1 (0,1)B (1,0)R (1,1)G2
+        t0, t1, t2, t3 = 1, 3, 0, 2
+
+    H, W = image.shape
+    for y in prange(H):
+        y1 = y & 1
+        for x in range(W):
+            x1 = x & 1
+            p = (y1 << 1) | x1  # 0..3
+            if p == 0:
+                pi = t0
+            elif p == 1:
+                pi = t1
+            elif p == 2:
+                pi = t2
+            else:
+                pi = t3
+
+            denom = master_flat[y, x] / med4[pi]
+            if denom == 0.0 or (not np.isfinite(denom)):
+                denom = 1.0
+            image[y, x] /= denom
+    return image
+
+def apply_flat_division_bayer(image2d: np.ndarray, flat2d: np.ndarray, bayerpat: str):
+    med4 = _bayer_plane_medians(flat2d, bayerpat)
+    pid = _bayerpat_to_id(bayerpat)
+    return apply_flat_division_numba_bayer_2d(image2d, flat2d, med4, pid)
+@njit(parallel=True, cache=True)
+def subtract_dark_3d(frames, dark_frame, dark_median):
+    """
+    frames: (F,H,W), dark_frame: (H,W)
+    Subtracts only the dark's spatial deviation from its median,
+    preserving the image DC pedestal. Equivalent to flat normalization
+    philosophy: remove spatial non-uniformity, not absolute level.
+    """
+    num_frames, height, width = frames.shape
+    result = np.empty_like(frames, dtype=np.float32)
+    for i in prange(num_frames):
+        result[i] = frames[i] - dark_frame + dark_median
+    return result
+
+
+@njit(parallel=True, cache=True)
+def subtract_dark_4d(frames, dark_frame, dark_median):
+    """
+    frames: (F,H,W,C), dark_frame: (H,W,C)
+    dark_median: scalar — median of the full dark frame across all pixels/channels.
+    """
+    num_frames, height, width, channels = frames.shape
+    result = np.empty_like(frames, dtype=np.float32)
+    for i in prange(num_frames):
+        for y in range(height):
+            for x in range(width):
+                for c in range(channels):
+                    result[i, y, x, c] = frames[i, y, x, c] - dark_frame[y, x, c] + dark_median
+    return result
+
+
+def subtract_dark(frames, dark_frame):
+    """
+    Standard dark subtraction: img - dark.
+    dark_median addback has been removed — it was causing overcorrection
+    during flat division.
+    """
+    dark_median = 0.0  # was: float(np.median(dark_frame)) — removed
+    if frames.ndim == 3:
+        return subtract_dark_3d(frames, dark_frame, dark_median)
+    elif frames.ndim == 4:
+        return subtract_dark_4d(frames, dark_frame, dark_median)
+    else:
+        raise ValueError(f"subtract_dark: frames must be 3D or 4D, got {frames.shape}")
+    
+import numpy as np
+from numba import njit, prange
+
+# -------------------------------
+# Windsorized Sigma Clipping (Weighted, Iterative)
+# -------------------------------
+@njit(parallel=True, fastmath=True, cache=True)
+def windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower=2.5, upper=2.5, iterations=2):
+    num_frames, height, width = stack.shape
+    clipped = np.zeros((height, width), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            pixel_values = stack[:, i, j]
+            if weights.ndim == 1:
+                pixel_weights = weights[:]
+            else:
+                pixel_weights = weights[:, i, j]
+
+            valid_mask = pixel_values != 0.0
+            med_final = 0.0
+
+            for _ in range(iterations):
+                count = 0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        count += 1
+                if count == 0:
+                    break
+                valid_vals = pixel_values[valid_mask]
+                n = valid_vals.shape[0]
+                sorted_vals = np.sort(valid_vals)
+                mid = n // 2
+                med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
+                sum_sq = 0.0
+                for k in range(n):
+                    d = valid_vals[k] - med_final
+                    sum_sq += d * d
+                std_dev = (sum_sq / float(n)) ** 0.5
+                if std_dev < 1e-12:
+                    break
+                lower_bound = med_final - lower * std_dev
+                upper_bound = med_final + upper * std_dev
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        v = pixel_values[k]
+                        if v < lower_bound or v > upper_bound:
+                            valid_mask[k] = False
+
+            for f in range(num_frames):
+                rej_mask[f, i, j] = not valid_mask[f]
+
+            # Winsorized mean: rejected pixels replaced with converged median,
+            # not excluded and not clamped to boundary
+            wsum = 0.0
+            vsum = 0.0
+            for k in range(num_frames):
+                if pixel_values[k] != 0.0:
+                    v = pixel_values[k] if valid_mask[k] else med_final
+                    w = pixel_weights[k]
+                    wsum += w
+                    vsum += v * w
+
+            if wsum > 0:
+                clipped[i, j] = vsum / wsum
+            else:
+                clipped[i, j] = med_final
+
+    return clipped, rej_mask
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower=2.5, upper=2.5, iterations=2):
+    num_frames, height, width, channels = stack.shape
+    clipped = np.zeros((height, width, channels), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            for c in range(channels):
+                pixel_values = stack[:, i, j, c]
+                if weights.ndim == 1:
+                    pixel_weights = weights[:]
+                else:
+                    pixel_weights = weights[:, i, j, c]
+
+                valid_mask = pixel_values != 0.0
+                med_final = 0.0
+
+                for _ in range(iterations):
+                    count = 0
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            count += 1
+                    if count == 0:
+                        break
+                    valid_vals = pixel_values[valid_mask]
+                    n = valid_vals.shape[0]
+                    sorted_vals = np.sort(valid_vals)
+                    mid = n // 2
+                    med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
+                    sum_sq = 0.0
+                    for k in range(n):
+                        d = valid_vals[k] - med_final
+                        sum_sq += d * d
+                    std_dev = (sum_sq / float(n)) ** 0.5
+                    if std_dev < 1e-12:
+                        break
+                    lower_bound = med_final - lower * std_dev
+                    upper_bound = med_final + upper * std_dev
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            v = pixel_values[k]
+                            if v < lower_bound or v > upper_bound:
+                                valid_mask[k] = False
+
+                for f in range(num_frames):
+                    rej_mask[f, i, j, c] = not valid_mask[f]
+
+                wsum = 0.0
+                vsum = 0.0
+                for k in range(num_frames):
+                    if pixel_values[k] != 0.0:
+                        v = pixel_values[k] if valid_mask[k] else med_final
+                        w = pixel_weights[k]
+                        wsum += w
+                        vsum += v * w
+
+                if wsum > 0:
+                    clipped[i, j, c] = vsum / wsum
+                else:
+                    clipped[i, j, c] = med_final
+
+    return clipped, rej_mask
+
+def windsorized_sigma_clip_weighted(stack, weights, lower=2.5, upper=2.5, iterations=2):
+    if stack.ndim == 3:
+        return windsorized_sigma_clip_weighted_3d_iter(stack, weights, lower, upper, iterations)
+    elif stack.ndim == 4:
+        return windsorized_sigma_clip_weighted_4d_iter(stack, weights, lower, upper, iterations)
+    else:
+        raise ValueError(f"windsorized_sigma_clip_weighted: stack must be 3D or 4D, got {stack.shape}")
+
+
+# -------------------------------
+# Kappa-Sigma Clipping (Weighted)
+# -------------------------------
+@njit(parallel=True, fastmath=True, cache=True)
+def kappa_sigma_clip_weighted_3d(stack, weights, kappa=2.5, iterations=3):
+    num_frames, height, width = stack.shape
+    clipped = np.empty((height, width), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            pixel_values = stack[:, i, j].copy()
+            if weights.ndim == 1:
+                pixel_weights = weights[:]
+            else:
+                pixel_weights = weights[:, i, j].copy()
+
+            valid_mask = pixel_values != 0.0
+            n_valid = 0
+            for k in range(num_frames):
+                if valid_mask[k]:
+                    n_valid += 1
+
+            med = 0.0
+            for _ in range(iterations):
+                count = 0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        count += 1
+                if count == 0:
+                    break
+                current_vals = pixel_values[valid_mask]
+                n = current_vals.shape[0]
+                sorted_vals = np.sort(current_vals)
+                mid = n // 2
+                med = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid-1] + sorted_vals[mid]) * 0.5
+                abs_dev = np.abs(current_vals - med)
+                sorted_dev = np.sort(abs_dev)
+                mad = sorted_dev[mid] if n % 2 == 1 else (sorted_dev[mid-1] + sorted_dev[mid]) * 0.5
+                std = mad * 1.4826
+                if std < 1e-12:
+                    break
+                lower_bound = med - kappa * std
+                upper_bound = med + kappa * std
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        val = pixel_values[k]
+                        if val < lower_bound or val > upper_bound:
+                            valid_mask[k] = False
+
+            for f in range(num_frames):
+                rej_mask[f, i, j] = not valid_mask[f]
+
+            n_kept = 0
+            for k in range(num_frames):
+                if valid_mask[k]:
+                    n_kept += 1
+
+            wsum = 0.0
+            vsum = 0.0
+            for k in range(num_frames):
+                if valid_mask[k]:
+                    w = pixel_weights[k]
+                    v = pixel_values[k]
+                    wsum += w
+                    vsum += v * w
+
+            if wsum > 0:
+                mean_kept = vsum / wsum
+            else:
+                mean_kept = med
+
+            # blend toward converged median when rejection is heavy
+            rej_frac = 1.0 - (float(n_kept) / float(max(n_valid, 1)))
+            blend = (rej_frac - 0.30)
+            if blend < 0.0:
+                blend = 0.0
+            elif blend > 0.70:
+                blend = 0.70
+            blend = blend / 0.70
+            clipped[i, j] = (1.0 - blend) * mean_kept + blend * med
+
+    return clipped, rej_mask
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def kappa_sigma_clip_weighted_4d(stack, weights, kappa=2.5, iterations=3):
+    num_frames, height, width, channels = stack.shape
+    clipped = np.empty((height, width, channels), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            for c in range(channels):
+                pixel_values = stack[:, i, j, c].copy()
+                if weights.ndim == 1:
+                    pixel_weights = weights[:]
+                else:
+                    pixel_weights = weights[:, i, j, c].copy()
+
+                valid_mask = pixel_values != 0.0
+                n_valid = 0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        n_valid += 1
+
+                med = 0.0
+                for _ in range(iterations):
+                    count = 0
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            count += 1
+                    if count == 0:
+                        break
+                    current_vals = pixel_values[valid_mask]
+                    n = current_vals.shape[0]
+                    sorted_vals = np.sort(current_vals)
+                    mid = n // 2
+                    med = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid-1] + sorted_vals[mid]) * 0.5
+                    abs_dev = np.abs(current_vals - med)
+                    sorted_dev = np.sort(abs_dev)
+                    mad = sorted_dev[mid] if n % 2 == 1 else (sorted_dev[mid-1] + sorted_dev[mid]) * 0.5
+                    std = mad * 1.4826
+                    if std < 1e-12:
+                        break
+                    lower_bound = med - kappa * std
+                    upper_bound = med + kappa * std
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            val = pixel_values[k]
+                            if val < lower_bound or val > upper_bound:
+                                valid_mask[k] = False
+
+                for f in range(num_frames):
+                    rej_mask[f, i, j, c] = not valid_mask[f]
+
+                n_kept = 0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        n_kept += 1
+
+                wsum = 0.0
+                vsum = 0.0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        w = pixel_weights[k]
+                        v = pixel_values[k]
+                        wsum += w
+                        vsum += v * w
+
+                if wsum > 0:
+                    mean_kept = vsum / wsum
+                else:
+                    mean_kept = med
+
+                rej_frac = 1.0 - (float(n_kept) / float(max(n_valid, 1)))
+                blend = (rej_frac - 0.30)
+                if blend < 0.0:
+                    blend = 0.0
+                elif blend > 0.70:
+                    blend = 0.70
+                blend = blend / 0.70
+                clipped[i, j, c] = (1.0 - blend) * mean_kept + blend * med
+
+    return clipped, rej_mask
+
+def kappa_sigma_clip_weighted(stack, weights, kappa=2.5, iterations=3):
+    if stack.ndim == 3:
+        return kappa_sigma_clip_weighted_3d(stack, weights, kappa, iterations)
+    elif stack.ndim == 4:
+        return kappa_sigma_clip_weighted_4d(stack, weights, kappa, iterations)
+    else:
+        raise ValueError(f"kappa_sigma_clip_weighted: stack must be 3D or 4D, got {stack.shape}")
+
+
+# -------------------------------
+# Trimmed Mean (Weighted)
+# -------------------------------
+
+@njit(parallel=True, fastmath=True, cache=True)
+def trimmed_mean_weighted_3d(stack, weights, trim_fraction=0.1):
+    num_frames, height, width = stack.shape
+    clipped = np.empty((height, width), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            pix_all = stack[:, i, j]
+            if weights.ndim == 1:
+                w_all = weights[:]
+            else:
+                w_all = weights[:, i, j]
+
+            valid = pix_all != 0.0
+            pix = pix_all[valid]
+            w = w_all[valid]
+
+            orig_idx = np.empty(pix_all.shape[0], dtype=np.int64)
+            count = 0
+            for f in range(num_frames):
+                if valid[f]:
+                    orig_idx[count] = f
+                    count += 1
+
+            n = pix.size
+            if n == 0:
+                clipped[i, j] = 0.0
+                for f in range(num_frames):
+                    rej_mask[f, i, j] = True
+                continue
+
+            trim = int(trim_fraction * n)
+            order = np.argsort(pix)
+
+            if n > 2 * trim:
+                keep_order = order[trim:n - trim]
+            else:
+                keep_order = order
+
+            keep_mask = np.zeros(n, dtype=np.bool_)
+            for k in range(keep_order.size):
+                keep_mask[keep_order[k]] = True
+
+            for f in range(num_frames):
+                rej_mask[f, i, j] = True
+            for idx in range(n):
+                frame = orig_idx[idx]
+                rej_mask[frame, i, j] = not keep_mask[idx]
+
+            sorted_pix = pix[order]
+            sorted_w = w[order]
+            if n > 2 * trim:
+                trimmed_values = sorted_pix[trim:n - trim]
+                trimmed_weights = sorted_w[trim:n - trim]
+            else:
+                trimmed_values = sorted_pix
+                trimmed_weights = sorted_w
+
+            wsum = trimmed_weights.sum()
+            if wsum > 0:
+                clipped[i, j] = np.sum(trimmed_values * trimmed_weights) / wsum
+            else:
+                clipped[i, j] = np.median(trimmed_values)
+
+    return clipped, rej_mask
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def trimmed_mean_weighted_4d(stack, weights, trim_fraction=0.1):
+    num_frames, height, width, channels = stack.shape
+    clipped = np.empty((height, width, channels), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            for c in range(channels):
+                pix_all = stack[:, i, j, c]
+                if weights.ndim == 1:
+                    w_all = weights[:]
+                else:
+                    w_all = weights[:, i, j, c]
+
+                valid = pix_all != 0.0
+                pix = pix_all[valid]
+                w = w_all[valid]
+
+                orig_idx = np.empty(pix_all.shape[0], dtype=np.int64)
+                count = 0
+                for f in range(num_frames):
+                    if valid[f]:
+                        orig_idx[count] = f
+                        count += 1
+
+                n = pix.size
+                if n == 0:
+                    clipped[i, j, c] = 0.0
+                    for f in range(num_frames):
+                        rej_mask[f, i, j, c] = True
+                    continue
+
+                trim = int(trim_fraction * n)
+                order = np.argsort(pix)
+
+                if n > 2 * trim:
+                    keep_order = order[trim:n - trim]
+                else:
+                    keep_order = order
+
+                keep_mask = np.zeros(n, dtype=np.bool_)
+                for k in range(keep_order.size):
+                    keep_mask[keep_order[k]] = True
+
+                for f in range(num_frames):
+                    rej_mask[f, i, j, c] = True
+                for idx in range(n):
+                    frame = orig_idx[idx]
+                    rej_mask[frame, i, j, c] = not keep_mask[idx]
+
+                sorted_pix = pix[order]
+                sorted_w = w[order]
+                if n > 2 * trim:
+                    trimmed_values = sorted_pix[trim:n - trim]
+                    trimmed_weights = sorted_w[trim:n - trim]
+                else:
+                    trimmed_values = sorted_pix
+                    trimmed_weights = sorted_w
+
+                wsum = trimmed_weights.sum()
+                if wsum > 0:
+                    clipped[i, j, c] = np.sum(trimmed_values * trimmed_weights) / wsum
+                else:
+                    clipped[i, j, c] = np.median(trimmed_values)
+
+    return clipped, rej_mask
+
+
+def trimmed_mean_weighted(stack, weights, trim_fraction=0.1):
+    if stack.ndim == 3:
+        return trimmed_mean_weighted_3d(stack, weights, trim_fraction)
+    elif stack.ndim == 4:
+        return trimmed_mean_weighted_4d(stack, weights, trim_fraction)
+    else:
+        raise ValueError(f"trimmed_mean_weighted: stack must be 3D or 4D, got {stack.shape}")
+
+
+# -------------------------------
+# Extreme Studentized Deviate (ESD) Clipping (Weighted)
+# -------------------------------
+@njit(parallel=True, fastmath=True, cache=True)
+def esd_clip_weighted_3d(stack, weights, threshold=3.0, iterations=3):
+    num_frames, height, width = stack.shape
+    clipped = np.empty((height, width), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            pix = stack[:, i, j]
+            if weights.ndim == 1:
+                w = weights[:]
+            else:
+                w = weights[:, i, j]
+
+            valid = pix != 0.0
+            values = pix[valid]
+            wvals = w[valid]
+
+            if values.size == 0:
+                clipped[i, j] = 0.0
+                for f in range(num_frames):
+                    rej_mask[f, i, j] = True
+                continue
+
+            n_valid = values.size
+            keep2 = np.ones(values.size, dtype=np.bool_)
+            med_val = 0.0
+
+            for _it in range(iterations):
+                active = values[keep2]
+                if active.size == 0:
+                    break
+                n = active.size
+                sorted_active = np.sort(active)
+                mid = n // 2
+                med_val = sorted_active[mid] if n % 2 == 1 else (sorted_active[mid-1] + sorted_active[mid]) * 0.5
+
+                # std from kept pixels (not MAD)
+                sum_sq = 0.0
+                for k in range(n):
+                    d = active[k] - med_val
+                    sum_sq += d * d
+                std_val = (sum_sq / float(n)) ** 0.5
+                if std_val < 1e-12:
+                    break
+
+                for k in range(values.size):
+                    if keep2[k]:
+                        z = abs(values[k] - med_val) / std_val
+                        if z >= threshold:
+                            keep2[k] = False
+
+            for f in range(num_frames):
+                rej_mask[f, i, j] = not valid[f]
+            idx = 0
+            for f in range(num_frames):
+                if valid[f]:
+                    rej_mask[f, i, j] = not keep2[idx]
+                    idx += 1
+
+            active = values[keep2]
+            if active.size == 0:
+                # all rejected — fall back to median of all valid
+                n = values.size
+                sorted_vals = np.sort(values)
+                mid = n // 2
+                clipped[i, j] = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid-1] + sorted_vals[mid]) * 0.5
+                continue
+
+            wvals_kept = wvals[keep2]
+            wsum = wvals_kept.sum()
+            if wsum > 0:
+                mean_kept = np.sum(active * wvals_kept) / wsum
+            else:
+                mean_kept = 0.0
+                for k in range(active.size):
+                    mean_kept += active[k]
+                mean_kept /= float(active.size)
+
+            # converged median of kept pixels
+            n_act = active.size
+            sorted_act = np.sort(active)
+            mid_act = n_act // 2
+            med_kept = sorted_act[mid_act] if n_act % 2 == 1 else (sorted_act[mid_act-1] + sorted_act[mid_act]) * 0.5
+
+            # blend toward converged median when rejection is heavy
+            rej_frac = 1.0 - (float(n_act) / float(n_valid))
+            blend = (rej_frac - 0.30)
+            if blend < 0.0:
+                blend = 0.0
+            elif blend > 0.70:
+                blend = 0.70
+            blend = blend / 0.70
+            clipped[i, j] = (1.0 - blend) * mean_kept + blend * med_kept
+
+    return clipped, rej_mask
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def esd_clip_weighted_4d(stack, weights, threshold=3.0, iterations=3):
+    num_frames, height, width, channels = stack.shape
+    clipped = np.empty((height, width, channels), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            for c in range(channels):
+                pix = stack[:, i, j, c]
+                if weights.ndim == 1:
+                    w = weights[:]
+                else:
+                    w = weights[:, i, j, c]
+
+                valid = pix != 0.0
+                values = pix[valid]
+                wvals = w[valid]
+
+                if values.size == 0:
+                    clipped[i, j, c] = 0.0
+                    for f in range(num_frames):
+                        rej_mask[f, i, j, c] = True
+                    continue
+
+                n_valid = values.size
+                keep2 = np.ones(values.size, dtype=np.bool_)
+                med_val = 0.0
+
+                for _it in range(iterations):
+                    active = values[keep2]
+                    if active.size == 0:
+                        break
+                    n = active.size
+                    sorted_active = np.sort(active)
+                    mid = n // 2
+                    med_val = sorted_active[mid] if n % 2 == 1 else (sorted_active[mid-1] + sorted_active[mid]) * 0.5
+
+                    sum_sq = 0.0
+                    for k in range(n):
+                        d = active[k] - med_val
+                        sum_sq += d * d
+                    std_val = (sum_sq / float(n)) ** 0.5
+                    if std_val < 1e-12:
+                        break
+
+                    for k in range(values.size):
+                        if keep2[k]:
+                            z = abs(values[k] - med_val) / std_val
+                            if z >= threshold:
+                                keep2[k] = False
+
+                for f in range(num_frames):
+                    rej_mask[f, i, j, c] = not valid[f]
+                idx = 0
+                for f in range(num_frames):
+                    if valid[f]:
+                        rej_mask[f, i, j, c] = not keep2[idx]
+                        idx += 1
+
+                active = values[keep2]
+                if active.size == 0:
+                    n = values.size
+                    sorted_vals = np.sort(values)
+                    mid = n // 2
+                    clipped[i, j, c] = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid-1] + sorted_vals[mid]) * 0.5
+                    continue
+
+                wvals_kept = wvals[keep2]
+                wsum = wvals_kept.sum()
+                if wsum > 0:
+                    mean_kept = np.sum(active * wvals_kept) / wsum
+                else:
+                    mean_kept = 0.0
+                    for k in range(active.size):
+                        mean_kept += active[k]
+                    mean_kept /= float(active.size)
+
+                n_act = active.size
+                sorted_act = np.sort(active)
+                mid_act = n_act // 2
+                med_kept = sorted_act[mid_act] if n_act % 2 == 1 else (sorted_act[mid_act-1] + sorted_act[mid_act]) * 0.5
+
+                rej_frac = 1.0 - (float(n_act) / float(n_valid))
+                blend = (rej_frac - 0.30)
+                if blend < 0.0:
+                    blend = 0.0
+                elif blend > 0.70:
+                    blend = 0.70
+                blend = blend / 0.70
+                clipped[i, j, c] = (1.0 - blend) * mean_kept + blend * med_kept
+
+    return clipped, rej_mask
+
+
+def esd_clip_weighted(stack, weights, threshold=3.0, iterations=3):
+    if stack.ndim == 3:
+        return esd_clip_weighted_3d(stack, weights, threshold, iterations)
+    elif stack.ndim == 4:
+        return esd_clip_weighted_4d(stack, weights, threshold, iterations)
+    else:
+        raise ValueError(f"esd_clip_weighted: stack must be 3D or 4D, got {stack.shape}")
+
+
+# -------------------------------
+# Biweight Location (Weighted)
+# -------------------------------
+
+@njit(parallel=True, fastmath=True, cache=True)
+def biweight_location_weighted_3d(stack, weights, tuning_constant=6.0):
+    num_frames, height, width = stack.shape
+    clipped = np.empty((height, width), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
+
+    if weights.ndim == 1 and weights.shape[0] == num_frames:
         pass
-    # ----------------------------------------
+    elif weights.ndim == 3 and weights.shape == stack.shape:
+        pass
+    else:
+        raise ValueError("biweight_location_weighted_3d: mismatch in shapes for 3D stack & weights")
 
-    dm = getattr(main, "doc_manager", None) or getattr(main, "dm", None)
-    if dm is None:
-        QMessageBox.warning(main, "Debayer", "DocManager not available.")
-        return
+    for i in prange(height):
+        for j in range(width):
+            x = stack[:, i, j]
+            if weights.ndim == 1:
+                w = weights[:]
+            else:
+                w = weights[:, i, j]
 
-    if doc is None:
-        d = getattr(main, "_active_doc", None)
-        doc = d() if callable(d) else d
+            valid = x != 0.0
+            x_valid = x[valid]
+            w_valid = w[valid]
 
-    if doc is None or getattr(doc, "image", None) is None:
-        QMessageBox.warning(main, "Debayer", "Load an image first.")
-        return
+            for f in range(num_frames):
+                rej_mask[f, i, j] = not valid[f]
 
-    try:
-        used_pat, _rgb = apply_debayer_preset_to_doc(dm, doc, p)
-        if hasattr(main, "_log"):
-            main._log(f"✅ Debayer (headless) pattern={used_pat}, preset={p}")
-    except Exception as e:
-        QMessageBox.critical(main, "Debayer", str(e))
-        if hasattr(main, "_log"):
-            main._log(f"❌ Debayer failed: {e}")
+            n = x_valid.size
+            if n == 0:
+                clipped[i, j] = 0.0
+                continue
+
+            M = np.median(x_valid)
+            mad = np.median(np.abs(x_valid - M))
+            if mad == 0:
+                clipped[i, j] = M
+                continue
+
+            u = (x_valid - M) / (tuning_constant * mad)
+            mask = np.abs(u) < 1.0
+
+            idx = 0
+            for f in range(num_frames):
+                if valid[f]:
+                    if not mask[idx]:
+                        rej_mask[f, i, j] = True
+                    idx += 1
+
+            x_masked = x_valid[mask]
+            w_masked = w_valid[mask]
+
+            numerator = ((x_masked - M) * (1.0 - u[mask]**2)**2 * w_masked).sum()
+            denominator = ((1.0 - u[mask]**2)**2 * w_masked).sum()
+
+            if denominator != 0:
+                clipped[i, j] = M + numerator / denominator
+            else:
+                clipped[i, j] = M
+
+    return clipped, rej_mask
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def biweight_location_weighted_4d(stack, weights, tuning_constant=6.0):
+    num_frames, height, width, channels = stack.shape
+    clipped = np.empty((height, width, channels), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
+
+    if weights.ndim == 1 and weights.shape[0] == num_frames:
+        pass
+    elif weights.ndim == 4 and weights.shape == stack.shape:
+        pass
+    else:
+        raise ValueError("biweight_location_weighted_4d: mismatch in shapes for 4D stack & weights")
+
+    for i in prange(height):
+        for j in range(width):
+            for c in range(channels):
+                x = stack[:, i, j, c]
+                if weights.ndim == 1:
+                    w = weights[:]
+                else:
+                    w = weights[:, i, j, c]
+
+                valid = x != 0.0
+                x_valid = x[valid]
+                w_valid = w[valid]
+
+                for f in range(num_frames):
+                    rej_mask[f, i, j, c] = not valid[f]
+
+                n = x_valid.size
+                if n == 0:
+                    clipped[i, j, c] = 0.0
+                    continue
+
+                M = np.median(x_valid)
+                mad = np.median(np.abs(x_valid - M))
+                if mad == 0:
+                    clipped[i, j, c] = M
+                    continue
+
+                u = (x_valid - M) / (tuning_constant * mad)
+                mask = np.abs(u) < 1.0
+
+                idx = 0
+                for f in range(num_frames):
+                    if valid[f]:
+                        if not mask[idx]:
+                            rej_mask[f, i, j, c] = True
+                        idx += 1
+
+                x_masked = x_valid[mask]
+                w_masked = w_valid[mask]
+
+                numerator = ((x_masked - M) * (1.0 - u[mask]**2)**2 * w_masked).sum()
+                denominator = ((1.0 - u[mask]**2)**2 * w_masked).sum()
+
+                if denominator != 0:
+                    clipped[i, j, c] = M + numerator / denominator
+                else:
+                    clipped[i, j, c] = M
+
+    return clipped, rej_mask
+
+
+def biweight_location_weighted(stack, weights, tuning_constant=6.0):
+    if stack.ndim == 3:
+        return biweight_location_weighted_3d(stack, weights, tuning_constant)
+    elif stack.ndim == 4:
+        return biweight_location_weighted_4d(stack, weights, tuning_constant)
+    else:
+        raise ValueError(f"biweight_location_weighted: stack must be 3D or 4D, got {stack.shape}")
+
+
+# -------------------------------
+# Modified Z-Score Clipping (Weighted)
+# -------------------------------
+
+@njit(parallel=True, fastmath=True, cache=True)
+def modified_zscore_clip_weighted_3d(stack, weights, threshold=3.5):
+    num_frames, height, width = stack.shape
+    clipped = np.empty((height, width), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
+
+    if weights.ndim == 1 and weights.shape[0] == num_frames:
+        pass
+    elif weights.ndim == 3 and weights.shape == stack.shape:
+        pass
+    else:
+        raise ValueError("modified_zscore_clip_weighted_3d: mismatch in shapes for 3D stack & weights")
+
+    for i in prange(height):
+        for j in range(width):
+            x = stack[:, i, j]
+            if weights.ndim == 1:
+                w = weights[:]
+            else:
+                w = weights[:, i, j]
+
+            valid = x != 0.0
+            x_valid = x[valid]
+            w_valid = w[valid]
+
+            if x_valid.size == 0:
+                clipped[i, j] = 0.0
+                for f in range(num_frames):
+                    rej_mask[f, i, j] = True
+                continue
+
+            median_val = np.median(x_valid)
+            mad = np.median(np.abs(x_valid - median_val))
+            if mad == 0:
+                clipped[i, j] = median_val
+                for f in range(num_frames):
+                    rej_mask[f, i, j] = not valid[f]
+                continue
+
+            modified_z = 0.6745 * (x_valid - median_val) / mad
+            valid2 = np.abs(modified_z) < threshold
+
+            idx = 0
+            for f in range(num_frames):
+                if valid[f]:
+                    rej_mask[f, i, j] = not valid2[idx]
+                    idx += 1
+                else:
+                    rej_mask[f, i, j] = True
+
+            x_final = x_valid[valid2]
+            w_final = w_valid[valid2]
+            wsum = w_final.sum()
+            if wsum > 0:
+                clipped[i, j] = np.sum(x_final * w_final) / wsum
+            else:
+                clipped[i, j] = median_val
+
+    return clipped, rej_mask
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def modified_zscore_clip_weighted_4d(stack, weights, threshold=3.5):
+    num_frames, height, width, channels = stack.shape
+    clipped = np.empty((height, width, channels), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
+
+    if weights.ndim == 1 and weights.shape[0] == num_frames:
+        pass
+    elif weights.ndim == 4 and weights.shape == stack.shape:
+        pass
+    else:
+        raise ValueError("modified_zscore_clip_weighted_4d: mismatch in shapes for 4D stack & weights")
+
+    for i in prange(height):
+        for j in range(width):
+            for c in range(channels):
+                x = stack[:, i, j, c]
+                if weights.ndim == 1:
+                    w = weights[:]
+                else:
+                    w = weights[:, i, j, c]
+
+                valid = x != 0.0
+                x_valid = x[valid]
+                w_valid = w[valid]
+
+                if x_valid.size == 0:
+                    clipped[i, j, c] = 0.0
+                    for f in range(num_frames):
+                        rej_mask[f, i, j, c] = True
+                    continue
+
+                median_val = np.median(x_valid)
+                mad = np.median(np.abs(x_valid - median_val))
+                if mad == 0:
+                    clipped[i, j, c] = median_val
+                    for f in range(num_frames):
+                        rej_mask[f, i, j, c] = not valid[f]
+                    continue
+
+                modified_z = 0.6745 * (x_valid - median_val) / mad
+                valid2 = np.abs(modified_z) < threshold
+
+                idx = 0
+                for f in range(num_frames):
+                    if valid[f]:
+                        rej_mask[f, i, j, c] = not valid2[idx]
+                        idx += 1
+                    else:
+                        rej_mask[f, i, j, c] = True
+
+                x_final = x_valid[valid2]
+                w_final = w_valid[valid2]
+                wsum = w_final.sum()
+                if wsum > 0:
+                    clipped[i, j, c] = np.sum(x_final * w_final) / wsum
+                else:
+                    clipped[i, j, c] = median_val
+
+    return clipped, rej_mask
+
+
+def modified_zscore_clip_weighted(stack, weights, threshold=3.5):
+    if stack.ndim == 3:
+        return modified_zscore_clip_weighted_3d(stack, weights, threshold)
+    elif stack.ndim == 4:
+        return modified_zscore_clip_weighted_4d(stack, weights, threshold)
+    else:
+        raise ValueError(f"modified_zscore_clip_weighted: stack must be 3D or 4D, got {stack.shape}")
+
+
+# -------------------------------
+# Windsorized Sigma Clipping (Non-weighted)
+# -------------------------------
+@njit(parallel=True, fastmath=True, cache=True)
+def windsorized_sigma_clip_3d(stack, lower=2.5, upper=2.5):
+    num_frames, height, width = stack.shape
+    clipped = np.zeros((height, width), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            pixel_values = stack[:, i, j]
+            valid_mask = pixel_values != 0.0
+            med_final = 0.0
+
+            for _ in range(3):
+                count = 0
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        count += 1
+                if count == 0:
+                    break
+                valid_vals = pixel_values[valid_mask]
+                n = valid_vals.shape[0]
+                sorted_vals = np.sort(valid_vals)
+                mid = n // 2
+                med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
+                sum_sq = 0.0
+                for k in range(n):
+                    d = valid_vals[k] - med_final
+                    sum_sq += d * d
+                std_dev = (sum_sq / float(n)) ** 0.5
+                if std_dev < 1e-12:
+                    break
+                lower_bound = med_final - lower * std_dev
+                upper_bound = med_final + upper * std_dev
+                for k in range(num_frames):
+                    if valid_mask[k]:
+                        v = pixel_values[k]
+                        if v < lower_bound or v > upper_bound:
+                            valid_mask[k] = False
+
+            for f in range(num_frames):
+                rej_mask[f, i, j] = not valid_mask[f]
+
+            vsum = 0.0
+            count = 0
+            for f in range(num_frames):
+                if pixel_values[f] != 0.0:
+                    v = pixel_values[f] if valid_mask[f] else med_final
+                    vsum += v
+                    count += 1
+
+            if count > 0:
+                clipped[i, j] = vsum / float(count)
+            else:
+                clipped[i, j] = med_final
+
+    return clipped, rej_mask
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def windsorized_sigma_clip_4d(stack, lower=2.5, upper=2.5):
+    num_frames, height, width, channels = stack.shape
+    clipped = np.zeros((height, width, channels), dtype=np.float32)
+    rej_mask = np.zeros((num_frames, height, width, channels), dtype=np.bool_)
+
+    for i in prange(height):
+        for j in range(width):
+            for c in range(channels):
+                pixel_values = stack[:, i, j, c]
+                valid_mask = pixel_values != 0.0
+                med_final = 0.0
+
+                for _ in range(3):
+                    count = 0
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            count += 1
+                    if count == 0:
+                        break
+                    valid_vals = pixel_values[valid_mask]
+                    n = valid_vals.shape[0]
+                    sorted_vals = np.sort(valid_vals)
+                    mid = n // 2
+                    med_final = sorted_vals[mid] if n % 2 == 1 else (sorted_vals[mid - 1] + sorted_vals[mid]) * 0.5
+                    sum_sq = 0.0
+                    for k in range(n):
+                        d = valid_vals[k] - med_final
+                        sum_sq += d * d
+                    std_dev = (sum_sq / float(n)) ** 0.5
+                    if std_dev < 1e-12:
+                        break
+                    lower_bound = med_final - lower * std_dev
+                    upper_bound = med_final + upper * std_dev
+                    for k in range(num_frames):
+                        if valid_mask[k]:
+                            v = pixel_values[k]
+                            if v < lower_bound or v > upper_bound:
+                                valid_mask[k] = False
+
+                for f in range(num_frames):
+                    rej_mask[f, i, j, c] = not valid_mask[f]
+
+                vsum = 0.0
+                count = 0
+                for f in range(num_frames):
+                    if pixel_values[f] != 0.0:
+                        v = pixel_values[f] if valid_mask[f] else med_final
+                        vsum += v
+                        count += 1
+
+                if count > 0:
+                    clipped[i, j, c] = vsum / float(count)
+                else:
+                    clipped[i, j, c] = med_final
+
+    return clipped, rej_mask
+
+
+def windsorized_sigma_clip(stack, lower=2.5, upper=2.5):
+    if stack.ndim == 3:
+        return windsorized_sigma_clip_3d(stack, lower, upper)
+    elif stack.ndim == 4:
+        return windsorized_sigma_clip_4d(stack, lower, upper)
+    else:
+        raise ValueError(f"windsorized_sigma_clip: stack must be 3D or 4D, got {stack.shape}")
+
+
+def max_value_stack(stack, weights=None):
+    """
+    Stacking by taking the maximum non-zero value along the frame axis.
+    Returns:
+      clipped: H×W (or H×W×C)
+      rejection_mask: same shape as stack, True where ignored/rejected
+    """
+    valid = stack != 0.0
+    masked = np.where(valid, stack, -np.inf)
+    clipped = np.max(masked, axis=0)
+    clipped = np.where(np.isfinite(clipped), clipped, 0.0).astype(np.float32)
+    rej_mask = ~valid
+    return clipped, rej_mask
+
+@njit(parallel=True, cache=True)
+def subtract_dark_with_pedestal_3d(frames, dark_frame, pedestal, dark_median):
+    """
+    frames: (F,H,W), dark_frame: (H,W)
+    Subtracts only the dark's spatial deviation from its median,
+    preserving the image DC pedestal. Pedestal is a PI-era holdover
+    for integer pipelines that clip to zero — use 0.0 in SASpro float32.
+    """
+    num_frames, height, width = frames.shape
+    result = np.empty_like(frames, dtype=np.float32)
+    for i in prange(num_frames):
+        for y in range(height):
+            for x in range(width):
+                result[i, y, x] = frames[i, y, x] - dark_frame[y, x] + dark_median + pedestal
+    return result
+
+
+@njit(parallel=True, cache=True)
+def subtract_dark_with_pedestal_4d(frames, dark_frame, pedestal, dark_median):
+    """
+    frames: (F,H,W,C), dark_frame: (H,W,C)
+    Subtracts only the dark's spatial deviation from its median,
+    preserving the image DC pedestal. Pedestal is a PI-era holdover
+    for integer pipelines that clip to zero — use 0.0 in SASpro float32.
+    """
+    num_frames, height, width, channels = frames.shape
+    result = np.empty_like(frames, dtype=np.float32)
+    for i in prange(num_frames):
+        for y in range(height):
+            for x in range(width):
+                for c in range(channels):
+                    result[i, y, x, c] = (frames[i, y, x, c] - dark_frame[y, x, c]
+                                          + dark_median + pedestal)
+    return result
+
+
+def subtract_dark_with_pedestal(frames, dark_frame, pedestal):
+    """
+    Standard dark subtraction: img - dark + pedestal.
+    dark_median addback has been removed — it was causing overcorrection
+    during flat division. pedestal is a PI-era holdover; use 0.0 in SASpro.
+    """
+    dark_median = 0.0  # was: float(np.median(dark_frame)) — removed
+    if frames.ndim == 3:
+        return subtract_dark_with_pedestal_3d(frames, dark_frame, pedestal, dark_median)
+    elif frames.ndim == 4:
+        return subtract_dark_with_pedestal_4d(frames, dark_frame, pedestal, dark_median)
+    else:
+        raise ValueError(
+            f"subtract_dark_with_pedestal: frames must be 3D or 4D, got {frames.shape}"
+        )
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _parallel_measure_frames_stack(stack):  # stack: float32[N,H,W] or float32[N,H,W,C]
+    n = stack.shape[0]
+    means = np.empty(n, np.float32)
+    for i in prange(n):
+        # Option A: mean then cast
+        # m = np.mean(stack[i])
+        # means[i] = np.float32(m)
+
+        # Option B (often a hair faster): sum / size then cast
+        s = np.sum(stack[i])          # no kwargs
+        means[i] = np.float32(s / stack[i].size)
+    return means
+
+def parallel_measure_frames(images_py):
+    a = [np.ascontiguousarray(x, dtype=np.float32) for x in images_py]
+    a = [x[:, :, None] if x.ndim == 2 else x for x in a]
+    stack = np.ascontiguousarray(np.stack(a, axis=0))  # (N,H,W,C)
+    return _parallel_measure_frames_stack(stack)
+@njit(fastmath=True, cache=True)
+def fast_mad(image):
+    """ Computes the Median Absolute Deviation (MAD) as a robust noise estimator. """
+    flat_image = image.ravel()  # ✅ Flatten the 2D array into 1D
+    median_val = np.median(flat_image)  # Compute median
+    mad = np.median(np.abs(flat_image - median_val))  # Compute MAD
+    return mad * 1.4826  # ✅ Scale MAD to match standard deviation (for Gaussian noise)
+
+
+
+@njit(fastmath=True, cache=True)
+def compute_snr(image):
+    """ Computes the Signal-to-Noise Ratio (SNR) using fast Numba std. """
+    mean_signal = np.mean(image)
+    noise = compute_noise(image)
+    return mean_signal / noise if noise > 0 else 0
+
+
+
+
+@njit(fastmath=True, cache=True)
+def compute_noise(image):
+    """ Estimates noise using Median Absolute Deviation (MAD). """
+    return fast_mad(image)
+
+def _downsample_for_stars(img: np.ndarray, factor: int = 4) -> np.ndarray:
+    """
+    Very cheap spatial downsample for star counting.
+    Works on mono or RGB. Returns float32 2D.
+    """
+    if img.ndim == 3 and img.shape[-1] == 3:
+        # luma first
+        r, g, b = img[..., 0], img[..., 1], img[..., 2]
+        img = 0.2126*r + 0.7152*g + 0.0722*b
+    img = np.asarray(img, dtype=np.float32, order="C")
+    if factor <= 1:
+        return img
+    # stride (fast & cache friendly), not interpolation
+    return img[::factor, ::factor]
+
+
+def fast_star_count_lite(img: np.ndarray,
+                         sample_stride: int = 8,
+                         localmax_k: int = 3,
+                         thr_sigma: float = 4.0,
+                         max_ecc_samples: int = 200) -> tuple[int, float]:
+    """
+    Super-fast star counter:
+      • sample a tiny subset to estimate background mean/std
+      • local-maxima on small image
+      • optional rough eccentricity on a small random subset
+    Returns (count, avg_ecc).
+    """
+    # img is 2D float32, already downsampled
+    H, W = img.shape
+    # 1) quick background stats on a sparse grid
+    samp = img[::sample_stride, ::sample_stride]
+    mu = float(np.mean(samp))
+    sigma = float(np.std(samp))
+    thr = mu + thr_sigma * max(sigma, 1e-6)
+
+    # 2) find local maxima above threshold
+    # small structuring element; k must be odd
+    k = localmax_k if (localmax_k % 2 == 1) else (localmax_k + 1)
+    se = np.ones((k, k), np.uint8)
+    # dilate the image (on float -> do it via cv2.dilate after scaling)
+    # scale to 16-bit to keep numeric fidelity (cheap)
+    scaled = (img * (65535.0 / max(np.max(img), 1e-6))).astype(np.uint16)
+    dil = cv2.dilate(scaled, se)
+    # peaks are pixels that equal the local max and exceed thr
+    peaks = (scaled == dil) & (img > thr)
+    count = int(np.count_nonzero(peaks))
+
+    # 3) (optional) rough eccentricity on a tiny subset
+    if count == 0:
+        return 0, 0.0
+    if max_ecc_samples <= 0:
+        return count, 0.0
+
+    ys, xs = np.where(peaks)
+    if xs.size > max_ecc_samples:
+        idx = np.random.choice(xs.size, max_ecc_samples, replace=False)
+        xs, ys = xs[idx], ys[idx]
+
+    ecc_vals = []
+    # small window around each peak
+    r = 2  # 5×5 window
+    for x, y in zip(xs, ys):
+        x0, x1 = max(0, x - r), min(W, x + r + 1)
+        y0, y1 = max(0, y - r), min(H, y + r + 1)
+        patch = img[y0:y1, x0:x1]
+        if patch.size < 9:
+            continue
+        # second moments for ellipse approximation
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        yy = yy.astype(np.float32) - y
+        xx = xx.astype(np.float32) - x
+        w = patch - patch.min()
+        s = float(w.sum())
+        if s <= 0:
+            continue
+        mxx = float((w * (xx*xx)).sum() / s)
+        myy = float((w * (yy*yy)).sum() / s)
+        # approximate major/minor from variances
+        a = math.sqrt(max(mxx, myy))
+        b = math.sqrt(min(mxx, myy))
+        if a > 1e-6:
+            e = math.sqrt(max(0.0, 1.0 - (b*b)/(a*a)))
+            ecc_vals.append(e)
+    avg_ecc = float(np.mean(ecc_vals)) if ecc_vals else 0.0
+    return count, avg_ecc
+
+def compute_star_count_fast_preview(preview_2d: np.ndarray, *, return_size: bool = False):
+    """
+    Star counter for stacking suite measurement phase.
+
+    sep detection 5σ above the global background RMS (minarea 5) on the full
+    preview — the same detector registration uses (astroalign._find_sources).
+    The threshold is referenced to the noise, so the count follows the stars
+    rather than the noise: fast_star_count's percentile stretch + Otsu cut
+    sits inside the background on sparse fields and counts noise fragments.
+
+    Returns (count, ecc) by default; ecc is the median eccentricity. With
+    return_size=True returns (count, ecc, median_size), where median_size is
+    a relative FWHM proxy in preview pixels (smaller = sharper). Only
+    comparable across frames measured through this same path — good enough
+    for frame weighting, not calibrated to arcsec.
+    """
+    import sep
+    data = np.ascontiguousarray(np.asarray(preview_2d, dtype=np.float32))
+    # Room for every pixel: a dense field must not overflow sep's buffer.
+    # Only ever raised, since other sep users share the process setting.
+    if sep.get_extract_pixstack() < data.size:
+        sep.set_extract_pixstack(int(data.size))
+    bkg = sep.Background(data)
+    cat = sep.extract(data - bkg.back(), 5.0, err=bkg.globalrms, minarea=5)
+    if len(cat) == 0:
+        return (0, 0.0, 0.0) if return_size else (0, 0.0)
+    a = np.maximum(cat["a"], 1e-12)
+    b = np.maximum(cat["b"], 0.0)
+    q = np.clip(b / a, 0.0, 1.0)
+    count = int(len(cat))
+    ecc = float(np.median(np.sqrt(1.0 - q * q)))
+    if return_size:
+        size = float(np.median(2.3548 * np.sqrt(a * b)))
+        return count, ecc, size
+    return count, ecc
+
+def compute_star_count(image):
+    return fast_star_count(image)
+
+def fast_star_count(
+    image,
+    blur_size=None,
+    threshold_factor=0.8,
+    min_area=None,
+    max_area=None,
+    *,
+    # robust stretch controls (file1)
+    stretch=True,
+    gamma=0.45,
+    p_lo=0.1,
+    p_hi=99.8,
+    # morphology behavior
+    morph_open="auto",   # "auto" | True | False
+    # opt-in: also return a median star size (FWHM proxy, in *this image's* px)
+    return_size=False,
+):
+    """
+    Returns (star_count, avg_ecc) by default, or
+    (star_count, avg_ecc, median_size) when return_size=True.
+
+    median_size is the median over detected stars of the fitted-ellipse mean
+    diameter (a+b)/2, in pixels *of the image passed in*. It is a relative
+    sharpness / FWHM proxy: smaller = tighter stars = sharper frame. Because
+    it is measured on whatever (possibly downsampled) image is handed in, it is
+    only comparable across frames that went through the identical pre-scaling —
+    which is exactly the case during the stacking measurement phase. It is NOT
+    calibrated to arcseconds. 0.0 means no stars were measured.
+
+    stretch=True (default): robust for linear astro images (percentile stretch + gamma)
+    stretch=False: simple min/max normalize (legacy behavior)
+    """
+
+    # 1) grayscale float32
+    if image.ndim == 3:
+        r, g, b = image[..., 0], image[..., 1], image[..., 2]
+        img = (0.2126 * r + 0.7152 * g + 0.0722 * b).astype(np.float32, copy=False)
+    else:
+        img = np.asarray(image, dtype=np.float32, order="C")
+
+    H, W = img.shape[:2]
+    short_side = max(1, min(H, W))
+
+    # 2) adaptive params (file1 style)
+    if blur_size is None:
+        k = max(3, int(round(short_side / 80)))
+        blur_size = k if (k % 2 == 1) else (k + 1)
+
+    if min_area is None:
+        min_area = 1
+
+    if max_area is None:
+        max_area = max(100, int(0.01 * H * W))
+
+    # 3) build 8-bit working image
+    if stretch:
+        lo = float(np.percentile(img, p_lo))
+        hi = float(np.percentile(img, p_hi))
+        if not (hi > lo):
+            lo, hi = float(img.min()), float(img.max())
+            if not (hi > lo):
+                # Flat / all-zero core (e.g. a fully black-bordered aligned
+                # preview): no stars to measure. Respect the requested arity so
+                # callers doing `c, ecc, size = ...` don't blow up on unpack.
+                return (0, 0.0, 0.0) if return_size else (0, 0.0)
+
+        norm = (img - lo) / max(1e-8, (hi - lo))
+        norm = np.clip(norm, 0.0, 1.0)
+
+        if gamma and gamma > 0:
+            norm = np.power(norm, gamma, dtype=np.float32)
+
+        image_8u = (norm * 255.0).astype(np.uint8)
+    else:
+        img_min = float(img.min())
+        img_max = float(img.max())
+        if img_max > img_min:
+            image_8u = (255.0 * (img - img_min) / (img_max - img_min)).astype(np.uint8)
+        else:
+            # Flat image with no dynamic range → no measurable stars. Match the
+            # requested return arity (see note in the stretch branch above).
+            return (0, 0.0, 0.0) if return_size else (0, 0.0)
+
+    # 4) blur + subtract
+    blurred = cv2.GaussianBlur(image_8u, (blur_size, blur_size), 0)
+    sub = cv2.absdiff(image_8u, blurred)
+
+    # 5) Otsu + threshold_factor
+    otsu, _ = cv2.threshold(sub, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    thr = max(2, int(otsu * threshold_factor))
+    _, mask = cv2.threshold(sub, thr, 255, cv2.THRESH_BINARY)
+
+    # 6) morphology
+    do_morph = False
+    if morph_open == "auto":
+        do_morph = short_side >= 600
+    elif morph_open is True:
+        do_morph = True
+
+    if do_morph:
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+
+    # 7) contours -> ellipse ecc
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    star_count = 0
+    ecc_values = []
+    size_values = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < min_area or area > max_area:
+            continue
+        if len(c) < 5:
+            continue
+        (_, _), (a, b), _ = cv2.fitEllipse(c)
+        # fitEllipse can return nan/inf axis lengths for near-degenerate
+        # contours (collinear points that still pass len>=5). Skip them so a
+        # single bad fit doesn't poison the median size with nan — this is
+        # what produced "FWHM~nan" on high-star-count frames (thousands of
+        # contours → far more chances to hit one degenerate fit).
+        if not (math.isfinite(a) and math.isfinite(b)) or a <= 0.0 or b <= 0.0:
+            continue
+        if b > a:
+            a, b = b, a
+        e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
+        ecc_values.append(e)
+        # ellipse mean diameter = FWHM proxy (px of this image). a,b are axis
+        # *lengths* from fitEllipse; (a+b)/2 is the round-equivalent diameter.
+        size_values.append(0.5 * (a + b))
+        star_count += 1
+
+    # 8) fallback if too few
+    if star_count < 5:
+        k2 = max(3, (blur_size // 2) | 1)
+        blurred2 = cv2.GaussianBlur(image_8u, (k2, k2), 0)
+        sub2 = cv2.absdiff(image_8u, blurred2)
+        otsu2, _ = cv2.threshold(sub2, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+        thr2 = max(2, int(otsu2 * 0.6))
+        _, mask2 = cv2.threshold(sub2, thr2, 255, cv2.THRESH_BINARY)
+        contours2, _ = cv2.findContours(mask2, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        star_count = 0
+        ecc_values = []
+        size_values = []
+        for c in contours2:
+            area = cv2.contourArea(c)
+            if area < 1 or area > max_area:
+                continue
+            if len(c) < 5:
+                continue
+            (_, _), (a, b), _ = cv2.fitEllipse(c)
+            if not (math.isfinite(a) and math.isfinite(b)) or a <= 0.0 or b <= 0.0:
+                continue
+            if b > a:
+                a, b = b, a
+            e = math.sqrt(max(0.0, 1.0 - (b * b) / (a * a))) if a > 0 else 0.0
+            ecc_values.append(e)
+            size_values.append(0.5 * (a + b))
+            star_count += 1
+
+    avg_ecc = float(np.mean(ecc_values)) if star_count > 0 else 0.0
+    if return_size:
+        # median is more robust than mean to a few blown-out/merged blobs.
+        # Filter any non-finite entries defensively so the size proxy can
+        # never come back nan (which would silently neutralise the sharpness
+        # term downstream and, worse, print as "FWHM~nan").
+        _finite_sizes = [s for s in size_values if math.isfinite(s) and s > 0.0]
+        median_size = float(np.median(_finite_sizes)) if _finite_sizes else 0.0
+        return star_count, avg_ecc, median_size
+    return star_count, avg_ecc
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def normalize_images_3d(stack, ref_median):
+    """
+    Normalizes each frame in a 3D mono stack (F,H,W)
+    so that its median equals ref_median.
+
+    Returns a 3D result (F,H,W).
+    """
+    num_frames, height, width = stack.shape
+    normalized_stack = np.zeros_like(stack, dtype=np.float32)
+
+    for i in prange(num_frames):
+        # shape of one frame: (H,W)
+        img = stack[i]
+        img_median = np.median(img)
+
+        # Prevent division by zero
+        scale_factor = ref_median / max(img_median, 1e-6)
+        # Scale the entire 2D frame
+        normalized_stack[i] = img * scale_factor
+
+    return normalized_stack
+
+@njit(parallel=True, fastmath=True, cache=True)
+def normalize_images_4d(stack, ref_median):
+    """
+    Normalizes each frame in a 4D color stack (F,H,W,C)
+    so that its median equals ref_median.
+
+    Returns a 4D result (F,H,W,C).
+    """
+    num_frames, height, width, channels = stack.shape
+    normalized_stack = np.zeros_like(stack, dtype=np.float32)
+
+    for i in prange(num_frames):
+        # shape of one frame: (H,W,C)
+        img = stack[i]  # (H,W,C)
+        # Flatten to 1D to compute median across all channels/pixels
+        img_median = np.median(img.ravel())
+
+        # Prevent division by zero
+        scale_factor = ref_median / max(img_median, 1e-6)
+
+        # Scale the entire 3D frame
+        for y in range(height):
+            for x in range(width):
+                for c in range(channels):
+                    normalized_stack[i, y, x, c] = img[y, x, c] * scale_factor
+
+    return normalized_stack
+
+def normalize_images(stack, ref_median):
+    """
+    Dispatcher that calls either the 3D or 4D specialized Numba function
+    depending on 'stack.ndim'.
+
+    - If stack.ndim == 3, we assume shape (F,H,W).
+    - If stack.ndim == 4, we assume shape (F,H,W,C).
+    """
+    if stack.ndim == 3:
+        return normalize_images_3d(stack, ref_median)
+    elif stack.ndim == 4:
+        return normalize_images_4d(stack, ref_median)
+    else:
+        raise ValueError(f"normalize_images: stack must be 3D or 4D, got shape {stack.shape}")
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _bilinear_interpolate_numba(out):
+    H, W, C = out.shape
+    for c in range(C):
+        for y in prange(H):
+            for x in range(W):
+                if out[y, x, c] == 0:
+                    sumv = 0.0
+                    cnt = 0
+                    # 3x3 neighborhood average of non-zero samples (simple & fast)
+                    for dy in (-1, 0, 1):
+                        yy = y + dy
+                        if yy < 0 or yy >= H: 
+                            continue
+                        for dx in (-1, 0, 1):
+                            xx = x + dx
+                            if xx < 0 or xx >= W:
+                                continue
+                            v = out[yy, xx, c]
+                            if v != 0:
+                                sumv += v
+                                cnt += 1
+                    if cnt > 0:
+                        out[y, x, c] = sumv / cnt
+    return out
+
+
+@njit(parallel=True, fastmath=True)
+def _edge_aware_interpolate_numba(out):
+    """
+    For each pixel in out (shape: (H,W,3)) where out[y,x,c] == 0,
+    use a simple edge-aware approach:
+      1) Compute horizontal gradient = abs( left - right )
+      2) Compute vertical gradient   = abs( top - bottom )
+      3) Choose the direction with the smaller gradient => average neighbors
+      4) If neighbors are missing or zero, fallback to a small 3x3 average
+
+    This is simpler than AHD but usually better than naive bilinear
+    for high-contrast features like star cores.
+    """
+    H, W, C = out.shape
+
+    for c in range(C):
+        for y in prange(H):
+            for x in range(W):
+                if out[y, x, c] == 0:
+                    # Gather immediate neighbors
+                    left = 0.0
+                    right = 0.0
+                    top = 0.0
+                    bottom = 0.0
+                    have_left = False
+                    have_right = False
+                    have_top = False
+                    have_bottom = False
+
+                    # Left
+                    if x - 1 >= 0:
+                        val = out[y, x - 1, c]
+                        if val != 0:
+                            left = val
+                            have_left = True
+
+                    # Right
+                    if x + 1 < W:
+                        val = out[y, x + 1, c]
+                        if val != 0:
+                            right = val
+                            have_right = True
+
+                    # Top
+                    if y - 1 >= 0:
+                        val = out[y - 1, x, c]
+                        if val != 0:
+                            top = val
+                            have_top = True
+
+                    # Bottom
+                    if y + 1 < H:
+                        val = out[y + 1, x, c]
+                        if val != 0:
+                            bottom = val
+                            have_bottom = True
+
+                    # Compute gradients
+                    # If we don't have valid neighbors for that direction,
+                    # set the gradient to a large number => won't be chosen
+                    gh = 1e6
+                    gv = 1e6
+
+                    if have_left and have_right:
+                        gh = abs(left - right)
+                    if have_top and have_bottom:
+                        gv = abs(top - bottom)
+
+                    # Decide which direction to interpolate
+                    if gh < gv and have_left and have_right:
+                        # Horizontal interpolation
+                        out[y, x, c] = 0.5 * (left + right)
+                    elif gv <= gh and have_top and have_bottom:
+                        # Vertical interpolation
+                        out[y, x, c] = 0.5 * (top + bottom)
+                    else:
+                        # Fallback: average 3×3 region
+                        sumv = 0.0
+                        count = 0
+                        for dy in range(-1, 2):
+                            for dx in range(-1, 2):
+                                yy = y + dy
+                                xx = x + dx
+                                if 0 <= yy < H and 0 <= xx < W:
+                                    val = out[yy, xx, c]
+                                    if val != 0:
+                                        sumv += val
+                                        count += 1
+                        if count > 0:
+                            out[y, x, c] = sumv / count
+
+    return out
+# === Separate Full-Resolution Demosaicing Kernels ===
+# These njit functions assume the raw image is arranged in a Bayer pattern
+# and that we want a full (H,W,3) output.
+
+@njit(parallel=True, fastmath=True, cache=True)
+def debayer_RGGB_fullres_fast(image, interpolate=True):
+    H, W = image.shape
+    out = np.zeros((H, W, 3), dtype=image.dtype)
+    for y in prange(H):
+        for x in range(W):
+            if (y & 1) == 0:
+                if (x & 1) == 0: out[y, x, 0] = image[y, x]  # R
+                else:            out[y, x, 1] = image[y, x]  # G
+            else:
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 2] = image[y, x]  # B
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def debayer_BGGR_fullres_fast(image, interpolate=True):
+    H, W = image.shape
+    out = np.zeros((H, W, 3), dtype=image.dtype)
+    for y in prange(H):
+        for x in range(W):
+            if (y & 1) == 0:
+                if (x & 1) == 0: out[y, x, 2] = image[y, x]  # B
+                else:            out[y, x, 1] = image[y, x]  # G
+            else:
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 0] = image[y, x]  # R
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def debayer_GRBG_fullres_fast(image, interpolate=True):
+    H, W = image.shape
+    out = np.zeros((H, W, 3), dtype=image.dtype)
+    for y in prange(H):
+        for x in range(W):
+            if (y & 1) == 0:
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 0] = image[y, x]  # R
+            else:
+                if (x & 1) == 0: out[y, x, 2] = image[y, x]  # B
+                else:            out[y, x, 1] = image[y, x]  # G
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def debayer_GBRG_fullres_fast(image, interpolate=True):
+    H, W = image.shape
+    out = np.zeros((H, W, 3), dtype=image.dtype)
+    for y in prange(H):
+        for x in range(W):
+            if (y & 1) == 0:
+                if (x & 1) == 0: out[y, x, 1] = image[y, x]  # G
+                else:            out[y, x, 2] = image[y, x]  # B
+            else:
+                if (x & 1) == 0: out[y, x, 0] = image[y, x]  # R
+                else:            out[y, x, 1] = image[y, x]  # G
+    if interpolate:
+        _edge_aware_interpolate_numba(out)
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _strict_cfa_fill(image, out, r0, c0_r, r1, c1_r):
+    """
+    Strict CFA: place each raw sample into its true channel, leave everything
+    else black. No interpolation whatsoever.
+
+    r0/c0_r/r1/c1_r encode the 2x2 Bayer tile as channel indices (0=R,1=G,2=B):
+      pixel (even_row, even_col) → channel r0
+      pixel (even_row, odd_col)  → channel c0_r
+      pixel (odd_row,  even_col) → channel r1
+      pixel (odd_row,  odd_col)  → channel c1_r
+    """
+    H, W = image.shape
+    for y in prange(H):
+        for x in range(W):
+            yr = y & 1
+            xr = x & 1
+            if yr == 0:
+                ch = c0_r if xr else r0
+            else:
+                ch = c1_r if xr else r1
+            out[y, x, ch] = image[y, x]
+    return out
+
+# channel-index tuples for _strict_cfa_fill: (even_row/even_col, even_row/odd_col, odd_row/even_col, odd_row/odd_col)
+_CFA_CHAN = {
+    "RGGB": (0, 1, 1, 2),
+    "BGGR": (2, 1, 1, 0),
+    "GRBG": (1, 0, 2, 1),
+    "GBRG": (1, 2, 0, 1),
+}
+
+# ============================== VNG demosaic ==================================
+# Variable Number of Gradients (Chang, Cheung & Pan 1999), ported faithfully
+# from LibRaw/dcraw's vng_interpolate (LibRaw src/demosaic/misc_demosaic.cpp).
+# Verified to match OpenCV's LibRaw-derived VNG to <0.5 LSB (8-bit) across all
+# four Bayer phases; unlike cv2's VNG (8-bit only) this runs in float32, so it
+# preserves the full precision / >1.0 linear range of astro data. The gradient
+# 'terms' and 'chood' tables below are LibRaw's verbatim.
+_VNG_TERMS = (
+    -2,-2,0,-1,0,0x01,-2,-2,0,0,1,0x01,-2,-1,-1,0,0,0x01,-2,-1,0,-1,0,0x02,
+    -2,-1,0,0,0,0x03,-2,-1,0,1,1,0x01,-2,0,0,-1,0,0x06,-2,0,0,0,1,0x02,
+    -2,0,0,1,0,0x03,-2,1,-1,0,0,0x04,-2,1,0,-1,1,0x04,-2,1,0,0,0,0x06,
+    -2,1,0,1,0,0x02,-2,2,0,0,1,0x04,-2,2,0,1,0,0x04,-1,-2,-1,0,0,0x80,
+    -1,-2,0,-1,0,0x01,-1,-2,1,-1,0,0x01,-1,-2,1,0,1,0x01,-1,-1,-1,1,0,0x88,
+    -1,-1,1,-2,0,0x40,-1,-1,1,-1,0,0x22,-1,-1,1,0,0,0x33,-1,-1,1,1,1,0x11,
+    -1,0,-1,2,0,0x08,-1,0,0,-1,0,0x44,-1,0,0,1,0,0x11,-1,0,1,-2,1,0x40,
+    -1,0,1,-1,0,0x66,-1,0,1,0,1,0x22,-1,0,1,1,0,0x33,-1,0,1,2,1,0x10,
+    -1,1,1,-1,1,0x44,-1,1,1,0,0,0x66,-1,1,1,1,0,0x22,-1,1,1,2,0,0x10,
+    -1,2,0,1,0,0x04,-1,2,1,0,1,0x04,-1,2,1,1,0,0x04,0,-2,0,0,1,0x80,
+    0,-1,0,1,1,0x88,0,-1,1,-2,0,0x40,0,-1,1,0,0,0x11,0,-1,2,-2,0,0x40,
+    0,-1,2,-1,0,0x20,0,-1,2,0,0,0x30,0,-1,2,1,1,0x10,0,0,0,2,1,0x08,
+    0,0,2,-2,1,0x40,0,0,2,-1,0,0x60,0,0,2,0,1,0x20,0,0,2,1,0,0x30,
+    0,0,2,2,1,0x10,0,1,1,0,0,0x44,0,1,1,2,0,0x10,0,1,2,-1,1,0x40,
+    0,1,2,0,0,0x60,0,1,2,1,0,0x20,0,1,2,2,0,0x10,1,-2,1,0,0,0x80,
+    1,-1,1,1,0,0x88,1,0,1,2,0,0x08,1,0,2,-1,0,0x40,1,0,2,1,0,0x10,
+)
+_VNG_CHOOD = (-1,-1,-1,0,-1,1,0,1,1,1,1,0,1,-1,0,-1)
+
+# Per-pattern precomputed gradient/averaging tables, keyed by pattern string.
+_VNG_TABLE_CACHE = {}
+
+def _vng_build_tables(bp):
+    """Build LibRaw VNG code tables for a 2x2 Bayer phase grid. Cached per pattern."""
+    tables = _VNG_TABLE_CACHE.get(bp)
+    if tables is not None:
+        return tables
+    t = _CFA_CHAN[bp]  # (evenrow/evencol, evenrow/oddcol, oddrow/evencol, oddrow/oddcol)
+    def fcol(r, c):
+        return t[(r & 1) * 2 + (c & 1)]
+    term_arr = np.zeros((4, 64, 7), np.int64)  # y1,x1,y2,x2,tcolor,weight,gradmask
+    term_cnt = np.zeros(4, np.int64)
+    chood_arr = np.zeros((4, 8, 3), np.int64)  # y,x,special
+    color_arr = np.zeros(4, np.int64)
+    for rp in range(2):
+        for cp in range(2):
+            ph = rp * 2 + cp
+            color0 = fcol(rp, cp)
+            color_arr[ph] = color0
+            n = 0
+            for k in range(64):
+                y1, x1, y2, x2, weight, grads = _VNG_TERMS[k*6:k*6+6]
+                color = fcol(rp + y1, cp + x1)
+                if fcol(rp + y2, cp + x2) != color:
+                    continue
+                diag = 2 if (fcol(rp, cp+1) == color and fcol(rp+1, cp) == color) else 1
+                if abs(y1 - y2) == diag and abs(x1 - x2) == diag:
+                    continue
+                term_arr[ph, n] = (y1, x1, y2, x2, color, weight, grads)
+                n += 1
+            term_cnt[ph] = n
+            for g in range(8):
+                y = _VNG_CHOOD[g*2]; x = _VNG_CHOOD[g*2 + 1]
+                special = 1 if (fcol(rp + y, cp + x) != color0 and
+                                fcol(rp + 2*y, cp + 2*x) == color0) else 0
+                chood_arr[ph, g] = (y, x, special)
+    tables = (term_arr, term_cnt, chood_arr, color_arr)
+    _VNG_TABLE_CACHE[bp] = tables
+    return tables
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _vng_bilinear_prefill(image, r0, c0, r1, c1):
+    """Full (H,W,3) bilinear demosaic used as the base image VNG refines.
+    Reads only the immutable raw mosaic so the result is order-independent."""
+    H, W = image.shape
+    out = np.zeros((H, W, 3), dtype=np.float32)
+    for y in prange(H):
+        for x in range(W):
+            yr = y & 1; xr = x & 1
+            sc = (c0 if xr else r0) if yr == 0 else (c1 if xr else r1)
+            for c in range(3):
+                if c == sc:
+                    out[y, x, c] = image[y, x]
+                else:
+                    s = 0.0; nn = 0
+                    for dy in range(-1, 2):
+                        yy = y + dy
+                        if yy < 0 or yy >= H:
+                            continue
+                        for dx in range(-1, 2):
+                            xx = x + dx
+                            if xx < 0 or xx >= W:
+                                continue
+                            yyr = yy & 1; xxr = xx & 1
+                            fc = (c0 if xxr else r0) if yyr == 0 else (c1 if xxr else r1)
+                            if fc == c:
+                                s += image[yy, xx]; nn += 1
+                    if nn > 0:
+                        out[y, x, c] = s / nn
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _vng_interpolate_core(img, term_arr, term_cnt, chood_arr, color_arr):
+    """LibRaw VNG refinement over the interior of a bilinear-prefilled image.
+    Border pixels (2px frame) and flat regions keep the bilinear estimate."""
+    H, W, _ = img.shape
+    out = img.copy()
+    for row in prange(2, H - 2):
+        for col in range(2, W - 2):
+            ph = (row & 1) * 2 + (col & 1)
+            color = color_arr[ph]
+            g0=0.0;g1=0.0;g2=0.0;g3=0.0;g4=0.0;g5=0.0;g6=0.0;g7=0.0
+            nt = term_cnt[ph]
+            for k in range(nt):
+                y1=term_arr[ph,k,0]; x1=term_arr[ph,k,1]
+                y2=term_arr[ph,k,2]; x2=term_arr[ph,k,3]
+                tc=term_arr[ph,k,4]; w=term_arr[ph,k,5]; gm=term_arr[ph,k,6]
+                diff = abs(img[row+y1, col+x1, tc] - img[row+y2, col+x2, tc]) * (1 << w)
+                if gm & 1:   g0 += diff
+                if gm & 2:   g1 += diff
+                if gm & 4:   g2 += diff
+                if gm & 8:   g3 += diff
+                if gm & 16:  g4 += diff
+                if gm & 32:  g5 += diff
+                if gm & 64:  g6 += diff
+                if gm & 128: g7 += diff
+            gmin = g0; gmax = g0
+            for gv in (g1, g2, g3, g4, g5, g6, g7):
+                if gv < gmin: gmin = gv
+                if gv > gmax: gmax = gv
+            if gmax == 0.0:
+                continue  # flat: keep bilinear value already in out
+            thold = gmin + gmax * 0.5
+            gvals = (g0, g1, g2, g3, g4, g5, g6, g7)
+            sR = 0.0; sG = 0.0; sB = 0.0; num = 0
+            for g in range(8):
+                if gvals[g] <= thold:
+                    y = chood_arr[ph, g, 0]; x = chood_arr[ph, g, 1]; sp = chood_arr[ph, g, 2]
+                    for c in range(3):
+                        if c == color and sp == 1:
+                            val = (img[row, col, c] + img[row + 2*y, col + 2*x, c]) * 0.5
+                        else:
+                            val = img[row + y, col + x, c]
+                        if c == 0: sR += val
+                        elif c == 1: sG += val
+                        else: sB += val
+                    num += 1
+            s = (sR, sG, sB)
+            base = img[row, col, color]
+            for c in range(3):
+                tv = base
+                if c != color:
+                    tv += (s[c] - s[color]) / num
+                if tv < 0.0:
+                    tv = 0.0
+                out[row, col, c] = tv
+    return out
+
+def _vng_demosaic(image_data, bp):
+    """Full VNG demosaic: raw 2D mosaic + pattern string -> (H,W,3) float32."""
+    term_arr, term_cnt, chood_arr, color_arr = _vng_build_tables(bp)
+    r0, c0, r1, c1 = _CFA_CHAN[bp]
+    pre = _vng_bilinear_prefill(image_data, r0, c0, r1, c1)
+    return _vng_interpolate_core(pre, term_arr, term_cnt, chood_arr, color_arr)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# RCD — Ratio-Corrected Demosaicing (Luis Miguel Sanz Rodríguez, 2016)
+#
+# Why add it:
+#   VNG's first-order gradient test gets randomized by noise on dim OSC
+#   data (narrowband especially), producing the chrominance speckling the
+#   user saw in the VNG-vs-bilinear comparison. RCD uses second-order
+#   color-space gradients to pick the interpolation direction — much more
+#   noise-robust — and interpolates R/B as ratios of G rather than as
+#   additive differences, which preserves saturation on faint color
+#   features where VNG tends to desaturate.
+#
+# Three passes over the mosaic:
+#   1. Green at R/B sites. Hamilton-Adams H and V estimates, weighted by
+#      the inverse-square of a second-order color gradient. The gradient
+#      combines a G-plane first difference with a C-plane Laplacian
+#      (C = R at R sites, B at B sites); this is more selective than
+#      VNG's "sum of absolute differences" and far less random under
+#      shot noise.
+#   2. R/B at G sites. The two neighbors in one axis are R and the two
+#      in the other axis are B (the layout depends on the pattern phase
+#      detected per pixel via the color masks). Interpolate R and B as
+#      G-weighted ratios of the neighbors' R-or-B-over-G, then multiply
+#      by the local G. Ratio form smooths noise in dark channels where
+#      the difference form amplifies it.
+#   3. R at B sites and B at R sites. Diagonal ratio interpolation along
+#      whichever diagonal has the smaller RCD gradient.
+#
+# The 2-pixel frame around the border is filled by the bilinear prefill
+# and left untouched by the RCD passes, so the core loops don't need
+# out-of-bounds handling. On a typical OSC stack frame the loss of RCD
+# quality on that frame (~0.1% of the pixels) is invisible.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _rcd_build_masks(bp, H, W):
+    """Build R, G, B boolean masks for a given Bayer phase. Vectorized —
+    runs once per frame and is ~1 ms on a 60 MP image."""
+    r0, c0, r1, c1 = _CFA_CHAN[bp]
+    # Layout: colors[phase] where phase = (y&1)*2 + (x&1); matches _CFA_CHAN
+    colors = np.array([r0, c0, r1, c1], dtype=np.int8)
+    yy, xx = np.indices((H, W), dtype=np.int32)
+    phase = (((yy & 1).astype(np.int8) << 1) | (xx & 1).astype(np.int8))
+    color_at_px = colors[phase]
+    r_mask = (color_at_px == 0)
+    g_mask = (color_at_px == 1)
+    b_mask = (color_at_px == 2)
+    return r_mask, g_mask, b_mask
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _rcd_green_at_rb(image, out, r_mask, b_mask):
+    """Phase 1 — RCD green at R/B sites.
+
+    Hamilton-Adams H and V estimates for G, weighted by inverse-square of
+    a second-order color-space gradient (G first difference + C-channel
+    Laplacian, where C is R at R sites or B at B sites). Writes G into
+    out[:,:,1] at every R and B interior pixel.
+    """
+    H, W, _ = out.shape
+    eps = 1e-10
+    for y in prange(2, H - 2):
+        for x in range(2, W - 2):
+            is_r = r_mask[y, x]
+            is_b = b_mask[y, x]
+            if not (is_r or is_b):
+                continue
+            c = image[y, x]  # the sampled R or B value here
+
+            # Hamilton-Adams H/V G estimates. The Laplacian correction on
+            # the center-color channel removes the DC bias in the simple
+            # neighbor-average G estimate.
+            G_H = 0.5 * (image[y, x - 1] + image[y, x + 1]) \
+                + 0.25 * (2.0 * c - image[y, x - 2] - image[y, x + 2])
+            G_V = 0.5 * (image[y - 1, x] + image[y + 1, x]) \
+                + 0.25 * (2.0 * c - image[y - 2, x] - image[y + 2, x])
+
+            # RCD gradient. First term is a plain G first difference (the
+            # VNG-style edge detector); second is the Laplacian of the
+            # center color — a second-order signal that noise rarely
+            # pushes above an edge. Together they pick the correct
+            # interpolation direction on noisy OSC data where VNG alone
+            # randomizes.
+            D_H = abs(image[y, x - 1] - image[y, x + 1]) \
+                + abs(image[y, x - 2] - 2.0 * c + image[y, x + 2])
+            D_V = abs(image[y - 1, x] - image[y + 1, x]) \
+                + abs(image[y - 2, x] - 2.0 * c + image[y + 2, x])
+
+            # Inverse-square weighting biases strongly toward the smaller
+            # gradient direction without being binary (helps on 45° edges).
+            w_H = 1.0 / ((D_H * D_H) + eps)
+            w_V = 1.0 / ((D_V * D_V) + eps)
+            G_est = (w_H * G_H + w_V * G_V) / (w_H + w_V)
+            if G_est < 0.0:
+                G_est = 0.0
+            out[y, x, 1] = G_est
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _rcd_rb_at_g(image, out, g_mask, r_mask, b_mask):
+    """Phase 2 — RCD R and B at G sites, ratio-corrected.
+
+    At every G site, two of the four 4-neighbors are R and two are B
+    (perpendicular axes). Which axis holds which color depends on the
+    pattern phase — we read it off the mask instead of threading a
+    pattern index down, so the kernel is pattern-agnostic.
+
+    Interpolates R as the local G times the mean of R/G ratios from the
+    two R neighbors (and B symmetrically). The ratio form smooths noise
+    in dark channels where additive differences would amplify it, and
+    it preserves color saturation on faint features — which is the
+    RCD-vs-VNG win most visible on narrowband OSC.
+    """
+    H, W, _ = out.shape
+    G_FLOOR = 1e-6  # guard against division by zero in dark pixels
+    for y in prange(1, H - 1):
+        for x in range(1, W - 1):
+            if not g_mask[y, x]:
+                continue
+            g_c = out[y, x, 1]
+
+            # Decide which axis is R vs B by sampling the mask once. Each
+            # G site has exactly two R neighbors on one axis and two B on
+            # the other — the mask tells us which. We use the "left"
+            # neighbor's color as a probe; the opposite is symmetric.
+            if r_mask[y, x - 1]:
+                # Horizontal = R axis, Vertical = B axis
+                r_h1 = out[y, x - 1, 0]; g_h1 = out[y, x - 1, 1]
+                r_h2 = out[y, x + 1, 0]; g_h2 = out[y, x + 1, 1]
+                b_v1 = out[y - 1, x, 2]; g_v1 = out[y - 1, x, 1]
+                b_v2 = out[y + 1, x, 2]; g_v2 = out[y + 1, x, 1]
+                g_h1s = g_h1 if g_h1 > G_FLOOR else G_FLOOR
+                g_h2s = g_h2 if g_h2 > G_FLOOR else G_FLOOR
+                g_v1s = g_v1 if g_v1 > G_FLOOR else G_FLOOR
+                g_v2s = g_v2 if g_v2 > G_FLOOR else G_FLOOR
+                r_est = g_c * 0.5 * (r_h1 / g_h1s + r_h2 / g_h2s)
+                b_est = g_c * 0.5 * (b_v1 / g_v1s + b_v2 / g_v2s)
+            else:
+                # Horizontal = B axis, Vertical = R axis
+                b_h1 = out[y, x - 1, 2]; g_h1 = out[y, x - 1, 1]
+                b_h2 = out[y, x + 1, 2]; g_h2 = out[y, x + 1, 1]
+                r_v1 = out[y - 1, x, 0]; g_v1 = out[y - 1, x, 1]
+                r_v2 = out[y + 1, x, 0]; g_v2 = out[y + 1, x, 1]
+                g_h1s = g_h1 if g_h1 > G_FLOOR else G_FLOOR
+                g_h2s = g_h2 if g_h2 > G_FLOOR else G_FLOOR
+                g_v1s = g_v1 if g_v1 > G_FLOOR else G_FLOOR
+                g_v2s = g_v2 if g_v2 > G_FLOOR else G_FLOOR
+                r_est = g_c * 0.5 * (r_v1 / g_v1s + r_v2 / g_v2s)
+                b_est = g_c * 0.5 * (b_h1 / g_h1s + b_h2 / g_h2s)
+            if r_est < 0.0: r_est = 0.0
+            if b_est < 0.0: b_est = 0.0
+            out[y, x, 0] = r_est
+            out[y, x, 2] = b_est
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _rcd_rb_at_br(image, out, r_mask, b_mask):
+    """Phase 3 — RCD R at B sites and B at R sites, diagonal ratio.
+
+    Diagonal neighbors of an R site are B (and vice-versa). Picks the
+    diagonal (NE-SW vs NW-SE) with the smaller RCD gradient and takes a
+    ratio-corrected average along that diagonal.
+    """
+    H, W, _ = out.shape
+    eps = 1e-10
+    G_FLOOR = 1e-6
+    for y in prange(2, H - 2):
+        for x in range(2, W - 2):
+            is_r = r_mask[y, x]
+            is_b = b_mask[y, x]
+            if not (is_r or is_b):
+                continue
+            g_c = out[y, x, 1]
+            # Diagonal neighbors (both diagonals carry the opposite color)
+            nw_c = out[y - 1, x - 1, 2 if is_r else 0]
+            ne_c = out[y - 1, x + 1, 2 if is_r else 0]
+            sw_c = out[y + 1, x - 1, 2 if is_r else 0]
+            se_c = out[y + 1, x + 1, 2 if is_r else 0]
+            g_nw = out[y - 1, x - 1, 1]
+            g_ne = out[y - 1, x + 1, 1]
+            g_sw = out[y + 1, x - 1, 1]
+            g_se = out[y + 1, x + 1, 1]
+            # Second-order diagonal gradients, same spirit as phase 1 but
+            # along NE-SW and NW-SE. The G-Laplacian term captures real
+            # diagonal edges without being fooled by chrominance noise.
+            D_NESW = abs(ne_c - sw_c) + abs(2.0 * g_c - g_ne - g_sw)
+            D_NWSE = abs(nw_c - se_c) + abs(2.0 * g_c - g_nw - g_se)
+            w1 = 1.0 / ((D_NESW * D_NESW) + eps)
+            w2 = 1.0 / ((D_NWSE * D_NWSE) + eps)
+            # Ratio-correct each diagonal independently, then weighted-blend
+            g_nws = g_nw if g_nw > G_FLOOR else G_FLOOR
+            g_nes = g_ne if g_ne > G_FLOOR else G_FLOOR
+            g_sws = g_sw if g_sw > G_FLOOR else G_FLOOR
+            g_ses = g_se if g_se > G_FLOOR else G_FLOOR
+            c_NESW = g_c * 0.5 * (ne_c / g_nes + sw_c / g_sws)
+            c_NWSE = g_c * 0.5 * (nw_c / g_nws + se_c / g_ses)
+            c_est = (w1 * c_NESW + w2 * c_NWSE) / (w1 + w2)
+            if c_est < 0.0:
+                c_est = 0.0
+            if is_r:
+                out[y, x, 2] = c_est   # need B at this R site
+            else:
+                out[y, x, 0] = c_est   # need R at this B site
+
+
+def _rcd_demosaic(image_data, bp):
+    """Full RCD demosaic: raw 2D mosaic + pattern string -> (H,W,3) float32.
+
+    Mirrors _vng_demosaic's shape — bilinear prefill then three refinement
+    passes over the 2-px-interior. Border (2-pixel frame) keeps the
+    bilinear estimate so the core loops stay out-of-bounds-free.
+    """
+    H, W = image_data.shape
+    r_mask, g_mask, b_mask = _rcd_build_masks(bp, H, W)
+    r0, c0, r1, c1 = _CFA_CHAN[bp]
+    out = _vng_bilinear_prefill(image_data, r0, c0, r1, c1)
+    _rcd_green_at_rb(image_data, out, r_mask, b_mask)
+    _rcd_rb_at_g(image_data, out, g_mask, r_mask, b_mask)
+    _rcd_rb_at_br(image_data, out, r_mask, b_mask)
+    return out
+
+
+def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
+                            method="edge", preserve_zeros=True):
+    bp = (bayer_pattern or "").upper()
+    interpolate = not cfa_drizzle
+
+    # Hard-zero pixels (satellite/cosmic-ray trails clipped to exactly 0.0
+    # upstream) must survive demosaic. The interp kernels use 0 as the
+    # "unsampled CFA site" sentinel, so without this they treat clipped pixels
+    # as holes and fill them from neighbors — reviving the removed trail and
+    # defeating rejection in the stack.
+    zero_mask = (image_data == 0) if preserve_zeros else None
+
+    # 1) lay down samples
+    if bp == "RGGB":
+        out = debayer_RGGB_fullres_fast(image_data, interpolate=False)
+    elif bp == "BGGR":
+        out = debayer_BGGR_fullres_fast(image_data, interpolate=False)
+    elif bp == "GRBG":
+        out = debayer_GRBG_fullres_fast(image_data, interpolate=False)
+    elif bp == "GBRG":
+        out = debayer_GBRG_fullres_fast(image_data, interpolate=False)
+    else:
+        raise ValueError(f"Unsupported Bayer pattern: {bayer_pattern}")
+
+    # 2) method dispatch
+    if interpolate:
+        m = (method or "edge").lower()
+        if m == "bilinear":
+            _bilinear_interpolate_numba(out)
+        elif m == "strict_cfa":
+            out = np.zeros_like(out)
+            r0, c0r, r1, c1r = _CFA_CHAN[bp]
+            _strict_cfa_fill(image_data, out, r0, c0r, r1, c1r)
+        elif m == "vng":
+            # VNG demosaics from the raw mosaic directly (its own bilinear
+            # prefill + gradient refinement); the sparse `out` laid down
+            # above is replaced. preserve_zeros is re-asserted below.
+            out = _vng_demosaic(image_data, bp)
+        elif m == "rcd":
+            # Ratio-Corrected Demosaicing (Sanz Rodríguez, 2016). Shares
+            # the bilinear prefill + 2-px-interior refinement shape with
+            # VNG, but with second-order gradients (noise-robust direction
+            # pick) and ratio-corrected R/B (preserves saturation on faint
+            # narrowband color). Best choice for OSC narrowband data where
+            # VNG speckles. The sparse `out` laid down above is replaced.
+            out = _rcd_demosaic(image_data, bp)
+        else:   # "edge" default
+            _edge_aware_interpolate_numba(out)
+
+    # 3) re-assert clipped pixels as (0,0,0) across all channels
+    if zero_mask is not None and zero_mask.any():
+        out[zero_mask] = 0.0
+
+    return out
+
+
+def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False,
+                      method="edge", preserve_zeros=True):
+    with NUMBA_PARALLEL_LOCK:
+        return _debayer_fits_fast_impl(
+            image_data, bayer_pattern, cfa_drizzle=cfa_drizzle,
+            method=method, preserve_zeros=preserve_zeros,
+        )
+
+def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False,
+                     method="edge", preserve_zeros=True):
+    return debayer_fits_fast(raw_image_data, bayer_pattern,
+                             cfa_drizzle=cfa_drizzle, method=method,
+                             preserve_zeros=preserve_zeros)
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def applyPixelMath_numba(image_array, amount):
+    factor = 3 ** amount
+    denom_factor = 3 ** amount - 1
+    height, width, channels = image_array.shape
+    output = np.empty_like(image_array, dtype=np.float32)
+
+    for y in prange(height):
+        for x in prange(width):
+            for c in prange(channels):
+                val = (factor * image_array[y, x, c]) / (denom_factor * image_array[y, x, c] + 1)
+                output[y, x, c] = min(max(val, 0.0), 1.0)  # Equivalent to np.clip()
+    
+    return output
+
+@njit(parallel=True, fastmath=True, cache=True)
+def adjust_saturation_numba(image_array, saturation_factor):
+    height, width, channels = image_array.shape
+    output = np.empty_like(image_array, dtype=np.float32)
+
+    for y in prange(int(height)):  # Ensure y is an integer
+        for x in prange(int(width)):  # Ensure x is an integer
+            r, g, b = image_array[int(y), int(x)]  # Force integer indexing
+
+            # Convert RGB to HSV manually
+            max_val = max(r, g, b)
+            min_val = min(r, g, b)
+            delta = max_val - min_val
+
+            # Compute Hue (H)
+            if delta == 0:
+                h = 0
+            elif max_val == r:
+                h = (60 * ((g - b) / delta) + 360) % 360
+            elif max_val == g:
+                h = (60 * ((b - r) / delta) + 120) % 360
+            else:
+                h = (60 * ((r - g) / delta) + 240) % 360
+
+            # Compute Saturation (S)
+            s = (delta / max_val) if max_val != 0 else 0
+            s *= saturation_factor  # Apply saturation adjustment
+            s = min(max(s, 0.0), 1.0)  # Clip saturation
+
+            # Convert back to RGB
+            if s == 0:
+                r, g, b = max_val, max_val, max_val
+            else:
+                c = s * max_val
+                x_val = c * (1 - abs((h / 60) % 2 - 1))
+                m = max_val - c
+
+                if 0 <= h < 60:
+                    r, g, b = c, x_val, 0
+                elif 60 <= h < 120:
+                    r, g, b = x_val, c, 0
+                elif 120 <= h < 180:
+                    r, g, b = 0, c, x_val
+                elif 180 <= h < 240:
+                    r, g, b = 0, x_val, c
+                elif 240 <= h < 300:
+                    r, g, b = x_val, 0, c
+                else:
+                    r, g, b = c, 0, x_val
+
+                r, g, b = r + m, g + m, b + m  # Add m to shift brightness
+
+            # ✅ Fix: Explicitly cast indices to integers
+            output[int(y), int(x), 0] = r
+            output[int(y), int(x), 1] = g
+            output[int(y), int(x), 2] = b
+
+    return output
+
+
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def applySCNR_numba(image_array):
+    height, width, _ = image_array.shape
+    output = np.empty_like(image_array, dtype=np.float32)
+
+    for y in prange(int(height)):
+        for x in prange(int(width)):
+            r, g, b = image_array[y, x]
+            g = min(g, (r + b) / 2)  # Reduce green to the average of red & blue
+            
+            # ✅ Fix: Assign channels individually instead of a tuple
+            output[int(y), int(x), 0] = r
+            output[int(y), int(x), 1] = g
+            output[int(y), int(x), 2] = b
+
+
+    return output
+
+# D65 reference
+_Xn, _Yn, _Zn = 0.95047, 1.00000, 1.08883
+
+# Matrix for RGB -> XYZ (sRGB => D65)
+_M_rgb2xyz = np.array([
+    [0.4124564, 0.3575761, 0.1804375],
+    [0.2126729, 0.7151522, 0.0721750],
+    [0.0193339, 0.1191920, 0.9503041]
+], dtype=np.float32)
+
+# Matrix for XYZ -> RGB (sRGB => D65)
+_M_xyz2rgb = np.array([
+    [ 3.2404542, -1.5371385, -0.4985314],
+    [-0.9692660,  1.8760108,  0.0415560],
+    [ 0.0556434, -0.2040259,  1.0572252]
+], dtype=np.float32)
+
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def apply_lut_gray(image_in, lut):
+    """
+    Numba-accelerated application of 'lut' to a single-channel image_in in [0..1].
+    'lut' is a 1D array of shape (size,) also in [0..1].
+    """
+    out = np.empty_like(image_in)
+    height, width = image_in.shape
+    size_lut = len(lut) - 1
+
+    for y in prange(height):
+        for x in range(width):
+            v = image_in[y, x]
+            idx = int(v * size_lut + 0.5)
+            if idx < 0: idx = 0
+            elif idx > size_lut: idx = size_lut
+            out[y, x] = lut[idx]
+
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def apply_lut_color(image_in, lut):
+    """
+    Numba-accelerated application of 'lut' to a 3-channel image_in in [0..1].
+    'lut' is a 1D array of shape (size,) also in [0..1].
+    """
+    out = np.empty_like(image_in)
+    height, width, channels = image_in.shape
+    size_lut = len(lut) - 1
+
+    for y in prange(height):
+        for x in range(width):
+            for c in range(channels):
+                v = image_in[y, x, c]
+                idx = int(v * size_lut + 0.5)
+                if idx < 0: idx = 0
+                elif idx > size_lut: idx = size_lut
+                out[y, x, c] = lut[idx]
+
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def apply_lut_mono_inplace(array2d, lut):
+    """
+    In-place LUT application on a single-channel 2D array in [0..1].
+    'lut' has shape (size,) also in [0..1].
+    """
+    H, W = array2d.shape
+    size_lut = len(lut) - 1
+    for y in prange(H):
+        for x in prange(W):
+            v = array2d[y, x]
+            idx = int(v * size_lut + 0.5)
+            if idx < 0:
+                idx = 0
+            elif idx > size_lut:
+                idx = size_lut
+            array2d[y, x] = lut[idx]
+
+@njit(parallel=True, fastmath=True, cache=True)
+def apply_lut_color_inplace(array3d, lut):
+    """
+    In-place LUT application on a 3-channel array in [0..1].
+    'lut' has shape (size,) also in [0..1].
+    """
+    H, W, C = array3d.shape
+    size_lut = len(lut) - 1
+    for y in prange(H):
+        for x in prange(W):
+            for c in range(C):
+                v = array3d[y, x, c]
+                idx = int(v * size_lut + 0.5)
+                if idx < 0:
+                    idx = 0
+                elif idx > size_lut:
+                    idx = size_lut
+                array3d[y, x, c] = lut[idx]
+
+@njit(parallel=True, fastmath=True, cache=True)
+def rgb_to_xyz_numba(rgb):
+    """
+    Convert an image from sRGB to XYZ (D65).
+    rgb: float32 array in [0..1], shape (H,W,3)
+    returns xyz in [0..maybe >1], shape (H,W,3)
+    """
+    H, W, _ = rgb.shape
+    out = np.empty((H, W, 3), dtype=np.float32)
+    for y in prange(H):
+        for x in prange(W):
+            r = rgb[y, x, 0]
+            g = rgb[y, x, 1]
+            b = rgb[y, x, 2]
+            # Multiply by M_rgb2xyz
+            X = _M_rgb2xyz[0,0]*r + _M_rgb2xyz[0,1]*g + _M_rgb2xyz[0,2]*b
+            Y = _M_rgb2xyz[1,0]*r + _M_rgb2xyz[1,1]*g + _M_rgb2xyz[1,2]*b
+            Z = _M_rgb2xyz[2,0]*r + _M_rgb2xyz[2,1]*g + _M_rgb2xyz[2,2]*b
+            out[y, x, 0] = X
+            out[y, x, 1] = Y
+            out[y, x, 2] = Z
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def xyz_to_rgb_numba(xyz):
+    """
+    Convert an image from XYZ (D65) to sRGB.
+    xyz: float32 array, shape (H,W,3)
+    returns rgb in [0..1], shape (H,W,3)
+    """
+    H, W, _ = xyz.shape
+    out = np.empty((H, W, 3), dtype=np.float32)
+    for y in prange(H):
+        for x in prange(W):
+            X = xyz[y, x, 0]
+            Y = xyz[y, x, 1]
+            Z = xyz[y, x, 2]
+            # Multiply by M_xyz2rgb
+            r = _M_xyz2rgb[0,0]*X + _M_xyz2rgb[0,1]*Y + _M_xyz2rgb[0,2]*Z
+            g = _M_xyz2rgb[1,0]*X + _M_xyz2rgb[1,1]*Y + _M_xyz2rgb[1,2]*Z
+            b = _M_xyz2rgb[2,0]*X + _M_xyz2rgb[2,1]*Y + _M_xyz2rgb[2,2]*Z
+            # Clip to [0..1]
+            if r < 0: r = 0
+            elif r > 1: r = 1
+            if g < 0: g = 0
+            elif g > 1: g = 1
+            if b < 0: b = 0
+            elif b > 1: b = 1
+            out[y, x, 0] = r
+            out[y, x, 1] = g
+            out[y, x, 2] = b
+    return out
+
+@njit(cache=True)
+def f_lab_numba(t):
+    delta = 6/29
+    out = np.empty_like(t, dtype=np.float32)
+    for i in range(t.size):
+        val = t.flat[i]
+        if val > delta**3:
+            out.flat[i] = val**(1/3)
+        else:
+            out.flat[i] = val/(3*delta*delta) + (4/29)
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def xyz_to_lab_numba(xyz):
+    """
+    xyz => shape(H,W,3), in D65. 
+    returns lab in shape(H,W,3): L in [0..100], a,b in ~[-128..127].
+    """
+    H, W, _ = xyz.shape
+    out = np.empty((H,W,3), dtype=np.float32)
+    for y in prange(H):
+        for x in prange(W):
+            X = xyz[y, x, 0] / _Xn
+            Y = xyz[y, x, 1] / _Yn
+            Z = xyz[y, x, 2] / _Zn
+            fx = (X)**(1/3) if X > (6/29)**3 else X/(3*(6/29)**2) + 4/29
+            fy = (Y)**(1/3) if Y > (6/29)**3 else Y/(3*(6/29)**2) + 4/29
+            fz = (Z)**(1/3) if Z > (6/29)**3 else Z/(3*(6/29)**2) + 4/29
+            L = 116*fy - 16
+            a = 500*(fx - fy)
+            b = 200*(fy - fz)
+            out[y, x, 0] = L
+            out[y, x, 1] = a
+            out[y, x, 2] = b
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def lab_to_xyz_numba(lab):
+    """
+    lab => shape(H,W,3): L in [0..100], a,b in ~[-128..127].
+    returns xyz shape(H,W,3).
+    """
+    H, W, _ = lab.shape
+    out = np.empty((H,W,3), dtype=np.float32)
+    delta = 6/29
+    for y in prange(H):
+        for x in prange(W):
+            L = lab[y, x, 0]
+            a = lab[y, x, 1]
+            b = lab[y, x, 2]
+            fy = (L+16)/116
+            fx = fy + a/500
+            fz = fy - b/200
+
+            if fx > delta:
+                xr = fx**3
+            else:
+                xr = 3*delta*delta*(fx - 4/29)
+            if fy > delta:
+                yr = fy**3
+            else:
+                yr = 3*delta*delta*(fy - 4/29)
+            if fz > delta:
+                zr = fz**3
+            else:
+                zr = 3*delta*delta*(fz - 4/29)
+
+            X = _Xn * xr
+            Y = _Yn * yr
+            Z = _Zn * zr
+            out[y, x, 0] = X
+            out[y, x, 1] = Y
+            out[y, x, 2] = Z
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def rgb_to_hsv_numba(rgb):
+    H, W, _ = rgb.shape
+    out = np.empty((H,W,3), dtype=np.float32)
+    for y in prange(H):
+        for x in prange(W):
+            r = rgb[y,x,0]
+            g = rgb[y,x,1]
+            b = rgb[y,x,2]
+            cmax = max(r,g,b)
+            cmin = min(r,g,b)
+            delta = cmax - cmin
+            # Hue
+            h = 0.0
+            if delta != 0.0:
+                if cmax == r:
+                    h = 60*(((g-b)/delta) % 6)
+                elif cmax == g:
+                    h = 60*(((b-r)/delta) + 2)
+                else:
+                    h = 60*(((r-g)/delta) + 4)
+            # Saturation
+            s = 0.0
+            if cmax > 0.0:
+                s = delta / cmax
+            v = cmax
+            out[y,x,0] = h
+            out[y,x,1] = s
+            out[y,x,2] = v
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def hsv_to_rgb_numba(hsv):
+    H, W, _ = hsv.shape
+    out = np.empty((H,W,3), dtype=np.float32)
+    for y in prange(H):
+        for x in prange(W):
+            h = hsv[y,x,0]
+            s = hsv[y,x,1]
+            v = hsv[y,x,2]
+            c = v*s
+            hh = (h/60.0) % 6
+            x_ = c*(1 - abs(hh % 2 - 1))
+            m = v - c
+            r = 0.0
+            g = 0.0
+            b = 0.0
+            if 0 <= hh < 1:
+                r,g,b = c,x_,0
+            elif 1 <= hh < 2:
+                r,g,b = x_,c,0
+            elif 2 <= hh < 3:
+                r,g,b = 0,c,x_
+            elif 3 <= hh < 4:
+                r,g,b = 0,x_,c
+            elif 4 <= hh < 5:
+                r,g,b = x_,0,c
+            else:
+                r,g,b = c,0,x_
+            out[y,x,0] = (r + m)
+            out[y,x,1] = (g + m)
+            out[y,x,2] = (b + m)
+    return out
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _cosmetic_correction_core(src, dst, H, W, C,
+                              hot_sigma, cold_sigma,
+                              star_mean_ratio,
+                              star_max_ratio,
+                              sat_threshold,
+                              cold_cluster_max):
+    # 5x5 neighborhood = 24 pixels excluding center
+    local_vals = np.empty(24, dtype=np.float32)
+
+    for y in prange(2, H - 2):
+        for x in range(2, W - 2):
+            for c in range(C if src.ndim == 3 else 1):
+                # gather 5x5 ring excluding center
+                k = 0
+                ring_sum = 0.0
+                ring_max = -1e30
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
+                        if dy == 0 and dx == 0:
+                            continue
+                        if src.ndim == 3:
+                            v = src[y + dy, x + dx, c]
+                        else:
+                            v = src[y + dy, x + dx]
+                        local_vals[k] = v
+                        ring_sum += v
+                        if v > ring_max:
+                            ring_max = v
+                        k += 1
+
+                # median and std from 24-pixel neighborhood
+                # std is more appropriate than MAD here — we want
+                # sensitivity to genuine outliers, not robustness
+                sorted_vals = np.sort(local_vals[:24])
+                M = (sorted_vals[11] + sorted_vals[12]) * 0.5  # median of 24
+
+                mean_val = 0.0
+                for i in range(24):
+                    mean_val += local_vals[i]
+                mean_val /= 24.0
+                sum_sq = 0.0
+                for i in range(24):
+                    d = local_vals[i] - mean_val
+                    sum_sq += d * d
+                sigma = (sum_sq / 24.0) ** 0.5 + 1e-8
+
+                # center pixel
+                T = src[y, x, c] if src.ndim == 3 else src[y, x]
+
+                # saturation guard
+                if T >= sat_threshold:
+                    if src.ndim == 3:
+                        dst[y, x, c] = T
+                    else:
+                        dst[y, x] = T
+                    continue
+
+                high = M + hot_sigma * sigma
+                low  = M - cold_sigma * sigma
+
+                replace = False
+
+                if T > high:
+                    # star guard: if neighbors form a PSF footprint, skip
+                    ring_mean = ring_sum / 24.0
+                    if (ring_mean / (T + 1e-8) < star_mean_ratio) and \
+                       (ring_max / (T + 1e-8) < star_max_ratio):
+                        replace = True
+                elif T < low:
+                    # cold guard: only fix isolated cold pixels
+                    count_below = 0
+                    for i in range(24):
+                        if local_vals[i] < low:
+                            count_below += 1
+                    if count_below <= cold_cluster_max:
+                        replace = True
+
+                if replace:
+                    if src.ndim == 3:
+                        dst[y, x, c] = M
+                    else:
+                        dst[y, x] = M
+                else:
+                    if src.ndim == 3:
+                        dst[y, x, c] = T
+                    else:
+                        dst[y, x] = T
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _detect_hot_cold_pixels(src, H, W, hot_sigma, cold_sigma, avg_dev):
+    """
+    Pass 1: identify hot and cold pixels
+    """
+    hot_map  = np.zeros((H, W), dtype=np.bool_)
+    cold_map = np.zeros((H, W), dtype=np.bool_)
+
+    for y in prange(1, H - 1):
+        for x in range(1, W - 1):
+            T = src[y, x]
+
+            # 5 nearest neighbors: N, S, E, W + center itself
+            five = np.empty(5, dtype=np.float32)
+            five[0] = src[y - 1, x]  # N
+            five[1] = src[y + 1, x]  # S
+            five[2] = src[y, x - 1]  # W
+            five[3] = src[y, x + 1]  # E
+            five[4] = T               # center
+
+            # sort and take median of 5
+            # simple insertion sort — faster than np.sort for 5 elements in numba
+            for ii in range(1, 5):
+                key = five[ii]
+                jj = ii - 1
+                while jj >= 0 and five[jj] > key:
+                    five[jj + 1] = five[jj]
+                    jj -= 1
+                five[jj + 1] = key
+            m5 = five[2]  # median of 5
+
+            hot_thresh  = m5 + max(avg_dev, hot_sigma * avg_dev)
+            cold_thresh = m5 - cold_sigma * avg_dev
+
+            if T > hot_thresh:
+                # star guard: if 3x3 neighbor average is elevated,
+                # this is likely a star PSF core — don't flag it
+                s = 0.0
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        if dy == 0 and dx == 0:
+                            continue
+                        s += src[y + dy, x + dx]
+                avg3x3 = s / 8.0
+                if avg3x3 < m5 + avg_dev * 0.5:
+                    hot_map[y, x] = True
+
+            elif T < cold_thresh:
+                cold_map[y, x] = True
+
+    return hot_map, cold_map
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _correct_hot_cold_pixels(src, dst, hot_map, cold_map, H, W):
+    """
+    Pass 2: correct flagged pixels
+    """
+    for y in prange(1, H - 1):
+        for x in range(1, W - 1):
+            if not hot_map[y, x] and not cold_map[y, x]:
+                dst[y, x] = src[y, x]
+                continue
+
+            # Collect clean (non-flagged) 8-neighbors
+            vals = np.empty(8, dtype=np.float32)
+            k = 0
+            for dy in range(-1, 2):
+                for dx in range(-1, 2):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny = y + dy
+                    nx = x + dx
+                    if not hot_map[ny, nx] and not cold_map[ny, nx]:
+                        vals[k] = src[ny, nx]
+                        k += 1
+
+            if k == 0:
+                # Rare: all 8 neighbors are also flagged
+                # Fall back to using all neighbors regardless of flag status
+                k = 0
+                for dy in range(-1, 2):
+                    for dx in range(-1, 2):
+                        if dy == 0 and dx == 0:
+                            continue
+                        vals[k] = src[y + dy, x + dx]
+                        k += 1
+
+            # Insertion sort and median of k clean neighbors
+            for ii in range(1, k):
+                key = vals[ii]
+                jj = ii - 1
+                while jj >= 0 and vals[jj] > key:
+                    vals[jj + 1] = vals[jj]
+                    jj -= 1
+                vals[jj + 1] = key
+
+            mid = k // 2
+            dst[y, x] = vals[mid] if k % 2 == 1 else (vals[mid - 1] + vals[mid]) * 0.5
+
+
+def bulk_cosmetic_correction_numba(image,
+                                   hot_sigma=3.0,
+                                   cold_sigma=3.0,
+                                   star_mean_ratio=0.22,
+                                   star_max_ratio=0.55,
+                                   sat_quantile=0.9995,
+                                   protect_sigma=5.0):
+    """
+    Orchestrator: try GPU first, fall back to Numba CPU.
+    """
+    from setiastro.saspro.torch_rejection import (cosmetic_correction_gpu, torch_available as _torch_ok) 
+    
+    return cosmetic_correction_gpu(image, hot_sigma=hot_sigma, cold_sigma=cold_sigma,
+                                   protect_sigma=protect_sigma)
+
+
+
+def bulk_cosmetic_correction_bayer(image,
+                                   hot_sigma=5.5,
+                                   cold_sigma=5.0,
+                                   star_mean_ratio=0.22,
+                                   star_max_ratio=0.55,
+                                   sat_quantile=0.9995,
+                                   pattern="RGGB",
+                                   protect_sigma=5.0):
+    """
+    Bayer-safe cosmetic correction. Work on same-color sub-planes (2-px stride),
+    then write results back. Defaults assume normalized or 16/32f data.
+    """
+    H, W = image.shape
+    corrected = image.astype(np.float32).copy()
+
+    if pattern.upper() not in ("RGGB", "BGGR", "GRBG", "GBRG"):
+        pattern = "RGGB"
+
+    # index maps for each CFA pattern (row0,col0 offsets)
+    if pattern.upper() == "RGGB":
+        r0, c0 = 0, 0
+        g1r, g1c = 0, 1
+        g2r, g2c = 1, 0
+        b0, b0c = 1, 1
+    elif pattern.upper() == "BGGR":
+        r0, c0 = 1, 1
+        g1r, g1c = 1, 0
+        g2r, g2c = 0, 1
+        b0, b0c = 0, 0
+    elif pattern.upper() == "GRBG":
+        r0, c0 = 0, 1
+        g1r, g1c = 0, 0
+        g2r, g2c = 1, 1
+        b0, b0c = 1, 0
+    else:  # GBRG
+        r0, c0 = 1, 0
+        g1r, g1c = 0, 0
+        g2r, g2c = 1, 1
+        b0, b0c = 0, 1
+
+    # helper to process a same-color plane view
+    def _process_plane(view):
+        return bulk_cosmetic_correction_numba(
+            view,
+            hot_sigma=hot_sigma,
+            cold_sigma=cold_sigma,
+            star_mean_ratio=star_mean_ratio,
+            star_max_ratio=star_max_ratio,
+            sat_quantile=sat_quantile,
+            protect_sigma=protect_sigma,
+        )
+
+    # Red
+    red = corrected[r0:H:2, c0:W:2]
+    corrected[r0:H:2, c0:W:2] = _process_plane(red)
+
+    # Blue
+    blue = corrected[b0:H:2, b0c:W:2]
+    corrected[b0:H:2, b0c:W:2] = _process_plane(blue)
+
+    # Greens
+    g1 = corrected[g1r:H:2, g1c:W:2]
+    corrected[g1r:H:2, g1c:W:2] = _process_plane(g1)
+
+    g2 = corrected[g2r:H:2, g2c:W:2]
+    corrected[g2r:H:2, g2c:W:2] = _process_plane(g2)
+
+    return corrected
+
+def evaluate_polynomial(H: int, W: int, coeffs: np.ndarray, degree: int) -> np.ndarray:
+    """
+    Evaluates the polynomial function over the entire image domain.
+    """
+    xx, yy = np.meshgrid(np.arange(W, dtype=np.float32), np.arange(H, dtype=np.float32), indexing="xy")
+    A_full = build_poly_terms(xx.ravel(), yy.ravel(), degree)
+    return (A_full @ coeffs).reshape(H, W)
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def numba_mono_final_formula(rescaled, median_rescaled, target_median):
+    """
+    Applies the final formula *after* we already have the rescaled values.
+    
+    rescaled[y,x] = (original[y,x] - black_point) / (1 - black_point)
+    median_rescaled = median(rescaled)
+    
+    out_val = ((median_rescaled - 1) * target_median * r) /
+              ( median_rescaled*(target_median + r -1) - target_median*r )
+    """
+    H, W = rescaled.shape
+    out = np.empty_like(rescaled)
+
+    for y in prange(H):
+        for x in range(W):
+            r = rescaled[y, x]
+            numer = (median_rescaled - 1.0) * target_median * r
+            denom = median_rescaled * (target_median + r - 1.0) - target_median * r
+            if np.abs(denom) < 1e-12:
+                denom = 1e-12
+            out[y, x] = numer / denom
+
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
+    H, W = img.shape
+    out = np.empty_like(img)
+    for y in prange(H):
+        for x in range(W):
+            r = (img[y, x] - bp) / denom
+            numer = (median_rescaled - 1.0) * target_median * r
+            denom2 = median_rescaled * (target_median + r - 1.0) - target_median * r
+            if abs(denom2) < 1e-12:
+                denom2 = 1e-12
+            out[y, x] = numer / denom2
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
+    H, W, C = img.shape
+    out = np.empty_like(img)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                r = (img[y, x, c] - bp) / denom
+                numer = (median_rescaled - 1.0) * target_median * r
+                denom2 = median_rescaled * (target_median + r - 1.0) - target_median * r
+                if abs(denom2) < 1e-12:
+                    denom2 = 1e-12
+                out[y, x, c] = numer / denom2
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_median):
+    H, W, C = img.shape
+    out = np.empty_like(img)
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                r = (img[y, x, c] - bp3[c]) / denom3[c]
+                med = meds_rescaled3[c]
+                numer = (med - 1.0) * target_median * r
+                denom2 = med * (target_median + r - 1.0) - target_median * r
+                if abs(denom2) < 1e-12:
+                    denom2 = 1e-12
+                out[y, x, c] = numer / denom2
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_mono_final_formula(rescaled, median_rescaled, target_median):
+    """
+    Applies the final formula *after* we already have the rescaled values.
+    
+    rescaled[y,x] = (original[y,x] - black_point) / (1 - black_point)
+    median_rescaled = median(rescaled)
+    
+    out_val = ((median_rescaled - 1) * target_median * r) /
+              ( median_rescaled*(target_median + r -1) - target_median*r )
+    """
+    H, W = rescaled.shape
+    out = np.empty_like(rescaled)
+
+    for y in prange(H):
+        for x in range(W):
+            r = rescaled[y, x]
+            numer = (median_rescaled - 1.0) * target_median * r
+            denom = median_rescaled * (target_median + r - 1.0) - target_median * r
+            if np.abs(denom) < 1e-12:
+                denom = 1e-12
+            out[y, x] = numer / denom
+
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_color_final_formula_linked(rescaled, median_rescaled, target_median):
+    """
+    Linked color transform: we use one median_rescaled for all channels.
+    rescaled: (H,W,3), already = (image - black_point)/(1 - black_point)
+    median_rescaled = median of *all* pixels in rescaled
+    """
+    H, W, C = rescaled.shape
+    out = np.empty_like(rescaled)
+
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                r = rescaled[y, x, c]
+                numer = (median_rescaled - 1.0) * target_median * r
+                denom = median_rescaled * (target_median + r - 1.0) - target_median * r
+                if np.abs(denom) < 1e-12:
+                    denom = 1e-12
+                out[y, x, c] = numer / denom
+
+    return out
+
+@njit(parallel=True, fastmath=True)
+def numba_color_final_formula_unlinked(rescaled, medians_rescaled, target_median):
+    """
+    Unlinked color transform: a separate median_rescaled per channel.
+    rescaled: (H,W,3), where each channel is already (val - black_point[c]) / (1 - black_point[c])
+    medians_rescaled: shape (3,) with median of each channel in the rescaled array.
+    """
+    H, W, C = rescaled.shape
+    out = np.empty_like(rescaled)
+
+    for y in prange(H):
+        for x in range(W):
+            for c in range(C):
+                r = rescaled[y, x, c]
+                med = medians_rescaled[c]
+                numer = (med - 1.0) * target_median * r
+                denom = med * (target_median + r - 1.0) - target_median * r
+                if np.abs(denom) < 1e-12:
+                    denom = 1e-12
+                out[y, x, c] = numer / denom
+
+    return out
+
+
+def build_poly_terms(x_array: np.ndarray, y_array: np.ndarray, degree: int) -> np.ndarray:
+    """
+    Precomputes polynomial basis terms efficiently using NumPy, supporting up to degree 6.
+    """
+    ones = np.ones_like(x_array, dtype=np.float32)
+
+    if degree == 1:
+        return np.column_stack((ones, x_array, y_array))
+
+    elif degree == 2:
+        return np.column_stack((ones, x_array, y_array, 
+                                x_array**2, x_array * y_array, y_array**2))
+
+    elif degree == 3:
+        return np.column_stack((ones, x_array, y_array, 
+                                x_array**2, x_array * y_array, y_array**2, 
+                                x_array**3, x_array**2 * y_array, x_array * y_array**2, y_array**3))
+
+    elif degree == 4:
+        return np.column_stack((ones, x_array, y_array, 
+                                x_array**2, x_array * y_array, y_array**2, 
+                                x_array**3, x_array**2 * y_array, x_array * y_array**2, y_array**3,
+                                x_array**4, x_array**3 * y_array, x_array**2 * y_array**2, x_array * y_array**3, y_array**4))
+
+    elif degree == 5:
+        return np.column_stack((ones, x_array, y_array, 
+                                x_array**2, x_array * y_array, y_array**2, 
+                                x_array**3, x_array**2 * y_array, x_array * y_array**2, y_array**3,
+                                x_array**4, x_array**3 * y_array, x_array**2 * y_array**2, x_array * y_array**3, y_array**4,
+                                x_array**5, x_array**4 * y_array, x_array**3 * y_array**2, x_array**2 * y_array**3, x_array * y_array**4, y_array**5))
+
+    elif degree == 6:
+        return np.column_stack((ones, x_array, y_array, 
+                                x_array**2, x_array * y_array, y_array**2, 
+                                x_array**3, x_array**2 * y_array, x_array * y_array**2, y_array**3,
+                                x_array**4, x_array**3 * y_array, x_array**2 * y_array**2, x_array * y_array**3, y_array**4,
+                                x_array**5, x_array**4 * y_array, x_array**3 * y_array**2, x_array**2 * y_array**3, x_array * y_array**4, y_array**5,
+                                x_array**6, x_array**5 * y_array, x_array**4 * y_array**2, x_array**3 * y_array**3, x_array**2 * y_array**4, x_array * y_array**5, y_array**6))
+
+    else:
+        raise ValueError(f"Unsupported polynomial degree={degree}. Max supported is 6.")
+
+
+
+
+def generate_sample_points(image: np.ndarray, num_points: int = 100) -> np.ndarray:
+    """
+    Generates sample points uniformly across the image.
+
+    - Places points in a uniform grid (no randomization).
+    - Avoids border pixels.
+    - Skips any points with value 0.000 or above 0.85.
+
+    Returns:
+        np.ndarray: Array of shape (N, 2) containing (x, y) coordinates of sample points.
+    """
+    H, W = image.shape[:2]
+    points = []
+
+    # Create a uniform grid (avoiding the border)
+    grid_size = int(np.sqrt(num_points))  # Roughly equal spacing
+    x_vals = np.linspace(10, W - 10, grid_size, dtype=int)  # Avoids border
+    y_vals = np.linspace(10, H - 10, grid_size, dtype=int)
+
+    for y in y_vals:
+        for x in x_vals:
+            # Skip values that are too dark (0.000) or too bright (> 0.85)
+            if np.any(image[int(y), int(x)] == 0.000) or np.any(image[int(y), int(x)] > 0.85):
+                continue  # Skip this pixel
+
+            points.append((int(x), int(y)))
+
+            if len(points) >= num_points:
+                return np.array(points, dtype=np.int32)  # Return only valid points
+
+    return np.array(points, dtype=np.int32)  # Return all collected points
+
+@njit(parallel=True, fastmath=True, cache=True)
+def numba_unstretch(image: np.ndarray, stretch_original_medians: np.ndarray, stretch_original_mins: np.ndarray) -> np.ndarray:
+    """
+    Numba-optimized function to undo the unlinked stretch.
+    Restores each channel separately.
+    """
+    H, W, C = image.shape
+    out = np.empty_like(image, dtype=np.float32)
+
+    for c in prange(C):  # Parallelize per channel
+        cmed_stretched = np.median(image[..., c])
+        orig_med = stretch_original_medians[c]
+        orig_min = stretch_original_mins[c]
+
+        if cmed_stretched != 0 and orig_med != 0:
+            for y in prange(H):
+                for x in range(W):
+                    r = image[y, x, c]
+                    numerator = (cmed_stretched - 1) * orig_med * r
+                    denominator = cmed_stretched * (orig_med + r - 1) - orig_med * r
+                    if denominator == 0:
+                        denominator = 1e-6  # Avoid division by zero
+                    out[y, x, c] = numerator / denominator
+
+            # Restore the original black point
+            out[..., c] += orig_min
+
+    return np.clip(out, 0, 1)  # Clip to valid range
+
+
+@njit(fastmath=True, cache=True)
+def drizzle_deposit_numba_naive(
+    img_data,       # shape (H, W), mono
+    transform,      # shape (2, 3), e.g. [[a,b,tx],[c,d,ty]]
+    drizzle_buffer, # shape (outH, outW)
+    coverage_buffer,# shape (outH, outW)
+    drizzle_factor: float,
+    frame_weight: float
+):
+    """
+    Naive deposit: each input pixel is mapped to exactly one output pixel,
+    ignoring drop_shrink. 2D single-channel version (mono).
+    """
+    h, w = img_data.shape
+    out_h, out_w = drizzle_buffer.shape
+
+    # Build a 3×3 matrix M
+    # transform is 2×3, so we expand to 3×3 for the standard [x, y, 1] approach
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0, 0] = transform[0, 0]  # a
+    M[0, 1] = transform[0, 1]  # b
+    M[0, 2] = transform[0, 2]  # tx
+    M[1, 0] = transform[1, 0]  # c
+    M[1, 1] = transform[1, 1]  # d
+    M[1, 2] = transform[1, 2]  # ty
+    M[2, 2] = 1.0
+
+    # We'll reuse a small input vector for each pixel
+    in_coords = np.zeros(3, dtype=np.float32)
+    in_coords[2] = 1.0
+
+    for y in range(h):
+        for x in range(w):
+            val = img_data[y, x]
+            if val == 0:
+                continue
+
+            # Fill the input vector
+            in_coords[0] = x
+            in_coords[1] = y
+
+            # Multiply
+            out_coords = M @ in_coords
+            X = out_coords[0]
+            Y = out_coords[1]
+
+            # Multiply by drizzle_factor
+            Xo = int(X * drizzle_factor)
+            Yo = int(Y * drizzle_factor)
+
+            if 0 <= Xo < out_w and 0 <= Yo < out_h:
+                drizzle_buffer[Yo, Xo] += val * frame_weight
+                coverage_buffer[Yo, Xo] += frame_weight
+
+    return drizzle_buffer, coverage_buffer
+
+
+@njit(fastmath=True, cache=True)
+def drizzle_deposit_numba_footprint(
+    img_data,       # shape (H, W), mono
+    transform,      # shape (2, 3)
+    drizzle_buffer, # shape (outH, outW)
+    coverage_buffer,# shape (outH, outW)
+    drizzle_factor: float,
+    drop_shrink: float,
+    frame_weight: float
+):
+    """
+    Distributes each input pixel over a bounding box of width=drop_shrink
+    in the drizzle (out) plane. (Mono 2D version)
+    """
+    h, w = img_data.shape
+    out_h, out_w = drizzle_buffer.shape
+
+    # Build a 3×3 matrix M
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0, 0] = transform[0, 0]  # a
+    M[0, 1] = transform[0, 1]  # b
+    M[0, 2] = transform[0, 2]  # tx
+    M[1, 0] = transform[1, 0]  # c
+    M[1, 1] = transform[1, 1]  # d
+    M[1, 2] = transform[1, 2]  # ty
+    M[2, 2] = 1.0
+
+    in_coords = np.zeros(3, dtype=np.float32)
+    in_coords[2] = 1.0
+
+    footprint_radius = drop_shrink * 0.5
+
+    for y in range(h):
+        for x in range(w):
+            val = img_data[y, x]
+            if val == 0:
+                continue
+
+            # Transform to output coords
+            in_coords[0] = x
+            in_coords[1] = y
+            out_coords = M @ in_coords
+            X = out_coords[0]
+            Y = out_coords[1]
+
+            # Upsample
+            Xo = X * drizzle_factor
+            Yo = Y * drizzle_factor
+
+            # bounding box
+            min_x = int(np.floor(Xo - footprint_radius))
+            max_x = int(np.floor(Xo + footprint_radius))
+            min_y = int(np.floor(Yo - footprint_radius))
+            max_y = int(np.floor(Yo + footprint_radius))
+
+            # clip
+            if max_x < 0 or min_x >= out_w or max_y < 0 or min_y >= out_h:
+                continue
+            if min_x < 0:
+                min_x = 0
+            if max_x >= out_w:
+                max_x = out_w - 1
+            if min_y < 0:
+                min_y = 0
+            if max_y >= out_h:
+                max_y = out_h - 1
+
+            width_foot = (max_x - min_x + 1)
+            height_foot = (max_y - min_y + 1)
+            area_pixels = width_foot * height_foot
+            if area_pixels <= 0:
+                continue
+
+            deposit_val = (val * frame_weight) / area_pixels
+            coverage_fraction = frame_weight / area_pixels
+
+            for oy in range(min_y, max_y+1):
+                for ox in range(min_x, max_x+1):
+                    drizzle_buffer[oy, ox] += deposit_val
+                    coverage_buffer[oy, ox] += coverage_fraction
+
+    return drizzle_buffer, coverage_buffer
+
+@njit(fastmath=True)
+def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
+                            min_x: int, max_x: int, min_y: int, max_y: int,
+                            sigma_out: float,
+                            weights_out):  # preallocated 2D view (max_y-min_y+1, max_x-min_x+1)
+    """
+    Fill `weights_out` with unnormalized kernel weights centered at (Xo,Yo).
+    Returns (sum_w, count_used).
+
+    kernel_code 0 = square  -> TRUE drizzle drop: fractional overlap area between
+                              the drop square [Xo±rad, Yo±rad] (rad = sigma_out,
+                              the pixfrac-shrunken input pixel mapped to output
+                              space) and each output cell [ox,ox+1]x[oy,oy+1].
+                              Sub-pixel-position aware; normalized weights conserve
+                              flux (sum over full drop = (2*rad)^2).
+    kernel_code 1 = circle  -> hard disk (uniform inside radius).
+    kernel_code 2 = gaussian.
+    """
+    H = max_y - min_y + 1
+    W = max_x - min_x + 1
+    r2_limit = sigma_out * sigma_out  # for circle, sigma_out := radius
+
+    # square-drop edges in output-pixel coords (rad == sigma_out for the box)
+    rad = sigma_out
+    drop_lx = Xo - rad
+    drop_hx = Xo + rad
+    drop_ly = Yo - rad
+    drop_hy = Yo + rad
+
+    sum_w = 0.0
+    cnt = 0
+    for j in range(H):
+        oy = min_y + j
+        cy = (oy + 0.5) - Yo  # pixel-center distance (circle/gaussian)
+        # vertical overlap of this cell row with the drop (square kernel)
+        ovy = min(oy + 1.0, drop_hy) - max(float(oy), drop_ly)
+        for i in range(W):
+            ox = min_x + i
+            cx = (ox + 0.5) - Xo
+            w = 0.0
+
+            if kernel_code == 0:
+                # true fractional-area overlap
+                ovx = min(ox + 1.0, drop_hx) - max(float(ox), drop_lx)
+                if ovx > 0.0 and ovy > 0.0:
+                    w = ovx * ovy
+            elif kernel_code == 1:
+                # circle = uniform weight if inside radius
+                if (cx*cx + cy*cy) <= r2_limit:
+                    w = 1.0
+            else:  # gaussian
+                z = (cx*cx + cy*cy) / (2.0 * sigma_out * sigma_out)
+                if z <= 9.0:  # ~3σ
+                    w = math.exp(-z)
+
+            weights_out[j, i] = w
+            sum_w += w
+            if w > 0.0:
+                cnt += 1
+
+    return sum_w, cnt
+
+
+@njit(fastmath=True)
+def drizzle_deposit_numba_kernel_mono(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor: float, drop_shrink: float, frame_weight: float,
+    kernel_code: int, gaussian_sigma_or_radius: float
+):
+    H, W = img_data.shape
+    outH, outW = drizzle_buffer.shape
+
+    # build 3x3
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0,0], M[0,1], M[0,2] = transform[0,0], transform[0,1], transform[0,2]
+    M[1,0], M[1,1], M[1,2] = transform[1,0], transform[1,1], transform[1,2]
+    M[2,2] = 1.0
+
+    v = np.zeros(3, dtype=np.float32); v[2] = 1.0
+
+    # interpret width parameter:
+    # - square/circle: radius = drop_shrink * 0.5   (pixfrac-like)
+    # - gaussian: sigma_out = max(gaussian_sigma_or_radius, drop_shrink * 0.5)
+    # Footprint width must live in OUTPUT (drizzle) pixels, not input pixels
+    radius = 0.5 * drop_shrink * drizzle_factor
+
+    if kernel_code == 2:
+        # Gaussian sigma should also be interpreted in output-pixel space.
+        # If user gave a custom sigma, scale it too.
+        sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+    else:
+        sigma_out = max(radius, 1e-6)
+
+    # temp weights tile (safely sized later per pixel)
+    for y in range(H):
+        for x in range(W):
+            val = img_data[y, x]
+            if val == 0.0:
+                continue
+
+            v[0] = x; v[1] = y
+            out_coords = M @ v
+            Xo = out_coords[0] * drizzle_factor
+            Yo = out_coords[1] * drizzle_factor
+
+            # choose bounds
+            if kernel_code == 2:
+                r = int(math.ceil(3.0 * sigma_out))
+            else:
+                r = int(math.ceil(radius))
+
+            if r <= 0:
+                # degenerate → nearest pixel
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+
+            min_x = int(math.floor(Xo - r))
+            max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r))
+            max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+
+            Ht = max_y - min_y + 1
+            Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+
+            # allocate small tile (Numba-friendly: fixed-size via stack array)
+            weights = np.zeros((Ht, Wt), dtype=np.float32)
+            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
+                                                 min_x, max_x, min_y, max_y,
+                                                 sigma_out, weights)
+            if cnt == 0 or sum_w <= 1e-12:
+                # fallback to nearest
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+
+            scale = (val * frame_weight) / sum_w
+            cov_scale = frame_weight / sum_w
+            for j in range(Ht):
+                oy = min_y + j
+                for i in range(Wt):
+                    w = weights[j, i]
+                    if w > 0.0:
+                        ox = min_x + i
+                        drizzle_buffer[oy, ox] += w * scale
+                        coverage_buffer[oy, ox] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
+
+
+@njit(fastmath=True)
+def drizzle_deposit_color_kernel(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor: float, drop_shrink: float, frame_weight: float,
+    kernel_code: int, gaussian_sigma_or_radius: float
+):
+    H, W, C = img_data.shape
+    outH, outW, _ = drizzle_buffer.shape
+
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0,0], M[0,1], M[0,2] = transform[0,0], transform[0,1], transform[0,2]
+    M[1,0], M[1,1], M[1,2] = transform[1,0], transform[1,1], transform[1,2]
+    M[2,2] = 1.0
+
+    v = np.zeros(3, dtype=np.float32); v[2] = 1.0
+
+    # Footprint width must live in OUTPUT (drizzle) pixels, not input pixels
+    radius = 0.5 * drop_shrink * drizzle_factor
+
+    if kernel_code == 2:
+        # Gaussian sigma should also be interpreted in output-pixel space.
+        # If user gave a custom sigma, scale it too.
+        sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+    else:
+        sigma_out = max(radius, 1e-6)
+
+    for y in range(H):
+        for x in range(W):
+            # (minor optimization) skip all-zero triplets
+            nz = False
+            for cc in range(C):
+                if img_data[y, x, cc] != 0.0:
+                    nz = True; break
+            if not nz:
+                continue
+
+            v[0] = x; v[1] = y
+            out_coords = M @ v
+            Xo = out_coords[0] * drizzle_factor
+            Yo = out_coords[1] * drizzle_factor
+
+            if kernel_code == 2:
+                r = int(math.ceil(3.0 * sigma_out))
+            else:
+                r = int(math.ceil(radius))
+
+            if r <= 0:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        val = img_data[y, x, c]
+                        if val != 0.0:
+                            drizzle_buffer[oy, ox, c] += val * frame_weight
+                            coverage_buffer[oy, ox, c] += frame_weight
+                continue
+
+            min_x = int(math.floor(Xo - r))
+            max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r))
+            max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+
+            Ht = max_y - min_y + 1
+            Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+
+            weights = np.zeros((Ht, Wt), dtype=np.float32)
+            sum_w, cnt = _drizzle_kernel_weights(kernel_code, Xo, Yo,
+                                                 min_x, max_x, min_y, max_y,
+                                                 sigma_out, weights)
+            if cnt == 0 or sum_w <= 1e-12:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        val = img_data[y, x, c]
+                        if val != 0.0:
+                            drizzle_buffer[oy, ox, c] += val * frame_weight
+                            coverage_buffer[oy, ox, c] += frame_weight
+                continue
+
+            inv_sum = 1.0 / sum_w
+            for c in range(C):
+                val = img_data[y, x, c]
+                if val == 0.0:
+                    continue
+                scale = (val * frame_weight) * inv_sum
+                cov_scale = frame_weight * inv_sum
+                for j in range(Ht):
+                    oy = min_y + j
+                    for i in range(Wt):
+                        w = weights[j, i]
+                        if w > 0.0:
+                            ox = min_x + i
+                            drizzle_buffer[oy, ox, c] += w * scale
+                            coverage_buffer[oy, ox, c] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
+
+
+@njit(fastmath=True)
+def _project_3x3(M, x, y):
+    """Apply a full 3x3 projective transform to (x, y) and return the
+    perspective-divided (X, Y). For an affine matrix (bottom row 0,0,1) the
+    divide is by 1.0, so this is exactly the old affine behavior — one kernel
+    correctly handles affine, homography, and any projective model."""
+    wx = M[0, 0] * x + M[0, 1] * y + M[0, 2]
+    wy = M[1, 0] * x + M[1, 1] * y + M[1, 2]
+    ww = M[2, 0] * x + M[2, 1] * y + M[2, 2]
+    if ww == 0.0:
+        ww = 1e-12
+    inv = 1.0 / ww
+    return wx * inv, wy * inv
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def drizzle_deposit_kernel_mono_proj(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor, drop_shrink, frame_weight,
+    kernel_code, gaussian_sigma_or_radius
+):
+    """Mono projective drizzle deposit, parallelized by output-row bands.
+    Each band is written by exactly one thread → race-free, no extra memory.
+    Bit-identical to the serial version."""
+    H, W = img_data.shape
+    outH, outW = drizzle_buffer.shape
+
+    M = np.empty((3, 3), dtype=np.float32)
+    for a in range(3):
+        for b in range(3):
+            M[a, b] = transform[a, b]
+
+    radius = 0.5 * drop_shrink * drizzle_factor
+    if kernel_code == 2:
+        sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+        rmax = int(math.ceil(3.0 * sigma_out))
+    else:
+        sigma_out = max(radius, 1e-6)
+        rmax = int(math.ceil(radius))
+    if rmax < 0:
+        rmax = 0
+    tile_side = 2 * rmax + 2
+
+    n_bands = get_num_threads()
+    rows_per_band = (outH + n_bands - 1) // n_bands
+
+    for t in prange(n_bands):
+        yb0 = t * rows_per_band
+        yb1 = yb0 + rows_per_band
+        if yb1 > outH:
+            yb1 = outH
+        if yb0 >= yb1:
+            continue
+
+        # one scratch tile per band (not per pixel)
+        scratch = np.empty((tile_side, tile_side), dtype=np.float32)
+
+        for y in range(H):
+            for x in range(W):
+                val = img_data[y, x]
+                if val == 0.0:
+                    continue
+
+                Px, Py = _project_3x3(M, np.float32(x), np.float32(y))
+                Xo = Px * drizzle_factor
+                Yo = Py * drizzle_factor
+
+                if rmax <= 0:
+                    ox = int(Xo); oy = int(Yo)
+                    if yb0 <= oy < yb1 and 0 <= ox < outW:
+                        drizzle_buffer[oy, ox] += val * frame_weight
+                        coverage_buffer[oy, ox] += frame_weight
+                    continue
+
+                min_x = int(math.floor(Xo - rmax)); max_x = int(math.floor(Xo + rmax))
+                min_y = int(math.floor(Yo - rmax)); max_y = int(math.floor(Yo + rmax))
+                if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                    continue
+                if min_x < 0: min_x = 0
+                if min_y < 0: min_y = 0
+                if max_x >= outW: max_x = outW - 1
+                if max_y >= outH: max_y = outH - 1
+
+                # skip footprints that don't touch this band at all
+                if max_y < yb0 or min_y >= yb1:
+                    continue
+
+                Ht = max_y - min_y + 1; Wt = max_x - min_x + 1
+                if Ht <= 0 or Wt <= 0:
+                    continue
+
+                tile = scratch[:Ht, :Wt]
+                sum_w, cnt = _drizzle_kernel_weights_preallocated(
+                    kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
+                )
+                if cnt == 0 or sum_w <= 1e-12:
+                    ox = int(Xo); oy = int(Yo)
+                    if yb0 <= oy < yb1 and 0 <= ox < outW:
+                        drizzle_buffer[oy, ox] += val * frame_weight
+                        coverage_buffer[oy, ox] += frame_weight
+                    continue
+
+                scale = (val * frame_weight) / sum_w
+                cov_scale = frame_weight / sum_w
+
+                # deposit only the footprint rows that fall in this band
+                j_start = 0
+                if min_y < yb0:
+                    j_start = yb0 - min_y
+                j_end = Ht
+                if (max_y + 1) > yb1:
+                    j_end = yb1 - min_y
+
+                for j in range(j_start, j_end):
+                    oy = min_y + j
+                    for i in range(Wt):
+                        w = tile[j, i]
+                        if w > 0.0:
+                            ox = min_x + i
+                            drizzle_buffer[oy, ox] += w * scale
+                            coverage_buffer[oy, ox] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
+
+@njit(parallel=True, fastmath=True, cache=True)
+def drizzle_deposit_color_kernel_proj(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor, drop_shrink, frame_weight,
+    kernel_code, gaussian_sigma_or_radius
+):
+    """Color projective drizzle deposit, parallelized by output-row bands.
+    Per-channel coverage preserved for sparse CFA-drizzle planes."""
+    H, W, C = img_data.shape
+    outH, outW, _ = drizzle_buffer.shape
+
+    M = np.empty((3, 3), dtype=np.float32)
+    for a in range(3):
+        for b in range(3):
+            M[a, b] = transform[a, b]
+
+    radius = 0.5 * drop_shrink * drizzle_factor
+    if kernel_code == 2:
+        sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6)
+        rmax = int(math.ceil(3.0 * sigma_out))
+    else:
+        sigma_out = max(radius, 1e-6)
+        rmax = int(math.ceil(radius))
+    if rmax < 0:
+        rmax = 0
+    tile_side = 2 * rmax + 2
+
+    n_bands = get_num_threads()
+    rows_per_band = (outH + n_bands - 1) // n_bands
+
+    for t in prange(n_bands):
+        yb0 = t * rows_per_band
+        yb1 = yb0 + rows_per_band
+        if yb1 > outH:
+            yb1 = outH
+        if yb0 >= yb1:
+            continue
+
+        scratch = np.empty((tile_side, tile_side), dtype=np.float32)
+
+        for y in range(H):
+            for x in range(W):
+                nz = False
+                for cc in range(C):
+                    if img_data[y, x, cc] != 0.0:
+                        nz = True; break
+                if not nz:
+                    continue
+
+                Px, Py = _project_3x3(M, np.float32(x), np.float32(y))
+                Xo = Px * drizzle_factor
+                Yo = Py * drizzle_factor
+
+                if rmax <= 0:
+                    ox = int(Xo); oy = int(Yo)
+                    if yb0 <= oy < yb1 and 0 <= ox < outW:
+                        for c in range(C):
+                            val = img_data[y, x, c]
+                            if val != 0.0:
+                                drizzle_buffer[oy, ox, c] += val * frame_weight
+                                coverage_buffer[oy, ox, c] += frame_weight
+                    continue
+
+                min_x = int(math.floor(Xo - rmax)); max_x = int(math.floor(Xo + rmax))
+                min_y = int(math.floor(Yo - rmax)); max_y = int(math.floor(Yo + rmax))
+                if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                    continue
+                if min_x < 0: min_x = 0
+                if min_y < 0: min_y = 0
+                if max_x >= outW: max_x = outW - 1
+                if max_y >= outH: max_y = outH - 1
+
+                if max_y < yb0 or min_y >= yb1:
+                    continue
+
+                Ht = max_y - min_y + 1; Wt = max_x - min_x + 1
+                if Ht <= 0 or Wt <= 0:
+                    continue
+
+                tile = scratch[:Ht, :Wt]
+                sum_w, cnt = _drizzle_kernel_weights_preallocated(
+                    kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
+                )
+                if cnt == 0 or sum_w <= 1e-12:
+                    ox = int(Xo); oy = int(Yo)
+                    if yb0 <= oy < yb1 and 0 <= ox < outW:
+                        for c in range(C):
+                            val = img_data[y, x, c]
+                            if val != 0.0:
+                                drizzle_buffer[oy, ox, c] += val * frame_weight
+                                coverage_buffer[oy, ox, c] += frame_weight
+                    continue
+
+                inv_sum = 1.0 / sum_w
+
+                j_start = 0
+                if min_y < yb0:
+                    j_start = yb0 - min_y
+                j_end = Ht
+                if (max_y + 1) > yb1:
+                    j_end = yb1 - min_y
+
+                for c in range(C):
+                    val = img_data[y, x, c]
+                    if val == 0.0:
+                        continue
+                    scale = (val * frame_weight) * inv_sum
+                    cov_scale = frame_weight * inv_sum
+                    for j in range(j_start, j_end):
+                        oy = min_y + j
+                        for i in range(Wt):
+                            w = tile[j, i]
+                            if w > 0.0:
+                                ox = min_x + i
+                                drizzle_buffer[oy, ox, c] += w * scale
+                                coverage_buffer[oy, ox, c] += w * cov_scale
+
+    return drizzle_buffer, coverage_buffer
+
+@njit(parallel=True)
+def finalize_drizzle_2d(drizzle_buffer, coverage_buffer, final_out):
+    """
+    parallel-friendly final step: final_out = drizzle_buffer / coverage_buffer,
+    with coverage < 1e-8 => 0
+    """
+    out_h, out_w = drizzle_buffer.shape
+    for y in prange(out_h):
+        for x in range(out_w):
+            cov = coverage_buffer[y, x]
+            if cov < 1e-8:
+                final_out[y, x] = 0.0
+            else:
+                final_out[y, x] = drizzle_buffer[y, x] / cov
+    return final_out
+
+@njit(fastmath=True, cache=True)
+def drizzle_deposit_color_naive(
+    img_data,         # shape (H,W,C)
+    transform,        # shape (2,3)
+    drizzle_buffer,   # shape (outH,outW,C)
+    coverage_buffer,  # shape (outH,outW,C)
+    drizzle_factor: float,
+    drop_shrink: float,  # unused here
+    frame_weight: float
+):
+    """
+    Naive color deposit:
+    Each input pixel is mapped to exactly one output pixel (ignores drop_shrink).
+    """
+    H, W, channels = img_data.shape
+    outH, outW, outC = drizzle_buffer.shape
+
+    # Build 3×3 matrix M
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0, 0] = transform[0, 0]
+    M[0, 1] = transform[0, 1]
+    M[0, 2] = transform[0, 2]
+    M[1, 0] = transform[1, 0]
+    M[1, 1] = transform[1, 1]
+    M[1, 2] = transform[1, 2]
+    M[2, 2] = 1.0
+
+    in_coords = np.zeros(3, dtype=np.float32)
+    in_coords[2] = 1.0
+
+    for y in range(H):
+        for x in range(W):
+            # 1) Transform
+            in_coords[0] = x
+            in_coords[1] = y
+            out_coords = M @ in_coords
+            X = out_coords[0]
+            Y = out_coords[1]
+
+            # 2) Upsample
+            Xo = int(X * drizzle_factor)
+            Yo = int(Y * drizzle_factor)
+
+            # 3) Check bounds
+            if 0 <= Xo < outW and 0 <= Yo < outH:
+                # 4) For each channel
+                for cidx in range(channels):
+                    val = img_data[y, x, cidx]
+                    if val != 0:
+                        drizzle_buffer[Yo, Xo, cidx] += val * frame_weight
+                        coverage_buffer[Yo, Xo, cidx] += frame_weight
+
+    return drizzle_buffer, coverage_buffer
+
+@njit(fastmath=True, cache=True)
+def drizzle_deposit_color_footprint(
+    img_data,         # shape (H,W,C)
+    transform,        # shape (2,3)
+    drizzle_buffer,   # shape (outH,outW,C)
+    coverage_buffer,  # shape (outH,outW,C)
+    drizzle_factor: float,
+    drop_shrink: float,
+    frame_weight: float
+):
+    """
+    Color version with a bounding-box footprint of width=drop_shrink
+    for distributing flux in the output plane.
+    """
+    H, W, channels = img_data.shape
+    outH, outW, outC = drizzle_buffer.shape
+
+    # Build 3×3 matrix
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0, 0] = transform[0, 0]
+    M[0, 1] = transform[0, 1]
+    M[0, 2] = transform[0, 2]
+    M[1, 0] = transform[1, 0]
+    M[1, 1] = transform[1, 1]
+    M[1, 2] = transform[1, 2]
+    M[2, 2] = 1.0
+
+    in_coords = np.zeros(3, dtype=np.float32)
+    in_coords[2] = 1.0
+
+    footprint_radius = drop_shrink * 0.5
+
+    for y in range(H):
+        for x in range(W):
+            # Transform once per pixel
+            in_coords[0] = x
+            in_coords[1] = y
+            out_coords = M @ in_coords
+            X = out_coords[0]
+            Y = out_coords[1]
+
+            # Upsample
+            Xo = X * drizzle_factor
+            Yo = Y * drizzle_factor
+
+            # bounding box
+            min_x = int(np.floor(Xo - footprint_radius))
+            max_x = int(np.floor(Xo + footprint_radius))
+            min_y = int(np.floor(Yo - footprint_radius))
+            max_y = int(np.floor(Yo + footprint_radius))
+
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0:
+                min_x = 0
+            if max_x >= outW:
+                max_x = outW - 1
+            if min_y < 0:
+                min_y = 0
+            if max_y >= outH:
+                max_y = outH - 1
+
+            width_foot = (max_x - min_x + 1)
+            height_foot = (max_y - min_y + 1)
+            area_pixels = width_foot * height_foot
+            if area_pixels <= 0:
+                continue
+
+            for cidx in range(channels):
+                val = img_data[y, x, cidx]
+                if val == 0:
+                    continue
+
+                deposit_val = (val * frame_weight) / area_pixels
+                coverage_fraction = frame_weight / area_pixels
+
+                for oy in range(min_y, max_y + 1):
+                    for ox in range(min_x, max_x + 1):
+                        drizzle_buffer[oy, ox, cidx] += deposit_val
+                        coverage_buffer[oy, ox, cidx] += coverage_fraction
+
+    return drizzle_buffer, coverage_buffer
+
+
+@njit(parallel=True, cache=True)
+def finalize_drizzle_3d(drizzle_buffer, coverage_buffer, final_out):
+    """
+    final_out[y,x,c] = drizzle_buffer[y,x,c] / coverage_buffer[y,x,c]
+    if coverage < 1e-8 => 0
+    """
+    outH, outW, channels = drizzle_buffer.shape
+    for y in prange(outH):
+        for x in range(outW):
+            for cidx in range(channels):
+                cov = coverage_buffer[y, x, cidx]
+                if cov < 1e-8:
+                    final_out[y, x, cidx] = 0.0
+                else:
+                    final_out[y, x, cidx] = drizzle_buffer[y, x, cidx] / cov
+    return final_out
+
+@njit(fastmath=True)
+def _drizzle_kernel_weights_preallocated(
+    kernel_code: int, Xo: float, Yo: float,
+    min_x: int, max_x: int, min_y: int, max_y: int,
+    sigma_out: float,
+    weights_out,   # caller-allocated (Ht, Wt) tile — we just fill it
+):
+    """See _drizzle_kernel_weights. kernel_code 0 = true fractional-overlap square
+    drop (sub-pixel aware, flux-conserving); 1 = hard disk; 2 = gaussian."""
+    H = max_y - min_y + 1
+    W = max_x - min_x + 1
+    r2_limit = sigma_out * sigma_out
+
+    rad = sigma_out
+    drop_lx = Xo - rad
+    drop_hx = Xo + rad
+    drop_ly = Yo - rad
+    drop_hy = Yo + rad
+
+    sum_w = 0.0
+    cnt = 0
+    for j in range(H):
+        oy = min_y + j
+        cy = (oy + 0.5) - Yo
+        ovy = min(oy + 1.0, drop_hy) - max(float(oy), drop_ly)
+        for i in range(W):
+            ox = min_x + i
+            cx = (ox + 0.5) - Xo
+            w = 0.0
+            if kernel_code == 0:
+                ovx = min(ox + 1.0, drop_hx) - max(float(ox), drop_lx)
+                if ovx > 0.0 and ovy > 0.0:
+                    w = ovx * ovy
+            elif kernel_code == 1:
+                if (cx*cx + cy*cy) <= r2_limit:
+                    w = 1.0
+            else:
+                z = (cx*cx + cy*cy) / (2.0 * sigma_out * sigma_out)
+                if z <= 9.0:
+                    w = math.exp(-z)
+            weights_out[j, i] = w
+            sum_w += w
+            if w > 0.0:
+                cnt += 1
+    return sum_w, cnt
+
+ 
+@njit(fastmath=True)
+def drizzle_deposit_kernel_mono_fast(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor: float, drop_shrink: float, frame_weight: float,
+    kernel_code: int, gaussian_sigma_or_radius: float,
+    scratch,        # ← pre-allocated (max_tile, max_tile) float32 scratch tile
+):
+    H, W = img_data.shape
+    outH, outW = drizzle_buffer.shape
+ 
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0,0], M[0,1], M[0,2] = transform[0,0], transform[0,1], transform[0,2]
+    M[1,0], M[1,1], M[1,2] = transform[1,0], transform[1,1], transform[1,2]
+    M[2,2] = 1.0
+ 
+    v = np.zeros(3, dtype=np.float32); v[2] = 1.0
+ 
+    radius    = 0.5 * drop_shrink * drizzle_factor
+    sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6) if kernel_code == 2 else max(radius, 1e-6)
+ 
+    for y in range(H):
+        for x in range(W):
+            val = img_data[y, x]
+            if val == 0.0:
+                continue
+ 
+            v[0] = x; v[1] = y
+            out_coords = M @ v
+            Xo = out_coords[0] * drizzle_factor
+            Yo = out_coords[1] * drizzle_factor
+ 
+            r = int(math.ceil(3.0 * sigma_out)) if kernel_code == 2 else int(math.ceil(radius))
+            if r <= 0:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+ 
+            min_x = int(math.floor(Xo - r))
+            max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r))
+            max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+ 
+            Ht = max_y - min_y + 1
+            Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+ 
+            # ← USE the pre-allocated scratch slice instead of allocating
+            tile = scratch[:Ht, :Wt]
+            sum_w, cnt = _drizzle_kernel_weights_preallocated(
+                kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
+            )
+            if cnt == 0 or sum_w <= 1e-12:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    drizzle_buffer[oy, ox] += val * frame_weight
+                    coverage_buffer[oy, ox] += frame_weight
+                continue
+ 
+            scale     = (val * frame_weight) / sum_w
+            cov_scale = frame_weight / sum_w
+            for j in range(Ht):
+                oy2 = min_y + j
+                for i in range(Wt):
+                    w = tile[j, i]
+                    if w > 0.0:
+                        drizzle_buffer[oy2, min_x + i] += w * scale
+                        coverage_buffer[oy2, min_x + i] += w * cov_scale
+ 
+ 
+@njit(fastmath=True)
+def drizzle_deposit_kernel_color_fast(
+    img_data, transform, drizzle_buffer, coverage_buffer,
+    drizzle_factor: float, drop_shrink: float, frame_weight: float,
+    kernel_code: int, gaussian_sigma_or_radius: float,
+    scratch,        # ← pre-allocated (max_tile, max_tile) float32 scratch tile
+):
+    H, W, C = img_data.shape
+    outH, outW, _ = drizzle_buffer.shape
+ 
+    M = np.zeros((3, 3), dtype=np.float32)
+    M[0,0], M[0,1], M[0,2] = transform[0,0], transform[0,1], transform[0,2]
+    M[1,0], M[1,1], M[1,2] = transform[1,0], transform[1,1], transform[1,2]
+    M[2,2] = 1.0
+ 
+    v = np.zeros(3, dtype=np.float32); v[2] = 1.0
+ 
+    radius    = 0.5 * drop_shrink * drizzle_factor
+    sigma_out = max(gaussian_sigma_or_radius * drizzle_factor, 1e-6) if kernel_code == 2 else max(radius, 1e-6)
+ 
+    for y in range(H):
+        for x in range(W):
+            nz = False
+            for cc in range(C):
+                if img_data[y, x, cc] != 0.0:
+                    nz = True; break
+            if not nz:
+                continue
+ 
+            v[0] = x; v[1] = y
+            out_coords = M @ v
+            Xo = out_coords[0] * drizzle_factor
+            Yo = out_coords[1] * drizzle_factor
+ 
+            r = int(math.ceil(3.0 * sigma_out)) if kernel_code == 2 else int(math.ceil(radius))
+            if r <= 0:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        drizzle_buffer[oy, ox, c] += img_data[y, x, c] * frame_weight
+                        coverage_buffer[oy, ox, c] += frame_weight
+                continue
+ 
+            min_x = int(math.floor(Xo - r))
+            max_x = int(math.floor(Xo + r))
+            min_y = int(math.floor(Yo - r))
+            max_y = int(math.floor(Yo + r))
+            if max_x < 0 or min_x >= outW or max_y < 0 or min_y >= outH:
+                continue
+            if min_x < 0: min_x = 0
+            if min_y < 0: min_y = 0
+            if max_x >= outW: max_x = outW - 1
+            if max_y >= outH: max_y = outH - 1
+ 
+            Ht = max_y - min_y + 1
+            Wt = max_x - min_x + 1
+            if Ht <= 0 or Wt <= 0:
+                continue
+ 
+            tile = scratch[:Ht, :Wt]
+            sum_w, cnt = _drizzle_kernel_weights_preallocated(
+                kernel_code, Xo, Yo, min_x, max_x, min_y, max_y, sigma_out, tile
+            )
+            if cnt == 0 or sum_w <= 1e-12:
+                ox = int(Xo); oy = int(Yo)
+                if 0 <= ox < outW and 0 <= oy < outH:
+                    for c in range(C):
+                        drizzle_buffer[oy, ox, c] += img_data[y, x, c] * frame_weight
+                        coverage_buffer[oy, ox, c] += frame_weight
+                continue
+ 
+            inv_sum = 1.0 / sum_w
+            for c in range(C):
+                val = img_data[y, x, c]
+                if val == 0.0:
+                    continue
+                scale     = (val * frame_weight) * inv_sum
+                cov_scale = frame_weight * inv_sum
+                for j in range(Ht):
+                    oy2 = min_y + j
+                    for i in range(Wt):
+                        w = tile[j, i]
+                        if w > 0.0:
+                            drizzle_buffer[oy2, min_x + i, c] += w * scale
+                            coverage_buffer[oy2, min_x + i, c] += w * cov_scale
+
+
+@njit(cache=True)
+def piecewise_linear(val, xvals, yvals):
+    """
+    Performs piecewise linear interpolation:
+    Given a scalar 'val', and arrays xvals, yvals (each of length N),
+    finds i s.t. xvals[i] <= val < xvals[i+1],
+    then returns the linear interpolation between yvals[i], yvals[i+1].
+    If val < xvals[0], returns yvals[0].
+    If val > xvals[-1], returns yvals[-1].
+    """
+    if val <= xvals[0]:
+        return yvals[0]
+    for i in range(len(xvals)-1):
+        if val < xvals[i+1]:
+            # Perform a linear interpolation in interval [xvals[i], xvals[i+1]]
+            dx = xvals[i+1] - xvals[i]
+            dy = yvals[i+1] - yvals[i]
+            ratio = (val - xvals[i]) / dx
+            return yvals[i] + ratio * dy
+    return yvals[-1]
+
+@njit(parallel=True, fastmath=True, cache=True)
+def apply_curves_numba(image, xvals, yvals):
+    """
+    Numba-accelerated routine to apply piecewise linear interpolation 
+    to each pixel in 'image'.
+    - image can be (H,W) or (H,W,3).
+    - xvals, yvals are the curve arrays in ascending order.
+    Returns the adjusted image as float32.
+    """
+    if image.ndim == 2:
+        H, W = image.shape
+        out = np.empty((H, W), dtype=np.float32)
+        for y in prange(H):
+            for x in range(W):
+                val = image[y, x]
+                out[y, x] = piecewise_linear(val, xvals, yvals)
+        return out
+    elif image.ndim == 3:
+        H, W, C = image.shape
+        out = np.empty((H, W, C), dtype=np.float32)
+        for y in prange(H):
+            for x in range(W):
+                for c in range(C):
+                    val = image[y, x, c]
+                    out[y, x, c] = piecewise_linear(val, xvals, yvals)
+        return out
+    else:
+        # Unexpected shape
+        return image  # Fallback
+
+def fast_star_detect(image, 
+                     blur_size=9, 
+                     threshold_factor=0.7, 
+                     min_area=1, 
+                     max_area=5000):
+    """
+    Finds star positions via contour detection + ellipse fitting.
+    Returns Nx2 array of (x, y) star coordinates in the same coordinate system as 'image'.
+    """
+
+    # 1) Convert to grayscale if needed
+    if image.ndim == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+    # 2) Normalize to 8-bit [0..255]
+    img_min, img_max = image.min(), image.max()
+    if img_max <= img_min:
+        return np.empty((0,2), dtype=np.float32)  # All pixels same => no stars
+    image_8u = (255.0 * (image - img_min) / (img_max - img_min)).astype(np.uint8)
+
+    # 3) Blur => subtract => highlight stars
+    blurred = cv2.GaussianBlur(image_8u, (blur_size, blur_size), 0)
+    subtracted = cv2.absdiff(image_8u, blurred)
+
+    # 4) Otsu's threshold => scaled by threshold_factor
+    otsu_thresh, _ = cv2.threshold(subtracted, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    final_thresh_val = max(2, int(otsu_thresh * threshold_factor))
+
+    _, thresh = cv2.threshold(subtracted, final_thresh_val, 255, cv2.THRESH_BINARY)
+
+    # 5) (Optional) morphological opening to remove single-pixel noise
+    kernel = np.ones((2, 2), np.uint8)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+    # 6) Find contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # 7) Filter by area, fit ellipse => use ellipse center as star position
+    star_positions = []
+    for c in contours:
+        area = cv2.contourArea(c)
+        if area < min_area or area > max_area:
+            continue
+        if len(c) < 5:
+            # Need >=5 points to fit an ellipse
+            continue
+
+        ellipse = cv2.fitEllipse(c)
+        (cx, cy), (major_axis, minor_axis), angle = ellipse
+        # You could check eccentricity, etc. if you want to filter out weird shapes
+        star_positions.append((cx, cy))
+
+    if len(star_positions) == 0:
+        return np.empty((0,2), dtype=np.float32)
+    else:
+        return np.array(star_positions, dtype=np.float32)
+
+
+@njit(fastmath=True)
+def _drizzle_kernel_weights(kernel_code: int, Xo: float, Yo: float,
+                            min_x: int, max_x: int, min_y: int, max_y: int,
+                            sigma_out: float,
+                            weights_out):  # preallocated 2D view (max_y-min_y+1, max_x-min_x+1)
+    """
+    Fill `weights_out` with unnormalized kernel weights centered at (Xo,Yo).
+    Returns (sum_w, count_used).
+    """
+    H = max_y - min_y + 1
+    W = max_x - min_x + 1
+    r2_limit = sigma_out * sigma_out  # for circle, sigma_out := radius
+
+    sum_w = 0.0
+    cnt = 0
+    for j in range(H):
+        oy = min_y + j
+        cy = (oy + 0.5) - Yo  # pixel-center distance
+        for i in range(W):
+            ox = min_x + i
+            cx = (ox + 0.5) - Xo
+            w = 0.0
+
+            if kernel_code == 0:
+                # square = uniform weight in the bounding box
+                w = 1.0
+            elif kernel_code == 1:
+                # circle = uniform weight if inside radius
+                if (cx*cx + cy*cy) <= r2_limit:
+                    w = 1.0
+            else:  # gaussian
+                # gaussian centered at (Xo,Yo) with sigma_out
+                z = (cx*cx + cy*cy) / (2.0 * sigma_out * sigma_out)
+                # drop tiny far-away contributions to keep perf ok
+                if z <= 9.0:  # ~3σ
+                    w = math.exp(-z)
+
+            weights_out[j, i] = w
+            sum_w += w
+            if w > 0.0:
+                cnt += 1
+
+    return sum_w, cnt
+
+
+
+@njit(nogil=True, fastmath=True, cache=True)
+def gradient_descent_to_dim_spot_numba(gray_small, start_x, start_y, patch_size):
+    """
+    Numba implementation of _gradient_descent_to_dim_spot.
+    Walks to the local minimum (median-of-patch) around (start_x, start_y).
+    gray_small: 2D float32 array
+    """
+    H, W = gray_small.shape
+    half = patch_size // 2
+    
+    cx = int(min(max(start_x, 0), W - 1))
+    cy = int(min(max(start_y, 0), H - 1))
+
+    # Helper to compute patch median manually or efficiently
+    # Numba supports np.median on arrays, but slicing inside a loop can be costly.
+    # However, for small patches (e.g. 15x15), it should be okay.
+    
+    for _ in range(60):
+        # Current value
+        x0 = max(0, cx - half)
+        x1 = min(W, cx + half + 1)
+        y0 = max(0, cy - half)
+        y1 = min(H, cy + half + 1)
+        sub = gray_small[y0:y1, x0:x1].flatten()
+        if sub.size == 0:
+            cur_val = 1e9 # Should not happen
+        else:
+            cur_val = np.median(sub)
+
+        best_x, best_y = cx, cy
+        best_val = cur_val
+        
+        # 3x3 search
+        changed = False
+        
+        # Unroll for strict 3x3 neighborhood
+        for dy in range(-1, 2):
+            for dx in range(-1, 2):
+                if dx == 0 and dy == 0:
+                    continue
+                
+                nx = cx + dx
+                ny = cy + dy
+                
+                if nx < 0 or ny < 0 or nx >= W or ny >= H:
+                    continue
+                
+                # Compute median for neighbor
+                nx0 = max(0, nx - half)
+                nx1 = min(W, nx + half + 1)
+                ny0 = max(0, ny - half)
+                ny1 = min(H, ny + half + 1)
+                
+                # In Numba, median on a slice creates a copy.
+                # For small patches this is acceptable given the huge speedup vs Python interpreter overhead.
+                n_sub = gray_small[ny0:ny1, nx0:nx1].flatten()
+                if n_sub.size == 0:
+                    val = 1e9
+                else:
+                    val = np.median(n_sub)
+                
+                if val < best_val:
+                    best_val = val
+                    best_x = nx
+                    best_y = ny
+                    changed = True
+        
+        if not changed:
+            break
+            
+        cx, cy = best_x, best_y
+        
+    return cx, cy

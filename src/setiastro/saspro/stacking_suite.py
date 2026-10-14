@@ -8786,9 +8786,12 @@ class StackingSuiteDialog(QDialog):
         if getattr(self, "_debayer_method_for_this_run", None) is not None:
             dmethod = str(self._debayer_method_for_this_run).lower()
         else:
-            dmethod = str(self.settings.value("stacking/debayer_method", "vng")).lower()
-        if dmethod not in ("vng", "edge", "bilinear", "strict_cfa"):
-            dmethod = "vng"
+            dmethod = str(self.settings.value("stacking/debayer_method", "rcd")).lower()
+        # Accept "rcd" and default-sanitise unknown values to RCD too — the
+        # dropdown-first default so a user who never touched the setting
+        # gets ratio-corrected demosaic on their first OSC stack.
+        if dmethod not in ("rcd", "vng", "edge", "bilinear", "strict_cfa"):
+            dmethod = "rcd"
 
         ext = file_path.lower()
         is_raw = ext.endswith(('.cr2','.cr3','.nef','.arw','.dng','.raf','.orf','.rw2','.pef'))
@@ -13617,22 +13620,38 @@ class StackingSuiteDialog(QDialog):
         # Debayer method for OSC/Bayer integration (same options as the Debayer dialog).
         drizzle_layout.addWidget(QLabel(self.tr("Debayer:")))
         self.debayer_method_combo = QComboBox()
+        # RCD first + default. On OSC narrowband data VNG's first-order
+        # gradient test gets randomized by shot noise and sprays chrominance
+        # speckles across the dim regions (the "VNG vs bilinear" artefact
+        # we chased). RCD's second-order color gradient makes direction
+        # selection noise-robust and ratio-corrected R/B preserves faint
+        # color — the right default for astro stacking.
         for _dm_label, _dm_tok in (
+            ("RCD (Ratio-Corrected; recommended for OSC)", "rcd"),
             ("VNG",        "vng"),
             ("Edge-aware", "edge"),
             ("Bilinear",   "bilinear"),
             ("Strict CFA", "strict_cfa"),
         ):
             self.debayer_method_combo.addItem(self.tr(_dm_label), _dm_tok)
-        _saved_dm = str(self.settings.value("stacking/debayer_method", "vng")).lower()
+        # Default changed from "vng" to "rcd" — pre-existing user installs
+        # that already have "vng" saved keep it (QSettings.value returns
+        # the stored string); only brand-new installs get the new default.
+        _saved_dm = str(self.settings.value("stacking/debayer_method", "rcd")).lower()
         _dm_idx = next((
             i for i in range(self.debayer_method_combo.count())
             if self.debayer_method_combo.itemData(i) == _saved_dm
         ), 0)
         self.debayer_method_combo.setCurrentIndex(_dm_idx)
         self.debayer_method_combo.setToolTip(self.tr(
-            "Demosaic used when integrating OSC/Bayer frames. VNG = highest quality "
-            "(slower); Edge/Bilinear = faster; Strict CFA = no interpolation. "
+            "Demosaic used when integrating OSC/Bayer frames.\n"
+            "• RCD: ratio-corrected, noise-robust direction detection — best\n"
+            "  for OSC narrowband; preserves faint color without the colour\n"
+            "  speckling VNG produces in dim regions.\n"
+            "• VNG: variable number of gradients; sharper on daylight-subject\n"
+            "  broadband data but speckles under noise on dim astro frames.\n"
+            "• Edge-aware / Bilinear: faster, lower quality fallbacks.\n"
+            "• Strict CFA: no interpolation (used for drizzle prep).\n"
             "Ignored when CFA Drizzle is on."
         ))
         self.debayer_method_combo.currentIndexChanged.connect(
