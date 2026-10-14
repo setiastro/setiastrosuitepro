@@ -9761,6 +9761,38 @@ class StackingSuiteDialog(QDialog):
         )
         fl_align.addRow(self.tr("Max stars:"), self.align_limit_stars_spin)
 
+        # Warp interpolation kernel — the final full-resolution resample.
+        # Shared QSettings key `stacking/align/kernel` is read AND written by
+        # the Star Alignment dialog's Advanced panel too, so a user who
+        # changes it in either place sees the change reflected in the other.
+        # `_warp_hi_interp()` in star_alignment.py reads this key live on
+        # every warp — no restart needed.
+        self.align_kernel_combo = QComboBox()
+        self.align_kernel_combo.addItems([
+            self.tr("Lanczos4 (sharpest; rings on bright stars)"),
+            self.tr("Bicubic / Mitchell (less ringy; recommended)"),
+            self.tr("Bilinear (softest; no ringing)"),
+        ])
+        _KERNEL_TO_IDX = {"lanczos": 0, "cubic": 1, "linear": 2}
+        _saved_kernel = str(
+            self.settings.value("stacking/align/kernel", "lanczos") or "lanczos"
+        ).strip().lower()
+        self.align_kernel_combo.setCurrentIndex(_KERNEL_TO_IDX.get(_saved_kernel, 0))
+        self.align_kernel_combo.setToolTip(self.tr(
+            "Resampling kernel used for the final full-resolution warp "
+            "(applies to Register and Integrate, Skip Registration, and the "
+            "Star Alignment dialog).\n\n"
+            "• Lanczos4: sharpest, but its negative lobes cause dark halos\n"
+            "  around bright narrowband stars (what the anti-ring guard is\n"
+            "  there to catch).\n"
+            "• Bicubic / Mitchell: shorter negative lobes — noticeably less\n"
+            "  ringy, slightly softer on well-aligned frames. Recommended\n"
+            "  if dark rings persist (OSC narrowband data in particular).\n"
+            "• Bilinear: no sharpening and no ringing at all; the softest\n"
+            "  result. Keep for ring-sensitive diagnostics only."
+        ))
+        fl_align.addRow(self.tr("Warp interpolation:"), self.align_kernel_combo)
+
         # Timeout spinbox kept for QSettings back-compat but hidden from UI
         self.align_timeout_spin = QSpinBox()
         self.align_timeout_spin.setValue(
@@ -10671,6 +10703,14 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/align/auto_threshold",        bool(self.align_auto_thresh_cb.isChecked()))
         self.settings.setValue("stacking/align/limit_stars",           int(self.align_limit_stars_spin.value()))
         self.settings.setValue("stacking/align/timeout_per_job_sec",   int(self.align_timeout_spin.value()))
+        # Warp interpolation kernel — shared with the Star Alignment dialog's
+        # Advanced-panel dropdown. Canonical strings: "lanczos"|"cubic"|"linear".
+        _IDX_TO_KERNEL = ("lanczos", "cubic", "linear")
+        _kidx = self.align_kernel_combo.currentIndex()
+        self.settings.setValue(
+            "stacking/align/kernel",
+            _IDX_TO_KERNEL[max(0, min(_kidx, len(_IDX_TO_KERNEL) - 1))],
+        )
         self.settings.setValue("stacking/drop_shrink",                 float(self.drop_shrink_spin.value()))
 
         kidx = self.drizzle_kernel_combo.currentIndex()
@@ -10724,7 +10764,7 @@ class StackingSuiteDialog(QDialog):
             self._refresh_comet_starless_enable()
         except Exception:
             pass
-
+        
     # --- Drizzle config: single source of truth ---
     def _get_drizzle_pixfrac(self) -> float:
         s = self.settings

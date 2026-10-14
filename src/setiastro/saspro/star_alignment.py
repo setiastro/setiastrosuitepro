@@ -10,46 +10,83 @@ from setiastro.saspro.help_support import make_help_button
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Hi-sharpness warp kernel (set once at import, used by every warp site)
+# Hi-sharpness warp kernel (used by every warp site)
 #
 # Lanczos4 is objectively the sharpest OpenCV ships and also the ringiest
 # — its negative lobes cause the dark-halo artifact on bright narrowband
 # stars that bit us in 1.22.6. The anti-ring guard (`_warp_antiring`)
 # contains most of the damage, but a user who still sees traces of
 # ringing can swap to bicubic (a Mitchell-family cubic kernel with much
-# shorter negative lobes) via an environment variable without a rebuild:
+# shorter negative lobes) without a rebuild.
 #
-#   SASPRO_WARP_KERNEL=cubic    → cv2.INTER_CUBIC (recommended fallback)
-#   SASPRO_WARP_KERNEL=lanczos  → cv2.INTER_LANCZOS4 (default; sharpest)
-#   SASPRO_WARP_KERNEL=linear   → cv2.INTER_LINEAR (no sharpening at all)
+# Three ways to pick the kernel, in priority order:
+#   1. QSettings  stacking/align/kernel  (written by the Star Alignment UI
+#                                         dropdown and the Stacking Suite
+#                                         settings dropdown — shared key)
+#   2. Env var    SASPRO_WARP_KERNEL     (set once at launcher time)
+#   3. Default    "lanczos"
+#
+# Allowed values (case-insensitive):
+#   "lanczos" | "lanczos4"      → cv2.INTER_LANCZOS4 (sharpest, default)
+#   "cubic" | "mitchell" | "bicubic"
+#                               → cv2.INTER_CUBIC    (recommended if rings persist)
+#   "linear" | "bilinear"       → cv2.INTER_LINEAR   (no sharpening at all)
 #
 # True Mitchell-Netravali (B=1/3, C=1/3) isn't in OpenCV; cv2.INTER_CUBIC
 # is close enough (Catmull-Rom-ish) for a drop-in. Switching to CUBIC
 # costs some perceived sharpness on well-aligned frames but is noticeably
 # less ringy on bright stars than Lanczos4.
 # ─────────────────────────────────────────────────────────────────────
-def _resolve_warp_hi_interp():
-    """Resolve the configured hi-sharpness interpolation flag once."""
+# QSettings key shared with Stacking Suite's "Warp interpolation" dropdown.
+# Both UIs read and write THIS key so the user's choice follows them around.
+_WARP_KERNEL_SETTINGS_KEY = "stacking/align/kernel"
+
+def _warp_kernel_name_to_cv2(name: str):
+    """Map a string kernel name (case-insensitive) to a cv2 interpolation
+    flag. Unknown names fall back to Lanczos4 so a typo in settings never
+    crashes the warp — just silently uses the sharp default."""
     import cv2
-    sel = os.environ.get("SASPRO_WARP_KERNEL", "lanczos").strip().lower()
+    sel = str(name or "").strip().lower()
     if sel in ("cubic", "mitchell", "bicubic"):
         return cv2.INTER_CUBIC
     if sel in ("linear", "bilinear"):
         return cv2.INTER_LINEAR
     return cv2.INTER_LANCZOS4
 
-_WARP_HI_INTERP = None  # resolved lazily on first use (cv2 isn't imported yet)
+def _warp_kernel_name() -> str:
+    """Canonical name of the configured hi-sharpness kernel. Reads
+    QSettings first, env var next, "lanczos" as a last-resort default.
+    Returns one of {"lanczos", "cubic", "linear"}."""
+    try:
+        from PyQt6.QtCore import QSettings as _QS
+        v = _QS().value(_WARP_KERNEL_SETTINGS_KEY, None)
+        if v is not None:
+            s = str(v).strip().lower()
+            if s in ("lanczos", "lanczos4"):
+                return "lanczos"
+            if s in ("cubic", "mitchell", "bicubic"):
+                return "cubic"
+            if s in ("linear", "bilinear"):
+                return "linear"
+    except Exception:
+        pass
+    env = os.environ.get("SASPRO_WARP_KERNEL", "").strip().lower()
+    if env in ("cubic", "mitchell", "bicubic"):
+        return "cubic"
+    if env in ("linear", "bilinear"):
+        return "linear"
+    return "lanczos"
 
 def _warp_hi_interp():
     """
-    Return the cached hi-sharpness interpolation flag. Lazy so that an
-    import-time error (missing cv2 in a lightweight unit test environment)
-    doesn't take the whole module down with it.
+    Return the configured hi-sharpness interpolation flag.
+
+    Resolved on every call (NOT cached) so that a UI change to the
+    "Warp interpolation" dropdown takes effect on the next warp without a
+    restart. The resolution is cheap (one QSettings.value + a string
+    compare); the per-call cost is noise next to a Lanczos warp.
     """
-    global _WARP_HI_INTERP
-    if _WARP_HI_INTERP is None:
-        _WARP_HI_INTERP = _resolve_warp_hi_interp()
-    return _WARP_HI_INTERP
+    return _warp_kernel_name_to_cv2(_warp_kernel_name())
 def _qs_raw(settings, key, default=None):
     try:
         return settings.value(key, default)
@@ -320,6 +357,21 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         model = "poly3"
         settings.setValue("stacking/align/model", model)  # migrate to new key
 
+    # Warp kernel (shared with Stacking Suite settings). Canonicalised to
+    # one of {"lanczos", "cubic", "linear"} so callers that pass it back
+    # to `_warp_kernel_name_to_cv2()` always get a resolvable flag. The
+    # key is `stacking/align/kernel` — same key the Star Alignment UI's
+    # dropdown writes and the Stacking Suite settings page writes.
+    _k_raw = (_get("kernel", "lanczos", str) or "lanczos").strip().lower()
+    if _k_raw in ("lanczos", "lanczos4"):
+        kernel = "lanczos"
+    elif _k_raw in ("cubic", "mitchell", "bicubic"):
+        kernel = "cubic"
+    elif _k_raw in ("linear", "bilinear"):
+        kernel = "linear"
+    else:
+        kernel = "lanczos"
+
     prefs = {
         "model":       model,
         "max_cp":      _get("max_cp", 250, int),
@@ -332,6 +384,8 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         # Hot pixel rejection
         "min_fwhm":        _get("min_fwhm", 1.2, float),
         "max_ellipticity": _get("max_ellipticity", 0.6, float),
+        # Warp kernel used by every anti-ring warp site. See _warp_hi_interp.
+        "kernel":          kernel,
     }
 
     return prefs
@@ -6236,6 +6290,35 @@ class StarRegistrationWindow(QWidget):
         )
         _adv.addRow("Per-frame timeout:", self.sp_adv_timeout)
 
+        # Warp interpolation kernel — the final full-res resample pass.
+        # Shared QSettings key `stacking/align/kernel` is read/written by
+        # BOTH this dropdown and the Stacking Suite settings dropdown, so a
+        # user's choice follows them around. See `_warp_hi_interp()` for
+        # the resolution order (QSettings → env var → "lanczos").
+        self.cmb_adv_kernel = QComboBox()
+        self.cmb_adv_kernel.addItems([
+            "Lanczos4 (sharpest; rings on bright stars)",
+            "Bicubic / Mitchell (less ringy; recommended)",
+            "Bilinear (softest; no ringing)",
+        ])
+        _KERNEL_TO_IDX = {"lanczos": 0, "cubic": 1, "linear": 2}
+        self.cmb_adv_kernel.setCurrentIndex(
+            _KERNEL_TO_IDX.get(str(_prefs.get("kernel", "lanczos")).lower(), 0)
+        )
+        self.cmb_adv_kernel.setToolTip(
+            "Resampling kernel used for the final full-resolution warp.\n"
+            " • Lanczos4: sharpest; its negative lobes cause dark halos\n"
+            "   around bright narrowband stars (what the anti-ring guard\n"
+            "   is there to catch).\n"
+            " • Bicubic / Mitchell: shorter negative lobes — noticeably\n"
+            "   less ringy, slightly softer on well-aligned frames.\n"
+            "   Recommended if dark rings persist despite the anti-ring\n"
+            "   guard (OSC narrowband data in particular).\n"
+            " • Bilinear: no sharpening and no ringing at all; the softest\n"
+            "   result. Keep for ring-sensitive diagnostics only."
+        )
+        _adv.addRow("Warp interpolation:", self.cmb_adv_kernel)
+
         # Trial Detect — same spirit as the Stellar Alignment dialog's but
         # adapted to Registration's N-target model: runs sep detection with
         # the CURRENT Detection σ against the REFERENCE and the FIRST target
@@ -6544,6 +6627,7 @@ class StarRegistrationWindow(QWidget):
     # Advanced alignment settings
     # ------------------------------------------------------------------
     _ADV_IDX_TO_MODEL = ("affine", "homography", "poly3", "poly4")
+    _ADV_IDX_TO_KERNEL = ("lanczos", "cubic", "linear")
 
     def _collect_align_prefs(self) -> dict:
         """
@@ -6563,6 +6647,13 @@ class StarRegistrationWindow(QWidget):
             "timeout_per_job_sec": int(self.sp_adv_timeout.value()),
             "min_fwhm":        float(self.sp_adv_minfwhm.value()),
             "max_ellipticity": float(self.sp_adv_maxellip.value()),
+            # Warp interpolation kernel — written to the shared QSettings key
+            # `stacking/align/kernel` so the Stacking Suite settings dropdown
+            # sees the same value.
+            "kernel": self._ADV_IDX_TO_KERNEL[
+                max(0, min(self.cmb_adv_kernel.currentIndex(),
+                           len(self._ADV_IDX_TO_KERNEL) - 1))
+            ],
         }
 
     def _adv_reload_defaults(self):
@@ -6587,6 +6678,10 @@ class StarRegistrationWindow(QWidget):
         self.cmb_adv_method.setCurrentIndex(
             {"stellar": 0, "wcs": 1, "wcs_stellar": 2}.get(_saved_method, 0)
         )
+        _KERNEL_TO_IDX = {"lanczos": 0, "cubic": 1, "linear": 2}
+        self.cmb_adv_kernel.setCurrentIndex(
+            _KERNEL_TO_IDX.get(str(p.get("kernel", "lanczos")).lower(), 0)
+        )
 
     _ADV_IDX_TO_METHOD = ("stellar", "wcs", "wcs_stellar")
 
@@ -6600,6 +6695,10 @@ class StarRegistrationWindow(QWidget):
         — same keys the Stellar Alignment dialog and Stacking Suite use.
         Called on Start so Registration edits propagate to the rest of the
         suite (matches Stellar Alignment's save-on-run).
+
+        `stacking/align/kernel` is the one Stacking Suite's settings page
+        also writes; `_warp_hi_interp()` reads it live on every warp so a
+        change here takes effect without a restart.
         """
         s = QSettings()
         s.setValue("stacking/align/method",      self._current_method())
@@ -6613,6 +6712,7 @@ class StarRegistrationWindow(QWidget):
                    int(prefs["timeout_per_job_sec"]))
         s.setValue("stacking/align/min_fwhm",        float(prefs["min_fwhm"]))
         s.setValue("stacking/align/max_ellipticity", float(prefs["max_ellipticity"]))
+        s.setValue(_WARP_KERNEL_SETTINGS_KEY,         str(prefs.get("kernel", "lanczos")))
 
     # ------------------------------------------------------------------
     # Trial detect
