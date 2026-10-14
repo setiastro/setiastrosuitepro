@@ -107,7 +107,18 @@ _r(r"⚠️.*dark.*skip",                               "Master Darks",      _ST
 # ── Master flat ───────────────────────────────────────────────────────────
 _r(r"Starting Master Flat",                         "Master Flats",      _ST_RUNNING)
 _r(r"🟢 Processing \d+ flats for .+?\[(.+?)\]",     "Master Flats",      _ST_RUNNING, 1)
+# create_master_flat now writes master FITS files on a background thread
+# pool and emits "✅ Master Flat queued: …" the moment the main-thread work
+# for a group is done (the actual on-disk save completes shortly after and
+# is drained in the function's finally). The old "Master Flat saved" rule
+# never matched the new wording, so the LAST group's Master Flats row kept
+# ticking forever until the whole dialog closed — polluting the "total
+# time" readout. Accept the queued message as the per-group terminator;
+# the final "✅ All master flats saved" message after the drain serves as
+# a belt-and-braces closer when every group finishes together.
+_r(r"✅ Master Flat queued",                         "Master Flats",      _ST_OK)
 _r(r"✅ Master Flat saved",                          "Master Flats",      _ST_OK)
+_r(r"✅ All master flats saved",                     "Master Flats",      _ST_OK)
 _r(r"⚠️.*flat.*skip",                               "Master Flats",      _ST_WARN)
 
 # ── Calibration — specific rules BEFORE generic catch-alls ───────────────

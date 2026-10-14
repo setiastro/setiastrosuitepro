@@ -296,7 +296,11 @@ def _apply_color_matrix_wb(
     # Sanity check
     diag = np.diag(M)
     off  = M - np.diag(diag)
-    if np.any(np.abs(diag) > 3.0) or np.any(np.abs(off) > 1.5):
+    # Tightened from (3.0, 1.5): for WB-style corrections, off-diagonals
+    # above ~0.5 almost always indicate an ill-conditioned stellar sample
+    # and produce the teal-core artifact when matrix output + negative
+    # recovery interact at near-saturated star cores.
+    if np.any(np.abs(diag) > 2.0) or np.any(np.abs(off) > 0.5):
         print(f"[CC WB] Color matrix rejected (out of bounds): "
               f"diag={np.round(diag,4)} off-diag max={np.abs(off).max():.3f}")
         return None
@@ -319,16 +323,21 @@ def _apply_color_matrix_wb(
 
     result = out.astype(np.float32)
 
-    # Per-pixel negative fix: for any pixel with a negative channel,
-    # shift that pixel's RGB up by the minimum channel value so the
-    # darkest channel lands at 0. This is a local additive shift —
-    # it preserves the color ratios between channels for that pixel
-    # rather than hard-clipping one channel to 0 while leaving others intact.
+    # Per-pixel negative fix: blend toward the (already linearly WB'd)
+    # input where the matrix went negative, weighted by how negative it
+    # went. The previous whole-pixel additive lift manufactured luminance
+    # at star cores (one channel went strongly negative, lifting the
+    # other two above 1.0) which, combined with the ceiling compression
+    # below, produced the teal-core artifact.
     pixel_mins = np.min(result, axis=-1, keepdims=True)  # (H, W, 1)
     needs_fix = pixel_mins < 0.0
     if np.any(needs_fix):
-        # Only shift pixels that actually have negatives
-        result = np.where(needs_fix, result - pixel_mins, result)
+        severity = np.clip(-pixel_mins / 0.2, 0.0, 1.0).astype(np.float32)
+        result = np.where(
+            needs_fix,
+            result * (1.0 - severity) + bg_neutral.astype(np.float32) * severity,
+            result,
+        )
 
     # Ceiling: single scalar compress to preserve inter-channel ratios
     mx = float(np.nanmax(result))
@@ -341,6 +350,20 @@ def _apply_color_matrix_wb(
         denom = max(mx - lum_pivot, 1e-8)
         a = (1.0 - lum_pivot) / denom
         result = lum_pivot + (result - lum_pivot) * a
+
+    # Highlight protection: blend matrix output back toward the linearly
+    # WB'd input for near-saturated pixels. The matrix is trained on
+    # stellar scatter in the wings where color info lives; saturated
+    # cores carry no color info and shouldn't be rotated. smoothstep
+    # from L=0.80 (full matrix) to L=0.98 (full passthrough).
+    L_in = (0.2126 * bg_neutral[..., 0]
+            + 0.7152 * bg_neutral[..., 1]
+            + 0.0722 * bg_neutral[..., 2]).astype(np.float32)
+    edge0, edge1 = 0.80, 0.98
+    t = np.clip((L_in - edge0) / (edge1 - edge0), 0.0, 1.0)
+    w = (t * t * (3.0 - 2.0 * t))[..., None]
+    result = (result * (1.0 - w)
+              + bg_neutral.astype(np.float32) * w).astype(np.float32)
 
     return result
 def apply_star_based_white_balance(

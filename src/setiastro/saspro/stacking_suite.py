@@ -6247,7 +6247,14 @@ class SubRejectionDialog(QDialog):
     _METRIC_BOUNDS = {
         "fwhm":  (0.0, None),
         "ecc":   (0.0, 1.0),
-        "bg":    (0.0, 1.0),
+        # Background has no fixed upper bound — the preview median comes
+        # out in whatever units the input data lives in (normalized
+        # [0..1] FITS, ADU-scaled, calibrated e⁻, etc.). An earlier
+        # (0, 1) ceiling collapsed the "park above max" default for a
+        # 30–34-range distribution down to 1.0, which with higher-worse
+        # semantics flagged every sub (bg > 1 == true for all of them).
+        # Only the floor at 0 is actually physical.
+        "bg":    (0.0, None),
         "count": (0.0, None),
         "noise": (0.0, None),
         "score": (0.0, None),
@@ -18668,6 +18675,12 @@ class StackingSuiteDialog(QDialog):
                 except Exception as _se:
                     self.update_status(self.tr(f"⚠️ Master-flat save failed: {_se}"))
             save_futs.clear()
+            # Emit a clean "all done" marker so the Stacking Execution Monitor
+            # closes the Master Flats row for sure — the per-group "queued"
+            # message is the primary terminator, but if the monitor's rule
+            # for that is older than the async-save refactor, this final line
+            # guarantees the row stops ticking before the next phase begins.
+            self.update_status(self.tr("✅ All master flats saved."))
 
             # Final wrap-up
             self.assign_best_master_dark()
@@ -28443,6 +28456,14 @@ class StackingSuiteDialog(QDialog):
                     orig_list.append(op)
             originals_by_group[group] = orig_list
 
+        # Reset the session-level buffers drizzle_stack_one_group appends
+        # to on each successful save. This finalize call owns the drizzle
+        # loop below, so the lists reflect THIS run only — the next run
+        # starts fresh and won't inherit stale paths from an earlier
+        # click of Integrate.
+        self._drizzle_master_paths = []
+        self._drizzle_crop_paths   = []
+
         for group_key, file_list in grouped_files.items():
             if not drizzle_enabled_global:
                 log(f"✅ Drizzle disabled (checkbox off). Group '{group_key}' integrated image already saved.")
@@ -28515,11 +28536,32 @@ class StackingSuiteDialog(QDialog):
             for g, p in autocrop_outputs:
                 summary_lines.append(f"  • {g} → {p}")
 
-        # Primary integrated masters + any auto-cropped variants, for the
-        # "Open Saved Masters" button in the completion popup.
-        crop_paths = [p for (_g, p) in autocrop_outputs]
+        _driz_outs      = getattr(self, "_drizzle_master_paths", []) or []
+        _driz_crop_outs = getattr(self, "_drizzle_crop_paths",   []) or []
+        if _driz_outs:
+            summary_lines.append("")
+            summary_lines.append("Drizzle masters saved:")
+            for g, p in _driz_outs:
+                summary_lines.append(f"  • {g} → {p}")
+        if _driz_crop_outs:
+            summary_lines.append("")
+            summary_lines.append("Drizzle auto-cropped files saved:")
+            for g, p in _driz_crop_outs:
+                summary_lines.append(f"  • {g} → {p}")
+
+        # Primary integrated masters + any auto-cropped variants + any
+        # DRIZZLE outputs (both the full drizzle master and its auto-crop
+        # if drizzle+autocrop were on), for the "Open Saved Masters"
+        # button in the completion popup. Before this, drizzle outputs
+        # were saved to disk and logged but never surfaced in the summary
+        # payload — "N master(s)" counted only the normal-integration
+        # files and the Open button only opened those.
+        crop_paths         = [p for (_g, p) in autocrop_outputs]
+        drizzle_paths      = [p for (_g, p) in _driz_outs]
+        drizzle_crop_paths = [p for (_g, p) in _driz_crop_outs]
         seen, master_files_out = set(), []
-        for p in list(master_files) + crop_paths:
+        for p in (list(master_files) + crop_paths
+                  + drizzle_paths + drizzle_crop_paths):
             if p and p not in seen:
                 seen.add(p)
                 master_files_out.append(p)
@@ -28527,6 +28569,8 @@ class StackingSuiteDialog(QDialog):
         return {
             "summary_lines": summary_lines,
             "autocrop_outputs": autocrop_outputs,
+            "drizzle_outputs": list(_driz_outs),
+            "drizzle_crop_outputs": list(_driz_crop_outs),
             "master_files": master_files_out,
         }
 
@@ -30700,6 +30744,14 @@ class StackingSuiteDialog(QDialog):
                     orig_list.append(op)
             originals_by_group[group] = orig_list
         # ---- Drizzle pass (only for groups with drizzle enabled) ----
+        # Reset the session-level drizzle output buffers so this run's
+        # list reflects only its own saves (drizzle_stack_one_group
+        # appends to these on each successful write, and finalize's
+        # summary payload reads them to tell the user both the normal
+        # AND drizzle masters are available to open).
+        self._drizzle_master_paths = []
+        self._drizzle_crop_paths   = []
+
         for group_key, file_list in grouped_files.items():
             if not drizzle_enabled_global:
                 log(f"✅ Drizzle disabled (checkbox off). Group '{group_key}' integrated image already saved.")
@@ -30776,11 +30828,28 @@ class StackingSuiteDialog(QDialog):
             for g, p in autocrop_outputs:
                 summary_lines.append(f"  • {g} → {p}")
 
-        # Primary masters (star + comet-only + comet-blend) plus star autocrop
-        # variants, for the "Open Saved Masters" button in the completion popup.
-        crop_paths = [p for (_g, p) in autocrop_outputs]
+        _driz_outs      = getattr(self, "_drizzle_master_paths", []) or []
+        _driz_crop_outs = getattr(self, "_drizzle_crop_paths",   []) or []
+        if _driz_outs:
+            summary_lines.append("")
+            summary_lines.append("Drizzle masters saved:")
+            for g, p in _driz_outs:
+                summary_lines.append(f"  • {g} → {p}")
+        if _driz_crop_outs:
+            summary_lines.append("")
+            summary_lines.append("Drizzle auto-cropped files saved:")
+            for g, p in _driz_crop_outs:
+                summary_lines.append(f"  • {g} → {p}")
+
+        # Primary masters (star + comet-only + comet-blend) + star
+        # autocrop variants + any drizzle masters / drizzle autocrop
+        # variants, for the "Open Saved Masters" button.
+        crop_paths         = [p for (_g, p) in autocrop_outputs]
+        drizzle_paths      = [p for (_g, p) in _driz_outs]
+        drizzle_crop_paths = [p for (_g, p) in _driz_crop_outs]
         seen, master_files_out = set(), []
-        for p in list(master_files) + crop_paths:
+        for p in (list(master_files) + crop_paths
+                  + drizzle_paths + drizzle_crop_paths):
             if p and p not in seen:
                 seen.add(p)
                 master_files_out.append(p)
@@ -30788,6 +30857,8 @@ class StackingSuiteDialog(QDialog):
         return {
             "summary_lines": summary_lines,
             "autocrop_outputs": autocrop_outputs,
+            "drizzle_outputs": list(_driz_outs),
+            "drizzle_crop_outputs": list(_driz_crop_outs),
             "master_files": master_files_out,
         }
 
@@ -34406,6 +34477,12 @@ class StackingSuiteDialog(QDialog):
             is_mono=is_mono_driz
         )
         log(f"✅ Drizzle (original) saved: {out_path_orig}")
+        # Make the drizzle master visible to the post-alignment summary.
+        # Finalize resets this list at the top of its drizzle loop, so
+        # each run collects only its own outputs.
+        if not hasattr(self, "_drizzle_master_paths"):
+            self._drizzle_master_paths = []
+        self._drizzle_master_paths.append((group_key, out_path_orig))
 
         # ---- optional auto-crop ----
         if autocrop_enabled:
@@ -34448,9 +34525,12 @@ class StackingSuiteDialog(QDialog):
                 original_header=hdr_crop,
                 is_mono=is_mono_crop
             )
-            if not hasattr(self, "_autocrop_outputs"):
-                self._autocrop_outputs = []
-            self._autocrop_outputs.append((group_key, out_path_crop))
+            # Expose the drizzle crop to the post-alignment summary (same
+            # list the main drizzle master above uses; finalize reads both
+            # when building master_files_out).
+            if not hasattr(self, "_drizzle_crop_paths"):
+                self._drizzle_crop_paths = []
+            self._drizzle_crop_paths.append((group_key, out_path_crop))
             log(f"✂️ Drizzle (auto-cropped) saved: {out_path_crop}")
 
         return True
