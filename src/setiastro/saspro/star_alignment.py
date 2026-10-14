@@ -7,6 +7,86 @@ import random
 import sys
 from PyQt6.QtCore import QByteArray
 from setiastro.saspro.help_support import make_help_button
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Hi-sharpness warp kernel (used by every warp site)
+#
+# Lanczos4 is objectively the sharpest OpenCV ships and also the ringiest
+# — its negative lobes cause the dark-halo artifact on bright narrowband
+# stars that bit us in 1.22.6. The anti-ring guard (`_warp_antiring`)
+# contains most of the damage, but a user who still sees traces of
+# ringing can swap to bicubic (a Mitchell-family cubic kernel with much
+# shorter negative lobes) without a rebuild.
+#
+# Three ways to pick the kernel, in priority order:
+#   1. QSettings  stacking/align/kernel  (written by the Star Alignment UI
+#                                         dropdown and the Stacking Suite
+#                                         settings dropdown — shared key)
+#   2. Env var    SASPRO_WARP_KERNEL     (set once at launcher time)
+#   3. Default    "lanczos"
+#
+# Allowed values (case-insensitive):
+#   "lanczos" | "lanczos4"      → cv2.INTER_LANCZOS4 (sharpest, default)
+#   "cubic" | "mitchell" | "bicubic"
+#                               → cv2.INTER_CUBIC    (recommended if rings persist)
+#   "linear" | "bilinear"       → cv2.INTER_LINEAR   (no sharpening at all)
+#
+# True Mitchell-Netravali (B=1/3, C=1/3) isn't in OpenCV; cv2.INTER_CUBIC
+# is close enough (Catmull-Rom-ish) for a drop-in. Switching to CUBIC
+# costs some perceived sharpness on well-aligned frames but is noticeably
+# less ringy on bright stars than Lanczos4.
+# ─────────────────────────────────────────────────────────────────────
+# QSettings key shared with Stacking Suite's "Warp interpolation" dropdown.
+# Both UIs read and write THIS key so the user's choice follows them around.
+_WARP_KERNEL_SETTINGS_KEY = "stacking/align/kernel"
+
+def _warp_kernel_name_to_cv2(name: str):
+    """Map a string kernel name (case-insensitive) to a cv2 interpolation
+    flag. Unknown names fall back to Lanczos4 so a typo in settings never
+    crashes the warp — just silently uses the sharp default."""
+    import cv2
+    sel = str(name or "").strip().lower()
+    if sel in ("cubic", "mitchell", "bicubic"):
+        return cv2.INTER_CUBIC
+    if sel in ("linear", "bilinear"):
+        return cv2.INTER_LINEAR
+    return cv2.INTER_LANCZOS4
+
+def _warp_kernel_name() -> str:
+    """Canonical name of the configured hi-sharpness kernel. Reads
+    QSettings first, env var next, "lanczos" as a last-resort default.
+    Returns one of {"lanczos", "cubic", "linear"}."""
+    try:
+        from PyQt6.QtCore import QSettings as _QS
+        v = _QS().value(_WARP_KERNEL_SETTINGS_KEY, None)
+        if v is not None:
+            s = str(v).strip().lower()
+            if s in ("lanczos", "lanczos4"):
+                return "lanczos"
+            if s in ("cubic", "mitchell", "bicubic"):
+                return "cubic"
+            if s in ("linear", "bilinear"):
+                return "linear"
+    except Exception:
+        pass
+    env = os.environ.get("SASPRO_WARP_KERNEL", "").strip().lower()
+    if env in ("cubic", "mitchell", "bicubic"):
+        return "cubic"
+    if env in ("linear", "bilinear"):
+        return "linear"
+    return "lanczos"
+
+def _warp_hi_interp():
+    """
+    Return the configured hi-sharpness interpolation flag.
+
+    Resolved on every call (NOT cached) so that a UI change to the
+    "Warp interpolation" dropdown takes effect on the next warp without a
+    restart. The resolution is cheap (one QSettings.value + a string
+    compare); the per-call cost is noise next to a Lanczos warp.
+    """
+    return _warp_kernel_name_to_cv2(_warp_kernel_name())
 def _qs_raw(settings, key, default=None):
     try:
         return settings.value(key, default)
@@ -277,6 +357,21 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         model = "poly3"
         settings.setValue("stacking/align/model", model)  # migrate to new key
 
+    # Warp kernel (shared with Stacking Suite settings). Canonicalised to
+    # one of {"lanczos", "cubic", "linear"} so callers that pass it back
+    # to `_warp_kernel_name_to_cv2()` always get a resolvable flag. The
+    # key is `stacking/align/kernel` — same key the Star Alignment UI's
+    # dropdown writes and the Stacking Suite settings page writes.
+    _k_raw = (_get("kernel", "lanczos", str) or "lanczos").strip().lower()
+    if _k_raw in ("lanczos", "lanczos4"):
+        kernel = "lanczos"
+    elif _k_raw in ("cubic", "mitchell", "bicubic"):
+        kernel = "cubic"
+    elif _k_raw in ("linear", "bilinear"):
+        kernel = "linear"
+    else:
+        kernel = "lanczos"
+
     prefs = {
         "model":       model,
         "max_cp":      _get("max_cp", 250, int),
@@ -289,6 +384,8 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         # Hot pixel rejection
         "min_fwhm":        _get("min_fwhm", 1.2, float),
         "max_ellipticity": _get("max_ellipticity", 0.6, float),
+        # Warp kernel used by every anti-ring warp site. See _warp_hi_interp.
+        "kernel":          kernel,
     }
 
     return prefs
@@ -684,12 +781,15 @@ def _warp_like_ref(target_img: np.ndarray, M_2x3: np.ndarray, ref_shape_hw: tupl
         return _warp_antiring(lambda: _wa(target_img, cv2.INTER_LANCZOS4),
                               lambda: _wa(target_img, cv2.INTER_LINEAR))
 
-    # Fallback for >4 channels (warpAffine can't do them natively) — per-channel.
-    return np.stack([
-        _warp_antiring(lambda c=c: _wa(np.ascontiguousarray(target_img[..., c]), cv2.INTER_LANCZOS4),
-                       lambda c=c: _wa(np.ascontiguousarray(target_img[..., c]), cv2.INTER_LINEAR))
-        for c in range(C)
-    ], axis=2)
+    # Fallback for >4 channels (warpAffine can't do them natively) — per-
+    # channel loop with a shared cross-channel star mask (see
+    # _warp_hwc_antiring; replaces the old per-channel _warp_antiring stack
+    # whose per-channel mask missed narrowband stars in the dim channels).
+    return _warp_hwc_antiring(
+        C,
+        lambda c: _wa(np.ascontiguousarray(target_img[..., c]), cv2.INTER_LANCZOS4),
+        lambda c: _wa(np.ascontiguousarray(target_img[..., c]), cv2.INTER_LINEAR),
+    )
 
 def run_star_alignment_headless(mw, target_sw, preset: dict) -> bool:
     """
@@ -2207,7 +2307,10 @@ class StellarAlignmentDialog(QDialog):
             def _warp_poly_residual(img: np.ndarray, out_hw: tuple[int,int]) -> np.ndarray:
                 Hout, Wout = out_hw
 
-                # Pass A: base warp to reference grid (anti-ring clamped)
+                # Pass A: base warp to reference grid (anti-ring clamped).
+                # Color case batches the per-channel call into one HWC warp
+                # so the star mask is computed max-across-channels (see
+                # _warp_antiring docstring for the OSC regression this fixes).
                 if base_kind == "affine":
                     def _wa(ch, flags):
                         return cv2.warpAffine(ch, base_X, (Wout, Hout),
@@ -2217,11 +2320,16 @@ class StellarAlignmentDialog(QDialog):
                             img = np.ascontiguousarray(img)
                         base_img = _warp_antiring(lambda: _wa(img, cv2.INTER_LANCZOS4),
                                                   lambda: _wa(img, cv2.INTER_LINEAR))
+                    elif img.shape[2] <= 4:
+                        _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
+                        base_img = _warp_antiring(lambda: _wa(_img, cv2.INTER_LANCZOS4),
+                                                  lambda: _wa(_img, cv2.INTER_LINEAR))
                     else:
-                        base_img = np.stack([
-                            _warp_antiring(lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
-                                           lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
-                            for c in range(img.shape[2])], axis=2)
+                        base_img = _warp_hwc_antiring(
+                            img.shape[2],
+                            lambda c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                            lambda c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR),
+                        )
                 else:
                     def _wp(ch, flags):
                         return cv2.warpPerspective(ch, base_X, (Wout, Hout),
@@ -2231,11 +2339,16 @@ class StellarAlignmentDialog(QDialog):
                             img = np.ascontiguousarray(img)
                         base_img = _warp_antiring(lambda: _wp(img, cv2.INTER_LANCZOS4),
                                                   lambda: _wp(img, cv2.INTER_LINEAR))
+                    elif img.shape[2] <= 4:
+                        _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
+                        base_img = _warp_antiring(lambda: _wp(_img, cv2.INTER_LANCZOS4),
+                                                  lambda: _wp(_img, cv2.INTER_LINEAR))
                     else:
-                        base_img = np.stack([
-                            _warp_antiring(lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
-                                           lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
-                            for c in range(img.shape[2])], axis=2)
+                        base_img = _warp_hwc_antiring(
+                            img.shape[2],
+                            lambda c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                            lambda c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR),
+                        )
 
                 # Pass B: polynomial residual via inverse_map (ref->basewarped), with normalization
                 class _InvMap:
@@ -2370,7 +2483,9 @@ class StellarAlignmentDialog(QDialog):
         QApplication.processEvents()
         H, W = src.shape[:2]
 
-        # Apply the transform
+        # Apply the transform.
+        # Color case: ONE batched call so _warp_antiring builds the mask from
+        # max-across-channels (fixes the OSC narrowband dark-ring regression).
         if kind == "affine":
             def _wa(ch, flags):
                 return cv2.warpAffine(ch, X, (W, H), flags=flags,
@@ -2378,12 +2493,15 @@ class StellarAlignmentDialog(QDialog):
             if tgt.ndim == 2:
                 warped_target = _warp_antiring(lambda: _wa(tgt, cv2.INTER_LANCZOS4),
                                                lambda: _wa(tgt, cv2.INTER_LINEAR))
+            elif tgt.shape[2] <= 4:
+                _tgt = tgt if tgt.flags['C_CONTIGUOUS'] else np.ascontiguousarray(tgt)
+                warped_target = _warp_antiring(lambda: _wa(_tgt, cv2.INTER_LANCZOS4),
+                                               lambda: _wa(_tgt, cv2.INTER_LINEAR))
             else:
-                warped_target = np.stack(
-                    [_warp_antiring(lambda i=i: _wa(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LANCZOS4),
-                                    lambda i=i: _wa(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LINEAR))
-                    for i in range(tgt.shape[2])],
-                    axis=2
+                warped_target = _warp_hwc_antiring(
+                    tgt.shape[2],
+                    lambda i: _wa(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LANCZOS4),
+                    lambda i: _wa(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LINEAR),
                 )
             transform_3x3 = np.eye(3, dtype=np.float32); transform_3x3[:2] = X
             _note = ("NOTE: WCS/SIP reprojection was applied first; this matrix is\n"
@@ -2398,12 +2516,15 @@ class StellarAlignmentDialog(QDialog):
             if tgt.ndim == 2:
                 warped_target = _warp_antiring(lambda: _wp(tgt, cv2.INTER_LANCZOS4),
                                                lambda: _wp(tgt, cv2.INTER_LINEAR))
+            elif tgt.shape[2] <= 4:
+                _tgt = tgt if tgt.flags['C_CONTIGUOUS'] else np.ascontiguousarray(tgt)
+                warped_target = _warp_antiring(lambda: _wp(_tgt, cv2.INTER_LANCZOS4),
+                                               lambda: _wp(_tgt, cv2.INTER_LINEAR))
             else:
-                warped_target = np.stack(
-                    [_warp_antiring(lambda i=i: _wp(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LANCZOS4),
-                                    lambda i=i: _wp(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LINEAR))
-                    for i in range(tgt.shape[2])],
-                    axis=2
+                warped_target = _warp_hwc_antiring(
+                    tgt.shape[2],
+                    lambda i: _wp(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LANCZOS4),
+                    lambda i: _wp(np.ascontiguousarray(tgt[..., i]), cv2.INTER_LINEAR),
                 )
             # Optional: show homography info as well
             try:
@@ -2666,13 +2787,24 @@ def lift_homography_from_ds(H_ds: np.ndarray, ds: float,
 # refinement.
 # ─────────────────────────────────────────────────────────────────────
 
-# Rotation window (deg) that triggers meridian-flip pre-rotate.
-# Loose enough to catch real-world flips that come back at 178° or
-# 181° if the OTA isn't perfectly orthogonal to the mount. The cost of
-# a false trigger is one extra solve pass; the composed transform is
+# Rotation window (deg) that triggers meridian-flip pre-rotate. Widened
+# from the original [150, 210] to [135, 225] because the OSC narrowband
+# dark-ring regression showed real-world flips landing at ~140° / ~220°
+# when the imaging train isn't perfectly orthogonal — those fell outside
+# the old window, so the solver's near-180° result ran through the final
+# Lanczos warp (which is where the ring artifact actually gets imprinted).
+# A false trigger costs one extra solve pass; the composed transform is
 # numerically identical to the direct solve, so correctness is unaffected.
-_MERIDIAN_LOW_DEG  = 150.0
-_MERIDIAN_HIGH_DEG = 210.0
+_MERIDIAN_LOW_DEG  = 135.0
+_MERIDIAN_HIGH_DEG = 225.0
+
+# Quarter-turn window (deg) that triggers 90°/270° bit-exact pre-rotate.
+# Rare in GEM imaging — mostly a cover for users who rotated the imaging
+# train 90° between sessions, or alt-az rigs where field rotation chewed
+# through a quarter turn across a long run. Same half-width as the
+# meridian window (±45°) so the three quarter-turn buckets (90, 180, 270)
+# cover the circle without overlap and without leaving gaps.
+_QUARTER_TURN_HALF_WIDTH_DEG = 45.0
 
 # Fraction of (W, H) that |tx|, |ty| must EACH exceed for the translation
 # test to flag a flip. A pure 180° point reflection in an H×W canvas
@@ -2780,43 +2912,124 @@ def _compose_affine_2x3(A2x3: np.ndarray, B2x3: np.ndarray) -> np.ndarray:
     return (A3 @ B3)[:2, :]
 
 
+def _rotk_affine_2x3(k: int, H: int, W: int) -> np.ndarray:
+    """
+    2x3 that reproduces np.rot90(img, k) exactly for an H×W image.
+
+    k is taken mod 4:
+      0 : identity        (new_x = x,         new_y = y)
+      1 : 90° CCW         (new_x = y,         new_y = (W-1) - x)   shape -> (W, H)
+      2 : 180°            (new_x = (W-1) - x, new_y = (H-1) - y)
+      3 : 270° CCW / 90° CW
+                          (new_x = (H-1) - y, new_y = x)           shape -> (W, H)
+
+    Bit-exact point reflections (no interpolation, no bias). Composing a
+    solver's near-quarter-turn result with the inverse of the matching
+    rot-k means the downstream Lanczos warp performs a single sub-pixel
+    resample instead of a near-quarter-turn rotation that would carry
+    per-frame PSF drift across the stack — same reasoning as _rot180_affine_2x3,
+    extended to the full quarter-turn family.
+    """
+    k = int(k) & 3
+    if k == 0:
+        return np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
+    if k == 1:
+        return np.array([[0.0, 1.0, 0.0], [-1.0, 0.0, float(W - 1)]], dtype=np.float64)
+    if k == 2:
+        return np.array([[-1.0, 0.0, float(W - 1)], [0.0, -1.0, float(H - 1)]], dtype=np.float64)
+    # k == 3
+    return np.array([[0.0, -1.0, float(H - 1)], [1.0, 0.0, 0.0]], dtype=np.float64)
+
+
+def _nearest_quarter_turn(T2x3: np.ndarray,
+                          src_shape: tuple | None = None,
+                          half_width_deg: float = _QUARTER_TURN_HALF_WIDTH_DEG,
+                          translation_frac: float = _MERIDIAN_TRANSLATION_FRAC) -> int:
+    """
+    Return the quarter-turn count k ∈ {0, 1, 2, 3} that best matches the
+    rotation component of T, or 0 if T is close to identity (no pre-rotate
+    needed). Only non-zero values trigger the bit-exact pre-rotate path.
+
+    Rotation signal: wrap the signed atan2 angle to [-180, 180) and bucket
+    it by nearest multiple of 90°. k is returned only when the angle is
+    within ±half_width_deg of its bucket centre; otherwise 0.
+
+    Translation backup (180° only, when src_shape is given): a solve that
+    absorbed the flip into translation reads near-zero rotation but has
+    |tx|≈W AND |ty|≈H. Covers the same case the previous _is_near_180
+    guarded against so this function is a drop-in replacement.
+    """
+    if T2x3 is None:
+        return 0
+    try:
+        ang = _rot_angle_deg_2x3(T2x3)
+        # Nearest multiple of 90°, folded onto the circle.
+        k = int(round(ang / 90.0)) & 3    # 0, 1, 2, or 3
+        if k != 0 and abs(ang - 90.0 * (k if k <= 2 else k - 4)) <= half_width_deg:
+            return k
+        # Also check the k==2 (180°) bucket via the explicit meridian window
+        # — tolerant to a 1-degree slop between round() and the half-width check.
+        if _MERIDIAN_LOW_DEG <= abs(ang) <= _MERIDIAN_HIGH_DEG:
+            return 2
+        # Translation backup (180° only — the k=1/3 point reflections produce
+        # swapped-axis translations that are hard to disambiguate from mosaic
+        # steps without matching the solver's recovered shape).
+        if src_shape is not None:
+            H = int(src_shape[0]); W = int(src_shape[1])
+            tx, ty = _translation_magnitudes(T2x3)
+            if tx > translation_frac * W and ty > translation_frac * H:
+                return 2
+        return 0
+    except Exception:
+        return 0
+
+
 def _solve_with_meridian_check(src_gray: np.ndarray,
                                ref_gray: np.ndarray,
                                solver,
                                *,
                                log=None) -> np.ndarray | None:
     """
-    Run `solver(src, ref) -> 2x3 or None`. If the result is a near-180°
-    rotation (meridian flip), redo the solve on np.rot90(src, 2) and
-    fold the pre-rotation back in so the returned 2x3 still maps
-    ORIGINAL src coords -> ref coords.
+    Run `solver(src, ref) -> 2x3 or None`. If the result is a near-
+    quarter-turn rotation (90°, 180°, or 270°), redo the solve on the
+    matching bit-exact np.rot90(src, k) and fold the pre-rotation back
+    in so the returned 2x3 still maps ORIGINAL src coords -> ref coords.
 
-    Rationale: the triangle+vote stage recovers the correct 180°
-    correspondences, but a least-squares similarity fit biased by
-    sub-pixel centroid noise leaves a fractional-degree rotation
-    residual. Lanczos resampling of that near-180° rotation then
-    imprints a position-dependent PSF variation per frame that stacks
-    into visible ghosting on flipped halves. Pre-rotating the source
-    with a bit-exact np.rot90 collapses the warp pass to a sub-pixel
-    residual correction, which the resampler handles cleanly and
-    uniformly across the stack.
+    Rationale: the triangle+vote stage recovers the correct quarter-turn
+    correspondences, but a least-squares similarity fit biased by sub-
+    pixel centroid noise leaves a fractional-degree rotation residual.
+    Lanczos resampling of a near-quarter-turn rotation then imprints a
+    position-dependent PSF variation per frame that stacks into visible
+    ringing on bright stars (the OSC dark-ring regression we chased
+    through 1.22.6). Pre-rotating the source with a bit-exact np.rot90
+    collapses the final warp to a sub-pixel residual correction, which
+    the resampler handles cleanly and uniformly across the stack.
+
+    Covers 90° / 270° in addition to the original 180° meridian flip:
+    rare for GEM runs but exactly the case a user who rotated the
+    imaging train between sessions, or an alt-az rig with heavy field
+    rotation, falls into. For those angles a Lanczos warp rings just as
+    badly as it does near 180°; the bit-exact rot90 fixes all three.
 
     Returns a 2x3 (same contract as `solver`) or None if both
     attempts fail.
     """
     Hs, Ws = src_gray.shape[:2]
     T = solver(src_gray, ref_gray)
-    # Pass the SOURCE canvas size so both signals (rotation AND
-    # translation-magnitude) are active. The translation test is the
-    # one that catches the case where the solver absorbed the flip
-    # into translation and the rotation reading alone is weak —
-    # for example, a huge |tx|≈W, |ty|≈H transform with a0,a00 that
-    # read closer to 0° than 180° because of RANSAC bias.
-    if T is None or not _is_near_180(T, src_shape=(Hs, Ws)):
+    # Pass the SOURCE canvas size so the translation-magnitude backup
+    # signal is active for the 180° case. The translation test catches
+    # the case where the solver absorbed the flip into translation and
+    # the rotation reading alone is weak — for example, a huge |tx|≈W,
+    # |ty|≈H transform with a00, a11 that read closer to 0° than 180°
+    # because of RANSAC bias.
+    k = _nearest_quarter_turn(T, src_shape=(Hs, Ws)) if T is not None else 0
+    if T is None or k == 0:
         return T
 
-    # Bit-exact point reflection: no kernel, no interpolation, no bias.
-    src_rot = np.ascontiguousarray(src_gray[::-1, ::-1])
+    # Bit-exact rotation: no kernel, no interpolation, no bias. For k=2
+    # (meridian flip) this is the familiar [::-1, ::-1]; for k=1/3 the
+    # output shape swaps H and W, which numpy and the solver both handle.
+    src_rot = np.ascontiguousarray(np.rot90(src_gray, k))
     T_resid = solver(src_rot, ref_gray)
     if T_resid is None:
         # Pre-rotate path couldn't find a solve at all — keep the
@@ -2824,21 +3037,25 @@ def _solve_with_meridian_check(src_gray: np.ndarray,
         # dropped one just because the fallback path failed.
         if log:
             try:
-                log("[meridian-flip] detected, but pre-rotated solve "
+                _tag = {1: "quarter-turn 90°", 2: "meridian-flip",
+                        3: "quarter-turn 270°"}.get(k, f"quarter-turn k={k}")
+                log(f"[{_tag}] detected, but pre-rotated solve "
                     "failed; keeping original transform")
             except Exception:
                 pass
         return T
 
-    T_180 = _rot180_affine_2x3(Hs, Ws)
-    T_final = _compose_affine_2x3(T_resid, T_180)
+    T_rotk = _rotk_affine_2x3(k, Hs, Ws)
+    T_final = _compose_affine_2x3(T_resid, T_rotk)
 
     if log:
         try:
             orig_ang  = _rot_angle_deg_2x3(T)
             orig_tx, orig_ty = _translation_magnitudes(T)
             resid_ang = _rot_angle_deg_2x3(T_resid)
-            log(f"[meridian-flip] detected (rot={orig_ang:+.2f}°, "
+            _tag = {1: "quarter-turn 90°", 2: "meridian-flip",
+                    3: "quarter-turn 270°"}.get(k, f"quarter-turn k={k}")
+            log(f"[{_tag}] detected (rot={orig_ang:+.2f}°, "
                 f"|t|=({orig_tx:.0f}, {orig_ty:.0f}) px on {Ws}x{Hs} canvas); "
                 f"residual after pre-rot = {resid_ang:+.3f}°, "
                 f"translation = ({T_resid[0,2]:+.2f}, {T_resid[1,2]:+.2f}) px")
@@ -3478,62 +3695,216 @@ def _solve_delta_job(args):
 # Final warp+save worker (process-safe)
 # ─────────────────────────────────────────────────────────────
 def _warp_antiring(warp_hi, warp_lo, star_sigma: float = 3.0,
-                   grow_px: int = 6, feather_px: float = 2.0):
+                   grow_px: int = 6, feather_px: float = 2.0,
+                   envelope: bool = True,
+                   envelope_pad_px: int = 1,
+                   ref_mask: np.ndarray | None = None):
     """
     Selective anti-ring resampling for HDR point sources (saturated stars).
 
-    Lanczos everywhere EXCEPT a grown, feathered disk around bright stars, where
-    the ring-free bilinear warp is blended in.
+    Three layers of defence against Lanczos ringing, applied in this order:
 
-    Key point: Lanczos undershoot (the dark ring / black hole) lives in the DIM
-    pixels *around* a bright star, not in the bright pixel itself — so a
-    bright-pixel mask must be grown by ~the Lanczos radius to actually cover the
-    ring. Blending two smooth warps (rather than clipping Lanczos to a min/max
-    envelope) avoids the rosette/"petal" facets an envelope clamp produces by
-    quantizing the kernel's lobes.
+      1. ENVELOPE CLAMP (always on by default). For every pixel, compute the
+         per-channel min/max of the bilinear warp over a (2*envelope_pad_px+1)
+         neighbourhood and clip the Lanczos result into that envelope. This
+         kills every undershoot/overshoot the kernel's negative lobes can
+         produce, EVERYWHERE in the frame — not just near flagged stars.
+         Cheap: two cv2 min/max filters on an array we already have.
 
-    star_sigma : robust threshold in sigmas above background (median + k·MAD)
-    grow_px    : dilate the star mask this many px to cover the ring zone
-    feather_px : Gaussian feather so the Lanczos↔bilinear seam is invisible
+      2. STAR-DISK BLEND (on when stars are present). Lanczos everywhere
+         EXCEPT a grown, feathered disk around bright stars, where the
+         ring-free bilinear warp is blended in. Catches the residual
+         rosette/"petal" facets the envelope clamp can leave around a
+         bright PSF when the Lanczos lobes approach the envelope wall.
+
+      3. FINAL ZERO FLOOR. Any pixel still below zero (very rare after
+         envelope + blend) is clamped to zero so stacking can't amplify
+         a negative artefact.
+
+    PER-CHANNEL CALL BUG (the one that caused the dark-ring regression on
+    OSC narrowband data): when `_warp_antiring` is called inside a per-
+    channel loop, the `lo` array is 2D and the star mask is computed from
+    only that single channel's intensity. A star bright in Hα (R) but dim
+    in G/B would mask correctly in R and MISS in G/B, letting Lanczos
+    rings through in two of three channels — exactly the greenish dark
+    halos the user saw. Two fixes available:
+      a) Call the warp with the full HWC image (cv2.warpAffine/
+         warpPerspective handle up to 4 channels natively), so `lo.ndim==3`
+         and `lo.max(axis=2)` runs. Preferred — single-call per frame.
+      b) When a per-channel loop is unavoidable (>4 channels or a
+         resampler that doesn't handle multi-channel), pass a cross-
+         channel `ref_mask` computed once up front. See
+         `_warp_hwc_antiring` below for the batched helper.
+
+    star_sigma      : robust threshold in sigmas above background (median + k·MAD)
+    grow_px         : dilate the star mask this many px to cover the ring zone
+    feather_px      : Gaussian feather so the Lanczos↔bilinear seam is invisible
+    envelope        : enable the per-pixel bilinear min/max clamp (recommended on)
+    envelope_pad_px : neighbourhood radius for the envelope filter (1 = 3x3)
+    ref_mask        : if given, use this 2D float32 mask [0..1] instead of
+                      computing one from `lo`. Lets per-channel callers inject
+                      a mask built from the max-across-channels luminance.
     """
     import cv2
     import numpy as np
 
-    hi = warp_hi()   # Lanczos: sharp, rings on bright stars
+    hi = warp_hi()   # Lanczos (or configured hi-sharpness kernel): sharp, rings
     lo = warp_lo()   # bilinear: soft, no ring
 
-    # Luminance proxy for the mask (max over channels catches a star bright in
-    # any one channel). Use the ring-free bilinear warp so the mask isn't
-    # polluted by Lanczos lobes.
-    ref = lo if lo.ndim == 2 else lo.max(axis=2)
+    # ─── 1. ENVELOPE CLAMP ────────────────────────────────────────────────
+    # Clip the Lanczos result to the local min/max of the bilinear warp.
+    # cv2.erode = per-pixel minimum, cv2.dilate = per-pixel maximum over the
+    # structuring element. Works on 2D or HWC (cv2 broadcasts per channel).
+    if envelope and envelope_pad_px > 0:
+        try:
+            ksz = int(2 * envelope_pad_px + 1)
+            kern = cv2.getStructuringElement(cv2.MORPH_RECT, (ksz, ksz))
+            lo_min = cv2.erode(lo,  kern)
+            lo_max = cv2.dilate(lo, kern)
+            # np.clip + explicit float32 preserves dtype on HWC inputs.
+            hi = np.minimum(np.maximum(hi, lo_min), lo_max).astype(np.float32,
+                                                                   copy=False)
+        except Exception:
+            # Envelope clamp is best-effort — on failure fall through to the
+            # blend-only path (never worse than the pre-envelope behaviour).
+            pass
 
-    finite = np.isfinite(ref)
-    if finite.any():
-        vals = ref[finite]
-        med = float(np.median(vals))
-        mad = float(np.median(np.abs(vals - med)))
+    # ─── 2. STAR-DISK BLEND ───────────────────────────────────────────────
+    if ref_mask is not None:
+        # Caller handed us the mask (per-channel loop computed it against
+        # the full-channel luminance). Just reuse it.
+        ref = None
+        mask = np.ascontiguousarray(ref_mask, dtype=np.float32)
     else:
-        med = mad = 0.0
-    thr = med + float(star_sigma) * 1.4826 * mad   # 1.4826 = MAD→sigma
+        # Compute the mask from `lo`. For HWC this is max-over-channels so a
+        # star bright in only one channel still masks correctly in all three.
+        ref = lo if lo.ndim == 2 else lo.max(axis=2)
+        finite = np.isfinite(ref)
+        if finite.any():
+            vals = ref[finite]
+            med = float(np.median(vals))
+            mad = float(np.median(np.abs(vals - med)))
+        else:
+            med = mad = 0.0
+        thr = med + float(star_sigma) * 1.4826 * mad   # 1.4826 = MAD→sigma
+        mask = (ref > thr).astype(np.float32)
 
-    mask = (ref > thr).astype(np.float32)
     if mask.any():
-        if grow_px > 0:
-            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
-                                          (2 * grow_px + 1, 2 * grow_px + 1))
-            mask = cv2.dilate(mask, k)
-        if feather_px and feather_px > 0:
-            ksz = int(2 * round(feather_px) + 1)
-            mask = cv2.GaussianBlur(mask, (ksz, ksz), float(feather_px))
-        if lo.ndim == 3:
+        if ref_mask is None:
+            # Only grow+feather an INTERNALLY-computed mask. A caller-supplied
+            # mask is assumed to be already grown/feathered the way they want.
+            if grow_px > 0:
+                k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                              (2 * grow_px + 1, 2 * grow_px + 1))
+                mask = cv2.dilate(mask, k)
+            if feather_px and feather_px > 0:
+                ksz = int(2 * round(feather_px) + 1)
+                mask = cv2.GaussianBlur(mask, (ksz, ksz), float(feather_px))
+        if lo.ndim == 3 and mask.ndim == 2:
             mask = mask[..., None]
         out = hi * (1.0 - mask) + lo * mask
     else:
         out = hi
 
+    # ─── 3. FINAL ZERO FLOOR ──────────────────────────────────────────────
     out = np.asarray(out, np.float32)
     np.maximum(out, 0.0, out=out)
     return out
+
+
+def _build_antiring_mask(ref2d: np.ndarray,
+                         star_sigma: float = 3.0,
+                         grow_px: int = 6,
+                         feather_px: float = 2.0) -> np.ndarray:
+    """
+    Build the grown + feathered star mask from a 2D luminance reference.
+
+    Factored out of `_warp_antiring` so per-channel callers can compute ONE
+    mask against the max-across-channels luminance, then feed it to each
+    per-channel `_warp_antiring` call via the `ref_mask` parameter. That
+    closes the OSC narrowband hole where a star bright only in Hα would be
+    masked in R but miss in G/B, letting Lanczos rings through in two of
+    three channels (the dark-ring symptom).
+    """
+    import cv2
+    import numpy as np
+
+    finite = np.isfinite(ref2d)
+    if finite.any():
+        vals = ref2d[finite]
+        med = float(np.median(vals))
+        mad = float(np.median(np.abs(vals - med)))
+    else:
+        med = mad = 0.0
+    thr = med + float(star_sigma) * 1.4826 * mad
+    mask = (ref2d > thr).astype(np.float32)
+    if not mask.any():
+        return mask
+    if grow_px > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                      (2 * grow_px + 1, 2 * grow_px + 1))
+        mask = cv2.dilate(mask, k)
+    if feather_px and feather_px > 0:
+        ksz = int(2 * round(feather_px) + 1)
+        mask = cv2.GaussianBlur(mask, (ksz, ksz), float(feather_px))
+    return mask
+
+
+def _warp_hwc_antiring(nch: int,
+                      warp_hi_ch,     # callable(c) -> 2D Lanczos warp of channel c
+                      warp_lo_ch,     # callable(c) -> 2D bilinear warp of channel c
+                      *,
+                      star_sigma: float = 3.0,
+                      grow_px: int = 6,
+                      feather_px: float = 2.0,
+                      envelope: bool = True,
+                      envelope_pad_px: int = 1) -> np.ndarray:
+    """
+    Per-channel anti-ring warp with a CROSS-CHANNEL star mask.
+
+    Use this when the per-channel loop is unavoidable (>4 channels, or a
+    custom resampler that cannot be fed HWC in one shot). It:
+      1. Runs the bilinear warp for every channel first.
+      2. Builds the star mask ONCE from the max-across-channels luminance.
+      3. Runs the Lanczos warp per channel and blends it with the bilinear
+         result through the shared mask + envelope clamp.
+
+    For <=4 channel data the simpler path is to call `_warp_antiring`
+    directly with the full HWC image — cv2.warpAffine/warpPerspective
+    handle up to 4 channels natively and `_warp_antiring` already computes
+    the max-across-channels mask internally. This helper exists for the
+    cases where the single-call path isn't available.
+    """
+    import numpy as np
+
+    # Pass 1: bilinear warps for every channel (needed for the mask AND the
+    # final blend). These are cheap compared to Lanczos.
+    lo_planes = [np.ascontiguousarray(warp_lo_ch(c)) for c in range(nch)]
+    lo_hwc = np.stack(lo_planes, axis=2)
+    # Max-across-channels luminance for the mask. A star bright in one
+    # channel (narrowband Hα on an OSC) shows up here and masks correctly
+    # in ALL channels in the per-channel blend below.
+    ref2d = lo_hwc.max(axis=2)
+    mask = _build_antiring_mask(ref2d, star_sigma=star_sigma,
+                                grow_px=grow_px, feather_px=feather_px)
+
+    # Pass 2: Lanczos warps + per-channel blend using the shared mask.
+    out_planes = []
+    for c in range(nch):
+        hi = warp_hi_ch(c)
+        lo = lo_planes[c]
+        out = _warp_antiring(
+            lambda hi=hi: hi,
+            lambda lo=lo: lo,
+            star_sigma=star_sigma,
+            grow_px=grow_px,
+            feather_px=feather_px,
+            envelope=envelope,
+            envelope_pad_px=envelope_pad_px,
+            ref_mask=mask,
+        )
+        out_planes.append(out)
+    return np.stack(out_planes, axis=2)
 
 def _finalize_write_job(args):
     """
@@ -3794,10 +4165,27 @@ def _finalize_write_job(args):
 
         # 4) warp full-res image  (anti-ring: clamp Lanczos to bilinear envelope)
         Hh, Ww = Href, Wref
-        _LANCZOS = cv2.INTER_LANCZOS4
+        # Hi-sharpness kernel is resolved from SASPRO_WARP_KERNEL at import —
+        # defaults to Lanczos4, user can set the env var to "cubic" to swap
+        # in bicubic (Mitchell-family, much shorter negative lobes) when
+        # faint-residual-ring artifacts persist past the anti-ring guard.
+        _LANCZOS = _warp_hi_interp()
         _LINEAR  = cv2.INTER_LINEAR
         _BMODE, _BVAL = cv2.BORDER_CONSTANT, 0
 
+        # ─── OSC anti-ring note ─────────────────────────────────────────
+        # The <=4-channel color branch deliberately calls `_warp_antiring`
+        # ONCE with the full HWC image rather than looping per channel. The
+        # per-channel loop (removed) built the star mask from only that
+        # single channel's intensity: a narrowband star bright in Hα (R)
+        # but dim in G/B would mask correctly in R and MISS in G/B, letting
+        # Lanczos undershoot through in two of three channels — the
+        # greenish dark halos seen in the 1.22.6 regression. One batched
+        # call lets `_warp_antiring` compute the mask against max-across-
+        # channels luminance so a star bright in ANY channel masks all of
+        # them. cv2.warpAffine/warpPerspective/remap handle up to 4
+        # channels natively. For >4 channels we fall back to
+        # `_warp_hwc_antiring`, which still shares one cross-channel mask.
         if kind in ("affine", "similarity"):
             A = np.asarray(X, np.float64).reshape(2, 3)
             def _wa(ch, flags):
@@ -3806,12 +4194,16 @@ def _finalize_write_job(args):
             if is_mono:
                 aligned = _warp_antiring(lambda: _wa(img, _LANCZOS),
                                          lambda: _wa(img, _LINEAR))
+            elif img.shape[2] <= 4:
+                _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
+                aligned = _warp_antiring(lambda: _wa(_img, _LANCZOS),
+                                         lambda: _wa(_img, _LINEAR))
             else:
-                aligned = np.stack([
-                    _warp_antiring(lambda c=c: _wa(img[..., c], _LANCZOS),
-                                   lambda c=c: _wa(img[..., c], _LINEAR))
-                    for c in range(img.shape[2])
-                ], axis=2)
+                aligned = _warp_hwc_antiring(
+                    img.shape[2],
+                    lambda c: _wa(np.ascontiguousarray(img[..., c]), _LANCZOS),
+                    lambda c: _wa(np.ascontiguousarray(img[..., c]), _LINEAR),
+                )
 
             drizzle_tuple = ("affine", A.astype(np.float64))
             warp_label = ("similarity" if kind == "similarity" else "affine")
@@ -3824,12 +4216,16 @@ def _finalize_write_job(args):
             if is_mono:
                 aligned = _warp_antiring(lambda: _wp(img, _LANCZOS),
                                          lambda: _wp(img, _LINEAR))
+            elif img.shape[2] <= 4:
+                _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
+                aligned = _warp_antiring(lambda: _wp(_img, _LANCZOS),
+                                         lambda: _wp(_img, _LINEAR))
             else:
-                aligned = np.stack([
-                    _warp_antiring(lambda c=c: _wp(img[..., c], _LANCZOS),
-                                   lambda c=c: _wp(img[..., c], _LINEAR))
-                    for c in range(img.shape[2])
-                ], axis=2)
+                aligned = _warp_hwc_antiring(
+                    img.shape[2],
+                    lambda c: _wp(np.ascontiguousarray(img[..., c]), _LANCZOS),
+                    lambda c: _wp(np.ascontiguousarray(img[..., c]), _LINEAR),
+                )
 
             drizzle_tuple = ("homography", Hm.astype(np.float64))
             warp_label = "homography"
@@ -3842,12 +4238,16 @@ def _finalize_write_job(args):
             if is_mono:
                 aligned = _warp_antiring(lambda: _wr(img, _LANCZOS),
                                          lambda: _wr(img, _LINEAR))
+            elif img.shape[2] <= 4:
+                _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
+                aligned = _warp_antiring(lambda: _wr(_img, _LANCZOS),
+                                         lambda: _wr(_img, _LINEAR))
             else:
-                aligned = np.stack([
-                    _warp_antiring(lambda c=c: _wr(img[..., c], _LANCZOS),
-                                   lambda c=c: _wr(img[..., c], _LINEAR))
-                    for c in range(img.shape[2])
-                ], axis=2)
+                aligned = _warp_hwc_antiring(
+                    img.shape[2],
+                    lambda c: _wr(np.ascontiguousarray(img[..., c]), _LANCZOS),
+                    lambda c: _wr(np.ascontiguousarray(img[..., c]), _LINEAR),
+                )
 
             drizzle_tuple = (align_model, None)
             warp_label = align_model
@@ -4591,7 +4991,9 @@ class StarRegistrationThread(QThread):
 
         def _warp_poly_residual(img: np.ndarray, out_hw: tuple[int,int]) -> np.ndarray:
             Hh, Ww = out_hw
-            # Pass A: base warp (anti-ring clamped)
+            # Pass A: base warp (anti-ring clamped). Color case batched into
+            # ONE HWC warp so the star mask sees max-across-channels (fixes
+            # the OSC narrowband dark-ring regression — see _warp_antiring).
             if base_kind == "affine":
                 def _wa(ch, flags):
                     return cv2.warpAffine(ch, base_X, (Ww, Hh),
@@ -4599,11 +5001,16 @@ class StarRegistrationThread(QThread):
                 if img.ndim == 2:
                     img_base = _warp_antiring(lambda: _wa(img, cv2.INTER_LANCZOS4),
                                               lambda: _wa(img, cv2.INTER_LINEAR))
+                elif img.shape[2] <= 4:
+                    _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
+                    img_base = _warp_antiring(lambda: _wa(_img, cv2.INTER_LANCZOS4),
+                                              lambda: _wa(_img, cv2.INTER_LINEAR))
                 else:
-                    img_base = np.stack([
-                        _warp_antiring(lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
-                                       lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
-                        for c in range(img.shape[2])], axis=2)
+                    img_base = _warp_hwc_antiring(
+                        img.shape[2],
+                        lambda c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                        lambda c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR),
+                    )
             else:
                 def _wp(ch, flags):
                     return cv2.warpPerspective(ch, base_X, (Ww, Hh),
@@ -4611,11 +5018,16 @@ class StarRegistrationThread(QThread):
                 if img.ndim == 2:
                     img_base = _warp_antiring(lambda: _wp(img, cv2.INTER_LANCZOS4),
                                               lambda: _wp(img, cv2.INTER_LINEAR))
+                elif img.shape[2] <= 4:
+                    _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
+                    img_base = _warp_antiring(lambda: _wp(_img, cv2.INTER_LANCZOS4),
+                                              lambda: _wp(_img, cv2.INTER_LINEAR))
                 else:
-                    img_base = np.stack([
-                        _warp_antiring(lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
-                                       lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
-                        for c in range(img.shape[2])], axis=2)
+                    img_base = _warp_hwc_antiring(
+                        img.shape[2],
+                        lambda c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                        lambda c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR),
+                    )
 
             class _InvMap:
                 def __call__(self, coords):
@@ -4645,6 +5057,8 @@ class StarRegistrationThread(QThread):
 
 
     def _warp_with_kind(self, img: np.ndarray, kind: str, X: object, out_hw: tuple[int,int]) -> np.ndarray:
+        # Color case: batched HWC call so _warp_antiring builds its star
+        # mask from max-across-channels (fixes OSC narrowband ring).
         Hh, Ww = out_hw
         if kind == "affine":
             A = np.asarray(X, np.float64)
@@ -4654,10 +5068,15 @@ class StarRegistrationThread(QThread):
             if img.ndim == 2:
                 return _warp_antiring(lambda: _wa(img, cv2.INTER_LANCZOS4),
                                       lambda: _wa(img, cv2.INTER_LINEAR))
-            return np.stack([
-                _warp_antiring(lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
-                               lambda c=c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
-                for c in range(img.shape[2])], axis=2)
+            if img.shape[2] <= 4:
+                _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
+                return _warp_antiring(lambda: _wa(_img, cv2.INTER_LANCZOS4),
+                                      lambda: _wa(_img, cv2.INTER_LINEAR))
+            return _warp_hwc_antiring(
+                img.shape[2],
+                lambda c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                lambda c: _wa(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR),
+            )
 
         if kind.startswith("poly"):
             return X(img, (Hh, Ww))
@@ -4670,10 +5089,15 @@ class StarRegistrationThread(QThread):
             if img.ndim == 2:
                 return _warp_antiring(lambda: _wp(img, cv2.INTER_LANCZOS4),
                                       lambda: _wp(img, cv2.INTER_LINEAR))
-            return np.stack([
-                _warp_antiring(lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
-                               lambda c=c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR))
-                for c in range(img.shape[2])], axis=2)
+            if img.shape[2] <= 4:
+                _img = img if img.flags['C_CONTIGUOUS'] else np.ascontiguousarray(img)
+                return _warp_antiring(lambda: _wp(_img, cv2.INTER_LANCZOS4),
+                                      lambda: _wp(_img, cv2.INTER_LINEAR))
+            return _warp_hwc_antiring(
+                img.shape[2],
+                lambda c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LANCZOS4),
+                lambda c: _wp(np.ascontiguousarray(img[..., c]), cv2.INTER_LINEAR),
+            )
 
         # TPS: X is a callable(img, out_hw) -> img
         return X(img, (Hh, Ww))
@@ -4774,7 +5198,14 @@ class StarRegistrationThread(QThread):
 
             # Summary based on our known corpus
             total_count = len(self.original_files)
-            aligned_count = sum(1 for f in self.original_files if os.path.exists(self.file_key_to_current_path.get(f, "")))
+            # A frame counts only once finalize wrote its aligned output; until
+            # then its entry still points at its own input.
+            aligned_count = 0
+            for f in self.original_files:
+                k = os.path.normpath(f)
+                cur = self.file_key_to_current_path.get(k, k)
+                if os.path.normpath(cur) != k and os.path.exists(cur):
+                    aligned_count += 1
             summary = f"Registration complete. Valid frames: {aligned_count}/{total_count}."
             self.registration_complete.emit(True, summary)
 
@@ -5414,19 +5845,29 @@ class WCSRegistrationThread(QThread):
             )
             M = np.asarray(tform.params, dtype=np.float64)[:2, :]
             H, W = ref2d.shape[:2]
-            if aligned.ndim == 3:
-                refined = np.zeros_like(aligned)
-                for c in range(aligned.shape[2]):
-                    refined[..., c] = cv2.warpAffine(
-                        aligned[..., c], M, (W, H),
-                        flags=cv2.INTER_LANCZOS4,
-                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
-                    )
-                return refined
-            return cv2.warpAffine(
-                aligned, M, (W, H),
-                flags=cv2.INTER_LANCZOS4,
-                borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+            _LANCZOS = _warp_hi_interp()
+            _LINEAR  = cv2.INTER_LINEAR
+            # Route the WCS→Stellar refine warp through _warp_antiring too
+            # — raw Lanczos here was a second, overlooked ring-exposure path
+            # that bypassed the anti-ring guard entirely. One batched HWC
+            # call so the star mask is max-across-channels.
+            def _wa(ch, flags):
+                return cv2.warpAffine(
+                    ch, M, (W, H), flags=flags,
+                    borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+                )
+            if aligned.ndim == 2:
+                return _warp_antiring(lambda: _wa(aligned, _LANCZOS),
+                                      lambda: _wa(aligned, _LINEAR))
+            if aligned.shape[2] <= 4:
+                _aligned = (aligned if aligned.flags['C_CONTIGUOUS']
+                            else np.ascontiguousarray(aligned))
+                return _warp_antiring(lambda: _wa(_aligned, _LANCZOS),
+                                      lambda: _wa(_aligned, _LINEAR))
+            return _warp_hwc_antiring(
+                aligned.shape[2],
+                lambda c: _wa(np.ascontiguousarray(aligned[..., c]), _LANCZOS),
+                lambda c: _wa(np.ascontiguousarray(aligned[..., c]), _LINEAR),
             )
         except Exception as e:
             self.progress_update.emit(
@@ -5849,6 +6290,35 @@ class StarRegistrationWindow(QWidget):
         )
         _adv.addRow("Per-frame timeout:", self.sp_adv_timeout)
 
+        # Warp interpolation kernel — the final full-res resample pass.
+        # Shared QSettings key `stacking/align/kernel` is read/written by
+        # BOTH this dropdown and the Stacking Suite settings dropdown, so a
+        # user's choice follows them around. See `_warp_hi_interp()` for
+        # the resolution order (QSettings → env var → "lanczos").
+        self.cmb_adv_kernel = QComboBox()
+        self.cmb_adv_kernel.addItems([
+            "Lanczos4 (sharpest; rings on bright stars)",
+            "Bicubic / Mitchell (less ringy; recommended)",
+            "Bilinear (softest; no ringing)",
+        ])
+        _KERNEL_TO_IDX = {"lanczos": 0, "cubic": 1, "linear": 2}
+        self.cmb_adv_kernel.setCurrentIndex(
+            _KERNEL_TO_IDX.get(str(_prefs.get("kernel", "lanczos")).lower(), 0)
+        )
+        self.cmb_adv_kernel.setToolTip(
+            "Resampling kernel used for the final full-resolution warp.\n"
+            " • Lanczos4: sharpest; its negative lobes cause dark halos\n"
+            "   around bright narrowband stars (what the anti-ring guard\n"
+            "   is there to catch).\n"
+            " • Bicubic / Mitchell: shorter negative lobes — noticeably\n"
+            "   less ringy, slightly softer on well-aligned frames.\n"
+            "   Recommended if dark rings persist despite the anti-ring\n"
+            "   guard (OSC narrowband data in particular).\n"
+            " • Bilinear: no sharpening and no ringing at all; the softest\n"
+            "   result. Keep for ring-sensitive diagnostics only."
+        )
+        _adv.addRow("Warp interpolation:", self.cmb_adv_kernel)
+
         # Trial Detect — same spirit as the Stellar Alignment dialog's but
         # adapted to Registration's N-target model: runs sep detection with
         # the CURRENT Detection σ against the REFERENCE and the FIRST target
@@ -6157,6 +6627,7 @@ class StarRegistrationWindow(QWidget):
     # Advanced alignment settings
     # ------------------------------------------------------------------
     _ADV_IDX_TO_MODEL = ("affine", "homography", "poly3", "poly4")
+    _ADV_IDX_TO_KERNEL = ("lanczos", "cubic", "linear")
 
     def _collect_align_prefs(self) -> dict:
         """
@@ -6176,6 +6647,13 @@ class StarRegistrationWindow(QWidget):
             "timeout_per_job_sec": int(self.sp_adv_timeout.value()),
             "min_fwhm":        float(self.sp_adv_minfwhm.value()),
             "max_ellipticity": float(self.sp_adv_maxellip.value()),
+            # Warp interpolation kernel — written to the shared QSettings key
+            # `stacking/align/kernel` so the Stacking Suite settings dropdown
+            # sees the same value.
+            "kernel": self._ADV_IDX_TO_KERNEL[
+                max(0, min(self.cmb_adv_kernel.currentIndex(),
+                           len(self._ADV_IDX_TO_KERNEL) - 1))
+            ],
         }
 
     def _adv_reload_defaults(self):
@@ -6200,6 +6678,10 @@ class StarRegistrationWindow(QWidget):
         self.cmb_adv_method.setCurrentIndex(
             {"stellar": 0, "wcs": 1, "wcs_stellar": 2}.get(_saved_method, 0)
         )
+        _KERNEL_TO_IDX = {"lanczos": 0, "cubic": 1, "linear": 2}
+        self.cmb_adv_kernel.setCurrentIndex(
+            _KERNEL_TO_IDX.get(str(p.get("kernel", "lanczos")).lower(), 0)
+        )
 
     _ADV_IDX_TO_METHOD = ("stellar", "wcs", "wcs_stellar")
 
@@ -6213,6 +6695,10 @@ class StarRegistrationWindow(QWidget):
         — same keys the Stellar Alignment dialog and Stacking Suite use.
         Called on Start so Registration edits propagate to the rest of the
         suite (matches Stellar Alignment's save-on-run).
+
+        `stacking/align/kernel` is the one Stacking Suite's settings page
+        also writes; `_warp_hi_interp()` reads it live on every warp so a
+        change here takes effect without a restart.
         """
         s = QSettings()
         s.setValue("stacking/align/method",      self._current_method())
@@ -6226,6 +6712,7 @@ class StarRegistrationWindow(QWidget):
                    int(prefs["timeout_per_job_sec"]))
         s.setValue("stacking/align/min_fwhm",        float(prefs["min_fwhm"]))
         s.setValue("stacking/align/max_ellipticity", float(prefs["max_ellipticity"]))
+        s.setValue(_WARP_KERNEL_SETTINGS_KEY,         str(prefs.get("kernel", "lanczos")))
 
     # ------------------------------------------------------------------
     # Trial detect

@@ -1,9 +1,9 @@
 # ============================================================
-#  ____       _   _ _    _       _
-# / ___|  ___| |_(_) |  / \  ___| |_ _ __ ___
-# \___ \ / _ \ __| | | / _ \/ __| __| '__/ _ \
-#  ___) |  __/ |_| | |/ ___ \__ \ |_| | | (_) |
-# |____/ \___|\__|_|_/_/   \_\___/\__|_|  \___/
+#  ____       _   _      _       _
+# / ___|  ___| |_(_)    / \  ___| |_ _ __ ___
+# \___ \ / _ \ __| |   / _ \/ __| __| '__/ _ \
+#  ___) |  __/ |_| |  / ___ \__ \ |_| | | (_) |
+# |____/ \___|\__|_|_/_/   \_\__/\__|_|  \___/
 #
 #  SASpro – Stacking Execution Monitor
 #  Franklin Marek  |  www.setiastro.com
@@ -107,7 +107,18 @@ _r(r"⚠️.*dark.*skip",                               "Master Darks",      _ST
 # ── Master flat ───────────────────────────────────────────────────────────
 _r(r"Starting Master Flat",                         "Master Flats",      _ST_RUNNING)
 _r(r"🟢 Processing \d+ flats for .+?\[(.+?)\]",     "Master Flats",      _ST_RUNNING, 1)
+# create_master_flat now writes master FITS files on a background thread
+# pool and emits "✅ Master Flat queued: …" the moment the main-thread work
+# for a group is done (the actual on-disk save completes shortly after and
+# is drained in the function's finally). The old "Master Flat saved" rule
+# never matched the new wording, so the LAST group's Master Flats row kept
+# ticking forever until the whole dialog closed — polluting the "total
+# time" readout. Accept the queued message as the per-group terminator;
+# the final "✅ All master flats saved" message after the drain serves as
+# a belt-and-braces closer when every group finishes together.
+_r(r"✅ Master Flat queued",                         "Master Flats",      _ST_OK)
 _r(r"✅ Master Flat saved",                          "Master Flats",      _ST_OK)
+_r(r"✅ All master flats saved",                     "Master Flats",      _ST_OK)
 _r(r"⚠️.*flat.*skip",                               "Master Flats",      _ST_WARN)
 
 # ── Calibration — specific rules BEFORE generic catch-alls ───────────────
@@ -197,13 +208,23 @@ _r(r"⚡ Running max-value projection",                   "Star Trail: Stack",  
 _r(r"✅ Star-Trail image saved",                          "Star Trail: Stack",     _ST_OK)
 
 # ── Autocrop ──────────────────────────────────────────────────────────────
-# Terminal rule FIRST — the greedy running rule below also matches the word
+# Terminal rules FIRST — the greedy running rule below also matches the word
 # "auto-cropped" (…crop…); with it first it swallowed every "Saved auto-
 # cropped" message, so the Autocrop row never left the running state. The
-# negative lookahead on "saved" also keeps the running rule from grabbing the
+# negative lookahead on "saved" keeps the running rule from grabbing the
 # MF / comet / drizzle "Saved … (auto-cropped)" messages, which have their
-# own terminal rules further down this list.
+# own terminal rules.
+#
+# Note the two different wordings coming out of the suite:
+#   normal integration → "✂️ Saved auto-cropped image for 'group': …"
+#   drizzle            → "✂️ Drizzle (auto-cropped) saved: …"
+# The drizzle path phrases "saved" after "(auto-cropped)", so the first
+# rule's "✂️ Saved auto-cropped" prefix never matches it and the Autocrop
+# row stays running forever (even though the running rule's lookahead on
+# "saved" correctly refuses to re-open the row on the drizzle message).
+# Second terminator pins the drizzle wording so both paths close cleanly.
 _r(r"✂️ Saved auto-cropped",                         "Autocrop",          _ST_OK)
+_r(r"✂️ Drizzle \(auto-cropped\) saved",             "Autocrop",          _ST_OK)
 _r(r"✂️(?!.*[Ss]aved).*[Cc]rop",                    "Autocrop",          _ST_RUNNING)
 
 # ── Astrometric solution ──────────────────────────────────────────────────

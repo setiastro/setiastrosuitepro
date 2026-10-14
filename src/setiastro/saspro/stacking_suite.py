@@ -1,4 +1,4 @@
-#pro.stacking_suite.py
+#saspro.stacking_suite.py
 from __future__ import annotations
 import os
 import glob
@@ -6247,7 +6247,14 @@ class SubRejectionDialog(QDialog):
     _METRIC_BOUNDS = {
         "fwhm":  (0.0, None),
         "ecc":   (0.0, 1.0),
-        "bg":    (0.0, 1.0),
+        # Background has no fixed upper bound — the preview median comes
+        # out in whatever units the input data lives in (normalized
+        # [0..1] FITS, ADU-scaled, calibrated e⁻, etc.). An earlier
+        # (0, 1) ceiling collapsed the "park above max" default for a
+        # 30–34-range distribution down to 1.0, which with higher-worse
+        # semantics flagged every sub (bg > 1 == true for all of them).
+        # Only the floor at 0 is actually physical.
+        "bg":    (0.0, None),
         "count": (0.0, None),
         "noise": (0.0, None),
         "score": (0.0, None),
@@ -6628,8 +6635,16 @@ class SubRejectionDialog(QDialog):
             size=7 if short_title else 8,
         )
         scat.setData(x=x, y=y)
+        # pyqtgraph's sigClicked signature changed from (plot, points) to
+        # (plot, points, ev) somewhere around 0.13 — a lambda that took
+        # two positional args + a default-captured _mk would see the mouse
+        # event overwrite _mk when pyqtgraph emits three, and the click
+        # handler would silently exit on the metric_key-not-in-dict guard.
+        # The *_args splat ignores whatever positional count pyqtgraph
+        # emits, and _mk= stays the keyword default we actually set.
         scat.sigClicked.connect(
-            lambda _p, pts, _mk=mk: self._on_point_click(_mk, pts)
+            lambda *_args, _mk=mk: self._on_point_click(_mk, _args[1])
+            if len(_args) >= 2 else None
         )
         plot.addItem(scat)
 
@@ -7948,7 +7963,7 @@ class StackingSuiteDialog(QDialog):
         root.addWidget(self.pipeline_force_clean_slate_cb)
 
         # ── Full Pipeline button ─────────────────────────────────────────────
-        pipeline_btn = QPushButton(self.tr("🚀 Run Full Pipeline (Darks → Flats → Calibrate → Register & Integrate)"))
+        pipeline_btn = QPushButton(self.tr("🚀 Run Full Pipeline (Darks → Flats → Calibrate → Register → Integrate)"))
         pipeline_btn.setStyleSheet("""
             QPushButton {
                 background-color: #FF4500;
@@ -9746,6 +9761,38 @@ class StackingSuiteDialog(QDialog):
         )
         fl_align.addRow(self.tr("Max stars:"), self.align_limit_stars_spin)
 
+        # Warp interpolation kernel — the final full-resolution resample.
+        # Shared QSettings key `stacking/align/kernel` is read AND written by
+        # the Star Alignment dialog's Advanced panel too, so a user who
+        # changes it in either place sees the change reflected in the other.
+        # `_warp_hi_interp()` in star_alignment.py reads this key live on
+        # every warp — no restart needed.
+        self.align_kernel_combo = QComboBox()
+        self.align_kernel_combo.addItems([
+            self.tr("Lanczos4 (sharpest; rings on bright stars)"),
+            self.tr("Bicubic / Mitchell (less ringy; recommended)"),
+            self.tr("Bilinear (softest; no ringing)"),
+        ])
+        _KERNEL_TO_IDX = {"lanczos": 0, "cubic": 1, "linear": 2}
+        _saved_kernel = str(
+            self.settings.value("stacking/align/kernel", "lanczos") or "lanczos"
+        ).strip().lower()
+        self.align_kernel_combo.setCurrentIndex(_KERNEL_TO_IDX.get(_saved_kernel, 0))
+        self.align_kernel_combo.setToolTip(self.tr(
+            "Resampling kernel used for the final full-resolution warp "
+            "(applies to Register and Integrate, Skip Registration, and the "
+            "Star Alignment dialog).\n\n"
+            "• Lanczos4: sharpest, but its negative lobes cause dark halos\n"
+            "  around bright narrowband stars (what the anti-ring guard is\n"
+            "  there to catch).\n"
+            "• Bicubic / Mitchell: shorter negative lobes — noticeably less\n"
+            "  ringy, slightly softer on well-aligned frames. Recommended\n"
+            "  if dark rings persist (OSC narrowband data in particular).\n"
+            "• Bilinear: no sharpening and no ringing at all; the softest\n"
+            "  result. Keep for ring-sensitive diagnostics only."
+        ))
+        fl_align.addRow(self.tr("Warp interpolation:"), self.align_kernel_combo)
+
         # Timeout spinbox kept for QSettings back-compat but hidden from UI
         self.align_timeout_spin = QSpinBox()
         self.align_timeout_spin.setValue(
@@ -10656,6 +10703,14 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/align/auto_threshold",        bool(self.align_auto_thresh_cb.isChecked()))
         self.settings.setValue("stacking/align/limit_stars",           int(self.align_limit_stars_spin.value()))
         self.settings.setValue("stacking/align/timeout_per_job_sec",   int(self.align_timeout_spin.value()))
+        # Warp interpolation kernel — shared with the Star Alignment dialog's
+        # Advanced-panel dropdown. Canonical strings: "lanczos"|"cubic"|"linear".
+        _IDX_TO_KERNEL = ("lanczos", "cubic", "linear")
+        _kidx = self.align_kernel_combo.currentIndex()
+        self.settings.setValue(
+            "stacking/align/kernel",
+            _IDX_TO_KERNEL[max(0, min(_kidx, len(_IDX_TO_KERNEL) - 1))],
+        )
         self.settings.setValue("stacking/drop_shrink",                 float(self.drop_shrink_spin.value()))
 
         kidx = self.drizzle_kernel_combo.currentIndex()
@@ -10709,7 +10764,7 @@ class StackingSuiteDialog(QDialog):
             self._refresh_comet_starless_enable()
         except Exception:
             pass
-
+        
     # --- Drizzle config: single source of truth ---
     def _get_drizzle_pixfrac(self) -> float:
         s = self.settings
@@ -12104,6 +12159,47 @@ class StackingSuiteDialog(QDialog):
         sat_layout.addWidget(self.cal_satellite_clip_checkbox)
         sat_layout.addStretch(1)
 
+        # Concurrent workers for the Phase 2 satellite trail pass. Each
+        # worker holds one calibrated frame in RAM and allocates its own
+        # GPU activations; 2 overlaps I/O and CPU work with GPU inference
+        # for a solid speedup, higher costs memory. Set to 1 for serial
+        # behavior if VRAM is tight.
+        sat_workers_lbl = QLabel(self.tr("Workers:"))
+        sat_workers_lbl.setStyleSheet("font-size: 11px; color: palette(mid);")
+        sat_workers_lbl.setToolTip(self.tr(
+            "Number of frames processed in parallel during the satellite "
+            "trail pass. Higher values overlap file I/O and CPU work with "
+            "GPU inference. Default 2. Drop to 1 if you hit VRAM OOM; raise "
+            "if your GPU and RAM can take it."
+        ))
+
+        self.cal_satellite_workers_spin = QSpinBox()
+        self.cal_satellite_workers_spin.setRange(1, 8)
+        self.cal_satellite_workers_spin.setFixedWidth(60)
+        self.cal_satellite_workers_spin.setToolTip(sat_workers_lbl.toolTip())
+        self.cal_satellite_workers_spin.setValue(
+            int(self.settings.value(
+                "stacking/calibration_satellite_workers", 2, type=int
+            ))
+        )
+        self.cal_satellite_workers_spin.valueChanged.connect(
+            lambda v: self.settings.setValue(
+                "stacking/calibration_satellite_workers", int(v)
+            )
+        )
+
+        # Gray out the Workers control when satellite removal is disabled,
+        # so the knob only lights up when it will actually be used.
+        def _sync_sat_workers_enabled(checked: bool):
+            self.cal_satellite_workers_spin.setEnabled(bool(checked))
+            sat_workers_lbl.setEnabled(bool(checked))
+
+        _sync_sat_workers_enabled(self.cal_satellite_checkbox.isChecked())
+        self.cal_satellite_checkbox.toggled.connect(_sync_sat_workers_enabled)
+
+        sat_layout.addWidget(sat_workers_lbl)
+        sat_layout.addWidget(self.cal_satellite_workers_spin)
+
         layout.addLayout(sat_layout)
         # --- RIGHT SIDE CONTROLS: Override Dark & Flat ---
         override_layout = QHBoxLayout()
@@ -13162,12 +13258,25 @@ class StackingSuiteDialog(QDialog):
         return self.frame_set_of.get(self._set_key(path), "Default")
 
     def _ensure_default_set(self):
-        if "Default" not in self.reg_sets:
-            # Default set inherits the existing global reference/lock so current behavior is unchanged.
-            self.reg_sets["Default"] = {
-                "reference": (self.reference_frame if getattr(self, "_user_ref_locked", False) else None),
-                "locked": bool(getattr(self, "_user_ref_locked", False)),
-            }
+        # Always re-sync "Default" with the current global reference state.
+        #
+        # The per-set registration loop (see _run_registration_set / line
+        # ~24574) treats reg_sets["Default"]["locked"] as the single source
+        # of truth for whether to honor a user-picked reference. If we only
+        # synced on first creation, the common flow — Default set existed
+        # already (created at UI init via _rebuild_set_combo), THEN the user
+        # clicked "Select Reference" to pick a bin 1 frame — would leave
+        # reg_sets["Default"]["locked"] = False even though _user_ref_locked
+        # is True globally, and the queue loop would silently discard the
+        # user's pick and auto-select within the set (often a bin 2 frame).
+        # Re-syncing every call keeps global and Default-set state unified,
+        # so a user ref picked at any point before registration starts is
+        # honored, and reset_reference_to_auto() propagates too. Named sets
+        # (anything other than "Default") are never touched here — their
+        # per-set reference picker owns their state.
+        _locked = bool(getattr(self, "_user_ref_locked", False))
+        _ref = self.reference_frame if _locked else None
+        self.reg_sets["Default"] = {"reference": _ref, "locked": _locked}
 
     def _rebuild_set_combo(self):
         self._ensure_default_set()
@@ -18619,6 +18728,12 @@ class StackingSuiteDialog(QDialog):
                 except Exception as _se:
                     self.update_status(self.tr(f"⚠️ Master-flat save failed: {_se}"))
             save_futs.clear()
+            # Emit a clean "all done" marker so the Stacking Execution Monitor
+            # closes the Master Flats row for sure — the per-group "queued"
+            # message is the primary terminator, but if the monitor's rule
+            # for that is older than the async-save refactor, this final line
+            # guarantees the row stops ticking before the next phase begins.
+            self.update_status(self.tr("✅ All master flats saved."))
 
             # Final wrap-up
             self.assign_best_master_dark()
@@ -21563,29 +21678,52 @@ class StackingSuiteDialog(QDialog):
             n_rewritten = 0
             n_unchanged = 0
             if sat_models is not None:
-                for s_idx, cal_path in enumerate(sat_files, 1):
-                    if self._cancelled():
-                        self.update_status(self.tr("⏹ Satellite pass cancelled."))
-                        break
+                # ── Image-level concurrency: run multiple frames through the
+                # satellite pipeline at once. PyTorch kernels serialize on the
+                # GPU's default stream, but we overlap file I/O (load + write),
+                # CPU numpy prep/post, PCIe transfers, and sync waits. Same
+                # pattern as blink_comparator_pro's Detect Satellite Trails.
+                #
+                # Each worker is independent: loads one calibrated FITS,
+                # applies satellite_remove_image, and (if a trail was found)
+                # writes it back to disk. write_calibrated_fast is already
+                # used concurrently in Phase 1 (WRITE_WORKERS=3), so parallel
+                # writes to distinct paths are safe.
+                import concurrent.futures as _cf_sat
+
+                sat_workers = max(1, int(self.settings.value(
+                    "stacking/calibration_satellite_workers", 2, type=int
+                )))
+
+                # Snapshot debug flag so workers don't call Qt-dependent
+                # status callbacks. _nan_probe is kept but sinks to print().
+                _probe_on = _nan_probe_enabled()
+
+                def _sat_worker(cal_path):
+                    """
+                    Returns (cal_path, outcome, err_msg).
+                    outcome: 'missing' | 'unchanged' | 'rewritten' | 'failed'
+                    """
                     try:
                         if not os.path.exists(cal_path):
-                            continue
+                            return (cal_path, 'missing', None)
                         sd, shdr, _sbits, s_mono = load_image(cal_path)
                         if sd is None:
-                            continue
+                            return (cal_path, 'missing', None)
                         cleaned, sat_mask = self._apply_satellite_removal_to_calibrated_light(
                             sd, is_mono=s_mono, models=sat_models
                         )
                         if not trail_mask_requires_rewrite(sat_mask):
-                            n_unchanged += 1
-                            self.update_status(self.tr(
-                                f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
-                            ))
-                            QApplication.processEvents()
-                            continue
+                            return (cal_path, 'unchanged', None)
                         cleaned = np.asarray(cleaned, dtype=np.float32)
-                        if _nan_probe_enabled():
-                            _nan_probe(f"calib(repass): post sat-removal (mem) {os.path.basename(cal_path)}", cleaned, self.update_status, force=True)
+                        if _probe_on:
+                            try:
+                                _nan_probe(
+                                    f"calib(repass): post sat-removal (mem) {os.path.basename(cal_path)}",
+                                    cleaned, print, force=True,
+                                )
+                            except Exception:
+                                pass
                         if (not s_mono) and cleaned.ndim == 3 and cleaned.shape[0] == 3:
                             cleaned = cleaned.transpose(1, 2, 0)
                         cleaned = np.nan_to_num(
@@ -21600,28 +21738,80 @@ class StackingSuiteDialog(QDialog):
                         except Exception:
                             pass
                         write_calibrated_fast(cal_path, cleaned, shdr, s_mono)
-                        if _nan_probe_enabled():
+                        if _probe_on:
                             try:
-                                _nan_probe(f"calib: reopened {os.path.basename(cal_path)}", _probe_load_first(cal_path), self.update_status, force=True)
-                            except Exception as _e:
-                                self.update_status(f"🔎 NaN-probe (reopen _c) failed: {_e}")
-                        n_rewritten += 1
-                        self.update_status(self.tr(
-                            f"🛰️ {s_idx}/{n_sat}: {os.path.basename(cal_path)}"
-                        ))
+                                _nan_probe(
+                                    f"calib: reopened {os.path.basename(cal_path)}",
+                                    _probe_load_first(cal_path), print, force=True,
+                                )
+                            except Exception:
+                                pass
+                        return (cal_path, 'rewritten', None)
                     except Exception as e:
-                        self.update_status(self.tr(
-                            f"⚠️ Satellite pass failed on "
-                            f"{os.path.basename(cal_path)}: {e}"
-                        ))
-                    finally:
-                        try:
-                            import torch as _torch_sat
-                            if _torch_sat.cuda.is_available():
-                                _torch_sat.cuda.empty_cache()
-                        except Exception:
-                            pass
-                    QApplication.processEvents()
+                        return (cal_path, 'failed', str(e))
+
+                completed = 0
+                with _cf_sat.ThreadPoolExecutor(max_workers=sat_workers) as _sat_ex:
+                    futures = {}
+                    for cal_path in sat_files:
+                        fut = _sat_ex.submit(_sat_worker, cal_path)
+                        futures[fut] = cal_path
+
+                    pending = set(futures.keys())
+                    cancelled_mid = False
+                    while pending:
+                        if self._cancelled():
+                            for f in pending:
+                                f.cancel()
+                            self.update_status(self.tr("⏹ Satellite pass cancelled."))
+                            cancelled_mid = True
+                            break
+
+                        done, pending = _cf_sat.wait(
+                            pending,
+                            timeout=0.1,
+                            return_when=_cf_sat.FIRST_COMPLETED,
+                        )
+
+                        for fut in done:
+                            try:
+                                cp, outcome, err = fut.result()
+                            except Exception as e:
+                                cp = futures.get(fut, '?')
+                                outcome = 'failed'
+                                err = str(e)
+
+                            completed += 1
+                            basename = os.path.basename(cp) if cp else '?'
+
+                            if outcome == 'unchanged':
+                                n_unchanged += 1
+                                self.update_status(self.tr(
+                                    f"🛰️ {completed}/{n_sat}: {basename}"
+                                ))
+                            elif outcome == 'rewritten':
+                                n_rewritten += 1
+                                self.update_status(self.tr(
+                                    f"🛰️ {completed}/{n_sat}: {basename}"
+                                ))
+                            elif outcome == 'failed':
+                                self.update_status(self.tr(
+                                    f"⚠️ Satellite pass failed on {basename}: {err}"
+                                ))
+                            # 'missing' = silent skip (matches prior behavior)
+
+                        QApplication.processEvents()
+
+                # Clear the CUDA cache ONCE after all workers finish instead
+                # of per-frame — per-frame empty_cache() while sibling
+                # workers are still mid-flight would just thrash the
+                # allocator.
+                try:
+                    import torch as _torch_sat
+                    if _torch_sat.cuda.is_available():
+                        _torch_sat.cuda.empty_cache()
+                except Exception:
+                    pass
             # honor a cancel that arrived during the satellite pass
             cancelled = cancelled or self._cancelled()
             # Give the monitor an explicit terminal signal so the dedicated
@@ -23217,6 +23407,101 @@ class StackingSuiteDialog(QDialog):
                     fname = "Unknown"
             groups.setdefault(fname, []).append(fp)
         return groups
+
+    def _make_weight_resolver(self, weights: dict = None):
+        """Return a callable ``resolve(path) -> float`` that looks up a
+        frame's effective weight across the aligned→original path chain.
+        Factored out so ``_count_contributing_frames`` and the acquisition
+        summary filter use the SAME lookup, guaranteeing their counts
+        agree."""
+        import os as _os
+        if weights is None:
+            weights = getattr(self, "frame_weights", None) or {}
+        if not weights:
+            return lambda _p: 1.0
+
+        fw_norm = {}
+        for k, v in weights.items():
+            try:
+                fw_norm[_os.path.normcase(_os.path.normpath(k))] = float(v)
+            except Exception:
+                fw_norm[_os.path.normcase(_os.path.normpath(k))] = 1.0
+
+        _orig_by_aligned = getattr(self, "orig_by_aligned", {}) or {}
+        _orig2norm       = getattr(self, "_orig2norm", {}) or {}
+        _norm2orig_nc = {}
+        for orig_nc, norm_np in _orig2norm.items():
+            try:
+                _norm2orig_nc[_os.path.normpath(norm_np)] = orig_nc
+            except Exception:
+                pass
+
+        def _resolve(fp) -> float:
+            try:
+                p_nc = _os.path.normcase(_os.path.normpath(fp))
+            except Exception:
+                return 1.0
+            if p_nc in fw_norm:
+                return fw_norm[p_nc]
+            try:
+                p_np = _os.path.normpath(fp)
+            except Exception:
+                return 1.0
+            norm_path = _orig_by_aligned.get(p_np)
+            if norm_path:
+                orig_nc = _norm2orig_nc.get(_os.path.normpath(norm_path))
+                if orig_nc and orig_nc in fw_norm:
+                    return fw_norm[orig_nc]
+            return 1.0
+
+        return _resolve
+
+    def _count_contributing_frames(self, file_list, weights: dict = None) -> int:
+        """How many frames in ``file_list`` will actually contribute photons
+        to the integrated master. Soft-rejected subs — those whose score was
+        forced to 0 by ``_apply_sub_rejection`` — don't contribute even
+        though they're still in ``file_list`` for bookkeeping. The stacked
+        count that goes into the filename, ``NCOMBINE`` header, and status
+        summary should name the number of contributing frames, not the
+        pre-rejection pool size.
+
+        Registration failures DO NOT reach this method: aligned_light_files
+        is filtered against ``self.valid_transforms`` upstream (around line
+        27617) so a reg-failed frame is already absent from ``file_list``
+        by the time we count. The only drop reason this method consults is
+        soft rejection (weight = 0). Combined effect: 100 subs, 2 soft-
+        rejected (A, B), 2 reg-failed (A, C) → ``file_list`` arrives with
+        98 entries (A, C already gone), one has weight 0 (B), the returned
+        count is 97. A sub rejected by both routes (A) is subtracted once,
+        which is the correct accounting.
+
+        **Lookup chain** mirrors ``_resolve_weight`` inside the
+        integrators because ``file_list`` at this point holds ALIGNED
+        paths (Aligned_Images/...) but ``self.frame_weights`` is keyed by
+        the CALIBRATED/original paths the measurement pass saw:
+
+          aligned path  →  ``orig_by_aligned`` → normalized intermediate
+                        →  ``_orig2norm`` reverse → original (normcase)
+                        →  ``frame_weights`` → weight
+
+        Without this chain the direct ``weights.get(aligned_path, 1.0)``
+        would always return 1.0 and the Register-and-Integrate path would
+        silently count every frame as contributing. Any lookup that falls
+        off the chain defaults to 1.0 (contributing) so pipelines without
+        a weighting pass still produce an all-frames count — no regression.
+
+        ``weights`` can be an explicit dict (the prepass passes its own
+        captured copy for isolation); if omitted, falls back to
+        ``self.frame_weights``."""
+        resolve = self._make_weight_resolver(weights)
+        n = 0
+        for fp in file_list:
+            try:
+                if resolve(fp) > 0.0:
+                    n += 1
+            except Exception:
+                n += 1
+        return n
 
     def _apply_sub_rejection(self, measured_frames: list,
                              star_counts: dict = None,
@@ -25478,6 +25763,38 @@ class StackingSuiteDialog(QDialog):
             io_workers = min(8, max(2, ncpu // 2))
 
             ref_H, ref_W = ref_img.shape[:2] if ref_img.ndim == 2 else ref_img.shape[:2]
+            # When pixel-scale normalization is active, every frame (including the
+            # reference) is resampled to the hi-res target scale. _norm_target_hw
+            # is used by _force_shape_hw below to snap each normalized frame to a
+            # canonical size — if we leave it at the raw reference shape (e.g.
+            # 2822×4144 for a bin 2 ref), the correctly upscaled bin 2 frames
+            # (8288×5644 at bin 1 scale) get center-cropped back to bin 2 size
+            # and the "upscale to bin 1" step is silently reversed. Compute the
+            # post-normalization target shape by applying the ref's own gx/gy to
+            # its raw shape, using the same tol-clamp as the per-frame path so a
+            # ref that's already at target scale stays bit-stable.
+            if do_scale_norm:
+                try:
+                    _ref_psx, _ref_psy = _robust_scale_from_header(ref_hdr)
+                    if _ref_psx and _ref_psy and target_sx and target_sy:
+                        _gx_ref = float(_ref_psx) / float(target_sx)
+                        _gy_ref = float(_ref_psy) / float(target_sy)
+                        if _rel_delta(_gx_ref, 1.0) <= tol:
+                            _gx_ref = 1.0
+                        if _rel_delta(_gy_ref, 1.0) <= tol:
+                            _gy_ref = 1.0
+                        if (_gx_ref != 1.0) or (_gy_ref != 1.0):
+                            _ref_H_new = max(1, int(round(ref_H * _gy_ref)))
+                            _ref_W_new = max(1, int(round(ref_W * _gx_ref)))
+                            self.update_status(self.tr(
+                                f"📐 Normalize target shape {ref_W}×{ref_H} → "
+                                f"{_ref_W_new}×{_ref_H_new} (pixel-scale upscale)"
+                            ))
+                            ref_H, ref_W = _ref_H_new, _ref_W_new
+                except Exception as _e_thw:
+                    self.update_status(self.tr(
+                        f"⚠️ Could not derive post-normalize target shape from ref "
+                        f"({_e_thw}); using raw ref shape {ref_W}×{ref_H}."))
             self._norm_target_hw = (int(ref_H), int(ref_W))
 
             for idx, chunk in enumerate(chunks, 1):
@@ -26114,6 +26431,7 @@ class StackingSuiteDialog(QDialog):
 
         except StackCancelled:
             self._abort_partial_reg_state()
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             mon = getattr(self, "_exec_monitor", None)
             if mon is not None:
@@ -27239,6 +27557,7 @@ class StackingSuiteDialog(QDialog):
         # (it's a black-box thread), but we refuse to start the next phase.
         if self._cancelled():
             self._abort_partial_reg_state()
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             self.alignment_thread = None
             mon = getattr(self, "_exec_monitor", None)
@@ -27342,6 +27661,25 @@ class StackingSuiteDialog(QDialog):
 
         accepted = [k for k in keys if _accept(k)]
         rejected = [k for k in keys if not _accept(k)]
+
+        # A solved frame whose aligned output was never written (the finalize
+        # pass failed) has no usable solution either; the output map still
+        # points at its own unaligned input.
+        _out_map = alignment_thread.file_key_to_current_path
+        unwritten = [
+            k for k in accepted
+            if os.path.normcase(os.path.normpath(_out_map.get(k, k)))
+            == os.path.normcase(os.path.normpath(k))
+        ]
+        if unwritten:
+            _unwritten = set(unwritten)
+            accepted = [k for k in accepted if k not in _unwritten]
+            self.update_status(self.tr(
+                f"🚫 Rejected {len(unwritten)} frame(s) whose aligned output "
+                f"wasn't written (finalize failed):"
+            ))
+            for rf in unwritten:
+                self.update_status(f"  ❌ {os.path.basename(rf)}")
 
         # ----------------------------
         # Persist numeric transforms we accepted (for drizzle, etc.)
@@ -27451,7 +27789,9 @@ class StackingSuiteDialog(QDialog):
 
         # Status
         prefix = "⚡ Fast mode: " if fast_mode else ""
-        self.update_status(self.tr(f"{prefix}Alignment summary: {len(accepted)} succeeded, {len(rejected)} rejected."))
+        n_rejected = len(rejected) + len(unwritten)
+        self.update_status(self.tr(
+            f"{prefix}Alignment summary: {len(accepted)} succeeded, {n_rejected} rejected."))
         QApplication.processEvents()
         if (not fast_mode) and rejected:
             self.update_status(self.tr(f"🚨 Rejected {len(rejected)} frame(s) due to shift > {accept_thresh}px."))
@@ -27460,6 +27800,9 @@ class StackingSuiteDialog(QDialog):
 
         if not self.valid_transforms:
             self.update_status(self.tr("⚠️ No frames to stack; aborting."))
+            # Like a cancel: the next run rebuilds from the tree and asks again.
+            self._abort_partial_reg_state()
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             return
 
@@ -27762,6 +28105,13 @@ class StackingSuiteDialog(QDialog):
 
             # --- Restore the full tree and hand off to integrate ---
             self.light_files = {g: list(lst) for g, lst in _full_tree.items()}
+            # The new frames that failed this run have no registered twin;
+            # tell integration to leave them out rather than stack them as-is.
+            _registered = {os.path.normcase(k) for k in self.valid_transforms}
+            self._integrate_leave_out = {
+                k for k, norm in self._orig2norm.items()
+                if os.path.normcase(os.path.normpath(norm)) not in _registered
+            }
             self.update_status(self.tr(
                 "🔗 New frames registered. Integrating the full set "
                 "(existing + newly registered)…"
@@ -27861,6 +28211,12 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 group_rej_maps = {}
 
+            # Store the EFFECTIVE frame count — soft-rejected (weight=0)
+            # subs are still in file_list for bookkeeping but don't
+            # contribute to the integrated master. Everything downstream
+            # that stamps "N stacked" into the filename or NCOMBINE
+            # header reads from this field.
+            effective_n = self._count_contributing_frames(file_list, frame_weights)
             prepass["groups"][group_key] = {
                 "group_key": group_key,
                 "file_list": list(file_list),
@@ -27868,14 +28224,18 @@ class StackingSuiteDialog(QDialog):
                 "rejection_map": rejection_map,
                 "ref_header": ref_header,
                 "rej_maps": group_rej_maps,
-                "n_frames": len(file_list),
+                "n_frames": effective_n,
+                "n_total": len(file_list),  # pre-rejection count, for logs
             }
 
             dt = perf_counter() - t0
+            rejected_here = len(file_list) - effective_n
+            rej_note = (f" ({rejected_here} soft-rejected)" if rejected_here else "")
             line = (
                 f"Prepass '{group_key}': "
                 f"{integrated_image.shape[1]}×{integrated_image.shape[0]}, "
-                f"{len(file_list)} frame(s), {dt:.1f}s"
+                f"{effective_n}/{len(file_list)} frame(s) contributing{rej_note}, "
+                f"{dt:.1f}s"
             )
             prepass["summary_lines"].append(line)
             log(f"✅ {line}")
@@ -27999,9 +28359,18 @@ class StackingSuiteDialog(QDialog):
             hdr_orig["CREATOR"] = "SetiAstroSuite"
             hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
 
-            n_frames_group = len(file_list)
-            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+            # Effective count = frames with weight > 0 (sub rejection may
+            # have zeroed some). Reflect that in the filename AND header
+            # so a 245-frame set that soft-rejected 3 says "242" in both.
+            n_frames_group = self._count_contributing_frames(file_list)
+            n_frames_pool  = len(file_list)
+            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined (weight > 0)")
             hdr_orig["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+            if n_frames_pool != n_frames_group:
+                hdr_orig["NPOOL"] = (int(n_frames_pool),
+                                     "Pre-rejection frame pool size (SetiAstro)")
+                hdr_orig["NREJECT"] = (int(n_frames_pool - n_frames_group),
+                                       "Frames soft-rejected (weight=0) by score outlier pass")
 
             # Correct header fields if frames were upscaled during normalization
             # (e.g. bin2 RGB upscaled to match bin1 L — binning, pixscale, CRPIX all wrong otherwise)
@@ -28134,13 +28503,22 @@ class StackingSuiteDialog(QDialog):
                     scale=1.0,
                     rect_override=group_rect if group_rect is not None else global_rect
                 )
-                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+                # Cropped master uses the SAME contributing frames as the
+                # full master (crop is spatial-only); carry the same
+                # NCOMBINE/NPOOL/NREJECT values across so both files tell
+                # the same story.
+                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined (weight > 0)")
                 hdr_crop["NSTACK"] = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+                if n_frames_pool != n_frames_group:
+                    hdr_crop["NPOOL"]   = (int(n_frames_pool),
+                                           "Pre-rejection frame pool size (SetiAstro)")
+                    hdr_crop["NREJECT"] = (int(n_frames_pool - n_frames_group),
+                                           "Frames soft-rejected (weight=0) by score outlier pass")
                 if upscale_map and file_list:
                     rep_key = os.path.normcase(os.path.normpath(file_list[0]))
                     uf = upscale_map.get(rep_key)
                     if uf and (abs(uf[0] - 1.0) > 1e-4 or abs(uf[1] - 1.0) > 1e-4):
-                        hdr_crop = self._fix_header_for_upscale(hdr_crop, uf[0], uf[1])                
+                        hdr_crop = self._fix_header_for_upscale(hdr_crop, uf[0], uf[1])
                 is_mono_crop = (cropped_img.ndim == 2)
                 hdr_crop = self._maybe_plate_solve_master(
                     cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
@@ -28195,6 +28573,14 @@ class StackingSuiteDialog(QDialog):
                 if op:
                     orig_list.append(op)
             originals_by_group[group] = orig_list
+
+        # Reset the session-level buffers drizzle_stack_one_group appends
+        # to on each successful save. This finalize call owns the drizzle
+        # loop below, so the lists reflect THIS run only — the next run
+        # starts fresh and won't inherit stale paths from an earlier
+        # click of Integrate.
+        self._drizzle_master_paths = []
+        self._drizzle_crop_paths   = []
 
         for group_key, file_list in grouped_files.items():
             if not drizzle_enabled_global:
@@ -28268,11 +28654,32 @@ class StackingSuiteDialog(QDialog):
             for g, p in autocrop_outputs:
                 summary_lines.append(f"  • {g} → {p}")
 
-        # Primary integrated masters + any auto-cropped variants, for the
-        # "Open Saved Masters" button in the completion popup.
-        crop_paths = [p for (_g, p) in autocrop_outputs]
+        _driz_outs      = getattr(self, "_drizzle_master_paths", []) or []
+        _driz_crop_outs = getattr(self, "_drizzle_crop_paths",   []) or []
+        if _driz_outs:
+            summary_lines.append("")
+            summary_lines.append("Drizzle masters saved:")
+            for g, p in _driz_outs:
+                summary_lines.append(f"  • {g} → {p}")
+        if _driz_crop_outs:
+            summary_lines.append("")
+            summary_lines.append("Drizzle auto-cropped files saved:")
+            for g, p in _driz_crop_outs:
+                summary_lines.append(f"  • {g} → {p}")
+
+        # Primary integrated masters + any auto-cropped variants + any
+        # DRIZZLE outputs (both the full drizzle master and its auto-crop
+        # if drizzle+autocrop were on), for the "Open Saved Masters"
+        # button in the completion popup. Before this, drizzle outputs
+        # were saved to disk and logged but never surfaced in the summary
+        # payload — "N master(s)" counted only the normal-integration
+        # files and the Open button only opened those.
+        crop_paths         = [p for (_g, p) in autocrop_outputs]
+        drizzle_paths      = [p for (_g, p) in _driz_outs]
+        drizzle_crop_paths = [p for (_g, p) in _driz_crop_outs]
         seen, master_files_out = set(), []
-        for p in list(master_files) + crop_paths:
+        for p in (list(master_files) + crop_paths
+                  + drizzle_paths + drizzle_crop_paths):
             if p and p not in seen:
                 seen.add(p)
                 master_files_out.append(p)
@@ -28280,6 +28687,8 @@ class StackingSuiteDialog(QDialog):
         return {
             "summary_lines": summary_lines,
             "autocrop_outputs": autocrop_outputs,
+            "drizzle_outputs": list(_driz_outs),
+            "drizzle_crop_outputs": list(_driz_crop_outs),
             "master_files": master_files_out,
         }
 
@@ -28871,7 +29280,23 @@ class StackingSuiteDialog(QDialog):
         # Walk every path once; carry the set tag through.
         per_set_records = []
         total_skipped = 0
-        n_total_files = sum(len(p or []) for g in sets_map.values() for p in g.values())
+        # Reuse the same aligned→original resolver the stacked-count helper
+        # uses so the summary ALWAYS reports the same number as the
+        # filename/NCOMBINE header. Two separate direct-lookup codepaths
+        # would silently disagree the first time Register-and-Integrate
+        # ran — frame_weights there is keyed by original (not aligned)
+        # paths, and self.light_files can be either.
+        _resolve_summary_w = self._make_weight_resolver()
+        def _effective_in(paths):
+            n = 0
+            for p in (paths or []):
+                try:
+                    if _resolve_summary_w(p) > 0.0:
+                        n += 1
+                except Exception:
+                    n += 1
+            return n
+        n_total_files = sum(_effective_in(p) for g in sets_map.values() for p in g.values())
         if n_total_files > 200:
             try:
                 self.update_status(self.tr(
@@ -28881,10 +29306,20 @@ class StackingSuiteDialog(QDialog):
             except Exception:
                 pass
 
+        # Honour soft rejection: a sub whose frame_weights was zeroed by
+        # the score-outlier pass didn't contribute to the integrated
+        # master, so it must not inflate the "N frames / M hours" numbers.
+        # Uses the same aligned→original resolver as the count above.
+        def _contributes(fp):
+            try:
+                return _resolve_summary_w(fp) > 0.0
+            except Exception:
+                return True
+
         for set_name, groups in sets_map.items():
             flat_paths = []
             for _gk, paths in (groups or {}).items():
-                flat_paths.extend(paths or [])
+                flat_paths.extend(p for p in (paths or []) if _contributes(p))
             recs, skipped = self._read_light_frame_meta(flat_paths)
             for r in recs:
                 r["set"] = set_name
@@ -29958,9 +30393,18 @@ class StackingSuiteDialog(QDialog):
             hdr_orig["CREATOR"]  = "SetiAstroSuite"
             hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
 
-            n_frames_group = len(file_list)
-            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+            # Count soft-rejected (weight = 0) subs out of the stacked
+            # tally so the filename and NCOMBINE header reflect only
+            # the frames that actually contributed photons.
+            n_frames_group = self._count_contributing_frames(file_list)
+            n_frames_pool  = len(file_list)
+            hdr_orig["NCOMBINE"] = (int(n_frames_group), "Number of frames combined (weight > 0)")
             hdr_orig["NSTACK"]   = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+            if n_frames_pool != n_frames_group:
+                hdr_orig["NPOOL"]   = (int(n_frames_pool),
+                                       "Pre-rejection frame pool size (SetiAstro)")
+                hdr_orig["NREJECT"] = (int(n_frames_pool - n_frames_group),
+                                       "Frames soft-rejected (weight=0) by score outlier pass")
 
             is_mono_orig = (integrated_image.ndim == 2)
             if is_mono_orig:
@@ -29975,7 +30419,8 @@ class StackingSuiteDialog(QDialog):
                 hdr_orig["NAXIS2"] = integrated_image.shape[0]
                 hdr_orig["NAXIS3"] = integrated_image.shape[2]
 
-            n_frames_group = len(file_list)
+            # Already computed above; keep variable in scope for the
+            # filename stem construction a few lines below.
             H, W = integrated_image.shape[:2]
             display_group = self._label_with_dims(group_key, W, H)
             _set_pref = (f"{self._reg_current_set_slug}_"
@@ -30093,8 +30538,13 @@ class StackingSuiteDialog(QDialog):
                     scale=1.0,
                     rect_override=group_rect if group_rect is not None else global_rect
                 )
-                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined")
+                hdr_crop["NCOMBINE"] = (int(n_frames_group), "Number of frames combined (weight > 0)")
                 hdr_crop["NSTACK"]   = (int(n_frames_group), "Alias of NCOMBINE (SetiAstro)")
+                if n_frames_pool != n_frames_group:
+                    hdr_crop["NPOOL"]   = (int(n_frames_pool),
+                                           "Pre-rejection frame pool size (SetiAstro)")
+                    hdr_crop["NREJECT"] = (int(n_frames_pool - n_frames_group),
+                                           "Frames soft-rejected (weight=0) by score outlier pass")
                 # ── NEW: plate solve the cropped master separately (geometry/CRPIX differ) ──
                 hdr_crop = self._maybe_plate_solve_master(
                     cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
@@ -30412,6 +30862,14 @@ class StackingSuiteDialog(QDialog):
                     orig_list.append(op)
             originals_by_group[group] = orig_list
         # ---- Drizzle pass (only for groups with drizzle enabled) ----
+        # Reset the session-level drizzle output buffers so this run's
+        # list reflects only its own saves (drizzle_stack_one_group
+        # appends to these on each successful write, and finalize's
+        # summary payload reads them to tell the user both the normal
+        # AND drizzle masters are available to open).
+        self._drizzle_master_paths = []
+        self._drizzle_crop_paths   = []
+
         for group_key, file_list in grouped_files.items():
             if not drizzle_enabled_global:
                 log(f"✅ Drizzle disabled (checkbox off). Group '{group_key}' integrated image already saved.")
@@ -30488,11 +30946,28 @@ class StackingSuiteDialog(QDialog):
             for g, p in autocrop_outputs:
                 summary_lines.append(f"  • {g} → {p}")
 
-        # Primary masters (star + comet-only + comet-blend) plus star autocrop
-        # variants, for the "Open Saved Masters" button in the completion popup.
-        crop_paths = [p for (_g, p) in autocrop_outputs]
+        _driz_outs      = getattr(self, "_drizzle_master_paths", []) or []
+        _driz_crop_outs = getattr(self, "_drizzle_crop_paths",   []) or []
+        if _driz_outs:
+            summary_lines.append("")
+            summary_lines.append("Drizzle masters saved:")
+            for g, p in _driz_outs:
+                summary_lines.append(f"  • {g} → {p}")
+        if _driz_crop_outs:
+            summary_lines.append("")
+            summary_lines.append("Drizzle auto-cropped files saved:")
+            for g, p in _driz_crop_outs:
+                summary_lines.append(f"  • {g} → {p}")
+
+        # Primary masters (star + comet-only + comet-blend) + star
+        # autocrop variants + any drizzle masters / drizzle autocrop
+        # variants, for the "Open Saved Masters" button.
+        crop_paths         = [p for (_g, p) in autocrop_outputs]
+        drizzle_paths      = [p for (_g, p) in _driz_outs]
+        drizzle_crop_paths = [p for (_g, p) in _driz_crop_outs]
         seen, master_files_out = set(), []
-        for p in list(master_files) + crop_paths:
+        for p in (list(master_files) + crop_paths
+                  + drizzle_paths + drizzle_crop_paths):
             if p and p not in seen:
                 seen.add(p)
                 master_files_out.append(p)
@@ -30500,6 +30975,8 @@ class StackingSuiteDialog(QDialog):
         return {
             "summary_lines": summary_lines,
             "autocrop_outputs": autocrop_outputs,
+            "drizzle_outputs": list(_driz_outs),
+            "drizzle_crop_outputs": list(_driz_crop_outs),
             "master_files": master_files_out,
         }
 
@@ -31181,6 +31658,7 @@ class StackingSuiteDialog(QDialog):
 
     def _start_after_align_worker(self, aligned_light_files: dict[str, list[str]]):
         if self._cancelled():
+            self._reg_queue_abort()
             self._set_registration_busy(False)
             mon = getattr(self, "_exec_monitor", None)
             if mon is not None:
@@ -32516,6 +32994,9 @@ class StackingSuiteDialog(QDialog):
         Integrate frames that are already aligned (and typically normalized).
         We only do fast measurements for weights; no re-normalization, no re-alignment.
         """
+        # Set only by the "Register N New → Integrate All" hand-off.
+        _leave_out = getattr(self, "_integrate_leave_out", None) or set()
+        self._integrate_leave_out = None
         if getattr(self, "_registration_busy", False):
             self.update_status(self.tr("⏸ Another job is running; ignoring extra click."))
             return
@@ -32536,9 +33017,10 @@ class StackingSuiteDialog(QDialog):
             # pass restacks frames belonging to OTHER Sets — labeled with the
             # current Set's prefix — producing duplicate masters (e.g. a
             # "MasterLight_m17_SII_..." twin of a frame that belongs to the
-            # SNR set). Keep the Default (no-set) case unaffected.
+            # SNR set). Default is scoped too: it holds only the frames with no
+            # Set of their own.
             cur_set = getattr(self, "_reg_current_set", None)
-            if cur_set and cur_set != "Default":
+            if cur_set:
                 scoped_lf = {}
                 dropped = 0
                 for g, lst in self.light_files.items():
@@ -32551,6 +33033,21 @@ class StackingSuiteDialog(QDialog):
                     self.update_status(self.tr(
                         f"🧩 Set '{cur_set}': scoped integration to this set "
                         f"({dropped} frame(s) from other sets held back)."
+                    ))
+
+            # 1a') After "Register N New → Integrate All": leave out the new
+            # frames that failed registration in that run.
+            if _leave_out:
+                _n_before = sum(len(lst) for lst in self.light_files.values())
+                self.light_files = {
+                    g: [p for p in lst
+                        if os.path.normcase(os.path.normpath(p)) not in _leave_out]
+                    for g, lst in self.light_files.items()
+                }
+                _n_left_out = _n_before - sum(len(lst) for lst in self.light_files.values())
+                if _n_left_out:
+                    self.update_status(self.tr(
+                        f"🚫 Leaving out {_n_left_out} new frame(s) that failed registration."
                     ))
 
             if not self.light_files:
@@ -34065,7 +34562,14 @@ class StackingSuiteDialog(QDialog):
         _set_pref = (f"{self._reg_current_set_slug}_"
                      if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
                      else "")
-        base_stem = f"MasterLight_{_set_pref}{display_group_driz}_{len(file_list)}stacked_drizzle"
+        # Effective count = frames with weight > 0 (soft rejection may
+        # have zeroed some). Drizzle filename and header reflect only
+        # those; the pre-rejection pool size is kept in NPOOL/NREJECT
+        # if any sub was rejected.
+        n_frames      = int(self._count_contributing_frames(file_list))
+        n_frames_pool = int(len(file_list))
+
+        base_stem = f"MasterLight_{_set_pref}{display_group_driz}_{n_frames}stacked_drizzle"
         base_stem = self._normalize_master_stem(base_stem)
         out_path_orig = self._build_out(self._master_light_dir(), base_stem, "fit")
         out_path_orig = self._dedupe_out_path(out_path_orig)
@@ -34077,9 +34581,13 @@ class StackingSuiteDialog(QDialog):
         hdr_orig["CREATOR"] = "SetiAstroSuite"
         hdr_orig["DATE-OBS"] = datetime.utcnow().isoformat()
 
-        n_frames = int(len(file_list))
-        hdr_orig["NCOMBINE"] = (n_frames, "Number of frames combined")
+        hdr_orig["NCOMBINE"] = (n_frames, "Number of frames combined (weight > 0)")
         hdr_orig["NSTACK"] = (n_frames, "Alias of NCOMBINE (SetiAstro)")
+        if n_frames_pool != n_frames:
+            hdr_orig["NPOOL"]   = (n_frames_pool,
+                                   "Pre-rejection frame pool size (SetiAstro)")
+            hdr_orig["NREJECT"] = (n_frames_pool - n_frames,
+                                   "Frames soft-rejected (weight=0) by score outlier pass")
 
         if final_drizzle.ndim == 2:
             hdr_orig["NAXIS"] = 2
@@ -34107,6 +34615,12 @@ class StackingSuiteDialog(QDialog):
             is_mono=is_mono_driz
         )
         log(f"✅ Drizzle (original) saved: {out_path_orig}")
+        # Make the drizzle master visible to the post-alignment summary.
+        # Finalize resets this list at the top of its drizzle loop, so
+        # each run collects only its own outputs.
+        if not hasattr(self, "_drizzle_master_paths"):
+            self._drizzle_master_paths = []
+        self._drizzle_master_paths.append((group_key, out_path_orig))
 
         # ---- optional auto-crop ----
         if autocrop_enabled:
@@ -34117,15 +34631,20 @@ class StackingSuiteDialog(QDialog):
                 scale=float(scale_factor),
                 rect_override=rect_override
             )
-            hdr_crop["NCOMBINE"] = (n_frames, "Number of frames combined")
+            hdr_crop["NCOMBINE"] = (n_frames, "Number of frames combined (weight > 0)")
             hdr_crop["NSTACK"] = (n_frames, "Alias of NCOMBINE (SetiAstro)")
+            if n_frames_pool != n_frames:
+                hdr_crop["NPOOL"]   = (n_frames_pool,
+                                       "Pre-rejection frame pool size (SetiAstro)")
+                hdr_crop["NREJECT"] = (n_frames_pool - n_frames,
+                                       "Frames soft-rejected (weight=0) by score outlier pass")
 
             is_mono_crop = (cropped_drizzle.ndim == 2)
             display_group_driz_crop = self._label_with_dims(group_key, cropped_drizzle.shape[1], cropped_drizzle.shape[0])
             _set_pref = (f"{self._reg_current_set_slug}_"
                          if getattr(self, "_reg_current_set", "Default") not in (None, "Default")
                          else "")
-            base_crop = f"MasterLight_{_set_pref}{display_group_driz_crop}_{len(file_list)}stacked_drizzle_autocrop"
+            base_crop = f"MasterLight_{_set_pref}{display_group_driz_crop}_{n_frames}stacked_drizzle_autocrop"
             base_crop = self._normalize_master_stem(base_crop)
             out_path_crop = self._build_out(self._master_light_dir(), base_crop, "fit")
             out_path_crop = self._dedupe_out_path(out_path_crop)
@@ -34144,9 +34663,12 @@ class StackingSuiteDialog(QDialog):
                 original_header=hdr_crop,
                 is_mono=is_mono_crop
             )
-            if not hasattr(self, "_autocrop_outputs"):
-                self._autocrop_outputs = []
-            self._autocrop_outputs.append((group_key, out_path_crop))
+            # Expose the drizzle crop to the post-alignment summary (same
+            # list the main drizzle master above uses; finalize reads both
+            # when building master_files_out).
+            if not hasattr(self, "_drizzle_crop_paths"):
+                self._drizzle_crop_paths = []
+            self._drizzle_crop_paths.append((group_key, out_path_crop))
             log(f"✂️ Drizzle (auto-cropped) saved: {out_path_crop}")
 
         return True
