@@ -8786,9 +8786,12 @@ class StackingSuiteDialog(QDialog):
         if getattr(self, "_debayer_method_for_this_run", None) is not None:
             dmethod = str(self._debayer_method_for_this_run).lower()
         else:
-            dmethod = str(self.settings.value("stacking/debayer_method", "vng")).lower()
-        if dmethod not in ("vng", "edge", "bilinear", "strict_cfa"):
-            dmethod = "vng"
+            dmethod = str(self.settings.value("stacking/debayer_method", "rcd")).lower()
+        # Accept "rcd" and default-sanitise unknown values to RCD too — the
+        # dropdown-first default so a user who never touched the setting
+        # gets ratio-corrected demosaic on their first OSC stack.
+        if dmethod not in ("rcd", "vng", "edge", "bilinear", "strict_cfa"):
+            dmethod = "rcd"
 
         ext = file_path.lower()
         is_raw = ext.endswith(('.cr2','.cr3','.nef','.arw','.dng','.raf','.orf','.rw2','.pef'))
@@ -13617,22 +13620,38 @@ class StackingSuiteDialog(QDialog):
         # Debayer method for OSC/Bayer integration (same options as the Debayer dialog).
         drizzle_layout.addWidget(QLabel(self.tr("Debayer:")))
         self.debayer_method_combo = QComboBox()
+        # RCD first + default. On OSC narrowband data VNG's first-order
+        # gradient test gets randomized by shot noise and sprays chrominance
+        # speckles across the dim regions (the "VNG vs bilinear" artefact
+        # we chased). RCD's second-order color gradient makes direction
+        # selection noise-robust and ratio-corrected R/B preserves faint
+        # color — the right default for astro stacking.
         for _dm_label, _dm_tok in (
+            ("RCD", "rcd"),
             ("VNG",        "vng"),
             ("Edge-aware", "edge"),
             ("Bilinear",   "bilinear"),
             ("Strict CFA", "strict_cfa"),
         ):
             self.debayer_method_combo.addItem(self.tr(_dm_label), _dm_tok)
-        _saved_dm = str(self.settings.value("stacking/debayer_method", "vng")).lower()
+        # Default changed from "vng" to "rcd" — pre-existing user installs
+        # that already have "vng" saved keep it (QSettings.value returns
+        # the stored string); only brand-new installs get the new default.
+        _saved_dm = str(self.settings.value("stacking/debayer_method", "rcd")).lower()
         _dm_idx = next((
             i for i in range(self.debayer_method_combo.count())
             if self.debayer_method_combo.itemData(i) == _saved_dm
         ), 0)
         self.debayer_method_combo.setCurrentIndex(_dm_idx)
         self.debayer_method_combo.setToolTip(self.tr(
-            "Demosaic used when integrating OSC/Bayer frames. VNG = highest quality "
-            "(slower); Edge/Bilinear = faster; Strict CFA = no interpolation. "
+            "Demosaic used when integrating OSC/Bayer frames.\n"
+            "• RCD: ratio-corrected, noise-robust direction detection — best\n"
+            "  for OSC narrowband; preserves faint color without the colour\n"
+            "  speckling VNG produces in dim regions.\n"
+            "• VNG: variable number of gradients; sharper on daylight-subject\n"
+            "  broadband data but speckles under noise on dim astro frames.\n"
+            "• Edge-aware / Bilinear: faster, lower quality fallbacks.\n"
+            "• Strict CFA: no interpolation (used for drizzle prep).\n"
             "Ignored when CFA Drizzle is on."
         ))
         self.debayer_method_combo.currentIndexChanged.connect(
@@ -20916,7 +20935,7 @@ class StackingSuiteDialog(QDialog):
         # Attach the resolved filter override to each frame_info so both the GPU
         # and CPU calibration paths can inject it into the saved header. The
         # tree/group filter value is already correct for files ingested via
-        # process_fits_header (which now consults _path_filter_override), but the
+        #sasprocess_fits_header (which now consults _path_filter_override), but the
         # source FITS/XISF header itself may still be blank — so we carry the
         # resolved name forward here.
         try:
@@ -23076,8 +23095,47 @@ class StackingSuiteDialog(QDialog):
                 a = np.transpose(a, (1, 2, 0))   # FITS colour is (3, H, W) -> HWC
             if a.ndim == 3 and a.shape[-1] == 1:
                 a = a[...,0]
-            # if it’s color, make a luma-like 2×2 superpixel preview; if mono/CFA, same superpixel trick
-            if a.ndim == 3 and a.shape[-1] == 3:
+            # 2D CFA frames (BAYERPAT in the header) build the preview from the
+            # MAX of each 2×2 Bayer block instead of its mean. The old flat
+            # ``(R + Gr + Gb + B) / 4`` silently diluted narrowband-OSC star
+            # peaks by ~4× — a bright Ha star lives in the single R pixel of
+            # its 2×2 block, so averaging it with its three dark Bayer siblings
+            # dropped it below sep's 5-σ detector and under-represented the
+            # frame to the quality scorer. OSC measurement looked "hella
+            # quicker" than mono because many narrowband stars never made it
+            # past detection, so the capped-at-100 FWHM loop ran on a thinner
+            # candidate set (SAME code, just a thinner preview). Taking the
+            # per-block MAX preserves the peak regardless of which Bayer colour
+            # carries the signal, so OSC and mono see comparable star density,
+            # run the full candidate budget, and produce comparable weights.
+            _cfa_bp = None
+            if a.ndim == 2 and hdr is not None:
+                _bp_raw = None
+                try:
+                    _bp_raw = hdr.get("BAYERPAT") if hasattr(hdr, "get") else None
+                    if not _bp_raw and hasattr(hdr, "get"):
+                        _fkw = hdr.get("FITSKeywords", None)
+                        if isinstance(_fkw, dict):
+                            _vals = _fkw.get("BAYERPAT", None)
+                            if _vals:
+                                _bp_raw = _vals[0].get("value")
+                except Exception:
+                    _bp_raw = None
+                if _bp_raw:
+                    _bpn = str(_bp_raw).strip().upper()
+                    if _bpn in ("RGGB", "BGGR", "GRBG", "GBRG"):
+                        _cfa_bp = _bpn
+            if _cfa_bp is not None:
+                _h, _w = a.shape[:2]
+                _h2, _w2 = _h - (_h % 2), _w - (_w % 2)
+                if _h2 > 0 and _w2 > 0:
+                    _ca = a[:_h2, :_w2].astype(np.float32, copy=False)
+                    _tl = _ca[0:_h2:2, 0:_w2:2]; _tr = _ca[0:_h2:2, 1:_w2:2]
+                    _bl = _ca[1:_h2:2, 0:_w2:2]; _br = _ca[1:_h2:2, 1:_w2:2]
+                    prev2d = np.maximum(np.maximum(_tl, _tr), np.maximum(_bl, _br))
+                else:
+                    prev2d = a.astype(np.float32, copy=False)
+            elif a.ndim == 3 and a.shape[-1] == 3:
                 prev2d = _superpixel2x2(a)
             else:
                 prev2d = _superpixel2x2(a)
@@ -23206,7 +23264,7 @@ class StackingSuiteDialog(QDialog):
             if hasattr(self, name):
                 setattr(self, name, None)
 
-        # Proactively clear any lru_cache’d helpers if available
+        #sasproactively clear any lru_cache’d helpers if available
         def _cc(f):
             try:
                 if hasattr(f, "cache_clear"): f.cache_clear()
@@ -29620,7 +29678,7 @@ class StackingSuiteDialog(QDialog):
                 _open_dither()
         else:
             # Fallback: the old plain QMessageBox path, used when we can't
-            # produce any summary (e.g. headers all unreadable).
+            #sasproduce any summary (e.g. headers all unreadable).
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
             msg_box.setText(message)
@@ -33386,7 +33444,7 @@ class StackingSuiteDialog(QDialog):
             #     measurement path below.
             # Before this split the chunk loop re-measured EVERY aligned
             # frame on a small preview even when the originals were already
-            # processed, which produced the "⚡ Measured 245/245 originals
+            #sasprocessed, which produced the "⚡ Measured 245/245 originals
             # → 📦 Measuring chunk 1/7…" double-pass the user flagged.
             # ─────────────────────────────────────────────────────────────
             twinned_frames = []
@@ -34246,7 +34304,7 @@ class StackingSuiteDialog(QDialog):
         # --- choose depositor ONCE (and log it) ---
         # Always use footprint/kernel drizzle for drizzle output.
         # Point deposit is not valid for 2x/3x drizzle.
-        # Projective deposit: full 3x3 transform, no pixel pre-warp (correct
+        #sasprojective deposit: full 3x3 transform, no pixel pre-warp (correct
         # drizzle for affine AND homography; required for CFA sparse planes).
         deposit_func = drizzle_deposit_kernel_mono_proj if is_mono else drizzle_deposit_color_kernel_proj
         kinf = ["square", "circular", "gaussian"][_kcode]

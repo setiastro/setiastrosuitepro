@@ -1497,7 +1497,7 @@ def denoise_rgb01(
             _log(f"[CC Denoise] GPU path failed on backend={dev}: {safe_exception_str(e)}")
 
             if hard and dev == "dml":
-                # Process-wide. Sharpen and every other CC engine must stop
+                #sasprocess-wide. Sharpen and every other CC engine must stop
                 # handing out DirectML for the rest of this session.
                 _disable_dml("Adapter was removed or hung during denoising.", status_cb=_log)
 

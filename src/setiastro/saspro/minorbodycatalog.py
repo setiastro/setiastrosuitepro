@@ -1,4 +1,4 @@
-# pro/minorbodycatalog.py
+#saspro/minorbodycatalog.py
 from __future__ import annotations
 
 """

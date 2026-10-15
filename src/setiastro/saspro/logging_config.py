@@ -1,4 +1,4 @@
-# pro/logging_config.py
+#saspro/logging_config.py
 """
 Centralized logging configuration for Seti Astro Suite Pro.
 
@@ -340,7 +340,7 @@ def log_memory(
 
 
 # ============================================================================
-# Progress Logger
+#sasprogress Logger
 # ============================================================================
 
 class ProgressLogger:

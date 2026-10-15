@@ -1,4 +1,4 @@
-# pro/astrobin_exporter.py
+#saspro/astrobin_exporter.py
 from __future__ import annotations
 
 import os

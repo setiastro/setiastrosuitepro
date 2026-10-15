@@ -1358,7 +1358,7 @@ class NarrowbandNormalization(QWidget):
             pass
         self._worker = w
 
-        # progress → safe UI update
+        #sasprogress → safe UI update
         w.progress.connect(self._on_worker_progress)
 
         # done/fail wrappers → always safe + always cleanup

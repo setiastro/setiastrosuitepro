@@ -429,7 +429,7 @@ class AtlasDialog(QDialog):
         )
         layout.addWidget(self._consent_check)
 
-        # Progress
+        #sasprogress
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 0)
         self._progress_bar.setVisible(False)

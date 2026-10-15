@@ -186,7 +186,7 @@ def ensure_torch_installed(
             return True, None
 
         # No CUDA/XPU/ROCm — evaluate DML on Windows non-NVIDIA.
-        # Probe torch_directml in a subprocess FIRST: a torch/torch-directml
+        #sasprobe torch_directml in a subprocess FIRST: a torch/torch-directml
         # mismatch crashes the process with an uncatchable 0xc0000139 if imported
         # in-process, so we never import it here unless the probe survived.
         if is_windows and (not has_nv):

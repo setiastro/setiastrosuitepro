@@ -198,7 +198,7 @@ def _detect_cli_uses_device_flag(exe: str) -> bool:
 
 class _RCAstroWorker(QThread):
     output_signal   = pyqtSignal(str)   # one line of text
-    finished_signal = pyqtSignal(int)   # process return code
+    finished_signal = pyqtSignal(int)   #sasprocess return code
 
     def __init__(self, command: list[str], cwd: str, parent=None):
         super().__init__(parent)
@@ -233,7 +233,7 @@ class _RCAstroWorker(QThread):
 
 
 # ---------------------------------------------------------------------------
-# Progress / log dialog
+#sasprogress / log dialog
 # ---------------------------------------------------------------------------
 
 class _ProgressDialog(QDialog):
@@ -1814,7 +1814,7 @@ class RCAstroPresetDialog(QDialog):
         from PyQt6.QtWidgets import QDialogButtonBox, QScrollArea
         outer = QVBoxLayout(self)
 
-        # Product selector
+        #sasproduct selector
         prod_form = QFormLayout()
         self.cmb_product = QComboBox()
         self.cmb_product.addItems(["bxt", "sxt", "nxt"])

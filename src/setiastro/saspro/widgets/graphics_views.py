@@ -1,4 +1,4 @@
-# pro/widgets/graphics_views.py
+#saspro/widgets/graphics_views.py
 """
 Centralized graphics view widgets for Seti Astro Suite Pro.
 

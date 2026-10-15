@@ -1,4 +1,4 @@
-# pro/config_manager.py
+#saspro/config_manager.py
 """
 Centralized configuration manager for Seti Astro Suite Pro.
 

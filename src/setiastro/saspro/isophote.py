@@ -1,4 +1,4 @@
-#pro.isophote.py
+#saspro.isophote.py
 from __future__ import annotations
 
 # --- Stdlib ---

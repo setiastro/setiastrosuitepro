@@ -1,4 +1,4 @@
-# pro/debug_utils.py (or near save_document)
+#saspro/debug_utils.py (or near save_document)
 
 from astropy.io import fits
 import logging

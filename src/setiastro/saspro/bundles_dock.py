@@ -1,4 +1,4 @@
-# pro/bundles_dock.py
+#saspro/bundles_dock.py
 from __future__ import annotations
 from PyQt6.QtWidgets import QDockWidget, QListWidget, QListWidgetItem, QMenu, QInputDialog
 from PyQt6.QtCore import Qt, QMimeData, QByteArray

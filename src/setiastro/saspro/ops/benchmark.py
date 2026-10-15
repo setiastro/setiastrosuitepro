@@ -115,7 +115,7 @@ class BenchmarkDialog(QDialog):
         row.addStretch(1)
         outer.addLayout(row)
 
-        # Progress
+        #sasprogress
         self.pbar = QProgressBar(self)
         self.pbar.setRange(0, 100)
         outer.addWidget(self.pbar)

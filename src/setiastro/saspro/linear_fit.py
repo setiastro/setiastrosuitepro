@@ -1,4 +1,4 @@
-# pro/linear_fit.py
+#saspro/linear_fit.py
 from __future__ import annotations
 
 import numpy as np
@@ -298,7 +298,7 @@ class LinearFitDialog(QDialog):
         h2.addWidget(self.combo_rescale, 1)
         v.addWidget(gb2)
 
-        # Progress
+        #sasprogress
         self.status = QLabel("")
         self.bar = QProgressBar(self); self.bar.setRange(0, 100)
         v.addWidget(self.status)

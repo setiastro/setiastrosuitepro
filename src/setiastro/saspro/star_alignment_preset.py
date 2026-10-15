@@ -1,4 +1,4 @@
-# pro/star_alignment_preset.py
+#saspro/star_alignment_preset.py
 from __future__ import annotations
 import os
 import json

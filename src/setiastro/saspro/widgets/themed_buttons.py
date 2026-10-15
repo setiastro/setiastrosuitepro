@@ -1,4 +1,4 @@
-# pro/widgets/themed_buttons.py
+#saspro/widgets/themed_buttons.py
 from __future__ import annotations
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QToolButton

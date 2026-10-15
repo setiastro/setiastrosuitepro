@@ -1,4 +1,4 @@
-# pro/blink_comparator_pro.py
+#saspro/blink_comparator_pro.py
 # thread safe version
 from __future__ import annotations
 
@@ -691,7 +691,7 @@ class MetricsPanel(QWidget):
         # ----------------------------
         # 3) Worker sizing by contention-aware heuristic
         # ----------------------------
-        # Profiling shows SEP's internal C allocator serializes under heavy
+        #sasprofiling shows SEP's internal C allocator serializes under heavy
         # threading on large images — more workers = more contention = slower
         # wall time. RAM is not the constraint; allocator lock contention is.
         # Empirically 4-6 workers is the sweet spot for bin-2 downsampled frames.
@@ -2624,7 +2624,7 @@ class BlinkTab(QWidget):
             )
             return
 
-        # Progress UI
+        #sasprogress UI
         prog = QProgressDialog(self.tr("Rendering video…"), self.tr("Cancel"), 0, len(order), self)
         prog.setWindowTitle(self.tr("Export Blink Video"))
         prog.setAutoClose(True)
@@ -2784,7 +2784,7 @@ class BlinkTab(QWidget):
             # Mismatch — don't risk painting the wrong pixels
             return frame_u8
 
-        # Promote mono to RGB so we can draw green
+        #saspromote mono to RGB so we can draw green
         if frame_u8.ndim == 2:
             frame_rgb = np.stack([frame_u8, frame_u8, frame_u8], axis=-1)
         elif frame_u8.ndim == 3 and frame_u8.shape[2] == 1:

@@ -1,4 +1,4 @@
-# pro/autostretch.py
+#saspro/autostretch.py
 import numpy as np
 
 _MAX_STATS_PIXELS = 1_000_000

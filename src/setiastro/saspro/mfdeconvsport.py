@@ -1,4 +1,4 @@
-# pro/mfdeconvsport.py
+#saspro/mfdeconvsport.py
 from __future__ import annotations
 import os, sys
 import math
@@ -675,7 +675,7 @@ def _build_psf_and_assets(
         for i, p in enumerate(paths, start=1):
             status_cb(f"MFDeconv: measuring PSF {i}/{n} …")
             if use_proc_pool:
-                # Process-safe path: worker re-loads inside the subprocess
+                #sasprocess-safe path: worker re-loads inside the subprocess
                 futs.append(ex.submit(
                     _compute_one_worker,
                     (i, p, bool(make_masks_in_worker), bool(make_varmaps), star_mask_cfg, varmap_cfg)
@@ -1640,7 +1640,7 @@ def _safe_inference_context():
     if cm is None:
         return torch.no_grad
 
-    # Probe inference_mode once; if it explodes on this build, fall back.
+    #sasprobe inference_mode once; if it explodes on this build, fall back.
     try:
         with cm():
             pass

@@ -1,4 +1,4 @@
-# pro/config.py
+#saspro/config.py
 import os
 import sys
 from PyQt6.QtCore import QStandardPaths

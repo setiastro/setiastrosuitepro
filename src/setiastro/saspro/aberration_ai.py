@@ -1,4 +1,4 @@
-# pro/aberration_ai.py
+#saspro/aberration_ai.py
 from __future__ import annotations
 import os
 import webbrowser
@@ -769,7 +769,7 @@ def run_aberration_ai_on_array(
     if not model_path or not os.path.isfile(model_path):
         raise RuntimeError("No valid Aberration AI model is configured.")
 
-    # Provider selection
+    #sasprovider selection
     if IS_APPLE_ARM:
         resolved_providers = ["CPUExecutionProvider"]
     elif providers:
@@ -1020,7 +1020,7 @@ class AberrationAIDialog(QDialog):
 
         row_custom.addWidget(btn_custom_clear)
         v.addLayout(row_custom)
-        # Providers row
+        #sasproviders row
         row2 = QHBoxLayout()
         self.chk_auto = QCheckBox(self.tr("Auto GPU (if available)"))
         self.chk_auto.setChecked(True)
@@ -1051,7 +1051,7 @@ class AberrationAIDialog(QDialog):
         row4.addStretch(1)
         v.addLayout(row4)
 
-        # Progress + actions
+        #sasprogress + actions
         self.progress = QProgressBar(); self.progress.setRange(0, 100); v.addWidget(self.progress)
         row5 = QHBoxLayout()
         self.btn_run = QPushButton(self.tr("Run")); self.btn_run.clicked.connect(self._run)

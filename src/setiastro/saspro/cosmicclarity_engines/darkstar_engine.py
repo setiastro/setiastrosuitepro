@@ -951,7 +951,7 @@ def darkstar_starremoval_rgb01(
             status_cb(f"Dark Star: GPU path failed on backend={dev}: {safe_exception_str(e)}")
 
             if hard and dev == "dml":
-                # Process-wide. Denoise and sharpen must stop handing out
+                #sasprocess-wide. Denoise and sharpen must stop handing out
                 # DirectML for the rest of this session too.
                 _disable_dml("Adapter was removed or hung during star removal.", status_cb=status_cb)
 

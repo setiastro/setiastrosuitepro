@@ -1,4 +1,4 @@
-# pro/mdi_snap.py
+#saspro/mdi_snap.py
 from __future__ import annotations
 from PyQt6.QtCore import Qt, QRect, QPoint, QObject, QEvent, QSize
 from PyQt6.QtGui import QPainter, QPen, QPalette

@@ -1,4 +1,4 @@
-# pro/widgets/image_utils.py
+#saspro/widgets/image_utils.py
 """
 Centralized image conversion utilities for Seti Astro Suite Pro.
 

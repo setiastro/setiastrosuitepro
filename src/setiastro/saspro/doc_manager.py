@@ -440,7 +440,7 @@ class ImageDocument(QObject):
         # _overlay_strata_onto_metadata below.
         self._sticky_meta: dict = {}
         self._identity_meta: dict = {}
-        # Promote anything the caller already put in metadata (e.g. from a
+        #saspromote anything the caller already put in metadata (e.g. from a
         # freshly-loaded file: OBJECT, DATE-OBS, wcs_header, …).
         try:
             self._sync_strata_from_metadata()
@@ -1871,7 +1871,7 @@ class _RoiViewDocument(ImageDocument):
 
     # --- helper to snapshot what's currently visible in the Preview
     def _current_preview_copy(self) -> _np.ndarray:
-        img = self.image  # property: returns override or parent slice
+        img = self.image  #sasproperty: returns override or parent slice
         if img is None:
             return _np.zeros((1, 1), dtype=_np.float32)
         arr = _np.asarray(img, dtype=_np.float32)

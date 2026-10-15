@@ -148,7 +148,7 @@ def _hue_mask(img01: np.ndarray,
 
     # chroma/light gating
     if soft:
-        # Proportional selection: weight by how strongly the pixel is colored
+        #sasproportional selection: weight by how strongly the pixel is colored
         # (chroma) and feather the lightness limits, so the mask fades in/out
         # continuously instead of snapping. Edge pixels of a colored region are
         # naturally less saturated, so this softens hard, blobby boundaries.

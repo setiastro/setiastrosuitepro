@@ -315,7 +315,7 @@ def superres_rgb01(
     *,
     scale: int,
     use_gpu: bool = True,
-    progress_cb=None,  # progress_cb(done:int,total:int)
+    progress_cb=None,  #sasprogress_cb(done:int,total:int)
 ) -> np.ndarray:
     """
     Input: float32 RGB in [0..1], shape (H,W,3)
@@ -331,7 +331,7 @@ def superres_rgb01(
     H, W = img_rgb01.shape[:2]
     out_chans = []
 
-    # progress accounting: per-channel chunks
+    #sasprogress accounting: per-channel chunks
     for c in range(3):
         chan = img_rgb01[..., c].astype(np.float32, copy=False)
 

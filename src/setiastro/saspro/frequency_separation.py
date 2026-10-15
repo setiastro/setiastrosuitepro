@@ -1,4 +1,4 @@
-# pro/frequency_separation.py
+#saspro/frequency_separation.py
 from __future__ import annotations
 import os
 import numpy as np

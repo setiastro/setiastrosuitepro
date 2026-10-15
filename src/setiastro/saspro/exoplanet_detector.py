@@ -1898,7 +1898,7 @@ class ExoPlanetWindow(QDialog):
                     sky_total = sky_per_pix * ap_area
                     f_sky_sub = f_ap - sky_total
 
-                    # propagate sky subtraction error
+                    #saspropagate sky subtraction error
                     # var(sky_total) = (ap_area/ann_area)^2 * var(ann)
                     sky_err_contrib = float(ann_err[0]) * (ap_area / max(ann_area, 1.0))
                     f_err_total = float(np.sqrt(max(f_err**2 + sky_err_contrib**2, 0.0)))
@@ -2961,7 +2961,7 @@ class ExoPlanetWindow(QDialog):
     #
     # David's request #1: instead of star-hopping from WIMI to locate a
     # named target, let the user type the name.  We resolve via SIMBAD,
-    # project through the WCS, and single-select the closest detected
+    #sasproject through the WCS, and single-select the closest detected
     # star in the list (which triggers the existing overlay highlight and
     # light-curve redraw).  Tolerance is generous — max(2·median FWHM,
     # 10″) — to cover slight WCS residuals; if nothing detected is close
@@ -3574,7 +3574,7 @@ class ExoPlanetWindow(QDialog):
 
         # Per-channel KMAGs: use catalog for check star, then fill missing.
         kmags = aav.check_star_kmags(kstar_catalog)   # {"R":..,"G":..,"B":..}
-        # Prompt default = V-mag when we have it. Better than 0 (which
+        #sasprompt default = V-mag when we have it. Better than 0 (which
         # gives MAG=0-ish outputs if the user hits OK without editing —
         # David saw exactly this on TB/TR for V336 Aps). For most stars
         # V is within a magnitude or so of B and R, so if the user

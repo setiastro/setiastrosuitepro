@@ -78,7 +78,7 @@ def _lum_band_mask(L: np.ndarray, lo: float, hi: float,
     s = float(max(smooth, 0.0))
 
     if soft:
-        # Proportional selection: a smooth bump with soft shoulders straddling
+        #sasproportional selection: a smooth bump with soft shoulders straddling
         # the band edges, so mask strength tracks how close a pixel's luminance
         # is to the selected range instead of a hard in/out boxcar. Narrow bands
         # become a smooth bell; wide bands keep a soft-shouldered plateau. This

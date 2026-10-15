@@ -1,4 +1,4 @@
-# pro/remove_stars_preset.py
+#saspro/remove_stars_preset.py
 from __future__ import annotations
 import os
 import platform

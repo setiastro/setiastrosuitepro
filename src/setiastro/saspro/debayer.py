@@ -1,4 +1,4 @@
-# pro/debayer.py
+#saspro/debayer.py
 from __future__ import annotations
 import numpy as np
 from typing import Optional, Tuple
@@ -49,10 +49,17 @@ def _find_raw_sibling(path: Optional[str]) -> Optional[str]:
 
 # -------- helpers ------------------------------------------------------------
 _BAYER_METHODS = [
-    ("VNG (Variable Number of Gradients)", "vng"),
-    ("Edge-aware (Numba)",            "edge"),
-    ("Bilinear (Numba)",              "bilinear"),
-    ("Strict CFA (no interpolation)", "strict_cfa"),
+    # RCD is first because it's the best general choice for OSC astro work
+    # — ratio-corrected demosaic preserves saturation on faint narrowband
+    # color and uses second-order gradients that don't speckle under noise
+    # the way VNG does on dim data. VNG stays available for daylight
+    # subjects where its sharper gradient response is a win; edge-aware
+    # and bilinear are kept as fallbacks and strict_cfa for drizzle prep.
+    ("RCD (Ratio-Corrected; recommended for OSC)", "rcd"),
+    ("VNG (Variable Number of Gradients)",         "vng"),
+    ("Edge-aware (Numba)",                         "edge"),
+    ("Bilinear (Numba)",                           "bilinear"),
+    ("Strict CFA (no interpolation)",              "strict_cfa"),
 ]
 _XTRANS_METHODS = [
     ("AHD (rawpy)", "AHD"),
@@ -475,7 +482,7 @@ class DebayerDialog(QDialog):
         hm.addWidget(make_help_button("debayer", self))
         v.addWidget(self.method_group)
 
-        # progress + buttons
+        #sasprogress + buttons
         self.status = QLabel("")
         self.bar = QProgressBar(self); self.bar.setRange(0, 100)
         v.addWidget(self.status)
@@ -598,7 +605,7 @@ def debayer_array(
     if flipped:
         m = np.ascontiguousarray(np.flipud(m))
 
-    meth = method if method in ("edge", "bilinear", "strict_cfa", "vng") else "vng"
+    meth = method if method in ("edge", "bilinear", "strict_cfa", "vng", "rcd") else "rcd"
     rgb = debayer_fits_fast(m, pat, cfa_drizzle=cfa_drizzle, method=meth)
 
     if flipped:
@@ -657,7 +664,7 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
     if pat not in _VALID:
         raise ValueError(f"Unsupported Bayer pattern: {pat}")
 
-    method_tok = (want_method.lower() if want_method.lower() in ("edge", "bilinear", "vng", "strict_cfa") else "vng")
+    method_tok = (want_method.lower() if want_method.lower() in ("edge", "bilinear", "vng", "strict_cfa", "rcd") else "rcd")
 
     if debayer_fits_fast is None:
         raise RuntimeError("Numba debayer kernels not available.")

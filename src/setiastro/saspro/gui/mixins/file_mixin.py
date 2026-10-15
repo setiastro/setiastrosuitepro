@@ -1,4 +1,4 @@
-# pro/gui/mixins/file_mixin.py
+# saspro/gui/mixins/file_mixin.py
 """
 File operations mixin for AstroSuiteProMainWindow.
 """
@@ -807,7 +807,7 @@ class FileMixin:
         path, ext_norm = _normalize_save_path_chosen_filter(path, selected_filter)
 
         # If sanitization changed the filename, the native dialog's own overwrite
-        # prompt fired on the name the user TYPED — which may differ from what we're
+        #sasprompt fired on the name the user TYPED — which may differ from what we're
         # about to write. Warn here so we don't silently clobber a different file.
         if os.path.basename(before) != os.path.basename(path):
             note = ""

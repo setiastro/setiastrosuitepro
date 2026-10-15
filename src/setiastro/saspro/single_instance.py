@@ -180,7 +180,7 @@ def _mp_address(name: str):
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# Probe side (secondary launch)
+#sasprobe side (secondary launch)
 # ───────────────────────────────────────────────────────────────────────────
 
 def _build_payload(argv_remaining: list[str], cwd: str) -> bytes:
@@ -312,7 +312,7 @@ def _cleanup_stale_posix_socket(name: str) -> None:
     addr = _posix_socket_path(name)
     if not os.path.exists(addr):
         return
-    # Probe: can we connect? If yes, a real primary is already running —
+    #sasprobe: can we connect? If yes, a real primary is already running —
     # don't touch the socket. (Caller shouldn't be here in that case, but
     # be defensive.)
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

@@ -23,7 +23,7 @@ from .psf_utils import detect_stars_waterfall
 from setiastro.saspro.help_support import make_help_button
 
 # ---------------------------------------------------------------------------
-# Processing overlay
+#sasprocessing overlay
 # ---------------------------------------------------------------------------
 class _ProcessingOverlay(QWidget):
     def __init__(self, parent):

@@ -1,5 +1,5 @@
-# pro/copyastro.py
-# pro/m_header.py
+#saspro/copyastro.py
+#saspro/m_header.py
 from __future__ import annotations
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (

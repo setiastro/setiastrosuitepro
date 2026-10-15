@@ -1508,7 +1508,7 @@ def sharpen_image_array(image: np.ndarray,
                 pass
 
             if hard and dev == "dml":
-                # Process-wide: denoise, sharpen and every other CC engine must
+                #sasprocess-wide: denoise, sharpen and every other CC engine must
                 # stop handing out DirectML for the rest of this session.
                 _disable_dml("Adapter was removed or hung during sharpening.", status_cb=status_cb)
 

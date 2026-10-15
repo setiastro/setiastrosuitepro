@@ -1108,7 +1108,7 @@ def satellite_remove_image(
             status_cb(f"[Satellite] GPU path failed on backend={dev}: {safe_exception_str(e)}")
 
             if hard and dev == "dml":
-                # Process-wide. Denoise, sharpen and Dark Star must stop handing
+                #sasprocess-wide. Denoise, sharpen and Dark Star must stop handing
                 # out DirectML for the rest of this session too.
                 _disable_dml("Adapter was removed or hung during satellite removal.",
                              status_cb=status_cb)

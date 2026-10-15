@@ -350,7 +350,7 @@ def export_trimmed_to_ser(
 
     out_frames = int(end - start + 1)
 
-    # progress helper (works for both fast and generic paths)
+    #sasprogress helper (works for both fast and generic paths)
     progress = _make_progress_updater(out_frames, progress_cb, every=progress_every)
     progress(0)
 
@@ -1321,7 +1321,7 @@ class ImageSequenceReader(PlanetaryFrameSource):
         self.files = flist
         self.path = flist[0]
 
-        # Probe first frame
+        #sasprobe first frame
         first = _imread_any(flist[0])
         h, w = first.shape[:2]
         depth = _infer_bit_depth(first)

@@ -1,4 +1,4 @@
-# pro/stat_stretch.py
+#saspro/stat_stretch.py
 from __future__ import annotations
 from PyQt6.QtCore import Qt, QSize, QEvent
 from PyQt6.QtWidgets import (

@@ -1,4 +1,4 @@
-# pro/mfdeconv.py non-sport normal version
+#saspro/mfdeconv.py non-sport normal version
 from __future__ import annotations
 import os, sys
 import math
@@ -1916,7 +1916,7 @@ def _safe_inference_context():
     if cm is None:
         return torch.no_grad
 
-    # Probe inference_mode once; if it explodes on this build, fall back.
+    #sasprobe inference_mode once; if it explodes on this build, fall back.
     try:
         with cm():
             pass

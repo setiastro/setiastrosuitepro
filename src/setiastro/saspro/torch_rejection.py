@@ -588,7 +588,7 @@ def _cosmetic_correction_tensor(torch, dev, t, hot_sigma, cold_sigma,
 
         hot_candidates = plane > hot_thresh
         cold_map       = plane < cold_thresh
-        # protect resolved signal: a lone hot pixel can't move m5, a star
+        #sasprotect resolved signal: a lone hot pixel can't move m5, a star
         # core can. m5 is stride-s so this stays same-colour for Bayer.
         protect_thr = med_f + float(protect_sigma) * robust_sig
         structure   = m5 > protect_thr

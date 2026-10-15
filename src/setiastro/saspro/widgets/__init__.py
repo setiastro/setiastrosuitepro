@@ -1,4 +1,4 @@
-# pro/widgets/__init__.py
+#saspro/widgets/__init__.py
 """
 Shared UI widgets for Seti Astro Suite Pro.
 

@@ -756,7 +756,7 @@ class UnwarpDialog(QDialog):
 
         v.addWidget(opt)
 
-        # Progress
+        #sasprogress
         self._bar = QProgressBar()
         self._bar.setRange(0, 100)
         self._bar.setValue(0)

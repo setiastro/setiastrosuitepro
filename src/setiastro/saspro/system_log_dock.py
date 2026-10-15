@@ -1,4 +1,4 @@
-# pro/system_log_dock.py
+#saspro/system_log_dock.py
 """
 System Log Dock — echoes stdout/stderr with ANSI color rendering,
 log-level filtering, search, and copy/clear controls.

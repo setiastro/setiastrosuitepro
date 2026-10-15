@@ -1,4 +1,4 @@
-# pro/gui/mixins/dock_rail_mixin.py
+#saspro/gui/mixins/dock_rail_mixin.py
 """
 Dock rail mixin for AstroSuiteProMainWindow.
 

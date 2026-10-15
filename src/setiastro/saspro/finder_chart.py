@@ -433,7 +433,7 @@ def _draw_dso_overlay(ax, bg_wcs: "WCS", center: "SkyCoord", fov_deg: float, req
     cand.sort(key=lambda t: t[0])
     cand = cand[:max(1, int(req.dso_max_labels) * 4)]  # keep a bit extra before declutter
 
-    # project
+    #sasproject
     coords = SkyCoord([t[1]["ra"] for t in cand]*u.deg, [t[1]["dec"] for t in cand]*u.deg, frame="icrs")
     xs, ys = bg_wcs.world_to_pixel(coords)
     out_px = int(getattr(ax.figure, "_sas_out_px", 0) or 0)

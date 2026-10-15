@@ -1,4 +1,4 @@
-# pro/image_peeker_pro.py
+#saspro/image_peeker_pro.py
 from __future__ import annotations
 import os
 import math

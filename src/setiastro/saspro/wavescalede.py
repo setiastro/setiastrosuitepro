@@ -1,4 +1,4 @@
-# pro/wavescalede.py
+#saspro/wavescalede.py
 from __future__ import annotations
 import math
 import numpy as np
@@ -266,7 +266,7 @@ class WaveScaleDarkEnhancerDialogPro(QDialog):
         row.addWidget(self.btn_preview); row.addWidget(self.btn_toggle)
         form.addRow(row)
 
-        # progress
+        #sasprogress
         self.prog_grp = QGroupBox(self.tr("Progress"))
         vprog = QVBoxLayout(self.prog_grp)
         self.lbl_step = QLabel(self.tr("Idle"))

@@ -1389,7 +1389,7 @@ class _ChangeLocationDialog(QDialog):
             v.addWidget(QLabel(
                 "No files installed yet — new downloads will go to the chosen folder."))
 
-        # Progress bar (hidden until migration starts)
+        #sasprogress bar (hidden until migration starts)
         self._prog_label = QLabel("")
         self._prog_label.setStyleSheet("color:#aaa; font-size:11px;")
         self._prog_label.setVisible(False)

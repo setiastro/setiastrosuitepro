@@ -173,7 +173,7 @@ def resolve_cosmic_root(parent=None) -> str:
             s.setValue("paths/cosmic_clarity", c); s.sync()
             return c
 
-    # Prompt user once
+    #sasprompt user once
     QMessageBox.information(parent, "Cosmic Clarity",
         "Please select your Cosmic Clarity folder (the one that contains the CC executables and input/output).")
     folder = QFileDialog.getExistingDirectory(parent, "Select Cosmic Clarity Folder", "")
@@ -2392,7 +2392,7 @@ class CosmicClaritySatelliteDialogPro(QDialog):
             return
 
         # ----------------------------
-        # Progress dialog helper
+        #sasprogress dialog helper
         #   IMPORTANT: create/show AFTER input is chosen
         # ----------------------------
         pd = QProgressDialog("Satellite removal…", "Cancel", 0, 100, self)

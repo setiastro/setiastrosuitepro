@@ -1,4 +1,4 @@
-# pro/resources.py
+#saspro/resources.py
 """
 Centralized resource paths for Seti Astro Suite Pro.
 
@@ -100,7 +100,7 @@ class Icons:
     APP_ICO = property(lambda self: _resource_path('astrosuitepro.ico'))
     BACKGROUND = property(lambda self: _resource_path('background.png')) 
     
-    # Processing tools
+    #sasprocessing tools
     GREEN = property(lambda self: _resource_path('green.png'))
     NEUTRAL = property(lambda self: _resource_path('neutral.png'))
     WHITE_BALANCE = property(lambda self: _resource_path('whitebalance.png'))
