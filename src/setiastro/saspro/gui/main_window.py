@@ -7464,7 +7464,14 @@ class AstroSuiteProMainWindow(
                 except Exception as e:
                     QMessageBox.warning(self, "Crop", f"Apply failed:\n{e}")
                 return
-            
+            if cid == "create_mask":
+                try:
+                    from setiastro.saspro.mask_creation import open_mask_creation_with_preset
+                    open_mask_creation_with_preset(self, preset)
+                    self._log("Opened Mask Creation with preset.")
+                except Exception as e:
+                    QMessageBox.warning(self, "Mask Creation", f"Open failed:\n{e}")
+                return            
             if cid == "star_align":
                 try:
                     from setiastro.saspro.star_alignment_preset import run_star_alignment_via_preset
@@ -7730,7 +7737,55 @@ class AstroSuiteProMainWindow(
                 )
             return
 
-
+        if cid == "create_mask":
+            # Loud by design — print statements inside apply_mask_creation_via_preset
+            # cover every step; a silent failure is impossible here.
+            print(f"[HCD] create_mask: target_sw={target_sw}, doc={doc!r}, "
+                  f"preset_keys={list((preset or {}).keys())}", flush=True)
+            if doc is None or getattr(doc, "image", None) is None:
+                QMessageBox.information(self, "Mask Creation",
+                                        "Target view has no image.")
+                return
+            try:
+                from setiastro.saspro.mask_creation import apply_mask_creation_via_preset
+                ok = apply_mask_creation_via_preset(
+                    self, preset or {},
+                    target_doc=doc,
+                    target_sw=target_sw,   # ← add this
+                )
+                print(f"[HCD] create_mask: apply returned {ok}", flush=True)
+                if ok:
+                    try:
+                        self._last_headless_command = {
+                            "command_id": "create_mask",
+                            "preset": dict(preset or {}),
+                        }
+                    except Exception:
+                        pass
+                    p = preset or {}
+                    mt = str(p.get("mask_type", "Binary"))
+                    bits = [f"type={mt}"]
+                    blur = int(p.get("blur_amount", 0) or 0)
+                    if blur: bits.append(f"blur={blur}px")
+                    mode = str(p.get("apply_mode", "attach_only"))
+                    bits.append(f"apply={mode}")
+                    if p.get("make_active"):
+                        bits.append("active")
+                    self._log(
+                        f"Create Mask applied to '{target_sw.windowTitle()}' "
+                        f"({', '.join(bits)})"
+                    )
+                else:
+                    QMessageBox.warning(
+                        self, "Mask Creation",
+                        "Mask generation returned no result. See console log."
+                    )
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.warning(self, "Mask Creation",
+                                    f"Preset apply failed:\n{e}")
+            return
         if cid == "convo":
             try:
                 self._apply_convo_preset_to_doc(doc, preset or {})

@@ -613,7 +613,7 @@ _PRESET_UI_IDS = {
     "resize_canvas","canvas_resize","texture_clarity","aberrationai",
     "star_spikes","diffraction_spikes", "multiscale_decomp","geom_rotate_any","syqontools","rcastro",
     "satchroma","fx","unwarp","pedestal","cosmetic_correction",
-    "export_fits","plate_solve",
+    "export_fits","plate_solve","create_mask",
 }
 
 def _has_preset_editor_for_command(command_id: str) -> bool:
@@ -723,7 +723,15 @@ def _preset_opener_for_command(command_id: str):
     if command_id == "plate_solve":
         from setiastro.saspro.plate_solver import open_plate_solver_with_preset
         return open_plate_solver_with_preset
-    return None                      
+    if command_id == "create_mask":
+        # Toolbar id is "create_mask" (toolbar_mixin.reg("create_mask", …)),
+        # not "mask_creation". ShortcutManager.trigger_with_preset looks the
+        # opener up by the id a shortcut carries, so the branch must match
+        # that registration — otherwise double-clicking a mask shortcut
+        # falls back to the bare QAction and ignores the stored preset.
+        from setiastro.saspro.mask_creation import open_mask_creation_with_preset
+        return open_mask_creation_with_preset
+    return None
 
 # ---- Shared preset editor helper for other modules (e.g. Function Bundles) ----
 def _open_preset_editor_for_command(parent, command_id: str, initial: dict | None):
@@ -803,6 +811,14 @@ def _open_preset_editor_for_command(parent, command_id: str, initial: dict | Non
     if command_id == "plate_solve":
         from setiastro.saspro.plate_solver import PlateSolverPresetDialog
         dlg = PlateSolverPresetDialog(parent, initial=cur or {})
+        return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
+    if command_id == "create_mask":
+        # Same note as _preset_opener_for_command: must match the id the
+        # action was registered under (toolbar_mixin: "create_mask"), not
+        # the Python module name. Right-clicking a mask shortcut → Edit
+        # Preset routes through here, so a mismatched id was giving the
+        # user an empty dialog with no fields.
+        dlg = _MaskCreationPresetDialog(parent, initial=cur)
         return dlg.result_dict() if dlg.exec() == QDialog.DialogCode.Accepted else None
     if command_id == "syqontools":
         dlg = _SyQonToolsPresetDialog(parent, initial=cur or {})
@@ -3067,6 +3083,292 @@ class _SatChromaPresetDialog(QDialog):
             "strength":   self._spin.value(),
             "points":     self._canvas.get_points(),
             "use_mask":   self._chk_mask.isChecked(),
+        }
+
+
+class _MaskCreationPresetDialog(QDialog):
+    """
+    Preset editor for command_id="create_mask".
+
+    Mirrors mask_creation.py's _mask_params / seed_from_preset schema.
+    Canvas shapes are NOT part of the preset — the headless replay
+    defaults to a full-image base, which is the behavior that matches
+    the common UX this tool is used for (drop a 'Color: Green' shortcut
+    on an image → whole-frame green mask).
+    """
+
+    _MASK_TYPES = [
+        "Binary", "Range Selection", "Diffuse Structure",
+        "Lightness", "Chrominance", "Star Mask",
+        "Color: Red", "Color: Orange", "Color: Yellow",
+        "Color: Green", "Color: Cyan", "Color: Blue", "Color: Magenta",
+    ]
+    _DIFFUSE_PROFILES = [
+        ("Extended structure", "extended"),
+        ("Brightness weighted", "brightness_weighted"),
+    ]
+    _DIFFUSE_QUALITY = [
+        ("Low",    700),
+        ("Medium", 1400),
+        ("Ultra",  0),
+    ]
+    _APPLY_MODES = [
+        # Order sets the default (first entry). apply_mask_creation_via_preset
+        # routes between these; see its docstring for the full semantics.
+        #   push_only   — create a new mask document only
+        #   attach_only — create a new mask document AND apply it to the
+        #                 dropped-on view, same code path as shift+click+drag
+        #                 of the mask doc onto a view (via
+        #                 main_window._handle_mask_drop in subwindow.py).
+        #                 Requires Block 2 of _handle_command_drop to pass
+        #                 target_sw through to apply_mask_creation_via_preset.
+        #   both        — synonym for attach_only, kept for backward-compat
+        ("Push as new document",             "push_only"),
+        ("Push and apply to the dropped view", "attach_only"),
+        ("Both (same as 'Push and apply')",  "both"),
+    ]
+
+    def __init__(self, parent=None, initial: dict | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Mask Creation — Preset")
+        init = dict(initial or {})
+
+        root = QVBoxLayout(self)
+
+        # ── Core: mask type, blur, name, apply mode ────────────────────────
+        form_core = QFormLayout()
+
+        self.cmb_type = QComboBox()
+        self.cmb_type.addItems(self._MASK_TYPES)
+        want_type = str(init.get("mask_type", "Binary"))
+        i = self.cmb_type.findText(want_type)
+        self.cmb_type.setCurrentIndex(max(0, i))
+        form_core.addRow("Mask type:", self.cmb_type)
+
+        self.sp_blur = QSpinBox()
+        self.sp_blur.setRange(0, 300)
+        self.sp_blur.setValue(int(init.get("blur_amount", 0)))
+        form_core.addRow("Edge blur (px):", self.sp_blur)
+
+        # Default name is derived from the current mask type (e.g. a Color:
+        # Green preset lands as "ColorMaskGreen", a Diffuse Structure preset
+        # as "DiffuseMask"). We also auto-sync when the user flips the type
+        # combo, but only when the current value in the name box is one of
+        # the derived names — anything else means the user typed a custom
+        # name and we leave it alone.
+        try:
+            from setiastro.saspro.mask_creation import (
+                _derive_mask_name as _mc_derive_name,
+                KNOWN_MASK_NAMES as _mc_known_names,
+            )
+        except Exception:
+            # Fallback if mask_creation is unavailable at import time.
+            def _mc_derive_name(t: str) -> str:
+                return "Mask"
+            _mc_known_names = {"Mask"}
+        self._derive_mask_name = _mc_derive_name
+        self._known_mask_names = _mc_known_names
+
+        # Pick the field's initial value: an explicit mask_name in the
+        # preset wins; otherwise derive from the type the preset carries.
+        _init_name = str(init.get("mask_name") or "").strip()
+        if not _init_name or _init_name == "Mask":
+            _init_name = self._derive_mask_name(want_type)
+        self.ed_name = QLineEdit()
+        self.ed_name.setText(_init_name)
+        form_core.addRow("Mask name:", self.ed_name)
+
+        # Auto-sync when the mask type changes, unless the user customized.
+        def _on_type_change_update_name(new_type: str):
+            current = self.ed_name.text().strip()
+            if current in self._known_mask_names or current == "":
+                self.ed_name.blockSignals(True)
+                try:
+                    self.ed_name.setText(self._derive_mask_name(new_type))
+                finally:
+                    self.ed_name.blockSignals(False)
+        self.cmb_type.currentTextChanged.connect(_on_type_change_update_name)
+
+        self.cmb_apply = QComboBox()
+        for label, key in self._APPLY_MODES:
+            self.cmb_apply.addItem(label, userData=key)
+        _am = str(init.get("apply_mode", "push_only"))
+        j = self.cmb_apply.findData(_am)
+        self.cmb_apply.setCurrentIndex(max(0, j))
+        form_core.addRow("On apply:", self.cmb_apply)
+
+        # Apply-only knobs — only meaningful when apply_mode is attach_only
+        # or both. Keys are "apply_invert" / "apply_feather" (NOT plain
+        # "invert" / "feather") because the Range Selection group below
+        # already owns those names in the preset dict for its own mask-
+        # inversion / blur controls. Confusing them was a real bug.
+        self.chk_apply_invert = QCheckBox("Invert mask when applied to view")
+        self.chk_apply_invert.setChecked(bool(init.get("apply_invert", False)))
+        form_core.addRow("", self.chk_apply_invert)
+
+        self.sp_apply_feather = QDoubleSpinBox()
+        self.sp_apply_feather.setRange(0.0, 100.0)
+        self.sp_apply_feather.setDecimals(1)
+        self.sp_apply_feather.setSingleStep(0.5)
+        self.sp_apply_feather.setSuffix(" px")
+        self.sp_apply_feather.setValue(float(init.get("apply_feather", 0.0)))
+        form_core.addRow("Feather on apply:", self.sp_apply_feather)
+
+        root.addLayout(form_core)
+
+        # ── Range Selection group ──────────────────────────────────────────
+        self.grp_range = QGroupBox("Range Selection")
+        fr = QGridLayout(self.grp_range)
+        self.sp_lower = QDoubleSpinBox(); self.sp_lower.setRange(0.0, 1.0)
+        self.sp_lower.setDecimals(3); self.sp_lower.setSingleStep(0.01)
+        self.sp_lower.setValue(float(init.get("lower", 0.0)))
+        self.sp_upper = QDoubleSpinBox(); self.sp_upper.setRange(0.0, 1.0)
+        self.sp_upper.setDecimals(3); self.sp_upper.setSingleStep(0.01)
+        self.sp_upper.setValue(float(init.get("upper", 1.0)))
+        self.sp_fuzz = QDoubleSpinBox(); self.sp_fuzz.setRange(0.0, 1.0)
+        self.sp_fuzz.setDecimals(3); self.sp_fuzz.setSingleStep(0.01)
+        self.sp_fuzz.setValue(float(init.get("fuzz", 0.0)))
+        self.sp_smooth = QDoubleSpinBox(); self.sp_smooth.setRange(0.0, 200.0)
+        self.sp_smooth.setDecimals(2); self.sp_smooth.setSingleStep(0.5)
+        self.sp_smooth.setValue(float(init.get("smooth", 3.0)))
+        self.chk_screen = QCheckBox("Screening"); self.chk_screen.setChecked(bool(init.get("screen", False)))
+        self.chk_light  = QCheckBox("Lightness"); self.chk_light.setChecked(bool(init.get("lightness", False)))
+        self.chk_invert = QCheckBox("Invert");    self.chk_invert.setChecked(bool(init.get("invert", False)))
+        self.chk_link   = QCheckBox("Link limits"); self.chk_link.setChecked(bool(init.get("link", False)))
+        fr.addWidget(QLabel("Lower:"), 0, 0); fr.addWidget(self.sp_lower, 0, 1)
+        fr.addWidget(QLabel("Upper:"), 1, 0); fr.addWidget(self.sp_upper, 1, 1)
+        fr.addWidget(QLabel("Fuzz:"),  2, 0); fr.addWidget(self.sp_fuzz,  2, 1)
+        fr.addWidget(QLabel("Blur σ (px):"), 3, 0); fr.addWidget(self.sp_smooth, 3, 1)
+        fr.addWidget(self.chk_screen, 0, 2); fr.addWidget(self.chk_light, 1, 2)
+        fr.addWidget(self.chk_invert, 2, 2); fr.addWidget(self.chk_link,  3, 2)
+        root.addWidget(self.grp_range)
+
+        # ── Diffuse Structure group ────────────────────────────────────────
+        self.grp_diffuse = QGroupBox("Diffuse Structure")
+        fd = QFormLayout(self.grp_diffuse)
+        self.cmb_profile = QComboBox()
+        for label, key in self._DIFFUSE_PROFILES:
+            self.cmb_profile.addItem(label, userData=key)
+        _dp = str(init.get("diffuse_profile", "extended"))
+        pi = self.cmb_profile.findData(_dp)
+        self.cmb_profile.setCurrentIndex(max(0, pi))
+        fd.addRow("Profile:", self.cmb_profile)
+
+        self.sp_sens = QDoubleSpinBox(); self.sp_sens.setRange(0.5, 20.0)
+        self.sp_sens.setDecimals(2); self.sp_sens.setSingleStep(0.05)
+        self.sp_sens.setValue(float(init.get("diffuse_sensitivity", 1.0)))
+        fd.addRow("Sensitivity:", self.sp_sens)
+
+        self.sp_feather = QDoubleSpinBox(); self.sp_feather.setRange(0.0, 10.0)
+        self.sp_feather.setDecimals(3); self.sp_feather.setSingleStep(0.1)
+        self.sp_feather.setSuffix(" %")
+        self.sp_feather.setValue(float(init.get("diffuse_feather_frac", 0.0075)) * 100.0)
+        fd.addRow("Feather (% of short side):", self.sp_feather)
+
+        self.sp_minarea = QDoubleSpinBox(); self.sp_minarea.setRange(0.0, 5.0)
+        self.sp_minarea.setDecimals(3); self.sp_minarea.setSingleStep(0.05)
+        self.sp_minarea.setSuffix(" %")
+        self.sp_minarea.setValue(float(init.get("diffuse_min_area_frac", 0.001)) * 100.0)
+        fd.addRow("Minimum object area:", self.sp_minarea)
+
+        self.sp_envelope = QDoubleSpinBox(); self.sp_envelope.setRange(0.0, 25.0)
+        self.sp_envelope.setDecimals(3); self.sp_envelope.setSingleStep(0.1)
+        self.sp_envelope.setSuffix(" %")
+        self.sp_envelope.setValue(float(init.get("diffuse_envelope_frac", 0.0)) * 100.0)
+        fd.addRow("Envelope fill:", self.sp_envelope)
+
+        self.chk_reject_stars = QCheckBox("Suppress compact stars")
+        self.chk_reject_stars.setChecked(bool(init.get("diffuse_reject_stars", False)))
+        fd.addRow("", self.chk_reject_stars)
+
+        self.cmb_quality = QComboBox()
+        for label, key in self._DIFFUSE_QUALITY:
+            self.cmb_quality.addItem(label, userData=key)
+        _q = int(init.get("diffuse_quality", 1400))
+        qi = self.cmb_quality.findData(_q)
+        self.cmb_quality.setCurrentIndex(max(0, qi))
+        fd.addRow("Quality:", self.cmb_quality)
+
+        self.chk_diff_invert = QCheckBox("Invert (protect background)")
+        self.chk_diff_invert.setChecked(bool(init.get("diffuse_invert", False)))
+        fd.addRow("", self.chk_diff_invert)
+
+        root.addWidget(self.grp_diffuse)
+
+        # ── Star Mask group ────────────────────────────────────────────────
+        self.grp_star = QGroupBox("Star Mask")
+        fs = QFormLayout(self.grp_star)
+        self.sp_star_thresh = QDoubleSpinBox()
+        self.sp_star_thresh.setRange(0.5, 50.0); self.sp_star_thresh.setDecimals(1)
+        self.sp_star_thresh.setSingleStep(0.5)
+        self.sp_star_thresh.setValue(float(init.get("star_threshold", 3.0)))
+        fs.addRow("Detection threshold (σ):", self.sp_star_thresh)
+
+        self.chk_gaia = QCheckBox("Augment with Gaia Local DB (requires plate-solved WCS)")
+        self.chk_gaia.setChecked(bool(init.get("gaia_augment", False)))
+        fs.addRow("", self.chk_gaia)
+
+        self.sp_gaia_g = QDoubleSpinBox()
+        self.sp_gaia_g.setRange(6.0, 20.0); self.sp_gaia_g.setDecimals(1)
+        self.sp_gaia_g.setSingleStep(0.5)
+        self.sp_gaia_g.setValue(float(init.get("gaia_max_g", 17.0)))
+        fs.addRow("Max Gaia G mag:", self.sp_gaia_g)
+
+        root.addWidget(self.grp_star)
+
+        # ── Visibility: hide the groups that don't apply to the chosen type
+        self.cmb_type.currentTextChanged.connect(self._sync_visibility)
+        self._sync_visibility(self.cmb_type.currentText())
+
+        # ── OK / Cancel ────────────────────────────────────────────────────
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    def _sync_visibility(self, mask_type: str):
+        self.grp_range.setVisible(mask_type == "Range Selection")
+        self.grp_diffuse.setVisible(mask_type == "Diffuse Structure")
+        self.grp_star.setVisible(mask_type == "Star Mask")
+
+    def result_dict(self) -> dict:
+        return {
+            "mask_type":  self.cmb_type.currentText(),
+            "blur_amount": int(self.sp_blur.value()),
+            "mask_name":   self.ed_name.text().strip() or "Mask",
+            "apply_mode":    str(self.cmb_apply.currentData() or "push_only"),
+            # Apply-side knobs — distinct keys so they can't be shadowed
+            # by Range Selection's "invert" / Diffuse Structure's feather.
+            "apply_invert":  bool(self.chk_apply_invert.isChecked()),
+            "apply_feather": float(self.sp_apply_feather.value()),
+
+            # Range Selection
+            "lower":     float(self.sp_lower.value()),
+            "upper":     float(self.sp_upper.value()),
+            "fuzz":      float(self.sp_fuzz.value()),
+            "smooth":    float(self.sp_smooth.value()),
+            "screen":    bool(self.chk_screen.isChecked()),
+            "lightness": bool(self.chk_light.isChecked()),
+            "invert":    bool(self.chk_invert.isChecked()),
+            "link":      bool(self.chk_link.isChecked()),
+
+            # Diffuse Structure (preset stores fractions, UI shows percent)
+            "diffuse_profile":       str(self.cmb_profile.currentData() or "extended"),
+            "diffuse_sensitivity":   float(self.sp_sens.value()),
+            "diffuse_feather_frac":  float(self.sp_feather.value()) / 100.0,
+            "diffuse_min_area_frac": float(self.sp_minarea.value()) / 100.0,
+            "diffuse_envelope_frac": float(self.sp_envelope.value()) / 100.0,
+            "diffuse_reject_stars":  bool(self.chk_reject_stars.isChecked()),
+            "diffuse_quality":       int(self.cmb_quality.currentData() or 0),
+            "diffuse_invert":        bool(self.chk_diff_invert.isChecked()),
+
+            # Star Mask
+            "star_threshold": float(self.sp_star_thresh.value()),
+            "gaia_augment":   bool(self.chk_gaia.isChecked()),
+            "gaia_max_g":     float(self.sp_gaia_g.value()),
         }
 
 

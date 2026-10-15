@@ -17,7 +17,8 @@ except Exception:
 from PyQt6.QtCore import Qt, QPointF, QRectF, QTimer, QEvent
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QPen, QBrush,
-    QPainterPath, QWheelEvent, QPolygonF, QMouseEvent,QShortcut, QKeySequence
+    QPainterPath, QWheelEvent, QPolygonF, QMouseEvent, QShortcut, QKeySequence,
+    QIcon,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -39,6 +40,8 @@ from setiastro.saspro.imageops.diffuse_structure_mask import (
     suggest_diffuse_structure_settings,
 )
 from setiastro.saspro.help_support import make_help_button
+# PI-style "new instance" grip. Imported lazily inside _build_ui below so this
+# module stays importable even in a build where shortcuts.py was trimmed.
 # ---------- small utils ----------
 
 def _to_qpixmap01(img01: np.ndarray) -> QPixmap:
@@ -82,6 +85,54 @@ def _find_main_window(w):
     while p is not None and not isinstance(p, QMainWindow):
         p = p.parent()
     return p
+
+
+def _derive_mask_name(mask_type: str) -> str:
+    """Pick a descriptive default name from a mask-type label.
+
+    Examples:
+        "Color: Green"      → "ColorMaskGreen"
+        "Diffuse Structure" → "DiffuseMask"
+        "Range Selection"   → "RangeSelectionMask"
+        "Star Mask"         → "StarMask"
+        "Binary"            → "BinaryMask"
+
+    Used as the default both for:
+      • the New Document name prompt / the headless push title
+      • the preset editor's "Mask name:" field, which auto-syncs when
+        the mask-type combo changes (see _MaskCreationPresetDialog)
+
+    Anything we don't recognize falls back to a plain "Mask" so a build
+    that adds a new mask type without updating this map still produces
+    a usable name.
+    """
+    t = (mask_type or "").strip()
+    if t.startswith("Color:"):
+        color = t.split(":", 1)[1].strip().replace(" ", "")
+        return f"ColorMask{color}" if color else "ColorMask"
+    _MAP = {
+        "Binary":            "BinaryMask",
+        "Range Selection":   "RangeSelectionMask",
+        "Diffuse Structure": "DiffuseMask",
+        "Lightness":         "LightnessMask",
+        "Chrominance":       "ChrominanceMask",
+        "Star Mask":         "StarMask",
+    }
+    return _MAP.get(t, "Mask")
+
+
+# Snapshot of every name _derive_mask_name can produce, so UI code can tell
+# "the user hasn't customized the name" (its current value is a derived
+# name for SOME type) from "the user typed something custom". Computed
+# once at import; mask types this build knows about are stable.
+KNOWN_MASK_NAMES: set[str] = {
+    _derive_mask_name(t) for t in (
+        "Binary", "Range Selection", "Diffuse Structure",
+        "Lightness", "Chrominance", "Star Mask",
+        "Color: Red", "Color: Orange", "Color: Yellow", "Color: Green",
+        "Color: Cyan", "Color: Blue", "Color: Magenta",
+    )
+} | {"Mask"}  # include the plain fallback
 
 
 def _push_numpy_as_new_document(
@@ -1216,17 +1267,68 @@ class MaskCreationDialog(QDialog):
         rowb.addWidget(b_undo)
         rowb.addWidget(b_clear)
         rowb.addStretch(1)
-        rowb.addWidget(make_help_button("mask_creation", self))        
+        rowb.addWidget(make_help_button("mask_creation", self))
         layout.addLayout(rowb)
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #cfcfcf;")
         layout.addWidget(self.status_label)
 
+        # ── Bottom row: drag-to-canvas grip (lower-left) + OK/Cancel (right)
+        # The grip is a PI-style "new instance" handle. Dragging it onto an
+        # image applies the mask with the live UI settings headlessly;
+        # dragging onto empty canvas creates a shortcut carrying them.
+        # Shapes drawn on the canvas are deliberately NOT included in the
+        # preset — a dropped mask shortcut defaults to the full image
+        # (same rule as _create_mask_from_shapes_at_size's empty-shapes
+        # fallback). If the user wants a region-restricted mask, that's
+        # a UI session, not a draggable preset.
+        bottom_row = QHBoxLayout()
+
+        try:
+            from setiastro.saspro.shortcuts import PresetDragHandle
+            # Prefer the Create Mask toolbar icon so the grip reads as the
+            # same tool at a glance; fall back to no icon (the handle's own
+            # braille glyph) if the resource import fails in some builds.
+            grip_icon = None
+            try:
+                from setiastro.saspro.resources import maskcreate_path
+                _ic = QIcon(maskcreate_path)
+                if not _ic.isNull():
+                    grip_icon = _ic
+            except Exception:
+                grip_icon = None
+
+            # command_id MUST match the id the main window's toolbar_mixin
+            # registered the QAction under — "create_mask", not
+            # "mask_creation". The ShortcutManager's grip/drop dispatch
+            # checks self.registry[command_id]; an unknown id makes
+            # add_shortcut return None (hence the "no-entry" cursor the
+            # user saw when dragging onto the canvas).
+            self.preset_drag_handle = PresetDragHandle(
+                "create_mask",
+                self._mask_params,
+                icon=grip_icon,
+                tooltip=self.tr(
+                    "Drag to the canvas to create a Mask Creation shortcut\n"
+                    "with these exact settings.\n"
+                    "Drop directly on an image to generate the mask headlessly."
+                ),
+                parent=self,
+            )
+            bottom_row.addWidget(self.preset_drag_handle)
+        except Exception:
+            # shortcuts module not available in this build; grip simply isn't
+            # shown. Dialog, Preview, OK, etc. all keep working.
+            self.preset_drag_handle = None
+
+        bottom_row.addStretch(1)
+
         # OK / Cancel
         btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, parent=self)
         btns.accepted.connect(self._accept_apply); btns.rejected.connect(self.reject)
-        layout.addWidget(btns)
+        bottom_row.addWidget(btns)
+        layout.addLayout(bottom_row)
         
         self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
         self._undo_shortcut.activated.connect(self._undo_shape)
@@ -1959,6 +2061,205 @@ class MaskCreationDialog(QDialog):
         finally:
             self._set_status("")
 
+    def _mask_params(self) -> dict:
+        """Collect current UI state as a shortcut-ready preset dict.
+
+        This is the single source of truth consumed by:
+          • the PresetDragHandle grip  → embedded in a MIME_CMD drag
+          • the right-click "Edit Preset..." dialog (shortcuts._MaskCreationPresetDialog)
+          • headless replay           → apply_mask_creation_via_preset()
+          • double-clicked shortcut   → open_mask_creation_with_preset()
+
+        Canvas shapes are intentionally NOT serialized here — a draggable
+        preset describes "what kind of mask, with what parameters"; it
+        does not teach the headless path to draw polygons on an image it
+        has never seen. The empty-shapes default (whole-frame base) in
+        _create_mask_from_shapes_at_size covers the headless path cleanly.
+        """
+        p = {
+            "mask_type":    str(self.mask_type),
+            "blur_amount":  int(self.blur_amount),
+
+            # Range Selection
+            "lower":        float(self.lower_sl.value()) / float(self.lower_sl.maximum() or 1),
+            "upper":        float(self.upper_sl.value()) / float(self.upper_sl.maximum() or 1),
+            "fuzz":         float(self.fuzz_sl.value()) / float(self.fuzz_sl.maximum() or 1),
+            "smooth":       float(self.smooth_sl.value()),   # sigma in px
+            "screen":       bool(self.screen_cb.isChecked()),
+            "lightness":    bool(self.light_cb.isChecked()),
+            "invert":       bool(self.invert_cb.isChecked()),
+            "link":         bool(self.link_cb.isChecked()),
+
+            # Diffuse Structure
+            "diffuse_profile":        str(self.diffuse_profile.currentData() or "extended"),
+            "diffuse_sensitivity":    float(self.diffuse_sensitivity.value()) / 100.0,
+            "diffuse_feather_frac":   float(self.diffuse_feather.value()) / 400.0,
+            "diffuse_min_area_frac":  float(self.diffuse_min_area.value()) / 10000.0,
+            "diffuse_envelope_frac":  float(self.diffuse_envelope.value()) / 400.0,
+            "diffuse_reject_stars":   bool(self.diffuse_reject_stars.isChecked()),
+            # Quality is a QComboBox userData int (0, 700, 1400); store the int.
+            "diffuse_quality":        int(self.diffuse_quality.currentData() or 0),
+            "diffuse_invert":         bool(self.diffuse_invert.isChecked()),
+
+            # Star Mask
+            "star_threshold":  float(getattr(self, "_star_thresh",
+                                             self._spin_star_thresh.value())),
+            "gaia_augment":    bool(getattr(self, "_chk_gaia_augment", None)
+                                    and self._chk_gaia_augment.isChecked()),
+            "gaia_max_g":      float(self._spin_gaia_maxg.value()
+                                     if hasattr(self, "_spin_gaia_maxg") else 17.0),
+
+            # Headless apply behavior — see apply_mask_creation_via_preset().
+            # Default is "push_only": a dropped mask produces a NEW document
+            # in the MDI (same behavior as clicking the toolbar Create Mask
+            # button), rather than silently attaching to the dropped-on
+            # image's mask list. Users who want the layer attached can
+            # still pick that mode in the Edit Preset dialog.
+            # Default name derived from the current mask type so a dropped
+            # Color-Green shortcut lands as "ColorMaskGreen" in the doc list,
+            # not just "Mask". The preset editor overrides this when the
+            # user has typed a custom name (see _MaskCreationPresetDialog).
+            "mask_name":   _derive_mask_name(self.mask_type),
+            # Default is push_only — a dropped shortcut just creates a
+            # new mask document. attach_only / both ask for the mask to
+            # also be applied to the dropped-on view via the same
+            # _handle_mask_drop path shift+click+drag uses. See
+            # apply_mask_creation_via_preset() for the apply-side wiring.
+            "apply_mode":    "push_only",
+            # Apply-path knobs forwarded to _handle_mask_drop. Keys are
+            # "apply_*" to avoid shadowing the Range Selection group's
+            # own "invert" / the generic "feather" naming — Range Selection
+            # has its own invert for the mask build itself, which is a
+            # distinct concept from inverting the mask at apply time.
+            "apply_mode_compose": "replace",  # replace | union | intersect | diff
+            "apply_invert":  False,
+            "apply_feather": 0.0,             # px
+        }
+        return p
+
+    def seed_from_preset(self, p: dict | None) -> None:
+        """Public: load a preset dict (same schema as _mask_params) into the
+        live controls. Mirrors stat_stretch's seed_from_preset shape — guard
+        the widgets with blockSignals, apply, then re-fire dependent state.
+
+        Called by open_mask_creation_with_preset() after construction so a
+        double-clicked shortcut opens the dialog seeded with its settings.
+        Values a preset omits keep the dialog's current defaults.
+        """
+        if not p:
+            return
+
+        widgets = [
+            self.type_dd, self.blur_slider,
+            self.lower_sl, self.upper_sl, self.fuzz_sl, self.smooth_sl,
+            self.screen_cb, self.light_cb, self.invert_cb, self.link_cb,
+            self.diffuse_profile, self.diffuse_sensitivity, self.diffuse_feather,
+            self.diffuse_min_area, self.diffuse_envelope, self.diffuse_reject_stars,
+            self.diffuse_quality, self.diffuse_invert,
+        ]
+        if hasattr(self, "_spin_star_thresh"):
+            widgets.append(self._spin_star_thresh)
+        if hasattr(self, "_chk_gaia_augment"):
+            widgets.append(self._chk_gaia_augment)
+        if hasattr(self, "_spin_gaia_maxg"):
+            widgets.append(self._spin_gaia_maxg)
+
+        for w in widgets:
+            try: w.blockSignals(True)
+            except Exception: pass
+
+        try:
+            if "mask_type" in p:
+                idx = self.type_dd.findText(str(p["mask_type"]))
+                if idx >= 0:
+                    self.type_dd.setCurrentIndex(idx)
+                    self.mask_type = str(p["mask_type"])
+
+            if "blur_amount" in p:
+                self.blur_amount = int(p["blur_amount"])
+                self.blur_slider.setValue(self.blur_amount)
+                self.blur_lbl.setText(str(self.blur_amount))
+
+            # Range Selection — preset stores normalized 0..1, slider is 0..max
+            if "lower" in p:
+                self.lower_sl.setValue(int(round(float(p["lower"]) * self.lower_sl.maximum())))
+            if "upper" in p:
+                self.upper_sl.setValue(int(round(float(p["upper"]) * self.upper_sl.maximum())))
+            if "fuzz" in p:
+                self.fuzz_sl.setValue(int(round(float(p["fuzz"]) * self.fuzz_sl.maximum())))
+            if "smooth" in p:
+                self.smooth_sl.setValue(int(round(float(p["smooth"]))))
+                self.smooth_lbl.setText(f"σ = {int(self.smooth_sl.value())} px")
+            if "screen" in p:    self.screen_cb.setChecked(bool(p["screen"]))
+            if "lightness" in p: self.light_cb.setChecked(bool(p["lightness"]))
+            if "invert" in p:    self.invert_cb.setChecked(bool(p["invert"]))
+            if "link" in p:      self.link_cb.setChecked(bool(p["link"]))
+
+            # Diffuse Structure — preset uses fractions; sliders use scaled ints
+            if "diffuse_profile" in p:
+                i = self.diffuse_profile.findData(str(p["diffuse_profile"]))
+                if i >= 0: self.diffuse_profile.setCurrentIndex(i)
+            if "diffuse_sensitivity" in p:
+                self.diffuse_sensitivity.setValue(
+                    int(round(float(p["diffuse_sensitivity"]) * 100.0)))
+                self.diffuse_sensitivity_label.setText(
+                    f"{float(p['diffuse_sensitivity']):.2f}")
+            if "diffuse_feather_frac" in p:
+                self.diffuse_feather.setValue(
+                    int(round(float(p["diffuse_feather_frac"]) * 400.0)))
+                self.diffuse_feather_label.setText(
+                    f"{float(p['diffuse_feather_frac']) * 100.0:.2f} %")
+            if "diffuse_min_area_frac" in p:
+                self.diffuse_min_area.setValue(
+                    int(round(float(p["diffuse_min_area_frac"]) * 10000.0)))
+                self.diffuse_min_area_label.setText(
+                    f"{float(p['diffuse_min_area_frac']) * 100.0:.2f} %")
+            if "diffuse_envelope_frac" in p:
+                self.diffuse_envelope.setValue(
+                    int(round(float(p["diffuse_envelope_frac"]) * 400.0)))
+                self.diffuse_envelope_label.setText(
+                    f"{float(p['diffuse_envelope_frac']) * 100.0:.2f} %")
+            if "diffuse_reject_stars" in p:
+                self.diffuse_reject_stars.setChecked(bool(p["diffuse_reject_stars"]))
+            if "diffuse_quality" in p:
+                # Match by userData; findData returns -1 if the value isn't in
+                # the combo, in which case we leave the current choice alone.
+                q = self.diffuse_quality.findData(int(p["diffuse_quality"]))
+                if q >= 0: self.diffuse_quality.setCurrentIndex(q)
+            if "diffuse_invert" in p:
+                self.diffuse_invert.setChecked(bool(p["diffuse_invert"]))
+
+            # Star Mask
+            if "star_threshold" in p and hasattr(self, "_spin_star_thresh"):
+                self._spin_star_thresh.setValue(float(p["star_threshold"]))
+                self._star_thresh = float(p["star_threshold"])
+            if "gaia_augment" in p and hasattr(self, "_chk_gaia_augment"):
+                # Respect the availability gate — don't flip it on if the
+                # user doesn't actually have Gaia installed on this build.
+                if self._chk_gaia_augment.isEnabled():
+                    self._chk_gaia_augment.setChecked(bool(p["gaia_augment"]))
+            if "gaia_max_g" in p and hasattr(self, "_spin_gaia_maxg"):
+                self._spin_gaia_maxg.setValue(float(p["gaia_max_g"]))
+
+        finally:
+            for w in widgets:
+                try: w.blockSignals(False)
+                except Exception: pass
+
+        # Re-apply dependent visibility (the type combo controls which group
+        # of sliders is shown and which base image the live preview uses)
+        try:
+            self._on_type_changed(self.type_dd.currentText())
+        except Exception:
+            pass
+
+        # Freshen caches and live preview to reflect the seeded state
+        try:
+            self._invalidate_base_mask()
+            self._schedule_live_preview()
+        except Exception:
+            pass
+
     def _accept_apply(self):
         self._set_status("Creating full-resolution mask document...")
         try:
@@ -1972,7 +2273,13 @@ class MaskCreationDialog(QDialog):
             # if this dialog was opened in "tool" mode, push it as a new doc
             if self.auto_push_on_ok:
                 self._set_status("Calculating full mask and creating document...")
-                _push_numpy_as_new_document(self, m, default_name="Mask")
+                _push_numpy_as_new_document(
+                    self, m,
+                    # Prime the "Name:" field with a type-aware default so
+                    # the user usually just hits Enter: "ColorMaskGreen",
+                    # "DiffuseMask", "RangeSelectionMask", etc.
+                    default_name=_derive_mask_name(self.mask_type),
+                )
 
             self.accept()
         finally:
@@ -2062,10 +2369,28 @@ class MaskCreationDialog(QDialog):
 
 # ---------- Integration helper ----------
 
+# Module-level fallback keep-alive set for mask-creation dialogs when parent
+# can't hold the reference itself. Each dialog removes itself on finished.
+_OPEN_MASK_DIALOGS: set = set()
+
+
 def create_mask_and_attach(parent, document, *, make_active: bool = False) -> bool:
     """
-    Open the mask-creation dialog. On OK the mask is pushed as its own "Mask"
-    document (via the dialog's auto_push) AND added to `document`'s mask list.
+    Open the mask-creation dialog NON-MODALLY (via .show()) and wire the
+    post-OK attach/push on the dialog's `accepted` signal.
+
+    Why non-modal: the PresetDragHandle grip starts a QDrag whose data lives
+    in the main window's drag/drop event system. A modal exec() loop
+    monopolises event delivery, so the grip's drag never reaches the canvas
+    — the user sees a "no" cursor as soon as they move it out of the dialog.
+    Statistical Stretch's open_*_with_preset path has the same shape and
+    this matches it exactly.
+
+    GC guard: a non-modal dialog launched from a function returns control
+    immediately. With WA_DeleteOnClose set on MaskCreationDialog, the only
+    thing keeping the dialog alive once this function returns is the
+    reference we're about to stash — either on `parent._open_dialogs` or
+    in the module-level fallback set — released by the finished handler.
 
     make_active (default False): whether the newly added mask becomes the
     document's ACTIVE mask. This defaults to False so that merely *creating* a
@@ -2073,19 +2398,143 @@ def create_mask_and_attach(parent, document, *, make_active: bool = False) -> bo
     Stretch, ABE, ...) to run masked. The user creates the mask, then activates
     it deliberately when they actually want it. Pass make_active=True only from
     a workflow that explicitly means "create this mask and start using it now."
+
+    Returns True once the dialog has launched (the caller's toast/log fires
+    on launch, not completion — the actual attach is logged by the accepted
+    handler via parent._log). Returns False only if the launch itself was
+    refused (no image, construction failure).
     """
     if document is None or getattr(document, "image", None) is None:
         QMessageBox.information(parent, "No image", "Open an image first.")
         return False
 
-    # Pull WCS from the doc for the Gaia augment. Match WIMI's extraction
-    # order: wcs_header wins (it's the WCS-only header the solver writes),
-    # then original_header. Use naxis=2 + .celestial to strip stub 3rd
-    # axes on RGB images — the plain WCS(hdr) path produces naxis=3 for
-    # colour cubes and fails has_celestial even on a valid solve.
-    wcs = None
-    meta = getattr(document, "metadata", {}) or {}
+    # Pull WCS from the doc for the Gaia augment. _extract_wcs_from_document
+    # (defined below) matches WIMI's extraction order and strips the stub
+    # 3rd axis on RGB cubes.
+    wcs = _extract_wcs_from_document(document)
     try:
+        meta = getattr(document, "metadata", {}) or {}
+        print(f"[MaskGaia] WCS available for augment: "
+              f"{wcs is not None} (keys present: "
+              f"wcs_header={'wcs_header' in meta}, "
+              f"original_header={'original_header' in meta})")
+    except Exception:
+        pass
+
+    try:
+        dlg = MaskCreationDialog(document.image, parent=parent,
+                                 auto_push_on_ok=True, wcs=wcs)
+    except Exception as e:
+        QMessageBox.warning(parent, "Mask Creation",
+                            f"Failed to open mask dialog:\n{e}")
+        return False
+
+    # Keep-alive. Prefer a set on `parent` so dialogs land next to the
+    # window that spawned them; fall back to the module-level set if the
+    # parent won't accept the attribute (unusual, but defensive).
+    tracker = None
+    try:
+        tracker = getattr(parent, "_open_dialogs", None)
+        if tracker is None:
+            tracker = set()
+            setattr(parent, "_open_dialogs", tracker)
+    except Exception:
+        tracker = None
+    if tracker is None:
+        tracker = _OPEN_MASK_DIALOGS
+    tracker.add(dlg)
+
+    def _on_accepted():
+        """auto_push_on_ok=True made the dialog push a standalone Mask doc in
+        its own _accept_apply. We also attach to the source doc here, which
+        is the second half of the original behavior."""
+        mask = getattr(dlg, "mask", None)
+        if mask is None:
+            return
+        try:
+            layer = MaskLayer(
+                id=uuid.uuid4().hex,
+                name="Mask",                 # matches preview default
+                data=np.clip(mask.astype(np.float32, copy=False), 0.0, 1.0),
+                invert=False,
+                opacity=1.0,
+                mode="affect",
+                visible=True,
+            )
+            document.add_mask(layer, make_active=bool(make_active))
+        except Exception as e:
+            print(f"[MaskCreation] attach to source doc failed: {e}")
+            return
+
+        try:
+            if hasattr(parent, "_log"):
+                _state = "set active" if make_active else "inactive (create-only)"
+                parent._log(
+                    f"Added mask '{layer.name}' — {_state} "
+                    "(and pushed as document)."
+                )
+        except Exception:
+            pass
+
+    def _on_finished(_result):
+        """Drop the keep-alive reference. WA_DeleteOnClose will then eat the
+        dialog on its own; nothing else needs doing."""
+        try:
+            tracker.discard(dlg)
+        except Exception:
+            pass
+
+    try:
+        dlg.accepted.connect(_on_accepted)
+        dlg.finished.connect(_on_finished)
+    except Exception as e:
+        tracker.discard(dlg)
+        QMessageBox.warning(parent, "Mask Creation",
+                            f"Failed to connect dialog signals:\n{e}")
+        try:
+            dlg.deleteLater()
+        except Exception:
+            pass
+        return False
+
+    dlg.show()
+    dlg.raise_()
+    dlg.activateWindow()
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Shortcut entry points — grip/drop/double-click/edit-preset
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve_active_document(main_window):
+    """Shared doc lookup for the preset entry points. Mirrors the lookup that
+    open_stat_stretch_with_preset uses, so dropping a shortcut on an image
+    picks the same document the toolbar action would have."""
+    doc = None
+    try:
+        sw = main_window.mdi.activeSubWindow()
+        if sw is not None:
+            w = sw.widget()
+            doc = getattr(w, "document", None)
+    except Exception:
+        doc = None
+    if doc is None:
+        dm = getattr(main_window, "doc_manager",
+                     getattr(main_window, "docman", None))
+        if dm is not None:
+            doc = (dm.get_active_document() if hasattr(dm, "get_active_document")
+                   else getattr(dm, "active_document", None))
+    return doc
+
+
+def _extract_wcs_from_document(document):
+    """Pull a celestial WCS from a document's metadata, following WIMI's
+    extraction order (wcs_header first, then original_header), with the
+    naxis=2 + .celestial stripping that handles RGB cubes."""
+    wcs = None
+    try:
+        meta = getattr(document, "metadata", {}) or {}
         from astropy.wcs import WCS
         hdr = meta.get("wcs_header") or meta.get("original_header")
         if hdr is not None:
@@ -2097,42 +2546,420 @@ def create_mask_and_attach(parent, document, *, make_active: bool = False) -> bo
     except Exception as e:
         print(f"[MaskGaia] WCS extraction failed: {e}")
         wcs = None
-    print(f"[MaskGaia] WCS available for augment: "
-          f"{wcs is not None} (keys present: "
-          f"wcs_header={'wcs_header' in meta}, "
-          f"original_header={'original_header' in meta})")
+    return wcs
 
-    # NOW we let the dialog auto-push when user hits OK
-    dlg = MaskCreationDialog(document.image, parent=parent,
-                             auto_push_on_ok=True, wcs=wcs)
-    if dlg.exec() != QDialog.DialogCode.Accepted:
-        return False
 
-    mask = getattr(dlg, "mask", None)
-    if mask is None:
-        QMessageBox.information(parent, "No mask", "No mask was generated.")
-        return False
+# ─────────────────────────────────────────────────────────────────────────────
+# Standalone headless mask builder
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# These helpers reimplement the dialog's generate_mask() logic *without* any
+# widget / scene / timer dependencies. The previous version built a full
+# MaskCreationDialog in memory and called generate_mask() on it — which worked
+# in isolation but swallowed errors wherever the dialog's live-preview, canvas,
+# or UI construction threw. Keeping the headless path dialog-free makes
+# failures loud and testable from a plain python shell.
 
-    # We already pushed a standalone "Mask" document above. Add the mask to
-    # the source document's mask list too, but DO NOT make it active unless the
-    # caller explicitly asked — otherwise simply creating a mask would silently
-    # cause every later operation to run masked (the reported bug).
-    layer = MaskLayer(
-        id=uuid.uuid4().hex,
-        name="Mask",                     # keep it simple; matches preview default
-        data=np.clip(mask.astype(np.float32, copy=False), 0.0, 1.0),
-        invert=False,
-        opacity=1.0,
-        mode="affect",
-        visible=True,
-    )
-    document.add_mask(layer, make_active=bool(make_active))
+def _mc_component_lightness(image: np.ndarray) -> np.ndarray:
+    """RGB → luminance, matching MaskCreationDialog._component_lightness."""
+    if image.ndim == 3:
+        return (image[..., 0] * 0.2989
+                + image[..., 1] * 0.5870
+                + image[..., 2] * 0.1140).astype(np.float32)
+    return image.astype(np.float32)
+
+
+def _mc_range_mask(comp01: np.ndarray, L: float, U: float, fuzz: float,
+                   smooth: float, screening: bool, invert: bool) -> np.ndarray:
+    """Mirror of MaskCreationDialog._range_selection_mask."""
+    m = np.zeros_like(comp01, dtype=np.float32)
+    inside = (comp01 >= L) & (comp01 <= U)
+    m[inside] = 1.0
+    if fuzz > 0:
+        ramp = (comp01 - (L - fuzz)) / max(fuzz, 1e-12)
+        m += np.clip(ramp, 0, 1)
+        ramp2 = ((U + fuzz) - comp01) / max(fuzz, 1e-12)
+        m *= np.clip(ramp2, 0, 1)
+    if screening:
+        m *= comp01
+    if smooth > 0 and cv2 is not None:
+        m = cv2.GaussianBlur(m, (0, 0), float(smooth))
+    if invert:
+        m = 1.0 - m
+    return np.clip(m, 0, 1)
+
+
+def _mc_color_mask(image: np.ndarray, color: str) -> np.ndarray:
+    """Mirror of MaskCreationDialog._generate_color_mask."""
+    if cv2 is None or image.ndim != 3:
+        return np.zeros(image.shape[:2], dtype=np.float32)
+    ranges = {
+        "Red":     [(0, 10), (350, 360)],
+        "Orange":  [(10, 40)],
+        "Yellow":  [(40, 70)],
+        "Green":   [(70, 170)],
+        "Cyan":    [(170, 200)],
+        "Blue":    [(200, 270)],
+        "Magenta": [(270, 350)],
+    }
+    if color not in ranges:
+        return np.zeros(image.shape[:2], dtype=np.float32)
+    rgb8 = (np.clip(image, 0, 1) * 255).astype(np.uint8)
+    hls = cv2.cvtColor(rgb8, cv2.COLOR_RGB2HLS)
+    hue = (hls[..., 0].astype(np.float32) / 180.0) * 360.0
+    out = np.zeros(hue.shape, dtype=np.float32)
+    for lo, hi in ranges[color]:
+        if lo < hi:
+            out = np.maximum(out, ((hue >= lo) & (hue <= hi)).astype(np.float32))
+        else:
+            out = np.maximum(out, ((hue >= lo) | (hue <= hi)).astype(np.float32))
+    return out
+
+
+def _mc_chrominance(image: np.ndarray) -> np.ndarray:
+    """Mirror of MaskCreationDialog._generate_chrominance."""
+    if cv2 is None or image.ndim != 3:
+        return np.zeros(image.shape[:2], dtype=np.float32)
+    rgb8 = (np.clip(image, 0, 1) * 255).astype(np.uint8)
+    ycrcb = cv2.cvtColor(rgb8, cv2.COLOR_RGB2YCrCb)
+    cb = ycrcb[..., 1].astype(np.float32) / 255.0
+    cr = ycrcb[..., 2].astype(np.float32) / 255.0
+    out = np.sqrt((cb - cb.mean()) ** 2 + (cr - cr.mean()) ** 2)
+    return (out - out.min()) / (out.max() - out.min() + 1e-12)
+
+
+def _mc_star_mask(image: np.ndarray, threshold: float):
+    """Returns (mask, sep_objs). sep_objs is None if sep isn't installed."""
+    if sep is None:
+        print("[MaskCreation] sep not installed — star mask skipped.")
+        return np.zeros(image.shape[:2], dtype=np.float32), None
+    data = image.mean(axis=2).astype(np.float32) if image.ndim == 3 else image.astype(np.float32)
+    data = np.ascontiguousarray(data)
+    bkg = sep.Background(data)
+    data_sub = data - bkg
+    try:
+        sep.set_extract_pixstack(5000000)
+    except Exception:
+        pass
+    objs = sep.extract(data_sub, thresh=float(threshold), err=bkg.globalrms)
+    h, w = data.shape
+    out = np.zeros((h, w), dtype=np.float32)
+    if cv2 is None:
+        return out, objs
+    MAX_RADIUS = 10
+    for o in objs:
+        x, y = int(o["x"]), int(o["y"])
+        r = int(max(o["a"], o["b"]) * 1.5)
+        if r <= MAX_RADIUS:
+            cv2.circle(out, (x, y), max(1, r), 1.0, -1)
+    return np.clip(out, 0, 1), objs
+
+
+def generate_mask_from_preset(image: np.ndarray, preset: dict | None,
+                              wcs=None, main_window=None) -> np.ndarray | None:
+    """
+    Standalone headless mask generation. No MaskCreationDialog, no scene,
+    no timers — pure numpy + cv2 + sep + the shared diffuse_structure_mask
+    helper. Returns a float32 mask in [0, 1] shaped like `image`'s first
+    two dims, or None on fatal failure (with a loud print).
+
+    Shapes are intentionally not supported here — the headless path's
+    whole premise is "no canvas drawn", so the base is always the full
+    frame. For region-restricted masks, use the interactive dialog.
+    """
+    preset = dict(preset or {})
+    try:
+        img = np.asarray(image, dtype=np.float32)
+    except Exception as e:
+        print(f"[MaskCreation] bad image input: {e}")
+        return None
+    if img.ndim == 3 and img.shape[2] == 1:
+        img = img[..., 0]
+
+    h, w = img.shape[:2]
+    base = np.ones((h, w), dtype=np.float32)
+
+    mask_type = str(preset.get("mask_type", "Binary"))
+    blur_amount = int(preset.get("blur_amount", 0) or 0)
 
     try:
-        if hasattr(parent, "_log"):
-            _state = "set active" if make_active else "inactive (create-only)"
-            parent._log(f"Added mask '{layer.name}' — {_state} (and pushed as document).")
+        if mask_type == "Binary":
+            m = base
+
+        elif mask_type == "Range Selection":
+            comp = _mc_component_lightness(img)
+            m = base * _mc_range_mask(
+                comp,
+                L=float(preset.get("lower", 0.0)),
+                U=float(preset.get("upper", 1.0)),
+                fuzz=float(preset.get("fuzz", 0.0)),
+                smooth=float(preset.get("smooth", 3.0)),
+                screening=bool(preset.get("screen", False)),
+                invert=bool(preset.get("invert", False)),
+            )
+
+        elif mask_type == "Diffuse Structure":
+            processing_limit = int(preset.get("diffuse_quality", 1400)) or None
+            structure = diffuse_structure_mask(
+                img,
+                sensitivity=float(preset.get("diffuse_sensitivity", 1.0)),
+                feather_fraction=float(preset.get("diffuse_feather_frac", 0.0075)),
+                min_area_fraction=float(preset.get("diffuse_min_area_frac", 0.001)),
+                envelope_fraction=float(preset.get("diffuse_envelope_frac", 0.0)),
+                profile=str(preset.get("diffuse_profile", "extended")),
+                reject_stars=bool(preset.get("diffuse_reject_stars", False)),
+                _processing_limit=processing_limit,
+            )
+            if structure.shape != img.shape[:2] and cv2 is not None:
+                structure = cv2.resize(structure, (w, h), interpolation=cv2.INTER_AREA)
+            if preset.get("diffuse_invert"):
+                structure = 1.0 - structure
+            m = base * structure
+
+        elif mask_type == "Lightness":
+            m = np.where(base > 0, _mc_component_lightness(img), 0.0)
+
+        elif mask_type == "Chrominance":
+            m = np.where(base > 0, _mc_chrominance(img), 0.0)
+
+        elif mask_type == "Star Mask":
+            star_mask, _objs = _mc_star_mask(
+                img, float(preset.get("star_threshold", 3.0))
+            )
+            m = np.where(base > 0, star_mask, 0.0)
+            # Gaia augment: skipped in headless unless we have WCS AND
+            # the user opted in. The dialog's _augment_star_mask_with_gaia
+            # expects a MaskCreationDialog instance (self.wcs, self.sp_*),
+            # so headless just logs and moves on.
+            if preset.get("gaia_augment"):
+                if wcs is None:
+                    print("[MaskCreation] gaia_augment requested but no WCS — skipping.")
+                else:
+                    print("[MaskCreation] gaia_augment requested — "
+                          "headless path doesn't support it yet; "
+                          "use the interactive dialog for Gaia-augmented star masks.")
+
+        elif mask_type.startswith("Color:"):
+            color = mask_type.split(":", 1)[1].strip()
+            m = np.where(base > 0, _mc_color_mask(img, color), 0.0)
+
+        else:
+            print(f"[MaskCreation] unknown mask_type {mask_type!r}; falling back to Binary.")
+            m = base
+
+        if blur_amount > 0 and cv2 is not None:
+            k = max(1, int(blur_amount) * 2 + 1)
+            m = cv2.GaussianBlur(m.astype(np.float32), (k, k), 0.0)
+
+        m = np.clip(m.astype(np.float32), 0.0, 1.0)
+        return m
+
+    except Exception as e:
+        import traceback
+        print(f"[MaskCreation] generate_mask_from_preset FAILED: "
+              f"{type(e).__name__}: {e}")
+        traceback.print_exc()
+        return None
+
+
+def apply_mask_creation_via_preset(main_window, preset: dict | None = None,
+                                   target_doc=None, target_sw=None) -> bool:
+    """Headless mask generation + push (and optionally apply) for a dropped
+    shortcut / bundle step.
+
+    Flow:
+      1. Resolve a document to read pixels from.
+      2. Build the full-resolution mask from the preset.
+      3. ALWAYS push the mask into docman as a new document.
+      4. If apply_mode asks for it AND the HCD caller passed target_sw,
+         call main_window._handle_mask_drop with a MIME_MASK-shaped payload
+         pointing at the new mask document. Same code path shift+click+drag
+         uses in ImageSubWindow.
+
+    target_sw is REQUIRED for the apply path. We no longer try to recover
+    it with _find_subwindow_for_doc — that lookup fails for _DocProxy-
+    wrapped docs (identity check mismatch), which is exactly how a drop
+    silently stopped applying. Block 2 of _handle_command_drop MUST pass
+    target_sw=target_sw for the apply modes to do anything.
+
+    preset["apply_mode"]:
+      - "push_only" (default) — create a new mask document only
+      - "attach_only"         — create a new mask document AND apply it
+                                to target_sw (same as shift+click+drag)
+      - "both"                — synonym for "attach_only"
+    """
+    preset = dict(preset or {})
+
+
+    doc = target_doc if target_doc is not None else _resolve_active_document(main_window)
+    if doc is None or getattr(doc, "image", None) is None:
+        msg = "no active image to build a mask from."
+        try:
+            if hasattr(main_window, "_log"):
+                main_window._log(f"Mask Creation: {msg}")
+        except Exception:
+            pass
+        return False
+
+    wcs = _extract_wcs_from_document(doc)
+
+    mask = generate_mask_from_preset(doc.image, preset, wcs=wcs,
+                                     main_window=main_window)
+    if mask is None:
+        print("[MaskCreation] mask generation returned None — bailing.")
+        try:
+            if hasattr(main_window, "_log"):
+                main_window._log("Mask Creation (headless): mask generation failed.")
+        except Exception:
+            pass
+        return False
+
+    # Pick a name: explicit > derived from mask type > plain "Mask".
+    _derived_default = _derive_mask_name(preset.get("mask_type", "Binary"))
+    _raw_name = str(preset.get("mask_name") or "").strip()
+    mask_name = _derived_default if _raw_name in ("", "Mask") else _raw_name
+
+    apply_mode = str(preset.get("apply_mode", "push_only")).lower()
+
+    # ── 1) Push as new document ────────────────────────────────────────────
+    pushed = False
+    new_doc = None
+    try:
+        dm = getattr(main_window, "docman", None) \
+            or getattr(main_window, "doc_manager", None)
+        if dm is not None and hasattr(dm, "open_array"):
+            img = np.clip(mask.astype(np.float32, copy=False), 0.0, 1.0)
+            new_doc = dm.open_array(img, title=mask_name)
+            pushed = (new_doc is not None)
+
+        else:
+            print("[MaskCreation] docman has no open_array — cannot push mask doc.")
+    except Exception as e:
+        import traceback
+        print(f"[MaskCreation] push-as-doc failed: {type(e).__name__}: {e}")
+        traceback.print_exc()
+
+    if not pushed:
+        return False
+
+    # ── 2) Optionally apply to the target view ──────────────────────────────
+    # IMPORTANT: target_sw MUST come from the HCD caller. We don't fall
+    # back to _find_subwindow_for_doc anymore — that lookup fails on
+    # _DocProxy wrappers, which is how the apply silently became a no-op
+    # on the first attempt.
+    attached = False
+    if apply_mode in ("attach_only", "both"):
+        if target_sw is None:
+            print("[MaskCreation] apply requested but Block 2 didn't pass "
+                  "target_sw. Pass it from _handle_command_drop:\n"
+                  "    apply_mask_creation_via_preset(self, preset or {}, "
+                  "target_doc=doc, target_sw=target_sw)")
+        elif not hasattr(main_window, "_handle_mask_drop"):
+            print("[MaskCreation] main window has no _handle_mask_drop — "
+                  "mask was pushed but can't be applied in this build.")
+        else:
+            # Two things have to be true BEFORE _handle_mask_drop can
+            # resolve the mask document:
+            #   (a) the push must have finished registering the new doc
+            #       with every subsystem that tracks it (docman registry,
+            #       subwindow list, title bar, etc.). open_array can
+            #       schedule part of that work asynchronously, so draining
+            #       the event queue here forces it to complete first.
+            #   (b) the pointer in the payload must match what the main
+            #       window's _find_doc_by_id compares against — the id
+            #       of the UNDERLYING doc, not whatever proxy open_array
+            #       happens to hand back. We walk the subwindow list and
+            #       pick the actual doc the newly-created mask lives on,
+            #       which is what shift+click+drag also implicitly uses
+            #       (ImageSubWindow._start_mask_drag passes id(self.document),
+            #       and self.document is the real doc the subwindow holds).
+            try:
+                from PyQt6.QtWidgets import QApplication
+                QApplication.processEvents()
+                QApplication.processEvents()
+            except Exception:
+                pass
+
+            authoritative_doc = new_doc
+            auth_source = "open_array return value"
+            try:
+                for sw in main_window.mdi.subWindowList():
+                    try:
+                        w = sw.widget()
+                        sw_doc = getattr(w, "document", None)
+                        if sw_doc is None:
+                            continue
+                        if sw_doc is new_doc:
+                            authoritative_doc = sw_doc
+                            auth_source = "mdi subwindow (identity match)"
+                            break
+                        disp = getattr(sw_doc, "display_name", None)
+                        if callable(disp) and disp() == mask_name:
+                            authoritative_doc = sw_doc
+                            auth_source = "mdi subwindow (title match)"
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                print(f"[MaskCreation] subwindow scan raised: {e}")
+
+            mask_doc_ptr = id(authoritative_doc)
+
+            payload = {
+                # Shape ImageSubWindow._start_mask_drag emits. "apply_*"
+                # preset keys avoid clobbering Range Selection's own
+                # "invert" / "feather" meanings.
+                "mask_doc_ptr": mask_doc_ptr,
+                "doc_ptr":      mask_doc_ptr,
+                "mode":         str(preset.get("apply_mode_compose", "replace")),
+                "invert":       bool(preset.get("apply_invert", False)),
+                "feather":      float(preset.get("apply_feather", 0.0)),
+                "name":         mask_name,
+            }
+            try:
+                main_window._handle_mask_drop(payload, target_sw)
+                attached = True
+            except Exception as e:
+                import traceback
+                print(f"[MaskCreation] _handle_mask_drop failed: "
+                      f"{type(e).__name__}: {e}")
+                traceback.print_exc()
+
+    try:
+        if hasattr(main_window, "_log"):
+            parts = ["pushed as document"]
+            if attached: parts.append("applied to target view")
+            tag = ", ".join(parts)
+            main_window._log(
+                f"Mask Creation (headless): '{mask_name}' — "
+                f"type={preset.get('mask_type', 'Binary')}, blur="
+                f"{int(preset.get('blur_amount', 0))} — {tag}."
+            )
     except Exception:
         pass
 
-    return True
+    return pushed
+
+
+def open_mask_creation_with_preset(main_window, preset: dict | None = None):
+    """Open the Mask Creation dialog, seeded from `preset`. Routed to from the
+    shortcuts module's _preset_opener_for_command so a double-clicked shortcut
+    opens the dialog pre-filled with its stored settings. Mirrors
+    open_stat_stretch_with_preset so the two tools behave identically."""
+    doc = _resolve_active_document(main_window)
+    if doc is None or getattr(doc, "image", None) is None:
+        try:
+            if hasattr(main_window, "_log"):
+                main_window._log("Mask Creation: no active image to open against.")
+        except Exception:
+            pass
+        return
+
+    wcs = _extract_wcs_from_document(doc)
+    dlg = MaskCreationDialog(doc.image, parent=main_window,
+                             auto_push_on_ok=True, wcs=wcs)
+    try:
+        dlg.seed_from_preset(preset or {})
+    except Exception as e:
+        print(f"[MaskCreation] seed_from_preset failed: {e}")
+    dlg.show(); dlg.raise_(); dlg.activateWindow()
