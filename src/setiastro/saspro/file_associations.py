@@ -159,19 +159,19 @@ def register_windows_per_user(exe_path: str,
             ) as k:
                 winreg.SetValueEx(k, progid, 0, winreg.REG_SZ, "")
 
-            # ProgID -> description
+            #sasprogID -> description
             with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
                                   f"Software\\Classes\\{progid}") as k:
                 winreg.SetValue(k, "", winreg.REG_SZ, label)
 
-            # ProgID -> icon
+            #sasprogID -> icon
             with winreg.CreateKey(
                 winreg.HKEY_CURRENT_USER,
                 f"Software\\Classes\\{progid}\\DefaultIcon",
             ) as k:
                 winreg.SetValue(k, "", winreg.REG_SZ, f'"{exe_path}",0')
 
-            # ProgID -> open command
+            #sasprogID -> open command
             with winreg.CreateKey(
                 winreg.HKEY_CURRENT_USER,
                 f"Software\\Classes\\{progid}\\shell\\open\\command",

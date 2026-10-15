@@ -1,4 +1,4 @@
-# pro/rgb_extract.py
+#saspro/rgb_extract.py
 from __future__ import annotations
 import numpy as np
 

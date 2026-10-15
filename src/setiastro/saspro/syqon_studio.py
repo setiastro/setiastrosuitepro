@@ -679,7 +679,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self._family_page = {"prism": 0, "parallax": 1, "axiom": 2, "deep-gradient": 3}
         lay.addWidget(self.opt_stack)
 
-        # Progress + cancel
+        #sasprogress + cancel
         self.pbar = QProgressBar(self); self.pbar.setRange(0, 100); self.pbar.setValue(0)
         self.pbar.setVisible(False)
         lay.addWidget(self.pbar)

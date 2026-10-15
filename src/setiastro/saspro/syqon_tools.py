@@ -1325,7 +1325,7 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
         self.lbl_status.setWordWrap(True)
         form.addRow("", self.lbl_status)
  
-        # Processing stages — compact single row for correction + star reduction
+        #sasprocessing stages — compact single row for correction + star reduction
         stages_row = QWidget(self)
         stages_lay = QHBoxLayout(stages_row)
         stages_lay.setContentsMargins(0, 0, 0, 0)
@@ -1463,7 +1463,7 @@ class _SyQonSharpenHubPage(_WorkerCloseGuardMixin, QWidget):
  
         lay.addWidget(box)
  
-        # Progress bar
+        #sasprogress bar
         self.pbar = QProgressBar(self)
         self.pbar.setRange(0, 100)
         self.pbar.setVisible(False)

@@ -1,4 +1,4 @@
-# pro/gui/mixins/__init__.py
+#saspro/gui/mixins/__init__.py
 """
 GUI Mixins for AstroSuiteProMainWindow.
 

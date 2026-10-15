@@ -1,4 +1,4 @@
-# pro/wavescale_hdr.py
+#saspro/wavescale_hdr.py
 from __future__ import annotations
 import numpy as np
 
@@ -133,7 +133,7 @@ class HDRWorker(QObject):
     def run(self):
         try:
             self.progress_update.emit(self.tr("Converting to Lab color space…"), 10)
-            # progress checkpoints inline here are cosmetic
+            #sasprogress checkpoints inline here are cosmetic
             self.progress_update.emit(self.tr("Decomposing luminance with starlet…"), 20)
             # full compute
             transformed, mask = compute_wavescale_hdr(
@@ -332,7 +332,7 @@ class WaveScaleHDRDialogPro(QDialog):
         zoom_row.addWidget(self.btn_fit)
         form.addRow(zoom_row)
 
-        # progress group (unchanged)
+        #sasprogress group (unchanged)
         self.prog_grp = QGroupBox(self.tr("Processing Progress"))
         vprog = QVBoxLayout(self.prog_grp)
         self.lbl_step = QLabel(self.tr("Idle"))

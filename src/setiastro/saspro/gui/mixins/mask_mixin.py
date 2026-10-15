@@ -1,4 +1,4 @@
-# pro/gui/mixins/mask_mixin.py
+#saspro/gui/mixins/mask_mixin.py
 """
 Mask management mixin for AstroSuiteProMainWindow.
 

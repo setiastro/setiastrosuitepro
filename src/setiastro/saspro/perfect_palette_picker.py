@@ -1,4 +1,4 @@
-# pro/perfect_palette_picker.py
+#saspro/perfect_palette_picker.py
 from __future__ import annotations
 import os
 import numpy as np

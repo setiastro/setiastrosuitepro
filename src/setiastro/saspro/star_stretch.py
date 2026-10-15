@@ -1,4 +1,4 @@
-# pro/star_stretch.py
+#saspro/star_stretch.py
 from __future__ import annotations
 import os
 import numpy as np

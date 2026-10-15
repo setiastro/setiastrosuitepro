@@ -1,4 +1,4 @@
-# pro/mask_creation.py
+# saspro/mask_creation.py
 from __future__ import annotations
 import uuid
 import numpy as np
@@ -1463,6 +1463,16 @@ class MaskCreationDialog(QDialog):
         return self._cached_base_mask_preview
 
     def _create_mask_from_shapes_at_size(self, out_h: int, out_w: int) -> np.ndarray:
+        # No shapes drawn and the user didn't click "Select Entire Image"
+        # (that action adds a full-frame polygon, which lands in this list).
+        # Default to the whole frame so a plain "Green" / "Range Selection"
+        # / "Star Mask" workflow produces a usable mask instead of all-black
+        # — the usual confused-black-mask bug: user picks a type, hits
+        # Preview or OK, gets nothing, has no idea why. No cv2 needed on
+        # this branch, so we return before the cv2 guard too.
+        if not self.canvas.shapes:
+            return np.ones((out_h, out_w), dtype=np.float32)
+
         if cv2 is None:
             raise RuntimeError("OpenCV (cv2) is required for mask creation.")
 

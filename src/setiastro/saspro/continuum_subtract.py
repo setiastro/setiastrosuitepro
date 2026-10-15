@@ -1,4 +1,4 @@
-# pro/continuum_subtract.py
+#saspro/continuum_subtract.py
 from __future__ import annotations
 from setiastro.saspro.main_helpers import non_blocking_sleep
 import os

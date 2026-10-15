@@ -1,4 +1,4 @@
-# pro/abe_preset.py
+#saspro/abe_preset.py
 from __future__ import annotations
 import os
 import numpy as np
@@ -204,7 +204,7 @@ def apply_abe_via_preset(main_window, doc, preset: dict | None = None):
         try:
             layers = max(ms_cfg["band_hi"] + 1, 9)
 
-            # Protection mask from the star-inclusive image (see dialog path);
+            #sasprotection mask from the star-inclusive image (see dialog path);
             # gradient band still estimated on the starless copy below.
             mask_from = corrected
             estimate_from = corrected

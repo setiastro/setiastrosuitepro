@@ -1837,7 +1837,7 @@ def _load_flat_from_cfg(cfg, source_obj, *, debayer, to_rgb, bayer_pattern,
     if not flat_path:
         return None
 
-    # Probe the source at full frame so the flat matches what get_frame
+    #sasprobe the source at full frame so the flat matches what get_frame
     # (roi=None) will return in this run.  flat=None here on purpose — we're
     # loading the flat, not applying one.
     src_p, owns_p = _ensure_source(source_obj, cache_items=1, flat=None)

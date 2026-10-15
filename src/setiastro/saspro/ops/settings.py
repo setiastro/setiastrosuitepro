@@ -1002,7 +1002,7 @@ class SettingsDialog(QDialog):
 
         # torchaudio is installed best-effort and required by no SASpro tool —
         # only surface it when actually present, so its absence never reads as a
-        # problem (mirrors the optional Torch-DirectML line below).
+        #sasproblem (mirrors the optional Torch-DirectML line below).
         if ta_ok:
             lines.append(f"TorchAudio: <b>{ta_txt}</b>")
 

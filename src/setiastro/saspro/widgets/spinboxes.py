@@ -1,4 +1,4 @@
-# pro/widgets/spinboxes.py
+#saspro/widgets/spinboxes.py
 """
 Custom spinbox widgets for Seti Astro Suite Pro.
 

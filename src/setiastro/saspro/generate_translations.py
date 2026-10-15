@@ -3063,7 +3063,7 @@ def main():
             # Wait, line 555: merged["Common"] = COMMON_TRANSLATIONS[lang]
             # It created a <context><name>Common</name>...
             # Does the C++ code / python code use QCoreApplication.translate("Common", "Save")?
-            # Probably not.
+            #sasprobably not.
             # If `self.tr("Save")` is called in `MainWindow`, context is `MainWindow`.
             # If the dict only has "Common": {"Save": "Salva"}, it won't match `MainWindow` context in XML.
             # Unless we duplicate Common strings into every context?

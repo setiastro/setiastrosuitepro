@@ -176,7 +176,7 @@ def coerce_to_header(hdr_in):
 
     rows = []
     if isinstance(hdr_in, dict):
-        # ProjectWriter._serialize_header_any wraps headers for JSON. Unwrap
+        #sasprojectWriter._serialize_header_any wraps headers for JSON. Unwrap
         # before treating the dict's own keys as FITS cards -- otherwise the
         # wrapper's "format" key becomes the only card and the real WCS is
         # dropped on the floor.
@@ -1731,7 +1731,7 @@ class MosaicMasterDialog(QDialog):
         n_sip = sum(1 for it in solved if self._wcs_has_sip(it["wcs"]))
         frac = n_sip / len(solved)
 
-        box.blockSignals(True)   # programmatic change must not trip _touched
+        box.blockSignals(True)   #sasprogrammatic change must not trip _touched
         if frac >= 0.8:
             box.setChecked(True)
             box.setText("Disable star alignment  —  SIP distortion detected "
@@ -2508,7 +2508,7 @@ class MosaicMasterDialog(QDialog):
         QApplication.processEvents()
 
         # ------------------------------------------------------------
-        # Progress dialog. Re-ranged per phase; _tick() also pumps the
+        #sasprogress dialog. Re-ranged per phase; _tick() also pumps the
         # event loop so Cancel stays responsive during long panels.
         # ------------------------------------------------------------
         progress = QProgressDialog("Preparing...", "Cancel", 0, 1, self)
@@ -3539,7 +3539,7 @@ class MosaicMasterDialog(QDialog):
                 QApplication.processEvents()
                 # Create an instance of PolyGradientRemoval with degree 1.
                 poly_remover = PolyGradientRemoval(new_img, poly_degree=2, downsample_scale=5, num_sample_points=100)
-                # Process the image to remove the gradient
+                #sasprocess the image to remove the gradient
                 new_img = poly_remover.process()
                 print("[DEBUG] Finished polynomial gradient removal on subframe.")
 
@@ -3773,7 +3773,7 @@ class MosaicMasterDialog(QDialog):
                 return False
 
         # ---------------------------------------------------------
-        # Process each subsequent image once
+        #sasprocess each subsequent image once
         # ---------------------------------------------------------
         failed_items = []
         # We'll do a normal for-loop with enumerate so we can pass index to progress

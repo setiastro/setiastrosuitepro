@@ -1,4 +1,4 @@
-# pro/astrospike.py
+#saspro/astrospike.py
 """
 AstroSpike integration module for Seti Astro Suite Pro.
 

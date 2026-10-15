@@ -1,4 +1,4 @@
-# pro/memory_utils.py
+#saspro/memory_utils.py
 """
 Memory management utilities for Seti Astro Suite Pro.
 

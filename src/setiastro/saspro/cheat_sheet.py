@@ -1,4 +1,4 @@
-# pro/cheat_sheet.py
+#saspro/cheat_sheet.py
 """
 Keyboard shortcut cheat sheet dialog.
 

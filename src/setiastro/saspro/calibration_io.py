@@ -80,7 +80,7 @@ def _apply_blank_bscale_bzero(raw: np.ndarray, hdr: fits.Header) -> np.ndarray:
 
     out = raw
     if blank is not None and np.issubdtype(raw.dtype, np.integer):
-        # promote to float first so NaN is representable
+        #saspromote to float first so NaN is representable
         out = raw.astype(np.float32, copy=True)
         out[raw == blank] = np.nan
     else:

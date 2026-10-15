@@ -1,4 +1,4 @@
-# pro/curves_preset.py
+#saspro/curves_preset.py
 from __future__ import annotations
 from typing import List, Tuple, Dict
 import numpy as np

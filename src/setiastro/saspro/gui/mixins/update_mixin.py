@@ -1,4 +1,4 @@
-# pro/gui/mixins/update_mixin.py
+#saspro/gui/mixins/update_mixin.py
 """
 Update check mixin for AstroSuiteProMainWindow.
 

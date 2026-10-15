@@ -1,4 +1,4 @@
-# pro/log_bus.py
+#saspro/log_bus.py
 from PyQt6.QtCore import QObject, pyqtSignal
 
 class LogBus(QObject):

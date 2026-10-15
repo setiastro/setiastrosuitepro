@@ -1,4 +1,4 @@
-# pro/gui/mixins/geometry_mixin.py
+#saspro/gui/mixins/geometry_mixin.py
 """
 Geometry operations mixin for AstroSuiteProMainWindow.
 

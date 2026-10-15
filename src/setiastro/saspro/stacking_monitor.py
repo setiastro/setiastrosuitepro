@@ -797,7 +797,7 @@ class StackingMonitorDialog(QDialog):
         # a soft stop; _on_message will restart if new RUNNING ops appear.
         self._tick_timer.stop()
 
-        # Processing-time total (sum of step durations), not wall clock, so it
+        #sasprocessing-time total (sum of step durations), not wall clock, so it
         # matches the per-row Elapsed column.
         total_s = self._mmss(self._process_seconds())
 

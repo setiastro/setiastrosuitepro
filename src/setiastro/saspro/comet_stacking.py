@@ -1,4 +1,4 @@
-# pro/comet_stacking.py
+#saspro/comet_stacking.py
 from __future__ import annotations
 import os
 import sys

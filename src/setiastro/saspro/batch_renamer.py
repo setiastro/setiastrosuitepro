@@ -1,4 +1,4 @@
-# pro/batch_renamer.py
+#saspro/batch_renamer.py
 from __future__ import annotations
 
 import os

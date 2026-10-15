@@ -1,4 +1,4 @@
-# pro/texture_clarity.py
+#saspro/texture_clarity.py
 from __future__ import annotations
 import numpy as np
 

@@ -1,4 +1,4 @@
-# pro/mdi_widgets.py
+#saspro/mdi_widgets.py
 """
 MDI-related widgets and supporting classes extracted from main file.
 

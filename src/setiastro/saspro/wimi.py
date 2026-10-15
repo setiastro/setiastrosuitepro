@@ -9572,7 +9572,7 @@ class WIMIDialog(QDialog):
             self.results_tree.clear()
             query_results = []
 
-            # Process each observation in the results
+            #sasprocess each observation in the results
             for obj in limited_observations:
 
                 def safe_get(value):

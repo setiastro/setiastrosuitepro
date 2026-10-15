@@ -2,7 +2,7 @@
 
 TRANSLATIONS_DE = {
     "ABEDialog": {
-        "# sample points:": "# Probenpunkte:",
+        "# sample points:": "#sasprobenpunkte:",
         "Apply": "Anwenden",
         "Automatic Background Extraction (ABE)": "Automatische Hintergrundextraktion (ABE)",
         "Clear Exclusions": "Ausschlüsse löschen",

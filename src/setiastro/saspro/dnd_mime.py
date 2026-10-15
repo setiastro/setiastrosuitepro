@@ -1,4 +1,4 @@
-# pro/dnd_mime.py
+#saspro/dnd_mime.py
 """
 Custom MIME types used for internal drag-and-drop in Seti Astro Suite (SAS/SASpro).
 Keep these as plain strings (Qt expects str MIME type names).

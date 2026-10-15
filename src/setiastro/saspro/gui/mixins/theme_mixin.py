@@ -1,4 +1,4 @@
-# pro/gui/mixins/theme_mixin.py
+#saspro/gui/mixins/theme_mixin.py
 """
 Theme management mixin for AstroSuiteProMainWindow.
 

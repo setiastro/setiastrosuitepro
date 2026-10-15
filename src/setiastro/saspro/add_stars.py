@@ -1,4 +1,4 @@
-# pro/add_stars.py
+#saspro/add_stars.py
 from __future__ import annotations
 import os
 import numpy as np

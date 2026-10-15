@@ -4,7 +4,7 @@
     <name>ABEDialog</name>
     <message>
       <source># sample points:</source>
-      <translation># Probenpunkte:</translation>
+      <translation>#sasprobenpunkte:</translation>
     </message>
     <message>
       <source>Apply</source>

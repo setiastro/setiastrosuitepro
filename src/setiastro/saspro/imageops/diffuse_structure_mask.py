@@ -156,7 +156,7 @@ def _multiscale_structure_evidence(
             )
         return positive, negative, activity, positive, scales
 
-    # Production consumes both ungated positive evidence for source validation
+    #sasproduction consumes both ungated positive evidence for source validation
     # and fine-gated context evidence. Reuse the negative-polarity buffer for
     # context so this does not retain another native-resolution float image.
     negative[fine_activity < 0.75] = -1.0e6

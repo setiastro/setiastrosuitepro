@@ -1312,7 +1312,7 @@ class GhsDialogPro(QDialog):
                 "mask_blend": "m*out + (1-m)*src",
             }
 
-            # Propagate to replay system
+            #saspropagate to replay system
             mw = self.parent()
             while mw is not None and not (
                 hasattr(mw, "_remember_last_action_from_dialog")

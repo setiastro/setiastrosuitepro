@@ -201,7 +201,7 @@ def _make_executor(max_workers: int):
     - In dev (non-frozen), you can still use processes if you want. For
       now we keep it simple and always use threads – safer everywhere.
     """
-    # Processes give real multi-core; the thread pool serialized every solve
+    #sasprocesses give real multi-core; the thread pool serialized every solve
     # through the GIL + _AA_LOCK and pinned cv2 to one thread process-wide.
     # Frozen builds re-exec the EXE per worker, so they use processes only once
     # freeze_support() is wired in the entry AND _ALIGN_USE_PROCS_FROZEN is True.
@@ -2808,7 +2808,7 @@ _QUARTER_TURN_HALF_WIDTH_DEG = 45.0
 
 # Fraction of (W, H) that |tx|, |ty| must EACH exceed for the translation
 # test to flag a flip. A pure 180° point reflection in an H×W canvas
-# produces tx ≈ (W - 1) and ty ≈ (H - 1), so magnitudes close to 1.0*W/H.
+#sasproduces tx ≈ (W - 1) and ty ≈ (H - 1), so magnitudes close to 1.0*W/H.
 # A normal frame-to-frame drift is a few hundred px — well under 0.5
 # fractions of the canvas even on short-focal rigs. 0.5 is wide enough
 # to catch borderline cases where the solver absorbed part of the flip
@@ -5157,8 +5157,8 @@ class StarRegistrationThread(QThread):
             self.alignment_matrices = {os.path.normpath(f): IDENTITY_2x3.copy() for f in self.original_files}
             self.delta_transforms = {}
 
-            # Progress totals (units = number of worker completions across passes)
-            # Progress totals:
+            #sasprogress totals (units = number of worker completions across passes)
+            #sasprogress totals:
             #   passes = N * passes
             #   finalize = N
             N = len(self.original_files)
@@ -6469,7 +6469,7 @@ class StarRegistrationWindow(QWidget):
         # Hidden until a view target is added.
         self.view_output_group.setVisible(False)
 
-        # Progress + start
+        #sasprogress + start
         self.progress_label = QLabel("Status: Waiting…")
         self.progress_label.setStyleSheet("color: blue; font-weight: bold;")
 
@@ -7097,7 +7097,7 @@ class StarRegistrationWindow(QWidget):
 
         # Dispatch to the right thread for the chosen Method. Both threads
         # expose the same signals (progress_update / registration_complete /
-        # progress_step) and populate self.thread.file_key_to_current_path
+        #sasprogress_step) and populate self.thread.file_key_to_current_path
         # with the same convention, so _route_view_outputs_to_docs,
         # _enqueue_progress and registration_finished are oblivious to
         # which one actually ran.

@@ -1,4 +1,4 @@
-# pro/widgets/wavelet_utils.py
+#saspro/widgets/wavelet_utils.py
 """
 Shared wavelet utilities for à-trous decomposition and reconstruction.
 

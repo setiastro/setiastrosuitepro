@@ -253,7 +253,7 @@ class TiledImageCanvas(ViewportImageCanvas):
                 for tx in range(tx0, tx1 + 1):
                     pm = self._get_tile(tx, ty)
                     if pm is None:
-                        continue          # proxy shows through
+                        continue          #sasproxy shows through
                     dx = (tx * TILE_DIM) * scale
                     dy = (ty * TILE_DIM) * scale
                     p.drawPixmap(

@@ -2994,7 +2994,7 @@ def _extract_stars_only(original_rgb: np.ndarray,
 
 
 # ------------------------------------------------------------
-# Proc runner & dialog (merged stdout/stderr)
+#sasproc runner & dialog (merged stdout/stderr)
 # ------------------------------------------------------------
 class _ProcThread(QThread):
     output_signal = pyqtSignal(str)

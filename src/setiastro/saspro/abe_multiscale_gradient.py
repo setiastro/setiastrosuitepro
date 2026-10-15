@@ -356,7 +356,7 @@ def multiscale_gradient_correct(
     protect_blend_mask=None,  # bool/float HxW, True/1 = keep ORIGINAL pixels
                               # at APPLY time (e.g. a hand-drawn exclusion
                               # polygon around a galaxy). The multiscale
-                              # process runs on the whole image; this is just
+                              #sasprocess runs on the whole image; this is just
                               # a final composite so the protected region is
                               # taken straight from the untouched source.
     protect_feather_frac=0.10,  # exclusion-edge feather as a FRACTION of the
@@ -540,7 +540,7 @@ def multiscale_gradient_correct(
     # 0.0722 blue weight, so the luma band stayed small and the division
     # left the halo almost untouched. Running the pipeline per channel on
     # RGB inputs gives each channel its own gradient map, so a blue halo
-    # produces a strong gradient in the blue plane and gets divided out
+    #sasproduces a strong gradient in the blue plane and gets divided out
     # there; the R and G planes see very little and are barely affected.
     # The protection mask stays single-channel (built from luma / mask_from
     # above) — "signal regions" are brightness-defined and the same mask is
@@ -588,7 +588,7 @@ def multiscale_gradient_correct(
 
         # Three workers, one per channel. map() returns results in the
         # same order as the inputs, so grads[0]=R, [1]=G, [2]=B naturally.
-        # Progress callbacks from inside workers are intentionally NOT
+        #sasprogress callbacks from inside workers are intentionally NOT
         # emitted — a GUI progress_cb may not be thread-safe. The single
         # aggregate message above is enough.
         with ThreadPoolExecutor(max_workers=3) as _pool:

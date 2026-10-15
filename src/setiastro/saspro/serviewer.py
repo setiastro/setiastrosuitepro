@@ -66,7 +66,7 @@ class _TrimExportWorker(QObject):
         try:
             from setiastro.saspro.imageops.serloader import export_trimmed_to_ser
 
-            # Progress callback executed from worker thread.
+            #sasprogress callback executed from worker thread.
             # It emits a Qt signal (thread-safe), and checks cancel.
             def _cb(done: int, total: int) -> None:
                 if self._cancel_evt.is_set():
@@ -1560,7 +1560,7 @@ class SERViewer(QDialog):
         self.btn_play.setEnabled(False)
         self.btn_stack.setEnabled(False)
 
-        # Progress dialog
+        #sasprogress dialog
         pd = QProgressDialog("Exporting trimmed SER…", "Cancel", 0, total, self)
         pd.setWindowTitle("Saving Trimmed SER")
         pd.setWindowModality(Qt.WindowModality.WindowModal)
@@ -1599,7 +1599,7 @@ class SERViewer(QDialog):
                 pass
         pd.canceled.connect(_on_cancel)
 
-        # Progress updates (runs on GUI thread)
+        #sasprogress updates (runs on GUI thread)
         @pyqtSlot(int, int)
         def _on_progress(done: int, tot: int):
             try:

@@ -959,7 +959,7 @@ class ObjectSearchDialog(QDialog):
         self._results_list.itemDoubleClicked.connect(self._on_item_selected)
         outer.addWidget(self._results_list, 1)
 
-        # Progress bar (hidden until needed)
+        #sasprogress bar (hidden until needed)
         from PyQt6.QtWidgets import QProgressBar
         self._progress = QProgressBar()
         self._progress.setRange(0, 100)

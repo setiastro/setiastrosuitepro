@@ -1,4 +1,4 @@
-# pro/gui/mixins/menu_mixin.py
+#saspro/gui/mixins/menu_mixin.py
 """
 Menu management mixin for AstroSuiteProMainWindow.
 """

@@ -1,4 +1,4 @@
-# pro/status_log_dock.py
+#saspro/status_log_dock.py
 from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QTextCursor
 from PyQt6.QtWidgets import (

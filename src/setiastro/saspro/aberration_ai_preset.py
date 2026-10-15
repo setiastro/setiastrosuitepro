@@ -1,4 +1,4 @@
-# pro/aberration_ai_preset.py
+#saspro/aberration_ai_preset.py
 from __future__ import annotations
 import os
 import time
@@ -53,7 +53,7 @@ def run_aberration_ai_via_preset(main, preset: dict | None = None, doc=None):
     overlap  = int(p.get("overlap", 64))
     border_px= int(p.get("border_px", 10))
 
-    # providers
+    #sasproviders
     if IS_APPLE_ARM:
         providers = ["CPUExecutionProvider"]
         auto_gpu = False

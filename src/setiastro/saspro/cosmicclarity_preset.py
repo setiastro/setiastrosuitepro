@@ -1,4 +1,4 @@
-# pro/cosmicclarity_preset.py
+#saspro/cosmicclarity_preset.py
 from __future__ import annotations
 from setiastro.saspro.main_helpers import non_blocking_sleep
 import os

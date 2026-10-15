@@ -1,4 +1,4 @@
-# pro/gui/mixins/toolbar_mixin.py
+#saspro/gui/mixins/toolbar_mixin.py
 """
 Toolbar and action management mixin for AstroSuiteProMainWindow.
 """

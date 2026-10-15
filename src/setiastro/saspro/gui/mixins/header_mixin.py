@@ -1,4 +1,4 @@
-# pro/gui/mixins/header_mixin.py
+#saspro/gui/mixins/header_mixin.py
 """
 Header management mixin for AstroSuiteProMainWindow.
 

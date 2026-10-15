@@ -1,4 +1,4 @@
-# pro/debayer.py
+#saspro/debayer.py
 from __future__ import annotations
 import numpy as np
 from typing import Optional, Tuple
@@ -482,7 +482,7 @@ class DebayerDialog(QDialog):
         hm.addWidget(make_help_button("debayer", self))
         v.addWidget(self.method_group)
 
-        # progress + buttons
+        #sasprogress + buttons
         self.status = QLabel("")
         self.bar = QProgressBar(self); self.bar.setRange(0, 100)
         v.addWidget(self.status)

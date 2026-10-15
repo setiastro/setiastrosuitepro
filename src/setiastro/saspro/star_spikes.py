@@ -1,4 +1,4 @@
-# pro/tools/star_spikes.py
+#saspro/tools/star_spikes.py
 from __future__ import annotations
 import numpy as np
 import math
@@ -488,7 +488,7 @@ class StarSpikesDialogPro(QDialog):
             spikes_mono = 0.2126*canvas[...,0] + 0.7152*canvas[...,1] + 0.0722*canvas[...,2]
             spiked_lin = np.clip(lin + spikes_mono, 0, 1)
 
-        # protect by active mask (document-level)
+        #sasprotect by active mask (document-level)
         if spiked_lin.ndim == 3:
             spiked_final = np.empty_like(spiked_lin)
             for c in range(3):

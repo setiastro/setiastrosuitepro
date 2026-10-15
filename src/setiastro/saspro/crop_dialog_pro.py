@@ -1,4 +1,4 @@
-# pro/crop_dialog_pro.py
+#saspro/crop_dialog_pro.py
 from __future__ import annotations
 
 import math

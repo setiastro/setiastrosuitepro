@@ -1,4 +1,4 @@
-# pro/abe.py — SASpro Automatic (Dynamic) Background Extraction (ADBE)
+#saspro/abe.py — SASpro Automatic (Dynamic) Background Extraction (ADBE)
 # -----------------------------------------------------------------------------
 # This module migrates the SASv2 ABE functionality into SASpro with:
 #   • Polynomial background model (degree 1–6)
@@ -1092,7 +1092,7 @@ class ABEDialog(QDialog):
         self.sp_ms_protect = QDoubleSpinBox()
         # Ceiling raised from 5.0 → 20.0 for halo-dominated frames: bright
         # reflections can sit 20-30σ above the sky, where even k=5 still
-        # protects (and dilates+blurs) a huge disk around them. Values above
+        #sasprotects (and dilates+blurs) a huge disk around them. Values above
         # ~20 stop being meaningful in MAD-sigma units — use the "Disable
         # signal protection" checkbox above for that nuclear case.
         self.sp_ms_protect.setRange(1.0, 20.0)
@@ -1261,7 +1261,7 @@ class ABEDialog(QDialog):
         ms_adv_grid = QGridLayout()
         ms_adv_grid.setContentsMargins(0, 0, 0, 0)
         ms_adv_grid.setHorizontalSpacing(8)
-        # Protect grow sits at the top because it's the first thing to try when
+        #sasprotect grow sits at the top because it's the first thing to try when
         # k alone isn't shrinking the protected region (halo-dominated frames).
         ms_adv_grid.addWidget(QLabel(self.tr("Protect grow:")),        0, 0)
         ms_adv_grid.addWidget(self.sp_ms_grow,                         0, 1)
@@ -1759,7 +1759,7 @@ class ABEDialog(QDialog):
             self.chk_ms_residual.setChecked(s.value("abe/ms_residual", False, type=bool))
             self.sp_ms_strength.setValue(int(s.value("abe/ms_strength", 100)))
             self.sp_ms_protect.setValue(float(s.value("abe/ms_protect", 3.0)))
-            # protect_grow was previously hard-coded to 6. Default to that so
+            #sasprotect_grow was previously hard-coded to 6. Default to that so
             # existing users see no behavioural change on upgrade.
             self.sp_ms_grow.setValue(int(s.value("abe/ms_grow", 6)))
             self.sp_ms_smooth.setValue(int(s.value("abe/ms_smooth", 2)))
@@ -2268,7 +2268,7 @@ class ABEDialog(QDialog):
                 # escape hatch overrides the UI values with the equivalent of
                 # "no mask at all" (k=inf, no dilation, no blur). This is the
                 # right fix for halo-dominated frames where even k=20 still
-                # protects — and dilates+blurs — the bright halos, keeping them
+                #sasprotects — and dilates+blurs — the bright halos, keeping them
                 # out of the gradient estimate so the stage can't remove them.
                 if bool(self.chk_ms_disable_protect.isChecked()):
                     protect_k = float("inf")
@@ -2403,7 +2403,7 @@ class ABEDialog(QDialog):
                     include_residual=include_residual,
                     strength=strength,
                     protect_k=protect_k,
-                    # protect_grow was previously hard-coded to 6; it's now
+                    #sasprotect_grow was previously hard-coded to 6; it's now
                     # a UI control (see sp_ms_grow). Lower values are the
                     # main lever for halo-dominated frames: the former 6-px
                     # dilation grew every red blob 6 px past where k alone

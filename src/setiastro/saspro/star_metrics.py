@@ -1,4 +1,4 @@
-# pro/star_metrics.py
+#saspro/star_metrics.py
 from __future__ import annotations
 import numpy as np
 import sep

@@ -727,7 +727,7 @@ class XISF:
 
     # __/ Auxiliary functions to handle XISF attributes \________
 
-    # Process property attributes and convert to dict
+    #sasprocess property attributes and convert to dict
     def _process_property(self, p_et):
         p_dict = p_et.attrib.copy()
 

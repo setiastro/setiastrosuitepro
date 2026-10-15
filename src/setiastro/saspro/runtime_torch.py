@@ -800,7 +800,7 @@ def _diagnose_win_torch_dlls(site: Path) -> str:
     lines = []
 
     # If the compiled extension is built for a different Python than this
-    # process, the "missing dependency" is the interpreter DLL itself
+    #sasprocess, the "missing dependency" is the interpreter DLL itself
     # (pythonXY.dll), not a shadowed/absent CRT. Report that and stop -- the
     # resident-CRT walk below would only mislead here.
     _mm = _abi_mismatch(site)
@@ -2391,7 +2391,7 @@ def import_torch(
         # After a fresh install, skip the in-process import entirely.
         # The first in-process import after a cold install can fail on some cp314
         # builds due to torch.hub side-effect imports that don't work in this
-        # process context. The marker is written and the next launch will use
+        #sasprocess context. The marker is written and the next launch will use
         # the fast marker path which works cleanly.
         status_cb(
             "[RT] Hardware Acceleration installed successfully. "

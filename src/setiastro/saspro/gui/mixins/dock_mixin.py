@@ -1,4 +1,4 @@
-# pro/gui/mixins/dock_mixin.py
+#saspro/gui/mixins/dock_mixin.py
 """
 Dock management mixin for AstroSuiteProMainWindow.
 

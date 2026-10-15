@@ -1984,7 +1984,7 @@ class DitherAnalysisWindow(QWidget):
 
         print(f"[DitherAnalysis] transforms non-None: {sum(1 for t in transforms if t is not None)}")
 
-        # Prompt to save the .sasd before cleanup
+        #sasprompt to save the .sasd before cleanup
         sasd_src = os.path.join(
             getattr(self._reg_thread, "output_directory",
                     getattr(self, "_temp_dir", "")),

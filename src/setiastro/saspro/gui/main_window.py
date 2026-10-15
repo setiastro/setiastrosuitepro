@@ -1,4 +1,4 @@
-#pro.gui.main_window.py
+#saspro.gui.main_window.py
 from setiastro.saspro.runtime_torch import add_runtime_to_sys_path, _ban_shadow_torch_paths, _purge_bad_torch_from_sysmodules
 add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
@@ -990,7 +990,7 @@ class AstroSuiteProMainWindow(
         else:
 
             # No dedicated roi_header: this is either a "plain" doc or a
-            # promoted ROI doc. Do NOT try to re-derive WCS from the header,
+            #saspromoted ROI doc. Do NOT try to re-derive WCS from the header,
             # since it may contain non-WCS strings like:
             #   "Calibrated: bias/dark sub, flat division."
             #
@@ -2082,7 +2082,7 @@ class AstroSuiteProMainWindow(
                 image_manager=getattr(self, "image_manager", None), parent=self
             )
 
-        # progress ("thinking") dialog
+        #sasprogress ("thinking") dialog
         dlg = QProgressDialog("Loading project...", "", 0, 0, self)
         dlg.setWindowTitle("Loading")
         try:
@@ -10825,7 +10825,7 @@ class AstroSuiteProMainWindow(
         
         # Check if we have already faded out
         if getattr(self, "_fade_out_complete", False):
-            # Proceed with shutdown
+            #sasproceed with shutdown
             self._do_shutdown_steps(e)
             return
 

@@ -20935,7 +20935,7 @@ class StackingSuiteDialog(QDialog):
         # Attach the resolved filter override to each frame_info so both the GPU
         # and CPU calibration paths can inject it into the saved header. The
         # tree/group filter value is already correct for files ingested via
-        # process_fits_header (which now consults _path_filter_override), but the
+        #sasprocess_fits_header (which now consults _path_filter_override), but the
         # source FITS/XISF header itself may still be blank — so we carry the
         # resolved name forward here.
         try:
@@ -23264,7 +23264,7 @@ class StackingSuiteDialog(QDialog):
             if hasattr(self, name):
                 setattr(self, name, None)
 
-        # Proactively clear any lru_cache’d helpers if available
+        #sasproactively clear any lru_cache’d helpers if available
         def _cc(f):
             try:
                 if hasattr(f, "cache_clear"): f.cache_clear()
@@ -29678,7 +29678,7 @@ class StackingSuiteDialog(QDialog):
                 _open_dither()
         else:
             # Fallback: the old plain QMessageBox path, used when we can't
-            # produce any summary (e.g. headers all unreadable).
+            #sasproduce any summary (e.g. headers all unreadable).
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle(self.tr("Post-Alignment Complete"))
             msg_box.setText(message)
@@ -33444,7 +33444,7 @@ class StackingSuiteDialog(QDialog):
             #     measurement path below.
             # Before this split the chunk loop re-measured EVERY aligned
             # frame on a small preview even when the originals were already
-            # processed, which produced the "⚡ Measured 245/245 originals
+            #sasprocessed, which produced the "⚡ Measured 245/245 originals
             # → 📦 Measuring chunk 1/7…" double-pass the user flagged.
             # ─────────────────────────────────────────────────────────────
             twinned_frames = []
@@ -34304,7 +34304,7 @@ class StackingSuiteDialog(QDialog):
         # --- choose depositor ONCE (and log it) ---
         # Always use footprint/kernel drizzle for drizzle output.
         # Point deposit is not valid for 2x/3x drizzle.
-        # Projective deposit: full 3x3 transform, no pixel pre-warp (correct
+        #sasprojective deposit: full 3x3 transform, no pixel pre-warp (correct
         # drizzle for affine AND homography; required for CFA sparse planes).
         deposit_func = drizzle_deposit_kernel_mono_proj if is_mono else drizzle_deposit_color_kernel_proj
         kinf = ["square", "circular", "gaussian"][_kcode]

@@ -1,4 +1,4 @@
-# pro/widgets/preview_dialogs.py
+#saspro/widgets/preview_dialogs.py
 """
 Centralized preview dialog widgets for Seti Astro Suite Pro.
 """

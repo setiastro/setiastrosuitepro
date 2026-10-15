@@ -1,4 +1,4 @@
-# pro/rgbalign.py
+#saspro/rgbalign.py
 from __future__ import annotations
 
 import os
@@ -739,7 +739,7 @@ class RGBAlignDialog(QDialog):
         self.chk_new_doc.setChecked(True)
         lay.addWidget(self.chk_new_doc)
 
-        # progress
+        #sasprogress
         self.progress_label = QLabel("Idle.")
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)

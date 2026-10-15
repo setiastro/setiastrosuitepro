@@ -1437,7 +1437,7 @@ def _equalize_radial(tiles: List[Tile], cfg: SurfaceMosaicConfig,
             np.add.at(wac, bi, ct)
         prof = np.where(wac > 0, acc / np.maximum(wac, 1e-9), 0.0)
         # per-tile GAIN-ONLY robust fit: weighted median of per-bin ratios
-        # profile/tile. A median of ratios shrugs off glint-corrupted bins where
+        #sasprofile/tile. A median of ratios shrugs off glint-corrupted bins where
         # a least-squares would chase them; no bias term, so the sky (which never
         # enters the bins anyway) cannot be lifted.
         for pos, (bi, md, ct) in tile_bins.items():
