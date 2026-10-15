@@ -501,7 +501,19 @@ def _qimage_to_rgb_array(img: QImage) -> np.ndarray:
 
 
 def _rgb_array_to_qimage(rgb: np.ndarray) -> QImage:
-    arr = np.ascontiguousarray(np.clip(rgb, 0, 255).astype(np.uint8))
+    # Guard: QImage(Format_RGB888) assumes a 3-channel buffer with stride 3*w.
+    # Passing a mono (H, W) or (H, W, 1) buffer here means Qt reads 3x the
+    # bytes available -> native segfault, no Python traceback. We now reject
+    # mis-shaped inputs with a clear error so any future caller that forgets
+    # the mono-skip gets a traceback instead of taking the app down.
+    arr = np.asarray(rgb)
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        raise ValueError(
+            f"_rgb_array_to_qimage expects an (H, W, 3) uint8 array; "
+            f"got shape {arr.shape}, dtype {arr.dtype}. "
+            f"Grayscale data must be widened to 3 channels or skipped by the caller."
+        )
+    arr = np.ascontiguousarray(np.clip(arr, 0, 255).astype(np.uint8))
     h, w = arr.shape[:2]
     return QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
 
@@ -621,7 +633,24 @@ def convert_float_rgb_with_lcms(
     rendering_intent: object = DEFAULT_RENDERING_INTENT,
     black_point_compensation: bool = True,
 ) -> np.ndarray:
-    rgb8 = np.ascontiguousarray((np.clip(np.asarray(arr, dtype=np.float32), 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
+    # Option (a): grayscale has no chromaticity to re-map between ICC spaces,
+    # so skip the conversion entirely for mono input. This also prevents a
+    # native segfault in _rgb_array_to_qimage, which assumes a 3-channel
+    # buffer -- feeding it an (H, W) or (H, W, 1) array makes Qt read 3x the
+    # bytes available and takes the whole app down. The crash reproducer was
+    # "save mono JPEG with export color space = sRGB" when the working space
+    # is Display P3 (so source_key != target_key and this function actually
+    # runs). Display P3 export short-circuits upstream in
+    # _maybe_convert_export_profile, which is why it never crashed.
+    arr_in = np.asarray(arr, dtype=np.float32)
+    if arr_in.ndim == 2 or (arr_in.ndim == 3 and arr_in.shape[2] == 1):
+        return arr_in
+
+    # Drop alpha / extra channels before handing to the 3-channel QImage path.
+    if arr_in.ndim == 3 and arr_in.shape[2] > 3:
+        arr_in = arr_in[..., :3]
+
+    rgb8 = np.ascontiguousarray((np.clip(arr_in, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
     img = _rgb_array_to_qimage(rgb8)
     converted = convert_qimage_with_lcms(
         img,

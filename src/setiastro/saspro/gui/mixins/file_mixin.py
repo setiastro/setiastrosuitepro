@@ -1,4 +1,4 @@
-# pro/gui/mixins/file_mixin.py
+# saspro/gui/mixins/file_mixin.py
 """
 File operations mixin for AstroSuiteProMainWindow.
 """

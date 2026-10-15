@@ -1827,30 +1827,56 @@ class ShortcutManager:
             if replace_existing:
                 self.clear()  # clears both UI + settings keys, keeps manager ready
 
-            # Build widgets (shortcuts) as before
-            for it in items:
-                cid = it.get("command_id")
-                if not cid:
-                    continue
-                sid    = it.get("id") or uuid.uuid4().hex
-                x      = int(it.get("x", 10))
-                y      = int(it.get("y", 10))
-                label  = it.get("label") or self._default_label_for(cid)
+            # Suppress intermediate saves while we build the shortcut set.
+            # Without this guard, add_shortcut() calls save_shortcuts() after
+            # every single item, and each of those saves reads w.pos(). If
+            # anything triggers reflow_into_view() between items (a file-
+            # dialog teardown, a transient resize), already-added widgets
+            # end up at clamped positions and get persisted that way. By
+            # flipping _loading we route all persistence to the single
+            # save_shortcuts() call at the end, which now uses _desired_pos.
+            self._loading = True
+            try:
+                for it in items:
+                    cid = it.get("command_id")
+                    if not cid:
+                        continue
+                    sid    = it.get("id") or uuid.uuid4().hex
+                    x      = int(it.get("x", 10))
+                    y      = int(it.get("y", 10))
+                    label  = it.get("label") or self._default_label_for(cid)
 
-                self.add_shortcut(cid, QPoint(x, y), label=label, shortcut_id=sid)
+                    # add_shortcut may hand us a fresh sid if the file's sid
+                    # was already live on the canvas (merge-mode collision);
+                    # use the returned sid for the preset lookup so it lands
+                    # on the shortcut we actually just created.
+                    actual_sid = self.add_shortcut(
+                        cid, QPoint(x, y), label=label, shortcut_id=sid
+                    ) or sid
 
-                # Restore the inlined per-instance preset (written by
-                # _collect_live_items on export) so a .sass round-trip keeps it.
-                pr = it.get("preset")
-                if isinstance(pr, dict) and pr:
-                    w = self.widgets.get(sid)
-                    if w and not _is_dead(w):
-                        try:
-                            w._save_preset(pr)
-                        except Exception:
-                            pass
+                    # Restore the inlined per-instance preset (written by
+                    # _collect_live_items on export) so a .sass round-trip keeps it.
+                    pr = it.get("preset")
+                    if isinstance(pr, dict) and pr:
+                        w = self.widgets.get(actual_sid)
+                        if w and not _is_dead(w):
+                            try:
+                                w._save_preset(pr)
+                            except Exception:
+                                pass
+            finally:
+                self._loading = False
 
-            # Persist shortcuts to QSettings
+            # If the file was exported from a larger canvas than the current
+            # one, some shortcuts were just placed off-screen. Clamp them
+            # into the viewport for display, keeping _desired_pos untouched
+            # so they spring back when the window is enlarged again.
+            try:
+                self.reflow_into_view()
+            except Exception:
+                pass
+
+            # Persist shortcuts to QSettings (single write, using _desired_pos)
             self.save_shortcuts()
 
             # NEW: Restore function bundle definitions + chips
@@ -1909,27 +1935,91 @@ class ShortcutManager:
             return command_id
         return (act.text() or act.toolTip() or command_id).strip() or command_id
 
+    def _find_free_position(self, w: QWidget, pos: QPoint) -> QPoint:
+        """Return a point near `pos` where a widget of w's size will not
+        overlap any existing shortcut. If `pos` is already free the point
+        is returned unchanged; otherwise we cascade outward (diagonally
+        first, then axis-aligned, then anti-diagonal) in widget-sized
+        steps, keeping candidates inside the viewport when it's realized.
+        Falls back to `pos` after a bounded search so we never spin."""
+        size = w.size()
+        others = [o.geometry() for sid, o in self.widgets.items()
+                  if not _is_dead(o) and o is not w]
+
+        def collides(r: QRect) -> bool:
+            return any(r.intersects(g) for g in others)
+
+        if not collides(QRect(pos, size)):
+            return QPoint(pos)
+
+        step = max(24, max(size.width(), size.height()) // 2 + 8)
+        vp = self._viewport_rect()
+        has_vp = vp.width() > 0 and vp.height() > 0
+
+        for i in range(1, 60):
+            for dx, dy in (
+                ( step * i,  step * i),  # down-right (classic cascade)
+                ( step * i,         0),  # right
+                (        0,  step * i),  # down
+                (-step * i,  step * i),  # down-left
+                ( step * i, -step * i),  # up-right
+                (-step * i,         0),  # left
+                (        0, -step * i),  # up
+                (-step * i, -step * i),  # up-left
+            ):
+                cand = QPoint(pos.x() + dx, pos.y() + dy)
+                if has_vp:
+                    if (cand.x() < 0 or cand.y() < 0 or
+                        cand.x() + size.width()  > vp.width() or
+                        cand.y() + size.height() > vp.height()):
+                        continue
+                if not collides(QRect(cand, size)):
+                    return cand
+
+        # Give up gracefully. reflow_into_view() may still clamp this later.
+        return QPoint(pos)
+
     def add_shortcut(self,
                      command_id: str,
                      pos: QPoint,
                      *,
                      label: Optional[str] = None,
-                     shortcut_id: Optional[str] = None):
+                     shortcut_id: Optional[str] = None) -> Optional[str]:
         """
         Always creates a NEW instance (multiple per command_id allowed).
+
+        Returns the sid actually used, or None if the command is unknown.
+        Callers that need to look the new widget back up (to attach a
+        per-instance preset, for example) must use the returned sid, not
+        the one they passed in — see the collision guard below.
         """
         act = self.registry.get(command_id)
         if not act:
-            return
+            return None
 
         sid = shortcut_id or uuid.uuid4().hex
+        # Never let a caller-supplied id silently overwrite a live entry.
+        # Doing so would leave the old QToolButton on the canvas as an
+        # un-tracked child: still visible, still on top of the hit-test
+        # stack, still eating mouse events — but gone from self.widgets,
+        # which also hides it from _find_free_position's overlap check so
+        # the replacement lands exactly on top of it. This is what makes
+        # merged imports "swallow" clicks for the pre-existing shortcuts.
+        while sid in self.widgets:
+            sid = uuid.uuid4().hex
         lbl = (label or self._default_label_for(command_id)).strip() or command_id
 
         ico = self._icon_for_command(command_id, act)
         w = ShortcutButton(self, sid, command_id, ico, lbl, self.canvas)
         w.adjustSize()
-        w.move(pos)
-        w._desired_pos = QPoint(pos)   # remember intended spot for reflow/persist
+        # Nudge off any existing shortcut this would land on top of (import
+        # merge, repeated toolbar drops on the same spot, history drag onto
+        # an occupied cell). User-initiated drags go through move_selected_by
+        # and are left alone — if the user drops on top of another chip,
+        # that's their call.
+        free_pos = self._find_free_position(w, pos)
+        w.move(free_pos)
+        w._desired_pos = QPoint(free_pos)   # remember intended spot for reflow/persist
         w.show()
 
         # when the C++ object dies, clean maps using the SID
@@ -1937,6 +2027,7 @@ class ShortcutManager:
 
         self.widgets[sid] = w
         self.save_shortcuts()
+        return sid
 
     def add_shortcut_from_payload(self, payload: dict, pos: QPoint):
         """
@@ -1972,9 +2063,9 @@ class ShortcutManager:
         # Normal single-shortcut creation
         sid = uuid.uuid4().hex
         label = self._default_label_for(cid)
-        self.add_shortcut(cid, pos, label=label, shortcut_id=sid)
+        actual_sid = self.add_shortcut(cid, pos, label=label, shortcut_id=sid) or sid
 
-        w = self.widgets.get(sid)
+        w = self.widgets.get(actual_sid)
         if w and not _is_dead(w):
             try:
                 w._save_preset(preset)
@@ -2008,9 +2099,11 @@ class ShortcutManager:
             sid = uuid.uuid4().hex
             label = self._default_label_for(scid)
             step_pos = QPoint(pos.x() + dx * made, pos.y() + dy * made)
-            self.add_shortcut(scid, step_pos, label=label, shortcut_id=sid)
+            actual_sid = self.add_shortcut(
+                scid, step_pos, label=label, shortcut_id=sid
+            ) or sid
 
-            w = self.widgets.get(sid)
+            w = self.widgets.get(actual_sid)
             if w and not _is_dead(w):
                 try:
                     w._save_preset(spreset)
@@ -2049,13 +2142,21 @@ class ShortcutManager:
                 # Do NOT filter on isVisible(): a freshly created shortcut whose
                 # top-level window hasn't been shown yet reports not-visible and
                 # would be silently dropped, persisting an empty/partial set.
-                p = w.pos()
+                #
+                # Persist the USER'S INTENDED position (_desired_pos), not the
+                # live w.pos(). After a reflow clamp (viewport shrink), w.pos()
+                # is the on-screen clamped position while _desired_pos still
+                # holds the real placement. Saving w.pos() here slowly bakes
+                # clamped positions into QSettings, which then leak into every
+                # subsequent export and show up as "garbled" positions when
+                # the file is re-imported into a differently-sized canvas.
+                desired = getattr(w, "_desired_pos", None) or w.pos()
                 data.append({
                     "id": sid,
                     "command_id": w.command_id,
                     "label": w.text(),
-                    "x": p.x(),
-                    "y": p.y(),
+                    "x": int(desired.x()),
+                    "y": int(desired.y()),
                 })
             except RuntimeError:
                 self.widgets.pop(sid, None)
