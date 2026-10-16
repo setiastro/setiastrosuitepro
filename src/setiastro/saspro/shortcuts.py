@@ -1667,9 +1667,35 @@ class ShortcutManager:
             return self.trigger(command_id)
 
     def _on_widget_destroyed(self, sid: str):
-        # Called from QObject.destroyed — never touch the widget, just clean maps
-        self.widgets.pop(sid, None)
-        self.selected.discard(sid)
+        # Called from QObject.destroyed — never touch the widget, just clean maps.
+        #
+        # Defensive sid-identity guard: pop ONLY if the widget currently
+        # tracked at `sid` is the one actually being destroyed. Qt's
+        # destroyed signal fires from the widget being destroyed, so
+        # self.sender() points at it (even though its C++ side is going
+        # away); comparing by identity to the current dict entry means a
+        # stale deferred-destroy call can never accidentally evict a
+        # newer widget that happens to share the sid.
+        #
+        # The main clear() path disconnects these signals before scheduling
+        # deletion, so this guard is normally redundant. It's here as a
+        # catch-all for any future deferred-delete site that forgets.
+        current = self.widgets.get(sid)
+        try:
+            sender = self.sender()
+        except Exception:
+            sender = None
+        if current is None or sender is None or current is sender:
+            self.widgets.pop(sid, None)
+            self.selected.discard(sid)
+        else:
+            # Stale callback for a sid that's since been reassigned. Leave
+            # the current entry alone.
+            try:
+                self._debug(f"_on_widget_destroyed: stale callback for sid={sid}, "
+                            f"current widget is a different object; ignoring.")
+            except Exception:
+                pass
 
     def _collect_live_items(self) -> list[dict]:
         """
@@ -2663,10 +2689,38 @@ class ShortcutManager:
 
 
     def clear(self):
-      
         for sid, w in list(self.widgets.items()):
             try:
                 if not _is_dead(w):
+                    # CRITICAL: disconnect destroyed BEFORE scheduling the
+                    # delete. deleteLater() is deferred — the actual Qt
+                    # destruction fires one event-loop tick later and emits
+                    # 'destroyed', which runs _on_widget_destroyed(sid) and
+                    # pops that sid from self.widgets.
+                    #
+                    # If a REPLACE import follows clear() (same transaction,
+                    # before the event loop runs), the import loop re-adds
+                    # widgets AT THE SAME SIDS the .sass file carries — and
+                    # a .sass file that was previously exported from this
+                    # install carries exactly the sids we just scheduled
+                    # for deletion. So the stale destroyed signals fire
+                    # with sids that now point to BRAND-NEW widgets, pop
+                    # them from self.widgets, and leave them as orphan
+                    # QToolButtons: still parented to the canvas, still
+                    # visible, still on top of the hit-test stack — but
+                    # untracked. Hence the "corrupted icons, can't click,
+                    # can't select" bug on import+Replace.
+                    #
+                    # Disconnecting here is the surgical fix: when the
+                    # deferred destruction finally runs, no slot is attached,
+                    # so no dict mutation happens. Individual deletions
+                    # (delete_by_id) and normal widget lifecycle are
+                    # unaffected — they pop by sid BEFORE deleteLater(),
+                    # so a late destroyed call is a harmless no-op.
+                    try:
+                        w.destroyed.disconnect()
+                    except Exception:
+                        pass
                     w.hide()
                     try:
                         w.setParent(None)   # ← detach from canvas immediately
