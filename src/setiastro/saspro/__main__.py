@@ -98,7 +98,12 @@ def entry(argv: list[str] | None = None) -> int:
 
     from setiastro.saspro.gui_entry import main as gui_main
     _minimize_console_if_owned()
-    return int(gui_main(argv))
+    # We already did the single-instance handoff above with the raw (unstripped)
+    # argv, so pass _skip_handoff=True to stop gui_entry.main from running its
+    # OWN handoff on the cleaned argv — that second call would re-probe the
+    # running primary without --new-instance in its view of the args, hand off
+    # again, and silently exit the new instance the user actually asked for.
+    return int(gui_main(argv, _skip_handoff=True))
 
 def main(argv: list[str] | None = None) -> int:
     return entry(argv)

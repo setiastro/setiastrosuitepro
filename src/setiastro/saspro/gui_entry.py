@@ -1389,7 +1389,7 @@ def _init_opengl_before_qapp():
     QSurfaceFormat.setDefaultFormat(fmt)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
     """
     Main entry point for Seti Astro Suite Pro.
     
@@ -1418,21 +1418,42 @@ def main(argv: list[str] | None = None) -> int:
     # splash paints, before OpenGL init, before heavy imports — so the user
     # sees nothing but the existing window popping to the front with their
     # file open in it.
-    try:
-        from setiastro.saspro.single_instance import maybe_handoff_and_exit
-        _effective_argv = argv if argv is not None else sys.argv[1:]
-        _cleaned = maybe_handoff_and_exit(_effective_argv)
-        if _cleaned is None:
-            # Primary accepted our handoff. We're done; secondary exits silently.
-            return 0
-        # Strip --new-instance / --single-instance from argv for the rest of main().
-        argv = _cleaned
-    except Exception:
-        # Single-instance failure must never block launch. Fall through and
-        # start a normal full instance.
-        import traceback as _tb
-        print("[single-instance] probe failed, launching normally:")
-        _tb.print_exc()
+    #
+    # _skip_handoff=True means __main__.entry() already ran this probe against
+    # the RAW argv (including any --new-instance flag) and either handed off or
+    # decided we're the primary. Running it again here would re-probe with the
+    # already-stripped argv — losing the --new-instance signal — and silently
+    # hand the "new instance" launch back to the running primary. The direct
+    # cli._launch_gui() path leaves this False so single-instance still works
+    # for `python -m setiastro.saspro.cli file.fits`.
+    if not _skip_handoff:
+        try:
+            from setiastro.saspro.single_instance import maybe_handoff_and_exit
+            _effective_argv = argv if argv is not None else sys.argv[1:]
+            _cleaned = maybe_handoff_and_exit(_effective_argv)
+            if _cleaned is None:
+                # Primary accepted our handoff. We're done; secondary exits silently.
+                return 0
+            # Strip --new-instance / --single-instance from argv for the rest of main().
+            argv = _cleaned
+        except Exception:
+            # Single-instance failure must never block launch. Fall through and
+            # start a normal full instance.
+            import traceback as _tb
+            print("[single-instance] probe failed, launching normally:")
+            _tb.print_exc()
+    else:
+        # Caller already handled handoff with the raw argv; just normalize
+        # our view of argv so downstream code (_collect_open_paths etc.)
+        # sees the cleaned list.
+        try:
+            from setiastro.saspro.single_instance import parse_instance_flags
+            argv = parse_instance_flags(argv).remaining
+        except Exception:
+            # If flag parsing somehow blows up, use argv as-is. Downstream
+            # tolerates stray flags via _collect_open_paths' startswith("-")
+            # filter, so there's no crash risk here.
+            pass
 
     _init_opengl_before_qapp()
     global _splash, _app, _splash_initialized
