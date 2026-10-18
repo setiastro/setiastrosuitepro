@@ -52,13 +52,17 @@ _BAYER_METHODS = [
     # RCD is first because it's the best general choice for OSC astro work
     # — ratio-corrected demosaic preserves saturation on faint narrowband
     # color and uses second-order gradients that don't speckle under noise
-    # the way VNG does on dim data. VNG stays available for daylight
-    # subjects where its sharper gradient response is a win; edge-aware
-    # and bilinear are kept as fallbacks and strict_cfa for drizzle prep.
-    ("RCD (Ratio-Corrected)", "rcd"),
+    # the way VNG does on dim data. AHD is a close second and tends to win
+    # on fine-detail subjects (planetary, lunar, dense star fields,
+    # daylight) by reconstructing both H and V candidates and picking per
+    # pixel which one is more homogeneous in CIELab. VNG stays available
+    # for daylight subjects where its gradient response is still useful;
+    # edge-aware and bilinear are fallbacks; strict_cfa is for drizzle prep.
+    ("RCD (Ratio-Corrected)",                      "rcd"),
+    ("AHD (Adaptive Homogeneity-Directed)",        "ahd"),
     ("VNG (Variable Number of Gradients)",         "vng"),
-    ("Edge-aware (Selective Gradient)",                         "edge"),
-    ("Bilinear (Traditional Debayer)",                           "bilinear"),
+    ("Edge-aware (Selective Gradient)",            "edge"),
+    ("Bilinear (Traditional Debayer)",             "bilinear"),
     ("Strict CFA (no interpolation)",              "strict_cfa"),
 ]
 _XTRANS_METHODS = [
@@ -605,7 +609,7 @@ def debayer_array(
     if flipped:
         m = np.ascontiguousarray(np.flipud(m))
 
-    meth = method if method in ("edge", "bilinear", "strict_cfa", "vng", "rcd") else "rcd"
+    meth = method if method in ("edge", "bilinear", "strict_cfa", "vng", "rcd", "ahd") else "rcd"
     rgb = debayer_fits_fast(m, pat, cfa_drizzle=cfa_drizzle, method=meth)
 
     if flipped:
@@ -616,7 +620,9 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
     """
     preset = {
         "pattern": "auto|RGGB|BGGR|GRBG|GBRG",
-        "method":  "auto|vng|edge|bilinear|strict_cfa|AHD|DHT"
+        "method":  "auto|rcd|ahd|vng|edge|bilinear|strict_cfa|AHD|DHT"
+                   (lowercase 'ahd' is the Numba Bayer AHD; uppercase 'AHD'
+                   routes to rawpy for X-Trans only.)
     }
     Returns (used_pattern, rgb_array).
     """
@@ -664,7 +670,7 @@ def apply_debayer_preset_to_doc(dm, doc, preset: dict) -> Tuple[str, np.ndarray]
     if pat not in _VALID:
         raise ValueError(f"Unsupported Bayer pattern: {pat}")
 
-    method_tok = (want_method.lower() if want_method.lower() in ("edge", "bilinear", "vng", "strict_cfa", "rcd") else "rcd")
+    method_tok = (want_method.lower() if want_method.lower() in ("edge", "bilinear", "vng", "strict_cfa", "rcd", "ahd") else "rcd")
 
     if debayer_fits_fast is None:
         raise RuntimeError("Numba debayer kernels not available.")
@@ -684,7 +690,10 @@ def run_debayer_via_preset(main, preset: dict | None = None, *, doc=None):
 
     preset keys:
       - pattern: "auto" | "RGGB" | "BGGR" | "GRBG" | "GBRG"
-      - method:  "auto" | "vng" | "edge" | "bilinear" | "strict_cfa" | "AHD" | "DHT"
+      - method:  "auto" | "rcd" | "ahd" | "vng" | "edge" | "bilinear"
+                 | "strict_cfa" | "AHD" | "DHT"
+                 (lowercase 'ahd' is the Numba Bayer AHD; uppercase 'AHD'
+                 routes to rawpy for X-Trans only.)
     """
     p = dict(preset or {})
 

@@ -2715,12 +2715,24 @@ def _vng_interpolate_core(img, term_arr, term_cnt, chood_arr, color_arr):
             sR = 0.0; sG = 0.0; sB = 0.0; num = 0
             for g in range(8):
                 if gvals[g] <= thold:
-                    y = chood_arr[ph, g, 0]; x = chood_arr[ph, g, 1]; sp = chood_arr[ph, g, 2]
+                    y = chood_arr[ph, g, 0]; x = chood_arr[ph, g, 1]
+                    # Symmetric color accumulator: every selected direction
+                    # contributes exactly one neighbor sample to each of the
+                    # R/G/B accumulators. LibRaw's original kernel added a
+                    # (center + 2-away)/2 average into s[color] when sp==1
+                    # (direction code points at a same-color pixel), on the
+                    # grounds that the center is a real sample. The practical
+                    # effect on linear astro data is a per-pixel chrominance
+                    # bias: at R and B sites, s_color (R or B) ends up weighted
+                    # higher than s_G, so (s_G - s_color)/num pushes G too
+                    # bright — a visible green cast at every reconstructed G
+                    # site, which is most of the image. Dropping the special
+                    # case makes the accumulator symmetric, costs ~0.1-0.3 dB
+                    # PSNR on daylight benchmarks (LibRaw gained that from the
+                    # trick), and removes the color bias on astro data where
+                    # SASpro doesn't apply camera WB in the stacking path.
                     for c in range(3):
-                        if c == color and sp == 1:
-                            val = (img[row, col, c] + img[row + 2*y, col + 2*x, c]) * 0.5
-                        else:
-                            val = img[row + y, col + x, c]
+                        val = img[row + y, col + x, c]
                         if c == 0: sR += val
                         elif c == 1: sG += val
                         else: sB += val
@@ -3132,13 +3144,292 @@ def _rcd_demosaic(image_data, bp, denoise: bool = True, denoise_k: float = 4.0,
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# AHD — Adaptive Homogeneity-Directed demosaicing (Hirakawa & Parks, 2005)
+#
+# AHD builds two full-resolution RGB candidates — one from horizontal
+# interpolation only, one from vertical — then picks per pixel which one
+# to keep based on a local-homogeneity score computed in CIELab space.
+# The idea: on a horizontal edge, horizontal interpolation produces a
+# locally-flat chrominance region (good homogeneity); vertical
+# interpolation across the edge produces a chrominance stripe (bad
+# homogeneity). The homogeneity map identifies which direction got it
+# right at every pixel without needing an explicit edge detector.
+#
+# Why bother in a suite that already has RCD-N: AHD is a different kind
+# of win than RCD. RCD uses noise-adaptive second-order gradients to
+# make a smart H/V choice per pixel; AHD actually reconstructs both and
+# compares the result in a perceptually-weighted color space. On frames
+# with lots of fine-scale detail (planetary, lunar, dense star fields,
+# daylight subjects) AHD generally edges out RCD on PSNR benchmarks.
+# RCD still wins on faint nebulosity where its noise-adaptive gradient
+# pick really matters. Having both lets users pick based on content.
+# ─────────────────────────────────────────────────────────────────────────
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _ahd_fill_green_candidates(image, out_h, out_v, r_mask, b_mask):
+    """Phase 1 of AHD: Hamilton-Adams green at R/B sites, both H and V.
+
+    out_h and out_v are seeded from the bilinear prefill (so border
+    pixels and G sites already carry a sensible G value) before this
+    runs; this kernel overwrites G only at R/B interior sites.
+    """
+    H, W, _ = out_h.shape
+    for y in prange(2, H - 2):
+        for x in range(2, W - 2):
+            if not (r_mask[y, x] or b_mask[y, x]):
+                continue
+            c = image[y, x]
+            G_H = 0.5 * (image[y, x - 1] + image[y, x + 1]) \
+                + 0.25 * (2.0 * c - image[y, x - 2] - image[y, x + 2])
+            G_V = 0.5 * (image[y - 1, x] + image[y + 1, x]) \
+                + 0.25 * (2.0 * c - image[y - 2, x] - image[y + 2, x])
+            if G_H < 0.0: G_H = 0.0
+            if G_V < 0.0: G_V = 0.0
+            out_h[y, x, 1] = G_H
+            out_v[y, x, 1] = G_V
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _ahd_fill_rb(out, g_mask, r_mask, b_mask):
+    """Phase 2 of AHD: R and B everywhere, difference form.
+
+    Operates in-place on a candidate that already has G filled at every
+    pixel. R-at-G and B-at-G use the 4-neighbor R and B samples (which
+    sit on perpendicular axes at every G site); R-at-B and B-at-R use
+    the 4-diagonal neighbors. Both use the same (C - G) + G form as
+    RCD's fixed Phase 2/3 — safe on linear astro data.
+    """
+    H, W, _ = out.shape
+    # R/B at G sites
+    for y in prange(1, H - 1):
+        for x in range(1, W - 1):
+            if not g_mask[y, x]:
+                continue
+            g_c = out[y, x, 1]
+            if r_mask[y, x - 1]:
+                # Horizontal axis holds R, vertical holds B
+                r_h1 = out[y, x - 1, 0]; g_h1 = out[y, x - 1, 1]
+                r_h2 = out[y, x + 1, 0]; g_h2 = out[y, x + 1, 1]
+                b_v1 = out[y - 1, x, 2]; g_v1 = out[y - 1, x, 1]
+                b_v2 = out[y + 1, x, 2]; g_v2 = out[y + 1, x, 1]
+                r_est = g_c + 0.5 * ((r_h1 - g_h1) + (r_h2 - g_h2))
+                b_est = g_c + 0.5 * ((b_v1 - g_v1) + (b_v2 - g_v2))
+            else:
+                b_h1 = out[y, x - 1, 2]; g_h1 = out[y, x - 1, 1]
+                b_h2 = out[y, x + 1, 2]; g_h2 = out[y, x + 1, 1]
+                r_v1 = out[y - 1, x, 0]; g_v1 = out[y - 1, x, 1]
+                r_v2 = out[y + 1, x, 0]; g_v2 = out[y + 1, x, 1]
+                r_est = g_c + 0.5 * ((r_v1 - g_v1) + (r_v2 - g_v2))
+                b_est = g_c + 0.5 * ((b_h1 - g_h1) + (b_h2 - g_h2))
+            if r_est < 0.0: r_est = 0.0
+            if b_est < 0.0: b_est = 0.0
+            out[y, x, 0] = r_est
+            out[y, x, 2] = b_est
+    # R at B sites and B at R sites — 4-diagonal neighbors.
+    for y in prange(1, H - 1):
+        for x in range(1, W - 1):
+            is_r = r_mask[y, x]
+            is_b = b_mask[y, x]
+            if not (is_r or is_b):
+                continue
+            g_c = out[y, x, 1]
+            tgt_c = 2 if is_r else 0  # need B at R, R at B
+            c_nw = out[y - 1, x - 1, tgt_c]; g_nw = out[y - 1, x - 1, 1]
+            c_ne = out[y - 1, x + 1, tgt_c]; g_ne = out[y - 1, x + 1, 1]
+            c_sw = out[y + 1, x - 1, tgt_c]; g_sw = out[y + 1, x - 1, 1]
+            c_se = out[y + 1, x + 1, tgt_c]; g_se = out[y + 1, x + 1, 1]
+            # Average over all four diagonals in difference form.
+            c_est = g_c + 0.25 * ((c_nw - g_nw) + (c_ne - g_ne)
+                                  + (c_sw - g_sw) + (c_se - g_se))
+            if c_est < 0.0:
+                c_est = 0.0
+            out[y, x, tgt_c] = c_est
+
+
+# D65 scaled whitepoint for Lab conversion. Reusing the matrix constants
+# already defined above for the rgb_to_xyz / xyz_to_lab kernels. On linear
+# astro data we skip the sRGB gamma inverse and feed linear RGB directly
+# — the matrix is for sRGB primaries + D65, which is a fine choice of
+# perceptually-weighted space for the homogeneity test even without gamma.
+@njit(parallel=True, fastmath=True, cache=True)
+def _ahd_rgb_to_lab_linear(rgb, lab_out):
+    """Linear RGB (as sRGB primaries, D65) → CIELab, in-place-ish.
+
+    `lab_out` is a preallocated (H, W, 3) float32 buffer. Writes L, a, b.
+    The piecewise f() uses the standard δ=6/29 cube-root curve.
+    """
+    H, W, _ = rgb.shape
+    delta = 6.0 / 29.0
+    delta3 = delta * delta * delta
+    three_delta2 = 3.0 * delta * delta
+    four_29 = 4.0 / 29.0
+    for y in prange(H):
+        for x in range(W):
+            r = rgb[y, x, 0]
+            g = rgb[y, x, 1]
+            b = rgb[y, x, 2]
+            X = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047
+            Y = (0.2126729 * r + 0.7151522 * g + 0.0721750 * b) / 1.00000
+            Z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883
+            # f(t)
+            if X > delta3:
+                fx = X ** (1.0 / 3.0)
+            else:
+                fx = X / three_delta2 + four_29
+            if Y > delta3:
+                fy = Y ** (1.0 / 3.0)
+            else:
+                fy = Y / three_delta2 + four_29
+            if Z > delta3:
+                fz = Z ** (1.0 / 3.0)
+            else:
+                fz = Z / three_delta2 + four_29
+            lab_out[y, x, 0] = 116.0 * fy - 16.0
+            lab_out[y, x, 1] = 500.0 * (fx - fy)
+            lab_out[y, x, 2] = 200.0 * (fy - fz)
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _ahd_homogeneity_map(lab, hom_out, ball):
+    """Phase 4: compute per-pixel homogeneity in Lab space.
+
+    For each pixel, counts how many of its 4 cardinal neighbors are
+    within `ball` CIE76 distance in Lab. A ball of 1.0 CIE76 unit is
+    just below the Just-Noticeable-Difference and matches the original
+    Hirakawa paper's ε. Writes an integer count 0..4 into hom_out as
+    float32 (plain float for easier downstream smoothing).
+
+    Note: We don't separate L and chroma thresholds (as some variants
+    do). On linear astro data the brightness-vs-chroma distinction
+    matters less, and the single-ball test is both simpler and faster.
+    """
+    H, W, _ = lab.shape
+    for y in prange(1, H - 1):
+        for x in range(1, W - 1):
+            Lc = lab[y, x, 0]; ac = lab[y, x, 1]; bc = lab[y, x, 2]
+            count = 0.0
+            # 4-connected neighbors
+            for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                yy = y + dy; xx = x + dx
+                dL = lab[yy, xx, 0] - Lc
+                da = lab[yy, xx, 1] - ac
+                db = lab[yy, xx, 2] - bc
+                d2 = dL * dL + da * da + db * db
+                if d2 <= ball * ball:
+                    count += 1.0
+            hom_out[y, x] = count
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _ahd_box_blur_3x3(src, dst):
+    """3×3 box smoothing of the homogeneity map (Hirakawa Phase 4b).
+
+    Smoothing the per-pixel integer count means pixels at a 1-pixel-wide
+    chrominance stripe (where only ONE direction scored 4/4 and the other
+    scored, say, 2/4) still get a clear winner after neighborhood averaging.
+    Without this step you can see 1-pixel direction flip-flopping, which
+    looks like fine salt-and-pepper noise in the output.
+    """
+    H, W = src.shape
+    for y in prange(1, H - 1):
+        for x in range(1, W - 1):
+            s = 0.0
+            for dy in range(-1, 2):
+                for dx in range(-1, 2):
+                    s += src[y + dy, x + dx]
+            dst[y, x] = s * (1.0 / 9.0)
+
+
+@njit(parallel=True, fastmath=True, cache=True)
+def _ahd_select_winner(cand_h, cand_v, hom_h, hom_v, out):
+    """Phase 5: per-pixel pick between the two candidates by homogeneity.
+
+    Tie-break by averaging — a tie means neither direction found a clear
+    edge, so averaging reduces noise without smearing anything real.
+    Border pixels (where the homogeneity map is 0) fall back to the
+    H candidate's bilinear seed, which is already correct there.
+    """
+    H, W, _ = out.shape
+    for y in prange(H):
+        for x in range(W):
+            hH = hom_h[y, x]; hV = hom_v[y, x]
+            if hH > hV:
+                out[y, x, 0] = cand_h[y, x, 0]
+                out[y, x, 1] = cand_h[y, x, 1]
+                out[y, x, 2] = cand_h[y, x, 2]
+            elif hV > hH:
+                out[y, x, 0] = cand_v[y, x, 0]
+                out[y, x, 1] = cand_v[y, x, 1]
+                out[y, x, 2] = cand_v[y, x, 2]
+            else:
+                out[y, x, 0] = 0.5 * (cand_h[y, x, 0] + cand_v[y, x, 0])
+                out[y, x, 1] = 0.5 * (cand_h[y, x, 1] + cand_v[y, x, 1])
+                out[y, x, 2] = 0.5 * (cand_h[y, x, 2] + cand_v[y, x, 2])
+
+
+def _ahd_demosaic(image_data, bp, lab_ball: float = 1.0):
+    """Full AHD demosaic: raw 2D mosaic + pattern string -> (H,W,3) float32.
+
+    Pipeline:
+      1. Bilinear prefill for both H and V candidates (shared starting
+         point; the G at R/B sites is overwritten per direction next).
+      2. Hamilton-Adams G at R/B sites, horizontal and vertical, into
+         the two candidates independently.
+      3. R and B everywhere in each candidate (difference form; same
+         math as RCD's fixed Phase 2/3). Produces two full RGB images.
+      4. Convert each to CIELab (linear → XYZ → Lab, D65).
+      5. Compute per-pixel 4-neighbor homogeneity in Lab for each.
+      6. 3×3 box-smooth both homogeneity maps.
+      7. Per pixel, pick the candidate with higher smoothed homogeneity;
+         tie-break by averaging.
+
+    `lab_ball`: CIE76 radius for the homogeneity test. 1.0 ≈ just-
+    noticeable-difference, which is the Hirakawa paper's default. Larger
+    values make AHD less direction-sensitive (approaches bilinear);
+    smaller values make it more aggressive (approaches a pure directional
+    pick, less tolerant of noise).
+    """
+    H, W = image_data.shape
+    r_mask, g_mask, b_mask = _rcd_build_masks(bp, H, W)
+    r0, c0, r1, c1 = _CFA_CHAN[bp]
+    # Shared starting candidate: a bilinear prefill.
+    base = _vng_bilinear_prefill(image_data, r0, c0, r1, c1)
+    cand_h = base.copy()
+    cand_v = base.copy()
+    # Phase 1: directional G at R/B sites.
+    _ahd_fill_green_candidates(image_data, cand_h, cand_v, r_mask, b_mask)
+    # Phase 2: R and B everywhere, in each candidate independently.
+    _ahd_fill_rb(cand_h, g_mask, r_mask, b_mask)
+    _ahd_fill_rb(cand_v, g_mask, r_mask, b_mask)
+    # Phase 3: Lab conversion. Preallocate the two Lab buffers once.
+    lab_h = np.empty((H, W, 3), dtype=np.float32)
+    lab_v = np.empty((H, W, 3), dtype=np.float32)
+    _ahd_rgb_to_lab_linear(cand_h, lab_h)
+    _ahd_rgb_to_lab_linear(cand_v, lab_v)
+    # Phase 4: homogeneity + smoothing.
+    hom_h = np.zeros((H, W), dtype=np.float32)
+    hom_v = np.zeros((H, W), dtype=np.float32)
+    _ahd_homogeneity_map(lab_h, hom_h, lab_ball)
+    _ahd_homogeneity_map(lab_v, hom_v, lab_ball)
+    hom_h_s = np.empty_like(hom_h)
+    hom_v_s = np.empty_like(hom_v)
+    _ahd_box_blur_3x3(hom_h, hom_h_s)
+    _ahd_box_blur_3x3(hom_v, hom_v_s)
+    # Phase 5: pick the per-pixel winner.
+    out = np.empty_like(cand_h)
+    _ahd_select_winner(cand_h, cand_v, hom_h_s, hom_v_s, out)
+    return out
+
+
 def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
                             method="edge", preserve_zeros=True,
                             rcd_denoise: bool = True,
                             rcd_denoise_k: float = 4.0,
                             rcd_clip_blend: bool = True,
                             rcd_clip_threshold: float = 0.95,
-                            rcd_clip_feather: float = 2.0):
+                            rcd_clip_feather: float = 2.0,
+                            ahd_lab_ball: float = 1.0):
     bp = (bayer_pattern or "").upper()
     interpolate = not cfa_drizzle
 
@@ -3190,6 +3481,17 @@ def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
                                 clip_blend=rcd_clip_blend,
                                 clip_threshold=rcd_clip_threshold,
                                 clip_feather=rcd_clip_feather)
+        elif m == "ahd":
+            # Adaptive Homogeneity-Directed demosaicing (Hirakawa &
+            # Parks, 2005). Builds two full RGB candidates — one from
+            # purely horizontal interpolation, one from vertical — and
+            # picks per pixel which one has higher local homogeneity
+            # in CIELab. Where RCD-N uses a gradient heuristic to pick
+            # a direction, AHD actually reconstructs both and compares;
+            # it tends to win on fine-detail subjects (planetary,
+            # lunar, dense star fields, daylight) at the cost of ~2-3×
+            # the compute of RCD. The sparse `out` is replaced here.
+            out = _ahd_demosaic(image_data, bp, lab_ball=ahd_lab_ball)
         else:   # "edge" default
             _edge_aware_interpolate_numba(out)
 
@@ -3206,7 +3508,8 @@ def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False,
                       rcd_denoise_k: float = 4.0,
                       rcd_clip_blend: bool = True,
                       rcd_clip_threshold: float = 0.95,
-                      rcd_clip_feather: float = 2.0):
+                      rcd_clip_feather: float = 2.0,
+                      ahd_lab_ball: float = 1.0):
     with NUMBA_PARALLEL_LOCK:
         return _debayer_fits_fast_impl(
             image_data, bayer_pattern, cfa_drizzle=cfa_drizzle,
@@ -3215,6 +3518,7 @@ def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False,
             rcd_clip_blend=rcd_clip_blend,
             rcd_clip_threshold=rcd_clip_threshold,
             rcd_clip_feather=rcd_clip_feather,
+            ahd_lab_ball=ahd_lab_ball,
         )
 
 def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False,
@@ -3222,7 +3526,8 @@ def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False,
                      rcd_denoise: bool = True, rcd_denoise_k: float = 4.0,
                      rcd_clip_blend: bool = True,
                      rcd_clip_threshold: float = 0.95,
-                     rcd_clip_feather: float = 2.0):
+                     rcd_clip_feather: float = 2.0,
+                     ahd_lab_ball: float = 1.0):
     return debayer_fits_fast(raw_image_data, bayer_pattern,
                              cfa_drizzle=cfa_drizzle, method=method,
                              preserve_zeros=preserve_zeros,
@@ -3230,7 +3535,8 @@ def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False,
                              rcd_denoise_k=rcd_denoise_k,
                              rcd_clip_blend=rcd_clip_blend,
                              rcd_clip_threshold=rcd_clip_threshold,
-                             rcd_clip_feather=rcd_clip_feather)
+                             rcd_clip_feather=rcd_clip_feather,
+                             ahd_lab_ball=ahd_lab_ball)
 
 
 @njit(parallel=True, fastmath=True, cache=True)

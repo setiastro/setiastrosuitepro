@@ -8790,7 +8790,7 @@ class StackingSuiteDialog(QDialog):
         # Accept "rcd" and default-sanitise unknown values to RCD too — the
         # dropdown-first default so a user who never touched the setting
         # gets ratio-corrected demosaic on their first OSC stack.
-        if dmethod not in ("rcd", "vng", "edge", "bilinear", "strict_cfa"):
+        if dmethod not in ("rcd", "ahd", "vng", "edge", "bilinear", "strict_cfa"):
             dmethod = "rcd"
 
         ext = file_path.lower()
@@ -13631,6 +13631,7 @@ class StackingSuiteDialog(QDialog):
         # color — the right default for astro stacking.
         for _dm_label, _dm_tok in (
             ("RCD", "rcd"),
+            ("AHD", "ahd"),
             ("VNG",        "vng"),
             ("Edge-aware", "edge"),
             ("Bilinear",   "bilinear"),
@@ -13651,6 +13652,7 @@ class StackingSuiteDialog(QDialog):
             "• RCD: ratio-corrected, noise-robust direction detection — best\n"
             "  for OSC narrowband; preserves faint color without the colour\n"
             "  speckling VNG produces in dim regions.\n"
+            "• AHD: adaptive homogeneity-directed; slower, better for daylight\n"
             "• VNG: variable number of gradients; sharper on daylight-subject\n"
             "  broadband data but speckles under noise on dim astro frames.\n"
             "• Edge-aware / Bilinear: faster, lower quality fallbacks.\n"
