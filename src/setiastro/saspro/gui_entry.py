@@ -1056,7 +1056,53 @@ def _bootstrap_imports():
                 "GPU tools will be unavailable until Hardware Acceleration is installed "
                 "via Settings -> Preferences."
             )
- 
+
+    # ── reproject.spherical_intersect SAC guard ──────────────────────────────
+    # reproject's __init__.py eagerly imports its C-extension submodule
+    # `spherical_intersect` (which backs reproject_exact) at package load.
+    # SASpro only ever calls reproject_interp — pure Python — but the eager
+    # import means ANY failure loading the compiled _overlap.pyd takes the
+    # whole reproject package down with it, and star_alignment/mosaic_master
+    # can't even import.
+    #
+    # Windows 11 24H2's Smart App Control has started quarantining the
+    # _overlap.pyd shipped in the reproject wheel on some installs (first
+    # reported Oct 2026, after KB5127647 / KB5127648). The quarantine fires
+    # at DLL-load time with:
+    #   ImportError: DLL load failed while importing _overlap:
+    #                An Application Control policy has blocked this file.
+    # We can't sign every third-party wheel, so the practical defence is:
+    # try the real import once, and if it fails for ANY reason (SAC block,
+    # missing DLL, broken wheel), replace reproject.spherical_intersect in
+    # sys.modules with a stub whose reproject_exact raises a clear
+    # RuntimeError at call time. Downstream `from reproject import
+    # reproject_interp` then succeeds, star_alignment loads, Stacking
+    # Suite launches, and nothing in SASpro that we actually use is lost.
+    # Must run BEFORE the main_window import below, which pulls
+    # star_alignment -> reproject. Same ordering requirement as the torch
+    # stub above.
+    try:
+        import reproject.spherical_intersect  # noqa: F401
+    except (ImportError, OSError) as _reproject_err:
+        import types as _types2
+        _stub = _types2.ModuleType("reproject.spherical_intersect")
+        _reproject_err_captured = _reproject_err
+        def _reproject_exact_unavailable(*_a, **_kw):
+            raise RuntimeError(
+                "reproject_exact is unavailable on this system "
+                f"({_reproject_err_captured}). SASpro only uses "
+                "reproject_interp, so stacking and WCS alignment still "
+                "work; if you need reproject_exact specifically, see "
+                "https://aka.ms/smartappcontrol about Smart App Control."
+            )
+        _stub.reproject_exact = _reproject_exact_unavailable
+        sys.modules["reproject.spherical_intersect"] = _stub
+        print(
+            f"[SASpro] reproject.spherical_intersect unavailable "
+            f"({_reproject_err}); stub injected. "
+            "reproject_interp (what SASpro actually uses) still works."
+        )
+
     _update_splash_gravitas(7)
     _update_splash_technical("Preparing AI runtime cache...")
     try:

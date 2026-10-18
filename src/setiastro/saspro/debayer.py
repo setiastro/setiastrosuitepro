@@ -55,10 +55,10 @@ _BAYER_METHODS = [
     # the way VNG does on dim data. VNG stays available for daylight
     # subjects where its sharper gradient response is a win; edge-aware
     # and bilinear are kept as fallbacks and strict_cfa for drizzle prep.
-    ("RCD (Ratio-Corrected; recommended for OSC)", "rcd"),
+    ("RCD (Ratio-Corrected)", "rcd"),
     ("VNG (Variable Number of Gradients)",         "vng"),
-    ("Edge-aware (Numba)",                         "edge"),
-    ("Bilinear (Numba)",                           "bilinear"),
+    ("Edge-aware (Selective Gradient)",                         "edge"),
+    ("Bilinear (Traditional Debayer)",                           "bilinear"),
     ("Strict CFA (no interpolation)",              "strict_cfa"),
 ]
 _XTRANS_METHODS = [

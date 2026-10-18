@@ -13231,7 +13231,10 @@ class StackingSuiteDialog(QDialog):
 
             if filt != f2 or s2 != size:
                 continue
-            if abs(float(exp) - float(e2)) > exp_tol:
+            # +0.5s epsilon absorbs sub-second EXPTIME jitter from drivers
+            # (e.g. 89.999 vs 120.001) and .1f rounding of the seed key, so
+            # files you'd call "exactly 30s apart" still land in one group.
+            if abs(float(exp) - float(e2)) > exp_tol + 0.5:
                 continue
 
             # Gain check — extract gain from key if present
@@ -22059,9 +22062,10 @@ class StackingSuiteDialog(QDialog):
                 if pa["dims"] != pb["dims"] and pa["dims"] is not None and pb["dims"] is not None:
                     return False
 
-                # Exposure tolerance
+                # Exposure tolerance (+0.5s epsilon — see
+                # _find_or_make_exposure_group_key for rationale)
                 if pa["exp"] is not None and pb["exp"] is not None:
-                    if abs(pa["exp"] - pb["exp"]) > exp_tol:
+                    if abs(pa["exp"] - pb["exp"]) > exp_tol + 0.5:
                         return False
 
                 # Gain tolerance

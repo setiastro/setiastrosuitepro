@@ -142,103 +142,286 @@ def _to_luminance(img: np.ndarray) -> np.ndarray:
     return np.dot(img[..., :3], [0.2989, 0.5870, 0.1140]).astype(np.float32)
 
 
-def _gradient_descent_to_dim_spot(image: np.ndarray, x: int, y: int, max_iter: int = 500, patch_size: int = 15) -> tuple[int, int]:
+def _gradient_descent_to_dim_spot(
+    image: np.ndarray,
+    x: int,
+    y: int,
+    max_iter: int = 60,
+    patch_size: int = 15,
+    exclusion_mask: np.ndarray | None = None,
+    max_offset: int | None = None,
+    _lum_cache: np.ndarray | None = None,
+) -> tuple[int, int]:
+    """
+    Slide a sample seed downhill in brightness until it lands on the
+    locally dimmest reachable patch — a star- and nebula-free spot
+    suitable for background sampling.
+
+    Four things the previous one-pixel-step median descent got wrong:
+
+      1. **Star rejection.** The old score was the patch median. Median is
+         robust against a few bright pixels but a dense star field or a
+         saturated star PSF whose core fills >50% of the patch still drags
+         the median up, so the descent stalls on top of the star. New
+         score is the 25th percentile of the patch: stars live in the
+         upper tail, the lower quartile tracks sky even when the patch
+         straddles a bright source, so the score decreases monotonically
+         as the patch slides OFF the star.
+
+      2. **Step size.** 1-pixel neighbour steps meant moving even one
+         patch-width away took `patch_size` iterations. Two-stage descent
+         now: a coarse pass (step = max(2, patch_size // 3), up to 15
+         iters) to escape a nearby star glow quickly, then a fine 1-px
+         pass (up to max_iter - 15 iters) to settle on the local minimum.
+
+      3. **Exclusion awareness.** The old descent didn't know about the
+         user's drawn exclusion polygons — a seed near the edge of a
+         masked-out galaxy could still happily descend INTO the galaxy
+         along its brightness gradient. Now, if `exclusion_mask` is
+         provided (True = sampling allowed; same convention as the rest
+         of ABE), the descent will never step onto an excluded pixel.
+         A seed that starts inside the excluded region is returned
+         unchanged, and the caller's `allowed()` check drops it.
+
+      4. **Bounded travel.** The old descent could wander arbitrarily far
+         from the seed. On an image with a smooth background gradient
+         (every real sky image has one — that is the WHOLE POINT of ABE)
+         every seed slid downhill toward the dim corner, collapsing the
+         sampler's intended spatial tiling into a lopsided cluster and
+         starving the polynomial fit of coverage on the bright side. The
+         new `max_offset` parameter clamps descent travel to a radius
+         around the seed; `_generate_sample_points` sets this to half
+         the grid-cell size, so each seed can slide OFF a local star
+         but cannot drift into another cell's territory.
+
+    `_lum_cache` lets batch callers (notably `_generate_sample_points`)
+    pass in `_to_luminance(image)` once instead of re-computing it on
+    every seed. Noticeable speedup when num_points is in the hundreds.
+    """
     half = patch_size // 2
-    lum = _to_luminance(image)
+    lum = _lum_cache if _lum_cache is not None else (
+        _to_luminance(image) if image.ndim == 3
+        else image.astype(np.float32, copy=False)
+    )
     H, W = lum.shape
 
-    def patch_median(px: int, py: int) -> float:
+    sx0, sy0 = int(np.clip(x, 0, W - 1)), int(np.clip(y, 0, H - 1))
+
+    def _in_bounds(px: int, py: int) -> bool:
+        return 0 <= px < W and 0 <= py < H
+
+    def _in_radius(px: int, py: int) -> bool:
+        if max_offset is None:
+            return True
+        return abs(px - sx0) <= max_offset and abs(py - sy0) <= max_offset
+
+    def _mask_ok(px: int, py: int) -> bool:
+        if exclusion_mask is None:
+            return True
+        return bool(exclusion_mask[py, px])
+
+    def patch_score(px: int, py: int) -> float:
         x0, x1 = max(0, px - half), min(W, px + half + 1)
         y0, y1 = max(0, py - half), min(H, py + half + 1)
-        return float(np.median(lum[y0:y1, x0:x1]))
+        # 25th-percentile sky estimate: robust to stars/compact sources.
+        return float(np.percentile(lum[y0:y1, x0:x1], 25.0))
 
-    cx, cy = int(np.clip(x, 0, W - 1)), int(np.clip(y, 0, H - 1))
-    for _ in range(max_iter):
-        cur = patch_median(cx, cy)
-        xs = range(max(0, cx - 1), min(W, cx + 2))
-        ys = range(max(0, cy - 1), min(H, cy + 2))
-        best = (cx, cy); best_val = cur
-        for nx in xs:
-            for ny in ys:
-                if nx == cx and ny == cy:
-                    continue
-                val = patch_median(nx, ny)
-                if val < best_val:
-                    best_val = val; best = (nx, ny)
-        if best == (cx, cy):
-            break
-        cx, cy = best
+    cx, cy = sx0, sy0
+
+    # Seed inside the drawn exclusion → return unchanged. The caller's
+    # allowed() check treats this as "drop" (see _generate_sample_points).
+    if not _mask_ok(cx, cy):
+        return cx, cy
+
+    def _descent_pass(step: int, iters: int) -> None:
+        """
+        One descent pass at a fixed 8-neighbour step size. Mutates cx, cy
+        in the enclosing scope. Stops early when no neighbour improves.
+        A neighbour is considered only if it is in-bounds, within the
+        allowed max_offset radius from the seed, AND outside the
+        exclusion mask — so the descent slides AROUND excluded regions
+        and never leaves its grid cell.
+        """
+        nonlocal cx, cy
+        for _ in range(iters):
+            cur = patch_score(cx, cy)
+            best = (cx, cy)
+            best_val = cur
+            for dy in (-step, 0, step):
+                for dx in (-step, 0, step):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nx = cx + dx
+                    ny = cy + dy
+                    if (not _in_bounds(nx, ny)
+                            or not _in_radius(nx, ny)
+                            or not _mask_ok(nx, ny)):
+                        continue
+                    val = patch_score(nx, ny)
+                    if val < best_val:
+                        best_val = val
+                        best = (nx, ny)
+            if best == (cx, cy):
+                break
+            cx, cy = best
+
+    coarse_step = max(2, patch_size // 3)
+    coarse_iters = min(15, max(1, max_iter // 2))
+    fine_iters = max(5, max_iter - coarse_iters)
+
+    _descent_pass(coarse_step, coarse_iters)   # escape nearby bright features
+    _descent_pass(1, fine_iters)               # settle on the local minimum
+
     return cx, cy
 
 
 def _generate_sample_points(image, num_points=100, exclusion_mask=None, patch_size=15, rng=None):
+    """
+    Build a well-tiled set of background sample points for the polynomial
+    (and RBF) fit stage.
+
+    The previous sampler walked the four corners + 5 border points + a
+    few random picks per image quartile. That left big interior gaps on
+    high-aspect fields, over-sampled corners (not where polynomial fits
+    need coverage anyway), and the random quartile picks changed run to
+    run even with the same seed count.
+
+    The new sampler:
+
+      - **Uniform grid tiling.** The image is divided into an
+        aspect-ratio-aware grid sized to hit roughly `num_points` cells
+        (wider images get more columns than rows). Each cell contributes
+        one seed at its centre, which gives a dense, even coverage —
+        exactly what a polynomial fit needs to avoid being pulled around
+        by any single bright region.
+
+      - **Exclusion-aware seeding.** A grid cell whose centre falls
+        inside the drawn exclusion mask does a short spiral search for
+        a valid starting point nearby — a cell straddling the edge of a
+        galaxy mask still contributes a point from its sky-side half.
+        A cell fully inside the exclusion zone is skipped; nothing in
+        that region influences the fit.
+
+      - **Star-robust descent.** Each seed is slid downhill by the
+        upgraded `_gradient_descent_to_dim_spot` (lower-percentile score,
+        two-stage step size, exclusion-aware). A seed that drops onto a
+        star therefore slides off it; a seed near the edge of an
+        excluded galaxy slides AWAY from the galaxy, not into it.
+
+      - **Deduplication.** Two adjacent seeds that happen to settle on
+        the same dim patch only contribute once, so a crowded local min
+        doesn't get oversampled relative to the rest of the frame.
+
+    Returns an (N, 2) int32 array of (x, y) pixel coordinates. Falls back
+    to a coarse grid if exclusion is so aggressive nothing survives, so
+    the downstream polynomial fit never gets a zero-point input.
+    """
     H, W = image.shape[:2]
-    pts: list[tuple[int, int]] = []
     border = 10
+
+    # Pre-compute luminance once and share it with every descent call.
+    # Avoids an _to_luminance per seed on an RGB input — on a 500 point
+    # grid that's hundreds of redundant array allocations.
+    lum = (_to_luminance(image) if image.ndim == 3
+           else image.astype(np.float32, copy=False))
 
     def allowed(x: int, y: int) -> bool:
         if exclusion_mask is None:
             return True
-        return bool(exclusion_mask[min(max(0, y), H-1), min(max(0, x), W-1)])
+        return bool(exclusion_mask[min(max(0, y), H - 1), min(max(0, x), W - 1)])
 
-    # corners
-    corners = [(border, border), (W - border - 1, border), (border, H - border - 1), (W - border - 1, H - border - 1)]
-    for x, y in corners:
-        if not allowed(x, y):
-            continue
-        nx, ny = _gradient_descent_to_dim_spot(image, x, y, patch_size=patch_size)
-        if allowed(nx, ny):
-            pts.append((nx, ny))
+    # Grid dimensions — aspect-ratio aware so a wide field doesn't get
+    # over-sampled vertically. Clamp to at least 2×2 so even a tiny image
+    # produces something a polynomial fit can use.
+    target = max(4, int(num_points))
+    aspect = max(W, 1) / max(H, 1)
+    ny = max(2, int(round(np.sqrt(target / max(aspect, 1e-6)))))
+    nx = max(2, int(round(ny * aspect)))
 
-    # borders
-    xs = np.linspace(border, W - border - 1, 5, dtype=int)
-    ys = np.linspace(border, H - border - 1, 5, dtype=int)
-    for x in xs:
-        if allowed(x, border):
-            nx, ny = _gradient_descent_to_dim_spot(image, x, border, patch_size=patch_size)
-            if allowed(nx, ny):
-                pts.append((nx, ny))
-        if allowed(x, H - border - 1):
-            nx, ny = _gradient_descent_to_dim_spot(image, x, H - border - 1, patch_size=patch_size)
-            if allowed(nx, ny):
-                pts.append((nx, ny))
-    for y in ys:
-        if allowed(border, y):
-            nx, ny = _gradient_descent_to_dim_spot(image, border, y, patch_size=patch_size)
-            if allowed(nx, ny):
-                pts.append((nx, ny))
-        if allowed(W - border - 1, y):
-            nx, ny = _gradient_descent_to_dim_spot(image, W - border - 1, y, patch_size=patch_size)
-            if allowed(nx, ny):
-                pts.append((nx, ny))
+    xs = np.linspace(border, W - border - 1, nx, dtype=int)
+    ys = np.linspace(border, H - border - 1, ny, dtype=int)
 
-    # quartiles with bright-region avoidance and descent
-    quarts = _divide_into_quartiles(image)
-    for _, (yslc, xslc, (x0, y0)) in quarts.items():
-        sub = image[yslc, xslc]
-        gray = _to_luminance(sub)
-        bright_mask = _exclude_bright_regions(gray, exclusion_fraction=0.5)
-        if exclusion_mask is not None:
-            bright_mask &= exclusion_mask[yslc, xslc]
-        elig = np.argwhere(bright_mask)
-        if elig.size == 0:
-            continue
-        k = min(len(elig), max(1, num_points // 4))
-        _rng = rng if rng is not None else np.random.default_rng()
-        sel = elig[_rng.choice(len(elig), k, replace=False)]
-        for (yy, xx) in sel:
-            gx, gy = x0 + int(xx), y0 + int(yy)
-            nx, ny = _gradient_descent_to_dim_spot(image, gx, gy, patch_size=patch_size)
-            if allowed(nx, ny):
-                pts.append((nx, ny))
+    # Per-seed descent radius: half the cell size (whichever is smaller).
+    # This is what keeps the sampler's intended tiling intact even on an
+    # image with a strong background gradient — without it, every seed
+    # would slide downhill into the dim corner and the fit would starve
+    # on the bright side. A seed can still move far enough to escape a
+    # local star (patch_size px is a few hops with coarse step), but it
+    # cannot leave its own cell.
+    cell_w = int((W - 2 * border) / max(nx - 1, 1))
+    cell_h = int((H - 2 * border) / max(ny - 1, 1))
+    cell_offset = max(patch_size, min(cell_w, cell_h) // 2)
+
+    # Spiral offsets for finding a valid starting point when a cell
+    # centre lands inside the exclusion mask. Walks outward in square
+    # rings up to ~patch_size/2 — enough to clear a thin mask edge
+    # without wandering into the next cell's territory.
+    max_ring = max(3, patch_size // 2)
+    spiral_offsets: list[tuple[int, int]] = [(0, 0)]
+    for r in range(1, max_ring + 1):
+        for dx in range(-r, r + 1):
+            spiral_offsets.append((dx, -r))
+            spiral_offsets.append((dx,  r))
+        for dy in range(-r + 1, r):
+            spiral_offsets.append((-r, dy))
+            spiral_offsets.append(( r, dy))
+
+    seen: set[tuple[int, int]] = set()
+    pts: list[tuple[int, int]] = []
+
+    for sy in ys:
+        for sx in xs:
+            # Find a valid seed near this cell centre. For cells wholly
+            # outside the exclusion, the first offset (0, 0) hits.
+            seed = None
+            for dx, dy in spiral_offsets:
+                px = int(sx) + dx
+                py = int(sy) + dy
+                if 0 <= px < W and 0 <= py < H and allowed(px, py):
+                    seed = (px, py)
+                    break
+            if seed is None:
+                continue   # cell fully inside the exclusion mask
+
+            # Star-robust, exclusion-aware, cell-bounded descent. The
+            # exclusion mask is passed through so a seed near a mask edge
+            # slides AROUND the excluded region, not into it; the
+            # max_offset cap keeps the seed inside its grid cell so the
+            # tiling isn't collapsed by a strong background gradient.
+            nx_, ny_ = _gradient_descent_to_dim_spot(
+                image, seed[0], seed[1],
+                patch_size=patch_size,
+                exclusion_mask=exclusion_mask,
+                max_offset=cell_offset,
+                _lum_cache=lum,
+            )
+
+            # Belt-and-suspenders: the descent should never return an
+            # excluded pixel, but if a future refactor regresses that or
+            # the seed itself started inside the mask, drop the point.
+            if not allowed(nx_, ny_):
+                continue
+
+            key = (int(nx_), int(ny_))
+            if key in seen:
+                continue
+            seen.add(key)
+            pts.append(key)
 
     if len(pts) == 0:
-        # fallback grid
-        grid = int(np.sqrt(max(9, num_points)))
-        xs = np.linspace(border, W - border - 1, grid, dtype=int)
-        ys = np.linspace(border, H - border - 1, grid, dtype=int)
-        pts = [(x, y) for y in ys for x in xs if allowed(x, y)]
-    return np.array(pts, dtype=np.int32)
+        # Fallback: coarse exclusion-respecting grid. Keeps the function
+        # from ever returning zero points, which would break the polyfit
+        # downstream.
+        g = int(np.sqrt(max(9, num_points)))
+        xs_f = np.linspace(border, W - border - 1, g, dtype=int)
+        ys_f = np.linspace(border, H - border - 1, g, dtype=int)
+        pts = [(int(x), int(y)) for y in ys_f for x in xs_f if allowed(int(x), int(y))]
+        if len(pts) == 0:
+            # Last resort — ignore exclusion so the caller gets SOMETHING.
+            # This only trips if the entire image is masked out.
+            pts = [(int(x), int(y)) for y in ys_f for x in xs_f]
+
+    return np.asarray(pts, dtype=np.int32)
 
 def _fit_rbf_on_small(small: np.ndarray, points: np.ndarray, smooth: float = 0.1, patch_size: int = 15) -> np.ndarray:
     """
@@ -3517,7 +3700,11 @@ class ABEDialog(QDialog):
                     return True
 
                 if ev.buttons() & Qt.MouseButton.LeftButton:
-                    img_pt = self._label_to_image_coords(ev.position())
+                    # clamp=True: polygon drawing clamps out-of-bounds mouse
+                    # positions to the image edge instead of ignoring them.
+                    # Fixes the "my corner polygon missed the corner" bug —
+                    # see _label_to_image_coords docstring for the full story.
+                    img_pt = self._label_to_image_coords(ev.position(), clamp=True)
                     if img_pt is not None:
                         if self._drawing_poly is None:
                             self._drawing_poly = [img_pt]
@@ -3551,7 +3738,11 @@ class ABEDialog(QDialog):
                     vsb.setValue(vsb.value() - delta.y())
                     return True
                 if (not self._manual_mode()) and self._drawing_poly is not None and (ev.buttons() & Qt.MouseButton.LeftButton):
-                    img_pt = self._label_to_image_coords(ev.position())
+                    # clamp=True: the drag of a freehand polygon follows
+                    # the image edge when the cursor wanders outside, so
+                    # dragging around a corner encloses the corner instead
+                    # of cutting it off at the re-entry point.
+                    img_pt = self._label_to_image_coords(ev.position(), clamp=True)
                     if img_pt is not None:
                         self._drawing_poly.append(img_pt)
                         self._redraw_overlay()
@@ -3647,7 +3838,29 @@ class ABEDialog(QDialog):
         hsb.setValue((hsb.maximum() - hsb.minimum()) // 2)
         vsb.setValue((vsb.maximum() - vsb.minimum()) // 2)
 
-    def _label_to_image_coords(self, posf) -> QPointF | None:
+    def _label_to_image_coords(self, posf, clamp: bool = False) -> QPointF | None:
+        """
+        Convert a mouse position in the preview label into image-space
+        coordinates.
+
+        By default, returns None when the position is outside the drawn
+        pixmap area — the correct behaviour for click events (a user
+        clicking in the empty area beside the image should not be treated
+        as clicking on the image edge).
+
+        When `clamp=True`, out-of-bounds positions are snapped to the
+        nearest pixmap edge instead of dropped. This is what the
+        exclusion-polygon drawing paths want: when the user drags the
+        mouse past a corner of the image, we want the polygon to follow
+        the IMAGE corner (so a dragged "arc around the corner" actually
+        encloses the corner), not to be ignored until the cursor
+        re-enters the image. The old drop-on-out-of-bounds behaviour was
+        the cause of the "my corner polygon missed the corner" bug: Qt
+        kept delivering MouseMove events as the cursor left the label,
+        each one was dropped, and the first in-bounds re-entry event got
+        appended as a straight-line jump from the last recorded point —
+        cutting the corner off entirely.
+        """
         if self._preview_qimg is None:
             return None
 
@@ -3672,15 +3885,24 @@ class ABEDialog(QDialog):
         px = float(posf.x()) - off_x
         py = float(posf.y()) - off_y
 
-        # Outside the drawn pixmap area — ignore
-        if px < 0 or py < 0 or px >= pm_w or py >= pm_h:
-            return None
+        if clamp:
+            # Snap out-of-bounds positions to the nearest pixmap edge so
+            # the caller still gets a usable image-space point. The final
+            # clamp to [0, img_w-1] below belt-and-suspenders this.
+            px = max(0.0, min(px, pm_w - 1.0))
+            py = max(0.0, min(py, pm_h - 1.0))
+        else:
+            # Outside the drawn pixmap area — ignore. Click-style callers
+            # (manual sample placement) rely on this to reject stray
+            # clicks beside the image.
+            if px < 0 or py < 0 or px >= pm_w or py >= pm_h:
+                return None
 
         # Pixmap pixels → image pixels via the preview scale
         x_img = px / max(1e-12, self._preview_scale)
         y_img = py / max(1e-12, self._preview_scale)
 
-        # Clamp to image bounds
+        # Clamp to image bounds (also catches float rounding on the pm edge)
         x_img = max(0.0, min(x_img, img_w - 1.0))
         y_img = max(0.0, min(y_img, img_h - 1.0))
 
