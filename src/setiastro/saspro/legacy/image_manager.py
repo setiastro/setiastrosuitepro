@@ -1358,6 +1358,123 @@ def _apply_roworder_flip(image, header):
             pass
     return image, header
 
+def _ensure_wcs_cd_matrix(hdr: fits.Header) -> bool:
+    """
+    On-the-fly WCS repair for masters whose header carries only a seed WCS
+    (CTYPE+CRPIX+CRVAL) without a CD/PC/CDELT matrix — astropy silently
+    substitutes PC=I, CDELT=1.0 deg, which reads as a 3600"/px plate.
+
+    Synthesizes a real CD matrix from PIXSCALE + POSANGLE + FLIPPED when
+    the matrix is missing OR when a prior broken save left behind the
+    astropy-default sentinel (PC=I, CDELT=1.0 deg) that disagrees with
+    the header's own PIXSCALE.
+
+    Mirrors the stacking suite's _ensure_wcs_matrix so masters opened
+    directly or produced by the stacker converge to the same correct WCS.
+    Returns True if the header was changed, False otherwise.
+    """
+    if not isinstance(hdr, fits.Header):
+        return False
+
+    has_cd    = all(k in hdr for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2"))
+    has_pc    = all(k in hdr for k in ("PC1_1", "PC1_2", "PC2_1", "PC2_2"))
+    has_cdelt = ("CDELT1" in hdr) and ("CDELT2" in hdr)
+
+    if has_cd:
+        return False
+
+    scrub_defaults = False
+    if has_pc and has_cdelt:
+        # Detect the astropy default sentinel: PC~I, CDELT~1.0 deg, and
+        # PIXSCALE (if present) disagrees by >20% with CDELT magnitude.
+        try:
+            cdelt1 = float(hdr["CDELT1"]); cdelt2 = float(hdr["CDELT2"])
+            pc11   = float(hdr["PC1_1"]);  pc22   = float(hdr["PC2_2"])
+            default_sentinel = (
+                abs(cdelt1 - 1.0) < 1e-9 and abs(cdelt2 - 1.0) < 1e-9
+                and abs(pc11) < 10.0 and abs(pc22) < 10.0
+            )
+            if default_sentinel and "PIXSCALE" in hdr:
+                try:
+                    pix_deg = float(hdr["PIXSCALE"]) / 3600.0
+                    if abs(pix_deg - abs(cdelt1)) / max(1e-12, abs(cdelt1)) > 0.2:
+                        scrub_defaults = True
+                except Exception:
+                    pass
+            if not scrub_defaults:
+                return False
+        except Exception:
+            return False
+
+    need = ("CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2")
+    if not all(k in hdr for k in need):
+        return False
+
+    def _ff(keys):
+        for k in keys:
+            if k in hdr:
+                try:
+                    v = float(hdr[k])
+                    if np.isfinite(v) and v != 0.0:
+                        return v
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    pixscale = _ff(("PIXSCALE", "SCALE", "SECPIX", "SECPIX1", "PIXSZ"))
+    if pixscale is None or pixscale <= 0:
+        # Try XPIXSZ * 206.265 / FOCALLEN as last resort
+        try:
+            xpsz = float(hdr.get("XPIXSZ", 0))
+            foc  = float(hdr.get("FOCALLEN", 0))
+            if xpsz > 0 and foc > 0:
+                pixscale = xpsz * 206.265 / foc
+        except Exception:
+            pixscale = None
+    if pixscale is None or pixscale <= 0:
+        return False
+
+    posang = _ff(("POSANGLE", "ORIENTAT", "CROTA2", "ANGLE"))
+    if posang is None:
+        posang = 0.0
+
+    flipped_raw = hdr.get("FLIPPED", False)
+    if isinstance(flipped_raw, str):
+        flipped = flipped_raw.strip().lower() in ("true", "t", "yes", "y", "1")
+    else:
+        flipped = bool(flipped_raw)
+
+    s  = float(pixscale) / 3600.0
+    th = np.radians(float(posang))
+    c, sn = np.cos(th), np.sin(th)
+    sx = s if flipped else -s
+    sy = s
+    cd11, cd12 =  sx * c, -sx * sn
+    cd21, cd22 =  sy * sn,  sy * c
+
+    # Scrub any half-written matrix leftovers (and the broken sentinel) before
+    # writing a clean CD matrix.
+    for k in ("PC1_1", "PC1_2", "PC2_1", "PC2_2", "CDELT1", "CDELT2"):
+        if k in hdr:
+            try: del hdr[k]
+            except Exception: pass
+
+    hdr["CD1_1"]  = (float(cd11), "WCS matrix (SASpro load-time synth)")
+    hdr["CD1_2"]  = (float(cd12), "WCS matrix (SASpro load-time synth)")
+    hdr["CD2_1"]  = (float(cd21), "WCS matrix (SASpro load-time synth)")
+    hdr["CD2_2"]  = (float(cd22), "WCS matrix (SASpro load-time synth)")
+    if "CUNIT1"  not in hdr: hdr["CUNIT1"]  = "deg"
+    if "CUNIT2"  not in hdr: hdr["CUNIT2"]  = "deg"
+    if "RADESYS" not in hdr: hdr["RADESYS"] = "ICRS"
+    if "EQUINOX" not in hdr: hdr["EQUINOX"] = 2000.0
+    hdr["SASWCSSY"] = (True, "WCS CD matrix synthesized at load (PIXSCALE/POSANGLE)")
+
+    tag = "scrubbed default-sentinel" if scrub_defaults else "no matrix in header"
+    print(f"🧭 Synthesized WCS CD matrix on load ({tag}): "
+          f"PIXSCALE={pixscale:.5f}\"/px, POSANGLE={posang:.3f}°, FLIPPED={flipped}")
+    return True
+
+
 def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
     """
     If hdr contains WCS, create an astropy.wcs.WCS and stash in metadata.
@@ -1370,6 +1487,20 @@ def attach_wcs_to_metadata(meta: dict, hdr: fits.Header | dict | None) -> dict:
 
     try:
         fhdr = hdr if isinstance(hdr, fits.Header) else fits.Header(hdr)
+
+        # 🔹 Repair seed WCS (CTYPE/CRPIX/CRVAL but no CD matrix) and overwrite
+        # the astropy default sentinel (PC=I, CDELT=1.0 deg) that leaks in
+        # when a prior save round-tripped a half-WCS. We mutate the caller's
+        # fits.Header object so original_header carries the fix downstream
+        # (crop, save, replay) — not just the WCS cached here.
+        try:
+            if isinstance(hdr, fits.Header):
+                _ensure_wcs_cd_matrix(hdr)
+                # fhdr IS hdr in this branch, no copy needed; otherwise sync.
+            else:
+                _ensure_wcs_cd_matrix(fhdr)
+        except Exception as _e_wcs_fix:
+            print(f"⚠️ WCS CD-matrix synth failed (continuing): {_e_wcs_fix}")
 
         # 🔹 Drop problematic long-string cards that upset astropy.wcs
         # FILE_PATH is the one we saw erroring, but you can add more here if needed.

@@ -1056,7 +1056,53 @@ def _bootstrap_imports():
                 "GPU tools will be unavailable until Hardware Acceleration is installed "
                 "via Settings -> Preferences."
             )
- 
+
+    # ── reproject.spherical_intersect SAC guard ──────────────────────────────
+    # reproject's __init__.py eagerly imports its C-extension submodule
+    # `spherical_intersect` (which backs reproject_exact) at package load.
+    # SASpro only ever calls reproject_interp — pure Python — but the eager
+    # import means ANY failure loading the compiled _overlap.pyd takes the
+    # whole reproject package down with it, and star_alignment/mosaic_master
+    # can't even import.
+    #
+    # Windows 11 24H2's Smart App Control has started quarantining the
+    # _overlap.pyd shipped in the reproject wheel on some installs (first
+    # reported Oct 2026, after KB5127647 / KB5127648). The quarantine fires
+    # at DLL-load time with:
+    #   ImportError: DLL load failed while importing _overlap:
+    #                An Application Control policy has blocked this file.
+    # We can't sign every third-party wheel, so the practical defence is:
+    # try the real import once, and if it fails for ANY reason (SAC block,
+    # missing DLL, broken wheel), replace reproject.spherical_intersect in
+    # sys.modules with a stub whose reproject_exact raises a clear
+    # RuntimeError at call time. Downstream `from reproject import
+    # reproject_interp` then succeeds, star_alignment loads, Stacking
+    # Suite launches, and nothing in SASpro that we actually use is lost.
+    # Must run BEFORE the main_window import below, which pulls
+    # star_alignment -> reproject. Same ordering requirement as the torch
+    # stub above.
+    try:
+        import reproject.spherical_intersect  # noqa: F401
+    except (ImportError, OSError) as _reproject_err:
+        import types as _types2
+        _stub = _types2.ModuleType("reproject.spherical_intersect")
+        _reproject_err_captured = _reproject_err
+        def _reproject_exact_unavailable(*_a, **_kw):
+            raise RuntimeError(
+                "reproject_exact is unavailable on this system "
+                f"({_reproject_err_captured}). SASpro only uses "
+                "reproject_interp, so stacking and WCS alignment still "
+                "work; if you need reproject_exact specifically, see "
+                "https://aka.ms/smartappcontrol about Smart App Control."
+            )
+        _stub.reproject_exact = _reproject_exact_unavailable
+        sys.modules["reproject.spherical_intersect"] = _stub
+        print(
+            f"[SASpro] reproject.spherical_intersect unavailable "
+            f"({_reproject_err}); stub injected. "
+            "reproject_interp (what SASpro actually uses) still works."
+        )
+
     _update_splash_gravitas(7)
     _update_splash_technical("Preparing AI runtime cache...")
     try:
@@ -1343,7 +1389,7 @@ def _init_opengl_before_qapp():
     QSurfaceFormat.setDefaultFormat(fmt)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, _skip_handoff: bool = False) -> int:
     """
     Main entry point for Seti Astro Suite Pro.
     
@@ -1372,21 +1418,42 @@ def main(argv: list[str] | None = None) -> int:
     # splash paints, before OpenGL init, before heavy imports — so the user
     # sees nothing but the existing window popping to the front with their
     # file open in it.
-    try:
-        from setiastro.saspro.single_instance import maybe_handoff_and_exit
-        _effective_argv = argv if argv is not None else sys.argv[1:]
-        _cleaned = maybe_handoff_and_exit(_effective_argv)
-        if _cleaned is None:
-            # Primary accepted our handoff. We're done; secondary exits silently.
-            return 0
-        # Strip --new-instance / --single-instance from argv for the rest of main().
-        argv = _cleaned
-    except Exception:
-        # Single-instance failure must never block launch. Fall through and
-        # start a normal full instance.
-        import traceback as _tb
-        print("[single-instance] probe failed, launching normally:")
-        _tb.print_exc()
+    #
+    # _skip_handoff=True means __main__.entry() already ran this probe against
+    # the RAW argv (including any --new-instance flag) and either handed off or
+    # decided we're the primary. Running it again here would re-probe with the
+    # already-stripped argv — losing the --new-instance signal — and silently
+    # hand the "new instance" launch back to the running primary. The direct
+    # cli._launch_gui() path leaves this False so single-instance still works
+    # for `python -m setiastro.saspro.cli file.fits`.
+    if not _skip_handoff:
+        try:
+            from setiastro.saspro.single_instance import maybe_handoff_and_exit
+            _effective_argv = argv if argv is not None else sys.argv[1:]
+            _cleaned = maybe_handoff_and_exit(_effective_argv)
+            if _cleaned is None:
+                # Primary accepted our handoff. We're done; secondary exits silently.
+                return 0
+            # Strip --new-instance / --single-instance from argv for the rest of main().
+            argv = _cleaned
+        except Exception:
+            # Single-instance failure must never block launch. Fall through and
+            # start a normal full instance.
+            import traceback as _tb
+            print("[single-instance] probe failed, launching normally:")
+            _tb.print_exc()
+    else:
+        # Caller already handled handoff with the raw argv; just normalize
+        # our view of argv so downstream code (_collect_open_paths etc.)
+        # sees the cleaned list.
+        try:
+            from setiastro.saspro.single_instance import parse_instance_flags
+            argv = parse_instance_flags(argv).remaining
+        except Exception:
+            # If flag parsing somehow blows up, use argv as-is. Downstream
+            # tolerates stray flags via _collect_open_paths' startswith("-")
+            # filter, so there's no crash risk here.
+            pass
 
     _init_opengl_before_qapp()
     global _splash, _app, _splash_initialized

@@ -8790,7 +8790,7 @@ class StackingSuiteDialog(QDialog):
         # Accept "rcd" and default-sanitise unknown values to RCD too — the
         # dropdown-first default so a user who never touched the setting
         # gets ratio-corrected demosaic on their first OSC stack.
-        if dmethod not in ("rcd", "vng", "edge", "bilinear", "strict_cfa"):
+        if dmethod not in ("rcd", "ahd", "vng", "edge", "bilinear", "strict_cfa"):
             dmethod = "rcd"
 
         ext = file_path.lower()
@@ -13231,7 +13231,10 @@ class StackingSuiteDialog(QDialog):
 
             if filt != f2 or s2 != size:
                 continue
-            if abs(float(exp) - float(e2)) > exp_tol:
+            # +0.5s epsilon absorbs sub-second EXPTIME jitter from drivers
+            # (e.g. 89.999 vs 120.001) and .1f rounding of the seed key, so
+            # files you'd call "exactly 30s apart" still land in one group.
+            if abs(float(exp) - float(e2)) > exp_tol + 0.5:
                 continue
 
             # Gain check — extract gain from key if present
@@ -13628,8 +13631,9 @@ class StackingSuiteDialog(QDialog):
         # color — the right default for astro stacking.
         for _dm_label, _dm_tok in (
             ("RCD", "rcd"),
+            ("Edge-aware", "edge"),            
+            ("AHD", "ahd"),
             ("VNG",        "vng"),
-            ("Edge-aware", "edge"),
             ("Bilinear",   "bilinear"),
             ("Strict CFA", "strict_cfa"),
         ):
@@ -13648,6 +13652,7 @@ class StackingSuiteDialog(QDialog):
             "• RCD: ratio-corrected, noise-robust direction detection — best\n"
             "  for OSC narrowband; preserves faint color without the colour\n"
             "  speckling VNG produces in dim regions.\n"
+            "• AHD: adaptive homogeneity-directed; slower, better for daylight\n"
             "• VNG: variable number of gradients; sharper on daylight-subject\n"
             "  broadband data but speckles under noise on dim astro frames.\n"
             "• Edge-aware / Bilinear: faster, lower quality fallbacks.\n"
@@ -22059,9 +22064,10 @@ class StackingSuiteDialog(QDialog):
                 if pa["dims"] != pb["dims"] and pa["dims"] is not None and pb["dims"] is not None:
                     return False
 
-                # Exposure tolerance
+                # Exposure tolerance (+0.5s epsilon — see
+                # _find_or_make_exposure_group_key for rationale)
                 if pa["exp"] is not None and pb["exp"] is not None:
-                    if abs(pa["exp"] - pb["exp"]) > exp_tol:
+                    if abs(pa["exp"] - pb["exp"]) > exp_tol + 0.5:
                         return False
 
                 # Gain tolerance
@@ -23374,6 +23380,32 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
 
+        # WCS plate-scale matrix: divide (deg per pixel shrinks as image grows).
+        # CDi_j elements that mix X and Y use the row-axis factor (X-axis cards
+        # scale by upscale_x, Y-axis by upscale_y). Same for PCi_j with CDELTi.
+        try:
+            cd_keys = ("CD1_1", "CD1_2", "CD2_1", "CD2_2")
+            if any(k in hdr for k in cd_keys):
+                for k, axis in (("CD1_1", upscale_x), ("CD1_2", upscale_x),
+                                ("CD2_1", upscale_y), ("CD2_2", upscale_y)):
+                    if k in hdr:
+                        try:
+                            hdr[k] = float(hdr[k]) / float(axis)
+                        except Exception:
+                            pass
+            # If CD not present but PC+CDELT are, scale CDELT (keep PC rotational part).
+            elif ("CDELT1" in hdr) or ("CDELT2" in hdr):
+                if "CDELT1" in hdr:
+                    try: hdr["CDELT1"] = float(hdr["CDELT1"]) / float(upscale_x)
+                    except Exception: pass
+                if "CDELT2" in hdr:
+                    try: hdr["CDELT2"] = float(hdr["CDELT2"]) / float(upscale_y)
+                    except Exception: pass
+        except Exception:
+            pass
+
+        hdr["SASUPSCX"] = (float(upscale_x), "Header rescaled for X upscale factor (SASpro)")
+        hdr["SASUPSCY"] = (float(upscale_y), "Header rescaled for Y upscale factor (SASpro)")
         return hdr
 
     def _cancelled(self) -> bool:
@@ -28431,14 +28463,12 @@ class StackingSuiteDialog(QDialog):
                                        "Frames soft-rejected (weight=0) by score outlier pass")
 
             # Correct header fields if frames were upscaled during normalization
-            # (e.g. bin2 RGB upscaled to match bin1 L — binning, pixscale, CRPIX all wrong otherwise)
-            upscale_map = getattr(self, "_upscale_factor_by_orig", {})
-            if upscale_map and file_list:
-                rep_key = os.path.normcase(os.path.normpath(file_list[0]))
-                uf = upscale_map.get(rep_key)
-                if uf and (abs(uf[0] - 1.0) > 1e-4 or abs(uf[1] - 1.0) > 1e-4):
-                    hdr_orig = self._fix_header_for_upscale(hdr_orig, uf[0], uf[1])
-                    log(f"📐 Header corrected for {uf[0]:.3f}×{uf[1]:.3f} upscale (binning/pixscale/CRPIX).")
+            # (e.g. bin2 RGB upscaled to match bin1 L — binning, pixscale, CRPIX
+            # all wrong otherwise). Uses the robust reverse-lookup helper that
+            # walks aligned → orig_by_aligned → self.reference_frame → stems.
+            hdr_orig = self._apply_upscale_fix_to_header(
+                hdr_orig, file_list, label=f"'{group_key}' master", status_cb=log
+            )
 
             is_mono_orig = (integrated_image.ndim == 2)
             if is_mono_orig:
@@ -28462,7 +28492,11 @@ class StackingSuiteDialog(QDialog):
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
             out_path_orig = self._dedupe_out_path(out_path_orig)
-            # ── NEW: plate solve before saving ──────────────────────────
+            # ── NEW: ensure WCS CD matrix exists (synth from PIXSCALE/POSANGLE
+            #        when the ref frame only had a seed WCS), then plate solve.
+            hdr_orig = self._ensure_wcs_matrix(
+                hdr_orig, label=f"'{group_key}' master", status_cb=log
+            )
             hdr_orig = self._maybe_plate_solve_master(
                 integrated_image, hdr_orig, label=f"'{group_key}' master", status_cb=log
             )
@@ -28572,12 +28606,14 @@ class StackingSuiteDialog(QDialog):
                                            "Pre-rejection frame pool size (SetiAstro)")
                     hdr_crop["NREJECT"] = (int(n_frames_pool - n_frames_group),
                                            "Frames soft-rejected (weight=0) by score outlier pass")
-                if upscale_map and file_list:
-                    rep_key = os.path.normcase(os.path.normpath(file_list[0]))
-                    uf = upscale_map.get(rep_key)
-                    if uf and (abs(uf[0] - 1.0) > 1e-4 or abs(uf[1] - 1.0) > 1e-4):
-                        hdr_crop = self._fix_header_for_upscale(hdr_crop, uf[0], uf[1])
+                hdr_crop = self._apply_upscale_fix_to_header(
+                    hdr_crop, file_list,
+                    label=f"'{group_key}' auto-cropped master", status_cb=log
+                )
                 is_mono_crop = (cropped_img.ndim == 2)
+                hdr_crop = self._ensure_wcs_matrix(
+                    hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
+                )
                 hdr_crop = self._maybe_plate_solve_master(
                     cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
                 )
@@ -30310,6 +30346,240 @@ class StackingSuiteDialog(QDialog):
         ok, result = self._plate_solve_waterfall(img_array, header, label=label, status_cb=log)
         return result if ok else header
 
+    # ──────────────────────────────────────────────────────────────────
+    # WCS integrity helpers for master-light save paths.
+    #
+    # Camera-capture pipelines (SGP/NINA/APT) typically write a seed WCS
+    # consisting of CTYPE1/2, CRPIX1/2, CRVAL1/2 and the non-standard
+    # PIXSCALE / POSANGLE / FLIPPED — but NO CD/PC/CDELT matrix. When
+    # astropy.wcs.WCS() reads such a header it silently fills in PC=I and
+    # CDELT=1.0 deg, which looks like a 3600"/px, rot=0 plate scale. That
+    # falsified WCS poisons every downstream geometry step (crop, SIP
+    # refit, dialogs) because residual-sanity checks have nothing to
+    # notice. See wcs_update.py:update_wcs_after_crop.
+    #
+    # _ensure_wcs_matrix synthesizes a real CD matrix from PIXSCALE +
+    # POSANGLE + FLIPPED whenever the seed is present but the matrix is
+    # missing. Called BEFORE _maybe_plate_solve_master so the solver has
+    # a decent seed (and so masters saved with plate-solving disabled
+    # still carry a correct WCS matrix).
+    # ──────────────────────────────────────────────────────────────────
+    def _ensure_wcs_matrix(self, header, *, label="master", status_cb=None):
+        """
+        If the header carries a seed WCS (CTYPE+CRPIX+CRVAL) but no CD or
+        PC+CDELT matrix, synthesize a CD matrix from PIXSCALE + POSANGLE +
+        FLIPPED so downstream tools see a real plate scale instead of
+        astropy's PC=I, CDELT=1.0 deg fallback. Returns the header.
+        """
+        log = status_cb or self.update_status
+        try:
+            import numpy as _np
+            from astropy.io import fits as _fits
+        except Exception:
+            return header
+
+        if header is None:
+            return header
+        if not isinstance(header, _fits.Header):
+            try:
+                tmp = _fits.Header()
+                for k, v in dict(header).items():
+                    try:
+                        tmp[k] = v
+                    except Exception:
+                        pass
+                header = tmp
+            except Exception:
+                return header
+
+        # Already has a usable matrix? Nothing to do.
+        has_cd    = all(k in header for k in ("CD1_1", "CD1_2", "CD2_1", "CD2_2"))
+        has_pc    = all(k in header for k in ("PC1_1", "PC1_2", "PC2_1", "PC2_2"))
+        has_cdelt = ("CDELT1" in header) and ("CDELT2" in header)
+        if has_cd:
+            return header
+        if has_pc and has_cdelt:
+            # Reject the astropy-default PC=I, CDELT=1.0 deg sentinel
+            # (that header can only have come from a prior broken write).
+            try:
+                cdelt1 = float(header["CDELT1"]); cdelt2 = float(header["CDELT2"])
+                pc11   = float(header["PC1_1"]);  pc22   = float(header["PC2_2"])
+                default_sentinel = (
+                    abs(cdelt1 - 1.0) < 1e-9 and abs(cdelt2 - 1.0) < 1e-9
+                    and abs(pc11) < 10.0 and abs(pc22) < 10.0
+                    # If PIXSCALE disagrees by >20% with CDELT, PC+CDELT is garbage
+                    and (
+                        "PIXSCALE" not in header
+                        or abs(float(header["PIXSCALE"]) / 3600.0 - abs(cdelt1)) / max(1e-12, abs(cdelt1)) > 0.2
+                    )
+                )
+                if not default_sentinel:
+                    return header
+                # Fall through: scrub and rebuild.
+            except Exception:
+                return header
+
+        # Need the seed WCS keys to anchor it.
+        need = ("CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2")
+        if not all(k in header for k in need):
+            return header
+
+        # Need a plate scale from somewhere.
+        def _ff(keys):
+            for k in keys:
+                if k in header:
+                    try:
+                        v = float(header[k])
+                        if _np.isfinite(v) and v != 0.0:
+                            return v
+                    except (TypeError, ValueError):
+                        continue
+            return None
+
+        pixscale = _ff(("PIXSCALE", "SCALE", "SECPIX", "SECPIX1", "PIXSZ"))
+        if pixscale is None or pixscale <= 0:
+            return header
+
+        posang = _ff(("POSANGLE", "ORIENTAT", "CROTA2", "ANGLE"))
+        if posang is None:
+            posang = 0.0
+
+        flipped_raw = header.get("FLIPPED", False)
+        if isinstance(flipped_raw, str):
+            flipped = flipped_raw.strip().lower() in ("true", "t", "yes", "y", "1")
+        else:
+            flipped = bool(flipped_raw)
+
+        s  = float(pixscale) / 3600.0        # arcsec/px -> deg/px
+        th = _np.radians(float(posang))
+        c, sn = _np.cos(th), _np.sin(th)
+        sx = s if flipped else -s            # RA increases east → CD1_1 negative when not flipped
+        sy = s
+        cd11, cd12 =  sx * c, -sx * sn
+        cd21, cd22 =  sy * sn,  sy * c
+
+        # Scrub any half-written matrix leftovers before writing a clean CD.
+        for k in ("PC1_1", "PC1_2", "PC2_1", "PC2_2",
+                  "CDELT1", "CDELT2"):
+            if k in header:
+                try: del header[k]
+                except Exception: pass
+
+        header["CD1_1"]  = (float(cd11), "WCS matrix (SASpro-synth from PIXSCALE/POSANGLE)")
+        header["CD1_2"]  = (float(cd12), "WCS matrix (SASpro-synth from PIXSCALE/POSANGLE)")
+        header["CD2_1"]  = (float(cd21), "WCS matrix (SASpro-synth from PIXSCALE/POSANGLE)")
+        header["CD2_2"]  = (float(cd22), "WCS matrix (SASpro-synth from PIXSCALE/POSANGLE)")
+        if "CUNIT1"  not in header: header["CUNIT1"]  = "deg"
+        if "CUNIT2"  not in header: header["CUNIT2"]  = "deg"
+        if "RADESYS" not in header: header["RADESYS"] = "ICRS"
+        if "EQUINOX" not in header: header["EQUINOX"] = 2000.0
+        header["SASWCSSY"] = (True, "WCS CD matrix synthesized from PIXSCALE/POSANGLE")
+
+        try:
+            log(f"🧭 WCS matrix synthesized for {label} "
+                f"(PIXSCALE={pixscale:.5f}\"/px, POSANGLE={posang:.3f}°, FLIPPED={flipped}).")
+        except Exception:
+            pass
+        return header
+
+    def _resolve_upscale_factor(self, file_list, ref_header=None):
+        """
+        Return (ux, uy) upscale factors for the master whose reference frame
+        is the first alignment target, or (1.0, 1.0) if nothing matches.
+
+        _upscale_factor_by_orig is keyed by the ORIGINAL raw/calibrated path
+        from the normalization pass. The save sites only have aligned paths
+        (and self.reference_frame). This helper walks all plausible keys
+        before giving up: aligned → orig_by_aligned → self.reference_frame
+        → every entry of file_list → every stem match in the map.
+        """
+        import os as _os
+        upscale_map = getattr(self, "_upscale_factor_by_orig", {}) or {}
+        if not upscale_map:
+            return (1.0, 1.0)
+
+        def _norm(p):
+            try:
+                return _os.path.normcase(_os.path.normpath(p))
+            except Exception:
+                return p
+
+        def _look(p):
+            if not p:
+                return None
+            k = _norm(p)
+            return upscale_map.get(k)
+
+        # 1) self.reference_frame — the master's actual coord-space source
+        uf = _look(getattr(self, "reference_frame", None))
+        if uf:
+            return (float(uf[0]), float(uf[1]))
+
+        # 2) First aligned path, then its orig_by_aligned mapping
+        oba = getattr(self, "orig_by_aligned", {}) or {}
+        if file_list:
+            first = file_list[0]
+            uf = _look(first)
+            if uf:
+                return (float(uf[0]), float(uf[1]))
+            op = oba.get(_norm(first))
+            uf = _look(op) if op else None
+            if uf:
+                return (float(uf[0]), float(uf[1]))
+
+        # 3) Any entry in file_list (aligned OR via orig_by_aligned)
+        for ap in (file_list or []):
+            uf = _look(ap)
+            if uf:
+                return (float(uf[0]), float(uf[1]))
+            op = oba.get(_norm(ap))
+            uf = _look(op) if op else None
+            if uf:
+                return (float(uf[0]), float(uf[1]))
+
+        # 4) Stem-match fallback — in case normcase/normpath mismatches.
+        try:
+            ref = getattr(self, "reference_frame", None)
+            stems = []
+            if ref:
+                stems.append(_os.path.splitext(_os.path.basename(ref))[0].lower())
+            if file_list:
+                stems.append(_os.path.splitext(_os.path.basename(file_list[0]))[0].lower())
+            for key, uf in upscale_map.items():
+                try:
+                    kstem = _os.path.splitext(_os.path.basename(key))[0].lower()
+                    if any(s and (s == kstem or s in kstem or kstem in s) for s in stems):
+                        return (float(uf[0]), float(uf[1]))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        return (1.0, 1.0)
+
+    def _apply_upscale_fix_to_header(self, hdr, file_list, *, label="master", status_cb=None):
+        """
+        Resolve the upscale factor for this master and apply _fix_header_for_upscale
+        when non-trivial. Centralizes the lookup so the four prepass/non-prepass
+        save sites can't drift from each other.
+        """
+        log = status_cb or self.update_status
+        ux, uy = self._resolve_upscale_factor(file_list, ref_header=hdr)
+        if (abs(ux - 1.0) > 1e-4) or (abs(uy - 1.0) > 1e-4):
+            try:
+                hdr = self._fix_header_for_upscale(hdr, ux, uy)
+                try:
+                    log(f"📐 Header corrected for {ux:.3f}×{uy:.3f} upscale on {label} "
+                        f"(PIXSCALE/XPIXSZ/XBINNING/CRPIX scaled).")
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    log(f"⚠️ Upscale header fix failed for {label}: {e}")
+                except Exception:
+                    pass
+        return hdr
+
     def _plate_solve_waterfall(self, img_array, header, *, label="frame", status_cb=None):
         """Run the Gaia DR3 → ASTAP → Astrometry.net solver waterfall, UNGATED by the
         master-solve setting. Returns (ok, solved_header | error_msg). Thread-safe:
@@ -30488,7 +30758,14 @@ class StackingSuiteDialog(QDialog):
             base = self._normalize_master_stem(base)
             out_path_orig = self._build_out(self._master_light_dir(), base, "fit")
             out_path_orig = self._dedupe_out_path(out_path_orig)
-            # ── NEW: plate solve before saving ──────────────────────────
+            # ── NEW: upscale fix (binning/pixscale/CRPIX/CD) → ensure WCS CD
+            #        matrix → plate solve. Mirrors stack_images_mixed_drizzle_from_prepass.
+            hdr_orig = self._apply_upscale_fix_to_header(
+                hdr_orig, file_list, label=f"'{group_key}' master", status_cb=log
+            )
+            hdr_orig = self._ensure_wcs_matrix(
+                hdr_orig, label=f"'{group_key}' master", status_cb=log
+            )
             hdr_orig = self._maybe_plate_solve_master(
                 integrated_image, hdr_orig, label=f"'{group_key}' master", status_cb=log
             )
@@ -30603,10 +30880,18 @@ class StackingSuiteDialog(QDialog):
                                            "Pre-rejection frame pool size (SetiAstro)")
                     hdr_crop["NREJECT"] = (int(n_frames_pool - n_frames_group),
                                            "Frames soft-rejected (weight=0) by score outlier pass")
-                # ── NEW: plate solve the cropped master separately (geometry/CRPIX differ) ──
+                # ── NEW: upscale fix → ensure WCS CD matrix → plate solve
+                #        the cropped master separately (geometry/CRPIX differ) ──
+                hdr_crop = self._apply_upscale_fix_to_header(
+                    hdr_crop, file_list,
+                    label=f"'{group_key}' auto-cropped master", status_cb=log
+                )
+                hdr_crop = self._ensure_wcs_matrix(
+                    hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
+                )
                 hdr_crop = self._maybe_plate_solve_master(
                     cropped_img, hdr_crop, label=f"'{group_key}' auto-cropped master", status_cb=log
-                )                
+                )
                 is_mono_crop = (cropped_img.ndim == 2)
                 Hc, Wc = (cropped_img.shape[:2] if cropped_img.ndim >= 2 else (H, W))
                 display_group_crop = self._label_with_dims(group_key, Wc, Hc)
@@ -34661,9 +34946,28 @@ class StackingSuiteDialog(QDialog):
 
         is_mono_driz = (final_drizzle.ndim == 2)
         final_drizzle = self._normalize_stack_01(final_drizzle)
+
+        # ── NEW: upscale fix (normalization + drizzle factor) → ensure WCS CD
+        # matrix → plate solve. Drizzle multiplies the image geometry by
+        # scale_factor on top of any upstream normalization upscale, so the
+        # ref header's PIXSCALE/CRPIX/CDi_j must be rescaled by both.
+        hdr_orig = self._apply_upscale_fix_to_header(
+            hdr_orig, file_list,
+            label=f"'{group_key}' drizzle master", status_cb=log
+        )
+        try:
+            sf = float(scale_factor)
+            if abs(sf - 1.0) > 1e-4:
+                hdr_orig = self._fix_header_for_upscale(hdr_orig, sf, sf)
+                log(f"📐 Header corrected for {sf:.3f}× drizzle scale on '{group_key}' master.")
+        except Exception as e:
+            log(f"⚠️ Drizzle header fix failed for '{group_key}': {e}")
+        hdr_orig = self._ensure_wcs_matrix(
+            hdr_orig, label=f"'{group_key}' drizzle master", status_cb=log
+        )
         hdr_orig = self._maybe_plate_solve_master(
             final_drizzle, hdr_orig, label=f"'{group_key}' drizzle master", status_cb=log
-        )        
+        )
         save_image(
             img_array=final_drizzle,
             filename=out_path_orig,
@@ -34708,11 +35012,19 @@ class StackingSuiteDialog(QDialog):
             out_path_crop = self._dedupe_out_path(out_path_crop)
 
             cropped_drizzle = self._normalize_stack_01(cropped_drizzle)
+            # hdr_crop was derived from hdr_orig (which already carries the
+            # upscale+drizzle correction), so only the WCS CD matrix guard
+            # is needed here before the solve.
+            hdr_crop = self._ensure_wcs_matrix(
+                hdr_crop,
+                label=f"'{group_key}' auto-cropped drizzle master",
+                status_cb=log,
+            )
             hdr_crop = self._maybe_plate_solve_master(
                 cropped_drizzle, hdr_crop,
                 label=f"'{group_key}' auto-cropped drizzle master",
                 status_cb=log
-            )            
+            )
             save_image(
                 img_array=cropped_drizzle,
                 filename=out_path_crop,

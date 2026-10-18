@@ -56,6 +56,174 @@ def _pixscale_rot_from_wcs(w):
     theta = float(np.degrees(np.arctan2(-CD[1, 0], CD[0, 0])))
     return sx, sy, theta
 
+def _wcs_appears_default(w) -> bool:
+    """True if this WCS is astropy's PC=I, CDELT=1.0 deg fallback —
+    i.e. the header had CTYPE/CRPIX/CRVAL but no CD/PC/CDELT matrix."""
+    try:
+        if w.wcs.has_cd():
+            cd = np.array(w.wcs.cd)
+            return bool(np.allclose(cd, np.eye(2), atol=1e-12))
+        pc = np.array(w.wcs.pc) if w.wcs.pc is not None else np.eye(2)
+        cdelt = np.array(w.wcs.cdelt)
+        return bool(np.allclose(pc, np.eye(2), atol=1e-12)
+                    and np.allclose(np.abs(cdelt), 1.0, atol=1e-12))
+    except Exception:
+        return False
+
+
+def _try_float(hdr, keys):
+    for k in keys:
+        if k in hdr:
+            try:
+                v = float(hdr[k])
+                if np.isfinite(v):
+                    return v
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
+def _try_bool(hdr, key):
+    if key not in hdr:
+        return False
+    v = hdr[key]
+    if isinstance(v, bool):   return v
+    if isinstance(v, (int, float)): return bool(v)
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "t", "yes", "y", "1")
+    return False
+
+
+def _wcs_from_pixscale_posang(hdr):
+    """Build a proper CD-matrix header from CTYPE/CRPIX/CRVAL + PIXSCALE + POSANGLE
+    when the original header has no WCS matrix. Returns a fits.Header or None."""
+    from astropy.io import fits
+    try:
+        pixscale = _try_float(hdr, ("PIXSCALE", "SCALE", "SECPIX", "SECPIX1", "PIXSZ"))
+        if pixscale is None or pixscale <= 0:
+            return None
+        posang = _try_float(hdr, ("POSANGLE", "ORIENTAT", "CROTA2", "ANGLE"))
+        if posang is None:
+            posang = 0.0
+
+        crpix1 = _try_float(hdr, ("CRPIX1",))
+        crpix2 = _try_float(hdr, ("CRPIX2",))
+        crval1 = _try_float(hdr, ("CRVAL1", "RA"))
+        crval2 = _try_float(hdr, ("CRVAL2", "DEC"))
+        if None in (crpix1, crpix2, crval1, crval2):
+            return None
+
+        flipped = _try_bool(hdr, "FLIPPED")
+        s  = pixscale / 3600.0            # arcsec/px -> deg/px
+        th = np.radians(posang)
+        c, sn = np.cos(th), np.sin(th)
+        # RA increases east (to the left) → CD1_1 is negative when not flipped
+        sx = s if flipped else -s
+        sy = s
+        cd11, cd12 =  sx * c, -sx * sn
+        cd21, cd22 =  sy * sn,  sy * c
+
+        h = fits.Header()
+        # keep SIP if any happens to be present
+        for k, v in hdr.items():
+            try:
+                uk = str(k).upper()
+                if uk.startswith(("A_", "B_", "AP_", "BP_")):
+                    h[k] = v
+            except Exception:
+                pass
+        h["WCSAXES"] = 2
+        h["NAXIS"]   = 2
+        h["CTYPE1"]  = str(hdr.get("CTYPE1", "RA---TAN"))
+        h["CTYPE2"]  = str(hdr.get("CTYPE2", "DEC--TAN"))
+        h["CUNIT1"]  = "deg"
+        h["CUNIT2"]  = "deg"
+        h["CRPIX1"]  = crpix1
+        h["CRPIX2"]  = crpix2
+        h["CRVAL1"]  = crval1
+        h["CRVAL2"]  = crval2
+        h["CD1_1"]   = cd11
+        h["CD1_2"]   = cd12
+        h["CD2_1"]   = cd21
+        h["CD2_2"]   = cd22
+        h["RADESYS"] = str(hdr.get("RADESYS", "ICRS"))
+        return h
+    except Exception:
+        return None
+
+
+def _best_wcs_source(metadata, hdr0):
+    """Pick the best WCS to crop from.
+    Priority: live WCS object → stored wcs_header → hdr0 as-is → rebuild from PIXSCALE/POSANGLE.
+    Anything whose scale disagrees with hdr0's PIXSCALE by >20% is rejected.
+    Returns (WCS, header_used) or (None, None)."""
+    from astropy.io import fits
+    from astropy.wcs import WCS
+
+    expected_scale = _try_float(hdr0, ("PIXSCALE", "SCALE", "SECPIX", "SECPIX1"))
+
+    def _scale_ok(w):
+        if expected_scale is None or expected_scale <= 0:
+            return True
+        try:
+            sx, sy, _ = _pixscale_rot_from_wcs(w)
+            return (abs(sx - expected_scale) / expected_scale < 0.2
+                    and abs(sy - expected_scale) / expected_scale < 0.2)
+        except Exception:
+            return False
+
+    # 1) live WCS
+    try:
+        w_live = metadata.get("wcs")
+        if w_live is not None and not _wcs_appears_default(w_live) and _scale_ok(w_live):
+            return w_live, w_live.to_header(relax=True)
+    except Exception:
+        pass
+
+    # 2) stored wcs_header — only if its scale actually matches hdr0's PIXSCALE
+    try:
+        wh = metadata.get("wcs_header")
+        wh_hdr = None
+        if isinstance(wh, fits.Header):
+            wh_hdr = wh
+        elif isinstance(wh, str):
+            try:    wh_hdr = fits.Header.fromstring(wh)
+            except Exception:
+                try: wh_hdr = fits.Header.fromstring(wh, sep="\n")
+                except Exception: wh_hdr = None
+        elif isinstance(wh, dict):
+            wh_hdr = fits.Header()
+            for k, v in wh.items():
+                try: wh_hdr[k] = v
+                except Exception: pass
+        if wh_hdr is not None:
+            try:
+                w_wh = WCS(wh_hdr, relax=True)
+                if not _wcs_appears_default(w_wh) and _scale_ok(w_wh):
+                    return w_wh, wh_hdr
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # 3) hdr0 itself
+    try:
+        hdr_use = _coerce_header_to_2d(hdr0) if _needs_2d_coercion(hdr0) else hdr0
+        w_h = WCS(hdr_use, relax=True)
+        if not _wcs_appears_default(w_h) and _scale_ok(w_h):
+            return w_h, hdr_use
+    except Exception:
+        pass
+
+    # 4) rebuild from PIXSCALE + POSANGLE
+    try:
+        rebuilt = _wcs_from_pixscale_posang(hdr0)
+        if rebuilt is not None:
+            return WCS(rebuilt, relax=True), rebuilt
+    except Exception:
+        pass
+
+    return None, None
 
 def _needs_2d_coercion(hdr) -> bool:
     try:
@@ -135,44 +303,26 @@ def update_wcs_after_crop(metadata: dict, M_src_to_dst: np.ndarray, out_w: int, 
             return metadata
 
     # ------------------------------------------------------------------
-    # 1) Build the *old* WCS
+    # 1) Build the *old* WCS — pick the best available source
     # ------------------------------------------------------------------
-    hdr_for_wcs = hdr0
-    coerced = False
+    w_old, hdr_for_wcs = _best_wcs_source(metadata, hdr0)
+    if w_old is None:
+        if debug:
+            print("[WCS-CROP] No usable WCS (no CD/PC matrix anywhere, "
+                  "and no PIXSCALE/POSANGLE to rebuild from); skipping.")
+        return metadata
+    coerced = _needs_2d_coercion(hdr0)
 
-    if _needs_2d_coercion(hdr0):
-        hdr_for_wcs = _coerce_header_to_2d(hdr0)
-        coerced = True
-
-    try:
-        w_old = WCS(hdr_for_wcs, relax=True)
-    except Exception as e:
-        if not coerced:
-            try:
-                hdr_for_wcs = _coerce_header_to_2d(hdr0)
-                w_old = WCS(hdr_for_wcs, relax=True)
-                coerced = True
-            except Exception as e2:
-                if debug:
-                    print(f"[WCS-CROP] WCS() failed even after 2-D coercion: {e2}; skipping.")
-                return metadata
-        else:
-            if debug:
-                print(f"[WCS-CROP] WCS() failed: {e}; skipping.")
-            return metadata
-
-    # Before stats
     try:
         old_crval = (float(w_old.wcs.crval[0]), float(w_old.wcs.crval[1]))
         old_crpix = (float(w_old.wcs.crpix[0]), float(w_old.wcs.crpix[1]))
     except Exception:
-        old_crval = (np.nan, np.nan)
-        old_crpix = (np.nan, np.nan)
+        old_crval = (np.nan, np.nan); old_crpix = (np.nan, np.nan)
     try:
         old_sx, old_sy, old_rot = _pixscale_rot_from_wcs(w_old)
     except Exception:
         old_sx = old_sy = old_rot = float("nan")
-
+        
     # ------------------------------------------------------------------
     # 2) dst->src inverse homography
     # ------------------------------------------------------------------
