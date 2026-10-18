@@ -59,9 +59,9 @@ _BAYER_METHODS = [
     # for daylight subjects where its gradient response is still useful;
     # edge-aware and bilinear are fallbacks; strict_cfa is for drizzle prep.
     ("RCD (Ratio-Corrected)",                      "rcd"),
+    ("Edge-aware (Selective Gradient)",            "edge"),    
     ("AHD (Adaptive Homogeneity-Directed)",        "ahd"),
     ("VNG (Variable Number of Gradients)",         "vng"),
-    ("Edge-aware (Selective Gradient)",            "edge"),
     ("Bilinear (Traditional Debayer)",             "bilinear"),
     ("Strict CFA (no interpolation)",              "strict_cfa"),
 ]

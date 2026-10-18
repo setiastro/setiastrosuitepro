@@ -3368,7 +3368,9 @@ def _ahd_select_winner(cand_h, cand_v, hom_h, hom_v, out):
                 out[y, x, 2] = 0.5 * (cand_h[y, x, 2] + cand_v[y, x, 2])
 
 
-def _ahd_demosaic(image_data, bp, lab_ball: float = 1.0):
+def _ahd_demosaic(image_data, bp, lab_ball: float = 1.0,
+                  clip_blend: bool = True, clip_threshold: float = 0.95,
+                  clip_feather: float = 2.0):
     """Full AHD demosaic: raw 2D mosaic + pattern string -> (H,W,3) float32.
 
     Pipeline:
@@ -3383,20 +3385,33 @@ def _ahd_demosaic(image_data, bp, lab_ball: float = 1.0):
       6. 3×3 box-smooth both homogeneity maps.
       7. Per pixel, pick the candidate with higher smoothed homogeneity;
          tie-break by averaging.
+      8. Optional: crossfade back to the shared bilinear prefill in soft
+         neighborhoods around saturated samples (same mechanism as RCD's
+         clip crossfade — addresses the blue/magenta-cored star artifact
+         AHD shows on linear astro data, caused by the Lab-homogeneity
+         test picking directions that favor the under-clipped channel
+         at differentially-clipped star cores).
 
     `lab_ball`: CIE76 radius for the homogeneity test. 1.0 ≈ just-
     noticeable-difference, which is the Hirakawa paper's default. Larger
     values make AHD less direction-sensitive (approaches bilinear);
     smaller values make it more aggressive (approaches a pure directional
     pick, less tolerant of noise).
+
+    `clip_blend=True` crossfades AHD → bilinear in a soft neighborhood
+    around saturated samples. Short-circuits on frames with no near-clip
+    pixels (flat-field-calibrated faint-target data pays zero cost).
+    `clip_feather` is the Gaussian σ in pixels for the mask transition.
     """
     H, W = image_data.shape
     r_mask, g_mask, b_mask = _rcd_build_masks(bp, H, W)
     r0, c0, r1, c1 = _CFA_CHAN[bp]
-    # Shared starting candidate: a bilinear prefill.
-    base = _vng_bilinear_prefill(image_data, r0, c0, r1, c1)
-    cand_h = base.copy()
-    cand_v = base.copy()
+    # Shared starting candidate: a bilinear prefill. We hold onto it as
+    # `bilinear` for the clip crossfade; both candidates derive from a
+    # copy so the AHD passes don't mutate the baseline.
+    bilinear = _vng_bilinear_prefill(image_data, r0, c0, r1, c1)
+    cand_h = bilinear.copy()
+    cand_v = bilinear.copy()
     # Phase 1: directional G at R/B sites.
     _ahd_fill_green_candidates(image_data, cand_h, cand_v, r_mask, b_mask)
     # Phase 2: R and B everywhere, in each candidate independently.
@@ -3419,6 +3434,17 @@ def _ahd_demosaic(image_data, bp, lab_ball: float = 1.0):
     # Phase 5: pick the per-pixel winner.
     out = np.empty_like(cand_h)
     _ahd_select_winner(cand_h, cand_v, hom_h_s, hom_v_s, out)
+    # Phase 8 (optional): crossfade back to bilinear in saturated
+    # neighborhoods. Reuses _rcd_build_clip_blend since the mask it
+    # computes is a function of the raw mosaic only — identical across
+    # demosaic methods. On frames with no near-clip pixels, the helper
+    # returns None and we skip the blend entirely.
+    if clip_blend:
+        blend = _rcd_build_clip_blend(image_data, clip_threshold, clip_feather)
+        if blend is not None:
+            b3 = blend[:, :, None]
+            np.multiply(out, 1.0 - b3, out=out)
+            np.add(out, bilinear * b3, out=out)
     return out
 
 
@@ -3429,7 +3455,10 @@ def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
                             rcd_clip_blend: bool = True,
                             rcd_clip_threshold: float = 0.95,
                             rcd_clip_feather: float = 2.0,
-                            ahd_lab_ball: float = 1.0):
+                            ahd_lab_ball: float = 1.0,
+                            ahd_clip_blend: bool = True,
+                            ahd_clip_threshold: float = 0.95,
+                            ahd_clip_feather: float = 2.0):
     bp = (bayer_pattern or "").upper()
     interpolate = not cfa_drizzle
 
@@ -3491,7 +3520,11 @@ def _debayer_fits_fast_impl(image_data, bayer_pattern, cfa_drizzle=False,
             # it tends to win on fine-detail subjects (planetary,
             # lunar, dense star fields, daylight) at the cost of ~2-3×
             # the compute of RCD. The sparse `out` is replaced here.
-            out = _ahd_demosaic(image_data, bp, lab_ball=ahd_lab_ball)
+            out = _ahd_demosaic(image_data, bp,
+                                lab_ball=ahd_lab_ball,
+                                clip_blend=ahd_clip_blend,
+                                clip_threshold=ahd_clip_threshold,
+                                clip_feather=ahd_clip_feather)
         else:   # "edge" default
             _edge_aware_interpolate_numba(out)
 
@@ -3509,7 +3542,10 @@ def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False,
                       rcd_clip_blend: bool = True,
                       rcd_clip_threshold: float = 0.95,
                       rcd_clip_feather: float = 2.0,
-                      ahd_lab_ball: float = 1.0):
+                      ahd_lab_ball: float = 1.0,
+                      ahd_clip_blend: bool = True,
+                      ahd_clip_threshold: float = 0.95,
+                      ahd_clip_feather: float = 2.0):
     with NUMBA_PARALLEL_LOCK:
         return _debayer_fits_fast_impl(
             image_data, bayer_pattern, cfa_drizzle=cfa_drizzle,
@@ -3519,6 +3555,9 @@ def debayer_fits_fast(image_data, bayer_pattern, cfa_drizzle=False,
             rcd_clip_threshold=rcd_clip_threshold,
             rcd_clip_feather=rcd_clip_feather,
             ahd_lab_ball=ahd_lab_ball,
+            ahd_clip_blend=ahd_clip_blend,
+            ahd_clip_threshold=ahd_clip_threshold,
+            ahd_clip_feather=ahd_clip_feather,
         )
 
 def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False,
@@ -3527,7 +3566,10 @@ def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False,
                      rcd_clip_blend: bool = True,
                      rcd_clip_threshold: float = 0.95,
                      rcd_clip_feather: float = 2.0,
-                     ahd_lab_ball: float = 1.0):
+                     ahd_lab_ball: float = 1.0,
+                     ahd_clip_blend: bool = True,
+                     ahd_clip_threshold: float = 0.95,
+                     ahd_clip_feather: float = 2.0):
     return debayer_fits_fast(raw_image_data, bayer_pattern,
                              cfa_drizzle=cfa_drizzle, method=method,
                              preserve_zeros=preserve_zeros,
@@ -3536,7 +3578,10 @@ def debayer_raw_fast(raw_image_data, bayer_pattern="RGGB", cfa_drizzle=False,
                              rcd_clip_blend=rcd_clip_blend,
                              rcd_clip_threshold=rcd_clip_threshold,
                              rcd_clip_feather=rcd_clip_feather,
-                             ahd_lab_ball=ahd_lab_ball)
+                             ahd_lab_ball=ahd_lab_ball,
+                             ahd_clip_blend=ahd_clip_blend,
+                             ahd_clip_threshold=ahd_clip_threshold,
+                             ahd_clip_feather=ahd_clip_feather)
 
 
 @njit(parallel=True, fastmath=True, cache=True)
