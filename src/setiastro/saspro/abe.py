@@ -580,6 +580,50 @@ def _anchor_median_linear_rescale(img: np.ndarray, pivot: float, eps: float = 1e
 
     return out.astype(np.float32, copy=False)
 
+def _build_nodata_mask(img: np.ndarray,
+                       pad_px: int = 4,
+                       zero_tol: float = 1e-6) -> np.ndarray | None:
+    """
+    Detect "no-data" border pixels that come from registered / rotated frames
+    (black triangular wedges after a warp, zero-fill border from cv2.warpAffine
+    with BORDER_CONSTANT=0, etc.) and from NaN/inf anywhere in the frame.
+
+    Returned mask follows the ABE sampling convention:
+        True  = sample this pixel (good)
+        False = DO NOT sample (no-data / infinite)
+
+    `pad_px` dilates the no-data region slightly so the sampler also skips
+    the few-pixel resampling fringe at the border where values are still
+    "real" but photometrically unreliable (Lanczos ringing, bilinear
+    half-pixels of zero bleeding into the first row of real sky). Dropping
+    those keeps the polynomial fit from being tugged toward 0 along the
+    wedge edge.
+
+    Returns None if there are no no-data pixels at all — lets the caller
+    cheap-check and skip the OR work.
+    """
+    if img is None:
+        return None
+    a = np.asarray(img)
+    if a.ndim == 3:
+        # No-data = all channels at/below tol, OR any channel non-finite.
+        # ANY-non-finite is stricter than ALL on purpose: if even one
+        # channel is NaN there, we don't want the sampler landing on it.
+        zero_all = np.all(np.abs(a) <= zero_tol, axis=2)
+        nonfinite_any = np.any(~np.isfinite(a), axis=2)
+        nodata = zero_all | nonfinite_any
+    else:
+        nodata = (np.abs(a) <= zero_tol) | ~np.isfinite(a)
+    if not nodata.any():
+        return None
+    if pad_px > 0 and cv2 is not None:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                      (2 * pad_px + 1, 2 * pad_px + 1))
+        nodata = cv2.dilate(nodata.astype(np.uint8), k).astype(bool)
+    # Convert "nodata" to the sampling mask (True = sample).
+    return ~nodata
+
+
 def abe_run(
     image: np.ndarray,
     degree: int = 2,
@@ -595,7 +639,22 @@ def abe_run(
     manual_points: np.ndarray | None = None,
     rng=None,
     correction_mode: str = "subtract",
+    ignore_nodata: bool = False,
+    nodata_pad_px: int = 4,
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+    """
+    ABE core.
+
+    `ignore_nodata` (default False for back-compat): when True, auto-detect
+    zero-valued or non-finite border pixels and treat them as excluded
+    sample sites. Essential for images coming out of star alignment or
+    reprojection, where the rotated frame leaves black wedges at the
+    corners — otherwise the polynomial fit tries to interpolate the frame
+    down to 0.0 along those wedges and drags the real sky with it. The
+    detected mask is OR-ed into whatever `exclusion_mask` the caller
+    passed. `nodata_pad_px` dilates the no-data region to also drop the
+    few-pixel resampling fringe at the wedge edge.
+    """
     if image is None:
         raise ValueError("ABE: image is None")
 
@@ -611,6 +670,29 @@ def abe_run(
     img_rgb = img_src_work if (img_src_work.ndim == 3 and img_src_work.shape[2] == 3) else np.stack(
         [img_src_work.squeeze()] * 3, axis=-1
     )
+
+    # Auto no-data detection. Built on img_rgb (not img_src) so a mono input
+    # that we just stacked up to 3 channels is still handled correctly. Done
+    # before any stretching so a legacy_prestretch mapping NaN→huge doesn't
+    # hide the no-data wedge. Then OR into any user-supplied exclusion mask.
+    if ignore_nodata:
+        if progress_cb: progress_cb("Detecting no-data border/wedge…")
+        auto_mask = _build_nodata_mask(img_rgb, pad_px=int(nodata_pad_px))
+        if auto_mask is not None:
+            if exclusion_mask is None:
+                exclusion_mask = auto_mask
+            else:
+                try:
+                    ex = np.asarray(exclusion_mask, dtype=bool)
+                    if ex.shape[:2] == auto_mask.shape[:2]:
+                        exclusion_mask = ex & auto_mask
+                    else:
+                        # Shape mismatch — can't merge safely; keep the user's.
+                        if progress_cb:
+                            progress_cb("No-data mask shape differs from "
+                                        "user exclusion; keeping user mask.")
+                except Exception:
+                    pass
 
     # --- Stretch for background FITTING only ---
     stretch_state = None

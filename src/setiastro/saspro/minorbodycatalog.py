@@ -626,8 +626,10 @@ class MinorBodyCatalog:
         if debug:
             print(f"[MinorBodies] obs time: {t_obs.iso}  JD={jd:.6f}")
 
+        jd_obs = float(jd)
+
         # Earth barycentric position at observation time (ICRS, AU)
-        from astropy.coordinates import solar_system_ephemeris
+        from astropy.coordinates import solar_system_ephemeris, EarthLocation, GCRS
         with solar_system_ephemeris.set("builtin"):
             earth_bary, _ = get_body_barycentric_posvel("earth", t_obs)
         earth_xyz = np.array([
@@ -636,14 +638,62 @@ class MinorBodyCatalog:
             earth_bary.z.to(u.au).value,
         ])
 
-        # Sun barycentric position
+        # Sun barycentric position AND velocity. The velocity is used to
+        # shift the Sun to the light-retarded time below; it is small but
+        # not negligible (~0.8" at 1.5 AU if ignored).
         with solar_system_ephemeris.set("builtin"):
-            sun_bary, _ = get_body_barycentric_posvel("sun", t_obs)
+            sun_bary, sun_bary_v = get_body_barycentric_posvel("sun", t_obs)
         sun_xyz = np.array([
             sun_bary.x.to(u.au).value,
             sun_bary.y.to(u.au).value,
             sun_bary.z.to(u.au).value,
         ])
+        try:
+            sun_vel_xyz = np.array([
+                sun_bary_v.x.to(u.au / u.day).value,
+                sun_bary_v.y.to(u.au / u.day).value,
+                sun_bary_v.z.to(u.au / u.day).value,
+            ])
+        except Exception:
+            sun_vel_xyz = np.zeros(3)
+
+        # ------------------------------------------------------------------
+        # Observer position: TOPOCENTRIC when a site is supplied.
+        #
+        # Previously this parameter was accepted and silently ignored — every
+        # position was computed from the geocentre. The geocentre-to-observer
+        # vector is one Earth radius, which subtends ~4.4" on a main-belt
+        # asteroid at 2 AU and ~18" at 0.5 AU. For anyone trying to confirm
+        # a specific object against a plate solution, that alone is enough
+        # to make the marker miss.
+        # ------------------------------------------------------------------
+        obs_xyz = earth_xyz
+        if topocentric is not None:
+            try:
+                lat_deg, lon_deg, elev_m = (list(topocentric) + [0.0, 0.0, 0.0])[:3]
+                loc = EarthLocation(lat=float(lat_deg) * u.deg,
+                                    lon=float(lon_deg) * u.deg,
+                                    height=float(elev_m) * u.m)
+                gc = loc.get_itrs(obstime=t_obs).transform_to(
+                    GCRS(obstime=t_obs)).cartesian
+                off = np.array([
+                    gc.x.to(u.au).value,
+                    gc.y.to(u.au).value,
+                    gc.z.to(u.au).value,
+                ])
+                obs_xyz = earth_xyz + off
+                if debug:
+                    print(f"[MinorBodies] topocentric: lat={lat_deg} lon={lon_deg} "
+                          f"elev={elev_m}m, offset={np.linalg.norm(off)*1.495978707e8:.0f} km")
+            except Exception as exc:
+                print(f"[MinorBodies] topocentric setup failed, using geocentre: {exc!r}")
+                obs_xyz = earth_xyz
+        elif debug:
+            print("[MinorBodies] no site supplied — geocentric positions "
+                  "(up to ~18\" parallax error on close objects)")
+
+        # Speed of light, AU per day.
+        _C_AU_PER_DAY = 173.1446326846693
 
         if debug:
             print(f"[MinorBodies] Earth ICRS (AU): {earth_xyz}")
@@ -679,30 +729,7 @@ class MinorBodyCatalog:
                 M0  = np.radians(float(row["mean_anomaly_degrees"]))
                 n   = np.radians(float(row["mean_daily_motion_degrees"]))  # rad/day
 
-                # ── 3) Propagate mean anomaly to obs time ─────────────────────
-                dt_days = float((t_obs - t_epoch).jd)
-                M = M0 + n * dt_days
-                M = M % (2 * np.pi)
-
-                # ── 4) Solve Kepler's equation  M = E - e*sin(E) ─────────────
-                E = _solve_kepler(M, e)
-
-                # ── 5) True anomaly ───────────────────────────────────────────
-                cos_E = np.cos(E)
-                sin_E = np.sin(E)
-                nu = np.arctan2(
-                    np.sqrt(1 - e*e) * sin_E,
-                    cos_E - e
-                )
-
-                # ── 6) Heliocentric distance ──────────────────────────────────
-                r = a * (1 - e * cos_E)
-
-                # ── 7) Position in orbital plane ──────────────────────────────
-                x_orb = r * np.cos(nu)
-                y_orb = r * np.sin(nu)
-
-                # ── 8) Rotate to ecliptic J2000 ───────────────────────────────
+                # ── 3) Constant rotation terms for this object ────────────────
                 cos_Om = np.cos(Om); sin_Om = np.sin(Om)
                 cos_om = np.cos(om); sin_om = np.sin(om)
                 cos_i  = np.cos(inc); sin_i = np.sin(inc)
@@ -715,31 +742,64 @@ class MinorBodyCatalog:
                 Zx =  sin_om*sin_i
                 Zy =  cos_om*sin_i
 
-                x_ecl = Xx*x_orb + Xy*y_orb
-                y_ecl = Yx*x_orb + Yy*y_orb
-                z_ecl = Zx*x_orb + Zy*y_orb
-
-                # ── 9) Ecliptic J2000 → ICRS (rotate by obliquity of J2000) ──
                 eps = np.radians(23.439291111)   # obliquity J2000.0
                 cos_e = np.cos(eps); sin_e = np.sin(eps)
 
-                x_icrs = x_ecl
-                y_icrs = cos_e*y_ecl - sin_e*z_ecl
-                z_icrs = sin_e*y_ecl + cos_e*z_ecl
+                def _helio_icrs(jd_at, _a=a, _e=e, _n=n, _M0=M0, _ej=epoch_jd):
+                    """Heliocentric ICRS position (AU) at a given JD.
 
-                # ── 10) Heliocentric ICRS → barycentric ICRS ──────────────────
-                # Add Sun's barycentric position
-                x_bary = x_icrs + sun_xyz[0]
-                y_bary = y_icrs + sun_xyz[1]
-                z_bary = z_icrs + sun_xyz[2]
+                    Factored out so the light-time loop can evaluate it at
+                    the retarded time without duplicating the Kepler maths.
+                    """
+                    M = (_M0 + _n * (jd_at - _ej)) % (2.0 * np.pi)
+                    E = _solve_kepler(M, _e)
+                    cos_E = np.cos(E); sin_E = np.sin(E)
+                    nu = np.arctan2(np.sqrt(1 - _e*_e) * sin_E, cos_E - _e)
+                    r = _a * (1 - _e * cos_E)
+                    x_orb = r * np.cos(nu)
+                    y_orb = r * np.sin(nu)
+                    x_ecl = Xx*x_orb + Xy*y_orb
+                    y_ecl = Yx*x_orb + Yy*y_orb
+                    z_ecl = Zx*x_orb + Zy*y_orb
+                    return np.array([
+                        x_ecl,
+                        cos_e*y_ecl - sin_e*z_ecl,
+                        sin_e*y_ecl + cos_e*z_ecl,
+                    ])
 
-                # ── 11) Topocentric vector (asteroid − Earth) ─────────────────
-                dx = x_bary - earth_xyz[0]
-                dy = y_bary - earth_xyz[1]
-                dz = z_bary - earth_xyz[2]
-                dist = np.sqrt(dx*dx + dy*dy + dz*dz)
+                # ── 4) Light-time iteration ───────────────────────────────────
+                # We see the object where it WAS when the light left it. For
+                # a main-belt asteroid that is 12-17 minutes earlier, during
+                # which it moves 6-9 arcsec across the sky. Omitting this was
+                # the largest systematic in this routine — it put every
+                # prediction consistently ahead of the real object along its
+                # direction of motion.
+                #
+                # Solve  tau = |r_ast(t - tau) - r_obs(t)| / c  by iteration.
+                # Converges to well under a milliarcsecond in two passes for
+                # anything that isn't a sungrazer.
+                tau = 0.0
+                d_vec = None
+                dist = 0.0
+                for _lt in range(3):
+                    p_helio = _helio_icrs(jd_obs - tau)
+                    # Sun's barycentric position at the retarded time, to
+                    # first order in its barycentric velocity.
+                    p_bary = p_helio + (sun_xyz - sun_vel_xyz * tau)
+                    d_vec = p_bary - obs_xyz
+                    dist = float(np.sqrt(d_vec.dot(d_vec)))
+                    tau_new = dist / _C_AU_PER_DAY
+                    if abs(tau_new - tau) < 1e-10:
+                        tau = tau_new
+                        break
+                    tau = tau_new
 
-                # ── 12) ICRS RA/Dec ───────────────────────────────────────────
+                dx, dy, dz = float(d_vec[0]), float(d_vec[1]), float(d_vec[2])
+
+                # ── 5) ICRS RA/Dec — astrometric place ────────────────────────
+                # Light-time corrected, NOT aberration corrected. That is the
+                # right quantity to compare against a WCS fitted to catalog
+                # star positions, which are themselves un-aberrated.
                 sc = SkyCoord(
                     x=dx*u.au, y=dy*u.au, z=dz*u.au,
                     representation_type="cartesian",
@@ -752,6 +812,7 @@ class MinorBodyCatalog:
                     "ra_deg":      float(sc_sph.lon.deg),
                     "dec_deg":     float(sc_sph.lat.deg),
                     "distance_au": float(dist),
+                    "light_time_s": float(tau * 86400.0),
                 })
                 ok += 1
 
