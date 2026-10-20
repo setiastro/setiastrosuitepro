@@ -58,6 +58,95 @@ RELEASES_PAGE_URL = "https://github.com/setiastro/saspro-minorbody-data/releases
 DEFAULT_DB_BASENAME = "saspro_minor_bodies.sqlite"
 DEFAULT_MANIFEST_BASENAME = "saspro_minor_bodies_manifest.json"
 
+# Heliocentric gravitational parameter in AU^3 / day^2, from the Gaussian
+# gravitational constant k = 0.01720209895 (mu = k^2).
+MU_SUN_AU3_PER_DAY2 = 0.01720209895 ** 2
+
+# How close to 1.0 the eccentricity has to be before the elliptical and
+# hyperbolic formulations both go numerically soft and Barker's parabolic
+# equation is the well-conditioned choice. At e = 1 +/- 1e-8 the semimajor
+# axis q/(1-e) exceeds 1e8 AU and n underflows, so neither branch is usable.
+_PARABOLIC_TOL = 1e-8
+
+
+def _solve_kepler_hyperbolic(M: float, e: float,
+                             tol: float = 1e-11, max_iter: int = 100) -> float:
+    """
+    Solve the hyperbolic Kepler equation  M = e*sinh(H) - H  for H.
+
+    Newton from a starting guess that stays sane for large |M|: using
+    H0 = M directly diverges badly once sinh(M) overflows the step, so
+    seed with an asinh-based estimate instead.
+    """
+    if M == 0.0:
+        return 0.0
+    sign = 1.0 if M > 0 else -1.0
+    Ma = abs(M)
+    # Good seed: for large M, e*sinh(H) ~ M  =>  H ~ asinh(M/e)
+    H = np.arcsinh(Ma / e) if Ma > 6.0 else Ma / max(e - 1.0, 1e-6)
+    if not np.isfinite(H):
+        H = np.arcsinh(Ma / e)
+    for _ in range(max_iter):
+        f = e * np.sinh(H) - H - Ma
+        fp = e * np.cosh(H) - 1.0
+        if fp == 0.0 or not np.isfinite(fp):
+            break
+        dH = f / fp
+        H -= dH
+        if abs(dH) < tol:
+            break
+    return sign * H
+
+
+def _conic_r_nu(dt_days: float, q: float, e: float):
+    """
+    Heliocentric distance and true anomaly at `dt_days` after perihelion,
+    for ANY conic section.
+
+    This exists because the catalog's comet half is dominated by
+    near-parabolic long-period orbits, which have no semimajor axis at
+    all. The previous elliptical-only path could not express them: fed
+    e >= 1 it produced a = q/(1-e) <= 0 and a Newton iteration on the
+    elliptical Kepler equation that converges to a plausible-looking but
+    meaningless answer. Dispatching on conic type is the only way to get
+    a correct position for those objects.
+
+    Returns (r_au, nu_rad).
+    """
+    mu = MU_SUN_AU3_PER_DAY2
+
+    # ---- Parabolic: Barker's equation -------------------------------
+    if abs(e - 1.0) <= _PARABOLIC_TOL:
+        # D + D^3/3 = sqrt(mu / (2 q^3)) * dt, solved in closed form by
+        # Cardano:  D^3 + 3D - 3M = 0  =>  D = B - 1/B.
+        M_bar = np.sqrt(mu / (2.0 * q ** 3)) * dt_days
+        A = 1.5 * M_bar
+        B = np.cbrt(A + np.sqrt(A * A + 1.0))
+        D = B - 1.0 / B
+        r = q * (1.0 + D * D)
+        nu = 2.0 * np.arctan(D)
+        return float(r), float(nu)
+
+    # ---- Hyperbolic -------------------------------------------------
+    if e > 1.0:
+        a_abs = q / (e - 1.0)                 # |a|
+        M = np.sqrt(mu / a_abs ** 3) * dt_days
+        H = _solve_kepler_hyperbolic(float(M), float(e))
+        r = a_abs * (e * np.cosh(H) - 1.0)
+        nu = 2.0 * np.arctan2(
+            np.sqrt(e + 1.0) * np.tanh(H / 2.0), np.sqrt(e - 1.0))
+        return float(r), float(nu)
+
+    # ---- Elliptical -------------------------------------------------
+    a = q / (1.0 - e)
+    M = np.sqrt(mu / a ** 3) * dt_days
+    M = float(np.mod(M, 2.0 * np.pi))
+    E = _solve_kepler(M, float(e))
+    r = a * (1.0 - e * np.cos(E))
+    nu = np.arctan2(np.sqrt(1.0 - e * e) * np.sin(E), np.cos(E) - e)
+    return float(r), float(nu)
+
+
 def _solve_kepler(M: float, e: float, tol: float = 1e-10, max_iter: int = 50) -> float:
     """
     Solve Kepler's equation M = E - e*sin(E) for E (eccentric anomaly).
@@ -71,6 +160,31 @@ def _solve_kepler(M: float, e: float, tol: float = 1e-10, max_iter: int = 50) ->
         if abs(dE) < tol:
             break
     return E
+
+
+def _ymd_to_jd(year, month, day) -> float:
+    """
+    Calendar date -> Julian Date at 0h, with fractional-day support.
+
+    Shared by the packed-epoch decoder and the comet perihelion-time
+    derivation so both land on exactly the same scale; a half-day
+    disagreement between them would show up as a systematic position
+    offset that looks like bad orbital elements.
+    """
+    try:
+        di = int(np.floor(float(day)))
+        frac = float(day) - di
+        y = int(year)
+        m = int(month)
+        if m <= 2:
+            y -= 1
+            m += 12
+        A = int(y // 100)
+        B = 2 - A + int(A // 4)
+        jd = int(365.25 * (y + 4716)) + int(30.6001 * (m + 1)) + di + B - 1524.5
+        return float(jd) + frac
+    except Exception:
+        return float("nan")
 
 
 def _decode_packed_epoch(packed: str) -> float:
@@ -401,6 +515,29 @@ class MinorBodyCatalog:
             self._conn.close()
             self._conn = None
 
+    def _has_column(self, table: str, column: str) -> bool:
+        """
+        Does `table` carry `column`? Used to light up newer schema
+        features without breaking an older database that predates them —
+        users upgrade the app and the catalog independently, so neither
+        can assume the other has moved.
+        """
+        key = (table, column)
+        cache = getattr(self, "_col_cache", None)
+        if cache is None:
+            cache = self._col_cache = {}
+        if key in cache:
+            return cache[key]
+        try:
+            cur = self._get_conn().cursor()
+            cur.execute(f"PRAGMA table_info({table})")
+            cols = {row[1] for row in cur.fetchall()}
+            found = column in cols
+        except sqlite3.Error:
+            found = False
+        cache[key] = found
+        return found
+
     # ---- Introspection ---------------------------------------------------------
 
     @property
@@ -434,11 +571,19 @@ class MinorBodyCatalog:
 
         conn = self._get_conn()
 
-        # Force numeric comparison + ordering
-        sql = """
+        # Skip rows the builder already determined can never yield a
+        # position. Doing it in SQL means an incomplete row never occupies
+        # a slot in the LIMIT — previously a run capped at 50,000 could
+        # spend part of its budget on rows guaranteed to be discarded.
+        # Guarded by a column check so an older database still works.
+        extra = ""
+        if self._has_column("asteroids", "two_body_ok"):
+            extra = " AND two_body_ok = 1"
+
+        sql = f"""
             SELECT *
             FROM asteroids
-            WHERE CAST(magnitude_H AS REAL) <= ?
+            WHERE CAST(magnitude_H AS REAL) <= ?{extra}
             ORDER BY CAST(magnitude_H AS REAL) ASC
         """
         if limit is not None:
@@ -454,54 +599,15 @@ class MinorBodyCatalog:
         limit: Optional[int] = 5000,
     ):
         """
-        Return a pandas DataFrame of 'bright' comets.
+        Bright comets by magnitude.
 
-        We auto-detect the magnitude column and cast it to REAL so that
-        filtering and ordering are done in brightness order.
+        Deliberately NOT filtered on two_body_ok. The builder clears that
+        flag for e >= 1 because those orbits have no semimajor axis and so
+        no mean-anomaly element set — but compute_positions_astropy now
+        propagates them from (q, T_perihelion) via Barker's equation and
+        the hyperbolic Kepler equation. Filtering here would throw away
+        exactly the long-period comets that support was added for.
         """
-        import pandas as pd
-
-        conn = self._get_conn()
-        cur = conn.cursor()
-        cur.execute("PRAGMA table_info(comets)")
-        cols = {row[1] for row in cur.fetchall()}
-
-        mag_col = None
-        for candidate in ("absolute_magnitude", "magnitude_H", "H"):
-            if candidate in cols:
-                mag_col = candidate
-                break
-
-        if mag_col is None:
-            # No magnitude info, just return a limited subset
-            sql = "SELECT * FROM comets"
-            if limit is not None:
-                sql += " LIMIT ?"
-                return pd.read_sql_query(sql, conn, params=(limit,))
-            return pd.read_sql_query(sql, conn)
-
-        # Cast to REAL so TEXT columns behave numerically
-        mag_expr = f"CAST({mag_col} AS REAL)"
-
-        sql = f"""
-            SELECT *
-            FROM comets
-            WHERE {mag_expr} <= ?
-            ORDER BY {mag_expr} ASC
-        """
-        if limit is not None:
-            sql += " LIMIT ?"
-            df = pd.read_sql_query(sql, conn, params=(H_max, limit))
-        else:
-            df = pd.read_sql_query(sql, conn, params=(H_max,))
-        return df
-
-
-    def get_bright_comets(
-        self,
-        H_max: float = 15.0,
-        limit: Optional[int] = 5000,
-    ):
         import pandas as pd
 
         conn = self._get_conn()
@@ -600,23 +706,85 @@ class MinorBodyCatalog:
         else:
             df = pd.DataFrame(list(asteroid_rows))
 
-        required_numeric = [
-            "mean_anomaly_degrees",
+        # ------------------------------------------------------------------
+        # Element validation, conic-aware.
+        #
+        # Orientation (i, node, argp) plus eccentricity is required for every
+        # orbit. Beyond that there are two valid element sets and a row
+        # needs only ONE of them:
+        #
+        #   A) mean-anomaly form   — a, n, M, epoch   (MPCORB asteroids, and
+        #                            elliptical comets converted at build time)
+        #   B) perihelion form     — q, T_perihelion  (AllCometEls, and the
+        #                            only form that can express e >= 1)
+        #
+        # The old code demanded set A unconditionally, so every parabolic
+        # and hyperbolic comet was discarded here before the propagator ever
+        # saw it — on top of the fact that comets never carried set A at all.
+        # ------------------------------------------------------------------
+        orientation = [
             "argument_of_perihelion_degrees",
             "longitude_of_ascending_node_degrees",
             "inclination_degrees",
             "eccentricity",
-            "mean_daily_motion_degrees",
-            "semimajor_axis_au",
         ]
-        for col in required_numeric:
+        set_a = ["semimajor_axis_au", "mean_anomaly_degrees",
+                 "mean_daily_motion_degrees"]
+        set_b = ["perihelion_distance_au"]
+        maybe_numeric = (orientation + set_a + set_b + ["epoch_jd",
+                         "perihelion_year", "perihelion_month", "perihelion_day"])
+        for col in maybe_numeric:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
 
         before = len(df)
-        df = df.dropna(subset=[c for c in required_numeric if c in df.columns])
+
+        have_orient = [c for c in orientation if c in df.columns]
+        if len(have_orient) < len(orientation):
+            missing = set(orientation) - set(have_orient)
+            if debug:
+                print(f"[MinorBodies] rows lack orientation columns {missing}")
+            return []
+        ok_orient = df[have_orient].notna().all(axis=1)
+
+        ok_a = pd.Series(False, index=df.index)
+        if all(c in df.columns for c in set_a):
+            ok_a = df[set_a].notna().all(axis=1)
+
+        # Perihelion time: prefer a stored JD, else rebuild it from the
+        # year/month/day triple AllCometEls provides. Deriving it here means
+        # an existing database works unchanged — no rebuild needed to get
+        # parabolic and hyperbolic comets working.
+        if "perihelion_jd" not in df.columns:
+            if all(c in df.columns for c in
+                   ("perihelion_year", "perihelion_month", "perihelion_day")):
+                df["perihelion_jd"] = [
+                    _ymd_to_jd(y, m, d)
+                    if (pd.notna(y) and pd.notna(m) and pd.notna(d)) else np.nan
+                    for y, m, d in zip(df["perihelion_year"],
+                                       df["perihelion_month"],
+                                       df["perihelion_day"])
+                ]
+            else:
+                df["perihelion_jd"] = np.nan
+        else:
+            df["perihelion_jd"] = pd.to_numeric(df["perihelion_jd"], errors="coerce")
+
+        ok_b = pd.Series(False, index=df.index)
+        if "perihelion_distance_au" in df.columns:
+            ok_b = (df["perihelion_distance_au"].notna()
+                    & (df["perihelion_distance_au"] > 0)
+                    & df["perihelion_jd"].notna())
+
+        keep = ok_orient & (ok_a | ok_b)
+        df = df[keep].copy()
+        df["_has_set_a"] = ok_a[keep]
+        df["_has_set_b"] = ok_b[keep]
+
         if debug:
-            print(f"[MinorBodies] rows after cleaning: {len(df)} (was {before})")
+            print(f"[MinorBodies] rows after cleaning: {len(df)} (was {before})"
+                  f"  [mean-anomaly: {int(df['_has_set_a'].sum())}, "
+                  f"perihelion-only: {int((~df['_has_set_a'] & df['_has_set_b']).sum())}]")
 
         if df.empty:
             return []
@@ -626,8 +794,10 @@ class MinorBodyCatalog:
         if debug:
             print(f"[MinorBodies] obs time: {t_obs.iso}  JD={jd:.6f}")
 
+        jd_obs = float(jd)
+
         # Earth barycentric position at observation time (ICRS, AU)
-        from astropy.coordinates import solar_system_ephemeris
+        from astropy.coordinates import solar_system_ephemeris, EarthLocation, GCRS
         with solar_system_ephemeris.set("builtin"):
             earth_bary, _ = get_body_barycentric_posvel("earth", t_obs)
         earth_xyz = np.array([
@@ -636,14 +806,62 @@ class MinorBodyCatalog:
             earth_bary.z.to(u.au).value,
         ])
 
-        # Sun barycentric position
+        # Sun barycentric position AND velocity. The velocity is used to
+        # shift the Sun to the light-retarded time below; it is small but
+        # not negligible (~0.8" at 1.5 AU if ignored).
         with solar_system_ephemeris.set("builtin"):
-            sun_bary, _ = get_body_barycentric_posvel("sun", t_obs)
+            sun_bary, sun_bary_v = get_body_barycentric_posvel("sun", t_obs)
         sun_xyz = np.array([
             sun_bary.x.to(u.au).value,
             sun_bary.y.to(u.au).value,
             sun_bary.z.to(u.au).value,
         ])
+        try:
+            sun_vel_xyz = np.array([
+                sun_bary_v.x.to(u.au / u.day).value,
+                sun_bary_v.y.to(u.au / u.day).value,
+                sun_bary_v.z.to(u.au / u.day).value,
+            ])
+        except Exception:
+            sun_vel_xyz = np.zeros(3)
+
+        # ------------------------------------------------------------------
+        # Observer position: TOPOCENTRIC when a site is supplied.
+        #
+        # Previously this parameter was accepted and silently ignored — every
+        # position was computed from the geocentre. The geocentre-to-observer
+        # vector is one Earth radius, which subtends ~4.4" on a main-belt
+        # asteroid at 2 AU and ~18" at 0.5 AU. For anyone trying to confirm
+        # a specific object against a plate solution, that alone is enough
+        # to make the marker miss.
+        # ------------------------------------------------------------------
+        obs_xyz = earth_xyz
+        if topocentric is not None:
+            try:
+                lat_deg, lon_deg, elev_m = (list(topocentric) + [0.0, 0.0, 0.0])[:3]
+                loc = EarthLocation(lat=float(lat_deg) * u.deg,
+                                    lon=float(lon_deg) * u.deg,
+                                    height=float(elev_m) * u.m)
+                gc = loc.get_itrs(obstime=t_obs).transform_to(
+                    GCRS(obstime=t_obs)).cartesian
+                off = np.array([
+                    gc.x.to(u.au).value,
+                    gc.y.to(u.au).value,
+                    gc.z.to(u.au).value,
+                ])
+                obs_xyz = earth_xyz + off
+                if debug:
+                    print(f"[MinorBodies] topocentric: lat={lat_deg} lon={lon_deg} "
+                          f"elev={elev_m}m, offset={np.linalg.norm(off)*1.495978707e8:.0f} km")
+            except Exception as exc:
+                print(f"[MinorBodies] topocentric setup failed, using geocentre: {exc!r}")
+                obs_xyz = earth_xyz
+        elif debug:
+            print("[MinorBodies] no site supplied — geocentric positions "
+                  "(up to ~18\" parallax error on close objects)")
+
+        # Speed of light, AU per day.
+        _C_AU_PER_DAY = 173.1446326846693
 
         if debug:
             print(f"[MinorBodies] Earth ICRS (AU): {earth_xyz}")
@@ -665,44 +883,58 @@ class MinorBodyCatalog:
                     break
 
             try:
-                # ── 1) Decode epoch ───────────────────────────────────────────
-                epoch_packed = str(row.get("epoch_packed", "")).strip()
-                epoch_jd = _decode_packed_epoch(epoch_packed)
-                t_epoch = Time(epoch_jd, format="jd", scale="tt")
+                # ── 1) Epoch ──────────────────────────────────────────────────
+                # Prefer a precomputed numeric epoch when the database
+                # carries one (the builder stores epoch_jd), and only fall
+                # back to decoding the packed string. Decoding five
+                # characters per row per light-time iteration across tens of
+                # thousands of rows is pure overhead when the value is
+                # already sitting in the table.
+                epoch_jd = row.get("epoch_jd", None)
+                try:
+                    epoch_jd = float(epoch_jd)
+                    if not np.isfinite(epoch_jd):
+                        raise ValueError
+                except Exception:
+                    epoch_jd = _decode_packed_epoch(
+                        str(row.get("epoch_packed", "")).strip())
 
                 # ── 2) Orbital elements ───────────────────────────────────────
-                a   = float(row["semimajor_axis_au"])          # AU
                 e   = float(row["eccentricity"])
                 inc = np.radians(float(row["inclination_degrees"]))
                 Om  = np.radians(float(row["longitude_of_ascending_node_degrees"]))
                 om  = np.radians(float(row["argument_of_perihelion_degrees"]))
-                M0  = np.radians(float(row["mean_anomaly_degrees"]))
-                n   = np.radians(float(row["mean_daily_motion_degrees"]))  # rad/day
 
-                # ── 3) Propagate mean anomaly to obs time ─────────────────────
-                dt_days = float((t_obs - t_epoch).jd)
-                M = M0 + n * dt_days
-                M = M % (2 * np.pi)
+                # Pick the propagation form from the elements the row
+                # actually carries.
+                #
+                # Mean-anomaly rows are deliberately NOT reduced to
+                # (q, T_perihelion). That conversion needs T = epoch - M/n,
+                # and MPC's published mean_daily_motion_degrees differs from
+                # sqrt(mu/a^3) in the fourth decimal. Harmless on its own,
+                # but M/n is ~800 days for a typical main-belt object, so the
+                # mismatch lands as ~0.1 degree of mean anomaly — a few
+                # hundred arcsec on sky. Use each row's own n and M directly.
+                use_mean_anomaly = bool(row.get("_has_set_a", False)) and e < 1.0
+                a = M0_deg = n_deg = None
+                q_peri = t_peri = None
 
-                # ── 4) Solve Kepler's equation  M = E - e*sin(E) ─────────────
-                E = _solve_kepler(M, e)
+                if use_mean_anomaly:
+                    a = float(row["semimajor_axis_au"])
+                    M0_deg = float(row["mean_anomaly_degrees"])
+                    n_deg = float(row["mean_daily_motion_degrees"])
+                    if not (np.isfinite(a) and a > 0 and np.isfinite(M0_deg)
+                            and np.isfinite(n_deg) and n_deg != 0.0):
+                        use_mean_anomaly = False
 
-                # ── 5) True anomaly ───────────────────────────────────────────
-                cos_E = np.cos(E)
-                sin_E = np.sin(E)
-                nu = np.arctan2(
-                    np.sqrt(1 - e*e) * sin_E,
-                    cos_E - e
-                )
+                if not use_mean_anomaly:
+                    q_peri = float(row.get("perihelion_distance_au", np.nan))
+                    t_peri = float(row.get("perihelion_jd", np.nan))
+                    if not (np.isfinite(q_peri) and q_peri > 0
+                            and np.isfinite(t_peri) and np.isfinite(e)):
+                        raise ValueError("degenerate conic elements")
 
-                # ── 6) Heliocentric distance ──────────────────────────────────
-                r = a * (1 - e * cos_E)
-
-                # ── 7) Position in orbital plane ──────────────────────────────
-                x_orb = r * np.cos(nu)
-                y_orb = r * np.sin(nu)
-
-                # ── 8) Rotate to ecliptic J2000 ───────────────────────────────
+                # ── 3) Constant rotation terms for this object ────────────────
                 cos_Om = np.cos(Om); sin_Om = np.sin(Om)
                 cos_om = np.cos(om); sin_om = np.sin(om)
                 cos_i  = np.cos(inc); sin_i = np.sin(inc)
@@ -715,31 +947,75 @@ class MinorBodyCatalog:
                 Zx =  sin_om*sin_i
                 Zy =  cos_om*sin_i
 
-                x_ecl = Xx*x_orb + Xy*y_orb
-                y_ecl = Yx*x_orb + Yy*y_orb
-                z_ecl = Zx*x_orb + Zy*y_orb
-
-                # ── 9) Ecliptic J2000 → ICRS (rotate by obliquity of J2000) ──
                 eps = np.radians(23.439291111)   # obliquity J2000.0
                 cos_e = np.cos(eps); sin_e = np.sin(eps)
 
-                x_icrs = x_ecl
-                y_icrs = cos_e*y_ecl - sin_e*z_ecl
-                z_icrs = sin_e*y_ecl + cos_e*z_ecl
+                if use_mean_anomaly:
+                    def _r_nu(jd_at, _a=a, _e=e, _M0=M0_deg,
+                              _n=n_deg, _ej=epoch_jd):
+                        """Classic MPCORB path — unchanged numerics."""
+                        M = np.radians(_M0 + _n * (jd_at - _ej)) % (2.0 * np.pi)
+                        E = _solve_kepler(M, _e)
+                        cos_E = np.cos(E); sin_E = np.sin(E)
+                        return (_a * (1.0 - _e * cos_E),
+                                np.arctan2(np.sqrt(1.0 - _e * _e) * sin_E,
+                                           cos_E - _e))
+                else:
+                    def _r_nu(jd_at, _q=q_peri, _e=e, _tp=t_peri):
+                        """Perihelion path — any conic, including e >= 1."""
+                        return _conic_r_nu(jd_at - _tp, _q, _e)
 
-                # ── 10) Heliocentric ICRS → barycentric ICRS ──────────────────
-                # Add Sun's barycentric position
-                x_bary = x_icrs + sun_xyz[0]
-                y_bary = y_icrs + sun_xyz[1]
-                z_bary = z_icrs + sun_xyz[2]
+                def _helio_icrs(jd_at):
+                    """Heliocentric ICRS position (AU) at a given JD.
 
-                # ── 11) Topocentric vector (asteroid − Earth) ─────────────────
-                dx = x_bary - earth_xyz[0]
-                dy = y_bary - earth_xyz[1]
-                dz = z_bary - earth_xyz[2]
-                dist = np.sqrt(dx*dx + dy*dy + dz*dz)
+                    Factored out so the light-time loop can evaluate it at
+                    the retarded time without duplicating the Kepler maths.
+                    """
+                    r, nu = _r_nu(jd_at)
+                    x_orb = r * np.cos(nu)
+                    y_orb = r * np.sin(nu)
+                    x_ecl = Xx*x_orb + Xy*y_orb
+                    y_ecl = Yx*x_orb + Yy*y_orb
+                    z_ecl = Zx*x_orb + Zy*y_orb
+                    return np.array([
+                        x_ecl,
+                        cos_e*y_ecl - sin_e*z_ecl,
+                        sin_e*y_ecl + cos_e*z_ecl,
+                    ])
 
-                # ── 12) ICRS RA/Dec ───────────────────────────────────────────
+                # ── 4) Light-time iteration ───────────────────────────────────
+                # We see the object where it WAS when the light left it. For
+                # a main-belt asteroid that is 12-17 minutes earlier, during
+                # which it moves 6-9 arcsec across the sky. Omitting this was
+                # the largest systematic in this routine — it put every
+                # prediction consistently ahead of the real object along its
+                # direction of motion.
+                #
+                # Solve  tau = |r_ast(t - tau) - r_obs(t)| / c  by iteration.
+                # Converges to well under a milliarcsecond in two passes for
+                # anything that isn't a sungrazer.
+                tau = 0.0
+                d_vec = None
+                dist = 0.0
+                for _lt in range(3):
+                    p_helio = _helio_icrs(jd_obs - tau)
+                    # Sun's barycentric position at the retarded time, to
+                    # first order in its barycentric velocity.
+                    p_bary = p_helio + (sun_xyz - sun_vel_xyz * tau)
+                    d_vec = p_bary - obs_xyz
+                    dist = float(np.sqrt(d_vec.dot(d_vec)))
+                    tau_new = dist / _C_AU_PER_DAY
+                    if abs(tau_new - tau) < 1e-10:
+                        tau = tau_new
+                        break
+                    tau = tau_new
+
+                dx, dy, dz = float(d_vec[0]), float(d_vec[1]), float(d_vec[2])
+
+                # ── 5) ICRS RA/Dec — astrometric place ────────────────────────
+                # Light-time corrected, NOT aberration corrected. That is the
+                # right quantity to compare against a WCS fitted to catalog
+                # star positions, which are themselves un-aberrated.
                 sc = SkyCoord(
                     x=dx*u.au, y=dy*u.au, z=dz*u.au,
                     representation_type="cartesian",
@@ -752,6 +1028,7 @@ class MinorBodyCatalog:
                     "ra_deg":      float(sc_sph.lon.deg),
                     "dec_deg":     float(sc_sph.lat.deg),
                     "distance_au": float(dist),
+                    "light_time_s": float(tau * 86400.0),
                 })
                 ok += 1
 

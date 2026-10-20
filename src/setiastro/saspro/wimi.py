@@ -190,6 +190,26 @@ import math
 from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
 from setiastro.saspro import minorbodycatalog as mbc
+
+# Interactive 3D orbit viewer (shared with the Supernova/Asteroid Hunter).
+# Guarded so a missing pyqtgraph.opengl / PyOpenGL degrades to a message
+# on the "SASpro Orbit Explorer" choice rather than breaking the module.
+try:
+    from setiastro.saspro.orbit_explorer import (
+        open_orbit_explorer, extract_elements_from_row,
+    )
+    _HAS_ORBIT_EXPLORER = True
+    _ORBIT_EXPLORER_ERR = ""
+except Exception as _oe_err:                     # pragma: no cover
+    _HAS_ORBIT_EXPLORER = False
+    _ORBIT_EXPLORER_ERR = str(_oe_err)
+
+    def extract_elements_from_row(_row):
+        return None
+
+    def open_orbit_explorer(*_a, **_k):
+        return None
+
 from setiastro.saspro.resources import get_icon_path
 
 # Determine if running inside a PyInstaller bundle
@@ -743,6 +763,7 @@ from PyQt6.QtGui import QPainter, QPen, QColor
 class MarkerLayer(QGraphicsItem):
     def __init__(self, image_w, image_h, show_names_fn, color_fn, style_fn,
                  selected_name_fn=lambda: None, show_active_name_fn=lambda: False,
+                 name_font_fn=None, name_color_fn=None,
                  radius_px=6, cell=64, parent=None):
         super().__init__(parent)
         self._w, self._h = image_w, image_h
@@ -755,6 +776,10 @@ class MarkerLayer(QGraphicsItem):
         self._style = style_fn
         self._selected_name = selected_name_fn
         self._show_active_name = show_active_name_fn
+        # Object-name label styling (configurable in WIMI Settings). Defaults
+        # keep the old look (Arial 12, white) when no getters are supplied.
+        self._name_font = name_font_fn or (lambda: QFont("Arial", 12))
+        self._name_color = name_color_fn or (lambda: QColor(255, 255, 255))
         self.setZValue(100)
         self.setCacheMode(QGraphicsItem.CacheMode.DeviceCoordinateCache)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
@@ -867,12 +892,27 @@ class MarkerLayer(QGraphicsItem):
                             p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
                     if pt.get("name") and (show_names or (show_active and is_sel)):
-                        text_pen = QPen(QColor(255, 255, 255))
+                        text_pen = QPen(self._name_color())
                         text_pen.setCosmetic(True)
                         p.setPen(text_pen)
+                        # Configurable font, drawn screen-constant: the point
+                        # size is divided by the current zoom so the label is
+                        # the same on-screen size at any zoom (the markers are
+                        # screen-constant too). pointSizeF is preferred; fall
+                        # back to pixelSize when the font was built that way.
+                        nf = QFont(self._name_font())
+                        base_pt = nf.pointSizeF()
+                        p.save()
+                        if base_pt > 0:
+                            nf.setPointSizeF(max(0.1, base_pt / scene_scale))
+                        else:
+                            base_px = nf.pixelSize() if nf.pixelSize() > 0 else 12
+                            nf.setPixelSize(max(1, int(round(base_px / scene_scale))))
+                        p.setFont(nf)
                         # Offset name label by fixed screen amount
                         label_offset = (FIXED_SCREEN_R + 2.0) / scene_scale
                         p.drawText(QPointF(x + label_offset, y - label_offset), str(pt["name"]))
+                        p.restore()
                         p.setPen(base_pen)
 
 def _qt_is_alive(obj) -> bool:
@@ -1021,9 +1061,9 @@ class CustomGraphicsView(QGraphicsView):
 
             s = (source or "").strip().lower()
 
-            # --- Minor-body overlays → 3d-asteroids.space ---
+            # --- Minor-body overlays → choose how to explore ---
             if s.startswith("minordb"):
-                open_minor_body_3d_page(object_name, kind=kind)
+                prompt_minor_body_choice(self.parent, object_name, kind=kind)
                 return
 
             if source == "Simbad" and object_name:
@@ -1306,7 +1346,7 @@ class CustomGraphicsView(QGraphicsView):
 
         s = source.lower()
         if s.startswith("minordb"):
-            open_minor_body_3d_page(name, kind=kind)
+            prompt_minor_body_choice(self.parent, name, kind=kind)
             return
 
         try:
@@ -3121,6 +3161,179 @@ def open_minor_body_3d_page(name: str, kind: str = "Asteroid") -> None:
     url = f"https://3d-asteroids.space/{base}/{slug}"
     webbrowser.open(url)
 
+
+def open_jpl_sbdb_page(name: str, kind: str = "Asteroid") -> None:
+    """
+    Open JPL's Small-Body Database Lookup for this object — the
+    authoritative record (orbit, physical parameters, close approaches,
+    and JPL's own orbit viewer).
+
+    The tool takes a free-form identifier via `sstr`, so no slug or
+    provisional-designation guessing is needed: a plain number resolves
+    an asteroid, and the full designation resolves a comet. One endpoint
+    serves both.
+    """
+    if not name:
+        return
+    s = name.replace(chr(160), " ").strip()      # normalize non-breaking space
+    is_comet = bool(kind and str(kind).lower().startswith("comet"))
+
+    if is_comet:
+        # Comets: never reduce to a bare number ('1P' -> 1 would resolve
+        # to asteroid Ceres). Pass the designation as-is.
+        sstr = s
+    elif re.match(r'^\d{4}[ _-][A-Za-z]{1,2}\d*$', s):
+        # Unnumbered provisional ('2011 TK5'): the leading 4 digits are a
+        # YEAR, not a catalog number — pass the whole designation.
+        sstr = s
+    else:
+        # Numbered asteroid ('(6281) Strnad', '6281 Strnad', '1 Ceres'):
+        # the catalog number alone is the least ambiguous identifier.
+        m = re.match(r'^\(?\s*(\d+)\s*\)?', s)
+        sstr = m.group(1) if m else s
+
+    url = ("https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr="
+           + quote(sstr))
+    webbrowser.open(url)
+
+
+def _lookup_minor_body_row(db_path, name: str, kind: str = ""):
+    """
+    Read one catalog row for `name` straight from the minor-body SQLite,
+    read-only, matching on the `designation` column. Tries the table the
+    `kind` suggests first, then the other. Returns a plain dict, or None.
+    """
+    import sqlite3
+    from pathlib import Path
+
+    tables = (["comets", "asteroids"]
+              if str(kind or "").lower().startswith("comet")
+              else ["asteroids", "comets"])
+    try:
+        uri = f"file:{Path(db_path).as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+    except Exception:
+        return None
+    try:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        for tbl in tables:
+            try:
+                cur.execute(
+                    f"SELECT * FROM {tbl} WHERE designation = ? LIMIT 1", (name,))
+            except sqlite3.Error:
+                continue
+            r = cur.fetchone()
+            if r is not None:
+                return {k: r[k] for k in r.keys()}
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _open_sas_orbit_explorer(window, name: str, kind: str = "Asteroid") -> None:
+    """
+    Launch the in-app SASpro Orbit Explorer for a minor body. Needs the
+    observation JD and DB path the last minor-body search stashed on the
+    window, plus the body's Keplerian elements looked up by designation.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    if not _HAS_ORBIT_EXPLORER:
+        QMessageBox.information(
+            window, "Orbit Explorer",
+            "The 3D orbit explorer could not be loaded.\n\n"
+            f"{_ORBIT_EXPLORER_ERR}\n\n"
+            "It needs pyqtgraph.opengl and PyOpenGL (pip install PyOpenGL).")
+        return
+
+    jd = getattr(window, "_minor_jd", None)
+    db_path = getattr(window, "_minor_db_path", None)
+    if jd is None or not db_path:
+        QMessageBox.information(
+            window, "Orbit Explorer",
+            "Run a minor-body search first — I need the observation time it "
+            "was computed at to place the orbit.")
+        return
+
+    row = _lookup_minor_body_row(db_path, name, kind)
+    if row is None:
+        QMessageBox.information(
+            window, "Orbit Explorer",
+            f"Couldn't find {name} in the catalog to read its orbit.")
+        return
+
+    el = extract_elements_from_row(row)
+    if el is None:
+        QMessageBox.information(
+            window, "Orbit Explorer",
+            f"{name} has no usable orbital elements in the catalog, so its "
+            "orbit can't be drawn.")
+        return
+
+    H = None
+    for k in ("magnitude_H", "H", "absolute_magnitude"):
+        if k in row and row[k] not in (None, ""):
+            try:
+                H = float(row[k])
+                break
+            except Exception:
+                pass
+
+    body = {"designation": name, "kind": (kind or "minor body"),
+            "H": H, "elements": el}
+    icon = None
+    try:
+        icon = window.windowIcon()
+    except Exception:
+        icon = None
+    dlg = open_orbit_explorer(window, body, float(jd),
+                              settings=getattr(window, "settings", None),
+                              icon=icon)
+    if dlg is not None:
+        # Hold a reference so the non-modal window isn't garbage collected.
+        refs = getattr(window, "_orbit_dialogs", None)
+        if refs is None:
+            refs = window._orbit_dialogs = []
+        refs.append(dlg)
+
+
+def prompt_minor_body_choice(window, name: str, kind: str = "Asteroid") -> None:
+    """
+    Ask how to explore a minor body, then dispatch. Replaces the old
+    straight-to-3d-asteroids double-click: not every object is on that
+    site, and the in-app Orbit Explorer works for anything in the local
+    catalog.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    if not name:
+        return
+    box = QMessageBox(window)
+    box.setWindowTitle("Explore Minor Body")
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setText(f"How would you like to explore {name}?")
+    box.setInformativeText(
+        "Orbit Explorer draws it in 3D inside SASpro from the local catalog.\n"
+        "JPL Small-Body Database is the authoritative record (orbit, physical\n"
+        "parameters, close approaches). 3D Model Site is 3d-asteroids.space.")
+    b_orbit = box.addButton("SASpro Orbit Explorer", QMessageBox.ButtonRole.AcceptRole)
+    b_jpl = box.addButton("JPL Small-Body Database", QMessageBox.ButtonRole.AcceptRole)
+    b_model = box.addButton("3D Model Site", QMessageBox.ButtonRole.AcceptRole)
+    box.addButton(QMessageBox.StandardButton.Cancel)
+    box.setDefaultButton(b_orbit)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is b_jpl:
+        open_jpl_sbdb_page(name, kind=kind)
+    elif clicked is b_model:
+        open_minor_body_3d_page(name, kind=kind)
+    elif clicked is b_orbit:
+        _open_sas_orbit_explorer(window, name, kind=kind)
+
 class _CrosshairOverlay(QWidget):
     """Transparent overlay that draws a crosshair at the viewport center."""
     MODES = ["off", "thin", "full", "gap"]
@@ -4067,8 +4280,15 @@ class WIMIDialog(QDialog):
         self.wcs = None  # Initialize WCS to None
         # Initialize selected color and font with default values
         self.selected_color = QColor(Qt.GlobalColor.red)  # Default annotation color
-        self.selected_font = QFont("Arial", 12)  # Default font for text annotations   
-        self.populate_object_tree() 
+        self.selected_font = QFont("Arial", 12)  # Default font for text annotations
+
+        # "Show Object Names" label styling — font + colour, independent of
+        # the annotation-tools font (which only affects added text). Drawn
+        # screen-constant, so the point size is the on-screen size at any
+        # zoom. Persisted in QSettings.
+        self.name_label_font, self.name_label_color = self._load_name_label_style()
+
+        self.populate_object_tree()
 
         self._green_box_timer = QTimer(self)
         self._green_box_timer.setSingleShot(True)
@@ -4355,7 +4575,9 @@ class WIMIDialog(QDialog):
                 color_fn=lambda: self.selected_color,
                 style_fn=lambda: self.marker_style,
                 selected_name_fn=lambda: self._selected_name,
-                show_active_name_fn=lambda: self.show_active_name
+                show_active_name_fn=lambda: self.show_active_name,
+                name_font_fn=lambda: self.name_label_font,
+                name_color_fn=lambda: self.name_label_color,
             )
             self.main_scene.addItem(self._marker_layer)
         else:
@@ -4445,9 +4667,25 @@ class WIMIDialog(QDialog):
         kept = []
         for obj in results:
             x, y = self.calculate_pixel_from_ra_dec(obj.get("ra"), obj.get("dec"))
+            on_frame = (x is not None and y is not None
+                        and 0 <= x < w and 0 <= y < h)
+            # Minor bodies are different from a catalog dump: the cone search
+            # already narrowed to a handful, each one is individually
+            # meaningful, and the object you are hunting often sits just past
+            # the sensor edge on the particular frame you loaded (it drifts
+            # into frame on another sub). Never silently drop those — keep
+            # every minor body that projected to a finite pixel and just flag
+            # whether it actually lands on the sensor. Non-minor results keep
+            # the strict on-frame-only behaviour.
+            if obj.get("_minor_body"):
+                if x is None or y is None:
+                    continue  # ephemeris failed (NaN) — nothing to show
+                obj["_on_frame"] = bool(on_frame)
+                kept.append(obj)
+                continue
             if x is None or y is None:
                 continue  # couldn't project onto the image
-            if 0 <= x < w and 0 <= y < h:
+            if on_frame:
                 kept.append(obj)
         return kept
 
@@ -6890,11 +7128,11 @@ class WIMIDialog(QDialog):
         print(f"[DEBUG] Matched source: {source!r}")  # ← debug print
 
         s = source.strip().lower()
-        # --- Minor-body rows (local MinorDB results) → 3d-asteroids.space ----
+        # --- Minor-body rows (local MinorDB results) → choose how to explore ----
         if s.startswith("minordb"):
             kind = (entry.get("long_type") if entry else "") or ""
             # 'kind' will usually be "Asteroid" or "Comet"
-            open_minor_body_3d_page(object_name, kind=kind)
+            prompt_minor_body_choice(self, object_name, kind=kind)
             return
         
         if s == "simbad" and object_name:
@@ -6958,6 +7196,16 @@ class WIMIDialog(QDialog):
         # 2) pick a header
         meta = dict(getattr(doc, "metadata", {}) or {})
         header = None
+
+        # Keep this view's SASpro metadata reachable for the observation-time
+        # lookup. SASpro carries DATE-OBS / DATE-LOC / EXPTIME in the image
+        # metadata (FITSKeywords), and a plate solve updates that same
+        # metadata, so the timestamp is already here — there is no need to go
+        # digging for a separate original_header. Also drop any cached
+        # observation time so the newly loaded view is re-read rather than
+        # reusing the previous image's timestamp.
+        self._loaded_meta = meta
+        self.observation_datetime = None
 
         # prefer an explicit WCS header saved by a solver
         if "wcs_header" in meta and meta["wcs_header"]:
@@ -7255,6 +7503,10 @@ class WIMIDialog(QDialog):
         # persist basics
         self.image_data = img_array
         self.original_header = original_header
+        # A fresh file: forget any cached observation time and view metadata
+        # so the time is re-read from THIS file's header, not the last one.
+        self.observation_datetime = None
+        self._loaded_meta = None
         self.bit_depth = bit_depth
         self.is_mono = is_mono
 
@@ -7942,99 +8194,197 @@ class WIMIDialog(QDialog):
             return None, None, None
 
     # ─────────────────────────────────────────
+    # SASpro metadata keyword access
+    # ─────────────────────────────────────────
+    def _build_metadata_kw(self):
+        """
+        Return a `_kw(*names)` getter over the current view's SASpro metadata.
+
+        SASpro keeps the camera's FITS keywords (DATE-OBS, DATE-LOC, SITELAT,
+        SITELONG, EXPTIME, …) in the document's image metadata (FITSKeywords),
+        and a plate solve updates that same metadata. The getter checks that
+        store first, then any FITS Header fallbacks (wcs_header, a direct-file
+        original header, the live WCS header). First finite value wins.
+        """
+        kw_dicts = []    # XISF-style FITSKeywords dicts (SASpro's own store)
+        headers  = []    # FITS Header / mapping fallbacks
+
+        meta = getattr(self, "_loaded_meta", None)
+        if isinstance(meta, dict):
+            for mk in ("image_meta", "file_meta", "XISF"):
+                mm = meta.get(mk)
+                if isinstance(mm, dict) and isinstance(mm.get("FITSKeywords"), dict):
+                    kw_dicts.append(mm["FITSKeywords"])
+            for hk in ("original_header", "wcs_header"):
+                if meta.get(hk) is not None:
+                    headers.append(meta[hk])
+        # Direct-file-open path keeps these on self.
+        im = getattr(self, "image_meta", None)
+        if isinstance(im, dict) and isinstance(im.get("FITSKeywords"), dict):
+            kw_dicts.append(im["FITSKeywords"])
+        oh = getattr(self, "original_header", None)
+        if oh is not None:
+            headers.append(oh)
+        w = getattr(self, "wcs", None)
+        if w is not None:
+            try:
+                headers.append(w.to_header(relax=True))
+            except Exception:
+                pass
+
+        def _kw(*names):
+            """First value for any of `names`, metadata store before headers."""
+            for d in kw_dicts:
+                for n in names:
+                    ent = d.get(n)
+                    if not ent:
+                        continue
+                    try:
+                        v = (ent[0].get("value")
+                             if isinstance(ent, (list, tuple)) else ent)
+                    except Exception:
+                        v = None
+                    if v not in (None, ""):
+                        return v
+            for h in headers:
+                for n in names:
+                    try:
+                        if n in h and h[n] not in (None, ""):
+                            return h[n]
+                    except Exception:
+                        continue
+            return None
+
+        return _kw
+
+    def _observer_site(self):
+        """
+        Observer location (lat_deg, lon_deg, elev_m) for the topocentric
+        parallax correction, or None.
+
+        The camera already recorded where it was standing — SGP/NINA write
+        SITELAT / SITELONG (space-separated sexagesimal, the sign belongs to
+        the WHOLE value) and SITEELEV — so read it straight from the SASpro
+        metadata. Falls back to the site saved in Settings. Without it the
+        ephemeris is geocentric, which is up to ~18" off on a close object.
+        """
+        _kw = self._build_metadata_kw()
+        lat = _wimi_parse_sexagesimal(_kw("SITELAT", "LAT-OBS", "OBSGEO-B", "LATITUDE"))
+        lon = _wimi_parse_sexagesimal(_kw("SITELONG", "LONG-OBS", "OBSGEO-L", "LONGITUD"))
+        elev = None
+        try:
+            ev = _kw("SITEELEV", "ALT-OBS", "OBSGEO-H", "ELEVATIO")
+            elev = float(ev) if ev not in (None, "") else None
+        except Exception:
+            elev = None
+
+        # Fall back to a site stored in Settings (same keys the Hunter uses).
+        if (lat is None or lon is None) and getattr(self, "settings", None) is not None:
+            try:
+                s_lat = self.settings.value("site/latitude_deg", None)
+                s_lon = self.settings.value("site/longitude_deg", None)
+                if s_lat not in (None, "") and s_lon not in (None, ""):
+                    lat = float(s_lat)
+                    lon = float(s_lon)
+                    if elev is None:
+                        s_elev = self.settings.value("site/elevation_m", 0.0)
+                        elev = float(s_elev) if s_elev not in (None, "") else 0.0
+            except Exception:
+                pass
+
+        if lat is None or lon is None:
+            return None
+        if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+            return None
+        return (float(lat), float(lon), float(elev or 0.0))
+
+    # ─────────────────────────────────────────
     # Observation datetime helpers
     # ─────────────────────────────────────────
     def _get_observation_datetime_from_header(self):
         """
-        Try to extract observation datetime from:
+        Observation time (UTC) from the SASpro image metadata.
 
-          1) self.original_header   (full FITS header, if present)
-          2) self.wcs.wcs.dateobs   (DATE-OBS stored in the WCS header)
-          3) MJD-OBS in the WCS header
+        SASpro keeps the camera's FITS keywords (DATE-OBS, DATE-LOC,
+        EXPTIME, …) in the document metadata, and a plate solve updates
+        that same metadata — so the timestamp is already attached to the
+        view; there is no need to go digging for a separate original
+        header. DATE-OBS is UTC by the FITS standard, and a DATE-LOC card
+        beside it is the LOCAL wall-clock time, which confirms the DATE-OBS
+        really is UTC (NINA, SGP and ACP all write the pair). We read the
+        keywords here, evaluate at mid-exposure, and never run DATE-OBS
+        through a timezone conversion.
 
-        Returns a Python datetime (UTC) or None.
+        Returns a naive UTC datetime, or None (the caller then prompts).
         """
+        _kw = self._build_metadata_kw()
+        w = getattr(self, "wcs", None)
 
-        def _extract_from_header(hdr: fits.Header):
-            """Best-effort extraction from a FITS Header."""
-            # 1) DATE-OBS (+ optional TIME-OBS)
+        # exposure length, for the mid-exposure shift
+        try:
+            exptime = float(_kw("EXPTIME", "EXPOSURE", "EXPOSURE_TIME") or 0.0)
+        except Exception:
+            exptime = 0.0
+
+        # DATE-OBS (UTC) [+ TIME-OBS], then MJD-OBS, WCS dateobs, JD
+        t = None
+        source = None
+        d = _kw("DATE-OBS", "DATE_OBS")
+        if d is not None:
+            s = str(d).strip()
+            if "T" not in s:
+                tv = _kw("TIME-OBS", "TIME_OBS")
+                if tv:
+                    s = f"{s}T{str(tv).strip()}"
+            for fmt in ("isot", None):
+                try:
+                    t = (Time(s, format=fmt, scale="utc") if fmt
+                         else Time(s, scale="utc"))
+                    break
+                except Exception:
+                    t = None
+            if t is not None:
+                dloc = _kw("DATE-LOC", "DATE_LOC", "LOCALTIM")
+                confirmed = bool(dloc) and str(dloc).strip() != s
+                source = ("DATE-OBS (UTC — DATE-LOC present separately)"
+                          if confirmed else "DATE-OBS (UTC)")
+        if t is None:
+            mjd = _kw("MJD-OBS", "MJD_OBS")
+            if mjd is not None:
+                try:
+                    t = Time(float(mjd), format="mjd", scale="utc")
+                    source = "MJD-OBS (UTC)"
+                except Exception:
+                    t = None
+        if t is None and w is not None:
             try:
-                if "DATE-OBS" in hdr:
-                    val = str(hdr["DATE-OBS"]).strip()
-
-                    # Already full ISO timestamp
-                    if "T" in val:
-                        t = Time(val, format="isot", scale="utc")
-                        return t.to_datetime()
-
-                    # DATE-OBS + TIME-OBS split
-                    if "TIME-OBS" in hdr:
-                        val2 = str(hdr["TIME-OBS"]).strip()
-                        t = Time(f"{val}T{val2}", format="isot", scale="utc")
-                        return t.to_datetime()
-            except Exception as e:
-                print(f"[WIMI] DATE-OBS parse failed from header: {e!r}")
-
-            # 2) MJD-OBS
-            try:
-                if "MJD-OBS" in hdr:
-                    t = Time(float(hdr["MJD-OBS"]), format="mjd", scale="utc")
-                    return t.to_datetime()
-            except Exception as e:
-                print(f"[WIMI] MJD-OBS parse failed from header: {e!r}")
-
-            # 3) JD
-            try:
-                if "JD" in hdr:
-                    t = Time(float(hdr["JD"]), format="jd", scale="utc")
-                    return t.to_datetime()
-            except Exception as e:
-                print(f"[WIMI] JD parse failed from header: {e!r}")
-
+                do = getattr(getattr(w, "wcs", None), "dateobs", None)
+                if do:
+                    t = Time(str(do),
+                             format=("isot" if "T" in str(do) else "iso"),
+                             scale="utc")
+                    source = "WCS DATE-OBS (UTC)"
+            except Exception:
+                t = None
+        if t is None:
+            jd = _kw("JD", "JD-OBS")
+            if jd is not None:
+                try:
+                    t = Time(float(jd), format="jd", scale="utc")
+                    source = "JD (UTC)"
+                except Exception:
+                    t = None
+        if t is None:
+            self._obs_time_source = None
             return None
 
-        # --- 1) Try original_header if we have it ---
-        hdr = getattr(self, "original_header", None)
-        if isinstance(hdr, fits.Header):
-            dt = _extract_from_header(hdr)
-            if dt is not None:
-                print(f"[WIMI] Observation time from original_header: {dt.isoformat()}")
-                return dt
-
-        # --- 2) Fall back to WCS header (this matches your Metadata.WCS.* block) ---
-        w = getattr(self, "wcs", None)
-        if w is not None:
-            # 2a) native dateobs field
-            dateobs = None
-            try:
-                dateobs = getattr(w.wcs, "dateobs", None)
-            except Exception:
-                dateobs = None
-
-            if dateobs:
-                try:
-                    # Handles 'YYYY-MM-DDTHH:MM:SS...' (your case)
-                    fmt = "isot" if "T" in dateobs else "iso"
-                    t = Time(dateobs, format=fmt, scale="utc")
-                    dt = t.to_datetime()
-                    print(f"[WIMI] Observation time from WCS.dateobs: {dt.isoformat()}")
-                    return dt
-                except Exception as e:
-                    print(f"[WIMI] failed to parse WCS.dateobs={dateobs!r}: {e!r}")
-
-            # 2b) If that fails, try MJD-OBS in the WCS header
-            try:
-                w_hdr = w.to_header(relax=True)
-                if "MJD-OBS" in w_hdr:
-                    t = Time(float(w_hdr["MJD-OBS"]), format="mjd", scale="utc")
-                    dt = t.to_datetime()
-                    print(f"[WIMI] Observation time from WCS MJD-OBS: {dt.isoformat()}")
-                    return dt
-            except Exception as e:
-                print(f"[WIMI] failed to parse MJD-OBS from WCS header: {e!r}")
-
-        # --- 3) Give up; caller will prompt ---
-        return None
+        dt = t.to_datetime()                 # naive, UTC
+        if exptime > 0:
+            dt = dt + timedelta(seconds=exptime / 2.0)
+        self._obs_time_source = source
+        print(f"[WIMI] Observation time from {source}: {dt.isoformat()} "
+              f"(mid-exposure, exptime={exptime:g}s)")
+        return dt
 
 
     def _prompt_for_observation_datetime(self):
@@ -8047,8 +8397,11 @@ class WIMIDialog(QDialog):
 
         layout = QFormLayout(dialog)
         lbl = QLabel(
-            "The FITS header does not contain an observation date/time.\n"
-            "Please enter the midpoint of the exposure:"
+            "This image's metadata has no observation date/time "
+            "(no DATE-OBS / MJD-OBS / JD).\n"
+            "Enter the midpoint of the exposure. Astro capture software "
+            "writes DATE-OBS in UTC, so leave the timezone on UTC unless "
+            "you know this value was recorded in local time."
         )
         lbl.setWordWrap(True)
         layout.addRow(lbl)
@@ -8074,22 +8427,12 @@ class WIMIDialog(QDialog):
         tz_combo.addItems(common)
         tz_combo.insertSeparator(len(common))
         tz_combo.addItems([t for t in all_tz if t not in common])
+        # Default to UTC. FITS DATE-OBS is UTC by the standard, so UTC is the
+        # right assumption for a hand-entered exposure midpoint too — we do
+        # NOT pre-select the computer's local zone (that was the old
+        # behaviour, and it silently shifted correct UTC entries by the local
+        # offset, forcing the user to hunt for "Universal" in the list).
         tz_combo.setCurrentText("UTC")
-        # Try to pre-select local timezone
-        try:
-            import tzlocal
-            local_tz = tzlocal.get_localzone_name()
-            idx = tz_combo.findText(local_tz)
-            if idx >= 0:
-                tz_combo.setCurrentIndex(idx)
-            else:
-                # Try matching against common list
-                for tz in common:
-                    if local_tz.split("/")[-1] in tz:
-                        tz_combo.setCurrentText(tz)
-                        break
-        except Exception:
-            pass
 
         layout.addRow("Timezone:", tz_combo)
 
@@ -8351,13 +8694,24 @@ class WIMIDialog(QDialog):
             )
             return
 
-        # 5) Populate tree & overlay (unchanged)
+        # 5) Populate tree & overlay
         self.results_tree.clear()
         query_results = []
+
+        # Image size, so we can tell the user which bodies actually fall on
+        # the sensor vs just past its edge at this frame's time.
+        try:
+            img_w = int(self.main_image.width())
+            img_h = int(self.main_image.height())
+        except Exception:
+            img_w = img_h = 0
+        n_on = n_off = 0
 
         for r in results:
             ra  = float(r["ra"])
             dec = float(r["dec"])
+            if not (math.isfinite(ra) and math.isfinite(dec)):
+                continue  # ephemeris failed to converge for this body
             name  = r.get("name", r.get("designation", "N/A"))
             mag   = r.get("mag", "N/A")
             qtype = r.get("type", "Minor body")
@@ -8367,6 +8721,17 @@ class WIMIDialog(QDialog):
             dist_num = _wimi_num_or_none(dist)
             dist_disp = f"{dist_num:g} AU" if dist_num is not None else "N/A"
 
+            # On- or off-sensor at this frame's observation time?
+            px, py = self.calculate_pixel_from_ra_dec(ra, dec)
+            on_frame = (px is not None and py is not None
+                        and img_w > 0 and img_h > 0
+                        and 0 <= px < img_w and 0 <= py < img_h)
+            if on_frame:
+                n_on += 1
+            else:
+                n_off += 1
+            long_type = qtype if on_frame else f"{qtype} — off-frame"
+
             query_results.append({
                 "ra": ra,
                 "dec": dec,
@@ -8374,18 +8739,32 @@ class WIMIDialog(QDialog):
                 "diameter": "N/A",              # minor bodies carry no angular size here
                 "mag_display": _fmt_mag(mag),   # apparent magnitude -> Mag column
                 "short_type": "MP",
-                "long_type": qtype,
+                "long_type": long_type,
                 "redshift": "N/A",          # not meaningful for minor bodies
                 "parallax_mas": "N/A",
                 "comoving_distance": dist,  # kept as-is (AU) for any legacy reader
                 "distance_display": dist_disp,
                 "source": src,
+                # Flag so _filter_results_to_image keeps this row even when it
+                # lands off the sensor, instead of silently culling it.
+                "_minor_body": True,
+                "_on_frame": on_frame,
             })
 
         self.main_preview.set_query_results(query_results)
         self.query_results = query_results
         self.update_results_tree()
         self.update_object_count()
+
+        # Tell the user what was found, and crucially that some bodies are in
+        # the field but just past the frame edge at THIS frame's time — load
+        # the sub where the object has drifted into frame to see it on-image.
+        total_mb = n_on + n_off
+        if total_mb:
+            msg = f"{total_mb} minor bod{'y' if total_mb == 1 else 'ies'} in field"
+            if n_off:
+                msg += f" — {n_on} on-frame, {n_off} just off the sensor edge"
+            self.status_label.setText("Status: " + msg + ".")
 
     def _query_minor_planets_from_db(
         self,
@@ -8435,6 +8814,12 @@ class WIMIDialog(QDialog):
 
         # 1) Convert observation datetime to JD
         jd = Time(obs_datetime).jd
+
+        # Stash the exact epoch and DB file this search used, so a later
+        # double-click can open the in-app Orbit Explorer placed at the
+        # same instant and read the clicked body's elements by designation.
+        self._minor_jd = float(jd)
+        self._minor_db_path = str(db_path)
 
         print(
             f"[MinorBodies] Search: RA={ra_center:.6f} deg  "
@@ -8613,6 +8998,17 @@ class WIMIDialog(QDialog):
             def progress_cb(done: int, total: int) -> bool:
                 return True
 
+        # Observer site (topocentric parallax). Read from the image metadata
+        # (SITELAT/SITELONG/SITEELEV), falling back to Settings. Without it
+        # the ephemeris is geocentric — up to ~18" off on a close object.
+        site = self._observer_site()
+        if site is not None:
+            print(f"[MinorBodies] observer site: lat={site[0]:.5f} "
+                  f"lon={site[1]:.5f} elev={site[2]:.0f} m (topocentric)")
+        else:
+            print("[MinorBodies] no observer site in metadata or Settings — "
+                  "geocentric positions")
+
         # 4) Compute positions with Skyfield at this JD
         print(
             f"[MinorBodies] compute_positions_skyfield: sending {total_rows} rows, jd={jd}"
@@ -8621,7 +9017,7 @@ class WIMIDialog(QDialog):
             asteroid_rows=rows_df,
             jd=jd,
             ephemeris_path=str(self._minorbody_data_dir()),
-            topocentric=None,
+            topocentric=site,
             progress_cb=progress_cb,
             debug=True,
         )
@@ -9621,6 +10017,39 @@ class WIMIDialog(QDialog):
         self.main_preview.clear_query_results()
         self.status_label.setText("Results cleared.")
 
+    def _load_name_label_style(self):
+        """Load the Show-Object-Names label font + colour from QSettings."""
+        s = getattr(self, "settings", None) or QSettings()
+        font = QFont("Arial", 12)
+        try:
+            fs = s.value("wimi/name_label_font", "", type=str)
+            if fs:
+                f = QFont()
+                if f.fromString(fs):
+                    font = f
+        except Exception:
+            pass
+        color = QColor(255, 255, 255)
+        try:
+            cs = s.value("wimi/name_label_color", "", type=str)
+            if cs:
+                c = QColor(cs)
+                if c.isValid():
+                    color = c
+        except Exception:
+            pass
+        return font, color
+
+    def _save_name_label_style(self):
+        """Persist the current Show-Object-Names label font + colour."""
+        s = getattr(self, "settings", None) or QSettings()
+        try:
+            s.setValue("wimi/name_label_font", self.name_label_font.toString())
+            s.setValue("wimi/name_label_color",
+                       self.name_label_color.name(QColor.NameFormat.HexArgb))
+        except Exception:
+            pass
+
     def open_settings_dialog(self):
         """Open settings dialog to adjust max results and marker type."""
         dialog = QDialog(self)
@@ -9654,6 +10083,66 @@ class WIMIDialog(QDialog):
         marker_style_combo.setCurrentText(getattr(self, "marker_style", "Circle"))
         layout.addRow("Marker Style:", marker_style_combo)
 
+        # --- Object-name label font + colour ----------------------------
+        # Separate from the annotation-tools font (which only styles added
+        # text). Edits a working copy; committed on OK.
+        state = {
+            "font": QFont(self.name_label_font),
+            "color": QColor(self.name_label_color),
+        }
+
+        preview = QLabel("Sample  (6281) Strnad", dialog)
+        preview.setAutoFillBackground(True)
+        preview.setMinimumHeight(34)
+        preview.setFrameShape(QFrame.Shape.StyledPanel)
+        preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        def _refresh_preview():
+            f = QFont(state["font"])
+            # Clamp the on-canvas point size into something legible in this
+            # little swatch, without changing the stored size.
+            f.setPointSizeF(max(8.0, min(22.0, f.pointSizeF() if f.pointSizeF() > 0 else 12.0)))
+            preview.setFont(f)
+            pal = preview.palette()
+            pal.setColor(QPalette.ColorRole.WindowText, state["color"])
+            pal.setColor(QPalette.ColorRole.Window, QColor(40, 40, 40))
+            preview.setPalette(pal)
+            fnt = state["font"]
+            bits = [fnt.family(),
+                    f"{(fnt.pointSizeF() if fnt.pointSizeF() > 0 else fnt.pixelSize()):g} pt"]
+            if fnt.bold():
+                bits.append("Bold")
+            if fnt.italic():
+                bits.append("Italic")
+            font_btn.setText("  ".join(bits))
+
+        font_btn = QPushButton(dialog)
+        font_btn.setToolTip("Family, size and style of the object-name labels")
+
+        def _pick_font():
+            f, ok = QFontDialog.getFont(state["font"], dialog, "Object Name Font")
+            if ok:
+                state["font"] = f
+                _refresh_preview()
+        font_btn.clicked.connect(_pick_font)
+
+        color_btn = QPushButton("Colour…", dialog)
+        color_btn.setToolTip("Colour of the object-name labels")
+
+        def _pick_color():
+            c = QColorDialog.getColor(
+                state["color"], dialog, "Object Name Colour",
+                QColorDialog.ColorDialogOption.ShowAlphaChannel)
+            if c.isValid():
+                state["color"] = c
+                _refresh_preview()
+        color_btn.clicked.connect(_pick_color)
+
+        layout.addRow("Object Name Font:", font_btn)
+        layout.addRow("Object Name Colour:", color_btn)
+        layout.addRow("Preview:", preview)
+        _refresh_preview()
+
         # --- Force Blind Solve ---
         force_blind_solve_button = QPushButton("Force Blind Solve", dialog)
         force_blind_solve_button.clicked.connect(self.force_blind_solve)
@@ -9664,11 +10153,19 @@ class WIMIDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=dialog
         )
-        buttons.accepted.connect(lambda: self.update_settings(
-            max_results_spinbox.value(),              # <-- IMPORTANT: call it
-            marker_style_combo.currentText(),
-            dialog
-        ))
+
+        def _accept():
+            # Commit the label style first, then the rest (which repaints).
+            self.name_label_font = QFont(state["font"])
+            self.name_label_color = QColor(state["color"])
+            self._save_name_label_style()
+            self.update_settings(
+                max_results_spinbox.value(),
+                marker_style_combo.currentText(),
+                dialog,
+            )
+
+        buttons.accepted.connect(_accept)
         buttons.rejected.connect(dialog.reject)
         layout.addRow(buttons)
 
@@ -9751,6 +10248,45 @@ class WIMIDialog(QDialog):
         super().closeEvent(event)
 
 # Function to calculate comoving radial distance (in Gly)
+def _wimi_parse_sexagesimal(val):
+    """
+    Parse 'DD MM SS.SS', '-DD:MM:SS', '+DD MM SS' or a plain decimal into
+    degrees.
+
+    SGP/NINA write SITELAT/SITELONG as space-separated sexagesimal, and the
+    sign belongs to the WHOLE value rather than just the degrees field —
+    treating '-90 11 44.16' as -90 + 11/60 + 44/3600 puts the observer in
+    the wrong place by over 20 arcminutes of longitude.
+    """
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        return float(s)                      # already decimal
+    except ValueError:
+        pass
+    neg = s.startswith("-")
+    parts = [p for p in s.replace(":", " ").replace(",", " ").split() if p]
+    try:
+        nums = [abs(float(p)) for p in parts]
+    except ValueError:
+        return None
+    if not nums:
+        return None
+    deg = nums[0]
+    if len(nums) > 1:
+        deg += nums[1] / 60.0
+    if len(nums) > 2:
+        deg += nums[2] / 3600.0
+    return -deg if neg else deg
+
+
 def _wimi_num_or_none(x):
     """Best-effort float. Returns None for None/masked/'N/A'/'--'/non-numeric/non-finite."""
     if x is None:

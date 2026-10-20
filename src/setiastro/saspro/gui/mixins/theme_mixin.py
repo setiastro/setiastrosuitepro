@@ -1,4 +1,4 @@
-#saspro/gui/mixins/theme_mixin.py
+# pro/gui/mixins/theme_mixin.py
 """
 Theme management mixin for AstroSuiteProMainWindow.
 
@@ -8,12 +8,43 @@ theme application, and system theme detection.
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QBrush, QColor, QFont, QPalette, QPainter, QPixmap, QIcon
-from PyQt6.QtWidgets import QApplication, QLabel, QWidget
+from PyQt6.QtCore import Qt, QTimer, QRectF
+from PyQt6.QtGui import QBrush, QColor, QFont, QPalette, QPainter, QPixmap, QIcon, QTextOption
+from PyQt6.QtWidgets import QApplication, QProxyStyle, QStyle, QStyleOptionTitleBar
 
 if TYPE_CHECKING:
     pass
+
+
+class _SinglePassTitleStyle(QProxyStyle):
+    """Keep Fusion decorations, but draw MDI title text without its emboss pass."""
+
+    def __init__(self):
+        super().__init__("Fusion")
+
+    def drawComplexControl(self, control, option, painter, widget=None):
+        if control != QStyle.ComplexControl.CC_TitleBar or not isinstance(option, QStyleOptionTitleBar):
+            super().drawComplexControl(control, option, painter, widget)
+            return
+
+        # Fusion draws the title even when SC_TitleBarLabel is excluded.
+        # Clear only the copied text so it still draws the frame and buttons.
+        decoration = QStyleOptionTitleBar(option)
+        decoration.text = ""
+        super().drawComplexControl(control, decoration, painter, widget)
+
+        if not option.subControls & QStyle.SubControl.SC_TitleBarLabel:
+            return
+
+        text_rect = self.subControlRect(control, option, QStyle.SubControl.SC_TitleBarLabel, widget)
+        title = painter.fontMetrics().elidedText(option.text, Qt.TextElideMode.ElideRight, max(0, text_rect.width() - 14))
+        active = bool(option.titleBarState & QStyle.StateFlag.State_Active.value)
+        painter.save()
+        try:
+            painter.setPen(QColor(Qt.GlobalColor.white) if active else option.palette.color(QPalette.ColorRole.Text))
+            painter.drawText(QRectF(text_rect), title, QTextOption(Qt.AlignmentFlag.AlignCenter))
+        finally:
+            painter.restore()
 
 def _force_mdi_subwindow_flags(sw):
     f = sw.windowFlags()
@@ -92,7 +123,7 @@ class ThemeMixin:
 
         # Base style
         if mode in ("dark", "gray", "light", "custom"):
-            app.setStyle("Fusion")
+            app.setStyle(_SinglePassTitleStyle())
         else:
             app.setStyle(None)
 
@@ -198,46 +229,6 @@ class ThemeMixin:
             }}
         """)
 
-
-    def _fix_mdi_titlebar_emboss(self, fg_hex: str):
-        """
-        Fusion/Windows style can draw embossed title text (two-pass).
-        In dark themes that can become white-on-white -> 'double text'.
-        Force the shadow/emboss colors on the *titlebar widget only*.
-        """
-        try:
-            fg = QColor(fg_hex)
-        except Exception:
-            fg = QColor(240, 240, 240)
-
-        for sw in self.mdi.subWindowList():
-            try:
-                tb = sw.findChild(QWidget, "qt_mdi_titlebar")
-                if tb is None:
-                    continue
-
-                pal = tb.palette()
-
-                # Main text
-                pal.setColor(QPalette.ColorRole.WindowText, fg)
-                pal.setColor(QPalette.ColorRole.Text, fg)
-                pal.setColor(QPalette.ColorRole.ButtonText, fg)
-
-                # Critical: make the embossed/shadow pass dark
-                dark = QColor(0, 0, 0)
-                pal.setColor(QPalette.ColorRole.Light, dark)
-                pal.setColor(QPalette.ColorRole.Midlight, dark)
-                pal.setColor(QPalette.ColorRole.Dark, dark)
-                pal.setColor(QPalette.ColorRole.Shadow, dark)
-
-                tb.setPalette(pal)
-
-                # Also push to the label if present (some styles read it from label)
-                lbl = tb.findChild(QLabel)
-                if lbl is not None:
-                    lbl.setPalette(pal)
-            except Exception:
-                pass
 
     def _tint_icon(self, icon: QIcon, color: QColor) -> QIcon:
         """

@@ -1,4 +1,4 @@
-#saspro.gui.main_window.py
+#pro.gui.main_window.py
 from setiastro.saspro.runtime_torch import add_runtime_to_sys_path, _ban_shadow_torch_paths, _purge_bad_torch_from_sysmodules
 add_runtime_to_sys_path(status_cb=lambda *_: None)
 _ban_shadow_torch_paths(status_cb=lambda *_: None)
@@ -990,7 +990,7 @@ class AstroSuiteProMainWindow(
         else:
 
             # No dedicated roi_header: this is either a "plain" doc or a
-            #saspromoted ROI doc. Do NOT try to re-derive WCS from the header,
+            # promoted ROI doc. Do NOT try to re-derive WCS from the header,
             # since it may contain non-WCS strings like:
             #   "Calibrated: bias/dark sub, flat division."
             #
@@ -2082,7 +2082,7 @@ class AstroSuiteProMainWindow(
                 image_manager=getattr(self, "image_manager", None), parent=self
             )
 
-        #sasprogress ("thinking") dialog
+        # progress ("thinking") dialog
         dlg = QProgressDialog("Loading project...", "", 0, 0, self)
         dlg.setWindowTitle("Loading")
         try:
@@ -7464,14 +7464,7 @@ class AstroSuiteProMainWindow(
                 except Exception as e:
                     QMessageBox.warning(self, "Crop", f"Apply failed:\n{e}")
                 return
-            if cid == "create_mask":
-                try:
-                    from setiastro.saspro.mask_creation import open_mask_creation_with_preset
-                    open_mask_creation_with_preset(self, preset)
-                    self._log("Opened Mask Creation with preset.")
-                except Exception as e:
-                    QMessageBox.warning(self, "Mask Creation", f"Open failed:\n{e}")
-                return            
+            
             if cid == "star_align":
                 try:
                     from setiastro.saspro.star_alignment_preset import run_star_alignment_via_preset
@@ -7737,55 +7730,7 @@ class AstroSuiteProMainWindow(
                 )
             return
 
-        if cid == "create_mask":
-            # Loud by design — print statements inside apply_mask_creation_via_preset
-            # cover every step; a silent failure is impossible here.
-            print(f"[HCD] create_mask: target_sw={target_sw}, doc={doc!r}, "
-                  f"preset_keys={list((preset or {}).keys())}", flush=True)
-            if doc is None or getattr(doc, "image", None) is None:
-                QMessageBox.information(self, "Mask Creation",
-                                        "Target view has no image.")
-                return
-            try:
-                from setiastro.saspro.mask_creation import apply_mask_creation_via_preset
-                ok = apply_mask_creation_via_preset(
-                    self, preset or {},
-                    target_doc=doc,
-                    target_sw=target_sw,   # ← add this
-                )
-                print(f"[HCD] create_mask: apply returned {ok}", flush=True)
-                if ok:
-                    try:
-                        self._last_headless_command = {
-                            "command_id": "create_mask",
-                            "preset": dict(preset or {}),
-                        }
-                    except Exception:
-                        pass
-                    p = preset or {}
-                    mt = str(p.get("mask_type", "Binary"))
-                    bits = [f"type={mt}"]
-                    blur = int(p.get("blur_amount", 0) or 0)
-                    if blur: bits.append(f"blur={blur}px")
-                    mode = str(p.get("apply_mode", "attach_only"))
-                    bits.append(f"apply={mode}")
-                    if p.get("make_active"):
-                        bits.append("active")
-                    self._log(
-                        f"Create Mask applied to '{target_sw.windowTitle()}' "
-                        f"({', '.join(bits)})"
-                    )
-                else:
-                    QMessageBox.warning(
-                        self, "Mask Creation",
-                        "Mask generation returned no result. See console log."
-                    )
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                QMessageBox.warning(self, "Mask Creation",
-                                    f"Preset apply failed:\n{e}")
-            return
+
         if cid == "convo":
             try:
                 self._apply_convo_preset_to_doc(doc, preset or {})
@@ -10027,11 +9972,6 @@ class AstroSuiteProMainWindow(
             pass
 
         try:
-            self._fix_mdi_titlebar_emboss("#dcdcdc" if self._theme_mode()=="dark" else "#f0f0f0")
-        except Exception:
-            pass
-
-        try:
             drop_pos = getattr(self, "_pending_spawn_cursor_pos", None)
             if drop_pos is not None and sw is not None and force_new:
                 mdi_pos = self.mdi.mapFromGlobal(drop_pos)
@@ -10512,10 +10452,6 @@ class AstroSuiteProMainWindow(
             self._refresh_mask_action_states()
         except Exception:
             pass
-        try:
-            self._fix_mdi_titlebar_emboss("#dcdcdc" if self._theme_mode()=="dark" else "#f0f0f0")
-        except Exception:
-            pass
 
     def _sync_docman_active(self, doc):
         dm = self.doc_manager
@@ -10880,7 +10816,7 @@ class AstroSuiteProMainWindow(
         
         # Check if we have already faded out
         if getattr(self, "_fade_out_complete", False):
-            #sasproceed with shutdown
+            # Proceed with shutdown
             self._do_shutdown_steps(e)
             return
 
