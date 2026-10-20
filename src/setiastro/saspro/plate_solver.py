@@ -1575,7 +1575,29 @@ def _write_temp_fit_via_save_image(gray2d: np.ndarray, _header: Header | None) -
     print(f"Saved FITS image to: {fit_path}")
     return fit_path, os.path.splitext(fit_path)[0] + ".wcs"
 
-def _solve_numpy_with_fallback(
+def _solve_numpy_with_fallback(parent, settings, image, seed_header):
+    """
+    Four-pass solve strategy — thin wrapper that guarantees the status
+    popup goes away when the solver finishes.
+
+    The popup had a Hide button but no auto-close, so a solve kicked off
+    from a tool other than the main PlateSolverDialog (the Supernova /
+    Asteroid Hunter runs it directly) left a modeless "Plate Solving"
+    window stuck on top until the user hunted it down and clicked Hide.
+    Wrapping the real implementation here closes it on every exit path —
+    success, failure, or raised exception — in exactly one place rather
+    than at every one of the implementation's many `return` statements.
+    """
+    try:
+        return _solve_numpy_with_fallback_impl(parent, settings, image, seed_header)
+    finally:
+        try:
+            _status_popup_close()
+        except Exception:
+            pass
+
+
+def _solve_numpy_with_fallback_impl(
     parent, settings, image: np.ndarray, seed_header
 ) -> tuple[bool, "Header | str"]:
     """
@@ -5049,4 +5071,3 @@ def open_plate_solver_with_preset(main_window, preset: dict | None = None):
     dlg.raise_()
     dlg.activateWindow()
     return dlg
-

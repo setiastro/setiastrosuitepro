@@ -29,6 +29,139 @@ import webbrowser
 import shutil
 import subprocess
 import os
+from pathlib import Path
+from PyQt6.QtCore import QStandardPaths, pyqtSignal
+
+
+# QSettings keys for the minor-body catalog. Kept module-level and used
+# verbatim so Settings, WIMI and the Supernova/Asteroid Hunter all point
+# at the SAME database rather than each maintaining its own.
+#
+#   wimi/minorbody_db_path   — absolute path to the .sqlite (WIMI reads this)
+#   wimi/minorbody_data_dir  — the folder it lives in (the Hunter reads THIS)
+#
+# WIMI historically only ever wrote the first key and computed the folder
+# on the fly, while the Hunter only ever read the second. The result was
+# that downloading in WIMI left the Hunter's key empty, so the Hunter fell
+# back to a different folder (~/.saspro_minor_bodies) and silently
+# re-downloaded its own 350 MB copy. Writing both keys here, to one
+# canonical location, makes a single download serve every tool.
+MINORBODY_DB_PATH_KEY = "wimi/minorbody_db_path"
+MINORBODY_DATA_DIR_KEY = "wimi/minorbody_data_dir"
+
+
+def minorbody_data_dir(settings: "QSettings | None" = None) -> Path:
+    """
+    Canonical per-user folder for the minor-body catalog.
+
+    Uses QStandardPaths.AppDataLocation so it lands in the platform's
+    normal place:
+      Windows: %LOCALAPPDATA%/SetiAstroSuitePro/minor_bodies
+      macOS:   ~/Library/Application Support/SetiAstroSuitePro/minor_bodies
+      Linux:   ~/.local/share/SetiAstroSuitePro/minor_bodies
+
+    When a QSettings is supplied the resolved path is written to
+    MINORBODY_DATA_DIR_KEY, which is the key the Hunter reads. Computing
+    it in one place and persisting it there is what keeps the tools in
+    sync — this is the half WIMI never did.
+    """
+    base = QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.AppDataLocation
+    )
+    base_path = Path(base) if base else Path.home() / ".saspro"
+    data_dir = base_path / "minor_bodies"
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    if settings is not None:
+        try:
+            settings.setValue(MINORBODY_DATA_DIR_KEY, str(data_dir))
+        except Exception:
+            pass
+    return data_dir
+
+
+class MinorBodyDownloadWorker(QThread):
+    """
+    Background download/update of the minor-body catalog.
+
+    Emits finished_ok(db_path, version, asteroids, comets) on success and
+    failed(error_message) otherwise. Ported out of WIMI so the updater can
+    live in Settings without dragging the rest of the WIMI dialog along.
+    """
+    finished_ok = pyqtSignal(str, str, int, int)
+    failed = pyqtSignal(str)
+
+    def __init__(self, data_dir: Path, force_refresh: bool = False, parent=None):
+        super().__init__(parent)
+        self.data_dir = Path(data_dir)
+        self.force_refresh = force_refresh
+
+    def run(self):
+        try:
+            from setiastro.saspro import minorbodycatalog as mbc
+            db_path, manifest = mbc.ensure_minor_body_db(
+                data_dir=self.data_dir,
+                manifest_url=mbc.MANIFEST_URL,
+                force_refresh=self.force_refresh,
+            )
+            self.finished_ok.emit(
+                str(db_path),
+                str(manifest.version),
+                int(manifest.counts_asteroids),
+                int(manifest.counts_comets),
+            )
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
+class MinorBodyUpdateCheckWorker(QThread):
+    """
+    Non-blocking "is there a newer catalog?" check.
+
+    Fetches ONLY the small JSON manifest (not the 350 MB database) and
+    compares its version to the local one. Emits
+    result(update_available, remote_version, local_version). Any failure
+    — offline, DNS, SSL, timeout — resolves to "no update, stay quiet":
+    a version badge is a convenience, never worth an error dialog or a
+    scary header when the user simply has no connection.
+
+    The comparison is deliberately "versions differ", not "remote > local":
+    that is exactly the condition ensure_minor_body_db() uses to decide
+    whether clicking Update would actually fetch anything, so the badge
+    can never promise an update the button won't perform.
+    """
+    result = pyqtSignal(bool, str, str)   # update_available, remote_ver, local_ver
+
+    def __init__(self, data_dir: Path, parent=None):
+        super().__init__(parent)
+        self.data_dir = Path(data_dir)
+
+    def run(self):
+        try:
+            from setiastro.saspro import minorbodycatalog as mbc
+            local_ver = ""
+            try:
+                lm = mbc.load_local_manifest(
+                    self.data_dir / mbc.DEFAULT_MANIFEST_BASENAME)
+                if lm is not None:
+                    local_ver = str(lm.version)
+            except Exception:
+                local_ver = ""
+
+            remote_ver = ""
+            try:
+                rm = mbc.fetch_remote_manifest(mbc.MANIFEST_URL)
+                remote_ver = str(rm.version)
+            except Exception:
+                remote_ver = ""
+
+            avail = bool(local_ver) and bool(remote_ver) and (remote_ver != local_ver)
+            self.result.emit(avail, remote_ver, local_ver)
+        except Exception:
+            self.result.emit(False, "", "")
+
 
 class SettingsDialog(QDialog):
     """
@@ -39,6 +172,9 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Preferences"))
         self.settings = settings
+
+        # Background minor-body update-check thread (lazily started on show).
+        self._mb_check_thread = None
 
         # Ensure we don't delete on close, so we can cache it
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
@@ -470,6 +606,60 @@ class SettingsDialog(QDialog):
         self.btn_gaia_open.clicked.connect(self._open_gaia_database_clicked)
         right_col.addRow(self.btn_gaia_open)
 
+        # ---- Minor-Body Catalog (asteroids + comets) ----
+        # Header kept as an instance attribute so the background update
+        # check can append an "Update available" badge to it.
+        self.lbl_minorbody_header = QLabel(self.tr("<b>Minor-Body Catalog</b>"))
+        self.lbl_minorbody_header.setTextFormat(Qt.TextFormat.RichText)
+        right_col.addRow(self.lbl_minorbody_header)
+
+        self.lbl_minorbody_status = QLabel(self.tr("Status: (unknown)"))
+        self.lbl_minorbody_status.setStyleSheet("color:#888;")
+        self.lbl_minorbody_status.setWordWrap(True)
+        self.lbl_minorbody_status.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        right_col.addRow(self.lbl_minorbody_status)
+
+        # Primary action: Download / Update. The MPC catalog refreshes
+        # roughly monthly (its element epoch rolls over), so this is a
+        # recurring action, not a one-time install — hence it lives in
+        # Settings next to the other data-library managers rather than
+        # buried in the hunting tool.
+        self.btn_minorbody_update = QPushButton(self.tr("Download / Update Catalog"))
+        self.btn_minorbody_update.setToolTip(self.tr(
+            "Fetch the latest asteroid + comet orbital elements (~350 MB).\n"
+            "Only downloads when the published version is newer than what\n"
+            "you already have."))
+        self.btn_minorbody_update.clicked.connect(
+            lambda: self._download_minorbody_clicked(force=False))
+
+        # Secondary actions live behind a ▾ menu so the common case stays
+        # a single obvious button.
+        self.btn_minorbody_menu = QToolButton()
+        self.btn_minorbody_menu.setText("▾")
+        self.btn_minorbody_menu.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
+        _mb_menu = QMenu(self.btn_minorbody_menu)
+        _act_force = _mb_menu.addAction(self.tr("Force Re-download…"))
+        _act_force.triggered.connect(
+            lambda: self._download_minorbody_clicked(force=True))
+        _act_install = _mb_menu.addAction(self.tr("Install from Local File…"))
+        _act_install.triggered.connect(self._install_minorbody_from_file)
+        _mb_menu.addSeparator()
+        _act_page = _mb_menu.addAction(self.tr("Open Releases Page…"))
+        _act_page.triggered.connect(self._open_minorbody_releases)
+        _act_folder = _mb_menu.addAction(self.tr("Open Catalog Folder…"))
+        _act_folder.triggered.connect(self._open_minorbody_folder)
+        self.btn_minorbody_menu.setMenu(_mb_menu)
+
+        _row_mb = QHBoxLayout()
+        _row_mb.setContentsMargins(0, 0, 0, 0)
+        _row_mb.addWidget(self.btn_minorbody_update, 1)
+        _row_mb.addWidget(self.btn_minorbody_menu)
+        _w_mb = QWidget()
+        _w_mb.setLayout(_row_mb)
+        right_col.addRow(_w_mb)
+
         # ---- RA/Dec Overlay ----
         right_col.addRow(QLabel(self.tr("<b>RA/Dec Overlay</b>")))
         self.chk_wcs_enabled = QCheckBox(self.tr("Show RA/Dec grid"))
@@ -598,9 +788,266 @@ class SettingsDialog(QDialog):
         except Exception as e:
             self.lbl_gaia_status.setText(self.tr("Status: error reading library ({0})").format(e))
 
+    # ------------------------------------------------------------------
+    # Minor-body catalog
+    # ------------------------------------------------------------------
+
+    def _minorbody_data_dir(self) -> Path:
+        """Canonical folder, and persist it so WIMI + Hunter agree."""
+        return minorbody_data_dir(self.settings)
+
+    def _refresh_minorbody_status(self):
+        """
+        Show the installed catalog's version, counts and how stale its
+        orbital elements are. The freshness line is the one that matters:
+        two-body propagation drifts with the gap from the element epoch,
+        so a catalog months old will visibly mis-mark fast movers, and a
+        number on screen turns 'the markers are a bit off' into 'oh, it's
+        140 days old'.
+        """
+        try:
+            from setiastro.saspro import minorbodycatalog as mbc
+        except Exception as e:
+            self.lbl_minorbody_status.setText(
+                self.tr("Status: catalog module unavailable ({0})").format(e))
+            return
+
+        path = self.settings.value(MINORBODY_DB_PATH_KEY, "", type=str)
+        if not path:
+            # Nothing cached: probe the canonical folder anyway, in case a
+            # file is present from a prior version that never wrote the key.
+            cand = self._minorbody_data_dir() / mbc.DEFAULT_DB_BASENAME
+            path = str(cand) if cand.is_file() else ""
+
+        if not path or not Path(path).is_file():
+            self.lbl_minorbody_status.setText(
+                self.tr("Not installed — click Download / Update Catalog."))
+            return
+
+        p = Path(path)
+        lines = []
+        manifest_path = p.parent / mbc.DEFAULT_MANIFEST_BASENAME
+        manifest = mbc.load_local_manifest(manifest_path)
+        if manifest is not None:
+            lines.append(self.tr("Version {0} — {1:,} asteroids, {2:,} comets").format(
+                manifest.version, manifest.counts_asteroids, manifest.counts_comets))
+            # Manifest schema v2 carries epoch-freshness stats; show them
+            # when present, without hard-depending on them.
+            try:
+                fresh = (manifest.raw or {}).get("epoch_freshness", {})
+                ast = fresh.get("asteroids", {})
+                med = ast.get("median_days")
+                if med is not None:
+                    age_txt = (f"{med/365.25:.1f} yr" if med >= 400
+                               else f"{med:.0f} days")
+                    note = ""
+                    if med > 180:
+                        note = self.tr("  — consider updating")
+                    lines.append(self.tr(
+                        "Asteroid elements ~{0} old{1}").format(age_txt, note))
+            except Exception:
+                pass
+        else:
+            lines.append(self.tr("Installed: {0}").format(p.name))
+
+        try:
+            size_mb = p.stat().st_size / (1024 * 1024)
+            lines.append(self.tr("{0:.0f} MB  ·  {1}").format(size_mb, str(p.parent)))
+        except Exception:
+            lines.append(str(p.parent))
+
+        self.lbl_minorbody_status.setText("\n".join(lines))
+
+    def _set_minorbody_db_path(self, db_path: str):
+        """Persist the resolved DB path + folder for every tool to find."""
+        self.settings.setValue(MINORBODY_DB_PATH_KEY, db_path)
+        try:
+            self.settings.setValue(MINORBODY_DATA_DIR_KEY, str(Path(db_path).parent))
+        except Exception:
+            pass
+        self.settings.sync()
+
+    def _download_minorbody_clicked(self, force: bool = False):
+        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtCore import QEventLoop
+
+        data_dir = self._minorbody_data_dir()
+
+        self.btn_minorbody_update.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
+        dlg = QProgressDialog(
+            self.tr("Downloading minor-body catalog…\n"
+                    "This may take a minute (~350 MB)."),
+            "", 0, 0, self)
+        dlg.setWindowTitle(self.tr("Minor-Body Catalog"))
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setCancelButton(None)
+        dlg.show()
+
+        result = {"ok": False, "db_path": "", "version": "",
+                  "ast": 0, "com": 0, "error": ""}
+        loop = QEventLoop()
+
+        def _on_ok(db_path, version, ast, com):
+            result.update(ok=True, db_path=db_path, version=version,
+                          ast=ast, com=com)
+            loop.quit()
+
+        def _on_fail(msg):
+            result.update(ok=False, error=msg)
+            loop.quit()
+
+        worker = MinorBodyDownloadWorker(data_dir, force_refresh=force, parent=self)
+        worker.finished_ok.connect(_on_ok)
+        worker.failed.connect(_on_fail)
+        worker.finished.connect(loop.quit)
+        worker.start()
+        loop.exec()
+
+        dlg.close()
+        QApplication.restoreOverrideCursor()
+        self.btn_minorbody_update.setEnabled(True)
+
+        if not result["ok"]:
+            self._refresh_minorbody_status()
+            QMessageBox.critical(
+                self, self.tr("Minor-Body Catalog Error"),
+                self.tr("Failed to download minor-body catalog:\n{0}\n\n"
+                        "If this is an SSL error (common on macOS), use the ▾ menu\n"
+                        "→ Open Releases Page to download the .sqlite in a browser,\n"
+                        "then ▾ → Install from Local File.").format(
+                            result["error"] or self.tr("Unknown error.")))
+            return
+
+        self._set_minorbody_db_path(result["db_path"])
+        self._refresh_minorbody_status()
+        QMessageBox.information(
+            self, self.tr("Minor-Body Catalog"),
+            self.tr("Catalog ready.\nVersion: {0}\nAsteroids: {1:,}\n"
+                    "Comets: {2:,}").format(
+                        result["version"], result["ast"], result["com"]))
+
+    def _install_minorbody_from_file(self):
+        from PyQt6.QtWidgets import QMessageBox, QFileDialog
+        from setiastro.saspro import minorbodycatalog as mbc
+
+        src_path, _ = QFileDialog.getOpenFileName(
+            self, self.tr("Select minor-body SQLite file"), "",
+            self.tr("SQLite databases (*.sqlite *.db);;All files (*)"))
+        if not src_path:
+            return
+
+        data_dir = self._minorbody_data_dir()
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            db_path, manifest = mbc.install_local_db_file(
+                src_path=Path(src_path), data_dir=data_dir)
+        except Exception as exc:
+            QApplication.restoreOverrideCursor()
+            self._refresh_minorbody_status()
+            QMessageBox.critical(
+                self, self.tr("Minor-Body Catalog Error"),
+                self.tr("Failed to install minor-body catalog:\n{0}").format(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+
+        self._set_minorbody_db_path(str(db_path))
+        self._refresh_minorbody_status()
+        QMessageBox.information(
+            self, self.tr("Minor-Body Catalog"),
+            self.tr("Catalog installed from local file.\nVersion: {0}\n"
+                    "Asteroids: {1:,}\nComets: {2:,}").format(
+                        manifest.version, manifest.counts_asteroids,
+                        manifest.counts_comets))
+
+    def _open_minorbody_releases(self):
+        from PyQt6.QtWidgets import QMessageBox
+        from setiastro.saspro import minorbodycatalog as mbc
+        QMessageBox.information(
+            self, self.tr("Manual Download"),
+            self.tr("Your browser will open the SASpro minor-body releases page.\n\n"
+                    "Download the '{0}' asset from the latest release, then use\n"
+                    "▾ → Install from Local File.").format(mbc.DEFAULT_DB_BASENAME))
+        try:
+            webbrowser.open(mbc.RELEASES_PAGE_URL)
+        except Exception:
+            pass
+
+    def _open_minorbody_folder(self):
+        folder = self._minorbody_data_dir()
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(folder))  # noqa: S606
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+        except Exception:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, self.tr("Catalog Folder"), str(folder))
+
+    def _start_minorbody_update_check(self):
+        """
+        Kick off the background version check, unless one is already
+        running or there is nothing installed to compare against (the
+        status line already says "not installed" in that case, so a badge
+        would be noise).
+        """
+        if getattr(self, "_mb_check_thread", None) is not None:
+            if self._mb_check_thread.isRunning():
+                return
+        if not self.settings.value(MINORBODY_DB_PATH_KEY, "", type=str):
+            cand = self._minorbody_data_dir()
+            try:
+                from setiastro.saspro import minorbodycatalog as mbc
+                if not (cand / mbc.DEFAULT_DB_BASENAME).is_file():
+                    return
+            except Exception:
+                return
+        self._mb_check_thread = MinorBodyUpdateCheckWorker(
+            self._minorbody_data_dir(), parent=self)
+        self._mb_check_thread.result.connect(self._on_minorbody_update_check)
+        self._mb_check_thread.finished.connect(self._mb_check_thread.deleteLater)
+
+        def _clear():
+            self._mb_check_thread = None
+        self._mb_check_thread.finished.connect(_clear)
+        self._mb_check_thread.start()
+
+    def _on_minorbody_update_check(self, available: bool,
+                                   remote_ver: str, local_ver: str):
+        if available:
+            self.lbl_minorbody_header.setText(self.tr(
+                "<b>Minor-Body Catalog</b> "
+                "<span style='color:#e0a030;'>— Update available ({0})</span>"
+            ).format(remote_ver))
+            self.lbl_minorbody_header.setToolTip(self.tr(
+                "Installed: {0}   Available: {1}\n"
+                "Click Download / Update Catalog to get it.").format(
+                    local_ver or self.tr("unknown"), remote_ver))
+            # A subtle nudge on the button itself, so someone who scrolled
+            # past the header still sees there is something to do.
+            self.btn_minorbody_update.setText(
+                self.tr("Download / Update Catalog  ⬤"))
+        else:
+            self.lbl_minorbody_header.setText(self.tr("<b>Minor-Body Catalog</b>"))
+            self.lbl_minorbody_header.setToolTip("")
+            self.btn_minorbody_update.setText(self.tr("Download / Update Catalog"))
+
     def showEvent(self, event):
         super().showEvent(event)
         self._update_responsive_layout()
+        # Fire-and-forget: check for a newer catalog whenever Settings
+        # opens. Non-blocking, silent on failure — see the worker.
+        try:
+            self._start_minorbody_update_check()
+        except Exception:
+            pass
 
 
     def resizeEvent(self, event):
@@ -1500,6 +1947,10 @@ class SettingsDialog(QDialog):
             pass
         try:
             self._refresh_gaia_status()
+        except Exception:
+            pass
+        try:
+            self._refresh_minorbody_status()
         except Exception:
             pass
         

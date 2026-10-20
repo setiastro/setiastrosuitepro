@@ -92,6 +92,27 @@ from setiastro.saspro import minorbodycatalog as mbc
 from setiastro.saspro.plate_solver import PlateSolverDialog as PlateSolver
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 from setiastro.saspro.help_support import make_help_button
+
+# Interactive 3D orbit viewer for catalogued minor bodies. Guarded so a
+# missing pyqtgraph.opengl / PyOpenGL (or any import-time hiccup) degrades
+# to "no elements attached + Explore button reports why" rather than
+# taking the whole hunter down.
+try:
+    from setiastro.saspro.orbit_explorer import (
+        open_orbit_explorer, extract_elements_from_row,
+    )
+    _HAS_ORBIT_EXPLORER = True
+    _ORBIT_EXPLORER_ERR = ""
+except Exception as _oe_err:                     # pragma: no cover
+    _HAS_ORBIT_EXPLORER = False
+    _ORBIT_EXPLORER_ERR = str(_oe_err)
+
+    def extract_elements_from_row(_row):         # no-op fallback
+        return None
+
+    def open_orbit_explorer(*_a, **_k):
+        return None
+
 from setiastro.saspro.plate_solver import (
     _solve_numpy_with_fallback,
     _as_header,
@@ -362,6 +383,77 @@ def _named_tz_offset_hours(t_like, zone_name: str) -> float:
         return 0.0
 
 
+def _parse_sexagesimal(val):
+    """
+    Parse 'DD MM SS.SS', '-DD:MM:SS', '+DD MM SS' or a plain decimal into
+    degrees.
+
+    SGP writes SITELAT/SITELONG as space-separated sexagesimal, and the
+    sign belongs to the WHOLE value rather than just the degrees field —
+    treating '-90 11 44.16' as -90 + 11/60 + 44/3600 puts the observer
+    in the wrong place by over 20 arcminutes of longitude.
+    """
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s:
+        return None
+    try:
+        return float(s)                      # already decimal
+    except ValueError:
+        pass
+    neg = s.startswith("-")
+    parts = [p for p in s.replace(":", " ").replace(",", " ").split() if p]
+    try:
+        nums = [abs(float(p)) for p in parts]
+    except ValueError:
+        return None
+    if not nums:
+        return None
+    deg = nums[0]
+    if len(nums) > 1:
+        deg += nums[1] / 60.0
+    if len(nums) > 2:
+        deg += nums[2] / 3600.0
+    return -deg if neg else deg
+
+
+def _site_from_header(header):
+    """
+    Observer location from the acquisition header: (lat, lon, elev) or None.
+
+    Worth reading automatically — the camera already recorded where it
+    was standing, and the topocentric correction only applies when a site
+    is known. Making the user retype it is a good way to have it stay
+    switched off forever.
+    """
+    if not isinstance(header, (dict, Header)):
+        return None
+
+    def g(*keys):
+        for k in keys:
+            try:
+                if k in header and header[k] not in (None, ""):
+                    return header[k]
+            except Exception:
+                continue
+        return None
+
+    lat = _parse_sexagesimal(g("SITELAT", "LAT-OBS", "OBSGEO-B", "LATITUDE"))
+    lon = _parse_sexagesimal(g("SITELONG", "LONG-OBS", "OBSGEO-L", "LONGITUD"))
+    if lat is None or lon is None:
+        return None
+    try:
+        elev = float(g("SITEELEV", "ALT-OBS", "OBSGEO-H", "ELEVATIO") or 0.0)
+    except Exception:
+        elev = 0.0
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None
+    return (float(lat), float(lon), float(elev))
+
+
 def _extract_obs_time(header, meta=None):
     """
     Pull the exposure START time and exposure length from whatever
@@ -391,12 +483,12 @@ def _extract_obs_time(header, meta=None):
                     try:
                         t = (Time(str(d), format=fmt, scale="utc") if fmt
                              else Time(str(d), scale="utc"))
-                        return t, e, "XISF DATE-OBS"
+                        return t, e, "XISF DATE-OBS", False
                     except Exception:
                         continue
 
     if not isinstance(header, (dict, Header)):
-        return None, 0.0, "no header available"
+        return None, 0.0, "no header available", False
 
     def _hget(*keys):
         for k in keys:
@@ -426,25 +518,35 @@ def _extract_obs_time(header, meta=None):
             try:
                 t = (Time(s, format=fmt, scale="utc") if fmt
                      else Time(s, scale="utc"))
-                return t, exptime, "FITS DATE-OBS"
+                # DATE-LOC alongside DATE-OBS means the writer keeps
+                # local and UTC in separate cards, so DATE-OBS is UTC by
+                # construction. SGP, NINA and ACP all do this. When we can
+                # see that, there is nothing for the user to guess at.
+                dloc = _hget("DATE-LOC", "DATE_LOC", "LOCALTIM")
+                confirmed = bool(dloc) and str(dloc).strip() != s
+                src = ("FITS DATE-OBS (UTC — DATE-LOC present separately)"
+                       if confirmed else "FITS DATE-OBS")
+                return t, exptime, src, confirmed
             except Exception:
                 continue
 
     mjd = _hget("MJD-OBS", "MJD_OBS")
     if mjd is not None:
         try:
-            return Time(float(mjd), format="mjd", scale="utc"), exptime, "FITS MJD-OBS"
+            return (Time(float(mjd), format="mjd", scale="utc"), exptime,
+                    "FITS MJD-OBS (UTC by definition)", True)
         except Exception:
             pass
 
     jd = _hget("JD", "JD-OBS")
     if jd is not None:
         try:
-            return Time(float(jd), format="jd", scale="utc"), exptime, "FITS JD"
+            return (Time(float(jd), format="jd", scale="utc"), exptime,
+                    "FITS JD (UTC by definition)", True)
         except Exception:
             pass
 
-    return None, exptime, "no DATE-OBS / MJD-OBS / JD found"
+    return None, exptime, "no DATE-OBS / MJD-OBS / JD found", False
 
 
 def _numpy_to_qimage(img: np.ndarray) -> QImage:
@@ -583,22 +685,52 @@ def _worker_load_and_cosmetic(args):
     """
     try:
         path, do_cosmetic, bin_factor = args
-        img, header, bit_depth, is_mono = load_image(path)
+
+        # Read this frame's OWN observation time while the file is open.
+        # Every search frame was taken at a different moment and a minor
+        # body has moved between them, so each frame needs its own epoch.
+        # Costs nothing here — the file is already being decoded.
+        meta = None
+        header = None
+        try:
+            res = load_image(path, return_metadata=True)
+            if res and len(res) >= 5:
+                img, header, bit_depth, is_mono, meta = res
+            elif res:
+                img, header, bit_depth, is_mono = res[:4]
+            else:
+                img = None
+        except TypeError:
+            img, header, bit_depth, is_mono = load_image(path)
+
         if img is None:
-            return (path, None, f"load_image returned None for {os.path.basename(path)}")
+            return (path, None, (None, 0.0, "load failed", False),
+                    f"load_image returned None for {os.path.basename(path)}")
+
+        hdr_for_time = (meta.get("fits_header", header)
+                        if isinstance(meta, dict) else header)
+        try:
+            t0, exptime, tsrc, utc_ok = _extract_obs_time(
+                hdr_for_time, meta if isinstance(meta, dict) else None)
+            obs = (str(t0.utc.isot) if t0 is not None else None,
+                   float(exptime), str(tsrc), bool(utc_ok))
+        except Exception as e:
+            obs = (None, 0.0, f"time parse failed: {e}", False)
+
         if do_cosmetic:
             img = bulk_cosmetic_correction_numba(
                 img, hot_sigma=5.0, cold_sigma=5.0, window_size=3)
         img = np.asarray(img, dtype=np.float32)
         if bin_factor and int(bin_factor) > 1:
             img = _bin_image(img, int(bin_factor))
-        return (path, img, None)
+        return (path, img, obs, None)
     except Exception as e:
         try:
             base = os.path.basename(args[0]) if args else "?"
         except Exception:
             base = "?"
-        return (args[0] if args else "?", None, f"{base}: {e}")
+        return (args[0] if args else "?", None, (None, 0.0, "error", False),
+                f"{base}: {e}")
 
 
 def _worker_adbe(args):
@@ -880,13 +1012,33 @@ def _worker_make_diff(args):
         return (args[0] if args else "?", None, None, 0.0, {}, f"diff: {e}")
 
 
+# Connectivity dilation is a fixed internal detail, not a user knob. A
+# source that threshold-fragments into a couple of islands should be
+# labelled once; 1px handles that without inflating anything. (The
+# user-facing "Grow" control was repurposed to dilate the STAR MASK —
+# see star_grow_px below — which is what people actually reach for when
+# shifting star halos throw false positives.)
+_CONN_DILATE_PX = 1
+
+
 def _detect_on_diff(diff, valid, sigma, star_mask, *, k_sigma, min_area,
-                    max_dim, border_frac, grow_px=1, psf_sigma=1.5):
+                    max_dim, border_frac, star_grow_px=4, psf_sigma=1.5):
     """
     STAGE B (cheap, re-runnable): find point-source detections in a
     cached difference image. A pure function of the cached arrays plus
     the detection knobs, so re-tuning costs tens of milliseconds per
     frame instead of a full pipeline re-run.
+
+    `star_grow_px` dilates the reference star mask before it is
+    subtracted from the threshold mask. This is the knob to turn up when
+    a star's halo or diffraction spikes differ slightly frame-to-frame
+    and light up the difference in a ring around every bright star: a
+    wider mask swallows that ring. The star mask handed in here is the
+    bare threshold (undilated), so this value IS the full margin the
+    mask extends past each detected star — 0 masks only the star cores,
+    larger values reach further into the halo. Trade-off: too wide and
+    the mask starts covering real objects that pass near a field star,
+    so grow only as far as the halo residuals actually reach.
 
     MATCHED FILTERING — why this isn't a plain threshold any more:
 
@@ -932,7 +1084,13 @@ def _detect_on_diff(diff, valid, sigma, star_mask, *, k_sigma, min_area,
     if has_valid:
         raw &= valid
     if star_mask is not None and getattr(star_mask, "shape", None) == raw.shape:
-        raw &= ~star_mask
+        sm = star_mask
+        if star_grow_px and star_grow_px > 0:
+            k = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE,
+                (2 * int(star_grow_px) + 1, 2 * int(star_grow_px) + 1))
+            sm = cv2.dilate(star_mask.astype(np.uint8), k).astype(bool)
+        raw &= ~sm
 
     bx, by = int(border_frac * w), int(border_frac * h)
     if bx > 0:
@@ -946,13 +1104,16 @@ def _detect_on_diff(diff, valid, sigma, star_mask, *, k_sigma, min_area,
         return []
 
     # Dilate for CONNECTIVITY only — so a source that fragments into a
-    # couple of islands is labelled once. Area is still counted on the
-    # undilated mask below, so `min_area` keeps meaning "significant
-    # pixels" rather than "pixels after I inflated them".
+    # couple of islands is labelled once. Fixed at _CONN_DILATE_PX; this
+    # is no longer the user-facing "Grow" (that now dilates the star
+    # mask above). Area is still counted on the undilated mask below, so
+    # `min_area` keeps meaning "significant pixels" rather than "pixels
+    # after I inflated them".
     raw_u8 = raw.astype(np.uint8)
-    if grow_px > 0:
+    if _CONN_DILATE_PX > 0:
         k = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (2 * grow_px + 1, 2 * grow_px + 1))
+            cv2.MORPH_ELLIPSE,
+            (2 * _CONN_DILATE_PX + 1, 2 * _CONN_DILATE_PX + 1))
         conn = cv2.dilate(raw_u8, k)
     else:
         conn = raw_u8
@@ -1002,16 +1163,16 @@ def _build_star_mask(ref_gray: np.ndarray,
                      k_sigma: float = 8.0,
                      dilate_px: int = 6) -> np.ndarray:
     """
-    Threshold the LINEAR reference at median + k·sigma (sigma-clipped)
-    and dilate. The dilation lets the mask swallow the resampling fringe
-    around bright stars, which is where alignment-residual false
-    positives concentrate.
+    Threshold the LINEAR reference at median + k·sigma (sigma-clipped),
+    optionally dilating by `dilate_px`.
 
-    With proper photometric matching those residuals are far smaller
-    than they were under the MAD-ratio scaling, so the default dilation
-    is now 4px rather than 6 — a tighter mask leaves more of the frame
-    searchable, which matters when the object of interest happens to
-    pass near a field star.
+    The pipeline now builds this with dilate_px=0 — the bare threshold —
+    and lets the detection stage own the dilation via its `star_grow_px`
+    knob (the UI "Star mask grow"). That way the margin around each star
+    is re-tunable per re-detect without rebuilding the mask: turn it up
+    when shifting star halos throw a ring of false positives, down when
+    the mask is eating objects near field stars. `dilate_px` is kept for
+    any caller that wants a pre-dilated mask.
     """
     g = np.asarray(ref_gray, dtype=np.float32)
     med, sig = _sigma_clipped_stats(g)
@@ -1175,15 +1336,21 @@ class HunterPipelineThread(QThread):
                            f"Load / cosmetic: binning {bin_factor}× on load "
                            f"(~{bin_factor * bin_factor}× less memory)")
             loaded = {}
+            frame_obs = {}
             load_items = [(p, do_cosmetic, bin_factor) for p in all_paths]
-            for path, img, err in self._run_pool(
+            for path, img, obs, err in self._run_pool(
                 _worker_load_and_cosmetic, load_items, "Load / cosmetic", workers,
             ):
                 if err:
                     self.log.emit(f"⚠ {err}")
                 loaded[path] = img
+                frame_obs[path] = obs or (None, 0.0, "unknown", False)
                 if self.cancelled:
                     return
+
+            _n_timed = sum(1 for v in frame_obs.values() if v and v[0])
+            self.log.emit(f"   observation times read for "
+                          f"{_n_timed}/{len(all_paths)} frames")
 
             if loaded.get(ref_path) is None:
                 self.finished_err.emit("Failed to load reference image.")
@@ -1212,7 +1379,8 @@ class HunterPipelineThread(QThread):
                                   if isinstance(meta, dict) else header)
 
                     # Observation time first — it is independent of binning.
-                    t0, ref_obs_exptime, ref_obs_source = _extract_obs_time(
+                    (t0, ref_obs_exptime, ref_obs_source,
+                     _ref_utc_ok) = _extract_obs_time(
                         ref_header, meta if isinstance(meta, dict) else None)
                     if t0 is not None:
                         ref_obs_iso = str(t0.utc.isot)
@@ -1309,8 +1477,11 @@ class HunterPipelineThread(QThread):
                 return
             ref_gray_lin = _to_grayscale(ref_lin).astype(np.float32)
 
-            # Star mask from the LINEAR reference.
-            star_mask = _build_star_mask(ref_gray_lin, k_sigma=10.0, dilate_px=4)
+            # Star mask from the LINEAR reference. Stored UNDILATED — the
+            # bare threshold. The detection stage dilates it by the
+            # "Star mask grow" knob (star_grow_px), so the margin around
+            # each star is re-tunable per re-detect without rebuilding.
+            star_mask = _build_star_mask(ref_gray_lin, k_sigma=10.0, dilate_px=0)
 
             # ── Stage 4a: photometric match + linear difference ──────────
             if self.cancelled:
@@ -1347,13 +1518,17 @@ class HunterPipelineThread(QThread):
             loaded.clear()
 
             # ── Stage 4b: detection (cheap, re-runnable) ─────────────────
+            # star_grow_px defaults to 4, which reproduces the mask
+            # coverage this stage used to hardcode (threshold dilated by
+            # 4). The ResultsDialog exposes it as "Star mask grow".
+            star_grow_px = int(p.get("star_grow_px", 4))
             det_params = {
                 "k_sigma": k_sigma,
                 "min_area": min_area,
                 "max_dim": max_dim,
                 "border_frac": border_frac,
                 "use_star_mask": True,
-                "grow_px": 1,
+                "star_grow_px": star_grow_px,
                 "psf_sigma": psf_sigma,
             }
             anomaly_data = []
@@ -1362,11 +1537,17 @@ class HunterPipelineThread(QThread):
                     diffs.get(sp), valids.get(sp), sigmas.get(sp, 1.0),
                     star_mask,
                     k_sigma=k_sigma, min_area=min_area, max_dim=max_dim,
-                    border_frac=border_frac, grow_px=1, psf_sigma=psf_sigma,
+                    border_frac=border_frac, star_grow_px=star_grow_px,
+                    psf_sigma=psf_sigma,
                 )
+                _obs = frame_obs.get(sp) or (None, 0.0, "unknown", False)
                 anomaly_data.append({
                     "path": sp,
                     "imageName": os.path.basename(sp),
+                    "obs_iso": _obs[0],
+                    "obs_exptime": float(_obs[1] or 0.0),
+                    "obs_source": _obs[2],
+                    "obs_utc_confirmed": bool(_obs[3]),
                     "anomalyCount": len(anoms),
                     "anomalies": anoms,
                     "search_image": display.get(sp),
@@ -1392,6 +1573,7 @@ class HunterPipelineThread(QThread):
                 "ref_obs_exptime": ref_obs_exptime,
                 "ref_obs_source": ref_obs_source,
                 "bin_factor": bin_factor,
+                "site_from_header": _site_from_header(ref_header),
                 "star_mask": star_mask,
                 "det_params": det_params,
                 "anomaly_data": anomaly_data,
@@ -1439,7 +1621,7 @@ class RedetectThread(QThread):
                 entry.get("sigma", 1.0), star_mask,
                 k_sigma=p["k_sigma"], min_area=p["min_area"],
                 max_dim=p["max_dim"], border_frac=p["border_frac"],
-                grow_px=p.get("grow_px", 1),
+                star_grow_px=int(p.get("star_grow_px", p.get("grow_px", 4))),
                 psf_sigma=float(p.get("psf_sigma", 1.5)),
             )
             entry["anomalies"] = anoms
@@ -1454,28 +1636,32 @@ class RedetectThread(QThread):
 # ─────────────────────────────────────────────────────────────────────
 
 class MinorBodyWorker(QObject):
-    finished = pyqtSignal(list, str)
+    # object rather than list: the result carries both the bodies found at
+    # the selected frame's epoch and a per-frame position table.
+    finished = pyqtSignal(object, str)
     progress = pyqtSignal(int, str)
 
-    def __init__(self, owner, jd_for_calc: float):
+    def __init__(self, owner, jd_for_calc: float, frame_jds=None):
         super().__init__()
         self._owner = owner
         self._jd = jd_for_calc
+        self._frame_jds = list(frame_jds or [])
 
     def run(self):
         try:
             self.progress.emit(0, "Minor-body search: preparing catalog query...")
-            bodies = self._owner._get_predicted_minor_bodies_for_field(
+            result = self._owner._get_predicted_minor_bodies_for_field(
                 H_ast_max=self._owner.minor_H_ast_max,
                 H_com_max=self._owner.minor_H_com_max,
                 jd=self._jd,
                 progress_cb=self.progress.emit,
+                frame_jds=self._frame_jds,
             )
-            if bodies is None:
-                bodies = []
-            self.finished.emit(bodies, "")
+            if result is None:
+                result = {"ref": [], "per_frame": {}}
+            self.finished.emit(result, "")
         except Exception as e:
-            self.finished.emit([], str(e))
+            self.finished.emit({"ref": [], "per_frame": {}}, str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1585,13 +1771,21 @@ class ZoomableImageView(QGraphicsView):
         self.zoomChanged.emit(self._scale)
 
     def wheelEvent(self, event):
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            delta = event.angleDelta().y()
-            step = 1.25 if delta > 0 else 0.8
-            self.zoom(step, anchor_pos=event.position())
-            event.accept()
-        else:
+        # Bare wheel zooms, no modifier required. The previous Ctrl+wheel
+        # requirement comes from browser habit, but a results viewer is
+        # closer to an image viewer: both hands can be elsewhere, and
+        # scrolling a static picture has no useful meaning. Shift+wheel
+        # still falls through to the default (horizontal scroll).
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
             super().wheelEvent(event)
+            return
+        delta = event.angleDelta().y()
+        if delta == 0:
+            super().wheelEvent(event)
+            return
+        step = 1.25 if delta > 0 else 0.8
+        self.zoom(step, anchor_pos=event.position())
+        event.accept()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1653,6 +1847,7 @@ class ResultsDialog(QDialog):
 
     pushed = pyqtSignal(object, str, str)
     redetectRequested = pyqtSignal(object)   # det_params dict
+    exploreRequested = pyqtSignal()          # open the 3D orbit explorer
 
     MODE_SEARCH = "search"
     MODE_REF = "reference"
@@ -1667,6 +1862,7 @@ class ResultsDialog(QDialog):
         self._payload = payload
         self._anoms = payload.get("anomaly_data", [])
         self._minor_bodies = payload.get("minor_bodies") or []
+        self._bodies_per_frame = payload.get("minor_bodies_per_frame") or {}
 
         # Caches of overlay-stamped uint8 images, keyed by (mode, idx).
         # idx is the index into self._anoms; for the Reference mode the
@@ -1868,14 +2064,22 @@ class ResultsDialog(QDialog):
         self.sp_maxdim.setValue(int(dp.get("max_dim", 200)))
         dr.addWidget(self.sp_maxdim)
 
-        dr.addWidget(QLabel("Grow:"))
+        dr.addWidget(QLabel("Star mask grow:"))
         self.sp_grow = QSpinBox()
-        self.sp_grow.setRange(0, 8)
-        self.sp_grow.setValue(int(dp.get("grow_px", 1)))
+        self.sp_grow.setRange(0, 50)
+        self.sp_grow.setValue(int(dp.get("star_grow_px", dp.get("grow_px", 4))))
         self.sp_grow.setToolTip(
-            "Dilate the threshold mask by N px for CONNECTIVITY only, so\n"
-            "a source that fragments is labelled once. Area is still\n"
-            "counted pre-dilation, so this does not inflate min-area."
+            "Grow the reference star mask by N px before it rejects\n"
+            "detections. Turn this UP when a star's halo or diffraction\n"
+            "spikes shift slightly between frames and light up a ring of\n"
+            "false positives around every bright star — a wider mask\n"
+            "swallows that ring.\n\n"
+            "This is the full margin the mask extends past each star:\n"
+            "0 masks only the star cores, 4 is the default, larger\n"
+            "values reach further into the halo. Too wide and the mask\n"
+            "starts covering real objects that pass near a field star,\n"
+            "so grow only as far as the residuals actually reach.\n\n"
+            "Only active while 'Reject at ref stars' is on."
         )
         dr.addWidget(self.sp_grow)
 
@@ -1918,25 +2122,106 @@ class ResultsDialog(QDialog):
         self._rebuild_tree()
         lay.addWidget(self._tree)
 
+        # ── Minor-body progress strip ───────────────────────────────────
+        # Mirrors the status/progress on the parent, which is normally
+        # hidden behind this window during a search. Without it a solve +
+        # catalog query looks like a frozen UI, and the user ends up
+        # clicking Re-detect or Search again. Hidden until a search runs.
+        self._mb_status = QLabel("")
+        self._mb_status.setWordWrap(True)
+        self._mb_status.setStyleSheet(
+            "color:#2c7; padding: 3px 4px 0px 4px; font-size: 11px;")
+        self._mb_status.setVisible(False)
+        lay.addWidget(self._mb_status)
+
+        self._mb_progress = QProgressBar()
+        self._mb_progress.setRange(0, 100)
+        self._mb_progress.setValue(0)
+        self._mb_progress.setTextVisible(True)
+        self._mb_progress.setVisible(False)
+        lay.addWidget(self._mb_progress)
+
         # ── Bottom button bar ───────────────────────────────────────────
         bb = QHBoxLayout()
         bb.addStretch(1)
         self.btn_minor = QPushButton("Catalogue Minor Bodies in Field")
         self.btn_minor.setToolTip(
-            "Query the minor-body catalog using the reference WCS/JD and\n"
+            "Query the minor-body catalog using the frame's own WCS/JD and\n"
             "cross-match against detected anomalies."
         )
         bb.addWidget(self.btn_minor)
+        self.btn_explore = QPushButton("Explore Orbit (3D)…")
+        self.btn_explore.setToolTip(
+            "Open an interactive 3D heliocentric view of a catalogued\n"
+            "body's orbit — Sun, planets, and the asteroid placed at this\n"
+            "frame's exact observation time. Run the catalog search first."
+        )
+        self.btn_explore.setEnabled(bool(self._minor_bodies))
+        self.btn_explore.clicked.connect(lambda: self.exploreRequested.emit())
+        bb.addWidget(self.btn_explore)
         self.btn_close = QPushButton("Close")
         self.btn_close.clicked.connect(self.close)
         bb.addWidget(self.btn_close)
         lay.addLayout(bb)
 
+    # ---- Minor-body progress mirroring ---------------------------------
+
+    def minor_body_begin(self, msg: str = "Minor-body search starting…"):
+        """
+        Reveal the mirrored progress strip at the bottom of the results
+        window and reset it to zero. Called by the main dialog when it
+        kicks off the catalog query, so the user sees activity even when
+        the parent window is covered.
+        """
+        self._mb_status.setText(msg)
+        self._mb_status.setVisible(True)
+        self._mb_progress.setValue(0)
+        self._mb_progress.setVisible(True)
+
+    def minor_body_progress(self, pct: int, msg: str):
+        self._mb_status.setText(str(msg or ""))
+        self._mb_status.setVisible(True)
+        try:
+            v = int(max(0, min(100, int(pct))))
+        except Exception:
+            v = 0
+        self._mb_progress.setValue(v)
+        self._mb_progress.setVisible(True)
+
+    def minor_body_end(self, final_msg: str = "", keep_status: bool = True):
+        self._mb_progress.setValue(100)
+        self._mb_progress.setVisible(False)
+        if final_msg and keep_status:
+            self._mb_status.setText(final_msg)
+            self._mb_status.setVisible(True)
+        else:
+            self._mb_status.setVisible(False)
+
     # ---- Overlay helpers -----------------------------------------------
 
-    def _overlay_boxes_on(self, base: np.ndarray, anomalies: list) -> np.ndarray:
+    def _bodies_for(self, idx: int, mode: str):
+        """
+        Predicted positions to draw on a given frame.
+
+        Search and difference views get that frame's OWN epoch, so a
+        moving object's circle tracks it as you step or play through the
+        set. The reference view keeps the anchor epoch — drawing a search
+        frame's positions over the reference would mark where the object
+        was not.
+        """
+        if mode == self.MODE_REF:
+            return self._minor_bodies
+        if not (0 <= idx < len(self._anoms)):
+            return self._minor_bodies
+        return (self._bodies_per_frame.get(self._anoms[idx].get("path"))
+                or self._minor_bodies)
+
+    def _overlay_boxes_on(self, base: np.ndarray, anomalies: list,
+                          bodies: list | None = None) -> np.ndarray:
         """Draw anomaly bboxes + minor-body circles onto a copy of `base`.
         Returns a uint8 RGB image sized to match."""
+        if bodies is None:
+            bodies = self._minor_bodies
         if base is None:
             return None
         img = base
@@ -1997,7 +2282,7 @@ class ResultsDialog(QDialog):
                                     (255, 90, 90), fs * 0.85, lt,
                                     occupied=occupied, anchor=(x1, y1))
 
-        for body in self._minor_bodies:
+        for body in bodies:
             try:
                 x = int(round(float(body["x"])))
                 y = int(round(float(body["y"])))
@@ -2055,7 +2340,8 @@ class ResultsDialog(QDialog):
             base = self._diff_display(data.get("diff_image"))
         else:
             return None
-        out = self._overlay_boxes_on(base, anomalies)
+        out = self._overlay_boxes_on(base, anomalies,
+                                     self._bodies_for(idx, mode))
         self._cache[key] = out
         return out
 
@@ -2188,6 +2474,15 @@ class ResultsDialog(QDialog):
             txt += f" (+{len(mbs) - 2})"
         return txt
 
+    def current_frame_index(self) -> int:
+        """Index of the frame currently in the viewer."""
+        return int(self._current_idx)
+
+    def current_frame_path(self) -> str | None:
+        if 0 <= self._current_idx < len(self._anoms):
+            return self._anoms[self._current_idx].get("path")
+        return None
+
     def _rebuild_tree(self):
         """
         Repopulate the summary tree from the current anomaly data. Split
@@ -2233,7 +2528,7 @@ class ResultsDialog(QDialog):
             "border_frac": float(
                 (self._payload.get("det_params", {}) or {}).get("border_frac", 0.05)),
             "use_star_mask": bool(self.chk_starmask.isChecked()),
-            "grow_px": int(self.sp_grow.value()),
+            "star_grow_px": int(self.sp_grow.value()),
             "psf_sigma": float(self.sp_psf.value()),
         }
 
@@ -2278,13 +2573,19 @@ class ResultsDialog(QDialog):
 
     # ---- Minor-body refresh --------------------------------------------
 
-    def update_minor_bodies(self, bodies: list):
+    def update_minor_bodies(self, bodies: list, per_frame: dict | None = None):
         """
         Called after the catalog query returns. Blow the overlay cache so
         the next render stamps the circles and names on; the next _show()
         call rebuilds whatever frame is visible.
         """
         self._minor_bodies = bodies or []
+        if per_frame is not None:
+            self._bodies_per_frame = per_frame or {}
+        try:
+            self.btn_explore.setEnabled(bool(self._minor_bodies))
+        except Exception:
+            pass
         self._cache.clear()
         self._rebuild_tree()
         total = sum(d["anomalyCount"] for d in self._anoms)
@@ -2349,6 +2650,8 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.ref_jd = None
         self.ref_site = None
         self.predicted_minor_bodies: list | None = None
+        self.minor_bodies_per_frame: dict = {}
+        self._minor_frame_index: int = -1
 
         # Minor-body knobs (identical defaults to original).
         self.minor_H_ast_max = 20.0
@@ -2788,8 +3091,108 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self._results_dialog = ResultsDialog(payload, icon=icon, parent=self)
         self._results_dialog.pushed.connect(self._handle_push_to_new_view)
         self._results_dialog.redetectRequested.connect(self._on_redetect_requested)
+        # Fire the mirrored progress UI immediately so the user gets a
+        # response the instant they click, before the dialog's own setup
+        # work (prompt, plate solve) has a chance to make them wonder if
+        # the click registered.
+        self._results_dialog.btn_minor.clicked.connect(
+            lambda: self._results_dialog.minor_body_begin(
+                "Minor-body: preparing search…"))
         self._results_dialog.btn_minor.clicked.connect(self.runMinorBodySearch)
+        self._results_dialog.exploreRequested.connect(self.exploreOrbit)
         self._results_dialog.show()
+
+    # ---- 3D orbit explorer ----------------------------------------------
+
+    def exploreOrbit(self):
+        """
+        Open the interactive 3D orbit viewer for a catalogued body at the
+        exact JD this search was evaluated at. If several bodies are in
+        the field, let the user pick which one; bodies that matched a
+        detection are flagged and listed first.
+        """
+        from PyQt6.QtWidgets import QInputDialog
+
+        if not _HAS_ORBIT_EXPLORER:
+            QMessageBox.information(
+                self, "Orbit Explorer",
+                "The 3D orbit explorer could not be loaded.\n\n"
+                f"{_ORBIT_EXPLORER_ERR}\n\n"
+                "It needs pyqtgraph.opengl and PyOpenGL "
+                "(pip install PyOpenGL).")
+            return
+
+        bodies = list(self.predicted_minor_bodies or [])
+        if not bodies:
+            QMessageBox.information(
+                self, "Orbit Explorer",
+                "No catalogued minor bodies yet — run "
+                "'Catalogue Minor Bodies in Field' first.")
+            return
+
+        jd = getattr(self, "_minor_jd", None) or self.ref_jd
+        if jd is None:
+            QMessageBox.warning(
+                self, "Orbit Explorer",
+                "No observation time is available to place the orbit at.")
+            return
+
+        # Which designations actually matched a detection — flag and float
+        # them to the top of the chooser, since those are the ones the user
+        # most likely wants to inspect.
+        matched = set()
+        payload = self._last_payload or {}
+        for entry in payload.get("anomaly_data", []) or []:
+            for a in entry.get("anomalies") or []:
+                for b in a.get("matched_bodies") or []:
+                    d = b.get("designation")
+                    if d:
+                        matched.add(d)
+
+        def _sort_key(b):
+            d = b.get("designation", "")
+            return (0 if d in matched else 1, d)
+
+        bodies.sort(key=_sort_key)
+
+        if len(bodies) == 1:
+            chosen = bodies[0]
+        else:
+            labels = []
+            for b in bodies:
+                d = str(b.get("designation", "?"))
+                H = b.get("H")
+                try:
+                    hs = f"  H={float(H):.1f}" if H is not None and np.isfinite(float(H)) else ""
+                except Exception:
+                    hs = ""
+                flag = "  ✓ detected" if d in matched else ""
+                noel = "" if b.get("elements") else "  (no elements)"
+                labels.append(f"{d}{hs}{flag}{noel}")
+            label, ok = QInputDialog.getItem(
+                self, "Explore Orbit",
+                "Choose a body to view in 3D:", labels, 0, False)
+            if not ok:
+                return
+            chosen = bodies[labels.index(label)]
+
+        if chosen.get("elements") is None:
+            QMessageBox.information(
+                self, "Orbit Explorer",
+                f"{chosen.get('designation', 'This body')} has no orbital "
+                "elements in the catalog row, so its orbit can't be drawn.\n\n"
+                "Other bodies in the field may still have them.")
+            return
+
+        icon = QIcon(self.supernova_path) if self.supernova_path else None
+        dlg = open_orbit_explorer(self, chosen, float(jd),
+                                  settings=self.settings, icon=icon)
+        if dlg is not None:
+            # Keep a reference so the non-modal window isn't garbage
+            # collected the moment this method returns.
+            if not hasattr(self, "_orbit_dialogs"):
+                self._orbit_dialogs = []
+            self._orbit_dialogs.append(dlg)
 
     # ---- Re-detect (Stage B only) ---------------------------------------
 
@@ -2804,6 +3207,11 @@ class SupernovaAsteroidHunterDialog(QDialog):
                 self, "Re-detect",
                 "Nothing cached yet — run the hunter once first.")
             return
+        # The main dialog has no "Star mask grow" widget of its own —
+        # that control lives in the results window. Carry forward whatever
+        # grow was last applied (defaulting to 4) instead of resetting it.
+        _prev = (self._last_payload or {}).get("det_params", {}) or {}
+        _star_grow = int(_prev.get("star_grow_px", _prev.get("grow_px", 4)))
         self._redetect_reopen = True
         self._on_redetect_requested({
             "k_sigma": float(self.sigma_spin.value()),
@@ -2811,7 +3219,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             "max_dim": int(self.maxdim_spin.value()),
             "border_frac": max(0.0, self.border_spin.value() / 100.0),
             "use_star_mask": True,
-            "grow_px": 1,
+            "star_grow_px": _star_grow,
             "psf_sigma": float(self.psf_spin.value()),
         })
 
@@ -2837,7 +3245,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         )
         self._append_log(
             f"Re-detect: σ={dp.get('k_sigma')} min_area={dp.get('min_area')} "
-            f"grow={dp.get('grow_px')} star_mask={dp.get('use_star_mask')} "
+            f"star_grow={dp.get('star_grow_px')} star_mask={dp.get('use_star_mask')} "
             f"→ {total} candidates"
         )
         if getattr(self, "_redetect_reopen", False) or self._results_dialog is None:
@@ -2957,8 +3365,18 @@ class SupernovaAsteroidHunterDialog(QDialog):
                   if isinstance(self.ref_header, (dict, Header)) else None)
         acq_base = _strip_wcs_keys(seed_h) if isinstance(seed_h, Header) else None
 
-        self.status_label.setText(
-            "Status: plate solving (Gaia DR3 → ASTAP → Astrometry.net)…")
+        _solving_msg = ("Plate solving the reference frame "
+                        "(Gaia DR3 → ASTAP → Astrometry.net)…")
+        self.status_label.setText(f"Status: {_solving_msg}")
+        if self._results_dialog is not None:
+            try:
+                # Mirror the solve stage too — this is the step that
+                # takes several seconds, so without the mirrored strip
+                # the results window just sits there looking frozen while
+                # the main dialog shows "plate solving" behind it.
+                self._results_dialog.minor_body_progress(5, _solving_msg)
+            except Exception:
+                pass
         QApplication.processEvents()
 
         try:
@@ -3004,9 +3422,44 @@ class SupernovaAsteroidHunterDialog(QDialog):
         an obvious one.
         """
         payload = self._last_payload or {}
-        obs_iso = payload.get("ref_obs_iso")
-        exptime = float(payload.get("ref_obs_exptime") or 0.0)
-        obs_src = payload.get("ref_obs_source") or "unknown"
+        anoms = payload.get("anomaly_data", []) or []
+
+        # ------------------------------------------------------------------
+        # Anchor on the frame the user is LOOKING AT.
+        #
+        # This used to take the reference frame's timestamp. With a
+        # reference that is frame 1 of the night and the object being
+        # inspected on frame 108 of 120-second subs, that is a 3.6-hour
+        # epoch error — several hundred pixels for a main-belt asteroid.
+        # No amount of timezone fiddling can fix that, though it can
+        # accidentally mask part of it, which is exactly what a manual
+        # "+1 hour" offset was doing.
+        # ------------------------------------------------------------------
+        idx = -1
+        if anoms:
+            idx = 0
+            if self._results_dialog is not None:
+                try:
+                    idx = int(self._results_dialog.current_frame_index())
+                except Exception:
+                    idx = 0
+            idx = max(0, min(idx, len(anoms) - 1))
+        self._minor_frame_index = idx
+
+        if idx >= 0:
+            _entry = anoms[idx]
+            frame_label = (f"frame {idx + 1}/{len(anoms)} — "
+                           f"{_entry.get('imageName', '?')}")
+            obs_iso = _entry.get("obs_iso")
+            exptime = float(_entry.get("obs_exptime") or 0.0)
+            obs_src = _entry.get("obs_source") or "unknown"
+            utc_ok = bool(_entry.get("obs_utc_confirmed"))
+        else:
+            frame_label = "reference frame"
+            obs_iso = payload.get("ref_obs_iso")
+            exptime = float(payload.get("ref_obs_exptime") or 0.0)
+            obs_src = payload.get("ref_obs_source") or "unknown"
+            utc_ok = False
 
         t0 = None
         if obs_iso:
@@ -3020,7 +3473,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         layout = QVBoxLayout(dlg)
 
         # ── Observation time ────────────────────────────────────────────
-        tbox = QGroupBox(self.tr("Observation time  (verify this before trusting a result)"))
+        tbox = QGroupBox(self.tr("Observation time — {0}").format(frame_label))
         tg = QGridLayout(tbox)
         rr = 0
         tg.addWidget(QLabel(self.tr("Header value:")), rr, 0)
@@ -3050,6 +3503,11 @@ class SupernovaAsteroidHunterDialog(QDialog):
                     "supernova_hunter/header_time_mode", 0, type=int))
             except Exception:
                 _mode_default = 0
+        if utc_ok:
+            # The header carries DATE-LOC separately, so DATE-OBS is UTC by
+            # construction. A saved "local time" preference from before we
+            # knew that would silently add hours, so proof wins over memory.
+            _mode_default = 0
         cmb_tz.setCurrentIndex(max(0, min(3, _mode_default)))
         cmb_tz.setToolTip(
             "UTC (as written): trust DATE-OBS as UTC — the FITS standard.\n\n"
@@ -3239,6 +3697,55 @@ class SupernovaAsteroidHunterDialog(QDialog):
         ag.addWidget(chk_solve)
         layout.addWidget(abox)
 
+        # ── Observer site ───────────────────────────────────────────────
+        # Without this the ephemeris is computed from the centre of the
+        # Earth. One Earth radius subtends ~4" on a main-belt asteroid at
+        # 2 AU and ~18" at 0.5 AU, so for confirming a specific object
+        # against a plate solution it is not a negligible term.
+        sbox = QGroupBox(self.tr("Observer site  (topocentric parallax)"))
+        sg = QGridLayout(sbox)
+        _lat = _lon = _elev = 0.0
+        _hdr_site = payload.get("site_from_header")
+        if _hdr_site:
+            _lat, _lon, _elev = _hdr_site
+        if not _hdr_site and self.settings is not None:
+            try:
+                _lat = float(self.settings.value("site/latitude_deg", 0.0, type=float) or 0.0)
+                _lon = float(self.settings.value("site/longitude_deg", 0.0, type=float) or 0.0)
+                _elev = float(self.settings.value("site/elevation_m", 0.0, type=float) or 0.0)
+            except Exception:
+                pass
+
+        sg.addWidget(QLabel(self.tr("Latitude °")), 0, 0)
+        lat_spin = QDoubleSpinBox(dlg)
+        lat_spin.setDecimals(5); lat_spin.setRange(-90.0, 90.0)
+        lat_spin.setSingleStep(0.001); lat_spin.setValue(_lat)
+        sg.addWidget(lat_spin, 0, 1)
+
+        sg.addWidget(QLabel(self.tr("Longitude °")), 0, 2)
+        lon_spin = QDoubleSpinBox(dlg)
+        lon_spin.setDecimals(5); lon_spin.setRange(-180.0, 180.0)
+        lon_spin.setSingleStep(0.001); lon_spin.setValue(_lon)
+        lon_spin.setToolTip("East positive, west negative.")
+        sg.addWidget(lon_spin, 0, 3)
+
+        sg.addWidget(QLabel(self.tr("Elevation m")), 1, 0)
+        elev_spin = QDoubleSpinBox(dlg)
+        elev_spin.setDecimals(0); elev_spin.setRange(-500.0, 6000.0)
+        elev_spin.setValue(_elev)
+        sg.addWidget(elev_spin, 1, 1)
+
+        chk_topo = QCheckBox(self.tr("Use topocentric positions"))
+        chk_topo.setChecked(abs(_lat) > 1e-9 or abs(_lon) > 1e-9)
+        chk_topo.setToolTip(
+            "Compute positions from your actual location on Earth rather\n"
+            "than from the geocentre.\n\n"
+            "Worth ~4\" on a main-belt asteroid at 2 AU and ~18\" at\n"
+            "0.5 AU. Leave unticked for geocentric positions."
+        )
+        sg.addWidget(chk_topo, 1, 2, 1, 2)
+        layout.addWidget(sbox)
+
         # ── Catalog limits ──────────────────────────────────────────────
         lbox = QGroupBox(self.tr("Catalog limits"))
         row_layout = QGridLayout(lbox)
@@ -3289,6 +3796,12 @@ class SupernovaAsteroidHunterDialog(QDialog):
             self.minor_header_time_mode = int(cmb_tz.currentIndex())
             self.minor_header_utc_offset = float(tz_spin.value())
             self.minor_header_timezone = str(cmb_zone.currentText())
+            if chk_topo.isChecked():
+                self.ref_site = (float(lat_spin.value()),
+                                 float(lon_spin.value()),
+                                 float(elev_spin.value()))
+            else:
+                self.ref_site = None
             self._minor_force_solve = bool(chk_solve.isChecked())
             # The JD shown in the dialog is the one we search at — no
             # recomputation downstream, so what the user verified on
@@ -3308,6 +3821,9 @@ class SupernovaAsteroidHunterDialog(QDialog):
                     self.settings.setValue(
                         "supernova_hunter/header_timezone",
                         str(cmb_zone.currentText()))
+                    self.settings.setValue("site/latitude_deg", float(lat_spin.value()))
+                    self.settings.setValue("site/longitude_deg", float(lon_spin.value()))
+                    self.settings.setValue("site/elevation_m", float(elev_spin.value()))
                 except Exception:
                     pass
             dlg.accept()
@@ -3320,16 +3836,39 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.status_label.setText(msg)
         self.minor_progress.setVisible(True)
         self.minor_progress.setValue(int(pct))
+        # Mirror to the results window if it exists — the parent dialog
+        # is normally covered by it during a search, so the bar on this
+        # side is invisible to the user.
+        if self._results_dialog is not None:
+            try:
+                self._results_dialog.minor_body_progress(int(pct), str(msg))
+            except Exception:
+                pass
 
-    def _on_minor_body_finished(self, bodies: list, error: str):
+    def _on_minor_body_finished(self, result, error: str):
         self.minor_progress.setValue(100 if not error else 0)
         self.minor_progress.setVisible(False)
+        if self._results_dialog is not None:
+            try:
+                self._results_dialog.minor_body_end(
+                    final_msg="Minor-body search failed." if error else "",
+                    keep_status=bool(error),
+                )
+            except Exception:
+                pass
         if error:
             QMessageBox.critical(self, "Minor-body Search",
                                  f"Minor-body prediction failed:\n{error}")
             self.status_label.setText("Minor-body search failed.")
             return
-        self.predicted_minor_bodies = bodies or []
+        if isinstance(result, dict):
+            bodies = result.get("ref") or []
+            per_frame = result.get("per_frame") or {}
+        else:                                   # defensive: older shape
+            bodies, per_frame = (result or []), {}
+
+        self.predicted_minor_bodies = bodies
+        self.minor_bodies_per_frame = per_frame
         if not self.predicted_minor_bodies:
             self.status_label.setText(
                 "Minor-body search complete: no catalogued objects in field.")
@@ -3337,19 +3876,23 @@ class SupernovaAsteroidHunterDialog(QDialog):
                 self, "Minor-body Search",
                 "No catalogued minor bodies were found in this field.")
             return
+        n_tracked = sum(1 for v in per_frame.values() if v)
         self.status_label.setText(
-            f"Minor-body search complete: {len(self.predicted_minor_bodies)} objects.")
+            f"Minor-body search complete: {len(bodies)} object(s), "
+            f"tracked across {n_tracked} frame(s).")
+        self._append_log(
+            f"Minor-body: {len(bodies)} in field; per-frame positions for "
+            f"{n_tracked} frame(s)")
 
-        # Cross-match against anomalies if we have results.
         if self._last_payload and self._last_payload.get("anomaly_data"):
             self._match_anomalies_to_minor_bodies(
-                self.predicted_minor_bodies,
-                search_radius_arcsec=60.0,
+                bodies, search_radius_arcsec=60.0, per_frame=per_frame,
             )
         if self._results_dialog is not None:
             try:
-                self._last_payload["minor_bodies"] = self.predicted_minor_bodies
-                self._results_dialog.update_minor_bodies(self.predicted_minor_bodies)
+                self._last_payload["minor_bodies"] = bodies
+                self._last_payload["minor_bodies_per_frame"] = per_frame
+                self._results_dialog.update_minor_bodies(bodies, per_frame)
             except Exception as e:
                 print("[Hunter] results dialog update failed:", e)
 
@@ -3409,23 +3952,51 @@ class SupernovaAsteroidHunterDialog(QDialog):
             f"mid-exposure={'on' if getattr(self, 'minor_use_midexposure', True) else 'off'}]"
         )
 
-        try:
-            lat = self.settings.value("site/latitude_deg", None, type=float)
-            lon = self.settings.value("site/longitude_deg", None, type=float)
-            elev = self.settings.value("site/elevation_m", 0.0, type=float)
-            if lat is not None and lon is not None:
-                self.ref_site = (lat, lon, elev)
-            else:
-                self.ref_site = None
-        except Exception:
-            self.ref_site = None
+        # self.ref_site was set by the dialog above — do not re-read it from
+        # settings here, or an unticked "topocentric" box would be silently
+        # overridden by whatever happens to be stored.
+        if self.ref_site:
+            self._append_log(
+                f"Minor-body: topocentric from lat={self.ref_site[0]:.4f} "
+                f"lon={self.ref_site[1]:.4f} elev={self.ref_site[2]:.0f}m")
+        else:
+            self._append_log("Minor-body: geocentric positions (no site set)")
 
         self.status_label.setText("Minor-body: starting background query…")
         self.minor_progress.setVisible(True)
         self.minor_progress.setValue(0)
+        # Light up the mirrored strip in the results window so a user
+        # looking at it (which they almost always are) sees activity.
+        if self._results_dialog is not None:
+            try:
+                self._results_dialog.minor_body_begin(
+                    "Minor-body: starting background query…")
+            except Exception:
+                pass
+
+        _ad = self._last_payload.get("anomaly_data", []) or []
+        _fi = int(getattr(self, "_minor_frame_index", -1))
+        if 0 <= _fi < len(_ad):
+            self._append_log(
+                f"Minor-body: anchored on frame {_fi + 1}/{len(_ad)} "
+                f"({_ad[_fi].get('imageName')}), not the reference")
+
+        # Per-frame epochs, via the same conversion the dialog showed.
+        frame_jds = []
+        _missing = 0
+        for entry in _ad:
+            fj = self._frame_jd(entry.get("obs_iso"),
+                                float(entry.get("obs_exptime") or 0.0))
+            if fj is None:
+                _missing += 1
+            frame_jds.append((entry["path"], fj))
+        if _missing:
+            self._append_log(
+                f"Minor-body: {_missing} frame(s) have no usable DATE-OBS — "
+                "those keep the anchor frame's positions")
 
         self._mb_thread = QThread(self)
-        self._mb_worker = MinorBodyWorker(self, jd_for_calc)
+        self._mb_worker = MinorBodyWorker(self, jd_for_calc, frame_jds)
         self._mb_worker.moveToThread(self._mb_thread)
         self._mb_thread.started.connect(self._mb_worker.run)
         self._mb_worker.progress.connect(self._on_minor_body_progress)
@@ -3435,15 +4006,51 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self._mb_thread.finished.connect(self._mb_thread.deleteLater)
         self._mb_thread.start()
 
+    def _frame_jd(self, obs_iso, exptime: float):
+        """
+        One frame's header timestamp -> JD, using exactly the rules the
+        dialog displayed for the selected frame: mid-exposure, header
+        timezone interpretation, and the extra manual offset.
+
+        Deliberately a single code path. If per-frame epochs were derived
+        any differently from the one the user verified on screen, every
+        propagated position would carry a constant bias against it.
+        """
+        if not obs_iso:
+            return None
+        try:
+            t = Time(str(obs_iso), format="isot", scale="utc")
+        except Exception:
+            return None
+        try:
+            if getattr(self, "minor_use_midexposure", True) and exptime > 0:
+                t = t + (float(exptime) / 2.0) * u.s
+            mode = int(getattr(self, "minor_header_time_mode", 0))
+            if mode == 1:
+                off = _local_utc_offset_hours(t)
+            elif mode == 2:
+                off = _named_tz_offset_hours(
+                    t, getattr(self, "minor_header_timezone", ""))
+            elif mode == 3:
+                off = float(getattr(self, "minor_header_utc_offset", 0.0))
+            else:
+                off = 0.0
+            t = t - off * u.hour
+            t = t + float(getattr(self, "minor_time_offset_hours", 0.0)) * u.hour
+            return float(t.utc.jd)
+        except Exception:
+            return None
+
     def _get_predicted_minor_bodies_for_field(
-        self, H_ast_max, H_com_max, jd=None, progress_cb=None,
+        self, H_ast_max, H_com_max, jd=None, progress_cb=None, frame_jds=None,
     ):
         """Needs ref_wcs and the reference image's shape — pulled from payload."""
+        _EMPTY = {"ref": [], "per_frame": {}}
         if self.ref_wcs is None or self._last_payload is None:
-            return []
+            return _EMPTY
         ref_img = self._last_payload.get("ref_image")
         if ref_img is None:
-            return []
+            return _EMPTY
 
         def emit(pct, msg):
             if progress_cb is not None:
@@ -3455,7 +4062,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         if jd is None:
             jd = self.ref_jd
         if jd is None or self.settings is None:
-            return []
+            return _EMPTY
         ast_limit = getattr(self, "minor_ast_max_count", 50000)
         com_limit = getattr(self, "minor_com_max_count", 5000)
 
@@ -3470,7 +4077,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
         except Exception as e:
             print("[MinorBodies] could not open DB:", e)
             emit(100, "Minor-body search: failed to open database.")
-            return []
+            return _EMPTY
         try:
             import pandas as pd
 
@@ -3491,7 +4098,7 @@ class SupernovaAsteroidHunterDialog(QDialog):
             print(f"[MinorBodies] candidate rows: asteroids={n_ast} comets={n_com}")
             if n_ast == 0 and n_com == 0:
                 emit(100, "Minor-body search: no catalog rows matched those limits.")
-                return []
+                return _EMPTY
 
             # Designation → kind / magnitude maps, built before the concat
             # so each computed position can be labelled afterwards.
@@ -3570,19 +4177,113 @@ class SupernovaAsteroidHunterDialog(QDialog):
                     "x": x, "y": y,
                     "H": float(mag_by_name.get(desig, np.nan)),
                     "distance_au": pos.get("distance_au", np.nan),
+                    "elements": None,     # filled below for in-FOV bodies only
                 })
             print(f"[MinorBodies] inside frame: {len(bodies)} of {len(positions)}")
+
+            # Attach Keplerian elements for the 3D Orbit Explorer — only for
+            # the handful of bodies that actually landed in the frame, so we
+            # never materialise the whole (tens-of-thousands-row) catalog
+            # into dicts. Elements live on rows_df under the same column
+            # names compute_positions_astropy reads (semimajor_axis_au,
+            # mean_anomaly_degrees, …); orbit_explorer.extract_elements_from_row
+            # knows them.
+            try:
+                in_fov = {b["designation"] for b in bodies}
+                if in_fov and "designation" in rows_df.columns:
+                    sub = rows_df[rows_df["designation"].isin(in_fov)]
+                    row_by_desig = {r.get("designation"): r
+                                    for r in sub.to_dict("records")}
+                    n_with = 0
+                    for b in bodies:
+                        el = extract_elements_from_row(
+                            row_by_desig.get(b["designation"]))
+                        b["elements"] = el
+                        n_with += 1 if el else 0
+                    print(f"[MinorBodies] orbital elements attached to "
+                          f"{n_with}/{len(bodies)} in-frame bodies")
+                    if n_with < len(bodies):
+                        # Surface the real column names once so the aliases in
+                        # orbit_explorer can be reconciled if a schema changes.
+                        try:
+                            from setiastro.saspro import orbit_explorer as _oemod
+                            print("[MinorBodies] (no elements for some) catalog "
+                                  f"columns: {getattr(_oemod, '_last_available_keys', [])}")
+                        except Exception:
+                            pass
+            except Exception as _e:
+                print("[MinorBodies] element attachment failed:", _e)
+
+            # ---------------------------------------------------------------
+            # Propagate the FOUND bodies to every other frame's epoch.
+            #
+            # Discovery above is unchanged — it answers "what is in this
+            # field" at the selected frame's time. But each frame was taken
+            # at a different moment and the object has moved between them;
+            # that drift is the entire signal being hunted. Re-propagating
+            # just this handful of bodies is cheap next to the full-catalog
+            # pass that produced them.
+            # ---------------------------------------------------------------
+            per_frame = {}
+            in_fov = {b["designation"] for b in bodies}
+            if frame_jds and in_fov and "designation" in rows_df.columns:
+                sub = rows_df[rows_df["designation"].isin(in_fov)]
+                n_f = len(frame_jds)
+                print(f"[MinorBodies] propagating {len(sub)} body(s) to {n_f} frames")
+                for k, (fpath, fjd) in enumerate(frame_jds, 1):
+                    if fjd is None:
+                        continue
+                    emit(92 + int(7.0 * k / max(1, n_f)),
+                         f"Minor-body search: positions for frame {k}/{n_f}…")
+                    try:
+                        fpos = catalog.compute_positions_astropy(
+                            asteroid_rows=sub, jd=float(fjd),
+                            ephemeris_path=str(data_dir),
+                            topocentric=self.ref_site, debug=False,
+                        )
+                    except Exception as exc:
+                        print(f"[MinorBodies] frame {k} failed: {exc!r}")
+                        continue
+                    lst = []
+                    for pos in fpos:
+                        try:
+                            ra = float(pos["ra_deg"]); dec = float(pos["dec_deg"])
+                            x, y = self.ref_wcs.world_to_pixel_values(ra, dec)
+                        except Exception:
+                            continue
+                        desig = pos.get("designation", "") or "Unknown"
+                        lst.append({
+                            "designation": desig,
+                            "kind": ("asteroid" if desig in ast_names
+                                     else "comet" if desig in com_names
+                                     else "minor body"),
+                            "ra_deg": ra, "dec_deg": dec,
+                            "x": float(x), "y": float(y),
+                            "H": float(mag_by_name.get(desig, np.nan)),
+                            "distance_au": pos.get("distance_au", np.nan),
+                        })
+                    per_frame[fpath] = lst
+
             emit(100, f"Minor-body search: {len(bodies)} object(s) inside the frame.")
-            return bodies
+            return {"ref": bodies, "per_frame": per_frame}
         finally:
             try:
                 catalog.close()
             except Exception:
                 pass
 
-    def _match_anomalies_to_minor_bodies(self, bodies, search_radius_arcsec=20.0):
+    def _match_anomalies_to_minor_bodies(self, bodies, search_radius_arcsec=20.0,
+                                         per_frame=None):
+        """
+        Cross-match detections against predicted positions, each frame
+        against ITS OWN epoch where available. Over a night of subs a
+        main-belt object drifts far beyond any sane match radius, so
+        matching every frame to one epoch identifies it near that epoch
+        and quietly fails everywhere else.
+        """
         if self.ref_wcs is None or not bodies or self._last_payload is None:
             return
+        per_frame = per_frame or {}
         try:
             cd = self.ref_wcs.pixel_scale_matrix
             from numpy.linalg import det
@@ -3591,12 +4292,16 @@ class SupernovaAsteroidHunterDialog(QDialog):
         except Exception:
             arcsec_per_pix = 1.0
         pix_radius = search_radius_arcsec / arcsec_per_pix
+        default_bodies = bodies
         for entry in self._last_payload["anomaly_data"]:
+            # New name on purpose: rebinding `bodies` here would leak one
+            # frame's positions into the next frame that lacks its own.
+            frame_bodies = per_frame.get(entry.get("path")) or default_bodies
             for anomaly in entry["anomalies"]:
                 cx = 0.5 * (anomaly["minX"] + anomaly["maxX"])
                 cy = 0.5 * (anomaly["minY"] + anomaly["maxY"])
                 matches = []
-                for body in bodies:
+                for body in frame_bodies:
                     dx = body["x"] - cx
                     dy = body["y"] - cy
                     r_pix = np.hypot(dx, dy)
@@ -3649,6 +4354,8 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.ref_jd = None
         self.ref_site = None
         self.predicted_minor_bodies = None
+        self.minor_bodies_per_frame = {}
+        self._minor_frame_index = -1
         self._minor_jd = None
         self._minor_force_solve = False
 
