@@ -45,6 +45,69 @@ def _minimize_console_if_owned() -> None:
     if count == 1:
         user32.ShowWindow(hwnd, 7)  # SW_SHOWMINNOACTIVE
 
+
+def _report_startup_crash(tb: str) -> None:
+    """Last-chance crash reporting for failures during GUI startup.
+
+    gui_entry.main() configures file logging only AFTER _bootstrap_imports()
+    returns, so anything that dies during the heavy-import phase leaves no log
+    entry at all. On a double-click launch _minimize_console_if_owned() has
+    also just hidden the console, so the user sees the splash flash and the
+    app vanish with nothing to report.
+
+    Write the traceback somewhere findable and show a native MessageBox (via
+    ctypes, so it works even when PyQt6 is the thing that failed to import).
+    """
+    import os, tempfile
+    from pathlib import Path
+
+    log_path = None
+    try:
+        if sys.platform.startswith("win"):
+            d = Path(os.path.expandvars("%APPDATA%")) / "SetiAstroSuitePro" / "logs"
+        elif sys.platform.startswith("darwin"):
+            d = Path.home() / "Library" / "Logs" / "SetiAstroSuitePro"
+        else:
+            d = Path.home() / ".local" / "share" / "SetiAstroSuitePro" / "logs"
+        d.mkdir(parents=True, exist_ok=True)
+        log_path = d / "startup-crash.log"
+        log_path.write_text(tb, encoding="utf-8")
+    except Exception:
+        try:
+            log_path = Path(tempfile.gettempdir()) / "saspro-startup-crash.log"
+            log_path.write_text(tb, encoding="utf-8")
+        except Exception:
+            log_path = None
+
+    # Always dump to stderr too — covers the `./setiastrosuitepro.exe` from a
+    # shared terminal case, where the console was deliberately left visible.
+    try:
+        print(tb, file=sys.stderr)
+    except Exception:
+        pass
+
+    try:
+        tail = "\r\n".join(tb.strip().splitlines()[-3:])
+    except Exception:
+        tail = "(no traceback available)"
+
+    body = (
+        "Seti Astro Suite Pro failed to start.\r\n\r\n"
+        f"{tail}\r\n\r\n"
+        + (f"Full details were written to:\r\n{log_path}\r\n\r\n" if log_path else "")
+        + "Please send that file to the SetiAstro Discord or open a GitHub issue."
+    )
+
+    if sys.platform.startswith("win"):
+        # MB_ICONERROR (0x10) | MB_SETFOREGROUND (0x10000) | MB_TOPMOST (0x40000)
+        try:
+            ctypes.windll.user32.MessageBoxW(
+                0, body, "Seti Astro Suite Pro - Startup Failure", 0x50010
+            )
+        except Exception:
+            pass
+
+
 def entry(argv: list[str] | None = None) -> int:
     # Catch multiprocessing spawn children FIRST — before anything else runs.
     # In a frozen build, every ProcessPool worker re-execs this EXE and ends
@@ -103,7 +166,23 @@ def entry(argv: list[str] | None = None) -> int:
     # OWN handoff on the cleaned argv — that second call would re-probe the
     # running primary without --new-instance in its view of the args, hand off
     # again, and silently exit the new instance the user actually asked for.
-    return int(gui_main(argv, _skip_handoff=True))
+    #
+    # Wrapped: gui_entry's own try/except only covers main-window construction,
+    # which is well after _bootstrap_imports(). An import-time failure in the
+    # bootstrap (a missing VC++ runtime, a quarantined .pyd, a third-party
+    # package blowing up at import) propagates all the way out to here, and
+    # without this handler the frozen EXE dies with a hidden console and no log.
+    # SystemExit re-raises untouched so the normal sys.exit(_app.exec()) path is
+    # unaffected; BaseException catches KeyboardInterrupt during a long cold
+    # start as well, which is worth logging rather than swallowing.
+    try:
+        return int(gui_main(argv, _skip_handoff=True))
+    except SystemExit:
+        raise
+    except BaseException:
+        import traceback as _tb
+        _report_startup_crash(_tb.format_exc())
+        return 1
 
 def main(argv: list[str] | None = None) -> int:
     return entry(argv)

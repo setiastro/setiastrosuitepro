@@ -985,47 +985,61 @@ def _bootstrap_imports():
                 self.__path__ = []    # makes Python treat it as a package
                 self.__spec__ = None
                 self.__version__ = "0.0.0+unavailable"
-                # Minimal cuda/version stubs so guards like
-                # `torch.cuda.is_available()` return False instead of crashing
-                self.cuda = _sys.modules.get(
-                    "torch.cuda",
-                    _TorchUnavailableStub.__new__(_TorchUnavailableStub)
-                )
-                self.version = _sys.modules.get(
-                    "torch.version",
-                    _TorchUnavailableStub.__new__(_TorchUnavailableStub)
-                )
- 
-            _STUB_GETATTR_GUARD = set()  # add this as a class-level variable above __getattr__
+                # NOTE: torch.cuda / torch.version are deliberately NOT set
+                # here any more. They used to be built with __new__ (skipping
+                # __init__), which left them without a __name__ -- so the very
+                # first __getattr__ on one would blow up inside the f-string
+                # below. They now resolve lazily through __getattr__ to the
+                # fully-constructed stubs that the _torch_submods loop installs
+                # into sys.modules immediately after this class is defined.
 
             def __getattr__(self, name: str):
-                child_key = f"{self.__name__}.{name}"
-                # Guard against recursion during frozen module introspection
-                if child_key in _TorchUnavailableStub._STUB_GETATTR_GUARD:
+                # CRITICAL: never fabricate a child stub for a dunder.
+                #
+                # inspect.getmodule() walks every entry in sys.modules probing
+                # __file__ (and friends). If __file__ hands back a module
+                # object, inspect.getfile() falls through to its
+                # `raise TypeError('{!r} is a built-in module'.format(object))`
+                # branch -- and that repr goes through importlib's
+                # _module_repr, which formats self.__file__ with !r, whose
+                # __file__ is another stub, whose __file__ is another stub...
+                # 950 frames later: RecursionError, during the astropy.nddata
+                # import triggered by the reproject guard below.
+                #
+                # Real built-in modules raise AttributeError for __file__.
+                # So do we. That terminates the walk cleanly.
+                if name.startswith("__") and name.endswith("__"):
                     raise AttributeError(name)
-                _TorchUnavailableStub._STUB_GETATTR_GUARD.add(child_key)
-                try:
-                    if child_key not in _sys.modules:
-                        child = _TorchUnavailableStub(child_key)
-                        _sys.modules[child_key] = child
-                    return _sys.modules[child_key]
-                finally:
-                    _TorchUnavailableStub._STUB_GETATTR_GUARD.discard(child_key)
- 
+
+                child_key = f"{self.__name__}.{name}"
+                child = _sys.modules.get(child_key)
+                if child is None:
+                    child = _TorchUnavailableStub(child_key)
+                    _sys.modules[child_key] = child
+                return child
+
+            # Belt and braces: give repr() a terminating implementation of its
+            # own, so no future introspection path can re-enter the cycle above
+            # even if it reaches us by some other route.
+            def __repr__(self) -> str:
+                return f"<module {self.__name__!r} (SASpro torch-unavailable stub)>"
+
             def __call__(self, *a, **kw):
                 raise RuntimeError(_TORCH_NOT_INSTALLED_MSG)
- 
+
             def __bool__(self):
                 return False
- 
-            # Keep isinstance(x, torch.nn.Module) from crashing — just False
+
+            # Keep isinstance(x, torch.nn.Module) from crashing -- just False.
+            # Works because the second isinstance argument is a stub INSTANCE,
+            # so Python looks __instancecheck__ up on _TorchUnavailableStub.
             def __instancecheck__(self, instance):
                 return False
- 
+
             # Make `torch.cuda.is_available()` return False instead of crashing
             def is_available(self):
                 return False
- 
+
         # Only inject if torch is genuinely absent
         if "torch" not in _sys.modules:
             _stub_root = _TorchUnavailableStub("torch")
