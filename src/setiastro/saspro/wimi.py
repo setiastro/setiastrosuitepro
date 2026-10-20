@@ -190,6 +190,26 @@ import math
 from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
 from setiastro.saspro import minorbodycatalog as mbc
+
+# Interactive 3D orbit viewer (shared with the Supernova/Asteroid Hunter).
+# Guarded so a missing pyqtgraph.opengl / PyOpenGL degrades to a message
+# on the "SASpro Orbit Explorer" choice rather than breaking the module.
+try:
+    from setiastro.saspro.orbit_explorer import (
+        open_orbit_explorer, extract_elements_from_row,
+    )
+    _HAS_ORBIT_EXPLORER = True
+    _ORBIT_EXPLORER_ERR = ""
+except Exception as _oe_err:                     # pragma: no cover
+    _HAS_ORBIT_EXPLORER = False
+    _ORBIT_EXPLORER_ERR = str(_oe_err)
+
+    def extract_elements_from_row(_row):
+        return None
+
+    def open_orbit_explorer(*_a, **_k):
+        return None
+
 from setiastro.saspro.resources import get_icon_path
 
 # Determine if running inside a PyInstaller bundle
@@ -1041,9 +1061,9 @@ class CustomGraphicsView(QGraphicsView):
 
             s = (source or "").strip().lower()
 
-            # --- Minor-body overlays → 3d-asteroids.space ---
+            # --- Minor-body overlays → choose how to explore ---
             if s.startswith("minordb"):
-                open_minor_body_3d_page(object_name, kind=kind)
+                prompt_minor_body_choice(self.parent, object_name, kind=kind)
                 return
 
             if source == "Simbad" and object_name:
@@ -1326,7 +1346,7 @@ class CustomGraphicsView(QGraphicsView):
 
         s = source.lower()
         if s.startswith("minordb"):
-            open_minor_body_3d_page(name, kind=kind)
+            prompt_minor_body_choice(self.parent, name, kind=kind)
             return
 
         try:
@@ -3140,6 +3160,179 @@ def open_minor_body_3d_page(name: str, kind: str = "Asteroid") -> None:
 
     url = f"https://3d-asteroids.space/{base}/{slug}"
     webbrowser.open(url)
+
+
+def open_jpl_sbdb_page(name: str, kind: str = "Asteroid") -> None:
+    """
+    Open JPL's Small-Body Database Lookup for this object — the
+    authoritative record (orbit, physical parameters, close approaches,
+    and JPL's own orbit viewer).
+
+    The tool takes a free-form identifier via `sstr`, so no slug or
+    provisional-designation guessing is needed: a plain number resolves
+    an asteroid, and the full designation resolves a comet. One endpoint
+    serves both.
+    """
+    if not name:
+        return
+    s = name.replace(chr(160), " ").strip()      # normalize non-breaking space
+    is_comet = bool(kind and str(kind).lower().startswith("comet"))
+
+    if is_comet:
+        # Comets: never reduce to a bare number ('1P' -> 1 would resolve
+        # to asteroid Ceres). Pass the designation as-is.
+        sstr = s
+    elif re.match(r'^\d{4}[ _-][A-Za-z]{1,2}\d*$', s):
+        # Unnumbered provisional ('2011 TK5'): the leading 4 digits are a
+        # YEAR, not a catalog number — pass the whole designation.
+        sstr = s
+    else:
+        # Numbered asteroid ('(6281) Strnad', '6281 Strnad', '1 Ceres'):
+        # the catalog number alone is the least ambiguous identifier.
+        m = re.match(r'^\(?\s*(\d+)\s*\)?', s)
+        sstr = m.group(1) if m else s
+
+    url = ("https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr="
+           + quote(sstr))
+    webbrowser.open(url)
+
+
+def _lookup_minor_body_row(db_path, name: str, kind: str = ""):
+    """
+    Read one catalog row for `name` straight from the minor-body SQLite,
+    read-only, matching on the `designation` column. Tries the table the
+    `kind` suggests first, then the other. Returns a plain dict, or None.
+    """
+    import sqlite3
+    from pathlib import Path
+
+    tables = (["comets", "asteroids"]
+              if str(kind or "").lower().startswith("comet")
+              else ["asteroids", "comets"])
+    try:
+        uri = f"file:{Path(db_path).as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+    except Exception:
+        return None
+    try:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        for tbl in tables:
+            try:
+                cur.execute(
+                    f"SELECT * FROM {tbl} WHERE designation = ? LIMIT 1", (name,))
+            except sqlite3.Error:
+                continue
+            r = cur.fetchone()
+            if r is not None:
+                return {k: r[k] for k in r.keys()}
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _open_sas_orbit_explorer(window, name: str, kind: str = "Asteroid") -> None:
+    """
+    Launch the in-app SASpro Orbit Explorer for a minor body. Needs the
+    observation JD and DB path the last minor-body search stashed on the
+    window, plus the body's Keplerian elements looked up by designation.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    if not _HAS_ORBIT_EXPLORER:
+        QMessageBox.information(
+            window, "Orbit Explorer",
+            "The 3D orbit explorer could not be loaded.\n\n"
+            f"{_ORBIT_EXPLORER_ERR}\n\n"
+            "It needs pyqtgraph.opengl and PyOpenGL (pip install PyOpenGL).")
+        return
+
+    jd = getattr(window, "_minor_jd", None)
+    db_path = getattr(window, "_minor_db_path", None)
+    if jd is None or not db_path:
+        QMessageBox.information(
+            window, "Orbit Explorer",
+            "Run a minor-body search first — I need the observation time it "
+            "was computed at to place the orbit.")
+        return
+
+    row = _lookup_minor_body_row(db_path, name, kind)
+    if row is None:
+        QMessageBox.information(
+            window, "Orbit Explorer",
+            f"Couldn't find {name} in the catalog to read its orbit.")
+        return
+
+    el = extract_elements_from_row(row)
+    if el is None:
+        QMessageBox.information(
+            window, "Orbit Explorer",
+            f"{name} has no usable orbital elements in the catalog, so its "
+            "orbit can't be drawn.")
+        return
+
+    H = None
+    for k in ("magnitude_H", "H", "absolute_magnitude"):
+        if k in row and row[k] not in (None, ""):
+            try:
+                H = float(row[k])
+                break
+            except Exception:
+                pass
+
+    body = {"designation": name, "kind": (kind or "minor body"),
+            "H": H, "elements": el}
+    icon = None
+    try:
+        icon = window.windowIcon()
+    except Exception:
+        icon = None
+    dlg = open_orbit_explorer(window, body, float(jd),
+                              settings=getattr(window, "settings", None),
+                              icon=icon)
+    if dlg is not None:
+        # Hold a reference so the non-modal window isn't garbage collected.
+        refs = getattr(window, "_orbit_dialogs", None)
+        if refs is None:
+            refs = window._orbit_dialogs = []
+        refs.append(dlg)
+
+
+def prompt_minor_body_choice(window, name: str, kind: str = "Asteroid") -> None:
+    """
+    Ask how to explore a minor body, then dispatch. Replaces the old
+    straight-to-3d-asteroids double-click: not every object is on that
+    site, and the in-app Orbit Explorer works for anything in the local
+    catalog.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+
+    if not name:
+        return
+    box = QMessageBox(window)
+    box.setWindowTitle("Explore Minor Body")
+    box.setIcon(QMessageBox.Icon.Question)
+    box.setText(f"How would you like to explore {name}?")
+    box.setInformativeText(
+        "Orbit Explorer draws it in 3D inside SASpro from the local catalog.\n"
+        "JPL Small-Body Database is the authoritative record (orbit, physical\n"
+        "parameters, close approaches). 3D Model Site is 3d-asteroids.space.")
+    b_orbit = box.addButton("SASpro Orbit Explorer", QMessageBox.ButtonRole.AcceptRole)
+    b_jpl = box.addButton("JPL Small-Body Database", QMessageBox.ButtonRole.AcceptRole)
+    b_model = box.addButton("3D Model Site", QMessageBox.ButtonRole.AcceptRole)
+    box.addButton(QMessageBox.StandardButton.Cancel)
+    box.setDefaultButton(b_orbit)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is b_jpl:
+        open_jpl_sbdb_page(name, kind=kind)
+    elif clicked is b_model:
+        open_minor_body_3d_page(name, kind=kind)
+    elif clicked is b_orbit:
+        _open_sas_orbit_explorer(window, name, kind=kind)
 
 class _CrosshairOverlay(QWidget):
     """Transparent overlay that draws a crosshair at the viewport center."""
@@ -6935,11 +7128,11 @@ class WIMIDialog(QDialog):
         print(f"[DEBUG] Matched source: {source!r}")  # ← debug print
 
         s = source.strip().lower()
-        # --- Minor-body rows (local MinorDB results) → 3d-asteroids.space ----
+        # --- Minor-body rows (local MinorDB results) → choose how to explore ----
         if s.startswith("minordb"):
             kind = (entry.get("long_type") if entry else "") or ""
             # 'kind' will usually be "Asteroid" or "Comet"
-            open_minor_body_3d_page(object_name, kind=kind)
+            prompt_minor_body_choice(self, object_name, kind=kind)
             return
         
         if s == "simbad" and object_name:
@@ -8621,6 +8814,12 @@ class WIMIDialog(QDialog):
 
         # 1) Convert observation datetime to JD
         jd = Time(obs_datetime).jd
+
+        # Stash the exact epoch and DB file this search used, so a later
+        # double-click can open the in-app Orbit Explorer placed at the
+        # same instant and read the clicked body's elements by designation.
+        self._minor_jd = float(jd)
+        self._minor_db_path = str(db_path)
 
         print(
             f"[MinorBodies] Search: RA={ra_center:.6f} deg  "
