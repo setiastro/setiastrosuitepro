@@ -14,14 +14,14 @@
   b, strong { color:#ffffff; }
   code { background:#2a2a2a; color:#9fe0cf; padding:1px 4px; border-radius:3px;
          font-family:Consolas,"DejaVu Sans Mono",monospace; }
-  .eq { background:#141414; border:1px solid #333; border-left:3px solid #3dbf9f;
-        padding:9px 13px; margin:9px 0; color:#e6e6e6;
+  .eq, .matheq, .matheq-hero { background:#141414; border:1px solid #333;
+        border-left:3px solid #3dbf9f; padding:9px 13px; margin:9px 0; color:#e6e6e6;
         font-family:Consolas,"DejaVu Sans Mono",monospace; font-size:13px;
         white-space:pre-wrap; }
   .hero { background:#15211e; border:1px solid #2c5a4e; border-left:3px solid #3dbf9f;
           padding:11px 14px; margin:10px 0; }
   ul { margin:4px 0; } li { margin:3px 0; }
-  table { border-collapse:collapse; margin:8px 0; }
+  table { border-collapse:collapse; margin:8px 0; width:100%; }
   th, td { border:1px solid #333; padding:5px 10px; text-align:left; vertical-align:top; }
   th { background:#262626; color:#3dbf9f; }
   .sub { color:#9a9a9a; font-size:12px; margin-top:0; }
@@ -43,203 +43,212 @@
 <body>
 
 <h1>Supernova / Asteroid Hunter</h1>
-<p class="sub">Difference-imaging anomaly detector for transient discovery. Takes a reference frame and one or more follow-up search frames of the same field, matches their backgrounds, subtracts, and reports the groups of pixels that got brighter &mdash; candidates for supernovae, novae, asteroids, comets, variable stars, or anything else that changed between frames. An optional minor-body cross-match path can plate-solve the reference frame, query the SASpro minor-body catalog at the exact observation time, and label the candidates that correspond to already-known asteroids and comets so what's left is the <i>interesting</i> set.</p>
+<p class="sub">Difference-imaging transient detector. Takes a reference frame and one or more search frames of the same field, optionally registers and background-flattens them in parallel, puts every search frame onto the reference's photometric system from the flux of shared stars, subtracts, matched-filters the difference at the point-spread-function scale, and flags the compact sources that got brighter &mdash; candidates for supernovae, novae, asteroids, comets, variable stars, or anything else that appeared or brightened between frames. An optional minor-body path plate-solves the reference, reads the catalogue at the exact observation time, propagates each found body to every frame's own epoch so moving objects track through the blink, and labels the candidates that are already-known asteroids and comets &mdash; so what's left over is the <i>interesting</i> set. Any catalogued body can be opened in the in-app <b>3D Orbit Explorer</b>.</p>
 
 <div class="pub">
-<b>Original work for SetiAstro Suite Pro.</b> The <b>difference-imaging transient-hunt orchestration</b> &mdash; cosmetic-correct both sides optionally, apply <b>per-channel background neutralization</b> against a central sample patch with the <code>(I - &delta;) / (1 - &delta;)</code> dynamic-range-preserving correction, run SASpro's <b>polynomial gradient removal</b> on both sides so matching backgrounds subtract cleanly, apply <b>asymmetric stretch</b> to the matched target median so faint positive residuals pop out of the subtraction, convert to mono, subtract and clip to <b>positive-only residuals</b> (so disappearing stars don't flood the detections, only new or brightened sources do), threshold at a user-chosen level with the first/last 5% of each axis masked out to kill alignment-induced edge artefacts, group with 8-connected components, filter by area (<code>&ge; 25&nbsp;px</code>, <code>&le; 200&times;200</code>) &mdash; is Franklin Marek's design. The <b>optional minor-body cross-match path</b> is also original: lazily plate-solve the reference via SASpro's Plate Solver when a WCS isn't already attached, derive <b>mid-exposure JD</b> from <code>DATE-OBS</code> + <code>EXPTIME/2</code> with XISF <code>FITSKeywords</code> and FITS-header fallbacks (and the TT scale conversion where that matters), query SASpro's minor-body catalog for bright asteroids and comets, compute Skyfield ephemerides at the derived JD (topocentric when settings carry an observatory location), project the predicted RA/Dec through the reference WCS to pixel coordinates, cull predictions outside the FOV, and cross-match each anomaly's bounding-box centre against the predicted catalogue positions with a <b>WCS-aware pixel search radius</b> computed from the actual plate scale <code>&radic;|det&nbsp;CD| &middot; 3600</code>. The <b>colour-coded preview</b> (green for anomalies that match a catalogued minor body, red for unmatched candidates, yellow circles for every predicted minor body in field whether an anomaly fell on it or not), the <b>Push to New View</b> handler that re-reads the source file so the pushed anomaly-marked image keeps the original FITS/XISF header and metadata intact, the <b>background-threaded</b> <code>QThread</code> + <code>QObject</code> + <code>moveToThread</code> minor-body worker with progress reporting, and the <b>candidate-list text summary</b> with per-anomaly H-magnitude annotations are all original work.
+<b>Original work for SetiAstro Suite Pro, rebuilt from the ground up.</b> This is a from-scratch overhaul of the original SASv1-era hunter. The orchestration is Franklin Marek's design: run <b>load, cosmetic correction, binning, star alignment, background extraction, photometric match and difference</b> across a <b>process pool</b> driven off the GUI thread, detect on <b>linear</b> data (never the stretched display copy), put each search frame onto the reference's photometric system with a <b>star-flux gain</b>, matched-filter the difference at the <b>PSF scale</b>, threshold at a <b>noise-relative sigma</b> measured per frame on valid pixels only, reject residuals that sit on a <b>reference star</b>, and split detection into a cheap re-runnable stage so the knobs can be swept against cached differences in well under a second. The <b>minor-body cross-match</b> is also original: a usability-checked WCS (with on-demand plate solve on the binned linear reference), a DST-aware observation-time model, ephemerides evaluated at exactly the verified epoch, <b>per-frame propagation</b> so each sub shows the body where it actually was, topocentric parallax, and a plate-scale-aware cross-match radius. The <b>blink results viewer</b>, the <b>metadata-preserving Push to New View</b>, and the <b>3D Orbit Explorer</b> hand-off are all original work.
 </div>
 
 <div class="workflow"><b>Workflow</b><br>
-<b>Select a reference image</b> &mdash; usually the earlier of the two sessions, or a stacked master if you have one. <b>Select one or more search images</b> &mdash; the frames you want to hunt in. Optionally tick <b>Apply Cosmetic Correction</b> to clean hot/cold pixels before preprocessing. Pick a threshold (default <code>0.10</code>). Click <b>Process</b> &mdash; the dialog preprocesses both sides, subtracts, finds anomalies, and shows a tree of results. Double-click an entry to open its anomaly-marked preview. From the preview you can zoom with <b>Ctrl + wheel</b>, pan by dragging, and push the marked image back into SASpro as a new document.
+<b>Select a reference image</b> &mdash; usually the earlier session, or a stacked master. <b>Add one or more search images</b> &mdash; the frames to hunt in. Leave <b>Align search images to reference</b> ticked unless the frames are already pixel-registered. Tune the pipeline options if you like (the defaults are good), then click <b>Run Hunter</b>. The pipeline runs in the background with a live progress bar and a <b>Cancel</b> button; when it finishes, the <b>Anomaly Results</b> window opens. Step or <b>Play</b> through the frames to watch moving objects drift, flip between <b>Search / Reference / Difference</b>, and sweep the detection knobs with <b>Re-detect</b> (sub-second, no reprocessing). Click <b>Catalogue Minor Bodies in Field</b> to identify known asteroids and comets, and <b>Explore Orbit (3D)</b> to open any of them in the 3D viewer.
 </div>
 
 <div class="hero">
-<p>The signature move is <b>positive-only residuals</b>:</p>
-<div class="matheq-hero">D(x, y) = \mathrm{clip}\!\left( I_{\mathrm{search}}(x, y) - I_{\mathrm{ref}}(x, y),\; 0,\; 1 \right)</div>
-<p>Clipping negative residuals to zero asymmetrises the subtraction: a star that <i>disappeared</i> between the reference and the search produces <code>D &lt; 0</code> and is thrown away; a star that <i>appeared</i> or got <i>brighter</i> survives. For transient hunting this is exactly what you want &mdash; a supernova, a nova, or an asteroid passing through the field is a new source added onto the background, not something taken away.</p>
+<p>The signature move is <b>detecting on linear, photometrically-matched data and matched-filtering at the PSF scale</b>:</p>
+<div class="matheq-hero">D  = (I_search &minus; bg_search)&middot;gain + bg_ref  &minus;  I_ref          (star-flux gain, linear)
+D_f = D &lowast; G(&sigma;_psf)                                     (PSF matched filter)
+detect where  D_f &gt; median(D_f) + k&middot;&sigma;(D_f)            (&sigma; clipped, valid pixels only)</div>
+<p>Two ideas carry the detector. First, the gain that puts the search frame onto the reference's brightness scale comes from the <i>flux of stars present in both frames</i>, not from a noise statistic &mdash; so a thin-cloud or transparency change rescales real light correctly and stars subtract to nothing. Second, a faint point source is not best found pixel-by-pixel: convolving the difference with a Gaussian matched to the star PSF is the optimal linear detector for a point source and buys roughly 3&times; in signal-to-noise, which is the difference between a 16th-magnitude asteroid being invisible and being obvious. Everything the detector touches is <b>linear</b>; the stretched image exists only so you have something to look at.</p>
 </div>
 
 <h2>1. Reference and search frames</h2>
-<p>The two paths at the top of the dialog select the inputs:</p>
 <ul>
-  <li><b>Reference image</b> &mdash; a single file. Formats: PNG, TIFF, FITS, XISF. This is the &ldquo;before&rdquo; frame &mdash; its content is what every search image gets measured against.</li>
-  <li><b>Search images</b> &mdash; one or many files. Each is independently preprocessed and compared against the reference, so you can batch-process a whole night's worth of frames in one run.</li>
+  <li><b>Reference image</b> &mdash; a single file (PNG, TIFF, FITS, FIT, XISF). The &ldquo;before&rdquo; frame that every search frame is measured against, and the frame whose WCS and observation time drive the minor-body path.</li>
+  <li><b>Search images</b> &mdash; one or many. Each is independently aligned, matched, differenced and searched, so a whole night of subs can run in one pass. Add with <b>Add Files&hellip;</b>, prune with <b>Remove Selected</b> / <b>Clear</b>. The reference folder and the search folder are remembered separately between runs.</li>
 </ul>
-<p>The two frames don't need to be bit-for-bit co-registered going in &mdash; the background neutralisation and gradient-removal steps leave the geometry alone and simply match brightness levels across the two sides &mdash; but they <i>do</i> need to be of the same field at the same approximate scale. If you have one with and one without an alignment pass, align first (SASpro's Star Alignment or the Stacking Suite's integration output both work).</p>
+<p>The frames do not need to be co-registered going in &mdash; the <b>Align</b> option (&sect;3.2) registers them for you &mdash; but they must be the same field at roughly the same scale.</p>
 
-<h2>2. Cosmetic correction option</h2>
-<p>Check <b>Apply Cosmetic Correction before Preprocessing</b> to clean hot and cold pixels on every search image before subtraction. Uses SASpro's shared Numba cosmetic correction kernel (the same code the Stacking Suite uses) at <code>5&sigma;</code> hot and <code>5&sigma;</code> cold with a 3-pixel window. Important when your search frames are raw single-sub exposures &mdash; one or two hot pixels in a search sub that aren't in the reference will produce single-pixel &ldquo;transients&rdquo; that pass the threshold. The area filter (&sect;9.8) catches most of these anyway, but turning this on removes them at the source.</p>
-<p>Leave it off when both sides are already-stacked integrations &mdash; the stacking rejection has already cleaned them.</p>
-
-<h2>3. Threshold slider</h2>
-<p>Slider from <code>0.01</code> to <code>0.50</code>, default <code>0.10</code>. The threshold is applied to the clipped difference image <i>after</i> normalisation and asymmetric stretch (target median 0.25), so <code>0.10</code> corresponds to roughly &ldquo;40% dimmer than typical stretched star core&rdquo;. Lower values catch fainter transients at the cost of more false positives; higher values find only bright anomalies.</p>
-<p>For a 15-minute search frame against a deep stacked reference, <code>0.10</code> is a good starting point. For noisier shorter exposures, nudge up to <code>0.15</code> or <code>0.20</code>.</p>
-
-<h2>4. Process</h2>
-<p>The <b>Process</b> button runs the whole pipeline in order:</p>
-<ol>
-  <li>Cosmetic correction (if checked), on every search image.</li>
-  <li>Preprocessing of the reference, then every search image.</li>
-  <li>Difference imaging and anomaly extraction, per search image.</li>
-  <li>Minor-body cross-match if a predicted catalogue is loaded (manual step, see &sect;9).</li>
-  <li>Results dialogs (summary tree + text report).</li>
-</ol>
-<p>Each phase updates the status label and either the preprocessing or search progress label as it goes. The dialog stays responsive &mdash; <code>processEvents</code> is called between images so you can see progress live.</p>
-
-<h2>5. Results tree</h2>
-<p>After Process completes, a non-modal <b>Anomaly Results</b> window opens with a two-column tree: the search image's filename and the number of anomaly groups found in it. Double-click any row to open that image's anomaly-marked preview (&sect;6).</p>
-<p>A separate <b>Detailed Anomaly Results</b> text panel also opens, listing each image's anomalies with their bounding-box corners and any catalogued minor-body candidates that fell inside them.</p>
-
-<h2>6. Anomaly preview window</h2>
-<p>The preview is a zoomable, pannable, non-modal viewer with its own toolbar. On top of the stretched search image, SASpro draws:</p>
+<h2>2. Run, Cancel, Re-detect</h2>
 <ul>
-  <li><b>Red boxes</b> &mdash; anomalies that <i>don't</i> match any catalogued minor body. These are the interesting ones: an unmatched candidate could be a supernova, nova, variable star outburst, uncatalogued asteroid, satellite streak, or image artefact. Hopefully not the last one.</li>
-  <li><b>Green boxes</b> &mdash; anomalies that match a catalogued minor body within the search radius. Known asteroid or comet &mdash; useful to confirm, not news.</li>
-  <li><b>Yellow circles</b> &mdash; every catalogued minor body predicted to be in the field, whether an anomaly was found on it or not. Lets you spot asteroids that <i>should</i> have been detected but weren't (too faint for the threshold, lost to noise, &hellip;) and manually inspect them.</li>
+  <li><b>Run Hunter</b> &mdash; runs the full pipeline (load &rarr; optional cosmetic &rarr; optional bin &rarr; optional align &rarr; optional ADBE &rarr; photometric match + difference &rarr; detection) in a background thread driving a process pool. The progress bar and status line update live and the dialog stays responsive.</li>
+  <li><b>Cancel</b> &mdash; requests a clean stop between stages.</li>
+  <li><b>Re-detect (cached)</b> &mdash; re-runs <i>only</i> the detection stage against the difference images cached from the last run, using the current detection settings, and reopens the results. No reload, no re-align, no ADBE, no re-match &mdash; typically under a second for a large set. This is what makes the sigma, min-area, PSF and star-mask knobs things you sweep while watching the result rather than parameters you commit to and wait on.</li>
 </ul>
 
-<h3>Toolbar</h3>
+<h2>3. Pipeline options</h2>
+<p>All of these have sensible defaults; most runs only ever touch <b>Detection &sigma;</b> and <b>PSF &sigma;</b> afterwards via Re-detect.</p>
+
+<h3>3.1 Cosmetic correction</h3>
+<p><b>Cosmetic correction (hot/cold pixel suppression)</b> &mdash; default <b>off</b>. Cleans hot and cold pixels on every frame before anything else, using SASpro's shared Numba kernel at <code>5&sigma;</code> hot / <code>5&sigma;</code> cold with a 3-pixel window. Turn it on when the search frames are raw single subs &mdash; a hot pixel present in a search sub but not the reference is a single-pixel &ldquo;transient.&rdquo; Leave it off for already-stacked integrations, whose rejection has done this. Cosmetic correction runs at full resolution <i>before</i> binning, because hot pixels are single-pixel events and binning would smear them below the sigma filter.</p>
+
+<h3>3.2 Align search images to reference</h3>
+<p>Default <b>on</b>. Registers every search frame to the reference before differencing, using the same <code>astroalign</code> star-matching and anti-ring warp stack as SASpro's Star Alignment tool. <b>Leave this on unless your frames are already pixel-registered</b> &mdash; pixel-wise subtraction of unregistered frames produces a false anomaly around every star and is the single biggest correctness trap in difference imaging. The alignment leaves a zero-valued wedge at the frame edge; that wedge is detected and excluded downstream (&sect;9.7).</p>
+
+<h3>3.3 ADBE background removal</h3>
+<p>Default <b>on</b>, with <b>Degree</b> (polynomial degree 0&ndash;6, default <code>2</code>) and <b>RBF refinement</b> (default on). Runs SASpro's modern Automatic Dynamic Background Extraction (<code>abe_run</code>) on every frame so a sky gradient on either side does not print itself into the difference. It samples away from stars, fits a low-order polynomial (optionally refined with a radial-basis function), and is told to ignore the no-data wedge an aligned frame leaves at its edges, so the fit is not dragged toward zero there. Degree 2 handles ordinary gradients; raise it only for strong, structured backgrounds.</p>
+
+<h3>3.4 Detection controls</h3>
+<p>These feed the detection stage and can all be re-tuned after a run with Re-detect:</p>
+<table>
+<tr><th>Control</th><th>Default</th><th>What it does</th></tr>
+<tr><td><b>Detection &sigma;</b></td><td>5.0</td><td>Threshold in units of the measured noise of the <i>matched-filtered</i> difference, sigma-clipped and computed per frame on valid pixels only. With true photometric matching the noise floor is real, so 3&ndash;4&sigma; is usable for faint objects.</td></tr>
+<tr><td><b>Min area (px)</b></td><td>5</td><td>Minimum number of significant pixels, counted on the matched-filtered image <i>before</i> the connectivity dilation. Raise to suppress marginal noise clumps.</td></tr>
+<tr><td><b>PSF &sigma; (matched filter)</b></td><td>1.5</td><td>Width of the Gaussian the difference is convolved with before thresholding, in binned pixels (&asymp; star FWHM / 2.35). The single most important faint-object control &mdash; worth about 3&times; in SNR over raw-pixel thresholding, and it rejects single-pixel cosmic rays for free. Set <code>0</code> to threshold the raw difference.</td></tr>
+<tr><td><b>Max bbox dim (px)</b></td><td>200</td><td>Rejects large structures (nebulosity, aircraft or satellite trails) that are not point sources.</td></tr>
+<tr><td><b>Border exclude (%)</b></td><td>5.0</td><td>Zeroes a margin on each edge so any residual misregistration there cannot masquerade as transients.</td></tr>
+</table>
+
+<h3>3.5 Resource controls</h3>
+<table>
+<tr><th>Control</th><th>Default</th><th>What it does</th></tr>
+<tr><td><b>Parallel workers</b></td><td>&asymp; &frac12; CPU count (max 16)</td><td>Processes used for each pipeline stage. Defaults leave headroom for the GUI and OS; raise it on headless or benchmark runs.</td></tr>
+<tr><td><b>Bin factor</b></td><td>2</td><td>Downsamples every frame on load by N&times;N block averaging. <code>2</code> drops a 45&nbsp;MP frame to ~11&nbsp;MP, cuts memory and inter-process traffic ~4&times;, and slightly <i>raises</i> transient detection SNR (block averaging compresses read noise). Recommended for 24&nbsp;MP+ sensors unless you need sub-pixel bounding boxes. The WCS is rescaled to the binned grid so minor-body positions still land correctly.</td></tr>
+</table>
+<div class="tip"><b>Why binning helps rather than hurts.</b> For point-source <i>detection</i> you are not trying to resolve the object, only to find it above the noise. Averaging 2&times;2 blocks keeps the source flux while halving the read-noise standard deviation, so a transient that is marginal at full resolution is clearer at bin 2 &mdash; and the whole run uses a quarter of the memory.</div>
+
+<h2>4. Results window</h2>
+<p>When the run finishes, a non-modal <b>Anomaly Results</b> window opens. It is a single zoomable viewer fed on demand &mdash; not one tab per frame &mdash; so a 120-frame run opens instantly instead of building thousands of widgets.</p>
+
+<h3>4.1 The viewer and its three modes</h3>
+<p>Three mode buttons flip the single viewer without disturbing the playback:</p>
 <ul>
-  <li><b>Fit</b> (shortcut <b>F</b>) &mdash; scale the image to the window.</li>
-  <li><b>1:1</b> (shortcut <b>1</b>) &mdash; show at 100%, no zoom.</li>
-  <li><b>Zoom In</b> / <b>Zoom Out</b> (shortcuts <b>Ctrl++</b> / <b>Ctrl+-</b>) &mdash; smooth factor-of-1.25 zoom step. The current zoom level is shown as a percentage on the right.</li>
-  <li><b>Push to New View</b> &mdash; re-reads the original source file to recover its complete header + metadata, substitutes the anomaly-marked pixels, and creates a brand-new SASpro document. The pushed image keeps the original FITS/XISF header intact, so WCS, DATE-OBS, EXPTIME, and every other acquisition keyword follow it into the new view.</li>
+  <li><b>Search</b> &mdash; the stretched search frame with overlays. The frame the drift animation plays over.</li>
+  <li><b>Reference</b> &mdash; the shared reference, for comparing a flagged spot against the &ldquo;before.&rdquo;</li>
+  <li><b>Difference</b> &mdash; the signed difference, MAD-scaled for display so a bright transient does not blow out the view.</li>
+</ul>
+<p>Overlays: a <b>red box</b> marks an anomaly with no catalogue match (the interesting case &mdash; supernova, nova, variable, uncatalogued or faint asteroid, satellite, or artefact); a <b>green box</b> marks one that matched a catalogued minor body, labelled with the designation and absolute magnitude; a <b>yellow circle</b> marks every predicted minor body in the field whether or not an anomaly fell on it, so you can see which known bodies the threshold missed. Unmatched candidates are labelled with their peak significance in &sigma;. Labels avoid colliding with one another and can be toggled off in a crowded field.</p>
+
+<h3>4.2 Blink / Play</h3>
+<p><b>Play</b> cycles the search frames in sequence at the chosen <b>Rate (ms)</b>, so an actual moving object drifts visibly across the field while a static anomaly stays put &mdash; the whole reason to blink. Your zoom and pan are preserved across frames, so you can zoom into a corner, press Play, and watch the asteroid drift past it. Step one frame at a time with the <b>&#9664;</b> / <b>&#9654;|</b> buttons. Double-clicking a row in the tree pauses playback and jumps to that frame.</p>
+
+<h3>4.3 Detection controls (in-window Re-detect)</h3>
+<p>The detection knobs are repeated here, next to what they found, because tuning a threshold is something you do <i>while</i> looking at the result. <b>Re-detect</b> re-thresholds the cached difference images with these settings in a fraction of a second. In addition to Detection &sigma;, Min area, PSF &sigma; and Max dim, the window exposes:</p>
+<ul>
+  <li><b>Star mask grow</b> (default <code>4</code>, range 0&ndash;50) &mdash; grows the reference star mask by N pixels before it rejects detections. Turn this up when a star's halo or diffraction spikes shift slightly between frames and light up a ring of false positives around every bright star; a wider mask swallows that ring. This value is the full margin the mask extends past each star: <code>0</code> masks only the star cores, larger values reach further into the halo. Too wide and the mask starts covering real objects passing near a field star, so grow only as far as the residuals actually reach. Active only while <b>Reject at ref stars</b> is on.</li>
+  <li><b>Reject at ref stars</b> (default on) &mdash; suppresses detections that land on a reference-frame star. Turn <i>off</i> when hunting a supernova inside a galaxy or an object passing very close to a field star.</li>
 </ul>
 
-<h3>Mouse</h3>
+<h3>4.4 Toolbar, mouse and summary tree</h3>
 <ul>
-  <li><b>Ctrl + wheel</b> &mdash; zoom around the cursor. Plain wheel scrolls.</li>
-  <li><b>Left drag</b> &mdash; pan the view (cursor turns to a closed hand).</li>
+  <li><b>Zoom +</b> / <b>Zoom &minus;</b> / <b>Fit</b> / <b>1:1</b> on the toolbar; the mouse wheel zooms around the cursor with no modifier, <b>Shift + wheel</b> scrolls horizontally, and left-drag pans.</li>
+  <li><b>Labels</b> toggles the designation / significance text.</li>
+  <li><b>Push to New View</b> creates a new SASpro document from the frame currently shown, overlays included (&sect;9.14).</li>
+  <li>The <b>summary tree</b> at the bottom lists every search frame, its anomaly count, the peak &sigma; in it, and any identification. Expand a row to see each anomaly's bounding box, area and &sigma;; double-click to show that frame.</li>
 </ul>
+
+<h2>5. Minor-body cross-match</h2>
+<p>Click <b>Catalogue Minor Bodies in Field</b> in the results window. This is a deliberate, explicit step &mdash; a catalogue-plus-ephemeris query is not something to run on every frame automatically &mdash; and it opens a setup dialog first. A mirrored progress strip appears in the results window so you see activity even while it covers the main dialog.</p>
+
+<h3>5.1 Observation time &mdash; the thing that most often goes wrong</h3>
+<p>An ephemeris is only as good as its timestamp, and a silently wrong <code>DATE-OBS</code> looks <i>exactly</i> like &ldquo;no objects in this field.&rdquo; The dialog therefore shows the header value, where it came from, and the effective UTC and Julian Date it will actually use, recomputed live as you change the settings:</p>
+<ul>
+  <li><b>Header time is</b> &mdash; how to interpret <code>DATE-OBS</code>: UTC as written (the FITS standard); local time in <i>this computer's</i> timezone (converted with the daylight-saving rule in force on the night of the exposure, not today's); local time in a <i>named observing-site</i> timezone (DST resolved for that zone on that date, so it keeps working across the site's next DST change); or a fixed UTC offset for a site that does not observe DST. When the header carries a separate <code>DATE-LOC</code>, SASpro knows <code>DATE-OBS</code> is UTC by construction and says so.</li>
+  <li><b>Use mid-exposure</b> &mdash; evaluate the ephemeris at the middle of the exposure rather than its start. Minor bodies move during an exposure; the midpoint is where the predicted centroid should land.</li>
+  <li><b>Additional offset (hours)</b> &mdash; a manual nudge, shared with the WIMI tool through the same setting, for a camera that wrote local time or a DST slip.</li>
+</ul>
+<p>The anchor epoch is the frame <b>you are looking at</b>, not the reference &mdash; inspecting frame 108 of a night while anchoring on frame 1 would be a multi-hour epoch error, hundreds of pixels for a main-belt asteroid.</p>
+<div class="eq">effective time = header time  (&plusmn; exposure/2 if mid-exposure)  &minus; zone offset  + manual offset
+JD = effective time in UTC, as a Julian Date</div>
+
+<h3>5.2 Astrometry</h3>
+<p>Minor-body prediction needs a real astrometric solution on the reference. SASpro checks the attached WCS for genuineness &mdash; a header with no WCS keywords yields a <i>default</i> object pointing at RA&nbsp;0, Dec&nbsp;0 at one degree per pixel, which looks valid and silently projects the whole sky off-frame &mdash; and rejects anything whose derived scale or centre is implausible. If no usable solution is present, SASpro plate-solves on demand, running its full chain (in-house Gaia&nbsp;DR3 &rarr; ASTAP seeded &rarr; ASTAP blind &rarr; Astrometry.net local then web). The solve runs on the <i>binned linear reference</i> &mdash; the exact pixel grid the anomaly coordinates live on &mdash; so no post-hoc rescaling is needed.</p>
+
+<h3>5.3 Observer site (topocentric parallax)</h3>
+<p>Read from the acquisition header (<code>SITELAT</code> / <code>SITELONG</code> / <code>SITEELEV</code>) or SASpro settings, and editable in the dialog. With a site set, positions are topocentric rather than geocentric &mdash; worth about <code>4&Prime;</code> on a main-belt asteroid at 2&nbsp;AU and <code>18&Prime;</code> at 0.5&nbsp;AU, enough to make a marker miss when confirming a specific object against a plate solution.</p>
+
+<h3>5.4 Catalogue limits</h3>
+<ul>
+  <li><b>Asteroid H &le;</b> (absolute-magnitude cap, default <code>20</code>) and <b>Max asteroid</b> (row cap, default <code>50000</code>).</li>
+  <li><b>Comet H &le;</b> (default <code>15</code>) and <b>Max comet</b> (default <code>5000</code>).</li>
+</ul>
+
+<h3>5.5 Results and tracking</h3>
+<p>When the query returns, every anomaly that falls within the match radius of a predicted body is labelled with its designation. Crucially, each found body is then propagated to <b>every frame's own epoch</b>, so as you Play through the subs its yellow circle tracks it across the field &mdash; the drift that was the whole point of the hunt. Frames without a usable timestamp keep the anchor frame's positions. The progress bar reports through opening the database, selecting bright bodies, propagating orbits (the slow per-object step), and projecting onto pixels.</p>
+
+<h2>6. 3D Orbit Explorer</h2>
+<p>With bodies catalogued, <b>Explore Orbit (3D)</b> opens the in-app heliocentric orbit viewer for a chosen body at the frame's exact observation time &mdash; the Sun, the inner planets (plus Jupiter and beyond as the orbit requires), and the body with its full orbit, placed at that instant. Detection-matched bodies float to the top of the chooser. The viewer draws the body's current position, a drop line to the ecliptic plane (so its inclination reads at a glance), and the Earth&rarr;body sight line (the direction you imaged along), with its elements, perihelion/aphelion, period and current Sun/Earth distances in a side panel. It uses the same <code>pyqtgraph.opengl</code> renderer as the Gaia Stellar Neighborhood Explorer and shares the two-body geometry with the catalogue, so the marker lands where the cross-match placed the body. See the Orbit Explorer's own help for its controls.</p>
+<div class="tip">The Orbit Explorer reads the body's orbital elements straight from the minor-body catalogue row, so any body the cross-match found can be explored &mdash; whether or not it also appears on an external site.</div>
 
 <h2>7. New Instance</h2>
-<p>Clears every selection, resets threshold to <code>0.10</code>, drops the loaded preprocessed images, and clears the WCS / JD / predicted-minor-body state. Equivalent to closing and reopening the dialog but keeps your window position.</p>
+<p>Clears both selections, resets every option to its default, drops the cached images and differences, and clears the WCS / JD / minor-body state. Equivalent to reopening the dialog but keeping its position.</p>
 
-<h2>8. Minor-body cross-match</h2>
-<p>The minor-body path runs as a separate background operation after Process has produced anomalies. SASpro doesn't auto-trigger it on every search &mdash; it's a slow catalogue + ephemeris query, so you ask for it explicitly, and the dialog lets you tune the magnitude limits and time offset before kicking it off.</p>
+<h2>8. Technical details</h2>
+<p class="tech-lead">The parallel pipeline, the linear detector, and the minor-body path, in order.</p>
 
-<h3>Limits dialog</h3>
-<p>When the minor-body search is requested, a modal dialog asks for:</p>
-<ul>
-  <li><b>Asteroid H &le;</b> (absolute magnitude cap) &mdash; default <code>9.0</code>. Bright asteroids only. For deep searches, raise toward <code>15&ndash;18</code>.</li>
-  <li><b>Max asteroid</b> &mdash; cap on the number of asteroid rows pulled from the catalogue. Default <code>5000</code>.</li>
-  <li><b>Comet H &le;</b> &mdash; default <code>10.0</code>.</li>
-  <li><b>Max comet</b> &mdash; row cap for comets. Default <code>1000</code>.</li>
-  <li><b>Time offset (hours)</b> &mdash; shift the ephemeris epoch by this many hours relative to the reference image's mid-exposure JD. Useful for checking whether an anomaly's position matches a known body's position a few hours earlier or later (identifying trailing streaks, for example). Default <code>0</code>, range &plusmn;72 hours.</li>
-</ul>
+<h3>8.1 Parallel pipeline architecture</h3>
+<p>The whole run executes in a <code>QThread</code> that drives a <code>ProcessPoolExecutor</code> (with a thread-pool fallback for frozen builds), emitting progress signals so the GUI never blocks and Cancel is honoured between results. Each per-frame operation &mdash; load/cosmetic/bin, align, ADBE, photometric match + difference, display building &mdash; is a top-level worker function dispatched across the pool. Binning is applied inside the load worker so the full-resolution buffer never crosses the process boundary, cutting inter-process traffic by the bin factor squared on top of the memory drop.</p>
 
-<h3>Progress</h3>
-<p>The search runs in a background <code>QThread</code>-wrapped <code>QObject</code> worker, so the dialog stays responsive. A dedicated progress bar appears below the status label, reporting through the phases: opening the catalogue, selecting bright asteroids and comets, computing positions (asteroids then comets), projecting onto image pixels. On completion, SASpro re-opens the detailed results dialog with every anomaly annotated with its candidate matches.</p>
+<h3>8.2 Load, cosmetic correction, binning &mdash; order matters</h3>
+<p>Each frame is loaded, optionally cosmetic-corrected at full resolution, then optionally binned by integer-factor block averaging. The order is deliberate: hot pixels are single-pixel events, and binning first would smear them so the sigma filter could no longer catch them cleanly. Every later stage runs on the binned buffer. Each frame's own observation time is read while the file is open.</p>
 
-<h2>9. Technical details</h2>
-<p class="tech-lead">The preprocessing pipeline, difference extraction, and minor-body cross-match in order.</p>
+<h3>8.3 Star alignment</h3>
+<p>When enabled, each search frame is registered to the reference with <code>astroalign</code> (asterism matching with a robustness back-off), and warped with SASpro's shared anti-ring warp so resampling does not ring around bright stars. Registration leaves a zero / non-finite wedge at the frame edge wherever rotation moved data out of frame; that wedge is tracked as invalid (&sect;8.7).</p>
 
-<h3>9.1 Preprocessing pipeline</h3>
-<p>Both the reference and every search image run through identical preprocessing before subtraction:</p>
-<ol>
-  <li><b>Optional cosmetic correction</b> on search frames (&sect;2).</li>
-  <li><b>Background neutralisation</b> on colour frames (&sect;9.2).</li>
-  <li><b>Automatic Background Extraction</b> via SASpro's PolyGradientRemoval (&sect;9.3).</li>
-  <li><b>Asymmetric stretch</b> to target median 0.25 (&sect;9.4).</li>
-</ol>
-<p>The two sides are preprocessed independently with the same code path, so background levels, gradients, and brightness are matched. Any residual difference after preprocessing is &mdash; by construction &mdash; local structural difference, not global illumination.</p>
+<h3>8.4 ADBE background removal</h3>
+<p><code>abe_run</code> fits the background with a low-order polynomial (degree 0&ndash;6) and an optional radial-basis-function refinement, sampling away from stars with anchored median rescaling. It is run with no-data detection on (<code>ignore_nodata</code>): without it the polynomial would sample the dark alignment wedge &mdash; the dimmest pixels in the frame &mdash; and try to pull the real sky toward zero at the nearest edge. Running the same extraction on both sides matches their gradients to the same flat-zero reference, so the difference sees only local structure.</p>
 
-<h3>9.2 Background neutralisation</h3>
-<p>For colour frames, SASpro removes any residual tint by subtracting a per-channel offset derived from a 10% central sample patch. For each channel <code>c</code>, taking <code>med(C_c)</code> as the sample-region median and the mean of all three channel medians as the target:</p>
-<div class="matheq">I'_c = \frac{I_c - \delta_c}{1 - \delta_c},\quad \delta_c = \mathrm{med}(C_c) - \overline{\mathrm{med}(C)}</div>
-<p>The denominator <code>(1 - &delta;_c)</code> is the dynamic-range-preserving correction: a plain subtraction <code>I_c - &delta;_c</code> would push a bright white pixel below 1.0 wherever a channel was tinted up, and crush its headroom. Rescaling by <code>1 - &delta;_c</code> preserves white at white while removing the tint. Clipped to <code>[0, 1]</code>.</p>
-<p>Only applied to colour frames (<code>img.ndim == 3 and shape[2] == 3</code>). Mono frames pass through unchanged.</p>
+<h3>8.5 Photometric matching</h3>
+<p>Each search frame is put onto the reference's photometric system before subtraction:</p>
+<div class="eq">matched = (search &minus; bg_search) &middot; gain + bg_ref
+gain    = sigma-clipped median of  f_ref(i) / f_search(i)  over shared stars i</div>
+<p><code>bg</code> is each frame's sigma-clipped sky level (an additive pedestal); <code>gain</code> is a multiplicative throughput ratio measured from the aperture flux of bright, compact, unsaturated stars found in the reference and measured in both frames. The aperture radius scales with the bin factor. When fewer than five clean stars are available (sparse field, heavy cloud, bad alignment) it falls back to a noise-ratio gain and the log says so.</p>
+<div class="warn"><b>Why this replaced the old approach.</b> The original matched frames by the ratio of their MAD (a <i>noise</i> statistic) on <i>stretched</i> data. Both were fatal for faint work: the MAD ratio tracks sky and read noise, not throughput, so a 10% transparency drop left a ~13% residual on every star &mdash; the size of a 16th-magnitude object; and a per-frame nonlinear stretch gives two frames with slightly different skies different curves, leaving a curvature residual largest exactly at the background where a faint asteroid lives. That stretch-mismatch floor sat far above the noise floor, which is why lowering the threshold used to hit random noise before it reached the real signal. Matching from star flux on linear data removes both.</div>
 
-<h3>9.3 Automatic Background Extraction</h3>
-<p>SASpro's <code>PolyGradientRemoval</code> fits a 2D polynomial of degree 2 to the background and subtracts it in the original (linear) domain. The fit runs on a <code>4&times;</code> downsample with 100 sample points placed over the frame; sample locations are chosen to avoid stars and bright structures (the same algorithm as SASpro's standalone Polynomial Gradient Removal tool).</p>
-<p>Why on both sides: the whole point of the subtraction is to isolate local differences. A residual uncorrected gradient on either frame would print the gradient into the difference image and pollute the anomaly search. Running the same ABE on both sides matches their gradients to the same reference (flat zero), so the difference image sees only local structure.</p>
+<h3>8.6 Linear detection, display-only stretch</h3>
+<p>Detection runs entirely on linear data. A separate, compact 8-bit stretched copy (target median 0.25) is built <i>only</i> for the results viewer. Keeping the stretch out of the mathematics is the central correctness fix of this revision; keeping the display copy as 8-bit mono rather than float RGB is what holds a large results set to a few hundred megabytes instead of tens of gigabytes.</p>
 
-<h3>9.4 Asymmetric stretch</h3>
-<p>Both sides are stretched to the same target median:</p>
-<div class="matheq">\mu_{\mathrm{target}} = 0.25</div>
-<p>via SASpro's shared midtones-transfer stretch (<code>stretch_mono_image</code> / <code>stretch_color_image</code>, same code used by GHS and Autostretch). The 0.25 target is deliberately brighter than a conventional linear or quarter-median stretch &mdash; it pushes faint positive residuals into a visible brightness regime where the threshold slider can bite on them, while leaving the deep background still noticeably dark. For visual transient hunting on web-exported JPEGs this is close to ideal.</p>
-<p>Colour frames are stretched per-channel unlinked, so the ABE'd colour balance is preserved into the stretched output.</p>
+<h3>8.7 Validity mask</h3>
+<p>Pixels where either frame has no data &mdash; the alignment wedge, or a NaN &mdash; are marked invalid and eroded to drop the resampling fringe at the wedge edge. Invalid pixels are excluded from both the noise estimate and detection; leaving the wedge in would inflate the noise and desensitise the whole frame.</p>
 
-<h3>9.5 Difference imaging</h3>
-<p>Both frames collapse to mono (channel average for RGB) and the stretched reference is subtracted from the stretched search:</p>
-<div class="matheq">D(x, y) = \mathrm{clip}\!\left( I_{\mathrm{search}}(x, y) - I_{\mathrm{ref}}(x, y),\; 0,\; 1 \right)</div>
-<p>Clipping the lower bound at zero makes this a <b>positive-only</b> detector &mdash; it will find things that appeared or brightened, never things that disappeared or dimmed. For transient-source discovery that's exactly the physics: supernovae, novae, dwarf-nova outbursts, and asteroids passing through all show as new / brightened pixels. A star variable that fades isn't being searched for here (and classical difference imaging with a two-sided threshold would catch it, but at much higher false-positive rates). The upper clip at 1.0 is defensive, not substantive &mdash; stretched values stay in <code>[0, 1]</code> already.</p>
+<h3>8.8 Difference and noise</h3>
+<p>The linear difference is <code>diff = matched &minus; I_ref</code>, zeroed outside the valid region. Its noise is estimated by iterative MAD clipping on valid pixels only, so stars and genuine transients do not inflate the threshold. This cached <code>(diff, valid, &sigma;)</code> per frame is all the detection stage needs.</p>
 
-<h3>9.6 Border exclusion</h3>
-<p>A 5% border on each side of the frame is zeroed out of the detection mask:</p>
-<div class="matheq">\mathcal{M}(x, y) = 0 \;\; \mathrm{if}\;\; x < 0.05 W \;\mathrm{or}\; x > 0.95 W \;\mathrm{or}\; y < 0.05 H \;\mathrm{or}\; y > 0.95 H</div>
-<p>Why: if the two frames weren't perfectly aligned going in (small rotation, differential drift, atmospheric refraction at low altitudes), the edges of the frame are where the misregistration prints the strongest, and they would produce rings of edge-aligned false transients. Masking the outer 5% off keeps the detector well-behaved on imperfect alignment at the cost of ignoring any real transients in the extreme corners.</p>
+<h3>8.9 Matched filtering</h3>
+<p>A faint point source clears a few-sigma pixel cut on only one or two pixels, which then die to the min-area filter &mdash; too faint to pass on area, too bright to ignore. Convolving the difference with a Gaussian matched to the PSF is the optimal linear detector for a point source:</p>
+<div class="eq">D_f = D &lowast; G(&sigma;_psf)</div>
+<p>It attenuates the source peak by about 2&times; but suppresses pixel-to-pixel noise far more, a net SNR gain near 3&times; for typical seeing, and it rejects single-pixel cosmic rays for free. The noise is <b>re-measured on the filtered image</b> &mdash; filtering changes it by the root-sum-square of the kernel, roughly 6&times; smaller for a &sigma;&nbsp;=&nbsp;1.5 kernel &mdash; so reusing the raw-difference noise would set the threshold about six times too high and find nothing. Set PSF&nbsp;&sigma;&nbsp;=&nbsp;0 to threshold the raw difference instead.</p>
 
-<h3>9.7 Connected-components grouping</h3>
-<p>SASpro thresholds the difference image at the user's slider setting:</p>
-<div class="matheq">\mathcal{M}(x, y) = \mathbb{1}\!\left[ D(x, y) > \tau \right]</div>
-<p>and runs 8-connected components labelling (<code>cv2.connectedComponentsWithStats</code>) to group the above-threshold pixels into distinct candidate anomalies. Each component gets a bounding box <code>(minX, minY, maxX, maxY)</code> and an area in pixels &mdash; the pieces of information the preview and the minor-body cross-match need.</p>
+<h3>8.10 Reference star mask</h3>
+<p>A mask of the reference's stars (threshold at median&nbsp;+&nbsp;k&middot;&sigma;, k&nbsp;=&nbsp;10) is stored undilated. At detection time it is dilated by the <b>Star mask grow</b> value and subtracted from the threshold mask, so alignment-residual and shifting-halo false positives at bright stars are removed. Storing it undilated means the grow margin is fully re-tunable per Re-detect without rebuilding the mask.</p>
 
-<h3>9.8 Area filtering</h3>
-<p>Components are kept only if:</p>
-<div class="matheq">25 \leq \mathrm{area}(c) \quad \mathrm{and} \quad \max(w_c, h_c) \leq 200</div>
-<p>The lower bound rejects noise speckle: a single hot pixel or an edge artefact that scraped past the border exclusion is tiny; a real transient on a stacked frame will seat on 25+ connected pixels after stretching. The upper bound rejects large structures &mdash; a globally-brighter nebulosity region, a passing airplane trail, or a satellite streak. For transient-point-source hunting both ends of the filter are appropriate.</p>
-<p>If you need to catch something intermediate (a bright comet coma, say), consider raising the max bound or dropping this filter in a one-off edit.</p>
+<h3>8.11 Thresholding, grouping, filtering</h3>
+<div class="eq">raw = D_f &gt; median(D_f) + k&middot;&sigma;(D_f)        then  &and; valid  &and; not star-mask  &and; not border
+label 8-connected components (dilated 1&nbsp;px for connectivity only)
+keep if  area &ge; min_area  and  width,height &le; max_dim</div>
+<p>The 1-pixel connectivity dilation only ensures a source that threshold-fragments into islands is labelled once; area is still counted on the undilated mask, so <b>Min area</b> keeps meaning &ldquo;significant pixels,&rdquo; not &ldquo;pixels after inflation.&rdquo; Each surviving component reports its bounding box, area, centroid, matched-filter peak significance (how detections are ranked) and raw-difference significance.</p>
 
-<h3>9.9 Mid-exposure JD derivation</h3>
-<p>For minor-body cross-matching, SASpro needs the exact observation time of the reference frame. The clock used is the midpoint of the reference's exposure:</p>
-<div class="matheq">\mathrm{JD}_{\mathrm{mid}} = \mathrm{JD}_{\mathrm{obs}} + \frac{t_{\mathrm{exp}}}{2 \cdot 86400}</div>
-<p>where <code>JD_obs</code> is derived from the <code>DATE-OBS</code> keyword and <code>t_exp</code> is the exposure time in seconds (<code>EXPTIME</code> or <code>EXPOSURE</code>).</p>
-<p>Minor bodies move during the exposure; the midpoint is where they are &ldquo;on average&rdquo; across the frame and where their predicted centroid should land. Three retrieval paths:</p>
-<ol>
-  <li><b>XISF path</b>: <code>DATE-OBS</code> and <code>EXPOSURE</code> (or <code>EXPTIME</code>) from the file's <code>FITSKeywords</code> metadata, parsed through astropy's <code>Time</code>. Handles the ISO-8601-with-fractional-seconds format that SharpCap / N.I.N.A. / SGP emit.</li>
-  <li><b>FITS path</b>: <code>DATE-OBS</code> and <code>EXPTIME</code>/<code>EXPOSURE</code> from the FITS header. Converted to TT scale (<code>t.tt.jd</code>) because that's the planetary-ephemeris reference.</li>
-  <li><b>None</b>: minor-body search aborts with an explanation. Try plate-solving first if the file lost its header.</li>
-</ol>
+<h3>8.12 Two-stage detection and Re-detect</h3>
+<p>Stage A (expensive: align, ADBE, photometric match, difference) is cached per frame. Stage B (cheap: filter, threshold, group, filter) is a pure function of the cached arrays plus the knobs. Re-detect runs Stage B alone against the cache, so sweeping Detection&nbsp;&sigma;, Min area, PSF&nbsp;&sigma;, Star mask grow or Reject-at-stars costs tens of milliseconds per frame instead of a full reprocess.</p>
 
-<h3>9.10 Lazy plate solve</h3>
-<p>Minor-body prediction requires a WCS on the reference. If one is already attached (because the frame came from a solved stacking integration, say), SASpro uses it directly. If not, it calls into the Plate Solver's four-pass core (<code>_solve_numpy_with_fallback</code>) on-demand, strips any existing WCS keywords from the acquisition header via <code>_strip_wcs_keys</code>, and merges the fresh solver WCS back in via <code>_merge_wcs_into_base_header</code>. The result is identical to what Plate Solver would produce as a standalone tool, so the fall-back ladder (Gaia DR3 engine &rarr; ASTAP seeded &rarr; ASTAP blind &rarr; astrometry.net) is available here too.</p>
+<h3>8.13 WCS rescaling for binning</h3>
+<p>When binning is active the reference WCS is rescaled so pixel <code>(x,y)</code> in the binned frame still maps to the same sky position:</p>
+<div class="eq">CRPIX &rarr; (CRPIX &minus; 0.5)/f + 0.5      CDELT &rarr; CDELT&middot;f      CD &rarr; CD&middot;f
+SIP A_mn &rarr; A_mn &middot; f^(1 &minus; m &minus; n)      NAXIS &rarr; NAXIS / f</div>
+<p>Both the CDELT+CROTA and CD-matrix conventions are handled, and SIP distortion terms are adjusted so the mapping is invariant under the pixel rescale. Without this the minor-body cross-match would land one bin factor off.</p>
 
-<h3>9.11 Catalogue query</h3>
-<p>The minor-body catalogue (SASpro's packaged MPC + comet orbit database, managed by <code>minorbodycatalog</code>) is queried for bright asteroids and comets up to the user-configured absolute-magnitude caps (<code>H_ast_max</code>, <code>H_com_max</code>) with row count caps for each (<code>ast_max_count</code>, <code>com_max_count</code>). The result is two DataFrames of orbital elements.</p>
+<h3>8.14 Minor-body ephemerides</h3>
+<p>Positions are computed with astropy and a local two-body propagator &mdash; no network, no Skyfield frame issues. Mean-anomaly elements (asteroids) use the catalogue's own mean daily motion; perihelion elements (comets, including <code>e&nbsp;&ge;&nbsp;1</code>) are propagated through Barker's equation or the hyperbolic Kepler equation as the conic requires. A light-time iteration places each body where it was when the light left it (12&ndash;17 minutes earlier for a main-belt asteroid, 6&ndash;9&Prime; of motion); the result is the astrometric place, light-time corrected but not aberration corrected, which is the right quantity to compare against a WCS fitted to catalogue star positions.</p>
 
-<h3>9.12 Ephemeris + WCS projection</h3>
-<p>Each selected body's position is propagated to the mid-exposure JD using Skyfield's catalogue ephemerides. Topocentric observation is used when the SASpro settings carry an observatory latitude, longitude, and elevation; otherwise geocentric (parallax error for an outer-main-belt asteroid at geocentric vs. topocentric is at most ~arcseconds, well below the default 60&nbsp;arcsec cross-match radius).</p>
-<p>The predicted RA/Dec is projected to pixel coordinates through the reference's WCS:</p>
-<div class="matheq">(\alpha, \delta) \;\;\overset{\mathrm{WCS}}{\to}\;\; (x, y)</div>
-<p>Bodies landing outside the frame are discarded; the survivors are the predicted catalogue positions on this specific frame.</p>
+<h3>8.15 Cross-match radius</h3>
+<p>Each anomaly's bounding-box centre is tested against every predicted body. The radius is given in arcseconds (60&Prime; default) and converted to pixels from the actual plate scale of the reference WCS:</p>
+<div class="eq">s = &radic;|det&nbsp;CD| &middot; 3600   [arcsec/pixel]      r_pix = r_arcsec / s
+match if  &radic;((x_body &minus; x_anom)&sup2; + (y_body &minus; y_anom)&sup2;)  &le;  r_pix</div>
+<p>Matching is done per frame against that frame's own epoch, because over a night a main-belt body drifts far beyond any sane radius. All matches inside the radius are kept, nearest first.</p>
 
-<h3>9.13 Cross-match</h3>
-<p>Each anomaly's bounding-box centre is tested against every predicted body position. The search radius is specified in arcseconds (60&nbsp;arcsec default) and converted to pixels using the actual plate scale derived from the reference WCS's CD matrix:</p>
-<div class="matheq">s = \sqrt{\left| \det \mathrm{CD} \right|} \cdot 3600 \;\; [\mathrm{arcsec/pix}]</div>
-<p>and the per-anomaly pixel search radius:</p>
-<div class="matheq">r_{\mathrm{pix}} = \frac{r_{\mathrm{arcsec}}}{s}</div>
-<p>Pixel distance from the anomaly centre to each predicted body:</p>
-<div class="matheq">d = \sqrt{(x_{\mathrm{body}} - x_{\mathrm{anom}})^2 + (y_{\mathrm{body}} - y_{\mathrm{anom}})^2}</div>
-<p>and acceptance:</p>
-<div class="matheq">d \leq r_{\mathrm{pix}} \;\;\Rightarrow\;\; \mathrm{candidate\ match}</div>
-<p>All matches within the radius are kept and sorted by distance; the closest becomes the anomaly's primary match (the <code>matched_body</code> field), used to colour its box green in the preview. Multiple close candidates (two asteroids within an arcminute of each other) still both show up in the text results so you can inspect them.</p>
+<h3>8.16 Preview rendering</h3>
+<p>Overlays are drawn with OpenCV onto a per-frame 8-bit cache built lazily the first time each frame is shown. Anomaly boxes carry a small margin; a catalogue match gets one combined designation + magnitude label on the box, and labels are pushed apart with leader lines so two never overlap. Predicted bodies get yellow circles, labelled unless the same body was already named on its detection box.</p>
 
-<h3>9.14 Preview rendering</h3>
-<p>The anomaly-marked preview is drawn with OpenCV rectangle and circle primitives on an 8-bit RGB copy of the stretched image:</p>
-<ul>
-  <li><b>Rectangles</b> around every anomaly's bounding box with a 10-pixel margin added on each side. Green when <code>matched_bodies</code> is non-empty, red otherwise.</li>
-  <li><b>Yellow circles</b> (8-pixel radius, 2-pixel stroke) at every predicted minor-body pixel coordinate inside the frame, regardless of whether an anomaly fell on it. Lets you spot &ldquo;should-have-been-detected&rdquo; bodies that the threshold missed.</li>
-</ul>
-
-<h3>9.15 Push to new view</h3>
-<p>Pushing the anomaly-marked preview back into SASpro as a new document goes through a careful metadata-preserving path rather than just handing over the pixel buffer. The push handler:</p>
-<ol>
-  <li>Looks up the source file path that the preview window was opened from.</li>
-  <li>Re-reads the original file with <code>load_image(..., return_metadata=True)</code> to recover the complete header, bit-depth record, mono flag, and metadata dict.</li>
-  <li>Takes the anomaly-marked pixels from the preview (normalising from <code>[0, 255]</code> to <code>[0, 1]</code> if needed).</li>
-  <li>Creates a new SASpro document with the marked pixels but every piece of the original metadata attached &mdash; FITS header, XISF <code>FITSKeywords</code>, WCS, DATE-OBS, EXPTIME, the lot.</li>
-</ol>
-<p>Why this matters: the new document is a legitimate astronomy image, not a screenshot. You can plate-solve it (it will solve to the same solution, since it's the same field), feed it back into another SASpro tool, save it as FITS with proper headers, or send it to a collaborator for independent confirmation.</p>
+<h3>8.17 Push to new view</h3>
+<p>Pushing re-reads the original source file with its full metadata, substitutes the overlay-marked pixels, and creates a new SASpro document carrying the original FITS/XISF header, WCS and acquisition keywords intact. The result is a real astronomy image, not a screenshot &mdash; you can plate-solve it, feed it to another tool, or send it for independent confirmation.</p>
 
 <div class="credit">
-<b>Credits.</b> The transient-hunt orchestration and minor-body cross-match workflow are new work by <b>Franklin Marek</b> for SetiAstro Suite Pro. SASpro-exclusive content: the <b>cosmetic-correct &rarr; background-neutralise &rarr; ABE &rarr; stretch &rarr; subtract &rarr; threshold &rarr; connected-components &rarr; area-filter &rarr; cross-match &rarr; colour-code</b> pipeline composition; the <b>asymmetric positive-only difference</b> (<code>clip(S - R, 0, 1)</code>) that filters the detector to new/brightened sources; the <b>5% border exclusion</b> against alignment-edge artefacts; the <b>minor-body cross-match path</b> (lazy plate solve, mid-exposure JD from XISF or FITS header, Skyfield ephemerides topocentric when a site is configured, plate-scale-aware pixel search radius from <code>&radic;|det&nbsp;CD|&middot;3600</code>, nearest-match primary + full candidate list); the <b>colour-coded anomaly preview</b> (green matched / red unmatched / yellow predicted) and its interactive <code>QGraphicsView</code> with <code>Ctrl + wheel</code> cursor-anchored zoom; the <b>metadata-preserving push-to-view</b> that re-reads the source file so the pushed anomaly image keeps its original FITS/XISF header intact; and the <b>background-threaded minor-body worker</b> with its <code>QThread</code> + <code>QObject</code> + <code>moveToThread</code> lifecycle and granular progress callbacks are original work.
+<b>Credits.</b> The rebuilt transient-hunt orchestration and minor-body cross-match are original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. SASpro-exclusive content: the <b>parallel load &rarr; cosmetic &rarr; bin &rarr; align &rarr; ADBE &rarr; photometric-match &rarr; difference &rarr; matched-filter &rarr; threshold &rarr; group &rarr; area-filter &rarr; cross-match</b> pipeline on a <code>QThread</code>-driven process pool; <b>detection on linear data</b> with a display-only stretch; the <b>star-flux photometric match</b> (<code>matched = (search&minus;bg)&middot;gain+bg_ref</code>, gain from shared-star aperture flux) replacing the old MAD-ratio-on-stretched-data scaling; the <b>PSF matched filter</b> with noise re-measured on the filtered image; the <b>reference star mask</b> with its re-tunable grow margin; the <b>validity/no-data wedge</b> handling; integer-factor <b>binning</b> with full <b>WCS (including SIP) rescaling</b>; the <b>two-stage cached-difference detection</b> and sub-second Re-detect; the <b>single-viewer blink results window</b> (Search/Reference/Difference, drift-preserving zoom, lazy overlay cache); the <b>minor-body path</b> (genuine-WCS check that rejects the default unsolved solution, on-demand plate solve on the binned linear reference, DST-aware observation-time model with live effective-UTC/JD readout, mid-exposure handling, topocentric parallax, <b>per-frame propagation</b> so moving objects track through the blink, plate-scale-aware match radius); the <b>metadata-preserving Push to New View</b>; and the <b>3D Orbit Explorer</b> hand-off.
 <br><br>
-Reused SASpro primitives (also original SASpro work, cross-credited): <b>bulk cosmetic correction</b> via the shared Numba kernel (<code>bulk_cosmetic_correction_numba</code>, 5&sigma; hot + 5&sigma; cold); <b>Polynomial Gradient Removal</b> (<code>PolyGradientRemoval</code>, degree-2 polynomial, 4&times; downsample, 100 sample points); <b>midtones-transfer stretch</b> (<code>stretch_mono_image</code> / <code>stretch_color_image</code>, same code behind Autostretch and GHS); <b>unified image I/O</b> (<code>load_image</code>, <code>save_image</code>) for FITS, XISF, TIFF, PNG with metadata round-tripping; the <b>Plate Solver</b> four-pass fallback ladder (<code>_solve_numpy_with_fallback</code>, <code>_strip_wcs_keys</code>, <code>_merge_wcs_into_base_header</code>) which is reused here for on-demand WCS attachment; and the <b>minor-body catalogue</b> infrastructure (<code>minorbodycatalog</code> with its MPC + comet orbit database, <code>ensure_minor_body_db</code> managed-download, and Skyfield-driven position computation).
+Reused SASpro primitives (also original SASpro work, cross-credited): <b>bulk cosmetic correction</b> (shared Numba kernel, 5&sigma; hot + 5&sigma; cold); <b>Automatic Dynamic Background Extraction</b> (<code>abe_run</code>, polynomial + optional RBF, no-data aware); <b>star alignment</b> (<code>astroalign</code> transform with robustness back-off plus the shared anti-ring warp); the <b>midtones-transfer stretch</b> used for the display copy; <b>unified image I/O</b> (<code>load_image</code> / <code>save_image</code>) for FITS, XISF, TIFF, PNG with metadata round-tripping; the <b>Plate Solver</b> fallback ladder (in-house Gaia&nbsp;DR3 &rarr; ASTAP seeded &rarr; ASTAP blind &rarr; Astrometry.net) reused for on-demand WCS; the <b>minor-body catalogue</b> infrastructure (<code>minorbodycatalog</code>, managed MPC + comet database, astropy/Kepler position computation); and the <b>3D Orbit Explorer</b> (<code>orbit_explorer</code>, <code>pyqtgraph.opengl</code>).
 <br><br>
-External algorithms and tools: <b>difference imaging for transient detection</b> is a classical technique in time-domain astronomy; the proper PSF-matched version is <b>Alard &amp; Lupton (1998, ApJ 503:325)</b>, and SASpro's simpler aligned-subtraction form is appropriate when input stacks have been co-registered and background-matched (as they are here by the shared preprocessing path). <b>Connected-component labelling</b> originates with <b>Rosenfeld &amp; Pfaltz (1966, J. ACM 13(4):471)</b>, with the modern two-scan implementation in OpenCV's <code>connectedComponentsWithStats</code>. <b>Mid-exposure epoch handling</b> for moving-source astrometry is standard IAU practice; the <b>TT time scale</b> (used for the FITS-fallback JD) is the correct reference for planetary and minor-body ephemerides.
+External algorithms and tools: <b>difference imaging for transient detection</b> is a classical time-domain technique, with the PSF-matched form due to <b>Alard &amp; Lupton (1998, ApJ 503:325)</b>; the <b>matched filter</b> as the optimal linear detector for a known-shape signal in additive noise is standard detection theory. <b>Connected-component labelling</b> originates with <b>Rosenfeld &amp; Pfaltz (1966, J. ACM 13(4):471)</b>, implemented here via OpenCV's two-scan <code>connectedComponentsWithStats</code>. Asterism-based registration follows <b>astroalign (Beroiz, Cabral &amp; Sanchez 2020, A&amp;C 32:100384)</b>. Mid-exposure epoch handling and light-time correction are standard IAU practice for moving-source astrometry.
 <br><br>
-Libraries: <b>OpenCV</b> (<code>cv2</code>) provides connected-components, rectangle and circle drawing, and the base image-processing primitives. <b>NumPy</b> provides array operations and linear-algebra helpers (<code>linalg.det</code> for the plate-scale derivation). <b>Astropy</b> provides the WCS implementation (<code>astropy.wcs.WCS</code>), the Time object with scale conversions (UTC &harr; TT) and ISO-8601 parsing (<code>astropy.time.Time</code>), units (<code>astropy.units</code>), and the FITS header I/O (<code>astropy.io.fits.Header</code>). <b>Skyfield</b> computes the minor-body ephemerides from the catalogue orbital elements using JPL DE-series planetary ephemerides. <b>PyQt6</b> provides the UI framework: <code>QGraphicsView</code> / <code>QGraphicsScene</code> for the zoomable preview, <code>QTreeWidget</code> for the results tree, the <code>QThread</code>+<code>QObject</code> worker pattern, and the dialog toolkit.
+Libraries: <b>OpenCV</b> (connected components, morphology, drawing, separable Gaussian filtering); <b>NumPy</b> (arrays, <code>linalg.det</code> for the plate scale); <b>Astropy</b> (<code>WCS</code>, <code>Time</code> with UTC&harr;TT scales and ISO-8601 parsing, units, FITS header I/O, and solar-system ephemerides for the position computation); <b>astroalign</b> (frame registration); <b>pyqtgraph</b> + <b>PyOpenGL</b> (the 3D Orbit Explorer); and <b>PyQt6</b> (the <code>QGraphicsView</code> viewer, the results tree, and the <code>QThread</code> + process-pool worker pattern).
 </div>
 
 </body>
