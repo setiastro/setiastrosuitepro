@@ -1242,10 +1242,15 @@ class SERViewer(QDialog):
             dlg.setDirectory(start_dir)
         dlg.setFileMode(QFileDialog.FileMode.ExistingFiles)
         dlg.setNameFilters([
-            "Planetary Sources (*.ser *.avi *.mp4 *.mov *.mkv *.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp *.fit *.fits)",
+            "Planetary Sources (*.ser *.avi *.mp4 *.mov *.mkv "
+            "*.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp "
+            "*.fit *.fits *.fts *.fz *.gz *.xisf "
+            "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef)",
             "SER Videos (*.ser)",
             "AVI/Video (*.avi *.mp4 *.mov *.mkv)",
-            "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp *.fit *.fits)",
+            "Images (*.png *.tif *.tiff *.jpg *.jpeg *.bmp *.webp)",
+            "FITS/XISF (*.fit *.fits *.fts *.fz *.gz *.xisf)",
+            "RAW camera (*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef)",
             "All Files (*)",
         ])
 
@@ -1905,4 +1910,3 @@ class SERViewer(QDialog):
 
         # Fallback
         return getattr(self.reader, "path", None)
-

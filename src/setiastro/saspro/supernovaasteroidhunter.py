@@ -1262,11 +1262,31 @@ class HunterPipelineThread(QThread):
         self.progress.emit(int(done), int(total), str(msg))
         self.log.emit(msg)
 
-    def _run_pool(self, worker_fn, items, label, workers):
+    def _run_pool(self, worker_fn, items, label, workers, n_fields=3):
         """
         Drive one pass across a list of items through a process pool. Yields
         results as they come in. Honours cancellation between results.
+
+        Every result is a tuple of width `n_fields` whose FIRST element is
+        the item's path/tag and whose LAST element is an error string (or
+        None) — the shape each caller unpacks. `n_fields` must match that
+        caller (4 for load, 6 for the diff pass, 3 otherwise) so the
+        crash-fallback below can synthesise a correctly shaped result.
+
+        Why this matters: when a worker process dies — a segfault or an
+        OOM kill in any one task marks the whole ProcessPoolExecutor
+        broken, so EVERY pending fut.result() then raises
+        BrokenProcessPool — the fallback must still yield something the
+        caller can unpack. The old fallback used the whole input ITEM as
+        the first element; for the align/adbe/diff passes that item is a
+        tuple containing numpy arrays, so using it as a dict key blew up
+        with "unhashable type: 'numpy.ndarray'" and masked the real
+        failure. Use the item's path (its first element) instead.
         """
+        def _err_result(it, msg):
+            tag = it[0] if isinstance(it, (tuple, list)) and len(it) else it
+            return (tag,) + (None,) * (n_fields - 2) + (msg,)
+
         total = len(items)
         done = 0
         self._emit(done, total, f"{label}: starting ({total} tasks, {workers} workers)")
@@ -1281,7 +1301,7 @@ class HunterPipelineThread(QThread):
                 try:
                     res = fut.result()
                 except Exception as e:
-                    res = (futs[fut], None, f"worker crashed: {e}")
+                    res = _err_result(futs[fut], f"worker crashed: {e}")
                 done += 1
                 self._emit(done, total, f"{label}: {done}/{total}")
                 yield res
@@ -1340,6 +1360,7 @@ class HunterPipelineThread(QThread):
             load_items = [(p, do_cosmetic, bin_factor) for p in all_paths]
             for path, img, obs, err in self._run_pool(
                 _worker_load_and_cosmetic, load_items, "Load / cosmetic", workers,
+                n_fields=4,
             ):
                 if err:
                     self.log.emit(f"⚠ {err}")
@@ -1494,7 +1515,7 @@ class HunterPipelineThread(QThread):
             diffs, valids, sigmas, infos = {}, {}, {}, {}
             for path, diff, valid, sigma, info, err in self._run_pool(
                 _worker_make_diff, diff_items,
-                "Photometric match + difference", workers,
+                "Photometric match + difference", workers, n_fields=6,
             ):
                 if err:
                     self.log.emit(f"⚠ {os.path.basename(str(path))}: {err}")
