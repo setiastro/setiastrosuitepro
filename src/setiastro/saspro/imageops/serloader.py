@@ -1178,83 +1178,42 @@ class AVIReader(PlanetaryFrameSource):
 # -----------------------------
 # Image-sequence reader
 # -----------------------------
-def _imread_any(path: str) -> np.ndarray:
+def _load_still(path: str) -> Tuple[np.ndarray, object]:
+    """
+    Load a single still frame (FITS / TIFF / PNG / JPEG / …) through SASpro's
+    GLOBAL image loader so the planetary pipeline sees exactly what the rest of
+    the app sees: correct bit-depth scaling, ROWORDER normalised to top-down,
+    embedded-metadata/WCS recovery, and — crucially for OSC — the Bayer header
+    (BAYERPAT/XBAYROFF/…) carried through so the sequence reader can debayer.
+
+    Returns ``(image_float01, header)``. ``header`` is a fits.Header (or dict,
+    or None) and is what the AUTO path reads the Bayer pattern from.
+
+    A Bayer FITS comes back as a RAW 2-D mosaic (load_image does NOT demosaic a
+    mono frame) — exactly what ImageSequenceReader.get_frame() needs so IT owns
+    the demosaic. This is hard-required: if the global loader can't be imported
+    or fails, we raise rather than silently falling back to a header-blind read
+    (which is the whole bug this replaces).
+    """
     p = os.fspath(path)
-    ext = os.path.splitext(p)[1].lower()
+    try:
+        from setiastro.saspro.legacy.image_manager import load_image
+    except Exception as e:
+        raise RuntimeError(
+            "Planetary still/sequence loading requires the global image loader "
+            f"(setiastro.saspro.legacy.image_manager.load_image), which failed "
+            f"to import: {e}"
+        )
 
-    # ---- FITS / FIT ----
-    if ext in (".fit", ".fits"):
-        try:
-            from astropy.io import fits
-            data = fits.getdata(p, memmap=False)
-            if data is None:
-                raise ValueError("Empty FITS data.")
-            arr = np.asarray(data)
-            if arr.ndim == 3:
-                if arr.shape[0] in (1, 3, 4) and arr.shape[1] > 8 and arr.shape[2] > 8:
-                    arr = np.moveaxis(arr, 0, -1)
-                if arr.shape[-1] >= 4:
-                    arr = arr[..., :3]
-                if arr.shape[-1] == 1:
-                    arr = arr[..., 0]
-            return arr
-        except Exception as e:
-            raise RuntimeError(f"Failed to read FITS: {p}\n{e}")
+    result = load_image(p, return_metadata=True)
+    # load_image returns (image, header, bit_depth, is_mono[, meta]); on failure
+    # it returns an all-None tuple instead of raising.
+    if not result or result[0] is None:
+        raise RuntimeError(f"Global loader could not read still frame: {p}")
 
-    # Prefer cv2 if available
-    if cv2 is not None:
-        # Attempt to suppress C-level stderr (libpng CRC warnings etc.)
-        # Falls back silently if fd redirection isn't available (frozen env, bad fd, etc.)
-        _saved_fd = None
-        _devnull_fd = None
-        try:
-            _devnull_fd = os.open(os.devnull, os.O_WRONLY)
-            _saved_fd = os.dup(2)
-            os.dup2(_devnull_fd, 2)
-        except OSError:
-            # Can't redirect stderr — just read without suppression
-            if _devnull_fd is not None:
-                try:
-                    os.close(_devnull_fd)
-                except OSError:
-                    pass
-            _saved_fd = None
-            _devnull_fd = None
-
-        try:
-            img = cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-        finally:
-            if _saved_fd is not None:
-                try:
-                    os.dup2(_saved_fd, 2)
-                except OSError:
-                    pass
-                try:
-                    os.close(_saved_fd)
-                except OSError:
-                    pass
-            if _devnull_fd is not None:
-                try:
-                    os.close(_devnull_fd)
-                except OSError:
-                    pass
-
-        if img is not None:
-            if img.ndim == 3 and img.shape[2] >= 3:
-                img = img[..., :3]
-                img = img[..., ::-1].copy()  # BGR -> RGB
-            return img
-
-    # PIL fallback
-    if Image is None:
-        raise RuntimeError("Neither OpenCV nor PIL are available to read images.")
-    im = Image.open(p)
-    if im.mode in ("I;16", "I;16B", "I"):
-        return np.array(im)
-    if im.mode in ("L",):
-        return np.array(im)
-    im = im.convert("RGB")
-    return np.array(im)
+    image = result[0]
+    header = result[1] if len(result) > 1 else None
+    return np.asarray(image), header
 
 def _to_float01_robust(img: np.ndarray) -> np.ndarray:
     """
@@ -1314,15 +1273,35 @@ class ImageSequenceReader(PlanetaryFrameSource):
     Reads a list of image files as frames.
     Supports random access; caches decoded frames for smooth scrubbing.
     """
-    def __init__(self, files: Sequence[str], *, cache_items: int = 10):
+    def __init__(
+        self,
+        files: Sequence[str],
+        *,
+        cache_items: int = 10,
+        preload: bool = False,
+        progress_cb: Optional[ProgressCB] = None,
+    ):
         flist = [os.fspath(f) for f in files]
         if not flist:
             raise ValueError("Empty image sequence.")
         self.files = flist
         self.path = flist[0]
 
-        #sasprobe first frame
-        first = _imread_any(flist[0])
+        # Raw (image, header) per frame, materialised once through the GLOBAL
+        # loader. The expensive disk read + load_image work happens here; every
+        # later get_frame() (any roi/debayer combination) reuses this array, so
+        # the per-call LRU below only ever caches cheap post-processing.
+        self._raw: Dict[int, np.ndarray] = {}
+        self._headers: Dict[int, object] = {}
+
+        # Probe first frame through the GLOBAL loader (hard-required). This is
+        # what fixes OSC debayering for FITS sequences: load_image carries the
+        # Bayer header through, normalises bit-depth, and reorients ROWORDER —
+        # none of which the old header-blind _imread_any did.
+        first, first_hdr = _load_still(flist[0])
+        self._raw[0] = first
+        self._headers[0] = first_hdr
+
         h, w = first.shape[:2]
         depth = _infer_bit_depth(first)
         if first.ndim == 2:
@@ -1344,9 +1323,82 @@ class ImageSequenceReader(PlanetaryFrameSource):
 
         self._cache = _LRUCache(max_items=cache_items)
 
+        # Eager preload: materialise every frame up front with progress so the
+        # viewer can show a "Loading frames" bar. Playback/scrub/Analyze are
+        # then served from RAM. progress_cb(done, total) is reported from
+        # whatever thread calls __init__ (the viewer runs this on a worker).
+        if preload:
+            self.preload_all(progress_cb=progress_cb)
+
+    def preload_all(self, *, progress_cb: Optional[ProgressCB] = None) -> None:
+        """
+        Read every frame through the global loader into RAM, reporting
+        progress. Idempotent: frames already resident are skipped. Any single
+        frame that fails to load is left absent (get_frame will retry/raise
+        later) rather than aborting the whole preload.
+        """
+        total = int(self.meta.frames)
+        if progress_cb:
+            try:
+                progress_cb(0, total)
+            except Exception:
+                pass
+        for i in range(total):
+            if i not in self._raw:
+                try:
+                    img, hdr = _load_still(self.files[i])
+                    self._raw[i] = img
+                    self._headers[i] = hdr
+                except Exception as e:
+                    print(f"[ImageSequenceReader] preload: frame {i} "
+                          f"({os.path.basename(self.files[i])}) failed: {e}")
+            if progress_cb:
+                try:
+                    progress_cb(i + 1, total)
+                except Exception:
+                    pass
+
+    def _load_frame(self, i: int) -> Tuple[np.ndarray, object]:
+        """Return raw (image, header) for frame ``i`` (RAM first, else disk)."""
+        img = self._raw.get(i)
+        if img is not None:
+            return img, self._headers.get(i)
+        img, hdr = _load_still(self.files[i])
+        self._raw[i] = img
+        self._headers[i] = hdr
+        return img, hdr
+
+    def _resolve_pattern(self, user_pat: Optional[str], header: object) -> Optional[str]:
+        """
+        Decide the effective Bayer pattern for a sequence frame.
+
+        - A user-forced pattern (not AUTO) always wins.
+        - AUTO: read BAYERPAT/XBAYROFF/… from this frame's FITS header via
+          bayer_utils.effective_bayer_from_header. A mono-luminance frame with
+          no Bayer card returns None → we leave it mono (never fabricate colour).
+
+        Returns a short token (RGGB/BGGR/GRBG/GBRG) or None.
+        """
+        if user_pat is not None:
+            return user_pat.replace("BAYER_", "")  # "BAYER_RGGB" -> "RGGB"
+        if header is None:
+            return None
+        try:
+            from setiastro.saspro.bayer_utils import effective_bayer_from_header
+            eff, _xoff, _yoff, _roworder = effective_bayer_from_header(header)
+            return eff  # already a short RGGB/… token or None
+        except Exception:
+            return None
+
     def close(self):
         try:
             self._cache.clear()
+        except Exception:
+            pass
+        # Release the preloaded frame buffers (can be large for long sequences).
+        try:
+            self._raw.clear()
+            self._headers.clear()
         except Exception:
             pass
 
@@ -1366,39 +1418,72 @@ class ImageSequenceReader(PlanetaryFrameSource):
         force_rgb: bool = False,
         bayer_pattern: Optional[str] = None,
     ) -> np.ndarray:
-        _ = debayer, bayer_pattern  # unused for sequences (for now)
         i = int(i)
         if i < 0 or i >= self.meta.frames:
             raise IndexError(f"Frame index {i} out of range (0..{self.meta.frames-1})")
 
+        # User's Bayer choice. None == AUTO (resolve from the frame's header).
+        user_pat = _normalize_bayer_pattern(bayer_pattern)  # "BAYER_RGGB" or None
+        pat_for_key = user_pat or "AUTO"
+
         roi_key = None if roi is None else tuple(int(v) for v in roi)
-        key = ("seq", i, roi_key, bool(to_float01), bool(force_rgb))
+        key = ("seq", i, roi_key, bool(debayer), pat_for_key,
+               bool(to_float01), bool(force_rgb))
         cached = self._cache.get(key)
         if cached is not None:
             return cached
 
-        img = _imread_any(self.files[i])
+        # Load through the global loader: already float32 [0,1], ROWORDER
+        # normalised to top-down, with the Bayer header available for AUTO.
+        img, header = self._load_frame(i)
 
-        # Basic consistency checks (don’t hard fail; some sequences have slight differences)
-        # If sizes differ, we’ll just use whatever comes back for that frame.
+        # If sizes differ frame-to-frame we just use whatever comes back.
         H, W = img.shape[:2]
 
-        # ROI
+        # Resolve the effective Bayer pattern (forced token or AUTO-from-header).
+        short_pat = self._resolve_pattern(user_pat, header) if debayer else None
+
+        # A genuine single-channel mosaic is required to demosaic.
+        is_true_mosaic = (img.ndim == 2) or (img.ndim == 3 and img.shape[2] == 1)
+        want_debayer = bool(debayer) and (short_pat is not None) and is_true_mosaic
+
+        # ROI (apply before debayer; enforce even-even origin so the Bayer
+        # phase is preserved — mirrors SERReader / AVIReader).
         if roi is not None:
             x, y, w, h = [int(v) for v in roi]
             x = max(0, min(W - 1, x))
             y = max(0, min(H - 1, y))
             w = max(1, min(W - x, w))
             h = max(1, min(H - y, h))
+            if want_debayer:
+                x, y = _roi_evenize_for_bayer(x, y)
+                w = max(1, min(W - x, w))
+                h = max(1, min(H - y, h))
             img = img[y:y + h, x:x + w]
+
+        if want_debayer:
+            # Collapse a packed (H,W,1) mosaic to 2-D.
+            mosaic = img if img.ndim == 2 else img[..., 0]
+
+            # SASpro's real demosaic (numba debayer_fits_fast via debayer_array).
+            # load_image already reoriented ROWORDER to top-down and returned
+            # float32 [0,1], so roworder="" (no second flip) and we trust the
+            # [0,1] mosaic as-is.
+            from setiastro.saspro.debayer import debayer_array
+            img = debayer_array(mosaic, pattern=short_pat, roworder="", method="rcd")
+            # debayer_array already returns float32 [0,1]; don't re-normalise.
+            to_float01 = False
 
         # Force RGB for mono
         if force_rgb and img.ndim == 2:
             img = np.stack([img, img, img], axis=-1)
 
-        # Normalize to float01
-        if to_float01:
+        # Normalize to float01 (load_image already gives [0,1]; this only acts
+        # if a caller passed an unexpected dtype and we didn't debayer).
+        if to_float01 and img.dtype != np.float32:
             img = _to_float01_robust(img)
+        elif to_float01:
+            img = np.clip(img.astype(np.float32, copy=False), 0.0, 1.0)
 
         self._cache.put(key, img)
         return img
@@ -1408,17 +1493,51 @@ class ImageSequenceReader(PlanetaryFrameSource):
 # Factory
 # -----------------------------
 
+# Still-image extensions routed to ImageSequenceReader (loaded via the global
+# image_manager.load_image). Must stay in step with the planetary open/batch
+# dialog filters in serviewer.py and with what load_image actually supports:
+#   - ordinary rasters:  png / tiff / jpg / bmp / webp
+#   - FITS + variants:   fit / fits / fts / fz (Rice) / .fits.gz,.fit.gz
+#   - XISF
+#   - RAW (rawpy/LibRaw): cr2 / cr3 / nef / arw / dng / raf / orf / rw2 / pef
+_STILL_EXTS = (
+    ".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".webp",
+    ".fit", ".fits", ".fts", ".fz", ".xisf",
+    ".cr2", ".cr3", ".nef", ".arw", ".dng", ".raf", ".orf", ".rw2", ".pef",
+)
+
+
+def _is_still_path(path: str) -> bool:
+    """True if ``path`` is a single still image the global loader can open."""
+    lower = os.fspath(path).lower()
+    if lower.endswith((".fits.gz", ".fit.gz")):   # double-extension FITS
+        return True
+    return os.path.splitext(lower)[1] in _STILL_EXTS
+
+
 def open_planetary_source(
     path_or_files: Union[str, Sequence[str]],
     *,
     cache_items: int = 10,
+    preload: bool = False,
+    progress_cb: Optional[ProgressCB] = None,
 ) -> PlanetaryFrameSource:
     """
     Open SER / AVI / image sequence under one API.
+
+    ``preload`` + ``progress_cb`` apply to image sequences (and single stills):
+    every frame is read through the global loader up front, reporting
+    progress(done, total), so the caller can show a "Loading frames" bar and
+    scrubbing afterward is served from RAM. SER/AVI ignore these (random access
+    is already cheap; a big SER's cost lands in Analyze, which has its own
+    progress), so the argument is harmless for them.
     """
     # Sequence
     if not isinstance(path_or_files, (str, os.PathLike)):
-        return ImageSequenceReader(path_or_files, cache_items=cache_items)
+        return ImageSequenceReader(
+            path_or_files, cache_items=cache_items,
+            preload=preload, progress_cb=progress_cb,
+        )
 
     path = os.fspath(path_or_files)
     ext = os.path.splitext(path)[1].lower()
@@ -1435,8 +1554,13 @@ def open_planetary_source(
     if ext in (".avi", ".mp4", ".mov", ".mkv"):
         return AVIReader(path, cache_items=cache_items)
 
-    # If user passes a single image, treat it as a 1-frame sequence
-    if ext in (".png", ".tif", ".tiff", ".jpg", ".jpeg", ".bmp", ".webp", ".fit", ".fits"):
-        return ImageSequenceReader([path], cache_items=cache_items)
+    # If user passes a single still image, treat it as a 1-frame sequence.
+    # (.fits.gz/.fit.gz report a bare ".gz" from splitext, so match on the
+    # full name via _is_still_path rather than ext alone.)
+    if _is_still_path(path):
+        return ImageSequenceReader(
+            [path], cache_items=cache_items,
+            preload=preload, progress_cb=progress_cb,
+        )
 
     raise ValueError(f"Unsupported input: {path}")
