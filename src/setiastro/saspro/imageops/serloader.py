@@ -1273,18 +1273,35 @@ class ImageSequenceReader(PlanetaryFrameSource):
     Reads a list of image files as frames.
     Supports random access; caches decoded frames for smooth scrubbing.
     """
-    def __init__(self, files: Sequence[str], *, cache_items: int = 10):
+    def __init__(
+        self,
+        files: Sequence[str],
+        *,
+        cache_items: int = 10,
+        preload: bool = False,
+        progress_cb: Optional[ProgressCB] = None,
+    ):
         flist = [os.fspath(f) for f in files]
         if not flist:
             raise ValueError("Empty image sequence.")
         self.files = flist
         self.path = flist[0]
 
+        # Raw (image, header) per frame, materialised once through the GLOBAL
+        # loader. The expensive disk read + load_image work happens here; every
+        # later get_frame() (any roi/debayer combination) reuses this array, so
+        # the per-call LRU below only ever caches cheap post-processing.
+        self._raw: Dict[int, np.ndarray] = {}
+        self._headers: Dict[int, object] = {}
+
         # Probe first frame through the GLOBAL loader (hard-required). This is
         # what fixes OSC debayering for FITS sequences: load_image carries the
         # Bayer header through, normalises bit-depth, and reorients ROWORDER —
         # none of which the old header-blind _imread_any did.
         first, first_hdr = _load_still(flist[0])
+        self._raw[0] = first
+        self._headers[0] = first_hdr
+
         h, w = first.shape[:2]
         depth = _infer_bit_depth(first)
         if first.ndim == 2:
@@ -1305,13 +1322,49 @@ class ImageSequenceReader(PlanetaryFrameSource):
         )
 
         self._cache = _LRUCache(max_items=cache_items)
-        # Per-frame FITS headers, resolved lazily on first read of each frame
-        # and reused so AUTO Bayer detection works on cache hits too.
-        self._headers: Dict[int, object] = {0: first_hdr}
+
+        # Eager preload: materialise every frame up front with progress so the
+        # viewer can show a "Loading frames" bar. Playback/scrub/Analyze are
+        # then served from RAM. progress_cb(done, total) is reported from
+        # whatever thread calls __init__ (the viewer runs this on a worker).
+        if preload:
+            self.preload_all(progress_cb=progress_cb)
+
+    def preload_all(self, *, progress_cb: Optional[ProgressCB] = None) -> None:
+        """
+        Read every frame through the global loader into RAM, reporting
+        progress. Idempotent: frames already resident are skipped. Any single
+        frame that fails to load is left absent (get_frame will retry/raise
+        later) rather than aborting the whole preload.
+        """
+        total = int(self.meta.frames)
+        if progress_cb:
+            try:
+                progress_cb(0, total)
+            except Exception:
+                pass
+        for i in range(total):
+            if i not in self._raw:
+                try:
+                    img, hdr = _load_still(self.files[i])
+                    self._raw[i] = img
+                    self._headers[i] = hdr
+                except Exception as e:
+                    print(f"[ImageSequenceReader] preload: frame {i} "
+                          f"({os.path.basename(self.files[i])}) failed: {e}")
+            if progress_cb:
+                try:
+                    progress_cb(i + 1, total)
+                except Exception:
+                    pass
 
     def _load_frame(self, i: int) -> Tuple[np.ndarray, object]:
-        """Load still ``i`` via the global loader, caching its header."""
+        """Return raw (image, header) for frame ``i`` (RAM first, else disk)."""
+        img = self._raw.get(i)
+        if img is not None:
+            return img, self._headers.get(i)
         img, hdr = _load_still(self.files[i])
+        self._raw[i] = img
         self._headers[i] = hdr
         return img, hdr
 
@@ -1340,6 +1393,12 @@ class ImageSequenceReader(PlanetaryFrameSource):
     def close(self):
         try:
             self._cache.clear()
+        except Exception:
+            pass
+        # Release the preloaded frame buffers (can be large for long sequences).
+        try:
+            self._raw.clear()
+            self._headers.clear()
         except Exception:
             pass
 
@@ -1460,13 +1519,25 @@ def open_planetary_source(
     path_or_files: Union[str, Sequence[str]],
     *,
     cache_items: int = 10,
+    preload: bool = False,
+    progress_cb: Optional[ProgressCB] = None,
 ) -> PlanetaryFrameSource:
     """
     Open SER / AVI / image sequence under one API.
+
+    ``preload`` + ``progress_cb`` apply to image sequences (and single stills):
+    every frame is read through the global loader up front, reporting
+    progress(done, total), so the caller can show a "Loading frames" bar and
+    scrubbing afterward is served from RAM. SER/AVI ignore these (random access
+    is already cheap; a big SER's cost lands in Analyze, which has its own
+    progress), so the argument is harmless for them.
     """
     # Sequence
     if not isinstance(path_or_files, (str, os.PathLike)):
-        return ImageSequenceReader(path_or_files, cache_items=cache_items)
+        return ImageSequenceReader(
+            path_or_files, cache_items=cache_items,
+            preload=preload, progress_cb=progress_cb,
+        )
 
     path = os.fspath(path_or_files)
     ext = os.path.splitext(path)[1].lower()
@@ -1487,6 +1558,9 @@ def open_planetary_source(
     # (.fits.gz/.fit.gz report a bare ".gz" from splitext, so match on the
     # full name via _is_still_path rather than ext alone.)
     if _is_still_path(path):
-        return ImageSequenceReader([path], cache_items=cache_items)
+        return ImageSequenceReader(
+            [path], cache_items=cache_items,
+            preload=preload, progress_cb=progress_cb,
+        )
 
     raise ValueError(f"Unsupported input: {path}")
