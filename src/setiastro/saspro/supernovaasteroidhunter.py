@@ -670,13 +670,17 @@ def _bin_image(img: np.ndarray, factor: int) -> np.ndarray:
 
 def _worker_load_and_cosmetic(args):
     """
-    Worker: load one image, optionally cosmetic-correct, optionally bin.
-    Returns (path, img_or_None, err_or_None).
+    Worker: load one image and optionally bin it. Returns
+    (path, img_or_None, obs_tuple, err_or_None).
 
-    Order matters: cosmetic-correct at full res first (hot pixels are
-    single-pixel events; binning smears them so the sigma filter can't
-    catch them cleanly), THEN bin. Everything the pipeline does after
-    this point — align, ADBE, diff — runs on the binned buffer.
+    Cosmetic correction is deliberately NOT done here. It is internally
+    parallel (GPU, then all-core Numba), so running it inside each of N
+    pool workers oversubscribes the whole machine and chokes the system.
+    It is applied once, serially, AFTER this load+bin pass completes (see
+    the pipeline's cosmetic stage) — which also means it runs on the
+    BINNED frame. Binning already averages away most hot/cold pixels, so
+    the serial pass only has to mop up the few that survive, on a buffer
+    factor^2 smaller and fast to process one at a time.
 
     Takes a single tuple arg so the pool can pickle the callable directly
     (a lambda wrapper around a multi-arg function pickles as a
@@ -684,7 +688,7 @@ def _worker_load_and_cosmetic(args):
     inside the worker).
     """
     try:
-        path, do_cosmetic, bin_factor = args
+        path, bin_factor = args
 
         # Read this frame's OWN observation time while the file is open.
         # Every search frame was taken at a different moment and a minor
@@ -717,9 +721,6 @@ def _worker_load_and_cosmetic(args):
         except Exception as e:
             obs = (None, 0.0, f"time parse failed: {e}", False)
 
-        if do_cosmetic:
-            img = bulk_cosmetic_correction_numba(
-                img, hot_sigma=5.0, cold_sigma=5.0, window_size=3)
         img = np.asarray(img, dtype=np.float32)
         if bin_factor and int(bin_factor) > 1:
             img = _bin_image(img, int(bin_factor))
@@ -1339,11 +1340,11 @@ class HunterPipelineThread(QThread):
             all_paths = [ref_path] + search_paths
             n_all = len(all_paths)
 
-            # ── Stage 1: load + optional cosmetic correction + optional bin
-            # Pack (path, do_cosmetic, bin_factor) into a tuple so the
-            # worker is a plain top-level function and the process pool can
-            # pickle it. Wrapping in a lambda here fails under spawn-start
-            # pools with "Can't get local object '…<lambda>'".
+            # ── Stage 1: load + optional bin (parallel across the pool)
+            # Pack (path, bin_factor) into a tuple so the worker is a plain
+            # top-level function and the process pool can pickle it.
+            # Wrapping in a lambda here fails under spawn-start pools with
+            # "Can't get local object '…<lambda>'".
             #
             # Binning is applied INSIDE the worker so the full-res buffer
             # never travels back across the pool boundary — IPC payload
@@ -1351,15 +1352,18 @@ class HunterPipelineThread(QThread):
             # 45MP frame at bin=2 that is ~45MB → ~11MB per frame; over
             # 120 frames that is a ~4GB saving in flight on top of the 4×
             # drop in peak RAM once the pipeline is holding them all.
+            #
+            # Cosmetic correction is NOT done in this pool — it runs once,
+            # serially, after this pass (see below).
             if bin_factor > 1:
                 self._emit(0, len(all_paths),
-                           f"Load / cosmetic: binning {bin_factor}× on load "
+                           f"Load: binning {bin_factor}× on load "
                            f"(~{bin_factor * bin_factor}× less memory)")
             loaded = {}
             frame_obs = {}
-            load_items = [(p, do_cosmetic, bin_factor) for p in all_paths]
+            load_items = [(p, bin_factor) for p in all_paths]
             for path, img, obs, err in self._run_pool(
-                _worker_load_and_cosmetic, load_items, "Load / cosmetic", workers,
+                _worker_load_and_cosmetic, load_items, "Load", workers,
                 n_fields=4,
             ):
                 if err:
@@ -1376,6 +1380,35 @@ class HunterPipelineThread(QThread):
             if loaded.get(ref_path) is None:
                 self.finished_err.emit("Failed to load reference image.")
                 return
+
+            # ── Stage 1b: cosmetic correction — SERIAL, post-bin ──────────
+            # Run AFTER binning and one frame at a time, on purpose:
+            #   • bulk_cosmetic_correction_numba is already heavily parallel
+            #     internally (GPU, then all-core Numba). Fanning it out
+            #     across N pool workers oversubscribes every core/the GPU
+            #     and chokes the whole machine, so it runs serially here.
+            #   • binning already block-averages away most hot/cold pixels;
+            #     this pass just mops up the few survivors, on a buffer
+            #     factor^2 smaller — cheap even one frame at a time.
+            # A failure on any frame is non-fatal: log it and keep that
+            # frame's (binned, uncorrected) data so the run still proceeds.
+            if do_cosmetic:
+                paths_to_fix = [pth for pth in all_paths
+                                if loaded.get(pth) is not None]
+                total_cc = len(paths_to_fix)
+                for i_cc, pth in enumerate(paths_to_fix, start=1):
+                    if self.cancelled:
+                        return
+                    self._emit(i_cc, total_cc,
+                               f"Cosmetic correction (post-bin): {i_cc}/{total_cc}")
+                    try:
+                        loaded[pth] = np.asarray(
+                            bulk_cosmetic_correction_numba(
+                                loaded[pth], hot_sigma=5.0, cold_sigma=5.0),
+                            dtype=np.float32)
+                    except Exception as ce:
+                        self.log.emit(
+                            f"⚠ {os.path.basename(pth)}: cosmetic skipped: {ce}")
 
             # Reference metadata on the GUI thread would be nicer, but we
             # need JD / WCS back on the dialog for minor-body work. Do it
@@ -2749,6 +2782,14 @@ class SupernovaAsteroidHunterDialog(QDialog):
         self.cosmetic_checkbox = QCheckBox(
             self.tr("Cosmetic correction (hot/cold pixel suppression)"))
         self.cosmetic_checkbox.setChecked(False)
+        self.cosmetic_checkbox.setToolTip(self.tr(
+            "Suppress hot/cold pixels. Runs AFTER binning (binning already\n"
+            "averages away most of them; this mops up the rest) and one\n"
+            "frame at a time — the correction is already parallel inside,\n"
+            "so fanning it across workers would choke the machine.\n\n"
+            "Leave off for already-stacked integrations; turn on for raw\n"
+            "single subs, where a hot pixel absent from the reference would\n"
+            "otherwise read as a transient."))
         opts_lay.addWidget(self.cosmetic_checkbox, 0, 0, 1, 3)
 
         # row 1: alignment

@@ -11,6 +11,17 @@ The CLI runs every SyQon neural process behind one stable, versioned contract:
 
     syqon-cli --model MODEL [OPTIONS] INPUT OUTPUT
 
+There is also an interactive editor mode, driven by `-gui`:
+
+    syqon-cli -gui [--overwrite] INPUT OUTPUT
+
+The editor presents SyQon's model picker, ROI selector, toggleable autostretch
+(display-only — not baked into the result), and processing-intensity controls.
+It blocks the host process until the user clicks Done (exit 0, saved output
+path on stdout) or Cancel (exit 20). Input and output must share a container
+format (TIFF→TIFF, FITS→FITS, XISF→XISF, PNG→PNG, JPEG→JPEG). Authentication
+and model licensing behave the same as the headless path.
+
 Design notes / invariants (per the published developer contract):
 
   * The executable is discovered, never assumed to be on PATH. Order:
@@ -32,7 +43,7 @@ Design notes / invariants (per the published developer contract):
       - shell disabled, argv array
       - stdout on exit 0 == absolute saved-output path + newline
       - stderr == progress ("model 42%") + diagnostics
-      - exit code carries the failure class (0..7, 130)
+      - exit code carries the failure class (0..7, 20 = GUI cancel, 130)
       - SIGINT/terminate cancels; no partial output is published
 
   * SASpro documents are in-memory float arrays, so we round-trip through a
@@ -81,9 +92,15 @@ from setiastro.saspro.remove_stars import _push_as_new_doc
 # ─────────────────────────────────────────────────────────────────────────────
 # Model registry — stable CLI identifiers (from --list-models / the dev docs).
 # Order here is the dropdown order. `family` drives which option page shows.
+#
+# `studio-gui` is a synthetic entry that does NOT correspond to a --model id;
+# it opens the Studio editor via `-gui` and lets the user pick the model,
+# ROI, autostretch and intensity interactively. We keep it in this list so it
+# shares the same dropdown / preset / dispatch plumbing as the headless models.
 # ─────────────────────────────────────────────────────────────────────────────
 # (identifier, friendly label, access, family, input contract note)
 STUDIO_MODELS: list[tuple[str, str, str, str, str]] = [
+    ("studio-gui",      "Studio Editor (GUI) — ROI · Autostretch · Intensity", "Included", "gui", "Any supported format (TIFF/FITS/XISF/PNG/JPEG)"),
     ("prism-essential", "Prism Essential — Denoise",       "Included", "prism",         "Linear RGB or mono"),
     ("prism-advanced",  "Prism Deep Advanced — Denoise",   "Licensed", "prism",         "Linear RGB or mono"),
     ("prism-ultra",     "Prism Deep Ultra — Denoise",      "Licensed", "prism",         "Linear or non-linear"),
@@ -203,6 +220,9 @@ def list_studio_models(path: str, timeout: float = 20.0) -> set[str]:
     Best-effort `--list-models`. Returns the set of known identifiers that
     appear in the CLI's output (so the UI can annotate what's actually
     installed/entitled). Empty set means "couldn't determine".
+
+    `studio-gui` is a synthetic entry (not a real --model), so we never
+    try to match it against the CLI's model list.
     """
     path = _resolve_bundle((path or "").strip())
     if not path or not os.path.isfile(path):
@@ -214,7 +234,11 @@ def list_studio_models(path: str, timeout: float = 20.0) -> set[str]:
             **({"creationflags": 0x08000000} if os.name == "nt" else {}),
         )
         blob = (r.stdout or "") + "\n" + (r.stderr or "")
-        found = {mid for mid in _MODEL_INDEX if re.search(rf"(?<![\w-]){re.escape(mid)}(?![\w-])", blob)}
+        found = {
+            mid for mid in _MODEL_INDEX
+            if studio_family_for(mid) != "gui"
+            and re.search(rf"(?<![\w-]){re.escape(mid)}(?![\w-])", blob)
+        }
         return found
     except Exception:
         return set()
@@ -276,8 +300,23 @@ def build_studio_argv(
     Build the full argv for one Studio CLI invocation. `model_id` chooses which
     model-specific flags are emitted. Positional INPUT/OUTPUT come last, per the
     canonical `syqon-cli --model MODEL [OPTIONS] INPUT OUTPUT`.
+
+    The synthetic `studio-gui` id uses the editor contract instead:
+    `syqon-cli -gui [--overwrite] INPUT OUTPUT`. No --model, no per-model
+    flags, no domain/precision/tile — the editor exposes all of that.
     """
     family = studio_family_for(model_id)
+
+    # GUI editor path — launches the Studio editor and blocks until the user
+    # clicks Done (exit 0) or Cancel (exit 20). The user picks the model,
+    # draws the ROI, toggles autostretch and sets intensity inside the editor.
+    if family == "gui":
+        argv_gui: list[str] = [exe, "-gui"]
+        if overwrite:
+            argv_gui += ["--overwrite"]
+        argv_gui += [str(in_path), str(out_path)]
+        return argv_gui
+
     argv: list[str] = [exe, "--model", model_id]
 
     # Domain: pass explicitly (auto lets the CLI read container metadata).
@@ -333,6 +372,8 @@ def build_studio_argv(
 
 
 # Failure-contract exit codes → human text (developer docs §"Failure contract").
+# 20 is the GUI-editor cancel code; we treat it as a user cancel (not an error)
+# before this map is ever consulted, but it's listed here for completeness.
 _EXIT_MESSAGES = {
     1: "SyQon CLI reported a general error. The original image was kept.",
     2: ("Invalid option or incompatible domain. Try declaring the input domain "
@@ -343,6 +384,7 @@ _EXIT_MESSAGES = {
     5: "Inference failed — no output was produced.",
     6: "Output encoding failed. Try a different precision or destination.",
     7: "Output was saved, but the application handoff step failed.",
+    20: "Cancelled from the SyQon Studio editor.",
 }
 
 
@@ -351,7 +393,8 @@ _EXIT_MESSAGES = {
 # ─────────────────────────────────────────────────────────────────────────────
 class _SyQonStudioCLIThread(QThread):
     # (primary_rgb01 | None, secondary_rgb01 | None, info: dict, err: str)
-    # err == "__cancelled__" for a user cancel.
+    # err == "__cancelled__" for a user cancel (SASpro-side cancel, SIGINT/130,
+    # or GUI-editor Cancel which exits 20).
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(object, object, dict, str)
 
@@ -377,6 +420,8 @@ class _SyQonStudioCLIThread(QThread):
         try:
             if p is not None and p.poll() is None:
                 # SIGTERM on POSIX; terminate() maps to TerminateProcess on Windows.
+                # For the GUI editor this closes the editor window and the CLI
+                # exits non-zero; we treat that as a cancel.
                 p.terminate()
         except Exception:
             pass
@@ -400,7 +445,15 @@ class _SyQonStudioCLIThread(QThread):
         return np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
 
     def run(self):
-        info: dict = {"engine": "syqon_studio_cli", "model": self.model_id, "exe": self.exe}
+        fam = studio_family_for(self.model_id)
+        is_gui = (fam == "gui")
+
+        info: dict = {
+            "engine": "syqon_studio_cli",
+            "model": self.model_id,
+            "exe": self.exe,
+            "mode": "gui" if is_gui else "headless",
+        }
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
         re_pct = re.compile(r"(\d+)\s*%")
@@ -411,7 +464,9 @@ class _SyQonStudioCLIThread(QThread):
                     line = raw.rstrip("\r\n")
                     sink.append(line)
                     print(f"[SyQon Studio {'err' if is_stderr else 'out'}] {line}", flush=True)
-                    if is_stderr:
+                    # The GUI editor doesn't emit percent progress to stderr —
+                    # don't try to parse it, so the indeterminate bar stays put.
+                    if is_stderr and not is_gui:
                         m = re_pct.search(line)
                         if m:
                             self._emit(min(int(m.group(1)), 99), "SyQon Studio processing…")
@@ -429,6 +484,9 @@ class _SyQonStudioCLIThread(QThread):
             tag = f"studio_{os.getpid()}_{int(time.time() * 1000)}"
             tmpdir = Path(tempfile.gettempdir()) / "SASpro_SyQon_Studio"
             tmpdir.mkdir(parents=True, exist_ok=True)
+            # TIFF both ways: the editor requires matching container formats
+            # (TIFF→TIFF, FITS→FITS, …). TIFF is the obvious lossless pick for
+            # a round-trip of f32 data and matches what the headless path uses.
             self._tmp_in = str(tmpdir / f"{tag}_in.tif")
             self._tmp_out = str(tmpdir / f"{tag}_out.tif")
             if self.want_secondary and self.secondary_flag:
@@ -452,7 +510,12 @@ class _SyQonStudioCLIThread(QThread):
             argv = build_studio_argv(exe, self.model_id, self._tmp_in, self._tmp_out, **opts)
             info["command"] = argv
             print("\n[SyQon Studio launch]\nCMD:", " ".join(argv), flush=True)
-            self._emit(5, "Launching SyQon CLI…")
+            if is_gui:
+                # Nudge the UI to switch the bar to indeterminate; the status
+                # text tells the user what to do.
+                self._emit(10, "Opening SyQon Studio editor — click Done when finished.")
+            else:
+                self._emit(5, "Launching SyQon CLI…")
 
             self._p = subprocess.Popen(
                 argv,
@@ -475,7 +538,9 @@ class _SyQonStudioCLIThread(QThread):
             info["stdout_tail"] = "\n".join(stdout_lines[-100:])
             info["stderr_tail"] = "\n".join(stderr_lines[-200:])
 
-            if self._cancel or rc == 130:
+            # Cancellation paths: SASpro-side cancel, SIGINT (130), or
+            # the GUI editor's Cancel button (20).
+            if self._cancel or rc == 130 or (is_gui and rc == 20):
                 raise RuntimeError("__cancelled__")
 
             if rc != 0:
@@ -624,18 +689,21 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self.cmb_domain.addItem("Auto (read metadata)", userData="auto")
         self.cmb_domain.addItem("Linear", userData="linear")
         self.cmb_domain.addItem("Non-linear", userData="nonlinear")
-        form.addRow("Input domain:", self.cmb_domain)
+        self.lbl_domain = QLabel("Input domain:", self)
+        form.addRow(self.lbl_domain, self.cmb_domain)
 
         self.spin_tile = QSpinBox(self)
         self.spin_tile.setRange(256, 2048)
         self.spin_tile.setSingleStep(64)
         self.spin_tile.setValue(int(self.settings.value("syqon/studio/tile", 512)))
-        form.addRow("Tile size:", self.spin_tile)
+        self.lbl_tile = QLabel("Tile size:", self)
+        form.addRow(self.lbl_tile, self.spin_tile)
 
         self.spin_overlap = QSpinBox(self)
         self.spin_overlap.setRange(0, 512)
         self.spin_overlap.setValue(int(self.settings.value("syqon/studio/overlap", 64)))
-        form.addRow("Overlap:", self.spin_overlap)
+        self.lbl_overlap = QLabel("Overlap:", self)
+        form.addRow(self.lbl_overlap, self.spin_overlap)
 
         # Application (blend) — Prism only
         saved_app = float(self.settings.value("syqon/studio/application", 1.0))
@@ -676,7 +744,8 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self.opt_stack.addWidget(self._build_parallax_page())
         self.opt_stack.addWidget(self._build_axiom_page())
         self.opt_stack.addWidget(self._build_gradient_page())
-        self._family_page = {"prism": 0, "parallax": 1, "axiom": 2, "deep-gradient": 3}
+        self.opt_stack.addWidget(self._build_gui_page())
+        self._family_page = {"prism": 0, "parallax": 1, "axiom": 2, "deep-gradient": 3, "gui": 4}
         lay.addWidget(self.opt_stack)
 
         #sasprogress + cancel
@@ -848,6 +917,30 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         form.addRow("", note)
         return w
 
+    def _build_gui_page(self) -> QWidget:
+        """
+        Minimal explainer for the GUI editor path. All of the knobs are driven
+        from inside the Studio editor window — SASpro just hands the image
+        over and waits.
+        """
+        w = QWidget(self)
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(
+            "Opens the SyQon Studio editor on this image. Pick the model, draw "
+            "an ROI, toggle autostretch (display-only — not baked into the "
+            "result) and dial in processing intensity interactively.\n\n"
+            "Click <b>Done</b> in the editor to save and return. "
+            "<b>Cancel</b> there (or Cancel here) returns to SASpro with the "
+            "original image unchanged.\n\n"
+            "SASpro is blocked while the editor is open.",
+            self,
+        )
+        lbl.setTextFormat(Qt.TextFormat.RichText)
+        lbl.setWordWrap(True); lbl.setStyleSheet("color:#8e8e93;")
+        v.addWidget(lbl)
+        return w
+
     # ---- CLI helpers -------------------------------------------------------
     def _cli_path(self) -> str:
         return _resolve_bundle(self.edt_cli.text().strip())
@@ -910,19 +1003,28 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
 
         if m:
             access = m[2]; note = m[4]
-            tag = "included with your account" if access == "Included" else "requires a licensed entitlement"
-            self.lbl_contract.setText(f"Input contract: {note}  ·  {tag}.")
+            if fam == "gui":
+                self.lbl_contract.setText(
+                    f"Input contract: {note}  ·  editor is included with Studio."
+                )
+            else:
+                tag = "included with your account" if access == "Included" else "requires a licensed entitlement"
+                self.lbl_contract.setText(f"Input contract: {note}  ·  {tag}.")
 
         self.opt_stack.setCurrentIndex(self._family_page.get(fam, 0))
 
-        # Application only applies to Prism; tile/overlap not used by deep-gradient.
+        # Application only applies to Prism; tile/overlap not used by
+        # deep-gradient or by the GUI editor (which runs its own pipeline);
+        # the GUI editor also owns the domain decision internally.
         is_prism = (fam == "prism")
+        is_gui = (fam == "gui")
         self.lbl_app.setVisible(is_prism)
         self._app_row_widget.setVisible(is_prism)
 
         uses_tiles = fam in ("prism", "parallax")
-        self.spin_tile.setEnabled(uses_tiles)
-        self.spin_overlap.setEnabled(uses_tiles)
+        self.spin_tile.setEnabled(uses_tiles and not is_gui)
+        self.spin_overlap.setEnabled(uses_tiles and not is_gui)
+        self.cmb_domain.setEnabled(not is_gui)
 
     # ---- preset ------------------------------------------------------------
     def get_preset(self) -> dict:
@@ -1054,7 +1156,8 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         mid = self.current_model()
         fam = studio_family_for(mid)
 
-        # Parallax needs at least one stage.
+        # Parallax needs at least one stage. GUI editor skips this check — the
+        # user picks what to run inside the editor window.
         if fam == "parallax" and not any((
             self.chk_px_correct.isChecked(),
             self.chk_px_reduce.isChecked(),
@@ -1086,7 +1189,8 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self._scale_factor = scale_factor
         self._orig_was_mono = orig_was_mono
 
-        # Secondary output selection
+        # Secondary output selection (not applicable to the GUI editor path —
+        # the editor doesn't accept --stars-output / --gradient-output).
         want_secondary = False
         secondary_flag = None
         if fam == "axiom" and self.chk_ax_stars.isChecked():
@@ -1101,7 +1205,10 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             pass
 
         self._set_busy(True)
-        self.lbl_status.setText("Processing…")
+        if fam == "gui":
+            self.lbl_status.setText("Opening editor…")
+        else:
+            self.lbl_status.setText("Processing…")
 
         self.proc_thr = _SyQonStudioCLIThread(
             input_rgb01=xrgb,
@@ -1137,10 +1244,23 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         self.btn_cancel.setVisible(busy)
         self.btn_cancel.setEnabled(busy)
         if busy:
+            # GUI editor doesn't emit percent progress — show an indeterminate
+            # busy bar so the user doesn't stare at a stuck 10%.
+            if studio_family_for(self.current_model()) == "gui":
+                self.pbar.setRange(0, 0)
+            else:
+                self.pbar.setRange(0, 100)
+                self.pbar.setValue(0)
+        else:
+            self.pbar.setRange(0, 100)
             self.pbar.setValue(0)
 
     def _on_worker_progress(self, pct: int, stage: str):
-        self.pbar.setValue(int(pct))
+        # Keep the bar indeterminate for GUI mode; otherwise reflect percent.
+        if studio_family_for(self.current_model()) != "gui":
+            if self.pbar.maximum() == 0:
+                self.pbar.setRange(0, 100)
+            self.pbar.setValue(int(pct))
         if stage:
             self.lbl_status.setText(stage)
 
@@ -1178,12 +1298,15 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
         else:
             orig_rgb = orig[..., :3]
 
-        # Deep Gradient / Axiom paths: skip the mask blend — the CLI's primary
-        # IS the final image (gradient-removed / starless); blending it against
-        # the original with-stars/with-gradient image just re-contaminates it
-        # wherever the mask isn't "on". Other families still go through the mask
-        # blend (Prism denoise / Parallax sharpen do benefit from local blends).
-        if fam in ("deep-gradient", "axiom"):
+        # Deep Gradient / Axiom / GUI paths: skip the mask blend — the CLI's
+        # primary IS the final image. For Deep Gradient and Axiom the output
+        # is a derived image where blending back against the original just
+        # re-contaminates it. For the GUI editor, the user has already shaped
+        # the result interactively (ROI, intensity, autostretch), so the CLI
+        # output is authoritative — SASpro should not second-guess it with a
+        # mask blend. Other families still go through the mask blend (Prism
+        # denoise / Parallax sharpen do benefit from local blends).
+        if fam in ("deep-gradient", "axiom", "gui"):
             pri = np.asarray(primary, dtype=np.float32)
             if pri.ndim == 2:
                 pri = np.stack([pri] * 3, axis=-1)
@@ -1198,6 +1321,7 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
             "parallax": "Sharpened",
             "axiom": "Stars Removed",
             "deep-gradient": "Gradient Removed",
+            "gui": "SyQon Studio Edit",
         }.get(fam, "SyQon Studio")
 
         meta = {
@@ -1234,7 +1358,8 @@ class _SyQonStudioHubPage(_WorkerCloseGuardMixin, QWidget):
 
         # Now push the secondary as a new view (stars-only for Axiom, gradient
         # for Deep Gradient). Done AFTER apply_edit so nothing it does can
-        # interfere with the primary being written to the original doc.
+        # interfere with the primary being written to the original doc. The
+        # GUI editor path never produces a secondary.
         if secondary is not None:
             try:
                 sec = np.asarray(secondary, dtype=np.float32)

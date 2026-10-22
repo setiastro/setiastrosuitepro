@@ -605,7 +605,7 @@ class WhiteBalanceDialog(QDialog):
         thr_row = QHBoxLayout()
         thr_row.addWidget(QLabel(self.tr("Detection threshold (σ):")))
         self.thr_slider = QSlider(Qt.Orientation.Horizontal)
-        self.thr_slider.setMinimum(1); self.thr_slider.setMaximum(100)
+        self.thr_slider.setMinimum(1); self.thr_slider.setMaximum(200)
         self.thr_slider.setValue(50); self.thr_slider.setTickInterval(10)
         self.thr_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.thr_label = QLabel("50")
@@ -613,7 +613,7 @@ class WhiteBalanceDialog(QDialog):
         sg.addLayout(thr_row)
 
         # ── Auto σ waterfall ──────────────────────────────────────────
-        # Removes manual guess-and-check. The worker runs σ = 100, 50, 25,
+        # Removes manual guess-and-check. The worker runs σ = 200, 100, 50, 25,
         # 12, 8, 5, 3 in order and stops at the first value that returns
         # ≥ 1200 detections. The slider is driven to the chosen σ so the
         # user can see what Auto picked (and uncheck Auto to override).
@@ -622,7 +622,7 @@ class WhiteBalanceDialog(QDialog):
         self.auto_sigma_chk.setChecked(True)
         self.auto_sigma_chk.setToolTip(self.tr(
             "Auto σ waterfall:\n"
-            "  Tries σ = 100, 50, 25, 12, 8, 5, 3 in order and stops at the\n"
+            "  Tries σ = 200, 100, 50, 25, 12, 8, 5, 3 in order and stops at the\n"
             "  first value that yields ≥ 1200 detections. Removes the need to\n"
             "  guess a threshold for different fields.\n\n"
             "  Uncheck to drive the slider manually."
@@ -661,9 +661,28 @@ class WhiteBalanceDialog(QDialog):
         self.star_count = QLabel(self.tr("Detecting stars..."))
         sg.addWidget(self.star_count)
 
+        # Show Preview button — the preview QLabel is hidden by default
+        # because on big RGB frames the overlay autostretch dominates open
+        # time and the preview is too small for the ellipses to be useful
+        # anyway. Disabled until the first detection completes so the
+        # button never kicks off an overlay against an empty source list.
+        show_row = QHBoxLayout()
+        show_row.addStretch(1)
+        self.btn_show_preview = QPushButton(self.tr("Show Preview"))
+        self.btn_show_preview.setEnabled(False)
+        self.btn_show_preview.setToolTip(self.tr(
+            "Reveal the star-detection overlay. Hidden by default on big\n"
+            "frames because building it needs an autostretch of the full\n"
+            "image. Enables once the SEP waterfall has settled."
+        ))
+        show_row.addWidget(self.btn_show_preview)
+        show_row.addStretch(1)
+        sg.addLayout(show_row)
+
         self.preview = QLabel()
         self.preview.setMinimumSize(640, 360)
         self.preview.setStyleSheet("border: 1px solid #333;")
+        self.preview.setVisible(False)
         sg.addWidget(self.preview)
         self.main_layout.addWidget(self.star_group)
 
@@ -718,6 +737,11 @@ class WhiteBalanceDialog(QDialog):
         self._pending_autostretch = None
         self._closing = False
 
+        # Lazy-preview state. The worker runs in cheap-mode (detection only,
+        # no overlay) until the user clicks Show Preview; after that every
+        # subsequent re-detection (e.g. slider move) builds the overlay too.
+        self._preview_shown = False
+
     def _cfg_gain(self, box: QDoubleSpinBox, val: float):
         box.setRange(0.5, 1.5); box.setDecimals(3); box.setSingleStep(0.01); box.setValue(val)
 
@@ -729,6 +753,7 @@ class WhiteBalanceDialog(QDialog):
         self.thr_slider.valueChanged.connect(self._on_threshold_changed)
         self.chk_autostretch_overlay.toggled.connect(lambda _=None: self._debounce.start())
         self.auto_sigma_chk.toggled.connect(self._on_auto_sigma_toggled)
+        self.btn_show_preview.clicked.connect(self._on_show_preview_clicked)
         self.finished.connect(lambda *_: self._stop_detection_worker())
 
         # Restore last Auto σ preference (default: ON — removes guess-and-check)
@@ -769,6 +794,15 @@ class WhiteBalanceDialog(QDialog):
         """Called when user clicks a different image window."""
         if doc is None or getattr(doc, "image", None) is None:
             return
+        # Qt fires currentDocumentChanged for focus churn as well as real
+        # doc swaps — if the dialog grabs activation on show, we get a
+        # None→doc round-trip for the SAME doc, which was starting a
+        # second detection worker on top of the one QTimer.singleShot had
+        # already kicked off. .cancel() only flags the result emission —
+        # the SEP waterfall inside the old worker still runs to completion.
+        # So no-op on same-doc changes.
+        if doc is self.doc:
+            return
         self.doc = doc
         self._update_star_preview()
 
@@ -784,9 +818,27 @@ class WhiteBalanceDialog(QDialog):
         thr = float(self.thr_slider.value())
         auto_stretch = bool(self.chk_autostretch_overlay.isChecked())
 
+        # Full set of params the worker will act on — used to short-circuit
+        # redundant restarts. doc identity matters because cancel() only
+        # flags result emission; SEP keeps running in the cancelled worker.
+        want = (
+            id(self.doc),
+            thr,
+            auto_sigma,
+            auto_stretch,
+            bool(self._preview_shown),
+        )
+
         # If a worker is already running, cancel it and remember what we want next.
         # The _on_worker_done slot will re-fire with the pending values.
         if self._detection_worker is not None and self._detection_worker.isRunning():
+            # Short-circuit: the running worker is doing exactly what we'd
+            # ask of a new one. Starting a replacement would run a second
+            # SEP waterfall in parallel (the first can't be stopped mid-call)
+            # for an identical result — this is where the duplicate
+            # [Auto-σ] prints were coming from.
+            if getattr(self, "_running_params", None) == want:
+                return
             self._pending_threshold = thr
             self._pending_autostretch = auto_stretch
             self._detection_worker.cancel()
@@ -795,6 +847,7 @@ class WhiteBalanceDialog(QDialog):
 
         self._pending_threshold = None
         self._pending_autostretch = None
+        self._running_params = want
         if auto_sigma:
             self.star_count.setText(self.tr("Auto σ: detecting…"))
         else:
@@ -803,10 +856,13 @@ class WhiteBalanceDialog(QDialog):
         from setiastro.saspro.imageops.starbasedwhitebalance import StarDetectionWorker
         img = _to_float01(np.asarray(self.doc.image))
         # In Auto mode the worker ignores `thr` and runs the σ ladder itself,
-        # emitting the resolved σ back via finished(overlay, count, used_σ).
+        # emitting the resolved σ back via finished(overlay_or_None, count, used_σ).
+        # with_overlay controls whether the slow stretch + ellipse pass runs;
+        # it stays off until the user has opted into the preview.
         worker = StarDetectionWorker(
             img, thr, auto_stretch, parent=self,
             auto_sigma=auto_sigma,
+            with_overlay=self._preview_shown,
         )
         worker.finished.connect(self._on_worker_done)
         worker.failed.connect(self._on_worker_failed)
@@ -849,6 +905,19 @@ class WhiteBalanceDialog(QDialog):
         else:
             self.star_count.setText(self.tr("Detected {0} stars.").format(int(count)))
 
+        # Detection succeeded — Show Preview is now safe to click. Stays
+        # enabled across subsequent re-detections even once the preview is
+        # visible, as a no-op (handler guards on _preview_shown).
+        try:
+            self.btn_show_preview.setEnabled(True)
+        except Exception:
+            pass
+
+        # No overlay unless the user asked for the preview. Nothing to draw
+        # in cheap-mode, and the preview QLabel is hidden anyway.
+        if overlay is None:
+            return
+
         try:
             overlay8 = np.ascontiguousarray(np.clip(overlay * 255.0, 0, 255).astype(np.uint8))
             h, w, _ = overlay8.shape
@@ -875,6 +944,24 @@ class WhiteBalanceDialog(QDialog):
             return
         self.star_count.setText(self.tr("Detection failed."))
         self.preview.clear()
+
+    def _on_show_preview_clicked(self):
+        """Flip the dialog into preview-shown mode and kick off a detection
+        pass that will build the overlay. One-shot — once the preview is
+        visible further slider moves rebuild it via the normal debounce
+        path (which reads self._preview_shown), so the button hides itself."""
+        if self._preview_shown:
+            return
+        self._preview_shown = True
+        try:
+            self.preview.setVisible(True)
+            self.btn_show_preview.setVisible(False)
+        except Exception:
+            pass
+        # Fire a fresh detection — this one builds the overlay. The result
+        # handler is the usual _on_worker_done.
+        self._update_star_preview()
+
     # ---- preset emit (grip) ---------------------------------------------
     def get_preset(self) -> dict:
         """Emit current state as the WB preset schema (inverse of seed_from_preset).
@@ -1052,11 +1139,18 @@ class WhiteBalanceDialog(QDialog):
                 def _capture_sigma(sig: float):
                     resolved["sigma"] = float(sig)
 
+                # reuse_cached_sources=True lets the dialog's open-time
+                # detection (either Preview or Show-Preview, which both ran
+                # via detect_stars_for_wb and populated the module cache)
+                # satisfy this call without a second SEP waterfall. The
+                # backend only honors the cache when image shape + σ match,
+                # and in auto mode it keys off the resolved σ, so this is a
+                # safe reuse — not a stale-cache hazard.
                 result = apply_star_based_white_balance(
                     base,
                     threshold=thr,
                     autostretch=False,
-                    reuse_cached_sources=False,
+                    reuse_cached_sources=True,
                     return_star_colors=True,
                     use_color_matrix=use_cm,     # ← pass through
                     auto_sigma=auto_sigma,

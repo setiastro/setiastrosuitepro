@@ -25,15 +25,21 @@ from .stretch import stretch_color_image
 from setiastro.saspro.widgets.image_utils import to_float01 as _to_float01
 from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_rect_50x50
 
-__all__ = ["apply_star_based_white_balance", "StarDetectionWorker",
-           "DEFAULT_AUTO_SIGMA_LADDER", "DEFAULT_AUTO_SIGMA_MIN_STARS"]
+__all__ = [
+    "apply_star_based_white_balance",
+    "detect_stars_for_wb",
+    "build_wb_preview_overlay",
+    "StarDetectionWorker",
+    "DEFAULT_AUTO_SIGMA_LADDER",
+    "DEFAULT_AUTO_SIGMA_MIN_STARS",
+]
 
 # ── Auto-σ waterfall defaults ──────────────────────────────────────────
 # Highest σ first, stepping down to the most sensitive setting. The first
 # rung that returns ≥ DEFAULT_AUTO_SIGMA_MIN_STARS detections wins. If no
 # rung clears the bar, the last (most sensitive) rung is used so the pipeline
 # still has something to work with on genuinely sparse fields.
-DEFAULT_AUTO_SIGMA_LADDER: tuple[float, ...] = (100.0, 50.0, 25.0, 12.0, 8.0, 5.0, 3.0)
+DEFAULT_AUTO_SIGMA_LADDER: tuple[float, ...] = (200.0, 100.0, 50.0, 25.0, 12.0, 8.0, 5.0, 3.0)
 DEFAULT_AUTO_SIGMA_MIN_STARS: int = 1200
 
 # Keep names for compatibility with any old imports / callers
@@ -178,6 +184,7 @@ def _waterfall_sep_extract(
         n = 0 if srcs is None else int(len(srcs))
         last_sources = srcs
         last_sigma = sig_f
+        print(f"[Auto-σ] σ={sig_f:.3f} → {n} detections (min_stars={min_stars})")
 
         at_last = (i >= len(ladder) - 1)
         hit = (n >= int(min_stars))
@@ -194,6 +201,187 @@ def _waterfall_sep_extract(
     # Ladder exhausted without hitting min_stars — fall back to the last try.
     return (last_sources if last_sources is not None
             else sep.extract(data_sub, float(ladder[-1]), err=err_val)), last_sigma
+
+
+def detect_stars_for_wb(
+    image: np.ndarray,
+    threshold: float = 50.0,
+    *,
+    reuse_cached_sources: bool = False,
+    auto_sigma: bool = False,
+    auto_sigma_min_stars: int = DEFAULT_AUTO_SIGMA_MIN_STARS,
+    auto_sigma_ladder: Sequence[float] = DEFAULT_AUTO_SIGMA_LADDER,
+    on_sigma_resolved: Optional[Callable[[float], None]] = None,
+) -> tuple[int, float, np.ndarray, np.ndarray]:
+    """
+    Detection-only pass for the WB dialog's open-time count and resolved σ.
+
+    Runs the same BN + sep.Background + sep.extract waterfall + flux_radius
+    filter + spatial subsampling as apply_star_based_white_balance, but
+    skips the full-image overlay construction (stretch + cv2 ellipse draw)
+    AND the WB math itself. On a 100 MP RGB frame that saves the overlay
+    autostretch and the two full-image allocations the WB math makes
+    (balanced = (bg_neutral - m) * g + m, then its clip), which is where
+    the open-time cost of the preview actually lives — not the detector.
+
+    Returns everything the dialog needs to:
+      - report "σ=X, N stars" immediately
+      - defer the overlay to a user-requested "Show Preview" (feed the
+        returned bg_neutral + sources into build_wb_preview_overlay)
+      - still populate the shared source cache for a later full
+        apply_star_based_white_balance() call that uses reuse_cached_sources.
+
+    Returns
+    -------
+    count : int
+    used_threshold : float
+        The σ the detector actually ran at. In manual mode this equals
+        `threshold`; in auto-σ mode this is the ladder rung that won.
+    sources : structured ndarray
+    bg_neutral : (H,W,3) float32
+        Already-neutralized image, so overlay rendering doesn't re-do BN.
+    """
+    if image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("detect_stars_for_wb: input must be an RGB image (H,W,3).")
+    if sep is None:
+        raise ImportError(
+            "detect_stars_for_wb requires the 'sep' package. "
+            f"Import error was: {_sep_import_error!r}"
+        )
+
+    img_rgb = _to_float01(image).astype(np.float32, copy=False)
+
+    rect = auto_rect_50x50(img_rgb)
+    bg_neutral = background_neutralize_rgb(img_rgb, rect).astype(np.float32, copy=False)
+
+    gray = np.mean(bg_neutral, axis=2).astype(np.float32, copy=False)
+    bkg = sep.Background(gray)
+    data_sub = gray - bkg.back()
+    err_val = float(bkg.globalrms)
+
+    global cached_star_sources, cached_flux_radii, _cached_shape, _cached_threshold
+
+    # Cache gate:
+    #   - manual mode: hit when caller asks AND cached σ matches input σ
+    #   - auto mode:   hit when caller asks AND we have a cached result for
+    #                  this shape — the waterfall is deterministic for a
+    #                  given image, so the previously-resolved σ is the one
+    #                  we'd resolve again. This is what makes a dialog
+    #                  Preview → Apply round-trip run SEP exactly once.
+    use_cache = (
+        bool(reuse_cached_sources)
+        and cached_star_sources is not None
+        and cached_flux_radii is not None
+        and _cached_shape == tuple(img_rgb.shape)
+        and _cached_threshold is not None
+        and (
+            bool(auto_sigma)
+            or abs(float(_cached_threshold) - float(threshold)) < 1e-9
+        )
+    )
+
+    if use_cache:
+        sources = cached_star_sources
+        r = cached_flux_radii
+        # In auto mode `threshold` is a stale user-set value — report back
+        # the σ actually used (the cached one), not the slider value.
+        used_threshold = float(_cached_threshold)
+    else:
+        if auto_sigma:
+            sources, used_threshold = _waterfall_sep_extract(
+                data_sub, err_val,
+                ladder=auto_sigma_ladder,
+                min_stars=auto_sigma_min_stars,
+            )
+        else:
+            used_threshold = float(threshold)
+            sources = sep.extract(data_sub, used_threshold, err=err_val)
+
+        if sources is None or len(sources) == 0:
+            raise ValueError("No sources detected for Star-Based White Balance.")
+
+        r, _ = sep.flux_radius(
+            gray,
+            sources["x"], sources["y"],
+            2.0 * sources["a"], 0.2,
+            normflux=sources["flux"],
+            subpix=5,
+        )
+
+        mask = (r > 0) & (r <= 10)
+        sources = sources[mask]
+        r = r[mask]
+
+        if len(sources) == 0:
+            raise ValueError("All detected sources were rejected as non-stellar (too large).")
+
+        sources, r = _spatially_sample_sources(sources, r, img_rgb.shape, grid=3, per_cell=500)
+
+        cached_star_sources = sources
+        cached_flux_radii = r
+        _cached_shape = tuple(img_rgb.shape)
+        _cached_threshold = float(used_threshold)
+
+    if on_sigma_resolved is not None:
+        try:
+            on_sigma_resolved(float(used_threshold))
+        except Exception:
+            pass
+
+    return int(len(sources)), float(used_threshold), sources, bg_neutral
+
+
+def build_wb_preview_overlay(
+    bg_neutral: np.ndarray,
+    sources: np.ndarray,
+    autostretch: bool = True,
+) -> np.ndarray:
+    """
+    Render the dialog's star-detection preview from an already-computed BN
+    image and already-detected sources. Call from a worker thread — the
+    autostretch allocates a full-image copy on big frames, which is the
+    reason the preview was deferred in the first place.
+
+    Parameters
+    ----------
+    bg_neutral : (H,W,3) float32 in [0,1]
+    sources    : structured ndarray from sep.extract (needs x, y, a, b, theta)
+    autostretch: if True, 0.25 target-median stretch on the display copy
+
+    Returns
+    -------
+    overlay_rgb : (H,W,3) float32 in [0,1] with red SEP ellipses drawn
+    """
+    disp = stretch_color_image(bg_neutral.copy(), 0.25) if autostretch else bg_neutral.copy()
+
+    if cv2 is not None:
+        overlay_bgr = cv2.cvtColor((disp * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+        for i in range(len(sources)):
+            cx = float(sources["x"][i])
+            cy = float(sources["y"][i])
+            a = float(sources["a"][i])
+            b = float(sources["b"][i])
+            theta_deg = float(sources["theta"][i] * 180.0 / np.pi)
+
+            center = (int(round(cx)), int(round(cy)))
+            axes = (max(1, int(round(3 * a))), max(1, int(round(3 * b))))
+
+            cv2.ellipse(
+                overlay_bgr,
+                center,
+                axes,
+                angle=theta_deg,
+                startAngle=0,
+                endAngle=360,
+                color=(0, 0, 255),
+                thickness=1,
+            )
+
+        overlay_rgb = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    else:
+        overlay_rgb = disp.astype(np.float32, copy=False)
+
+    return overlay_rgb
 
 
 def _apply_color_matrix_wb(
@@ -454,22 +642,31 @@ def apply_star_based_white_balance(
 
     global cached_star_sources, cached_flux_radii, _cached_shape, _cached_threshold
 
-    # Cache logic doesn't apply when we're auto-picking σ — the "key" would
-    # be the resolved σ, which isn't known yet.
+    # Cache gate — mirrors detect_stars_for_wb so that Preview → Apply on
+    # the same image runs SEP exactly once, in either mode:
+    #   - manual mode: hit when caller asks AND cached σ matches input σ
+    #   - auto mode:   hit when caller asks AND we have a cached result for
+    #                  this shape — the waterfall is deterministic for a
+    #                  given image, so the previously-resolved σ is the σ
+    #                  we would resolve again.
     use_cache = (
-        (not auto_sigma)
-        and bool(reuse_cached_sources)
+        bool(reuse_cached_sources)
         and cached_star_sources is not None
         and cached_flux_radii is not None
         and _cached_shape == tuple(img_rgb.shape)
         and _cached_threshold is not None
-        and abs(float(_cached_threshold) - float(threshold)) < 1e-9
+        and (
+            bool(auto_sigma)
+            or abs(float(_cached_threshold) - float(threshold)) < 1e-9
+        )
     )
 
     if use_cache:
         sources = cached_star_sources
         r = cached_flux_radii
-        used_threshold = float(threshold)
+        # In auto mode `threshold` is the stale slider value — report back
+        # the σ actually used (the cached one), not the input.
+        used_threshold = float(_cached_threshold)
     else:
         if auto_sigma:
             # σ waterfall — BN already done, so this only re-runs sep.extract
@@ -665,11 +862,17 @@ def apply_star_based_white_balance(
 from PyQt6.QtCore import QThread, pyqtSignal as _pyqtSignal
 
 class StarDetectionWorker(QThread):
-    # overlay, count, resolved_threshold
+    # overlay (or None if with_overlay=False), count, resolved_threshold
     #   `resolved_threshold` is the σ that was actually used — identical to
     #   the input threshold in manual mode, or the auto-picked value when
     #   `auto_sigma=True`. Dialogs can use it to drive a slider so the user
     #   sees what Auto chose.
+    #
+    #   `overlay` is None unless the dialog explicitly asked for the preview
+    #   via with_overlay=True. The default is cheap-mode (detection only)
+    #   because on big RGB frames the overlay autostretch + full-image WB
+    #   math dominate the open-time cost and the preview label itself is
+    #   too small for the ellipses to be useful anyway.
     finished = _pyqtSignal(object, int, float)
     failed   = _pyqtSignal(str)
 
@@ -683,6 +886,7 @@ class StarDetectionWorker(QThread):
         auto_sigma: bool = False,
         auto_sigma_min_stars: int = DEFAULT_AUTO_SIGMA_MIN_STARS,
         auto_sigma_ladder: Sequence[float] = DEFAULT_AUTO_SIGMA_LADDER,
+        with_overlay: bool = False,
     ):
         super().__init__(parent)
         self._image = np.asarray(image, dtype=np.float32)
@@ -692,7 +896,9 @@ class StarDetectionWorker(QThread):
         self._auto_sigma = bool(auto_sigma)
         self._auto_sigma_min_stars = int(auto_sigma_min_stars)
         self._auto_sigma_ladder = tuple(float(x) for x in auto_sigma_ladder)
-        # Populated by apply_star_based_white_balance via on_sigma_resolved
+        self._with_overlay = bool(with_overlay)
+        # Populated by detect_stars_for_wb via on_sigma_resolved as a
+        # fallback — the direct return value is used first.
         self._resolved_threshold: float = float(threshold)
 
     def cancel(self):
@@ -703,12 +909,10 @@ class StarDetectionWorker(QThread):
             def _on_resolved(sig: float):
                 self._resolved_threshold = float(sig)
 
-            result = apply_star_based_white_balance(
+            count, used_sigma, sources, bg_neutral = detect_stars_for_wb(
                 self._image,
                 threshold=self._threshold,
-                autostretch=self._autostretch,
                 reuse_cached_sources=False,
-                return_star_colors=False,
                 auto_sigma=self._auto_sigma,
                 auto_sigma_min_stars=self._auto_sigma_min_stars,
                 auto_sigma_ladder=self._auto_sigma_ladder,
@@ -716,8 +920,17 @@ class StarDetectionWorker(QThread):
             )
             if self._cancelled:
                 return
-            _, count, overlay = result
-            self.finished.emit(overlay, int(count), float(self._resolved_threshold))
+
+            if self._with_overlay:
+                overlay = build_wb_preview_overlay(
+                    bg_neutral, sources, autostretch=self._autostretch
+                )
+                if self._cancelled:
+                    return
+            else:
+                overlay = None
+
+            self.finished.emit(overlay, int(count), float(used_sigma))
         except Exception as e:
             if not self._cancelled:
                 self.failed.emit(str(e))
