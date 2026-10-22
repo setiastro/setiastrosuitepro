@@ -2662,47 +2662,92 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     print(f"[PSD] psd-tools path failed ({e}); falling back to Pillow.")
 
                 if image is None:
-                    # Pillow fallback. PsdImagePlugin is auto-registered by the
-                    # Image.init() call at module top; we just open the file.
-                    # Pillow only exposes the composite image for PSDs and
-                    # typically returns 8-bit RGB/L; good enough as a floor.
-                    with Image.open(filename) as im:
-                        im.load()
-                        mode = im.mode
-                        if mode == "CMYK":
-                            im = im.convert("RGB"); mode = "RGB"
-                        elif mode in ("LAB",):
-                            im = im.convert("RGB"); mode = "RGB"
-                        elif mode == "RGBA":
-                            im = im.convert("RGB"); mode = "RGB"
-                        elif mode == "LA":
-                            im = im.convert("L"); mode = "L"
-                        elif mode == "P":
-                            im = im.convert("RGB"); mode = "RGB"
-                        arr = np.array(im)
-                    if arr.dtype == np.uint16:
-                        arr = arr.astype(np.float32) / 65535.0
-                        bit_depth = "16-bit"
-                    elif arr.dtype == np.uint8:
-                        arr = arr.astype(np.float32) / 255.0
-                        bit_depth = "8-bit"
-                    else:
-                        arr = arr.astype(np.float32)
-                        mx = float(arr.max()) if arr.size else 1.0
-                        if mx > 1.0:
-                            arr /= mx
-                        bit_depth = f"{arr.dtype}"
-                    if arr.ndim == 2:
-                        is_mono = True
-                    elif arr.ndim == 3 and arr.shape[2] == 1:
-                        arr = arr[:, :, 0]
-                        is_mono = True
-                    elif arr.ndim == 3 and arr.shape[2] >= 3:
-                        arr = arr[:, :, :3]
-                        is_mono = False
-                    else:
-                        raise ValueError(f"Unsupported PSD image shape: {arr.shape}")
-                    image = arr
+                    # Pillow fallback. Image.init() at module top SHOULD
+                    # register PsdImagePlugin, but on some builds / plugin-
+                    # ordering edge cases it doesn't, which surfaces as
+                    # 'cannot identify image file' on perfectly valid PSDs.
+                    # Force the registration explicitly here. Pillow only
+                    # exposes the composite image for PSDs and typically
+                    # returns 8-bit RGB/L; good enough as a floor.
+                    try:
+                        from PIL import PsdImagePlugin  # noqa: F401
+                    except Exception:
+                        pass
+                    try:
+                        with Image.open(filename) as im:
+                            im.load()
+                            mode = im.mode
+                            if mode == "CMYK":
+                                im = im.convert("RGB"); mode = "RGB"
+                            elif mode in ("LAB",):
+                                im = im.convert("RGB"); mode = "RGB"
+                            elif mode == "RGBA":
+                                im = im.convert("RGB"); mode = "RGB"
+                            elif mode == "LA":
+                                im = im.convert("L"); mode = "L"
+                            elif mode == "P":
+                                im = im.convert("RGB"); mode = "RGB"
+                            arr = np.array(im)
+                        if arr.dtype == np.uint16:
+                            arr = arr.astype(np.float32) / 65535.0
+                            bit_depth = "16-bit"
+                        elif arr.dtype == np.uint8:
+                            arr = arr.astype(np.float32) / 255.0
+                            bit_depth = "8-bit"
+                        else:
+                            arr = arr.astype(np.float32)
+                            mx = float(arr.max()) if arr.size else 1.0
+                            if mx > 1.0:
+                                arr /= mx
+                            bit_depth = f"{arr.dtype}"
+                        if arr.ndim == 2:
+                            is_mono = True
+                        elif arr.ndim == 3 and arr.shape[2] == 1:
+                            arr = arr[:, :, 0]
+                            is_mono = True
+                        elif arr.ndim == 3 and arr.shape[2] >= 3:
+                            arr = arr[:, :, :3]
+                            is_mono = False
+                        else:
+                            raise ValueError(f"Unsupported PSD image shape: {arr.shape}")
+                        image = arr
+                    except Exception as e_pil:
+                        # Both paths failed. Pillow's PsdImagePlugin can't read
+                        # 16-bit PSDs or several newer Photoshop variants;
+                        # psd-tools covers those, so point the user at it.
+                        try:
+                            import psd_tools  # noqa: F401
+                            _have_psdtools = True
+                        except Exception:
+                            _have_psdtools = False
+                        if not _have_psdtools:
+                            raise ValueError(
+                                f"Could not read PSD file ({e_pil}). "
+                                "Pillow's built-in PSD support is limited and "
+                                "cannot handle 16-bit or many newer Photoshop "
+                                "files. Install psd-tools for full support:\n"
+                                "    pip install psd-tools"
+                            )
+                        # psd-tools IS installed but also failed earlier;
+                        # surface the original Pillow error.
+                        raise ValueError(
+                            f"Could not read PSD file: {e_pil}"
+                        )
+
+                # Final normalization: divide by max so the image lands in
+                # [0,1] regardless of the source bit depth or any odd value
+                # scaling in the PSD. The uint8 / uint16 divisions above get
+                # us most of the way, but Photoshop can write images with
+                # non-full-range content (16-bit files where max < 65535,
+                # 32-bit float PSDs with arbitrary ranges), and SASpro's
+                # pipeline expects [0,1] float32. Divide by max unless the
+                # image is all-zero (don't /0).
+                try:
+                    _psd_max = float(np.nanmax(image)) if image.size else 0.0
+                except Exception:
+                    _psd_max = 0.0
+                if _psd_max > 0.0:
+                    image = image.astype(np.float32, copy=False) / _psd_max
 
                 image = _finalize_loaded_image(image)
 
