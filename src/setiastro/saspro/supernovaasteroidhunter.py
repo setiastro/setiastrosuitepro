@@ -685,6 +685,7 @@ def _worker_load_and_cosmetic(args):
     """
     try:
         path, do_cosmetic, bin_factor = args
+        cosmetic_err = None
 
         # Read this frame's OWN observation time while the file is open.
         # Every search frame was taken at a different moment and a minor
@@ -718,12 +719,27 @@ def _worker_load_and_cosmetic(args):
             obs = (None, 0.0, f"time parse failed: {e}", False)
 
         if do_cosmetic:
-            img = bulk_cosmetic_correction_numba(
-                img, hot_sigma=5.0, cold_sigma=5.0, window_size=3)
+            # bulk_cosmetic_correction_numba takes (image, hot_sigma,
+            # cold_sigma, star_mean_ratio, star_max_ratio, sat_quantile,
+            # protect_sigma) — there is NO window_size (the kernel is a
+            # fixed 3x3 ring). Passing one raised TypeError, which the
+            # outer except turned into img=None for EVERY frame, including
+            # the reference — so the whole run died with "Failed to load
+            # reference image." A cosmetic failure must never do that:
+            # fall back to the uncorrected frame and let the run continue.
+            try:
+                img = bulk_cosmetic_correction_numba(
+                    img, hot_sigma=5.0, cold_sigma=5.0)
+            except Exception as ce:
+                cosmetic_err = f"cosmetic correction skipped: {ce}"
         img = np.asarray(img, dtype=np.float32)
         if bin_factor and int(bin_factor) > 1:
             img = _bin_image(img, int(bin_factor))
-        return (path, img, obs, None)
+        # cosmetic_err is a non-fatal WARNING: the frame loaded fine, the
+        # cosmetic pass just didn't run. img is valid, so the run proceeds.
+        warn = (f"{os.path.basename(path)}: {cosmetic_err}"
+                if cosmetic_err else None)
+        return (path, img, obs, warn)
     except Exception as e:
         try:
             base = os.path.basename(args[0]) if args else "?"

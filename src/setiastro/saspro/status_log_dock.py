@@ -24,8 +24,87 @@ class StatusLogDock(QDockWidget):
         self.view = QPlainTextEdit(w)
         self.view.setReadOnly(True)
         self.view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        # Show scrollbars when content overflows (NoWrap guarantees horizontal
+        # overflow on long lines). AsNeeded + the explicit QScrollBar styling
+        # below is what makes the groove+handle actually paint — styling the
+        # QPlainTextEdit alone leaves Qt drawing only the arrow buttons on some
+        # platforms/themes.
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.view.setStyleSheet(
-            "background-color: black; color: white; font-family: Monospace; padding: 6px;"
+            """
+            QPlainTextEdit {
+                background-color: black;
+                color: white;
+                font-family: Monospace;
+                padding: 6px;
+            }
+            QScrollBar:vertical {
+                background: #1a1a1a;
+                width: 14px;
+                margin: 0px;
+                border: none;
+            }
+            QScrollBar:horizontal {
+                background: #1a1a1a;
+                height: 14px;
+                margin: 0px;
+                border: none;
+            }
+            QScrollBar::handle:vertical {
+                background: #4a4a4a;
+                min-height: 24px;
+                border-radius: 4px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #4a4a4a;
+                min-width: 24px;
+                border-radius: 4px;
+                margin: 2px;
+            }
+            QScrollBar::handle:hover {
+                background: #5e5e5e;
+            }
+            /* Step arrows at each end, kept visible alongside the handle. */
+            QScrollBar::add-line:vertical {
+                background: #2a2a2a;
+                height: 14px;
+                subcontrol-position: bottom;
+                subcontrol-origin: margin;
+                border: none;
+            }
+            QScrollBar::sub-line:vertical {
+                background: #2a2a2a;
+                height: 14px;
+                subcontrol-position: top;
+                subcontrol-origin: margin;
+                border: none;
+            }
+            QScrollBar::add-line:horizontal {
+                background: #2a2a2a;
+                width: 14px;
+                subcontrol-position: right;
+                subcontrol-origin: margin;
+                border: none;
+            }
+            QScrollBar::sub-line:horizontal {
+                background: #2a2a2a;
+                width: 14px;
+                subcontrol-position: left;
+                subcontrol-origin: margin;
+                border: none;
+            }
+            QScrollBar::add-line:hover, QScrollBar::sub-line:hover {
+                background: #3a3a3a;
+            }
+            /* Leave the arrow glyphs unstyled so Qt paints its native
+               triangles inside the buttons above — restyling them with a
+               plain background would render squares instead of arrows. */
+            QScrollBar::add-page, QScrollBar::sub-page {
+                background: none;
+            }
+            """
         )
         lay.addWidget(self.view, 1)
         row = QHBoxLayout()
@@ -90,6 +169,15 @@ class StatusLogDock(QDockWidget):
     def append_line(self, message: str):
         doc = self.view.document()
 
+        # Remember where the user had the horizontal scroll BEFORE we touch the
+        # document. Inserting text (and the setTextCursor calls below) would
+        # otherwise drag the view to the caret at end-of-line. We restore this
+        # exact position afterward so a newly appended line — however long —
+        # never moves the horizontal scroll: left stays left, and a user who
+        # scrolled right to read a column stays right there.
+        hsb = self.view.horizontalScrollBar()
+        saved_hscroll = hsb.value()
+
         # --- existing UI logic unchanged ---
         if message.startswith("\r"):
             display = message[1:]
@@ -128,9 +216,13 @@ class StatusLogDock(QDockWidget):
             cur.removeSelectedText()
             self.view.setTextCursor(self.view.textCursor())
 
-        # autoscroll
-        sb = self.view.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        # Autoscroll vertically to follow new lines (unchanged), but keep the
+        # horizontal scroll exactly where the user had it (captured above),
+        # clamped to the new range in case trimming shrank the content width.
+        vsb = self.view.verticalScrollBar()
+        vsb.setValue(vsb.maximum())
+
+        hsb.setValue(max(hsb.minimum(), min(saved_hscroll, hsb.maximum())))
 
         # --- write to file (strip \r lines to last value; write others as-is) ---
         if self._log_file is not None:
