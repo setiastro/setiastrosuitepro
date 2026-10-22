@@ -3789,6 +3789,140 @@ files = [
 ]
 
 [[package]]
+name = "psd-tools"
+version = "1.24.0"
+description = "Python package for working with Adobe Photoshop PSD files"
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+markers = "python_version == \"3.10\""
+files = [
+    {file = "psd_tools-1.24.0-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:55611a5bf04ea767b28ba9cde49c73ebd8eddac39129946bf5d859ee9dabe1a9"},
+    {file = "psd_tools-1.24.0-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:ed5355b65ca3a1d692f07e0e553a010647ba1e1d5166856d5707c2687c41954b"},
+    {file = "psd_tools-1.24.0-cp310-cp310-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5a6bd25a1952c3ca9158f0ca1d2cdca8c94478a882f86e616ac2132036d2b4f9"},
+    {file = "psd_tools-1.24.0-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:c63093ca885228bdecf34dcfc6509e5ca68b14e86de4556ca44912479fcfc069"},
+    {file = "psd_tools-1.24.0-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:8f4bf7c542f15325efbe87f076f5bb50634347a03490486138905fa495389711"},
+    {file = "psd_tools-1.24.0-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:f33945c0e775b7140abfbb9e958293242831a3c622ca2409d21dedc5d750ac3e"},
+    {file = "psd_tools-1.24.0-cp310-cp310-win_amd64.whl", hash = "sha256:43d5ee009ad88bc4f407f041175ccbd053f6dc3aa7d79891a6a972d9afa5195e"},
+    {file = "psd_tools-1.24.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:828945b74f369774ef351aaa9fa66709d24dca4f539307d83324cc1f7336e872"},
+    {file = "psd_tools-1.24.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:ab79069ca9f0a946c982a656b4ee08b05a4239d006141c47dd9821e17457fe3e"},
+    {file = "psd_tools-1.24.0-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a0453d0f21b1ad72e54db6c90c8ae2ffad27a1d3a2c20d24fd37a41b877d83d7"},
+    {file = "psd_tools-1.24.0-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:bb761ae1d42922b71144f5ce61a42c6081f09877f25b1688295a902bf77d8586"},
+    {file = "psd_tools-1.24.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:3f2954187d40dec34174a727ba7af354e5a0ab6051cba335a1a04b6630d6522c"},
+    {file = "psd_tools-1.24.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:5fc005ee07879ec9e9de59f6e4d5f6c13b956092f35cafd734f03f5d370a2fa5"},
+    {file = "psd_tools-1.24.0-cp311-cp311-win_amd64.whl", hash = "sha256:c19aa276a2f52362ac320bbb8ee0de64d54c0d634874e63a6b3cf75e18020a68"},
+    {file = "psd_tools-1.24.0-cp311-cp311-win_arm64.whl", hash = "sha256:4a871ecd9b2552a3a74d7e1154b31734f03403d6659960186d33d5e19020b1c0"},
+    {file = "psd_tools-1.24.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:7a27e0593dda4bab97f751d73e7e26e82d5cc37fadd0be67f885fa756521c4e7"},
+    {file = "psd_tools-1.24.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:505af5cba340642ca753731e345b50630e3ad750c008978b9216fa3a1a8f6485"},
+    {file = "psd_tools-1.24.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c79496ed64ff30a0d2c91cecc56c8280e9c239b4d82abc67a2658d60202f5d3f"},
+    {file = "psd_tools-1.24.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1a35dcd86a840af544d287f6390f73123f2ee4f464268c89502e6c13d868725d"},
+    {file = "psd_tools-1.24.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:e7b4e20edbf308b03e1c6ae681e2958bd4bd29f8fd271e042e2608b97ca3cfb7"},
+    {file = "psd_tools-1.24.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:e34717283d0fb0121db3a45a5e53a135913da2970960a8c79d11e3c5205f68f0"},
+    {file = "psd_tools-1.24.0-cp312-cp312-win_amd64.whl", hash = "sha256:f43134cd0ab7ad963be7240676d21acca7cc6d16c6bbac28cdbcf44695305128"},
+    {file = "psd_tools-1.24.0-cp312-cp312-win_arm64.whl", hash = "sha256:26532427d1d4e54270d25223b7e5d13f02b666b7ce3304912c801c868ae1dfa5"},
+    {file = "psd_tools-1.24.0-cp313-abi3-macosx_10_13_x86_64.whl", hash = "sha256:907f6d89d673638e0fb9ca8c236609804c665a36c067484b8f0c990501b98a6b"},
+    {file = "psd_tools-1.24.0-cp313-abi3-macosx_11_0_arm64.whl", hash = "sha256:7b591cd96e28f802f23f1e2be1b5c77c5b1a063a197126c3ad82470f4e83c7d5"},
+    {file = "psd_tools-1.24.0-cp313-abi3-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a53951a0bbb885d7d63de4714c342f4ff939194420bb6c91deb0b0968bab776c"},
+    {file = "psd_tools-1.24.0-cp313-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7e720584da6da51cff560f4e28b57b124d83253df080259304382bb7914955a2"},
+    {file = "psd_tools-1.24.0-cp313-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:ca9801e7b8c788c1a91b4b2c9d636202935ebe0c1fc29c45eade8aada544678b"},
+    {file = "psd_tools-1.24.0-cp313-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:64cf5a6fee279b71178fdc906df4c94ad30c1bcdf3518d30b4fdeda8683cacc0"},
+    {file = "psd_tools-1.24.0-cp313-cp313-win_amd64.whl", hash = "sha256:98420616dc86acb114c2e19d4035ad3b5a6750fef3183ef92eb38c9052cb278a"},
+    {file = "psd_tools-1.24.0-cp313-cp313-win_arm64.whl", hash = "sha256:a9f11bd6b615c00dac2a52a8c44d4c7e69aa17a84a80b61199d49a6ce162a68e"},
+    {file = "psd_tools-1.24.0-cp314-cp314-win_amd64.whl", hash = "sha256:85d8b044984a3c1a7c2e2f121dd32e9297294b629dd5f908042d3a8640134de3"},
+    {file = "psd_tools-1.24.0-cp314-cp314-win_arm64.whl", hash = "sha256:6972ad1c53db948d36cf3e3e6e15496a103b9f065e6087b5a810adf7f937dc1f"},
+    {file = "psd_tools-1.24.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:e0f83a82d223d8e000c0921660f7fd396f299d4f23e95e03bd0ecc980cb610f0"},
+    {file = "psd_tools-1.24.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:a176bd666f371ed35b1bc47cc48198758c8cf2d8baff6ba092dcbbcf55355072"},
+    {file = "psd_tools-1.24.0-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:633c554d75306a549f4ced43771d9d52090caf04508d8f27bf02119e24bbd18f"},
+    {file = "psd_tools-1.24.0-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:452400265d4a219889d27f0cc908923ba49e7295208fb8c404cc1cc05ac9e441"},
+    {file = "psd_tools-1.24.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:81391b10e6866a8952d551040cbe82f1a3d37a0d0b216a05d627580c8d85a3f1"},
+    {file = "psd_tools-1.24.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:e553859e4774ce2db952e5d71dfc3ce5da13b1b1732436472c8c58ff90f053c2"},
+    {file = "psd_tools-1.24.0-cp314-cp314t-win_amd64.whl", hash = "sha256:9c2a2a1035f674c496a8a9f13fb212d879a3a2617534b3ca0f8471e5c9eb3cf0"},
+    {file = "psd_tools-1.24.0-cp314-cp314t-win_arm64.whl", hash = "sha256:f50fd7c13b7b838319c5351c4c1a7c25a5baba3b4c8a9edf0c2782cae248937c"},
+    {file = "psd_tools-1.24.0-cp315-cp315-win_amd64.whl", hash = "sha256:38e6ce6acbdc5b9f70728081597cbbfdb71ef6de718c339993ce9aeafd37253d"},
+    {file = "psd_tools-1.24.0-cp315-cp315-win_arm64.whl", hash = "sha256:fd373881b5880044a0569595d63c82d173df016521eeb681ff2da9e89802ce11"},
+    {file = "psd_tools-1.24.0-cp315-cp315t-macosx_10_15_x86_64.whl", hash = "sha256:b1f360646fd0d71b2b48b5e0efc90e265c2ee7c57d28ea57c64f67a6b641aff6"},
+    {file = "psd_tools-1.24.0-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:1dfa5ea820f320d08502f5678202f5f4f2aee095376bbd7eb9f8650937f30901"},
+    {file = "psd_tools-1.24.0-cp315-cp315t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:86905b27d184efd6252aa2f6fe3b6e7f702ce71c602de942df4eacb360b0a81f"},
+    {file = "psd_tools-1.24.0-cp315-cp315t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:59164ddd6686d904ef4d8794a436b902749d12ae751c929814e5ac43a916872b"},
+    {file = "psd_tools-1.24.0-cp315-cp315t-musllinux_1_2_aarch64.whl", hash = "sha256:dc0fc45bea8d53da0832dfc876f47b24a074efbc68cc0a785b37884ba85ed7b4"},
+    {file = "psd_tools-1.24.0-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:178d96be6cf895d5837ec045bb0c12590942f282bc6d02dac6a4793a7d3b7124"},
+    {file = "psd_tools-1.24.0-cp315-cp315t-win_amd64.whl", hash = "sha256:91a9fcb4dca4c5502fbd40a571387d8a54901e991bbb36c4802477c1d80be6fe"},
+    {file = "psd_tools-1.24.0-cp315-cp315t-win_arm64.whl", hash = "sha256:ecea3518fab75caa34d3af3bcf1a64d25eb6b8afc4d643e586cf148383cfe77e"},
+]
+
+[package.dependencies]
+attrs = ">=23.0.0"
+numpy = ">=1.22"
+Pillow = ">=10.3.0"
+typing-extensions = ">=4.0"
+
+[package.extras]
+composite = ["aggdraw (>=1.3.16) ; sys_platform != \"win32\"", "aggdraw (>=1.3.16,<1.4.1) ; sys_platform == \"win32\" and python_version < \"3.11\"", "aggdraw (>=1.4.1) ; sys_platform == \"win32\" and python_version >= \"3.11\"", "scipy (>=1.9)"]
+
+[[package]]
+name = "psd-tools"
+version = "1.26.0"
+description = "Python package for working with Adobe Photoshop PSD files"
+optional = false
+python-versions = ">=3.11"
+groups = ["main"]
+markers = "python_version >= \"3.11\""
+files = [
+    {file = "psd_tools-1.26.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:4f8ebe55a78446c52c53534c7c8bc237c48a0a61ffaca0aa1a19eb5cfb493304"},
+    {file = "psd_tools-1.26.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:4eef86d9426f9dc4c9f6007542446e281f621c8a934b39761b1b58533e315796"},
+    {file = "psd_tools-1.26.0-cp311-cp311-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:46ecf1573b10bb9bf2a0e718822cb611190059d383b8d811c38018c89ea18441"},
+    {file = "psd_tools-1.26.0-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:d5d01142e611998bd3aa29c89127f3544279c43ec3ba09eba6e81bfeafe9ad09"},
+    {file = "psd_tools-1.26.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:bca519045e6c730c14fbfc0b591b318896763a04d59b49cfbd42b488e38ac99e"},
+    {file = "psd_tools-1.26.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:fa6a2baba4342ca9c6e6aa54b73a9553a911b757b64184369d20fb9b9e2d0b9d"},
+    {file = "psd_tools-1.26.0-cp311-cp311-win_amd64.whl", hash = "sha256:04044ec140e770f9082dca51566f3184452729df008dbb8c452cd058f5e67d3d"},
+    {file = "psd_tools-1.26.0-cp311-cp311-win_arm64.whl", hash = "sha256:42da40e8214447eda7b515257e891d5c205a26b90e2552731329d80886ae9221"},
+    {file = "psd_tools-1.26.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:1c12d21c6db316cffc4846308fe1e886a62a0329f9fdced9e8e8c925e51ff9ed"},
+    {file = "psd_tools-1.26.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:0191ccfbd4a46ec2db7687e5e0fc6c8ee76e1001026f781560bb0d8ddde0aadf"},
+    {file = "psd_tools-1.26.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f018ef7d14d5dd70ce447a60e8a04d11593fdb89993177cd103756a9cf3db10d"},
+    {file = "psd_tools-1.26.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:cb60cbec27f032a0186c2f668524423c62df5d53f409958dbabaa954a2d99c56"},
+    {file = "psd_tools-1.26.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:44cd15f73798b7c47872b897415aecc0009357ce53a633c7c188b90e72843237"},
+    {file = "psd_tools-1.26.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:701fac23ae53c86794195543530377867001c34d345097908642e700ce3437fd"},
+    {file = "psd_tools-1.26.0-cp312-cp312-win_amd64.whl", hash = "sha256:7c23eb32d483fd575a10118aa8e05ba83cbc046c4435489be7a5a17283c75443"},
+    {file = "psd_tools-1.26.0-cp312-cp312-win_arm64.whl", hash = "sha256:58305ba85c0461d6a88cf3a560c3dcee34cb400512be88ee568f2b09cdf3606c"},
+    {file = "psd_tools-1.26.0-cp313-abi3-macosx_10_13_x86_64.whl", hash = "sha256:b070866b237a8659f5ea04c0912a471c4e9c3020b79cd877f9fd8f19e7381c51"},
+    {file = "psd_tools-1.26.0-cp313-abi3-macosx_11_0_arm64.whl", hash = "sha256:79d818cfe3c26dbe55ccee72add4343efbb811f7e8a22c2143ba74b64be28443"},
+    {file = "psd_tools-1.26.0-cp313-abi3-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9baec346224fc49607af32528a2360b64dc93f4784850d8f5550e2bcf723a861"},
+    {file = "psd_tools-1.26.0-cp313-abi3-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:ea72bbafa50907c6d02963015481ddd28fb6c4d647fdb6a456df25f9608635f1"},
+    {file = "psd_tools-1.26.0-cp313-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:1da5689b59c23802a7c549ca509903b4084f9601cd5b71f618eeeb47ae29d598"},
+    {file = "psd_tools-1.26.0-cp313-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:578319a77ab7e51f32fcc5481ad8477bfdd15d2fcfc037c246c8ff9484642ec9"},
+    {file = "psd_tools-1.26.0-cp313-cp313-win_amd64.whl", hash = "sha256:cb40d3635c28381e3d76ea517b33ec7c5122bb38f62a6efb16d479891667838e"},
+    {file = "psd_tools-1.26.0-cp313-cp313-win_arm64.whl", hash = "sha256:c1cbeecd44e968cdfc7ac5c7da7924dab72d05ff50ca8a28d1796732f20b5df6"},
+    {file = "psd_tools-1.26.0-cp314-cp314-win_amd64.whl", hash = "sha256:b40160e320360decc55944c22115922fa2aa7927d23c7fdfdd5ecba10d722c2c"},
+    {file = "psd_tools-1.26.0-cp314-cp314-win_arm64.whl", hash = "sha256:efafdd0546234dc26a86de6a558314086435bf18c842420ba6ed90f049f4a531"},
+    {file = "psd_tools-1.26.0-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:45851d065653582d1a66e1ed4f249af01bede06966af9a14d252538761e025de"},
+    {file = "psd_tools-1.26.0-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:9586a530005a4b92d642ee4d4d200109821822b9e69f1e65979ea30c0c3756ec"},
+    {file = "psd_tools-1.26.0-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:5673d224a09e1a614b5eb0b597911cf01d20c35356c891395c37b55efe727699"},
+    {file = "psd_tools-1.26.0-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5b899e4087830e315509536386daab8dd6e0a6ddf46d9c98f52174862db2a045"},
+    {file = "psd_tools-1.26.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:015245d89785fc0f65414d471ec80b61eabe93bb58d36832e19ab76fcec54774"},
+    {file = "psd_tools-1.26.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:2cae039e962b892952cb448ad2c6cf80517798dbb0bfdb8574e26c3277f3dcff"},
+    {file = "psd_tools-1.26.0-cp314-cp314t-win_amd64.whl", hash = "sha256:a1000945a74916f0f42cd6cb468470d40f42f6d8ec67b6c11e5383f9e2455923"},
+    {file = "psd_tools-1.26.0-cp314-cp314t-win_arm64.whl", hash = "sha256:513d67d99d5610b4271a31e50913f1cff3b1b55fa1c6d83662b565ccfbe48192"},
+    {file = "psd_tools-1.26.0-cp315-cp315-win_amd64.whl", hash = "sha256:c4e02a2511d8d316dd54f169c5c440cbf217051ac3db157e4eec4e55d3ff241a"},
+    {file = "psd_tools-1.26.0-cp315-cp315-win_arm64.whl", hash = "sha256:2eb7177e2149b82944fd8be9ff142483dbbd82fa6d3fd672eb08ef4075f4d70a"},
+    {file = "psd_tools-1.26.0-cp315-cp315t-macosx_10_15_x86_64.whl", hash = "sha256:e51c4b7523c9a0fb9a23f5b8b09db7639de845cbbf87d17f4481c32cf1c46368"},
+    {file = "psd_tools-1.26.0-cp315-cp315t-macosx_11_0_arm64.whl", hash = "sha256:0831756595628e65b3fed3b37b7230d0bc51dd9f9a8ebd33360b688a8bd0df32"},
+    {file = "psd_tools-1.26.0-cp315-cp315t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:b53a9be5e87fc9492cf980518b76478133527936a54149d7bb5d01933f91e6ca"},
+    {file = "psd_tools-1.26.0-cp315-cp315t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3185ca9acef199dba8332acade10b982b12d48e09e082d6724cf0236956c1057"},
+    {file = "psd_tools-1.26.0-cp315-cp315t-musllinux_1_2_aarch64.whl", hash = "sha256:95e442e2fb8bf1ef229d1b43c9f4497c6487aee4953729dcda89a6c452082820"},
+    {file = "psd_tools-1.26.0-cp315-cp315t-musllinux_1_2_x86_64.whl", hash = "sha256:76ec2f29d7dc46d600786f9cdc2b8ede2d9f769a2892db36dfc98a7f490feb59"},
+    {file = "psd_tools-1.26.0-cp315-cp315t-win_amd64.whl", hash = "sha256:9de9c1202cf986ce9032e0439b1a3d6d4eae64db7560380d828980ff540b59c8"},
+    {file = "psd_tools-1.26.0-cp315-cp315t-win_arm64.whl", hash = "sha256:dd9902b5528eac9caf9c1960e144b2198b30eda8601a70273a3a54b97f6db6fe"},
+]
+
+[package.dependencies]
+attrs = ">=23.0.0"
+numpy = ">=1.22"
+Pillow = ">=10.3.0"
+
+[package.extras]
+composite = ["aggdraw (>=1.4.1) ; sys_platform != \"win32\"", "aggdraw (>=1.4.1) ; sys_platform == \"win32\"", "scipy (>=1.9)"]
+
+[[package]]
 name = "psutil"
 version = "7.1.3"
 description = "Cross-platform lib for process and system monitoring."
@@ -5896,4 +6030,4 @@ cffi = ["cffi (>=1.17,<2.0) ; platform_python_implementation != \"PyPy\" and pyt
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "854cf89b1b2ebbcb1c7e2ac16140c600646157d1cb2994a127e38071d2627b2e"
+content-hash = "573212190fe46805c1e126f4d49b16843903d530aa3069ba3edad88af05d4c3a"
