@@ -578,12 +578,12 @@ class FileMixin:
         filters = (
             "All Supported (*.png *.jpg *.jpeg *.webp *.tif *.tiff "
             "*.fits *.fit *.fts *.fits.gz *.fit.gz *.fz *.xisf *.syq *.pdf "
-            "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.psb);;"
+            "*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef *.psb *.psd);;"
             "PDF (*.pdf);;"
             "Astro (FITS/XISF/SYQ) (*.xisf *.syq *.fits *.fit *.fts *.fits.gz *.fit.gz *.fz);;"
             "SYQ (SyQon) (*.syq);;"
             "RAW Images (*.cr2 *.cr3 *.nef *.arw *.dng *.raf *.orf *.rw2 *.pef);;"
-            "Photoshop Documents (*.psb);;"
+            "Photoshop Documents (*.psb *.psd);;"
             "Common Images (*.png *.jpg *.jpeg *.webp *.tif *.tiff);;"
             "All Files (*)"
         )

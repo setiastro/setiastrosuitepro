@@ -2590,6 +2590,122 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
 
                 image = arr.astype(np.float32) / 255.0                
 
+            elif filename.lower().endswith('.psd'):
+                # Photoshop (.psd) — read-only. SASpro has no PSD export path,
+                # so this branch only lives in load_image; see file_utils.py's
+                # add-a-new-format checklist comment for why there is no
+                # matching save path. We read the flattened composite image
+                # (not individual layers): that is what Photoshop renders when
+                # the file is opened, and what every reader we care about
+                # (PIL/psd-tools) can produce reliably across 8-bit and 16-bit
+                # PSDs.
+                print(f"Loading PSD file: {filename}")
+                image = None
+                bit_depth = "8-bit"
+                is_mono = False
+                # Prefer psd-tools when available: it handles 16-bit depth and
+                # odd modes (CMYK, Lab) better than Pillow's PsdImagePlugin,
+                # which composites 16-bit PSDs down to 8-bit silently.
+                try:
+                    from psd_tools import PSDImage  # type: ignore
+                    psd = PSDImage.open(filename)
+                    pil = psd.composite()  # merged/composite image
+                    if pil is None:
+                        raise RuntimeError("psd-tools returned no composite image")
+                    depth_bits = int(getattr(psd, "depth", 8) or 8)
+                    mode = pil.mode
+                    if mode == "CMYK":
+                        pil = pil.convert("RGB")
+                        mode = "RGB"
+                    elif mode in ("LAB", "L*a*b*"):
+                        pil = pil.convert("RGB")
+                        mode = "RGB"
+                    elif mode == "RGBA":
+                        # Drop alpha for processing; SASpro is 1/3-channel internally.
+                        pil = pil.convert("RGB")
+                        mode = "RGB"
+                    elif mode == "LA":
+                        pil = pil.convert("L")
+                        mode = "L"
+                    elif mode == "P":
+                        pil = pil.convert("RGB")
+                        mode = "RGB"
+                    arr = np.array(pil)
+                    if arr.dtype == np.uint16 or depth_bits == 16:
+                        arr = arr.astype(np.float32) / 65535.0
+                        bit_depth = "16-bit"
+                    elif arr.dtype == np.uint8:
+                        arr = arr.astype(np.float32) / 255.0
+                        bit_depth = "8-bit"
+                    else:
+                        # Anything else (float, int32, …) — normalize by max.
+                        arr = arr.astype(np.float32)
+                        mx = float(arr.max()) if arr.size else 1.0
+                        if mx > 1.0:
+                            arr /= mx
+                        bit_depth = f"{arr.dtype}"
+                    if arr.ndim == 2:
+                        is_mono = True
+                    elif arr.ndim == 3 and arr.shape[2] == 1:
+                        arr = arr[:, :, 0]
+                        is_mono = True
+                    elif arr.ndim == 3 and arr.shape[2] >= 3:
+                        arr = arr[:, :, :3]
+                        is_mono = False
+                    else:
+                        raise ValueError(f"Unsupported PSD array shape: {arr.shape}")
+                    image = arr
+                except ImportError:
+                    # psd-tools not installed — fall through to Pillow.
+                    pass
+                except Exception as e:
+                    print(f"[PSD] psd-tools path failed ({e}); falling back to Pillow.")
+
+                if image is None:
+                    # Pillow fallback. PsdImagePlugin is auto-registered by the
+                    # Image.init() call at module top; we just open the file.
+                    # Pillow only exposes the composite image for PSDs and
+                    # typically returns 8-bit RGB/L; good enough as a floor.
+                    with Image.open(filename) as im:
+                        im.load()
+                        mode = im.mode
+                        if mode == "CMYK":
+                            im = im.convert("RGB"); mode = "RGB"
+                        elif mode in ("LAB",):
+                            im = im.convert("RGB"); mode = "RGB"
+                        elif mode == "RGBA":
+                            im = im.convert("RGB"); mode = "RGB"
+                        elif mode == "LA":
+                            im = im.convert("L"); mode = "L"
+                        elif mode == "P":
+                            im = im.convert("RGB"); mode = "RGB"
+                        arr = np.array(im)
+                    if arr.dtype == np.uint16:
+                        arr = arr.astype(np.float32) / 65535.0
+                        bit_depth = "16-bit"
+                    elif arr.dtype == np.uint8:
+                        arr = arr.astype(np.float32) / 255.0
+                        bit_depth = "8-bit"
+                    else:
+                        arr = arr.astype(np.float32)
+                        mx = float(arr.max()) if arr.size else 1.0
+                        if mx > 1.0:
+                            arr /= mx
+                        bit_depth = f"{arr.dtype}"
+                    if arr.ndim == 2:
+                        is_mono = True
+                    elif arr.ndim == 3 and arr.shape[2] == 1:
+                        arr = arr[:, :, 0]
+                        is_mono = True
+                    elif arr.ndim == 3 and arr.shape[2] >= 3:
+                        arr = arr[:, :, :3]
+                        is_mono = False
+                    else:
+                        raise ValueError(f"Unsupported PSD image shape: {arr.shape}")
+                    image = arr
+
+                image = _finalize_loaded_image(image)
+
             elif filename.lower().endswith('.psb'):
                 print(f"Loading PSB file: {filename}")
                 from setiastro.saspro.imageops.save_psb import load_psb

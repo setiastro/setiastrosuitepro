@@ -55,6 +55,18 @@ from typing import Optional, List, Set
 #                               onto the canvas will silently reject the file
 # That's 8 files / 8+ touchpoints. Yes, it's a lot. No, we can't easily collapse them
 # without a larger refactor. This comment is the next best thing.
+#
+# READ-ONLY FORMATS
+# -----------------
+# Some formats are opened but never written (currently: .psd, .pdf, RAW).
+# For those, only two touchpoints apply:
+#   * image_manager.load_image()  — add an `elif filename.endswith('.xyz'):` branch
+#     (or route through _open_pdf / rawpy as those already do)
+#   * file_mixin.open_files()     — add *.xyz to the dialog filter string
+#   * shortcuts.OPENABLE_ENDINGS  — add .xyz so drag-and-drop onto the canvas works
+# Nothing in ALLOWED_BIT_DEPTHS / _BIT_DEPTHS / _ALLOWED_DEPTHS / save_active_as_format
+# touches read-only formats; adding those entries is what promotes a format from
+# read-only to full read-write, so leave them untouched until a writer actually exists.
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Constants
