@@ -136,6 +136,14 @@ from setiastro.saspro.torch_rejection import (
     release_flat_group_ctx as _release_flat_group_ctx,
     _get_torch,
     _safe_inference_ctx as _safe_inference_ctx_impl,
+    # Single-sourced so the numpy reducers below reject identically to the GPU
+    # ones. _rejection_gpu_ok() cross-checks the two paths element for element
+    # and silently demotes the whole integration to CPU on any mismatch, so a
+    # duplicated critical-value table or a different convergence rule is not a
+    # cosmetic difference — it costs the user the GPU.
+    esd_critical_values as _esd_critical_values,
+    _CONVERGENCE_MIN_ITERS,
+    _WINSOR_CONV_TOL,
 )
 
 import threading
@@ -3404,14 +3412,31 @@ def _np_winsorized_center_scale(ts, valid, iterations=3, winsor_k=1.5):
         med = _np_nanmedian_low(x)
         sigma = np.maximum(1.4826 * _np_nanmedian_low(np.abs(x - med[None])), 1e-10)
         cnt = np.maximum(valid.sum(axis=0), 1).astype(np.float32)
-        for _ in range(max(1, int(iterations))):
+        n_it = max(1, int(iterations))
+        # Same convergence rule and gate as the GPU path (see
+        # torch_rejection._winsorized_center_scale): stop once sigma moves by
+        # less than 0.05% relative, but only arm the check for deep iteration
+        # counts. The gate exists for the GPU's sake -- the test needs a device
+        # sync that stalls the tile pipeline -- and is applied here too so the
+        # two reducers iterate exactly the same number of times and
+        # _rejection_gpu_ok() cannot see a spurious mismatch.
+        check_conv = n_it >= _CONVERGENCE_MIN_ITERS
+        for it in range(n_it):
             lo = med - winsor_k * sigma
             hi = med + winsor_k * sigma
             xw = np.clip(x, lo[None], hi[None])       # NaN stays NaN
             med = _np_nanmedian_low(xw)
             mean_w = np.where(valid, xw, 0.0).sum(axis=0) / cnt
             var = np.where(valid, (xw - mean_w[None]) ** 2, 0.0).sum(axis=0) / cnt
-            sigma = np.maximum(1.134 * np.sqrt(np.maximum(var, 0.0)), 1e-10)
+            sigma_new = np.maximum(1.134 * np.sqrt(np.maximum(var, 0.0)), 1e-10)
+
+            if check_conv and it + 1 < n_it:
+                rel = np.max(np.abs(sigma_new - sigma) / np.maximum(sigma, 1e-10))
+                sigma = sigma_new
+                if float(rel) < _WINSOR_CONV_TOL:
+                    break
+            else:
+                sigma = sigma_new
     return med, sigma
 
 
@@ -3433,50 +3458,63 @@ def kappa_sigma_clip_weighted_np(ts, weights, kappa=2.5, iterations=3):
     ts, w, valid, was_3d = _rej_prepare(ts, weights)
     keep = valid.copy()
     with np.errstate(all="ignore"):
-        for _ in range(max(1, int(iterations))):
+        # `var` is measured about the MEDIAN, not the mean of the kept sample.
+        # Deliberate, and matches PixInsight: center and scale stay anchored to
+        # the same robust statistic, so a surviving outlier cannot pull the
+        # center and shrink the apparent spread at once. Mirrored in the GPU
+        # branch -- do not "fix" one without the other.
+        n_it = max(1, int(iterations))
+        check_conv = n_it >= _CONVERGENCE_MIN_ITERS
+        for it in range(n_it):
             x_iter = np.where(keep, ts, np.nan)
             med = _np_nanmedian_low(x_iter)
             n = np.maximum(keep.sum(axis=0), 1).astype(np.float32)
             var = np.where(keep, (ts - med[None]) ** 2, 0.0).sum(axis=0) / n
             std = np.maximum(np.sqrt(np.maximum(var, 0.0)), 1e-12)
-            keep &= (ts >= (med - float(kappa) * std)[None]) \
-                  & (ts <= (med + float(kappa) * std)[None])
+            keep_new = keep & (ts >= (med - float(kappa) * std)[None]) \
+                            & (ts <= (med + float(kappa) * std)[None])
+
+            # Exact fixed-point exit: an iteration that rejects nothing leaves
+            # the kept set, and therefore med/std and the bounds, unchanged --
+            # every later iteration would also reject nothing. Gated identically
+            # to the GPU branch so both run the same number of passes.
+            if check_conv and it + 1 < n_it:
+                changed = bool(np.any(keep_new != keep))
+                keep = keep_new
+                if not changed:
+                    break
+            else:
+                keep = keep_new
         x = np.where(valid, ts, np.nan)
         fallback = np.nan_to_num(_np_nanmedian_low(x), nan=0.0)
         out = _np_weighted_mean_or(ts, keep, w, fallback)
     return _rej_finish(out, ~keep, was_3d)
 
 
-def esd_clip_weighted_np(ts, weights, threshold=3.0):
+def esd_clip_weighted_np(ts, weights, threshold=3.0, esd_bonferroni=False):
     """
     Generalized ESD (Rosner), externally studentized, vectorized per pixel.
     Sequentially removes the most extreme remaining value and tests it
     against the leave-one-out mean/std of the remaining sample (defeats
     masking); no early stop — the outlier count is the largest step whose
-    test passed. Critical values are t-quantiles at df = n-2 mapped from the
-    user's z-style threshold, so 'threshold' keeps its literal 'sigmas'
-    meaning on large stacks and inflates automatically on small ones
-    (controls the false-rejection cascade a fixed cutoff would cause).
+    test passed.
+
+    Critical values come from torch_rejection.esd_critical_values so this and
+    the GPU reducer cannot drift apart; see that function for what `threshold`
+    and `esd_bonferroni` mean.
     """
     ts, w, valid, was_3d = _rej_prepare(ts, weights)
     F = ts.shape[0]
     thr = float(threshold)
+    # Half the stack, matching the GPU branch (a tighter cap was measured to
+    # start suppressing real rejections on short stacks — see that comment).
     max_out = int(max(1, min(F - 2, round(0.5 * F))))
 
-    crit_by_n = np.full(F + 1, np.inf, dtype=np.float32)
-    try:
-        from scipy import stats as _sstats
-        p_two = float(_sstats.norm.sf(thr))          # one-sided tail
-        for nn in range(3, F + 1):
-            crit_by_n[nn] = float(_sstats.t.ppf(1.0 - p_two, nn - 2))
-    except Exception:
-        for nn in range(3, F + 1):
-            df = nn - 2
-            infl = (df / (df - 2.0)) ** 0.5 if df > 2 else 3.0
-            crit_by_n[nn] = thr * infl
+    crit_by_n = _esd_critical_values(F, thr, bonferroni=bool(esd_bonferroni))
 
     active = valid.copy()
-    removed_step = np.full(ts.shape, -1, dtype=np.int32)
+    # int16 mirrors the GPU branch; step indices <= F/2 cannot overflow a short.
+    removed_step = np.full(ts.shape, -1, dtype=np.int16)
     passed = np.zeros((max_out,) + ts.shape[1:], dtype=bool)
 
     with np.errstate(all="ignore"):
@@ -3492,24 +3530,30 @@ def esd_clip_weighted_np(ts, weights, threshold=3.0):
             dmax = np.take_along_axis(zabs, idx[None], axis=0)[0]
             dmax = np.where(np.isfinite(dmax), dmax, 0.0)
 
-            # leave-one-out identities (no catastrophic cancellation):
-            #   ss_loo = ss_all - dmax^2 * n/(n-1);  R = dmax * n/(n-1) / s_loo
+            # Leave-one-out identities (no catastrophic cancellation):
+            #   ss_loo = ss_all - dmax^2 * n/(n-1)
+            # The candidate sits dmax*n/(n-1) from the LOO mean with standard
+            # error s_loo*sqrt(1 + 1/(n-1)), so the externally studentized
+            # deviate is dmax*sqrt(n/(n-1))/s_loo ~ t_{n-2}. The sqrt is what
+            # makes it an exact t; the old code used the raw n/(n-1) ratio and
+            # therefore ran every test hot.
             n_loo = np.maximum(n - 1.0, 1.0)
             ss_loo = np.maximum(ss_all - dmax * dmax * (n / n_loo), 0.0)
             var_loo = ss_loo / np.maximum(n_loo - 1.0, 1.0)
             std_loo = np.maximum(np.sqrt(var_loo), 1e-12)
-            R = dmax * (n / n_loo) / std_loo
+            R = dmax * np.sqrt(n / n_loo) / std_loo
 
-            lam = crit_by_n[np.clip(active.sum(axis=0), 0, F)]
+            # indexed by the PRE-removal active count, which is exactly `n`
+            lam = crit_by_n[np.clip(n.astype(np.int64), 0, F)]
             passed[j] = can & (R > lam)
 
             hit = np.zeros_like(active)
             np.put_along_axis(hit, idx[None], can[None], axis=0)
             active &= ~hit
-            removed_step = np.where(hit, j, removed_step)
+            removed_step = np.where(hit, np.int16(j), removed_step)
 
-        steps = np.arange(max_out, dtype=np.int32).reshape((max_out,) + (1,) * (ts.ndim - 1))
-        jstar = np.where(passed, steps, -1).max(axis=0)
+        steps = np.arange(max_out, dtype=np.int16).reshape((max_out,) + (1,) * (ts.ndim - 1))
+        jstar = np.where(passed, steps, np.int16(-1)).max(axis=0)
         keep = valid & ((removed_step < 0) | (removed_step > jstar[None]))
 
         x = np.where(valid, ts, np.nan)
@@ -3519,13 +3563,48 @@ def esd_clip_weighted_np(ts, weights, threshold=3.0):
 
 
 def trimmed_mean_weighted_np(ts, weights, trim_fraction=0.1):
+    """
+    True symmetric order-statistic trimmed mean: drop max(floor(f*n), 1) from
+    each end of the sorted sample, then take the weighted mean of what is left.
+    That is the textbook / scipy.stats.trim_mean estimator for any n >= 1/f,
+    with a minimum of one frame per tail so that picking a trimming rejection
+    method never silently degrades to a plain average on a short stack.
+
+    The old implementation thresholded on interpolated quantiles instead, which
+    is a different estimator: on a 5-frame stack at f=0.1 a true trim drops
+    floor(0.5)=0 frames, but q_0.1 interpolates strictly above the minimum, so
+    both the min and the max were thrown away -- a 40% trim labelled 10%. It
+    also under-trimmed whenever values tied at the cut, and the number kept
+    drifted with each pixel's value distribution instead of being fixed by n.
+    Mirrors the GPU branch exactly.
+    """
     ts, w, valid, was_3d = _rej_prepare(ts, weights)
+    F = ts.shape[0]
     with np.errstate(all="ignore"):
-        x = np.where(valid, ts, np.nan)
-        qlo = np.nanquantile(x, float(trim_fraction), axis=0)
-        qhi = np.nanquantile(x, 1.0 - float(trim_fraction), axis=0)
-        keep = valid & (ts >= qlo[None]) & (ts <= qhi[None])
-        fallback = np.nan_to_num(_np_nanmedian_low(x), nan=0.0)
+        x_sort = np.where(valid, ts, np.inf)
+        idx = np.argsort(x_sort, axis=0, kind="stable")
+        vals = np.take_along_axis(x_sort, idx, axis=0)
+
+        n = valid.sum(axis=0)
+        f = min(max(float(trim_fraction), 0.0), 0.5)
+        k = np.floor(n.astype(np.float32) * f).astype(np.int64)
+        if f > 0.0:
+            # Minimum one per tail — the one deliberate departure from
+            # scipy.stats.trim_mean's exact floor; see the GPU branch for why.
+            # Never fires once n >= 1/f.
+            k = np.maximum(k, 1)
+        # never trim the sample away entirely: leave at least one survivor
+        k = np.clip(np.minimum(k, np.maximum((n - 1) // 2, 0)), 0, None)
+
+        rank = np.arange(F, dtype=np.int64).reshape((F,) + (1,) * (ts.ndim - 1))
+        keep_sorted = (rank >= k[None]) & (rank < (n - k)[None]) & np.isfinite(vals)
+
+        # back to original frame order so weights and the rejection map line up
+        keep = np.zeros_like(keep_sorted)
+        np.put_along_axis(keep, idx, keep_sorted, axis=0)
+        keep &= valid
+
+        fallback = np.nan_to_num(_np_nanmedian_low(np.where(valid, ts, np.nan)), nan=0.0)
         out = _np_weighted_mean_or(ts, keep, w, fallback)
     return _rej_finish(out, ~keep, was_3d)
 
@@ -7334,6 +7413,13 @@ class StackingSuiteDialog(QDialog):
         self.kappa = self.settings.value("stacking/kappa", 2.5, type=float)
         self.iterations = self.settings.value("stacking/iterations", 3, type=int)
         self.esd_threshold = self.settings.value("stacking/esd_threshold", 3.0, type=float)
+        # Rosner's family-wise multiplicity correction for ESD. OFF by default:
+        # with it on, the threshold controls the per-PIXEL error rate instead of
+        # the per-FRAME rate the "sigma" control advertises, and detection of a
+        # 4-sigma outlier on a 245-frame stack drops from ~100% to ~1%. On is the
+        # literature test and is available for anyone who wants it. No UI
+        # control — expert escape hatch, set it in the INI.
+        self.esd_bonferroni = self.settings.value("stacking/esd_bonferroni", False, type=bool)
         self.biweight_constant = self.settings.value("stacking/biweight_constant", 6.0, type=float)
         self.trim_fraction = self.settings.value("stacking/trim_fraction", 0.1, type=float)
         self.modz_threshold = self.settings.value("stacking/modz_threshold", 3.5, type=float)
@@ -10617,6 +10703,10 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/kappa",                self.kappa)
         self.settings.setValue("stacking/iterations",           self.iterations)
         self.settings.setValue("stacking/esd_threshold",        self.esd_threshold)
+        # Round-trip the INI-only ESD escape hatch so saving settings from the
+        # dialog doesn't quietly reset it (there is no widget backing it).
+        self.settings.setValue("stacking/esd_bonferroni",
+                               bool(getattr(self, "esd_bonferroni", False)))
         self.settings.setValue("stacking/biweight_constant",    self.biweight_constant)
         self.settings.setValue("stacking/trim_fraction",        self.trim_fraction)
         self.settings.setValue("stacking/modz_threshold",       self.modz_threshold)
@@ -17326,6 +17416,7 @@ class StackingSuiteDialog(QDialog):
                             sigma_high=float(getattr(self, "sigma_high", 2.5)),
                             trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
                             esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
+                            esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
                             biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
                             modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
                             comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
@@ -18584,6 +18675,7 @@ class StackingSuiteDialog(QDialog):
                             sigma_high=float(getattr(self, "sigma_high", 2.5)),
                             trim_fraction=float(params.get("trim_fraction", getattr(self, "trim_fraction", 0.05))),
                             esd_threshold=float(getattr(self, "esd_threshold", 3.0)),
+                            esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
                             biweight_constant=float(getattr(self, "biweight_constant", 6.0)),
                             modz_threshold=float(getattr(self, "modz_threshold", 3.5)),
                             comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
@@ -31487,7 +31579,7 @@ class StackingSuiteDialog(QDialog):
             elif algo == "Trimmed Mean":
                 return trimmed_mean_weighted_np(ts, weights_array, trim_fraction=self.trim_fraction)
             elif algo == "Extreme Studentized Deviate (ESD)":
-                return esd_clip_weighted_np(ts, weights_array, threshold=self.esd_threshold)
+                return esd_clip_weighted_np(ts, weights_array, threshold=self.esd_threshold, esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)))
             elif algo == "Biweight Estimator":
                 return biweight_location_weighted_np(ts, weights_array, tuning_constant=self.biweight_constant)
             elif algo == "Modified Z-Score Clipping":
@@ -31840,6 +31932,7 @@ class StackingSuiteDialog(QDialog):
                             sigma_high=float(self.sigma_high),
                             trim_fraction=float(self.trim_fraction),
                             esd_threshold=float(self.esd_threshold),
+                            esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
                             biweight_constant=float(self.biweight_constant),
                             modz_threshold=float(self.modz_threshold),
                             comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
@@ -35433,7 +35526,7 @@ class StackingSuiteDialog(QDialog):
                 "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted_np(ts_zeroed, np.ones_like(weights_array), lower=self.sigma_low, upper=self.sigma_high, iterations=self.iterations),
                 "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted_np(ts_zeroed, weights_array, kappa=self.kappa, iterations=self.iterations),
                 "Trimmed Mean":                        lambda: trimmed_mean_weighted_np(ts_zeroed, weights_array, trim_fraction=self.trim_fraction),
-                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted_np(ts_zeroed, weights_array, threshold=self.esd_threshold),
+                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted_np(ts_zeroed, weights_array, threshold=self.esd_threshold, esd_bonferroni=bool(getattr(self, "esd_bonferroni", False))),
                 "Biweight Estimator":                  lambda: biweight_location_weighted_np(ts_zeroed, weights_array, tuning_constant=self.biweight_constant),
                 "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted_np(ts_zeroed, weights_array, threshold=self.modz_threshold),
             }
@@ -35520,6 +35613,7 @@ class StackingSuiteDialog(QDialog):
                                 sigma_high=float(self.sigma_high),
                                 trim_fraction=float(self.trim_fraction),
                                 esd_threshold=float(self.esd_threshold),
+                                esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
                                 biweight_constant=float(self.biweight_constant),
                                 modz_threshold=float(self.modz_threshold),
                                 comet_hclip_k=float(self.settings.value("stacking/comet_hclip_k", 1.30, type=float)),
@@ -35912,7 +36006,7 @@ class StackingSuiteDialog(QDialog):
                 "Windsorized Sigma Clipping":          lambda: windsorized_sigma_clip_weighted_np(ts_zeroed, np.ones_like(weights_array), lower=self.sigma_low, upper=self.sigma_high, iterations=self.iterations),
                 "Kappa-Sigma Clipping":                lambda: kappa_sigma_clip_weighted_np(ts_zeroed, weights_array, kappa=self.kappa, iterations=self.iterations),
                 "Trimmed Mean":                        lambda: trimmed_mean_weighted_np(ts_zeroed, weights_array, trim_fraction=self.trim_fraction),
-                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted_np(ts_zeroed, weights_array, threshold=self.esd_threshold),
+                "Extreme Studentized Deviate (ESD)":   lambda: esd_clip_weighted_np(ts_zeroed, weights_array, threshold=self.esd_threshold, esd_bonferroni=bool(getattr(self, "esd_bonferroni", False))),
                 "Biweight Estimator":                  lambda: biweight_location_weighted_np(ts_zeroed, weights_array, tuning_constant=self.biweight_constant),
                 "Modified Z-Score Clipping":           lambda: modified_zscore_clip_weighted_np(ts_zeroed, weights_array, threshold=self.modz_threshold),
             }
@@ -35979,6 +36073,7 @@ class StackingSuiteDialog(QDialog):
                             sigma_high=float(self.sigma_high),
                             trim_fraction=float(self.trim_fraction),
                             esd_threshold=float(self.esd_threshold),
+                            esd_bonferroni=bool(getattr(self, "esd_bonferroni", False)),
                             biweight_constant=float(self.biweight_constant),
                             modz_threshold=float(self.modz_threshold),
                             comet_hclip_k=float(self.settings.value(

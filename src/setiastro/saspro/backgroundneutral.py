@@ -358,7 +358,7 @@ class BackgroundNeutralizationDialog(QDialog):
         self.setModal(False)
         #self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
 
-        self.auto_stretch = False
+        self.auto_stretch = True
         self.zoom_factor = 1.0
         self._user_zoomed = False
 
@@ -383,7 +383,7 @@ class BackgroundNeutralizationDialog(QDialog):
         btn_row = QHBoxLayout()
         self.btn_apply = QPushButton(self.tr("Apply Neutralization"))
         self.btn_cancel = QPushButton(self.tr("Cancel"))
-        self.btn_toggle_stretch = QPushButton(self.tr("Enable Auto-Stretch"))
+        self.btn_toggle_stretch = QPushButton(self.tr("Toggle Auto-Stretch"))
         self.btn_find_bg = QPushButton(self.tr("Find Background"))
         btn_row.addWidget(self.btn_apply)
         btn_row.addWidget(self.btn_cancel)
@@ -510,7 +510,7 @@ class BackgroundNeutralizationDialog(QDialog):
 
     def _toggle_auto_stretch(self):
         self.auto_stretch = not self.auto_stretch
-        self.btn_toggle_stretch.setText("Disable Auto-Stretch" if self.auto_stretch else "Enable Auto-Stretch")
+        self.btn_toggle_stretch.setText("Toggle Auto-Stretch")
         self._load_image()
 
     # ---------- zoom ----------
