@@ -83,11 +83,37 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
     # ------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------
+    # Ratios past this are both far outside the 0..2 view and a sign the
+    # denominator has collapsed — no real stellar sample reaches it.
+    _RATIO_MAX = 100.0
+
     def compute_ratios(pixels: np.ndarray):
-        eps = 1e-8
-        rb = pixels[:, 0] / (pixels[:, 2] + eps)  # R/B
-        gb = pixels[:, 1] / (pixels[:, 2] + eps)  # G/B
-        return rb, gb
+        """
+        Star colors as (R/B, G/B), with degenerate points returned as nan.
+
+        The old form was `pixels[:, 0] / (pixels[:, 2] + 1e-8)`. That `+ eps`
+        guard stops the ZeroDivisionError but produces something worse: a
+        blue of 0.0 becomes a perfectly FINITE 8e7 instead of an inf, so
+        every np.isfinite() check downstream waved it through to the artists.
+        It is the same defect that crashed the locus tick labels (see
+        _blackbody_ratio_point), latent here for any star whose blue sample
+        sits at the noise floor — and those coordinates overflow a 32-bit
+        FT_Pos on Windows once anything text-shaped is placed at them.
+
+        Dividing straight through and filtering afterwards is both simpler
+        and honest: a star with no blue has no meaningful R/B, so it is not
+        a point on an R/B plot. Callers already drop non-finite pairs via
+        _finite_pair, so nan is all that is needed here.
+        """
+        p = np.asarray(pixels, dtype=np.float64)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rb = p[:, 0] / p[:, 2]
+            gb = p[:, 1] / p[:, 2]
+        bad = (
+            ~np.isfinite(rb) | ~np.isfinite(gb) |
+            (np.abs(rb) > _RATIO_MAX) | (np.abs(gb) > _RATIO_MAX)
+        )
+        return np.where(bad, np.nan, rb), np.where(bad, np.nan, gb)
 
     def _finite(x, y):
         m = np.isfinite(x) & np.isfinite(y)
@@ -187,11 +213,43 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         rgb /= mx
         return rgb.astype(np.float32)
 
+    # Below this the blue channel carries no usable signal and the R/B, G/B
+    # ratios are meaningless. 1500 K clips blue to EXACTLY 0.0 after the
+    # out-of-gamut clamp in _blackbody_rgb_approx; 2000 K is ~7.6e-3, which
+    # is small but still a real number, so this floor only rejects the
+    # genuinely degenerate end of the curve.
+    _BB_MIN_BLUE = 1e-4
+
     def _blackbody_ratio_point(temp_k: float):
+        """
+        Blackbody point in (R/B, G/B) ratio space, or (nan, nan) when the
+        blue channel is degenerate.
+
+        The old code did `rgb[0] / max(rgb[2], 1e-8)`, which turns a blue of
+        exactly 0.0 (true at 1500 K) into a ratio of 1e8 rather than an inf
+        or a nan — so every finite-check downstream passed it through. A text
+        label placed at data coordinate 1e8 lands around 2.7e10 display
+        pixels, and matplotlib's Agg text path hands FreeType
+        `round(0x40 * px)` ≈ 1.7e12 as the transform delta.
+
+        FT_Pos is a C long: 64-bit on Linux, but 32-bit on Windows (LLP64).
+        Since matplotlib 3.10 ft2font is a pybind11 module with strict
+        integer conversion, so on Windows that value is rejected with
+        "TypeError: _set_transform(): incompatible function arguments"
+        — raised from inside the Qt paint event, i.e. AFTER the figure is
+        handed to the result dialog, where _on_apply's try/except can no
+        longer see it. Hence a hard traceback on a WB that actually succeeded.
+
+        Returning nan lets the callers filter these points out instead.
+        """
         rgb = _blackbody_rgb_approx(temp_k).astype(np.float32)
-        eps = 1e-8
-        rb = float(rgb[0] / max(rgb[2], eps))
-        gb = float(rgb[1] / max(rgb[2], eps))
+        b = float(rgb[2])
+        if not np.isfinite(b) or b <= _BB_MIN_BLUE:
+            return float("nan"), float("nan")
+        rb = float(rgb[0] / b)
+        gb = float(rgb[1] / b)
+        if not (np.isfinite(rb) and np.isfinite(gb)):
+            return float("nan"), float("nan")
         return rb, gb
 
     def _add_blackbody_locus(ax):
@@ -208,8 +266,16 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         x = pts[:, 0]
         y = pts[:, 1]
 
-        # Keep only finite/in-range-ish points
-        m = np.isfinite(x) & np.isfinite(y)
+        # Keep finite points, and drop the cool end of the curve where the
+        # ratios run away to huge values. The bound is deliberately generous
+        # (the view is 0..2) so the drawn locus still crosses the whole
+        # visible box and the local-tangent estimate below still has
+        # neighbours at the edges — it only removes coordinates far enough
+        # out to be both invisible and numerically hazardous.
+        _CURVE_LIMIT = 10.0
+        m = (np.isfinite(x) & np.isfinite(y) &
+             (x > -1.0) & (x < _CURVE_LIMIT) &
+             (y > -1.0) & (y < _CURVE_LIMIT))
         x = x[m]
         y = y[m]
 
@@ -221,13 +287,23 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         # Labeled temperature ticks
         tick_temps = [1500, 2000, 2500, 3000, 4000, 6000, 10000]
 
+        # Only label ticks that actually land inside the plotted box. The
+        # cool end of the locus sits far outside it — 1500 K is at
+        # (1e8, 1.5e7), 2000 K at (131, 35), 2500 K at (14.8, 5.6) — so those
+        # labels were being created as artists and then drawn off-screen
+        # where nobody could see them anyway. Skipping them is both the fix
+        # for the FreeType overflow above and the behaviour the plot already
+        # appeared to have.
         tick_pts = []
         for t in tick_temps:
             px, py = _blackbody_ratio_point(t)
-            if np.isfinite(px) and np.isfinite(py):
-                tick_pts.append((t, px, py))
+            if not (np.isfinite(px) and np.isfinite(py)):
+                continue
+            if not (rmin <= px <= rmax and gmin <= py <= gmax):
+                continue
+            tick_pts.append((t, px, py))
 
-        if len(tick_pts) < 2:
+        if len(tick_pts) < 1:
             return
 
         # For local tangent estimation, use neighboring curve samples
@@ -275,8 +351,40 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
     rb_before, gb_before = compute_ratios(raw_pixels)
     rb_after,  gb_after  = compute_ratios(after_pixels)
 
-    rb_before, gb_before = _finite(rb_before, gb_before)
-    rb_after,  gb_after  = _finite(rb_after,  gb_after)
+    # Saturation mask, computed from the RAW (N,3) pixels rather than from the
+    # ratios — a star clipped at 1.0 in R with B=0.5 still yields a perfectly
+    # finite R/B, so a ratio-space filter cannot see it. Thresholds mirror
+    # starbasedwhitebalance._photometric_keep_mask so the dashed fit on this
+    # plot agrees with the slope the WB engine actually measured. Without
+    # this, the clipped stars cluster near (1,1) and drag the Before fit up,
+    # which is exactly the bias the engine now rejects.
+    _CLIP_HI, _CLIP_LO = 0.95, 0.005
+
+    def _unsat(pix):
+        a = np.asarray(pix, dtype=np.float32)
+        if a.ndim != 2 or a.shape[1] < 3:
+            return np.ones(len(a), dtype=bool)
+        return (np.all(np.isfinite(a[:, :3]), axis=1) &
+                np.all(a[:, :3] < _CLIP_HI, axis=1) &
+                np.all(a[:, :3] > _CLIP_LO, axis=1))
+
+    def _finite_pair(x, y):
+        return np.isfinite(x) & np.isfinite(y)
+
+    keep_before = _unsat(raw_pixels)   & _finite_pair(rb_before, gb_before)
+    keep_after  = _unsat(after_pixels) & _finite_pair(rb_after,  gb_after)
+
+    # Drop only non-finite points (they cannot be drawn); clipped stars are
+    # KEPT so they still appear on the scatter, just flagged and excluded
+    # from the fit.
+    fin_before = _finite_pair(rb_before, gb_before)
+    fin_after  = _finite_pair(rb_after,  gb_after)
+    rb_before, gb_before, keep_before = (rb_before[fin_before],
+                                         gb_before[fin_before],
+                                         keep_before[fin_before])
+    rb_after,  gb_after,  keep_after  = (rb_after[fin_after],
+                                         gb_after[fin_after],
+                                         keep_after[fin_after])
 
     # Limit plotted stars
     max_plot_stars = 2000
@@ -288,6 +396,8 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         gb_before = gb_before[:n]
         rb_after  = rb_after[:n]
         gb_after  = gb_after[:n]
+        keep_before = keep_before[:n]
+        keep_after  = keep_after[:n]
 
     # ------------------------------------------------------------
     # Plot bounds / ratio background
@@ -311,7 +421,7 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
     ax1 = fig.add_subplot(1, 2, 1)
     ax2 = fig.add_subplot(1, 2, 2, sharex=ax1, sharey=ax1)
 
-    def plot_panel(ax, rb_data, gb_data, title):
+    def plot_panel(ax, rb_data, gb_data, title, keep=None):
         ax.imshow(
             rgb_image,
             extent=(rmin, rmax, gmin, gmax),
@@ -320,18 +430,42 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
             alpha=0.9,
         )
 
+        if keep is None:
+            keep = np.ones(rb_data.shape, dtype=bool)
+        drop = ~keep
+
+        # Stars used for the fit
         ax.scatter(
-            rb_data,
-            gb_data,
+            rb_data[keep],
+            gb_data[keep],
             alpha=0.45,
             edgecolors="k",
             linewidths=0.25,
             s=12,
-            label="Stars",
+            label=f"Stars ({int(keep.sum())})",
         )
 
-        if rb_data.size >= 2:
-            m, b = np.polyfit(rb_data, gb_data, 1)
+        # Clipped stars — shown so the population is still visible, but
+        # excluded from the fit. Hollow gray so they read as "not counted".
+        if int(drop.sum()) > 0:
+            ax.scatter(
+                rb_data[drop],
+                gb_data[drop],
+                facecolors="none",
+                edgecolors="0.45",
+                linewidths=0.5,
+                s=14,
+                alpha=0.55,
+                label=f"Clipped, excluded ({int(drop.sum())})",
+            )
+
+        # Fit on unclipped stars only, so this line matches the slope the WB
+        # engine reports in the console.
+        fit_rb, fit_gb = rb_data[keep], gb_data[keep]
+        if fit_rb.size < 2:
+            fit_rb, fit_gb = rb_data, gb_data
+        if fit_rb.size >= 2:
+            m, b = np.polyfit(fit_rb, fit_gb, 1)
             xs = np.linspace(rmin, rmax, 200)
             ax.plot(xs, m * xs + b, "r--", linewidth=1.5, label=f"Best Fit\ny = {m:.2f}x + {b:.2f}")
 
@@ -352,8 +486,8 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         ax.grid(True, alpha=0.6)
         ax.legend(loc="upper right", fontsize=8)
 
-    plot_panel(ax1, rb_before, gb_before, "Before")
-    plot_panel(ax2, rb_after,  gb_after,  "After")
+    plot_panel(ax1, rb_before, gb_before, "Before", keep=keep_before)
+    plot_panel(ax2, rb_after,  gb_after,  "After",  keep=keep_after)
 
     if total_available > max_plot_stars:
         fig.suptitle(
@@ -409,6 +543,9 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
         "auto_sigma": bool (default True),    # waterfall-based threshold pick
         "auto_sigma_min_stars": int (default 1200),
         "reuse_cached_sources": bool (default True),
+        "use_color_matrix": bool (default False),
+        "matrix_strength": float 0..1 (default 0.70),  # only if use_color_matrix
+                                              # 0 = no rotation, 1 = full send
         # manual mode:
         "r_gain": float (default 1.0), "g_gain": float (default 1.0), "b_gain": float (default 1.0)
       }
@@ -437,6 +574,10 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
         else:  # "star"
             thr = float(p.get("threshold", 50.0))
             use_cm = bool(p.get("use_color_matrix", False))
+            # Default 0.7 matches the dialog's conservative default, so an
+            # old frozen shortcut with no matrix_strength key behaves exactly
+            # as it did before this setting existed.
+            cm_strength = float(p.get("matrix_strength", 0.70))
             # Auto-σ waterfall is on by default — removes the manual guess
             # and the "find too many stars" blowups at low σ.
             auto_sig = bool(p.get("auto_sigma", True))
@@ -448,6 +589,7 @@ def apply_white_balance_to_doc(doc, preset: Optional[Dict] = None):
                 reuse_cached_sources=False,
                 return_star_colors=False,
                 use_color_matrix=use_cm,
+                matrix_strength=cm_strength,
                 auto_sigma=auto_sig,
                 auto_sigma_min_stars=auto_min,
             )
@@ -651,7 +793,63 @@ class WhiteBalanceDialog(QDialog):
             "than standard diagonal white balance scaling."
         ))
         sg.addWidget(self.chk_color_matrix)
-    
+
+        # ── Matrix strength (indented sub-control of the matrix checkbox) ──
+        # How far each star is blended toward its blackbody-locus projection
+        # before the 3x3 is solved. 70% is the conservative default: the
+        # per-star targets are built from each star's own measured color, so
+        # a pathological population steers the targets as well as the solve.
+        # Holding back means such a population bends the result instead of
+        # dictating it. Users with clean broadband data can push it.
+        self.matrix_strength = 0.70
+        cm_row = QHBoxLayout()
+        cm_row.setContentsMargins(19, 0, 0, 0)
+        cm_row.setSpacing(6)
+        self.cm_strength_caption = QLabel(self.tr("Rotation strength:"))
+        self.cm_strength_caption.setStyleSheet("font-size:11px;")
+        cm_row.addWidget(self.cm_strength_caption)
+
+        self.cm_strength_slider = QSlider(Qt.Orientation.Horizontal)
+        self.cm_strength_slider.setMinimum(0)
+        self.cm_strength_slider.setMaximum(100)
+        self.cm_strength_slider.setValue(70)
+        self.cm_strength_slider.setTickInterval(10)
+        self.cm_strength_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.cm_strength_slider.setFixedWidth(200)
+        self.cm_strength_slider.setToolTip(self.tr(
+            "How hard the color matrix rotates the stellar scatter onto the\n"
+            "blackbody locus.\n\n"
+            "  0%    no rotation (diagonal white balance only)\n"
+            "  70%   default — conservative, resists pathological stars\n"
+            "  100%  full send: every star aimed straight at the locus\n\n"
+            "Each star's target is built from its OWN measured color, so a\n"
+            "population full of nebulosity, emission-line objects or junk\n"
+            "left over by a loose clip threshold steers the targets as well\n"
+            "as the solve. The default holds back so such a population bends\n"
+            "the result rather than dictating it.\n\n"
+            "Push it up on clean broadband fields with plenty of unclipped\n"
+            "stars. Keep it at or below the default on narrowband, duoband\n"
+            "or sparse data.\n\n"
+            "This is what is ASKED for, not what lands — the matrix realizes\n"
+            "roughly three quarters of the request even at 100%."
+        ))
+        cm_row.addWidget(self.cm_strength_slider)
+
+        self.cm_strength_label = QLabel("70%  default")
+        self.cm_strength_label.setFixedWidth(88)
+        self.cm_strength_label.setStyleSheet("font-size:11px;")
+        cm_row.addWidget(self.cm_strength_label)
+        cm_row.addStretch(1)
+        sg.addLayout(cm_row)
+
+        # Strength is meaningless unless the matrix is on.
+        def _sync_matrix_strength(checked: bool):
+            self.cm_strength_slider.setEnabled(bool(checked))
+            self.cm_strength_label.setEnabled(bool(checked))
+            self.cm_strength_caption.setEnabled(bool(checked))
+        self.chk_color_matrix.toggled.connect(_sync_matrix_strength)
+        _sync_matrix_strength(self.chk_color_matrix.isChecked())
+
         self.chk_reuse = None
 
         self.chk_autostretch_overlay = QCheckBox(self.tr("Autostretch overlay preview"))
@@ -754,7 +952,20 @@ class WhiteBalanceDialog(QDialog):
         self.chk_autostretch_overlay.toggled.connect(lambda _=None: self._debounce.start())
         self.auto_sigma_chk.toggled.connect(self._on_auto_sigma_toggled)
         self.btn_show_preview.clicked.connect(self._on_show_preview_clicked)
+        self.cm_strength_slider.valueChanged.connect(self._on_matrix_strength_changed)
         self.finished.connect(lambda *_: self._stop_detection_worker())
+
+        # Restore last matrix strength (default 0.70 — the conservative value)
+        try:
+            s = QSettings()
+            v = int(s.value("WhiteBalance/MatrixStrength", 70, type=int))
+            v = max(0, min(100, v))
+            self.cm_strength_slider.blockSignals(True)
+            self.cm_strength_slider.setValue(v)
+            self.cm_strength_slider.blockSignals(False)
+            self._on_matrix_strength_changed(v)
+        except Exception:
+            pass
 
         # Restore last Auto σ preference (default: ON — removes guess-and-check)
         try:
@@ -769,6 +980,27 @@ class WhiteBalanceDialog(QDialog):
     def _on_threshold_changed(self, v: int):
         self.thr_label.setText(str(v))
         self._debounce.start()  # restart debounce — slider still moving
+
+    def _on_matrix_strength_changed(self, v: int):
+        """Matrix rotation strength. Does NOT re-trigger detection — it only
+        affects the WB solve at Apply time, not star detection, so there is
+        nothing to re-detect and no debounce needed."""
+        self.matrix_strength = float(v) / 100.0
+        if v == 0:
+            word = self.tr("off")
+        elif v < 45:
+            word = self.tr("gentle")
+        elif v <= 75:
+            word = self.tr("default")
+        elif v < 100:
+            word = self.tr("strong")
+        else:
+            word = self.tr("full")
+        self.cm_strength_label.setText(f"{v}%  {word}")
+        try:
+            QSettings().setValue("WhiteBalance/MatrixStrength", int(v))
+        except Exception:
+            pass
 
     def _on_auto_sigma_toggled(self, on: bool):
         try:
@@ -980,6 +1212,7 @@ class WhiteBalanceDialog(QDialog):
             "mode": "star",
             "threshold": float(self.thr_slider.value()),
             "use_color_matrix": bool(self.chk_color_matrix.isChecked()),
+            "matrix_strength": float(self.cm_strength_slider.value()) / 100.0,
             "auto_sigma": (
                 bool(self.auto_sigma_chk.isChecked())
                 if hasattr(self, "auto_sigma_chk") else True
@@ -996,7 +1229,7 @@ class WhiteBalanceDialog(QDialog):
         widgets = [
             self.type_combo, self.thr_slider,
             self.r_spin, self.g_spin, self.b_spin,
-            self.chk_color_matrix,
+            self.chk_color_matrix, self.cm_strength_slider,
         ]
         if hasattr(self, "auto_sigma_chk"):
             widgets.append(self.auto_sigma_chk)
@@ -1020,6 +1253,8 @@ class WhiteBalanceDialog(QDialog):
                 self.thr_slider.setValue(iv)
                 self.thr_label.setText(str(iv))
                 self.chk_color_matrix.setChecked(bool(p.get("use_color_matrix", False)))
+                ms = int(round(float(p.get("matrix_strength", 0.70)) * 100.0))
+                self.cm_strength_slider.setValue(max(0, min(100, ms)))
                 if hasattr(self, "auto_sigma_chk"):
                     # Default: True — the whole point is to turn guess-and-check off.
                     self.auto_sigma_chk.setChecked(bool(p.get("auto_sigma", True)))
@@ -1032,6 +1267,15 @@ class WhiteBalanceDialog(QDialog):
 
         # Re-apply dependent state that the blocked signals would have set.
         self._update_mode_widgets()
+        # Blocked signals skipped the strength label + enable sync.
+        try:
+            self._on_matrix_strength_changed(self.cm_strength_slider.value())
+            on_cm = self.chk_color_matrix.isChecked()
+            self.cm_strength_slider.setEnabled(on_cm)
+            self.cm_strength_label.setEnabled(on_cm)
+            self.cm_strength_caption.setEnabled(on_cm)
+        except Exception:
+            pass
         # Re-sync slider enabled state with the restored Auto flag.
         if hasattr(self, "auto_sigma_chk"):
             try:
@@ -1073,6 +1317,12 @@ class WhiteBalanceDialog(QDialog):
                         thr = float(preset.get("threshold", 50.0))
                         auto = bool(preset.get("auto_sigma", False))
                         resolved = preset.get("resolved_threshold")
+                        if preset.get("use_color_matrix"):
+                            main._log(
+                                f"[Replay] White Balance color matrix ON "
+                                f"(strength "
+                                f"{float(preset.get('matrix_strength', 0.70))*100:.0f}%)"
+                            )
                         if auto and resolved is not None:
                             main._log(
                                 f"[Replay] Recorded White Balance preset "
@@ -1117,6 +1367,7 @@ class WhiteBalanceDialog(QDialog):
             else:  # Star-Based
                 thr = float(self.thr_slider.value())
                 use_cm = bool(self.chk_color_matrix.isChecked())
+                cm_strength = float(self.cm_strength_slider.value()) / 100.0
                 auto_sigma = (
                     bool(self.auto_sigma_chk.isChecked())
                     if hasattr(self, "auto_sigma_chk") else False
@@ -1126,6 +1377,7 @@ class WhiteBalanceDialog(QDialog):
                     "mode": "star",
                     "threshold": thr,
                     "use_color_matrix": use_cm,
+                    "matrix_strength": cm_strength,
                     "auto_sigma": auto_sigma,
                 }
 
@@ -1153,6 +1405,7 @@ class WhiteBalanceDialog(QDialog):
                     reuse_cached_sources=True,
                     return_star_colors=True,
                     use_color_matrix=use_cm,     # ← pass through
+                    matrix_strength=cm_strength,
                     auto_sigma=auto_sigma,
                     on_sigma_resolved=_capture_sigma,
                 )

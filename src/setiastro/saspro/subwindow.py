@@ -1819,11 +1819,11 @@ class ImageSubWindow(QWidget):
         if doc is None or doc.image is None:
             return
 
-        src = getattr(self, "_buf8", None)
-        if src is None:
-            src = np.asarray(doc.image)
-
-        arr = np.asarray(src)
+        # ALWAYS crop from the raw document image. The visual patch gets
+        # stretched below (if autostretch is on); the readout values come
+        # from `sample`, which was taken from doc.image directly by
+        # _sample_image_at_viewport_pos, so numbers stay honest.
+        arr = np.asarray(doc.image)
 
         if arr.ndim == 2:
             H, W = arr.shape
@@ -1869,8 +1869,19 @@ class ImageSubWindow(QWidget):
                        left_pad:left_pad + paste_w] = patch[:paste_h, :paste_w]
             patch = padded
 
+        # Apply the viewport's current display stretch to the patch for
+        # the visual preview only. Readout numbers below are unaffected.
+        patch_display = patch
+        if getattr(self, "autostretch_enabled", False):
+            try:
+                stretched = self.apply_current_display_stretch(patch)
+                if stretched is not None:
+                    patch_display = stretched
+            except Exception:
+                pass
+
         global_pos = self.scroll.viewport().mapToGlobal(vp_pos)
-        self._loupe.set_patch(patch)
+        self._loupe.set_patch(patch_display)
         # compact RGB + alpha/delta readout inside the loupe (if enabled)
         show_info = getattr(self._loupe, "_show_info", True)
         try:
@@ -3688,17 +3699,13 @@ class ImageSubWindow(QWidget):
             pm_scaled = pm_base.scaled(sw, sh, Qt.AspectRatioMode.KeepAspectRatio, mode)
             self._present_scaled_cache = (_pkey, pm_scaled)
 
-        # If interactive, skip WCS overlay entirely (this is the biggest speed win)
-        if interactive:
-            self.label.setPixmap(pm_scaled)
-            self.label.resize(pm_scaled.size())
-            return
-
-        # Non-interactive: (optionally) draw WCS grid.
+        # WCS grid: driven ONLY by the user's toggle, not by `interactive`.
+        # Cache key MUST include the scaling mode (`mode`) so an interactive
+        # fast-scaled bake does not shadow the smooth-scaled settle present
+        # (and vice-versa). Also key on pm_base.cacheKey() so a rebuild of
+        # _pm_src invalidates the grid cache for free.
         if getattr(self, "_show_wcs_grid", False):
-            # Cache a baked WCS pixmap at *this* scale to avoid re-drawing
-            # if _present_scaled(False) is called multiple times at same scale.
-            cache_key = (sw, sh, float(self.scale))
+            cache_key = (pm_base.cacheKey(), int(sw), int(sh), mode, float(self.scale))
             if getattr(self, "_pm_src_wcs_key", None) != cache_key or getattr(self, "_pm_src_wcs", None) is None:
                 pm_scaled = self._draw_wcs_grid_on_pixmap(pm_scaled)
                 self._pm_src_wcs = pm_scaled
@@ -3708,6 +3715,7 @@ class ImageSubWindow(QWidget):
 
         self.label.setPixmap(pm_scaled)
         self.label.resize(pm_scaled.size())
+        return
 
     def apply_current_display_stretch(self, image=None):
         if not self.autostretch_enabled:

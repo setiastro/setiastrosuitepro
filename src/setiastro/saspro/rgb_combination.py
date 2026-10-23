@@ -131,54 +131,162 @@ class RGBCombinationDialogPro(QDialog):
 
     # --- helpers
 
-    def _guess_channel(self, titles: list[str], channel: str) -> int:
+    # ─── Filter → channel map ──────────────────────────────────────────
+    # Used by _filter_bonus below to score the FITS FILTER keyword, which is
+    # the DEFINITIVE signal for which channel a stack belongs to — unlike
+    # filename patterns, a FILTER card can't masquerade as something else.
+    #
+    # Weights: direct broadband R/G/B get 100, Sloan variants 90, narrowband
+    # aliases 50-60. Lower narrowband weight means "if both an R and an Ha
+    # file exist, prefer R for the red role" — the Ha file still beats a
+    # file with no FILTER card, but a true R beats it.
+    #
+    # OIII is intentionally NOT mapped: users split it G or B depending on
+    # palette (HOO, SHO), so we leave it to the filename regex / user choice.
+    @staticmethod
+    def _map_filter(f: str):
         """
-        Score each title for how likely it is to be the given channel (R/G/B).
-        Returns the index of the best match, or 0 if no confident match.
+        Return (channel, weight) for a FITS FILTER keyword value, or None if
+        it maps to nothing we can act on. Case/space/underscore-insensitive.
+        """
+        if not f:
+            return None
+        s = str(f).strip().upper().replace(" ", "").replace("_", "").replace("-", "")
+        EXACT = {
+            "R":   ("R", 100), "RED":   ("R", 100),
+            "G":   ("G", 100), "GREEN": ("G", 100),
+            "B":   ("B", 100), "BLUE":  ("B", 100),
+            # Sloan short and prime notations
+            "SR":  ("R", 90),  "SG": ("G", 90),  "SB": ("B", 90),
+            "R'":  ("R", 90),  "G'": ("G", 90),  "B'": ("B", 90),
+            # Common narrowband mappings (weaker than broadband so true R wins)
+            "HA":  ("R", 60),  "HALPHA": ("R", 60),
+            "SII": ("R", 55),  "S2":     ("R", 55),
+            # L / Lum / Luminance intentionally return None — not an RGB channel
+        }
+        if s in EXACT:
+            return EXACT[s]
+        # Filter-wheel entries like "Ha_7nm", "Halpha6", "S2narrow"
+        if s.startswith(("HALPHA", "HA")):
+            return ("R", 55)
+        if s.startswith(("SII", "S2")):
+            return ("R", 50)
+        return None
+
+    @staticmethod
+    def _filter_from_doc(doc) -> str:
+        """
+        Pull the FITS FILTER keyword value off a doc's metadata. Returns the
+        raw string (not uppercased — _map_filter normalises). Checks the
+        common storage patterns SASpro uses: a flat metadata key, or a
+        nested astropy Header under one of a few names.
+        """
+        if doc is None:
+            return ""
+        try:
+            meta = getattr(doc, "metadata", None) or {}
+        except Exception:
+            return ""
+        # Direct flat key
+        for key in ("FILTER", "filter", "Filter"):
+            v = meta.get(key)
+            if v:
+                return str(v)
+        # Nested FITS/WCS header
+        for hkey in ("original_header", "fits_header", "header", "wcs_header"):
+            h = meta.get(hkey)
+            if h is None:
+                continue
+            try:
+                v = h.get("FILTER") if hasattr(h, "get") else h["FILTER"]
+                if v:
+                    return str(v)
+            except Exception:
+                continue
+        return ""
+
+    def _guess_channel(self, titles: list[str], docs: list, channel: str) -> int:
+        """
+        Score each (title, doc) pair for how likely it is to be the given
+        channel (R/G/B), and return the index of the best match. Falls back
+        to 0 only if nothing scored positive.
+
+        Scoring is two-layer:
+          1. FITS FILTER keyword — definitive when present. A card reading
+             "G" gets +100 for green and -50 for red/blue.
+          2. Filename regex — fallback for files whose FILTER card is
+             missing or non-standard.
+
+        The filename regex used to have a bug: `[_\\-\\s\\.]g[_\\-\\s\\.\\d]`
+        allowed `\\d` as the trailing boundary, which let the SASpro gain
+        prefix (`..._G121_...` on every master-light file) false-match as a
+        green channel. Every file in a field tied at the same score, and the
+        first one in the list won — which is why Green rarely auto-assigned
+        correctly while R and B almost always did (there's no `_R<n>_` or
+        `_B<n>_` convention to collide with). Removing `\\d` fixes it: only
+        the real `_G_` separator matches now.
         """
         import re
         channel = channel.upper()
 
-        def score(title: str) -> int:
+        def filter_bonus(doc) -> int:
+            entry = self._map_filter(self._filter_from_doc(doc))
+            if entry is None:
+                return 0
+            mapped, weight = entry
+            if mapped == channel:
+                return int(weight)
+            # Mapped to a DIFFERENT channel — penalise so it doesn't win
+            # the role it isn't right for. Half-weight: a FILTER=Ha file
+            # still scores -30 for green, which the real _G_ filename
+            # pattern (+8) will overcome, so the right file still wins.
+            return -int(weight) // 2
+
+        def filename_score(title: str) -> int:
             t = title.lower()
             s = 0
 
             if channel == "R":
-                # Strong signals
-                if re.search(r'\bred\b', t):           s += 10
-                if re.search(r'[_\-\s\.]r[_\-\s\.\d]', t): s += 8   # _r_ r_ _r
-                if re.search(r'[_\-\s\.]ha[_\-\s\.]', t):  s += 6   # Ha = red
-                if re.search(r'[_\-\s\.]sii[_\-\s\.]', t): s += 5   # SII often mapped to R
-                if t.endswith('_r') or t.endswith('-r'):     s += 7
-                if re.search(r'[_\-\s\.]r$', t):            s += 7
-                # Penalty: if it looks green or blue, penalise
-                if re.search(r'\bgreen\b|\bblue\b', t):      s -= 10
+                if re.search(r'\bred\b', t):               s += 10
+                if re.search(r'[_\-\s\.]r[_\-\s\.]', t):   s += 8   # was [...\d] — see docstring
+                if re.search(r'[_\-\s\.]ha[_\-\s\.]', t):  s += 6
+                if re.search(r'[_\-\s\.]sii[_\-\s\.]', t): s += 5
+                if t.endswith('_r') or t.endswith('-r'):   s += 7
+                if re.search(r'[_\-\s\.]r$', t):           s += 7
+                if re.search(r'\bgreen\b|\bblue\b', t):    s -= 10
                 if re.search(r'[_\-\s\.]g[_\-\s\.]|[_\-\s\.]b[_\-\s\.]', t): s -= 5
 
             elif channel == "G":
-                if re.search(r'\bgreen\b', t):               s += 10
-                if re.search(r'[_\-\s\.]g[_\-\s\.\d]', t):  s += 8
-                if t.endswith('_g') or t.endswith('-g'):      s += 7
-                if re.search(r'[_\-\s\.]g$', t):             s += 7
-                if re.search(r'[_\-\s\.]oiii[_\-\s\.]', t): s += 5  # OIII often mapped to G
-                if re.search(r'\bred\b|\bblue\b', t):         s -= 10
+                if re.search(r'\bgreen\b', t):             s += 10
+                if re.search(r'[_\-\s\.]g[_\-\s\.]', t):   s += 8   # dropped \d — see docstring
+                if t.endswith('_g') or t.endswith('-g'):   s += 7
+                if re.search(r'[_\-\s\.]g$', t):           s += 7
+                if re.search(r'[_\-\s\.]oiii[_\-\s\.]', t): s += 5
+                if re.search(r'\bred\b|\bblue\b', t):      s -= 10
                 if re.search(r'[_\-\s\.]r[_\-\s\.]|[_\-\s\.]b[_\-\s\.]', t): s -= 5
 
             elif channel == "B":
-                if re.search(r'\bblue\b', t):                s += 10
-                if re.search(r'[_\-\s\.]b[_\-\s\.\d]', t):  s += 8
-                if t.endswith('_b') or t.endswith('-b'):      s += 7
-                if re.search(r'[_\-\s\.]b$', t):             s += 7
-                if re.search(r'[_\-\s\.]oiii[_\-\s\.]', t): s += 4  # OIII sometimes B
-                if re.search(r'\bred\b|\bgreen\b', t):        s -= 10
+                if re.search(r'\bblue\b', t):              s += 10
+                if re.search(r'[_\-\s\.]b[_\-\s\.]', t):   s += 8   # dropped \d — see docstring
+                if t.endswith('_b') or t.endswith('-b'):   s += 7
+                if re.search(r'[_\-\s\.]b$', t):           s += 7
+                if re.search(r'[_\-\s\.]oiii[_\-\s\.]', t): s += 4
+                if re.search(r'\bred\b|\bgreen\b', t):     s -= 10
                 if re.search(r'[_\-\s\.]r[_\-\s\.]|[_\-\s\.]g[_\-\s\.]', t): s -= 5
 
             return s
 
-        scores = [score(t) for t in titles]
+        # If docs weren't supplied (older callers), fall back to filename-only
+        # with the regex fix still in place.
+        if not docs or len(docs) != len(titles):
+            scores = [filename_score(t) for t in titles]
+        else:
+            scores = [filename_score(t) + filter_bonus(d)
+                      for t, d in zip(titles, docs)]
+
         best_score = max(scores)
         if best_score <= 0:
-            return 0  # no confident match, leave at index 0
+            return 0
         return scores.index(best_score)
 
     def _labeled(self, text, w):
@@ -190,16 +298,21 @@ class RGBCombinationDialogPro(QDialog):
     def _populate_views(self):
         self.cmb_r.clear(); self.cmb_g.clear(); self.cmb_b.clear()
         titles = []
+        docs = []
         for title, doc in self._list_open_docs():
             self.cmb_r.addItem(title, doc)
             self.cmb_g.addItem(title, doc)
             self.cmb_b.addItem(title, doc)
             titles.append(title)
+            docs.append(doc)
 
         if len(titles) >= 3:
-            self.cmb_r.setCurrentIndex(self._guess_channel(titles, "R"))
-            self.cmb_g.setCurrentIndex(self._guess_channel(titles, "G"))
-            self.cmb_b.setCurrentIndex(self._guess_channel(titles, "B"))
+            # Pass docs through so _guess_channel can read the FITS FILTER
+            # keyword — the definitive signal when it's present. Filename
+            # patterns are the fallback.
+            self.cmb_r.setCurrentIndex(self._guess_channel(titles, docs, "R"))
+            self.cmb_g.setCurrentIndex(self._guess_channel(titles, docs, "G"))
+            self.cmb_b.setCurrentIndex(self._guess_channel(titles, docs, "B"))
 
     def _refresh_mode(self):
         use_views = self.use_views_radio.isChecked()

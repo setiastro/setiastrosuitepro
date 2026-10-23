@@ -2296,11 +2296,97 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         pg = _find_image_to_native_grid(props)
                         if pg is None:
                             raise KeyError("No ImageToNative grid found")
-                        gx = np.asarray(pg['GridX']['value'], dtype=float)
-                        gy = np.asarray(pg['GridY']['value'], dtype=float)
-                        delta = float(pg.get('Delta', {}).get('value', 1.0))
-                        rect  = np.asarray(pg.get('Rect', {}).get('value', [0,0,gx.shape[1]*delta, gx.shape[0]*delta]), dtype=float)
-                        x0, y0 = rect[0], rect[1]
+
+                        # PI stores grids lazily: the dict holds shape metadata
+                        # (rows, columns) and an attachment pointer, but
+                        # dict['value'] is None until xisf.resolve_property is
+                        # called. We MUST resolve or we get 0-D NaN arrays.
+                        def _resolve_prop_array(block, name):
+                            v = block.get(name) if isinstance(block, dict) else None
+                            if v is None:
+                                return None, None
+                            # dict-style property
+                            if isinstance(v, dict):
+                                shape_hint = None
+                                r = v.get('rows') or v.get('Rows') or v.get('height') or v.get('Height')
+                                c = v.get('columns') or v.get('Columns') or v.get('width') or v.get('Width')
+                                if r is not None and c is not None:
+                                    try:
+                                        shape_hint = (int(r), int(c))
+                                    except Exception:
+                                        shape_hint = None
+                                # resolve lazy or already-resolved value
+                                try:
+                                    if v.get('_lazy', False) or v.get('value') is None:
+                                        arr = xisf.resolve_property(v)
+                                    else:
+                                        arr = v.get('value')
+                                except Exception as _re:
+                                    print(f"⚠️ resolve_property({name}) failed: {_re}; using value field")
+                                    arr = v.get('value')
+                                return arr, shape_hint
+                            # bare value (unusual)
+                            return v, None
+
+                        gx_raw, gx_shape_hint = _resolve_prop_array(pg, 'GridX')
+                        gy_raw, gy_shape_hint = _resolve_prop_array(pg, 'GridY')
+                        if gx_raw is None or gy_raw is None:
+                            raise KeyError("PI ImageToNative grid missing GridX/GridY")
+
+                        gx = np.asarray(gx_raw, dtype=float)
+                        gy = np.asarray(gy_raw, dtype=float)
+
+                        # Reshape to the hint if the resolver returned a flat buffer.
+                        def _apply_shape_hint(arr, hint, label):
+                            if arr.ndim == 2:
+                                return arr
+                            if hint is not None and arr.size == hint[0] * hint[1]:
+                                return arr.reshape(hint)
+                            if arr.ndim == 1:
+                                # Last-resort square inference
+                                side = int(round(np.sqrt(arr.size)))
+                                if side * side == arr.size:
+                                    print(f"⚠️ Inferring square {side}x{side} shape for {label}")
+                                    return arr.reshape(side, side)
+                            raise ValueError(
+                                f"PI ImageToNative {label} unusable: shape={arr.shape} hint={hint}"
+                            )
+
+                        gx = _apply_shape_hint(gx, gx_shape_hint, 'GridX')
+                        gy = _apply_shape_hint(gy, gy_shape_hint, 'GridY')
+                        if gx.shape != gy.shape:
+                            raise ValueError(
+                                f"GridX/GridY shape mismatch: {gx.shape} vs {gy.shape}"
+                            )
+
+                        # Delta: scalar property, usually not lazy, but handle both.
+                        delta_raw, _ = _resolve_prop_array(pg, 'Delta')
+                        if delta_raw is None:
+                            delta = 1.0
+                        else:
+                            try:
+                                delta = float(np.asarray(delta_raw).ravel()[0])
+                            except Exception:
+                                delta = 1.0
+                        if not (np.isfinite(delta) and delta > 0):
+                            delta = 1.0
+
+                        # Rect: F64Vector length 4, usually lazy (base64 inline).
+                        rect_raw, _ = _resolve_prop_array(pg, 'Rect')
+                        if rect_raw is None:
+                            rect = np.array(
+                                [0.0, 0.0, gx.shape[1] * delta, gx.shape[0] * delta],
+                                dtype=float,
+                            )
+                        else:
+                            rect = np.asarray(rect_raw, dtype=float).ravel()
+                        if rect.size < 2:
+                            raise ValueError(f"Rect too short: shape={rect.shape}")
+
+                        x0, y0 = float(rect[0]), float(rect[1])
+                        print(f"🔷 Resolved PI grids: GridX={gx.shape}, delta={delta}, "
+                              f"rect=[{x0:.3f}, {y0:.3f}, {rect[2] if rect.size > 2 else '?'}, "
+                              f"{rect[3] if rect.size > 3 else '?'}]")
 
                         # grid gives native-plane coords (deg) at sampled pixels
                         # build pixel coord for each grid sample
@@ -2362,12 +2448,37 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         for (i,j), coef in zip(best['terms'], best['b']):
                             hdr[f'B_{i}_{j}'] = float(coef); _filled.add(f'B_{i}_{j}')
 
+                        # Promote CTYPE to TAN-SIP so strict consumers (Aladin,
+                        # Montage, WIMI) actually apply the A_i_j/B_i_j terms.
+                        for _ctkey, _newv in (("CTYPE1", "RA---TAN-SIP"),
+                                              ("CTYPE2", "DEC--TAN-SIP")):
+                            _cur = str(hdr.get(_ctkey, "")).strip().upper()
+                            if _cur in ("", "RA---TAN", "DEC--TAN"):
+                                hdr[_ctkey] = _newv
+                                _filled.add(_ctkey)
+
                         print(f"🔷 Injected SIP order {o} (from PI native grids), rms={best['rms']:.4g}px")
 
-                    except KeyError:
-                        print("⚠️ No PI ImageToNative grid; skipping SIP")
+                    except KeyError as e:
+                        # Only treat the top-level "no grid" case as a benign skip.
+                        if "No ImageToNative grid found" in str(e):
+                            print("⚠️ No PI ImageToNative grid; skipping SIP")
+                        else:
+                            print(f"⚠️ SIP skipped (KeyError in grid handling): {e}")
                     except Exception as e:
-                        print(f"⚠️ SIP fit failed; skipping SIP. Reason: {e}")
+                        import traceback
+                        print(f"⚠️ SIP fit failed; skipping SIP. Reason: {type(e).__name__}: {e}")
+                        try:
+                            _gx = locals().get('gx', None)
+                            _gy = locals().get('gy', None)
+                            _rect = locals().get('rect', None)
+                            print(f"  gx: shape={getattr(_gx,'shape','n/a')} dtype={getattr(_gx,'dtype','n/a')}")
+                            print(f"  gy: shape={getattr(_gy,'shape','n/a')} dtype={getattr(_gy,'dtype','n/a')}")
+                            print(f"  delta={locals().get('delta','n/a')}  rect={_rect}")
+                            print(f"  pg keys: {sorted((pg or {}).keys()) if isinstance(pg, dict) else type(pg).__name__}")
+                        except Exception as _de:
+                            print(f"  diag collection failed: {_de}")
+                        print(traceback.format_exc())
 
 
 

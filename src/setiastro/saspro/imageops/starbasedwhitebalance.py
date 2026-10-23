@@ -34,6 +34,116 @@ __all__ = [
     "DEFAULT_AUTO_SIGMA_MIN_STARS",
 ]
 
+# ── Blackbody locus reference ──────────────────────────────────────────
+# Target for the color-matrix rotation, in (R/B, G/B) ratio space.
+#
+# These are DERIVED, not guessed. They come from the same Planck spectrum →
+# approximate CIE 1931 XYZ → linear sRGB chain that whitebalance.py's
+# _blackbody_rgb_approx() uses to DRAW the locus on the diagnostic plot, so
+# the math and the picture agree by construction.
+#
+#   T (K)      R/B      G/B   local d(G/B)/d(R/B)
+#    5000   1.5864   1.2649   0.4978
+#    6000   1.1403   1.0297   0.5615
+#    6500   1.0066   0.9528   0.5890
+#    7000   0.9057   0.8922   0.6139   <- reference
+#    8000   0.7654   0.8031   0.6571
+#   10000   0.6101   0.6963   0.7226
+#
+# The locus is CURVED, so the "right" slope depends on where you anchor it.
+# 7000 K is the sensible anchor for a broadband stellar field: most field
+# stars are A–G, and the locus crosses R/B = 1 at ~6529 K. Earlier code used
+# 0.55 (roughly the 5000–9000 K secant) in the WB stage and 0.4 at the matrix
+# call site — the two disagreed, and both undershot the real tangent.
+LOCUS_REF_TEMP_K = 7000.0
+LOCUS_TARGET_SLOPE = 0.6139        # d(G/B)/d(R/B) tangent at LOCUS_REF_TEMP_K
+
+# G/B where the 7000 K tangent line crosses R/B = 1.0:
+#     G/B = 0.6139*(R/B) + 0.3362  ->  0.9501 at R/B = 1
+# (Was hardcoded 0.96. The true locus crosses R/B=1 at 6529 K, G/B=0.9490;
+# 0.9501 is the self-consistent value for the line we actually target, so
+# intercept = LOCUS_NEUTRAL_GB - LOCUS_TARGET_SLOPE lands on the real curve.)
+LOCUS_NEUTRAL_GB = 0.9501
+
+
+# ── Photometric clip-rejection defaults ────────────────────────────────
+# Shared across every photometric fit site so slope and matrix solves don't
+# lean on stars that have saturated in any channel (where the color info is
+# gone) or are buried in the noise floor (where the ratio is pure noise).
+_WB_CLIP_HIGH = 0.95
+_WB_CLIP_LOW  = 0.005
+
+
+def _photometric_keep_mask(
+    samples: np.ndarray,
+    *,
+    clip_high: float = _WB_CLIP_HIGH,
+    clip_low: float  = _WB_CLIP_LOW,
+) -> np.ndarray:
+    """
+    Boolean keep-mask for stellar samples: True where NO channel is clipped
+    high or buried in the noise floor. Vectorized across (N,3) or (N,K).
+
+    This is what keeps the WB slope and the scatter-plot diagnostic from
+    leaning on stars that have lost their color information.
+    """
+    a = np.asarray(samples, dtype=np.float32)
+    finite = np.all(np.isfinite(a), axis=-1)
+    below_hi = np.all(a < float(clip_high), axis=-1)
+    above_lo = np.all(a > float(clip_low),  axis=-1)
+    return finite & below_hi & above_lo
+
+
+def _robust_slope_fit(
+    rb: np.ndarray, gb: np.ndarray,
+    *,
+    sigma: float = 2.5,
+    max_iter: int = 5,
+    min_points: int = 10,
+) -> tuple[float, float, np.ndarray]:
+    """
+    Iterative MAD-sigma-clipped fit of gb ≈ slope*rb + intercept.
+    Caller is responsible for pre-rejecting saturated samples via
+    _photometric_keep_mask BEFORE handing (rb, gb) in here.
+
+    Returns (slope, intercept, final_keep_mask). Falls back to a plain
+    lstsq if too few points survive.
+    """
+    rb = np.asarray(rb, dtype=np.float64).reshape(-1)
+    gb = np.asarray(gb, dtype=np.float64).reshape(-1)
+    keep = np.isfinite(rb) & np.isfinite(gb)
+
+    if keep.sum() < min_points:
+        if keep.sum() < 2:
+            return 1.0, 0.0, keep
+        s, i = np.polyfit(rb[keep], gb[keep], 1)
+        return float(s), float(i), keep
+
+    for _ in range(max_iter):
+        xi, yi = rb[keep], gb[keep]
+        A = np.stack([xi, np.ones_like(xi)], axis=1)
+        (slope, intercept), *_ = np.linalg.lstsq(A, yi, rcond=None)
+        resid = yi - (slope * xi + intercept)
+        mad = float(np.median(np.abs(resid - np.median(resid))))
+        scale = 1.4826 * mad if mad > 0 else float(np.std(resid))
+        if scale <= 1e-9:
+            break
+        inlier = np.abs(resid) < sigma * scale
+        if inlier.all():
+            break
+        idx = np.where(keep)[0]
+        keep_new = np.zeros_like(keep)
+        keep_new[idx[inlier]] = True
+        if keep_new.sum() < min_points:
+            break
+        keep = keep_new
+
+    xi, yi = rb[keep], gb[keep]
+    A = np.stack([xi, np.ones_like(xi)], axis=1)
+    (slope, intercept), *_ = np.linalg.lstsq(A, yi, rcond=None)
+    return float(slope), float(intercept), keep
+
+
 # ── Auto-σ waterfall defaults ──────────────────────────────────────────
 # Highest σ first, stepping down to the most sensitive setting. The first
 # rung that returns ≥ DEFAULT_AUTO_SIGMA_MIN_STARS detections wins. If no
@@ -389,7 +499,7 @@ def _apply_color_matrix_wb(
     bn_star_pixels: np.ndarray,
     pivot: np.ndarray,
     *,
-    target_slope: float = 0.55,
+    target_slope: float = LOCUS_TARGET_SLOPE,
     tilt_strength: float = 0.7,
 ) -> np.ndarray:
     """
@@ -406,24 +516,35 @@ def _apply_color_matrix_wb(
     """
     eps = 1e-8
 
-    # At R/B=1 the blackbody locus sits at G/B≈0.96, not 1.0
-    # This is physically correct — a truly neutral gray star is slightly
-    # green-deficient relative to equal RGB
-    LOCUS_NEUTRAL_GB = 0.96
-
-    # Locus: gb = target_slope * rb + intercept, anchored through (1, LOCUS_NEUTRAL_GB)
+    # Locus: gb = target_slope * rb + intercept, anchored through
+    # (1, LOCUS_NEUTRAL_GB). Both constants are module-level and derived from
+    # the Planck/CIE chain at LOCUS_REF_TEMP_K — see the table up top. A
+    # neutral gray star is slightly green-deficient relative to equal RGB,
+    # which is why LOCUS_NEUTRAL_GB is below 1.0.
     intercept = LOCUS_NEUTRAL_GB - target_slope
 
     rb_actual = bn_star_pixels[:, 0] / (bn_star_pixels[:, 2] + eps)
     gb_actual = bn_star_pixels[:, 1] / (bn_star_pixels[:, 2] + eps)
 
+    # Reject stars saturated in ANY channel before fitting the matrix —
+    # a clipped-high star contributes a meaningless (R/B, G/B) point that
+    # pulls the solved rotation off the real blackbody locus.
+    unsat_mask = _photometric_keep_mask(
+        bn_star_pixels, clip_high=_WB_CLIP_HIGH, clip_low=_WB_CLIP_LOW
+    )
+
     # Filter to reasonable range
     mask = (
+        unsat_mask &
         np.isfinite(rb_actual) & np.isfinite(gb_actual) &
         (rb_actual > 0.2) & (rb_actual < 3.0) &
         (gb_actual > 0.2) & (gb_actual < 3.0) &
         (bn_star_pixels[:, 2] > eps)
     )
+    n_sat = int(np.sum(~unsat_mask))
+    print(f"[CC WB] matrix fit: {int(mask.sum())}/{len(bn_star_pixels)} stars "
+          f"({n_sat} rejected as clipped), strength={tilt_strength:.2f}, "
+          f"target slope={target_slope:.4f} ({LOCUS_REF_TEMP_K:.0f}K locus)")
     if np.sum(mask) < 10:
         return None
 
@@ -460,6 +581,18 @@ def _apply_color_matrix_wb(
 
     # Neutral constraint in raw pixel space:
     # a mid-gray pixel (0.5, 0.5, 0.5) should map to (0.5, 0.48, 0.5)
+    #
+    # WEIGHTING: kept at 2N deliberately. It is tempting to argue that a
+    # weight this heavy (w² = 4N² against the stars' combined N) drowns the
+    # star rows and leaves the locus rotation as a rounding error — measured
+    # on synthetic populations, that is NOT what happens. The neutral row
+    # pins only ONE direction of each row's 3-parameter space, leaving 2 DOF
+    # to fit the stars, so the rotation is essentially unaffected (70.9% of
+    # the slope gap closed at 2N vs 70.5% at sqrt(N)) while neutral accuracy
+    # is ~300x better (error 1e-5 vs 3e-3). Since the per-row re-anchor below
+    # was removed, this weight is now the ONLY thing holding gray at gray —
+    # which is exactly the "shift it back to neutral" half of the job the
+    # diagonal stage can no longer do. Do not lower it.
     NEUTRAL_WEIGHT = float(np.sum(mask)) * 2.0
     neutral_src = np.array([[0.5, 0.5, 0.5]], dtype=np.float64)
     neutral_dst = np.array([[0.5, 0.5 * LOCUS_NEUTRAL_GB, 0.5]], dtype=np.float64)
@@ -473,28 +606,78 @@ def _apply_color_matrix_wb(
         coeffs, _, _, _ = np.linalg.lstsq(src_aug, dst_aug[:, ch], rcond=None)
         M[ch] = coeffs
 
-    # Re-anchor: ensure (1,1,1) maps exactly to (1, LOCUS_NEUTRAL_GB, 1)
-    neutral_raw = np.array([1.0, 1.0, 1.0])
-    neutral_out = M @ neutral_raw
-    target_neutral = np.array([1.0, LOCUS_NEUTRAL_GB, 1.0])
-    for ch in range(3):
-        if abs(neutral_out[ch]) > eps:
-            M[ch] *= target_neutral[ch] / neutral_out[ch]
+    # NOTE: the old per-row re-anchor (M[ch] *= target/neutral_out[ch]) was
+    # REMOVED. Rescaling a solved row changes that channel's output scale,
+    # which changes rb'/gb' — reintroducing a diagonal correction on top of
+    # the rotation the lstsq just found, partially cancelling it. With the
+    # neutral row now properly weighted above, the solve already satisfies
+    # the neutral constraint; a third mechanism fighting the other two is
+    # exactly what kept the scatter from rotating.
 
-    # Sanity check
+    # Sanity check — bound scaled to the correction actually being asked for.
     diag = np.diag(M)
     off  = M - np.diag(diag)
-    # Tightened from (3.0, 1.5): for WB-style corrections, off-diagonals
-    # above ~0.5 almost always indicate an ill-conditioned stellar sample
-    # and produce the teal-core artifact when matrix output + negative
-    # recovery interact at near-saturated star cores.
-    if np.any(np.abs(diag) > 2.0) or np.any(np.abs(off) > 0.5):
+
+    # A real locus rotation REQUIRES substantial off-diagonals: rotating a
+    # slope-0.20 scatter up to 0.40 is a ~2x correction and legitimately
+    # produces off-diagonals near 1.0 (measured on real data: off-diag 0.942
+    # with diag [0.63, 1.18, 0.66] — a perfectly sane rotation that the old
+    # flat 0.5 ceiling threw away). Scale the bound by the correction being
+    # asked for, with a floor that is still looser than the old ceiling and
+    # a cap that catches genuinely degenerate (ill-conditioned / sample-
+    # starved) solves.
+    #
+    # Base 0.8, not 0.5: the clamp has to hold on the slope measured HERE,
+    # on the diagonal-balanced samples, which differs from the WB stage's
+    # slope by kg/kr. A bound that only just clears the observed off-diag
+    # would flip to reject on a small change in that ratio.
+    measured_slope = float(np.clip(np.polyfit(rb_m, gb_m, 1)[0], 0.01, 5.0)) \
+        if rb_m.size >= 2 else float(target_slope)
+    correction = float(np.clip(abs(target_slope / max(measured_slope, 1e-3)), 1.0, 4.0))
+    off_limit = float(np.clip(0.8 * correction, 0.8, 2.0))
+    diag_limit = 2.5
+
+    if np.any(np.abs(diag) > diag_limit) or np.any(np.abs(off) > off_limit):
         print(f"[CC WB] Color matrix rejected (out of bounds): "
-              f"diag={np.round(diag,4)} off-diag max={np.abs(off).max():.3f}")
+              f"diag={np.round(diag,4)} off-diag max={np.abs(off).max():.3f} "
+              f"(limits: diag {diag_limit:.2f}, off {off_limit:.2f}; "
+              f"measured slope={measured_slope:.4f} → target={target_slope:.4f})")
         return None
 
-    print(f"[CC WB] Color matrix:\n{np.round(M, 4)}")
-    print(f"[CC WB] Neutral check: {np.round(M @ np.array([1,1,1]), 4)}")
+    print(f"[CC WB] Color matrix (measured slope={measured_slope:.4f} → "
+          f"target={target_slope:.4f}, off-limit={off_limit:.2f}):\n{np.round(M, 4)}")
+
+    # ---- Verify BOTH constraints the 3x3 is supposed to satisfy ----------
+    # (1) Neutral preserved: gray in → gray out (at the locus-neutral G/B).
+    #     This is the "shift back to neutral" the diagonal stage can no
+    #     longer do — the matrix has to own it, so prove it did.
+    _n_out = M @ np.array([1.0, 1.0, 1.0])
+    _n_rb = float(_n_out[0] / max(_n_out[2], eps))
+    _n_gb = float(_n_out[1] / max(_n_out[2], eps))
+    print(f"[CC WB] Neutral check: (1,1,1) → {np.round(_n_out, 4)}  "
+          f"R/B={_n_rb:.4f} (want 1.000)  G/B={_n_gb:.4f} "
+          f"(want {LOCUS_NEUTRAL_GB:.3f})")
+
+    # (2) Rotation achieved: push the star samples through M and refit the
+    #     slope. This is the only honest measure of whether the matrix
+    #     actually rotated the scatter toward the locus, as opposed to
+    #     solving something that cancels out downstream.
+    try:
+        _starred = src_raw @ M.T
+        _rb_out = _starred[:, 0] / np.maximum(_starred[:, 2], eps)
+        _gb_out = _starred[:, 1] / np.maximum(_starred[:, 2], eps)
+        _ok = (np.isfinite(_rb_out) & np.isfinite(_gb_out) &
+               (_rb_out > 0.05) & (_rb_out < 5.0) &
+               (_gb_out > 0.05) & (_gb_out < 5.0))
+        if int(_ok.sum()) >= 2:
+            _achieved = float(np.polyfit(_rb_out[_ok], _gb_out[_ok], 1)[0])
+            _closed = ((_achieved - measured_slope) /
+                       max(target_slope - measured_slope, 1e-6)) * 100.0
+            print(f"[CC WB] Slope achieved: {measured_slope:.4f} → "
+                  f"{_achieved:.4f} (target {target_slope:.4f}, "
+                  f"{_closed:.0f}% of the gap closed)")
+    except Exception as _e:
+        print(f"[CC WB] Slope-achieved check skipped: {_e}")
 
 # Apply matrix directly (no pivot shift — matrix was solved in raw pixel space)
     img      = bg_neutral.astype(np.float64)
@@ -542,12 +725,17 @@ def _apply_color_matrix_wb(
     # Highlight protection: blend matrix output back toward the linearly
     # WB'd input for near-saturated pixels. The matrix is trained on
     # stellar scatter in the wings where color info lives; saturated
-    # cores carry no color info and shouldn't be rotated. smoothstep
-    # from L=0.80 (full matrix) to L=0.98 (full passthrough).
+    # cores carry no color info and shouldn't be rotated.
+    #
+    # edge0 raised 0.80 → 0.92: stars ARE the bright things, so a 0.80 floor
+    # reverted the rotation across most of the population the matrix was
+    # trained on — and since after_star_pixels is sampled from this reverted
+    # image, the After diagnostic plot then under-reported whatever rotation
+    # survived. 0.92 still protects genuinely blown cores.
     L_in = (0.2126 * bg_neutral[..., 0]
             + 0.7152 * bg_neutral[..., 1]
             + 0.0722 * bg_neutral[..., 2]).astype(np.float32)
-    edge0, edge1 = 0.80, 0.98
+    edge0, edge1 = 0.92, 0.995
     t = np.clip((L_in - edge0) / (edge1 - edge0), 0.0, 1.0)
     w = (t * t * (3.0 - 2.0 * t))[..., None]
     result = (result * (1.0 - w)
@@ -561,6 +749,7 @@ def apply_star_based_white_balance(
     reuse_cached_sources: bool = False,
     return_star_colors: bool = False,
     use_color_matrix: bool = False,       # ← new
+    matrix_strength: float = 0.7,         # ← how hard the 3x3 rotates
     # ── Auto-σ waterfall ────────────────────────────────────────────────
     auto_sigma: bool = False,
     auto_sigma_min_stars: int = DEFAULT_AUTO_SIGMA_MIN_STARS,
@@ -590,6 +779,24 @@ def apply_star_based_white_balance(
         known until detection runs.
     return_star_colors : bool
         If True, also returns (raw_star_pixels, after_star_pixels).
+    matrix_strength : float
+        Only used when `use_color_matrix=True`. How far each star's measured
+        (R/B, G/B) is blended toward its projection on the blackbody locus
+        before the 3x3 is solved: 0.0 = no rotation at all, 1.0 = ask for
+        full projection onto the locus. Clamped to [0, 1].
+
+        The default 0.7 is deliberately conservative. The target for each
+        star is built from that star's own measured color, so a pathological
+        population (heavy nebulosity, emission-line objects, a bad clip
+        threshold leaving junk in the fit) steers the targets as well as the
+        solve. Holding back to 70% means such a population bends the result
+        rather than dictating it. Push it higher on clean broadband fields
+        with a healthy unclipped star count; leave it at or below the default
+        on narrowband, duoband, or sparse data.
+
+        Note this is what is ASKED for, not what lands: the matrix is a
+        linear map solved in raw RGB against targets defined in ratio space,
+        so it realizes roughly three quarters of the request even at 1.0.
     auto_sigma : bool
         If True, run the σ waterfall described in `auto_sigma_ladder`,
         picking the highest σ that yields ≥ `auto_sigma_min_stars` sources.
@@ -761,56 +968,90 @@ def apply_star_based_white_balance(
     # ------------------------------------------------------------------
     # 5) WB math: shift center to neutral + tilt toward blackbody slope
     # ------------------------------------------------------------------
-    # ---- Step 1: measure current star color ratios ----
     eps = 1e-8
-    ref_color = np.median(bn_star_pixels, axis=0).astype(np.float32)
+
+    # Reject clipped-high / noise-floor samples at the RAW sample level —
+    # a star saturated in any channel has lost its color information, so
+    # rb/gb computed from it is noise, not photometry. This mask gates
+    # BOTH the neutral reference and the slope fit below.
+    unsat_mask = _photometric_keep_mask(
+        bn_star_pixels, clip_high=_WB_CLIP_HIGH, clip_low=_WB_CLIP_LOW
+    )
+
+    # Neutral reference from unsaturated stars only — otherwise clipped
+    # stars pull the median toward the clip ceiling in whichever channel
+    # saturates first, biasing the subsequent neutral shift.
+    ref_source = bn_star_pixels[unsat_mask] if np.any(unsat_mask) else bn_star_pixels
+    ref_color = np.median(ref_source, axis=0).astype(np.float32)
     ref_color = np.where(ref_color <= eps, eps, ref_color)
 
     rb_stars = bn_star_pixels[:, 0] / (bn_star_pixels[:, 2] + eps)
     gb_stars = bn_star_pixels[:, 1] / (bn_star_pixels[:, 2] + eps)
 
     finite_mask = (
+        unsat_mask &
         np.isfinite(rb_stars) & np.isfinite(gb_stars) &
         (rb_stars > 0.1) & (gb_stars > 0.1) &
         (rb_stars < 4.0) & (gb_stars < 4.0)
     )
 
-    TARGET_SLOPE = 0.55
-    TILT_STRENGTH = 0.7
+    # Single source of truth, shared with the matrix stage (was a separate
+    # hardcoded 0.55 here against 0.4 at the matrix call site).
+    TARGET_SLOPE = LOCUS_TARGET_SLOPE
 
-    if np.sum(finite_mask) >= 10:
+    # TILT_STRENGTH removed from the diagonal stage. The old code built a
+    # per-channel `tilt`, then computed neutral_scale = neutral_target /
+    # (ref_color * tilt) and multiplied the two together — in which tilt_c
+    # CANCELS ALGEBRAICALLY:
+    #
+    #     final_scaling_c = tilt_c * neutral_target / (ref_color_c * tilt_c)
+    #                     = neutral_target / ref_color_c
+    #
+    # leaving pure median neutralization with a scalar (neutral_target) that
+    # multiplies all three channels equally and so cannot change R/B or G/B
+    # at all. TARGET_SLOPE and TILT_STRENGTH had NO effect on output ratios.
+    #
+    # This is not merely a bug — a diagonal gain has only 2 ratio DOF
+    # (kr/kb, kg/kb), and neutralizing the star median consumes both, so no
+    # diagonal WB can neutralize AND set the locus slope. Rotation needs the
+    # 3x3, which has 9 DOF and solves both constraints jointly. So this stage
+    # now does one job honestly: put the median star at neutral.
+    n_total = int(bn_star_pixels.shape[0])
+    n_kept  = int(np.sum(finite_mask))
+    n_sat   = int(np.sum(~unsat_mask))
+    print(f"[WB] photometric fit: {n_kept}/{n_total} stars "
+          f"({n_sat} rejected as clipped)")
+
+    if n_kept >= 10:
         rb_f = rb_stars[finite_mask]
         gb_f = gb_stars[finite_mask]
-        A = np.stack([rb_f, np.ones_like(rb_f)], axis=1)
-        result = np.linalg.lstsq(A, gb_f, rcond=None)
-        current_slope = float(np.clip(result[0][0], 0.05, 3.0))
+        current_slope, _intercept, slope_keep = _robust_slope_fit(
+            rb_f, gb_f, sigma=2.5, max_iter=5, min_points=10
+        )
+        current_slope = float(np.clip(current_slope, 0.05, 3.0))
+        n_slope_kept = int(np.sum(slope_keep))
+        print(f"[WB] slope fit: {n_slope_kept}/{n_kept} after MAD sigma-clip, "
+              f"slope={current_slope:.4f}")
     else:
         current_slope = TARGET_SLOPE
+        print(f"[WB] slope fit: too few unclipped stars ({n_kept}), "
+              f"falling back to TARGET_SLOPE={TARGET_SLOPE}")
 
-    # ---- Step 2: compute slope correction gain ratio ----
-    # new_slope = (kg/kr) * current_slope = TARGET_SLOPE
-    # So kg/kr = TARGET_SLOPE / current_slope
-    # Split symmetrically: kr = 1/sqrt(ratio), kg = sqrt(ratio)
-    slope_ratio = float(np.clip(TARGET_SLOPE / current_slope, 0.3, 3.0))
-    blended_ratio = 1.0 + TILT_STRENGTH * (slope_ratio - 1.0)
+    # ---- Step 2: neutral shift ----
+    # Scale so the median star's channels all land on its brightest channel
+    # (i.e. the median star becomes gray). This is the ONLY thing a diagonal
+    # gain can do once neutrality is required — see the note above.
+    ref_safe = np.where(ref_color <= eps, eps, ref_color)
+    neutral_target = float(np.max(ref_safe))
+    final_scaling = (neutral_target / ref_safe).astype(np.float32)
 
-    kr_tilt = 1.0 / math.sqrt(blended_ratio)
-    kg_tilt = math.sqrt(blended_ratio)
-    kb_tilt = 1.0
-
-    # ---- Step 3: apply tilt to star samples, then find neutral shift ----
-    # We want the TILTED median to land at neutral (equal RGB)
-    # So compute where the median ends up after tilt, then correct
-    tilt = np.array([kr_tilt, kg_tilt, kb_tilt], dtype=np.float32)
-    tilted_median = ref_color * tilt
-    tilted_median = np.where(tilted_median <= eps, eps, tilted_median)
-
-    # Neutral shift: scale so max channel = all channels (gray)
-    neutral_target = float(np.max(tilted_median))
-    neutral_scale = neutral_target / tilted_median  # per-channel
-
-    # ---- Final combined scaling: tilt * neutral (computed together, not sequentially) ----
-    final_scaling = (tilt * neutral_scale).astype(np.float32)
+    # Report the slope the diagonal stage will leave behind. A diagonal gain
+    # maps slope' = (kg/kr) * slope, so this is predictable in closed form —
+    # and it is what the 3x3 stage (if enabled) then has to rotate.
+    _kg_kr = float(final_scaling[1] / max(final_scaling[0], eps))
+    print(f"[WB] diagonal stage: neutralizing median star; "
+          f"slope {current_slope:.4f} → {current_slope * _kg_kr:.4f} "
+          f"(locus target {TARGET_SLOPE:.2f}; rotation needs the 3x3 matrix)")
 
     m = pivot.reshape((1, 1, 3)).astype(np.float32)
     g = final_scaling.reshape((1, 1, 3)).astype(np.float32)
@@ -832,8 +1073,8 @@ def apply_star_based_white_balance(
             balanced,               # ← work on already-balanced image
             balanced_star_pixels,   # ← star samples from balanced image
             balanced_pivot,         # ← pivot from balanced image
-            target_slope=0.4,
-            tilt_strength=0.7,
+            target_slope=LOCUS_TARGET_SLOPE,   # was a hardcoded 0.4
+            tilt_strength=float(np.clip(matrix_strength, 0.0, 1.0)),
         )
         balanced = matrix_result if matrix_result is not None else balanced
 

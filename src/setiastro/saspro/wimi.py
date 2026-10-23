@@ -1,111 +1,53 @@
 import sys
-import typing_extensions
 import urllib
 # Standard library imports
-from itertools import combinations
 from tifffile import imwrite
-from datetime import timedelta
-import pickle
 import os
 os.environ['LIGHTKURVE_STYLE'] = 'default'
 import tempfile
 import time
 import json
-import logging
 import math
 from datetime import datetime, timedelta, timezone
-from decimal import getcontext
 from urllib.parse import quote
-from urllib.parse import quote_plus
 import webbrowser
-import warnings
-import shutil
-import subprocess
 from setiastro.saspro.xisf import XISF
 import requests
 import csv
 import lz4.block
 import zstandard
-import base64
 import ast
 from setiastro.saspro.main_helpers import non_blocking_sleep
 import platform
 from pathlib import Path
-import glob
-from typing import List, Tuple, Dict, Set
-import time
-from datetime import datetime
-import pywt
+from typing import List, Tuple, Set
 from io import BytesIO
-import io
 import re
 from collections import defaultdict
-from scipy.spatial import Delaunay, KDTree
-# from scipy.ndimage import gaussian_filter, laplace  <-- Removed unused
-# import scipy.ndimage as ndi                         <-- Removed unused
-# from scipy.ndimage import zoom                      <-- Removed unused (replaced by cv2.resize)
-import multiprocessing
+from scipy.spatial import KDTree
 import matplotlib
 matplotlib.use("QtAgg") 
-import matplotlib.pyplot as plt
-import matplotlib.colors as mcolors
-from matplotlib.colors import hsv_to_rgb
 import numpy as np
-from typing import List, Tuple, Optional
-from skimage.restoration import richardson_lucy, denoise_bilateral, denoise_tv_chambolle
-from skimage.color import rgb2gray, rgb2lab, lab2rgb
-from skimage.transform import warp_polar, warp
-from skimage import img_as_float32
-from numpy.fft import fft2, ifft2, fftshift, ifftshift
-from typing import Optional, Tuple, Callable
-from scipy.signal import medfilt
-import matplotlib.ticker as mtick
-from scipy.interpolate import RBFInterpolator
-import random
+from typing import List, Tuple, Optional, Callable
 import inspect
 #if running in IDE which runs ipython or jupiter in backend reconfigure may not be available
 if (sys.stdout is not None) and (hasattr(sys.stdout, "reconfigure")):
     sys.stdout.reconfigure(encoding='utf-8')
-
 try:
-    from photutils.isophote import Ellipse, EllipseGeometry, build_ellipse_model
+    from photutils.isophote import Ellipse
 except Exception as e:
     Ellipse = EllipseGeometry = build_ellipse_model = None
-
-from astropy.stats import sigma_clipped_stats
-from collections.abc import MutableMapping
 from astropy.io.votable import parse_single_table
-from astropy.timeseries import LombScargle, BoxLeastSquares
-from photutils.detection import DAOStarFinder
-from scipy.spatial import ConvexHull
-from astropy.table import Table, vstack
-from numba import njit, prange
-from scipy.optimize import curve_fit
-import exifread
-from setiastro.saspro import astroalign
+from astropy.table import Table
 import sqlite3
-from datetime import datetime
-import traceback
 import sep
-from astroquery.mast import Tesscut
 from setiastro.saspro.help_support import make_help_button
-from lightkurve import TessTargetPixelFile
-import oktopus
 import lightkurve as lk
-from scipy.interpolate import griddata
-from astropy.io.fits import Header as FitsHeader
 lk.MPLSTYLE = None
-
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-
-from astropy.wcs.utils import skycoord_to_pixel
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 import plotly.graph_objects as go
-
 from astropy.io.fits import Header
-from pyvo.dal.exceptions import DALServiceError
-
 # Reproject for WCS-based alignment
 try:
     from reproject import reproject_interp
@@ -116,11 +58,7 @@ except ImportError:
 
 OPENCV_AVAILABLE = True
 
-
-
 # Third-party library imports
-import requests
-import numpy as np
 import pandas as pd
 import cv2
 from PIL import Image, ImageDraw, ImageFont
@@ -128,31 +66,14 @@ from PIL import Image, ImageDraw, ImageFont
 # Astropy and Astroquery imports
 from astropy.io import fits
 from astropy.time import Time
-from astropy.coordinates import SkyCoord, EarthLocation, AltAz, get_body, get_sun
-import astropy.units as u
 from astropy.wcs import WCS
 from astroquery.simbad import Simbad
 from astroquery.mast import Mast
 from astroquery.vizier import Vizier
-import tifffile as tiff
-
 from astropy.utils.data import conf
 
-from scipy.interpolate import PchipInterpolator
-from scipy.interpolate import Rbf
-# from scipy.ndimage import median_filter  <-- Removed unused
-# from scipy.ndimage import convolve       <-- Removed unused
-# from scipy.signal import fftconvolve     <-- Removed unused
-from scipy.interpolate import interp1d
-
-
 import numpy.ma as ma
-
-import matplotlib.pyplot as plt
-from matplotlib.ticker import MaxNLocator
 from matplotlib.patches import Circle
-from matplotlib.figure import Figure
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from setiastro.saspro.plate_solver import plate_solve_doc_inplace, _active_doc_from_parent, _get_seed_mode, _set_seed_mode, _as_header
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
@@ -161,31 +82,28 @@ from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 #################################
 from collections import defaultdict
 import fnmatch
-import pyqtgraph as pg
-import psutil
-from PyQt6.QtGui import QIntValidator
+
 # ----- QtWidgets -----
-from PyQt6.QtWidgets import (    QApplication,    QMainWindow,    QWidget,    QVBoxLayout,    QHBoxLayout,    QLabel,    QPushButton,    QFileDialog,    QGraphicsView,    QGraphicsScene,    QMessageBox,    QInputDialog,    QTreeWidget,
-    QTreeWidgetItem,    QGraphicsPolygonItem,    QFrame,    QToolTip,    QCheckBox,    QDialog,    QFormLayout,    QSpinBox,    QDialogButtonBox,    QGridLayout,    QGraphicsEllipseItem,    QGraphicsLineItem,    QGraphicsRectItem,
-    QGraphicsPathItem,    QDoubleSpinBox,    QColorDialog,    QFontDialog,    QStyle,    QSlider,    QTabWidget,    QScrollArea,    QSizePolicy,    QSpacerItem,    QAbstractItemView,    QToolBar,    QGraphicsPixmapItem,    QRubberBand,
-    QGroupBox,    QGraphicsTextItem,    QComboBox,    QLineEdit,    QRadioButton,    QButtonGroup,    QHeaderView,    QStackedWidget,    QSplitter,    QMenuBar,    QTextEdit,    QPlainTextEdit,          QProgressBar,    QGraphicsItem,
-    QToolButton,    QStatusBar,    QMenu,    QTableWidget,    QTableWidgetItem,    QListWidget,    QListWidgetItem,    QSplashScreen,    QProgressDialog,     QDockWidget,    QAbstractItemView,    QStyledItemDelegate,    QListView,    QCompleter    , QDateTimeEdit
+from PyQt6.QtWidgets import (    QApplication,    QWidget,    QVBoxLayout,    QHBoxLayout,    QLabel,    QPushButton,    QFileDialog,    QGraphicsView,    QGraphicsScene,    QMessageBox,    QInputDialog,    QTreeWidget,
+    QTreeWidgetItem,    QFrame,    QCheckBox,    QDialog,    QFormLayout,    QSpinBox,    QDialogButtonBox,    QGridLayout,    QGraphicsEllipseItem,    QGraphicsLineItem,    QGraphicsRectItem,
+    QGraphicsPathItem,    QDoubleSpinBox,    QColorDialog,    QFontDialog,    QStyle,    QAbstractItemView,    
+    QGroupBox,    QGraphicsTextItem,    QComboBox,    QLineEdit,    QProgressBar,    QGraphicsItem,
+    QToolButton,    QStatusBar,    QMenu,     QProgressDialog,     QDockWidget,    QDateTimeEdit
 )
 
 # ----- QtGui -----
-from PyQt6.QtGui import (QPixmap,QImage,    QPainter,    QPen,    QColor,    QTransform,    QIcon,    QPainterPath,    QKeySequence,    QFont,    QMovie,    QCursor,    QBrush,    QShortcut,    QPolygon,
-    QFontMetrics,        QPolygonF,    QKeyEvent,    QPalette,     QWheelEvent,     QDoubleValidator,    QFontDatabase,    QGuiApplication,    QStandardItemModel,    QStandardItem,    QAction  # NOTE: In PyQt6, QAction is in QtGui (moved from QtWidgets)
+from PyQt6.QtGui import (QPixmap,QImage,    QPainter,    QPen,    QColor,    QTransform,    QIcon,    QPainterPath,    QKeySequence,    QFont,    QBrush,    QShortcut,    
+    QPalette,     QAction  
 )
 
 # ----- QtCore -----
-from PyQt6.QtCore import (    Qt,    QRectF,    QLineF,    QPointF,    QThread,    pyqtSignal,    QCoreApplication,    QPoint,    QTimer,    QRect,    QFileSystemWatcher,    QEvent,    pyqtSlot,    QLocale,    QProcess,    QSize,
-    QObject,    QSettings,    QRunnable,    QThreadPool,    QSignalBlocker,    QStandardPaths,    QModelIndex,    QMetaObject, QDateTime, QEventLoop
+from PyQt6.QtCore import (    Qt,    QRectF,    QLineF,    QPointF,    QThread,    pyqtSignal,    QTimer,    QEvent,    pyqtSlot,  
+   QSettings,    QSignalBlocker,    QDateTime, QEventLoop
 )
 
 
 # Math functions
 from math import sqrt
-import math
 
 from setiastro.saspro.legacy.image_manager import load_image, save_image
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image
@@ -3416,6 +3334,119 @@ class AtlasCatalogThread(QThread):
                     time.sleep(1.5)
         # All attempts failed — emit empty list silently
         self.finished.emit([])
+
+class SimbadQueryWorker(QThread):
+    """
+    Runs the two-step SIMBAD lookup off the GUI thread so Query Simbad
+    doesn't freeze WIMI. Emits stage() for live progress text and
+    finished_ok(result, extras_dict) on success, failed(msg) on error.
+    `cancel()` is cooperative — it is checked between stages/attempts.
+    """
+    stage        = pyqtSignal(str)                # free-form status text
+    attempt_info = pyqtSignal(int, int)           # (current_attempt, max_attempts)
+    finished_ok  = pyqtSignal(object, dict)       # (astropy Table or None, extras_dict)
+    failed       = pyqtSignal(str)                # error message
+
+    def __init__(self, tap_query: str, sam_url: str, sam_params: dict,
+                 max_attempts: int = 5, retry_wait_s: float = 1.0, parent=None):
+        super().__init__(parent)
+        self._tap_query     = tap_query
+        self._sam_url       = sam_url
+        self._sam_params    = sam_params
+        self._max_attempts  = int(max_attempts)
+        self._retry_wait_s  = float(retry_wait_s)
+        self._cancel        = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def _check_cancel(self):
+        if self._cancel:
+            raise RuntimeError("Query cancelled by user")
+
+    def run(self):
+        try:
+            # ——— Stage 1: TAP query with retries ———
+            self.stage.emit("Contacting SIMBAD TAP service…")
+            result = None
+            last_err = None
+            for attempt in range(1, self._max_attempts + 1):
+                self._check_cancel()
+                self.attempt_info.emit(attempt, self._max_attempts)
+                self.stage.emit(
+                    f"Querying SIMBAD TAP (attempt {attempt}/{self._max_attempts})…"
+                )
+                try:
+                    result = Simbad.query_tap(self._tap_query)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < self._max_attempts:
+                        self.stage.emit(
+                            f"TAP attempt {attempt} failed ({type(e).__name__}); "
+                            f"retrying in {self._retry_wait_s:.0f}s…"
+                        )
+                        # Cooperative sleep so cancel is responsive
+                        slept = 0.0
+                        step = 0.1
+                        while slept < self._retry_wait_s:
+                            if self._cancel:
+                                break
+                            time.sleep(step)
+                            slept += step
+
+            if last_err is not None:
+                self.failed.emit(
+                    "SIMBAD TAP service unreachable after "
+                    f"{self._max_attempts} attempts.\n\nLast error:\n{last_err}"
+                )
+                return
+
+            self._check_cancel()
+
+            if result is None or len(result) == 0:
+                # Empty result is NOT an error — upstream decides what to do
+                self.stage.emit("SIMBAD returned no objects in this region.")
+                self.finished_ok.emit(None, {})
+                return
+
+            self.stage.emit(f"TAP returned {len(result)} rows. Fetching star extras…")
+
+            # ——— Stage 2: sim-sam for FLUX/PLX/SP extras ———
+            self._check_cancel()
+            extras = {}
+            try:
+                self.stage.emit("Downloading star photometry/parallax (sim-sam)…")
+                resp = requests.get(self._sam_url, params=self._sam_params, timeout=300)
+                resp.raise_for_status()
+
+                self._check_cancel()
+                self.stage.emit("Parsing VOTable response…")
+                vot = parse_single_table(BytesIO(resp.content))
+                tbl = vot.to_table(use_names_over_ids=True)
+                extras = {row["MAIN_ID"]: row for row in tbl}
+                self.stage.emit(f"Got extras for {len(extras)} stars.")
+            except Exception as e:
+                # Non-fatal — the caller will note we have no extras
+                self.stage.emit(
+                    f"sim-sam extras unavailable ({type(e).__name__}); continuing without."
+                )
+                extras = {}
+
+            self._check_cancel()
+            self.stage.emit("Merging results…")
+            self.finished_ok.emit(result, extras)
+
+        except RuntimeError as e:
+            # Cancellation path
+            if "cancelled" in str(e).lower():
+                self.failed.emit("Cancelled.")
+            else:
+                self.failed.emit(f"{type(e).__name__}: {e}")
+        except Exception as e:
+            import traceback
+            self.failed.emit(f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
 
 def _ra_in_atlas(ra_deg: float, dec_deg: float, atlas_entries: list) -> bool:
     """
@@ -9521,8 +9552,362 @@ class WIMIDialog(QDialog):
         return query_results
 
     def query_simbad(self, radius_deg, max_results=None):
-        """Two-step SIMBAD lookup with debug prints for flux/plx/sp data."""
+        """Two-step SIMBAD lookup, run in a worker thread with a live progress dialog."""
         max_results = max_results if max_results is not None else self.max_results
+
+        # ——— 1) Validate inputs (unchanged) ———
+        if not self.circle_center or self.circle_radius <= 0:
+            QMessageBox.warning(self, "No Search Area",
+                                "Please define a search circle by Shift-clicking and dragging.")
+            return
+
+        ra_center, dec_center = self.calculate_ra_dec_from_pixel(
+            self.circle_center.x(), self.circle_center.y()
+        )
+        if ra_center is None or dec_center is None:
+            QMessageBox.warning(self, "Invalid Coordinates",
+                                "Could not determine the RA/Dec of the circle center.")
+            return
+
+        selected_types = self.get_selected_object_types()
+        if not selected_types:
+            QMessageBox.warning(self, "No Object Types Selected",
+                                "Please select at least one object type.")
+            return
+
+        # ——— 2) Build TAP + sim-sam requests (same strings as before) ———
+        tap_query = f"""
+            SELECT TOP {max_results}
+                ra, dec, main_id,
+                rvz_redshift, otype, galdim_majaxis, galdim_minaxis,
+                galdim_angle
+            FROM basic
+            WHERE CONTAINS(
+                POINT('ICRS', basic.ra, basic.dec),
+                CIRCLE('ICRS', {ra_center}, {dec_center}, {radius_deg})
+            ) = 1
+        """
+
+        star_codes = [
+            "*","V*","Pe*","HB*","Y*O","Ae*","Em*","Be*","BS*","RG*","AB*",
+            "C*","S*","sg*","s*r","s*y","s*b","HS*","pA*","WD*","LM*","BD*",
+            "N*","OH*","TT*","WR*","PM*","HV*","C?*","Pec?","Y*?","TT?","C*?",
+            "S*?","OH?","WR?","Be?","Ae?","HB?","RB?","sg?","s?r","s?y","s?b",
+            "pA?","BS?","HS?","WD?",
+            "**","EB*","Ce*","Ce?","cC*","**?",
+            "EB?","Sy?","CV?","No?","XB?","LX?","HX?","RR?","WV?","LP?","Mi?"
+        ]
+        ra_str  = f"{ra_center:.8f}"
+        dec_str = f"{dec_center:+.8f}"
+        rad_str = f"{radius_deg:.8f}d"
+        region_crit = f"region(CIRCLE,{ra_str} {dec_str},{rad_str})"
+        codes_list  = ",".join(f"'{c}'" for c in star_codes)
+        otype_crit  = f"otypes in ({codes_list})"
+        criteria    = f"{region_crit}&{otype_crit}"
+
+        sam_url = "https://simbad.cds.unistra.fr/simbad/sim-sam"
+        sam_params = {
+            "Criteria":      criteria,
+            "OutputMode":    "LIST",
+            "maxObject":     str(max_results),
+            "output.format": "votable",
+            "output.params": ",".join([
+                "MAIN_ID","RA","DEC",
+                "FLUX(B)","FLUX(V)",
+                "PLX_VALUE","RVZ_REDSHIFT",
+                "OTYPE","SP_TYPE"
+            ])
+        }
+
+        # ——— 3) Progress dialog + worker + event loop (same pattern as minor-body) ———
+        prog = QProgressDialog(
+            "Preparing SIMBAD query…",
+            "Cancel",
+            0, 0,  # indeterminate; worker switches to determinate per-attempt
+            self,
+        )
+        prog.setWindowTitle("Query SIMBAD")
+        prog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        prog.setAutoClose(True)
+        prog.setAutoReset(True)
+        prog.setMinimumDuration(0)
+        prog.setMinimumWidth(420)
+        prog.show()
+
+        worker = SimbadQueryWorker(
+            tap_query=tap_query,
+            sam_url=sam_url,
+            sam_params=sam_params,
+            max_attempts=5,
+            retry_wait_s=1.0,
+            parent=self,
+        )
+
+        loop = QEventLoop()
+        container = {"result": None, "extras": None, "error": None, "empty": False}
+
+        def on_stage(msg: str):
+            try:
+                prog.setLabelText(msg)
+            except Exception:
+                pass
+
+        def on_attempt(cur: int, total: int):
+            # Flash the window title with retry count
+            try:
+                prog.setWindowTitle(f"Query SIMBAD — attempt {cur}/{total}")
+            except Exception:
+                pass
+
+        def on_ok(result, extras: dict):
+            if result is None:
+                container["empty"] = True
+            else:
+                container["result"] = result
+            container["extras"] = extras or {}
+            loop.quit()
+
+        def on_fail(msg: str):
+            container["error"] = msg
+            loop.quit()
+
+        def on_cancel():
+            worker.cancel()
+            # Don't quit loop here — wait for worker to actually finish
+
+        worker.stage.connect(on_stage)
+        worker.attempt_info.connect(on_attempt)
+        worker.finished_ok.connect(on_ok)
+        worker.failed.connect(on_fail)
+        prog.canceled.connect(on_cancel)
+
+        worker.start()
+        loop.exec()
+
+        # Ensure worker is fully done
+        if worker.isRunning():
+            worker.wait(2000)
+
+        # Keep `prog` alive — we'll reuse it for the parse/draw stages below.
+        # It only closes after everything is done (or on cancel/error).
+
+        # ——— 4) Handle outcome ———
+        if container["error"] is not None:
+            # Cancellation shows a quieter message
+            if container["error"].strip().lower().startswith("cancelled"):
+                return
+            QMessageBox.warning(self, "SIMBAD Query Failed", container["error"])
+            return
+
+        if container["empty"]:
+            self.results_tree.clear()
+            query_results = self._augment_results_with_local_gaia(
+                [], ra_center, dec_center, radius_deg)
+            if not query_results:
+                QMessageBox.information(
+                    self, "No Results",
+                    "No objects found in the specified area."
+                )
+            self.main_preview.set_query_results(query_results)
+            self.query_results = query_results
+            self.update_results_tree()
+            self.update_object_count()
+            return
+
+        result = container["result"]
+        extras = container["extras"]
+
+        # ——— 5) Merge rows with live progress ———
+        n_total = int(len(result))
+        prog.setLabelText(f"Parsing SIMBAD rows (0 / {n_total})…")
+        prog.setMaximum(max(1, n_total))
+        prog.setValue(0)
+        QApplication.processEvents()
+
+        self.results_tree.clear()
+        query_results = []
+
+        # Cancellation check helper
+        def _cancelled():
+            return prog.wasCanceled()
+
+        # Throttle processEvents() — calling it every row is itself slow
+        tick = max(1, n_total // 100)   # ~100 UI updates total
+
+        for i, row in enumerate(result):
+            if _cancelled():
+                prog.close()
+                return
+
+            name       = row["main_id"]
+            short_type = row["otype"]
+            if short_type in selected_types:
+                ra, dec = float(row["ra"]), float(row["dec"])
+                diam_raw = row.get("galdim_majaxis")
+                diam_arcmin = _mask_safe_float(diam_raw)
+                minor_arcmin = _mask_safe_float(row.get("galdim_minaxis"))
+                pa_deg       = _mask_safe_float(row.get("galdim_angle"))
+                diam = diam_arcmin if diam_arcmin is not None else "N/A"
+
+                rz_raw   = row["rvz_redshift"]
+                red_z    = _mask_safe_float(rz_raw)
+
+                extra = extras.get(name, {})
+                Bmag  = _mask_safe_float(extra.get("FLUX_B"))
+                Vmag  = _mask_safe_float(extra.get("FLUX_V"))
+                plx   = _mask_safe_float(extra.get("PLX_VALUE"))
+                spec  = extra.get("SP_TYPE")
+
+                if plx is not None and plx > 0.0:
+                    pv = plx
+                    dist_pc  = 1000.0 / pv
+                    dist_ly  = dist_pc * 3.261563777
+                    distance = round(dist_ly / 1e9, 9)
+                    z_val    = "N/A"
+                    plx_val  = pv
+                    dist_ly_val = dist_ly
+                else:
+                    z_val    = red_z if red_z is not None else "N/A"
+                    plx_val  = "N/A"
+                    if isinstance(z_val, (int, float)):
+                        distance = calculate_comoving_distance(z_val)
+                        if distance is None:
+                            distance    = "N/A"
+                            dist_ly_val = "N/A"
+                        else:
+                            dist_ly_val = float(distance) * 1e9
+                    else:
+                        distance    = "N/A"
+                        dist_ly_val = "N/A"
+
+                absV = None
+                if Vmag is not None and plx is not None and plx > 0:
+                    absV = Vmag - (5 * np.log10(1000.0 / plx) - 5)
+
+                long_type = otype_long_name_lookup.get(short_type, short_type)
+
+                if diam_arcmin is not None:
+                    if diam_arcmin >= 1.0:
+                        diam_display = f"{diam_arcmin:.2f}'"
+                    else:
+                        diam_display = f"{diam_arcmin * 60.0:.1f}\""
+                else:
+                    diam_display = "N/A"
+
+                query_results.append({
+                    'ra': ra, 'dec': dec, 'name': name,
+                    'diameter': diam,
+                    'minor_arcmin': minor_arcmin,
+                    'pa_deg': pa_deg,
+                    'diameter_display': diam_display,
+                    'diameter_unit': 'arcmin',
+                    'short_type': short_type,
+                    'long_type': long_type,
+                    'redshift': z_val,
+                    'comoving_distance': distance,
+                    'distance_ly': dist_ly_val,
+                    'source': "Simbad",
+                    'Bmag': Bmag, 'Vmag': Vmag,
+                    'mag_display': (_fmt_mag(Vmag) or _fmt_mag(Bmag)),
+                    'parallax_mas': plx_val,
+                    'spectral_type': spec,
+                    'absolute_mag': absV
+                })
+
+            # Progress update (throttled)
+            if (i + 1) % tick == 0 or (i + 1) == n_total:
+                prog.setValue(i + 1)
+                prog.setLabelText(f"Parsing SIMBAD rows ({i + 1} / {n_total})…")
+                QApplication.processEvents()
+
+        # ——— 6) Gaia augmentation ———
+        if _cancelled():
+            prog.close()
+            return
+
+        prog.setMaximum(0)   # indeterminate while augmenting
+        prog.setValue(0)
+        prog.setLabelText("Augmenting with local Gaia DR3 (if enabled)…")
+        QApplication.processEvents()
+
+        try:
+            query_results = self._augment_results_with_local_gaia(
+                query_results, ra_center, dec_center, radius_deg)
+        except Exception as _ae:
+            prog.setLabelText(f"Gaia augment failed ({type(_ae).__name__}); continuing…")
+            QApplication.processEvents()
+
+        if _cancelled():
+            prog.close()
+            return
+
+        # ——— 7) Hand off to main preview (marker draw) ———
+        n_final = len(query_results)
+        prog.setLabelText(f"Drawing {n_final} markers on image…")
+        QApplication.processEvents()
+
+        self.main_preview.set_query_results(query_results)
+        self.query_results = query_results
+
+        if _cancelled():
+            prog.close()
+            return
+
+        # ——— 8) Populate results tree with batched inserts + progress ———
+        # QTreeWidget.addTopLevelItem is O(n) per call with sorting enabled.
+        # Disable updates + sorting during bulk insert for a big speedup, and
+        # use the batched addTopLevelItems API.
+        prog.setMaximum(max(1, n_final))
+        prog.setValue(0)
+        prog.setLabelText(f"Populating results table (0 / {n_final})…")
+        QApplication.processEvents()
+
+        tree = self.results_tree
+        tree.setUpdatesEnabled(False)
+        was_sorting = tree.isSortingEnabled()
+        tree.setSortingEnabled(False)
+        try:
+            tree.clear()
+            batch = []
+            batch_size = 500
+            for i, obj in enumerate(query_results):
+                if _cancelled():
+                    break
+                z_cell, plx_cell, dist_cell = wimi_result_columns(obj)
+                item = QTreeWidgetItem([
+                    str(obj['ra']),
+                    str(obj['dec']),
+                    obj['name'],
+                    str(obj.get('diameter_display', obj['diameter'])),
+                    obj['short_type'],
+                    obj['long_type'],
+                    z_cell,
+                    plx_cell,
+                    dist_cell,
+                    str(obj.get('mag_display', '')),
+                ])
+                batch.append(item)
+                if len(batch) >= batch_size or (i + 1) == n_final:
+                    tree.addTopLevelItems(batch)
+                    batch = []
+                    prog.setValue(i + 1)
+                    prog.setLabelText(f"Populating results table ({i + 1} / {n_final})…")
+                    QApplication.processEvents()
+            if batch and not _cancelled():
+                tree.addTopLevelItems(batch)
+        finally:
+            tree.setSortingEnabled(was_sorting)
+            tree.setUpdatesEnabled(True)
+
+        # ——— 9) Final counts & close ———
+        prog.setLabelText("Finalizing…")
+        QApplication.processEvents()
+        self.update_object_count()
+
+        try:
+            prog.close()
+        except Exception:
+            pass
 
         # ——— 1) Validate inputs ———
         if not self.circle_center or self.circle_radius <= 0:

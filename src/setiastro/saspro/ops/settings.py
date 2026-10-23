@@ -213,6 +213,17 @@ class SettingsDialog(QDialog):
             "Uncheck to open the Primary image only."
         ))
 
+        self.chk_smart_view_naming = QCheckBox(self.tr("Smart view naming"))
+        self.chk_smart_view_naming.setToolTip(self.tr(
+            "When checked, newly loaded views are named from the FITS header,\n"
+            "e.g. 'ngc660galaxy_G' from OBJECT=ngc660galaxy + FILTER=G, instead\n"
+            "of using the raw filename like\n"
+            "'MasterLight_ngc660galaxy_G_-_180s_G121_8307x5657_65stacked'.\n\n"
+            "Uncheck to show the full filename as the view title (previous\n"
+            "behaviour). Only affects new loads — existing open views keep\n"
+            "their current titles."
+        ))
+
         self.cb_theme = QComboBox()
         # Order: Dark, Gray, Light, System, Custom
         self.cb_theme.addItems(["Dark", "Gray", "Light", "System", "Custom"])
@@ -372,6 +383,7 @@ class SettingsDialog(QDialog):
         left_col.addRow(self.tr("Astrometry.net API key:"), self.le_astrometry)
         left_col.addRow(self.chk_save_shortcuts)
         left_col.addRow(self.chk_open_all_hdus)
+        left_col.addRow(self.chk_smart_view_naming)
 
         row_theme = QHBoxLayout()
         row_theme.setContentsMargins(0, 0, 0, 0)
@@ -1839,6 +1851,11 @@ class SettingsDialog(QDialog):
         self.chk_open_all_hdus.setChecked(
             self.settings.value("files/open_auxiliary_images", True, type=bool)
         )
+        # Default True — the smart name is almost always what the user wants.
+        # Uncheck to fall back to the raw filename as the view title.
+        self.chk_smart_view_naming.setChecked(
+            self.settings.value("files/smart_view_naming", True, type=bool)
+        )
         
         # Theme
         theme_val = (self.settings.value("ui/theme", "system", type=str) or "system").lower()
@@ -2068,6 +2085,7 @@ class SettingsDialog(QDialog):
         self.settings.setValue("paths/astap", self.le_astap.text().strip())
         self.settings.setValue("shortcuts/save_on_exit", self.chk_save_shortcuts.isChecked())
         self.settings.setValue("files/open_auxiliary_images", self.chk_open_all_hdus.isChecked())
+        self.settings.setValue("files/smart_view_naming", self.chk_smart_view_naming.isChecked())
         self.settings.setValue("api/astrometry_key", self.le_astrometry.text().strip())
 
         # RA/Dec Overlay
