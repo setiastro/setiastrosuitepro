@@ -131,6 +131,56 @@ def _debug_log_undo(context: str, **info):
 
 from setiastro.saspro.file_utils import _normalize_ext
 
+def _derive_display_name_from_header(header, fallback: str | None = None) -> str | None:
+    """
+    Build a short descriptive display name from a FITS-like header,
+    e.g. 'ngc660galaxy_G' from OBJECT=ngc660galaxy + FILTER=G.
+
+    Priority:
+      subject = OBJECT / TARGET / OBJNAME
+      filter  = FILTER / FILTNAM / FILTNAME
+
+    Returns 'SUBJECT_FILTER', or 'SUBJECT' if no filter, or `fallback`
+    if no usable subject. Accepts astropy fits.Header, plain dict, or
+    XISF-style [{"value": ..., "comment": ...}] entries.
+    """
+    if header is None:
+        return fallback
+
+    def _get(key):
+        try:
+            v = header.get(key) if hasattr(header, "get") else None
+            if v is None:
+                return None
+            if isinstance(v, list) and v:
+                v = v[0]
+            if isinstance(v, dict) and "value" in v:
+                v = v["value"]
+            s = str(v).strip()
+            return s or None
+        except Exception:
+            return None
+
+    subject = next((_get(k) for k in ("OBJECT", "TARGET", "OBJNAME") if _get(k)), None)
+    if not subject:
+        return fallback
+
+    filt = next((_get(k) for k in ("FILTER", "FILTNAM", "FILTNAME") if _get(k)), None)
+
+    def _san(s: str) -> str:
+        s = re.sub(r"\s+", "_", s.strip())
+        s = re.sub(r"[^\w\-.]", "", s)
+        return s
+
+    subject = _san(subject)
+    if not subject:
+        return fallback
+    if filt:
+        filt = _san(filt)
+        if filt:
+            return f"{subject}_{filt}"
+    return subject
+
 def _normalize_image_01(arr: np.ndarray) -> np.ndarray:
     """
     Normalize an image to [0,1] in-place-ish:
@@ -2949,9 +2999,32 @@ class DocManager(QObject):
                     "is_mono": is_mono,
                     "original_format": norm_ext,
                 }
-
-                # NEW: attach WCS even for old loader
                 meta = attach_wcs_to_metadata(meta, header)
+
+            # NEW: derive a short display name like OBJECT_FILTER from the
+            # header. Works for FITS, XISF (synthesized FITS header), and
+            # TIFF/PNG/JPEG/WebP that carry an embedded SASpro header
+            # sidecar — all of those populate original_header on load.
+            #
+            # Gated by Settings → "Smart view naming" (files/smart_view_naming,
+            # default True). When off, the raw filename is left as the view
+            # title — matches pre-smart-naming behaviour. Only affects NEW
+            # loads: existing views keep whatever display_name they have.
+            if not meta.get("display_name"):
+                try:
+                    from PyQt6.QtCore import QSettings
+                    smart_naming = QSettings().value(
+                        "files/smart_view_naming", True, type=bool
+                    )
+                except Exception:
+                    smart_naming = True
+                if smart_naming:
+                    hdr_for_name = (meta.get("fits_header")
+                                    or meta.get("original_header")
+                                    or header)
+                    derived = _derive_display_name_from_header(hdr_for_name)
+                    if derived:
+                        meta["display_name"] = derived
 
             _snapshot_header_for_metadata(meta)
 

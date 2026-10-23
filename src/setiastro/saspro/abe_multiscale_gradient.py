@@ -29,12 +29,47 @@ decomposition reuse multiscale_decomp._blur_gaussian when importable
 numpy apply_along_axis path is never used.
 """
 from __future__ import annotations
+import math
 import os
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from scipy.ndimage import gaussian_filter, binary_dilation
 
 _MAD_NORM = 1.4826
+
+
+def _safe_max_layer(min_dim: int, base_sigma: float, pad_mult: float = 3.0) -> int:
+    """
+    Largest a-trous decomposition index k such that a Gaussian blur with
+    sigma = base_sigma * 2**k can run on an image whose shortest side is
+    `min_dim` pixels without the reflect padding exceeding the image.
+
+    The torch/cv2 Gaussian paths both use reflect padding of roughly
+    pad_mult*sigma per side (torch is strictest: it raises
+    "Padding size should be less than the corresponding input dimension"
+    when 2*pad*sigma >= min_dim; the cv2 and scipy fallbacks silently clamp
+    but still get very slow). We derive the largest k that keeps us safely
+    under that ceiling:
+
+        2 * pad_mult * sigma  <  min_dim
+        sigma = base_sigma * 2**k
+        =>  k < log2(min_dim / (2 * pad_mult * base_sigma))
+
+    One extra layer of headroom is subtracted to absorb the ceil-rounding
+    in the actual kernel-size calc (2 * round(3*sigma) + 1), and against
+    the torch backend being a hair more conservative than cv2.
+
+    Clamped to [0, 20]. On a 4915-px short side with base_sigma=1 this
+    returns 9, which is well below the layer-10 (sigma=1024, padding=6144)
+    overflow the user hit on a 4915x7410 frame.
+    """
+    if min_dim <= 1 or base_sigma <= 0 or pad_mult <= 0:
+        return 0
+    sigma_cap = float(min_dim) / (2.0 * float(pad_mult))
+    if sigma_cap <= float(base_sigma):
+        return 0
+    k_cap = int(math.floor(math.log2(sigma_cap / float(base_sigma))))
+    return max(0, min(20, k_cap - 1))
 
 # Loud exclusion-zone tracing for the multiscale stage. On by default while we
 # chase the intermittent "exclusion ignored" bug; set env SASPRO_EXCL_DEBUG=0
@@ -534,6 +569,46 @@ def multiscale_gradient_correct(
     band_lo = max(0, min(int(band_lo), layers - 1))
     band_hi = max(band_lo, min(int(band_hi), layers - 1))
 
+    # Cap layers and band to what the image can physically support.
+    #
+    # Each a-trous layer k blurs with sigma = base_sigma * 2**k. The torch
+    # Gaussian path reflect-pads by ~3*sigma per side; when 2*3*sigma meets
+    # or exceeds the image's shortest dimension, torch raises:
+    #
+    #   RuntimeError: Padding size should be less than the corresponding
+    #   input dimension, but got: padding (6144, 6144) at dimension 2 of
+    #   input [1, 1, 4915, 7410]
+    #
+    # The caller's fallback path (cv2/scipy "tiled") inherits the same
+    # ridiculous sigma and effectively hangs the GUI thread. Prevent it
+    # from ever being attempted. _safe_max_layer gives the largest k that
+    # keeps the padding comfortably inside the ESTIMATE-resolution frame
+    # (luma_s is at estimate_downsample scale, which is also the scale
+    # every per-channel decomposition sees via _downscale), with one layer
+    # of headroom.
+    H_est, W_est = luma_s.shape[:2]
+    k_cap = _safe_max_layer(min(H_est, W_est), float(base_sigma))
+    if band_hi > k_cap:
+        _say(f"Scale band capped: image is {H_est}x{W_est}, so the coarsest "
+             f"safely-computable layer is {k_cap} (sigma={base_sigma * (2**k_cap):.0f}). "
+             f"Requested band_hi={band_hi} → using {k_cap}.")
+        band_hi = k_cap
+        if band_lo > band_hi:
+            band_lo = band_hi
+    # If we don't need the smooth residual, we only ever walk 0..band_hi,
+    # so the layer count can shrink to match. If we DO need the residual,
+    # fold back to the capped layer count — asking for 11 layers when the
+    # image can only support 9 would just reintroduce the overflow at the
+    # very last blur that produces the residual.
+    if include_residual:
+        if layers > k_cap + 1:
+            _say(f"Layer count capped from {layers} to {k_cap + 1} to keep the "
+                 f"coarse residual within reflect-padding limits.")
+            layers = k_cap + 1
+    else:
+        layers = max(layers, band_hi + 1)
+        layers = min(layers, k_cap + 1)
+
     # Per-channel gradient estimation: previously the gradient was estimated
     # from luminance alone, which cannot see colour-selective gradients. A
     # bright-blue halo contributes only ~7% to Rec.709 luminance via the
@@ -578,13 +653,26 @@ def multiscale_gradient_correct(
             # cv2 is thread-safe for independent inputs. For GPU torch there
             # is some contention on the default stream — not catastrophic,
             # and CPU backends scale cleanly 2-3x.
-            return _estimate_channel_gradient(
-                chans_s[c], sig_hole_s, blur,
-                eps=eps_per_c[c], layers=layers, band_lo=band_lo,
-                band_hi=band_hi, include_residual=include_residual,
-                base_sigma=base_sigma, clamp_sigma=clamp_sigma,
-                out_hw=(H, W), ds=ds,
-            )
+            #
+            # Any failure (blur backend padding overflow, OOM mid-channel,
+            # etc.) is caught here and converted to an identity gradient
+            # (all-ones) for THIS channel: no correction applied, but the
+            # other channels still return their real result and the GUI
+            # thread stays alive. The band cap above makes this very
+            # unlikely to fire on normal inputs; this is purely a safety
+            # net so a future surprise doesn't freeze SASpro.
+            try:
+                return _estimate_channel_gradient(
+                    chans_s[c], sig_hole_s, blur,
+                    eps=eps_per_c[c], layers=layers, band_lo=band_lo,
+                    band_hi=band_hi, include_residual=include_residual,
+                    base_sigma=base_sigma, clamp_sigma=clamp_sigma,
+                    out_hw=(H, W), ds=ds,
+                )
+            except Exception as _e:
+                _say(f"Channel {c} multiscale estimate FAILED ({_e!r}); "
+                     f"skipping multiplicative correction on that channel.")
+                return np.ones((H, W), dtype=np.float32)
 
         # Three workers, one per channel. map() returns results in the
         # same order as the inputs, so grads[0]=R, [1]=G, [2]=B naturally.
@@ -604,12 +692,21 @@ def multiscale_gradient_correct(
             _say("Multiscale decomposition (luma only — opt-out of per-channel)...")
         else:
             _say("Multiscale decomposition (log, torch/cv2 blur)...")
-        grad_lin = _estimate_channel_gradient(
-            luma_s, sig_hole_s, blur,
-            eps=eps, layers=layers, band_lo=band_lo, band_hi=band_hi,
-            include_residual=include_residual, base_sigma=base_sigma,
-            clamp_sigma=clamp_sigma, out_hw=(H, W), ds=ds,
-        )
+        # Same safety net as the per-channel path: a blur backend blow-up
+        # returns an identity gradient (all-ones) so Apply doesn't modify
+        # the image on this stage, instead of propagating up and freezing
+        # the GUI. The band cap above means we normally never land here.
+        try:
+            grad_lin = _estimate_channel_gradient(
+                luma_s, sig_hole_s, blur,
+                eps=eps, layers=layers, band_lo=band_lo, band_hi=band_hi,
+                include_residual=include_residual, base_sigma=base_sigma,
+                clamp_sigma=clamp_sigma, out_hw=(H, W), ds=ds,
+            )
+        except Exception as _e:
+            _say(f"Multiscale estimate FAILED ({_e!r}); skipping "
+                 f"multiplicative correction (returning identity gradient).")
+            grad_lin = np.ones((H, W), dtype=np.float32)
 
     # A gradient is low-frequency by definition: smooth the MAP (not the
     # image) before dividing so any per-pixel noise the band picked up -- which
