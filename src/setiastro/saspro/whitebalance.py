@@ -83,11 +83,37 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
     # ------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------
+    # Ratios past this are both far outside the 0..2 view and a sign the
+    # denominator has collapsed — no real stellar sample reaches it.
+    _RATIO_MAX = 100.0
+
     def compute_ratios(pixels: np.ndarray):
-        eps = 1e-8
-        rb = pixels[:, 0] / (pixels[:, 2] + eps)  # R/B
-        gb = pixels[:, 1] / (pixels[:, 2] + eps)  # G/B
-        return rb, gb
+        """
+        Star colors as (R/B, G/B), with degenerate points returned as nan.
+
+        The old form was `pixels[:, 0] / (pixels[:, 2] + 1e-8)`. That `+ eps`
+        guard stops the ZeroDivisionError but produces something worse: a
+        blue of 0.0 becomes a perfectly FINITE 8e7 instead of an inf, so
+        every np.isfinite() check downstream waved it through to the artists.
+        It is the same defect that crashed the locus tick labels (see
+        _blackbody_ratio_point), latent here for any star whose blue sample
+        sits at the noise floor — and those coordinates overflow a 32-bit
+        FT_Pos on Windows once anything text-shaped is placed at them.
+
+        Dividing straight through and filtering afterwards is both simpler
+        and honest: a star with no blue has no meaningful R/B, so it is not
+        a point on an R/B plot. Callers already drop non-finite pairs via
+        _finite_pair, so nan is all that is needed here.
+        """
+        p = np.asarray(pixels, dtype=np.float64)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rb = p[:, 0] / p[:, 2]
+            gb = p[:, 1] / p[:, 2]
+        bad = (
+            ~np.isfinite(rb) | ~np.isfinite(gb) |
+            (np.abs(rb) > _RATIO_MAX) | (np.abs(gb) > _RATIO_MAX)
+        )
+        return np.where(bad, np.nan, rb), np.where(bad, np.nan, gb)
 
     def _finite(x, y):
         m = np.isfinite(x) & np.isfinite(y)
@@ -187,11 +213,43 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         rgb /= mx
         return rgb.astype(np.float32)
 
+    # Below this the blue channel carries no usable signal and the R/B, G/B
+    # ratios are meaningless. 1500 K clips blue to EXACTLY 0.0 after the
+    # out-of-gamut clamp in _blackbody_rgb_approx; 2000 K is ~7.6e-3, which
+    # is small but still a real number, so this floor only rejects the
+    # genuinely degenerate end of the curve.
+    _BB_MIN_BLUE = 1e-4
+
     def _blackbody_ratio_point(temp_k: float):
+        """
+        Blackbody point in (R/B, G/B) ratio space, or (nan, nan) when the
+        blue channel is degenerate.
+
+        The old code did `rgb[0] / max(rgb[2], 1e-8)`, which turns a blue of
+        exactly 0.0 (true at 1500 K) into a ratio of 1e8 rather than an inf
+        or a nan — so every finite-check downstream passed it through. A text
+        label placed at data coordinate 1e8 lands around 2.7e10 display
+        pixels, and matplotlib's Agg text path hands FreeType
+        `round(0x40 * px)` ≈ 1.7e12 as the transform delta.
+
+        FT_Pos is a C long: 64-bit on Linux, but 32-bit on Windows (LLP64).
+        Since matplotlib 3.10 ft2font is a pybind11 module with strict
+        integer conversion, so on Windows that value is rejected with
+        "TypeError: _set_transform(): incompatible function arguments"
+        — raised from inside the Qt paint event, i.e. AFTER the figure is
+        handed to the result dialog, where _on_apply's try/except can no
+        longer see it. Hence a hard traceback on a WB that actually succeeded.
+
+        Returning nan lets the callers filter these points out instead.
+        """
         rgb = _blackbody_rgb_approx(temp_k).astype(np.float32)
-        eps = 1e-8
-        rb = float(rgb[0] / max(rgb[2], eps))
-        gb = float(rgb[1] / max(rgb[2], eps))
+        b = float(rgb[2])
+        if not np.isfinite(b) or b <= _BB_MIN_BLUE:
+            return float("nan"), float("nan")
+        rb = float(rgb[0] / b)
+        gb = float(rgb[1] / b)
+        if not (np.isfinite(rb) and np.isfinite(gb)):
+            return float("nan"), float("nan")
         return rb, gb
 
     def _add_blackbody_locus(ax):
@@ -208,8 +266,16 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         x = pts[:, 0]
         y = pts[:, 1]
 
-        # Keep only finite/in-range-ish points
-        m = np.isfinite(x) & np.isfinite(y)
+        # Keep finite points, and drop the cool end of the curve where the
+        # ratios run away to huge values. The bound is deliberately generous
+        # (the view is 0..2) so the drawn locus still crosses the whole
+        # visible box and the local-tangent estimate below still has
+        # neighbours at the edges — it only removes coordinates far enough
+        # out to be both invisible and numerically hazardous.
+        _CURVE_LIMIT = 10.0
+        m = (np.isfinite(x) & np.isfinite(y) &
+             (x > -1.0) & (x < _CURVE_LIMIT) &
+             (y > -1.0) & (y < _CURVE_LIMIT))
         x = x[m]
         y = y[m]
 
@@ -221,13 +287,23 @@ def build_star_color_ratios_figure(raw_pixels: np.ndarray, after_pixels: np.ndar
         # Labeled temperature ticks
         tick_temps = [1500, 2000, 2500, 3000, 4000, 6000, 10000]
 
+        # Only label ticks that actually land inside the plotted box. The
+        # cool end of the locus sits far outside it — 1500 K is at
+        # (1e8, 1.5e7), 2000 K at (131, 35), 2500 K at (14.8, 5.6) — so those
+        # labels were being created as artists and then drawn off-screen
+        # where nobody could see them anyway. Skipping them is both the fix
+        # for the FreeType overflow above and the behaviour the plot already
+        # appeared to have.
         tick_pts = []
         for t in tick_temps:
             px, py = _blackbody_ratio_point(t)
-            if np.isfinite(px) and np.isfinite(py):
-                tick_pts.append((t, px, py))
+            if not (np.isfinite(px) and np.isfinite(py)):
+                continue
+            if not (rmin <= px <= rmax and gmin <= py <= gmax):
+                continue
+            tick_pts.append((t, px, py))
 
-        if len(tick_pts) < 2:
+        if len(tick_pts) < 1:
             return
 
         # For local tangent estimation, use neighboring curve samples

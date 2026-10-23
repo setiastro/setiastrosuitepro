@@ -3417,6 +3417,119 @@ class AtlasCatalogThread(QThread):
         # All attempts failed — emit empty list silently
         self.finished.emit([])
 
+class SimbadQueryWorker(QThread):
+    """
+    Runs the two-step SIMBAD lookup off the GUI thread so Query Simbad
+    doesn't freeze WIMI. Emits stage() for live progress text and
+    finished_ok(result, extras_dict) on success, failed(msg) on error.
+    `cancel()` is cooperative — it is checked between stages/attempts.
+    """
+    stage        = pyqtSignal(str)                # free-form status text
+    attempt_info = pyqtSignal(int, int)           # (current_attempt, max_attempts)
+    finished_ok  = pyqtSignal(object, dict)       # (astropy Table or None, extras_dict)
+    failed       = pyqtSignal(str)                # error message
+
+    def __init__(self, tap_query: str, sam_url: str, sam_params: dict,
+                 max_attempts: int = 5, retry_wait_s: float = 1.0, parent=None):
+        super().__init__(parent)
+        self._tap_query     = tap_query
+        self._sam_url       = sam_url
+        self._sam_params    = sam_params
+        self._max_attempts  = int(max_attempts)
+        self._retry_wait_s  = float(retry_wait_s)
+        self._cancel        = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def _check_cancel(self):
+        if self._cancel:
+            raise RuntimeError("Query cancelled by user")
+
+    def run(self):
+        try:
+            # ——— Stage 1: TAP query with retries ———
+            self.stage.emit("Contacting SIMBAD TAP service…")
+            result = None
+            last_err = None
+            for attempt in range(1, self._max_attempts + 1):
+                self._check_cancel()
+                self.attempt_info.emit(attempt, self._max_attempts)
+                self.stage.emit(
+                    f"Querying SIMBAD TAP (attempt {attempt}/{self._max_attempts})…"
+                )
+                try:
+                    result = Simbad.query_tap(self._tap_query)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < self._max_attempts:
+                        self.stage.emit(
+                            f"TAP attempt {attempt} failed ({type(e).__name__}); "
+                            f"retrying in {self._retry_wait_s:.0f}s…"
+                        )
+                        # Cooperative sleep so cancel is responsive
+                        slept = 0.0
+                        step = 0.1
+                        while slept < self._retry_wait_s:
+                            if self._cancel:
+                                break
+                            time.sleep(step)
+                            slept += step
+
+            if last_err is not None:
+                self.failed.emit(
+                    "SIMBAD TAP service unreachable after "
+                    f"{self._max_attempts} attempts.\n\nLast error:\n{last_err}"
+                )
+                return
+
+            self._check_cancel()
+
+            if result is None or len(result) == 0:
+                # Empty result is NOT an error — upstream decides what to do
+                self.stage.emit("SIMBAD returned no objects in this region.")
+                self.finished_ok.emit(None, {})
+                return
+
+            self.stage.emit(f"TAP returned {len(result)} rows. Fetching star extras…")
+
+            # ——— Stage 2: sim-sam for FLUX/PLX/SP extras ———
+            self._check_cancel()
+            extras = {}
+            try:
+                self.stage.emit("Downloading star photometry/parallax (sim-sam)…")
+                resp = requests.get(self._sam_url, params=self._sam_params, timeout=300)
+                resp.raise_for_status()
+
+                self._check_cancel()
+                self.stage.emit("Parsing VOTable response…")
+                vot = parse_single_table(BytesIO(resp.content))
+                tbl = vot.to_table(use_names_over_ids=True)
+                extras = {row["MAIN_ID"]: row for row in tbl}
+                self.stage.emit(f"Got extras for {len(extras)} stars.")
+            except Exception as e:
+                # Non-fatal — the caller will note we have no extras
+                self.stage.emit(
+                    f"sim-sam extras unavailable ({type(e).__name__}); continuing without."
+                )
+                extras = {}
+
+            self._check_cancel()
+            self.stage.emit("Merging results…")
+            self.finished_ok.emit(result, extras)
+
+        except RuntimeError as e:
+            # Cancellation path
+            if "cancelled" in str(e).lower():
+                self.failed.emit("Cancelled.")
+            else:
+                self.failed.emit(f"{type(e).__name__}: {e}")
+        except Exception as e:
+            import traceback
+            self.failed.emit(f"{type(e).__name__}: {e}\n\n{traceback.format_exc()}")
+
 def _ra_in_atlas(ra_deg: float, dec_deg: float, atlas_entries: list) -> bool:
     """
     Returns True if (ra_deg, dec_deg) falls within the bounding box of any
@@ -9521,8 +9634,262 @@ class WIMIDialog(QDialog):
         return query_results
 
     def query_simbad(self, radius_deg, max_results=None):
-        """Two-step SIMBAD lookup with debug prints for flux/plx/sp data."""
+        """Two-step SIMBAD lookup, run in a worker thread with a live progress dialog."""
         max_results = max_results if max_results is not None else self.max_results
+
+        # ——— 1) Validate inputs (unchanged) ———
+        if not self.circle_center or self.circle_radius <= 0:
+            QMessageBox.warning(self, "No Search Area",
+                                "Please define a search circle by Shift-clicking and dragging.")
+            return
+
+        ra_center, dec_center = self.calculate_ra_dec_from_pixel(
+            self.circle_center.x(), self.circle_center.y()
+        )
+        if ra_center is None or dec_center is None:
+            QMessageBox.warning(self, "Invalid Coordinates",
+                                "Could not determine the RA/Dec of the circle center.")
+            return
+
+        selected_types = self.get_selected_object_types()
+        if not selected_types:
+            QMessageBox.warning(self, "No Object Types Selected",
+                                "Please select at least one object type.")
+            return
+
+        # ——— 2) Build TAP + sim-sam requests (same strings as before) ———
+        tap_query = f"""
+            SELECT TOP {max_results}
+                ra, dec, main_id,
+                rvz_redshift, otype, galdim_majaxis, galdim_minaxis,
+                galdim_angle
+            FROM basic
+            WHERE CONTAINS(
+                POINT('ICRS', basic.ra, basic.dec),
+                CIRCLE('ICRS', {ra_center}, {dec_center}, {radius_deg})
+            ) = 1
+        """
+
+        star_codes = [
+            "*","V*","Pe*","HB*","Y*O","Ae*","Em*","Be*","BS*","RG*","AB*",
+            "C*","S*","sg*","s*r","s*y","s*b","HS*","pA*","WD*","LM*","BD*",
+            "N*","OH*","TT*","WR*","PM*","HV*","C?*","Pec?","Y*?","TT?","C*?",
+            "S*?","OH?","WR?","Be?","Ae?","HB?","RB?","sg?","s?r","s?y","s?b",
+            "pA?","BS?","HS?","WD?",
+            "**","EB*","Ce*","Ce?","cC*","**?",
+            "EB?","Sy?","CV?","No?","XB?","LX?","HX?","RR?","WV?","LP?","Mi?"
+        ]
+        ra_str  = f"{ra_center:.8f}"
+        dec_str = f"{dec_center:+.8f}"
+        rad_str = f"{radius_deg:.8f}d"
+        region_crit = f"region(CIRCLE,{ra_str} {dec_str},{rad_str})"
+        codes_list  = ",".join(f"'{c}'" for c in star_codes)
+        otype_crit  = f"otypes in ({codes_list})"
+        criteria    = f"{region_crit}&{otype_crit}"
+
+        sam_url = "https://simbad.cds.unistra.fr/simbad/sim-sam"
+        sam_params = {
+            "Criteria":      criteria,
+            "OutputMode":    "LIST",
+            "maxObject":     str(max_results),
+            "output.format": "votable",
+            "output.params": ",".join([
+                "MAIN_ID","RA","DEC",
+                "FLUX(B)","FLUX(V)",
+                "PLX_VALUE","RVZ_REDSHIFT",
+                "OTYPE","SP_TYPE"
+            ])
+        }
+
+        # ——— 3) Progress dialog + worker + event loop (same pattern as minor-body) ———
+        prog = QProgressDialog(
+            "Preparing SIMBAD query…",
+            "Cancel",
+            0, 0,  # indeterminate; worker switches to determinate per-attempt
+            self,
+        )
+        prog.setWindowTitle("Query SIMBAD")
+        prog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        prog.setAutoClose(True)
+        prog.setAutoReset(True)
+        prog.setMinimumDuration(0)
+        prog.setMinimumWidth(420)
+        prog.show()
+
+        worker = SimbadQueryWorker(
+            tap_query=tap_query,
+            sam_url=sam_url,
+            sam_params=sam_params,
+            max_attempts=5,
+            retry_wait_s=1.0,
+            parent=self,
+        )
+
+        loop = QEventLoop()
+        container = {"result": None, "extras": None, "error": None, "empty": False}
+
+        def on_stage(msg: str):
+            try:
+                prog.setLabelText(msg)
+            except Exception:
+                pass
+
+        def on_attempt(cur: int, total: int):
+            # Flash the window title with retry count
+            try:
+                prog.setWindowTitle(f"Query SIMBAD — attempt {cur}/{total}")
+            except Exception:
+                pass
+
+        def on_ok(result, extras: dict):
+            if result is None:
+                container["empty"] = True
+            else:
+                container["result"] = result
+            container["extras"] = extras or {}
+            loop.quit()
+
+        def on_fail(msg: str):
+            container["error"] = msg
+            loop.quit()
+
+        def on_cancel():
+            worker.cancel()
+            # Don't quit loop here — wait for worker to actually finish
+
+        worker.stage.connect(on_stage)
+        worker.attempt_info.connect(on_attempt)
+        worker.finished_ok.connect(on_ok)
+        worker.failed.connect(on_fail)
+        prog.canceled.connect(on_cancel)
+
+        worker.start()
+        loop.exec()
+
+        # Ensure worker is fully done
+        if worker.isRunning():
+            worker.wait(2000)
+
+        try:
+            prog.close()
+        except Exception:
+            pass
+
+        # ——— 4) Handle outcome ———
+        if container["error"] is not None:
+            # Cancellation shows a quieter message
+            if container["error"].strip().lower().startswith("cancelled"):
+                return
+            QMessageBox.warning(self, "SIMBAD Query Failed", container["error"])
+            return
+
+        if container["empty"]:
+            self.results_tree.clear()
+            query_results = self._augment_results_with_local_gaia(
+                [], ra_center, dec_center, radius_deg)
+            if not query_results:
+                QMessageBox.information(
+                    self, "No Results",
+                    "No objects found in the specified area."
+                )
+            self.main_preview.set_query_results(query_results)
+            self.query_results = query_results
+            self.update_results_tree()
+            self.update_object_count()
+            return
+
+        result = container["result"]
+        extras = container["extras"]
+
+        # ——— 5) Merge & populate results_tree (unchanged logic, now on main thread) ———
+        self.results_tree.clear()
+        query_results = []
+
+        for row in result:
+            name       = row["main_id"]
+            short_type = row["otype"]
+            if short_type not in selected_types:
+                continue
+
+            ra, dec = float(row["ra"]), float(row["dec"])
+            diam_raw = row.get("galdim_majaxis")
+            diam_arcmin = _mask_safe_float(diam_raw)
+            minor_arcmin = _mask_safe_float(row.get("galdim_minaxis"))
+            pa_deg       = _mask_safe_float(row.get("galdim_angle"))
+            diam = diam_arcmin if diam_arcmin is not None else "N/A"
+
+            rz_raw   = row["rvz_redshift"]
+            red_z    = _mask_safe_float(rz_raw)
+
+            extra = extras.get(name, {})
+            Bmag  = _mask_safe_float(extra.get("FLUX_B"))
+            Vmag  = _mask_safe_float(extra.get("FLUX_V"))
+            plx   = _mask_safe_float(extra.get("PLX_VALUE"))
+            spec  = extra.get("SP_TYPE")
+
+            if plx is not None and plx > 0.0:
+                pv = plx
+                dist_pc  = 1000.0 / pv
+                dist_ly  = dist_pc * 3.261563777
+                distance = round(dist_ly / 1e9, 9)
+                z_val    = "N/A"
+                plx_val  = pv
+                dist_ly_val = dist_ly
+            else:
+                z_val    = red_z if red_z is not None else "N/A"
+                plx_val  = "N/A"
+                if isinstance(z_val, (int, float)):
+                    distance = calculate_comoving_distance(z_val)
+                    if distance is None:
+                        distance    = "N/A"
+                        dist_ly_val = "N/A"
+                    else:
+                        dist_ly_val = float(distance) * 1e9
+                else:
+                    distance    = "N/A"
+                    dist_ly_val = "N/A"
+
+            absV = None
+            if Vmag is not None and plx is not None and plx > 0:
+                absV = Vmag - (5 * np.log10(1000.0 / plx) - 5)
+
+            long_type = otype_long_name_lookup.get(short_type, short_type)
+
+            if diam_arcmin is not None:
+                if diam_arcmin >= 1.0:
+                    diam_display = f"{diam_arcmin:.2f}'"
+                else:
+                    diam_display = f"{diam_arcmin * 60.0:.1f}\""
+            else:
+                diam_display = "N/A"
+
+            query_results.append({
+                'ra': ra, 'dec': dec, 'name': name,
+                'diameter': diam,
+                'minor_arcmin': minor_arcmin,
+                'pa_deg': pa_deg,
+                'diameter_display': diam_display,
+                'diameter_unit': 'arcmin',
+                'short_type': short_type,
+                'long_type': long_type,
+                'redshift': z_val,
+                'comoving_distance': distance,
+                'distance_ly': dist_ly_val,
+                'source': "Simbad",
+                'Bmag': Bmag, 'Vmag': Vmag,
+                'mag_display': (_fmt_mag(Vmag) or _fmt_mag(Bmag)),
+                'parallax_mas': plx_val,
+                'spectral_type': spec,
+                'absolute_mag': absV
+            })
+
+        query_results = self._augment_results_with_local_gaia(
+            query_results, ra_center, dec_center, radius_deg)
+
+        self.main_preview.set_query_results(query_results)
+        self.query_results = query_results
+        self.update_results_tree()
+        self.update_object_count()
 
         # ——— 1) Validate inputs ———
         if not self.circle_center or self.circle_radius <= 0:
