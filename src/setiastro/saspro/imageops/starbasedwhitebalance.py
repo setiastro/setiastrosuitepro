@@ -34,6 +34,84 @@ __all__ = [
     "DEFAULT_AUTO_SIGMA_MIN_STARS",
 ]
 
+# ── Photometric clip-rejection defaults ────────────────────────────────
+# Shared across every photometric fit site so slope and matrix solves don't
+# lean on stars that have saturated in any channel (where the color info is
+# gone) or are buried in the noise floor (where the ratio is pure noise).
+_WB_CLIP_HIGH = 0.95
+_WB_CLIP_LOW  = 0.005
+
+
+def _photometric_keep_mask(
+    samples: np.ndarray,
+    *,
+    clip_high: float = _WB_CLIP_HIGH,
+    clip_low: float  = _WB_CLIP_LOW,
+) -> np.ndarray:
+    """
+    Boolean keep-mask for stellar samples: True where NO channel is clipped
+    high or buried in the noise floor. Vectorized across (N,3) or (N,K).
+
+    This is what keeps the WB slope and the scatter-plot diagnostic from
+    leaning on stars that have lost their color information.
+    """
+    a = np.asarray(samples, dtype=np.float32)
+    finite = np.all(np.isfinite(a), axis=-1)
+    below_hi = np.all(a < float(clip_high), axis=-1)
+    above_lo = np.all(a > float(clip_low),  axis=-1)
+    return finite & below_hi & above_lo
+
+
+def _robust_slope_fit(
+    rb: np.ndarray, gb: np.ndarray,
+    *,
+    sigma: float = 2.5,
+    max_iter: int = 5,
+    min_points: int = 10,
+) -> tuple[float, float, np.ndarray]:
+    """
+    Iterative MAD-sigma-clipped fit of gb ≈ slope*rb + intercept.
+    Caller is responsible for pre-rejecting saturated samples via
+    _photometric_keep_mask BEFORE handing (rb, gb) in here.
+
+    Returns (slope, intercept, final_keep_mask). Falls back to a plain
+    lstsq if too few points survive.
+    """
+    rb = np.asarray(rb, dtype=np.float64).reshape(-1)
+    gb = np.asarray(gb, dtype=np.float64).reshape(-1)
+    keep = np.isfinite(rb) & np.isfinite(gb)
+
+    if keep.sum() < min_points:
+        if keep.sum() < 2:
+            return 1.0, 0.0, keep
+        s, i = np.polyfit(rb[keep], gb[keep], 1)
+        return float(s), float(i), keep
+
+    for _ in range(max_iter):
+        xi, yi = rb[keep], gb[keep]
+        A = np.stack([xi, np.ones_like(xi)], axis=1)
+        (slope, intercept), *_ = np.linalg.lstsq(A, yi, rcond=None)
+        resid = yi - (slope * xi + intercept)
+        mad = float(np.median(np.abs(resid - np.median(resid))))
+        scale = 1.4826 * mad if mad > 0 else float(np.std(resid))
+        if scale <= 1e-9:
+            break
+        inlier = np.abs(resid) < sigma * scale
+        if inlier.all():
+            break
+        idx = np.where(keep)[0]
+        keep_new = np.zeros_like(keep)
+        keep_new[idx[inlier]] = True
+        if keep_new.sum() < min_points:
+            break
+        keep = keep_new
+
+    xi, yi = rb[keep], gb[keep]
+    A = np.stack([xi, np.ones_like(xi)], axis=1)
+    (slope, intercept), *_ = np.linalg.lstsq(A, yi, rcond=None)
+    return float(slope), float(intercept), keep
+
+
 # ── Auto-σ waterfall defaults ──────────────────────────────────────────
 # Highest σ first, stepping down to the most sensitive setting. The first
 # rung that returns ≥ DEFAULT_AUTO_SIGMA_MIN_STARS detections wins. If no
@@ -417,13 +495,24 @@ def _apply_color_matrix_wb(
     rb_actual = bn_star_pixels[:, 0] / (bn_star_pixels[:, 2] + eps)
     gb_actual = bn_star_pixels[:, 1] / (bn_star_pixels[:, 2] + eps)
 
+    # Reject stars saturated in ANY channel before fitting the matrix —
+    # a clipped-high star contributes a meaningless (R/B, G/B) point that
+    # pulls the solved rotation off the real blackbody locus.
+    unsat_mask = _photometric_keep_mask(
+        bn_star_pixels, clip_high=_WB_CLIP_HIGH, clip_low=_WB_CLIP_LOW
+    )
+
     # Filter to reasonable range
     mask = (
+        unsat_mask &
         np.isfinite(rb_actual) & np.isfinite(gb_actual) &
         (rb_actual > 0.2) & (rb_actual < 3.0) &
         (gb_actual > 0.2) & (gb_actual < 3.0) &
         (bn_star_pixels[:, 2] > eps)
     )
+    n_sat = int(np.sum(~unsat_mask))
+    print(f"[CC WB] matrix fit: {int(mask.sum())}/{len(bn_star_pixels)} stars "
+          f"({n_sat} rejected as clipped)")
     if np.sum(mask) < 10:
         return None
 
@@ -761,15 +850,28 @@ def apply_star_based_white_balance(
     # ------------------------------------------------------------------
     # 5) WB math: shift center to neutral + tilt toward blackbody slope
     # ------------------------------------------------------------------
-    # ---- Step 1: measure current star color ratios ----
     eps = 1e-8
-    ref_color = np.median(bn_star_pixels, axis=0).astype(np.float32)
+
+    # Reject clipped-high / noise-floor samples at the RAW sample level —
+    # a star saturated in any channel has lost its color information, so
+    # rb/gb computed from it is noise, not photometry. This mask gates
+    # BOTH the neutral reference and the slope fit below.
+    unsat_mask = _photometric_keep_mask(
+        bn_star_pixels, clip_high=_WB_CLIP_HIGH, clip_low=_WB_CLIP_LOW
+    )
+
+    # Neutral reference from unsaturated stars only — otherwise clipped
+    # stars pull the median toward the clip ceiling in whichever channel
+    # saturates first, biasing the subsequent neutral shift.
+    ref_source = bn_star_pixels[unsat_mask] if np.any(unsat_mask) else bn_star_pixels
+    ref_color = np.median(ref_source, axis=0).astype(np.float32)
     ref_color = np.where(ref_color <= eps, eps, ref_color)
 
     rb_stars = bn_star_pixels[:, 0] / (bn_star_pixels[:, 2] + eps)
     gb_stars = bn_star_pixels[:, 1] / (bn_star_pixels[:, 2] + eps)
 
     finite_mask = (
+        unsat_mask &
         np.isfinite(rb_stars) & np.isfinite(gb_stars) &
         (rb_stars > 0.1) & (gb_stars > 0.1) &
         (rb_stars < 4.0) & (gb_stars < 4.0)
@@ -778,14 +880,26 @@ def apply_star_based_white_balance(
     TARGET_SLOPE = 0.55
     TILT_STRENGTH = 0.7
 
-    if np.sum(finite_mask) >= 10:
+    n_total = int(bn_star_pixels.shape[0])
+    n_kept  = int(np.sum(finite_mask))
+    n_sat   = int(np.sum(~unsat_mask))
+    print(f"[WB] photometric fit: {n_kept}/{n_total} stars "
+          f"({n_sat} rejected as clipped)")
+
+    if n_kept >= 10:
         rb_f = rb_stars[finite_mask]
         gb_f = gb_stars[finite_mask]
-        A = np.stack([rb_f, np.ones_like(rb_f)], axis=1)
-        result = np.linalg.lstsq(A, gb_f, rcond=None)
-        current_slope = float(np.clip(result[0][0], 0.05, 3.0))
+        current_slope, _intercept, slope_keep = _robust_slope_fit(
+            rb_f, gb_f, sigma=2.5, max_iter=5, min_points=10
+        )
+        current_slope = float(np.clip(current_slope, 0.05, 3.0))
+        n_slope_kept = int(np.sum(slope_keep))
+        print(f"[WB] slope fit: {n_slope_kept}/{n_kept} after MAD sigma-clip, "
+              f"slope={current_slope:.4f}")
     else:
         current_slope = TARGET_SLOPE
+        print(f"[WB] slope fit: too few unclipped stars ({n_kept}), "
+              f"falling back to TARGET_SLOPE={TARGET_SLOPE}")
 
     # ---- Step 2: compute slope correction gain ratio ----
     # new_slope = (kg/kr) * current_slope = TARGET_SLOPE

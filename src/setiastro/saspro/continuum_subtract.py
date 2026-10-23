@@ -1183,20 +1183,45 @@ class ContinuumSubtractTab(QWidget):
             cont_flux = raw_pixels[:, 1].astype(np.float32, copy=False)
             h, w = 256, 256
             scatter_img = np.ones((h, w, 3), np.uint8) * 255
+
+            # Reject clipped-high and noise-floor samples before fitting the
+            # diagnostic line — otherwise saturated stars at the top-right
+            # lever the slope upward and misrepresent the WB.
+            CLIP_HI = 0.95
+            CLIP_LO = 0.005
+            keep_mask = (
+                np.isfinite(nb_flux) & np.isfinite(cont_flux) &
+                (nb_flux < CLIP_HI) & (cont_flux < CLIP_HI) &
+                (nb_flux > CLIP_LO) & (cont_flux > CLIP_LO)
+            )
             try:
-                m, c = np.polyfit(cont_flux, nb_flux, 1)
-                x0 = int(0.0 * (w-1)); y0 = int((1 - float(np.clip(c, 0, 1))) * (h-1))
-                x1 = int(1.0 * (w-1)); y1 = int((1 - float(np.clip(m+c, 0, 1))) * (h-1))
+                if int(keep_mask.sum()) >= 3:
+                    m, c = np.polyfit(cont_flux[keep_mask], nb_flux[keep_mask], 1)
+                else:
+                    m, c = np.polyfit(cont_flux, nb_flux, 1)
+                x0 = 0;      y0 = int((1 - float(np.clip(c,     0, 1))) * (h-1))
+                x1 = w - 1;  y1 = int((1 - float(np.clip(m + c, 0, 1))) * (h-1))
                 cv2.line(scatter_img, (x0, y0), (x1, y1), (0, 0, 255), 2)
+                # Draw clip boundaries so the rejected zone is obvious.
+                clip_y = int((1 - CLIP_HI) * (h-1))
+                clip_x = int(CLIP_HI * (w-1))
+                cv2.line(scatter_img, (0, clip_y), (w-1, clip_y),
+                        (200, 200, 200), 1, cv2.LINE_AA)
+                cv2.line(scatter_img, (clip_x, 0), (clip_x, h-1),
+                        (200, 200, 200), 1, cv2.LINE_AA)
             except Exception:
-                pass
+                keep_mask = np.ones_like(nb_flux, dtype=bool)
+
             xs = (np.clip(cont_flux, 0, 1) * (w-1)).astype(int)
             ys = ((1 - np.clip(nb_flux, 0, 1)) * (h-1)).astype(int)
-            for x, y in zip(xs, ys):
+            for x, y, kept in zip(xs, ys, keep_mask):
                 if 0 <= x < w and 0 <= y < h:
-                    cv2.circle(scatter_img, (x, y), 2, (255, 0, 0), -1)
-            cv2.line(scatter_img, (0, h-1), (w-1, h-1), (0,0,0), 1)
-            cv2.line(scatter_img, (0, 0), (0, h-1), (0,0,0), 1)
+                    if kept:
+                        cv2.circle(scatter_img, (x, y), 2, (255, 0, 0),   -1)
+                    else:
+                        cv2.circle(scatter_img, (x, y), 3, (160, 160, 160), 1)
+            cv2.line(scatter_img, (0, h-1), (w-1, h-1), (0, 0, 0), 1)
+            cv2.line(scatter_img, (0, 0),   (0, h-1),   (0, 0, 0), 1)
             font = cv2.FONT_HERSHEY_SIMPLEX
             ((tw,_),_) = cv2.getTextSize("BB Flux", font, 0.5, 1)
             cv2.putText(scatter_img, "BB Flux", ((w-tw)//2, h-5), font, 0.5, (0,0,0), 1, cv2.LINE_AA)
@@ -1725,6 +1750,13 @@ class ContinuumProcessingThread(QThread):
         if x.size > N:
             idx = np.random.choice(x.size, N, replace=False)
             x = x[idx]; y = y[idx]
+        # Reject samples saturated in EITHER axis — a star clipped at 1.0 in
+        # both input and output gives a (1,1) point that falsely anchors the
+        # fit at the top of the dynamic range.
+        keep = (x < 0.95) & (y < 0.95) & (x > 0.005) & (y > 0.005) \
+            & np.isfinite(x) & np.isfinite(y)
+        if keep.sum() >= 10:
+            x, y = x[keep], y[keep]
         A = np.vstack([x, np.ones_like(x)]).T
         a, b = np.linalg.lstsq(A, y, rcond=None)[0]
         return float(a), float(b)
