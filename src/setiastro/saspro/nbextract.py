@@ -1930,6 +1930,16 @@ class NBExtractDialog(SFCCDialog):
 
         img_float = img.astype(np.float32) / (255.0 if img.dtype == np.uint8 else 1.0)
 
+        # Per-channel floor = camera offset + sky pedestal.  Not line emission, so it
+        # must not go through pinv(A): the pedestal largely cancels (pseudo-inverse
+        # rows are signed) and the negative remainder clips at 0, which is what was
+        # zeroing the black point.  Subtract here, add back at the very end.
+        ch_min = np.array([float(np.nanmin(img_float[..., c])) for c in range(3)],
+                          dtype=np.float32)
+        img_float = img_float - ch_min[None, None, :]
+        print(f"[NBExtract] per-channel floor subtracted: "
+              f"R={ch_min[0]:.5f}  G={ch_min[1]:.5f}  B={ch_min[2]:.5f}")
+
         _sfcc_status(self, "NBExtract: solving per-pixel mixing system…")
         QApplication.processEvents()
 
@@ -1982,11 +1992,13 @@ class NBExtractDialog(SFCCDialog):
         q1 = float(self.nb_q1_spin.value()) if hasattr(self, "nb_q1_spin") else 1.0
         q2 = float(self.nb_q2_spin.value()) if hasattr(self, "nb_q2_spin") else 1.0
 
+        # Add the floor back INSIDE _linear_scale_to_unity — adding it after would
+        # push a max-1.0 source to ~1.06 with the guard already past.
         line1_img = _linear_scale_to_unity(
-            (q1 * line1_nnls + (1.0 - q1) * raw1).astype(np.float32)
+            (q1 * line1_nnls + (1.0 - q1) * raw1).astype(np.float32) + float(ch_min[ch1])
         )
         line2_img = _linear_scale_to_unity(
-            (q2 * line2_nnls + (1.0 - q2) * raw2).astype(np.float32)
+            (q2 * line2_nnls + (1.0 - q2) * raw2).astype(np.float32) + float(ch_min[ch2])
         )
 
         meta_base = dict(doc.metadata or {})
