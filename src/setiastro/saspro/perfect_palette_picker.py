@@ -7,7 +7,8 @@ import cv2
 from PyQt6.QtCore import Qt, QSize, QEvent, QTimer, QPoint, pyqtSignal, QSettings, QByteArray
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-    QFileDialog, QInputDialog, QMessageBox, QGridLayout, QCheckBox, QSizePolicy, QDialog
+    QFileDialog, QInputDialog, QMessageBox, QGridLayout, QCheckBox, QSizePolicy, QDialog,
+    QComboBox
 )
 from PyQt6.QtGui import QPixmap, QImage, QIcon, QPainter, QPen, QColor, QFont, QFontMetrics, QCursor
 
@@ -333,6 +334,64 @@ class PerfectPalettePicker(QWidget):
         self.chk_linear.stateChanged.connect(self._rebuild_stretch_cache_for_all)
         left.addSpacing(6); left.addWidget(self.chk_linear)
 
+        # Output linear: invert the stretch on push so the new document is linear
+        self.chk_output_linear = QCheckBox("Output linear (invert stretch on push)")
+        self.chk_output_linear.setChecked(False)
+        self.chk_output_linear.setToolTip(
+            "When pushing to a new view, apply a linked no-clip statistical stretch\n"
+            "back to the original channel median so the output lives in linear space.\n"
+            "Works for Foraxx and Dynamic Inverse too.\n"
+            "The on-screen preview stays stretched so you can see what you're doing."
+        )
+        self.chk_output_linear.setEnabled(self.chk_linear.isChecked())
+        left.addWidget(self.chk_output_linear)
+
+        # Which channel median to target when reverting
+        row_tm = QHBoxLayout()
+        self.lbl_target_median = QLabel("Target median:")
+        self.lbl_target_median.setStyleSheet("margin-left:8px;")
+        self.cmb_target_median = QComboBox(self)
+        self.cmb_target_median.addItems([
+            "Max (least stretched)",
+            "Min (most stretched)",
+            "Mean",
+            "Median of medians",
+            "Ha",
+            "OIII",
+            "SII",
+        ])
+        self.cmb_target_median.setCurrentIndex(0)
+        self.cmb_target_median.setToolTip(
+            "Which raw channel median to target when inverting the stretch.\n"
+            "• Max — preserves the brightest channel's dynamic range (default)\n"
+            "• Min — pushes everything deeper (noisier)\n"
+            "• Mean / Median of medians — compromise\n"
+            "• Ha / OIII / SII — force a specific channel (falls back to Max if missing)"
+        )
+        self.cmb_target_median.setEnabled(self.chk_linear.isChecked() and
+                                         self.chk_output_linear.isChecked())
+        row_tm.addWidget(self.lbl_target_median)
+        row_tm.addWidget(self.cmb_target_median, 1)
+        left.addLayout(row_tm)
+
+        # Enable/disable wiring: output-linear needs linear-input on;
+        # the dropdown needs output-linear on.
+        def _sync_output_linear_enabled(*_):
+            on = self.chk_linear.isChecked()
+            self.chk_output_linear.setEnabled(on)
+            if not on:
+                # If linear input turns off, output-linear is meaningless
+                self.chk_output_linear.setChecked(False)
+            self.cmb_target_median.setEnabled(on and self.chk_output_linear.isChecked())
+        self.chk_linear.stateChanged.connect(_sync_output_linear_enabled)
+        self.chk_output_linear.stateChanged.connect(
+            lambda *_: self.cmb_target_median.setEnabled(
+                self.chk_linear.isChecked() and self.chk_output_linear.isChecked()
+            )
+        )
+        self.chk_output_linear.stateChanged.connect(lambda *_: self._save_ui_state())
+        self.cmb_target_median.currentIndexChanged.connect(lambda *_: self._save_ui_state())
+
         # Actions
         self.btn_clear = QPushButton("Clear Loaded Channels")
         self.btn_clear.clicked.connect(self._clear_channels)
@@ -461,6 +520,10 @@ class PerfectPalettePicker(QWidget):
             s = self._settings
             s.setValue(self._k("window_geometry"), self.saveGeometry())
             s.setValue(self._k("linear"), bool(self.chk_linear.isChecked()))
+            if hasattr(self, "chk_output_linear"):
+                s.setValue(self._k("output_linear"), bool(self.chk_output_linear.isChecked()))
+            if hasattr(self, "cmb_target_median"):
+                s.setValue(self._k("target_median_mode"), self.cmb_target_median.currentText())
             if getattr(self, "_gallery", None) is not None:
                 s.setValue(self._k("gallery_geometry"), self._gallery.saveGeometry())
                 s.setValue(self._k("gallery_visible"), bool(self._gallery.isVisible()))
@@ -484,6 +547,20 @@ class PerfectPalettePicker(QWidget):
             self.chk_linear.blockSignals(True)
             self.chk_linear.setChecked(linear)
             self.chk_linear.blockSignals(False)
+
+            output_linear = bool(s.value(self._k("output_linear"), False, type=bool))
+            self.chk_output_linear.blockSignals(True)
+            self.chk_output_linear.setChecked(output_linear and linear)
+            self.chk_output_linear.setEnabled(linear)
+            self.chk_output_linear.blockSignals(False)
+
+            tm_mode = s.value(self._k("target_median_mode"), "Max (least stretched)", type=str)
+            idx = self.cmb_target_median.findText(tm_mode)
+            if idx >= 0:
+                self.cmb_target_median.blockSignals(True)
+                self.cmb_target_median.setCurrentIndex(idx)
+                self.cmb_target_median.blockSignals(False)
+            self.cmb_target_median.setEnabled(linear and self.chk_output_linear.isChecked())
 
             gg = s.value(self._k("gallery_geometry"), None)
             if gg is not None and getattr(self, "_gallery", None) is not None:
@@ -1081,6 +1158,109 @@ class PerfectPalettePicker(QWidget):
         else:
             self._gallery.hide()
 
+    # ------------- output-linear (invert stretch on push) -------------
+    def _prepared_channels_raw(self):
+        """
+        Same OSC synthesis as _prepared_channels, but ALWAYS from raw (unstretched)
+        inputs. Used to recover the original linear channel medians so we can
+        invert the pre-build stretch at push time.
+        """
+        ha, oo, si = self.ha, self.oiii, self.sii
+        o1, o2 = self.osc1, self.osc2
+
+        if o1 is not None:  # OSC1: R≈Ha, mean(G,B)≈OIII
+            h1 = o1[..., 0]
+            g1b1 = o1[..., 1:3].mean(axis=2)
+            ha = h1 if ha is None else 0.5 * ha + 0.5 * h1
+            oo = g1b1 if oo is None else 0.5 * oo + 0.5 * g1b1
+
+        if o2 is not None:  # OSC2: R≈SII, mean(G,B)≈OIII
+            s2 = o2[..., 0]
+            g2b2 = o2[..., 1:3].mean(axis=2)
+            si = s2 if si is None else 0.5 * si + 0.5 * s2
+            oo = g2b2 if oo is None else 0.5 * oo + 0.5 * g2b2
+
+        return ha, oo, si
+
+    def _channel_medians_raw(self):
+        """
+        Returns {name: median} for channels that look like linear data.
+        Values that aren't plausibly linear (median >= 0.5 or <= 1e-6) are dropped
+        — those were almost certainly pre-stretched and would produce a bad target.
+        """
+        ha, oo, si = self._prepared_channels_raw()
+        out = {}
+        for name, ch in (("Ha", ha), ("OIII", oo), ("SII", si)):
+            if ch is None:
+                continue
+            m = float(np.median(ch))
+            if 1e-6 < m < 0.5:
+                out[name] = m
+        return out
+
+    def _target_linear_median(self) -> float | None:
+        """
+        Resolve the user's dropdown choice to a single target median value.
+        Falls back to Max if the requested named channel is missing.
+        """
+        meds = self._channel_medians_raw()
+        if not meds:
+            return None
+
+        mode = self.cmb_target_median.currentText() if hasattr(self, "cmb_target_median") \
+               else "Max (least stretched)"
+
+        if mode.startswith("Max"):
+            return max(meds.values())
+        if mode.startswith("Min"):
+            return min(meds.values())
+        if mode == "Mean":
+            vals = list(meds.values())
+            return float(sum(vals) / len(vals))
+        if mode.startswith("Median"):
+            return float(np.median(list(meds.values())))
+        # Named channel — fall back to Max if that channel isn't loaded
+        if mode in meds:
+            return meds[mode]
+        return max(meds.values())
+
+    def _apply_output_linear(self, rgb: np.ndarray) -> np.ndarray:
+        """
+        Invert the pre-build statistical stretch by running a LINKED no-black-clip
+        statistical stretch on the finished palette with target_median set to the
+        chosen raw channel median. This works for every palette — including
+        Foraxx and Dynamic Inverse — because we're inverting the common lift
+        applied to all three channels before mixing.
+        """
+        if not (self.chk_linear.isChecked() and self.chk_output_linear.isChecked()):
+            return rgb
+        tgt = self._target_linear_median()
+        if tgt is None:
+            self.status.setText(
+                "Output linear: no plausibly-linear channel medians found; "
+                "pushed stretched instead."
+            )
+            return rgb
+        try:
+            inverted = stretch_color_image(
+                rgb.astype(np.float32, copy=False),
+                target_median=float(tgt),
+                linked=True,
+                no_black_clip=True,
+                normalize=False,
+            ).astype(np.float32, copy=False)
+            self.status.setText(
+                f"Output linear: inverted stretch to target median {tgt:.4f} "
+                f"({self.cmb_target_median.currentText()})."
+            )
+            return inverted
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Output Linear Failed",
+                f"Could not invert stretch:\n{e}\n\nPushing stretched image instead."
+            )
+            return rgb
+
     # ------------- push to new subwindow -------------
     def _get_doc_manager(self):
         """
@@ -1125,17 +1305,28 @@ class PerfectPalettePicker(QWidget):
         if adjusted["img"] is None:
             return  # user canceled
 
-        # Update preview with adjusted result and set as final
+        # Keep the stretched result as our on-screen "final" so the preview
+        # stays visually meaningful; the linear invert (if requested) happens
+        # only on the array we hand to the DocManager.
         self.final = adjusted["img"]
         self._set_preview_image(self._to_qimage(self.final))
 
+        # Build the image that actually goes to the new document.
+        # If output-linear is on, this is the inverse-stretched array;
+        # otherwise it's the stretched final the user is looking at.
+        output_img = self._apply_output_linear(self.final)
+
         title = self.current_palette or "Palette"
+        if self.chk_linear.isChecked() and self.chk_output_linear.isChecked():
+            title = f"{title} (linear)"
 
         # ---- get DocManager the robust way ----
         dm = self._get_doc_manager()
 
         if dm is None:
-            # Fallback: open a simple viewer instead of erroring out
+            # Fallback: open a simple viewer instead of erroring out.
+            # Show the stretched version so the user can actually see it;
+            # the linear array wouldn't display meaningfully in a bare QLabel.
             viewer = QDialog(self)
             viewer.setWindowTitle(title)
             vlayout = QVBoxLayout(viewer)
@@ -1154,16 +1345,19 @@ class PerfectPalettePicker(QWidget):
         try:
             if hasattr(dm, "open_array"):
                 # many of your tools already use this signature
-                doc = dm.open_array(self.final, metadata={"is_mono": False}, title=title)
+                doc = dm.open_array(output_img, metadata={"is_mono": False}, title=title)
             elif hasattr(dm, "create_document"):
-                doc = dm.create_document(image=self.final, metadata={"is_mono": False}, name=title)
+                doc = dm.create_document(image=output_img, metadata={"is_mono": False}, name=title)
             else:
                 raise RuntimeError("DocManager lacks open_array/create_document")
 
             # If DocManager or main window auto-spawns subwindows on new docs,
             # this is all we need. If not, you can optionally keep the
             # _spawn_subwindow_for hook here.
-            self.status.setText("Opened final palette in a new view.")
+            if self.chk_linear.isChecked() and self.chk_output_linear.isChecked():
+                self.status.setText("Opened final palette (linear) in a new view.")
+            else:
+                self.status.setText("Opened final palette in a new view.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open new view:\n{e}")
 
@@ -1424,4 +1618,4 @@ class PerfectPalettePicker(QWidget):
                 self.scroll.viewport().setCursor(QCursor(Qt.CursorShape.ArrowCursor))
                 return True
 
-        return super().eventFilter(obj, ev)    
+        return super().eventFilter(obj, ev)
