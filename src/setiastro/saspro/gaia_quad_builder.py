@@ -1,31 +1,48 @@
-#src/setiastro/saspro/gaia_quad_index.py
+#src/setiastro/saspro/gaia_quad_builder.py
 #!/usr/bin/env python3
 # ======================================================
-#   _____      __  _ ___         __
-#  / ___/___  / /_(_)   |  _____/ /__________
-#  \__ \/ _ \/ __/ / /| | / ___/ __/ ___/ __ \
-# ___/ /  __/ /_/ / ___ |(__  ) /_/ /  / /_/ /
-#/____/\___/\__/_/_/  |_/____/\__/_/   \____/
-#  SASpro Blind Solve Index
+#  gaia_quad_builder.py  —  build blind-solve quad layers LOCALLY
 #
-#  gaia_quad_index.py  —  quad-hash index layers for blind plate solving
+#  Builds the quad-hash index described in gaia_quad_index.py straight from the
+#  Gaia catalogs the user already downloaded. Nothing extra comes off the wire.
 #
-#  A quad index is a geometric hash of 4-star patterns (see quad_core.py and
-#  Lang et al. 2010, AJ 139, 1782). It is what lets SASpro solve a field with
-#  NO RA/Dec and NO field-of-view: the pattern itself says where you pointed.
+#  Source priority:
+#    1. Astrometric library  (gaia_astro_*.sqlite)  — preferred, far denser.
+#       Layers 2-7 need only G <= 13.6, which lives entirely inside
+#       gaia_astro_lt15.sqlite, one file of the "Bright (G < 17)" tier.
+#    2. XP spectral library  (gaia_xp_*.sqlite)     — fallback. Reaches
+#       G <= 12 with the Ultra-Bright + Bright + Medium tiers, so it can build
+#       layers 3-7 (fields 40' and wider) with no astrometric data at all.
 #
-#  A quad index is SCALE-BOUND — which four stars are neighbours depends on the
-#  angular scale you picked — so the index is a stack of LAYERS, each built at
-#  one quad size. One layer reliably solves fields from about 2.5x to 8x its
-#  quad size, so layers spaced a factor of 2 apart overlap comfortably.
+#  ── READ PATH, AND WHY IT LOOKS LIKE THIS ───────────────────────────────────
 #
-#  These layers are BUILT LOCALLY from the Gaia catalogs the user already
-#  downloaded (Astrometry tab, or the XP Spectrum library as a fallback).
-#  Nothing extra to download. See gaia_quad_builder.py.
+#  The obvious design — walk the sky in declination stripes, querying
+#  `WHERE dec_zone BETWEEN ? AND ?` — is a trap. The distributed tables are
+#  WITHOUT ROWID with source_id as the primary key, so ix_zone is a SECONDARY
+#  index: SQLite answers a dec_zone query with "SEARCH stars USING INDEX
+#  ix_zone", which means a primary-key B-tree lookup for EVERY matching row.
+#  That is random access scattered across a multi-GB file. Measured against a
+#  single sequential scan of the same data it was 8.7x slower, and that gap
+#  widens on a real 16 GB file where the page cache cannot hide it.
 #
-#  Layers 2-7 cover 20' to 25deg fields, need stars only to G~13.6, and total
-#  about 650 MB. Everything they need lives in gaia_astro_lt15.sqlite, which is
-#  part of the "Bright (G < 17)" astrometric tier.
+#  So phase 1 is ONE SEQUENTIAL SCAN per source file, streamed in chunks, with
+#  the per-cell selection applied incrementally. Keeping the brightest K per
+#  cell is associative — the top-K of a union of per-chunk top-K sets is the
+#  global top-K — so chunking costs nothing in correctness.
+#
+#  Threads do NOT help here and actively hurt (measured 0.3x): sqlite3 releases
+#  the GIL inside sqlite3_step, but building the row tuples holds it, so
+#  threads just contend. Processes do help, modestly, and only because each
+#  worker reduces its slice to a per-cell selection before anything is pickled
+#  back. That path is off in a frozen build unless the host app calls
+#  multiprocessing.freeze_support() — see WORKERS below.
+#
+#  Phase 2 forms quads from one KD-tree over unit vectors, so the neighbour
+#  search needs no projection and RA wraparound disappears; each quad is then
+#  gnomonic-projected about its own A-B midpoint before hashing.
+#
+#  Pure numpy + sqlite3. No Qt in this module, so it can be driven headlessly
+#  from a script or a test; the QThread wrapper lives in gaia_quad_tab.py.
 #
 #  Written by Franklin Marek
 #  www.setiastro.com
@@ -35,499 +52,642 @@ from __future__ import annotations
 
 import math
 import os
-import struct
+import re
+import sqlite3
+import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
-from setiastro.saspro.quad_core import (
-    CODE_HI, CODE_LO, nbins_for_tol, probe_keys,
+from setiastro.saspro.quad_core import quad_codes, pack_keys, nbins_for_tol
+from setiastro.saspro.gaia_quad_index import (
+    BIN_TOL, EPOCH_JYEAR, QuadLayerDef, quantize_codes, write_saq,
 )
 
-# ── file format ──────────────────────────────────────────────────────────────
+GAIA_REF_EPOCH = 2016.0          # Gaia DR3 astrometry epoch
+SCAN_CHUNK = 500_000             # rows pulled from sqlite per step
 
-SAQ_MAGIC = b"SASQ"
-SAQ_VERSION = 1
-HEADER_BYTES = 128
-ALIGN = 64
+# Proper motion only matters where a decade of it is a real fraction of a
+# quad. At G<=13.6 a brisk 50 mas/yr star has moved 0.5" since epoch 2016,
+# which against an 8' quad is 0.1% — far under the code tolerance. Below a 4'
+# quad it starts to bite, so only the two finest layers pay to fetch pm.
+PM_QUAD_ARCMIN = 4.0
 
-# Codes are stored quantised to uint16 over [CODE_LO, CODE_HI] -> 2.3e-5 per
-# step, far finer than any tolerance we ever apply.
-_CODE_SPAN = CODE_HI - CODE_LO
-_U16 = 65535.0
+# Cumulative Gaia DR3 source counts, from the exact row counts hard-coded in
+# gaia_database.py. Used ONLY to estimate progress: counting rows up front
+# would mean scanning the table twice.
+_CUM_G = np.array([8, 10, 12, 14, 15, 17, 18, 19, 20, 21], float)
+_CUM_N = np.log10([54_735, 440_004, 2_866_891, 15_719_844, 34_414_104,
+                   139_482_635, 268_869_606, 508_077_374, 928_307_157,
+                   1_585_128_120])
 
-# RA as uint32 over [0,360), Dec as int32 over [-90,90]: 0.0003" resolution.
-_RA_SCALE = 4294967296.0 / 360.0
-_DEC_SCALE = 2147483647.0 / 90.0
-
-# The bins are sized once, at the largest tolerance we will ever use. The
-# per-quad tolerance (which depends on |AB| and the centroid noise) is applied
-# afterwards as an exact filter, so a quad with a long baseline gets the full
-# benefit of its precision without needing its own binning.
-BIN_TOL = 0.010
-EPOCH_JYEAR = 2027.0            # proper motions are propagated to this epoch
+ProgressCb = Optional[Callable[[float, str], None]]
+CancelCb = Optional[Callable[[], bool]]
 
 
-# ── layer definitions ────────────────────────────────────────────────────────
-
-@dataclass
-class QuadLayerDef:
-    index:        int
-    key:          str
-    q_arcmin:     float          # nominal quad size; the band is 0.7x - 1.4x
-    gmag_limit:   float
-    per_cell:     int = 5
-    recommended:  bool = False
-    warning:      str = ""
-    build_note:   str = ""
-    # Measured fraction of the per_cell slots that actually fill. The
-    # geometric count assumes every cell finds per_cell stars at the magnitude
-    # limit, and the limits were picked so the all-sky total just covers the
-    # slots -- but Gaia is clustered, so the galactic plane overflows while
-    # high latitudes starve. The shortfall is worst on the finest layers,
-    # where a cell either has stars or it does not.
-    fill:         float = 1.0
-
-    @property
-    def q_lo_arcmin(self) -> float:
-        return 0.70 * self.q_arcmin
-
-    @property
-    def q_hi_arcmin(self) -> float:
-        return 1.40 * self.q_arcmin
-
-    @property
-    def cell_arcmin(self) -> float:
-        return self.q_arcmin
-
-    # Measured coverage band (see BLIND_SOLVER_DESIGN.md): one layer solves
-    # fields from ~2.5x to ~8x its quad size. Quoted conservatively.
-    @property
-    def field_lo_arcmin(self) -> float:
-        return 2.5 * self.q_arcmin
-
-    @property
-    def field_hi_arcmin(self) -> float:
-        return 8.0 * self.q_arcmin
-
-    @property
-    def filename(self) -> str:
-        return f"gaia_quads_L{self.index}.saq"
-
-    @property
-    def geometric_stars(self) -> int:
-        """Stars if every cell filled -- an upper bound, not the outcome."""
-        q_deg = self.q_arcmin / 60.0
-        return int(self.per_cell * 41252.96 / (q_deg * q_deg))
-
-    @property
-    def est_stars(self) -> int:
-        return int(self.fill * self.geometric_stars)
-
-    @property
-    def est_quads(self) -> int:
-        return int(1.6 * self.est_stars)
-
-    @property
-    def est_bytes(self) -> int:
-        return 20 * self.est_quads + 8 * self.est_stars
-
-    @property
-    def label(self) -> str:
-        return f"Layer {self.index} — quads {_fmt_ang(self.q_arcmin)}"
-
-    @property
-    def field_label(self) -> str:
-        return f"{_fmt_ang(self.field_lo_arcmin)} – {_fmt_ang(self.field_hi_arcmin)} fields"
+def expected_rows(gmax: float) -> int:
+    return int(10.0 ** float(np.interp(gmax, _CUM_G, _CUM_N)))
 
 
-def _fmt_ang(arcmin: float) -> str:
-    if arcmin < 60.0:
-        return f"{arcmin:.0f}′"
-    return f"{arcmin / 60.0:.1f}°"
+def default_workers() -> int:
+    """
+    How many reader processes to use by default.
 
-
-def fmt_size(nbytes: float) -> str:
-    if nbytes >= 1024 ** 3:
-        return f"{nbytes / 1024**3:.2f} GB"
-    if nbytes >= 1024 ** 2:
-        return f"{nbytes / 1024**2:.0f} MB"
-    return f"{nbytes / 1024:.0f} KB"
-
-
-# Ordered coarse -> fine. The G limits come from interpolating the exact row
-# counts already hard-coded in gaia_database.py, for 5 index stars per cell.
-# Fill factors and build times MEASURED on a real Gaia DR3 build (astrometric
-# library complete to G <= 18, 4 reader processes). Layer 0 is extrapolated.
-QUAD_LAYER_DEFS: List[QuadLayerDef] = [
-    QuadLayerDef(7, "quads_l7", 256.0,  8.0, recommended=True,
-                 fill=1.01, build_note="seconds"),
-    QuadLayerDef(6, "quads_l6", 128.0,  8.0, recommended=True,
-                 fill=0.58, build_note="seconds"),
-    QuadLayerDef(5, "quads_l5",  64.0,  9.1, recommended=True,
-                 fill=0.72, build_note="seconds"),
-    QuadLayerDef(4, "quads_l4",  32.0, 10.5, recommended=True,
-                 fill=0.65, build_note="under a minute"),
-    QuadLayerDef(3, "quads_l3",  16.0, 12.0, recommended=True,
-                 fill=0.59, build_note="about a minute"),
-    QuadLayerDef(2, "quads_l2",   8.0, 13.6, recommended=True,
-                 fill=0.52, build_note="a few minutes"),
-    QuadLayerDef(1, "quads_l1",   4.0, 15.4, fill=0.47,
-                 build_note="about 6 minutes",
-                 warning="Only needed for fields under 20′."),
-    # Layer 0 has never been built end to end; its fill is extrapolated from
-    # the 0.59 / 0.52 / 0.47 trend of layers 3, 2 and 1.
-    QuadLayerDef(0, "quads_l0",   2.0, 17.4, fill=0.43,
-                 build_note="roughly 30–45 minutes",
-                 warning="Longest build by far, needs about 8 GB of free RAM "
-                         "while sorting, and the Faint (G 17–18) astrometric "
-                         "tier must be installed. Only needed for fields under "
-                         "10′."),
-]
-
-LAYER_BY_INDEX: Dict[int, QuadLayerDef] = {d.index: d for d in QUAD_LAYER_DEFS}
-
-
-# ── library directory (mirrors get_astro_library_dir) ────────────────────────
-
-_SETTINGS_QUAD_LIBRARY_DIR = "gaia_quad_library/custom_dir"
-
-
-def _default_quad_library_dir() -> Path:
-    from PyQt6.QtCore import QStandardPaths
-    base = Path(QStandardPaths.writableLocation(
-        QStandardPaths.StandardLocation.AppDataLocation))
-    d = base / "gaia_quad_library"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def get_quad_library_dir() -> Path:
-    """Active blind-solve index directory; honours a user override."""
-    from PyQt6.QtCore import QSettings
-    custom = QSettings().value(_SETTINGS_QUAD_LIBRARY_DIR, "", type=str)
-    if custom:
-        p = Path(custom)
+    Disabled in a frozen build: multiprocessing 'spawn' re-imports the entry
+    point, and unless the host called multiprocessing.freeze_support() that
+    relaunches the whole GUI. Override with SASPRO_QUAD_WORKERS.
+    """
+    env = os.environ.get("SASPRO_QUAD_WORKERS")
+    if env:
         try:
-            p.mkdir(parents=True, exist_ok=True)
-            return p
-        except Exception:
+            return max(1, int(env))
+        except ValueError:
             pass
-    return _default_quad_library_dir()
+    if getattr(sys, "frozen", False):
+        return 1
+    n = os.cpu_count() or 1
+    return max(1, min(4, n // 2))
 
 
-def set_quad_library_dir(path: Path):
-    from PyQt6.QtCore import QSettings
-    QSettings().setValue(_SETTINGS_QUAD_LIBRARY_DIR, str(path))
+# ─────────────────────────────────────────────────────────────────────────────
+#  Source catalogues
+# ─────────────────────────────────────────────────────────────────────────────
 
-
-def clear_quad_library_dir_override():
-    from PyQt6.QtCore import QSettings
-    QSettings().remove(_SETTINGS_QUAD_LIBRARY_DIR)
-
-
-# ── writing ──────────────────────────────────────────────────────────────────
-
-def _align(n: int) -> int:
-    return (n + ALIGN - 1) // ALIGN * ALIGN
-
-
-def quantize_codes(codes) -> np.ndarray:
+def _band_from_filename(name: str) -> Tuple[float, float]:
     """
-    Codes -> uint16 over [CODE_LO, CODE_HI]: 2.3e-5 per step, far finer than
-    any tolerance we ever apply. Already-quantised input passes straight
-    through, which is what lets the builder quantise at generation time.
-    Holding 300M quads as float64 costs 32 bytes each and dominates peak
-    memory on the finest layer; 8 bytes each is the difference between
-    building and swapping.
+    Magnitude band a distributed file covers, from its name.
+
+    Astrometric: gaia_astro_lt15 -> (0,15),  gaia_astro_150_160 -> (15.0,16.0),
+                 gaia_astro_gt213 -> (21.3, 99)
+    XP:          gaia_xp_lt8 -> (0,8),  gaia_xp_8_10 -> (8,10),
+                 gaia_xp_100_105 -> (10.0,10.5)
+
+    The naming is not consistent between the two builders (lt15 means G<15 but
+    gt213 means G>21.3), so the rule is: a 3-digit token is tenths, anything
+    shorter is whole magnitudes.
     """
-    a = np.asarray(codes)
-    if a.dtype == np.uint16:
-        return np.ascontiguousarray(a.reshape(-1, 4), dtype="<u2")
-    q = np.clip((a.astype(np.float64) - CODE_LO) / _CODE_SPAN, 0.0, 1.0)
-    return np.rint(q * _U16).astype("<u2").reshape(-1, 4)
+    stem = Path(name).stem
+
+    def val(tok: str) -> float:
+        return float(tok) / 10.0 if len(tok) >= 3 else float(tok)
+
+    m = re.search(r"_lt(\d+)$", stem)
+    if m:
+        return 0.0, val(m.group(1))
+    m = re.search(r"_gt(\d+)$", stem)
+    if m:
+        return val(m.group(1)), 99.0
+    m = re.search(r"_(\d+)_(\d+)$", stem)
+    if m:
+        return val(m.group(1)), val(m.group(2))
+    return 0.0, 99.0
 
 
-def write_saq(path: Path,
-              layer: QuadLayerDef,
-              star_ra: np.ndarray,
-              star_dec: np.ndarray,
-              keys: np.ndarray,
-              codes: np.ndarray,
-              refs: np.ndarray,
-              nbins: int,
-              epoch: float = EPOCH_JYEAR) -> Path:
-    """
-    Write one layer. `keys` must already be sorted ascending, with `codes` and
-    `refs` in the same order.
-
-    star_ra/dec : float64 degrees
-    keys        : uint32, sorted
-    codes       : (N,4) float64 in code units
-    refs        : (N,2) uint32, indices of A and B into the star table
-    """
-    path = Path(path)
-    n_stars = len(star_ra)
-    n_quads = len(keys)
-
-    ra_u = np.clip(np.asarray(star_ra, np.float64) % 360.0 * _RA_SCALE,
-                   0, 4294967295.0).astype("<u4")
-    dec_i = np.clip(np.asarray(star_dec, np.float64) * _DEC_SCALE,
-                    -2147483647.0, 2147483647.0).astype("<i4")
-
-    cq = quantize_codes(codes)
-
-    off_stars = _align(HEADER_BYTES)
-    off_keys = _align(off_stars + n_stars * 8)
-    off_codes = _align(off_keys + n_quads * 4)
-    off_refs = _align(off_codes + n_quads * 8)
-    total = _align(off_refs + n_quads * 8)
-
-    hdr = bytearray(HEADER_BYTES)
-    struct.pack_into("<4sHH", hdr, 0, SAQ_MAGIC, SAQ_VERSION, layer.index)
-    struct.pack_into("<fff", hdr, 8,
-                     layer.q_lo_arcmin, layer.q_hi_arcmin, layer.cell_arcmin)
-    struct.pack_into("<HH", hdr, 20, layer.per_cell, nbins)
-    struct.pack_into("<fffff", hdr, 24,
-                     CODE_LO, CODE_HI, BIN_TOL, layer.gmag_limit, float(epoch))
-    struct.pack_into("<QQ", hdr, 48, n_stars, n_quads)
-    struct.pack_into("<QQQQ", hdr, 64, off_stars, off_keys, off_codes, off_refs)
-
-    tmp = path.with_suffix(".saq.tmp")
-    with open(tmp, "wb") as f:
-        f.write(bytes(hdr))
-
-        def _put(off, arr):
-            f.seek(off)
-            f.write(np.ascontiguousarray(arr).tobytes())
-
-        st = np.empty(n_stars, dtype=[("ra", "<u4"), ("dec", "<i4")])
-        st["ra"], st["dec"] = ra_u, dec_i
-        _put(off_stars, st)
-        _put(off_keys, np.asarray(keys, "<u4"))
-        _put(off_codes, cq.reshape(-1, 4))
-        _put(off_refs, np.asarray(refs, "<u4").reshape(-1, 2))
-        f.seek(total - 1)
-        f.write(b"\0")
-
-    os.replace(tmp, path)
-    return path
+def _contiguous_depth(bands: List[Tuple[float, float]]) -> float:
+    """How faint the installed files reach without a gap, starting from G=0."""
+    depth = 0.0
+    for lo, hi in sorted(bands):
+        if lo <= depth + 1e-6:
+            depth = max(depth, hi)
+    return depth
 
 
-# ── reading ──────────────────────────────────────────────────────────────────
-
-def read_saq_header(path: Path) -> Optional[dict]:
-    """
-    n_stars / n_quads / epoch without memmapping anything, so the tab can show
-    what a layer ACTUALLY contains instead of an estimate, the moment it
-    exists on disk.
-    """
-    try:
-        with open(path, "rb") as f:
-            hdr = f.read(HEADER_BYTES)
-        if len(hdr) < HEADER_BYTES:
-            return None
-        magic, ver, layer_idx = struct.unpack_from("<4sHH", hdr, 0)
-        if magic != SAQ_MAGIC:
-            return None
-        n_stars, n_quads = struct.unpack_from("<QQ", hdr, 48)
-        epoch = struct.unpack_from("<f", hdr, 40)[0]
-        return dict(version=int(ver), layer=int(layer_idx), n_stars=int(n_stars),
-                    n_quads=int(n_quads), epoch=float(epoch))
-    except Exception:
-        return None
+def _connect(path: str) -> sqlite3.Connection:
+    c = sqlite3.connect(path, check_same_thread=False)
+    c.execute("PRAGMA query_only = ON;")
+    c.execute("PRAGMA cache_size = -131072;")      # 128 MB page cache
+    c.execute("PRAGMA mmap_size = 1073741824;")    # let the OS map 1 GB
+    return c
 
 
-class QuadLayer:
-    """
-    One memmapped layer. Nothing is loaded until a query touches it, so opening
-    the whole stack costs microseconds no matter how large the files are.
-    """
+class _Source:
+    kind = "?"
+    table = "stars"
 
-    def __init__(self, path: Path):
-        self.path = Path(path)
-        with open(self.path, "rb") as f:
-            hdr = f.read(HEADER_BYTES)
-        magic, ver, layer_idx = struct.unpack_from("<4sHH", hdr, 0)
-        if magic != SAQ_MAGIC:
-            raise ValueError(f"{self.path.name}: not a SASpro quad index")
-        if ver != SAQ_VERSION:
-            raise ValueError(f"{self.path.name}: format version {ver}, "
-                             f"expected {SAQ_VERSION}")
-        self.layer_index = int(layer_idx)
-        (self.q_lo_arcmin, self.q_hi_arcmin,
-         self.cell_arcmin) = struct.unpack_from("<fff", hdr, 8)
-        self.per_cell, self.nbins = struct.unpack_from("<HH", hdr, 20)
-        (self.code_lo, self.code_hi, self.bin_tol,
-         self.gmag_limit, self.epoch) = struct.unpack_from("<fffff", hdr, 24)
-        self.n_stars, self.n_quads = struct.unpack_from("<QQ", hdr, 48)
-        o_s, o_k, o_c, o_r = struct.unpack_from("<QQQQ", hdr, 64)
+    def depth(self) -> float:
+        raise NotImplementedError
 
-        n_s, n_q = int(self.n_stars), int(self.n_quads)
-        self._stars = np.memmap(self.path, dtype=[("ra", "<u4"), ("dec", "<i4")],
-                                mode="r", offset=o_s, shape=(n_s,))
-        self._keys = np.memmap(self.path, dtype="<u4", mode="r",
-                               offset=o_k, shape=(n_q,))
-        self._codes = np.memmap(self.path, dtype="<u2", mode="r",
-                                offset=o_c, shape=(n_q, 4))
-        self._refs = np.memmap(self.path, dtype="<u4", mode="r",
-                               offset=o_r, shape=(n_q, 2))
+    def files(self, gmax: float) -> List[Path]:
+        raise NotImplementedError
 
-    @property
-    def defn(self) -> Optional[QuadLayerDef]:
-        return LAYER_BY_INDEX.get(self.layer_index)
-
-    def star_radec(self, idx) -> Tuple[np.ndarray, np.ndarray]:
-        s = self._stars[np.asarray(idx, np.int64)]
-        return (s["ra"].astype(np.float64) / _RA_SCALE,
-                s["dec"].astype(np.float64) / _DEC_SCALE)
-
-    def decode(self, ci) -> np.ndarray:
-        return (self._codes[np.asarray(ci, np.int64)].astype(np.float64)
-                / _U16) * _CODE_SPAN + CODE_LO
-
-    def query(self, qcode: np.ndarray, tol, chunk: int = 256):
-        """
-        Candidate quads whose code is within `tol` of each query code
-        (Chebyshev, per axis). `tol` may be a scalar or one value per query —
-        per-quad tolerance is the whole point, since code precision scales as
-        sigma/|AB| and a long baseline deserves a tighter box.
-
-        Returns (qi, ci): indices into qcode and into this layer's quads.
-        """
-        qcode = np.atleast_2d(np.asarray(qcode, np.float64))
-        m = len(qcode)
-        if m == 0 or self.n_quads == 0:
-            return np.zeros(0, np.int64), np.zeros(0, np.int64)
-        tol = np.broadcast_to(np.asarray(tol, np.float64), (m,))
-
-        out_q, out_c = [], []
-        for s in range(0, m, chunk):
-            e = min(s + chunk, m)
-            sub = qcode[s:e]
-            pk = probe_keys(sub, self.nbins).ravel()
-            lo = np.searchsorted(self._keys, pk, "left")
-            hi = np.searchsorted(self._keys, pk, "right")
-            n = hi - lo
-            tot = int(n.sum())
-            if tot == 0:
-                continue
-            qi = np.repeat(np.repeat(np.arange(len(sub)), 16), n)
-            ci = np.repeat(lo, n) + (np.arange(tot)
-                                     - np.repeat(np.cumsum(n) - n, n))
-            # a clipped probe can name the same cell twice
-            pair = qi.astype(np.int64) * (int(self.n_quads) + 1) + ci
-            _, u = np.unique(pair, return_index=True)
-            qi, ci = qi[u], ci[u]
-            d = np.abs(self.decode(ci) - sub[qi]).max(axis=1)
-            keep = d <= tol[s:e][qi]
-            if keep.any():
-                out_q.append(qi[keep] + s)
-                out_c.append(ci[keep])
-
-        if not out_q:
-            return np.zeros(0, np.int64), np.zeros(0, np.int64)
-        return (np.concatenate(out_q).astype(np.int64),
-                np.concatenate(out_c).astype(np.int64))
-
-    def quad_ab(self, ci):
-        """RA/Dec of the A and B stars of each candidate quad."""
-        r = self._refs[np.asarray(ci, np.int64)]
-        ra_a, dec_a = self.star_radec(r[:, 0])
-        ra_b, dec_b = self.star_radec(r[:, 1])
-        return ra_a, dec_a, ra_b, dec_b
+    def scan(self, gmax: float, want_pm: bool) -> Iterator[tuple]:
+        raise NotImplementedError
 
     def close(self):
-        for a in ("_stars", "_keys", "_codes", "_refs"):
+        for c in getattr(self, "_conns", {}).values():
             try:
-                delattr(self, a)
+                c.close()
             except Exception:
                 pass
+        getattr(self, "_conns", {}).clear()
 
 
-class QuadIndexLibrary:
-    """All built layers in the quad library directory."""
+def _stream(conn, sql, params, want_pm):
+    cur = conn.execute(sql, params)
+    while True:
+        rows = cur.fetchmany(SCAN_CHUNK)
+        if not rows:
+            return
+        # Every selected column is non-NULL (COALESCE handles pm), so this is
+        # one C-level cast. Going through dtype=object and per-column astype,
+        # which is the natural-looking alternative, is several times slower.
+        a = np.asarray(rows, dtype=np.float64)
+        if want_pm:
+            yield a[:, 0], a[:, 1], a[:, 2], a[:, 3], a[:, 4]
+        else:
+            yield a[:, 0], a[:, 1], a[:, 2], None, None
 
-    def __init__(self, library_dir: Optional[Path] = None):
-        self._dir = Path(library_dir) if library_dir else get_quad_library_dir()
-        self._layers: Dict[int, QuadLayer] = {}
-        self._open()
 
-    def _open(self):
-        for d in QUAD_LAYER_DEFS:
-            p = self._dir / d.filename
-            if d.index in self._layers or not p.exists():
+class AstrometricSource(_Source):
+    kind = "astrometric"
+    table = "stars"
+
+    def __init__(self, directory: Path,
+                 neighborhood_name: str = "gaia_neighborhood.sqlite"):
+        self._dir = Path(directory)
+        self._conns: Dict[str, sqlite3.Connection] = {}
+        self._bands: Dict[str, Tuple[float, float]] = {}
+        for p in sorted(self._dir.glob("gaia_astro_*.sqlite")):
+            if p.name == neighborhood_name:
                 continue
             try:
-                self._layers[d.index] = QuadLayer(p)
+                self._conns[p.name] = _connect(str(p))
+                self._bands[p.name] = _band_from_filename(p.name)
             except Exception as e:
-                print(f"[QuadIndexLibrary] could not open {p.name}: {e}")
+                print(f"[quad-builder] skipping {p.name}: {e}")
 
-    def refresh(self):
-        self.close()
+    def depth(self) -> float:
+        return _contiguous_depth(list(self._bands.values()))
+
+    def files(self, gmax: float) -> List[Path]:
+        return [self._dir / n for n, (lo, _) in self._bands.items() if lo <= gmax]
+
+    def scan(self, gmax, want_pm):
+        cols = ("ra, dec, phot_g_mean_mag, COALESCE(pmra,0), COALESCE(pmdec,0)"
+                if want_pm else "ra, dec, phot_g_mean_mag")
+        for name, conn in self._conns.items():
+            if self._bands[name][0] > gmax:
+                continue
+            sql = (f"SELECT {cols} FROM stars WHERE phot_g_mean_mag IS NOT NULL "
+                   f"AND phot_g_mean_mag <= ?")
+            try:
+                yield from _stream(conn, sql, (float(gmax),), want_pm)
+            except Exception as e:
+                print(f"[quad-builder] scan failed on {name}: {e}")
+
+    def slices(self, gmax: float, nparts: int) -> List[tuple]:
+        """Contiguous primary-key ranges, for the parallel reader."""
+        out = []
+        for p in self.files(gmax):
+            try:
+                c = _connect(str(p))
+                lo, hi = c.execute(
+                    "SELECT MIN(source_id), MAX(source_id) FROM stars").fetchone()
+                c.close()
+            except Exception:
+                continue
+            if lo is None:
+                continue
+            # Plain Python ints: a numpy integer binds as 0 in sqlite3,
+            # silently, and the query then returns nothing at all.
+            edges = [int(v) for v in np.linspace(int(lo), int(hi) + 1, nparts + 1)]
+            out += [(str(p), edges[i], edges[i + 1]) for i in range(nparts)]
+        return out
+
+
+class XPSource(_Source):
+    kind = "XP spectral"
+    table = "sources"
+
+    def __init__(self, directory: Path):
+        self._dir = Path(directory)
+        self._conns: Dict[str, sqlite3.Connection] = {}
+        self._bands: Dict[str, Tuple[float, float]] = {}
+        for p in sorted(self._dir.glob("gaia_xp_*.sqlite")):
+            try:
+                self._conns[p.name] = _connect(str(p))
+                self._bands[p.name] = _band_from_filename(p.name)
+            except Exception as e:
+                print(f"[quad-builder] skipping {p.name}: {e}")
+
+    def depth(self) -> float:
+        return _contiguous_depth(list(self._bands.values()))
+
+    def files(self, gmax: float) -> List[Path]:
+        return [self._dir / n for n, (lo, _) in self._bands.items() if lo <= gmax]
+
+    def scan(self, gmax, want_pm):
+        # The XP tables carry no proper motion; the caller tolerates None.
+        for name, conn in self._conns.items():
+            if self._bands[name][0] > gmax:
+                continue
+            sql = ("SELECT ra, dec, phot_g_mean_mag FROM sources "
+                   "WHERE phot_g_mean_mag IS NOT NULL AND phot_g_mean_mag <= ?")
+            try:
+                yield from _stream(conn, sql, (float(gmax),), False)
+            except Exception as e:
+                print(f"[quad-builder] scan failed on {name}: {e}")
+
+
+@dataclass
+class SourceInfo:
+    kind: str
+    depth: float
+    detail: str
+
+
+def open_source(astro_dir: Optional[Path] = None,
+                xp_dir: Optional[Path] = None) -> Tuple[Optional[_Source], SourceInfo]:
+    """Pick the deepest installed catalogue; astrometric wins on a tie."""
+    best, info = None, SourceInfo("none", 0.0, "No Gaia catalogue installed.")
+    cands: List[_Source] = []
+    if astro_dir and Path(astro_dir).exists():
+        cands.append(AstrometricSource(Path(astro_dir)))
+    if xp_dir and Path(xp_dir).exists():
+        cands.append(XPSource(Path(xp_dir)))
+    for s in cands:
+        d = s.depth()
+        if d > info.depth:
+            if best is not None:
+                best.close()
+            best = s
+            info = SourceInfo(s.kind, d, f"{s.kind} library, complete to G ≤ {d:.1f}")
+        else:
+            s.close()
+    return best, info
+
+
+def buildable_layers(depth: float, layers) -> Dict[int, bool]:
+    return {d.index: (depth >= d.gmag_limit - 1e-6) for d in layers}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Geometry helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _radec_to_xyz(ra_deg, dec_deg) -> np.ndarray:
+    ra = np.radians(ra_deg); dec = np.radians(dec_deg)
+    cd = np.cos(dec)
+    return np.column_stack([cd * np.cos(ra), cd * np.sin(ra), np.sin(dec)])
+
+
+def _chord(theta_rad):
+    return 2.0 * np.sin(np.asarray(theta_rad) * 0.5)
+
+
+def _gnomonic(points_xyz: np.ndarray, centre_xyz: np.ndarray) -> np.ndarray:
+    """
+    Gnomonic projection of (M,K,3) directions about (M,3) centres, as (M,K,2).
+    Done with vectors, not trig: u = unit(z x n0) is east, v = n0 x u is north,
+    and x = (p.u)/(p.n0).
+    """
+    n0 = centre_xyz
+    u = np.column_stack([-n0[:, 1], n0[:, 0], np.zeros(len(n0))])
+    nu = np.linalg.norm(u, axis=1)
+    bad = nu < 1e-12                                   # exactly at a pole
+    u[bad] = np.array([1.0, 0.0, 0.0])
+    nu[bad] = 1.0
+    u /= nu[:, None]
+    v = np.cross(n0, u)
+    w = np.einsum("mkj,mj->mk", points_xyz, n0)
+    w = np.where(np.abs(w) < 1e-12, 1e-12, w)
+    x = np.einsum("mkj,mj->mk", points_xyz, u) / w
+    y = np.einsum("mkj,mj->mk", points_xyz, v) / w
+    return np.stack([x, y], axis=2)
+
+
+def _topk_smallest(vals: np.ndarray, valid: np.ndarray, k: int):
+    """Per row, the k column indices with the smallest `vals` among `valid`."""
+    big = np.iinfo(np.int64).max
+    v = np.where(valid, vals, big)
+    order = np.argsort(v, axis=1, kind="stable")[:, :k]
+    return order, np.take_along_axis(v, order, axis=1) < big
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Phase 1 — choose index stars
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _select_index_stars(ra, dec, mag, cell_deg, per_cell):
+    """
+    Keep the brightest `per_cell` stars in each roughly-equal-area cell.
+
+    Cells are a declination band plus a cos(dec)-corrected RA division — the
+    same zone idea the astrometric builder already uses, within ~10% of equal
+    area, and with no healpy dependency.
+    """
+    if len(ra) == 0:
+        return np.zeros(0, np.int64)
+    jd = np.floor((dec + 90.0) / cell_deg).astype(np.int64)
+    band_mid = (jd + 0.5) * cell_deg - 90.0
+    nra = np.maximum(1, np.round(360.0 * np.cos(np.radians(band_mid))
+                                 / cell_deg).astype(np.int64))
+    ir = np.minimum(np.floor((ra % 360.0) / (360.0 / nra)).astype(np.int64),
+                    nra - 1)
+    key = jd * (1 << 22) + ir
+
+    o = np.lexsort((mag, key))
+    ks = key[o]
+    new = np.empty(len(ks), bool)
+    new[0] = True
+    np.not_equal(ks[1:], ks[:-1], out=new[1:])
+    starts = np.flatnonzero(new)
+    counts = np.diff(np.append(starts, len(ks)))
+    rank = np.arange(len(ks)) - np.repeat(starts, counts)
+    return o[rank < per_cell]
+
+
+def _apply_pm(ra, dec, pmra, pmdec, epoch):
+    """Propagate to `epoch`. pmra is mu_alpha* (already includes cos dec)."""
+    dt = float(epoch) - GAIA_REF_EPOCH
+    if dt == 0.0 or pmra is None:
+        return ra, dec
+    cd = np.maximum(np.cos(np.radians(dec)), 1e-6)
+    return ((ra + (pmra * dt / 3.6e6) / cd) % 360.0,
+            np.clip(dec + (pmdec * dt / 3.6e6), -90.0, 90.0))
+
+
+class _Selector:
+    """
+    Running per-cell top-K over a stream of chunks.
+
+    Correct because the selection is associative: the top-K of a union of
+    per-chunk top-K sets is the global top-K. Consolidation is deferred until
+    the backlog is several times the final size, so the sort cost stays near
+    linear in the rows actually kept.
+    """
+
+    def __init__(self, cell_deg: float, per_cell: int, expected: int):
+        self.cell = cell_deg
+        self.k = per_cell
+        self.limit = max(4 * max(expected, 1), 2_000_000)
+        self._parts: List[tuple] = []
+        self.n = 0
+        self.rows_read = 0
+
+    def add(self, ra, dec, mag):
+        if len(ra) == 0:
+            return
+        s = _select_index_stars(ra, dec, mag, self.cell, self.k)
+        self._parts.append((ra[s], dec[s], mag[s]))
+        self.n += len(s)
+        if self.n > self.limit:
+            self.consolidate()
+
+    def consolidate(self):
+        if len(self._parts) <= 1:
+            return
+        ra = np.concatenate([p[0] for p in self._parts])
+        dec = np.concatenate([p[1] for p in self._parts])
+        mag = np.concatenate([p[2] for p in self._parts])
+        s = _select_index_stars(ra, dec, mag, self.cell, self.k)
+        self._parts = [(ra[s], dec[s], mag[s])]
+        self.n = len(s)
+
+    def result(self):
+        self.consolidate()
+        if not self._parts:
+            z = np.zeros(0)
+            return z, z, z
+        return self._parts[0]
+
+
+def _scan_slice(task):
+    """
+    Worker entry point: scan one primary-key slice and return its per-cell
+    selection. Reducing inside the worker is what keeps the pickled payload
+    small — a raw slice would be far more expensive to ship back than to read.
+    """
+    (db, lo, hi, gmax, want_pm, cell_deg, per_cell, expected, epoch) = task
+    cols = ("ra, dec, phot_g_mean_mag, COALESCE(pmra,0), COALESCE(pmdec,0)"
+            if want_pm else "ra, dec, phot_g_mean_mag")
+    sel = _Selector(cell_deg, per_cell, expected)
+    c = _connect(db)
+    try:
+        cur = c.execute(
+            f"SELECT {cols} FROM stars WHERE source_id >= ? AND source_id < ? "
+            f"AND phot_g_mean_mag IS NOT NULL AND phot_g_mean_mag <= ?",
+            (int(lo), int(hi), float(gmax)))
+        while True:
+            rows = cur.fetchmany(SCAN_CHUNK)
+            if not rows:
+                break
+            a = np.asarray(rows, dtype=np.float64)
+            sel.rows_read += len(a)
+            ra, dec = a[:, 0], a[:, 1]
+            if want_pm:
+                ra, dec = _apply_pm(ra, dec, a[:, 3], a[:, 4], epoch)
+            sel.add(ra, dec, a[:, 2])
+    finally:
+        c.close()
+    ra, dec, mag = sel.result()
+    return ra, dec, mag, sel.rows_read
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Build
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _phase1(layer, source, cell_deg, epoch, workers, rep, stop):
+    """One sequential pass per file (or per primary-key slice, in parallel)."""
+    want_pm = layer.q_arcmin <= PM_QUAD_ARCMIN
+    expected = layer.est_stars
+    est_rows = max(expected, expected_rows(layer.gmag_limit))
+    sel = _Selector(cell_deg, layer.per_cell, expected)
+    t0 = time.time()
+
+    slices = []
+    if workers > 1 and isinstance(source, AstrometricSource):
+        slices = source.slices(layer.gmag_limit, workers * 3)
+
+    if slices:
+        from concurrent.futures import ProcessPoolExecutor
+        tasks = [(db, lo, hi, layer.gmag_limit, want_pm, cell_deg,
+                  layer.per_cell, expected, epoch) for db, lo, hi in slices]
+        done = 0
         try:
-            self._dir = get_quad_library_dir()
-        except Exception:
-            pass
-        self._open()
+            with ProcessPoolExecutor(workers) as ex:
+                for ra, dec, mag, nread in ex.map(_scan_slice, tasks):
+                    stop()
+                    sel.rows_read += nread
+                    sel.add(ra, dec, mag)
+                    done += 1
+                    rep(0.45 * done / len(tasks),
+                        f"Reading catalogue ({workers} workers) … "
+                        f"{sel.rows_read:,} rows, {sel.n:,} kept")
+            return sel.result(), sel.rows_read, time.time() - t0
+        except Exception as e:
+            # A frozen build without freeze_support(), a sandbox with no
+            # /dev/shm, a locked-down policy — any of these. Fall through to
+            # the serial path rather than failing the build.
+            print(f"[quad-builder] parallel read unavailable ({e}); "
+                  f"falling back to a single reader")
+            sel = _Selector(cell_deg, layer.per_cell, expected)
 
-    def close(self):
-        for l in self._layers.values():
-            l.close()
-        self._layers.clear()
+    for ra, dec, mag, pmra, pmdec in source.scan(layer.gmag_limit, want_pm):
+        stop()
+        sel.rows_read += len(ra)
+        if want_pm and pmra is not None:
+            ra, dec = _apply_pm(ra, dec, pmra, pmdec, epoch)
+        sel.add(ra, dec, mag)
+        rep(0.45 * min(1.0, sel.rows_read / max(est_rows, 1)),
+            f"Reading catalogue … {sel.rows_read:,} rows, {sel.n:,} kept")
 
-    @property
-    def directory(self) -> Path:
-        return self._dir
-
-    def is_built(self, index: int) -> bool:
-        return (self._dir / LAYER_BY_INDEX[index].filename).exists()
-
-    def installed(self) -> List[QuadLayer]:
-        return [self._layers[i] for i in sorted(self._layers)]
-
-    def any_installed(self) -> bool:
-        return bool(self._layers)
-
-    def layers_for_field(self, field_arcmin: Optional[float]) -> List[QuadLayer]:
-        """
-        Layers to try, best first.
-
-        With a field size (from the header pixel scale, which
-        _estimate_scale_arcsec_from_header already recovers for most files)
-        this is usually one or two layers. Without one it is every layer,
-        coarsest first — the coarse layers are megabytes and milliseconds, so
-        the cheap guesses get made before the expensive ones.
-        """
-        got = self.installed()
-        if not got:
-            return []
-        if field_arcmin is None or not np.isfinite(field_arcmin) or field_arcmin <= 0:
-            return sorted(got, key=lambda l: -l.q_lo_arcmin)
-
-        def rank(l: QuadLayer):
-            q = 0.5 * (l.q_lo_arcmin + l.q_hi_arcmin)
-            ratio = field_arcmin / max(q, 1e-9)
-            inband = 2.0 <= ratio <= 10.0
-            return (0 if inband else 1, abs(math.log(ratio / 4.5)))
-
-        return sorted(got, key=rank)
+    return sel.result(), sel.rows_read, time.time() - t0
 
 
-_quad_library: Optional[QuadIndexLibrary] = None
+def build_layer(layer: QuadLayerDef,
+                out_path: Path,
+                source: _Source,
+                progress: ProgressCb = None,
+                cancel: CancelCb = None,
+                kn: int = 28,
+                kc: int = 24,
+                max_b_per_a: int = 2,
+                a_chunk: int = 150_000,
+                workers: Optional[int] = None,
+                epoch: float = EPOCH_JYEAR) -> Dict:
+    """
+    Build one layer and write it to `out_path`. Returns a stats dict.
+    Raises RuntimeError("cancelled") if the cancel callback asks it to stop.
+    """
+    from scipy.spatial import cKDTree
 
+    t0 = time.time()
+    if workers is None:
+        workers = default_workers()
 
-def get_quad_library() -> QuadIndexLibrary:
-    global _quad_library
-    if _quad_library is None:
-        _quad_library = QuadIndexLibrary()
-    return _quad_library
+    def rep(f, msg):
+        if progress:
+            progress(max(0.0, min(1.0, f)), msg)
 
+    def stop():
+        if cancel and cancel():
+            raise RuntimeError("cancelled")
 
-def refresh_quad_library():
-    global _quad_library
-    if _quad_library is not None:
-        _quad_library.close()
-    _quad_library = QuadIndexLibrary()
+    cell_deg = layer.cell_arcmin / 60.0
+    q_lo = math.radians(layer.q_lo_arcmin / 60.0)
+    q_hi = math.radians(layer.q_hi_arcmin / 60.0)
+
+    # ── Phase 1 ─────────────────────────────────────────────────────────────
+    (star_ra, star_dec, star_mag), n_read, t_read = _phase1(
+        layer, source, cell_deg, epoch, workers, rep, stop)
+
+    if len(star_ra) == 0:
+        raise RuntimeError("No stars returned by the catalogue — is the right "
+                           "magnitude tier installed?")
+
+    # Global brightness order, so an array index IS its brightness rank. The
+    # solver ranks its detections the same way; that correspondence is what
+    # makes the builder and the solver choose the same C and D.
+    o = np.argsort(star_mag, kind="stable")
+    star_ra, star_dec, star_mag = star_ra[o], star_dec[o], star_mag[o]
+    n_stars = len(star_ra)
+    rep(0.45, f"{n_stars:,} index stars from {n_read:,} rows in {t_read:.0f}s "
+              f"— building tree")
+    stop()
+
+    # ── Phase 2 ─────────────────────────────────────────────────────────────
+    xyz = _radec_to_xyz(star_ra, star_dec)
+    tree = cKDTree(xyz)
+    c_lo, c_hi = _chord(q_lo), _chord(q_hi)
+
+    keys_l, codes_l, refs_l = [], [], []
+    n_quads = 0
+    nb = nbins_for_tol(BIN_TOL)
+
+    for s in range(0, n_stars, a_chunk):
+        stop()
+        e = min(s + a_chunk, n_stars)
+        rep(0.45 + 0.50 * s / max(n_stars, 1),
+            f"Forming quads … {s:,}/{n_stars:,} stars, {n_quads:,} quads")
+
+        ai = np.arange(s, e)
+        d, j = tree.query(xyz[ai], k=kn, distance_upper_bound=c_hi, workers=-1)
+        # Only pair A with a FAINTER star: each unordered pair appears once.
+        ok = (j < n_stars) & (d >= c_lo) & (j > ai[:, None])
+        if not ok.any():
+            continue
+        col, got = _topk_smallest(j, ok, max_b_per_a)
+        bj = np.take_along_axis(j, col, axis=1)
+
+        a_rep = np.repeat(ai, max_b_per_a)[got.ravel()]
+        b_rep = bj.ravel()[got.ravel()]
+        if len(a_rep) == 0:
+            continue
+
+        # Circle with AB as diameter: centre is the normalised midpoint,
+        # angular radius is half the separation.
+        mid = xyz[a_rep] + xyz[b_rep]
+        mid /= np.linalg.norm(mid, axis=1)[:, None]
+        sep = 2.0 * np.arcsin(np.clip(
+            0.5 * np.linalg.norm(xyz[a_rep] - xyz[b_rep], axis=1), 0.0, 1.0))
+        r_chord = _chord(sep * 0.5)
+
+        dc, jc = tree.query(mid, k=kc, distance_upper_bound=float(r_chord.max()),
+                            workers=-1)
+        okc = ((jc < n_stars) & (dc <= r_chord[:, None])
+               & (jc != a_rep[:, None]) & (jc != b_rep[:, None]))
+        colc, gotc = _topk_smallest(jc, okc, 2)
+        cd = np.take_along_axis(jc, colc, axis=1)
+        have = gotc.all(axis=1)
+        if not have.any():
+            continue
+
+        a_rep, b_rep, mid = a_rep[have], b_rep[have], mid[have]
+        sids = np.column_stack([a_rep, b_rep, cd[have, 0], cd[have, 1]]).astype(np.int64)
+
+        pts = _gnomonic(xyz[sids], mid)                     # (M,4,2)
+        m = len(pts)
+        code, idx, good, _ = quad_codes(pts.reshape(-1, 2),
+                                        np.arange(4 * m).reshape(m, 4))
+        if not good.any():
+            continue
+        code = code[good]
+        ids = sids.reshape(-1)[idx[good]]                   # canonical A,B,C,D
+
+        keys_l.append(pack_keys(code, nb).astype(np.uint32))
+        # Quantise NOW, not at write time. Layer 0 produces ~128M quads; held
+        # as float64 the code array alone is 4 GB, and the sort below then
+        # needs a second copy of it. At uint16 it is 1 GB.
+        codes_l.append(quantize_codes(code))
+        refs_l.append(ids[:, :2].astype(np.uint32))
+        n_quads += len(code)
+
+    if n_quads == 0:
+        raise RuntimeError("No quads formed. The catalogue is probably too "
+                           "sparse at this magnitude limit for this layer.")
+
+    stop()
+    rep(0.95, f"Sorting {n_quads:,} quads")
+    # Each array is concatenated, permuted and freed one at a time. Doing it
+    # in a single tuple assignment keeps every old array alive until the whole
+    # right-hand side is built, which on layer 0 is gigabytes of avoidable
+    # peak. star_mag has done its job (it set the brightness order) and goes
+    # too.
+    del star_mag
+    keys = np.concatenate(keys_l); del keys_l
+    o = np.argsort(keys, kind="stable")
+    tmp = keys[o]; del keys; keys = tmp
+    codes = np.concatenate(codes_l); del codes_l
+    tmp = codes[o]; del codes; codes = tmp
+    refs = np.concatenate(refs_l); del refs_l
+    tmp = refs[o]; del refs; refs = tmp
+    del o, tmp
+
+    rep(0.98, "Writing index file")
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    write_saq(out_path, layer, star_ra, star_dec, keys, codes, refs,
+              nbins=nb, epoch=epoch)
+
+    dt = time.time() - t0
+    rep(1.0, f"Layer {layer.index} built — {n_quads:,} quads, "
+             f"{out_path.stat().st_size / 1024**2:.0f} MB, {dt:.0f}s")
+    return dict(layer=layer.index, n_stars=int(n_stars), n_quads=int(n_quads),
+                bytes=int(out_path.stat().st_size), seconds=dt,
+                rows_read=int(n_read), read_seconds=t_read,
+                workers=int(workers), path=str(out_path))

@@ -3234,6 +3234,60 @@ def _solve_with_GAIA(image: np.ndarray,
         return True, _fb
     return False, "Gaia DR3 solver: no match found across all search attempts"
 
+def _quad_index_status_html() -> str:
+    """
+    One line on what the blind solver actually has to work with.
+
+    The useful fact is not how many files exist but which FIELD WIDTHS they
+    cover: each layer answers a band of about 4x in field size, so a user
+    with three layers built still gets nothing on a frame that falls outside
+    them. Lead with the covered range, and say plainly when a gap sends the
+    solve to ASTAP instead.
+    """
+    import html as _html
+    try:
+        from setiastro.saspro.gaia_quad_index import (
+            get_quad_library, refresh_quad_library, QUAD_LAYER_DEFS, _fmt_ang)
+    except Exception:
+        return ("<span style='color:#c87f00'>Quad index module unavailable \u2014 "
+                "blind solving will use ASTAP.</span>")
+    try:
+        refresh_quad_library()
+        lib = get_quad_library()
+        built = [l for l in lib.installed() if l.defn is not None]
+        total = len(QUAD_LAYER_DEFS)
+    except Exception as e:
+        return ("<span style='color:#c87f00'>Quad index could not be read: "
+                f"{_html.escape(str(e))}</span>")
+
+    try:
+        from setiastro.saspro.gaia_database import get_astro_library
+        n_bands = len(get_astro_library().installed_bands() or [])
+    except Exception:
+        n_bands = 0
+    bands = (f"{n_bands} Gaia catalogue band{'s' if n_bands != 1 else ''} installed"
+             if n_bands else "<b>no Gaia catalogue bands installed</b>")
+
+    if not built:
+        return ("<span style='color:#c87f00'><b>Quad index: not built.</b> "
+                "Blind solving will fall back to ASTAP. Build it from the Gaia "
+                "data you already have \u2014 Blind Solve Index tab.</span>"
+                f"<br><small>{bands}.</small>")
+
+    lo = min(l.defn.field_lo_arcmin for l in built)
+    hi = max(l.defn.field_hi_arcmin for l in built)
+    quads = sum(int(l.n_quads) for l in built)
+    missing = total - len(built)
+
+    txt = (f"<b>Quad index: {len(built)} of {total} layers built</b> "
+           f"({quads:,} quads) \u2014 solves fields "
+           f"{_fmt_ang(lo)} to {_fmt_ang(hi)} wide.<br><small>{bands}.")
+    if missing:
+        txt += (f" {missing} layer{'s' if missing != 1 else ''} not built; "
+                "fields outside that range fall back to ASTAP.")
+    return txt + "</small>"
+
+
 def _cd_matrix(scale_deg: float, theta_rad: float, mirrored: bool):
     """
     The CD matrix for a TAN image at pixel scale `scale_deg` and roll
@@ -4878,6 +4932,20 @@ class PlateSolverDialog(QDialog):
             lambda on: self.chk_blind.setEnabled(not on))
         seed_form.addRow("", self.chk_force_blind)
 
+        # What the blind solver has to work with, and a way to go change it.
+        quad_row = QHBoxLayout()
+        self.lbl_quad_status = QLabel("", seed_box)
+        self.lbl_quad_status.setWordWrap(True)
+        self.lbl_quad_status.setTextFormat(Qt.TextFormat.RichText)
+        self.btn_gaia_db = QPushButton(self.tr("Open Gaia Database\u2026"), seed_box)
+        self.btn_gaia_db.setToolTip(self.tr(
+            "Open the Gaia DR3 Library: download catalogue bands, and build the\n"
+            "blind-solve quad index from the data you already have."))
+        self.btn_gaia_db.clicked.connect(self._open_gaia_database)
+        quad_row.addWidget(self.lbl_quad_status, 1)
+        quad_row.addWidget(self.btn_gaia_db, 0, Qt.AlignmentFlag.AlignTop)
+        seed_form.addRow("", quad_row)
+
         # Tooltips
         self.cb_seed_mode.setToolTip(self.tr("Use FITS header, your manual RA/Dec/scale, or blind solve."))
         self.le_scale.setToolTip(self.tr('Pixel scale in arcseconds/pixel (e.g., 1.46).'))
@@ -4989,6 +5057,7 @@ class PlateSolverDialog(QDialog):
         self.chk_blind.setChecked(_get_blind_enabled(self.settings))
         self.chk_force_blind.setChecked(_get_force_blind(self.settings))
         self.chk_blind.setEnabled(not self.chk_force_blind.isChecked())
+        self._refresh_quad_status()
 
         def _update_visibility():
             manual = (self.cb_seed_mode.currentIndex() == 1)
@@ -5009,6 +5078,40 @@ class PlateSolverDialog(QDialog):
         self.status.setObjectName("status_label")
         # if batch page exists:
         self.log.setObjectName("batch_log")
+
+    def _refresh_quad_status(self):
+        """Re-read the quad library and repaint the status line."""
+        try:
+            self.lbl_quad_status.setText(_quad_index_status_html())
+        except Exception as e:
+            print(f"[PlateSolver] quad status refresh failed: {e}")
+
+    def _open_gaia_database(self):
+        from setiastro.saspro.gaia_database import GaiaDatabaseDialog
+        if getattr(self, "_gaia_db_window", None) and self._gaia_db_window.isVisible():
+            self._gaia_db_window.raise_()
+            self._gaia_db_window.activateWindow()
+            return
+        self._gaia_db_window = GaiaDatabaseDialog(parent=self)
+        try:
+            from setiastro.saspro.resources import gaia_path
+            self._gaia_db_window.setWindowIcon(QIcon(gaia_path))
+        except Exception:
+            pass
+
+        def _gone(*_):
+            # Layers are usually built from inside that dialog, so the count
+            # on this one is stale the moment it closes. Clear the handle and
+            # repaint together.
+            self._gaia_db_window = None
+            self._refresh_quad_status()
+
+        for _sig in ("destroyed", "finished"):
+            try:
+                getattr(self._gaia_db_window, _sig).connect(_gone)
+            except Exception:
+                pass
+        self._gaia_db_window.show()
 
     def current_preset(self) -> dict:
         idx = self.cb_seed_mode.currentIndex()
@@ -5282,10 +5385,22 @@ class PlateSolverDialog(QDialog):
         if not self.btn_go.isEnabled():
             return
         self.btn_go.setEnabled(False)
+        # The Gaia dialog can rebuild the quad index, and refreshing the
+        # library closes and reopens the memmaps the running solve is reading
+        # from. _run_impl is synchronous but pumps events, so this button is
+        # reachable mid-solve unless it is disabled with the Go button.
+        try:
+            self.btn_gaia_db.setEnabled(False)
+        except Exception:
+            pass
         try:
             self._run_impl()
         finally:
             self.btn_go.setEnabled(True)
+            try:
+                self.btn_gaia_db.setEnabled(True)
+            except Exception:
+                pass
 
     def _run_impl(self):
         # ── Save all settings first ──────────────────────────────────────────
