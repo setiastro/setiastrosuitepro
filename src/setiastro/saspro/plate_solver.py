@@ -3253,6 +3253,40 @@ def _solve_with_GAIA(image: np.ndarray,
         return True, _fb
     return False, "Gaia DR3 solver: no match found across all search attempts"
 
+def _sky_centroid(coords) -> "SkyCoord":
+    """
+    Mean direction of a set of sky coordinates, as a mean of unit vectors.
+
+    Averaging RA in degrees is wrong wherever the set wraps. A field straddling
+    RA 0h averages to 12h. A field containing a celestial pole holds stars at
+    every RA at once, so its mean RA is meaningless -- on the Polaris frame the
+    stars span 0.1 deg to 360.0 deg and average to 137.7 deg against a true
+    centre of 37.0 deg. Either way the tangent point lands degrees away from
+    the field, and a TAN fit anchored there cannot represent the true WCS: the
+    same 489 pairs fit to 551" RMS about the averaged point and 0.84" about the
+    real centre, with the plate scale inflated from 4.03"/px to 4.59"/px.
+
+    Averaging the unit vectors instead has no wrap and no pole.
+    """
+    from astropy.coordinates import SkyCoord
+    from astropy import units as u
+
+    v = np.atleast_2d(coords.cartesian.xyz.value.reshape(3, -1).T)
+    m = v.mean(axis=0)
+    n = float(np.linalg.norm(m))
+    if not np.isfinite(n) or n < 1e-12:
+        # Antipodally symmetric: no mean direction exists. Any member of the
+        # set beats a point outside it.
+        f = coords.flatten()[0]
+        return SkyCoord(ra=f.ra, dec=f.dec, frame=coords.frame)
+    m = m / n
+    return SkyCoord(
+        ra=(math.degrees(math.atan2(m[1], m[0])) % 360.0) * u.deg,
+        dec=math.degrees(math.asin(max(-1.0, min(1.0, float(m[2]))))) * u.deg,
+        frame=coords.frame,
+    )
+
+
 def _quad_seed_solution(quad_seed, img_w, img_h, seed_header, reason):
     """
     Last resort: hand back the quad index's own placement of the field.
@@ -3358,10 +3392,7 @@ def _gaia_fit_and_validate(
 
     # ── Fit initial TAN WCS ────────────────────────────────────────────────
     try:
-        proj_point = SkyCoord(
-            ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
-            dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
-        )
+        proj_point = _sky_centroid(matched_sky)
         wcs_tan = fit_wcs_from_points(
             (img_matched[:, 0], img_matched[:, 1]),
             matched_sky,
@@ -3470,10 +3501,7 @@ def _gaia_fit_and_validate(
                     print(f"[GaiaLocal] iter={iteration}: too few pairs ({len(t_img_m)}), stopping")
                     break
 
-                t_proj = SkyCoord(
-                    ra=float(np.mean([c.ra.deg for c in t_cat_sky_m])) * u.deg,
-                    dec=float(np.mean([c.dec.deg for c in t_cat_sky_m])) * u.deg,
-                )
+                t_proj = _sky_centroid(t_cat_sky_m)
                 t_wcs_tan = fit_wcs_from_points(
                     (t_img_m[:,0], t_img_m[:,1]),
                     t_cat_sky_m,
@@ -3526,10 +3554,7 @@ def _gaia_fit_and_validate(
         # rejected before SIP ever runs.
         if n_matched >= 20:
             try:
-                _sip_proj = SkyCoord(
-                    ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
-                    dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
-                )
+                _sip_proj = _sky_centroid(matched_sky)
 
                 def _sip_terms(_d):
                     # (d+1)(d+2)/2 - 3 distortion coefficients per axis (the
