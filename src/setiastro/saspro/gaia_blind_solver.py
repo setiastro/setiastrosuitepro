@@ -527,10 +527,20 @@ def blind_seed(image: np.ndarray,
     hdr["CRPIX2"] = h / 2.0
     hdr["CRVAL1"] = float(res["ra"])
     hdr["CRVAL2"] = float(res["dec"])
-    hdr["CD1_1"] = par * (-sc_deg * math.cos(th))
-    hdr["CD1_2"] = (sc_deg * math.sin(th))
-    hdr["CD2_1"] = par * (-sc_deg * math.sin(th))
-    hdr["CD2_2"] = (sc_deg * math.cos(th))
+    # A mirror negates a whole axis. Scaling CD1_1 and CD2_1 by the parity
+    # sign while leaving CD1_2 and CD2_2 alone takes half of each instead,
+    # which shears the matrix rather than reflecting it: det becomes
+    # -par * sc^2 * cos(2*th), singular at a 45 degree roll and parity-
+    # inverted past it. Kept in step with _cd_matrix() in plate_solver.py;
+    # duplicated rather than imported because plate_solver imports this
+    # module, and a module-level import back would be a cycle.
+    _c, _s = math.cos(th), math.sin(th)
+    if par < 0:                      # mirrored: det = -sc^2
+        hdr["CD1_1"], hdr["CD1_2"] = -sc_deg * _c, -sc_deg * _s
+        hdr["CD2_1"], hdr["CD2_2"] = -sc_deg * _s,  sc_deg * _c
+    else:                            # det = +sc^2
+        hdr["CD1_1"], hdr["CD1_2"] = -sc_deg * _c,  sc_deg * _s
+        hdr["CD2_1"], hdr["CD2_2"] = -sc_deg * _s, -sc_deg * _c
     hdr["CROTA2"] = float(res["roll_deg"])
     hdr["RADESYS"] = "ICRS"
     hdr["WCSAXES"] = 2

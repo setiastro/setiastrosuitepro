@@ -289,15 +289,9 @@ def _wcs_header_from_astrometry_calib(calib: dict, image_shape: tuple[int, ...])
     parity = float(calib.get("parity", -1.0))  # default -1.0 = normal
     parity_sign = -1.0 if parity > 0 else 1.0   # flip RA axis when mirrored
 
-    # Standard CD matrix for TAN projection:
-    #   CD1_1 = -scale * cos(theta)  * parity_sign  (RA increases East = negative pixel direction)
-    #   CD1_2 =  scale * sin(theta)                 (RA rotation)
-    #   CD2_1 =  scale * sin(theta)  * parity_sign  (Dec rotation, parity-aware)
-    #   CD2_2 =  scale * cos(theta)                 (Dec increases North = positive pixel direction)
-    h["CD1_1"] = parity_sign * (-scale_deg * math.cos(theta))
-    h["CD1_2"] =               ( scale_deg * math.sin(theta))
-    h["CD2_1"] = parity_sign * (-scale_deg * math.sin(theta))
-    h["CD2_2"] =               ( scale_deg * math.cos(theta))
+    (h["CD1_1"], h["CD1_2"]), (h["CD2_1"], h["CD2_2"]) = _cd_matrix(
+        scale_deg, theta, mirrored=(parity_sign < 0))
+    h["CROTA2"] = float(calib.get("orientation", 0.0))
 
     h["RADECSYS"] = "ICRS"
     h["WCSAXES"]  = 2
@@ -2058,21 +2052,8 @@ def _make_seed_wcs(ra_deg: float, dec_deg: float, scale_arcsec: float,
 
     scale_deg = float(scale_arcsec) / 3600.0
     rot_rad   = math.radians(rot_deg)
-    cos_r     = math.cos(rot_rad)
-    sin_r     = math.sin(rot_rad)
 
-    if not flip:
-        # det > 0 (original behavior)
-        w.wcs.cd = np.array([
-            [-scale_deg * cos_r,  scale_deg * sin_r],
-            [-scale_deg * sin_r, -scale_deg * cos_r],
-        ])
-    else:
-        # det < 0 — standard CROTA2 convention, CDELT1=-s, CDELT2=+s
-        w.wcs.cd = np.array([
-            [-scale_deg * cos_r, -scale_deg * sin_r],
-            [-scale_deg * sin_r,  scale_deg * cos_r],
-        ])
+    w.wcs.cd = np.array(_cd_matrix(scale_deg, rot_rad, mirrored=flip))
     w.wcs.set()
     return w
 
@@ -3252,6 +3233,35 @@ def _solve_with_GAIA(image: np.ndarray,
              "— approximate WCS, SOLVSRC='quad-seed'.")
         return True, _fb
     return False, "Gaia DR3 solver: no match found across all search attempts"
+
+def _cd_matrix(scale_deg: float, theta_rad: float, mirrored: bool):
+    """
+    The CD matrix for a TAN image at pixel scale `scale_deg` and roll
+    `theta_rad`, mirrored or not. Returns ((CD1_1, CD1_2), (CD2_1, CD2_2)).
+
+    One definition, because getting this wrong is quiet. The earlier form
+    multiplied CD1_1 and CD2_1 by the parity sign and left CD1_2 and CD2_2
+    alone. That is not a mirror -- a mirror negates a whole axis, so it must
+    take a full row or a full column, never half of each. What it produced
+    was a shear: det = -parity * scale^2 * cos(2*theta), which is zero at a
+    45 degree roll (singular matrix), changes sign past it (parity silently
+    inverts), and leaves the two column vectors non-perpendicular at every
+    roll that is not a multiple of 90 degrees. Column norms stay correct, so
+    a pixel scale read back from it still looks right while the WCS itself
+    is skewed.
+
+    Here det is +scale^2 or -scale^2 exactly, at every roll.
+    """
+    c = math.cos(theta_rad)
+    s = math.sin(theta_rad)
+    if mirrored:
+        # det = -scale^2  (standard CROTA2 convention, CDELT1=-s, CDELT2=+s)
+        return ((-scale_deg * c, -scale_deg * s),
+                (-scale_deg * s,  scale_deg * c))
+    # det = +scale^2
+    return ((-scale_deg * c,  scale_deg * s),
+            (-scale_deg * s, -scale_deg * c))
+
 
 def _sky_centroid(coords) -> "SkyCoord":
     """
