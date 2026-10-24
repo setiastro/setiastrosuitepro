@@ -97,9 +97,24 @@ class _SolveStatusPopup(QDialog):
         self.label.repaint()  # quick visual feedback
         QApplication.processEvents()
 
+# A scripted or CLI run has nowhere to put a window and nobody watching it.
+# Without this the solver opens a real floating dialog on the user's desktop
+# part-way through a batch, which is both startling and, on a headless box,
+# a crash waiting to happen.
+SUPPRESS_STATUS_POPUP = False
+
+
+def set_status_popup_enabled(on: bool) -> None:
+    """Turn the floating solve-status popup on or off process-wide."""
+    global SUPPRESS_STATUS_POPUP
+    SUPPRESS_STATUS_POPUP = not bool(on)
+
+
 def _status_popup_open(parent, text: str = ""):
     """Show (or create) the singleton status popup for headless runs."""
     global _STATUS_POPUP
+    if SUPPRESS_STATUS_POPUP:
+        return None
     if _STATUS_POPUP is None:
         host = parent if isinstance(parent, QWidget) else QApplication.activeWindow()
         _STATUS_POPUP = _SolveStatusPopup(host)
@@ -1604,6 +1619,86 @@ def _solve_numpy_with_fallback(parent, settings, image, seed_header):
             pass
 
 
+def _gaia_pass(parent, settings, image, seed_header, say=None):
+    """
+    Pass 1, plus one blind retry when a seeded attempt fails.
+
+    The blind path only runs on its own when the header has NO RA/Dec at all,
+    and _parse_ra_deg accepts eight keys -- CRVAL1, RA, OBJCTRA, TELRA, MNTRA,
+    CENTERRA, RA_OBJ, ALPHA_J2000. Capture software writes the mount's RA/DEC
+    into every light, and a stacked master inherits them, so a master almost
+    always LOOKS seeded. When those numbers are stale or the scale is wrong,
+    the spiral searches around a position or scale the field is not at, finds
+    nothing, and the whole chain fails -- even though the quad index could
+    have identified the field outright without either number.
+
+    So: if a seeded attempt fails, throw the seed away and ask the index.
+    That is the one case the seed cannot be trusted, by definition. It costs
+    a couple of seconds on a path that has already failed, and nothing at all
+    when the first attempt succeeds.
+
+    Returns (ok, Header | error_str).
+    """
+    ok, res = _solve_with_GAIA_threaded(parent, settings, image, seed_header)
+    if ok:
+        return True, res
+
+    # Only worth retrying if the first pass actually USED a seed. If it was
+    # already blind -- no pointing in the header, seed mode "none", or the
+    # force-blind box ticked -- the retry would repeat it exactly.
+    try:
+        if _get_force_blind(settings) or _get_seed_mode(settings) == "none":
+            return False, res
+        if not _get_blind_enabled(settings):
+            return False, res
+        if not isinstance(seed_header, Header):
+            return False, res
+        if _parse_ra_deg(seed_header) is None or _parse_dec_deg(seed_header) is None:
+            return False, res
+        from setiastro.saspro.gaia_quad_index import get_quad_library
+        if not get_quad_library().any_installed():
+            return False, res
+    except Exception:
+        return False, res
+
+    # Drop the SCALE as well as the pointing. Force-blind alone keeps the
+    # header's pixel scale, which is the right call for the user's checkbox --
+    # focal length times pixel size stays true even when the mount lied. But
+    # here we only know that SOMETHING in the seed was wrong, and if it was
+    # the scale, keeping it poisons the retry twice over: layers_for_field
+    # picks the wrong quad layers from it, and the spiral searches the wrong
+    # scale band. With no hint, the blind solver tries every built layer
+    # coarsest-first and works it out. That is slower, on a path that has
+    # already failed.
+    retry_header = seed_header.copy()
+    for _k in ("FOCALLEN", "PIXSCALE", "SCALE", "PLTSCALE", "SECPIX",
+               "SECPIX1", "SECPIX2", "XPIXSZ", "YPIXSZ", "PIXSZ",
+               "PIXSIZE1", "PIXSIZE2", "XBINNING", "YBINNING"):
+        try:
+            del retry_header[_k]
+        except Exception:
+            pass
+    retry_header = _strip_wcs_keys(retry_header)
+
+    msg = ("Status: Seeded solve failed \u2014 the header pointing or scale may be "
+           "wrong. Retrying blind from the quad index\u2026")
+    print("[PlateSolver] Pass 1 failed with a seed; retrying blind "
+          "(pointing and scale discarded)")
+    if say is not None:
+        say(msg)
+    else:
+        _set_status_ui(parent, msg)
+
+    ok2, res2 = _solve_with_GAIA_threaded(parent, settings, image, retry_header,
+                                          force_blind=True)
+    if ok2:
+        print("[PlateSolver] blind retry succeeded where the seeded pass failed")
+        return True, res2
+    # Report the seeded failure: it is the one that describes the user's
+    # actual header, and the blind failure is a consequence of it.
+    return False, f"{res}  (blind retry also failed: {res2})"
+
+
 def _solve_numpy_with_fallback_impl(
     parent, settings, image: np.ndarray, seed_header
 ) -> tuple[bool, "Header | str"]:
@@ -1639,7 +1734,7 @@ def _solve_numpy_with_fallback_impl(
     if pref in ("gaia_only", "vizier_only"):
         _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
             "Status: Solver preference = In-House Gaia DR3 only…"))
-        ok, res = _solve_with_GAIA_threaded(parent, settings, image, seed_header)
+        ok, res = _gaia_pass(parent, settings, image, seed_header)
         if ok:
             _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
                 "Status: Solved via in-house Gaia DR3."))
@@ -1654,7 +1749,7 @@ def _solve_numpy_with_fallback_impl(
             "Status: Trying in-house Gaia DR3 solver…"))
         QApplication.processEvents()
 
-        ok1, res1 = _solve_with_GAIA_threaded(parent, settings, image, seed_header)
+        ok1, res1 = _gaia_pass(parent, settings, image, seed_header)
         if ok1:
             _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
                 "Status: Solved via in-house Gaia DR3."))
@@ -2479,10 +2574,12 @@ class _GaiaSolveWorker(QThread):
     status = pyqtSignal(str)
     done = pyqtSignal(bool, object)   # (ok, Header|error_str)
 
-    def __init__(self, image: np.ndarray, seed_header, settings_scope=None, parent=None):
+    def __init__(self, image: np.ndarray, seed_header, settings_scope=None,
+                 parent=None, force_blind: "bool | None" = None):
         super().__init__(parent)
         self._image = image
         self._seed_header = seed_header
+        self._force_blind = force_blind
         # Capture the org/app name so the worker thread opens the same
         # QSettings file as the caller (avoids the "SASpro" vs
         # "Seti Astro Suite Pro" mismatch when the main app uses QSettings()).
@@ -2502,13 +2599,15 @@ class _GaiaSolveWorker(QThread):
                 self._image, self._seed_header,
                 parent=None, settings=settings,
                 status_cb=self.status.emit,
+                force_blind=self._force_blind,
             )
         except Exception as e:
             import traceback; traceback.print_exc()
             ok, res = False, f"Gaia DR3 solver: worker exception: {e}"
         self.done.emit(ok, res)
 
-def _solve_with_GAIA_threaded(parent, settings, image, seed_header) -> tuple[bool, "Header | str"]:
+def _solve_with_GAIA_threaded(parent, settings, image, seed_header,
+                              force_blind: "bool | None" = None) -> tuple[bool, "Header | str"]:
     """
     Same signature/contract as _solve_with_GAIA but runs it in a QThread,
     spinning a local event loop so the UI stays responsive. Synchronous to
@@ -2530,7 +2629,8 @@ def _solve_with_GAIA_threaded(parent, settings, image, seed_header) -> tuple[boo
         except Exception:
             pass
 
-    worker = _GaiaSolveWorker(image, seed_header, settings_scope=_scope)
+    worker = _GaiaSolveWorker(image, seed_header, settings_scope=_scope,
+                              force_blind=force_blind)
     worker.status.connect(lambda t: _set_status_ui(parent, t))   # queued → GUI thread
 
     def _on_done(ok, res):
@@ -2732,7 +2832,8 @@ def _solve_with_GAIA(image: np.ndarray,
                      seed_header: "Header | None",
                      parent=None,
                      settings=None,
-                     status_cb=None) -> tuple[bool, "Header | str"]:
+                     status_cb=None,
+                     force_blind: "bool | None" = None) -> tuple[bool, "Header | str"]:
     """
         Match image stars to catalog stars by voting on (dx, dy) translation space
         — a Generalized Hough Transform restricted to pure translation.
@@ -2769,7 +2870,10 @@ def _solve_with_GAIA(image: np.ndarray,
         else:
             _set_status_ui(parent, text)
 
-    _force_blind = _get_force_blind(settings)
+    # None = honour the user's checkbox; True/False = caller decides, used
+    # by the blind retry below so it need not write to persisted settings.
+    _force_blind = (_get_force_blind(settings) if force_blind is None
+                    else bool(force_blind))
     _from_blind = False
 
     if _seed_mode == "none" or _force_blind:
@@ -5498,10 +5602,20 @@ class PlateSolverDialog(QDialog):
         if save_path:
             try:
                 # never persist 'file_path' inside FITS
-                h2 = Header()
-                for k in hdr_final.keys():
-                    if k.upper() != "FILE_PATH":
-                        h2[k] = hdr_final[k]
+                # Copy the header wholesale, then drop FILE_PATH. Rebuilding
+                # it card by card looks equivalent and is not: for a
+                # commentary keyword, hdr[k] returns ALL of its cards joined
+                # by newlines, and assigning that back raises ValueError on
+                # the newline. Any solve that writes two HISTORY cards --
+                # a recomputed FOCALLEN, or a seed-grade fallback -- would
+                # therefore solve fine and then fail to save.
+                h2 = hdr_final.copy()
+                for _k in list(h2.keys()):
+                    if _k.upper() == "FILE_PATH":
+                        try:
+                            del h2[_k]
+                        except Exception:
+                            pass
 
                 save_image(
                     img_array=image_data,
@@ -5585,10 +5699,20 @@ class PlateSolverDialog(QDialog):
                     hdr_final = _sanitized_header_for_wcs(hdr) if isinstance(hdr, Header) else Header()
 
                 # Build header to save (and strip FILE_PATH)
-                h2 = Header()
-                for k in hdr_final.keys():
-                    if k.upper() != "FILE_PATH":
-                        h2[k] = hdr_final[k]
+                # Copy the header wholesale, then drop FILE_PATH. Rebuilding
+                # it card by card looks equivalent and is not: for a
+                # commentary keyword, hdr[k] returns ALL of its cards joined
+                # by newlines, and assigning that back raises ValueError on
+                # the newline. Any solve that writes two HISTORY cards --
+                # a recomputed FOCALLEN, or a seed-grade fallback -- would
+                # therefore solve fine and then fail to save.
+                h2 = hdr_final.copy()
+                for _k in list(h2.keys()):
+                    if _k.upper() == "FILE_PATH":
+                        try:
+                            del h2[_k]
+                        except Exception:
+                            pass
 
                 # Save using original pixels
                 save_image(
