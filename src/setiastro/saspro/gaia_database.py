@@ -860,28 +860,48 @@ class GaiaAstrometricLibrary:
         mag_clause = " AND phot_g_mean_mag < ?" if max_mag is not None else ""
         results: List[StarRecord] = []
 
+        # One query PER ZONE, with dec_zone fixed by equality.
+        #
+        # ix_zone is (dec_zone, ra), and an index can only use a column as a
+        # bound while every column to its left is pinned to a single value.
+        # "dec_zone BETWEEN ? AND ?" is a range on the LEADING column, so ra
+        # stops being a bound and becomes a filter: SQLite walks every row in
+        # the zone span and throws most of them away.
+        #
+        #   dec_zone BETWEEN  ->  SEARCH stars USING INDEX ix_zone (dec_zone>? AND dec_zone<?)
+        #   dec_zone =        ->  SEARCH stars USING INDEX ix_zone (dec_zone=? AND ra>? AND ra<?)
+        #
+        # Measured on a 1.55 deg field: 31 stars returned, 5,316 rows walked
+        # to find them. A narrow field was 527x. The waste scales with the
+        # table, so on the Bright tier it is millions of rows decoded per box
+        # -- which is why this is slow while the CPU sits idle. Each zone is
+        # one extra round trip, and even an all-sky dec span is only 180 of
+        # them, so the loop costs nothing next to what it saves.
         for conn in self._connections.values():
             for r_lo, r_hi in ra_ranges:
-                try:
-                    sql = (
-                        "SELECT source_id, ra, dec, pmra, pmdec, parallax, "
-                        "ref_epoch, phot_g_mean_mag, ruwe, astrometric_params_solved "
-                        "FROM stars WHERE dec_zone BETWEEN ? AND ? "
-                        "AND ra BETWEEN ? AND ?" + mag_clause
-                    )
-                    params = [zone_lo, zone_hi, r_lo, r_hi]
-                    if max_mag is not None:
-                        params.append(max_mag)
-                    cur = conn.execute(sql, params)
-                    for row in cur.fetchall():
-                        results.append(StarRecord(
-                            source_id=row[0], ra=row[1], dec=row[2],
-                            pmra=row[3], pmdec=row[4], parallax=row[5],
-                            ref_epoch=row[6], gmag=row[7], ruwe=row[8],
-                            astrometric_params_solved=row[9],
-                        ))
-                except Exception:
-                    continue
+                for zone in range(zone_lo, zone_hi + 1):
+                    try:
+                        sql = (
+                            "SELECT source_id, ra, dec, pmra, pmdec, parallax, "
+                            "ref_epoch, phot_g_mean_mag, ruwe, astrometric_params_solved "
+                            "FROM stars WHERE dec_zone = ? "
+                            "AND ra BETWEEN ? AND ?" + mag_clause
+                        )
+                        params = [zone, r_lo, r_hi]
+                        if max_mag is not None:
+                            params.append(max_mag)
+                        # Iterate the cursor rather than fetchall(): the rows
+                        # become StarRecords one at a time instead of
+                        # materialising the whole tuple list first.
+                        for row in conn.execute(sql, params):
+                            results.append(StarRecord(
+                                source_id=row[0], ra=row[1], dec=row[2],
+                                pmra=row[3], pmdec=row[4], parallax=row[5],
+                                ref_epoch=row[6], gmag=row[7], ruwe=row[8],
+                                astrometric_params_solved=row[9],
+                            ))
+                    except Exception:
+                        continue
 
         # Zone bounds are coarser than the exact box — final precise dec filter.
         return [s for s in results if dec_lo <= s.dec <= dec_hi]
@@ -4643,6 +4663,7 @@ class GaiaDatabaseDialog(QDialog):
         self._astro_workers: Dict[str, _GroupDownloadWorker] = {}
         self._astro_rows:    Dict[str, _GroupRowWidget]      = {}
         self._neighborhood_tab = None
+        self._quad_tab = None
         self._spectrum_popups: List[SpectrumPopupDialog] = []
 
         self._build_ui()
@@ -4709,6 +4730,16 @@ class GaiaDatabaseDialog(QDialog):
                 except Exception:
                     pass
 
+        # Either library can change which quad layers are buildable: the
+        # astrometric tiers are the preferred source, the XP tiers the
+        # fallback. Re-evaluate on any change to either.
+        qt = getattr(self, "_quad_tab", None)
+        if qt is not None:
+            try:
+                qt.refresh()
+            except Exception:
+                pass
+
     def _workers_dict(self, kind: str) -> Dict[str, _GroupDownloadWorker]:
         return self._workers if kind == "spectral" else self._astro_workers
 
@@ -4770,6 +4801,18 @@ class GaiaDatabaseDialog(QDialog):
 
         tabs.addTab(self._build_group_tab("spectral"), "Spectrum Library")
         tabs.addTab(self._build_group_tab("astro"), "Astrometry")
+
+        # Tab: Blind Solve Index (quad-hash layers, BUILT locally from the
+        # catalogs above — nothing is downloaded here). Wrapped so a missing
+        # or broken module can never stop the rest of this dialog opening.
+        try:
+            from setiastro.saspro.gaia_quad_tab import BlindSolveIndexTab
+            self._quad_tab = BlindSolveIndexTab()
+            self._quad_tab.library_changed.connect(self.library_changed.emit)
+            tabs.addTab(self._quad_tab, "Blind Solve Index")
+        except Exception as e:
+            print(f"[GaiaDatabaseDialog] Blind Solve Index tab unavailable: {e}")
+            self._quad_tab = None
 
         # Tab: Stellar Neighborhood Explorer (3D)
         self._neighborhood_tab = StellarNeighborhoodTab()
@@ -4891,6 +4934,20 @@ class GaiaDatabaseDialog(QDialog):
         1,585,128,120 sources, 183.9 GB at full depth. It is a far denser catalog than
         the XP spectral library, which only covers sources bright enough for usable
         BP/RP spectra. Start with the Bright tier; add depth only if your fields need it.</p>
+        <h4 style="color:#8899ee;">Blind Solve Index</h4>
+        <p>The Blind Solve Index tab builds a geometric hash of 4-star patterns
+        ("quads") from the catalogs above, so SASpro can plate-solve an image with
+        <b>no RA/Dec and no field of view</b> — the star pattern alone identifies
+        the field. The layers are <b>built locally</b>; nothing extra is downloaded.</p>
+        <p>Each layer is tied to one angular scale and solves fields roughly 2.5&times;
+        to 8&times; its quad size, so the layers overlap. The Recommended set covers
+        about 20&prime; to 25&deg; fields and needs nothing fainter than G&nbsp;&asymp;&nbsp;13.6,
+        which lives entirely inside <code>gaia_astro_lt15.sqlite</code> from the
+        Bright (G&nbsp;&lt;&nbsp;17) astrometric tier.</p>
+        <p style="color:#a98;">A candidate match is accepted on a Bayesian log-odds
+        test against the catalog, not an RMS threshold: a whole-sky search throws up
+        thousands of coincidences that any RMS gate would wave through.
+        Method after Lang et&nbsp;al. (2010), <i>AJ</i> 139, 1782.</p>
         <h4 style="color:#8899ee;">Stellar Neighborhood Explorer</h4>
         <p>A 3D view of every DR3 source with a usable parallax within 300 parsecs,
         Sun at the origin, galactic plane in XY. Distances come from
@@ -5522,12 +5579,13 @@ class GaiaDatabaseDialog(QDialog):
         self._viewer_status.setText(f"Spectrum loaded — {source_str}")
 
     def closeEvent(self, event):
-        tab = getattr(self, "_neighborhood_tab", None)
-        if tab is not None:
-            try:
-                tab.shutdown()
-            except Exception:
-                pass
+        for _t in (getattr(self, "_neighborhood_tab", None),
+                   getattr(self, "_quad_tab", None)):
+            if _t is not None:
+                try:
+                    _t.shutdown()
+                except Exception:
+                    pass
         try:
             QSettings("SetiAstro", "SASpro").setValue(
                 "GaiaDatabaseDialog/geometry", self.saveGeometry())

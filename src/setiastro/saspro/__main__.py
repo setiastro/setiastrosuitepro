@@ -19,9 +19,19 @@ CLI_SUBCOMMANDS = {
     # cosmicclarity subcommands
     "sharpen", "denoise", "both", "superres", "satellite",
 
+    # plate solving (headless; blind-capable)
+    "solve", "platesolve",
+
     # other CLI tools you may add
     "benchmark",
     "report",
+
+    # Help and version. These MUST be here, not only in cli.py: everything
+    # below this check goes through the single-instance probe first, so
+    # "setiastrosuitepro --help" with a window already open would hand the
+    # argv to the running instance and exit silently, printing nothing.
+    "-h", "--help", "--h", "-help", "help", "-?", "/?", "/h",
+    "--version", "version",
 }
 
 def _minimize_console_if_owned() -> None:

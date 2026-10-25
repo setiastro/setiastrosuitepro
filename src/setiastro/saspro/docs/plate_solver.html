@@ -49,14 +49,14 @@
 <body>
 
 <h1>Plate Solver</h1>
-<p class="sub">Finds the celestial coordinates of every pixel in an image &mdash; given a photo of the sky, it works out where the telescope was pointing, at what rotation and scale, and writes a full WCS (World Coordinate System) solution into the image's FITS header. Three solver backends run as a fallback chain: SASpro's <b>In-House Gaia DR3 solver</b> first, then <b>ASTAP</b> (seeded, then blind), and finally <b>Astrometry.net</b> (local solve-field or web API). Three operating modes: Active View, single File, and Batch directory processing.</p>
+<p class="sub">Finds the celestial coordinates of every pixel in an image &mdash; given a photo of the sky, it works out where the telescope was pointing, at what rotation and scale, and writes a full WCS (World Coordinate System) solution into the image's FITS header. Three solver backends run as a fallback chain: SASpro's <b>In-House Gaia DR3 solver</b> first, then <b>ASTAP</b> (seeded, then blind), and finally <b>Astrometry.net</b> (local solve-field or web API). The Gaia solver also solves <b>blind</b> &mdash; no coordinates, no field of view, nothing but the star pattern &mdash; using a quad-hash index built locally from the Gaia data you already downloaded (&sect;15). Three operating modes: Active View, single File, and Batch directory processing.</p>
 
 <div class="pub">
-<b>SASpro-exclusive solver orchestration and in-house Gaia DR3 engine.</b> The four-pass fallback chain (Gaia DR3 &rarr; ASTAP seeded &rarr; ASTAP blind &rarr; Astrometry.net), the entire <b>In-House Gaia DR3 plate-solving engine</b> (triangle-invariant matcher with vertex voting, Hough-space translation accumulator with 3&times;3 neighbourhood merging, RANSAC similarity and full-affine consensus, spiral seed search over scale and parity variants, pixel-relative RMS quality gate, iterative WCS refinement by reprojection and nearest-neighbour re-match, SIP distortion fit with order chosen by match count, focal-length recomputation from the solved plate scale, failed-match star exclusion for retry rounds), the acquisition-header-preserving WCS merge policy, the catalog object lookup with M/NGC/IC/Sh2/PK prefix normalisation, the ASTAP seed heuristics (radius/FOV mode controls), the preset system with draggable canvas shortcuts, and the View Bundle application are all original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. External solvers (<b>ASTAP</b> by Han Kleijn and <b>Astrometry.net</b> by Lang et al.) are credited separately in their sections and in the final Credits box.
+<b>SASpro-exclusive solver orchestration and in-house Gaia DR3 engine.</b> The four-pass fallback chain (Gaia DR3 &rarr; ASTAP seeded &rarr; ASTAP blind &rarr; Astrometry.net), the entire <b>In-House Gaia DR3 plate-solving engine</b> (triangle-invariant matcher with vertex voting, Hough-space translation accumulator with 3&times;3 neighbourhood merging, RANSAC similarity and full-affine consensus, spiral seed search over scale and parity variants, pixel-relative RMS quality gate, iterative WCS refinement by reprojection and nearest-neighbour re-match, bidirectional SIP degree search on parameter-penalised residuals, focal-length recomputation from the solved plate scale, failed-match star exclusion for retry rounds), the <b>native blind solver</b> (AB-frame quad-hash index built locally from the installed Gaia tiers, scale-banded layer selection, per-quad adaptive code tolerance, Bayesian log-odds verification, and the seed-grade fallback), the acquisition-header-preserving WCS merge policy, the catalog object lookup with M/NGC/IC/Sh2/PK prefix normalisation, the ASTAP seed heuristics (radius/FOV mode controls), the preset system with draggable canvas shortcuts, and the View Bundle application are all original work by <b>Franklin Marek</b> for SetiAstro Suite Pro. External solvers (<b>ASTAP</b> by Han Kleijn and <b>Astrometry.net</b> by Lang et al.) are credited separately in their sections and in the final Credits box.
 </div>
 
 <div class="workflow"><b>Workflow</b><br>
-Open an image &mdash; pick <b>Active View</b> (solve current window), <b>File</b> (load, solve, save), or <b>Batch</b> (whole folder) &mdash; set the <b>Seed mode</b> (Auto reads your header, Manual lets you type RA/Dec/scale or use <b>Lookup&hellip;</b> to search 100,000+ catalogued objects, None goes blind) &mdash; set the <b>Solver</b> preference (default: run all three in the fallback chain) &mdash; <b>Start</b>.
+Open an image &mdash; pick <b>Active View</b> (solve current window), <b>File</b> (load, solve, save), or <b>Batch</b> (whole folder) &mdash; set the <b>Seed mode</b> (Auto reads your header, Manual lets you type RA/Dec/scale or use <b>Lookup&hellip;</b> to search 100,000+ catalogued objects, None goes blind) &mdash; set the <b>Solver</b> preference (default: run all three in the fallback chain) &mdash; <b>Start</b>.<br><br>With no coordinates at all, or with <b>Force blind solve</b> ticked, the Gaia solver finds the field from the star pattern alone. Build the index once from the <b>Open Gaia Database&hellip;</b> button (&sect;15).
 </div>
 
 <div class="hero">
@@ -97,11 +97,20 @@ Open an image &mdash; pick <b>Active View</b> (solve current window), <b>File</b
 <a href="#s14_14">14.14 Spiral seed search</a><br>
 <a href="#s14_15">14.15 Focal length recomputation</a><br>
 <a href="#s14_16">14.16 ASTAP integration</a><br>
-<a href="#s14_17">14.17 Astrometry.net integration</a>
+<a href="#s14_17">14.17 Astrometry.net integration</a><br>
+<a href="#s15">15. Blind solving (quad index)</a><br>
+<a href="#s15_1">15.1 Why quads</a><br>
+<a href="#s15_2">15.2 The AB-frame code</a><br>
+<a href="#s15_3">15.3 Index layers</a><br>
+<a href="#s15_4">15.4 Matching and verification</a><br>
+<a href="#s15_5">15.5 Blind as a seed source</a><br>
+<a href="#s15_6">15.6 Blind retry after a failed seed</a><br>
+<a href="#s15_7">15.7 Seed-grade fallback</a>
 </div>
 
 <h2 id="s1">1. Dialog layout</h2>
 <p>The dialog has four blocks top-to-bottom: the <b>Mode</b> selector (Active View / File / Batch), a shared <b>Seeding &amp; Constraints</b> group that applies to every mode, the mode-specific controls page (file picker, batch I/O, etc.), and a status strip plus the <b>Apply to View Bundle&hellip;</b> / <b>Start</b> / <b>Close</b> buttons. A draggable preset handle in the bottom-left turns your current settings into a reusable shortcut (&sect;12).</p>
+<p>The Seeding &amp; Constraints group also carries the two blind-solve checkboxes (&sect;3) and a <b>quad index status line</b> reporting how many index layers are built, how many quads they hold, the range of field widths they cover, and how many Gaia catalogue bands are installed &mdash; next to an <b>Open Gaia Database&hellip;</b> button that opens the Gaia DR3 Library where both are managed. The status line reports <i>coverage</i> rather than just a count, because each layer answers a band of field widths roughly 4&times; wide: three layers built tells you nothing useful on its own, but &ldquo;solves fields 20&prime; to 34&deg; wide&rdquo; does. The button is disabled while a solve is running, since rebuilding the index closes the memory maps the running solve is reading from.</p>
 
 <h2 id="s2">2. Operating modes</h2>
 
@@ -119,8 +128,15 @@ Open an image &mdash; pick <b>Active View</b> (solve current window), <b>File</b
 <ul>
   <li><b>Auto (from header)</b> &mdash; reads RA, Dec and pixel scale from the FITS header (CRVAL1/CRVAL2, OBJCTRA/OBJCTDEC, RA/DEC, CD matrix, CDELT, or FOCALLEN + XPIXSZ as a last resort). The usual pick when your acquisition software (NINA, SGP, ASIAIR, etc.) wrote proper mount coordinates.</li>
   <li><b>Manual</b> &mdash; type RA, Dec and scale yourself, or use <b>Lookup&hellip;</b> to search for a catalogued object (&sect;4). Overrides any header values.</li>
-  <li><b>None (blind)</b> &mdash; no seed at all. The in-house Gaia DR3 solver <i>requires</i> a seed and will refuse this mode; ASTAP and Astrometry.net can both solve blindly but much more slowly.</li>
+  <li><b>None (blind)</b> &mdash; no seed at all. The in-house Gaia DR3 solver handles this natively from the local quad index (&sect;15), typically in a couple of seconds; ASTAP and Astrometry.net can also solve blindly, but much more slowly.</li>
 </ul>
+<h3>Blind-solve checkboxes</h3>
+<p>Two independent controls sit below the seed mode:</p>
+<ul>
+  <li><b>Blind-solve from the local quad index when there is no RA/Dec</b> (default on) &mdash; when the header carries no usable pointing, identify the field from the star pattern before handing it to the Gaia solver to refine. Turn it off to fall back to ASTAP's blind solve instead.</li>
+  <li><b>Force blind solve (ignore any RA/Dec seed)</b> (default off) &mdash; throw the header pointing away even when it <i>is</i> present. Use this when the coordinates are <b>wrong</b> rather than missing. A wrong seed is worse than no seed: the solver searches around a position the field is not in, and ASTAP then fails on the same bad position afterwards. The pixel scale from the header is still used, because it comes from focal length and pixel size and stays right even when the mount lied.</li>
+</ul>
+<div class="tip"><b>Which one do I want?</b> Leave both at their defaults. Missing coordinates are handled automatically by the first box. Reach for <b>Force blind solve</b> only when a solve is failing and you suspect the header pointing &mdash; and note that since SASpro now retries blind automatically after a failed seeded solve (&sect;15.6), you rarely need to tick it by hand.</div>
 
 <h2 id="s4">4. Manual coordinates &amp; Lookup</h2>
 <p>In Manual seed mode three fields are enabled:</p>
@@ -167,7 +183,8 @@ Open an image &mdash; pick <b>Active View</b> (solve current window), <b>File</b
 <h2 id="s7">7. The four-pass fallback chain</h2>
 <p>With <b>Gaia DR3 &rarr; ASTAP &rarr; Astrometry.net (all)</b> selected, SASpro tries up to four passes in sequence and stops at the first that succeeds:</p>
 <ol>
-  <li><b>In-house Gaia DR3</b> &mdash; triangle/Hough + RANSAC against the local Gaia catalog. Fast when a seed is available, no external processes, handles rotation/scale/parity automatically. Skipped if no seed.</li>
+  <li><b>In-house Gaia DR3</b> &mdash; triangle/Hough + RANSAC against the local Gaia catalog. Fast when a seed is available, no external processes, handles rotation/scale/parity automatically. With no RA/Dec in the header it recovers one blind from the quad index first (&sect;15.5), so a missing pointing no longer forces the chain down to ASTAP.</li>
+  <li><b>In-house Gaia DR3, blind retry</b> &mdash; if the seeded attempt above failed, the seed itself is the prime suspect, so SASpro discards both the pointing <i>and</i> the scale and asks the quad index outright (&sect;15.6). Runs only when the first pass actually used a seed; costs about a second on a path that has already failed.</li>
   <li><b>ASTAP seeded</b> &mdash; runs ASTAP with <code>-ra</code>, <code>-spd</code>, <code>-scale</code>, <code>-r</code> and computed <code>-fov</code> arguments. Very fast when seed is accurate.</li>
   <li><b>ASTAP blind</b> &mdash; runs ASTAP with <code>-r 179 -fov 0 -z 0</code>, no coordinates. Slower but can solve from nothing.</li>
   <li><b>Astrometry.net</b> &mdash; local <code>solve-field</code> if the path is configured, otherwise uploads to <code>nova.astrometry.net</code> via API. The slowest option; a lifeboat for fields the other solvers can't crack.</li>
@@ -188,6 +205,7 @@ Open an image &mdash; pick <b>Active View</b> (solve current window), <b>File</b
   <li>Offset from the seed (if a seed was used) in arcminutes.</li>
   <li>Distortion status (SIP order and term count, or &ldquo;linear TAN&rdquo; if no SIP).</li>
   <li>Fit RMS and matched star count (Gaia DR3 solver only &mdash; ASTAP and Astrometry.net don't report residuals).</li>
+  <li>A <b>seed-grade</b> warning, in amber, if the solve came back as a quad-index placement rather than a refined fit (&sect;15.7). Such a solution carries no RMS at all, so without this line it would look like an ordinary solve.</li>
 </ul>
 
 <h2 id="s9">9. File mode</h2>
@@ -218,6 +236,7 @@ Open an image &mdash; pick <b>Active View</b> (solve current window), <b>File</b
   <li><b>SIP projection flag auto-set</b> &mdash; if any SIP coefficients are present, CTYPE1/CTYPE2 are promoted from <code>RA---TAN</code>/<code>DEC--TAN</code> to <code>RA---TAN-SIP</code>/<code>DEC--TAN-SIP</code>.</li>
   <li><b>CROTA1/CROTA2 computed from CD matrix</b> if missing, so legacy tools that still read CROTA get a sensible value.</li>
   <li><b>FOCALLEN recomputed</b> from the solved plate scale and the acquisition header's XPIXSZ/YPIXSZ + binning values &mdash; even if the acquisition header had FOCALLEN wrong, you get back the true effective focal length. A HISTORY card is added when the recomputed value differs from the original by &ge; 0.5&nbsp;mm. See &sect;14.15.</li>
+  <li><b>Blind-solve provenance</b> &mdash; a blind solve adds <code>BLNDODDS</code> (log-odds of the quad match against the background hypothesis), <code>BLNDLAYR</code> (which index layer matched) and <code>BLNDPAR</code> (match parity). A seed-grade fallback additionally sets <code>SOLVSRC = 'quad-seed'</code> and writes HISTORY cards saying so; it deliberately carries <i>no</i> <code>SOLVRMS</code>, because there is no fit to quote a residual from and a fabricated number would let approximate astrometry pass for refined.</li>
   <li><b>The pre-solve header is stashed once</b> under <code>meta['pre_solve_header']</code> on the first solve of a document, so re-solving never loses the original acquisition cards even after repeated solves.</li>
 </ul>
 <p>The merged header is also parsed into an <code>astropy.wcs.WCS</code> object stored at <code>meta['wcs']</code>, and a WCS-only copy (just the celestial cards, no acquisition metadata) is stored at <code>meta['wcs_header']</code>. Downstream SASpro tools (SFCC, SSSC, catalogue overlays, mosaic alignment) read from these canonical fields.</p>
@@ -253,7 +272,8 @@ Open an image &mdash; pick <b>Active View</b> (solve current window), <b>File</b
 <p>The CD matrix for a rotated TAN projection with scale <code>s</code> and rotation <code>&theta;</code>:</p>
 <div class="eq">CD1_1 = -s cos(&theta;)        CD1_2 = +s sin(&theta;)
 CD2_1 = -s sin(&theta;)        CD2_2 = -s cos(&theta;)</div>
-<p>for the det&gt;0 branch, and the flipped parity equivalent for det&lt;0. &sect;14.14 explains why both are tried.</p>
+<p>for the det&gt;0 branch, and the mirrored equivalent for det&lt;0. &sect;14.14 explains why both are tried.</p>
+<div class="warn"><b>Parity belongs to the optics, not the roll angle.</b> Every CD matrix SASpro builds &mdash; seed WCS, blind seed, and the header synthesised from an Astrometry.net calibration dict (&sect;14.17) &mdash; now comes from one shared constructor, so <code>det(CD)</code> is exactly <code>+s&sup2;</code> or <code>&minus;s&sup2;</code> at every rotation. An earlier form multiplied <code>CD1_1</code> and <code>CD2_1</code> by the parity sign while leaving <code>CD1_2</code> and <code>CD2_2</code> alone. That is not a mirror &mdash; a mirror negates a whole axis, so it must take a full row or a full column, never half of each. What it produced was a shear: <code>det = &minus;p&middot;s&sup2;&middot;cos(2&theta;)</code>, zero at a 45&deg; roll (singular matrix), sign-flipped past it, and with the two column vectors no longer perpendicular at any roll that is not a multiple of 90&deg;. It hid for a long time because pixel scale is read back from <i>column norms</i>, which stay exactly <code>s</code> under the bug &mdash; the scale looked right while the WCS underneath was skewed.</div>
 
 <h3 id="s14_4">14.4 Gaia library (astrometric vs spectral)</h3>
 <p>SASpro ships with two Gaia DR3 library formats, pulled from different ESA data products:</p>
@@ -328,7 +348,17 @@ CD2_1 = -s sin(&theta;)        CD2_2 = -s cos(&theta;)</div>
 <p>Over N trials, sample the minimum number of correspondences needed to fit the model (3 for affine, 2 for similarity), fit, count inliers within tolerance <code>&tau;</code>, keep the fit with the most inliers. Refit on the best inlier set for the final transform. RANSAC avoids being dragged off by false correspondences the way a plain least-squares fit over the whole noisy pool would be.</p>
 
 <h3 id="s14_10">14.10 TAN WCS fit</h3>
-<p>Once matched pairs are in hand, SASpro uses <code>astropy.wcs.utils.fit_wcs_from_points</code> to fit a <b>TAN (gnomonic) projection WCS</b> through them. The projection point is set to the mean of the matched sky coordinates; the CD matrix emerges from the least-squares fit.</p>
+<p>Once matched pairs are in hand, SASpro uses <code>astropy.wcs.utils.fit_wcs_from_points</code> to fit a <b>TAN (gnomonic) projection WCS</b> through them. The projection point is the <b>unit-vector mean</b> of the matched sky coordinates; the CD matrix emerges from the least-squares fit.</p>
+<div class="matheq-hero">\hat{\mathbf{n}} = \frac{\sum_i \mathbf{u}_i}{\left\|\sum_i \mathbf{u}_i\right\|},\qquad \mathbf{u}_i = (\cos\delta_i\cos\alpha_i,\;\cos\delta_i\sin\alpha_i,\;\sin\delta_i)</div>
+<div class="warn"><b>Why not just average RA and Dec.</b> Because averaging an angle is wrong wherever the set wraps, and both failure cases are ordinary astrophotography. A field straddling RA&nbsp;0h averages to 12h. A field containing a celestial pole holds stars at <i>every</i> RA at once, so its mean RA is meaningless &mdash; on a real 1920&times;1080 frame centred 0.7&deg; from the north celestial pole, the matched stars span RA 0.1&deg; to 360.0&deg; and average to 137.7&deg; against a true centre of 37.0&deg;. Either way the tangent point lands degrees away from the field, and a TAN fit anchored off the field cannot represent the true WCS: gnomonic projections about different points differ by a projective transform, which no CD matrix and no SIP polynomial can absorb.
+<br><br>Measured on that frame, same 489 pairs, the only difference being the projection point:</div>
+<table>
+  <tr><th>Projection point</th><th>Offset from field centre</th><th>TAN RMS</th><th>SIP-3 RMS</th><th>Fitted scale</th></tr>
+  <tr><td>mean of RA, mean of Dec</td><td>1.29&deg;</td><td>551.45&quot;</td><td>186.63&quot;</td><td>4.5916&quot;/px</td></tr>
+  <tr><td><b>unit-vector mean</b></td><td>0.07&deg;</td><td><b>0.844&quot;</b></td><td><b>0.009&quot;</b></td><td><b>4.0253&quot;/px</b></td></tr>
+  <tr><td colspan="5"><span class="cap">True plate scale 4.0257&quot;/px. The SIP-3 figure recovers the published Astrometry.net solution for the same frame to 0.009&quot;.</span></td></tr>
+</table>
+<p>On a field straddling RA&nbsp;0h the arithmetic mean is worse still: the tangent point lands 139.9&deg; away and <code>fit_wcs_from_points</code> raises <code>Residuals are not finite in the initial point</code> rather than merely fitting badly. Away from the wrap and the poles the two means agree to four decimal places, so nothing changes for ordinary fields.</p>
 <p>The gnomonic / TAN projection is the FITS WCS standard for most astronomical imaging and follows Greisen &amp; Calabretta (2002). The forward (pixel &rarr; sky) transform in the simplest case:</p>
 <div class="eq">(&xi;, &eta;) = CD &middot; (x - CRPIX1, y - CRPIX2)
 sky coordinates derived from (&xi;, &eta;) via standard gnomonic equations</div>
@@ -343,21 +373,41 @@ sky coordinates derived from (&xi;, &eta;) via standard gnomonic equations</div>
   <li>Refit the TAN WCS on the new (larger, cleaner) correspondence set.</li>
   <li>Compute the new RMS. If it improved by more than roughly <code>0.02</code> pixels equivalent arcseconds, iterate again; otherwise stop. Capped at 5 iterations.</li>
 </ol>
+<p>An iteration is adopted if it gained pairs, or if it improved the RMS without losing more than 20% of them. That retention rule is right when the fit is already good &mdash; do not shed a fifth of the pairs for a marginal gain &mdash; and backwards when the fit is broken, so it carries one exception:</p>
+<div class="eq">adopt also if  RMS_new &lt; 0.5 &times; RMS_old  and  pairs &ge; 20</div>
+<p>A fit whose RMS <i>halves</i> was being dragged by pairs that do not belong in it, and protecting the pair count throws the solve away. Measured on a near-pole frame: the refit cut RMS from 519&quot; to 24&quot;, a 21&times; improvement, and was refused for dropping 975 pairs to 507. The clause cannot misfire on a healthy fit, because once the RMS is near optimal a halving is not available.</p>
 <p>Each iteration either tightens the fit by picking up more real correspondences from the catalog's dense inner region, or exposes the current fit as being as good as it's going to get. The &ldquo;0.02 px&rdquo; convergence threshold is pixel-relative so it works equally on 0.3&quot;/px long-focal-length rigs and 7&quot;/px wide-field rigs.</p>
 
 <h3 id="s14_12">14.12 SIP distortion fit</h3>
-<p>Linear TAN cannot absorb the geometric distortion of wide-field lenses or fast astrographs. SASpro fits a <b>SIP distortion polynomial</b> on top of the TAN fit, following Shupe et al. (2005), with the polynomial order chosen by the number of matched pairs:</p>
-<ul>
-  <li>&ge; 100 pairs &rarr; SIP order 4.</li>
-  <li>&ge; 50 pairs &rarr; SIP order 3.</li>
-  <li>&ge; 20 pairs &rarr; SIP order 2.</li>
-  <li>&lt; 20 pairs &rarr; TAN only (no SIP).</li>
-</ul>
-<p>SIP adds correction polynomials to the pixel-space side of the transform:</p>
+<p>Linear TAN cannot absorb the geometric distortion of wide-field lenses or fast astrographs. SASpro fits a <b>SIP distortion polynomial</b> on top of the TAN fit, following Shupe et al. (2005). SIP adds correction polynomials to the pixel-space side of the transform:</p>
 <div class="matheq">u' = u + \sum_{p+q \leq n} A_{p,q}\,u^p v^q</div>
 <div class="matheq">v' = v + \sum_{p+q \leq n} B_{p,q}\,u^p v^q</div>
-<p>with <code>(u, v)</code> the pixel offset from CRPIX, and <code>A_{p,q}</code>, <code>B_{p,q}</code> fitted coefficients up to order <code>n</code>. CTYPE1/CTYPE2 become <code>RA---TAN-SIP</code>/<code>DEC--TAN-SIP</code> when SIP is present.</p>
-<p>SASpro fits SIP <i>before</i> the quality gate (&sect;14.13), so a distorted wide-field frame that would fail the gate on linear TAN can still pass once SIP absorbs the distortion. The RMS used by the gate is the SIP RMS when SIP improves it, else TAN.</p>
+<p>with <code>(u, v)</code> the pixel offset from CRPIX and <code>A_{p,q}</code>, <code>B_{p,q}</code> fitted coefficients up to order <code>n</code>. CTYPE1/CTYPE2 become <code>RA---TAN-SIP</code>/<code>DEC--TAN-SIP</code> when SIP is present.</p>
+
+<h4>Choosing the degree</h4>
+<p>The degree is <b>searched, not assumed</b>. A higher order is not merely redundant when it fails &mdash; it is actively worse, because the extra freedom lets the polynomial diverge at the frame edges where stars are sparsest and nothing holds it down. SASpro therefore starts at the degree the matched-pair count comfortably supports (&ge;&nbsp;100 pairs &rarr; 4, &ge;&nbsp;50 &rarr; 3, else 2) and walks <i>outward in both directions</i>, each walk anchored at that base degree:</p>
+<ul>
+  <li><b>Upward</b> &mdash; a higher degree must cut the penalised residual by at least 3% <i>and</i> must not inflate the 95th-percentile residual by more than 25%. Divergence at the edges shows up in the tail long before it moves the mean, so p95 is the guard that catches it.</li>
+  <li><b>Downward</b> &mdash; any strict improvement is enough, since the parameter penalty already favours fewer terms.</li>
+  <li><b>Degree 5</b> is offered once the frame carries at least 300 matched pairs; its 42 parameters are only worth solving for when stars cover the field densely enough to pin the edges. Degree 6 is not offered at all: another even order mostly re-describes what 4 already captured, for fourteen more parameters. Degree 5 is the real step up from 3, because a radial lens profile expands to <i>odd</i> polynomial orders.</li>
+  <li>Each degree must also clear 4&times; oversampling &mdash; two residuals per pair against <code>k</code> parameters &mdash; or it is not attempted.</li>
+</ul>
+<p>Degrees are compared on a <b>parameter-penalised</b> residual, never on raw RMS. In-sample RMS almost always falls as coefficients are added, so comparing on it alone biases the choice toward the highest degree:</p>
+<div class="matheq-hero">\mathrm{RMS}_{\mathrm{adj}} = \mathrm{RMS}\sqrt{\frac{2N}{2N-k}},\qquad k = 2\left[\tfrac{(d+1)(d+2)}{2}-3\right]+6</div>
+<p>where <code>k</code> counts both axes' distortion coefficients plus the six linear WCS parameters. The correction is negligible when pairs vastly outnumber coefficients and decisive when they do not.</p>
+<p>Why both directions matter &mdash; measured on synthetic 6170&times;4013 frames with known radial distortion:</p>
+<table>
+  <tr><th>Case</th><th>pairs</th><th>SIP-2</th><th>SIP-3</th><th>SIP-4</th><th>SIP-5</th><th>TAN</th><th>Chosen</th></tr>
+  <tr><td>heavy radial distortion</td><td>1200</td><td>281.6&quot;</td><td><b>4.5&quot;</b></td><td>283.0&quot;</td><td>243.1&quot;</td><td>283.9&quot;</td><td>SIP-3</td></tr>
+  <tr><td>mild distortion</td><td>1200</td><td>16.3&quot;</td><td>1.57&quot;</td><td><b>1.56&quot;</b></td><td>14.6&quot;</td><td>16.7&quot;</td><td>SIP-4</td></tr>
+  <tr><td>no distortion</td><td>1200</td><td>1.40&quot;</td><td>1.40&quot;</td><td><b>1.39&quot;</b></td><td>2.59&quot;</td><td>2.59&quot;</td><td>SIP-4</td></tr>
+  <tr><td>heavy distortion</td><td>250</td><td>274.6&quot;</td><td>4.54&quot;</td><td><b>4.50&quot;</b></td><td>238.6&quot;</td><td>280.8&quot;</td><td>SIP-4</td></tr>
+</table>
+<p>The first row is the case that makes the point: degree 3 is excellent, 4 and 5 both diverge, and the quality is <i>not monotonic in the degree</i>. Anything that climbed in one direction only would have sat on SIP-5 at 243&quot; while SIP-3 at 4.5&quot; went unfitted. Each fit costs roughly 0.1&ndash;0.4&nbsp;s at 1200 pairs, so the worst case adds under a second.</p>
+
+<h4>Adopting SIP at all</h4>
+<p>SIP is accepted over plain TAN only if it clears the <i>same</i> penalised comparison and the same 3% margin, judged against TAN's own six parameters. Otherwise an undistorted field adopts a distortion polynomial for a fraction of a percent of RMS, which is just fitting the centroid noise &mdash; measured at 0.6% on a distortion-free frame, for six extra parameters.</p>
+<p>SASpro fits SIP <i>before</i> the quality gate (&sect;14.13), so a distorted wide-field frame that would fail the gate on linear TAN can still pass once SIP absorbs the distortion. The RMS used by the gate is the SIP RMS when SIP is adopted, else TAN.</p>
 
 <h3 id="s14_13">14.13 Quality gate</h3>
 <p>Before accepting a solve, SASpro checks fit quality. The RMS of final residuals (pair-wise angular separations):</p>
@@ -368,7 +418,7 @@ sky coordinates derived from (&xi;, &eta;) via standard gnomonic equations</div>
 <p>The gate is <b>pixel-relative, not raw arcseconds</b>, because a flat arcsecond threshold is wrong on both ends of the pixel-scale spectrum:</p>
 <div class="matheq">\mathrm{RMS}_{\max} = \max\!\left(\mathrm{floor}_{\mathrm{arcsec}},\;k_{\mathrm{px}} \cdot s_{\mathrm{px}}\right)</div>
 <p>with <code>k_px = 2.0</code> (two pixels equivalent) and <code>floor_arcsec = 3.0</code>&quot;. A fine-scale 0.5&quot;/px rig gets a 3.0&quot; limit (strict as it should be); a coarse 7&quot;/px rig gets a 14&quot; limit (sensible given the sampling). A flat 3.0&quot; limit would wrongly fail a sub-pixel solve on the coarse rig.</p>
-<p>Minimum pair count: 20. If the fit RMS exceeds <code>RMS_max</code>, or fewer than 20 pairs matched, the gate rejects and SASpro either retries the field with a different matcher (triangle &harr; Hough), excludes the previously-matched catalog stars and tries again, or falls back to the next solver in the chain.</p>
+<p>Minimum pair count: 20. If the fit RMS exceeds <code>RMS_max</code>, or fewer than 20 pairs matched, the gate rejects and SASpro either retries the field with a different matcher (triangle &harr; Hough), excludes the previously-matched catalog stars and tries again, retries blind (&sect;15.6), or falls back to the next solver in the chain. When every one of those has failed but the quad index <i>did</i> identify the field, SASpro returns that placement as a seed-grade solution rather than nothing at all (&sect;15.7).</p>
 
 <h3 id="s14_14">14.14 Spiral seed search</h3>
 <p>Even when the acquisition header has RA/Dec, those values can be off by many arcminutes due to mount pointing error. SASpro's Gaia solver covers this by searching a <b>spiral grid</b> of seed centres around the nominal RA/Dec:</p>
@@ -424,14 +474,89 @@ sky coordinates derived from (&xi;, &eta;) via standard gnomonic equations</div>
 </ol>
 <p>Every request has retry-with-exponential-backoff on <code>429, 500, 502, 503, 504</code> and connection/timeout errors (up to 5 retries, 0.5&middot;2^(n-1) + jitter seconds between). File handles are rewound before each retry since <code>requests</code> consumes them on each POST attempt.</p>
 
-<p>If the WCS FITS download fails, SASpro builds a plain TAN header from the calibration dict instead:</p>
-<div class="matheq">\mathrm{CD1\_1} = -s \cos\theta \cdot p,\quad \mathrm{CD2\_2} = s \cos\theta</div>
-<p>and symmetric entries for <code>CD1_2</code>, <code>CD2_1</code>, with <code>s</code> the pixel scale in degrees, <code>&theta;</code> the orientation (positive CCW from north), and <code>p</code> the parity sign (parity > 0 means the image was mirrored, so RA axis is negated to un-mirror). Downside: no SIP, so the fit is linear only.</p>
+<p>If the WCS FITS download fails, SASpro builds a plain TAN header from the calibration dict instead, through the same shared CD constructor the seed WCS uses (&sect;14.3). With <code>s</code> the pixel scale in degrees and <code>&theta;</code> the orientation (positive CCW from north):</p>
+<div class="eq">unmirrored        CD1_1 = -s cos&theta;   CD1_2 = +s sin&theta;      det = +s&sup2;
+                  CD2_1 = -s sin&theta;   CD2_2 = -s cos&theta;
+
+mirrored          CD1_1 = -s cos&theta;   CD1_2 = -s sin&theta;      det = -s&sup2;
+                  CD2_1 = -s sin&theta;   CD2_2 = +s cos&theta;</div>
+<p>Astrometry.net reports <code>parity &gt; 0</code> when the solution required an E/W flip, which selects the mirrored form. The determinant is <code>&plusmn;s&sup2;</code> at every orientation and the two columns stay perpendicular &mdash; see the warning in &sect;14.3 for what the earlier half-row/half-column form did instead. Downside of this path regardless: no SIP, so the fit is linear only.</p>
+
+<h2 id="s15">15. Blind solving (quad index)</h2>
+<p class="tech-lead">Finding the field from the star pattern alone &mdash; no coordinates, no field of view, no hints.</p>
+
+<h3 id="s15_1">15.1 Why quads</h3>
+<p>Triangle matching (&sect;14.7) needs a seed: it compares the image against a <i>projection</i> of the catalogue, and to project the catalogue you must already know roughly where you are. Blind solving inverts the problem &mdash; identify the field with no prior at all &mdash; and that needs a geometric signature you can look up in a table rather than compare pairwise.</p>
+<p>A triangle gives two invariant numbers (&sect;14.7). Two is not enough to be distinctive across the whole sky: with a few hundred million catalogue triangles, a 2-dimensional code collides constantly. <b>Four</b> stars give a 4-dimensional code, and the false-match rate falls as the fourth power of the tolerance. That is the whole reason the index stores quads rather than triangles.</p>
+<p>SASpro's implementation follows the scheme Lang, Hogg, Mierle, Blanton &amp; Roweis set out for Astrometry.net (2010, AJ 139:1782). The index itself is built locally from the Gaia tiers you already downloaded &mdash; nothing extra comes off the wire.</p>
+
+<h3 id="s15_2">15.2 The AB-frame code</h3>
+<p>Take four stars. Call the widest-separated pair <b>A</b> and <b>B</b>. Define a local coordinate frame in which A sits at (0,&nbsp;0) and B at (1,&nbsp;1), and express the two remaining stars <b>C</b> and <b>D</b> in that frame:</p>
+<div class="matheq-hero">\mathbf{c} = (x_C,\,y_C,\,x_D,\,y_D)</div>
+<p>Because the frame is defined <i>by the stars themselves</i>, the code is unchanged by translation, rotation and uniform scale &mdash; exactly the degrees of freedom an unknown pointing, rotator angle and plate scale represent. Only quads whose C and D fall inside the circle with AB as diameter are kept, which bounds the code to a known box and makes the hash dense.</p>
+<p>Two symmetries remain and are removed by canonicalisation: A&harr;B and C&harr;D swaps are collapsed by requiring <code>x_C &le; x_D</code> and then <code>x_C + x_D &le; 1</code>.</p>
+<div class="tip"><b>Parity is not symmetrised away &mdash; deliberately.</b> A reflection maps <code>(x, y) &rarr; (y, x)</code> in the AB frame, so a mirrored image produces a <i>different</i> code rather than the same one. SASpro queries both the code and its mirror, and which one hits tells you the parity of the frame outright. Folding parity into the code would have thrown that information away and left the solver to rediscover it.</div>
+
+<h3 id="s15_3">15.3 Index layers</h3>
+<p>A quad only helps if it is roughly the size of your field: a 4&prime; quad is invisible in a 20&deg; frame, and a 4&deg; quad does not fit inside a 20&prime; one. The index is therefore built as <b>layers</b>, each tied to one angular scale, each solving fields from about 2.5&times; to 10&times; its quad size. Layer spacing is a factor of 2, so adjacent layers overlap and a field near a boundary is covered twice.</p>
+<p>Built from the <b>Bright (G &lt; 17)</b> astrometric tier, the figures below are measured from real builds, not estimates:</p>
+<table>
+  <tr><th>Layer</th><th>Quad size</th><th>Needs stars to</th><th>Solves fields</th><th>Quads</th><th>On disk</th><th>Build time</th></tr>
+  <tr><td>Layer 7</td><td>4.3&deg;</td><td>G &le; 8.0</td><td>10.7&deg; &ndash; 34.1&deg;</td><td>18,308</td><td>447 KB</td><td>seconds</td></tr>
+  <tr><td>Layer 6</td><td>2.1&deg;</td><td>G &le; 8.0</td><td>5.3&deg; &ndash; 17.1&deg;</td><td>42,057</td><td>1 MB</td><td>seconds</td></tr>
+  <tr><td>Layer 5</td><td>1.1&deg;</td><td>G &le; 9.1</td><td>2.7&deg; &ndash; 8.5&deg;</td><td>208,841</td><td>5 MB</td><td>seconds</td></tr>
+  <tr><td>Layer 4</td><td>32&prime;</td><td>G &le; 10.5</td><td>1.3&deg; &ndash; 4.3&deg;</td><td>754,153</td><td>18 MB</td><td>under a minute</td></tr>
+  <tr><td>Layer 3</td><td>16&prime;</td><td>G &le; 12.0</td><td>40&prime; &ndash; 2.1&deg;</td><td>2,738,163</td><td>65 MB</td><td>about a minute</td></tr>
+  <tr><td>Layer 2</td><td>8&prime;</td><td>G &le; 13.6</td><td>20&prime; &ndash; 1.1&deg;</td><td>9,653,192</td><td>230 MB</td><td>a few minutes</td></tr>
+  <tr><td>Layer 1</td><td>4&prime;</td><td>G &le; 15.4</td><td>10&prime; &ndash; 32&prime;</td><td>34,900,003</td><td>832 MB</td><td>about 6 minutes</td></tr>
+  <tr><td>Layer 0</td><td>2&prime;</td><td>G &le; 17.4</td><td>5&prime; &ndash; 16&prime;</td><td>127,719,163</td><td>2.97 GB</td><td>roughly 30&ndash;45 min</td></tr>
+</table>
+<p>Layers 7&ndash;2 are marked Recommended and together cover roughly 20&prime; to 34&deg; &mdash; everything most imaging rigs produce &mdash; for under 320&nbsp;MB and a few minutes of building. Layers 1 and 0 are for long-focal-length narrow fields and are the only expensive ones. Build them from the Gaia DR3 Library's <b>Blind Solve Index</b> tab, reachable from the <b>Open Gaia Database&hellip;</b> button in this dialog.</p>
+<p>Each layer is a single <code>.saq</code> file: a 128-byte header followed by four contiguous memory-mapped arrays (index stars, sorted hash keys, quantised codes, quad references). Nothing is loaded into RAM up front; lookups page in from the map.</p>
+
+<h3 id="s15_4">15.4 Matching and verification</h3>
+<p>Detected stars are ranked by brightness and formed into quads, each quad's code is computed and hashed, and the matching layers are queried. Code bins were sized once at <code>BIN_TOL = 0.010</code>, but the tolerance actually applied per quad is adaptive:</p>
+<div class="matheq-hero">\tau \approx 3\sigma_{\mathrm{px}} / |AB|_{\mathrm{px}},\qquad \tau \in [0.0025,\;0.010]</div>
+<p>A given centroid error matters far more to a 30-pixel quad than to a 120-pixel one, and since false hits scale as <code>&tau;&#8308;</code>, giving large quads the tight tolerance they have earned removes most of the spurious traffic before verification.</p>
+<p>A code hit is only a <i>hypothesis</i>. Each one implies a similarity transform from the four correspondences; SASpro applies it to the whole field and asks how much better the data is explained by that pointing than by stars landing where they did at random. The test is the Bayesian log-odds of Lang et al. &sect;3, and a candidate is accepted at:</p>
+<div class="matheq-hero">\ln(\text{odds}) &gt; \ln(10^9) \approx 20.7</div>
+<p>That threshold is what makes an all-sky search safe: it is strict enough that millions of wrong hypotheses can be tested without one slipping through. In practice the separation is not marginal &mdash; correct candidates score in the hundreds of nats while the best wrong candidate sits well below zero, so the decision is rarely close. The accepted log-odds is written to the header as <code>BLNDODDS</code>.</p>
+
+<h3 id="s15_5">15.5 Blind as a seed source</h3>
+<p>Blind solving does not replace the Gaia solver &mdash; it <i>seeds</i> it. A quad match returns centre, scale, roll and parity, which is enough to collapse the spiral search (&sect;14.14) from 19 centres &times; 5 scales &times; 2 parities down to a single attempt that is already correct. The Gaia solver then refines it to a full SIP solution exactly as it would from a header seed.</p>
+<p>This is why blind solving is <i>fast</i> here rather than a last resort.</p>
+<div class="tip"><b>The quad index is not consulted when the header already has a usable RA/Dec.</b> The checkbox means what it says. An earlier build did run it on every solve, as an accelerator &mdash; one lookup collapses the whole grid &mdash; but that made a frame with perfectly good pointing go through the index anyway, and it is no longer needed: a seed that turns out to be wrong is caught by the blind retry (&sect;15.6) once the seeded pass has failed. The cost of that choice is a second or so on a badly-seeded frame, which now fails a spiral search before retrying blind rather than being placed instantly.</div>
+<p>If no pixel scale is available either, every built layer is tried coarsest-first, which costs more but needs nothing from the header at all.</p>
+
+<h3 id="s15_6">15.6 Blind retry after a failed seed</h3>
+<p>Blind solving fires on its own only when the header has <i>no</i> RA/Dec &mdash; and SASpro accepts eight different keys as pointing (<code>CRVAL1</code>, <code>RA</code>, <code>OBJCTRA</code>, <code>TELRA</code>, <code>MNTRA</code>, <code>CENTERRA</code>, <code>RA_OBJ</code>, <code>ALPHA_J2000</code>). Capture software writes the mount's RA/DEC into every light, and a stacked master inherits them, so a frame almost always <i>looks</i> seeded even when those numbers are stale or wrong.</p>
+<p>So when a seeded attempt fails, SASpro retries it blind before descending to ASTAP. The seed is the prime suspect by definition &mdash; it is the one thing that just demonstrably did not work.</p>
+<div class="tip"><b>The retry discards the scale as well as the pointing.</b> That is more than the Force blind solve checkbox does, and deliberately so. The checkbox keeps the header scale because focal length &times; pixel size stays true even when the mount lied. On a retry, though, we only know that <i>something</i> in the seed was wrong &mdash; and if it was the scale, keeping it poisons the retry twice over: it picks the wrong index layers and it searches the wrong scale band. With no hint at all the blind solver tries every built layer coarsest-first and works it out.</div>
+<p>Measured on master headers with deliberately broken seeds:</p>
+<table>
+  <tr><th>Master header</th><th>Before</th><th>After</th></tr>
+  <tr><td>right RA/Dec, <b>wrong scale</b></td><td>fail &rarr; ASTAP</td><td><b>solved, 1.34 s</b></td></tr>
+  <tr><td><b>wrong RA/Dec</b> (40&deg; off), right scale</td><td>solved, 0.51 s</td><td>solved, 0.51 s (quad seed, no retry needed)</td></tr>
+  <tr><td><b>both wrong</b></td><td>fail &rarr; ASTAP</td><td><b>solved, 1.06 s</b></td></tr>
+  <tr><td>good seed</td><td>solved, 0.47 s</td><td>solved, 0.47 s, no retry</td></tr>
+  <tr><td>no pointing at all</td><td>solved, 0.51 s</td><td>solved, 0.51 s, no retry</td></tr>
+</table>
+<p>The retry is skipped whenever it would merely repeat the first pass: force-blind already ticked, seed mode None, blind disabled, no RA/Dec in the header, or no index layers installed. So it costs nothing on the paths that already work. Acquisition keys (OBJECT, EXPTIME, &hellip;) survive the retry; only WCS and scale cards are dropped from the header handed to it.</p>
+<p>Because this happens inside the solver, tools that call it &mdash; the Stacking Suite's master plate-solve among them &mdash; get the behaviour without any change of their own.</p>
+
+<h3 id="s15_7">15.7 Seed-grade fallback</h3>
+<p>Sometimes the quad index identifies the field correctly and the refinement still cannot reach the quality gate. Returning nothing in that situation throws away a real identification, so SASpro instead returns the quad placement itself, clearly labelled:</p>
+<ul>
+  <li><code>SOLVSRC = 'quad-seed'</code>, plus <code>BLNDODDS</code>, <code>BLNDLAYR</code> and HISTORY cards recording that refinement failed its gate.</li>
+  <li><b>No <code>SOLVRMS</code>, deliberately.</b> There is no fit to quote a residual from, and inventing one would let seed-grade astrometry pass for refined in every downstream tool.</li>
+  <li>The solve-summary popup shows an amber <b>seed-grade</b> warning saying the centre and scale are approximate, there are no distortion terms, and the result is not suitable for photometry or mosaicking.</li>
+</ul>
+<p>The WCS is built from the quad match's own centre, scale, roll and parity &mdash; not the header's rotation, since a wrong CROTA2 is one of the reasons refinement fails in the first place. Expect accuracy of a few pixels: enough to know what you photographed and to overlay a catalogue, not enough to measure with.</p>
 
 <div class="credit">
-<b>Credits.</b> The <b>solver orchestration</b> (four-pass fallback chain with cross-solver state preservation and settings restoration), the <b>In-House Gaia DR3 engine</b> (triangle-invariant matcher with vertex-vote-and-RANSAC consensus, Hough translation-vote fallback with 3&times;3 neighbourhood merging and similarity-RANSAC refinement, spiral seed search over scale and parity variants, iterative WCS refinement with pixel-relative convergence, pixel-relative RMS quality gate, failed-match catalog-star exclusion for retry rounds, SIP-order-by-match-count fitting, focal-length recomputation from solved plate scale), the <b>acquisition-header-preserving WCS merge policy</b>, the <b>catalog object lookup</b> with M/NGC/IC/UGC/Sh2/LBN/LDN/Abell/PK/PN-G/Arp prefix normalisation and both bundled bright-star and 100 000+-object catalog search, the <b>ASTAP seed heuristics</b> (radius and FOV mode controls, scale-aware FOV computation, exit-code decoding and sidecar validation), the <b>preset system with draggable canvas shortcuts</b>, and the <b>View Bundle application</b> are all original work by <b>Franklin Marek</b> for SetiAstro Suite Pro.
+<b>Credits.</b> The <b>solver orchestration</b> (four-pass fallback chain with cross-solver state preservation and settings restoration), the <b>In-House Gaia DR3 engine</b> (triangle-invariant matcher with vertex-vote-and-RANSAC consensus, Hough translation-vote fallback with 3&times;3 neighbourhood merging and similarity-RANSAC refinement, spiral seed search over scale and parity variants, iterative WCS refinement with pixel-relative convergence, pixel-relative RMS quality gate, failed-match catalog-star exclusion for retry rounds, SIP-order-by-match-count fitting, focal-length recomputation from solved plate scale, bidirectional SIP degree search on parameter-penalised residuals, unit-vector projection-point centroid for pole- and wrap-safe TAN fitting), the <b>native blind solver and its locally-built quad index</b> (layer design and scale banding, <code>.saq</code> memory-mapped index format, multi-process local builder, per-quad adaptive code tolerance, quad-seeded grid collapse, automatic blind retry after a failed seeded solve, and the labelled seed-grade fallback), the <b>acquisition-header-preserving WCS merge policy</b>, the <b>catalog object lookup</b> with M/NGC/IC/UGC/Sh2/LBN/LDN/Abell/PK/PN-G/Arp prefix normalisation and both bundled bright-star and 100 000+-object catalog search, the <b>ASTAP seed heuristics</b> (radius and FOV mode controls, scale-aware FOV computation, exit-code decoding and sidecar validation), the <b>preset system with draggable canvas shortcuts</b>, and the <b>View Bundle application</b> are all original work by <b>Franklin Marek</b> for SetiAstro Suite Pro.
 <br><br>
-Standard algorithms credited to community: triangle star-pattern matching follows <b>Groth (1986, AJ 91:1244)</b>, with the invariant-pair + vertex-vote formulation and RANSAC consensus structure following <b>Beroiz, Cabral &amp; Sanchez (2020, A&amp;C 32:100384)</b> (astroalign); Hough-transform catalog matching follows <b>Hough (1962, US Patent 3,069,654)</b> and <b>Ballard (1981, Pattern Recognition 13(2):111)</b>, with the voting-on-translation-offsets application following <b>Tabur (2007, PASA 24:189)</b>; FOCAS voting-based catalog matching is <b>Valdes et al. (1995, PASP 107:1119)</b>; RANSAC is <b>Fischler &amp; Bolles (1981, Comm. ACM 24(6):381)</b>. FITS WCS standards: TAN gnomonic projection follows <b>Greisen &amp; Calabretta (2002, A&amp;A 395:1061)</b>; SIP distortion polynomial follows <b>Shupe et al. (2005, ADASS XIV)</b>.
+Standard algorithms credited to community: triangle star-pattern matching follows <b>Groth (1986, AJ 91:1244)</b>, with the invariant-pair + vertex-vote formulation and RANSAC consensus structure following <b>Beroiz, Cabral &amp; Sanchez (2020, A&amp;C 32:100384)</b> (astroalign); Hough-transform catalog matching follows <b>Hough (1962, US Patent 3,069,654)</b> and <b>Ballard (1981, Pattern Recognition 13(2):111)</b>, with the voting-on-translation-offsets application following <b>Tabur (2007, PASA 24:189)</b>; FOCAS voting-based catalog matching is <b>Valdes et al. (1995, PASP 107:1119)</b>; RANSAC is <b>Fischler &amp; Bolles (1981, Comm. ACM 24(6):381)</b>. FITS WCS standards: TAN gnomonic projection follows <b>Greisen &amp; Calabretta (2002, A&amp;A 395:1061)</b>; SIP distortion polynomial follows <b>Shupe et al. (2005, ADASS XIV)</b>; the four-star AB-frame geometric hash and the Bayesian log-odds acceptance test used by the blind solver follow <b>Lang, Hogg, Mierle, Blanton &amp; Roweis (2010, AJ 139:1782)</b>, implemented natively against SASpro's own locally-built Gaia quad index.
 <br><br>
 External tools and libraries: <b>ASTAP</b> is Han Kleijn's standalone plate solver (used as an external process; SASpro drives it with seed arguments and parses its <code>.wcs</code> sidecar); <b>Astrometry.net</b> is <b>Lang et al. (2010, AJ 139:1782)</b> with the web API at <code>nova.astrometry.net</code> and local <code>solve-field</code> both supported. <b>Gaia DR3</b> catalog data is <b>Gaia Collaboration et al. (2023, A&amp;A 674:A1)</b>, delivered through SASpro's local astrometric-tier library (preferred) or the XP-spectral library (fallback, shared with SSSC). <b>SEP</b> (Barbary 2016, JOSS 1:58) provides star detection, deriving from <b>Source Extractor</b> (Bertin &amp; Arnouts 1996, A&amp;AS 117:393). <b>Astropy</b> provides FITS I/O, the <code>WCS</code> class, <code>fit_wcs_from_points</code>, <code>proj_plane_pixel_scales</code>, and <code>SkyCoord</code>. <b>SciPy</b> provides <code>cKDTree</code> / <code>KDTree</code> for nearest-neighbour matching and <code>linalg.lstsq</code> for affine fits. <b>NumPy</b> provides the array engine, <b>PyQt6</b> provides the UI framework (including <code>QProcess</code> for driving external solvers), and <b>requests</b> provides HTTP transport for the Astrometry.net API.
 </div>

@@ -5,8 +5,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from setiastro.saspro.diagnostics import collect_diagnostics, write_report
-
 
 # ───────────────────────────────────────────────────────────────
 # GUI dispatch (you already have a main entrypoint elsewhere)
@@ -28,6 +26,108 @@ def _looks_like_path_token(tok: str) -> bool:
         return p.exists()
     except Exception:
         return False
+
+
+# ───────────────────────────────────────────────────────────────
+# Top-level help
+# ───────────────────────────────────────────────────────────────
+HELP_TOKENS = {"-h", "--help", "--h", "-help", "help", "-?", "/?", "/h"}
+VERSION_TOKENS = {"--version", "version"}
+
+
+def _cc_subcommands() -> list[str]:
+    """Read the CC subcommand list off its own parser so it cannot drift."""
+    try:
+        for a in build_cc_parser()._actions:
+            if isinstance(a, argparse._SubParsersAction):
+                return sorted(a.choices)
+    except Exception:
+        pass
+    return ["both", "correct", "darkstar", "denoise", "satellite",
+            "sharpen", "superres"]
+
+
+def _version_string() -> str:
+    for mod, attrs in (("setiastro.saspro.versioning",
+                        ("__version__", "VERSION", "version")),
+                       ("setiastro.saspro", ("__version__",))):
+        try:
+            m = __import__(mod, fromlist=["*"])
+            for a in attrs:
+                v = getattr(m, a, None)
+                if isinstance(v, str) and v:
+                    return v
+        except Exception:
+            pass
+    try:
+        from importlib.metadata import version
+        return version("setiastrosuitepro")
+    except Exception:
+        return "unknown"
+
+
+def top_level_help() -> str:
+    cc = ", ".join(_cc_subcommands())
+    return f"""Seti Astro Suite Pro \u2014 command line
+
+USAGE
+  setiastrosuitepro                          launch the GUI
+  setiastrosuitepro IMAGE [IMAGE ...]        launch the GUI with files opened
+  setiastrosuitepro <command> [options]      run a command headlessly
+  setiastrosuitepro <command> --help         full options for that command
+
+COMMANDS
+  solve        Plate-solve images. In-house Gaia DR3 solver (blind or seeded),
+               falling back to ASTAP and Astrometry.net. Blind solving needs no
+               coordinates at all \u2014 it identifies the field from the star
+               pattern using a quad index built from your local Gaia data.
+               Aliases: platesolve
+
+  cc           Cosmic Clarity image processing, in-process.
+               Subcommands: {cc}
+               These may be run directly, with or without the leading "cc".
+               Aliases: cosmicclarity
+
+  report       Write a diagnostics report (versions, paths, GPU, libraries).
+               Attach its output to bug reports.
+
+EXAMPLES
+  Solve one image, writing a new FITS:
+    setiastrosuitepro solve -i light.fits -o light_solved.fits
+
+  Solve with no coordinates in the header (blind):
+    setiastrosuitepro solve -i unknown.fits -o solved.fits
+
+  The header has coordinates but they are WRONG:
+    setiastrosuitepro solve -i light.fits --in-place --force-blind
+
+  Solve a whole folder, machine-readable output:
+    setiastrosuitepro solve -i ./lights -o ./solved --batch --json
+
+  Write a .wcs sidecar and leave the image untouched:
+    setiastrosuitepro solve -i light.fit --wcs-only
+
+  Which blind-solve index layers are built:
+    setiastrosuitepro solve --index-status
+
+  Denoise an image on the GPU:
+    setiastrosuitepro cc denoise -i in.tif -o out.tif --denoise-luma 0.6
+
+  Diagnostics for a bug report:
+    setiastrosuitepro report --save
+
+NOTES
+  Exit codes are 0 on success, 1 when the work failed, 2 for a usage or I/O
+  error, so these commands can be driven from a script.
+
+  Run "setiastrosuitepro <command> --help" for the full option list of any
+  command \u2014 this page is only the overview.
+"""
+
+
+def _print_top_level_help(stream=None) -> int:
+    (stream or sys.stdout).write(top_level_help())
+    return 0
 
 
 # ───────────────────────────────────────────────────────────────
@@ -215,9 +315,13 @@ def build_cc_parser() -> argparse.ArgumentParser:
 
 
 def _run_cc(argv: list[str]) -> int:
-    from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_file
-
+    # Parse FIRST. argparse exits during parse_args for --help and for a bad
+    # option, so importing the engine above this line made `cc --help` pay for
+    # loading torch, and made it fail outright on an install where the engine
+    # is missing -- printing help is exactly when you can least afford that.
     args = build_cc_parser().parse_args(argv)
+
+    from setiastro.saspro.cosmicclarity_headless import run_cosmicclarity_on_file
 
     inp = str(Path(args.input))
     out = str(Path(args.output))
@@ -318,6 +422,11 @@ def _run_cc(argv: list[str]) -> int:
         return 2
 
 
+def _run_solve(argv: list[str]) -> int:
+    from setiastro.saspro.plate_solve_cli import main as solve_main
+    return int(solve_main(argv))
+
+
 def build_report_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="setiastrosuitepro report",
@@ -337,6 +446,9 @@ def build_report_parser() -> argparse.ArgumentParser:
 
 def _run_report(argv: list[str]) -> int:
     args = build_report_parser().parse_args(argv)
+
+    from setiastro.saspro.diagnostics import collect_diagnostics, write_report
+
     report = collect_diagnostics()
     sys.stdout.write(report.markdown)
     if args.save or args.output:
@@ -351,8 +463,24 @@ def main(argv: list[str] | None = None) -> int:
     if not argv:
         return _launch_gui()
 
+    head = argv[0].lower()
+
+    # Top-level help must be checked BEFORE the CC aliases: "--help" used to
+    # reach the Cosmic Clarity parser, which advertised only the CC commands
+    # as though they were the whole CLI. "--h" matched nothing at all and fell
+    # through to launching the GUI.
+    if head in HELP_TOKENS and len(argv) == 1:
+        return _print_top_level_help()
+
+    if head in VERSION_TOKENS and len(argv) == 1:
+        print(f"Seti Astro Suite Pro {_version_string()}")
+        return 0
+
     if argv and argv[0].lower() in ("cc", "cosmicclarity"):
         return _run_cc(argv[1:] or ["--help"])
+
+    if argv and argv[0].lower() in ("solve", "platesolve"):
+        return _run_solve(argv[1:])
 
     if argv and argv[0].lower() == "report":
         return _run_report(argv[1:])
@@ -361,9 +489,15 @@ def main(argv: list[str] | None = None) -> int:
         paths = [str(Path(a)) for a in argv if _looks_like_path_token(a)]
         return _launch_gui(open_paths=paths)
 
-    known = {"sharpen", "correct", "denoise", "both", "superres", "satellite", "darkstar", "--help", "-h"}
-    if argv[0].lower() in known:
+    if head in set(_cc_subcommands()) | HELP_TOKENS:
         return _run_cc(argv)
+
+    # A leading dash is a flag, never a file. Opening the GUI on an unknown
+    # flag loses the typo silently and looks like the command was accepted.
+    if head.startswith("-"):
+        print(f"setiastrosuitepro: unknown option: {argv[0]}\n", file=sys.stderr)
+        _print_top_level_help(sys.stderr)
+        return 2
 
     return _launch_gui()
 

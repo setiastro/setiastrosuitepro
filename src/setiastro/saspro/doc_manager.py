@@ -131,7 +131,87 @@ def _debug_log_undo(context: str, **info):
 
 from setiastro.saspro.file_utils import _normalize_ext
 
-def _derive_display_name_from_header(header, fallback: str | None = None) -> str | None:
+# Processing-state words recognised in a FILENAME and appended to the smart
+# display name, e.g. 'ngc660galaxy_G' -> 'ngc660galaxy_G_starless'.
+#
+# ORDER MATTERS - most specific first. Once an alias matches, its span is
+# blanked out of the working copy so a shorter alias cannot re-match the same
+# text. Without that, 'crop_mask' would yield BOTH 'cropmask' and 'crop', and
+# 'star_mask' would yield both 'starmask' and 'mask'.
+#
+# Matching is separator-aware rather than \b-based, because '_' is a word
+# character to the regex engine: r'\bcrop\b' does NOT match 'ngc660_crop_G'.
+# Requiring a separator (or a string edge) on both sides is also what keeps
+# 'satmask' and 'masterflat' from registering as 'mask'.
+#
+# Extend by adding a (canonical, (aliases...)) row in the right priority slot.
+_DISPLAY_DESCRIPTORS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cropmask", ("cropmask", "crop_mask", "crop-mask")),
+    ("starmask", ("starmask", "star_mask", "star-mask",
+                  "starsmask", "stars_mask", "stars-mask")),
+    ("starless", ("starless", "star_less", "star-less",
+                  "nostars", "no_stars", "no-stars")),
+    ("stars",    ("starsonly", "stars_only", "stars-only", "onlystars")),
+    ("drizzle",  ("drizzle", "drizzled", "drz")),
+    ("crop",     ("crop", "cropped")),
+    ("mask",     ("mask",)),
+)
+
+# Keeps a heavily-processed filename from producing an absurd view title.
+_MAX_DISPLAY_DESCRIPTORS = 3
+
+
+def _descriptors_from_title(title: str) -> list[str]:
+    """
+    Pull processing-state words out of a filename, in the order they appear
+    there.
+
+    Filename order is preserved deliberately: 'ngc660_crop_starless' reads as
+    a processing sequence, and keeping that order means two files differing
+    only in it still get distinct view names.
+    """
+    if not title:
+        return []
+    # Drop the extension so a literal '.drz' tail can't become a descriptor
+    # and '....crop.fit' doesn't lose one to the boundary check.
+    work = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", str(title))
+    buf = list(work.lower())
+    found: list[tuple[int, str]] = []
+    for canon, aliases in _DISPLAY_DESCRIPTORS:
+        for alias in aliases:
+            pat = r"(?:^|[^a-z0-9])(" + re.escape(alias) + r")(?:[^a-z0-9]|$)"
+            m = re.search(pat, "".join(buf))
+            if not m:
+                continue
+            s, e = m.span(1)
+            # Blank the alias only, never the separators around it, so a
+            # neighbouring descriptor keeps its own boundaries.
+            for i in range(s, e):
+                buf[i] = "\x00"
+            found.append((s, canon))
+            break  # at most one hit per canonical descriptor
+    found.sort(key=lambda t: t[0])
+    return [c for _, c in found[:_MAX_DISPLAY_DESCRIPTORS]]
+
+
+def _append_descriptors(name: str, descriptors) -> str:
+    """
+    Append descriptors to a derived name, skipping any whose word is already
+    a token of it (so an OBJECT of 'ngc660_starless' doesn't become
+    'ngc660_starless_G_starless').
+    """
+    have = {t for t in re.split(r"[^a-z0-9]+", name.lower()) if t}
+    out = name
+    for d in descriptors:
+        if d in have:
+            continue
+        out = f"{out}_{d}"
+        have.add(d)
+    return out
+
+
+def _derive_display_name_from_header(header, fallback: str | None = None,
+                                     *, path: str | None = None) -> str | None:
     """
     Build a short descriptive display name from a FITS-like header,
     e.g. 'ngc660galaxy_G' from OBJECT=ngc660galaxy + FILTER=G.
@@ -140,9 +220,15 @@ def _derive_display_name_from_header(header, fallback: str | None = None) -> str
       subject = OBJECT / TARGET / OBJNAME
       filter  = FILTER / FILTNAM / FILTNAME
 
-    Returns 'SUBJECT_FILTER', or 'SUBJECT' if no filter, or `fallback`
-    if no usable subject. Accepts astropy fits.Header, plain dict, or
-    XISF-style [{"value": ..., "comment": ...}] entries.
+    When `path` is supplied, processing-state words found in the FILENAME
+    ('starless', 'crop', 'crop_mask', 'drizzle', ...) are appended as further
+    suffixes: 'ngc660galaxy_G_starless'. Without it a master and every
+    derivative cut from it collapse to the same view title, because they all
+    carry identical OBJECT and FILTER cards.
+
+    Returns 'SUBJECT_FILTER[_DESCRIPTOR...]', or 'SUBJECT' if no filter, or
+    `fallback` if no usable subject. Accepts astropy fits.Header, plain dict,
+    or XISF-style [{"value": ..., "comment": ...}] entries.
     """
     if header is None:
         return fallback
@@ -175,11 +261,22 @@ def _derive_display_name_from_header(header, fallback: str | None = None) -> str
     subject = _san(subject)
     if not subject:
         return fallback
+
+    name = subject
     if filt:
         filt = _san(filt)
         if filt:
-            return f"{subject}_{filt}"
-    return subject
+            name = f"{subject}_{filt}"
+
+    # Filename-derived processing descriptors, e.g. '_starless', '_crop'.
+    if path:
+        try:
+            name = _append_descriptors(
+                name, _descriptors_from_title(os.path.basename(str(path)))
+            )
+        except Exception:
+            pass  # naming is cosmetic - never let it break a file load
+    return name
 
 def _normalize_image_01(arr: np.ndarray) -> np.ndarray:
     """
@@ -3022,7 +3119,10 @@ class DocManager(QObject):
                     hdr_for_name = (meta.get("fits_header")
                                     or meta.get("original_header")
                                     or header)
-                    derived = _derive_display_name_from_header(hdr_for_name)
+                    derived = _derive_display_name_from_header(
+                        hdr_for_name,
+                        path=(meta.get("file_path") or path),
+                    )
                     if derived:
                         meta["display_name"] = derived
 

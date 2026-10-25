@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QDialog, QDialogButtonBox, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QFileDialog, QComboBox, QStackedWidget, QWidget, QMessageBox, QFormLayout,
     QLineEdit, QTextEdit, QApplication, QProgressBar, QListWidget, QListWidgetItem,
+    QCheckBox,
 )
 
 # === our I/O & stretch — migrate from SASv2 ===
@@ -96,9 +97,34 @@ class _SolveStatusPopup(QDialog):
         self.label.repaint()  # quick visual feedback
         QApplication.processEvents()
 
+# A scripted or CLI run has nowhere to put a window and nobody watching it.
+# Without this the solver opens a real floating dialog on the user's desktop
+# part-way through a batch, which is both startling and, on a headless box,
+# a crash waiting to happen.
+SUPPRESS_STATUS_POPUP = False
+
+
+def set_status_popup_enabled(on: bool) -> None:
+    """Turn the floating solve-status popup on or off process-wide."""
+    global SUPPRESS_STATUS_POPUP
+    SUPPRESS_STATUS_POPUP = not bool(on)
+
+
 def _status_popup_open(parent, text: str = ""):
     """Show (or create) the singleton status popup for headless runs."""
     global _STATUS_POPUP
+    if SUPPRESS_STATUS_POPUP:
+        # Suppressed must not mean discarded. This popup is the ONLY sink for
+        # status text when there is no status widget -- which is every CLI and
+        # scripted run -- so silently dropping it loses the blind solver's
+        # whole narration: stars detected, layers tried, where the quad index
+        # placed the field, and on what log-odds. Print it instead.
+        if text:
+            try:
+                print(text, flush=True)
+            except Exception:
+                pass
+        return None
     if _STATUS_POPUP is None:
         host = parent if isinstance(parent, QWidget) else QApplication.activeWindow()
         _STATUS_POPUP = _SolveStatusPopup(host)
@@ -288,15 +314,9 @@ def _wcs_header_from_astrometry_calib(calib: dict, image_shape: tuple[int, ...])
     parity = float(calib.get("parity", -1.0))  # default -1.0 = normal
     parity_sign = -1.0 if parity > 0 else 1.0   # flip RA axis when mirrored
 
-    # Standard CD matrix for TAN projection:
-    #   CD1_1 = -scale * cos(theta)  * parity_sign  (RA increases East = negative pixel direction)
-    #   CD1_2 =  scale * sin(theta)                 (RA rotation)
-    #   CD2_1 =  scale * sin(theta)  * parity_sign  (Dec rotation, parity-aware)
-    #   CD2_2 =  scale * cos(theta)                 (Dec increases North = positive pixel direction)
-    h["CD1_1"] = parity_sign * (-scale_deg * math.cos(theta))
-    h["CD1_2"] =               ( scale_deg * math.sin(theta))
-    h["CD2_1"] = parity_sign * (-scale_deg * math.sin(theta))
-    h["CD2_2"] =               ( scale_deg * math.cos(theta))
+    (h["CD1_1"], h["CD1_2"]), (h["CD2_1"], h["CD2_2"]) = _cd_matrix(
+        scale_deg, theta, mirrored=(parity_sign < 0))
+    h["CROTA2"] = float(calib.get("orientation", 0.0))
 
     h["RADECSYS"] = "ICRS"
     h["WCSAXES"]  = 2
@@ -1147,6 +1167,14 @@ def _choice(val, allowed: set[str], default: str) -> str:
     return s if s in allowed else default
 
 
+def _opt_bool(val, default=False):
+    if val is None or val == "":
+        return bool(default)
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes", "on")
+    return bool(val)
+
+
 def _opt_float(val):
     if val is None or val == "":
         return None
@@ -1178,6 +1206,8 @@ def normalize_plate_solve_preset(preset: dict | None) -> dict:
         "fov_mode": _choice(p.get("fov_mode"), _FOV_MODES, "compute"),
         "fov_value": float(fov_value),
         "solver": _choice(solver, _SOLVER_PREFS, "both"),
+        "blind": _opt_bool(p.get("blind"), True),
+        "force_blind": _opt_bool(p.get("force_blind"), False),
     }
 
 
@@ -1192,6 +1222,8 @@ def apply_plate_solve_preset(settings, preset: dict | None) -> dict:
     settings.setValue("astap/seed_fov_mode", spec["fov_mode"])
     settings.setValue("astap/seed_fov_value", float(spec["fov_value"]))
     _set_solver_preference(settings, spec["solver"])
+    _set_blind_enabled(settings, spec["blind"])
+    _set_force_blind(settings, spec["force_blind"])
     return spec
 
 
@@ -1597,14 +1629,97 @@ def _solve_numpy_with_fallback(parent, settings, image, seed_header):
             pass
 
 
+def _gaia_pass(parent, settings, image, seed_header, say=None):
+    """
+    Pass 1, plus one blind retry when a seeded attempt fails.
+
+    The blind path only runs on its own when the header has NO RA/Dec at all,
+    and _parse_ra_deg accepts eight keys -- CRVAL1, RA, OBJCTRA, TELRA, MNTRA,
+    CENTERRA, RA_OBJ, ALPHA_J2000. Capture software writes the mount's RA/DEC
+    into every light, and a stacked master inherits them, so a master almost
+    always LOOKS seeded. When those numbers are stale or the scale is wrong,
+    the spiral searches around a position or scale the field is not at, finds
+    nothing, and the whole chain fails -- even though the quad index could
+    have identified the field outright without either number.
+
+    So: if a seeded attempt fails, throw the seed away and ask the index.
+    That is the one case the seed cannot be trusted, by definition. It costs
+    a couple of seconds on a path that has already failed, and nothing at all
+    when the first attempt succeeds.
+
+    Returns (ok, Header | error_str).
+    """
+    ok, res = _solve_with_GAIA_threaded(parent, settings, image, seed_header)
+    if ok:
+        return True, res
+
+    # Only worth retrying if the first pass actually USED a seed. If it was
+    # already blind -- no pointing in the header, seed mode "none", or the
+    # force-blind box ticked -- the retry would repeat it exactly.
+    try:
+        if _get_force_blind(settings) or _get_seed_mode(settings) == "none":
+            return False, res
+        if not _get_blind_enabled(settings):
+            return False, res
+        if not isinstance(seed_header, Header):
+            return False, res
+        if _parse_ra_deg(seed_header) is None or _parse_dec_deg(seed_header) is None:
+            return False, res
+        from setiastro.saspro.gaia_quad_index import get_quad_library
+        if not get_quad_library().any_installed():
+            return False, res
+    except Exception:
+        return False, res
+
+    # Drop the SCALE as well as the pointing. Force-blind alone keeps the
+    # header's pixel scale, which is the right call for the user's checkbox --
+    # focal length times pixel size stays true even when the mount lied. But
+    # here we only know that SOMETHING in the seed was wrong, and if it was
+    # the scale, keeping it poisons the retry twice over: layers_for_field
+    # picks the wrong quad layers from it, and the spiral searches the wrong
+    # scale band. With no hint, the blind solver tries every built layer
+    # coarsest-first and works it out. That is slower, on a path that has
+    # already failed.
+    retry_header = seed_header.copy()
+    for _k in ("FOCALLEN", "PIXSCALE", "SCALE", "PLTSCALE", "SECPIX",
+               "SECPIX1", "SECPIX2", "XPIXSZ", "YPIXSZ", "PIXSZ",
+               "PIXSIZE1", "PIXSIZE2", "XBINNING", "YBINNING"):
+        try:
+            del retry_header[_k]
+        except Exception:
+            pass
+    retry_header = _strip_wcs_keys(retry_header)
+
+    msg = ("Status: Seeded solve failed \u2014 the header pointing or scale may be "
+           "wrong. Retrying blind from the quad index\u2026")
+    print("[PlateSolver] Pass 1 failed with a seed; retrying blind "
+          "(pointing and scale discarded)")
+    if say is not None:
+        say(msg)
+    else:
+        _set_status_ui(parent, msg)
+
+    ok2, res2 = _solve_with_GAIA_threaded(parent, settings, image, retry_header,
+                                          force_blind=True)
+    if ok2:
+        print("[PlateSolver] blind retry succeeded where the seeded pass failed")
+        return True, res2
+    # Report the seeded failure: it is the one that describes the user's
+    # actual header, and the blind failure is a consequence of it.
+    return False, f"{res}  (blind retry also failed: {res2})"
+
+
 def _solve_numpy_with_fallback_impl(
     parent, settings, image: np.ndarray, seed_header
 ) -> tuple[bool, "Header | str"]:
     """
     Four-pass solve strategy:
 
-    Pass 1 — In-House Gaia DR3 (Hough matching against local Gaia catalog).
-              Fast, no external process, handles rotation/scale variants.
+    Pass 1 — In-House Gaia DR3 (Hough/triangle matching against the local
+              Gaia catalog). Fast, no external process, handles rotation/scale
+              variants. When the header carries no usable RA/Dec this pass now
+              recovers one blind from the local quad index first, so a missing
+              or wrong pointing no longer forces the chain down to ASTAP.
 
     Pass 2 — ASTAP seeded (auto from header, compute FOV from scale).
               Fast when header has good RA/Dec.
@@ -1629,7 +1744,7 @@ def _solve_numpy_with_fallback_impl(
     if pref in ("gaia_only", "vizier_only"):
         _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
             "Status: Solver preference = In-House Gaia DR3 only…"))
-        ok, res = _solve_with_GAIA_threaded(parent, settings, image, seed_header)
+        ok, res = _gaia_pass(parent, settings, image, seed_header)
         if ok:
             _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
                 "Status: Solved via in-house Gaia DR3."))
@@ -1644,7 +1759,7 @@ def _solve_numpy_with_fallback_impl(
             "Status: Trying in-house Gaia DR3 solver…"))
         QApplication.processEvents()
 
-        ok1, res1 = _solve_with_GAIA_threaded(parent, settings, image, seed_header)
+        ok1, res1 = _gaia_pass(parent, settings, image, seed_header)
         if ok1:
             _set_status_ui(parent, QCoreApplication.translate("PlateSolver",
                 "Status: Solved via in-house Gaia DR3."))
@@ -1676,7 +1791,15 @@ def _solve_numpy_with_fallback_impl(
     # ── Determine if we have useful seed data ────────────────────────────────
     _has_seed = False
     _seed_mode = _get_seed_mode(settings)
-    
+
+    if _get_force_blind(settings):
+        # Pass 1 ignored the header position, so Pass 2 must not reinstate it:
+        # ASTAP seeded on the same wrong coordinates would just fail slowly
+        # before the blind pass gets its turn.
+        _seed_mode = "none"
+        print("[PlateSolver] Force blind solve — header position ignored "
+              "for every pass")
+
     if _seed_mode == "manual":
         # Check if manual fields have valid RA/Dec
         ra_s  = _get_manual_ra(settings)
@@ -2034,21 +2157,8 @@ def _make_seed_wcs(ra_deg: float, dec_deg: float, scale_arcsec: float,
 
     scale_deg = float(scale_arcsec) / 3600.0
     rot_rad   = math.radians(rot_deg)
-    cos_r     = math.cos(rot_rad)
-    sin_r     = math.sin(rot_rad)
 
-    if not flip:
-        # det > 0 (original behavior)
-        w.wcs.cd = np.array([
-            [-scale_deg * cos_r,  scale_deg * sin_r],
-            [-scale_deg * sin_r, -scale_deg * cos_r],
-        ])
-    else:
-        # det < 0 — standard CROTA2 convention, CDELT1=-s, CDELT2=+s
-        w.wcs.cd = np.array([
-            [-scale_deg * cos_r, -scale_deg * sin_r],
-            [-scale_deg * sin_r,  scale_deg * cos_r],
-        ])
+    w.wcs.cd = np.array(_cd_matrix(scale_deg, rot_rad, mirrored=flip))
     w.wcs.set()
     return w
 
@@ -2474,10 +2584,12 @@ class _GaiaSolveWorker(QThread):
     status = pyqtSignal(str)
     done = pyqtSignal(bool, object)   # (ok, Header|error_str)
 
-    def __init__(self, image: np.ndarray, seed_header, settings_scope=None, parent=None):
+    def __init__(self, image: np.ndarray, seed_header, settings_scope=None,
+                 parent=None, force_blind: "bool | None" = None):
         super().__init__(parent)
         self._image = image
         self._seed_header = seed_header
+        self._force_blind = force_blind
         # Capture the org/app name so the worker thread opens the same
         # QSettings file as the caller (avoids the "SASpro" vs
         # "Seti Astro Suite Pro" mismatch when the main app uses QSettings()).
@@ -2497,13 +2609,15 @@ class _GaiaSolveWorker(QThread):
                 self._image, self._seed_header,
                 parent=None, settings=settings,
                 status_cb=self.status.emit,
+                force_blind=self._force_blind,
             )
         except Exception as e:
             import traceback; traceback.print_exc()
             ok, res = False, f"Gaia DR3 solver: worker exception: {e}"
         self.done.emit(ok, res)
 
-def _solve_with_GAIA_threaded(parent, settings, image, seed_header) -> tuple[bool, "Header | str"]:
+def _solve_with_GAIA_threaded(parent, settings, image, seed_header,
+                              force_blind: "bool | None" = None) -> tuple[bool, "Header | str"]:
     """
     Same signature/contract as _solve_with_GAIA but runs it in a QThread,
     spinning a local event loop so the UI stays responsive. Synchronous to
@@ -2525,7 +2639,8 @@ def _solve_with_GAIA_threaded(parent, settings, image, seed_header) -> tuple[boo
         except Exception:
             pass
 
-    worker = _GaiaSolveWorker(image, seed_header, settings_scope=_scope)
+    worker = _GaiaSolveWorker(image, seed_header, settings_scope=_scope,
+                              force_blind=force_blind)
     worker.status.connect(lambda t: _set_status_ui(parent, t))   # queued → GUI thread
 
     def _on_done(ok, res):
@@ -2539,11 +2654,203 @@ def _solve_with_GAIA_threaded(parent, settings, image, seed_header) -> tuple[boo
     worker.deleteLater()
     return result.get("ok", False), result.get("res", "Gaia DR3 solver: worker did not return")
 
+# ---------- Blind solving via the local quad index ----------
+
+def _get_blind_enabled(settings) -> bool:
+    """Blind solving through the quad index. On by default."""
+    if settings is None:
+        return True
+    try:
+        v = settings.value("plate_solver/blind_quads", True)
+        if isinstance(v, str):
+            return v.strip().lower() not in ("false", "0", "no")
+        return bool(v)
+    except Exception:
+        return True
+
+
+def _set_blind_enabled(settings, on: bool):
+    if settings is not None:
+        settings.setValue("plate_solver/blind_quads", bool(on))
+
+
+def _get_force_blind(settings) -> bool:
+    """
+    Ignore the header RA/Dec and locate the field from the star pattern.
+
+    For when the pointing is WRONG rather than missing. A wrong seed is worse
+    than no seed: the spiral search quarters a patch of sky the field is not
+    in, fails slowly, and then hands ASTAP the same bad position to fail on
+    again. The pixel scale is kept, because it is derived from focal length
+    and pixel size and stays right even when the mount was lying.
+    """
+    if settings is None:
+        return False
+    try:
+        v = settings.value("plate_solver/force_blind", False)
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes")
+        return bool(v)
+    except Exception:
+        return False
+
+
+def _set_force_blind(settings, on: bool):
+    if settings is not None:
+        settings.setValue("plate_solver/force_blind", bool(on))
+
+
+def _blind_seed_header(image: np.ndarray, scale_hint, say) -> tuple[bool, object]:
+    """
+    Ask the quad index where this image points. Returns (True, Header) with
+    CRVAL/CD/CROTA2 only, or (False, reason).
+    """
+    try:
+        from setiastro.saspro.gaia_blind_solver import blind_seed
+    except Exception as e:
+        return False, (f"blind solver unavailable ({e}). Build a Blind Solve "
+                       f"Index on the Gaia DR3 Library dialog.")
+    # _set_status_ui only forwards a line to the batch log when it is tagged
+    # like the rest of the chain, so tag everything the blind solver says
+    # here rather than prefixing a dozen strings over there.
+    def blind_say(msg: str):
+        m = str(msg)
+        say(m if m.startswith(("Status:", "\u25b6", "\u2714", "\u274c")) else f"Status: {m}")
+
+    blind_say("Status: Blind solving \u2014 no usable RA/Dec, identifying the "
+              "field from the star pattern\u2026")
+    try:
+        return blind_seed(image, scale_hint_arcsec=scale_hint,
+                          status_cb=blind_say)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        blind_say(f"Status: Blind solve failed: {type(e).__name__}: {e}")
+        return False, f"blind solve raised {type(e).__name__}: {e}"
+
+
+def _merge_blind_seed(original: "Header | None", blind: "Header") -> "Header":
+    """
+    Acquisition header + the blind WCS. The original's own WCS keys are dropped
+    first: if they were any good we would not be here, and a stale CROTA2 would
+    otherwise override the roll the blind solve just measured.
+    """
+    base = (_strip_wcs_keys(original.copy())
+            if isinstance(original, Header) else Header())
+    for k in ("CTYPE1", "CTYPE2", "CRPIX1", "CRPIX2", "CRVAL1", "CRVAL2",
+              "CD1_1", "CD1_2", "CD2_1", "CD2_2", "CROTA1", "CROTA2",
+              "RADESYS", "WCSAXES", "BLNDODDS", "BLNDLAYR"):
+        if k in blind:
+            try:
+                base[k] = blind[k]
+            except Exception:
+                pass
+    return base
+
+
+def _field_sky_box(corner_sky, margin_deg):
+    """
+    RA/Dec bounding box for a field, correct at the poles and across RA=0.
+
+    Taking min/max of the four corner RAs is wrong twice over:
+
+      * A field containing a pole has corner RAs scattered anywhere around the
+        circle. min/max then spans the gap BETWEEN them and excludes
+        everything outside it -- which is most of the field. The catalogue
+        comes back missing a wedge of real stars, the matcher pairs the
+        survivors with whatever is nearest, and the fit lands hundreds of
+        arcseconds out while still reporting a confident-looking consensus.
+      * A field straddling RA=0 has corners at (say) 359.9 and 0.2, and the
+        box runs the long way round the sky.
+
+    Both are fixed the same way: when the corners span more than half the sky
+    in RA, or the field reaches a pole, take all RA and let the in-frame
+    projection filter downstream do the trimming. Over-fetching is harmless --
+    the caller already drops anything that does not project into the frame --
+    whereas under-fetching is silent and fatal.
+    """
+    ras = [float(c.ra.deg) % 360.0 for c in corner_sky]
+    decs = [float(c.dec.deg) for c in corner_sky]
+    dec_min = min(decs) - margin_deg
+    dec_max = max(decs) + margin_deg
+
+    polar = (dec_max >= 89.0) or (dec_min <= -89.0)
+    if polar:
+        if dec_max >= 89.0:
+            dec_max = 90.0
+        if dec_min <= -89.0:
+            dec_min = -90.0
+    if polar or (max(ras) - min(ras)) > 180.0:
+        return 0.0, 360.0, max(-90.0, dec_min), min(90.0, dec_max)
+    return (min(ras) - margin_deg, max(ras) + margin_deg,
+            max(-90.0, dec_min), min(90.0, dec_max))
+
+
+def _quad_refine_seed(img_stars, img_w, img_h, scale_hint, say):
+    """
+    Ask the quad index where this field actually is, reusing the stars the
+    caller already detected.
+
+    This exists to collapse the search grid. The spiral is 19 centres x 5
+    scales x 2 parities = 190 attempts, and each failing attempt that falls
+    through to the Hough matcher costs a pure-Python O(n^2) vote: measured at
+    4.3 s for 1000 stars. One hash lookup gets the answer outright, so the
+    grid becomes a single attempt that is already correct.
+
+    Returns the solve_blind_core result dict, or None to leave the grid alone.
+    Every failure path returns None: this is an accelerator, never a gate.
+
+    NOT CURRENTLY CALLED. It used to run on every solve, which made the
+    "blind-solve when there is no RA/Dec" checkbox consult the quad index even
+    when the header had a good pointing. Kept because the idea is sound and
+    cheap to re-enable -- but a wrong seed is now handled by the blind retry
+    in _gaia_pass(), so switching it back on would only buy speed on frames
+    that already solve on the first attempt.
+    """
+    try:
+        from setiastro.saspro.gaia_quad_index import get_quad_library
+        from setiastro.saspro.gaia_blind_solver import (
+            solve_blind_core, make_fetch_box)
+    except Exception as e:
+        print(f"[GaiaLocal] quad index unavailable: {e}")
+        return None
+    try:
+        lib = get_quad_library()
+        if not lib.any_installed():
+            return None
+        fetch = make_fetch_box()
+        if fetch is None:
+            return None
+
+        a = np.asarray(img_stars, dtype=np.float64)
+        if a.ndim != 2 or len(a) < 8:
+            return None
+        # The index keeps the brightest stars per sky cell, so the solver has
+        # to rank globally by brightness or the two sets never correspond.
+        if a.shape[1] >= 3:
+            a = a[np.argsort(-a[:, 2])]
+
+        field_arcmin = ((max(img_w, img_h) * scale_hint / 60.0)
+                        if scale_hint else None)
+        layers = lib.layers_for_field(field_arcmin)
+        if not layers:
+            return None
+        res = solve_blind_core(a[:, :2], int(img_w), int(img_h), layers, fetch,
+                               scale_hint_arcsec=scale_hint, status_cb=say)
+        return res if res.get("ok") else None
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[GaiaLocal] quad refine failed, using the search grid: {e}")
+        return None
+
+
 def _solve_with_GAIA(image: np.ndarray,
                      seed_header: "Header | None",
                      parent=None,
                      settings=None,
-                     status_cb=None) -> tuple[bool, "Header | str"]:
+                     status_cb=None,
+                     force_blind: "bool | None" = None) -> tuple[bool, "Header | str"]:
     """
         Match image stars to catalog stars by voting on (dx, dy) translation space
         — a Generalized Hough Transform restricted to pure translation.
@@ -2574,14 +2881,45 @@ def _solve_with_GAIA(image: np.ndarray,
     # Check if we're in manual seed mode — if so, prefer settings over header
     _seed_mode = _get_seed_mode(settings) if settings is not None else "auto"
 
-    if _seed_mode == "none":
-        return False, (
-            "Gaia DR3 solver: blind solving is not supported by the In-House Gaia DR3 solver. "
-            "A seed position is required. Set Seed Mode to 'Auto' (uses header RA/Dec) or "
-            "'Manual' (enter coordinates), or switch to ASTAP for blind solving."
-        )
+    def _say(text: str):
+        if status_cb is not None:
+            status_cb(text)
+        else:
+            _set_status_ui(parent, text)
 
-    if _seed_mode == "manual" and settings is not None:
+    # None = honour the user's checkbox; True/False = caller decides, used
+    # by the blind retry below so it need not write to persisted settings.
+    _force_blind = (_get_force_blind(settings) if force_blind is None
+                    else bool(force_blind))
+    _from_blind = False
+
+    if _seed_mode == "none" or _force_blind:
+        # Explicit blind, or forced. Throw the POSITION away but keep the
+        # pixel scale — it comes from focal length and pixel size, so it stays
+        # right even when the mount was lying, and it narrows the quad search
+        # to one or two layers. A manually entered scale outranks the header,
+        # since someone who typed it in knows something we do not.
+        ra = dec = None
+        # Only trust the manual scale in MANUAL mode. The manual fields are
+        # disabled in every other mode, but current_preset() still reads and
+        # persists whatever text is sitting in them, so outside manual mode
+        # they are stale leftovers. Honouring one here is actively harmful: a
+        # stale 1.0"/px against a real 1.63"/px puts the scale filter at
+        # 0.7-1.3, which discards every correct candidate before it is ever
+        # verified, and the solve grinds through junk instead of failing.
+        scale = None
+        _scale_src = "manual entry"
+        if _seed_mode == "manual" and settings is not None:
+            scale = _get_manual_scale(settings)
+        if scale is None:
+            scale = (_estimate_scale_arcsec_from_header(seed_header)
+                     if isinstance(seed_header, Header) else None)
+            _scale_src = "the header"
+        if _force_blind and _seed_mode != "none":
+            _say("Status: Force blind solve — ignoring the given position"
+                 + (f", keeping {scale:.3f}\"/px from {_scale_src}"
+                    if scale else " and searching every scale"))
+    elif _seed_mode == "manual" and settings is not None:
         ra_s  = _get_manual_ra(settings)
         dec_s = _get_manual_dec(settings)
         ra    = _parse_ra_input_to_deg(ra_s)
@@ -2595,6 +2933,31 @@ def _solve_with_GAIA(image: np.ndarray,
         ra    = _parse_ra_deg(seed_header)  if isinstance(seed_header, Header) else None
         dec   = _parse_dec_deg(seed_header) if isinstance(seed_header, Header) else None
         scale = _estimate_scale_arcsec_from_header(seed_header) if isinstance(seed_header, Header) else None
+
+    # ── 1b) No position? Recover one blind from the quad index ───────────────
+    # The quad index identifies the field from the star pattern alone. What it
+    # returns is a SEED, not a solution: everything below — the spiral search,
+    # the matcher, the refinement, the SIP fit and the quality gate — then runs
+    # exactly as it does for a header-seeded solve.
+    if ra is None or dec is None:
+        if not (_get_blind_enabled(settings) or _force_blind):
+            return False, ("Gaia DR3 solver: no RA/Dec seed in header, and blind "
+                           "solving via the quad index is disabled in settings.")
+        ok_b, blind = _blind_seed_header(image, scale, _say)
+        if not ok_b:
+            return False, f"Gaia DR3 solver: {blind}"
+        _from_blind = True
+        ra = _parse_ra_deg(blind)
+        dec = _parse_dec_deg(blind)
+        scale = _estimate_scale_arcsec_from_header(blind) or scale
+        seed_header = _merge_blind_seed(seed_header, blind)
+        _odds = blind.get("BLNDODDS", None)
+        _lyr = blind.get("BLNDLAYR", None)
+        _say("Status: Blind solve located the field at "
+             f"RA={ra:.4f}° Dec={dec:+.4f}°, {scale:.3f}\"/px"
+             + (f", log-odds {float(_odds):,.0f}" if _odds is not None else "")
+             + (f", layer {int(_lyr)}" if _lyr is not None else "")
+             + " — handing to the Gaia solver to refine…")
 
     if ra is None or dec is None:
         return False, "Gaia DR3 solver: no RA/Dec seed in header"
@@ -2727,6 +3090,44 @@ def _solve_with_GAIA(image: np.ndarray,
     if len(img_stars) < 10:
         return False, f"Gaia DR3 solver: only {len(img_stars)} stars detected — too few"
 
+    # ── 4b) Collapse the search grid with the quad index ────────────────────
+    # PREPENDED, never substituted: the quad answer becomes attempt 0, and the
+    # whole original grid stays behind it untouched. If the quad solution is
+    # subtly wrong the spiral still runs exactly as it does today, so this can
+    # only ever save attempts, never cost a solve.
+    # Held for the fallback below: if every refinement attempt fails its
+    # quality gate, this verified placement is still the best astrometry we
+    # have, and returning it beats returning nothing.
+    _quad_seed = None
+
+    if _from_blind:
+        # Blind already ran the quad index; its answer is the seed. Collapse
+        # the grid to it rather than paying for a second identical lookup.
+        search_centers = [(ra, dec)] + list(search_centers)
+        scale_variants = [scale] + list(scale_variants)
+        if isinstance(seed_header, Header) and seed_header.get("BLNDODDS") is not None:
+            _quad_seed = {
+                "ra": ra, "dec": dec, "scale_arcsec": scale,
+                "roll_deg": seed_header.get("CROTA2", 0.0),
+                "parity": seed_header.get("BLNDPAR", "normal"),
+                "log_odds": seed_header.get("BLNDODDS"),
+                "layer": seed_header.get("BLNDLAYR"),
+            }
+    # No `elif` consulting the quad index here on purpose.
+    #
+    # This branch used to run _quad_refine_seed on EVERY solve whenever the
+    # blind box was ticked, seed or no seed, as an accelerator: one lookup
+    # collapses 19 centres x 5 scales x 2 parities to a single attempt that is
+    # already right. But the checkbox says "when there is no RA/Dec", and a
+    # header carrying a perfectly good pointing still went through the quad
+    # index -- the control did not mean what it said.
+    #
+    # It is also no longer needed. A seed that turns out to be wrong is caught
+    # by _gaia_pass(), which retries blind once Pass 1 has failed, so the only
+    # thing the unconditional lookup bought was speed on exactly the frames
+    # that did not need it. Blind now runs when the header has no usable
+    # pointing (handled above) or when Force blind solve is ticked.
+
     # ── 5) Search loop: spiral centers × scale variants ──────────────────────
     import sqlite3
 
@@ -2758,10 +3159,8 @@ def _solve_with_GAIA(image: np.ndarray,
 
                         corners_pix = [(0,0),(img_w-1,0),(0,img_h-1),(img_w-1,img_h-1)]
                         corner_sky  = [seed_wcs.pixel_to_world(x, y) for x, y in corners_pix]
-                        ra_min  = min(c.ra.deg  for c in corner_sky) - 0.1
-                        ra_max  = max(c.ra.deg  for c in corner_sky) + 0.1
-                        dec_min = min(c.dec.deg for c in corner_sky) - 0.1
-                        dec_max = max(c.dec.deg for c in corner_sky) + 0.1
+                        (ra_min, ra_max, dec_min,
+                         dec_max) = _field_sky_box(corner_sky, 0.1)
 
                         if use_astro:
                             stars = astro_lib.find_stars_in_box(ra_min, ra_max, dec_min, dec_max)
@@ -2936,9 +3335,194 @@ def _solve_with_GAIA(image: np.ndarray,
             print(f"[GaiaLocal] excluding {len(matched_sids)} catalog stars from this bad match, retrying…")
             continue
         else:
+            _fb = _quad_seed_solution(_quad_seed, img_w, img_h, seed_header,
+                                      result_or_err)
+            if _fb is not None:
+                print("[GaiaLocal] refinement failed the gate — returning the "
+                      "quad index seed as a seed-grade solution")
+                _say("Status: Refinement could not reach the accuracy gate. "
+                     "Returning the quad index placement instead — the field "
+                     "is correctly identified, but the WCS is approximate "
+                     "(no distortion fit). SOLVSRC='quad-seed'.")
+                return True, _fb
             return False, result_or_err
 
+    _fb = _quad_seed_solution(_quad_seed, img_w, img_h, seed_header,
+                              "no match across all search attempts")
+    if _fb is not None:
+        print("[GaiaLocal] no refined match — returning the quad index seed")
+        _say("Status: No refined match. Returning the quad index placement "
+             "— approximate WCS, SOLVSRC='quad-seed'.")
+        return True, _fb
     return False, "Gaia DR3 solver: no match found across all search attempts"
+
+def _quad_index_status_html() -> str:
+    """
+    One line on what the blind solver actually has to work with.
+
+    The useful fact is not how many files exist but which FIELD WIDTHS they
+    cover: each layer answers a band of about 4x in field size, so a user
+    with three layers built still gets nothing on a frame that falls outside
+    them. Lead with the covered range, and say plainly when a gap sends the
+    solve to ASTAP instead.
+    """
+    import html as _html
+    try:
+        from setiastro.saspro.gaia_quad_index import (
+            get_quad_library, refresh_quad_library, QUAD_LAYER_DEFS, _fmt_ang)
+    except Exception:
+        return ("<span style='color:#c87f00'>Quad index module unavailable \u2014 "
+                "blind solving will use ASTAP.</span>")
+    try:
+        refresh_quad_library()
+        lib = get_quad_library()
+        built = [l for l in lib.installed() if l.defn is not None]
+        total = len(QUAD_LAYER_DEFS)
+    except Exception as e:
+        return ("<span style='color:#c87f00'>Quad index could not be read: "
+                f"{_html.escape(str(e))}</span>")
+
+    try:
+        from setiastro.saspro.gaia_database import get_astro_library
+        n_bands = len(get_astro_library().installed_bands() or [])
+    except Exception:
+        n_bands = 0
+    bands = (f"{n_bands} Gaia catalogue band{'s' if n_bands != 1 else ''} installed"
+             if n_bands else "<b>no Gaia catalogue bands installed</b>")
+
+    if not built:
+        return ("<span style='color:#c87f00'><b>Quad index: not built.</b> "
+                "Blind solving will fall back to ASTAP. Build it from the Gaia "
+                "data you already have \u2014 Blind Solve Index tab.</span>"
+                f"<br><small>{bands}.</small>")
+
+    lo = min(l.defn.field_lo_arcmin for l in built)
+    hi = max(l.defn.field_hi_arcmin for l in built)
+    quads = sum(int(l.n_quads) for l in built)
+    missing = total - len(built)
+
+    txt = (f"<b>Quad index: {len(built)} of {total} layers built</b> "
+           f"({quads:,} quads) \u2014 solves fields "
+           f"{_fmt_ang(lo)} to {_fmt_ang(hi)} wide.<br><small>{bands}.")
+    if missing:
+        txt += (f" {missing} layer{'s' if missing != 1 else ''} not built; "
+                "fields outside that range fall back to ASTAP.")
+    return txt + "</small>"
+
+
+def _cd_matrix(scale_deg: float, theta_rad: float, mirrored: bool):
+    """
+    The CD matrix for a TAN image at pixel scale `scale_deg` and roll
+    `theta_rad`, mirrored or not. Returns ((CD1_1, CD1_2), (CD2_1, CD2_2)).
+
+    One definition, because getting this wrong is quiet. The earlier form
+    multiplied CD1_1 and CD2_1 by the parity sign and left CD1_2 and CD2_2
+    alone. That is not a mirror -- a mirror negates a whole axis, so it must
+    take a full row or a full column, never half of each. What it produced
+    was a shear: det = -parity * scale^2 * cos(2*theta), which is zero at a
+    45 degree roll (singular matrix), changes sign past it (parity silently
+    inverts), and leaves the two column vectors non-perpendicular at every
+    roll that is not a multiple of 90 degrees. Column norms stay correct, so
+    a pixel scale read back from it still looks right while the WCS itself
+    is skewed.
+
+    Here det is +scale^2 or -scale^2 exactly, at every roll.
+    """
+    c = math.cos(theta_rad)
+    s = math.sin(theta_rad)
+    if mirrored:
+        # det = -scale^2  (standard CROTA2 convention, CDELT1=-s, CDELT2=+s)
+        return ((-scale_deg * c, -scale_deg * s),
+                (-scale_deg * s,  scale_deg * c))
+    # det = +scale^2
+    return ((-scale_deg * c,  scale_deg * s),
+            (-scale_deg * s, -scale_deg * c))
+
+
+def _sky_centroid(coords) -> "SkyCoord":
+    """
+    Mean direction of a set of sky coordinates, as a mean of unit vectors.
+
+    Averaging RA in degrees is wrong wherever the set wraps. A field straddling
+    RA 0h averages to 12h. A field containing a celestial pole holds stars at
+    every RA at once, so its mean RA is meaningless -- on the Polaris frame the
+    stars span 0.1 deg to 360.0 deg and average to 137.7 deg against a true
+    centre of 37.0 deg. Either way the tangent point lands degrees away from
+    the field, and a TAN fit anchored there cannot represent the true WCS: the
+    same 489 pairs fit to 551" RMS about the averaged point and 0.84" about the
+    real centre, with the plate scale inflated from 4.03"/px to 4.59"/px.
+
+    Averaging the unit vectors instead has no wrap and no pole.
+    """
+    from astropy.coordinates import SkyCoord
+    from astropy import units as u
+
+    v = np.atleast_2d(coords.cartesian.xyz.value.reshape(3, -1).T)
+    m = v.mean(axis=0)
+    n = float(np.linalg.norm(m))
+    if not np.isfinite(n) or n < 1e-12:
+        # Antipodally symmetric: no mean direction exists. Any member of the
+        # set beats a point outside it.
+        f = coords.flatten()[0]
+        return SkyCoord(ra=f.ra, dec=f.dec, frame=coords.frame)
+    m = m / n
+    return SkyCoord(
+        ra=(math.degrees(math.atan2(m[1], m[0])) % 360.0) * u.deg,
+        dec=math.degrees(math.asin(max(-1.0, min(1.0, float(m[2]))))) * u.deg,
+        frame=coords.frame,
+    )
+
+
+def _quad_seed_solution(quad_seed, img_w, img_h, seed_header, reason):
+    """
+    Last resort: hand back the quad index's own placement of the field.
+
+    The refinement pipeline has failed its quality gate, so there is no
+    distortion-corrected fit to return. The quad match itself, though, was
+    accepted on log-odds against the background hypothesis -- it is a real
+    identification of the field, carrying its own centre, scale, roll and
+    parity, accurate to about what a 4-star similarity fit allows. For a user
+    who would otherwise get nothing at all, a correctly centred WCS good to a
+    few pixels is worth far more than a failure.
+
+    It is returned clearly labelled, and deliberately WITHOUT a SOLVRMS card:
+    there is no fit to quote a residual from, and inventing one would let a
+    seed-grade WCS pass for a refined one downstream.
+
+    Returns a Header, or None if there is no quad match to fall back on.
+    """
+    if not quad_seed:
+        return None
+    try:
+        # The quad match brought its own roll. The seed header's rotation is
+        # not trustworthy here -- a wrong CROTA2 is one of the reasons the
+        # refinement can fail in the first place -- so carry the quad's.
+        _rot = Header()
+        _rot["CROTA2"] = float(quad_seed.get("roll_deg", 0.0) or 0.0)
+        w = _make_seed_wcs(float(quad_seed["ra"]), float(quad_seed["dec"]),
+                           float(quad_seed["scale_arcsec"]), img_w, img_h,
+                           _rot, flip=(quad_seed.get("parity") == "flipped"))
+        hdr = _gaia_build_final_header(w, seed_header)
+        for _k in ("SOLVRMS", "SOLVP95", "SOLVNSTR"):
+            hdr.pop(_k, None)
+        hdr["SOLVSRC"] = ("quad-seed",
+                          "WCS from quad index match - NOT refined")
+        if quad_seed.get("log_odds") is not None:
+            hdr["BLNDODDS"] = (round(float(quad_seed["log_odds"]), 1),
+                               "Quad match log-odds vs background")
+        if quad_seed.get("layer") is not None:
+            hdr["BLNDLAYR"] = (quad_seed["layer"],
+                               "Quad index layer that matched")
+        hdr.add_history("SASpro: astrometric refinement failed its quality "
+                        "gate; this WCS is the quad index seed")
+        hdr.add_history("SASpro: seed-grade astrometry - approximate centre "
+                        "and scale, no distortion terms")
+        hdr.add_history(f"SASpro: gate failure was: {str(reason)[:60]}")
+        return hdr
+    except Exception as e:
+        print(f"[GaiaLocal] quad seed fallback failed: {e}")
+        return None
+
 
 def _gaia_build_final_header(wcs_solution: WCS, seed_header: "Header | None") -> Header:
     wcs_hdr  = _as_header(wcs_solution.to_header(relax=True))
@@ -2994,10 +3578,7 @@ def _gaia_fit_and_validate(
 
     # ── Fit initial TAN WCS ────────────────────────────────────────────────
     try:
-        proj_point = SkyCoord(
-            ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
-            dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
-        )
+        proj_point = _sky_centroid(matched_sky)
         wcs_tan = fit_wcs_from_points(
             (img_matched[:, 0], img_matched[:, 1]),
             matched_sky,
@@ -3044,10 +3625,8 @@ def _gaia_fit_and_validate(
             try:
                 corners_pix = [(0,0),(img_w-1,0),(0,img_h-1),(img_w-1,img_h-1)]
                 corner_sky  = [wcs_solution.pixel_to_world(x, y) for x, y in corners_pix]
-                t_ra_min  = min(c.ra.deg  for c in corner_sky) - 0.05
-                t_ra_max  = max(c.ra.deg  for c in corner_sky) + 0.05
-                t_dec_min = min(c.dec.deg for c in corner_sky) - 0.05
-                t_dec_max = max(c.dec.deg for c in corner_sky) + 0.05
+                (t_ra_min, t_ra_max, t_dec_min,
+                 t_dec_max) = _field_sky_box(corner_sky, 0.05)
 
                 t_seen = {}
                 if use_astro:
@@ -3108,10 +3687,7 @@ def _gaia_fit_and_validate(
                     print(f"[GaiaLocal] iter={iteration}: too few pairs ({len(t_img_m)}), stopping")
                     break
 
-                t_proj = SkyCoord(
-                    ra=float(np.mean([c.ra.deg for c in t_cat_sky_m])) * u.deg,
-                    dec=float(np.mean([c.dec.deg for c in t_cat_sky_m])) * u.deg,
-                )
+                t_proj = _sky_centroid(t_cat_sky_m)
                 t_wcs_tan = fit_wcs_from_points(
                     (t_img_m[:,0], t_img_m[:,1]),
                     t_cat_sky_m,
@@ -3127,7 +3703,15 @@ def _gaia_fit_and_validate(
                 _gained = len(t_img_m) > n_matched
                 _kept   = len(t_img_m) >= 0.8 * n_matched   # tolerate small pair loss
                 _better = t_rms <= rms + 1e-9
-                if _gained or (_better and _kept):
+                # The 0.8 retention rule is right when the fit is already good:
+                # do not shed a fifth of the pairs for a marginal gain. It is
+                # backwards when the fit is broken. A fit whose RMS halves was
+                # being dragged by pairs that do not belong in it, and keeping
+                # them to protect the count throws the solve away -- measured
+                # on a near-pole field that went 519" -> 24" and was refused
+                # for dropping 975 pairs to 507.
+                _rescue = (t_rms < 0.5 * rms) and len(t_img_m) >= 20
+                if _gained or (_better and _kept) or _rescue:
                     print(f"[GaiaLocal] iter={iteration}: adopting ({len(t_img_m)} pairs, RMS={t_rms:.3f}\")")
                     img_matched  = t_img_m
                     matched_sky  = t_cat_sky_m
@@ -3156,32 +3740,134 @@ def _gaia_fit_and_validate(
         # rejected before SIP ever runs.
         if n_matched >= 20:
             try:
+                _sip_proj = _sky_centroid(matched_sky)
+
+                def _sip_terms(_d):
+                    # (d+1)(d+2)/2 - 3 distortion coefficients per axis (the
+                    # constant and both linear terms are already in the CD
+                    # matrix), two axes, plus the 6 linear WCS parameters.
+                    return 2 * ((_d + 1) * (_d + 2) // 2 - 3) + 6
+
+                def _sip_feasible(_d):
+                    if not (2 <= _d <= SIP_MAX_DEGREE):
+                        return False
+                    # Degree 5 needs a genuinely well-populated frame: its 42
+                    # parameters are only worth solving for when the stars
+                    # cover the field densely enough to pin the edges down.
+                    if _d >= 5 and n_matched < SIP5_MIN_PAIRS:
+                        return False
+                    # 4x oversampling: 2 residuals per matched pair.
+                    return 2 * n_matched >= 4 * _sip_terms(_d)
+
+                _sip_cache = {}
+
+                def _fit_sip(_d):
+                    """Fit one SIP degree -> (wcs, rms, p95, penalised rms)."""
+                    if _d in _sip_cache:
+                        return _sip_cache[_d]
+                    _res = None
+                    try:
+                        _w = fit_wcs_from_points(
+                            (img_matched[:, 0], img_matched[:, 1]),
+                            matched_sky,
+                            projection='TAN',
+                            proj_point=_sip_proj,
+                            sip_degree=_d,
+                        )
+                        _w.array_shape = (img_h, img_w)
+                        _sep = matched_sky.separation(
+                            _w.pixel_to_world(img_matched[:, 0],
+                                              img_matched[:, 1])).arcsec
+                        _r = float(np.sqrt(np.mean(_sep ** 2)))
+                        _p95 = float(np.percentile(_sep, 95))
+                        # In-sample RMS almost always falls as coefficients are
+                        # added, so comparing degrees on raw RMS biases toward
+                        # the highest one. Penalise by the small-sample
+                        # correction sqrt(2N / (2N - k)): negligible when pairs
+                        # vastly outnumber coefficients, decisive when they do
+                        # not.
+                        _k = _sip_terms(_d)
+                        _adj = _r * math.sqrt((2.0 * n_matched)
+                                              / max(2 * n_matched - _k, 1))
+                        print(f"[GaiaLocal] SIP-{_d}: RMS={_r:.3f}\" "
+                              f"p95={_p95:.3f}\" ({_k} terms, "
+                              f"penalised {_adj:.3f}\")")
+                        _res = (_w, _r, _p95, _adj)
+                    except Exception as _e:
+                        print(f"[GaiaLocal] SIP-{_d} fit failed: {_e}")
+                    _sip_cache[_d] = _res
+                    return _res
+
+                # Start at the degree the matched-star count comfortably
+                # supports, then search OUTWARD in both directions. A higher
+                # degree is not merely redundant when it fails -- the extra
+                # freedom lets the polynomial diverge where stars are sparsest,
+                # usually the frame corners, so it can be far worse than a
+                # lower one. Climbing only upward would miss that; we want the
+                # best-fitting polynomial, not the highest-order one.
                 if n_matched >= 100:
-                    sip_degree = 4
+                    _base_degree = 4
                 elif n_matched >= 50:
-                    sip_degree = 3
+                    _base_degree = 3
                 else:
-                    sip_degree = 2
-                _sip_proj = SkyCoord(
-                    ra=float(np.mean([c.ra.deg for c in matched_sky])) * u.deg,
-                    dec=float(np.mean([c.dec.deg for c in matched_sky])) * u.deg,
-                )
-                _wcs_sip = fit_wcs_from_points(
-                    (img_matched[:, 0], img_matched[:, 1]),
-                    matched_sky,
-                    projection='TAN',
-                    proj_point=_sip_proj,
-                    sip_degree=sip_degree,
-                )
-                _wcs_sip.array_shape = (img_h, img_w)
-                _rms_sip = float(np.sqrt(np.mean(
-                    matched_sky.separation(
-                        _wcs_sip.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
-                    ).arcsec ** 2)))
-                print(f"[GaiaLocal] TAN RMS={rms:.3f}\"  SIP-{sip_degree} RMS={_rms_sip:.3f}\"")
-                if _rms_sip < rms:
-                    wcs_solution = _wcs_sip
-                    print(f"[GaiaLocal] using SIP-{sip_degree} solution")
+                    _base_degree = 2
+                while _base_degree > 2 and not _sip_feasible(_base_degree):
+                    _base_degree -= 1
+
+                _best = _fit_sip(_base_degree)       # (wcs, rms, p95, adj)
+                _best_deg = _base_degree if _best is not None else None
+
+                # Both walks are anchored at the BASE degree and chained from
+                # their own last accepted step, never from the running winner.
+                # Anchoring the downward walk on the winner would make it start
+                # one step below whatever the upward walk reached, re-test that
+                # degree and stop -- leaving a far better low degree unfitted.
+                for _step in (+1, -1):
+                    _ref = _sip_cache.get(_base_degree)
+                    _d = _base_degree + _step
+                    while _sip_feasible(_d):
+                        _got = _fit_sip(_d)
+                        if _got is None:
+                            break
+                        if _ref is None:
+                            pass                     # base fit failed; take it
+                        elif _step > 0:
+                            # Going up has to EARN its extra terms, and must not
+                            # blow out the residual tail -- divergence at the
+                            # edges shows up in p95 long before it moves the
+                            # mean.
+                            if not (_got[3] < _ref[3] * SIP_STEP_UP_GAIN
+                                    and _got[2] <= _ref[2] * 1.25):
+                                break
+                        else:
+                            # Going down is already favoured by the penalty, so
+                            # any strict improvement is enough.
+                            if not _got[3] < _ref[3]:
+                                break
+                        _ref = _got
+                        if _best is None or _got[3] < _best[3]:
+                            _best, _best_deg = _got, _d
+                        _d += _step
+
+                if _best is not None:
+                    # Judge SIP against TAN the same way the degrees were
+                    # judged against each other: penalised for parameter count,
+                    # and having to clear the same margin. Otherwise an
+                    # undistorted field adopts a distortion polynomial for a
+                    # fraction of a percent of RMS, which is just fitting the
+                    # centroid noise.
+                    _tan_adj = rms * math.sqrt((2.0 * n_matched)
+                                               / max(2 * n_matched - 6, 1))
+                    print(f"[GaiaLocal] TAN RMS={rms:.3f}\" "
+                          f"(penalised {_tan_adj:.3f}\")  "
+                          f"best SIP-{_best_deg} RMS={_best[1]:.3f}\" "
+                          f"(penalised {_best[3]:.3f}\")")
+                    if _best[3] < _tan_adj * SIP_STEP_UP_GAIN:
+                        wcs_solution = _best[0]
+                        print(f"[GaiaLocal] using SIP-{_best_deg} solution")
+                    else:
+                        print("[GaiaLocal] no SIP degree earned its terms "
+                              "- keeping the linear solution")
             except Exception as e:
                 print(f"[GaiaLocal] SIP fit failed, using TAN: {e}")
 
@@ -3453,6 +4139,20 @@ def _solve_numpy_with_astap(parent, settings, image: np.ndarray, seed_header: He
 
 # --- Debug helpers ---------------------------------------------------
 DEBUG_PLATESOLVE_HEADERS = False  # set False to silence all header dumps
+
+# SIP distortion fitting. Degree 5 carries 36 distortion coefficients, so it
+# wants a few hundred matched stars before it is better determined than
+# degree 4; below that the penalty below would reject it anyway, and fitting
+# it is just wasted seconds.
+# Highest SIP order offered. Degree 5 adds the odd-order terms a
+# radial lens profile actually needs; a sixth order mostly
+# re-describes what 4 already captured, at 14 more parameters.
+SIP_MAX_DEGREE = 5
+SIP5_MIN_PAIRS = 300
+# A higher degree must cut the penalised RMS by at least this factor to be
+# adopted. 0.97 = a real 3% gain, not the fraction of a percent that extra
+# free parameters always buy on the very points they were fitted to.
+SIP_STEP_UP_GAIN = 0.97
 
 
 def _debug_dump_header(label: str, hdr: Header | None):
@@ -4093,6 +4793,20 @@ def show_solve_summary(parent, hdr: Header, img_w: int, img_h: int,
             lines.append(f"<b>Fit RMS vs Gaia:</b>  {float(rms):.2f}\"{px_txt}{n_txt}")
     except Exception:
         pass
+    # A seed-grade solution carries no RMS, so without this it would look
+    # exactly like a normal solve in the panel. Say plainly what it is.
+    try:
+        if str(hdr.get("SOLVSRC", "")).strip().lower() == "quad-seed":
+            lines.append(
+                "<b>Fit quality:</b>  <span style=\'color:#c87f00\'>seed-grade"
+                " — quad index placement only</span><br>"
+                "<span style=\'color:#c87f00\'>The field is identified, but "
+                "refinement did not reach the accuracy gate: centre and scale "
+                "are approximate (expect a few pixels) and there are no "
+                "distortion terms. Not suitable for photometry or "
+                "mosaicking.</span>")
+    except Exception:
+        pass
     if not lines:
         return
 
@@ -4169,6 +4883,17 @@ class PlateSolverPresetDialog(QDialog):
         self.cb_solver_pref.setCurrentIndex(max(0, self.cb_solver_pref.findData(spec["solver"])))
         form.addRow(self.tr("Solver:"), self.cb_solver_pref)
 
+        self.chk_blind = QCheckBox(self.tr("Blind-solve when there is no RA/Dec"), self)
+        self.chk_blind.setChecked(spec["blind"])
+        form.addRow("", self.chk_blind)
+        self.chk_force_blind = QCheckBox(
+            self.tr("Force blind solve (ignore any RA/Dec seed)"), self)
+        self.chk_force_blind.setChecked(spec["force_blind"])
+        self.chk_force_blind.toggled.connect(
+            lambda on: self.chk_blind.setEnabled(not on))
+        self.chk_blind.setEnabled(not spec["force_blind"])
+        form.addRow("", self.chk_force_blind)
+
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
             parent=self,
@@ -4200,6 +4925,8 @@ class PlateSolverPresetDialog(QDialog):
             "fov_mode": self.cb_fov_mode.currentData(),
             "fov_value": fov_value,
             "solver": self.cb_solver_pref.currentData(),
+            "blind": self.chk_blind.isChecked(),
+            "force_blind": self.chk_force_blind.isChecked(),
         })
 
 
@@ -4301,6 +5028,46 @@ class PlateSolverDialog(QDialog):
         self.cb_solver_pref.addItem(self.tr("Astrometry.net only"),                      "astrometry_only") 
         seed_form.addRow(self.tr("Solver:"), self.cb_solver_pref)
 
+        self.chk_blind = QCheckBox(
+            self.tr("Blind-solve from the local quad index when there is no RA/Dec"),
+            seed_box)
+        self.chk_blind.setToolTip(self.tr(
+            "Identify the field from the star pattern alone — no coordinates and no\n"
+            "field of view needed. Build the index on the Gaia DR3 Library dialog,\n"
+            "Blind Solve Index tab; it is built from the Gaia data you already have.\n\n"
+            "Turn this off to fall back to ASTAP's blind solve instead."))
+        seed_form.addRow("", self.chk_blind)
+
+        self.chk_force_blind = QCheckBox(
+            self.tr("Force blind solve (ignore any RA/Dec seed)"), seed_box)
+        self.chk_force_blind.setToolTip(self.tr(
+            "Throw the header pointing away and locate the field from the star\n"
+            "pattern, even when the header does contain an RA/Dec.\n\n"
+            "Overrides the seed mode above, including manual coordinates.\n\n"
+            "Use this when the coordinates are WRONG rather than missing \u2014 a\n"
+            "wrong seed is worse than none, because the solver searches around\n"
+            "a position the field is not in, and ASTAP then fails on the same\n"
+            "bad position afterwards.\n\n"
+            "The pixel scale from the header is still used; it comes from focal\n"
+            "length and pixel size and stays right even when the mount lied."))
+        self.chk_force_blind.toggled.connect(
+            lambda on: self.chk_blind.setEnabled(not on))
+        seed_form.addRow("", self.chk_force_blind)
+
+        # What the blind solver has to work with, and a way to go change it.
+        quad_row = QHBoxLayout()
+        self.lbl_quad_status = QLabel("", seed_box)
+        self.lbl_quad_status.setWordWrap(True)
+        self.lbl_quad_status.setTextFormat(Qt.TextFormat.RichText)
+        self.btn_gaia_db = QPushButton(self.tr("Open Gaia Database\u2026"), seed_box)
+        self.btn_gaia_db.setToolTip(self.tr(
+            "Open the Gaia DR3 Library: download catalogue bands, and build the\n"
+            "blind-solve quad index from the data you already have."))
+        self.btn_gaia_db.clicked.connect(self._open_gaia_database)
+        quad_row.addWidget(self.lbl_quad_status, 1)
+        quad_row.addWidget(self.btn_gaia_db, 0, Qt.AlignmentFlag.AlignTop)
+        seed_form.addRow("", quad_row)
+
         # Tooltips
         self.cb_seed_mode.setToolTip(self.tr("Use FITS header, your manual RA/Dec/scale, or blind solve."))
         self.le_scale.setToolTip(self.tr('Pixel scale in arcseconds/pixel (e.g., 1.46).'))
@@ -4344,6 +5111,7 @@ class PlateSolverDialog(QDialog):
         # ---------------- Status + buttons ----------------
         self.status = QLabel("", self)
         self.status.setMinimumHeight(20)
+        self.status.setWordWrap(True)
         main.addWidget(self.status)
 
         btn_row = QHBoxLayout()
@@ -4408,6 +5176,10 @@ class PlateSolverDialog(QDialog):
         self.cb_solver_pref.setCurrentIndex(
             pref_map.get(_get_solver_preference(self.settings), 0)
         )
+        self.chk_blind.setChecked(_get_blind_enabled(self.settings))
+        self.chk_force_blind.setChecked(_get_force_blind(self.settings))
+        self.chk_blind.setEnabled(not self.chk_force_blind.isChecked())
+        self._refresh_quad_status()
 
         def _update_visibility():
             manual = (self.cb_seed_mode.currentIndex() == 1)
@@ -4428,6 +5200,40 @@ class PlateSolverDialog(QDialog):
         self.status.setObjectName("status_label")
         # if batch page exists:
         self.log.setObjectName("batch_log")
+
+    def _refresh_quad_status(self):
+        """Re-read the quad library and repaint the status line."""
+        try:
+            self.lbl_quad_status.setText(_quad_index_status_html())
+        except Exception as e:
+            print(f"[PlateSolver] quad status refresh failed: {e}")
+
+    def _open_gaia_database(self):
+        from setiastro.saspro.gaia_database import GaiaDatabaseDialog
+        if getattr(self, "_gaia_db_window", None) and self._gaia_db_window.isVisible():
+            self._gaia_db_window.raise_()
+            self._gaia_db_window.activateWindow()
+            return
+        self._gaia_db_window = GaiaDatabaseDialog(parent=self)
+        try:
+            from setiastro.saspro.resources import gaia_path
+            self._gaia_db_window.setWindowIcon(QIcon(gaia_path))
+        except Exception:
+            pass
+
+        def _gone(*_):
+            # Layers are usually built from inside that dialog, so the count
+            # on this one is stale the moment it closes. Clear the handle and
+            # repaint together.
+            self._gaia_db_window = None
+            self._refresh_quad_status()
+
+        for _sig in ("destroyed", "finished"):
+            try:
+                getattr(self._gaia_db_window, _sig).connect(_gone)
+            except Exception:
+                pass
+        self._gaia_db_window.show()
 
     def current_preset(self) -> dict:
         idx = self.cb_seed_mode.currentIndex()
@@ -4458,6 +5264,8 @@ class PlateSolverDialog(QDialog):
             ),
             "fov_value": fov_value,
             "solver": pref_idx_map.get(self.cb_solver_pref.currentIndex(), "both"),
+            "blind": self.chk_blind.isChecked(),
+            "force_blind": self.chk_force_blind.isChecked(),
         })
 
     def seed_from_preset(self, preset: dict | None):
@@ -4474,6 +5282,9 @@ class PlateSolverDialog(QDialog):
         self.le_fov_val.setText(str(spec["fov_value"]))
         pref_map = {"both": 0, "gaia_only": 1, "astap_only": 2, "astrometry_only": 3}
         self.cb_solver_pref.setCurrentIndex(pref_map.get(spec["solver"], 0))
+        self.chk_blind.setChecked(spec["blind"])
+        self.chk_force_blind.setChecked(spec["force_blind"])
+        self.chk_blind.setEnabled(not spec["force_blind"])
 
     def _persist_ui_to_settings(self) -> dict:
         spec = self.current_preset()
@@ -4696,10 +5507,22 @@ class PlateSolverDialog(QDialog):
         if not self.btn_go.isEnabled():
             return
         self.btn_go.setEnabled(False)
+        # The Gaia dialog can rebuild the quad index, and refreshing the
+        # library closes and reopens the memmaps the running solve is reading
+        # from. _run_impl is synchronous but pumps events, so this button is
+        # reachable mid-solve unless it is disabled with the Go button.
+        try:
+            self.btn_gaia_db.setEnabled(False)
+        except Exception:
+            pass
         try:
             self._run_impl()
         finally:
             self.btn_go.setEnabled(True)
+            try:
+                self.btn_gaia_db.setEnabled(True)
+            except Exception:
+                pass
 
     def _run_impl(self):
         # ── Save all settings first ──────────────────────────────────────────
@@ -4797,10 +5620,20 @@ class PlateSolverDialog(QDialog):
         if save_path:
             try:
                 # never persist 'file_path' inside FITS
-                h2 = Header()
-                for k in hdr_final.keys():
-                    if k.upper() != "FILE_PATH":
-                        h2[k] = hdr_final[k]
+                # Copy the header wholesale, then drop FILE_PATH. Rebuilding
+                # it card by card looks equivalent and is not: for a
+                # commentary keyword, hdr[k] returns ALL of its cards joined
+                # by newlines, and assigning that back raises ValueError on
+                # the newline. Any solve that writes two HISTORY cards --
+                # a recomputed FOCALLEN, or a seed-grade fallback -- would
+                # therefore solve fine and then fail to save.
+                h2 = hdr_final.copy()
+                for _k in list(h2.keys()):
+                    if _k.upper() == "FILE_PATH":
+                        try:
+                            del h2[_k]
+                        except Exception:
+                            pass
 
                 save_image(
                     img_array=image_data,
@@ -4884,10 +5717,20 @@ class PlateSolverDialog(QDialog):
                     hdr_final = _sanitized_header_for_wcs(hdr) if isinstance(hdr, Header) else Header()
 
                 # Build header to save (and strip FILE_PATH)
-                h2 = Header()
-                for k in hdr_final.keys():
-                    if k.upper() != "FILE_PATH":
-                        h2[k] = hdr_final[k]
+                # Copy the header wholesale, then drop FILE_PATH. Rebuilding
+                # it card by card looks equivalent and is not: for a
+                # commentary keyword, hdr[k] returns ALL of its cards joined
+                # by newlines, and assigning that back raises ValueError on
+                # the newline. Any solve that writes two HISTORY cards --
+                # a recomputed FOCALLEN, or a seed-grade fallback -- would
+                # therefore solve fine and then fail to save.
+                h2 = hdr_final.copy()
+                for _k in list(h2.keys()):
+                    if _k.upper() == "FILE_PATH":
+                        try:
+                            del h2[_k]
+                        except Exception:
+                            pass
 
                 # Save using original pixels
                 save_image(
