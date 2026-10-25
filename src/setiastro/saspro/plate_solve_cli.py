@@ -125,7 +125,7 @@ def _cli_settings(args):
         except Exception:
             pass
 
-    s.setValue("plate_solver/solver_pref", SOLVER_PREF[args.solver])
+    s.setValue("plate_solver/preference", SOLVER_PREF[args.solver])
     s.setValue("plate_solver/blind_quads", bool(args.blind))
     s.setValue("plate_solver/force_blind", bool(args.force_blind))
 

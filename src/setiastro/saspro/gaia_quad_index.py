@@ -440,11 +440,28 @@ class QuadLayer:
         return ra_a, dec_a, ra_b, dec_b
 
     def close(self):
+        """
+        Release the memory maps, not merely the references to them.
+
+        Dropping the attribute is not enough. numpy keeps the underlying mmap
+        alive behind the array, and Windows refuses to delete or move a file
+        while a mapping of it is open -- which is what made Remove fail with
+        "[WinError 32] the process cannot access the file because it is being
+        used by another process". Close the mapping explicitly.
+        """
         for a in ("_stars", "_keys", "_codes", "_refs"):
+            arr = getattr(self, a, None)
+            mm = getattr(arr, "_mmap", None) if arr is not None else None
             try:
                 delattr(self, a)
             except Exception:
                 pass
+            arr = None
+            if mm is not None:
+                try:
+                    mm.close()
+                except Exception:
+                    pass
 
 
 class QuadIndexLibrary:
@@ -527,7 +544,24 @@ def get_quad_library() -> QuadIndexLibrary:
 
 
 def refresh_quad_library():
+    """Re-read the directory. Reopens every layer, so never call this
+    immediately BEFORE deleting or moving a layer file -- see
+    close_quad_library()."""
     global _quad_library
     if _quad_library is not None:
         _quad_library.close()
     _quad_library = QuadIndexLibrary()
+
+
+def close_quad_library():
+    """
+    Close the library and leave it closed.
+
+    This is the one to call before deleting or moving a .saq: refresh()
+    closes and then immediately reopens, which re-maps the very file you are
+    about to touch. The next get_quad_library() reopens lazily.
+    """
+    global _quad_library
+    if _quad_library is not None:
+        _quad_library.close()
+    _quad_library = None

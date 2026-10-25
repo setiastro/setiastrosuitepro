@@ -860,28 +860,48 @@ class GaiaAstrometricLibrary:
         mag_clause = " AND phot_g_mean_mag < ?" if max_mag is not None else ""
         results: List[StarRecord] = []
 
+        # One query PER ZONE, with dec_zone fixed by equality.
+        #
+        # ix_zone is (dec_zone, ra), and an index can only use a column as a
+        # bound while every column to its left is pinned to a single value.
+        # "dec_zone BETWEEN ? AND ?" is a range on the LEADING column, so ra
+        # stops being a bound and becomes a filter: SQLite walks every row in
+        # the zone span and throws most of them away.
+        #
+        #   dec_zone BETWEEN  ->  SEARCH stars USING INDEX ix_zone (dec_zone>? AND dec_zone<?)
+        #   dec_zone =        ->  SEARCH stars USING INDEX ix_zone (dec_zone=? AND ra>? AND ra<?)
+        #
+        # Measured on a 1.55 deg field: 31 stars returned, 5,316 rows walked
+        # to find them. A narrow field was 527x. The waste scales with the
+        # table, so on the Bright tier it is millions of rows decoded per box
+        # -- which is why this is slow while the CPU sits idle. Each zone is
+        # one extra round trip, and even an all-sky dec span is only 180 of
+        # them, so the loop costs nothing next to what it saves.
         for conn in self._connections.values():
             for r_lo, r_hi in ra_ranges:
-                try:
-                    sql = (
-                        "SELECT source_id, ra, dec, pmra, pmdec, parallax, "
-                        "ref_epoch, phot_g_mean_mag, ruwe, astrometric_params_solved "
-                        "FROM stars WHERE dec_zone BETWEEN ? AND ? "
-                        "AND ra BETWEEN ? AND ?" + mag_clause
-                    )
-                    params = [zone_lo, zone_hi, r_lo, r_hi]
-                    if max_mag is not None:
-                        params.append(max_mag)
-                    cur = conn.execute(sql, params)
-                    for row in cur.fetchall():
-                        results.append(StarRecord(
-                            source_id=row[0], ra=row[1], dec=row[2],
-                            pmra=row[3], pmdec=row[4], parallax=row[5],
-                            ref_epoch=row[6], gmag=row[7], ruwe=row[8],
-                            astrometric_params_solved=row[9],
-                        ))
-                except Exception:
-                    continue
+                for zone in range(zone_lo, zone_hi + 1):
+                    try:
+                        sql = (
+                            "SELECT source_id, ra, dec, pmra, pmdec, parallax, "
+                            "ref_epoch, phot_g_mean_mag, ruwe, astrometric_params_solved "
+                            "FROM stars WHERE dec_zone = ? "
+                            "AND ra BETWEEN ? AND ?" + mag_clause
+                        )
+                        params = [zone, r_lo, r_hi]
+                        if max_mag is not None:
+                            params.append(max_mag)
+                        # Iterate the cursor rather than fetchall(): the rows
+                        # become StarRecords one at a time instead of
+                        # materialising the whole tuple list first.
+                        for row in conn.execute(sql, params):
+                            results.append(StarRecord(
+                                source_id=row[0], ra=row[1], dec=row[2],
+                                pmra=row[3], pmdec=row[4], parallax=row[5],
+                                ref_epoch=row[6], gmag=row[7], ruwe=row[8],
+                                astrometric_params_solved=row[9],
+                            ))
+                    except Exception:
+                        continue
 
         # Zone bounds are coarser than the exact box — final precise dec filter.
         return [s for s in results if dec_lo <= s.dec <= dec_hi]

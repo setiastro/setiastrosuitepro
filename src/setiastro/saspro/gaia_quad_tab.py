@@ -32,6 +32,7 @@ from setiastro.saspro.gaia_quad_builder import default_workers as _default_worke
 from setiastro.saspro.gaia_quad_index import (
     QUAD_LAYER_DEFS, QuadLayerDef, fmt_size, read_saq_header,
     get_quad_library_dir, set_quad_library_dir, refresh_quad_library,
+    close_quad_library,
 )
 
 
@@ -140,6 +141,27 @@ class _QuadRowWidget(QFrame):
         self._chk.setChecked(d.recommended)
         self._chk.setToolTip("Include this layer when you press "
                              "“Build Selected”.")
+        # Qt draws an unstyled indicator through the stylesheet engine as soon
+        # as any ancestor carries a stylesheet -- and this row sets one. On a
+        # dark background that indicator comes out invisible, so the box has
+        # to be drawn explicitly.
+        self._chk.setStyleSheet("""
+            QCheckBox { background: transparent; border: none; spacing: 0px; }
+            QCheckBox::indicator {
+                width: 15px; height: 15px;
+                border: 1px solid #5b6680; border-radius: 3px;
+                background: #0a0a18;
+            }
+            QCheckBox::indicator:hover { border-color: #8b97b5; }
+            QCheckBox::indicator:checked {
+                background: #4a7cf0; border: 1px solid #6f9bff;
+            }
+            QCheckBox::indicator:checked:hover { background: #5d8bf7; }
+            QCheckBox::indicator:disabled {
+                border-color: #2f3442; background: #14141f;
+            }
+            QCheckBox::indicator:checked:disabled { background: #2b3a5c; }
+        """)
         outer.addWidget(self._chk)
 
         info = QVBoxLayout()
@@ -402,6 +424,7 @@ class BlindSolveIndexTab(QWidget):
                 f"layers buildable")
 
         built = 0
+        tot_quads = tot_stars = tot_bytes = 0
         for x in QUAD_LAYER_DEFS:
             p = d / x.filename
             is_built = p.exists()
@@ -410,15 +433,26 @@ class BlindSolveIndexTab(QWidget):
             detail = (f"Needs stars to G ≤ {x.gmag_limit:.1f} — install a deeper "
                       f"tier (have G ≤ {depth:.1f})" if depth > 0 else
                       "No Gaia catalogue installed")
-            self._rows[x.index].set_state(
-                is_built, can, detail,
-                p.stat().st_size if is_built else 0,
-                read_saq_header(p) if is_built else None)
+            size = p.stat().st_size if is_built else 0
+            # The header read here is the one the row already needs, so the
+            # totals cost nothing extra.
+            hdr = read_saq_header(p) if is_built else None
+            if is_built:
+                tot_bytes += size
+                if hdr:
+                    tot_quads += int(hdr.get("n_quads", 0) or 0)
+                    tot_stars += int(hdr.get("n_stars", 0) or 0)
+            self._rows[x.index].set_state(is_built, can, detail, size, hdr)
 
-        self._status.setText(
-            f"{built}/{len(QUAD_LAYER_DEFS)} layers built"
-            + ("  ·  blind solving is active" if built else
-               "  ·  blind solving is unavailable until at least one layer is built"))
+        if built:
+            self._status.setText(
+                f"{built}/{len(QUAD_LAYER_DEFS)} layers built  ·  "
+                f"{tot_quads:,} quads from {tot_stars:,} index stars  ·  "
+                f"{fmt_size(tot_bytes)} on disk  ·  blind solving is active")
+        else:
+            self._status.setText(
+                f"0/{len(QUAD_LAYER_DEFS)} layers built  ·  blind solving is "
+                f"unavailable until at least one layer is built")
 
     # ── build ────────────────────────────────────────────────────────────
 
@@ -519,7 +553,9 @@ class BlindSolveIndexTab(QWidget):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         ) != QMessageBox.StandardButton.Yes:
             return
-        refresh_quad_library()
+        # close, not refresh: refresh() closes the library and immediately
+        # reopens it, which re-maps the very file we are about to delete.
+        close_quad_library()
         try:
             p.unlink()
         except Exception as e:
@@ -552,7 +588,10 @@ class BlindSolveIndexTab(QWidget):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             ) == QMessageBox.StandardButton.Yes
 
-        refresh_quad_library()
+        # Same reason as Remove: a mapped file cannot be moved on Windows,
+        # and refresh() would re-map these from the old folder right before
+        # shutil.move touches them.
+        close_quad_library()
         set_quad_library_dir(dest)
         if move:
             dest.mkdir(parents=True, exist_ok=True)

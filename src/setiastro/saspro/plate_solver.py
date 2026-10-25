@@ -114,6 +114,16 @@ def _status_popup_open(parent, text: str = ""):
     """Show (or create) the singleton status popup for headless runs."""
     global _STATUS_POPUP
     if SUPPRESS_STATUS_POPUP:
+        # Suppressed must not mean discarded. This popup is the ONLY sink for
+        # status text when there is no status widget -- which is every CLI and
+        # scripted run -- so silently dropping it loses the blind solver's
+        # whole narration: stars detected, layers tried, where the quad index
+        # placed the field, and on what log-odds. Print it instead.
+        if text:
+            try:
+                print(text, flush=True)
+            except Exception:
+                pass
         return None
     if _STATUS_POPUP is None:
         host = parent if isinstance(parent, QWidget) else QApplication.activeWindow()
@@ -2789,6 +2799,13 @@ def _quad_refine_seed(img_stars, img_w, img_h, scale_hint, say):
 
     Returns the solve_blind_core result dict, or None to leave the grid alone.
     Every failure path returns None: this is an accelerator, never a gate.
+
+    NOT CURRENTLY CALLED. It used to run on every solve, which made the
+    "blind-solve when there is no RA/Dec" checkbox consult the quad index even
+    when the header had a good pointing. Kept because the idea is sound and
+    cheap to re-enable -- but a wrong seed is now handled by the blind retry
+    in _gaia_pass(), so switching it back on would only buy speed on frames
+    that already solve on the first attempt.
     """
     try:
         from setiastro.saspro.gaia_quad_index import get_quad_library
@@ -3096,19 +3113,20 @@ def _solve_with_GAIA(image: np.ndarray,
                 "log_odds": seed_header.get("BLNDODDS"),
                 "layer": seed_header.get("BLNDLAYR"),
             }
-    elif _get_blind_enabled(settings) or _force_blind:
-        _q = _quad_refine_seed(img_stars, img_w, img_h, scale, _say)
-        if _q:
-            _quad_seed = _q
-            _qflip = (_q["parity"] == "flipped")
-            search_centers = [(_q["ra"], _q["dec"])] + list(search_centers)
-            scale_variants = [_q["scale_arcsec"]] + list(scale_variants)
-            parity_variants = [_qflip, not _qflip]
-            _say(f"Status: Quad index placed the field at "
-                 f"RA={_q['ra']:.4f}° Dec={_q['dec']:+.4f}°, "
-                 f"{_q['scale_arcsec']:.3f}\"/px, "
-                 f"{'mirrored' if _qflip else 'normal'} parity "
-                 f"(log-odds {_q['log_odds']:,.0f}) — matching from there")
+    # No `elif` consulting the quad index here on purpose.
+    #
+    # This branch used to run _quad_refine_seed on EVERY solve whenever the
+    # blind box was ticked, seed or no seed, as an accelerator: one lookup
+    # collapses 19 centres x 5 scales x 2 parities to a single attempt that is
+    # already right. But the checkbox says "when there is no RA/Dec", and a
+    # header carrying a perfectly good pointing still went through the quad
+    # index -- the control did not mean what it said.
+    #
+    # It is also no longer needed. A seed that turns out to be wrong is caught
+    # by _gaia_pass(), which retries blind once Pass 1 has failed, so the only
+    # thing the unconditional lookup bought was speed on exactly the frames
+    # that did not need it. Blind now runs when the header has no usable
+    # pointing (handled above) or when Force blind solve is ticked.
 
     # ── 5) Search loop: spiral centers × scale variants ──────────────────────
     import sqlite3

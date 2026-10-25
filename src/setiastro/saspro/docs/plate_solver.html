@@ -524,7 +524,8 @@ mirrored          CD1_1 = -s cos&theta;   CD1_2 = -s sin&theta;      det = -s&su
 
 <h3 id="s15_5">15.5 Blind as a seed source</h3>
 <p>Blind solving does not replace the Gaia solver &mdash; it <i>seeds</i> it. A quad match returns centre, scale, roll and parity, which is enough to collapse the spiral search (&sect;14.14) from 19 centres &times; 5 scales &times; 2 parities down to a single attempt that is already correct. The Gaia solver then refines it to a full SIP solution exactly as it would from a header seed.</p>
-<p>This is why blind solving is <i>fast</i> here rather than a last resort. It also means the quad index helps even when the header <i>does</i> carry coordinates: a quad lookup is cheaper than letting a wrong seed drive the grid, so with the index installed the solver consults it first and starts from the answer.</p>
+<p>This is why blind solving is <i>fast</i> here rather than a last resort.</p>
+<div class="tip"><b>The quad index is not consulted when the header already has a usable RA/Dec.</b> The checkbox means what it says. An earlier build did run it on every solve, as an accelerator &mdash; one lookup collapses the whole grid &mdash; but that made a frame with perfectly good pointing go through the index anyway, and it is no longer needed: a seed that turns out to be wrong is caught by the blind retry (&sect;15.6) once the seeded pass has failed. The cost of that choice is a second or so on a badly-seeded frame, which now fails a spiral search before retrying blind rather than being placed instantly.</div>
 <p>If no pixel scale is available either, every built layer is tried coarsest-first, which costs more but needs nothing from the header at all.</p>
 
 <h3 id="s15_6">15.6 Blind retry after a failed seed</h3>
