@@ -104,6 +104,9 @@ EXAMPLES
   Solve a whole folder, machine-readable output:
     setiastrosuitepro solve -i ./lights -o ./solved --batch --json
 
+  Write a .wcs sidecar and leave the image untouched:
+    setiastrosuitepro solve -i light.fit --wcs-only
+
   Which blind-solve index layers are built:
     setiastrosuitepro solve --index-status
 

@@ -146,6 +146,79 @@ def _cli_settings(args):
     return s
 
 
+# ── .wcs sidecar ────────────────────────────────────────────────────────────
+
+# Everything that belongs in a WCS sidecar. The prefixes mirror the list
+# _strip_wcs_keys() removes in plate_solver, so the two stay in step: what the
+# merge treats as "solver-owned" is exactly what gets written here.
+_WCS_PREFIXES = ("CRPIX", "CRVAL", "CDELT", "CROTA", "CD1_", "CD2_", "PC",
+                 "CTYPE", "CUNIT", "WCSAXES", "LATPOLE", "LONPOLE", "EQUINOX",
+                 "PV1_", "PV2_", "A_", "B_", "AP_", "BP_")
+_WCS_EXACT = ("RADESYS", "RADECSYS", "DATE-OBS", "MJD-OBS", "FOCALLEN",
+              "SOLVRMS", "SOLVP95", "SOLVNSTR", "SOLVSRC",
+              "BLNDODDS", "BLNDLAYR", "BLNDPAR")
+
+
+def _write_wcs_sidecar(hdr, path: Path, img_w: int, img_h: int) -> str:
+    """
+    Write a `.wcs` sidecar: a header-only FITS carrying the solution alone.
+
+    This is the same shape ASTAP and Astrometry.net produce, and the same
+    shape plate_solver already reads back through fits.getheader() -- so a
+    sidecar written here is parseable by SASpro's own ASTAP code path, and by
+    anything else that consumes solve-field output.
+
+    IMAGEW/IMAGEH matter more than they look: a header-only FITS has NAXIS=0
+    and therefore no record of the frame it describes, so without them a
+    reader cannot tell what the pixel coordinates refer to.
+    """
+    from astropy.io import fits
+    from astropy.io.fits import Header
+
+    out = Header()
+    for k in hdr.keys():
+        ku = str(k).upper()
+        if ku in ("", "COMMENT", "HISTORY", "END", "SIMPLE", "BITPIX",
+                  "EXTEND") or ku.startswith("NAXIS"):
+            continue
+        if ku in _WCS_EXACT or ku.startswith(_WCS_PREFIXES):
+            try:
+                out[k] = hdr[k]
+            except Exception:
+                pass
+    # Normalise the linear terms to a CD matrix. astropy's to_header() emits
+    # PC plus CDELT=1.0, which is valid WCS but wrong for a sidecar twice
+    # over: ASTAP and solve-field both write CD, and CDELT=1.0 alongside a PC
+    # that carries the real scale is the exact shape SASpro's own stacking
+    # code treats as a falsified header. Derive CD once and drop the rest.
+    try:
+        from astropy.wcs import WCS
+        cd = WCS(hdr).pixel_scale_matrix
+        for _k in list(out.keys()):
+            ku = str(_k).upper()
+            if ku.startswith("PC") or ku.startswith("CDELT"):
+                try:
+                    del out[_k]
+                except Exception:
+                    pass
+        out["CD1_1"] = float(cd[0, 0])
+        out["CD1_2"] = float(cd[0, 1])
+        out["CD2_1"] = float(cd[1, 0])
+        out["CD2_2"] = float(cd[1, 1])
+    except Exception as e:
+        print(f"[solve] could not normalise the sidecar to a CD matrix: {e}")
+
+    if "WCSAXES" not in out:
+        out["WCSAXES"] = 2
+    out["IMAGEW"] = (int(img_w), "Image width this solution describes [px]")
+    out["IMAGEH"] = (int(img_h), "Image height this solution describes [px]")
+    out.add_history("Seti Astro Suite Pro: plate solve WCS sidecar")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fits.PrimaryHDU(header=out).writeto(str(path), overwrite=True)
+    return str(path)
+
+
 # ── reporting ───────────────────────────────────────────────────────────────
 
 def _summarize(hdr, w_px: int, h_px: int) -> dict:
@@ -226,7 +299,8 @@ def _print_summary(res: dict, prefix: str = "") -> None:
 
 # ── one image ───────────────────────────────────────────────────────────────
 
-def _solve_one(path: Path, out_path: Path | None, settings, args) -> dict:
+def _solve_one(path: Path, out_path: Path | None, wcs_path: "Path | None",
+               settings, args) -> dict:
     """Solve a single image. Returns a result dict; never raises."""
     from astropy.io.fits import Header
     from setiastro.saspro.legacy.image_manager import load_image, save_image
@@ -285,6 +359,14 @@ def _solve_one(path: Path, out_path: Path | None, settings, args) -> dict:
     h, w = int(image_data.shape[0]), int(image_data.shape[1])
     rec.update(_summarize(hdr_final, w, h))
     rec["ok"] = True
+
+    if wcs_path is not None:
+        try:
+            rec["wcs"] = _write_wcs_sidecar(hdr_final, wcs_path, w, h)
+        except Exception as e:
+            rec["ok"] = False
+            rec["error"] = f"solved, but could not write the .wcs sidecar: {e}"
+            return rec
 
     if out_path is not None:
         try:
@@ -361,6 +443,21 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--radius", type=float,
                    help="ASTAP cone search radius in degrees (default: auto).")
 
+    g = ap.add_argument_group("sidecar")
+    g.add_argument("--wcs", action="store_true",
+                   help="Also write a .wcs sidecar (header-only FITS) beside "
+                        "the output, the way ASTAP and Astrometry.net do. May "
+                        "be used on its own to solve WITHOUT rewriting the "
+                        "image.")
+    g.add_argument("--wcs-only", action="store_true",
+                   help="Solve and write ONLY the sidecar, leaving the image "
+                        "untouched. Same effect as --wcs with no output, said "
+                        "out loud so a script declares its intent and a "
+                        "contradictory -o is caught rather than obeyed.")
+    g.add_argument("--wcs-path",
+                   help="Explicit path for the sidecar. Single-image mode "
+                        "only; implies --wcs.")
+
     g = ap.add_argument_group("output")
     g.add_argument("--json", action="store_true",
                    help="Emit the result as JSON on stdout. Implies --quiet.")
@@ -419,8 +516,18 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("-i/--input is required (or use --index-status)")
     if (args.ra is None) != (args.dec is None):
         ap.error("--ra and --dec must be given together")
-    if not args.in_place and not args.output:
-        ap.error("either -o/--output or --in-place is required")
+    if args.wcs_only:
+        if args.output or args.in_place:
+            ap.error("--wcs-only writes nothing but the sidecar; drop "
+                     "-o/--output and --in-place")
+        args.wcs = True
+    if args.wcs_path:
+        args.wcs = True
+        if args.batch:
+            ap.error("--wcs-path is for a single image; with --batch the "
+                     "sidecars are named after each input")
+    if not args.in_place and not args.output and not args.wcs:
+        ap.error("one of -o/--output, --in-place or --wcs is required")
     if args.in_place and args.output:
         ap.error("--in-place and --output are mutually exclusive")
 
@@ -435,17 +542,34 @@ def main(argv: list[str] | None = None) -> int:
     settings = _cli_settings(args)
 
     # Build the work list.
-    jobs: list[tuple[Path, Path | None]] = []
+    def _sidecar_for(inp: Path, outp: "Path | None") -> "Path | None":
+        # Beside the output when there is one, else beside the input -- which
+        # is what makes `--wcs` alone useful: solve the frame, leave it
+        # untouched, drop the solution next to it.
+        if not args.wcs:
+            return None
+        if args.wcs_path:
+            return Path(args.wcs_path)
+        base = outp if (outp is not None and not args.in_place) else inp
+        return base.with_suffix(".wcs")
+
+    jobs: list[tuple[Path, "Path | None", "Path | None"]] = []
     if args.batch:
         if not src.is_dir():
             print(f"ERROR: --batch needs a directory, got {src}",
                   file=sys.stderr)
             return 2
-        outdir = None if args.in_place else Path(args.output)
+        write_img = args.in_place or bool(args.output)
+        outdir = Path(args.output) if (args.output and not args.in_place) else None
         for f in sorted(src.iterdir()):
             if f.is_file() and f.suffix.lower() in IMAGE_EXTS:
-                jobs.append((f, f if args.in_place
-                             else outdir / f"{f.stem}_plate_solved.fits"))
+                if args.in_place:
+                    outp = f
+                elif outdir is not None:
+                    outp = outdir / f"{f.stem}_plate_solved.fits"
+                else:
+                    outp = None          # --wcs only: do not rewrite images
+                jobs.append((f, outp, _sidecar_for(f, outp)))
         if not jobs:
             print(f"ERROR: no images found in {src}", file=sys.stderr)
             return 2
@@ -454,19 +578,23 @@ def main(argv: list[str] | None = None) -> int:
             print("ERROR: input is a directory; pass --batch to solve it",
                   file=sys.stderr)
             return 2
-        jobs.append((src, src if args.in_place else Path(args.output)))
+        outp = src if args.in_place else (Path(args.output) if args.output
+                                          else None)
+        jobs.append((src, outp, _sidecar_for(src, outp)))
 
     results, failed = [], 0
-    for path, out in jobs:
+    for path, out, wcs in jobs:
         if not args.json:
             print(f"\n=> {path.name}" if len(jobs) > 1 else f"=> {path.name}")
-        rec = _solve_one(path, out, settings, args)
+        rec = _solve_one(path, out, wcs, settings, args)
         results.append(rec)
         if rec["ok"]:
             if not args.json:
                 _print_summary(rec, prefix="   ")
                 if rec.get("output"):
                     print(f"   saved      : {rec['output']}")
+                if rec.get("wcs"):
+                    print(f"   sidecar    : {rec['wcs']}")
         else:
             failed += 1
             if not args.json:
