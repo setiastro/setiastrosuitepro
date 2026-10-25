@@ -10,6 +10,8 @@ from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import QMenu, QToolButton, QWidgetAction
 from PyQt6.QtCore import Qt
 
+from setiastro.saspro.gui import menu_spec
+
 if TYPE_CHECKING:
     pass
 
@@ -159,44 +161,7 @@ class MenuMixin:
 
         # Functions
         m_fn = mb.addMenu(self.tr("&Functions"))
-
-        m_fn.addAction(self.act_abe)
-        m_fn.addAction(self.act_add_stars)
-        m_fn.addAction(self.act_background_neutral)
-        m_fn.addAction(self.act_blemish)
-        m_fn.addAction(self.act_clahe)
-        m_fn.addAction(self.act_clone_stamp) 
-        m_fn.addAction(self.act_convo)
-        m_fn.addAction(self.act_cosmetic_correction)
-        m_fn.addAction(self.act_crop)
-        m_fn.addAction(self.act_curves)
-        m_fn.addAction(self.act_extract_luma)
-        m_fn.addAction(self.act_fx)
-        m_fn.addAction(self.act_graxpert)
-        m_fn.addAction(self.act_ghs)
-        m_fn.addAction(self.act_halobgon)
-        m_fn.addAction(self.act_histogram)
-        m_fn.addAction(self.act_hist_transform)
-        m_fn.addAction(self.act_linear_fit)
-        m_fn.addAction(self.act_morphology)
-        m_fn.addAction(self.act_nbextract)
-        m_fn.addAction(self.act_pedestal)
-        m_fn.addAction(self.act_pixelmath)
-        m_fn.addAction(self.act_recombine_luma)
-        m_fn.addAction(self.act_remove_green)
-        m_fn.addAction(self.act_remove_stars)
-        m_fn.addAction(self.act_rgb_combine)
-        m_fn.addAction(self.act_rgb_extract)
-        m_fn.addAction(self.act_satchroma)
-        m_fn.addAction(self.act_sfcc)
-        m_fn.addAction(self.act_sssc)
-        m_fn.addAction(self.act_signature)
-        m_fn.addAction(self.act_star_stretch)
-        m_fn.addAction(self.act_stat_stretch)
-        m_fn.addAction(self.act_texture_clarity)
-        m_fn.addAction(self.act_wavescale_de)
-        m_fn.addAction(self.act_wavescale_hdr)
-        m_fn.addAction(self.act_white_balance)
+        menu_spec.build_categorized_menu(self, m_fn, "functions")
 
 
         mCosmic = mb.addMenu(self.tr("&Smart Tools"))
@@ -209,26 +174,7 @@ class MenuMixin:
         mCosmic.addAction(self.act_rcastro)
 
         m_tools = mb.addMenu(self.tr("&Tools"))
-
-        m_tools.addAction(self.act_blink)
-        m_tools.addAction(self.act_contsub)
-        m_tools.addAction(self.act_freqsep)
-        m_tools.addAction(self.act_image_combine)
-        m_tools.addAction(self.act_multiscale_decomp)
-        
-        m_tools.addAction(self.act_narrowband_integration)
-        m_tools.addAction(self.act_narrowband_normalization)
-        m_tools.addAction(self.act_nbtorgb)
-        m_tools.addAction(self.act_ppp)
-        
-        m_tools.addAction(self.act_selective_color)
-        m_tools.addAction(self.act_selective_lum) 
-        m_tools.addAction(self.act_slap_toolkit)
-        m_tools.addAction(self.act_magnitude)
-        m_tools.addAction(self.act_snr)
-        m_tools.addSeparator()
-        m_tools.addAction(self.act_view_bundles) 
-        m_tools.addAction(self.act_function_bundles)
+        menu_spec.build_categorized_menu(self, m_tools, "tools")
 
         m_geom = mb.addMenu(self.tr("&Geometry"))
         m_geom.addAction(self.act_geom_invert)
@@ -247,27 +193,7 @@ class MenuMixin:
         m_geom.addAction(self.act_debayer)
 
         m_star = mb.addMenu(self.tr("&Star Stuff"))
-
-        m_star.addAction(self.act_astrospike)
-        m_star.addAction(self.act_exo_detector)
-        m_star.addAction(self.act_dither_analysis)
-        m_star.addAction(self.act_image_peeker)
-        m_star.addAction(self.act_isophote)
-        m_star.addAction(self.act_live_stacking)
-        m_star.addAction(self.act_mosaic_master)
-        m_star.addAction(self.act_flythrough)
-        m_star.addAction(self.act_planet_projection)
-        m_star.addAction(self.act_planetary_stacker)
-        m_star.addAction(self.act_plate_solve)
-        m_star.addAction(self.act_psf_viewer)
-        m_star.addAction(self.act_rgb_align)
-        m_star.addAction(self.act_star_align)
-        m_star.addAction(self.act_star_register)
-        m_star.addAction(self.act_star_spikes)
-        m_star.addAction(self.act_stacking_suite)
-        m_star.addAction(self.act_supernova_hunter)
-        m_star.addAction(self.act_surface_mosaic)
-        m_star.addAction(self.act_unwarp)
+        menu_spec.build_categorized_menu(self, m_star, "star_stuff")
 
         m_masks = mb.addMenu(self.tr("&Masks"))
         m_masks.addAction(self.act_create_mask)
@@ -577,71 +503,7 @@ class MenuMixin:
             )
 
 
-        MENU_GROUPS = [
-            ("File", [
-                self.act_open, self.act_save, self.act_export_fits,
-                self.act_project_new, self.act_project_save, self.act_project_load,
-            ]),
-            ("Edit", [
-                self.act_undo, self.act_redo, self.act_copy, self.act_paste,
-                self.act_mono_to_rgb, self.act_rgb_to_mono, self.act_swap_rb,
-            ]),
-            ("Display", [
-                self.act_autostretch, self.act_hardstretch, self.act_bake_display_stretch,
-                self.act_zoom_in, self.act_zoom_out, self.act_zoom_1_1, self.act_zoom_fit,
-            ]),
-            ("Functions", [
-                self.act_abe, self.act_graxpert, self.act_background_neutral,
-                self.act_stat_stretch, self.act_star_stretch, self.act_ghs,
-                self.act_curves, self.act_hist_transform, self.act_histogram,
-                self.act_white_balance, self.act_sfcc, self.act_remove_green,
-                self.act_linear_fit, self.act_remove_stars, self.act_add_stars,
-                self.act_halobgon, self.act_convo, self.act_clahe,
-                self.act_texture_clarity, self.act_wavescale_hdr, self.act_wavescale_de,
-                self.act_morphology, self.act_extract_luma, self.act_recombine_luma,
-                self.act_rgb_extract, self.act_rgb_combine, self.act_pedestal,
-                self.act_blemish, self.act_clone_stamp, self.act_crop,
-                self.act_pixelmath, self.act_signature, self.act_image_combine,
-            ]),
-            ("Smart Tools", [
-                self.actAberrationAI, self.actCosmicUI, self.actCosmicSat,
-                self.actSyQonTools,
-            ]),
-            ("Tools", [
-                self.act_blink, self.act_ppp, self.act_nbtorgb,
-                self.act_narrowband_normalization, self.act_selective_color,
-                self.act_selective_lum, self.act_freqsep, self.act_multiscale_decomp,
-                self.act_contsub, self.act_magnitude, self.act_snr,
-                self.act_view_bundles, self.act_function_bundles,
-            ]),
-            ("Geometry", [
-                self.act_geom_invert, self.act_geom_flip_h, self.act_geom_flip_v,
-                self.act_geom_rot_cw, self.act_geom_rot_ccw, self.act_geom_rot_180,
-                self.act_geom_rot_any, self.act_geom_rescale,
-                self.act_geom_resize_canvas, self.act_debayer,
-            ]),
-            ("Star Stuff", [
-                self.act_stacking_suite, self.act_live_stacking, self.act_planetary_stacker,
-                self.act_star_align, self.act_star_register, self.act_rgb_align,
-                self.act_mosaic_master, self.act_plate_solve, self.act_dither_analysis,
-                self.act_image_peeker, self.act_psf_viewer, self.act_exo_detector,
-                self.act_isophote, self.act_supernova_hunter,
-                self.act_planet_projection, self.act_star_spikes, self.act_astrospike,
-            ]),
-            ("Masks", [
-                self.act_create_mask, self.act_apply_mask, self.act_remove_mask,
-                self.act_show_mask, self.act_hide_mask, self.act_invert_mask,
-            ]),
-            ("What's In My…", [
-                self.act_whats_in_my_sky, self.act_wimi, self.act_finder_chart,
-            ]),
-            ("Header & Misc", [
-                self.act_fits_modifier, self.act_fits_batch_modifier,
-                self.act_batch_renamer, self.act_batch_convert,
-                self.act_astrobin_exporter, self.act_acv_exporter,
-                self.act_copy_astrometry,
-            ]),
-        ]
+        MENU_GROUPS = menu_spec.cheat_sheet_groups(self)
 
         def _entry(act):
             if act is None:
