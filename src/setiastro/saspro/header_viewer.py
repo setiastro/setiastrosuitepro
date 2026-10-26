@@ -330,13 +330,20 @@ class HeaderViewerDock(QDockWidget):
             except Exception:
                 pass
 
-            # 4) Always show remaining lightweight metadata (skip heavy blobs we already rendered)
+            # 4) XISF metadata as a browsable tree rather than one huge row.
+            #    str(image_meta) on a WBPP master is ~50 KB of stringified dict;
+            #    the standard properties are now promoted into the FITS header
+            #    above, and the full detail lives here, nested and exportable.
+            self._populate_xisf_meta(meta.get("xisf_meta"))
+
+            # 5) Always show remaining lightweight metadata (skip heavy blobs we already rendered)
             info_root = QTreeWidgetItem([self.tr("Metadata")])
             self._tree.addTopLevelItem(info_root)
             for k, v in meta.items():
-                if k in ("original_header", "fits_header", "header", "wcs", "__header_snapshot__", "xisf_header", "xisf_properties"):
+                if k in ("original_header", "fits_header", "header", "wcs", "__header_snapshot__",
+                         "xisf_header", "xisf_properties", "xisf_meta", "image_meta"):
                     continue
-                info_root.addChild(QTreeWidgetItem([str(k), str(v)]))
+                info_root.addChild(QTreeWidgetItem([str(k), self._short_value(v)]))
 
             self._tree.expandAll()
 
@@ -400,6 +407,124 @@ class HeaderViewerDock(QDockWidget):
                 else:
                     root.addChild(QTreeWidgetItem(["", s]))
 
+
+    # ---- XISF metadata already held by the document ----
+    _MAX_VALUE_CHARS = 300
+
+    @classmethod
+    def _short_value(cls, v) -> str:
+        """
+        Render a metadata value as one readable line.
+
+        Guards the panel against any oversized value: arrays are summarised by
+        shape, and long text is clipped with its real length noted, so a blob
+        can never make a row unreadable again.
+        """
+        try:
+            import numpy as _np
+            if isinstance(v, _np.ndarray):
+                return f"ndarray{tuple(v.shape)} {v.dtype}"
+        except Exception:
+            pass
+        if isinstance(v, (bytes, bytearray)):
+            return f"<{len(v)} bytes>"
+        if isinstance(v, dict):
+            return f"<dict, {len(v)} keys>"
+        if isinstance(v, (list, tuple)) and len(v) > 12:
+            return f"<{type(v).__name__}, {len(v)} items>"
+        try:
+            s = str(v)
+        except Exception:
+            return "<unprintable>"
+        s = s.replace("\n", " ").replace("\r", " ")
+        if len(s) > cls._MAX_VALUE_CHARS:
+            return f"{s[:cls._MAX_VALUE_CHARS]}… ({len(s)} chars)"
+        return s
+
+    def _populate_xisf_meta(self, image_meta) -> bool:
+        """
+        Render in-memory XISF image metadata as nested nodes.
+
+        Works off what the loader already stored -- no reopening the file.
+        Tolerates the stringified-dict shape some paths produce.
+        """
+        if isinstance(image_meta, str):
+            if not image_meta.strip():
+                return False
+            parsed = None
+            try:
+                import ast as _ast
+                parsed = _ast.literal_eval(image_meta)
+            except Exception:
+                # Real blobs embed repr-only values such as dtype('float32'),
+                # which literal_eval cannot read. Show it clipped rather than
+                # dropping it on the floor -- this key is skipped below.
+                parsed = None
+            if isinstance(parsed, dict):
+                image_meta = parsed
+            else:
+                root = QTreeWidgetItem([self.tr("XISF Image Metadata")])
+                self._tree.addTopLevelItem(root)
+                root.addChild(QTreeWidgetItem([self.tr("raw"), self._short_value(image_meta)]))
+                return True
+
+        if isinstance(image_meta, (list, tuple)) and image_meta:
+            image_meta = image_meta[0]
+        if not isinstance(image_meta, dict):
+            return False
+
+        root = QTreeWidgetItem([self.tr("XISF Image Metadata")])
+        self._tree.addTopLevelItem(root)
+
+        fk = image_meta.get("FITSKeywords")
+        if isinstance(fk, dict) and fk:
+            fits_item = QTreeWidgetItem(["FITSKeywords"])
+            root.addChild(fits_item)
+            for kw, entries in fk.items():
+                if not isinstance(entries, (list, tuple)):
+                    entries = [entries]
+                for ent in entries:
+                    if isinstance(ent, dict):
+                        val = ent.get("value", "")
+                        com = ent.get("comment", "")
+                        # COMMENT/HISTORY carry their text in the comment field
+                        text = val if (val not in (None, "")) else com
+                    else:
+                        text = ent
+                    fits_item.addChild(QTreeWidgetItem([str(kw), self._short_value(text)]))
+
+        props = image_meta.get("XISFProperties")
+        if isinstance(props, dict) and props:
+            props_item = QTreeWidgetItem(["XISFProperties"])
+            root.addChild(props_item)
+            for prop_name in sorted(props.keys()):
+                prop = props[prop_name]
+                if isinstance(prop, dict):
+                    # Lazy/attachment-backed grids: describe, never stringify.
+                    if prop.get("_lazy") or prop.get("location") or prop.get("value") is None:
+                        r = prop.get("rows") or prop.get("Rows")
+                        c = prop.get("columns") or prop.get("Columns")
+                        if r is not None and c is not None:
+                            shown = f"<{prop.get('type', 'array')} {r}x{c}, not loaded>"
+                        else:
+                            shown = f"<{prop.get('type', 'property')}, not loaded>"
+                    else:
+                        shown = self._short_value(prop.get("value"))
+                else:
+                    shown = self._short_value(prop)
+                props_item.addChild(QTreeWidgetItem([str(prop_name), shown]))
+
+        other = QTreeWidgetItem([self.tr("Image")])
+        added = False
+        for k, v in image_meta.items():
+            if k in ("FITSKeywords", "XISFProperties"):
+                continue
+            other.addChild(QTreeWidgetItem([str(k), self._short_value(v)]))
+            added = True
+        if added:
+            root.addChild(other)
+
+        return True
 
     def _populate_from_xisf(self, path: str):
         x = XISF(path)

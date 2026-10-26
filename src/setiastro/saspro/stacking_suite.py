@@ -16347,7 +16347,7 @@ class StackingSuiteDialog(QDialog):
         Rule: if local_time < cutoff_hour → use previous calendar date.
         Default cutoff = self.settings('stacking/night_cutoff_hour', 12)  # noon
         """
-        date_obs = hdr.get("DATE-OBS") if hdr else None
+        date_obs = self._acquisition_date_obs(hdr)
         dt_utc = self._parse_date_obs(date_obs) if date_obs else None
         if dt_utc is None:
             return None
@@ -16367,6 +16367,293 @@ class StackingSuiteDialog(QDialog):
 
         return local_date.isoformat()
 
+    # Header keywords that carry *acquisition* time, in priority order.
+    #
+    # This deliberately excludes every keyword that records when a FILE was
+    # written rather than when photons were collected -- 'DATE' (FITS write
+    # time), 'PCL:Signature:Integration' and friends (PixInsight process
+    # stamps), 'CREATED', etc. A master flat integrated in PixInsight weeks
+    # after the fact still belongs to the night its raw flats were shot, and
+    # WBPP/ImageIntegration preserve that in DATE-OBS / Observation:Time:Start.
+    _ACQUISITION_DATE_KEYS = (
+        "DATE-OBS",
+        "DATE-BEG",
+        "Observation:Time:Start",
+        "OBSSTART",
+        "DATE-LOC",
+        "DATE-AVG",
+        "DATE-END",
+        "Observation:Time:End",
+    )
+
+    def _acquisition_date_obs(self, hdr):
+        """
+        Return the best *acquisition* timestamp string in ``hdr``, or None.
+
+        DATE-OBS is preferred so ordinary frames behave exactly as before;
+        the remaining keys only matter for masters written by other tools.
+        """
+        if not hdr:
+            return None
+        for key in self._ACQUISITION_DATE_KEYS:
+            try:
+                val = hdr.get(key)
+            except Exception:
+                continue
+            if val is None:
+                continue
+            s = str(val).strip()
+            if not s:
+                continue
+            if self._parse_date_obs(s) is not None:
+                return s
+        return None
+
+    @staticmethod
+    def _fits_datetime(dt_aware) -> str:
+        """Aware datetime -> FITS 'YYYY-MM-DDThh:mm:ss.sss' in UTC."""
+        try:
+            return (dt_aware.astimezone(dt_timezone.utc)
+                            .strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3])
+        except Exception:
+            return str(dt_aware)
+
+    def _note_frame_acquisition(self, path: str, hdr):
+        """
+        Remember a frame's acquisition time from a header already in hand.
+
+        Called at ingest, where the header is read anyway, so building a
+        master costs no extra file reads. Caching None is meaningful: it
+        records that we looked and this header carries no acquisition date,
+        so nothing re-opens the file hoping for a different answer.
+        """
+        cache = getattr(self, "_frame_dateobs", None)
+        if cache is None:
+            cache = {}
+            self._frame_dateobs = cache
+        dt_utc = self._parse_date_obs(self._acquisition_date_obs(hdr)) if hdr else None
+        cache[path] = dt_utc
+        return dt_utc
+
+    def _raw_frame_time_span(self, file_list):
+        """
+        (earliest, latest, n_dated) acquisition datetimes across source frames.
+
+        Lets a master we build carry the acquisition window of the *raw* frames
+        that went into it, so it can be re-bucketed into the right
+        noon-to-noon night later -- by us after a restart, and by any other
+        tool -- instead of depending on a SESSION tag nothing else can read.
+
+        Served from the ingest-time cache; a header is only opened for a path
+        that never went through ingest (intermediates, a restored session).
+        """
+        cache = getattr(self, "_frame_dateobs", None)
+        if cache is None:
+            cache = {}
+            self._frame_dateobs = cache
+
+        first = last = None
+        n = 0
+        for p in (file_list or ()):
+            if p in cache:
+                dt_utc = cache[p]
+            else:
+                try:
+                    hdr, _ = get_valid_header(p)
+                except Exception:
+                    hdr = None
+                dt_utc = self._note_frame_acquisition(p, hdr)
+            if dt_utc is None:
+                continue
+            n += 1
+            if first is None or dt_utc < first:
+                first = dt_utc
+            if last is None or dt_utc > last:
+                last = dt_utc
+        return first, last, n
+
+    def _stamp_acquisition_provenance(self, header, file_list, exposure_time=None,
+                                      label="raw frames"):
+        """
+        Write the acquisition window of ``file_list`` into ``header``.
+
+        DATE-OBS / DATE-END / DATE-AVG describe when photons were collected;
+        DATE records when this master file was written and is deliberately
+        kept separate -- session matching must never fall back on it, or a
+        master integrated weeks later lands on the wrong night.
+        """
+        try:
+            t_first, t_last, _n = self._raw_frame_time_span(file_list)
+        except Exception:
+            t_first = t_last = None
+
+        if t_first is not None:
+            try:
+                exp = float(exposure_time or 0.0)
+            except Exception:
+                exp = 0.0
+            t_end = (t_last or t_first) + dt_timedelta(seconds=max(0.0, exp))
+            header["DATE-OBS"] = (self._fits_datetime(t_first),
+                                  f"Start of first {label} (acquisition)")
+            header["DATE-END"] = (self._fits_datetime(t_end),
+                                  f"End of last {label} (acquisition)")
+            header["DATE-AVG"] = (self._fits_datetime(t_first + (t_end - t_first) / 2),
+                                  f"Midpoint of {label} acquisition")
+        try:
+            header["DATE"] = (self._fits_datetime(dt_datetime.now(dt_timezone.utc)),
+                              "Master creation date (NOT acquisition)")
+        except Exception:
+            pass
+        return header
+
+    @staticmethod
+    def _session_token_to_date(token):
+        """'YYYY-MM-DD' (or 'YYYYMMDD') session token -> date(); else None."""
+        if not token:
+            return None
+        m = re.match(r"^\s*(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)\s*$", str(token))
+        if not m:
+            return None
+        try:
+            return _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except Exception:
+            return None
+
+    def _master_flat_session(self, path: str, hdr=None) -> str:
+        """
+        Session token for a master flat.
+
+        Priority:
+          1) explicit SESSION keyword (SASpro-native masters write it)
+          2) the noon-to-noon local night of the *raw flats* behind the master
+             (DATE-OBS / Observation:Time:Start) -- this is what lets masters
+             imported from PixInsight pair with lights from the same night,
+             exactly like masters built natively in SASpro
+          3) a real date/session token in the filename or folder
+          4) 'Default'
+
+        Note it never scrapes an arbitrary filename field: PixInsight names
+        like ``masterFlat_BIN-1_8288x5644_FILTER-Ha_mono.xisf`` used to yield
+        a session of ``BIN-1``, which could never match a light.
+        """
+        cache = getattr(self, "_master_flat_session_cache", None)
+        if cache is None:
+            cache = {}
+            self._master_flat_session_cache = cache
+        if hdr is None:
+            # Only trust the cache when we have nothing fresher; a caller that
+            # hands us a header has just read the file (possibly a rebuilt
+            # master at an existing path), so recompute and refresh.
+            if path in cache:
+                return cache[path]
+            try:
+                hdr, _ = get_valid_header(path)
+            except Exception:
+                hdr = None
+        else:
+            self._file_dt_cache = getattr(self, "_file_dt_cache", {}) or {}
+            self._file_dt_cache.pop(path, None)
+            if getattr(self, "_master_flat_go", None):
+                self._master_flat_go.pop(path, None)
+
+        session = None
+
+        # 1) explicit SESSION keyword
+        try:
+            s = str((hdr.get("SESSION") if hdr else "") or "").strip()
+        except Exception:
+            s = ""
+        if s and s.lower() not in ("default", "unknown", "none", "n/a"):
+            session = s
+
+        # 2) noon-to-noon night of the raw flats
+        if not session:
+            session = self._session_from_dateobs_local_night(hdr)
+
+        # 3) date/session token in the filename, then the usual path walk
+        if not session:
+            name = os.path.basename(path)
+            for rx, fmt in _SESSION_PATTERNS:
+                m = rx.search(name)
+                if m:
+                    session = fmt(m)
+                    break
+        if not session:
+            try:
+                from_path = self._auto_session_from_path(path, None)
+            except Exception:
+                from_path = None
+            if from_path and from_path != "Default":
+                session = from_path
+
+        session = session or "Default"
+        cache[path] = session
+        return session
+
+    def _unique_master_flat_key(self, base_key: str, file_path: str, exposure=None) -> str:
+        """
+        Keep two distinct masters from colliding on one master_files key.
+
+        Now that sessions are real dates, two masters for the same
+        filter/size/night/gain produce an identical key and one would be
+        silently dropped. Any disambiguator is appended *after* the existing
+        brackets so the filter/size prefix and the leading session bracket
+        (which is what the matchers parse) stay intact.
+        """
+        existing = self.master_files.get(base_key)
+        if existing is None or os.path.normpath(existing) == os.path.normpath(file_path):
+            return base_key
+
+        # Prefer something meaningful: flats of the same night usually differ
+        # in exposure.
+        try:
+            exp_text = f"{float(exposure):g}s"
+        except Exception:
+            exp_text = None
+        if exp_text:
+            cand = f"{base_key} [{exp_text}]"
+            cur = self.master_files.get(cand)
+            if cur is None or os.path.normpath(cur) == os.path.normpath(file_path):
+                return cand
+
+        for n in range(2, 100):
+            cand = f"{base_key} [#{n}]"
+            cur = self.master_files.get(cand)
+            if cur is None or os.path.normpath(cur) == os.path.normpath(file_path):
+                return cand
+        return base_key
+
+    def _master_flat_night_date(self, path: str, key: str | None = None):
+        """
+        date() of the night a master flat's raw frames were shot, or None.
+
+        Prefers the session already encoded in the master_files key (which may
+        carry a user-applied tag) and falls back to re-reading the header.
+        """
+        d = self._session_token_to_date(key) if key else None
+        if d is not None:
+            return d
+        d = self._session_token_to_date(self._master_flat_session(path))
+        if d is not None:
+            return d
+        return self._file_local_night_date(path)
+
+    def _master_flat_gain_offset(self, path: str):
+        """(gain, offset) for a master flat -- XISF-aware and cached."""
+        if not hasattr(self, "_master_flat_go") or self._master_flat_go is None:
+            self._master_flat_go = {}
+        if path not in self._master_flat_go:
+            g = o = None
+            try:
+                hdr, _ = get_valid_header(path)
+                g = _get_key_float(hdr, "GAIN")
+                o = _get_key_float(hdr, "OFFSET")
+                if o is None:
+                    o = _get_key_float(hdr, "BLKLEVEL")
+            except Exception:
+                g = o = None
+            self._master_flat_go[path] = (g, o)
+        return self._master_flat_go[path]
 
     def _auto_tag_sessions_for_paths(self, paths: list[str]) -> dict[str, str]:
         session_map = {}
@@ -16456,8 +16743,9 @@ class StackingSuiteDialog(QDialog):
 
         try:
             if hdr is None:
-                with fits.open(path, memmap=True) as hdul:
-                    hdr = hdul[0].header
+                # get_valid_header() is XISF-aware; fits.open() is not, and
+                # masters exported from PixInsight are usually .xisf.
+                hdr, _ = get_valid_header(path)
         except Exception:
             hdr = None
 
@@ -16469,9 +16757,9 @@ class StackingSuiteDialog(QDialog):
         return d
 
     def _closest_flat_for(self, *, filter_name: str, image_size: str, light_path: str,
-                        light_gain: float | None = None, light_offset: float | None = None):
+                        light_gain: float | None = None, light_offset: float | None = None,
+                        light_session: str | None = None):
         ftoken = self._sanitize_name(filter_name)
-        light_d = self._file_local_night_date(light_path)
 
         candidates = []
         for key, path in self.master_files.items():
@@ -16480,26 +16768,10 @@ class StackingSuiteDialog(QDialog):
         if not candidates:
             return None
 
-        if not hasattr(self, "_master_flat_go"):
-            self._master_flat_go = {}
-
-        def _flat_go(path):
-            if path not in self._master_flat_go:
-                try:
-                    hdr = fits.getheader(path, memmap=True)
-                    g = _get_key_float(hdr, "GAIN")
-                    o = _get_key_float(hdr, "OFFSET")
-                    if o is None:
-                        o = _get_key_float(hdr, "BLKLEVEL")
-                    self._master_flat_go[path] = (g, o)
-                except Exception:
-                    self._master_flat_go[path] = (None, None)
-            return self._master_flat_go[path]
-
         def _go_mismatch(path):
             if light_gain is None and light_offset is None:
                 return False
-            fg, fo = _flat_go(path)
+            fg, fo = self._master_flat_gain_offset(path)
             if light_gain is not None and fg is not None and abs(light_gain - fg) > 1:
                 return True
             if light_offset is not None and fo is not None and abs(light_offset - fo) > 1:
@@ -16512,14 +16784,19 @@ class StackingSuiteDialog(QDialog):
             return m.group(1) if m else None
 
         # 1) exact session + gain match — prefer the CACHED session tag (set correctly at ingest)
-        light_session = self.session_tags.get(light_path)
+        if not light_session:
+            light_session = self.session_tags.get(light_path)
         if not light_session:
             # fallback only if not cached for some reason
             try:
-                light_hdr = fits.getheader(light_path, memmap=True)
+                light_hdr, _ = get_valid_header(light_path)
             except Exception:
                 light_hdr = None
             light_session = self._session_from_dateobs_local_night(light_hdr) if light_hdr else None
+
+        light_d = self._file_local_night_date(light_path) if light_path else None
+        if light_d is None:
+            light_d = self._session_token_to_date(light_session)
 
         if light_session:
             exact_matches = [(k, p) for k, p in candidates if _key_session(k) == light_session]
@@ -16538,7 +16815,9 @@ class StackingSuiteDialog(QDialog):
 
         best = (None, 10**9, True)
         for _key, fpath in candidates:
-            fd = self._file_local_night_date(fpath)
+            # Night of the master's *raw* flats — works for SASpro-native and
+            # for PixInsight/XISF masters alike.
+            fd = self._master_flat_night_date(fpath, key=_key_session(_key))
             if fd is None:
                 continue
             delta = abs((fd - light_d).days)
@@ -16546,7 +16825,15 @@ class StackingSuiteDialog(QDialog):
             if (mismatch, delta) < (best[2], best[1]):
                 best = (fpath, delta, mismatch)
 
-        return best[0] if best[0] else candidates[0][1]
+        if best[0]:
+            return best[0]
+
+        # Nothing exposed a usable night: at least honour gain/offset instead
+        # of handing back an arbitrary candidate.
+        for _, path in candidates:
+            if not _go_mismatch(path):
+                return path
+        return candidates[0][1]
 
     def _ingest_paths_with_progress(self, paths, tree, expected_type, title, manual_session_name=None):
         # Reset per-batch missing-FILTER policy; keep _path_filter_override
@@ -16796,6 +17083,14 @@ class StackingSuiteDialog(QDialog):
                 keyword = self.settings.value("stacking/session_keyword", "Default", type=str)
                 session_tag = self._session_from_manual_keyword(path, keyword) or "Default"
 
+            # --- Acquisition timestamp (fast: header already loaded) ---
+            # Cached here so master creation can stamp the raw frames'
+            # acquisition window without re-opening every file in the group.
+            try:
+                self._note_frame_acquisition(path, header)
+            except Exception:
+                pass
+
             # --- Temperature (fast: header already loaded) ---
             ccd_temp = header.get("CCD-TEMP", None)
             set_temp = header.get("SET-TEMP", None)
@@ -17002,26 +17297,39 @@ class StackingSuiteDialog(QDialog):
                     except Exception:
                         exposure_text = f"{exposure}s" if str(exposure).endswith("s") else str(exposure)
 
-                    sensor_temp = header.get("CCD-TEMP", header.get("SET-TEMP", None))
-                    gain_val = header.get("GAIN", None)
-                    temp_suffix = f" [{float(sensor_temp):+.1f}C]" if sensor_temp is not None else ""
-                    gain_suffix = f" [G{int(gain_val)}]" if gain_val is not None else ""
+                    # Use the tolerant extractor the matchers use, so a key and
+                    # the gain/offset we later compare against are read the same
+                    # way. Raw header.get() + int() throws on a string value
+                    # like '100.0' or '-10 C', and the outer except would then
+                    # drop the master entirely instead of just omitting a tag.
+                    sensor_temp = _get_key_float(header, "CCD-TEMP")
+                    if sensor_temp is None:
+                        sensor_temp = _get_key_float(header, "SET-TEMP")
+                    gain_val = _get_key_float(header, "GAIN")
+                    temp_suffix = f" [{sensor_temp:+.1f}C]" if sensor_temp is not None else ""
+                    gain_suffix = f" [G{int(round(gain_val))}]" if gain_val is not None else ""
                     key = f"{exposure_text} ({image_size}){temp_suffix}{gain_suffix}"
                     self.master_files[key] = file_path
                     self.master_sizes[file_path] = image_size
                 elif file_type.upper() == "FLAT":
-                    session_name = "Default"
-                    filename = os.path.basename(file_path)
-                    if filename.lower().startswith("masterflat_"):
-                        parts = filename.split("_")
-                        if len(parts) > 1:
-                            session_name = parts[1]
+                    # Derive the session from the header we already loaded: a
+                    # master flat carries the acquisition time of its *raw*
+                    # flats, so it buckets into the same noon-to-noon night as
+                    # the lights shot that night. Falls back to filename/folder
+                    # tokens only when no acquisition date is present.
+                    session_name = self._master_flat_session(file_path, header)
 
-                    gain_val = header.get("GAIN", None)
-                    offset_val = header.get("OFFSET", header.get("BLKLEVEL", None))
-                    gain_suffix = f" [G{int(gain_val)}]" if gain_val is not None else ""
+                    # Same tolerant read as the matchers (see DARK branch).
+                    # Offset is intentionally not in the key: it is compared at
+                    # match time by _master_flat_gain_offset, and most capture
+                    # software (SGP, NINA) does not record it at all.
+                    gain_val = _get_key_float(header, "GAIN")
+                    gain_suffix = f" [G{int(round(gain_val))}]" if gain_val is not None else ""
 
-                    key = f"{filter_name} ({image_size}) [{session_name}]{gain_suffix}"
+                    key = self._unique_master_flat_key(
+                        f"{filter_name} ({image_size}) [{session_name}]{gain_suffix}",
+                        file_path, exposure,
+                    )
                     self.master_files[key] = file_path
                     self.master_sizes[file_path] = image_size
 
@@ -17535,6 +17843,13 @@ class StackingSuiteDialog(QDialog):
                 master_header["SESSION"]  = (str(session), "Session-agnostic dark (applies to all)")
                 master_header["NCOMBINE"] = (int(N), "Number of darks combined")
                 master_header["NSTACK"]   = (int(N), "Alias of NCOMBINE (SetiAstro)")
+                # Acquisition window of the raw darks. Darks are matched on
+                # exposure/temp/gain rather than session, so this is provenance
+                # rather than matching -- but it keeps every master SASpro
+                # writes self-describing, and DATE stays the creation stamp.
+                self._stamp_acquisition_provenance(
+                    master_header, file_list, exposure_time, label="raw dark"
+                )
                 if gain is not None:
                     master_header["GAIN"]   = (float(gain),   "Camera gain used for these darks")
                 if offset is not None:
@@ -18796,6 +19111,43 @@ class StackingSuiteDialog(QDialog):
                         header["GAIN"] = (flat_gain_val, "Camera gain of source flats")
                     if flat_offset_val is not None:
                         header["OFFSET"] = (flat_offset_val, "Camera offset of source flats")
+                    # Carry the site's timezone hints forward: 'local night'
+                    # bucketing resolves tz from QSettings, then from these
+                    # keys. Without them a master re-read on another machine
+                    # (or after the setting is cleared) can land on the
+                    # neighbouring night.
+                    for _k, _c in (("TIMEZONE", "Site timezone of source flats"),
+                                   ("TZ",       "Site timezone of source flats"),
+                                   ("SITELAT",  "Site latitude of source flats"),
+                                   ("SITELONG", "Site longitude of source flats"),
+                                   ("OBSGEO-B", "Site latitude of source flats"),
+                                   ("OBSGEO-L", "Site longitude of source flats")):
+                        try:
+                            _v = hdr0_full.get(_k)
+                        except Exception:
+                            _v = None
+                        if _v not in (None, ""):
+                            header[_k] = (_v, _c)
+                except Exception:
+                    pass
+
+                # ─────────────────────────────────────────────────────────────
+                # Acquisition provenance of the RAW flats.
+                #
+                # Previously the master carried no acquisition time at all, so
+                # the only thing tying it to a night was the SESSION tag --
+                # meaningless outside SASpro, and empty whenever the group was
+                # never tagged. Stamping the raw flats' window means this
+                # master buckets into the same noon-to-noon night as the lights
+                # shot that night, exactly like masters imported from
+                # PixInsight now do.
+                # ─────────────────────────────────────────────────────────────
+                self._stamp_acquisition_provenance(
+                    header, file_list, exposure_time, label="raw flat"
+                )
+                try:
+                    header["NCOMBINE"] = (int(len(file_list)), "Number of raw flats combined")
+                    header["NSTACK"]   = (int(len(file_list)), "Alias of NCOMBINE (SetiAstro)")
                 except Exception:
                     pass
                 # Stamp the source sensor's row order so this master is a faithful
@@ -18901,19 +19253,18 @@ class StackingSuiteDialog(QDialog):
         session = "Default"
         gain_suffix = ""
         try:
-            hdr = fits.getheader(master_flat_path, memmap=True)
-            s = str(hdr.get("SESSION", "") or "").strip()
-            if s:
-                session = s
+            hdr, _ = get_valid_header(master_flat_path)
+            session = self._master_flat_session(master_flat_path, hdr)
             g = _get_key_float(hdr, "GAIN")
             if g is not None:
                 gain_suffix = f" [G{int(g)}]"
         except Exception:
             pass
 
-        key = f"{filter_name} ({size}) [{session}]{gain_suffix}"
-        if key not in self.master_files:
-            self.master_files[key] = master_flat_path
+        key = self._unique_master_flat_key(
+            f"{filter_name} ({size}) [{session}]{gain_suffix}", master_flat_path
+        )
+        self.master_files[key] = master_flat_path
 
         existing_items = self.master_flat_tree.findItems(filter_name, Qt.MatchFlag.MatchExactly, 0)
         if existing_items:
@@ -19312,21 +19663,8 @@ class StackingSuiteDialog(QDialog):
                         ]
 
                         if exact_candidates:
-                            if not hasattr(self, "_master_flat_go"):
-                                self._master_flat_go = {}
-
                             for candidate in exact_candidates:
-                                if candidate not in self._master_flat_go:
-                                    try:
-                                        hdr = fits.getheader(candidate, memmap=True)
-                                        g = _get_key_float(hdr, "GAIN")
-                                        o = _get_key_float(hdr, "OFFSET")
-                                        if o is None:
-                                            o = _get_key_float(hdr, "BLKLEVEL")
-                                        self._master_flat_go[candidate] = (g, o)
-                                    except Exception:
-                                        self._master_flat_go[candidate] = (None, None)
-                                fg, fo = self._master_flat_go[candidate]
+                                fg, fo = self._master_flat_gain_offset(candidate)
                                 gain_ok = (l_gain is None or fg is None or abs(l_gain - fg) <= 1)
                                 offset_ok = (l_offset is None or fo is None or abs(l_offset - fo) <= 1)
                                 if gain_ok and offset_ok:
@@ -19555,11 +19893,57 @@ class StackingSuiteDialog(QDialog):
 
         return best_path
 
-    def _auto_pick_master_flat(self, filter_name: str, image_size: str, session_name: str):
-        # Prefer session-specific, then session-agnostic
-        key_pref = f"{filter_name} ({image_size}) [{session_name}]"
-        if key_pref in self.master_files:
-            return self.master_files[key_pref]
+    def _auto_pick_master_flat(self, filter_name: str, image_size: str, session_name: str,
+                               light_path: str | None = None,
+                               light_gain: float | None = None,
+                               light_offset: float | None = None):
+        """
+        Resolve a master flat for a light group.
+
+        Keys look like 'Ha (8288x5644) [2025-09-18] [G100]', so the session
+        bracket is not necessarily the last one — match by prefix rather than
+        exact key. When no master shares the night, fall back to the same
+        nearest-night search the tree preview uses, so imported PixInsight
+        masters are considered instead of silently dropping to a
+        session-agnostic key.
+        """
+        prefixes = [f"{filter_name} ({image_size}) [{session_name}]"]
+        try:
+            ftoken = self._sanitize_name(filter_name)
+        except Exception:
+            ftoken = filter_name
+        if ftoken != filter_name:
+            prefixes.append(f"{ftoken} ({image_size}) [{session_name}]")
+
+        exact = []
+        for mk, mp in self.master_files.items():
+            mk = str(mk)
+            if any(mk.startswith(p) for p in prefixes) and mp not in exact:
+                exact.append(mp)
+
+        for path in exact:
+            fg, fo = self._master_flat_gain_offset(path)
+            gain_ok = (light_gain is None or fg is None or abs(light_gain - fg) <= 1)
+            offset_ok = (light_offset is None or fo is None or abs(light_offset - fo) <= 1)
+            if gain_ok and offset_ok:
+                return path
+        if exact:
+            return exact[0]
+
+        try:
+            best = self._closest_flat_for(
+                filter_name=filter_name,
+                image_size=image_size,
+                light_path=light_path,
+                light_gain=light_gain,
+                light_offset=light_offset,
+                light_session=session_name,
+            )
+        except Exception:
+            best = None
+        if best:
+            return best
+
         fallback_key = f"{filter_name} ({image_size})"
         return self.master_files.get(fallback_key)
 
@@ -21000,7 +21384,10 @@ class StackingSuiteDialog(QDialog):
                                     master_flat_path = path; break
                     if master_flat_path is None:
                         master_flat_path = self._auto_pick_master_flat(
-                            filter_name, image_size, session_name
+                            filter_name, image_size, session_name,
+                            light_path=light_file,
+                            light_gain=light_gain,
+                            light_offset=light_offset,
                         )
 
                     group_key = (

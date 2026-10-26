@@ -1268,6 +1268,275 @@ def xisf_fits_header_from_meta(image_meta: dict, file_meta: dict | None = None) 
 
     return hdr
 
+# ─────────────────────────────────────────────────────────────────────────────
+# XISF metadata -> FITS header promotion
+#
+# XISF carries most of its real metadata in XISFProperties, which we previously
+# only mined for WCS. Everything else ended up as one stringified dict in
+# doc.metadata['xisf_meta'] -- 50 KB on a WBPP master -- which the header panel
+# rendered as a single unreadable row.
+#
+# Standard properties become real FITS keywords (only where the header does not
+# already carry them; FITSKeywords stay authoritative). Everything else that is
+# a short scalar becomes an 'XISF:<property>' card: both FITS writers already
+# skip keys starting with 'XISF:', so those are display/provenance only and
+# never reach a saved file.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# property name -> (FITS keyword, comment, scale)
+# Scale converts PixInsight's SI units to the FITS conventions: PI stores
+# focal length and aperture in metres, FITS wants millimetres.
+_XISF_PROP_TO_FITS = {
+    "Observation:Time:Start":          ("DATE-OBS", "Acquisition start (XISF)",        None),
+    "Observation:Time:End":            ("DATE-END", "Acquisition end (XISF)",          None),
+    "Observation:Object:Name":         ("OBJECT",   "Object name (XISF)",              None),
+    "Observation:Title":               ("OBJECT",   "Observation title (XISF)",        None),
+    "Observation:Equinox":             ("EQUINOX",  "Equinox (XISF)",                  None),
+    "Observation:Location:Latitude":   ("OBSGEO-B", "Site latitude, deg (XISF)",       None),
+    "Observation:Location:Longitude":  ("OBSGEO-L", "Site longitude, deg (XISF)",      None),
+    "Observation:Location:Elevation":  ("OBSGEO-H", "Site elevation, m (XISF)",        None),
+    "Observer:Name":                   ("OBSERVER", "Observer (XISF)",                 None),
+    "Instrument:ExposureTime":         ("EXPTIME",  "Exposure time, s (XISF)",         None),
+    "Instrument:Filter:Name":          ("FILTER",   "Filter (XISF)",                   None),
+    "Instrument:Camera:Name":          ("INSTRUME", "Camera (XISF)",                   None),
+    "Instrument:Camera:Gain":          ("EGAIN",    "Gain, e-/ADU (XISF)",             None),
+    "Instrument:Camera:ISOSpeed":      ("ISOSPEED", "ISO speed (XISF)",                None),
+    "Instrument:Camera:XBinning":      ("XBINNING", "Binning in X (XISF)",             None),
+    "Instrument:Camera:YBinning":      ("YBINNING", "Binning in Y (XISF)",             None),
+    "Instrument:Sensor:XPixelSize":    ("XPIXSZ",   "Pixel size in X, um (XISF)",      None),
+    "Instrument:Sensor:YPixelSize":    ("YPIXSZ",   "Pixel size in Y, um (XISF)",      None),
+    "Instrument:Sensor:Temperature":   ("CCD-TEMP", "Sensor temperature, C (XISF)",    None),
+    "Instrument:Telescope:Name":       ("TELESCOP", "Telescope (XISF)",                None),
+    "Instrument:Telescope:FocalLength": ("FOCALLEN", "Focal length, mm (XISF)",       1000.0),
+    "Instrument:Telescope:Aperture":   ("APTDIA",   "Aperture, mm (XISF)",           1000.0),
+    "Image:FrameNumber":               ("FRAMENUM", "Frame number (XISF)",             None),
+    "XISF:CreatorApplication":         ("CREATOR",  "Creating application (XISF)",     None),
+    # NOTE: deliberately NOT mapped to any DATE-OBS-like key -- this is when the
+    # file was written, not when photons were collected.
+    "XISF:CreationTime":               ("DATE",     "File creation (NOT acquisition)", None),
+}
+
+# Top-level image_meta fields worth surfacing, as XISF:Image:* cards.
+_XISF_IMAGE_FIELDS = ("id", "imageType", "colorSpace", "sampleFormat", "bounds", "geometry")
+
+# Properties never worth a card: pixel data, huge transforms, lazy attachments.
+_XISF_PROP_SKIP_PREFIXES = (
+    "PCL:AstrometricSolution:SplineWorldTransformation",
+    "PCL:AstrometricSolution:LinearTransformationMatrix",
+    "PCL:AstrometricSolution:ImageToNative",
+    "PCL:AstrometricSolution:NativeToImage",
+)
+
+
+def _xisf_prop_scalar(prop, max_len: int = 160):
+    """
+    Return a short scalar for an XISFProperty entry, or None.
+
+    Rejects attachment-backed (lazy) properties and arrays/matrices -- PI stores
+    spline grids and astrometric matrices that way, and those are exactly what
+    made the metadata blob enormous.
+    """
+    v = prop
+    if isinstance(prop, dict):
+        if prop.get("_lazy") or prop.get("location"):
+            return None
+        if any(k in prop for k in ("rows", "Rows", "columns", "Columns")):
+            return None
+        v = prop.get("value")
+
+    if v is None or isinstance(v, (list, tuple, set, dict, bytes, bytearray)):
+        return None
+
+    try:
+        if isinstance(v, np.ndarray):
+            return None
+        if isinstance(v, np.generic):
+            v = v.item()
+    except Exception:
+        pass
+
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v
+
+    # PI TimePoint often arrives as a datetime; keep it ISO ('T' separator) so
+    # downstream DATE-OBS parsing behaves.
+    try:
+        import datetime as _dtmod
+        if isinstance(v, (_dtmod.datetime, _dtmod.date)):
+            return v.isoformat()
+    except Exception:
+        pass
+
+    s = str(v).strip()
+    if not s or len(s) > max_len or "\n" in s or "\r" in s:
+        return None
+    return s
+
+
+def _xisf_props_dict(meta):
+    """XISFProperties out of any of the shapes we see in the wild."""
+    if isinstance(meta, (list, tuple)):
+        meta = meta[0] if meta else None
+    if not isinstance(meta, dict):
+        return {}
+
+    p = meta.get("XISFProperties")
+    if isinstance(p, dict):
+        return p
+
+    xm = meta.get("xisf_meta")
+    if isinstance(xm, dict) and isinstance(xm.get("XISFProperties"), dict):
+        return xm["XISFProperties"]
+    if isinstance(xm, str) and "XISFProperties" in xm:
+        try:
+            xm2 = ast.literal_eval(xm)
+            if isinstance(xm2, dict) and isinstance(xm2.get("XISFProperties"), dict):
+                return xm2["XISFProperties"]
+        except Exception:
+            pass
+    return {}
+
+
+def promote_xisf_metadata_to_header(hdr, image_meta, file_meta=None, max_props: int = 400):
+    """
+    Fold XISF metadata into ``hdr`` so the header panel can show it as cards.
+
+    Standard properties fill missing FITS keywords; the rest become
+    'XISF:<property>' cards that the FITS writers strip on save. Also replays
+    *every* COMMENT/HISTORY entry from FITSKeywords -- the base builder keeps
+    only entries[0], so WBPP's whole provenance block was being dropped.
+    """
+    if hdr is None:
+        hdr = fits.Header()
+
+    props = {}
+    for src in (file_meta, image_meta):          # image-level wins
+        got = _xisf_props_dict(src)
+        if got:
+            props.update(got)
+
+    # 1) Standard keywords, only where the header has nothing yet.
+    for prop_name, (kw, comment, scale) in _XISF_PROP_TO_FITS.items():
+        if prop_name not in props or kw in hdr:
+            continue
+        val = _xisf_prop_scalar(props[prop_name])
+        if val is None:
+            continue
+        if scale is not None:
+            try:
+                val = float(val) * scale
+            except Exception:
+                pass
+        # PI writes TimePoints with a trailing 'Z'; FITS DATE-* keywords are
+        # UTC by definition and some strict readers reject the suffix.
+        if kw.startswith("DATE") and isinstance(val, str) and val.endswith("Z"):
+            val = val[:-1]
+        try:
+            hdr[kw] = (val, comment)
+        except Exception:
+            pass
+
+    # 2) Top-level image fields (geometry, colorSpace, imageType, ...).
+    im = image_meta[0] if isinstance(image_meta, (list, tuple)) and image_meta else image_meta
+    if isinstance(im, dict):
+        for field in _XISF_IMAGE_FIELDS:
+            if field not in im:
+                continue
+            raw = im[field]
+            val = _xisf_prop_scalar(raw)
+            if val is None and isinstance(raw, (list, tuple)):
+                # geometry is a small tuple -- worth showing as text
+                try:
+                    val = "x".join(str(int(x)) for x in raw)
+                except Exception:
+                    val = None
+            if val is None:
+                continue
+            try:
+                hdr[f"XISF:Image:{field}"] = (val, "XISF image metadata")
+            except Exception:
+                pass
+        # PI's imageType is the only IMAGETYP some masters carry.
+        if "IMAGETYP" not in hdr:
+            it = _xisf_prop_scalar(im.get("imageType"))
+            if it:
+                try:
+                    hdr["IMAGETYP"] = (it, "Image type (from XISF imageType)")
+                except Exception:
+                    pass
+
+    # 3) Everything else that is a short scalar, as XISF:<property> cards.
+    mapped = {name for name in _XISF_PROP_TO_FITS}
+    written = 0
+    for prop_name in sorted(props.keys()):
+        if written >= max_props:
+            break
+        if prop_name in mapped:
+            continue
+        if prop_name.startswith(_XISF_PROP_SKIP_PREFIXES):
+            continue
+        val = _xisf_prop_scalar(props[prop_name])
+        if val is None:
+            continue
+        key = prop_name if prop_name.startswith("XISF:") else f"XISF:{prop_name}"
+        if key in hdr:
+            continue
+        try:
+            hdr[key] = (val, "XISF property")
+            written += 1
+        except Exception:
+            pass
+
+    # 4) Replay every COMMENT/HISTORY entry. The base builder only keeps
+    #    entries[0] per keyword, so WBPP's whole provenance block was lost and
+    #    what survived was a blank card. Rebuild each keyword from scratch:
+    #    keep existing non-blank lines, add the missing ones, drop the blanks.
+    for kw in ("COMMENT", "HISTORY"):
+        lines, seen = [], set()
+
+        def _add(text):
+            text = str(text or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                lines.append(text)
+
+        try:
+            for existing in hdr.get(kw, []):
+                _add(existing)
+        except Exception:
+            pass
+
+        for src in (image_meta, file_meta):
+            s = src[0] if isinstance(src, (list, tuple)) and src else src
+            if not isinstance(s, dict):
+                continue
+            fk = s.get("FITSKeywords")
+            if not isinstance(fk, dict):
+                continue
+            entries = fk.get(kw)
+            if not isinstance(entries, (list, tuple)):
+                entries = [entries] if entries is not None else []
+            for ent in entries:
+                if isinstance(ent, dict):
+                    # COMMENT/HISTORY carry their text in the comment field
+                    _add(ent.get("value") or ent.get("comment"))
+                else:
+                    _add(ent)
+
+        try:
+            if kw in hdr:
+                del hdr[kw]
+            adder = hdr.add_comment if kw == "COMMENT" else hdr.add_history
+            for text in lines:
+                adder(text)
+        except Exception:
+            pass
+
+    return hdr
+
+
 def _flip_vertical_wcs_header(hdr, naxis2):
     """Update a FITS/WCS header for an np.flipud (vertical) flip of the image."""
     if hdr is None:
@@ -2544,6 +2813,15 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                 by = int(_lookup_kw('YBINNING') or bx)
                 if bx!=by: print(f"⚠️ Unequal binning {bx}×{by}, averaging")
                 hdr['XBINNING'], hdr['YBINNING'] = bx, by
+
+                # 9) Fold the rest of the XISF metadata into the header so the
+                #    header panel shows it as cards instead of one giant
+                #    stringified dict. Standard keys fill gaps only; the rest
+                #    land as 'XISF:*' cards, which both FITS writers strip.
+                try:
+                    hdr = promote_xisf_metadata_to_header(hdr, image_meta, file_meta)
+                except Exception as _pe:
+                    print(f"⚠️ XISF metadata promotion skipped: {_pe}")
 
                 original_header = hdr
                 print(f"Loaded XISF header with keys: {_filled}")
