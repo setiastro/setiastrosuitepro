@@ -16297,14 +16297,36 @@ class StackingSuiteDialog(QDialog):
             return dt_timezone.utc
 
 
-    def _parse_date_obs(self, s: str):
+    # Timestamp shapes seen in real headers, tried in order after ISO parsing.
+    _DATE_FORMATS = (
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S",
+        # DWARF 2/3 write 'YYYY-MM-DD-HH-MM-SS-mmm': no 'T', all dashes.
+        # isoparse rejects it, so those frames previously produced no
+        # timestamp at all and therefore no session.
+        "%Y-%m-%d-%H-%M-%S-%f",
+        "%Y-%m-%d-%H-%M-%S",
+        "%Y%m%dT%H%M%S",
+        "%Y%m%d_%H%M%S",
+        "%Y-%m-%d",
+    )
+
+    def _parse_datetime_any(self, s):
         """
-        Parse DATE-OBS robustly → aware UTC datetime if possible.
-        Accepts ISO8601 with or without 'Z', fractional seconds, or date-only.
+        Parse a header timestamp into a datetime.
+
+        The result is tz-aware only if the string itself carried an offset --
+        callers decide what a naive value means. Date-only values are snapped
+        to midday to avoid accidental date flips.
         """
         if not s:
             return None
         s = str(s).strip()
+        if not s:
+            return None
 
         # Prefer dateutil if present
         try:
@@ -16314,29 +16336,52 @@ class StackingSuiteDialog(QDialog):
 
         if date_parser:
             try:
-                dt = date_parser.isoparse(s)
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=dt_timezone.utc)
-                return dt.astimezone(dt_timezone.utc)
+                return date_parser.isoparse(s)
             except Exception:
                 pass
 
-        # Manual fallbacks
-        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ",
-                    "%Y-%m-%dT%H:%M:%SZ",
-                    "%Y-%m-%dT%H:%M:%S",
-                    "%Y-%m-%d"):
+        for fmt in self._DATE_FORMATS:
             try:
                 dt = dt_datetime.strptime(s, fmt)
-                if fmt.endswith("Z") or "T" in fmt:
-                    if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=dt_timezone.utc)
-                else:
-                    # date-only; assume midday UTC to avoid accidental date flips
-                    dt = dt.replace(tzinfo=dt_timezone.utc, hour=12)
-                return dt.astimezone(dt_timezone.utc)
             except Exception:
                 continue
+            if fmt == "%Y-%m-%d":
+                dt = dt.replace(hour=12)
+            return dt
+        return None
+
+    def _parse_date_obs(self, s: str):
+        """
+        Parse DATE-OBS robustly → aware UTC datetime if possible.
+        A naive timestamp is taken as UTC, which is what SGP and NINA write.
+        """
+        dt = self._parse_datetime_any(s)
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=dt_timezone.utc)
+        return dt.astimezone(dt_timezone.utc)
+
+    # Local wall-clock keywords. SGP and NINA both write DATE-LOC, the site's
+    # own clock, which pins the night with no timezone guessing at all.
+    _LOCAL_TIME_KEYS = ("DATE-LOC", "DATE-LOCAL", "LOCALTIM", "TIME-LOC")
+
+    def _local_wall_clock(self, hdr):
+        """Naive local wall-clock datetime from a DATE-LOC-style key, or None."""
+        if not hdr:
+            return None
+        for key in self._LOCAL_TIME_KEYS:
+            try:
+                v = hdr.get(key)
+            except Exception:
+                continue
+            if v in (None, ""):
+                continue
+            dt = self._parse_datetime_any(v)
+            if dt is None:
+                continue
+            # Keep the clock exactly as written: this is already local time.
+            return dt.replace(tzinfo=None)
         return None
 
 
@@ -16347,16 +16392,20 @@ class StackingSuiteDialog(QDialog):
         Rule: if local_time < cutoff_hour → use previous calendar date.
         Default cutoff = self.settings('stacking/night_cutoff_hour', 12)  # noon
         """
-        date_obs = self._acquisition_date_obs(hdr)
-        dt_utc = self._parse_date_obs(date_obs) if date_obs else None
-        if dt_utc is None:
-            return None
+        # Prefer the site's own clock when the header carries it: DATE-OBS is
+        # UTC, so bucketing it needs a site timezone, and a wrong or missing
+        # 'stacking/site_timezone' can push a frame into the neighbouring
+        # night (badly so east of Greenwich). DATE-LOC removes the guess.
+        dt_local = self._local_wall_clock(hdr)
+        if dt_local is None:
+            date_obs = self._acquisition_date_obs(hdr)
+            dt_utc = self._parse_date_obs(date_obs) if date_obs else None
+            if dt_utc is None:
+                return None
+            dt_local = dt_utc.astimezone(self._get_site_timezone(hdr))
 
         if cutoff_hour is None:
             cutoff_hour = int(self.settings.value("stacking/night_cutoff_hour", 12, type=int))
-
-        tz = self._get_site_timezone(hdr)
-        dt_local = dt_utc.astimezone(tz)
 
         # ✅ Use datetime.time alias, not the 'time' module
         cutoff = dt_time(hour=max(0, min(23, int(cutoff_hour))), minute=0)
@@ -16380,7 +16429,9 @@ class StackingSuiteDialog(QDialog):
         "DATE-BEG",
         "Observation:Time:Start",
         "OBSSTART",
-        "DATE-LOC",
+        # NOTE: DATE-LOC is deliberately absent -- it is local time, and this
+        # list feeds _parse_date_obs, which reads a naive value as UTC.
+        # _local_wall_clock() handles DATE-LOC separately.
         "DATE-AVG",
         "DATE-END",
         "Observation:Time:End",
@@ -17092,8 +17143,20 @@ class StackingSuiteDialog(QDialog):
                 pass
 
             # --- Temperature (fast: header already loaded) ---
-            ccd_temp = header.get("CCD-TEMP", None)
-            set_temp = header.get("SET-TEMP", None)
+            # Via the vendor alias tables, so cameras that use a non-standard
+            # keyword (DWARF's DET-TEMP, for one) still group by temperature.
+            def _first_temp(keys):
+                for _k in keys:
+                    try:
+                        _v = header.get(_k, None)
+                    except Exception:
+                        continue
+                    if _v not in (None, ""):
+                        return _v
+                return None
+
+            ccd_temp = _first_temp(self._CCD_TEMP_KEYS)
+            set_temp = _first_temp(self._SET_TEMP_KEYS)
 
             def _to_float_temp(v):
                 try:
@@ -17123,8 +17186,8 @@ class StackingSuiteDialog(QDialog):
 
             # === DARKs ===
             if expected_type_u == "DARK":
-                ccd_t = _get_key_float(header, "CCD-TEMP")
-                set_t = _get_key_float(header, "SET-TEMP")
+                ccd_t = _to_float_temp(ccd_temp)
+                set_t = _to_float_temp(set_temp)
                 chosen_t = ccd_t if ccd_t is not None else set_t
 
                 temp_step = float(self.settings.value("stacking/temp_group_step", 1.0, type=float) or 1.0)
@@ -17302,9 +17365,11 @@ class StackingSuiteDialog(QDialog):
                     # way. Raw header.get() + int() throws on a string value
                     # like '100.0' or '-10 C', and the outer except would then
                     # drop the master entirely instead of just omitting a tag.
-                    sensor_temp = _get_key_float(header, "CCD-TEMP")
-                    if sensor_temp is None:
-                        sensor_temp = _get_key_float(header, "SET-TEMP")
+                    sensor_temp = None
+                    for _tk in (self._CCD_TEMP_KEYS + self._SET_TEMP_KEYS):
+                        sensor_temp = _get_key_float(header, _tk)
+                        if sensor_temp is not None:
+                            break
                     gain_val = _get_key_float(header, "GAIN")
                     temp_suffix = f" [{sensor_temp:+.1f}C]" if sensor_temp is not None else ""
                     gain_suffix = f" [G{int(round(gain_val))}]" if gain_val is not None else ""
@@ -19296,6 +19361,8 @@ class StackingSuiteDialog(QDialog):
     # Sensor/actual temperature keywords, most specific first, generic last.
     _CCD_TEMP_KEYS = (
         "CCD-TEMP", "CCDTEMP", "CCD_TEMP",
+        # DWARF 2/3 report the sensor temperature as DET-TEMP.
+        "DET-TEMP", "DETTEMP", "DET_TEMP",
         "SENSOR-TEMP", "SENSORTEMP", "SENSOR_TEMP",
         "CMOS-TEMP", "CMOSTEMP",
         "CAMTEMP", "CAM-TEMP", "CAM_TEMP",
@@ -19316,8 +19383,9 @@ class StackingSuiteDialog(QDialog):
         non-standard keyword still match. Used for BOTH lights and master darks,
         so widening it here fixes temperature matching on both sides."""
         try:
-            with fits.open(path) as hdul:
-                hdr = hdul[0].header
+            # get_valid_header() is XISF-aware; fits.open() is not.
+            hdr, _ = get_valid_header(path)
+            if hdr is not None:
 
                 def _first(keys):
                     for k in keys:
