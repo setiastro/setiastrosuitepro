@@ -5317,6 +5317,7 @@ class StarRegistrationThread(QThread):
                 fut_info[f] = j[0]
                 pending.add(f)
 
+            last_completion = time.monotonic()
             while pending:
                 if self._is_cancelled():
                     self.progress_update.emit("⏹ Cancelling alignment — stopping at next frame boundary…")
@@ -5324,6 +5325,32 @@ class StarRegistrationThread(QThread):
                         f.cancel()
                     break
                 done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+
+                if not done:
+                    # timeout_sec was read but never enforced, so a wedged solve
+                    # job span forever too. Treat "nothing completed at all" as
+                    # the stall it is.
+                    if timeout_sec > 0 and (time.monotonic() - last_completion) > timeout_sec:
+                        stuck = [os.path.basename(str(fut_info.get(f, "?"))) for f in list(pending)[:5]]
+                        more = f" (+{len(pending) - 5} more)" if len(pending) > 5 else ""
+                        self.progress_update.emit(
+                            f"⏱️ Alignment stalled: nothing completed in {timeout_sec}s. "
+                            f"Abandoning {len(pending)} frame(s): {', '.join(stuck)}{more}"
+                        )
+                        for f in pending:
+                            f.cancel()
+                            k_stuck = rev_current_to_orig.get(
+                                os.path.normpath(str(fut_info.get(f, ""))),
+                                os.path.normpath(str(fut_info.get(f, "")))
+                            )
+                            if pass_index == 0:
+                                self.alignment_matrices[k_stuck] = None
+                            self._increment_progress()
+                        pending = set()
+                        break
+                    continue
+
+                last_completion = time.monotonic()
                 for fut in done:
                     returned_path = fut_info.pop(fut, "<unknown>")
                     try:
@@ -5568,10 +5595,59 @@ class StarRegistrationThread(QThread):
         self.progress_update.emit(f"📝 Finalizing aligned outputs with {finalize_workers} processes…")
 
         ok = 0
+        # Watchdog: a single wedged worker used to hang this stage forever at
+        # N-1 of N with the Stop button dead, because as_completed() has no
+        # timeout and `with ... as ex` then blocked again in shutdown(wait=True).
+        # Mirror the solve pass: poll with a timeout, honour cancellation, and
+        # give up on frames that stop making progress.
+        import time as _time
+        stall_timeout = int(self.align_prefs.get("timeout_per_job_sec", 300))
+        ex = _make_executor(finalize_workers)
         try:
-            with _make_executor(finalize_workers) as ex:
-                futs = [ex.submit(_finalize_write_job, j) for j in jobs]
-                for fut in as_completed(futs):
+            fut_info, pending = {}, set()
+            for j in jobs:
+                f = ex.submit(_finalize_write_job, j)
+                fut_info[f] = j[0]
+                pending.add(f)
+
+            last_completion = _time.monotonic()
+            while pending:
+                if self._is_cancelled():
+                    self.progress_update.emit(
+                        "⏹ Cancelling finalize — stopping at next frame boundary…"
+                    )
+                    for f in pending:
+                        f.cancel()
+                    break
+
+                done, pending = wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+
+                if not done:
+                    if stall_timeout > 0 and (_time.monotonic() - last_completion) > stall_timeout:
+                        self.progress_update.emit(
+                            f"⏱️ Finalize stalled: nothing completed in {stall_timeout}s. "
+                            f"Treating {len(pending)} unfinished frame(s) as alignment failures."
+                        )
+                        for f in pending:
+                            f.cancel()
+                            stuck_path = str(fut_info.get(f, "") or "")
+                            # Mark it failed exactly as a frame that never
+                            # solved: no output was written, so it must not be
+                            # counted as valid, and the .sasd must not hand out
+                            # a transform for a frame that has no aligned file.
+                            if stuck_path:
+                                self.alignment_matrices[os.path.normpath(stuck_path)] = None
+                                self.progress_update.emit(
+                                    f"⏭️ Skipping {os.path.basename(stuck_path)} — "
+                                    f"finalize did not complete, not writing output."
+                                )
+                            self._increment_progress()   # keep the bar able to reach total
+                        pending = set()
+                        break
+                    continue
+
+                last_completion = _time.monotonic()
+                for fut in done:
                     try:
                         orig_path, out_path, msg, success, drizzle = fut.result()
                     except Exception as e:
@@ -5602,10 +5678,16 @@ class StarRegistrationThread(QThread):
                                         self.drizzle_xforms[k] = ("affine", np.asarray(A_fallback, np.float64).reshape(2, 3))
                                 else:
                                     self.drizzle_xforms[k] = (str(kind), None)
-                            except Exception as ex:
-                                self.progress_update.emit(f"⚠️ Could not store drizzle transform for {os.path.basename(orig_path)}: {ex}")
+                            except Exception as _dz_err:
+                                self.progress_update.emit(f"⚠️ Could not store drizzle transform for {os.path.basename(orig_path)}: {_dz_err}")
                     self._increment_progress()
         finally:
+            # Never wait here: a wedged worker would block shutdown just as it
+            # blocked as_completed(), re-freezing the UI at the same point.
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
             try: shutil.rmtree(tmpdir, ignore_errors=True)
             except Exception as e:
                 import logging
@@ -6284,9 +6366,11 @@ class StarRegistrationWindow(QWidget):
         self.sp_adv_timeout.setValue(int(_prefs["timeout_per_job_sec"]))
         self.sp_adv_timeout.setSuffix(" s")
         self.sp_adv_timeout.setToolTip(
-            "Hard timeout for a single per-frame solve job. Raise for very\n"
-            "large frames (6000+ px wide) or crowded fields where solving\n"
-            "legitimately takes longer; a stuck frame is still killed."
+            "Stall watchdog. If no frame finishes within this time, the\n"
+            "remaining frames are abandoned and marked as alignment\n"
+            "failures so the run can finish. This is not a per-frame limit:\n"
+            "a slow frame is fine as long as others keep completing. Raise\n"
+            "for very large frames (6000+ px wide) or crowded fields."
         )
         _adv.addRow("Per-frame timeout:", self.sp_adv_timeout)
 
