@@ -9637,6 +9637,83 @@ class StackingSuiteDialog(QDialog):
         )
         fl_general.addRow(self.low_ram_safe_mode_cb)
 
+        self.completion_sound_cb = QCheckBox(self.tr("Play a sound when stacking finishes"))
+        self.completion_sound_cb.setToolTip(self.tr(
+            "Chime when the completion summary appears, so a long stack you\n"
+            "walked away from doesn't sit unnoticed."
+        ))
+        self.completion_sound_cb.setChecked(
+            self.settings.value("stacking/completion_sound", True, type=bool)
+        )
+        fl_general.addRow(self.completion_sound_cb)
+
+        # Optional custom chime. Left blank, the system notification sound is
+        # used, so this row is purely opt-in.
+        self.completion_sound_edit = QLineEdit()
+        self.completion_sound_edit.setReadOnly(True)
+        self.completion_sound_edit.setPlaceholderText(self.tr("System chime"))
+        self.completion_sound_edit.setText(
+            self.settings.value("stacking/completion_sound_file", "", type=str) or ""
+        )
+        self.completion_sound_edit.setToolTip(self.tr(
+            "Uncompressed .wav only — compressed files will not play."
+        ))
+
+        _snd_browse = QPushButton(self.tr("Browse…"))
+        _snd_test   = QPushButton(self.tr("▶ Test"))
+        _snd_clear  = QPushButton(self.tr("Clear"))
+        for _b in (_snd_browse, _snd_test, _snd_clear):
+            _b.setAutoDefault(False)
+
+        def _pick_completion_sound():
+            start = self.completion_sound_edit.text().strip() or ""
+            p, _ = QFileDialog.getOpenFileName(
+                dialog, self.tr("Choose completion sound"),
+                os.path.dirname(start) if start else "",
+                self.tr("Wave audio (*.wav);;All files (*)")
+            )
+            if p:
+                self.completion_sound_edit.setText(p)
+
+        def _test_completion_sound():
+            # force=True: the checkbox value isn't committed until OK, so a
+            # freshly-ticked box would otherwise test silently.
+            self._play_completion_chime(
+                success=True,
+                path_override=(self.completion_sound_edit.text().strip() or None),
+                force=True,
+            )
+
+        _snd_browse.clicked.connect(_pick_completion_sound)
+        _snd_test.clicked.connect(_test_completion_sound)
+        _snd_clear.clicked.connect(lambda: self.completion_sound_edit.clear())
+
+        _snd_row = QHBoxLayout()
+        _snd_row.setContentsMargins(0, 0, 0, 0)
+        _snd_row.addWidget(self.completion_sound_edit, 1)
+        _snd_row.addWidget(_snd_browse)
+        _snd_row.addWidget(_snd_test)
+        _snd_row.addWidget(_snd_clear)
+        _snd_w = QWidget(); _snd_w.setLayout(_snd_row)
+        fl_general.addRow(self.tr("Custom sound:"), _snd_w)
+
+        _snd_note = QLabel(self.tr(
+            "Leave blank to use the system chime. A custom .wav is used instead when set."
+        ))
+        _snd_note.setWordWrap(True)
+        try:
+            _f = _snd_note.font(); _f.setPointSizeF(max(7.0, _f.pointSizeF() - 1.0)); _snd_note.setFont(_f)
+            _snd_note.setStyleSheet("color: palette(mid);")
+        except Exception:
+            pass
+        fl_general.addRow("", _snd_note)
+
+        def _sync_completion_sound_enabled(on: bool):
+            for _w in (self.completion_sound_edit, _snd_browse, _snd_test, _snd_clear, _snd_note):
+                _w.setEnabled(bool(on))
+        _sync_completion_sound_enabled(self.completion_sound_cb.isChecked())
+        self.completion_sound_cb.toggled.connect(_sync_completion_sound_enabled)
+
         left_col.addWidget(gb_general)
 
         self.temp_group_step_spin = QDoubleSpinBox()
@@ -10713,7 +10790,11 @@ class StackingSuiteDialog(QDialog):
         self.settings.setValue("stacking/chunk_height",         self.chunk_height)
         self.settings.setValue("stacking/chunk_width",          self.chunk_width)
         self.settings.setValue("stacking/low_ram_safe_mode",
-                               bool(self.low_ram_safe_mode_cb.isChecked()))        
+                               bool(self.low_ram_safe_mode_cb.isChecked()))
+        self.settings.setValue("stacking/completion_sound",
+                               bool(self.completion_sound_cb.isChecked()))
+        self.settings.setValue("stacking/completion_sound_file",
+                               self.completion_sound_edit.text().strip())
         self.settings.setValue("stacking/autocrop_enabled",     self.autocrop_cb.isChecked())
         self.settings.setValue("stacking/autocrop_pct",         float(self.autocrop_pct.value()))
         self.temp_group_step = float(self.temp_group_step_spin.value())
@@ -29688,6 +29769,8 @@ class StackingSuiteDialog(QDialog):
     def _on_after_align_finished(self, success: bool, message: str):
         # Stop thread/progress UI first (whatever you already do)
 
+        self._play_completion_chime(success=bool(success))
+
         if success:
             QMessageBox.information(
                 self,
@@ -30109,6 +30192,107 @@ class StackingSuiteDialog(QDialog):
             },
         }
 
+    def _completion_sound_path(self):
+        """Path to the completion chime, or None if this build ships none."""
+        # A user-chosen file wins, so anyone can swap in their own chime.
+        try:
+            custom = (self.settings.value("stacking/completion_sound_file", "", type=str) or "").strip()
+            if custom and os.path.exists(custom):
+                return custom
+        except Exception:
+            pass
+        try:
+            from setiastro.saspro.resources import _resource_path
+            for rel in ("sounds/complete.wav", "data/complete.wav"):
+                p = _resource_path(rel)
+                if p and os.path.exists(p):
+                    return p
+        except Exception:
+            pass
+        return None
+
+    def _play_completion_chime(self, success: bool = True,
+                               path_override: str | None = None,
+                               force: bool = False):
+        """
+        Audible nudge when a run finishes and the summary appears.
+
+        A long stack is something you walk away from, so the summary is easy
+        to miss. Opt out with 'stacking/completion_sound'.
+
+        Tries a bundled WAV, then the platform's own notification sound, then
+        Qt's beep. Every layer is guarded: a build without QtMultimedia, a
+        machine with no audio device, or a remote session must never stop the
+        summary dialog from appearing.
+        """
+        if not force:
+            try:
+                if not self.settings.value("stacking/completion_sound", True, type=bool):
+                    return
+            except Exception:
+                pass
+
+        # 1) User-supplied (or bundled) sound file.
+        try:
+            path = path_override or self._completion_sound_path()
+            if path and os.path.exists(path):
+                from PyQt6.QtMultimedia import QSoundEffect
+                from PyQt6.QtCore import QUrl
+                eff = getattr(self, "_completion_effect", None)
+                if eff is None or getattr(self, "_completion_effect_path", None) != path:
+                    # Keep a reference on self: a local QSoundEffect gets
+                    # garbage-collected before it finishes playing.
+                    eff = QSoundEffect(self)
+                    eff.setSource(QUrl.fromLocalFile(path))
+                    self._completion_effect = eff
+                    self._completion_effect_path = path
+                try:
+                    vol = float(self.settings.value("stacking/completion_sound_volume", 0.6, type=float))
+                except Exception:
+                    vol = 0.6
+                eff.setVolume(max(0.0, min(1.0, vol)))
+                # A file Qt can't decode (a renamed mp3, a compressed wav)
+                # would otherwise play nothing at all; fall through to the
+                # system chime instead of leaving the user in silence.
+                bad = False
+                try:
+                    bad = (eff.status() == QSoundEffect.Status.Error)
+                except Exception:
+                    bad = False
+                if not bad:
+                    eff.play()
+                    return
+                self._completion_effect = None
+                self._completion_effect_path = None
+        except Exception:
+            pass
+
+        # 2) Native notification sound — nicer than a raw bell.
+        try:
+            if sys.platform.startswith("win"):
+                import winsound
+                winsound.MessageBeep(
+                    winsound.MB_ICONASTERISK if success else winsound.MB_ICONHAND
+                )
+                return
+            if sys.platform == "darwin":
+                import subprocess
+                snd = ("/System/Library/Sounds/Glass.aiff" if success
+                       else "/System/Library/Sounds/Basso.aiff")
+                if os.path.exists(snd):
+                    subprocess.Popen(["afplay", snd],
+                                     stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+                    return
+        except Exception:
+            pass
+
+        # 3) Last resort: Qt's own beep.
+        try:
+            QApplication.beep()
+        except Exception:
+            pass
+
     def _show_rich_summary_dialog(self, *, title, lead_text, summary_text,
                                   master_paths=None, sasd_paths=None):
         """Shared completion dialog with a copyable acquisition summary
@@ -30202,6 +30386,10 @@ class StackingSuiteDialog(QDialog):
         if btn_dither  is not None: btn_dither.clicked.connect(_choose_dither)
         if btn_both    is not None: btn_both.clicked.connect(_choose_both)
         btn_ok.clicked.connect(dlg.accept)
+
+        # exec() blocks, so chime first — this is the moment the user
+        # who walked away needs to hear.
+        self._play_completion_chime(success=True)
 
         dlg.exec()
         return actions
