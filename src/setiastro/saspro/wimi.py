@@ -98,7 +98,7 @@ from PyQt6.QtGui import (QPixmap,QImage,    QPainter,    QPen,    QColor,    QTr
 
 # ----- QtCore -----
 from PyQt6.QtCore import (    Qt,    QRectF,    QLineF,    QPointF,    QThread,    pyqtSignal,    QTimer,    QEvent,    pyqtSlot,  
-   QSettings,    QSignalBlocker,    QDateTime, QEventLoop
+   QSettings,    QSignalBlocker,    QDateTime, QEventLoop, QStandardPaths
 )
 
 
@@ -6109,8 +6109,8 @@ class WIMIDialog(QDialog):
                                 # blackbody Teff — large divergence = peculiar star
                                 if flag_outliers and Teff is not None:
                                     T_col, _ = _teff_from_color(bp_rp=bp_rp, bv=bv)
-                                    if T_bv is not None:
-                                        ratio = Teff / T_bv if T_bv > 0 else 1.0
+                                    if T_col is not None:
+                                        ratio = Teff / T_col if T_col > 0 else 1.0
                                         outlier = ratio < 0.5 or ratio > 2.0
                     except Exception:
                         pass  # fall through to catalog
