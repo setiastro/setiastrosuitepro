@@ -2428,7 +2428,8 @@ class CurvesDialogPro(QDialog):
 
     def _on_symmetry_pick(self, u, _v):
         self.editor.redistributeHandlesByPivot(u)
-        self._set_status(self.tr("Inflection @ K={0:.3f}").format(u))
+        self._set_status(self.tr("Inflection @ {0}={1:.3f}").format(
+            self._current_mode_key, u))
         self._quick_preview()
 
     def _fit_once(self):
@@ -2453,6 +2454,66 @@ class CurvesDialogPro(QDialog):
             return
         QTimer.singleShot(0, self._fit_after_load)
 
+    # ── active-channel axis mapping ──────────────────────────────────────
+    # Channels whose grid x-axis is NOT tone. For these, a pixel's R/G/B
+    # levels say nothing about where it sits on the curve, so any readout or
+    # click-to-place has to convert first.
+    _COLOUR_AXIS_KEYS = ("L*", "a*", "b*", "Chroma", "Saturation")
+
+    @staticmethod
+    def _pixel_rgb(img, ix, iy):
+        """(r, g, b) in 0..1 for one pixel; mono is broadcast to all three.
+        Returns None if the pixel isn't finite."""
+        try:
+            if img.ndim == 2:
+                r = g = b = float(img[iy, ix])
+            elif img.ndim == 3 and img.shape[2] == 1:
+                r = g = b = float(img[iy, ix, 0])
+            elif img.ndim == 3 and img.shape[2] >= 3:
+                r = float(img[iy, ix, 0]); g = float(img[iy, ix, 1]); b = float(img[iy, ix, 2])
+            else:
+                return None
+        except Exception:
+            return None
+        if not (np.isfinite(r) and np.isfinite(g) and np.isfinite(b)):
+            return None
+        return (float(np.clip(r, 0.0, 1.0)),
+                float(np.clip(g, 0.0, 1.0)),
+                float(np.clip(b, 0.0, 1.0)))
+
+    def _axis_value_from_rgb(self, r, g, b) -> float:
+        """Where a pixel sits on the ACTIVE channel's x-axis, in 0..1.
+
+        The grid's horizontal axis is whatever the active channel curves:
+        tone for K/R/G/B, but a Lab or HSV component for L*/a*/b*/Chroma/
+        Saturation. Normalisation here matches _apply_all_curves_once exactly,
+        so a point placed at this value lands on the same input the LUT will
+        be indexed with.
+        """
+        key = self._current_mode_key
+        if key == "R": return float(np.clip(r, 0.0, 1.0))
+        if key == "G": return float(np.clip(g, 0.0, 1.0))
+        if key == "B": return float(np.clip(b, 0.0, 1.0))
+
+        if key in ("L*", "a*", "b*", "Chroma"):
+            px  = np.array([[[r, g, b]]], dtype=np.float32)
+            lab = _np_xyz_to_lab(_np_rgb_to_xyz(px))[0, 0]
+            if key == "L*":
+                return float(np.clip(float(lab[0]) / 100.0, 0.0, 1.0))
+            if key == "a*":
+                return float(np.clip((float(lab[1]) + 128.0) / 255.0, 0.0, 1.0))
+            if key == "b*":
+                return float(np.clip((float(lab[2]) + 128.0) / 255.0, 0.0, 1.0))
+            C = float(np.hypot(float(lab[1]), float(lab[2])))
+            return float(np.clip(C / 200.0, 0.0, 1.0))
+
+        if key == "Saturation":
+            px = np.array([[[r, g, b]]], dtype=np.float32)
+            return float(np.clip(float(_np_rgb_to_hsv(px)[0, 0, 1]), 0.0, 1.0))
+
+        # K (brightness) and anything unrecognised: linked RGB -> mean level.
+        return float(np.clip((float(r) + float(g) + float(b)) / 3.0, 0.0, 1.0))
+
     def _on_preview_mouse_moved(self, x, y):
         if self._preview_img is None:
             return
@@ -2472,12 +2533,26 @@ class CurvesDialogPro(QDialog):
             self.editor.clearValueLines(); self.hist.clearValueLines()
             self._set_status(""); return
 
+        # The histogram is drawn in R/G/B space whatever channel is active
+        # (see _HV_CHANNEL_ALIASES), so it always gets RGB levels. The curve
+        # grid's axis follows the active channel, so on L*/a*/b*/Chroma/
+        # Saturation it gets a single line at the pixel's actual axis value —
+        # RGB lines there would point at unrelated positions.
+        key     = self._current_mode_key
+        on_axis = key in self._COLOUR_AXIS_KEYS
+
         if img.ndim == 2 or (img.ndim == 3 and img.shape[2] == 1):
             v = float(img[iy,ix] if img.ndim == 2 else img[iy,ix,0])
             v = float(np.clip(0.0 if not np.isfinite(v) else v, 0.0, 1.0))
-            self.editor.updateValueLines(v, 0.0, 0.0, grayscale=True)
             self.hist.updateValueLines(v, 0.0, 0.0, grayscale=True)
-            self._set_status(self.tr("Cursor ({0}, {1})  K: {2:.3f}").format(ix,iy,v))
+            if on_axis:
+                av = self._axis_value_from_rgb(v, v, v)
+                self.editor.updateValueLines(av, 0.0, 0.0, grayscale=True)
+                self._set_status(self.tr("Cursor ({0}, {1})  K: {2:.3f}   {3}: {4:.3f}").format(
+                    ix, iy, v, key, av))
+            else:
+                self.editor.updateValueLines(v, 0.0, 0.0, grayscale=True)
+                self._set_status(self.tr("Cursor ({0}, {1})  K: {2:.3f}").format(ix,iy,v))
         else:
             C = img.shape[2]
             r = g = b = 0.0
@@ -2488,9 +2563,18 @@ class CurvesDialogPro(QDialog):
             r = float(np.clip(r if np.isfinite(r) else 0.0, 0.0, 1.0))
             g = float(np.clip(g if np.isfinite(g) else 0.0, 0.0, 1.0))
             b = float(np.clip(b if np.isfinite(b) else 0.0, 0.0, 1.0))
-            self.editor.updateValueLines(r, g, b, grayscale=False)
             self.hist.updateValueLines(r, g, b, grayscale=False)
-            self._set_status(self.tr("Cursor ({0}, {1})  R: {2:.3f}  G: {3:.3f}  B: {4:.3f}").format(ix,iy,r,g,b))
+            if on_axis:
+                av = self._axis_value_from_rgb(r, g, b)
+                self.editor.updateValueLines(av, 0.0, 0.0, grayscale=True)
+                self._set_status(self.tr(
+                    "Cursor ({0}, {1})  R: {2:.3f}  G: {3:.3f}  B: {4:.3f}   {5}: {6:.3f}"
+                ).format(ix, iy, r, g, b, key, av))
+            else:
+                self.editor.updateValueLines(r, g, b, grayscale=False)
+                self._set_status(self.tr(
+                    "Cursor ({0}, {1})  R: {2:.3f}  G: {3:.3f}  B: {4:.3f}"
+                ).format(ix, iy, r, g, b))
 
     def _map_label_xy_to_image_ij(self, x, y):
         if self._pix is None:
@@ -3197,9 +3281,11 @@ class CurvesDialogPro(QDialog):
                 ix  = max(0, min(self._pix.width()-1,  ix))
                 iy  = max(0, min(self._pix.height()-1, iy))
                 img = self._preview_img
-                k   = float(img[iy,ix] if img.ndim==2 else
-                            (img[iy,ix,0] if img.shape[2]==1 else np.mean(img[iy,ix,:3])))
-                k   = float(np.clip(k, 0.0, 1.0))
+                rgb = self._pixel_rgb(img, ix, iy)
+                if rgb is None:
+                    return True
+                # Pivot on the ACTIVE channel's axis, not on brightness.
+                k = self._axis_value_from_rgb(*rgb)
                 self.editor.setSymmetryPoint(k*360.0, 0.0)
                 self._on_symmetry_pick(k, k)
                 ev.accept(); return True
@@ -3217,10 +3303,14 @@ class CurvesDialogPro(QDialog):
                 return False
             ix,iy  = mapped
             img    = self._preview_img
-            v = float(img[iy,ix] if img.ndim==2 else
-                      (img[iy,ix,0] if img.ndim==3 and img.shape[2]==1 else np.mean(img[iy,ix,:3])))
-            if np.isnan(v): return True
-            v = float(np.clip(v, 0.0, 1.0))
+            rgb    = self._pixel_rgb(img, ix, iy)
+            if rgb is None: return True
+            # Place the point on the ACTIVE channel's axis. On a*/b*/Chroma/
+            # Saturation this is a Lab or HSV component, not brightness —
+            # using brightness here dropped handles at unrelated positions,
+            # and on a*/b* (where only the middle of the grid is reachable)
+            # usually in dead space where no pixel ever lands.
+            v = self._axis_value_from_rgb(*rgb)
             x = max(0.001, min(359.999, v*360.0))
             y = None
             try:
@@ -3240,7 +3330,8 @@ class CurvesDialogPro(QDialog):
                         continue
                     break
             self.editor.addControlPoint(x, y)
-            self._set_status(self.tr("Added point at x={0:.3f}").format(v))
+            self._set_status(self.tr("Added point at {0} = {1:.3f}").format(
+                self._current_mode_key, v))
             ev.accept(); return True
 
         return super().eventFilter(obj, ev)
