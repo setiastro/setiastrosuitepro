@@ -192,8 +192,13 @@ def _write_wcs_sidecar(hdr, path: Path, img_w: int, img_h: int) -> str:
     # that carries the real scale is the exact shape SASpro's own stacking
     # code treats as a falsified header. Derive CD once and drop the rest.
     try:
-        from astropy.wcs import WCS
-        cd = WCS(hdr).pixel_scale_matrix
+        # Same reason as in _write_astap_ini: a bare WCS(hdr) raises on an RGB
+        # cube's NAXIS=3 header when SIP terms are present. Here the failure
+        # was quieter and worse -- the except below only warned, so the PC and
+        # CDELT cards were left in place and no CD was written, which is the
+        # falsified-header shape this normalisation exists to prevent.
+        from setiastro.saspro.plate_solver import _wcs_from_header_2d
+        cd = _wcs_from_header_2d(hdr, relax=True).pixel_scale_matrix
         for _k in list(out.keys()):
             ku = str(_k).upper()
             if ku.startswith("PC") or ku.startswith("CDELT"):
@@ -260,8 +265,15 @@ def _write_astap_ini(path: Path, hdr=None, img_w: int = 0, img_h: int = 0,
     # the raw cards so a PC+CDELT header is handled identically to a CD one,
     # and a SIP solution still reports its correct linear anchor.
     try:
-        from astropy.wcs import WCS
-        w = WCS(hdr)
+        # _wcs_from_header_2d, not a bare WCS(hdr): a colour frame is an RGB
+        # cube, so its header says NAXIS=3, and WCSLIB refuses to combine
+        # three core axes with SIP ("you must select or reduce these to 2
+        # dimensions using the naxis kwarg"). That is every solve from an
+        # OSC camera -- which is most of them. The helper exists for exactly
+        # this and is what _summarize already uses, so using it here also
+        # keeps the .ini and the printed summary derived from one WCS.
+        from setiastro.saspro.plate_solver import _wcs_from_header_2d
+        w = _wcs_from_header_2d(hdr, relax=True)
         # A header with no WCS does not fail here: astropy hands back a
         # default WCS whose CD is the identity, which is non-singular and
         # would sail through every check below as a "solution" at RA 0 and
