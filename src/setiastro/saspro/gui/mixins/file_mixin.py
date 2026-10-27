@@ -222,6 +222,45 @@ class FileMixin:
     Provides methods for opening, saving, importing, and exporting files.
     """
     
+    @staticmethod
+    def _filter_for_ext(filters: str, ext: str) -> Optional[str]:
+        """
+        The entry in a ";;"-joined filter string that accepts *ext*.
+
+        Used so Save As can pre-select the filter matching the file the
+        document came from. Without it Qt falls back to the FIRST filter and
+        appends ITS first pattern, which is how a ".fit" comes back ".fits".
+        """
+        e = (ext or "").lower().lstrip(".")
+        if not e:
+            return None
+        for entry in (filters or "").split(";;"):
+            # A label can carry parentheses of its own -- "SYQ (SyQon)
+            # (*.syq)" -- so take the group holding the patterns, not simply
+            # the first one.
+            for grp in re.findall(r"\(([^)]*)\)", entry):
+                if "*" not in grp:
+                    continue
+                pats = [q.strip().lower().lstrip("*.") for q in grp.split()]
+                if e in pats:
+                    return entry
+        return None
+
+    @staticmethod
+    def _doc_original_ext(doc) -> str:
+        """The extension the document was opened from, '' if unknown."""
+        meta = (getattr(doc, "metadata", {}) or {})
+        fp = str(meta.get("file_path", "") or "")
+        if "::" in fp:                     # "/x/y.fits::HDU 2"
+            fp = fp.split("::", 1)[0]
+        ext = os.path.splitext(fp)[1].lower()
+        if ext:
+            return ext
+        fmt = str(meta.get("original_format", "") or "").lower().lstrip(".")
+        if fmt and fmt not in ("internal", ""):
+            return "." + fmt
+        return ""
+
     def _load_recent_lists(self):
         """Load recent files and projects from settings."""
         if not hasattr(self, "settings"):
@@ -755,7 +794,7 @@ class FileMixin:
             return
 
         filters = (
-            "FITS (*.fits *.fit);;"
+            "FITS (*.fits *.fit *.fts);;"
             "XISF (*.xisf);;"
             "SYQ (SyQon) (*.syq);;"
             "TIFF (*.tif *.tiff);;"
@@ -794,17 +833,35 @@ class FileMixin:
 
         # --- Suggest a sane filename ---------------------------------------
         suggested = _best_doc_name(doc)
-        suggested = os.path.splitext(suggested)[0]               # remove any ext
-        suggested_safe = _sanitize_filename(suggested)
+        suggested_safe = _sanitize_filename(os.path.splitext(suggested)[0])
+
+        # Offer the extension the document came in with, and pre-select the
+        # filter that owns it. Stripping the extension and letting the dialog
+        # default meant a file opened as ".fit" was offered back as ".fits" --
+        # a different filename, so Save As quietly produced a second copy
+        # beside the original rather than overwriting it.
+        _orig_ext = self._doc_original_ext(doc)
+        _sel_filter = self._filter_for_ext(filters, _orig_ext)
+        if _sel_filter:
+            suggested_safe = suggested_safe + _orig_ext
         suggested_path = os.path.join(candidate_dir, suggested_safe)
 
         # --- Open dialog ----------------------------------------
-        path, selected_filter = QFileDialog.getSaveFileName(self, self.tr("Save As"), suggested_path, filters)
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self, self.tr("Save As"), suggested_path, filters, _sel_filter or ""
+        )
         if not path:
             return
 
         before = path
+        _typed_ext = os.path.splitext(before)[1].lower()
         path, ext_norm = _normalize_save_path_chosen_filter(path, selected_filter)
+        # Normalisation may swap a perfectly valid extension for the filter's
+        # first pattern. If what the user had is also accepted by the filter
+        # they chose, keep theirs.
+        if _typed_ext and os.path.splitext(path)[1].lower() != _typed_ext:
+            if self._filter_for_ext(selected_filter or "", _typed_ext):
+                path = os.path.splitext(path)[0] + _typed_ext
 
         # If sanitization changed the filename, the native dialog's own overwrite
         #sasprompt fired on the name the user TYPED — which may differ from what we're
@@ -1121,7 +1178,7 @@ class FileMixin:
             return
 
         fmt_map = {
-            "fits":  ("FITS (*.fits *.fit)",              ".fits"),
+            "fits":  ("FITS (*.fits *.fit *.fts)",         ".fits"),
             "xisf":  ("XISF (*.xisf)",                   ".xisf"),
             "syq":   ("SYQ (SyQon) (*.syq)",             ".syq"),
             "tiff":  ("TIFF (*.tif *.tiff)",              ".tiff"),
@@ -1136,9 +1193,16 @@ class FileMixin:
 
         selected_filter, ext = fmt_map[fmt]
 
+        # If the document already came from a file this very format accepts,
+        # keep that spelling rather than the map's default -- ".fit" stays
+        # ".fit" instead of becoming a second file called ".fits".
+        _orig_ext = self._doc_original_ext(doc)
+        if _orig_ext and self._filter_for_ext(selected_filter, _orig_ext):
+            ext = _orig_ext
+
         # Build all filters with the chosen one first
         all_filters = [
-            "FITS (*.fits *.fit)",
+            "FITS (*.fits *.fit *.fts)",
             "XISF (*.xisf)",
             "SYQ (SyQon) (*.syq)",
             "TIFF (*.tif *.tiff)",
@@ -1185,7 +1249,11 @@ class FileMixin:
             return
 
         before = path
+        _typed_ext = os.path.splitext(before)[1].lower()
         path, ext_norm = _normalize_save_path_chosen_filter(path, chosen_filter)
+        if _typed_ext and os.path.splitext(path)[1].lower() != _typed_ext:
+            if self._filter_for_ext(chosen_filter or "", _typed_ext):
+                path = os.path.splitext(path)[0] + _typed_ext
 
         if os.path.basename(before) != os.path.basename(path):
             note = ""

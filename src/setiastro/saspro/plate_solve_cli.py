@@ -219,6 +219,117 @@ def _write_wcs_sidecar(hdr, path: Path, img_w: int, img_h: int) -> str:
     return str(path)
 
 
+def _write_astap_ini(path: Path, hdr=None, img_w: int = 0, img_h: int = 0,
+                     summary: "dict | None" = None,
+                     error: "str | None" = None) -> str:
+    """
+    Write an ASTAP-style `.ini` result file: plain ``KEY=VALUE`` lines.
+
+    This is the format N.I.N.A. actually reads back from a plate solve -- it
+    runs the solver, then parses ``<image-basename>.ini``; the `.wcs` sidecar
+    it only deletes afterwards. Writing it here is what lets SASpro stand in
+    for ASTAP in N.I.N.A., SGP, Voyager and anything else built against the
+    same convention, and it saves a caller from having to parse FITS at all.
+
+    Two details are load-bearing, both learned from how N.I.N.A. parses this:
+
+    * The reader splits each line on the FIRST '=' and builds a dictionary, so
+      a repeated key would make it throw. Every key here is written once.
+    * When ``PLTSOLVD=T`` it reads CRVAL1/2, CRPIX1/2 and all four CD terms
+      WITHOUT checking they exist, so a success line with any of the eight
+      missing is worse than a clean failure. If the linear terms cannot be
+      recovered this writes a failure instead.
+
+    A failure is worth writing too: without the file a caller can only report
+    "no output", while ``PLTSOLVD=F`` plus ERROR carries the real reason.
+    """
+    lines: list[str] = []
+
+    def _fail(msg: str) -> str:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "PLTSOLVD=F\n"
+            f"ERROR={str(msg).replace(chr(10), ' ').strip()}\n",
+            encoding="ascii", errors="replace")
+        return str(path)
+
+    if error is not None or hdr is None:
+        return _fail(error or "no solution")
+
+    # Pull the linear terms. CRVAL/CRPIX come from the WCS object rather than
+    # the raw cards so a PC+CDELT header is handled identically to a CD one,
+    # and a SIP solution still reports its correct linear anchor.
+    try:
+        from astropy.wcs import WCS
+        w = WCS(hdr)
+        # A header with no WCS does not fail here: astropy hands back a
+        # default WCS whose CD is the identity, which is non-singular and
+        # would sail through every check below as a "solution" at RA 0 and
+        # one degree per pixel. A caller may well slew a mount to whatever
+        # this file claims, so an unconfirmed header must never be reported
+        # as a success.
+        if not w.has_celestial:
+            return _fail("no celestial WCS in the solved header")
+        crval = [float(v) for v in w.wcs.crval[:2]]
+        crpix = [float(v) for v in w.wcs.crpix[:2]]
+        cd = w.pixel_scale_matrix
+        cd = [[float(cd[0, 0]), float(cd[0, 1])],
+              [float(cd[1, 0]), float(cd[1, 1])]]
+    except Exception as e:
+        return _fail(f"solved, but the linear WCS terms could not be read: {e}")
+
+    vals = crval + crpix + cd[0] + cd[1]
+    if not all(math.isfinite(v) for v in vals):
+        return _fail("solved, but the WCS contains non-finite terms")
+    det = cd[0][0] * cd[1][1] - cd[0][1] * cd[1][0]
+    if abs(det) < 1e-20:
+        return _fail("solved, but the CD matrix is singular")
+
+    lines.append("PLTSOLVD=T")
+    lines.append(f"CRVAL1={crval[0]!r}")
+    lines.append(f"CRVAL2={crval[1]!r}")
+    lines.append(f"CRPIX1={crpix[0]!r}")
+    lines.append(f"CRPIX2={crpix[1]!r}")
+    lines.append(f"CD1_1={cd[0][0]!r}")
+    lines.append(f"CD1_2={cd[0][1]!r}")
+    lines.append(f"CD2_1={cd[1][0]!r}")
+    lines.append(f"CD2_2={cd[1][1]!r}")
+
+    s = summary or {}
+    if img_w and img_h:
+        lines.append(f"IMAGEW={int(img_w)}")
+        lines.append(f"IMAGEH={int(img_h)}")
+    for key, name in (("CROTA2", "rotation_deg"),
+                      ("SCALE", "scale_arcsec_px"),
+                      ("SOLVRMS", "rms_arcsec"),
+                      ("SOLVP95", "p95_arcsec")):
+        v = s.get(name)
+        if v is not None and math.isfinite(float(v)):
+            lines.append(f"{key}={float(v)!r}")
+    if s.get("n_stars") is not None:
+        lines.append(f"SOLVNSTR={int(s['n_stars'])}")
+    if s.get("distortion"):
+        lines.append(f"DISTORT={s['distortion']}")
+    lines.append(f"PARITY={s.get('parity', 'flipped' if det > 0 else 'normal')}")
+    # Stated as its own key rather than left to be inferred from the WARNING
+    # text: a consumer deciding whether to accept a coarse solution should be
+    # matching on a field, not on the wording of a human-readable sentence.
+    lines.append(f"SOLVSRC={'quad-seed' if s.get('seed_grade') else 'full-fit'}")
+
+    # A quad-seed result is a real pointing but a coarse one. Say so through
+    # WARNING, which is the channel the ASTAP convention already has for
+    # "usable, but look at it" -- N.I.N.A. surfaces it to the user and still
+    # accepts the solve.
+    if s.get("seed_grade"):
+        lines.append("WARNING=Seed-grade solution from the blind quad index; "
+                     "pointing is good but the scale and rotation are coarse.")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="ascii",
+                    errors="replace")
+    return str(path)
+
+
 # ── reporting ───────────────────────────────────────────────────────────────
 
 def _summarize(hdr, w_px: int, h_px: int) -> dict:
@@ -299,8 +410,28 @@ def _print_summary(res: dict, prefix: str = "") -> None:
 
 # ── one image ───────────────────────────────────────────────────────────────
 
-def _solve_one(path: Path, out_path: Path | None, wcs_path: "Path | None",
-               settings, args) -> dict:
+def _solve_one(path: Path, out_path: "Path | None", wcs_path: "Path | None",
+               settings, args, ini_path: "Path | None" = None) -> dict:
+    """
+    Solve one image, and write the ASTAP-style `.ini` whatever the outcome.
+
+    The wrapper exists for the failure case: _solve_one_impl() returns early
+    from half a dozen places, and a caller driving SASpro as an ASTAP stand-in
+    needs the reason on disk rather than an absent file.
+    """
+    rec = _solve_one_impl(path, out_path, wcs_path, settings, args, ini_path)
+    if ini_path is not None and not rec.get("ini"):
+        try:
+            rec["ini"] = _write_astap_ini(
+                ini_path, error=rec.get("error") or "no solution")
+        except Exception as e:
+            print(f"[solve] could not write {ini_path}: {e}", file=sys.stderr)
+    return rec
+
+
+def _solve_one_impl(path: Path, out_path: "Path | None",
+                    wcs_path: "Path | None", settings, args,
+                    ini_path: "Path | None" = None) -> dict:
     """Solve a single image. Returns a result dict; never raises."""
     from astropy.io.fits import Header
     from setiastro.saspro.legacy.image_manager import load_image, save_image
@@ -359,6 +490,17 @@ def _solve_one(path: Path, out_path: Path | None, wcs_path: "Path | None",
     h, w = int(image_data.shape[0]), int(image_data.shape[1])
     rec.update(_summarize(hdr_final, w, h))
     rec["ok"] = True
+
+    if ini_path is not None:
+        # Written before anything else can go wrong: by this point the
+        # solution is in hand, and a caller waiting on the .ini should get it
+        # even if a later save fails.
+        try:
+            rec["ini"] = _write_astap_ini(ini_path, hdr_final, w, h, rec)
+        except Exception as e:
+            rec["ok"] = False
+            rec["error"] = f"solved, but could not write the .ini: {e}"
+            return rec
 
     if wcs_path is not None:
         try:
@@ -457,6 +599,19 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--wcs-path",
                    help="Explicit path for the sidecar. Single-image mode "
                         "only; implies --wcs.")
+    g.add_argument("--ini", action="store_true",
+                   help="Also write an ASTAP-style .ini result file (plain "
+                        "KEY=VALUE: PLTSOLVD, CRVAL/CRPIX, the CD matrix). "
+                        "This is what N.I.N.A. and other ASTAP-driven "
+                        "software read back, and it needs no FITS parser. "
+                        "A failed solve still writes PLTSOLVD=F with the "
+                        "reason. May be used on its own.")
+    g.add_argument("--ini-only", action="store_true",
+                   help="Solve and write ONLY the .ini, leaving the image "
+                        "untouched.")
+    g.add_argument("--ini-path",
+                   help="Explicit path for the .ini. Single-image mode only; "
+                        "implies --ini.")
 
     g = ap.add_argument_group("output")
     g.add_argument("--json", action="store_true",
@@ -521,13 +676,23 @@ def main(argv: list[str] | None = None) -> int:
             ap.error("--wcs-only writes nothing but the sidecar; drop "
                      "-o/--output and --in-place")
         args.wcs = True
+    if args.ini_only:
+        if args.output or args.in_place:
+            ap.error("--ini-only writes nothing but the .ini; drop "
+                     "-o/--output and --in-place")
+        args.ini = True
     if args.wcs_path:
         args.wcs = True
         if args.batch:
             ap.error("--wcs-path is for a single image; with --batch the "
                      "sidecars are named after each input")
-    if not args.in_place and not args.output and not args.wcs:
-        ap.error("one of -o/--output, --in-place or --wcs is required")
+    if args.ini_path:
+        args.ini = True
+        if args.batch:
+            ap.error("--ini-path is for a single image; with --batch the "
+                     ".ini files are named after each input")
+    if not args.in_place and not args.output and not args.wcs and not args.ini:
+        ap.error("one of -o/--output, --in-place, --wcs or --ini is required")
     if args.in_place and args.output:
         ap.error("--in-place and --output are mutually exclusive")
 
@@ -553,7 +718,17 @@ def main(argv: list[str] | None = None) -> int:
         base = outp if (outp is not None and not args.in_place) else inp
         return base.with_suffix(".wcs")
 
-    jobs: list[tuple[Path, "Path | None", "Path | None"]] = []
+    def _ini_for(inp: Path, outp: "Path | None") -> "Path | None":
+        if not args.ini:
+            return None
+        if args.ini_path:
+            return Path(args.ini_path)
+        # Beside the INPUT by default, even when an output is being written.
+        # ASTAP's callers look for <input-basename>.ini next to the frame they
+        # handed over, so that is where it has to land to be found.
+        return inp.with_suffix(".ini")
+
+    jobs: list[tuple[Path, "Path | None", "Path | None", "Path | None"]] = []
     if args.batch:
         if not src.is_dir():
             print(f"ERROR: --batch needs a directory, got {src}",
@@ -569,7 +744,7 @@ def main(argv: list[str] | None = None) -> int:
                     outp = outdir / f"{f.stem}_plate_solved.fits"
                 else:
                     outp = None          # --wcs only: do not rewrite images
-                jobs.append((f, outp, _sidecar_for(f, outp)))
+                jobs.append((f, outp, _sidecar_for(f, outp), _ini_for(f, outp)))
         if not jobs:
             print(f"ERROR: no images found in {src}", file=sys.stderr)
             return 2
@@ -580,13 +755,13 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         outp = src if args.in_place else (Path(args.output) if args.output
                                           else None)
-        jobs.append((src, outp, _sidecar_for(src, outp)))
+        jobs.append((src, outp, _sidecar_for(src, outp), _ini_for(src, outp)))
 
     results, failed = [], 0
-    for path, out, wcs in jobs:
+    for path, out, wcs, ini in jobs:
         if not args.json:
             print(f"\n=> {path.name}" if len(jobs) > 1 else f"=> {path.name}")
-        rec = _solve_one(path, out, wcs, settings, args)
+        rec = _solve_one(path, out, wcs, settings, args, ini)
         results.append(rec)
         if rec["ok"]:
             if not args.json:
@@ -595,6 +770,8 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"   saved      : {rec['output']}")
                 if rec.get("wcs"):
                     print(f"   sidecar    : {rec['wcs']}")
+                if rec.get("ini"):
+                    print(f"   ini        : {rec['ini']}")
         else:
             failed += 1
             if not args.json:

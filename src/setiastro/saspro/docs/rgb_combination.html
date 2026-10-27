@@ -28,191 +28,412 @@
   .tech-lead { color:#9a9a9a; font-size:12px; font-style:italic; margin:4px 0 0 0; }
   .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
          margin:10px 0; color:#cfe8e0; }
+  .warn { background:#2e2912; border:1px solid #d4a017; border-left:3px solid #d4a017;
+          padding:9px 13px; margin:10px 0; color:#f0d58c; }
+  .warn b, .warn strong { color:#ffe9a8; }
 </style>
 </head>
 <body>
 
-<h1>RGB Combination</h1>
-<p class="sub">Build a single RGB document from three mono channels &mdash;
-either from open views in the current session or from files on disk.
-Classical workflow for RGB/LRGB/narrowband assembly: process each
-filter's stack as mono (calibration, registration, denoise, stretch
-if you want pre-combine stretches) and bring the three together here.
-Always creates a <i>new</i> document; nothing is written to the source
-channels.</p>
+<h1>LRGB Combination</h1>
+<p class="sub">Build a single colour document from three mono channels, with an
+optional luminance channel &mdash; either from open views in the current session
+or from files on disk. Classical workflow for RGB/LRGB/narrowband assembly:
+process each filter's stack as mono (calibration, registration, denoise, stretch
+if you want pre-combine stretches) and bring them together here. Always creates
+a <i>new</i> document; nothing is written to the source channels.</p>
 
 <h2>1. Mode selector</h2>
-<p>Two radio buttons at the top of the dialog pick where the three
-channels come from:</p>
+<p>Two radio buttons at the top of the dialog pick where the channels come
+from:</p>
 <ul>
-  <li><b>Use Open Views</b> (default) &mdash; three dropdowns list every
-      open document in the session, and R/G/B are chosen from them.
-      The quickest path when the mono masters are already loaded.</li>
-  <li><b>Load Individual Files</b> &mdash; three Load&hellip; buttons open
-      a file picker (PNG, TIFF, FITS, XISF, JPEG) for each channel.
-      Useful when you want to assemble a quick colour view without
-      opening the mono masters as top-level documents first. This
-      option is auto-disabled when SASpro's file loader isn't
-      available in the current build.</li>
+  <li><b>Use Open Views</b> (default) &mdash; dropdowns list every open document
+      in the session, and the channels are chosen from them. The quickest path
+      when the mono masters are already loaded.</li>
+  <li><b>Load Individual Files</b> &mdash; Load&hellip; buttons open a file picker
+      (PNG, TIFF, FITS, XISF, JPEG) for each channel. Useful when you want to
+      assemble a quick colour view without opening the mono masters as top-level
+      documents first. This option is auto-disabled when SASpro's file loader
+      isn't available in the current build.</li>
 </ul>
-<p>Only one mode is active at a time &mdash; the inactive mode's widgets
-are greyed out so there's no ambiguity about which inputs will be
-used.</p>
+<p>Only one mode is active at a time &mdash; the inactive mode's widgets are
+greyed out so there's no ambiguity about which inputs will be used. The
+Luminance row in each mode is additionally greyed out until <b>Add a Luminance
+(L) channel</b> is ticked (&sect;&nbsp;4).</p>
 
 <h2>2. Views mode</h2>
-<p>Three combo boxes (Red / Green / Blue), each showing every open
-document by its window title.</p>
+<p>Four combo boxes &mdash; Luminance, Red, Green, Blue &mdash; each showing every
+open document by its window title. Luminance sits first so the rows read in the
+conventional LRGB order, but it is ignored entirely unless the L option is
+switched on.</p>
 
 <h3>Automatic channel guessing</h3>
-<p>When the dialog opens with at least three documents available,
-SASpro scores every title against the three channels and pre-selects
-the best match for each dropdown. Scoring looks at the title in
-lowercase and awards points for:</p>
-<ul>
-  <li><b>Full colour word</b> (<code>red</code>, <code>green</code>,
-      <code>blue</code>) &mdash; +10.</li>
-  <li><b>Separator-bounded letter</b> (<code>_r_</code>,
-      <code>-g-</code>, <code>.b.</code>) &mdash; +8.</li>
-  <li><b>Suffix</b> (<code>_r</code>, <code>-g</code>) or end-of-title
-      letter &mdash; +7.</li>
-  <li><b>Narrowband emission-line hints</b> &mdash; <code>Ha</code>
-      scores +6 for Red; <code>SII</code> scores +5 for Red;
-      <code>OIII</code> scores +5 for Green and +4 for Blue (the usual
-      HOO/SHO mappings).</li>
-  <li><b>Conflicting colour words</b> (e.g. the title contains
-      &ldquo;blue&rdquo; while scoring for red) &mdash; &minus;10.</li>
-  <li><b>Conflicting letter codes</b> &mdash; &minus;5.</li>
-</ul>
-<p>The best-scoring title is pre-selected; ties fall to the first match
-in the dropdown order. If no title scores above zero for a channel,
-the first document is chosen as a neutral default and you're expected
-to pick manually. The heuristic is designed to Just Work on filenames
-like <code>NGC7000_Ha.fits / NGC7000_OIII.fits / NGC7000_SII.fits</code>
-or the more literal <code>M31_red / M31_green / M31_blue</code>, but
-it never locks a choice &mdash; the dropdowns are always
+<p>When the dialog opens, SASpro scores every open document against each channel
+and pre-selects the best match. Scoring is two-layer, and the layers are summed:</p>
+
+<p><b>Layer 1 &mdash; the FITS <code>FILTER</code> keyword.</b> This is the
+definitive signal when it's present, because unlike a filename a FILTER card
+can't accidentally masquerade as something else. The keyword is read from a flat
+<code>FILTER</code> metadata key, or from a nested header under
+<code>original_header</code>, <code>fits_header</code>, <code>header</code> or
+<code>wcs_header</code>. Matching ignores case, spaces, underscores and
+hyphens.</p>
+<table>
+  <tr><th>FILTER value</th><th>Maps to</th><th>Weight</th></tr>
+  <tr><td><code>R</code> / <code>RED</code>, <code>G</code> / <code>GREEN</code>,
+          <code>B</code> / <code>BLUE</code></td><td>that channel</td><td>+100</td></tr>
+  <tr><td><code>L</code> / <code>LUM</code> / <code>LUMINANCE</code></td>
+      <td>Luminance</td><td>+100</td></tr>
+  <tr><td>Sloan <code>SR</code>/<code>SG</code>/<code>SB</code> and
+          <code>R'</code>/<code>G'</code>/<code>B'</code></td>
+      <td>that channel</td><td>+90</td></tr>
+  <tr><td>Anything starting <code>LUM&hellip;</code> / <code>LUMINANCE&hellip;</code></td>
+      <td>Luminance</td><td>+90</td></tr>
+  <tr><td><code>CLEAR</code></td><td>Luminance</td><td>+80</td></tr>
+  <tr><td><code>C</code></td><td>Luminance</td><td>+70</td></tr>
+  <tr><td><code>NONE</code></td><td>Luminance</td><td>+60</td></tr>
+  <tr><td><code>HA</code> / <code>HALPHA</code></td><td>Red</td><td>+60</td></tr>
+  <tr><td><code>SII</code> / <code>S2</code></td><td>Red</td><td>+55</td></tr>
+  <tr><td>Filter-wheel variants (<code>Ha_7nm</code>, <code>S2narrow</code>&hellip;)</td>
+      <td>Red</td><td>+55 / +50</td></tr>
+</table>
+<p>A card that maps to a <i>different</i> channel scores roughly
+<b>minus half</b> its weight for the channel being considered, so a stack with
+<code>FILTER = L</code> is actively pushed out of the Red slot (&minus;50) rather
+than being free to win it by default. <code>OIII</code> is deliberately
+<i>not</i> mapped, because observers split it to green or blue depending on the
+palette (HOO vs SHO) &mdash; it's left to the filename layer and your own
+choice.</p>
+
+<p><b>Layer 2 &mdash; the filename.</b> The fallback for files whose FILTER card is
+missing or non-standard. The full table is in &sect;&nbsp;6.3.</p>
+
+<p>The best-scoring title is pre-selected; ties fall to the first match in
+dropdown order. If no title scores above zero for a channel, the first document
+is chosen as a neutral default and you're expected to pick manually. R/G/B are
+only auto-guessed when at least three documents are open; Luminance is guessed
+whenever there is anything to guess from. The heuristic is designed to Just Work
+on filenames like <code>NGC7000_Ha.fits / NGC7000_OIII.fits /
+NGC7000_SII.fits</code> or the more literal <code>M31_red / M31_green /
+M31_blue</code>, but it never locks a choice &mdash; the dropdowns are always
 user-overridable.</p>
 
 <h2>3. Files mode</h2>
-<p>Each of the three Load&hellip; buttons opens an OS file dialog filtered
-to common astronomy formats. The chosen filename is shown next to its
-button; nothing is read from disk until Combine is pressed. Multi-channel
-files are supported &mdash; see &sect;&nbsp;6.1 for what happens to
-their channels.</p>
+<p>Each Load&hellip; button opens an OS file dialog filtered to common astronomy
+formats. The chosen filename is shown next to its button; nothing is read from
+disk until Combine is pressed. Multi-channel files are supported &mdash; see
+&sect;&nbsp;6.1 for what happens to their channels, which differs between the
+colour channels and L.</p>
 
-<h2>4. Combine</h2>
-<p>Reads the three channels, verifies dimensions, stacks them into a
-new RGB document named either <code>RGB_Combined</code> (views mode)
-or <code>RGB_&lt;red-file-stem&gt;</code> (files mode), and opens a
-subwindow for it. The source documents and files are left untouched.</p>
+<h2>4. Luminance (L)</h2>
+<p>Ticking <b>Add a Luminance (L) channel</b> enables the Luminance source row
+and runs the combined RGB through the same luminance-replacement pipeline as the
+standalone <b>Recombine Luminance</b> tool. The RGB keeps its colour; its
+brightness structure is replaced by L.</p>
+
+<div class="warn">
+<p><b>&#9888; Do not combine a LINEAR L with LINEAR RGB.</b></p>
+<p>Unless you have already matched the two stacks &mdash; total integration,
+sub-exposure length, pedestal/offset, filter throughput and camera response
+&mdash; the scale factor this tool applies is meaningless. You will get blown
+highlights or crushed shadows, and badly desaturated colour.</p>
+<p>Normal workflow: combine RGB here <i>without</i> L, stretch it, stretch L
+separately, then use Recombine Luminance on the stretched pair.</p>
+</div>
+
+<h3>4.1 Why linear LRGB goes wrong</h3>
+<p>Recombination computes the RGB image's own luminance <code>Y</code> and
+rescales every pixel by <code>s = L / Y</code> (the full maths is in
+&sect;&nbsp;6.5). That only works if L and Y sit on the same intensity scale. For
+stretched data they usually do, because stretching pushes both into roughly the
+display range. For linear data they almost never do:</p>
+<ul>
+  <li><b>Total integration</b> &mdash; an L stack is often several times deeper
+      than any single colour channel. More signal, higher mean level.</li>
+  <li><b>Sub-exposure length</b> &mdash; different sub lengths scale per-pixel
+      counts directly.</li>
+  <li><b>Filter throughput</b> &mdash; an L or clear filter passes far more
+      photons than any one of R, G or B over the same period.</li>
+  <li><b>Camera response</b> &mdash; QE varies with wavelength, so identical
+      photon flux yields different electron counts per channel.</li>
+  <li><b>Pedestal and offset</b> &mdash; calibration pedestals differ between
+      stacks. Near the background, <code>s = L/Y</code> is dominated by the
+      difference in offsets rather than by any real signal.</li>
+  <li><b>Stacking normalisation</b> &mdash; most integration routines rescale
+      each stack to its own reference frame, destroying whatever cross-stack
+      relationship survived calibration.</li>
+  <li><b>This dialog's own input normalisation</b> &mdash; see
+      &sect;&nbsp;6.2. Any channel whose values exceed 1.0 is divided by
+      <i>its own</i> maximum, independently of the others. For integer-typed
+      inputs that alone is enough to break the scale relationship between L and
+      the colour channels, before any of the above is considered.</li>
+</ul>
+<p>The result is that <code>s</code> is roughly a constant <i>wrong</i> number
+across the whole frame. Too high and the highlights blow and the colour washes
+out; too low and everything crushes. Either way chroma suffers, because colour
+lives in the <i>ratios</i> between R, G and B and those only survive when the
+overall scale is right.</p>
+<p>The <b>What this means&hellip;</b> button in the dialog opens this same
+explanation in a scrollable window.</p>
+
+<h3>4.2 Advanced options</h3>
+<p>Collapsed by default, and disabled until the L option is ticked. These are the
+same controls the standalone Recombine Luminance tool exposes, and identical
+settings produce identical results.</p>
+<table>
+  <tr><th>Control</th><th>Range / default</th><th>What it does</th></tr>
+  <tr><td><b>Luma profile</b></td><td>Rec.709</td>
+      <td>The weight vector used to measure the RGB's own luminance. Standard
+          profiles (Rec.709 / 601 / 2020, Equal, Max, Median, SNR) plus
+          per-sensor profiles grouped by manufacturer. If the L source is a
+          <i>colour</i> image, this also selects how L is extracted from it.</td></tr>
+  <tr><td><b>Blend</b></td><td>0.00&ndash;1.00, default 1.00</td>
+      <td>1.00 fully replaces the luminance; 0.00 leaves the RGB untouched.
+          Intermediate values mix the two linearly.</td></tr>
+  <tr><td><b>Highlight soft knee</b></td><td>0.00&ndash;1.00, default 0.00</td>
+      <td>Compresses the per-pixel scale factor as it rises above 1, holding back
+          highlights where L is much brighter than the RGB's luminance.</td></tr>
+  <tr><td><b>Pedestal</b></td><td>0.000&ndash;0.500, default 0.050</td>
+      <td>Noise-floor lift applied to both images before scaling and removed
+          afterwards, to stop hue skew near zero. 0.000 disables it, giving pure
+          linear scaling.</td></tr>
+  <tr><td><b>Saturation boost</b></td><td>&minus;1.00&ndash;2.00, default 0.00</td>
+      <td>Applied to the RGB <i>before</i> luminance is measured, so it cannot
+          skew the luma being placed. 0 = no change, 1.0 = double saturation,
+          &minus;1.0 = greyscale. Works in HSV to avoid hue drift.</td></tr>
+  <tr><td><b>Chrominance NR</b></td><td>0.0&ndash;10.0 px, default 0.0</td>
+      <td>Gaussian blur on the Cb/Cr channels only, leaving luma untouched.
+          Equivalent to a chrominance noise-reduction slider. 0 = off.</td></tr>
+  <tr><td><b>Linear-fit L to RGB luminance</b></td><td>off</td>
+      <td>See &sect;&nbsp;4.3.</td></tr>
+</table>
+
+<h3>4.3 Linear-fit L to RGB luminance</h3>
+<p>Runs SASpro's standard <b>Linear Fit</b> engine before recombining: L is
+scaled so its median matches the median of the combined RGB's own luminance,
+measured with whichever luma profile is selected. This is the minimum pre-work
+for recombining linear data.</p>
+<p>It handles the <i>scale</i> error &mdash; the first four causes in
+&sect;&nbsp;4.1. It does not handle the last three:</p>
+<ul>
+  <li>The fit is a <b>pure multiply with no offset term</b>, so a pedestal
+      difference survives it. Subtract your pedestals before combining if the two
+      stacks were calibrated differently.</li>
+  <li>No scalar fit can correct <b>spectral response</b>. An L filter sees a
+      wider band than R, G or B, so even a perfectly fitted L carries structure
+      the colour channels never recorded &mdash; which is what produces the flat,
+      washed-out look often blamed on &ldquo;too much L&rdquo;.</li>
+</ul>
+<p>Out-of-range handling is pinned to <b>clip to [0, 1]</b> rather than the
+Linear Fit dialog's own default of &ldquo;normalize if needed&rdquo;, because
+normalising subtracts the array minimum and rescales the whole frame, which would
+undo the median match that was the point of the fit.</p>
+<p>If either median is at or below <code>1e-8</code> &mdash; a blank or
+near-black L, say &mdash; the fit is skipped rather than applied, because the
+engine's internal <code>max(median, 1e-12)</code> guard would otherwise yield an
+astronomical scale factor. The skip is recorded in the document metadata.</p>
+
+<h2>5. Combine</h2>
+<p>Reads the channels, verifies dimensions, stacks them into a new colour
+document, optionally applies the luminance, and opens a subwindow for it. The
+source documents and files are left untouched.</p>
+
+<h3>Document title</h3>
+<table>
+  <tr><th></th><th>Views mode</th><th>Files mode</th></tr>
+  <tr><td>Without L</td><td><code>RGB_Combined</code></td>
+      <td><code>RGB_&lt;red-file-stem&gt;</code></td></tr>
+  <tr><td>With L</td><td><code>LRGB_Combined</code></td>
+      <td><code>LRGB_&lt;red-file-stem&gt;</code></td></tr>
+</table>
 
 <h3>WCS inheritance</h3>
-<p>In views mode, the new document inherits a World Coordinate System
-from the first donor among the three that carries one, in the order
-<b>Green&nbsp;&rarr;&nbsp;Red&nbsp;&rarr;&nbsp;Blue</b>. Green is
-tried first because it sits in the middle of the visible spectrum and
-is the usual astrometric calibration channel in LRGB rigs; the other
-two are tried only if green has no WCS. In files mode no WCS is
-inherited &mdash; the source documents don't exist in-session to pull
-headers from. If you want WCS on a files-mode combine, open the files
-as documents first, then use views mode.</p>
+<p>In views mode, the new document inherits a World Coordinate System from the
+first donor that carries one, in the order
+<b>Green&nbsp;&rarr;&nbsp;Red&nbsp;&rarr;&nbsp;Blue</b>. Green is tried first
+because it sits in the middle of the visible spectrum and is the usual
+astrometric calibration channel in LRGB rigs; the other two are tried only if
+green has no WCS. <b>The luminance document is not a WCS donor</b> &mdash; if only
+your L master is plate-solved, the combined document will carry no WCS and you
+should plate-solve it afterwards. In files mode no WCS is inherited at all, since
+the source documents don't exist in-session to pull headers from; open the files
+as documents first and use views mode if you want WCS on the result.</p>
 
 <h3>Shape requirement</h3>
-<p>All three channels must have identical dimensions. A mismatched
-set raises a message dialog with the mismatch and no new document
-is created; align or crop upstream and retry.</p>
+<p>All three colour channels must have identical dimensions, and L &mdash; when
+used &mdash; must match them too. A mismatched set raises a message dialog naming
+the mismatch and no new document is created; register or crop upstream and retry.
+L is <i>not</i> silently resampled here, because a luminance that doesn't line up
+with the colour data pixel-for-pixel will smear detail rather than sharpen
+it.</p>
 
-<h2>5. Technical details</h2>
-<p class="tech-lead">Everything happens on float32 [0, 1]. The combine
-is a plain stack-along-axis-2; the interesting work is in the input
-normalisation and the channel-match scoring.</p>
+<h2>6. Technical details</h2>
+<p class="tech-lead">Everything happens on float32 [0, 1]. The combine is a plain
+stack-along-axis-2; the interesting work is in the input normalisation, the
+channel-match scoring, and the optional luminance pipeline.</p>
 
-<h3>5.1 Mono extraction</h3>
-<p>Each selected input (view image or loaded file) passes through
-<code>_mono_from_any</code>, which produces a 2-D float32 [0, 1]
-array:</p>
+<h3>6.1 Mono extraction</h3>
+<p>The colour channels and the luminance channel are read differently, on
+purpose.</p>
+<p><b>R, G and B</b> pass through <code>_mono_from_any</code>, producing a 2-D
+float32 [0, 1] array:</p>
 <ul>
-  <li>2-D input &mdash; passed through after normalisation (see 5.2).</li>
-  <li>3-D input with any channel count &ge; 1 &mdash; the <i>first
-      channel</i> is used; others are discarded. This means that if
-      you accidentally point an R-channel selector at an already-RGB
-      document, the dialog quietly uses its red plane rather than
-      refusing &mdash; which is what you usually want for a quick
-      recombine (e.g. &ldquo;this already-combined RGB has the best
-      red data; use its R plane with better G and B elsewhere&rdquo;).
-      For narrowband swapping, make sure the mono master is actually
-      2-D so there's no surprise.</li>
+  <li>2-D input &mdash; passed through after normalisation (see 6.2).</li>
+  <li>3-D input with any channel count &ge; 1 &mdash; the <i>first channel</i>
+      is used; others are discarded. So if you accidentally point an R-channel
+      selector at an already-RGB document, the dialog quietly uses its red plane
+      rather than refusing &mdash; which is usually what you want for a quick
+      recombine (&ldquo;this already-combined RGB has the best red data; use its
+      R plane with better G and B elsewhere&rdquo;). For narrowband swapping,
+      make sure the mono master is actually 2-D so there's no surprise.</li>
 </ul>
+<p><b>L</b> passes through <code>_as_is_from_any</code>, which normalises
+identically but <i>keeps</i> the channel count. A mono L is used directly; a
+colour L is run through <code>compute_luminance</code> with the selected luma
+profile, so pointing L at an RGB document extracts a proper weighted luminance
+rather than silently taking its red plane. This is also what makes the Max,
+Median and SNR profiles meaningful &mdash; with a mono L they only affect the
+weights used to measure the target's <code>Y</code>.</p>
 
-<h3>5.2 Normalisation</h3>
-<p><code>_to_f01</code> coerces every input to float32 [0, 1] without
-assumptions about where the data came from:</p>
+<h3>6.2 Normalisation</h3>
+<p><code>_to_f01</code> coerces every input to float32 [0, 1] without assumptions
+about where the data came from:</p>
 <ul>
   <li>Integer dtypes are promoted to float32.</li>
   <li>Floats are promoted to float32 if they aren't already.</li>
-  <li>If <code>max(|a|)&nbsp;&gt;&nbsp;1</code> and finite, the array
-      is divided by that max; otherwise the data is kept as-is. This
-      means 16-bit integer data gets divided by its own max (not 65535),
-      which keeps the per-image contrast but drops a frame's absolute
-      scale information &mdash; which is fine for colour combine, where
-      per-channel scaling will be re-done anyway by any downstream
-      balance operation.</li>
+  <li>If <code>max(a)&nbsp;&gt;&nbsp;1</code> and finite, the array is divided by
+      that max; otherwise the data is kept as-is. This means 16-bit integer data
+      gets divided by its own max (not 65535), which keeps per-image contrast but
+      drops a frame's absolute scale information.</li>
   <li>Everything is finally clipped to [0, 1].</li>
 </ul>
+<div class="warn">That per-image division is applied to each channel
+<b>independently</b>, including L. For colour combine it's harmless, since any
+downstream balance operation redoes per-channel scaling anyway. For luminance
+recombination it is not: it is one more reason the L/Y ratio is meaningless on
+linear integer data, and it happens inside this dialog regardless of what you did
+upstream. Float data already within [0, 1] is left alone and is unaffected.</div>
 
-<h3>5.3 Channel-match scoring</h3>
-<p>Each candidate title gets a per-channel score computed from case-folded
-regex matches. The scoring vector by channel is:</p>
+<h3>6.3 Channel-match scoring &mdash; filename layer</h3>
+<p>Each candidate title gets a per-channel score from case-folded regex matches,
+summed with the FILTER-keyword layer from &sect;&nbsp;2.</p>
 <table>
-  <tr><th>Pattern</th><th>R</th><th>G</th><th>B</th></tr>
-  <tr><td>Full colour word (<code>red</code>/<code>green</code>/<code>blue</code>)</td>
-      <td>+10</td><td>+10</td><td>+10</td></tr>
-  <tr><td>Separator-bounded letter (<code>_r_</code> etc.)</td>
-      <td>+8</td><td>+8</td><td>+8</td></tr>
+  <tr><th>Pattern</th><th>L</th><th>R</th><th>G</th><th>B</th></tr>
+  <tr><td>Full word (<code>lum</code>/<code>luminance</code>, <code>red</code>,
+          <code>green</code>, <code>blue</code>)</td>
+      <td>+10</td><td>+10</td><td>+10</td><td>+10</td></tr>
+  <tr><td>Separator-bounded letter (<code>_l_</code>, <code>_r_</code>&hellip;)</td>
+      <td>+8</td><td>+8</td><td>+8</td><td>+8</td></tr>
   <tr><td>Suffix / end-of-title letter</td>
-      <td>+7</td><td>+7</td><td>+7</td></tr>
+      <td>+7</td><td>+7</td><td>+7</td><td>+7</td></tr>
   <tr><td><code>Ha</code> emission line</td>
-      <td>+6</td><td>&mdash;</td><td>&mdash;</td></tr>
+      <td>&mdash;</td><td>+6</td><td>&mdash;</td><td>&mdash;</td></tr>
   <tr><td><code>SII</code> emission line</td>
-      <td>+5</td><td>&mdash;</td><td>&mdash;</td></tr>
+      <td>&mdash;</td><td>+5</td><td>&mdash;</td><td>&mdash;</td></tr>
   <tr><td><code>OIII</code> emission line</td>
-      <td>&mdash;</td><td>+5</td><td>+4</td></tr>
+      <td>&mdash;</td><td>&mdash;</td><td>+5</td><td>+4</td></tr>
   <tr><td>Conflicting colour word</td>
-      <td>&minus;10</td><td>&minus;10</td><td>&minus;10</td></tr>
+      <td>&minus;10</td><td>&minus;10</td><td>&minus;10</td><td>&minus;10</td></tr>
   <tr><td>Conflicting single-letter code</td>
-      <td>&minus;5</td><td>&minus;5</td><td>&minus;5</td></tr>
+      <td>&minus;5</td><td>&minus;5</td><td>&minus;5</td><td>&minus;5</td></tr>
+  <tr><td><code>lum</code>/<code>luminance</code> present</td>
+      <td>&mdash;</td><td>&minus;8</td><td>&minus;8</td><td>&minus;8</td></tr>
 </table>
-<p>Separator matching uses the character class
-<code>[_\-\s\.]</code> for &ldquo;letter boundary&rdquo;, so dots in
-filenames behave the same as underscores or hyphens. The three channel
-scorers run independently per title, and the title with the highest
-positive score wins its dropdown. Scores of zero or less leave the
-dropdown at index&nbsp;0 as a neutral default &mdash; which is why,
-on a fresh session with three generically-named documents, you'll
-sometimes see all three channels defaulting to the first document;
-that's by design, not a bug.</p>
+<p>Separator matching uses the character class <code>[_\-\s\.]</code> for
+&ldquo;letter boundary&rdquo;, so dots in filenames behave the same as
+underscores or hyphens. Note that a digit is <i>not</i> a boundary: this matters
+because SASpro's own gain prefix (<code>&hellip;_G121_&hellip;</code> on every
+master-light file) would otherwise false-match as a green channel on every file
+in the set, leaving them all tied and handing green to whichever happened to be
+first in the list.</p>
+<p>The channel scorers run independently per title, and the title with the
+highest positive score wins its dropdown. Scores of zero or less leave the
+dropdown at index&nbsp;0 as a neutral default &mdash; which is why, on a fresh
+session with generically-named documents, you'll sometimes see every channel
+defaulting to the first document; that's by design, not a bug.</p>
 
-<h3>5.4 Stack and clip</h3>
+<h3>6.4 Stack and clip</h3>
 <p>Once R, G, B are three identically-shaped 2-D float32 arrays:</p>
 <div class="eq">RGB[y, x, 0] = R[y, x]
 RGB[y, x, 1] = G[y, x]
 RGB[y, x, 2] = B[y, x]</div>
-<p>via <code>np.stack([r, g, b], axis=2)</code>, then clipped once more
-to [0, 1] as a belt-and-braces guard against anything the per-channel
-normalisation might have missed in edge cases
-(NaN-dominated frames, etc.).</p>
+<p>via <code>np.stack([r, g, b], axis=2)</code>, then clipped once more to [0, 1]
+as a belt-and-braces guard against anything the per-channel normalisation might
+have missed in edge cases (NaN-dominated frames, etc.).</p>
 
-<h3>5.5 Document creation and WCS transfer</h3>
+<h3>6.5 Luminance recombination</h3>
+<p>When L is enabled, the stacked RGB goes through this pipeline, in order:</p>
+<ol>
+  <li><b>Saturation boost</b> on the RGB (HSV), if non-zero.</li>
+  <li><b>Chrominance NR</b> on the result (Cb/Cr Gaussian blur), if non-zero.
+      Both of these run before luminance is measured, so neither can skew the
+      luma being placed.</li>
+  <li><b>Build L</b> &mdash; mono passes through; colour goes through
+      <code>compute_luminance</code> with the selected profile.</li>
+  <li><b>Linear fit</b> of L onto <code>Y</code>, if enabled (&sect;&nbsp;4.3).</li>
+  <li><b>Recombine</b> by per-pixel scaling.</li>
+</ol>
+<p>The recombination itself lifts both images by the pedestal <code>p</code> and
+compresses by <code>(1 + p)</code>, scales, then inverts the lift:</p>
+<div class="eq">Y = wR·R + wG·G + wB·B
+s = L / (Y + eps)
+RGB' = RGB · s</div>
+<p>With a soft knee <code>k</code>, <code>s</code> is replaced by
+<code>s / (1 + k(s &minus; 1))</code> before it is applied. With a blend
+<code>β</code> below 1, the output is
+<code>RGB·(1&minus;β) + RGB'·β</code>. The transform is an identity when
+<code>L</code> equals the image's own <code>Y</code>, which is the round-trip
+guarantee the whole approach rests on.</p>
+<p>The weight vector <code>w</code> comes from the selected profile. Sensor
+profiles supply their own measured weights. Equal uses
+<code>(⅓,&nbsp;⅓,&nbsp;⅓)</code>. Rec.601 and Rec.2020 use their standard
+vectors. Max, Median and SNR have no weight vector of their own, so they fall
+back to Rec.709 for measuring <code>Y</code> &mdash; they only change how L is
+<i>extracted</i> when the L source is a colour image.</p>
+
+<h3>6.6 Document creation and WCS transfer</h3>
 <p>The result is handed to the document manager via whichever of
-<code>open_array</code>, <code>open_numpy</code>, or
-<code>create_document</code> is available, with metadata
-<code>step_name&nbsp;=&nbsp;&quot;RGB Combination&quot;</code> and the
-title derived from the mode (as in &sect;&nbsp;4). The main window's
-WCS helpers (<code>_extract_wcs_dict</code>, <code>_apply_wcs_dict_to_doc</code>)
-are then called in the G&nbsp;&rarr;&nbsp;R&nbsp;&rarr;&nbsp;B donor
-order until one of them yields a usable WCS, which is copied onto the
-new document before its subwindow is spawned. If no donor has a WCS,
-the new document carries none &mdash; a plate-solve can be run on it
-afterwards from any of SASpro's astrometry tools.</p>
+<code>open_array</code>, <code>open_numpy</code> or <code>create_document</code>
+is available, with the metadata described in &sect;&nbsp;6.7 and the title derived
+from the mode (as in &sect;&nbsp;5). The main window's WCS helpers
+(<code>_extract_wcs_dict</code>, <code>_apply_wcs_dict_to_doc</code>) are then
+called in the G&nbsp;&rarr;&nbsp;R&nbsp;&rarr;&nbsp;B donor order until one yields
+a usable WCS, which is copied onto the new document before its subwindow is
+spawned. If no donor has a WCS, the new document carries none &mdash; a
+plate-solve can be run on it afterwards from any of SASpro's astrometry
+tools.</p>
+
+<h3>6.7 Metadata</h3>
+<p>Without L, the document carries only
+<code>step_name = "RGB Combination"</code>. With L, <code>step_name</code> becomes
+<code>"LRGB Combination"</code> and the full settings are recorded so a finished
+document says exactly how its luminance was placed:</p>
+<table>
+  <tr><th>Key</th><th>Meaning</th></tr>
+  <tr><td><code>luminance_applied</code></td><td>Always true when L was used.</td></tr>
+  <tr><td><code>luma_method</code></td><td>Resolved method name
+      (<code>rec709</code>, <code>max</code>, &hellip;).</td></tr>
+  <tr><td><code>luma_profile_key</code></td><td>The profile as selected, including
+      the <code>sensor:</code> prefix, so the exact profile can be recovered
+      later.</td></tr>
+  <tr><td><code>luma_profile</code></td><td>Display name, for sensor profiles
+      only.</td></tr>
+  <tr><td><code>luma_weights</code></td><td>The three weights actually used.</td></tr>
+  <tr><td><code>l_blend</code>, <code>l_soft_knee</code>,
+          <code>l_pedestal</code></td><td>The recombine parameters.</td></tr>
+  <tr><td><code>saturation_boost</code>,
+          <code>chrominance_nr_sigma</code></td><td>Recorded only when
+      non-zero.</td></tr>
+  <tr><td><code>l_linear_fit</code></td><td>Whether the fit was applied.</td></tr>
+  <tr><td><code>l_linear_fit_median_src</code>,
+          <code>l_linear_fit_median_ref</code>,
+          <code>l_linear_fit_scale</code></td>
+      <td>The two medians and the resulting scale factor, when the fit ran. A
+          scale far from 1.0 is a direct measure of how mismatched the two stacks
+          were.</td></tr>
+  <tr><td><code>l_linear_fit_skipped</code></td><td>Present instead, with a
+      reason, when the fit was requested but could not be computed.</td></tr>
+</table>
 
 </body>
 </html>

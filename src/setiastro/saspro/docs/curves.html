@@ -29,6 +29,7 @@
   .tip { background:#20302c; border-left:3px solid #3dbf9f; padding:8px 12px;
          margin:10px 0; color:#cfe8e0; }
   .cap { color:#9a9a9a; font-size:11px; }
+  .axis { color:#9a9a9a; font-size:12px; }
 </style>
 </head>
 <body>
@@ -69,14 +70,16 @@ aren't editing are drawn as dim overlays so you always see the whole transform.<
 <h3>Working from the image</h3>
 <ul>
   <li><b>Hover the preview</b> &mdash; vertical value-lines appear on <i>both</i>
-      the curve grid and the histogram at the hovered pixel's R/G/B (or K) levels,
-      and the status line reads out the cursor position and those values. You can
-      see exactly where a feature's tones sit on your curve before you touch a
-      handle.</li>
+      the curve grid and the histogram, and the status line reads out the cursor
+      position and the pixel's values. The lines are drawn where that pixel sits
+      on the <i>active channel's</i> axis, so you can see exactly where a feature
+      lands on your curve before you touch a handle. (On K and R/G/B that's the
+      R/G/B levels; on a colour channel it's that channel's own value &mdash; see
+      &sect;2.2.)</li>
   <li><b>Double-click the preview</b> &mdash; drops a control point on the active
-      curve at that pixel's brightness (nudged slightly if it lands on an existing
-      point), so you can anchor the curve to a tone you picked straight off the
-      image.</li>
+      curve at that pixel's position on the active axis (nudged slightly if it
+      lands on an existing point), so you can anchor the curve to a tone or a
+      colour you picked straight off the image.</li>
   <li><b>Ctrl+click the grid</b> &mdash; sets an inflection pivot and redistributes
       the interior handles evenly around it, a quick way to seed a symmetric
       contrast move.</li>
@@ -101,34 +104,173 @@ aren't editing are drawn as dim overlays so you always see the whole transform.<
       headlessly.</td></tr>
 </table>
 
-<h2>2. Technical details</h2>
+<h2>2. Working with the colour channels</h2>
+<p class="sub">L*, a*, b* and Chroma behave differently from the RGB curves in one
+important way, and once that clicks they become the most precise colour tools in
+the program. This section is the practical version; the maths is in &sect;3.</p>
+
+<h3>2.1 Which way is which</h3>
+<p>CIELAB splits colour into two opponent axes. <b>a*</b> is the red&ndash;green
+axis, <b>b*</b> is the yellow&ndash;blue axis. On both of them, raising the curve
+moves toward the warm end and lowering it moves toward the cool end:</p>
+
+<table>
+  <tr><th>Channel</th><th>Raise the curve (output above the diagonal)</th><th>Lower the curve</th></tr>
+  <tr><td><b>a*</b></td><td>toward <b>red / magenta</b></td><td>toward <b>green</b></td></tr>
+  <tr><td><b>b*</b></td><td>toward <b>yellow</b></td><td>toward <b>blue</b></td></tr>
+  <tr><td><b>L*</b></td><td>lighter</td><td>darker</td></tr>
+  <tr><td><b>Chroma</b></td><td>more saturated, hue unchanged</td><td>toward neutral grey</td></tr>
+  <tr><td><b>Saturation</b></td><td>more vivid (HSV)</td><td>toward grey</td></tr>
+</table>
+
+<div class="tip"><b>Mnemonic:</b> up is warm, down is cool &mdash; on
+<i>both</i> colour axes. a* up is red, b* up is yellow; a* down is green,
+b* down is blue.</div>
+
+<h3>2.2 The x-axis is colour, not brightness</h3>
+<p>This is the part that catches people. In the <b>K</b> and <b>R/G/B</b> curves,
+the horizontal axis is tone &mdash; left is shadows, right is highlights. In
+<b>a*</b> and <b>b*</b> it is not. The horizontal axis is the pixel's
+<i>existing position on that colour axis</i>:</p>
+
+<table>
+  <tr><th>Channel</th><th>Left of the grid</th><th>Centre</th><th>Right of the grid</th></tr>
+  <tr><td><b>a*</b></td><td>already green</td><td>neutral / grey</td><td>already red</td></tr>
+  <tr><td><b>b*</b></td><td>already blue</td><td>neutral / grey</td><td>already yellow</td></tr>
+</table>
+
+<p>So a handle placed on the right-hand side of the <b>a*</b> curve acts on the
+red pixels and barely touches anything else &mdash; no mask required. That makes
+a*/b* curves <b>selective by colour</b> in the same way an RGB curve is selective
+by brightness. If you want to act on a region that happens to be a particular
+colour, this is usually the fastest route to it.</p>
+
+<div class="tip"><b>The readouts follow the axis.</b> On a colour channel the
+grid's hover line and the double-click-to-place point both use the pixel's
+actual <b>L*/a*/b*/Chroma/Saturation</b> value, not its brightness, so a feature
+you pick off the image lands exactly where the curve will act on it. The status
+line shows the R/G/B levels and that axis value side by side. The histogram
+stays in R/G/B &mdash; it shows the tonal distribution, not the a*/b*
+distribution &mdash; so ignore it when judging where to put a colour handle.</div>
+
+<h3>2.3 Neutral, and the part of the grid that's actually reachable</h3>
+<p>a* and b* are signed &mdash; zero means neutral, not black. They are mapped
+into the grid as <code>(a*+128)/255</code> and <code>(b*+128)/255</code>, so
+<b>a* = 0 and b* = 0 land at <code>0.502</code></b>, essentially dead centre. The
+identity diagonal passes through it, which is why an untouched curve leaves
+greys grey.</p>
+<p>If you want a contrast-style pivot that keeps neutrals neutral, put the pivot
+point at <code>0.502</code> rather than <code>0.500</code> &mdash; type it into
+the Point X box. Half a thousandth is invisible on most images, but on a
+carefully neutralised background it is the difference between no cast and a
+faint one.</p>
+
+<p>The grids also run wider than any real colour can reach. a* and b* are mapped
+over &plusmn;128 and Chroma over 0&ndash;200, but no displayable colour gets that
+far &mdash; the most extreme primaries top out well short of the edges:</p>
+
+<table>
+  <tr><th>Channel</th><th>Reachable input range</th><th>Dead zone</th></tr>
+  <tr><td><b>a*</b></td><td>about <code>0.16</code> &ndash; <code>0.89</code></td><td>both ends</td></tr>
+  <tr><td><b>b*</b></td><td>about <code>0.08</code> &ndash; <code>0.87</code></td><td>both ends</td></tr>
+  <tr><td><b>Chroma</b></td><td><code>0.00</code> &ndash; about <code>0.67</code></td><td>right third</td></tr>
+</table>
+
+<p>A handle parked outside those ranges does nothing at all, because no pixel
+ever has that input value. On a real image the occupied range is narrower still
+&mdash; most pixels cluster near the centre &mdash; so the useful work happens in
+the middle of the grid and a handle dragged to the far edge is usually a handle
+doing nothing. Keep moves close to the centre and they'll bite harder than they
+look.</p>
+
+<h3>2.4 Four shapes worth knowing</h3>
+<ul>
+  <li><b>Whole line lifted or dropped</b> &mdash; a global cast along that axis.
+      Everything, including the background, moves. Usually not what you want on a
+      calibrated image.</li>
+  <li><b>Steeper through the centre</b> &mdash; pushes colours apart along that
+      axis. Reds get redder <i>and</i> greens get greener. This is a colour
+      contrast move, and it is much better behaved than cranking Saturation
+      because it respects the opponent structure.</li>
+  <li><b>Flatter through the centre</b> &mdash; pulls everything toward neutral on
+      that axis only. Flattening <b>a*</b> alone kills red/green separation while
+      leaving yellow/blue untouched.</li>
+  <li><b>One half moved, the other left alone</b> &mdash; the targeted move. Lower
+      only the left half of <b>b*</b> and already-blue pixels get bluer while
+      yellows and reds stay exactly where they were.</li>
+</ul>
+
+<h3>2.5 Recipes</h3>
+<ul>
+  <li><b>Remove a green cast (SCNR-like).</b> On <b>a*</b>, lift the left-hand
+      side toward the centre line. Green pixels compress toward neutral; red
+      pixels, which live on the right, are untouched.</li>
+  <li><b>Neutralise a yellow-brown background.</b> On <b>b*</b>, pull the region
+      just right of centre down slightly. Stars and genuinely yellow features
+      further right survive if you keep the move local.</li>
+  <li><b>Deepen a reflection nebula without touching the emission.</b> On
+      <b>b*</b>, lower the left half only. The blue dust goes deeper blue; the red
+      H&alpha; regions never enter that part of the curve.</li>
+  <li><b>Push an H&beta;/OIII region blue in a red-dominant narrowband blend.</b>
+      Lower <b>b*</b> on the left half to drive the blue harder, then lower
+      <b>a*</b> on the right half if the region still carries too much red. For a
+      bigger shift than the curves will give you comfortably, assign the channel
+      a colour directly in <b>NB Integration</b> instead and use curves for the
+      finishing touch.</li>
+  <li><b>Separate an SHO palette.</b> Steepen <b>a*</b> through the centre to open
+      the gap between the SII/H&alpha; reds and the OIII greens, then use
+      <b>Chroma</b> to bring the overall intensity back down if it goes garish.</li>
+</ul>
+
+<h3>2.6 a*/b* vs Chroma vs Saturation</h3>
+<ul>
+  <li><b>a* / b*</b> change <i>where</i> a colour sits &mdash; they move hue and
+      intensity together, and they target by colour. Reach for these when a
+      specific colour needs to become a different colour.</li>
+  <li><b>Chroma</b> scales the distance from neutral in the a*&ndash;b* plane and
+      leaves hue alone. Reach for it when the colours are right but too weak or
+      too strong. Because it is perceptual, it holds up far better than HSV
+      saturation on bright stars.</li>
+  <li><b>Saturation</b> operates on HSV and is the blunter of the two. It is kept
+      for compatibility with RGB-style workflows and for quick, mild moves.</li>
+</ul>
+
+<div class="tip">Large a*/b* excursions can push colours out of gamut on the way
+back from Lab, where each channel is <b>hard-clamped to [0,1]</b> &mdash; there is
+no soft roll-off. Clamping one channel and not the others shifts the hue, so a
+bright core can go flat or drift colour after a big move. Back the curve off and
+finish with <b>Chroma</b> instead.</div>
+
+<h2>3. Technical details</h2>
 <p class="tech-lead">A curve is a monotone spline through your control points,
 baked to a lookup table and applied either per RGB channel or per colour-space
 component. Everything runs on float data in [0,1].</p>
 
-<h3>2.1 The curve: a monotone PCHIP spline</h3>
+<h3>3.1 The curve: a monotone PCHIP spline</h3>
 <p>The control points are interpolated with a <b>PCHIP</b> (Piecewise Cubic
 Hermite) spline &mdash; a shape-preserving monotone cubic. Unlike a natural cubic
 it never overshoots or rings between points, so the curve does exactly what the
 handles say and the transfer stays monotone (no tonal inversions).</p>
 
-<h3>2.2 From curve to lookup table</h3>
+<h3>3.2 From curve to lookup table</h3>
 <p>The spline is sampled into a lookup table &mdash; 65&thinsp;536 entries for the
 final apply (256 for the live preview) &mdash; and every pixel is mapped through
 it:</p>
-<div class="matheq-hero">\mathrm{out}(x)=\mathrm{LUT}\left[\,\mathrm{round}(x\,(N-1))\,\right],\qquad N=65536</div>
+<div class="matheq-hero">\mathrm{out}(x)=\mathrm{LUT}\left[\,\lfloor x\,(N-1)\rfloor\,\right],\qquad N=65536</div>
 <p>Because the LUT is monotone, the before&rarr;after histogram can be remapped
 exactly by resampling the input CDF onto the output axis &mdash; mass-preserving
 and gap-free, so the displayed &ldquo;after&rdquo; histogram can't show a false
 comb where the curve expands tones.</p>
 
-<h3>2.3 Channel modes</h3>
+<h3>3.3 Channel modes</h3>
 <p><b>RGB.</b> <b>K</b> applies one LUT to all three channels (linked brightness);
 <b>R/G/B</b> curve a single channel. When both are set, the per-channel curve is
 composed <i>after</i> K:</p>
 <div class="matheq">\mathrm{LUT}_{R}'=\mathrm{LUT}_{R}\circ\mathrm{LUT}_{K}</div>
-<p><b>CIELAB (L*, a*, b*, Chroma).</b> The image is converted sRGB&rarr;XYZ
-(D65) with</p>
+<p><b>CIELAB (L*, a*, b*, Chroma).</b> The image is converted to XYZ with the
+D65 primaries matrix, applied directly to the working data &mdash; no sRGB
+transfer function is decoded first, so the channel values are treated as linear.
+The inverse omits it symmetrically, so the round-trip is exact:</p>
 <div class="eq">[ X ]   [ 0.412456  0.357576  0.180438 ] [ R ]
 [ Y ] = [ 0.212673  0.715152  0.072175 ] [ G ]
 [ Z ]   [ 0.019334  0.119192  0.950304 ] [ B ]</div>
@@ -138,26 +280,27 @@ composed <i>after</i> K:</p>
 <div class="matheq">a^{*}=500\left(f\!\left(\frac{X}{X_n}\right)-f\!\left(\frac{Y}{Y_n}\right)\right),\qquad b^{*}=200\left(f\!\left(\frac{Y}{Y_n}\right)-f\!\left(\frac{Z}{Z_n}\right)\right)</div>
 <div class="matheq">f(t)=\sqrt[3]{t}\ \ (t>\delta^{3}),\qquad f(t)=\frac{t}{3\delta^{2}}+\frac{4}{29}\ \ (t\leq\delta^{3}),\qquad \delta=\frac{6}{29}</div>
 <p>The selected component is normalised to [0,1], curved, and de-normalised
-(<code>L*/100</code>, <code>(a*+128)/255</code>, <code>(b*+128)/255</code>). For
-<b>Chroma</b> the curve scales the colour's radius in the a*&ndash;b* plane while
-keeping its hue:</p>
+(<code>L*/100</code>, <code>(a*+128)/255</code>, <code>(b*+128)/255</code>) &mdash;
+which is why neutral falls at <code>0.502</code> on the a*/b* grids (&sect;2.3).
+For <b>Chroma</b> the curve scales the colour's radius in the a*&ndash;b* plane
+while keeping its hue:</p>
 <div class="matheq">C=\sqrt{a^{*2}+b^{*2}}\;,\qquad (a^{*},b^{*})\;\to\;(a^{*},b^{*})\cdot\frac{C_{\mathrm{new}}}{C}</div>
 <p><b>Saturation</b> curves the S channel of HSV and converts back.</p>
 
-<h3>2.4 Order of operations</h3>
+<h3>3.4 Order of operations</h3>
 <p>When several channels are active they are applied in a fixed order so the
 result is deterministic: first the RGB stage (K composed into R/G/B), then the
 Lab stage (L*, a*, b*, Chroma via one round-trip), then Saturation (via HSV).
 <b>Mono</b> images support K (applied directly) and L* (through the Lab lightness
 nonlinearity); the colour-only channels are skipped.</p>
 
-<h3>2.5 Inflection pivot</h3>
+<h3>3.5 Inflection pivot</h3>
 <p>Ctrl+clicking the grid (or double-clicking the image) sets a pivot
 <code>u</code> and redistributes the interior handles evenly on either side of it
 along the identity line &mdash; a quick way to seed a symmetric contrast curve
 around a chosen tone.</p>
 
-<h3>2.6 Masking &amp; apply</h3>
+<h3>3.6 Masking &amp; apply</h3>
 <p>With an active mask the result is blended back against the source over the
 mask:</p>
 <div class="matheq">\mathrm{out}=\mathrm{mask}\cdot\mathrm{out}+(1-\mathrm{mask})\cdot\mathrm{src}</div>

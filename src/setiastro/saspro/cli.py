@@ -67,7 +67,14 @@ def _version_string() -> str:
 
 
 def top_level_help() -> str:
-    cc = ", ".join(_cc_subcommands())
+    # Wrapped rather than joined: the list is generated from the CC parser, so
+    # it grows every time a subcommand is added and would otherwise run off
+    # the page. The whole line is wrapped, label included, because the label
+    # takes 13 of the first line's columns.
+    import textwrap
+    cc = textwrap.fill(f"Subcommands: {', '.join(_cc_subcommands())}",
+                       width=78, initial_indent=" " * 15,
+                       subsequent_indent=" " * 15).lstrip()
     return f"""Seti Astro Suite Pro \u2014 command line
 
 USAGE
@@ -81,10 +88,12 @@ COMMANDS
                falling back to ASTAP and Astrometry.net. Blind solving needs no
                coordinates at all \u2014 it identifies the field from the star
                pattern using a quad index built from your local Gaia data.
+               Can write its result as a .wcs sidecar or an ASTAP-style .ini,
+               so it can stand in for ASTAP in imaging software.
                Aliases: platesolve
 
   cc           Cosmic Clarity image processing, in-process.
-               Subcommands: {cc}
+               {cc}
                These may be run directly, with or without the leading "cc".
                Aliases: cosmicclarity
 
@@ -106,6 +115,10 @@ EXAMPLES
 
   Write a .wcs sidecar and leave the image untouched:
     setiastrosuitepro solve -i light.fit --wcs-only
+
+  Write an ASTAP-style .ini instead — what N.I.N.A. and other
+  ASTAP-driven software read a solve back from:
+    setiastrosuitepro solve -i light.fit --ini-only
 
   Which blind-solve index layers are built:
     setiastrosuitepro solve --index-status

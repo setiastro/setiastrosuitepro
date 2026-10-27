@@ -3762,6 +3762,27 @@ class ImageSubWindow(QWidget):
 
     def _draw_wcs_grid_on_pixmap(self, pm_scaled: QPixmap) -> QPixmap:
         """
+        Draw the WCS grid, with astropy's inverse-WCS warnings silenced.
+
+        A grid line that leaves the frame asks the inverse WCS for a point it
+        cannot reach, and for a TAN-SIP solution that inversion is iterative:
+        astropy WARNS rather than raises ("all_world2pix failed to converge",
+        "All-NaN slice encountered"). The painter already skips any sample
+        that comes back non-finite, so the condition is handled -- but without
+        this the log fills up on every repaint of a distorted field.
+
+        catch_warnings() mutates global state, so it must be a context manager
+        around the whole call: hand-rolled enter/exit would leak the filter
+        into the rest of the application if painting ever raised.
+        """
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            warnings.simplefilter("ignore", UserWarning)
+            return self._draw_wcs_grid_on_pixmap_impl(pm_scaled)
+
+    def _draw_wcs_grid_on_pixmap_impl(self, pm_scaled: QPixmap) -> QPixmap:
+        """
         Your existing WCS painter logic, moved to operate on a QPixmap (already scaled).
         Runs ONLY on non-interactive redraw.
         """
@@ -3795,29 +3816,133 @@ class ImageSubWindow(QWidget):
         px_deg = float(max(px_scales_deg[0], px_scales_deg[1]))
         fov_deg = px_deg * float(max(W_full, H_full))
 
-        if pref_mode == "fixed":
-            step_deg = float(pref_step_val if pref_step_unit == "deg" else (pref_step_val / 60.0))
-            step_deg = max(1e-6, min(step_deg, 90.0))
-        else:
-            nice = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30]
-            target_lines = 8
-            desired = max(fov_deg / target_lines, px_deg * 100)
-            step_deg = min((n for n in nice if n >= desired), default=30)
+        # Grid steps are chosen AFTER the sky bounds are known: the RA step
+        # depends on declination, so it cannot be settled here.
 
         # World bounds from corners
-        corners = _np.array([[0, 0], [W_full-1, 0], [0, H_full-1], [W_full-1, H_full-1]], dtype=float)
+        # Sample the whole BORDER, not the four corners. Near a pole the
+        # extreme declination lies part-way along an edge rather than at a
+        # corner, so corner sampling reports a dec range far narrower than the
+        # frame really covers -- the same trap the catalogue box fell into.
+        _bn = 64
+        _t = _np.linspace(0.0, 1.0, _bn)
+        _bx = _np.concatenate([_t * (W_full - 1), _np.full(_bn, W_full - 1.0),
+                               (1.0 - _t) * (W_full - 1), _np.zeros(_bn)])
+        _by = _np.concatenate([_np.zeros(_bn), _t * (H_full - 1),
+                               _np.full(_bn, H_full - 1.0), (1.0 - _t) * (H_full - 1)])
         try:
-            ra_c, dec_c = wcs2.pixel_to_world_values(corners[:,0], corners[:,1])
-            ra_min = float(_np.nanmin(ra_c));  ra_max = float(_np.nanmax(ra_c))
-            dec_min = float(_np.nanmin(dec_c)); dec_max = float(_np.nanmax(dec_c))
-            if ra_max - ra_min > 300:
-                ra_c_wrapped = _np.mod(ra_c + 180.0, 360.0)
-                ra_min = float(_np.nanmin(ra_c_wrapped)); ra_max = float(_np.nanmax(ra_c_wrapped))
-                ra_shift = 180.0
-            else:
-                ra_shift = 0.0
+            ra_b, dec_b = wcs2.pixel_to_world_values(_bx, _by)
+            _good = _np.isfinite(ra_b) & _np.isfinite(dec_b)
+            ra_b, dec_b = _np.asarray(ra_b)[_good], _np.asarray(dec_b)[_good]
+            if ra_b.size == 0:
+                raise ValueError("no finite border samples")
+            dec_min = float(_np.min(dec_b));  dec_max = float(_np.max(dec_b))
+            # RA needs circular statistics: min/max of raw angles is wrong
+            # across the 0/360 seam. Work relative to the mean DIRECTION, so
+            # the span comes out right wherever the seam falls.
+            _rr = _np.radians(ra_b)
+            _ref = float(_np.degrees(_np.arctan2(_np.mean(_np.sin(_rr)),
+                                                 _np.mean(_np.cos(_rr))))) % 360.0
+            _off = ((ra_b - _ref + 180.0) % 360.0) - 180.0
+            ra_min = _ref + float(_np.min(_off))
+            ra_max = _ref + float(_np.max(_off))
+            ra_shift = 0.0
         except Exception:
             ra_min, ra_max, dec_min, dec_max, ra_shift = 0.0, 360.0, -90.0, 90.0, 0.0
+
+        # ── Is a celestial pole in the frame? ───────────────────────────────
+        # Every line of constant RA runs through the pole, so once it is inside
+        # the picture the RA range is the whole circle whatever the corners
+        # say -- and the corner-based wrap test above cannot tell, because the
+        # corner RAs scatter right around the sky.
+        # Decide this with FORWARD transforms only, by WINDING NUMBER.
+        #
+        # Asking world_to_pixel_values where the pole lands looks simpler, but
+        # for a TAN-SIP solution that is an iterative inversion, and probing a
+        # pole 179 deg away makes it diverge -- the source of the
+        # "all_world2pix failed to converge" and "All-NaN slice" warnings.
+        #
+        # Walk the border instead and add up the change in RA. RA is the angle
+        # about the pole, so a border that encloses it turns through a full
+        # 360 deg, and one that does not comes back to where it started. That
+        # is exact, unlike comparing the pole's distance against the frame
+        # radius: the corners lie further out than the edges, so a radius test
+        # calls a pole "inside" while it sits beyond the top edge.
+        pole_in_frame, pole_dec = False, 0.0
+        try:
+            _c_ra, _c_dec = wcs2.pixel_to_world_values(
+                (W_full - 1) * 0.5, (H_full - 1) * 0.5)
+            _c_dec = float(_c_dec)
+            if _np.isfinite(_c_dec) and ra_b.size >= 8:
+                _loop = _np.radians(_np.append(ra_b, ra_b[0]))
+                _turn = float(_np.sum(_np.diff(_np.unwrap(_loop))))
+                if abs(_turn) > _np.pi:          # a full turn, not a wobble
+                    pole_in_frame = True
+                    pole_dec = 90.0 if _c_dec >= 0.0 else -90.0
+        except Exception:
+            pass
+
+        if pole_in_frame:
+            ra_min, ra_max, ra_shift = 0.0, 360.0, 0.0
+            if pole_dec > 0:
+                dec_max = 90.0
+            else:
+                dec_min = -90.0
+
+        # ── Separate steps for Dec and RA ───────────────────────────────────
+        # Meridians converge: two lines of constant RA that differ by `step`
+        # are only step*cos(dec) apart on the sky. At Dec +88.5 that is a
+        # factor of 38, so one step shared between both axes draws a readable
+        # Dec grid and a solid fan of RA lines.
+        _NICE_DEC = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30]
+        _NICE_RA  = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15,
+                     30, 45, 60, 90, 120, 180]
+        _MAX_RA_LINES = 24
+
+        if pref_mode == "fixed":
+            dec_step = float(pref_step_val if pref_step_unit == "deg"
+                             else (pref_step_val / 60.0))
+            dec_step = max(1e-6, min(dec_step, 90.0))
+            ra_step = dec_step
+        else:
+            target_lines = 8
+            desired = max(fov_deg / target_lines, px_deg * 100)
+            dec_step = min((x for x in _NICE_DEC if x >= desired), default=30)
+            if pole_in_frame:
+                # Meridians meet AT the pole, so "equal spacing on the sky" is
+                # not a thing that exists here -- 1/cos(dec) runs away to
+                # infinity and would leave a single line through the middle.
+                # Evenly spaced spokes are what a star chart draws instead.
+                _SPOKES = [15, 30, 45, 60, 90]
+                ra_step = next((x for x in _SPOKES
+                                if 360.0 / x <= _MAX_RA_LINES), 90)
+            else:
+                # Scale the RA step by 1/cos(dec) at the declination the
+                # frame is CENTRED on. Using the extreme instead lets one
+                # edge that creeps toward the pole blow the step out for the
+                # whole picture -- a frame reaching Dec 89.9 would end up with
+                # a single meridian through it.
+                _dec_ref = min(89.9, abs(0.5 * (dec_min + dec_max)))
+                _cosd = max(float(_np.cos(_np.radians(_dec_ref))), 1e-4)
+                ra_step = min((x for x in _NICE_RA if x >= desired / _cosd),
+                              default=180)
+
+        # Whatever the arithmetic said, never draw more meridians than can be
+        # told apart. With the pole in frame the span is the full 360 deg.
+        _MIN_RA_LINES = 3
+        _ra_span = 360.0 if pole_in_frame else max(1e-9, ra_max - ra_min)
+        while (_ra_span / ra_step) > _MAX_RA_LINES:
+            _bigger = [x for x in _NICE_RA if x > ra_step]
+            if not _bigger:
+                break
+            ra_step = _bigger[0]
+        # ...and a floor, so a frame near the pole does not end up with one
+        # lonely meridian just because cos(dec) is small there.
+        while (_ra_span / ra_step) < _MIN_RA_LINES:
+            _smaller = [x for x in _NICE_RA if x < ra_step]
+            if not _smaller:
+                break
+            ra_step = _smaller[-1]
 
         pm = QPixmap(pm_scaled)  # copy so we don’t mutate caller
         p = QPainter(pm)
@@ -3870,16 +3995,33 @@ class ImageSubWindow(QWidget):
         def _round_to(x, sstep):
             return sstep * round(x / sstep)
 
-        ra_start  = _round_to(ra_min, step_deg)
-        dec_start = _round_to(dec_min, step_deg)
+        ra_start  = _round_to(ra_min, ra_step)
+        dec_start = _round_to(dec_min, dec_step)
 
-        for dec in _frange(dec_start, dec_max, step_deg):
-            dec_arr = _np.full_like(ra_samples_wrapped, dec)
-            draw_world_poly(ra_samples_wrapped, dec_arr)
+        # Parallels of Dec. With the pole in frame these close into circles
+        # around it, so they have to be sampled right around the sky rather
+        # than across the corner-derived RA span.
+        if pole_in_frame:
+            dec_ra_samples = _np.linspace(0.0, 360.0, 1441, dtype=float)
+        else:
+            dec_ra_samples = ra_samples_wrapped
+        dec_values = [d for d in _frange(dec_start, dec_max, dec_step)
+                      if -90.0 < d < 90.0]
+        for dec in dec_values:
+            draw_world_poly(dec_ra_samples, _np.full_like(dec_ra_samples, dec))
 
-        for ra in _frange(ra_start, ra_max, step_deg):
-            ra_arr = _np.full_like(dec_samples, (ra + ra_shift) % 360.0)
-            draw_world_poly(ra_arr, dec_samples)
+        # Meridians. Round the circle once when the pole is in frame, so the
+        # spokes are evenly spaced instead of bunched where the corners fell.
+        if pole_in_frame:
+            # stop half a step short of 360 so the last spoke is not a
+            # duplicate of the one at 0
+            ra_values = [r % 360.0
+                         for r in _frange(0.0, 360.0 - 0.5 * ra_step, ra_step)]
+        else:
+            ra_values = [(r + ra_shift) % 360.0
+                         for r in _frange(ra_start, ra_max, ra_step)]
+        for ra_w in ra_values:
+            draw_world_poly(_np.full_like(dec_samples, ra_w), dec_samples)
 
         # Labels
         font = QFont()
@@ -3920,27 +4062,44 @@ class ImageSubWindow(QWidget):
             p.drawText(rect.adjusted(3, 2, -3, -2),
                     Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, txt)
 
+        # Labels are placed only when they are far enough from one that is
+        # already down. Near a pole the meridians arrive almost on top of each
+        # other, and one label per line turns the border into a wall of digits.
+        _placed = []
+        def _too_close(x, y, min_sep=46.0):
+            for (px_, py_) in _placed:
+                if abs(px_ - x) < min_sep and abs(py_ - y) < min_sep:
+                    return True
+            _placed.append((x, y))
+            return False
+
         # DEC labels on left edge
-        for dec in _frange(dec_start, dec_max, step_deg):
+        for dec in dec_values:
             try:
                 x_pix, y_pix = wcs2.world_to_pixel_values((ra_min + ra_shift) % 360.0, dec)
                 if not _np.isfinite([x_pix, y_pix]).all():
                     continue
                 x_pix = min(max(x_pix, 0.0), Wf - 1.0)
                 y_pix = min(max(y_pix, 0.0), Hf - 1.0)
+                if _too_close(x_pix * s, y_pix * s):
+                    continue
                 _draw_label(x_pix * s, y_pix * s, self._deg_to_dms(dec), anchor="lt")
             except Exception:
                 pass
 
-        # RA labels on top edge
-        for ra in _frange(ra_start, ra_max, step_deg):
-            ra_wrapped = (ra + ra_shift) % 360.0
+        # RA labels. Anchored at the edge of the frame furthest from the pole,
+        # because the meridians all meet AT the pole -- labelling the near edge
+        # would pile every one of them onto the same few pixels.
+        _ra_label_dec = dec_min if (not pole_in_frame or pole_dec > 0) else dec_max
+        for ra_wrapped in ra_values:
             try:
-                x_pix, y_pix = wcs2.world_to_pixel_values(ra_wrapped, dec_min)
+                x_pix, y_pix = wcs2.world_to_pixel_values(ra_wrapped, _ra_label_dec)
                 if not _np.isfinite([x_pix, y_pix]).all():
                     continue
                 x_pix = min(max(x_pix, 0.0), Wf - 1.0)
                 y_pix = min(max(y_pix, 0.0), Hf - 1.0)
+                if _too_close(x_pix * s, y_pix * s):
+                    continue
                 _draw_label(x_pix * s, y_pix * s, self._deg_to_hms(ra_wrapped), anchor="ct")
             except Exception:
                 pass

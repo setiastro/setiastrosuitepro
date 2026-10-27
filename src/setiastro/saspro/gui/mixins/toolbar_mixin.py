@@ -1188,9 +1188,9 @@ class ToolbarMixin:
         self.act_rgb_extract.setStatusTip(self.tr("Extract R/G/B as three mono documents"))
         self.act_rgb_extract.triggered.connect(self._rgb_extract_active)
 
-        self.act_rgb_combine = QAction(QIcon(rgbcombo_path), self.tr("RGB Combination..."), self)
+        self.act_rgb_combine = QAction(QIcon(rgbcombo_path), self.tr("LRGB Combination..."), self)
         self.act_rgb_combine.setIconVisibleInMenu(True)
-        self.act_rgb_combine.setStatusTip(self.tr("Combine three mono images into RGB"))
+        self.act_rgb_combine.setStatusTip(self.tr("Combine four mono images into LRGB"))
         self.act_rgb_combine.triggered.connect(self._open_rgb_combination)
 
         self.act_blemish = QAction(QIcon(blastericon_path), self.tr("Blemish Blaster..."), self)
