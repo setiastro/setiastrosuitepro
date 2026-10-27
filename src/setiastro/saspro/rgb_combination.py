@@ -6,9 +6,9 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QRadioButton,
     QGroupBox, QFileDialog, QComboBox, QButtonGroup, QMessageBox, QFormLayout,
     QCheckBox, QDoubleSpinBox, QFrame, QToolButton, QWidget, QTextBrowser,
-    QDialogButtonBox
+    QDialogButtonBox, QSizePolicy
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QSize
 
 try:
     from setiastro.saspro.legacy.image_manager import load_image
@@ -155,6 +155,43 @@ combine. The warning is about linear data specifically.</p>
 """
 
 
+class _WrapLabel(QLabel):
+    """A word-wrapped QLabel that reports an honest height.
+
+    QLabel.sizeHint() for wrapped text is computed against a width Qt guesses
+    (roughly a golden-ratio box), not the width the label actually gets. In a
+    fixed-width column that guess is too wide, the hint comes back too short,
+    and the tail of the text is silently clipped — which is exactly what
+    happened to the second paragraph of the luminance warning once it moved
+    into a side column.
+
+    Re-asserting minimumHeight from heightForWidth() on every resize makes the
+    layout allocate the room the text really needs, at whatever width and in
+    whatever language it ends up.
+    """
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred,
+                           QSizePolicy.Policy.MinimumExpanding)
+
+    def minimumSizeHint(self) -> QSize:
+        s = super().minimumSizeHint()
+        w = self.width()
+        if w > 0:
+            return QSize(s.width(), max(s.height(), self.heightForWidth(w)))
+        return s
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        w = self.width()
+        if w > 0:
+            need = self.heightForWidth(w)
+            if need > 0 and need != self.minimumHeight():
+                self.setMinimumHeight(need)
+
+
 class _LWarningDialog(QDialog):
     """Scrollable long-form explanation behind the warning button."""
 
@@ -192,7 +229,7 @@ class RGBCombinationDialogPro(QDialog):
 
     def __init__(self, parent, list_open_docs_fn=None, doc_manager=None):
         super().__init__(parent)
-        self.setWindowTitle(self.tr("RGB Combination"))
+        self.setWindowTitle(self.tr("LRGB Combination"))
         self.setWindowFlag(Qt.WindowType.Window, True)
         import platform
         if platform.system() == "Darwin":
@@ -218,7 +255,7 @@ class RGBCombinationDialogPro(QDialog):
         self.mode_group.addButton(self.load_files_radio)
         self.mode_group.addButton(self.use_views_radio)
 
-        mode_box = QGroupBox(self.tr("Select RGB Combination Mode"))
+        mode_box = QGroupBox(self.tr("Select LRGB Combination Mode"))
         ml = QVBoxLayout(mode_box)
         ml.addWidget(self.use_views_radio)
         ml.addWidget(self.load_files_radio)
@@ -235,15 +272,15 @@ class RGBCombinationDialogPro(QDialog):
 
         file_box = QGroupBox(self.tr("Files"))
         fl = QVBoxLayout(file_box)
-        for lab, btn in [(self.r_label, self.btn_load_r),
+        for lab, btn in [(self.l_label, self.btn_load_l),
+                         (self.r_label, self.btn_load_r),
                          (self.g_label, self.btn_load_g),
-                         (self.b_label, self.btn_load_b),
-                         (self.l_label, self.btn_load_l)]:
+                         (self.b_label, self.btn_load_b)]:
             row = QHBoxLayout(); row.addWidget(lab); row.addStretch(); row.addWidget(btn)
             fl.addLayout(row)
 
         # ── open-views widgets
-        views_box = QGroupBox(self.tr("Select Open Views for R / G / B"))
+        views_box = QGroupBox(self.tr("Select Open Views for L / R / G / B"))
         vf = QFormLayout(views_box)
 
         self.cmb_r = QComboBox()
@@ -256,11 +293,12 @@ class RGBCombinationDialogPro(QDialog):
             cmb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
             cmb.setMinimumContentsLength(24)  # tweak if you want
 
+        # L first, so the rows read in the conventional LRGB order.
+        self._lum_view_row_label = QLabel(self.tr("Luminance:"))
+        vf.addRow(self._lum_view_row_label, self.cmb_l)
         vf.addRow(self.tr("Red:"), self.cmb_r)
         vf.addRow(self.tr("Green:"), self.cmb_g)
         vf.addRow(self.tr("Blue:"), self.cmb_b)
-        self._lum_view_row_label = QLabel(self.tr("Luminance:"))
-        vf.addRow(self._lum_view_row_label, self.cmb_l)
 
         # ── luminance section
         lum_box = self._build_luminance_box()
@@ -276,12 +314,31 @@ class RGBCombinationDialogPro(QDialog):
         btns.addWidget(self.btn_help)
         btns.addStretch(); btns.addWidget(self.btn_combine); btns.addWidget(self.btn_cancel)
 
-        # ── layout
+        # ── layout: two columns, so the luminance warning + advanced options
+        # sit beside the source pickers instead of stacking the dialog to
+        # ~1000px tall. Buttons span the full width underneath.
+        col_left = QVBoxLayout()
+        col_left.setContentsMargins(0, 0, 0, 0)
+        col_left.addWidget(mode_box)
+        col_left.addWidget(views_box)
+        col_left.addWidget(file_box)
+        col_left.addStretch(1)
+
+        col_right = QVBoxLayout()
+        col_right.setContentsMargins(0, 0, 0, 0)
+        col_right.addWidget(lum_box)
+        col_right.addStretch(1)
+
+        cols = QHBoxLayout()
+        cols.setSpacing(10)
+        # Left takes its natural width (the combos already set a minimum
+        # contents length); the right column absorbs any extra, which is where
+        # the wrapped warning text wants it.
+        cols.addLayout(col_left, 0)
+        cols.addLayout(col_right, 1)
+
         L = QVBoxLayout(self)
-        L.addWidget(mode_box)
-        L.addWidget(views_box)
-        L.addWidget(file_box)
-        L.addWidget(lum_box)
+        L.addLayout(cols, 1)
         L.addLayout(btns)
 
         self.mode_group.buttonClicked.connect(self._refresh_mode)
@@ -293,6 +350,10 @@ class RGBCombinationDialogPro(QDialog):
 
     def _build_luminance_box(self) -> QGroupBox:
         box = QGroupBox(self.tr("Luminance (L)"))
+        # Wide enough that the warning paragraphs wrap to a readable measure
+        # rather than a narrow ribbon, and that the Advanced rows don't squeeze
+        # the profile combo.
+        box.setMinimumWidth(400)
         v = QVBoxLayout(box)
 
         self.chk_use_l = QCheckBox(self.tr("Add a Luminance (L) channel"))
@@ -312,16 +373,14 @@ class RGBCombinationDialogPro(QDialog):
         wv.setContentsMargins(12, 10, 12, 10)
         wv.setSpacing(6)
 
-        head = QLabel("⚠  " + self.tr(_L_WARNING_SHORT), self.warn_box)
+        head = _WrapLabel("⚠  " + self.tr(_L_WARNING_SHORT), self.warn_box)
         f = head.font()
         f.setBold(True)
         f.setPointSize(max(11, f.pointSize() + 2))
         head.setFont(f)
-        head.setWordWrap(True)
         wv.addWidget(head)
 
-        body = QLabel(self.tr(_L_WARNING_BODY), self.warn_box)
-        body.setWordWrap(True)
+        body = _WrapLabel(self.tr(_L_WARNING_BODY), self.warn_box)
         wv.addWidget(body)
 
         wrow = QHBoxLayout()
