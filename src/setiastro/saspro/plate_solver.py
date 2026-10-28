@@ -11,7 +11,6 @@ from functools import lru_cache
 import numpy as np
 import json
 import time
-import requests
 from astropy.io import fits
 from astropy.io.fits import Header
 from astropy.wcs import WCS
@@ -32,7 +31,16 @@ try:
 except Exception:
     stretch_mono_image = None
     stretch_color_image = None
-from setiastro.saspro.help_support import make_help_button
+def make_help_button(*args, **kwargs):
+    """Deferred shim for help_support.make_help_button.
+
+    help_support -> shortcuts -> the command registry -> the tool/widget
+    modules -> matplotlib. This module is imported by the plate-solve CLI,
+    which never builds a dialog and must not pay for any of that. The only
+    caller is a dialog button row, which is GUI-only by definition.
+    """
+    from setiastro.saspro.help_support import make_help_button as _real
+    return _real(*args, **kwargs)
 _NONFITS_META_KEYS = {
     "FILE_PATH",
     "FITS_HEADER",
@@ -405,6 +413,7 @@ def _astrometry_api_request(method: str, url: str, *, data=None, files=None,
     """
     Robust request with retries, exponential backoff + jitter.
     """
+    import requests  # deferred: ~138 ms, and a local solve never touches the network
     if requests is None:
         print("Requests not available for astrometry.net API.")
         return None
@@ -674,6 +683,7 @@ def _astrometry_download_wcs_file(settings, job_id: int, parent=None) -> Header 
     This includes SIP terms when present.
     Returns fits.Header or None.
     """
+    import requests  # deferred: ~138 ms, and a local solve never touches the network
     import os
     import tempfile
     from astropy.io import fits
@@ -2748,6 +2758,153 @@ def _merge_blind_seed(original: "Header | None", blind: "Header") -> "Header":
     return base
 
 
+#: Catalogue stars to aim for in one query. Four thousand rather than the
+#: ~1000 the 3x3 grid keeps, because the grid wants its quota in EVERY cell
+#: and the brightest stars in a field are not spread evenly -- a cluster or
+#: the galactic plane will hog one cell while another starves. Headroom here
+#: is what lets the grid make a uniform selection out of a clumpy one.
+_CATALOG_TARGET_STARS = 4000
+
+#: Per-detection multiplier, and the floor/ceiling around it. Tying the target
+#: to the detection count is what keeps the catalogue reliably DEEPER than the
+#: image: both scale the same way with field area, so a frame that detects
+#: more stars asks for proportionally more catalogue.
+_CATALOG_STARS_PER_DETECTION = 4
+_CATALOG_TARGET_MIN = 2000
+_CATALOG_TARGET_MAX = 20000
+
+
+def _catalog_mag_limit(ra_lo, ra_hi, dec_lo, dec_hi, n_detected: int = 0) -> float:
+    """
+    Faintest G worth querying for this sky box.
+
+    Unlimited, a query returns every Gaia source in the field, which on a wide
+    frame is enormous and almost entirely useless: a 12.6 x 8.2 degree field
+    holds about 1.2 million sources at full depth, and the matcher downstream
+    keeps at most 999 of them. The rest are fetched, sorted, built into a
+    SkyCoord, projected to pixels and discarded -- once per search centre,
+    scale and parity attempted.
+
+    Because the limit falls as the field grows, the row count stays roughly
+    constant whatever the field size, so the query cost no longer depends on
+    how wide the frame is. A narrow deep field is unaffected: at a third of a
+    square degree it still takes G ~ 18 to find a few thousand stars.
+
+    Never raises -- a solve must not fail because this estimate could not be
+    made, so anything unexpected falls back to no limit at all.
+    """
+    try:
+        from setiastro.saspro.gaia_database import (
+            field_area_deg2, mag_limit_for_field)
+        area = field_area_deg2(ra_lo, ra_hi, dec_lo, dec_hi)
+        # A non-finite box must fall back to NO limit, not to the bright
+        # floor. Both are "wrong", but one of them under-fetches and fails the
+        # solve, while the other merely costs what today already costs.
+        if not np.isfinite(area) or area <= 0.0:
+            return 99.0
+        target = _CATALOG_TARGET_STARS
+        if n_detected > 0:
+            target = int(np.clip(_CATALOG_STARS_PER_DETECTION * n_detected,
+                                 _CATALOG_TARGET_MIN, _CATALOG_TARGET_MAX))
+        return float(mag_limit_for_field(area, target_stars=target))
+    except Exception as e:
+        print(f"[GaiaLocal] could not size the magnitude limit ({e}); "
+              f"querying unlimited")
+        return 99.0
+
+
+def _solve_fingerprint(wcs_solution, img_matched, sep_arcsec,
+                       img_w: int, img_h: int) -> None:
+    """
+    Print what two solves of the same frame can actually be compared on.
+
+    RMS and pair count cannot be compared between runs: they are computed over
+    whatever pairs each run happened to keep, and the matcher chooses its own
+    tolerance, so a run that paired more stars reports a worse RMS even when
+    its astrometry is identical. Everything here is independent of that choice.
+
+      * The FINGERPRINT evaluates the final WCS at fixed pixel positions. Two
+        runs that agree here are the same solution, whatever their RMS says --
+        and the corners are the test that matters, because the centre can
+        agree while the SIP terms disagree out at the edges.
+      * The PERCENTILES show the shape of the residual distribution. A
+        population of genuine mismatches is a heavy tail; noisier centroids on
+        fainter stars are a broad, tight-tailed spread. These are 2-D angular
+        separations, so isotropic Gaussian position error makes them Rayleigh
+        distributed, giving p95/RMS = 2.448/sqrt(2) ~ 1.73; below that there
+        is no outlier population to prune.
+      * The RADIAL PROFILE says whether the error is uniform or lives at the
+        field edge, which separates a distortion model that has not converged
+        from pairs that are simply wrong.
+
+    Purely diagnostic. Never raises -- a solve must not fail because a print
+    could not be produced.
+    """
+    try:
+        print("[GaiaLocal] --- comparable between runs "
+              "(RMS and pair count are not) ---")
+
+        pts = [("centre", (img_w - 1) / 2.0, (img_h - 1) / 2.0),
+               ("TL", 0.0, 0.0), ("TR", img_w - 1.0, 0.0),
+               ("BL", 0.0, img_h - 1.0), ("BR", img_w - 1.0, img_h - 1.0)]
+        for name, x, y in pts:
+            c = wcs_solution.pixel_to_world(x, y)
+            print(f"[GaiaLocal]   fingerprint {name:<7} "
+                  f"RA={float(c.ra.deg):11.6f}  Dec={float(c.dec.deg):+11.6f}")
+
+        q = np.percentile(sep_arcsec, [50, 75, 90, 95, 99])
+        rms = float(np.sqrt(np.mean(sep_arcsec ** 2)))
+        print(f"[GaiaLocal]   residuals p50={q[0]:.2f}\" p75={q[1]:.2f}\" "
+              f"p90={q[2]:.2f}\" p95={q[3]:.2f}\" p99={q[4]:.2f}\" "
+              f"max={float(sep_arcsec.max()):.2f}\"")
+        # p95/RMS was the obvious shape test and it is a trap: a tail big
+        # enough to matter inflates the RMS it is being compared against, so
+        # the ratio SHRINKS as the tail grows. Measured on this very field,
+        # the run with a 77" worst pair scored 1.48 ("no outliers") while the
+        # clean one scored 2.31. Ratios against the MEDIAN do not move with
+        # the tail, so they actually report it.
+        _med = q[0] if q[0] > 0 else float("nan")
+        print(f"[GaiaLocal]   shape p95/p50={q[3] / _med:.1f}  "
+              f"p99/p50={q[4] / _med:.1f}  "
+              f"max/p50={float(sep_arcsec.max()) / _med:.1f}  "
+              f"(Rayleigh gives 2.1 / 2.6 / 3.3 at ~1000 pairs; "
+              f"far above means real outliers)")
+
+        # Residual against distance from the frame centre, in four equal-count
+        # rings so every bin carries the same weight.
+        cx, cy = (img_w - 1) / 2.0, (img_h - 1) / 2.0
+        r = np.hypot(img_matched[:, 0] - cx, img_matched[:, 1] - cy)
+        order = np.argsort(r)
+        rings = np.array_split(order, 4)
+        parts = []
+        for i, ring in enumerate(rings):
+            if len(ring) == 0:
+                continue
+            rr = float(np.sqrt(np.mean(sep_arcsec[ring] ** 2)))
+            parts.append(f"r{i}({len(ring)}@{float(r[ring].max()) / max(cx, 1):.2f}R)"
+                         f"={rr:.2f}\"")
+        print("[GaiaLocal]   radial RMS  " + "  ".join(parts))
+
+        # Coverage, stated outright. This is the line that distinguishes a
+        # solution fitted across the frame from one fitted in the middle and
+        # extrapolated outward -- and the RMS alone cannot tell them apart,
+        # because the second number is lower precisely BECAUSE it describes
+        # less of the image.
+        _corner = math.hypot(cx, cy)
+        _reach = float(r.max()) / _corner if _corner > 0 else 0.0
+        _inside = float(np.mean(
+            np.hypot(np.random.default_rng(0).uniform(0, img_w, 20000) - cx,
+                     np.random.default_rng(1).uniform(0, img_h, 20000) - cy)
+            <= float(r.max())))
+        print(f"[GaiaLocal]   coverage: outermost pair at "
+              f"{_reach * 100:.0f}% of the corner distance, "
+              f"pairs span ~{_inside * 100:.0f}% of the frame area"
+              + ("" if _reach > 0.95 else
+                 f"  <-- the outer {(1 - _inside) * 100:.0f}% is EXTRAPOLATED"))
+    except Exception as e:
+        print(f"[GaiaLocal] fingerprint unavailable: {e}")
+
+
 def _field_sky_box(corner_sky, margin_deg):
     """
     RA/Dec bounding box for a field, correct at the poles and across RA=0.
@@ -3162,8 +3319,22 @@ def _solve_with_GAIA(image: np.ndarray,
                         (ra_min, ra_max, dec_min,
                          dec_max) = _field_sky_box(corner_sky, 0.1)
 
+                        # Only ever ask for as many stars as the matcher can
+                        # use. Unlimited, a wide field returns every Gaia
+                        # source inside it -- 1.2 million on a 12.6 x 8.2 deg
+                        # frame -- all of which get sorted, turned into a
+                        # SkyCoord, projected to pixels, and then decimated to
+                        # at most 999 by the 3x3 grid below. And that happens
+                        # once per search centre, scale and parity tried.
+                        #
+                        # The limit is derived per box rather than once, so a
+                        # scale variant that widens the field correspondingly
+                        # brightens the cut.
+                        _gmax = _catalog_mag_limit(ra_min, ra_max, dec_min,
+                                                   dec_max, len(img_stars))
                         if use_astro:
-                            stars = astro_lib.find_stars_in_box(ra_min, ra_max, dec_min, dec_max)
+                            stars = astro_lib.find_stars_in_box(
+                                ra_min, ra_max, dec_min, dec_max, max_mag=_gmax)
                             seen_sids = {
                                 s.source_id: {"ra": s.ra, "dec": s.dec, "gmag": s.gmag, "sid": s.source_id}
                                 for s in stars if s.source_id not in excluded_sids
@@ -3176,7 +3347,9 @@ def _solve_with_GAIA(image: np.ndarray,
                                     cur.execute("""
                                         SELECT source_id, ra, dec, phot_g_mean_mag FROM sources
                                         WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
-                                    """, (dec_min, dec_max, ra_min, ra_max))
+                                          AND phot_g_mean_mag IS NOT NULL
+                                          AND phot_g_mean_mag <= ?
+                                    """, (dec_min, dec_max, ra_min, ra_max, float(_gmax)))
                                     all_sources.extend(cur.fetchall())
                                 except Exception as e:
                                     print(f"[GaiaLocal] query failed on {fname}: {e}")
@@ -3196,7 +3369,8 @@ def _solve_with_GAIA(image: np.ndarray,
 
                         if is_center:
                             print(f"[GaiaLocal] {len(seen_sids)} unique catalog stars found in field "
-                                f"({len(excluded_sids)} excluded from prior round)")
+                                f"(G <= {_gmax:.1f} for this field size, "
+                                f"{len(excluded_sids)} excluded from prior round)")
                         _status(f"Status: {len(seen_sids)} Gaia stars — trying {label}…")
 
                         cat_infos = list(seen_sids.values())
@@ -3300,7 +3474,7 @@ def _solve_with_GAIA(image: np.ndarray,
             img_matched, cat_matched_xy, seed_wcs, cat_sky,
             img_w, img_h, lib, parent,
             use_astro=use_astro, astro_lib=astro_lib,
-            status_cb=status_cb,
+            status_cb=status_cb, img_stars_all=img_stars,
         )
 
         # Best of both worlds: if the triangle-derived pairs matched but the
@@ -3321,7 +3495,7 @@ def _solve_with_GAIA(image: np.ndarray,
                     h_img, h_cat, seed_wcs, cat_sky,
                     img_w, img_h, lib, parent,
                     use_astro=use_astro, astro_lib=astro_lib,
-                    status_cb=status_cb,
+                    status_cb=status_cb, img_stars_all=img_stars,
                 )
                 if ok_round:
                     img_matched, cat_matched_xy = h_img, h_cat
@@ -3555,10 +3729,17 @@ def _gaia_fit_and_validate(
     use_astro: bool = False,
     astro_lib=None,
     status_cb=None,
+    img_stars_all=None,
 ) -> tuple[bool, "WCS | str"]:
     """
     Run steps 6-9 of the Gaia solve (TAN fit, iterative refinement,
     quality gate, SIP fit) on one matched-pair candidate set.
+
+    img_stars_all is EVERY star detected in the frame, not just the matched
+    ones. Two things need it: the per-iteration catalogue query is sized from
+    the detection count (the matched count would under-size it, since
+    refinement exists to grow the pair set), and the outer-field recovery pass
+    below re-matches the stars the affine never managed to pair.
     Returns (True, wcs_solution) on success, (False, error_str) on failure.
     """
     import astropy.units as u
@@ -3567,6 +3748,8 @@ def _gaia_fit_and_validate(
     from scipy.spatial import KDTree
 
     n_matched = len(img_matched)
+    _n_detected = (len(img_stars_all) if img_stars_all is not None
+                   else n_matched)
 
     # ── Map matched catalog pixel positions back to sky coords ───────────────
     try:
@@ -3593,8 +3776,20 @@ def _gaia_fit_and_validate(
     # ── Iterative refinement via fitted-WCS reprojection ──────────────────────
     try:
         MAX_ITER     = 5
-        NN_TOL_PX    = 8.0
+        NN_TOL_PX    = 8.0        # ceiling, and the value used on iteration 0
+        NN_TOL_FLOOR = 2.5        # never prune tighter than this
+        NN_TOL_K     = 3.0        # multiples of the current RMS to accept
         MIN_PAIRS    = 10
+
+        # How much worse the RMS may get in exchange for MORE pairs. Growing
+        # the pair set is normally a good sign, but it is not self-evidently
+        # one: at 8 px of nearest-neighbour slack -- which on a wide field is
+        # a minute of arc -- a coarse seed pairs plenty of image stars with
+        # the WRONG catalogue star, and those pairs still count. 10% absorbs
+        # the honest case, where a larger sample simply reports a slightly
+        # truer RMS than a small one did, while refusing the case where the
+        # extra pairs are wrong.
+        PAIR_GAIN_RMS_SLACK = 1.10
 
         # Convergence threshold is pixel-relative, like the matcher and gate:
         # stop when the RMS improvement drops below a small fraction of a pixel.
@@ -3628,9 +3823,19 @@ def _gaia_fit_and_validate(
                 (t_ra_min, t_ra_max, t_dec_min,
                  t_dec_max) = _field_sky_box(corner_sky, 0.05)
 
+                # Same limit as the search above, and for a sharper reason: the
+                # refinement runs this query once per iteration and builds a
+                # KD-tree over everything it returns. A faint star the image
+                # never detected cannot become a matched pair -- it can only
+                # sit in the tree and occasionally capture a detection as its
+                # nearest neighbour, which is a wrong pair, not a useful one.
+                _t_gmax = _catalog_mag_limit(t_ra_min, t_ra_max, t_dec_min,
+                                             t_dec_max, _n_detected)
                 t_seen = {}
                 if use_astro:
-                    for s in astro_lib.find_stars_in_box(t_ra_min, t_ra_max, t_dec_min, t_dec_max):
+                    for s in astro_lib.find_stars_in_box(
+                            t_ra_min, t_ra_max, t_dec_min, t_dec_max,
+                            max_mag=_t_gmax):
                         if s.source_id not in t_seen:
                             t_seen[s.source_id] = {"ra": s.ra, "dec": s.dec}
                 else:
@@ -3641,7 +3846,10 @@ def _gaia_fit_and_validate(
                             cur.execute("""
                                 SELECT source_id, ra, dec FROM sources
                                 WHERE dec BETWEEN ? AND ? AND ra BETWEEN ? AND ?
-                            """, (t_dec_min, t_dec_max, t_ra_min, t_ra_max))
+                                  AND phot_g_mean_mag IS NOT NULL
+                                  AND phot_g_mean_mag <= ?
+                            """, (t_dec_min, t_dec_max, t_ra_min, t_ra_max,
+                                  float(_t_gmax)))
                             t_sources.extend(cur.fetchall())
                         except Exception:
                             pass
@@ -3674,14 +3882,35 @@ def _gaia_fit_and_validate(
                     print(f"[GaiaLocal] iter={iteration}: only {len(t_cat_xy)} catalog stars in frame, stopping")
                     break
 
+                # Tolerance follows the fit instead of sitting at a constant.
+                # A fixed 8 px is downstream of an ADAPTIVE matcher tolerance
+                # (_triangle_match_catalog_to_image settles on 4x the median
+                # residual, which has been seen anywhere from 5.0 to 10.2 px),
+                # so the refinement prunes nothing at all whenever the matcher
+                # was stricter than 8 px, and prunes almost nothing when it was
+                # looser. Keyed to the current RMS it tightens as the solution
+                # improves, which is the only point at which a residual outlier
+                # is distinguishable from honest distortion.
+                #
+                # Iteration 0 is deliberately unchanged: the RMS is still the
+                # seed's, so the ceiling governs and behaviour matches today's.
+                _nn_tol = NN_TOL_PX
+                if _scale_conv and _scale_conv > 0 and rms and rms > 0:
+                    _nn_tol = float(np.clip(NN_TOL_K * rms / _scale_conv,
+                                            NN_TOL_FLOOR, NN_TOL_PX))
+
                 tree = KDTree(t_cat_xy)
                 dists, idxs = tree.query(img_matched, k=1, workers=-1)
-                inlier_mask = dists < NN_TOL_PX
+                inlier_mask = dists < _nn_tol
                 t_img_m     = img_matched[inlier_mask]
                 t_cat_sky_m = t_cat_sky_f[idxs[inlier_mask]]
 
-                print(f"[GaiaLocal] iter={iteration}: {inlier_mask.sum()} pairs within {NN_TOL_PX}px "
-                      f"from {len(t_cat_xy)} catalog stars")
+                print(f"[GaiaLocal] iter={iteration}: {inlier_mask.sum()} pairs within "
+                      f"{_nn_tol:.1f}px ({_nn_tol * (_scale_conv or 0):.1f}\") "
+                      f"from {len(t_cat_xy)} catalog stars"
+                      + ("" if _nn_tol >= NN_TOL_PX - 1e-9
+                         else f" [tightened from {NN_TOL_PX:.1f}px by the "
+                              f"{rms:.2f}\" fit]"))
 
                 if len(t_img_m) < MIN_PAIRS:
                     print(f"[GaiaLocal] iter={iteration}: too few pairs ({len(t_img_m)}), stopping")
@@ -3700,7 +3929,21 @@ def _gaia_fit_and_validate(
                 t_rms     = float(np.sqrt(np.mean(t_cat_sky_m.separation(t_sky_fit).arcsec**2)))
                 print(f"[GaiaLocal] iter={iteration}: new WCS RMS={t_rms:.3f}\" ({len(t_img_m)} pairs)")
 
-                _gained = len(t_img_m) > n_matched
+                # A pair gain has to come with a fit that is not materially
+                # worse. Unconditional, this clause rewards COUNT rather than
+                # QUALITY, and the two part company exactly when the seed is
+                # coarse: a blind seed arrives as a linear TAN with no
+                # distortion terms and can sit an arc-minute off, so each
+                # iteration brings more image stars within the 8 px tolerance
+                # of SOME catalogue star -- not necessarily the right one.
+                # Every such increase was adopted, so the refinement ratcheted
+                # toward a larger, dirtier pair set. Measured on a 12.6 x 8.2
+                # degree frame: blind finished at 1136 pairs and 6.20" where
+                # the same field seeded from an existing solution finished at
+                # 791 pairs and 3.93". Same WCS to a few tenths of an arcsec;
+                # the whole difference was which pairs went into the fit.
+                _gained = (len(t_img_m) > n_matched
+                           and t_rms <= rms * PAIR_GAIN_RMS_SLACK + 1e-9)
                 _kept   = len(t_img_m) >= 0.8 * n_matched   # tolerate small pair loss
                 _better = t_rms <= rms + 1e-9
                 # The 0.8 retention rule is right when the fit is already good:
@@ -3719,7 +3962,20 @@ def _gaia_fit_and_validate(
                     rms          = t_rms
                     wcs_solution = t_wcs_tan
                 else:
-                    print(f"[GaiaLocal] iter={iteration}: not better, stopping")
+                    # Say WHICH way it failed. "More pairs but a worse fit" and
+                    # "fewer pairs" are opposite problems, and lumping them
+                    # under "not better" hides the one that used to be
+                    # silently accepted.
+                    if len(t_img_m) > n_matched:
+                        print(f"[GaiaLocal] iter={iteration}: rejecting "
+                              f"{len(t_img_m)} pairs (up from {n_matched}) — "
+                              f"RMS would go {rms:.3f}\" -> {t_rms:.3f}\", "
+                              f"past the {PAIR_GAIN_RMS_SLACK:.2f}x gain "
+                              f"allowance; the extra pairs are mismatches")
+                    else:
+                        print(f"[GaiaLocal] iter={iteration}: not better "
+                              f"({len(t_img_m)} pairs, RMS={t_rms:.3f}\"), "
+                              f"stopping")
                     break
             except Exception as e:
                 print(f"[GaiaLocal] iter={iteration} refinement failed: {e}")
@@ -3871,12 +4127,188 @@ def _gaia_fit_and_validate(
             except Exception as e:
                 print(f"[GaiaLocal] SIP fit failed, using TAN: {e}")
 
+        # ── Recover the outer field against the chosen solution ──────────────
+        # The affine the matcher recovers is fitted on a few dozen
+        # correspondences, so it describes the middle of the frame and
+        # extrapolates badly beyond them -- measured at p90 = 701 px on a
+        # 12.6 x 8.2 degree frame. The matcher's tolerance is then set from the
+        # residual MEDIAN, which that core dominates, so every star out where
+        # the affine has drifted fails the gate and is never paired at all.
+        #
+        # The consequence is not a worse RMS, it is a DISHONEST one. Two solves
+        # of the same image: one paired stars out to 1.18R and reported 6.18",
+        # the other stopped at 0.87R and reported 3.09". The second number is
+        # better only because it describes the inner 78% of the frame and
+        # extrapolates a 30-term polynomial across the rest -- which is exactly
+        # where the two disagreed, by 29" at one corner.
+        #
+        # Once a SIP solution exists that stops being a problem, because the
+        # model is now good everywhere to within a few pixels, and a few pixels
+        # is far less than the ~49 px that separates neighbouring catalogue
+        # stars. So the nearest catalogue star is the RIGHT star even out where
+        # the fit is still extrapolating, and the pairs can simply be found and
+        # the model refitted with the whole frame constrained.
+        #
+        # Note the direction: this ADDS the edge pairs that were missed. A
+        # previous attempt did the reverse -- clipping the worst residuals,
+        # which are at the edge by construction -- and made every measure worse
+        # for exactly that reason.
+        try:
+            RECOVER_K      = 3.0     # tolerance in multiples of the current RMS
+            RECOVER_MIN_PX = 5.0     # but never tighter than the extrapolation
+            RECOVER_MAX_PX = 15.0    # and never near the catalogue spacing
+            RECOVER_SPACING_FRAC = 0.40   # nor past this much of it
+
+            _cx0, _cy0 = (img_w - 1) / 2.0, (img_h - 1) / 2.0
+            _cov_before = float(np.hypot(img_matched[:, 0] - _cx0,
+                                         img_matched[:, 1] - _cy0).max())
+
+            if img_stars_all is None or len(img_stars_all) <= n_matched:
+                print("[GaiaLocal] recover: no unpaired detections to try")
+            else:
+                _sep_now = matched_sky.separation(
+                    wcs_solution.pixel_to_world(img_matched[:, 0],
+                                                img_matched[:, 1])).arcsec
+                _rms_now = float(np.sqrt(np.mean(_sep_now ** 2)))
+                _px = _scale_conv or 1.0
+                _rtol = float(np.clip(RECOVER_K * _rms_now / _px,
+                                      RECOVER_MIN_PX, RECOVER_MAX_PX))
+
+                # Fresh catalogue box from the CURRENT solution, magnitude
+                # limited the same way every other query is.
+                _rc = [wcs_solution.pixel_to_world(x, y) for x, y in
+                       ((0, 0), (img_w - 1, 0), (0, img_h - 1),
+                        (img_w - 1, img_h - 1))]
+                _rra0, _rra1, _rd0, _rd1 = _field_sky_box(_rc, 0.05)
+                _rg = _catalog_mag_limit(_rra0, _rra1, _rd0, _rd1, _n_detected)
+                _seen = {}
+                if use_astro:
+                    for _st in astro_lib.find_stars_in_box(
+                            _rra0, _rra1, _rd0, _rd1, max_mag=_rg):
+                        if _st.source_id not in _seen:
+                            _seen[_st.source_id] = (_st.ra, _st.dec)
+                else:
+                    for _fn, _cn in lib._connections.items():
+                        try:
+                            for _sid, _sra, _sdec in _cn.execute(
+                                    "SELECT source_id, ra, dec FROM sources "
+                                    "WHERE dec BETWEEN ? AND ? "
+                                    "  AND ra BETWEEN ? AND ? "
+                                    "  AND phot_g_mean_mag IS NOT NULL "
+                                    "  AND phot_g_mean_mag <= ?",
+                                    (_rd0, _rd1, _rra0, _rra1, float(_rg))):
+                                if _sid not in _seen:
+                                    _seen[_sid] = (_sra, _sdec)
+                        except Exception:
+                            pass
+
+                if len(_seen) < MIN_PAIRS:
+                    print(f"[GaiaLocal] recover: catalogue returned only "
+                          f"{len(_seen)} stars, skipping")
+                else:
+                    _rv = list(_seen.values())
+                    _rsky = SkyCoord(ra=[v[0] for v in _rv] * u.deg,
+                                     dec=[v[1] for v in _rv] * u.deg)
+                    _rpx, _rpy = wcs_solution.world_to_pixel(_rsky)
+                    _rxy = np.column_stack([_rpx, _rpy])
+                    _rin = ((_rxy[:, 0] > -50) & (_rxy[:, 0] < img_w + 50) &
+                            (_rxy[:, 1] > -50) & (_rxy[:, 1] < img_h + 50))
+                    _rxy, _rsky = _rxy[_rin], _rsky[_rin]
+
+                    # Hard ceiling from the catalogue's own density: a
+                    # tolerance approaching half the mean separation can reach
+                    # the WRONG star, which is the one way this pass could do
+                    # real harm. At ~10k stars over this frame the spacing is
+                    # about 49 px, so the 15 px cap already binds -- but on a
+                    # sparse field it would not, and the guard has to come from
+                    # the data rather than a constant.
+                    _spacing = math.sqrt(img_w * img_h / max(len(_rxy), 1))
+                    _rtol = min(_rtol, RECOVER_SPACING_FRAC * _spacing)
+                    print(f"[GaiaLocal] recover: catalogue spacing "
+                          f"~{_spacing:.0f}px, matching within {_rtol:.1f}px")
+
+                    _all_img = np.asarray(img_stars_all, np.float64)[:, :2]
+                    _rtree = KDTree(_rxy)
+                    _rd, _ri = _rtree.query(_all_img, k=1, workers=-1)
+                    _rkeep = _rd < _rtol
+                    _n_rec = int(_rkeep.sum())
+
+                    if _n_rec <= n_matched:
+                        print(f"[GaiaLocal] recover: {_n_rec} pairs within "
+                              f"{_rtol:.1f}px is no more than the {n_matched} "
+                              f"already held, keeping them")
+                    else:
+                        _r_img = _all_img[_rkeep]
+                        _r_sky = _rsky[_ri[_rkeep]]
+                        _kw = dict(projection='TAN',
+                                   proj_point=_sky_centroid(_r_sky))
+                        _rdeg = None
+                        try:
+                            if getattr(wcs_solution, "sip", None) is not None:
+                                _rdeg = int(wcs_solution.sip.a_order)
+                        except Exception:
+                            _rdeg = None
+                        if _rdeg:
+                            _kw["sip_degree"] = _rdeg
+                        _r_wcs = fit_wcs_from_points(
+                            (_r_img[:, 0], _r_img[:, 1]), _r_sky, **_kw)
+                        _r_wcs.array_shape = (img_h, img_w)
+                        _r_sep = _r_sky.separation(
+                            _r_wcs.pixel_to_world(_r_img[:, 0],
+                                                  _r_img[:, 1])).arcsec
+                        _r_rms = float(np.sqrt(np.mean(_r_sep ** 2)))
+                        _cov_after = float(np.hypot(_r_img[:, 0] - _cx0,
+                                                    _r_img[:, 1] - _cy0).max())
+                        _corner = float(np.hypot(_cx0, _cy0))
+
+                        print(f"[GaiaLocal] recover: {n_matched} -> {_n_rec} pairs "
+                              f"within {_rtol:.1f}px of the "
+                              + (f"SIP-{_rdeg}" if _rdeg else "TAN")
+                              + f" solution; reach "
+                                f"{_cov_before / _corner * 100:.0f}% -> "
+                                f"{_cov_after / _corner * 100:.0f}% of the way "
+                                f"to the corner")
+                        # The RMS is EXPECTED to rise -- the edge of a
+                        # distorted field is genuinely harder than its middle,
+                        # and that rise is the honest number replacing a
+                        # flattering one. So a "RMS got worse" test would
+                        # refuse exactly the case this exists for; on a
+                        # synthetic field the true corner error halved while
+                        # RMS went 3.06" -> 23.39".
+                        #
+                        # What would really be wrong is MIS-pairing, and that
+                        # has a different signature: pairs land on neighbouring
+                        # stars, so residuals approach half the catalogue
+                        # spacing rather than staying inside the tolerance they
+                        # were matched within. A refit whose RMS exceeds its own
+                        # matching tolerance is incoherent; one inside it is
+                        # merely describing a harder region.
+                        if _r_rms / _px > _rtol:
+                            print(f"[GaiaLocal] recover: rejected — refit RMS "
+                                  f"{_r_rms / _px:.1f}px exceeds the {_rtol:.1f}px "
+                                  f"it matched within, so these are mismatches "
+                                  f"rather than missing stars")
+                        else:
+                            img_matched = _r_img
+                            matched_sky = _r_sky
+                            n_matched = _n_rec
+                            wcs_solution = _r_wcs
+                            print(f"[GaiaLocal] recover: adopted — RMS "
+                                  f"{_rms_now:.3f}\" -> {_r_rms:.3f}\" now "
+                                  f"describes the WHOLE frame"
+                                  + (" (higher, and honest)"
+                                     if _r_rms > _rms_now else ""))
+        except Exception as e:
+            print(f"[GaiaLocal] recover skipped: {e}")
+
         # Final residuals of the CHOSEN (SIP or TAN) solution — the gate uses these.
         sky_fit    = wcs_solution.pixel_to_world(img_matched[:, 0], img_matched[:, 1])
         sep_arcsec = matched_sky.separation(sky_fit).arcsec
         rms        = float(np.sqrt(np.mean(sep_arcsec**2)))
         p95        = float(np.percentile(sep_arcsec, 95))
         print(f"[GaiaLocal] final RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
+        _solve_fingerprint(wcs_solution, img_matched, sep_arcsec,
+                           img_w, img_h)
 
         # ── Quality gate — PIXEL-RELATIVE, not raw arcsec ─────────────────────
         # The matcher and NN refinement are already in pixels; the gate must be

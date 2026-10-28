@@ -253,7 +253,6 @@ from itertools import combinations
 from typing import Callable, Iterable, Tuple
 import tempfile
 import traceback
-import requests
 import numpy as np
 
 from setiastro.saspro import astroalign
@@ -275,8 +274,7 @@ from astropy.wcs import FITSFixedWarning
 import astropy.units as u
 from astropy.wcs import WCS
 from astropy.wcs.utils import skycoord_to_pixel
-from reproject import reproject_interp
-from setiastro.saspro.blink_comparator_pro import CustomDoubleSpinBox, CustomSpinBox
+from setiastro.saspro.widgets.spinboxes import CustomDoubleSpinBox, CustomSpinBox
 import numpy.ma as ma
 from PyQt6.QtCore import Qt, QThread, QRunnable, QThreadPool, pyqtSignal, QObject, QTimer, QProcess, QPoint, QEvent, QSettings
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QMovie
@@ -298,22 +296,7 @@ except Exception:
     stretch_mono_image = None
     stretch_color_image = None
 
-# Optional fast star detector; fall back gracefully if not present
-try:
-    from setiastro.saspro.legacy.numba_utils import fast_star_detect  # your optimized detector, if available
-except Exception:
-    fast_star_detect = None
 
-from setiastro.saspro.legacy.numba_utils import (
-    rescale_image_numba,
-    flip_horizontal_numba,
-    flip_vertical_numba,
-    rotate_90_clockwise_numba,
-    rotate_90_counterclockwise_numba,
-    rotate_180_numba,
-    invert_image_numba,
-)
-from setiastro.saspro.abe import _generate_sample_points as abe_generate_sample_points
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 # ---------------------------------------------------------------------

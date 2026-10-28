@@ -126,26 +126,108 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QColor
 from PyQt6 import sip
-try:
-    from matplotlib.figure import Figure
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-    import matplotlib
-    matplotlib.rcParams["text.usetex"] = False
-    HAS_MPL = True
-except ImportError:
-    HAS_MPL = False
-from setiastro.saspro.help_support import make_help_button
+# Matplotlib is used ONLY by the spectrum viewer, but importing it here cost
+# every CLI plate solve ~99 modules and ~460 ms it never touches. Same
+# except-ImportError semantics as the eager probe this replaces -- a real
+# import attempt -- just deferred to first use.
+_MPL = None   # None = not probed yet | False = unavailable | (Figure, Canvas)
+
+
+def _mpl():
+    """(Figure, FigureCanvas), or None if matplotlib is unavailable."""
+    global _MPL
+    if _MPL is None:
+        try:
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_qtagg import (
+                FigureCanvasQTAgg as FigureCanvas)
+            import matplotlib
+            matplotlib.rcParams["text.usetex"] = False
+            _MPL = (Figure, FigureCanvas)
+        except ImportError:
+            _MPL = False
+    return _MPL or None
+
+
+def __getattr__(name):
+    """Keep the old module-level capability flags working for any
+    out-of-module reader, without importing matplotlib or pyqtgraph until
+    something actually asks."""
+    if name == "HAS_MPL":
+        return _mpl() is not None
+    if name == "HAS_GL":
+        return _has_gl()
+    if name == "_GL_IMPORT_ERROR":
+        return _gl_import_error()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def make_help_button(*args, **kwargs):
+    """Deferred shim for help_support.make_help_button.
+
+    help_support -> shortcuts -> the command registry -> the tool/widget
+    modules -> matplotlib. This module is imported by the plate-solve CLI,
+    which never builds a dialog and must not pay for any of that. The only
+    caller is a dialog button row, which is GUI-only by definition.
+    """
+    from setiastro.saspro.help_support import make_help_button as _real
+    return _real(*args, **kwargs)
 # 3D Stellar Neighborhood Explorer needs pyqtgraph's OpenGL module, which in
 # turn needs PyOpenGL. Both are optional — the tab degrades to a message if
 # either is missing (e.g. a headless box, or a frozen build missing the
 # OpenGL.platform.* hidden imports).
-try:
-    import pyqtgraph.opengl as gl
-    HAS_GL = True
-    _GL_IMPORT_ERROR = ""
-except Exception as _e:            # ImportError, or OpenGL platform failures
-    HAS_GL = False
-    _GL_IMPORT_ERROR = str(_e)
+# Probed on FIRST USE, not at import. pyqtgraph.opengl plus PyOpenGL is about
+# 1.2 s and ~200 modules, and this module is on the headless plate-solve path
+# (the solver reads the Gaia catalogue from here), where no 3D view is ever
+# built. Measured chain: gaia_database -> pyqtgraph.opengl -> pyqtgraph.
+#
+# find_spec() is NOT a substitute for this probe: the failure mode named above
+# is a PyOpenGL *platform* error, which only surfaces on a real import. So the
+# probe stays a real import attempt with the same except-Exception semantics,
+# just deferred.
+_GL = None               # None = not probed yet | False = unavailable | module
+_GL_ERROR = ""
+_GL_VIEW_CLS = None
+
+
+def _gl():
+    """pyqtgraph.opengl, or None if it or PyOpenGL is unusable."""
+    global _GL, _GL_ERROR
+    if _GL is None:
+        try:
+            import pyqtgraph.opengl as _mod
+            _GL = _mod
+            _GL_ERROR = ""
+        except Exception as _e:    # ImportError, or OpenGL platform failures
+            _GL = False
+            _GL_ERROR = str(_e)
+    return _GL or None
+
+
+def _has_gl() -> bool:
+    return _gl() is not None
+
+
+def _gl_import_error() -> str:
+    _gl()                          # make sure _GL_ERROR has been filled in
+    return _GL_ERROR
+
+
+def _pickable_gl_view_cls():
+    """The picking-capable GLViewWidget subclass, built on first use.
+
+    The class cannot be defined at module scope: it subclasses
+    gl.GLViewWidget, so the base class has to exist at class-creation time,
+    which is exactly what we are deferring. _build_pickable_gl_view() below
+    creates it once we have `gl` in hand.
+    """
+    global _GL_VIEW_CLS
+    if _GL_VIEW_CLS is None:
+        gl = _gl()
+        if gl is None:
+            return None
+        _GL_VIEW_CLS = _build_pickable_gl_view(gl)
+    return _GL_VIEW_CLS
 
 
 # ── Backblaze public URLs ──────────────────────────────────────────────────────
@@ -393,6 +475,100 @@ ASTRO_GROUP_DEFS: List[GroupDef] = [
 _ASTRO_FILENAME_TO_GROUP: Dict[str, str] = {
     fn: g.key for g in ASTRO_GROUP_DEFS for fn in g.filenames
 }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  How deep to query  (one curve, shared by the solver and the quad builder)
+# ══════════════════════════════════════════════════════════════════════════════
+
+ALL_SKY_DEG2 = 41252.96
+
+# Cumulative Gaia DR3 source counts, all-sky, by G limit. Derived from the
+# exact per-band n_items above; kept as a small table because the counts are
+# fixed facts about DR3, not something to recompute.
+#
+# The curve is interpolated in log10(N) against G, which is the space it is
+# nearly straight in -- counts rise roughly a factor of 4 per magnitude, so
+# interpolating N directly would be badly wrong between the knots.
+_CUM_G = np.array([8.0, 10.0, 12.0, 14.0, 15.0, 17.0, 18.0, 19.0, 20.0, 21.0])
+_CUM_N = np.array([54_735, 440_004, 2_866_891, 15_719_844, 34_414_104,
+                   139_482_635, 268_869_606, 508_077_374, 928_307_157,
+                   1_585_128_120], dtype=float)
+_CUM_LOG_N = np.log10(_CUM_N)
+
+
+def expected_star_count(area_deg2: float, gmax: float) -> float:
+    """Roughly how many Gaia DR3 sources lie in `area_deg2` down to G <= gmax."""
+    allsky = 10.0 ** float(np.interp(float(gmax), _CUM_G, _CUM_LOG_N))
+    return max(0.0, float(area_deg2)) * allsky / ALL_SKY_DEG2
+
+
+def expected_allsky_count(gmax: float) -> int:
+    """All-sky source count down to G <= gmax. Used for build progress."""
+    return int(10.0 ** float(np.interp(float(gmax), _CUM_G, _CUM_LOG_N)))
+
+
+def mag_limit_for_field(area_deg2: float,
+                        target_stars: int = 4000,
+                        installed_depth: Optional[float] = None,
+                        g_floor: float = 8.0,
+                        g_ceiling: float = 21.0) -> float:
+    """
+    The faintest G worth querying for a field of this area.
+
+    A plate solve needs a few thousand catalogue stars; it does not need every
+    star in the sky that happens to lie inside the field. Those two quantities
+    diverge violently with field size -- a 12.6 x 8.2 degree frame holds about
+    1.2 MILLION Gaia sources at full depth, and the matcher downstream uses at
+    most a thousand of them. Everything else is fetched, sorted, projected to
+    pixels and then thrown away, once per search centre tried.
+
+    Inverting the count curve fixes that at its root. Because the limit scales
+    with area, the number of ROWS RETURNED stays near-constant whatever the
+    field size, which makes the query cost independent of how wide the frame
+    is. A narrow deep field still gets faint stars, because at a tenth of a
+    square degree it takes G ~ 18 to find a few thousand of them.
+
+    Over-fetching is not merely slow, either: the blind verifier's log-odds
+    gain goes as 1/N_catalogue, so extra faint stars that no detection will
+    ever match actively dilute the evidence for a correct solution.
+
+    `installed_depth` clamps the answer to what the user actually has on disk,
+    so this never asks for a magnitude band that was never downloaded.
+    """
+    area = max(float(area_deg2), 1e-9)
+    want = max(int(target_stars), 1)
+    # Density needed, expressed as the all-sky count that would produce it.
+    want_allsky = (want / area) * ALL_SKY_DEG2
+    g = float(np.interp(np.log10(max(want_allsky, 1.0)),
+                        _CUM_LOG_N, _CUM_G))
+    # The floor matters: for a very wide field the arithmetic asks for
+    # something brighter than G=8, and there is no reason to go shallower than
+    # the brightest tier everyone already has.
+    g = max(g_floor, min(g, g_ceiling))
+    if installed_depth is not None and installed_depth > 0:
+        g = min(g, float(installed_depth))
+    return g
+
+
+def field_area_deg2(ra_lo: float, ra_hi: float,
+                    dec_lo: float, dec_hi: float) -> float:
+    """
+    Solid angle of a RA/Dec box, in square degrees.
+
+    The cos(dec) factor is integrated rather than taken at the centre, which
+    matters for exactly the wide fields this is used on -- and near a pole a
+    centre-value approximation can be out by a large factor.
+    """
+    import math as _m
+    d_lo, d_hi = sorted((float(dec_lo), float(dec_hi)))
+    d_lo = max(d_lo, -90.0)
+    d_hi = min(d_hi, 90.0)
+    dra = (float(ra_hi) - float(ra_lo)) % 360.0
+    if dra == 0.0:
+        dra = 360.0
+    band = _m.degrees(_m.sin(_m.radians(d_hi)) - _m.sin(_m.radians(d_lo)))
+    return abs(dra * band)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1707,7 +1883,9 @@ class SpectrumViewerWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        if HAS_MPL:
+        _m = _mpl()
+        if _m:
+            Figure, FigureCanvas = _m
             self._fig    = Figure(figsize=(6, 3), facecolor="#1a1a2e")
             self._ax     = self._fig.add_subplot(111)
             self._canvas = FigureCanvas(self._fig)
@@ -1725,7 +1903,7 @@ class SpectrumViewerWidget(QWidget):
         layout.addWidget(self._info_lbl)
 
     def _draw_empty(self):
-        if not HAS_MPL:
+        if not _mpl():
             return
         self._ax.clear()
         self._ax.set_facecolor("#1a1a2e")
@@ -1744,7 +1922,7 @@ class SpectrumViewerWidget(QWidget):
         self._canvas.draw()
 
     def show_spectrum(self, spectrum: CalibratedSpectrum, title: str = ""):
-        if not HAS_MPL:
+        if not _mpl():
             return
         wl   = spectrum.wavelengths
         flux = spectrum.flux
@@ -2591,7 +2769,7 @@ class _NeighborhoodLoadWorker(QThread):
             self.failed.emit(str(e))
 
 
-if HAS_GL:
+def _build_pickable_gl_view(gl):
 
     class _PickableGLView(gl.GLViewWidget):
         """
@@ -2714,6 +2892,8 @@ if HAS_GL:
             if np.isfinite(d2[i]) and d2[i] <= (12.0 ** 2):   # 12 px tolerance
                 return i
             return None
+
+    return _PickableGLView
 
 
 class _WedgeDialog(QDialog):
@@ -2891,7 +3071,7 @@ class StellarNeighborhoodTab(QWidget):
 
     def showEvent(self, ev):
         super().showEvent(ev)
-        if not HAS_GL:
+        if not _has_gl():
             return
         # First visit to this tab builds the GL view. That is when Qt rebuilds
         # the dialog's native window — a one-off flicker of *this dialog*,
@@ -2911,7 +3091,11 @@ class StellarNeighborhoodTab(QWidget):
         and re-enter this method before it finished. Setting the flag up front
         makes that a no-op instead of a second stacked viewport.
         """
-        if self._gl_ready or not HAS_GL:
+        if self._gl_ready or not _has_gl():
+            return
+        gl = _gl()
+        _view_cls = _pickable_gl_view_cls()
+        if gl is None or _view_cls is None:
             return
         self._gl_ready = True
 
@@ -2929,7 +3113,7 @@ class StellarNeighborhoodTab(QWidget):
                 w.deleteLater()
         self._view_placeholder = None
 
-        self._view = _PickableGLView()
+        self._view = _view_cls()
         self._view.setMinimumSize(280, 260)
         self._view.setCameraPosition(distance=self.DEFAULT_RADIUS_PC * 3.0)
         self._view.pointPicked.connect(self._on_point_picked)
@@ -3012,12 +3196,12 @@ class StellarNeighborhoodTab(QWidget):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
-        if not HAS_GL:
+        if not _has_gl():
             msg = QLabel(
                 "<b>3D view unavailable.</b><br><br>"
                 "The Stellar Neighborhood Explorer needs <code>pyqtgraph.opengl</code> "
                 "and <code>PyOpenGL</code>.<br><br>"
-                f"<span style='color:#a66;'>Import error: {_GL_IMPORT_ERROR}</span><br><br>"
+                f"<span style='color:#a66;'>Import error: {_gl_import_error()}</span><br><br>"
                 "Install with:<br><code>pip install PyOpenGL</code>"
             )
             msg.setWordWrap(True)
@@ -3408,7 +3592,7 @@ class StellarNeighborhoodTab(QWidget):
     def _reload(self):
         # Never load before the GL view exists — showEvent triggers the first
         # load once _ensure_gl() has run.
-        if not HAS_GL or not self._gl_ready:
+        if not _has_gl() or not self._gl_ready:
             return
         # An asterism overlay owns the view while it's up — freeze Gaia loading
         # so radius/cut changes don't yank the camera off the constellation.
@@ -3578,7 +3762,7 @@ class StellarNeighborhoodTab(QWidget):
             self._start_colour_resolve()
 
     def _set_points(self, data: Optional[dict]):
-        if not HAS_GL or not self._gl_ready:
+        if not _has_gl() or not self._gl_ready:
             return
         if getattr(self, "_asterism_active", False):
             return
@@ -3862,7 +4046,7 @@ class StellarNeighborhoodTab(QWidget):
     def _recolor(self):
         if getattr(self, "_asterism_active", False):
             return
-        if (not HAS_GL or not self._gl_ready or self._data is None
+        if (not _has_gl() or not self._gl_ready or self._data is None
                 or len(self._data["source_id"]) == 0):
             return
 
@@ -3891,7 +4075,7 @@ class StellarNeighborhoodTab(QWidget):
         self._update_droplines(colors)
 
     def _fit_view(self):
-        if not HAS_GL or not self._gl_ready:
+        if not _has_gl() or not self._gl_ready:
             return
         if getattr(self, "_asterism_active", False):
             self._frame_asterism()
@@ -3909,7 +4093,7 @@ class StellarNeighborhoodTab(QWidget):
 
     def _reset_view(self):
         """Sun-centered, default angles, zoom fit to the current radius."""
-        if not HAS_GL or not self._gl_ready:
+        if not _has_gl() or not self._gl_ready:
             return
         if getattr(self, "_asterism_active", False):
             self._frame_asterism()
@@ -3982,7 +4166,7 @@ class StellarNeighborhoodTab(QWidget):
         self._btn_earth_view.setEnabled(True)
 
     def _load_asterism(self, name: str):
-        if not HAS_GL or not self._gl_ready:
+        if not _has_gl() or not self._gl_ready:
             return
         res = self._asterism_arrays(name)
         if res is None:
@@ -4042,7 +4226,7 @@ class StellarNeighborhoodTab(QWidget):
     def _clear_asterism(self):
         self._asterism_active = False
         self._aster_xyz = None
-        if HAS_GL and self._gl_ready:
+        if _has_gl() and self._gl_ready:
             self._aster_scatter.setData(pos=np.zeros((0, 3), dtype=np.float32))
             self._aster_lines.setData(pos=np.zeros((0, 3), dtype=np.float32))
             for lbl in self._aster_labels:
@@ -4098,7 +4282,7 @@ class StellarNeighborhoodTab(QWidget):
     def _frame_asterism(self):
         """Angled 3/4 view that frames the whole asterism — depth visible at a
         glance. Also grows the galactic grid to reach out under the stars."""
-        if not HAS_GL or not self._gl_ready or self._aster_xyz is None:
+        if not _has_gl() or not self._gl_ready or self._aster_xyz is None:
             return
         from pyqtgraph import Vector
         xyz = self._aster_xyz
@@ -4272,7 +4456,7 @@ class StellarNeighborhoodTab(QWidget):
             return
         self._selected_idx = idx
 
-        if HAS_GL and self._gl_ready:
+        if _has_gl() and self._gl_ready:
             self._marker.setData(pos=self._data["xyz"][idx:idx + 1],
                                  color=np.array([[0.35, 1.0, 1.0, 1.0]], dtype=np.float32),
                                  size=np.array([18.0], dtype=np.float32), pxMode=True)
@@ -4531,7 +4715,7 @@ class StellarNeighborhoodTab(QWidget):
         no-op — showEvent will do the first load when the tab is opened.
         """
         refresh_neighborhood_library()
-        if HAS_GL and self._gl_ready:
+        if _has_gl() and self._gl_ready:
             # Force a reload: installing/removing the extract changes what
             # _reload() will produce, even at an unchanged radius.
             self._data = None

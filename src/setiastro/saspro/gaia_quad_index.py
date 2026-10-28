@@ -162,6 +162,28 @@ def fmt_size(nbytes: float) -> str:
 # Fill factors and build times MEASURED on a real Gaia DR3 build (astrometric
 # library complete to G <= 18, 4 reader processes). Layer 0 is extrapolated.
 QUAD_LAYER_DEFS: List[QuadLayerDef] = [
+    # Layers 8 and 9 are for camera lenses, not telescopes, and are off by
+    # default because almost nobody shoots a 20-degree field. They cost
+    # essentially nothing: the same G <= 8.0 scan layer 7 already does, over
+    # cells four and sixteen times larger, so they finish in seconds and
+    # together take about 140 KB.
+    #
+    # What they do NOT fix: a frame this wide is a gnomonic projection about
+    # its own centre, while every index quad was projected about its own A-B
+    # midpoint. The two only agree where the frame is locally flat, so matches
+    # still come from near the frame centre and verification still works
+    # through a similarity transform that cannot represent the warp further
+    # out. These layers raise the hit rate on ultra-wide fields; they do not
+    # make them reliable. See BLIND_SOLVER_DESIGN.md.
+    QuadLayerDef(9, "quads_l9", 1024.0, 8.0, fill=1.0,
+                 build_note="seconds",
+                 warning="Ultra-wide fields only (43°+) — camera lenses under "
+                         "about 20 mm. Solves at this scale are opportunistic, "
+                         "not dependable."),
+    QuadLayerDef(8, "quads_l8",  512.0, 8.0, fill=1.0,
+                 build_note="seconds",
+                 warning="Very wide fields only (21°+) — camera lenses, not "
+                         "telescopes."),
     QuadLayerDef(7, "quads_l7", 256.0,  8.0, recommended=True,
                  fill=1.01, build_note="seconds"),
     QuadLayerDef(6, "quads_l6", 128.0,  8.0, recommended=True,

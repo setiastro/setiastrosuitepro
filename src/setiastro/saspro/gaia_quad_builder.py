@@ -76,20 +76,19 @@ SCAN_CHUNK = 500_000             # rows pulled from sqlite per step
 # quad it starts to bite, so only the two finest layers pay to fetch pm.
 PM_QUAD_ARCMIN = 4.0
 
-# Cumulative Gaia DR3 source counts, from the exact row counts hard-coded in
-# gaia_database.py. Used ONLY to estimate progress: counting rows up front
-# would mean scanning the table twice.
-_CUM_G = np.array([8, 10, 12, 14, 15, 17, 18, 19, 20, 21], float)
-_CUM_N = np.log10([54_735, 440_004, 2_866_891, 15_719_844, 34_414_104,
-                   139_482_635, 268_869_606, 508_077_374, 928_307_157,
-                   1_585_128_120])
+# The cumulative Gaia DR3 count curve now lives in gaia_database, where the
+# per-band row counts it is derived from already are, so the builder and the
+# plate solver size their work from ONE table rather than two copies that can
+# drift. Used here only to estimate progress: counting rows up front would
+# mean scanning the table twice.
 
 ProgressCb = Optional[Callable[[float, str], None]]
 CancelCb = Optional[Callable[[], bool]]
 
 
 def expected_rows(gmax: float) -> int:
-    return int(10.0 ** float(np.interp(gmax, _CUM_G, _CUM_N)))
+    from setiastro.saspro.gaia_database import expected_allsky_count
+    return expected_allsky_count(gmax)
 
 
 def default_workers() -> int:

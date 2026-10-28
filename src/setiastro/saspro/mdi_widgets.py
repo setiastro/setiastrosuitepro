@@ -14,6 +14,7 @@ import json
 import weakref
 from typing import Optional
 
+from PyQt6 import sip
 from PyQt6.QtWidgets import QMdiArea, QListWidget, QMenu, QApplication
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 
@@ -149,11 +150,11 @@ class MdiArea(QMdiArea):
 class ViewLinkController:
     """
     Controller to synchronize view transforms (zoom, scroll) across linked windows.
-    
+
     Views can be assigned to named groups. When one view's transform changes,
     all other views in the same group are updated to match.
     """
-    
+
     def __init__(self, mdi: QMdiArea):
         self.mdi = mdi
         self.groups: dict[str, set] = {}     # name -> set(views)
@@ -213,8 +214,7 @@ class ViewLinkController:
                     continue
                 try:
                     # Skip deleted / half-torn-down views
-                    from PyQt6 import sip as _sip
-                    if _sip.isdeleted(tgt):
+                    if sip.isdeleted(tgt):
                         continue
                 except Exception:
                     pass
@@ -240,7 +240,7 @@ class ConsoleListWidget(QListWidget):
     - Copy All
     - Clear
     """
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
@@ -285,6 +285,19 @@ class QtLogStream(QObject):
     """
     QObject that intercepts writes (e.g., from stdout/stderr) and emits
     them as Qt signals, while still forwarding to the original stream.
+
+    Shutdown safety
+    ---------------
+    Third-party libraries (colorama in particular) snapshot whatever
+    ``sys.stdout`` happens to be when they initialise, hold that reference
+    for the life of the process, and poke at it from an ``atexit`` callback.
+    By the time those callbacks run, Qt has already destroyed the C++ side of
+    this QObject, so any attribute access that touches Qt raises
+    ``RuntimeError: wrapped C/C++ object ... has been deleted``.
+
+    Every file-like method below is therefore written to degrade quietly
+    rather than raise: a deleted wrapper simply reports itself as a closed,
+    non-tty stream.
     """
     text_emitted = pyqtSignal(str)
 
@@ -292,23 +305,140 @@ class QtLogStream(QObject):
         super().__init__(parent)
         self._orig = orig_stream
 
+    # ------------------------------------------------------------------
+    # Lifetime helpers
+    # ------------------------------------------------------------------
+    def _alive(self) -> bool:
+        """True only while the underlying C++ QObject still exists."""
+        try:
+            return not sip.isdeleted(self)
+        except Exception:
+            return False
+
+    def detach(self):
+        """
+        Drop the reference to the wrapped stream.
+
+        Call this when restoring the real ``sys.stdout``/``sys.stderr`` so a
+        lingering reference to this wrapper can't keep writing anywhere.
+        """
+        try:
+            object.__setattr__(self, "_orig", None)
+        except Exception:
+            pass
+
+    def _stream(self):
+        """Return the wrapped stream, or None if unavailable/deleted."""
+        if not self._alive():
+            return None
+        try:
+            return self._orig
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # File-like protocol — these must never raise
+    # ------------------------------------------------------------------
+    @property
+    def closed(self) -> bool:
+        s = self._stream()
+        if s is None:
+            # No wrapped stream, or our C++ object is gone: treat as closed.
+            return True
+        try:
+            return bool(getattr(s, "closed", True))
+        except Exception:
+            return True
+
+    def isatty(self) -> bool:
+        s = self._stream()
+        if s is None:
+            return False
+        try:
+            return bool(s.isatty())
+        except Exception:
+            return False
+
+    def fileno(self):
+        # Delegate to the real stream so things like subprocess(stdout=sys.stdout)
+        # keep working. Raising OSError is the documented behaviour for streams
+        # with no descriptor, and callers are expected to handle it.
+        s = self._stream()
+        if s is None:
+            raise OSError("QtLogStream has no underlying file descriptor")
+        try:
+            return s.fileno()
+        except Exception as exc:
+            raise OSError("QtLogStream has no underlying file descriptor") from exc
+
+    def writable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        return False
+
+    @property
+    def encoding(self):
+        s = self._stream()
+        try:
+            return getattr(s, "encoding", "utf-8") if s is not None else "utf-8"
+        except Exception:
+            return "utf-8"
+
+    @property
+    def errors(self):
+        s = self._stream()
+        try:
+            return getattr(s, "errors", None) if s is not None else None
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # Writing
+    # ------------------------------------------------------------------
     def write(self, text: str):
         # Still write to the original stream
-        try:
-            if self._orig is not None:
-                self._orig.write(text)
-        except Exception:
-            pass
-        # Mirror into Qt
-        if text:
-            self.text_emitted.emit(text)
+        s = self._stream()
+        if s is not None:
+            try:
+                if not getattr(s, "closed", False):
+                    s.write(text)
+            except Exception:
+                pass
+
+        # Mirror into Qt — but only while the C++ object is alive. Anything
+        # printed during interpreter teardown would otherwise blow up here.
+        if text and self._alive():
+            try:
+                self.text_emitted.emit(text)
+            except RuntimeError:
+                # Object was deleted between the check and the emit.
+                pass
+            except Exception:
+                pass
+
+        return len(text) if text else 0
+
+    def writelines(self, lines):
+        for line in lines:
+            self.write(line)
 
     def flush(self):
+        s = self._stream()
+        if s is None:
+            return
         try:
-            if self._orig is not None:
-                self._orig.flush()
+            if not getattr(s, "closed", False):
+                s.flush()
         except Exception:
             pass
+
+    def close(self):
+        # Never close the real stdout/stderr on our behalf; just detach.
+        self.detach()
 
 
 class _DocProxy:
