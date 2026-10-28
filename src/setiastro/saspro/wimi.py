@@ -2958,6 +2958,9 @@ def _mask_safe_float(val):
         return None
     return f
 
+def _adql_quote(s) -> str:
+    """Quote a string as an ADQL literal. Doubles embedded single quotes."""
+    return "'" + str(s).replace("'", "''") + "'"
 
 def _fmt_mag(v):
     """Format a magnitude for the tree's Mag column; '' for missing/non-numeric."""
@@ -3404,8 +3407,7 @@ class SimbadQueryWorker(QThread):
     def run(self):
         try:
             # ——— Stage 1: TAP query with retries ———
-            from setiastro.saspro import cds_health
-
+            # (cds_health is imported at module level; no local import needed.)
             self.stage.emit("Contacting SIMBAD TAP service…")
             result = None
             last_err = None
@@ -3468,6 +3470,16 @@ class SimbadQueryWorker(QThread):
             # ——— Stage 2: sim-sam for FLUX/PLX/SP extras ———
             self._check_cancel()
             extras = {}
+
+            # No stellar types selected -> the caller passed sam_url=None.
+            # Nothing to fetch; skip the slowest request in the query.
+            if not self._sam_url:
+                self.stage.emit("No star types selected; skipping photometry fetch.")
+                self._check_cancel()
+                self.stage.emit("Merging results…")
+                self.finished_ok.emit(result, {})
+                return
+
             try:
                 self.stage.emit("Downloading star photometry/parallax (sim-sam)…")
                 # (connect, read). 300 s was a single combined timeout — five
@@ -9654,7 +9666,28 @@ class WIMIDialog(QDialog):
             return
         simbad_host = _configure_simbad_endpoint()
 
-        # ——— 2) Build TAP + sim-sam requests (same strings as before) ———
+        # ——— 2) Build TAP + sim-sam requests ———
+        #
+        # Push the otype selection into ADQL instead of filtering after the
+        # fact. This is a correctness fix, not just a speed one: TOP N is
+        # applied by SIMBAD BEFORE our client-side filter ran, so asking for
+        # (say) nebulae only in a star-rich field would fill all N rows with
+        # stars, drop every one of them locally, and report "No objects
+        # found" while the nebulae sat unreturned in the cone.
+        #
+        # basic.otype is the same column the client filter compared against,
+        # so this is the identical predicate evaluated server-side — no
+        # hierarchy semantics change. When everything is checked (the default)
+        # the clause is omitted entirely rather than emitting ~200 redundant
+        # literals.
+        _all_leaf_types = {li.text(0) for li in self._iterate_leaf_items()}
+        _sel_types = set(selected_types)
+        if _sel_types and _sel_types != _all_leaf_types:
+            _codes = ",".join(_adql_quote(c) for c in sorted(_sel_types))
+            otype_clause = f"\n                AND otype IN ({_codes})"
+        else:
+            otype_clause = ""
+
         tap_query = f"""
             SELECT TOP {max_results}
                 ra, dec, main_id,
@@ -9664,7 +9697,7 @@ class WIMIDialog(QDialog):
             WHERE CONTAINS(
                 POINT('ICRS', basic.ra, basic.dec),
                 CIRCLE('ICRS', {ra_center}, {dec_center}, {radius_deg})
-            ) = 1
+            ) = 1{otype_clause}
         """
 
         star_codes = [
@@ -9676,29 +9709,42 @@ class WIMIDialog(QDialog):
             "**","EB*","Ce*","Ce?","cC*","**?",
             "EB?","Sy?","CV?","No?","XB?","LX?","HX?","RR?","WV?","LP?","Mi?"
         ]
-        ra_str  = f"{ra_center:.8f}"
-        dec_str = f"{dec_center:+.8f}"
-        rad_str = f"{radius_deg:.8f}d"
-        region_crit = f"region(CIRCLE,{ra_str} {dec_str},{rad_str})"
-        codes_list  = ",".join(f"'{c}'" for c in star_codes)
-        otype_crit  = f"otypes in ({codes_list})"
-        criteria    = f"{region_crit}&{otype_crit}"
+        # Narrow the stellar-extras fetch to the star types actually selected.
+        # sim-sam is the slowest leg of the query (it's the one carrying the
+        # 90 s read timeout), and it exists only to attach B/V/parallax to
+        # STARS. If the user asked for nebulae only there are no stars to
+        # attach anything to, so skip the request entirely rather than
+        # download a VOTable we then discard.
+        if _sel_types != _all_leaf_types:
+            star_codes = [c for c in star_codes if c in _sel_types]
 
-        # Use whichever mirror answered the probe, so the TAP call and the
-        # sim-sam extras call don't end up split across two hosts.
-        sam_url = f"https://{simbad_host}/simbad/sim-sam"
-        sam_params = {
-            "Criteria":      criteria,
-            "OutputMode":    "LIST",
-            "maxObject":     str(max_results),
-            "output.format": "votable",
-            "output.params": ",".join([
-                "MAIN_ID","RA","DEC",
-                "FLUX(B)","FLUX(V)",
-                "PLX_VALUE","RVZ_REDSHIFT",
-                "OTYPE","SP_TYPE"
-            ])
-        }
+        if not star_codes:
+            sam_url = None
+            sam_params = {}
+        else:
+            ra_str  = f"{ra_center:.8f}"
+            dec_str = f"{dec_center:+.8f}"
+            rad_str = f"{radius_deg:.8f}d"
+            region_crit = f"region(CIRCLE,{ra_str} {dec_str},{rad_str})"
+            codes_list  = ",".join(_adql_quote(c) for c in star_codes)
+            otype_crit  = f"otypes in ({codes_list})"
+            criteria    = f"{region_crit}&{otype_crit}"
+
+            # Use whichever mirror answered the probe, so the TAP call and the
+            # sim-sam extras call don't end up split across two hosts.
+            sam_url = f"https://{simbad_host}/simbad/sim-sam"
+            sam_params = {
+                "Criteria":      criteria,
+                "OutputMode":    "LIST",
+                "maxObject":     str(max_results),
+                "output.format": "votable",
+                "output.params": ",".join([
+                    "MAIN_ID","RA","DEC",
+                    "FLUX(B)","FLUX(V)",
+                    "PLX_VALUE","RVZ_REDSHIFT",
+                    "OTYPE","SP_TYPE"
+                ])
+            }
 
         # ——— 3) Progress dialog + worker + event loop (same pattern as minor-body) ———
         prog = QProgressDialog(
@@ -9989,6 +10035,15 @@ class WIMIDialog(QDialog):
             prog.close()
         except Exception:
             pass
+
+        # Now that the otype filter runs server-side, hitting TOP N means
+        # "there are more objects of this type in the cone than you asked
+        # for" — actionable, unlike before when the cap was mostly consumed
+        # by rows the client filter was about to throw away.
+        if n_total >= max_results:
+            self.status_label.setText(
+                f"Status: showing the first {max_results:,} matches — there "
+                f"may be more. Raise Max Results in Settings.")
 
         # STOP HERE. Everything below this point is the pre-worker synchronous
         # implementation, kept by accident when the threaded path was added.
