@@ -103,8 +103,16 @@ def _midpoint(ra_a, dec_a, ra_b, dec_b):
 #  Detection
 # ─────────────────────────────────────────────────────────────────────────────
 
+#: Extraction ceiling per sigma level. Only `max_stars` survive this function
+#: and solve_blind_core uses 80 of those, so the old 4000 extracted roughly
+#: thirty times what any quad would ever see. The headroom that remains is
+#: deliberate: the ladder breaks at 2x max_stars, so there has to be room to
+#: reach that threshold comfortably before the brightest are taken.
+_DETECT_CEILING = 400
+
+
 def detect_stars_by_brightness(gray: np.ndarray, max_stars: int = 120,
-                               det_sigma_levels=(25, 15, 10, 5, 3)) -> np.ndarray:
+                               det_sigma_levels=(50, 25, 15, 10, 5, 3)) -> np.ndarray:
     """
     Detections ranked by flux, brightest first. Returns (N,3) of x, y, flux.
 
@@ -112,15 +120,31 @@ def detect_stars_by_brightness(gray: np.ndarray, max_stars: int = 120,
     detections evenly across the frame, which is right for the seeded matcher
     and wrong here: the index keeps the brightest stars per sky cell, so the
     solver has to rank globally by brightness or the two sets never line up.
+    That part is load-bearing and stays.
+
+    The ladder starts at sigma=50, matching the seeded path. Starting at 25
+    meant the very first and most expensive extraction was already two steps
+    down the ladder, on a frame where sigma=50 would have answered.
     """
     from setiastro.saspro.star_alignment import _detect_stars_uniform
+
+    # The seeded path raises sep's pixel stack before it extracts; this path
+    # never did, so whichever ran first decided the buffer for both. On a
+    # dense frame the default is small enough to change the character of the
+    # extraction entirely -- and under force-blind THIS runs first.
+    try:
+        import sep
+        sep.set_extract_pixstack(20000000)
+    except Exception:
+        pass
 
     best = None
     for s in det_sigma_levels:
         try:
             c = _detect_stars_uniform(gray, det_sigma=float(s), minarea=5,
-                                      grid=(1, 1), max_per_cell=4000,
-                                      max_total=4000)
+                                      grid=(1, 1),
+                                      max_per_cell=_DETECT_CEILING,
+                                      max_total=_DETECT_CEILING)
         except Exception:
             continue
         if c is None or len(c) == 0:

@@ -1,48 +1,112 @@
 # src/setiastro/saspro/imageops/stretch.py
 from __future__ import annotations
+import os
 import numpy as np
 
-# ---- Try Numba kernels from legacy ----
-try:
-    from setiastro.saspro.legacy.numba_utils import (
-        numba_mono_from_img,
-        numba_color_linked_from_img,
-        numba_color_unlinked_from_img,
+# ---- Numba kernels from legacy, resolved on FIRST USE ----
+#
+# These used to be imported at module scope inside a try/except. That made
+# `import setiastro.saspro.imageops.stretch` pull numba (+ llvmlite) -- about
+# 620 ms -- and plate_solver.py imports this module at module scope, so every
+# headless `setiastrosuitepro solve` paid for a JIT compiler it never used.
+# Measured chain: plate_solver -> imageops.stretch -> legacy.numba_utils
+#                              -> numba -> numba._version
+#
+# The probe is identical in kind, just deferred to the first stretch call:
+# a real import attempt, the same except-Exception semantics, the same numpy
+# fallbacks when numba is absent. Nothing about the arithmetic changes.
+#
+# The three public kernel names stay module-level FUNCTIONS rather than being
+# served by a module __getattr__, because the call sites below reference them
+# as bare globals -- which compiles to LOAD_GLOBAL and never consults
+# __getattr__. Names that are only ever reached from OUTSIDE this module
+# (_HAS_NUMBA, NUMBA_PARALLEL_LOCK and the *_final_formula re-exports) are
+# served by __getattr__ at the bottom of this section, which is safe because
+# attribute access on the module object does go through it.
 
-        # keep these too if other callers still use them
-        numba_mono_final_formula,
-        numba_color_final_formula_linked,
-        numba_color_final_formula_unlinked,
-    )
-    _HAS_NUMBA = True
-except Exception:
-    _HAS_NUMBA = False
+_NUMBA = None          # None = not probed yet | False = unavailable | dict
+_FALLBACK_LOCK = None
 
-    def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
-        r = (img - bp) / denom
-        med = float(median_rescaled)
-        num = (med - 1.0) * target_median * r
-        den = med * (target_median + r - 1.0) - target_median * r
-        den = np.where(np.abs(den) < 1e-12, 1e-12, den)
-        return num / den
 
-    def numba_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
-        r = (img - bp) / denom
-        med = float(median_rescaled)
-        num = (med - 1.0) * target_median * r
-        den = med * (target_median + r - 1.0) - target_median * r
-        den = np.where(np.abs(den) < 1e-12, 1e-12, den)
-        return num / den
+# ---- pure-numpy equivalents, used when numba is unavailable --------------
+# (bodies unchanged from the original except/fallback branch)
+def _np_mono_from_img(img, bp, denom, median_rescaled, target_median):
+    r = (img - bp) / denom
+    med = float(median_rescaled)
+    num = (med - 1.0) * target_median * r
+    den = med * (target_median + r - 1.0) - target_median * r
+    den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+    return num / den
 
-    def numba_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_median):
-        bp3 = np.asarray(bp3, dtype=np.float32).reshape((1, 1, 3))
-        denom3 = np.asarray(denom3, dtype=np.float32).reshape((1, 1, 3))
-        meds = np.asarray(meds_rescaled3, dtype=np.float32).reshape((1, 1, 3))
-        r = (img - bp3) / denom3
-        num = (meds - 1.0) * target_median * r
-        den = meds * (target_median + r - 1.0) - target_median * r
-        den = np.where(np.abs(den) < 1e-12, 1e-12, den)
-        return num / den
+
+def _np_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
+    r = (img - bp) / denom
+    med = float(median_rescaled)
+    num = (med - 1.0) * target_median * r
+    den = med * (target_median + r - 1.0) - target_median * r
+    den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+    return num / den
+
+
+def _np_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_median):
+    bp3 = np.asarray(bp3, dtype=np.float32).reshape((1, 1, 3))
+    denom3 = np.asarray(denom3, dtype=np.float32).reshape((1, 1, 3))
+    meds = np.asarray(meds_rescaled3, dtype=np.float32).reshape((1, 1, 3))
+    r = (img - bp3) / denom3
+    num = (meds - 1.0) * target_median * r
+    den = meds * (target_median + r - 1.0) - target_median * r
+    den = np.where(np.abs(den) < 1e-12, 1e-12, den)
+    return num / den
+
+
+def _kernels():
+    """The numba_utils module, or None. Imported once, on first use.
+
+    SASPRO_STRETCH_BACKEND=numpy forces the pure-numpy path and skips the
+    numba import entirely. That exists because the trade-off inverts with
+    usage: a process that performs ONE stretch and exits -- a headless
+    `setiastrosuitepro solve`, which calls _normalize_for_astap once -- pays
+    roughly 680 ms to import numba plus JIT compilation, to save on the order
+    of 100 ms of array arithmetic. The GUI warms the kernels once and then
+    stretches repeatedly, where numba wins comfortably. Default is unchanged
+    (numba when available), so nothing shifts unless the variable is set.
+    """
+    global _NUMBA
+    if _NUMBA is None:
+        if os.environ.get("SASPRO_STRETCH_BACKEND", "").strip().lower() in (
+                "numpy", "none", "off"):
+            _NUMBA = False
+            return None
+        try:
+            from setiastro.saspro.legacy import numba_utils as _nu
+            _NUMBA = {"module": _nu}
+        except Exception:
+            _NUMBA = False
+    return _NUMBA or None
+
+
+def _kernel(name, fallback):
+    k = _kernels()
+    if k is None:
+        return fallback
+    return getattr(k["module"], name, fallback)
+
+
+# ---- the three kernels the functions below actually call ------------------
+def numba_mono_from_img(img, bp, denom, median_rescaled, target_median):
+    return _kernel("numba_mono_from_img", _np_mono_from_img)(
+        img, bp, denom, median_rescaled, target_median)
+
+
+def numba_color_linked_from_img(img, bp, denom, median_rescaled, target_median):
+    return _kernel("numba_color_linked_from_img", _np_color_linked_from_img)(
+        img, bp, denom, median_rescaled, target_median)
+
+
+def numba_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_median):
+    return _kernel("numba_color_unlinked_from_img",
+                   _np_color_unlinked_from_img)(
+        img, bp3, denom3, meds_rescaled3, target_median)
 
 
 from setiastro.saspro.luminancerecombine import (
@@ -56,37 +120,81 @@ from setiastro.saspro.luminancerecombine import (
 import functools
 
 # Shared lock serializing EVERY entry into a numba parallel=True region.
-# Imported from numba_utils so debayer and stretch share ONE lock — two
+# Resolved from numba_utils so debayer and stretch share ONE lock -- two
 # different parallel functions entered concurrently abort the process
 # ("Concurrent access has been detected") just as badly as one entered twice.
-# RLock because stretch_color_image calls stretch_mono_image and both serialize.
-try:
-    from setiastro.saspro.legacy import numba_utils as _numba_utils
-    NUMBA_PARALLEL_LOCK = _numba_utils.NUMBA_PARALLEL_LOCK
-except Exception:
-    _numba_utils = None
-    import threading as _threading
-    NUMBA_PARALLEL_LOCK = _threading.RLock()
+# RLock because stretch_color_image calls stretch_mono_image and both
+# serialize.
+def _parallel_lock():
+    """The active parallel-region lock.
+
+    Resolved fresh on every call, NOT captured once: numba_utils can swap its
+    module-level lock at runtime (e.g. Blink flipping fast/safe mode), and a
+    lock captured at import time would never see that swap. On fast platforms
+    numba_utils hands back a no-op lock, so the `with` costs ~nothing.
+
+    If numba_utils is unavailable, fall back to a local RLock created on
+    demand -- so importing this module still allocates nothing.
+    """
+    global _FALLBACK_LOCK
+    k = _kernels()
+    if k is not None:
+        lock = getattr(k["module"], "NUMBA_PARALLEL_LOCK", None)
+        if lock is not None:
+            return lock
+    if _FALLBACK_LOCK is None:
+        import threading
+        _FALLBACK_LOCK = threading.RLock()
+    return _FALLBACK_LOCK
 
 
 def _numba_serialized(fn):
-    """Serialize a function that enters numba parallel=True regions — but only
-    when the active policy calls for it.
-
-    We must resolve the lock at CALL time, not decoration time. numba_utils can
-    swap its module-level lock at runtime (e.g. Blink flipping fast/safe mode);
-    if we captured the lock object here at import, that swap would never reach
-    these stretch functions. Looking it up fresh via the module each call keeps
-    us in sync. On fast platforms numba_utils hands back a no-op lock, so the
-    `with` costs effectively nothing."""
+    """Serialize a function that enters numba parallel=True regions -- but only
+    when the active policy calls for it. See _parallel_lock()."""
     @functools.wraps(fn)
     def _wrapper(*args, **kwargs):
-        lock = NUMBA_PARALLEL_LOCK
-        if _numba_utils is not None:
-            lock = getattr(_numba_utils, "NUMBA_PARALLEL_LOCK", lock)
-        with lock:
+        with _parallel_lock():
             return fn(*args, **kwargs)
     return _wrapper
+
+
+# Names other modules read off this one. Attribute access on a module DOES go
+# through __getattr__, so these stay available without importing numba until
+# something actually asks for them. _HAS_NUMBA is now a live answer rather
+# than a value frozen at import.
+_LAZY_ATTRS = (
+    "_HAS_NUMBA",
+    "NUMBA_PARALLEL_LOCK",
+    "_numba_utils",
+    "numba_mono_final_formula",
+    "numba_color_final_formula_linked",
+    "numba_color_final_formula_unlinked",
+)
+
+
+def __getattr__(name):
+    if name == "_HAS_NUMBA":
+        return _kernels() is not None
+    if name == "NUMBA_PARALLEL_LOCK":
+        return _parallel_lock()
+    if name == "_numba_utils":
+        k = _kernels()
+        return k["module"] if k else None
+    if name in _LAZY_ATTRS:
+        k = _kernels()
+        if k is None:
+            raise AttributeError(
+                f"{__name__}.{name} is unavailable: numba_utils could not be "
+                f"imported")
+        try:
+            return getattr(k["module"], name)
+        except AttributeError as exc:
+            raise AttributeError(f"{__name__}.{name}: {exc}") from exc
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_ATTRS))
 
 
 def _sample_flat(x: np.ndarray, max_n: int = 400_000) -> np.ndarray:

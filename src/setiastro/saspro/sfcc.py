@@ -211,6 +211,7 @@ from setiastro.saspro.backgroundneutral import background_neutralize_rgb, auto_r
 # --- Gaia XP fallback (optional) ---
 from setiastro.saspro.gaia_downloader import GaiaDownloader, HAS_GAIAXPY
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro import cds_health
 
 import warnings
 from typing import Callable, Dict, Any, Iterable
@@ -2108,11 +2109,24 @@ class SFCCDialog(QDialog):
                 ]
 
                 simbad_to_gaia: Dict[str, int] = {}
-                if main_ids_needed:
+                if main_ids_needed and cds_health.simbad_available(
+                        status_cb=lambda m: _sfcc_status(self, m)):
                     s = Simbad()
-                    s.add_votable_fields("ids")
+                    try:
+                        s.add_votable_fields("ids")
+                    except Exception as e:
+                        cds_health.note_failure(e, context="add_votable_fields/ids")
+                        main_ids_needed = []
+                    _ids_budget = cds_health.Budget(30.0)
                     BATCH = 200
                     for i in range(0, len(main_ids_needed), BATCH):
+                        # Once the breaker is open or the budget is spent,
+                        # abandon the whole loop rather than paying a full
+                        # timeout per remaining batch.
+                        if _ids_budget.expired() or not cds_health.simbad_available():
+                            _sfcc_status(self,
+                                "SIMBAD unavailable — skipping remaining id batches.")
+                            break
                         batch = main_ids_needed[i:i + BATCH]
                         try:
                             res = s.query_objects(batch)
@@ -2138,6 +2152,10 @@ class SFCCDialog(QDialog):
                                         break
                         except Exception as e:
                             print(f"[SPCC] SIMBAD ids batch failed: {e}")
+                            if cds_health.note_failure(e, context="query_objects/ids"):
+                                _sfcc_status(self,
+                                    "SIMBAD unreachable — skipping remaining id batches.")
+                                break
                             continue
 
                 _sfcc_status(self,
@@ -2720,39 +2738,28 @@ class SFCCDialog(QDialog):
                                dec=sky_corners[1:,1]*u.deg, frame="icrs")
         radius = center_sky.separation(corners_sky).max() * 1.05
 
-        Simbad.reset_votable_fields()
-
-        def _try_new_fields():
-            Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec", "main_id")
-
-        def _try_legacy_fields():
-            Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)",
-                                      "ra(d)", "dec(d)", "main_id")
-
-        ok = False
-        for _ in range(5):
-            try:
-                _try_new_fields(); ok = True; break
-            except Exception:
-                QApplication.processEvents(); non_blocking_sleep(0.8)
-        if not ok:
-            for _ in range(5):
-                try:
-                    _try_legacy_fields(); ok = True; break
-                except Exception:
-                    QApplication.processEvents(); non_blocking_sleep(0.8)
+        # Probe + mirror failover + bounded timeouts; see cds_health.
+        # Also routes the query off the GUI thread, which the old direct
+        # Simbad.query_region() call did not do.
+        self._simbad_budget = cds_health.Budget()
+        _simbad = cds_health.prepare_simbad(
+            status_cb=lambda m: _sfcc_status(self, m), timeout=30.0)
 
         simbad_result = None
-        if ok:
-            Simbad.ROW_LIMIT = 10000
-            for attempt in range(1, 6):
-                try:
-                    _sfcc_status(self, f"Querying SIMBAD for spectral types (attempt {attempt}/5)…")
-                    QApplication.processEvents()
-                    simbad_result = Simbad.query_region(center_sky, radius=radius)
-                    break
-                except Exception:
-                    QApplication.processEvents(); non_blocking_sleep(1.2)
+        if _simbad is not None:
+            _sfcc_status(self, "Querying SIMBAD for spectral types…")
+            QApplication.processEvents()
+            simbad_result = cds_health.call_simbad(
+                _simbad.query_region, center_sky,
+                radius=radius,
+                runner=lambda f, *a, **k: run_async_blocking(
+                    f, *a, parent=self, title="SFCC",
+                    label="Querying SIMBAD…", cancellable=False, **k),
+                status_cb=lambda m: _sfcc_status(self, m),
+                budget=self._simbad_budget,
+                attempts=2,
+                label="SIMBAD region query",
+            )
 
         # ── Step 6: Cross-match SIMBAD results onto star_list by position ──
         templates_for_hist = []
@@ -2872,11 +2879,20 @@ class SFCCDialog(QDialog):
                         QApplication.processEvents()
 
                         s_obj = Simbad()
-                        s_obj.add_votable_fields("ids")
-                        main_ids = [st["main_id"] for st in needs_simbad_ids]
+                        try:
+                            s_obj.add_votable_fields("ids")
+                        except Exception as e:
+                            cds_health.note_failure(e, context="add_votable_fields/ids")
+                        main_ids = ([st["main_id"] for st in needs_simbad_ids]
+                                    if cds_health.simbad_available() else [])
                         BATCH = 200
+                        _ids_budget = cds_health.Budget(30.0)
                         simbad_to_gaia: dict[str, int] = {}
                         for i in range(0, len(main_ids), BATCH):
+                            if _ids_budget.expired() or not cds_health.simbad_available():
+                                _sfcc_status(self,
+                                    "SIMBAD unavailable — skipping remaining id batches.")
+                                break
                             batch = main_ids[i:i+BATCH]
                             try:
                                 res = s_obj.query_objects(batch)

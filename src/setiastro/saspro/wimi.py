@@ -42,6 +42,7 @@ from astropy.table import Table
 import sqlite3
 import sep
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro import cds_health
 import lightkurve as lk
 lk.MPLSTYLE = None
 from astropy.coordinates import SkyCoord
@@ -640,8 +641,44 @@ CATEGORY_TO_COLOR = {
 
 
 
+# SIMBAD endpoint configuration.
+#
+# TIMEOUT was renamed to lowercase `timeout` in astroquery 0.4.8, so on a
+# current astroquery the old spelling is a silent no-op and every call falls
+# back to the OS TCP timeout (~130 s on Linux, ~21 s on Windows). Set both
+# names. And keep the value well under the old 300 s — five minutes is a
+# sane ceiling for a slow-but-alive archive and exactly what makes a dead
+# one feel like a hang.
 Simbad.ROW_LIMIT = 0  # Remove row limit for full results
-Simbad.TIMEOUT = 300  # Increase timeout for long queries
+
+_SIMBAD_TIMEOUT_S = 45
+
+
+def _configure_simbad_endpoint(server: str | None = None,
+                               timeout: float = _SIMBAD_TIMEOUT_S) -> str:
+    """
+    Point astroquery at `server` (or whichever mirror cds_health last found
+    healthy) and bound its timeouts. Returns the hostname actually selected so
+    callers can build matching sim-sam / sim-basic URLs against the same host.
+    """
+    import astroquery.simbad as _aqs
+
+    host = server or cds_health.current_server()
+    for setter in (
+        lambda: setattr(_aqs.conf, "server", host),
+        lambda: setattr(Simbad, "server", host),
+        lambda: setattr(_aqs.conf, "timeout", float(timeout)),
+        lambda: setattr(Simbad, "timeout", float(timeout)),
+        lambda: setattr(Simbad, "TIMEOUT", float(timeout)),
+    ):
+        try:
+            setter()
+        except Exception:
+            pass
+    return host
+
+
+_configure_simbad_endpoint()
 
 # Astrometry.net API constants
 ASTROMETRY_API_URL = "http://nova.astrometry.net/api/"
@@ -2921,6 +2958,9 @@ def _mask_safe_float(val):
         return None
     return f
 
+def _adql_quote(s) -> str:
+    """Quote a string as an ADQL literal. Doubles embedded single quotes."""
+    return "'" + str(s).replace("'", "''") + "'"
 
 def _fmt_mag(v):
     """Format a magnitude for the tree's Mag column; '' for missing/non-numeric."""
@@ -3367,6 +3407,7 @@ class SimbadQueryWorker(QThread):
     def run(self):
         try:
             # ——— Stage 1: TAP query with retries ———
+            # (cds_health is imported at module level; no local import needed.)
             self.stage.emit("Contacting SIMBAD TAP service…")
             result = None
             last_err = None
@@ -3379,9 +3420,22 @@ class SimbadQueryWorker(QThread):
                 try:
                     result = Simbad.query_tap(self._tap_query)
                     last_err = None
+                    cds_health.note_success()
                     break
                 except Exception as e:
                     last_err = e
+                    # A connection failure means the host is not answering.
+                    # Retrying costs a full timeout per attempt to re-learn
+                    # something we already know, so stop on the first one.
+                    # Server-side errors (5xx, rate-limit) are still retried.
+                    if cds_health.note_failure(e, context="simbad/query_tap"):
+                        self.failed.emit(
+                            "SIMBAD is unreachable (connection failed).\n\n"
+                            "CDS appears to be down — further retries would "
+                            "only wait out the same timeout.\n\n"
+                            f"{type(e).__name__}: {e}"
+                        )
+                        return
                     if attempt < self._max_attempts:
                         self.stage.emit(
                             f"TAP attempt {attempt} failed ({type(e).__name__}); "
@@ -3416,9 +3470,24 @@ class SimbadQueryWorker(QThread):
             # ——— Stage 2: sim-sam for FLUX/PLX/SP extras ———
             self._check_cancel()
             extras = {}
+
+            # No stellar types selected -> the caller passed sam_url=None.
+            # Nothing to fetch; skip the slowest request in the query.
+            if not self._sam_url:
+                self.stage.emit("No star types selected; skipping photometry fetch.")
+                self._check_cancel()
+                self.stage.emit("Merging results…")
+                self.finished_ok.emit(result, {})
+                return
+
             try:
                 self.stage.emit("Downloading star photometry/parallax (sim-sam)…")
-                resp = requests.get(self._sam_url, params=self._sam_params, timeout=300)
+                # (connect, read). 300 s was a single combined timeout — five
+                # minutes of nothing when the host is dead. 5 s to establish a
+                # connection is generous; 90 s of read covers a genuinely slow
+                # VOTable for a wide field.
+                resp = requests.get(self._sam_url, params=self._sam_params,
+                                    timeout=(5, 90))
                 resp.raise_for_status()
 
                 self._check_cancel()
@@ -9575,7 +9644,50 @@ class WIMIDialog(QDialog):
                                 "Please select at least one object type.")
             return
 
-        # ——— 2) Build TAP + sim-sam requests (same strings as before) ———
+        # ——— 1b) CDS preflight ———
+        # SIMBAD is not optional here the way it is in SFCC/SSSC — it IS the
+        # query. So probe (hard 4 s deadline, falls over to the Harvard
+        # mirror) and tell the user plainly rather than spending minutes of
+        # retries to reach the same conclusion.
+        self.status_label.setText("Status: Checking SIMBAD availability…")
+        QApplication.processEvents()
+        if not cds_health.simbad_available(
+                status_cb=lambda m: (self.status_label.setText(f"Status: {m}"),
+                                     QApplication.processEvents())):
+            self.status_label.setText("Status: SIMBAD unavailable.")
+            QMessageBox.warning(
+                self, "SIMBAD Unavailable",
+                "SIMBAD is not responding on either CDS mirror.\n\n"
+                f"{cds_health.status_text()}\n\n"
+                "CDS (Strasbourg) has scheduled and unscheduled outages; "
+                "check https://cds.unistra.fr/ and try again later.\n\n"
+                "Minor-body search and the local Gaia DR3 augment both work "
+                "offline and are unaffected.")
+            return
+        simbad_host = _configure_simbad_endpoint()
+
+        # ——— 2) Build TAP + sim-sam requests ———
+        #
+        # Push the otype selection into ADQL instead of filtering after the
+        # fact. This is a correctness fix, not just a speed one: TOP N is
+        # applied by SIMBAD BEFORE our client-side filter ran, so asking for
+        # (say) nebulae only in a star-rich field would fill all N rows with
+        # stars, drop every one of them locally, and report "No objects
+        # found" while the nebulae sat unreturned in the cone.
+        #
+        # basic.otype is the same column the client filter compared against,
+        # so this is the identical predicate evaluated server-side — no
+        # hierarchy semantics change. When everything is checked (the default)
+        # the clause is omitted entirely rather than emitting ~200 redundant
+        # literals.
+        _all_leaf_types = {li.text(0) for li in self._iterate_leaf_items()}
+        _sel_types = set(selected_types)
+        if _sel_types and _sel_types != _all_leaf_types:
+            _codes = ",".join(_adql_quote(c) for c in sorted(_sel_types))
+            otype_clause = f"\n                AND otype IN ({_codes})"
+        else:
+            otype_clause = ""
+
         tap_query = f"""
             SELECT TOP {max_results}
                 ra, dec, main_id,
@@ -9585,7 +9697,7 @@ class WIMIDialog(QDialog):
             WHERE CONTAINS(
                 POINT('ICRS', basic.ra, basic.dec),
                 CIRCLE('ICRS', {ra_center}, {dec_center}, {radius_deg})
-            ) = 1
+            ) = 1{otype_clause}
         """
 
         star_codes = [
@@ -9597,27 +9709,42 @@ class WIMIDialog(QDialog):
             "**","EB*","Ce*","Ce?","cC*","**?",
             "EB?","Sy?","CV?","No?","XB?","LX?","HX?","RR?","WV?","LP?","Mi?"
         ]
-        ra_str  = f"{ra_center:.8f}"
-        dec_str = f"{dec_center:+.8f}"
-        rad_str = f"{radius_deg:.8f}d"
-        region_crit = f"region(CIRCLE,{ra_str} {dec_str},{rad_str})"
-        codes_list  = ",".join(f"'{c}'" for c in star_codes)
-        otype_crit  = f"otypes in ({codes_list})"
-        criteria    = f"{region_crit}&{otype_crit}"
+        # Narrow the stellar-extras fetch to the star types actually selected.
+        # sim-sam is the slowest leg of the query (it's the one carrying the
+        # 90 s read timeout), and it exists only to attach B/V/parallax to
+        # STARS. If the user asked for nebulae only there are no stars to
+        # attach anything to, so skip the request entirely rather than
+        # download a VOTable we then discard.
+        if _sel_types != _all_leaf_types:
+            star_codes = [c for c in star_codes if c in _sel_types]
 
-        sam_url = "https://simbad.cds.unistra.fr/simbad/sim-sam"
-        sam_params = {
-            "Criteria":      criteria,
-            "OutputMode":    "LIST",
-            "maxObject":     str(max_results),
-            "output.format": "votable",
-            "output.params": ",".join([
-                "MAIN_ID","RA","DEC",
-                "FLUX(B)","FLUX(V)",
-                "PLX_VALUE","RVZ_REDSHIFT",
-                "OTYPE","SP_TYPE"
-            ])
-        }
+        if not star_codes:
+            sam_url = None
+            sam_params = {}
+        else:
+            ra_str  = f"{ra_center:.8f}"
+            dec_str = f"{dec_center:+.8f}"
+            rad_str = f"{radius_deg:.8f}d"
+            region_crit = f"region(CIRCLE,{ra_str} {dec_str},{rad_str})"
+            codes_list  = ",".join(_adql_quote(c) for c in star_codes)
+            otype_crit  = f"otypes in ({codes_list})"
+            criteria    = f"{region_crit}&{otype_crit}"
+
+            # Use whichever mirror answered the probe, so the TAP call and the
+            # sim-sam extras call don't end up split across two hosts.
+            sam_url = f"https://{simbad_host}/simbad/sim-sam"
+            sam_params = {
+                "Criteria":      criteria,
+                "OutputMode":    "LIST",
+                "maxObject":     str(max_results),
+                "output.format": "votable",
+                "output.params": ",".join([
+                    "MAIN_ID","RA","DEC",
+                    "FLUX(B)","FLUX(V)",
+                    "PLX_VALUE","RVZ_REDSHIFT",
+                    "OTYPE","SP_TYPE"
+                ])
+            }
 
         # ——— 3) Progress dialog + worker + event loop (same pattern as minor-body) ———
         prog = QProgressDialog(
@@ -9909,248 +10036,22 @@ class WIMIDialog(QDialog):
         except Exception:
             pass
 
-        # ——— 1) Validate inputs ———
-        if not self.circle_center or self.circle_radius <= 0:
-            QMessageBox.warning(self, "No Search Area",
-                                "Please define a search circle by Shift-clicking and dragging.")
-            return
+        # Now that the otype filter runs server-side, hitting TOP N means
+        # "there are more objects of this type in the cone than you asked
+        # for" — actionable, unlike before when the cap was mostly consumed
+        # by rows the client filter was about to throw away.
+        if n_total >= max_results:
+            self.status_label.setText(
+                f"Status: showing the first {max_results:,} matches — there "
+                f"may be more. Raise Max Results in Settings.")
 
-        ra_center, dec_center = self.calculate_ra_dec_from_pixel(
-            self.circle_center.x(), self.circle_center.y()
-        )
-        if ra_center is None or dec_center is None:
-            QMessageBox.warning(self, "Invalid Coordinates",
-                                "Could not determine the RA/Dec of the circle center.")
-            return
-
-        selected_types = self.get_selected_object_types()
-        if not selected_types:
-            QMessageBox.warning(self, "No Object Types Selected",
-                                "Please select at least one object type.")
-            return
-
-        # ——— 2) TAP query on BASIC ———
-        query = f"""
-            SELECT TOP {max_results}
-                ra, dec, main_id,
-                rvz_redshift, otype, galdim_majaxis, galdim_minaxis,
-                galdim_angle
-            FROM basic
-            WHERE CONTAINS(
-                POINT('ICRS', basic.ra, basic.dec),
-                CIRCLE('ICRS', {ra_center}, {dec_center}, {radius_deg})
-            ) = 1
-        """
-
-        result = None
-        last_err = None
-
-        for attempt in range(5):
-            try:
-                result = Simbad.query_tap(query)
-                last_err = None
-                break
-            except Exception as e:
-                last_err = e
-                if attempt < 4:
-                    non_blocking_sleep(1)
-                else:
-                    # After 5 attempts total, stop with a helpful message
-                    err_txt = str(last_err) if last_err is not None else "Unknown error"
-                    QMessageBox.warning(
-                        self,
-                        "SIMBAD network error",
-                        (
-                            "We couldn't reach SIMBAD due to a network or service error.\n\n"
-                            "We tried 5 times and then stopped.\n\n"
-                            "What to try:\n"
-                            " • Check your internet connection / VPN / firewall\n"
-                            " • Verify SIMBAD is reachable: https://simbad.cds.unistra.fr/simbad/\n"
-                            " • Then try again\n\n"
-                            f"Last error:\n{err_txt}"
-                        )
-                    )
-                    return
-
-        if result is None or len(result) == 0:
-            # SIMBAD found nothing here — but don't stop if the Gaia augment is
-            # on: local Gaia DR3 stars in this region should still be returned.
-            # Only a truly empty result (SIMBAD *and* Gaia) means "nothing here".
-            self.results_tree.clear()
-            query_results = self._augment_results_with_local_gaia(
-                [], ra_center, dec_center, radius_deg)
-            if not query_results:
-                QMessageBox.information(
-                    self,
-                    "No Results",
-                    "No objects found in the specified area."
-                )
-            self.main_preview.set_query_results(query_results)
-            self.query_results = query_results
-            self.update_results_tree()
-            self.update_object_count()
-            return
-
-        # ——— 3a) list of all “star” & binary/variable OTYPE codes ———
-        star_codes = [
-            "*","V*","Pe*","HB*","Y*O","Ae*","Em*","Be*","BS*","RG*","AB*",
-            "C*","S*","sg*","s*r","s*y","s*b","HS*","pA*","WD*","LM*","BD*",
-            "N*","OH*","TT*","WR*","PM*","HV*","C?*","Pec?","Y*?","TT?","C*?",
-            "S*?","OH?","WR?","Be?","Ae?","HB?","RB?","sg?","s?r","s?y","s?b",
-            "pA?","BS?","HS?","WD?",
-            "**","EB*","Ce*","Ce?","cC*","**?",
-            "EB?","Sy?","CV?","No?","XB?","LX?","HX?","RR?","WV?","LP?","Mi?"
-        ]
-
-        # 3b) build the two sub-criteria, un-encoded:
-        ra_str  = f"{ra_center:.8f}"
-        dec_str = f"{dec_center:+.8f}"   # keep the +/– sign
-        rad_str = f"{radius_deg:.8f}d"
-
-        region_crit = f"region(CIRCLE,{ra_str} {dec_str},{rad_str})"
-        codes_list  = ",".join(f"'{c}'" for c in star_codes)
-        otype_crit  = f"otypes in ({codes_list})"
-
-        # combine with a literal '&' (not "AND")
-        criteria = f"{region_crit}&{otype_crit}"
-
-        # ——— 3c) fetch _only_ those via sim-sam ———
-        sam_url = "https://simbad.cds.unistra.fr/simbad/sim-sam"
-        params = {
-            "Criteria":      criteria,
-            "OutputMode":    "LIST",
-            "maxObject":     str(max_results),
-            "output.format": "votable",
-            "output.params": ",".join([
-                "MAIN_ID","RA","DEC",
-                "FLUX(B)","FLUX(V)",
-                "PLX_VALUE","RVZ_REDSHIFT",
-                "OTYPE","SP_TYPE"
-            ])
-        }
-
-        try:
-            resp = requests.get(sam_url, params=params, timeout=300)
-            resp.raise_for_status()
-
-            vot = parse_single_table(BytesIO(resp.content))
-            tbl = vot.to_table(use_names_over_ids=True)
-            extras = { row["MAIN_ID"]: row for row in tbl }
-
-        except Exception as e:
-            print(f"DEBUG: sim-sam failed: {e}")
-            QMessageBox.warning(
-                self,
-                "Star-only Extras Failed",
-                "Could not fetch star flux/parallax—continuing without them."
-            )
-            extras = {}
-
-        # ——— 4) Merge & populate results_tree exactly as before ———
-        self.results_tree.clear()
-        query_results = []
-
-        for row in result:
-            name       = row["main_id"]
-            short_type = row["otype"]
-            if short_type not in selected_types:
-                continue
-
-            # basics
-            ra, dec = float(row["ra"]), float(row["dec"])
-            diam_raw = row.get("galdim_majaxis")  # arcmin, may be masked
-            diam_arcmin = _mask_safe_float(diam_raw)
-            # minor axis (arcmin) and major-axis position angle (deg, N->E) --
-            # already selected in the TAP query above, previously discarded.
-            minor_arcmin = _mask_safe_float(row.get("galdim_minaxis"))
-            pa_deg       = _mask_safe_float(row.get("galdim_angle"))
-
-            # For nebulae SIMBAD sometimes has nothing in galdim_majaxis.
-            # The otype can tell us to expect a size even when it's missing.
-            # We store in arcmin consistently; _set_marker_points_from_results converts.
-            diam = diam_arcmin if diam_arcmin is not None else "N/A"
-
-            rz_raw   = row["rvz_redshift"]
-            red_z    = _mask_safe_float(rz_raw)  # ← no warning, None if masked
-
-            # pull extras only if it’s a star
-            extra = extras.get(name, {})
-
-            Bmag  = _mask_safe_float(extra.get("FLUX_B"))
-            Vmag  = _mask_safe_float(extra.get("FLUX_V"))
-            plx   = _mask_safe_float(extra.get("PLX_VALUE"))
-            spec  = extra.get("SP_TYPE")
-
-            if plx is not None and plx > 0.0:
-                pv = plx  # already positive; absolute if you want
-                dist_pc  = 1000.0 / pv
-                dist_ly  = dist_pc * 3.261563777
-                # store comoving distance in Gly for consistency with your zs_raw pipeline:
-                distance = round(dist_ly / 1e9, 9)
-                z_val    = "N/A"   # a parallax is not a redshift — keep them apart
-                plx_val  = pv
-                dist_ly_val = dist_ly
-            else:
-                # no usable parallax → fall back to redshift if present
-                z_val    = red_z if red_z is not None else "N/A"
-                plx_val  = "N/A"
-                if isinstance(z_val, (int, float)):
-                    distance = calculate_comoving_distance(z_val)   # GLy, or None if z<0
-                    if distance is None:
-                        distance    = "N/A"
-                        dist_ly_val = "N/A"
-                    else:
-                        dist_ly_val = float(distance) * 1e9
-                else:
-                    distance    = "N/A"
-                    dist_ly_val = "N/A"
-
-            # absolute V magnitude if we have Vmag & plx
-            absV = None
-            if Vmag is not None and plx is not None and plx > 0:
-                absV = Vmag - (5 * np.log10(1000.0 / plx) - 5)
-
-            long_type = otype_long_name_lookup.get(short_type, short_type)
-
-            # add to tree
-            # Human-readable diameter display
-            if diam_arcmin is not None:
-                if diam_arcmin >= 1.0:
-                    diam_display = f"{diam_arcmin:.2f}'"
-                else:
-                    diam_display = f"{diam_arcmin * 60.0:.1f}\""
-            else:
-                diam_display = "N/A"
-
-            query_results.append({
-                'ra': ra, 'dec': dec, 'name': name,
-                'diameter': diam,           # arcmin float or "N/A" (major axis)
-                'minor_arcmin': minor_arcmin,      # arcmin float or None (minor axis)
-                'pa_deg': pa_deg,                  # deg (N->E) or None (major-axis PA)
-                'diameter_display': diam_display,  # human-readable (arcmin/arcsec)
-                'diameter_unit': 'arcmin',  # explicit so downstream code is unambiguous
-                'short_type': short_type,
-                'long_type': long_type,
-                'redshift': z_val,                 # true z, or "N/A"
-                'comoving_distance': distance,     # GLy (kept for 3D model / collage)
-                'distance_ly': dist_ly_val,        # canonical light-years for display
-                'source': "Simbad",
-                'Bmag': Bmag, 'Vmag': Vmag,
-                'mag_display': (_fmt_mag(Vmag) or _fmt_mag(Bmag)),  # V (fallback B) -> Mag column
-                'parallax_mas': plx_val,           # mas, or "N/A"
-                'spectral_type': spec,
-                'absolute_mag': absV
-            })
-
-        # Local Gaia DR3 augment (checkbox-gated; no-op if unchecked or no library).
-        query_results = self._augment_results_with_local_gaia(
-            query_results, ra_center, dec_center, radius_deg)
-
-        # ——— 5) Finally hand off to your preview/plotter ———
-        self.main_preview.set_query_results(query_results)
-        self.query_results = query_results
-        self.update_results_tree()
-        self.update_object_count()
+        # STOP HERE. Everything below this point is the pre-worker synchronous
+        # implementation, kept by accident when the threaded path was added.
+        # Without this return it re-ran the entire query — a second
+        # Simbad.query_tap retry loop and a second 300 s requests.get — on the
+        # GUI thread, with no progress dialog and no cancel. That is the "WIMI
+        # hangs forever" report. The dead block below can be deleted outright.
+        return
 
 
 
@@ -10212,11 +10113,50 @@ class WIMIDialog(QDialog):
         coord = SkyCoord(ra_center, dec_center, unit="deg")
         unique_entries = {}
 
+        # VizieR is a CDS service and goes down with SIMBAD, so the same
+        # breaker covers it. This loop hits 12 catalogs sequentially on the
+        # GUI thread with no timeout — during an outage that is 12 full TCP
+        # timeouts with a frozen window. Probe once, bound the per-query
+        # timeout, and abandon the loop the moment the breaker opens.
+        if not cds_health.simbad_available(
+                status_cb=lambda m: (self.status_label.setText(f"Status: {m}"),
+                                     QApplication.processEvents())):
+            self.status_label.setText("Status: CDS unavailable.")
+            QMessageBox.warning(
+                self, "CDS Unavailable",
+                "VizieR (CDS, Strasbourg) is not responding.\n\n"
+                f"{cds_health.status_text()}\n\n"
+                "The deep VizieR search needs the CDS archive. "
+                "Try again later.")
+            return
+        try:
+            Vizier.TIMEOUT = 45
+        except Exception:
+            pass
+        _vz_budget = cds_health.Budget(150.0)
+
         try:
             for catalog_id in catalog_ids:
-                result = Vizier.query_region(
-                    coord, radius=radius_arcmin * u.arcmin, catalog=catalog_id
-                )
+                if _vz_budget.expired() or not cds_health.simbad_available():
+                    self.status_label.setText(
+                        "Status: CDS unavailable — VizieR search stopped early.")
+                    QApplication.processEvents()
+                    break
+                self.status_label.setText(
+                    "Status: VizieR — querying "
+                    f"{CATALOG_NAMES.get(catalog_id, catalog_id)}…")
+                QApplication.processEvents()
+                try:
+                    result = Vizier.query_region(
+                        coord, radius=radius_arcmin * u.arcmin, catalog=catalog_id
+                    )
+                except Exception as e:
+                    if cds_health.note_failure(e, context=f"vizier/{catalog_id}"):
+                        self.status_label.setText(
+                            "Status: VizieR unreachable — stopping search.")
+                        QApplication.processEvents()
+                        break
+                    continue   # this one catalog failed; try the rest
                 if not result:
                     continue
 

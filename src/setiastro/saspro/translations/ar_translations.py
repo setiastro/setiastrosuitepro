@@ -1672,7 +1672,7 @@ TRANSLATIONS_AR = {
         "Choose Background…": "اختر الخلفية...",
         "Clear": "مسح",
         "Compute autostretch on a 24-bit histogram (smoother gradients).": "حساب التمدد التلقائي على هيستوجرام 24-بت (تدرجات أكثر سلاسة).",
-        "Cosmic Clarity folder:": "مجلد Cosmic Clarity:"
+        "Cosmic Clarity folder:": "مجلد Cosmic Clarity:",
         "Customize…": "تخصيص...",
         "Edit custom colors and font": "تحرير الألوان والخطوط المخصصة",
         "English": "الإنجليزية",

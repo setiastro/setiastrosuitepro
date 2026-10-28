@@ -10800,6 +10800,57 @@ class AstroSuiteProMainWindow(
             self.showMaximized()
 
 
+    def _unhook_stdout_stderr(self):
+        """
+        Restore the real stdout/stderr and repair references that third-party
+        libraries captured while our QtLogStream was installed.
+
+        colorama.init() snapshots sys.stdout into colorama.initialise and uses
+        that snapshot from an atexit callback. That callback runs *after* Qt has
+        destroyed the QtLogStream, producing:
+            RuntimeError: wrapped C/C++ object of type QtLogStream has been deleted
+        Restoring sys.stdout alone is not enough, because colorama is not reading
+        sys.stdout -- it holds its own reference to the dead wrapper.
+        """
+        if getattr(self, "_stdio_unhooked", False):
+            return
+        self._stdio_unhooked = True
+
+        out = getattr(self, "_orig_stdout", None) or sys.__stdout__
+        err = getattr(self, "_orig_stderr", None) or sys.__stderr__
+
+        # Neutralize any live wrappers so nothing can write through them again.
+        # Guard with isinstance: real text streams also have a detach(), and
+        # calling it on them would rip out their underlying buffer.
+        try:
+            from setiastro.saspro.mdi_widgets import QtLogStream
+            for cur in (sys.stdout, sys.stderr):
+                if isinstance(cur, QtLogStream):
+                    try:
+                        cur.detach()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        try:
+            if out is not None:
+                sys.stdout = out
+            if err is not None:
+                sys.stderr = err
+        except Exception:
+            pass
+
+        # Hand colorama back the real streams for its atexit callback.
+        try:
+            import colorama.initialise as _ci
+            if out is not None:
+                _ci.orig_stdout = out
+            if err is not None:
+                _ci.orig_stderr = err
+        except Exception:
+            pass
+
     def closeEvent(self, e):
         self._update_usage_stats()
         self._shutting_down = True
@@ -10811,6 +10862,7 @@ class AstroSuiteProMainWindow(
 
         # Optimization: If restarting (e.g. language change), bypass confirmation and close immediately
         if getattr(self, "_is_restarting", False):
+            self._unhook_stdout_stderr()
             e.accept()
             return
         
@@ -10821,10 +10873,7 @@ class AstroSuiteProMainWindow(
             return
 
         try:
-            if hasattr(self, "_orig_stdout") and self._orig_stdout is not None:
-                sys.stdout = self._orig_stdout
-            if hasattr(self, "_orig_stderr") and self._orig_stderr is not None:
-                sys.stderr = self._orig_stderr
+            pass  # stdout/stderr are restored in _do_shutdown_steps()
         except Exception:
             pass        
 
@@ -10918,6 +10967,7 @@ class AstroSuiteProMainWindow(
         self.close()
 
     def _do_shutdown_steps(self, e):
+        self._unhook_stdout_stderr()
         self._force_close_all = True
         self._shutting_down = True
         # User has confirmed exit. Un-shelve any minimized views before we

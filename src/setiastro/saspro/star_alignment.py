@@ -253,10 +253,8 @@ from itertools import combinations
 from typing import Callable, Iterable, Tuple
 import tempfile
 import traceback
-import requests
 import numpy as np
 
-from setiastro.saspro import astroalign
 import sep
 sep.set_extract_pixstack(20000000)
 import re
@@ -275,8 +273,7 @@ from astropy.wcs import FITSFixedWarning
 import astropy.units as u
 from astropy.wcs import WCS
 from astropy.wcs.utils import skycoord_to_pixel
-from reproject import reproject_interp
-from setiastro.saspro.blink_comparator_pro import CustomDoubleSpinBox, CustomSpinBox
+from setiastro.saspro.widgets.spinboxes import CustomDoubleSpinBox, CustomSpinBox
 import numpy.ma as ma
 from PyQt6.QtCore import Qt, QThread, QRunnable, QThreadPool, pyqtSignal, QObject, QTimer, QProcess, QPoint, QEvent, QSettings
 from PyQt6.QtGui import QImage, QPixmap, QIcon, QMovie
@@ -298,22 +295,7 @@ except Exception:
     stretch_mono_image = None
     stretch_color_image = None
 
-# Optional fast star detector; fall back gracefully if not present
-try:
-    from setiastro.saspro.legacy.numba_utils import fast_star_detect  # your optimized detector, if available
-except Exception:
-    fast_star_detect = None
 
-from setiastro.saspro.legacy.numba_utils import (
-    rescale_image_numba,
-    flip_horizontal_numba,
-    flip_vertical_numba,
-    rotate_90_clockwise_numba,
-    rotate_90_counterclockwise_numba,
-    rotate_180_numba,
-    invert_image_numba,
-)
-from setiastro.saspro.abe import _generate_sample_points as abe_generate_sample_points
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 # ---------------------------------------------------------------------
@@ -463,6 +445,7 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
     Retry astroalign.find_transform() with progressively stricter detection,
     serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
     """
+    from setiastro.saspro import astroalign  # deferred: see tools/apply_import_fixes.py (astroalign)
     tgt32 = _masked(tgt_gray, _zero_ignore_mask(tgt_gray))
     src32 = _masked(src_gray, _zero_ignore_mask(src_gray))
     try:
@@ -956,6 +939,7 @@ def compute_pairs_astroalign(source_img: np.ndarray, reference_img: np.ndarray):
     Lock astroalign, return (transform_obj, src_pts(float32), tgt_pts(float32)).
     """
     # Ensure contiguous arrays for astroalign/sep
+    from setiastro.saspro import astroalign  # deferred: see tools/apply_import_fixes.py (astroalign)
     source_img = np.ascontiguousarray(source_img)
     reference_img = np.ascontiguousarray(reference_img)
 
@@ -2150,6 +2134,7 @@ class StellarAlignmentDialog(QDialog):
         Retry astroalign.find_transform() with progressively stricter detection,
         serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
         """
+        from setiastro.saspro import astroalign  # deferred: see tools/apply_import_fixes.py (astroalign)
         tgt32 = _masked(tgt_gray, _zero_ignore_mask(tgt_gray))
         src32 = _masked(src_gray, _zero_ignore_mask(src_gray))
         try:
@@ -4902,6 +4887,7 @@ class StarRegistrationThread(QThread):
         solve on the crop, lift correspondences to FULL reference coords, then
         re-estimate the requested model (affine/homography or poly3/4). Returns (kind, X).
         """
+        from setiastro.saspro import astroalign  # deferred: see tools/apply_import_fixes.py (astroalign)
         ref2d = self.reference_image_2d
         src = np.ascontiguousarray(src_gray_full.astype(np.float32))
         ref = np.ascontiguousarray(ref2d.astype(np.float32))

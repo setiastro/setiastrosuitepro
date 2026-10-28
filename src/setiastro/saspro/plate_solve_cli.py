@@ -586,6 +586,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Ignore any RA/Dec in the header and locate the field "
                         "from the star pattern. Use when the coordinates are "
                         "wrong rather than missing.")
+    g.add_argument("--stretch-backend", choices=("auto", "numpy", "numba"),
+                   default="auto",
+                   help="Which kernels the internal stretch uses. 'auto' "
+                        "(default) picks numpy for a single image and "
+                        "numba for --batch: the solver performs exactly "
+                        "one stretch per frame, and numba costs ~700ms to "
+                        "import plus JIT compilation to save ~100ms of "
+                        "arithmetic, so it only pays off amortised over "
+                        "many frames. 'numba' forces the JIT kernels, "
+                        "'numpy' forces the plain ones. The solution is "
+                        "identical either way.")
 
     g = ap.add_argument_group("manual seed")
     g.add_argument("--ra", type=float,
@@ -712,6 +723,28 @@ def main(argv: list[str] | None = None) -> int:
     if not src.exists():
         print(f"ERROR: input does not exist: {src}", file=sys.stderr)
         return 2
+
+    # Which stretch kernels to use. _solve_with_GAIA calls
+    # _normalize_for_astap, which performs exactly ONE stretch_color_image
+    # per frame -- so for a single image the numba kernels cost ~700 ms of
+    # import plus JIT compilation to save on the order of 100 ms of array
+    # work. Measured on a 1080x1920x3 frame: 10.3 s with numba, 8.2 s
+    # without, and a byte-identical solution (same centre, same four
+    # corners, same RMS and pair count).
+    #
+    # --batch keeps numba, where the import and the JIT amortise across
+    # frames; the crossover is somewhere around twenty of them. This
+    # matters most for callers that spawn a process per frame -- N.I.N.A.
+    # through the ASTAP shim does exactly that, so there is never anything
+    # to amortise over.
+    #
+    # setdefault, so an explicit SASPRO_STRETCH_BACKEND in the environment
+    # still wins over the 'auto' default.
+    if args.stretch_backend == "auto":
+        if not args.batch:
+            os.environ.setdefault("SASPRO_STRETCH_BACKEND", "numpy")
+    else:
+        os.environ["SASPRO_STRETCH_BACKEND"] = args.stretch_backend
 
     _ensure_qapp()
     from setiastro.saspro.plate_solver import set_status_popup_enabled
