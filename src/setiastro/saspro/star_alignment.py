@@ -255,7 +255,6 @@ import tempfile
 import traceback
 import numpy as np
 
-from setiastro.saspro import astroalign
 import sep
 sep.set_extract_pixstack(20000000)
 import re
@@ -446,6 +445,7 @@ def aa_find_transform_with_backoff(tgt_gray: np.ndarray, src_gray: np.ndarray):
     Retry astroalign.find_transform() with progressively stricter detection,
     serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
     """
+    from setiastro.saspro import astroalign  # deferred: see tools/apply_import_fixes.py (astroalign)
     tgt32 = _masked(tgt_gray, _zero_ignore_mask(tgt_gray))
     src32 = _masked(src_gray, _zero_ignore_mask(src_gray))
     try:
@@ -939,6 +939,7 @@ def compute_pairs_astroalign(source_img: np.ndarray, reference_img: np.ndarray):
     Lock astroalign, return (transform_obj, src_pts(float32), tgt_pts(float32)).
     """
     # Ensure contiguous arrays for astroalign/sep
+    from setiastro.saspro import astroalign  # deferred: see tools/apply_import_fixes.py (astroalign)
     source_img = np.ascontiguousarray(source_img)
     reference_img = np.ascontiguousarray(reference_img)
 
@@ -2133,6 +2134,7 @@ class StellarAlignmentDialog(QDialog):
         Retry astroalign.find_transform() with progressively stricter detection,
         serializing SEP usage via _AA_LOCK; returns (transform_obj, (src_pts, tgt_pts)).
         """
+        from setiastro.saspro import astroalign  # deferred: see tools/apply_import_fixes.py (astroalign)
         tgt32 = _masked(tgt_gray, _zero_ignore_mask(tgt_gray))
         src32 = _masked(src_gray, _zero_ignore_mask(src_gray))
         try:
@@ -4885,6 +4887,7 @@ class StarRegistrationThread(QThread):
         solve on the crop, lift correspondences to FULL reference coords, then
         re-estimate the requested model (affine/homography or poly3/4). Returns (kind, X).
         """
+        from setiastro.saspro import astroalign  # deferred: see tools/apply_import_fixes.py (astroalign)
         ref2d = self.reference_image_2d
         src = np.ascontiguousarray(src_gray_full.astype(np.float32))
         ref = np.ascontiguousarray(ref2d.astype(np.float32))

@@ -1427,10 +1427,31 @@ def _merge_wcs_into_base_header(base_header: Header | None, wcs_header: Header |
         pass
 
     # CROTA from CD if missing.
+    #
+    # Written in the convention CROTA2 is defined in and _summarize reports:
+    # the position angle of celestial north. The previous form,
+    # atan2(CD1_2, CD1_1), was a THIRD convention -- it works out to
+    # 180 - theta, which agrees with the position angle only at theta = 0 and
+    # drifts by 2*theta everywhere else. Whatever it wrote, a later solve of
+    # the same file read back through _make_seed_wcs as if it were theta.
+    #
+    #     det > 0:   PA = atan2(CD1_2, -CD1_1) + 180
+    #     det < 0:   PA = atan2(CD1_2, -CD1_1)
+    #
+    # which tracks the numerically measured north angle to 0.06 deg, and to
+    # better than 0.01 deg once a real solution's skew is present.
     try:
         if ("CROTA1" not in merged or "CROTA2" not in merged) and \
            ("CD1_1" in merged and "CD1_2" in merged):
-            rot = math.degrees(math.atan2(float(merged["CD1_2"]), float(merged["CD1_1"])))
+            _c11 = float(merged["CD1_1"])
+            _c12 = float(merged["CD1_2"])
+            _c21 = float(merged.get("CD2_1", 0.0))
+            _c22 = float(merged.get("CD2_2", 0.0))
+            _det = _c11 * _c22 - _c12 * _c21
+            rot = math.degrees(math.atan2(_c12, -_c11))
+            if _det > 0:
+                rot += 180.0
+            rot %= 360.0
             merged["CROTA1"] = rot
             merged["CROTA2"] = rot
     except Exception:
@@ -2166,7 +2187,44 @@ def _make_seed_wcs(ra_deg: float, dec_deg: float, scale_arcsec: float,
     w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
 
     scale_deg = float(scale_arcsec) / 3600.0
-    rot_rad   = math.radians(rot_deg)
+
+    # CROTA2 is a POSITION ANGLE. _cd_matrix's theta is a different number.
+    # For a CD built by _cd_matrix, the position angle of celestial north --
+    # which is what CROTA2 means, and what plate_solve_cli._summarize
+    # reports -- works out to
+    #
+    #     det > 0  (mirrored=False):   PA = theta + 180
+    #     det < 0  (mirrored=True):    PA = -theta
+    #
+    # exact to 0.06 deg from the equator to dec +89.3, that residual being
+    # the TAN projection's own field rotation rather than an error.
+    #
+    # Passing CROTA2 straight in as theta therefore built a seed rotated 180
+    # deg wrong on the det > 0 branch and sign-flipped on the other. The
+    # triangle matcher absorbs it -- side-ratio invariants survive any
+    # similarity transform -- which is why it stayed invisible for so long.
+    # The evidence was in the matcher's own output all along: a seeded solve
+    # whose header CROTA2 was already correct reported
+    #
+    #     [TriMatch] affine consensus: 48/60  scale=1.0000  parity=+  rot=-180.00
+    #
+    # a seed perfect in every respect except exactly 180 degrees of roll.
+    # Inverting the mapping here lets the matcher start where the header
+    # actually says, so it has nothing to undo -- which matters most on a
+    # marginal field, where the rotation it must search through is the
+    # difference between a match and a miss.
+    theta_deg = (-rot_deg) if flip else (rot_deg - 180.0)
+    if seed_header is not None and rot_deg:
+        print(f"[GaiaLocal] seed rotation: CROTA2 {rot_deg:.2f}\u00b0 "
+              f"(position angle) -> CD theta {theta_deg % 360.0:.2f}\u00b0 "
+              f"for {'det<0' if flip else 'det>0'} parity")
+    rot_rad = math.radians(theta_deg)
+
+    # Stashed for the rotation diagnostic in _solve_fingerprint(): the seed is
+    # built here and the solution is judged there, so comparing the two is the
+    # only way to see how much roll the matcher had to remove.
+    global _LAST_SEED_ROT
+    _LAST_SEED_ROT = (float(rot_deg), float(theta_deg % 360.0), bool(flip))
 
     w.wcs.cd = np.array(_cd_matrix(scale_deg, rot_rad, mirrored=flip))
     w.wcs.set()
@@ -2843,6 +2901,42 @@ def _solve_fingerprint(wcs_solution, img_matched, sep_arcsec,
     try:
         print("[GaiaLocal] --- comparable between runs "
               "(RMS and pair count are not) ---")
+
+        # How much roll did the matcher have to remove from the seed?
+        #
+        # A residual near zero means the seed rotation was right. Near +/-180
+        # means the convention is inverted somewhere. Anything else is a real
+        # error in whatever produced the hint -- and the blind solver's
+        # roll_deg has shown ~16 deg of it on top of the 180, which is too
+        # large to be a convention and wants watching across several frames.
+        #
+        # globals().get rather than a bare name: a solve that never built a
+        # seed through _make_seed_wcs simply has nothing to report.
+        _seed = globals().get("_LAST_SEED_ROT")
+        if _seed is not None:
+            _crota, _theta, _flip = _seed
+            try:
+                _cx, _cy = (img_w - 1) / 2.0, (img_h - 1) / 2.0
+                _c = wcs_solution.pixel_to_world(_cx, _cy)
+                _xn, _yn = wcs_solution.world_to_pixel_values(
+                    float(_c.ra.deg), float(_c.dec.deg) + 10.0 / 3600.0)
+                _pa = math.degrees(math.atan2(float(_xn) - _cx,
+                                              float(_yn) - _cy)) % 360.0
+                _solved_theta = ((-_pa) if _flip else (_pa - 180.0)) % 360.0
+                _resid = (_solved_theta - _theta + 180.0) % 360.0 - 180.0
+                print(f"[GaiaLocal]   rotation: seed CROTA2 "
+                      f"{_crota:.2f}\u00b0 -> CD theta {_theta:.2f}\u00b0; "
+                      f"solved theta {_solved_theta:.2f}\u00b0 "
+                      f"(north PA {_pa:.2f}\u00b0); matcher removed "
+                      f"{_resid:+.2f}\u00b0")
+                if abs(abs(_resid) - 180.0) < 5.0:
+                    print("[GaiaLocal]   rotation: a residual near "
+                          "+/-180\u00b0 means the seed convention is inverted")
+                elif abs(_resid) > 5.0:
+                    print(f"[GaiaLocal]   rotation: {_resid:+.2f}\u00b0 is a "
+                          f"real seed error, not a convention offset")
+            except Exception:
+                pass
 
         pts = [("centre", (img_w - 1) / 2.0, (img_h - 1) / 2.0),
                ("TL", 0.0, 0.0), ("TR", img_w - 1.0, 0.0),

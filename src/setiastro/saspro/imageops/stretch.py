@@ -1,5 +1,6 @@
 # src/setiastro/saspro/imageops/stretch.py
 from __future__ import annotations
+import os
 import numpy as np
 
 # ---- Numba kernels from legacy, resolved on FIRST USE ----
@@ -59,9 +60,23 @@ def _np_color_unlinked_from_img(img, bp3, denom3, meds_rescaled3, target_median)
 
 
 def _kernels():
-    """The numba_utils module, or None. Imported once, on first use."""
+    """The numba_utils module, or None. Imported once, on first use.
+
+    SASPRO_STRETCH_BACKEND=numpy forces the pure-numpy path and skips the
+    numba import entirely. That exists because the trade-off inverts with
+    usage: a process that performs ONE stretch and exits -- a headless
+    `setiastrosuitepro solve`, which calls _normalize_for_astap once -- pays
+    roughly 680 ms to import numba plus JIT compilation, to save on the order
+    of 100 ms of array arithmetic. The GUI warms the kernels once and then
+    stretches repeatedly, where numba wins comfortably. Default is unchanged
+    (numba when available), so nothing shifts unless the variable is set.
+    """
     global _NUMBA
     if _NUMBA is None:
+        if os.environ.get("SASPRO_STRETCH_BACKEND", "").strip().lower() in (
+                "numpy", "none", "off"):
+            _NUMBA = False
+            return None
         try:
             from setiastro.saspro.legacy import numba_utils as _nu
             _NUMBA = {"module": _nu}

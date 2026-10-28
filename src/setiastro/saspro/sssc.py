@@ -178,6 +178,7 @@ from setiastro.saspro.gaia_downloader import GaiaDownloader, HAS_GAIAXPY
 from setiastro.saspro.gaia_downloader import GaiaSpectraDB
 from setiastro.saspro.gaia_database import get_library
 from setiastro.saspro.help_support import make_help_button
+from setiastro.saspro import cds_health
 
 # ── Re-use shared utilities from sfcc.py
 from setiastro.saspro.sfcc import (
@@ -2817,40 +2818,31 @@ class SSSCDialog(QDialog):
                                dec=sky_corners[1:,1]*u.deg, frame="icrs")
         radius = center_sky.separation(corners_sky).max() * 1.05
 
-        Simbad.reset_votable_fields()
-        ok = False
-        for _ in range(5):
-            try:
-                Simbad.add_votable_fields("sp", "B", "V", "R", "ra", "dec", "main_id")
-                ok = True; break
-            except Exception:
-                QApplication.processEvents(); non_blocking_sleep(0.8)
-        if not ok:
-            for _ in range(5):
-                try:
-                    Simbad.add_votable_fields("sp", "flux(B)", "flux(V)", "flux(R)",
-                                              "ra(d)", "dec(d)", "main_id")
-                    ok = True; break
-                except Exception:
-                    QApplication.processEvents(); non_blocking_sleep(0.8)
+        # SIMBAD is optional enrichment — Gaia XP is the primary source, so a
+        # CDS outage must cost seconds, not the ~15 unbounded network calls
+        # this block used to make. prepare_simbad() probes with a hard 4 s
+        # deadline, fails over to the Harvard mirror, and bounds the timeout
+        # BEFORE add_votable_fields (which hits the network on astroquery
+        # >= 0.4.8).
+        self._simbad_budget = cds_health.Budget()
+        _simbad = cds_health.prepare_simbad(
+            status_cb=lambda m: _sfcc_status(self, m), timeout=30.0)
 
         simbad_result = None
-        if ok:
-            Simbad.ROW_LIMIT = 10000
-            Simbad.TIMEOUT = 30   # bound a hung query; retry loop + off-thread wrap handle the rest
-            for attempt in range(1, 6):
-                try:
-                    _sfcc_status(self,
-                        f"Querying SIMBAD for spectral types (attempt {attempt}/5)…")
-                    QApplication.processEvents()
-                    simbad_result = run_async_blocking(
-                        Simbad.query_region, center_sky, radius=radius,
-                        parent=self, title="SSSC",
-                        label="Querying SIMBAD…", cancellable=False,
-                    )
-                    break
-                except Exception:
-                    QApplication.processEvents(); non_blocking_sleep(1.2)
+        if _simbad is not None:
+            _sfcc_status(self, "Querying SIMBAD for spectral types…")
+            QApplication.processEvents()
+            simbad_result = cds_health.call_simbad(
+                _simbad.query_region, center_sky,
+                radius=radius,
+                runner=lambda f, *a, **k: run_async_blocking(
+                    f, *a, parent=self, title="SSSC",
+                    label="Querying SIMBAD…", cancellable=False, **k),
+                status_cb=lambda m: _sfcc_status(self, m),
+                budget=self._simbad_budget,
+                attempts=2,
+                label="SIMBAD region query",
+            )
 
         templates_for_hist = []
 
