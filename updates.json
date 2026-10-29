@@ -1,10 +1,10 @@
 {
-  "version": "1.23.3",
+  "version": "1.23.4",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.3/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.3/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.3/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.3/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.4/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.4/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.4/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.4/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro\n\nV1.23.3\nUpdated Blind Solver quads to include two wide field layers for people taking those wide shots with normal camera lenses\n\nBackend updates: cli plate solving now 2x faster. normal blind plate solving speed improvements. all inhouse gaia plate solving more accurate across the board. simbad network failure fallbacks for spcc, sssc, and wimi. Arabic translation update.\n\nIf you want to run saspro solving in NINA be sure to also grab the SASproSolver.exe, then in NINA options->Plate Solve, replace the astap path with the path to SASproSolver.exe, you will have to copy and paste as the ...button can't be used for this.."
+  "notes": "Seti Astro Suite Pro\n\nV1.23.4\nSASproSolver now can be used to replace any of astap/asps/ps2/ps3 in NINA for platesolving\n\nMajor updates to satellite trail removal to ignore diffraction spikes and amp glow when processing batches of files (ie in Blink, Stacking Suite, and batch processing Input Folder)\n\nBug and UX fixes in NarrowbandNormalization, Blemish Blaster, Diffraction Spikes Tool, Signature Insert Tool."
 }
