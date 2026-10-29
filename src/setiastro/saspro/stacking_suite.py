@@ -20361,8 +20361,31 @@ class StackingSuiteDialog(QDialog):
         # No dedup — every leaf is a distinct file, even if basenames collide
         return paths
 
+    def _satellite_removal_opts(self) -> dict:
+        """Snapshot every QSettings value the satellite pass needs.
+
+        QSettings is REENTRANT, not thread-safe: separate instances in separate
+        threads are fine, one shared instance read from several threads is not.
+        The concurrent satellite pass calls this once on the GUI thread and
+        hands the dict to its workers, the same way the Blink detect pass
+        snapshots its edge-exclusion value before fanning out.
+        """
+        s = self.settings
+        return {
+            "clip_trail":         bool(s.value("stacking/calibration_satellite_clip", True, type=bool)),
+            "sensitivity":        float(s.value("stacking/calibration_satellite_sensitivity", 0.10, type=float)),
+            "use_gpu":            bool(s.value("stacking/calibration_satellite_gpu", True, type=bool)),
+            "compatibility_mode": bool(s.value("stacking/calibration_satellite_compatibility", False, type=bool)),
+            "chunk_size":         int(s.value("stacking/calibration_satellite_chunk_size", 256, type=int)),
+            "overlap":            int(s.value("stacking/calibration_satellite_overlap", 64, type=int)),
+            "border_size":        int(s.value("stacking/calibration_satellite_border", 16, type=int)),
+            "temp_stretch":       bool(s.value("stacking/calibration_satellite_temp_stretch", True, type=bool)),
+            "target_median":      float(s.value("stacking/calibration_satellite_target_median", 0.25, type=float)),
+            "workers":            max(1, int(s.value("stacking/calibration_satellite_workers", 2, type=int))),
+        }
+
     def _apply_satellite_removal_to_calibrated_light(
-        self, light_data, *, is_mono: bool, models=None
+        self, light_data, *, is_mono: bool, models=None, opts: dict | None = None
     ):
         """
         Run SASpro satellite trail removal on an already-calibrated light frame.
@@ -20407,17 +20430,24 @@ class StackingSuiteDialog(QDialog):
             nan=0.0, posinf=0.0, neginf=0.0
         )
 
-        clip_trail = self.settings.value("stacking/calibration_satellite_clip", True, type=bool)
-        sensitivity = self.settings.value("stacking/calibration_satellite_sensitivity", 0.10, type=float)
-        use_gpu = self.settings.value("stacking/calibration_satellite_gpu", True, type=bool)
-        compatibility_mode = self.settings.value("stacking/calibration_satellite_compatibility", False, type=bool)
+        # Never touch self.settings from here: this method runs inside the
+        # satellite pass's worker threads. Callers on a background thread MUST
+        # pass a snapshot from _satellite_removal_opts(); opts=None is only
+        # valid on the GUI thread (the serial per-frame call site).
+        if opts is None:
+            opts = self._satellite_removal_opts()
 
-        chunk_size = self.settings.value("stacking/calibration_satellite_chunk_size", 256, type=int)
-        overlap = self.settings.value("stacking/calibration_satellite_overlap", 64, type=int)
-        border_size = self.settings.value("stacking/calibration_satellite_border", 16, type=int)
+        clip_trail = bool(opts["clip_trail"])
+        sensitivity = float(opts["sensitivity"])
+        use_gpu = bool(opts["use_gpu"])
+        compatibility_mode = bool(opts["compatibility_mode"])
 
-        temp_stretch = self.settings.value("stacking/calibration_satellite_temp_stretch", True, type=bool)
-        target_median = self.settings.value("stacking/calibration_satellite_target_median", 0.25, type=float)
+        chunk_size = int(opts["chunk_size"])
+        overlap = int(opts["overlap"])
+        border_size = int(opts["border_size"])
+
+        temp_stretch = bool(opts["temp_stretch"])
+        target_median = float(opts["target_median"])
 
         def _status(msg):
             try:
@@ -22288,7 +22318,13 @@ class StackingSuiteDialog(QDialog):
         # ════════════════════════════════════════════════════════════════
         # PHASE 2 — satellite trail removal on a CLEAN GPU
         # Strictly after calibration; masters + cosmetic buffers are gone,
-        # so the cuDNN CNN owns the whole card. One frame at a time.
+        # so the CNN owns the whole card.
+        #
+        # Frames are fanned out over worker threads below, but GPU SUBMISSION
+        # is serialized inside the engine (_SAT_GPU_LOCK in satellite_engine).
+        # The threads exist to overlap file I/O and CPU prep only. Do not try
+        # to "parallelize the GPU" here: interleaving dispatches from several
+        # threads onto one DirectML device is what removes the adapter.
         # ════════════════════════════════════════════════════════════════
         if do_satellite and not cancelled:
             sat_files = [
@@ -22306,6 +22342,11 @@ class StackingSuiteDialog(QDialog):
                 get_satellite_models,
                 trail_mask_requires_rewrite,
             )
+            from setiastro.saspro.cosmicclarity_engines._backend_guard import (
+                DeviceLostError as _SatDeviceLost,
+                is_device_lost_error as _sat_is_device_lost,
+                safe_exception_str as _sat_exc_str,
+            )
 
             def _sat_status(msg):
                 try:
@@ -22313,13 +22354,14 @@ class StackingSuiteDialog(QDialog):
                 except Exception:
                     pass
 
+            # Snapshot QSettings ONCE on this thread; workers read the dict.
+            sat_opts = self._satellite_removal_opts()
+
             sat_models = None
             try:
                 sat_models = get_satellite_models(
                     resources=get_resources(),
-                    use_gpu=bool(self.settings.value(
-                        "stacking/calibration_satellite_gpu", True, type=bool
-                    )),
+                    use_gpu=bool(sat_opts["use_gpu"]),
                     status_cb=_sat_status,
                 )
             except Exception as e:
@@ -22329,12 +22371,21 @@ class StackingSuiteDialog(QDialog):
 
             n_rewritten = 0
             n_unchanged = 0
+            n_failed = 0
+            n_aborted = 0
+
+            # Declared out here, not inside the `sat_models is not None`
+            # branch: the completion message below reads them unconditionally.
+            import threading as _th_sat
+            sat_abort = _th_sat.Event()
+            sat_device_err: list[str] = []
+
             if sat_models is not None:
-                # ── Image-level concurrency: run multiple frames through the
-                # satellite pipeline at once. PyTorch kernels serialize on the
-                # GPU's default stream, but we overlap file I/O (load + write),
-                # CPU numpy prep/post, PCIe transfers, and sync waits. Same
-                # pattern as blink_comparator_pro's Detect Satellite Trails.
+                # ── Image-level concurrency. Workers overlap file I/O (load +
+                # write) and CPU numpy prep/post ONLY: the engine's GPU gate
+                # serializes every dispatch, so raising sat_workers does not
+                # put more work on the card at once. Same pattern as
+                # blink_comparator_pro's Detect Satellite Trails.
                 #
                 # Each worker is independent: loads one calibrated FITS,
                 # applies satellite_remove_image, and (if a trail was found)
@@ -22343,9 +22394,14 @@ class StackingSuiteDialog(QDialog):
                 # writes to distinct paths are safe.
                 import concurrent.futures as _cf_sat
 
-                sat_workers = max(1, int(self.settings.value(
-                    "stacking/calibration_satellite_workers", 2, type=int
-                )))
+                sat_workers = int(sat_opts["workers"])
+
+                # sat_abort / sat_device_err are declared above the branch.
+                # A removed D3D12 device is permanent and process-wide. Once
+                # one frame reports it, every remaining dispatch fails — and a
+                # failed frame is written back UNMODIFIED, so its trail goes
+                # into the stack. Stop the pass instead of grinding through
+                # the rest producing silently dirty calibrated lights.
 
                 # Snapshot debug flag so workers don't call Qt-dependent
                 # status callbacks. _nan_probe is kept but sinks to print().
@@ -22355,16 +22411,27 @@ class StackingSuiteDialog(QDialog):
                     """
                     Returns (cal_path, outcome, err_msg).
                     outcome: 'missing' | 'unchanged' | 'rewritten' | 'failed'
+                             | 'aborted'
                     """
+                    if sat_abort.is_set():
+                        return (cal_path, 'aborted', None)
                     try:
                         if not os.path.exists(cal_path):
                             return (cal_path, 'missing', None)
                         sd, shdr, _sbits, s_mono = load_image(cal_path)
                         if sd is None:
                             return (cal_path, 'missing', None)
-                        cleaned, sat_mask = self._apply_satellite_removal_to_calibrated_light(
-                            sd, is_mono=s_mono, models=sat_models
-                        )
+                        if sat_abort.is_set():
+                            return (cal_path, 'aborted', None)
+                        try:
+                            cleaned, sat_mask = self._apply_satellite_removal_to_calibrated_light(
+                                sd, is_mono=s_mono, models=sat_models, opts=sat_opts
+                            )
+                        except _SatDeviceLost as e:
+                            if not sat_device_err:
+                                sat_device_err.append(_sat_exc_str(e))
+                            sat_abort.set()
+                            return (cal_path, 'aborted', None)
                         if not trail_mask_requires_rewrite(sat_mask):
                             return (cal_path, 'unchanged', None)
                         cleaned = np.asarray(cleaned, dtype=np.float32)
@@ -22400,7 +22467,14 @@ class StackingSuiteDialog(QDialog):
                                 pass
                         return (cal_path, 'rewritten', None)
                     except Exception as e:
-                        return (cal_path, 'failed', str(e))
+                        # A device loss can also surface here (e.g. raw, when
+                        # the engine's own CPU retry was not applicable).
+                        if _sat_is_device_lost(e):
+                            if not sat_device_err:
+                                sat_device_err.append(_sat_exc_str(e))
+                            sat_abort.set()
+                            return (cal_path, 'aborted', None)
+                        return (cal_path, 'failed', _sat_exc_str(e))
 
                 completed = 0
                 with _cf_sat.ThreadPoolExecutor(max_workers=sat_workers) as _sat_ex:
@@ -22413,11 +22487,18 @@ class StackingSuiteDialog(QDialog):
                     cancelled_mid = False
                     while pending:
                         if self._cancelled():
+                            sat_abort.set()
                             for f in pending:
                                 f.cancel()
                             self.update_status(self.tr("⏹ Satellite pass cancelled."))
                             cancelled_mid = True
                             break
+
+                        if sat_abort.is_set():
+                            # Device gone: stop feeding it. Already-running
+                            # workers return 'aborted' on their own.
+                            for f in pending:
+                                f.cancel()
 
                         done, pending = _cf_sat.wait(
                             pending,
@@ -22426,12 +22507,16 @@ class StackingSuiteDialog(QDialog):
                         )
 
                         for fut in done:
+                            if fut.cancelled():
+                                completed += 1
+                                n_aborted += 1
+                                continue
                             try:
                                 cp, outcome, err = fut.result()
                             except Exception as e:
                                 cp = futures.get(fut, '?')
                                 outcome = 'failed'
-                                err = str(e)
+                                err = _sat_exc_str(e)
 
                             completed += 1
                             basename = os.path.basename(cp) if cp else '?'
@@ -22447,9 +22532,12 @@ class StackingSuiteDialog(QDialog):
                                     f"🛰️ {completed}/{n_sat}: {basename}"
                                 ))
                             elif outcome == 'failed':
+                                n_failed += 1
                                 self.update_status(self.tr(
                                     f"⚠️ Satellite pass failed on {basename}: {err}"
                                 ))
+                            elif outcome == 'aborted':
+                                n_aborted += 1
                             # 'missing' = silent skip (matches prior behavior)
 
                         QApplication.processEvents()
@@ -22470,10 +22558,32 @@ class StackingSuiteDialog(QDialog):
             # "Satellite Removal" row finishes here instead of lingering as
             # "running" until the end-of-run sweep.
             if not cancelled:
-                self.update_status(self.tr(
-                    f"✅ Satellite trail removal complete "
-                    f"({n_rewritten} clipped, {n_unchanged} unchanged)"
-                ))
+                # n_failed / n_aborted MUST appear here. A frame that failed
+                # was written back unmodified, so its trail is still in the
+                # data and will land in the integration. The old message
+                # counted only clipped+unchanged, so a run where every frame
+                # died still reported a cheerful ✅.
+                _n_bad = int(n_failed) + int(n_aborted)
+                if sat_device_err:
+                    self.update_status(self.tr(
+                        f"⛔ Satellite trail removal STOPPED — GPU device lost "
+                        f"({sat_device_err[0]}). "
+                        f"{n_rewritten} clipped, {n_unchanged} unchanged, "
+                        f"{_n_bad} NOT processed — those frames still contain "
+                        f"their trails. Re-run calibration (GPU acceleration is "
+                        f"disabled for the rest of this session)."
+                    ))
+                elif _n_bad:
+                    self.update_status(self.tr(
+                        f"⚠️ Satellite trail removal finished with errors "
+                        f"({n_rewritten} clipped, {n_unchanged} unchanged, "
+                        f"{_n_bad} failed — those frames still contain their trails)"
+                    ))
+                else:
+                    self.update_status(self.tr(
+                        f"✅ Satellite trail removal complete "
+                        f"({n_rewritten} clipped, {n_unchanged} unchanged)"
+                    ))
                 QApplication.processEvents()
             _free_torch_memory()
 

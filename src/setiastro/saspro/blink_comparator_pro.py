@@ -3144,14 +3144,20 @@ class BlinkTab(QWidget):
         workers_spin.setRange(1, 8)
         workers_spin.setValue(self._sat_detect_workers())
         workers_spin.setToolTip(self.tr(
-            "Number of images processed in parallel on the GPU. Higher values\n"
-            "overlap more file I/O and CPU work with GPU inference, but each\n"
-            "worker holds a full-res frame in RAM and allocates its own GPU\n"
-            "activations. Default 2. Drop to 1 if you see out-of-memory errors."
+            "Number of images LOADED AND PREPARED in parallel.\n"
+            "\n"
+            "GPU inference itself is always serialized — one image at a time,\n"
+            "regardless of this value. Interleaving GPU work from several\n"
+            "threads onto one device is what causes DirectML adapter resets,\n"
+            "so this knob deliberately does not parallelize it.\n"
+            "\n"
+            "Raising it overlaps file reads, stretching and tiling with the\n"
+            "inference that is already running. Each worker holds a full-res\n"
+            "frame in RAM. Default 2. Drop to 1 if you are short on memory."
         ))
 
         workers_help = QLabel(self.tr(
-            "2 is a good balance for most systems. Higher = faster but more memory."
+            "Overlaps file loading with inference. GPU work is always serialized."
         ), dlg)
         workers_help.setStyleSheet("font-size: 10px; color: palette(mid);")
         workers_help.setWordWrap(True)
