@@ -7,7 +7,7 @@ from PyQt6.QtCore import Qt, QEvent, QPointF, QRunnable, QThreadPool, pyqtSlot, 
 from PyQt6.QtGui import QImage, QPixmap, QPen, QBrush, QAction, QKeySequence, QColor, QWheelEvent, QIcon
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QSlider, QSizePolicy, QSpinBox,
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsEllipseItem, QMessageBox, QScrollArea, QCheckBox, QDoubleSpinBox, QWidget, QFrame    
+    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QGraphicsEllipseItem, QMessageBox, QScrollArea, QCheckBox, QDoubleSpinBox, QWidget, QFrame, QApplication, QAbstractSpinBox, QLineEdit    
 )
 from setiastro.saspro.imageops.stretch import stretch_color_image, stretch_mono_image 
 
@@ -804,10 +804,12 @@ class BlemishBlasterDialogPro(QDialog):
         self.rb_banding.toggled.connect(self._on_mode_changed)
         self.rb_extent_full.toggled.connect(lambda _=None: self._lin_refresh())
         self.btn_blast_line.clicked.connect(self._blast_line)
-        self.lbl_bracket_help = QLabel(self.tr("Tip: Use [ and ] to decrease/increase brush size."))
+        self.lbl_bracket_help = QLabel(self.tr(
+            "Tip: Use [ and ] to decrease/increase brush size. "
+            "Hold Space and drag to pan."))
         self.lbl_bracket_help.setStyleSheet("color:#888;")
         self.lbl_bracket_help.setWordWrap(True)
-        form.addRow(self.lbl_bracket_help)
+        # (lbl_bracket_help is placed in the Zoom box instead — see layout below)
         # --- PREVIEW AUTOSTRETCH (display only) ---
         self.cb_autostretch = QCheckBox(self.tr("Auto-stretch preview"))
         self.cb_autostretch.setChecked(True)
@@ -864,12 +866,25 @@ class BlemishBlasterDialogPro(QDialog):
         left.setSpacing(10)
 
         zoom_box = QGroupBox(self.tr("Zoom"))
-        zoom_lay = QHBoxLayout(zoom_box)
-        zoom_lay.addStretch(1)
-        zoom_lay.addWidget(self.btn_zoom_out)
-        zoom_lay.addWidget(self.btn_zoom_in)
-        zoom_lay.addWidget(self.btn_zoom_fit)
-        zoom_lay.addStretch(1)
+        zoom_lay = QVBoxLayout(zoom_box)
+        zoom_lay.setSpacing(6)
+
+        _zoom_btn_row = QHBoxLayout()
+        _zoom_btn_row.addStretch(1)
+        _zoom_btn_row.addWidget(self.btn_zoom_out)
+        _zoom_btn_row.addWidget(self.btn_zoom_in)
+        _zoom_btn_row.addWidget(self.btn_zoom_fit)
+        _zoom_btn_row.addStretch(1)
+        zoom_lay.addLayout(_zoom_btn_row)
+
+        # setText here rather than at construction so this block is the single
+        # source of truth for the hint wording.
+        self.lbl_bracket_help.setText(self.tr(
+            "Brush size: [ and ]   •   Pan: hold Space and drag"))
+        self.lbl_bracket_help.setStyleSheet("color:#888; font-size:10px;")
+        self.lbl_bracket_help.setWordWrap(True)
+        self.lbl_bracket_help.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        zoom_lay.addWidget(self.lbl_bracket_help)
 
         left.addWidget(zoom_box)
         left.addWidget(ctrls, 0)
@@ -908,6 +923,17 @@ class BlemishBlasterDialogPro(QDialog):
         self._threadpool = QThreadPool.globalInstance()
         self.view.setMouseTracking(True)
         self.view.viewport().installEventFilter(self)
+
+        # ── Spacebar pan ──────────────────────────────────────────
+        # Filtered at the application level because a focused QPushButton
+        # (Undo/Apply/...) consumes Space as an activation key, so the dialog's
+        # own keyPressEvent never sees it.
+        self._space_pan = False
+        self._space_prev_drag = None
+        try:
+            QApplication.instance().installEventFilter(self)
+        except Exception:
+            pass
 
         # zoom buttons
         self.btn_zoom_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
@@ -1017,8 +1043,24 @@ class BlemishBlasterDialogPro(QDialog):
 
     # ── Event filter for hover/click + wheel zoom
     def eventFilter(self, src, ev):
+        et = ev.type()
+
+        # ── Spacebar pan (app-wide events land here too) ─────────
+        if et == QEvent.Type.KeyPress or et == QEvent.Type.KeyRelease:
+            if self._handle_space_key(ev):
+                return True
+        elif et == QEvent.Type.WindowDeactivate or et == QEvent.Type.ApplicationDeactivate:
+            # Alt-tabbing away swallows the KeyRelease; don't get stuck panning.
+            self._end_space_pan()
+
         if src is self.view.viewport():
-            et = ev.type()
+            # While Space is held, let QGraphicsView's ScrollHandDrag own the
+            # mouse so a drag pans instead of healing / placing line endpoints.
+            if self._space_pan and et in (QEvent.Type.MouseButtonPress,
+                                          QEvent.Type.MouseButtonRelease,
+                                          QEvent.Type.MouseButtonDblClick,
+                                          QEvent.Type.MouseMove):
+                return False
 
             # ── Linear Blaster mode ──────────────────────────────
             if getattr(self, "_mode", 0) == 1:
@@ -1064,6 +1106,51 @@ class BlemishBlasterDialogPro(QDialog):
                 self._wheel_zoom(ev)
                 return True
         return super().eventFilter(src, ev)
+
+    # ── Spacebar pan ──────────────────────────────────────────────
+    def _handle_space_key(self, ev) -> bool:
+        """Begin/end space-pan. Returns True if the key was consumed."""
+        try:
+            if ev.key() != Qt.Key.Key_Space or ev.isAutoRepeat():
+                return False
+            if not self.isActiveWindow():
+                return False
+            # Never steal Space from a field the user is typing into.
+            fw = QApplication.focusWidget()
+            if isinstance(fw, (QAbstractSpinBox, QLineEdit)):
+                return False
+            if ev.type() == QEvent.Type.KeyPress:
+                self._begin_space_pan()
+            else:
+                self._end_space_pan()
+            return True
+        except Exception:
+            return False
+
+    def _begin_space_pan(self):
+        if getattr(self, "_space_pan", False):
+            return
+        self._space_pan = True
+        try:
+            self._space_prev_drag = self.view.dragMode()
+            self.view.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.view.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            self.circle.setVisible(False)
+        except Exception:
+            pass
+
+    def _end_space_pan(self):
+        if not getattr(self, "_space_pan", False):
+            return
+        self._space_pan = False
+        try:
+            prev = self._space_prev_drag
+            self.view.setDragMode(prev if prev is not None
+                                  else QGraphicsView.DragMode.NoDrag)
+            self.view.viewport().unsetCursor()
+        except Exception:
+            pass
+        self._space_prev_drag = None
 
     # ── Heal logic
     def _heal_at(self, scene_pos: QPointF):
@@ -1154,6 +1241,14 @@ class BlemishBlasterDialogPro(QDialog):
 
         # Blemish brush circle: only in blemish mode
         self.circle.setVisible(False)
+        try:
+            if lin or band:
+                self.lbl_bracket_help.setText(self.tr("Pan: hold Space and drag"))
+            else:
+                self.lbl_bracket_help.setText(self.tr(
+                    "Brush size: [ and ]   •   Pan: hold Space and drag"))
+        except Exception:
+            pass
         self._lin_reset()
 
         # # === SASpro Blaster speedup v1 ===: swap the view drag mode so banding mode
@@ -1645,6 +1740,11 @@ class BlemishBlasterDialogPro(QDialog):
         QTimer.singleShot(0, self._fit_view)        
 
     def closeEvent(self, ev):
+        try:
+            self._end_space_pan()
+            QApplication.instance().removeEventFilter(self)
+        except Exception:
+            pass
         try:
             self._save_window_geometry()
         except Exception:

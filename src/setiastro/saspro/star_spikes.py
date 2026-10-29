@@ -47,7 +47,8 @@ class StarSpikesDialogPro(QDialog):
                  initial_doc=None,
                  jwstpupil_path: str | None = None,
                  aperture_help_path: str | None = None,
-                 spinner_path: str | None = None):
+                 spinner_path: str | None = None,
+                 follow_active: bool = True):
         super().__init__(parent)
         self.setWindowTitle(self.tr("Diffraction Spikes"))
         self.setWindowFlag(Qt.WindowType.Window, True)
@@ -61,12 +62,21 @@ class StarSpikesDialogPro(QDialog):
         except Exception:
             pass  # older PyQt6 versions        
         self.docman = doc_manager
-        self.doc = initial_doc or (self.docman.get_active_document() if self.docman else None)
+        self._main = parent
+        # False when a caller pinned us to one specific doc (command drop,
+        # replay); then we never retarget on view switches.
+        self._follow_active = bool(follow_active)
+        self._follow_conn = False
+        self.doc = initial_doc or self._resolve_active_doc()
         self.jwstpupil_path = jwstpupil_path
         self.aperture_help_path = aperture_help_path
 
         self.final_image = None
-        self._img_src = None  # float32, 2D or 3D, [0..1]
+        self._img_src = None       # float32, 2D or 3D, [0..1]
+        self._img_src_doc = None   # which doc _img_src was read from
+        self._result_doc = None    # which doc final_image was computed from
+        self._busy = False         # inside _run_impl (which pumps the event loop)
+        self._pending_close = False
 
         # defaults (aligned to your SASv2 tool)
         self.advanced = {
@@ -76,6 +86,7 @@ class StarSpikesDialogPro(QDialog):
 
         self._build_ui()
         self._load_active_image()
+        self._hook_active_doc_following()
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -247,9 +258,117 @@ class StarSpikesDialogPro(QDialog):
         for w in (self.num_vanes, self.vane_width, self.obstruction, self.radius):
             w.setVisible(not jwst)
 
+    # ---------- active document resolution ----------
+    def _resolve_active_doc(self):
+        """Resolve the document behind the currently active view, ROI-aware.
+
+        Goes through the MDI rather than DocManager's cached active document,
+        which is only written on subWindowActivated and can be stale or None
+        while an image is clearly on screen.
+        """
+        mw = getattr(self, "_main", None)
+        dm = self.docman or getattr(mw, "doc_manager", None) or getattr(mw, "docman", None)
+
+        try:
+            mdi = getattr(mw, "mdi", None)
+            sw = mdi.activeSubWindow() if mdi is not None else None
+            view = sw.widget() if sw is not None else None
+            if view is not None:
+                if dm is not None and hasattr(dm, "get_document_for_view"):
+                    try:
+                        d = dm.get_document_for_view(view)
+                        if d is not None and getattr(d, "image", None) is not None:
+                            return d
+                    except Exception:
+                        pass
+                d = getattr(view, "document", None) or getattr(view, "doc", None)
+                if d is not None and getattr(d, "image", None) is not None:
+                    return d
+        except Exception:
+            pass
+
+        try:
+            if dm is not None and hasattr(dm, "get_active_document"):
+                d = dm.get_active_document()
+                if d is not None and getattr(d, "image", None) is not None:
+                    return d
+        except Exception:
+            pass
+
+        return None
+
+    @staticmethod
+    def _doc_label(doc) -> str:
+        if doc is None:
+            return "no image"
+        try:
+            n = doc.display_name()
+            if n:
+                return str(n)
+        except Exception:
+            pass
+        return getattr(doc, "name", None) or "image"
+
+    def _hook_active_doc_following(self):
+        if not self._follow_active:
+            return
+        sig = getattr(self._main, "currentDocumentChanged", None)
+        if sig is None:
+            return
+        try:
+            sig.connect(self._on_active_doc_changed)
+            self._follow_conn = True
+        except Exception:
+            self._follow_conn = False
+
+    def _on_active_doc_changed(self, doc):
+        # Mid-run, _run_impl owns self.doc; retargeting here would reload
+        # _img_src under it and clear a result it's about to write.
+        if not self._follow_active or self._busy:
+            return
+        if doc is None or getattr(doc, "image", None) is None:
+            return
+        if doc is self.doc:
+            return
+        self.doc = doc
+        self._load_active_image()
+        # Previous result belongs to the previous image.
+        self.final_image = None
+        self._result_doc = None
+        self.btn_apply.setEnabled(False)
+
+    def closeEvent(self, ev):
+        if self._busy:
+            # Mid-run: the close arrived through processEvents(). Hide now,
+            # close for real once _run unwinds.
+            self._pending_close = True
+            try:
+                self.hide()
+            except Exception:
+                pass
+            ev.ignore()
+            return
+        try:
+            if self._follow_conn:
+                self._main.currentDocumentChanged.disconnect(self._on_active_doc_changed)
+        except Exception:
+            pass
+        self._follow_conn = False
+        super().closeEvent(ev)
+
     # ---------- data/preset ----------
     def _load_active_image(self):
+        # Re-resolve rather than staying permanently broken: the old code
+        # returned here with self.doc == None and never tried again, so a bad
+        # moment at construction killed the dialog for its whole lifetime.
+        if self._follow_active and (not self.doc or getattr(self.doc, "image", None) is None):
+            d = self._resolve_active_doc()
+            if d is not None:
+                self.doc = d
+
         if not self.doc or getattr(self.doc, "image", None) is None:
+            self._img_src = None
+            self._img_src_doc = None
             self.status.setText("No active image.")
             return
         arr = np.asarray(self.doc.image)
@@ -264,6 +383,8 @@ class StarSpikesDialogPro(QDialog):
             if mx > 1.0:
                 arr = arr / (65535.0 if mx > 5.0 else mx)
         self._img_src = np.clip(arr, 0.0, 1.0)
+        self._img_src_doc = self.doc
+        self.status.setText(f"Ready — {self._doc_label(self.doc)}")
 
     def apply_preset(self, p: dict):
         if not p:
@@ -287,11 +408,42 @@ class StarSpikesDialogPro(QDialog):
 
     # ---------- core ----------
     def _run(self):
-        if self._img_src is None:
+        """Guarded wrapper around the real work.
+
+        _run_impl calls processEvents() several times (and opens a modal
+        warning for dense fields), so the user can close the dialog
+        mid-run. WA_DeleteOnClose then deletes the widgets out from under
+        the remaining code. Defer the close until the run unwinds.
+        """
+        if self._busy:
+            return
+        self._busy = True
+        try:
+            self._run_impl()
+        finally:
+            self._busy = False
+            if self._pending_close:
+                self._pending_close = False
+                self.close()
+
+    def _run_impl(self):
+        # Resolve on every run so the dialog follows view switches instead of
+        # being frozen to whatever was active when it opened.
+        if self._follow_active:
+            d = self._resolve_active_doc()
+            if d is not None:
+                self.doc = d
+
+        if self._img_src is None or self._img_src_doc is not self.doc:
             self._load_active_image()
         if self._img_src is None:
             QMessageBox.information(self, "Diffraction Spikes", "No active image.")
             return
+
+        # Capture the target locally: processEvents() below can deliver a
+        # subWindowActivated mid-run, and the mask lookup and Apply that follow
+        # must both refer to the image we actually processed.
+        run_doc = self.doc
 
         # deps check
         if sep is None:
@@ -497,7 +649,7 @@ class StarSpikesDialogPro(QDialog):
             spiked_final = self._midtones_m(spiked_lin, 0.05)
 
         # ---- apply mask AFTER full processing ----
-        m = self._active_mask_array(self.doc)
+        m = self._active_mask_array(run_doc)
         if m is not None:
             if spiked_final.ndim == 3 and m.ndim == 2:
                 m = m[..., None]
@@ -508,19 +660,44 @@ class StarSpikesDialogPro(QDialog):
             final = spiked_final
 
         self.final_image = final
+        self._result_doc = run_doc
         self._update_preview(final)
         self.btn_apply.setEnabled(True)
-        self.status.setText("Done.")
+        self.status.setText(f"Done — {self._doc_label(run_doc)}.")
 
     def _apply_to_doc(self):
         if self.final_image is None:
             QMessageBox.information(self, "Diffraction Spikes", "Nothing to apply yet.")
             return
-        if not self.docman:
-            QMessageBox.warning(self, "No DocManager", "DocManager not available.")
+
+        # Target the document the spikes were computed from. apply_edit_to_active()
+        # would land them on whatever view the user clicked into since Generate.
+        doc = self._result_doc or self.doc
+        if doc is None or getattr(doc, "image", None) is None:
+            QMessageBox.warning(self, "Diffraction Spikes",
+                                "The target document is no longer available.")
             return
-        self.docman.apply_edit_to_active(self.final_image, step_name="Diffraction Spikes")
-        self.status.setText("Applied to active document.")
+
+        out = np.asarray(self.final_image, dtype=np.float32)
+        try:
+            if hasattr(doc, "apply_edit"):
+                doc.apply_edit(
+                    out,
+                    metadata={"step_name": "Diffraction Spikes",
+                              "command_id": "star_spikes"},
+                    step_name="Diffraction Spikes",
+                )
+            elif hasattr(doc, "set_image"):
+                doc.set_image(out, step_name="Diffraction Spikes")
+            elif self.docman is not None and hasattr(self.docman, "apply_edit_to_active"):
+                self.docman.apply_edit_to_active(out, step_name="Diffraction Spikes")
+            else:
+                doc.image = out
+        except Exception as e:
+            QMessageBox.critical(self, "Diffraction Spikes", f"Failed to apply:\n{e}")
+            return
+
+        self.status.setText(f"Applied to {self._doc_label(doc)}.")
         # keep dialog open so user can tweak more if desired
 
     # ---------- helpers ----------

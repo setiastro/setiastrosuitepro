@@ -2674,7 +2674,9 @@ class SatelliteEngineThread(QThread):
     def run(self):
         try:
             from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
-                get_satellite_models, satellite_remove_image
+                get_satellite_models, satellite_remove_image,
+                satellite_detect_tiles,
+                ArtifactMapBuilder,
             )
 
             self.log_signal.emit("Loading Satellite models...")
@@ -2688,7 +2690,86 @@ class SatelliteEngineThread(QThread):
 
             os.makedirs(self.output_dir, exist_ok=True)
 
-            def process_one(fp_in: str, fp_out: str):
+            # ── PASS 1 (batch only): fixed-pattern artifact map ─────────────
+            #
+            # Build it per IMAGE SHAPE, since a pixel map cannot be shared
+            # across sensors and shape is the only grouping key available from
+            # a bare folder listing. Shapes are read during the detection scan
+            # itself, so nothing extra is loaded.
+            #
+            # LIVE MONITOR DELIBERATELY OPTS OUT: frames arrive one at a time
+            # and the output is written before persistence could ever be
+            # established. There is no safe veto to apply there.
+            clean_files: set = set()     # scanned and known to have no real trail
+            real_tiles_by_file: dict = {}   # fn -> REAL trail tiles from pass 1
+
+            def _build_artifact_maps(file_names):
+                """Scan the batch: builds the fixed-pattern map AND records
+                which files have no real trail at all.
+
+                The scan runs even when the batch is too small for the map,
+                because knowing a file is clean is worth having on its own —
+                pass 2 can then skip it outright instead of re-deriving the
+                same answer through a full load + pad + tile + detect."""
+                if self.monitor or not file_names:
+                    return
+
+                self.log_signal.emit(
+                    f"Pass 1 of 2: scanning {len(file_names)} file(s) for "
+                    f"diffraction spikes / amp glow (nothing is written)…"
+                )
+                builder = ArtifactMapBuilder()
+                scanned_any = False
+                for i, fn in enumerate(file_names):
+                    if self._cancel:
+                        return
+                    fp = os.path.join(self.input_dir, fn)
+                    try:
+                        res = load_image(fp, return_metadata=True)
+                        if res is None or res[0] is None:
+                            continue
+                        im = np.clip(np.asarray(res[0], dtype=np.float32), 0.0, 1.0)
+                        shape_hw = tuple(int(v) for v in im.shape[:2])
+                        tiles = satellite_detect_tiles(
+                            im, models,
+                            # MUST be 0: the persistence map is tested back
+                            # against whole tiles, so the scan grid has to be
+                            # fixed and non-overlapping or a fixed artifact
+                            # lands in a different tile subset each frame and
+                            # the mask shrinks to an unusable sliver.
+                            overlap=0,
+                            compatibility_mode=self.compatibility_mode,
+                            stop_after=None,
+                            status_cb=lambda _m: None,
+                        )
+                    except Exception as e:
+                        self.log_signal.emit(f"Pass 1 skipped {fn}: {e}")
+                        continue
+
+                    # Group by Object/Filter/Exposure/Instrument, NOT by shape:
+                    # Ha and Green off one camera share a shape, and pooling
+                    # them hides the Ha amp glow below the persistence
+                    # threshold so every Ha frame flags.
+                    builder.add(fn, res[1], shape_hw, tiles)
+                    scanned_any = True
+                    self.progress_signal.emit(i + 1, len(file_names))
+
+                if self._cancel or not scanned_any:
+                    return
+
+                # Same engine helper Blink and Calibrate_Lights use, so all
+                # three agree on what counts as fixed-pattern structure.
+                _clean, _real, _n_art = builder.finalize(
+                    status_cb=self.log_signal.emit)
+                clean_files.update(_clean)
+                real_tiles_by_file.update(_real)
+                self.log_signal.emit(
+                    f"Fixed-pattern filter: {_n_art} tile(s) ignored across "
+                    f"{builder.n_groups} group(s); {len(_real)} file(s) have "
+                    f"real trails, {len(_clean)} are clean."
+                )
+
+            def process_one(fp_in: str, fp_out: str, known_tiles=None):
                 result = load_image(fp_in, return_metadata=True)
                 if result is None or result[0] is None:
                     self.log_signal.emit(f"Failed to load: {os.path.basename(fp_in)}")
@@ -2706,6 +2787,8 @@ class SatelliteEngineThread(QThread):
                     sensitivity=float(self.sensitivity),
                     compatibility_mode=self.compatibility_mode,
                     progress_cb=None,
+                    detect_tiles=known_tiles,
+                    status_cb=self.log_signal.emit,
                 )
 
                 if self.skip_save and (not detected):
@@ -2739,12 +2822,23 @@ class SatelliteEngineThread(QThread):
                     except Exception as e:
                         self.log_signal.emit(f"Could not delete original {os.path.basename(fp_in)}: {e}")
 
-            # -------- batch (single pass) OR monitor (loop) --------
+            # -------- batch (two-pass) OR monitor (loop, single-pass) --------
+            _maps_built = False
             while not self._cancel:
                 files = list(self._iter_files())
 
                 # monitor: only process new files
                 todo = [fn for fn in files if fn not in self._seen]
+
+                # Pass 1 runs once, over the batch we are about to process.
+                if not _maps_built:
+                    _maps_built = True
+                    _build_artifact_maps(todo)
+                    if self._cancel:
+                        break
+                    if not self.monitor:
+                        self.log_signal.emit("Pass 2 of 2: removing trails…")
+
                 total = len(todo)
                 done = 0
                 self.progress_signal.emit(done, total)
@@ -2765,9 +2859,43 @@ class SatelliteEngineThread(QThread):
                         self.progress_signal.emit(done, total)
                         continue
 
+                    # Pass 1 already established this file has no real trail.
+                    # Running the pipeline would reproduce that answer at the
+                    # cost of a load, a 512px reflect pad, a full tiling and a
+                    # detection sweep — all to hand back the input unchanged.
+                    if fn in clean_files:
+                        if self.skip_save:
+                            # No output wanted, and NOT deleting the original:
+                            # that matches process_one, which returns before
+                            # its delete block on the skip-save path. Deleting
+                            # here would destroy a frame we never wrote out.
+                            self.log_signal.emit(f"Skip (no trail): {fn}")
+                        else:
+                            # The pipeline's output for a no-trail frame is the
+                            # input round-tripped through load+save, so copy the
+                            # bytes instead — identical data, no decode/encode,
+                            # and nothing for the round-trip to drop.
+                            try:
+                                import shutil as _sh
+                                _sh.copy2(fp_in, fp_out)
+                                self.log_signal.emit(f"No trail, copied: {fn}")
+                                if self.delete_original and \
+                                        os.path.abspath(fp_in) != os.path.abspath(fp_out):
+                                    try:
+                                        os.remove(fp_in)
+                                        self.log_signal.emit(f"Deleted original: {fn}")
+                                    except Exception as e:
+                                        self.log_signal.emit(
+                                            f"Could not delete original {fn}: {e}")
+                            except Exception as e:
+                                self.log_signal.emit(f"Copy failed for {fn}: {e}")
+                        done += 1
+                        self.progress_signal.emit(done, total)
+                        continue
+
                     self.log_signal.emit(f"Processing: {fn}")
                     try:
-                        process_one(fp_in, fp_out)
+                        process_one(fp_in, fp_out, real_tiles_by_file.get(fn))
                     except Exception as e:
                         self.log_signal.emit(f"Error {fn}: {e}")
 
