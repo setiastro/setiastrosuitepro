@@ -19,6 +19,7 @@ from setiastro.saspro.cosmicclarity_engines._backend_guard import (
     device_type as _device_type,
     dml_disabled as _dml_disabled,
     disable_dml as _disable_dml,
+    prefer_ort_dml as _prefer_ort_dml,
     cap_chunk_size_for_device as _cap_chunk_size_for_device,
     tick as _tick,
     evict_models as _evict_models,
@@ -36,6 +37,47 @@ except Exception:
     _sk_resize = None
 
 ProgressCB = Callable[[int, int], None]  # (done, total)
+
+
+# ---------------------------------------------------------------------------
+# One GPU, one submitter.
+#
+# Blink's batch satellite pass drives these models from N worker threads. That
+# only ever bought us overlapped file I/O -- PyTorch serializes on the default
+# CUDA stream anyway -- but the concurrent dispatches are actively harmful:
+#
+#   * torch-directml: one D3D12 device taking interleaved dispatches from
+#     several threads is what produces "The GPU device instance has been
+#     suspended. Use GetDeviceRemovedReason..." The adapter is then gone for
+#     the life of the process, which is why a failed run poisons every later
+#     run until SASpro restarts.
+#   * ORT DirectML EP: Run() is not safe to call concurrently on one session.
+#   * CUDA: concurrent first-touch of the cuDNN/cuBLAS handles plus
+#     pin_memory() from several threads stalls under the GIL -- the "hang with
+#     no further console output".
+#
+# So every GPU submission goes through this lock. Threads still overlap load,
+# normalize, stretch, tile and resize (all CPU, and where the wall clock
+# actually goes). It is an RLock so a gated helper can call another.
+# CPU bundles are not gated -- torch already threads internally there.
+# ---------------------------------------------------------------------------
+import threading
+from contextlib import nullcontext as _nullcontext_cls
+
+_SAT_GPU_LOCK = threading.RLock()
+
+# _SAT_CACHE is mutated by get_satellite_models() and by _evict_models() on
+# device loss, from worker threads. Guard it so two threads can't build the
+# same bundle at once, or evict one out from under a third.
+_SAT_CACHE_LOCK = threading.RLock()
+
+
+def _gpu_gate(models: Dict[str, Any]):
+    """Context manager serializing GPU submission; a no-op on CPU bundles."""
+    if _device_type(models.get("device")) == "cpu":
+        return _nullcontext_cls()
+    return _SAT_GPU_LOCK
+
 
 # ---------- Torch import (updated: CUDA + torch-directml awareness) ----------
 
@@ -359,6 +401,19 @@ _SAT_CACHE: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
 
 def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
     """
+    Thread-safe entry point. Blink's workers (and satellite_remove_image's CPU
+    fallback) call this from several threads at once; without the lock two
+    threads race to build the same bundle -- double model load, double VRAM,
+    and on DirectML two device probes in flight.
+    """
+    with _SAT_CACHE_LOCK:
+        return _get_satellite_models_unlocked(
+            resources=resources, use_gpu=use_gpu, status_cb=status_cb
+        )
+
+
+def _get_satellite_models_unlocked(resources: Any = None, use_gpu: bool = True, status_cb=print) -> Dict[str, Any]:
+    """
     Backend order:
       1) CUDA (PyTorch)
       2) DirectML (torch-directml)        [Windows]
@@ -404,16 +459,26 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
     else:
         # 2) torch-directml (Windows)
         if use_gpu and is_windows and not _dml_disabled():
-            try:
-                import torch_directml
-                dml = torch_directml.device()
-                _ = (torch.ones(1, device=dml) + 1).to("cpu").item()
-                backend = "torch_dml"
-            except Exception as e:
-                # The old bare `except Exception:` discarded every diagnostic.
-                status_cb(f"CosmicClarity Satellite: torch-directml unavailable "
-                          f"({safe_exception_str(e)})")
-                backend = "ort_dml" if ort_dml_ok else "cpu"
+            if _prefer_ort_dml() and ort_dml_ok:
+                # SASPRO_CC_PREFER_ORT_DML=1. ORT's DML EP dispatches one tile
+                # at a time with better op coverage, so it sits much further
+                # inside the TDR window than a batched torch-directml pass.
+                # This knob existed in _backend_guard but was never wired up
+                # here, so setting it did nothing.
+                status_cb("CosmicClarity Satellite: SASPRO_CC_PREFER_ORT_DML set — "
+                          "routing DirectML through ONNX Runtime.")
+                backend = "ort_dml"
+            else:
+                try:
+                    import torch_directml
+                    dml = torch_directml.device()
+                    _ = (torch.ones(1, device=dml) + 1).to("cpu").item()
+                    backend = "torch_dml"
+                except Exception as e:
+                    # The old bare `except Exception:` discarded every diagnostic.
+                    status_cb(f"CosmicClarity Satellite: torch-directml unavailable "
+                              f"({safe_exception_str(e)})")
+                    backend = "ort_dml" if ort_dml_ok else "cpu"
         elif use_gpu and is_windows:
             status_cb("CosmicClarity Satellite: DirectML disabled this session, using CPU.")
             backend = "cpu"
@@ -479,6 +544,16 @@ def get_satellite_models(resources: Any = None, use_gpu: bool = True, status_cb=
     else:
         device = torch.device("cpu")
         status_cb("CosmicClarity Satellite: using CPU")
+
+    # Log the NORMALIZED device tag alongside the backend name. Every DirectML
+    # safeguard (batch caps, tile caps, the disable_dml poison pill) keys off
+    # device_type() returning "dml", so a user's log should say outright
+    # whether those are live on their hardware instead of leaving us to infer
+    # it from a crash.
+    _dt = _device_type(device)
+    _bs = _satellite_batch_sizes({"device": device}, 256, False)
+    status_cb(f"CosmicClarity Satellite: backend={backend} device_type={_dt} "
+              f"detect_bs={_bs[0]} remove_bs={_bs[1]}")
 
     nn, NAFNetSatelliteRemover, BinaryClassificationCNN, BinaryClassificationCNN2, tfm = _build_torch_models(torch)
 
@@ -1066,6 +1141,111 @@ def _onnx_remove(tile_rgb01: np.ndarray, sess) -> np.ndarray:
     pred = pred[:h, :w, :]
     return np.clip(pred, 0.0, 1.0)
 
+def satellite_detect_image(
+    image: np.ndarray,
+    models: Dict[str, Any],
+    *,
+    chunk_size: int = 256,
+    overlap: int = 0,
+    border_size: int = 16,
+    temp_stretch: bool = True,
+    target_median: float = 0.25,
+    compatibility_mode: bool = False,
+    min_tiles: int = 1,
+    status_cb=print,
+) -> bool:
+    """
+    Detection-only pass: det1 + det2 over INTERIOR tiles, no NAFNet removal.
+
+    This exists so Blink's "Fast" mode stops carrying its own copy of the
+    detection loop. The inline copy hardcoded batch_size=32 for every backend,
+    which on DirectML is a multi-second dispatch straight into the Windows TDR
+    watchdog -- _satellite_batch_sizes() caps DML at 4 for exactly that reason
+    and the inline copy never consulted it.
+
+    Returns True when at least `min_tiles` interior tiles pass both
+    classifiers. Raises DeviceLostError when the adapter is gone: the caller
+    MUST abort the batch rather than record the frame as clean.
+    """
+    chunk_size = _cap_chunk_size_for_device(models.get("device"), int(chunk_size))
+    overlap = max(0, min(int(overlap), chunk_size - 1))
+
+    rgb01, _was_mono, _orig_min, _scale = _normalize_for_satellite(image)
+    H, W = rgb01.shape[:2]
+
+    arr = rgb01.astype(np.float32)
+    if bool(temp_stretch) or float(np.median(arr - np.min(arr))) < 0.05:
+        arr, _smin, _smeds = stretch_image(arr, target_median=float(target_median))
+
+    interior = [
+        (tile, y0, x0)
+        for (tile, y0, x0) in _split_chunks(arr, chunk_size, overlap)
+        if not _is_border_tile(
+            y0, x0, y0 + tile.shape[0], x0 + tile.shape[1], H, W, border_size
+        )
+    ]
+    if not interior:
+        return False
+
+    tiles_only = [t.astype(np.float32) for (t, _, _) in interior]
+    is_onnx = bool(models.get("is_onnx", False))
+    detect_bs, _remove_bs = _satellite_batch_sizes(models, chunk_size, compatibility_mode)
+
+    # ---- ONNX (ORT DirectML EP) ----
+    if is_onnx:
+        det1_sess = models["detection_model1"]
+        det2_sess = models["detection_model2"]
+        hits = 0
+        with _gpu_gate(models):
+            for tile in tiles_only:
+                if _onnx_detect(tile, det1_sess) and _onnx_detect(tile, det2_sess):
+                    hits += 1
+                    if hits >= min_tiles:
+                        return True
+        return False
+
+    # ---- Torch (CUDA / torch-directml / MPS / CPU) ----
+    # Resize OUTSIDE the GPU gate: it is pure CPU/skimage work and is exactly
+    # what we want the worker threads overlapping with each other.
+    resized = [_resize_tile_for_detect(t) for t in tiles_only]
+
+    torch = models["torch"]
+    device = models["device"]
+    det1 = models["detection_model1"]
+    det2 = models["detection_model2"]
+
+    def _detect_pass(bs: int) -> int:
+        hits = 0
+        for i in range(0, len(resized), bs):
+            batch_np = np.stack(resized[i:i + bs], axis=0)
+            batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
+
+            x = np_to_torch(batch_np, torch=torch)
+            if hasattr(device, "type") and device.type == "cuda":
+                x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+            else:
+                x = x.to(device=device, dtype=torch.float32)
+
+            with torch.no_grad():
+                o1 = det1(x).flatten()
+            keep1 = (o1 > 0.5)
+
+            if keep1.any():
+                idxs = keep1.nonzero(as_tuple=False).flatten()
+                with torch.no_grad():
+                    o2 = det2(x[idxs]).flatten()
+                keep2 = torch_to_np((o2 > 0.25).detach().float()).astype(bool)
+                hits += int(keep2.sum())
+                if hits >= min_tiles:
+                    return hits
+        return hits
+
+    with _gpu_gate(models):
+        hits = _with_batch_fallback(_detect_pass, detect_bs, label="detection")
+
+    return int(hits) >= int(min_tiles)
+
+
 def satellite_remove_image(
     image: np.ndarray,
     models: Dict[str, Any],
@@ -1114,7 +1294,10 @@ def satellite_remove_image(
                              status_cb=status_cb)
 
             if hard:
-                _evict_models(_SAT_CACHE, models, tag="Satellite", status_cb=status_cb)
+                # Another worker thread may be mid-inference against this same
+                # bundle; the cache lock keeps the dict mutation itself sane.
+                with _SAT_CACHE_LOCK:
+                    _evict_models(_SAT_CACHE, models, tag="Satellite", status_cb=status_cb)
 
             status_cb("[Satellite] retrying on CPU.")
             cpu_models = get_satellite_models(use_gpu=False, status_cb=status_cb)
@@ -1261,7 +1444,22 @@ def _is_border_tile(y0: int, x0: int, y1: int, x1: int, H: int, W: int, border_s
     """Returns True if this tile overlaps the image border region."""
     return y0 < border_size or x0 < border_size or y1 > H - border_size or x1 > W - border_size
 # ---------- Satellite remove loop (FIX: use correct ONNX sessions, not det1/rem confusion) ----------
-def _satellite_remove_rgb(
+def _satellite_remove_rgb(rgb01: np.ndarray, models: Dict[str, Any], **kw):
+    """
+    GPU gate for the removal pass.
+
+    The ONNX branch interleaves detect+remove per tile, so there is no useful
+    place to gate more finely -- serialize the whole pass. The torch branch
+    gates its two inference passes individually (see _impl) so the CPU tiling
+    and resize work still overlaps across worker threads.
+    """
+    if bool(models.get("is_onnx", False)):
+        with _gpu_gate(models):
+            return _satellite_remove_rgb_impl(rgb01, models, **kw)
+    return _satellite_remove_rgb_impl(rgb01, models, **kw)
+
+
+def _satellite_remove_rgb_impl(
     rgb01: np.ndarray,
     models: Dict[str, Any],
     *,
@@ -1385,7 +1583,8 @@ def _satellite_remove_rgb(
 
             return flags
 
-        detected_flags = _with_batch_fallback(_detect_pass, detect_bs, label="detection")
+        with _gpu_gate(models):
+            detected_flags = _with_batch_fallback(_detect_pass, detect_bs, label="detection")
 
         detected_indices = [i for i, flag in enumerate(detected_flags) if flag]
         # Only count interior tile detections toward trail_any — border tiles have
@@ -1443,69 +1642,15 @@ def _satellite_remove_rgb(
 
                     _tick(progress_cb, sum(done_flags), total)
 
-            _with_batch_fallback(_remove_pass, remove_bs, label="removal")
+            with _gpu_gate(models):
+                _with_batch_fallback(_remove_pass, remove_bs, label="removal")
 
-        detected_indices = [i for i, flag in enumerate(detected_flags) if flag]
-        # Only count interior tile detections toward trail_any — border tiles have
-        # reflected padding content that causes false positives for skip-save logic
-        trail_any = any(
-            not _is_border_tile(
-                all_tiles[i][1], all_tiles[i][2],
-                all_tiles[i][1] + all_tiles[i][0].shape[0],
-                all_tiles[i][2] + all_tiles[i][0].shape[1],
-                H, W, border_size
-            )
-            for i in detected_indices
-        )
-
-        if detected_indices:
-            padded_tiles = []
-            orig_shapes = []
-
-            for idx in detected_indices:
-                padded, h, w = _pad_tile_to_shape_rgb(tiles_only[idx], chunk_size, chunk_size)
-                padded_tiles.append(padded)
-                orig_shapes.append((h, w))
-
-            for batch_start in range(0, len(padded_tiles), remove_bs):
-                batch_tiles = padded_tiles[batch_start:batch_start + remove_bs]
-                batch_np = np.stack(batch_tiles, axis=0)
-                batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
-
-                x = np_to_torch(batch_np, torch=torch)
-                if hasattr(device, "type") and device.type == "cuda":
-                    x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
-                else:
-                    x = x.to(device=device, dtype=torch.float32)
-
-                rem = models["removal_model"]
-                with torch.no_grad(), _autocast_context(torch, device):
-                    y = torch_to_np(rem(x).detach().float())
-
-                y = np.transpose(y, (0, 2, 3, 1))
-
-                for local_j, pred in enumerate(y):
-                    src_idx = detected_indices[batch_start + local_j]
-                    h, w = orig_shapes[batch_start + local_j]
-                    pred = np.clip(pred[:h, :w, :], 0.0, 1.0).astype(np.float32)
-
-                    orig, y0, x0 = all_tiles[src_idx]
-                    orig = orig.astype(np.float32)
-
-                    if clip_trail:
-                        final, trail_mask = _apply_clip_trail_logic(
-                            pred, orig, sensitivity, return_mask=True
-                        )
-                    else:
-                        final = pred
-                        trail_mask = np.zeros(orig.shape[:2], dtype=bool)
-
-                    out_tiles[src_idx] = (final, y0, x0)
-                    mask_tiles[src_idx] = (trail_mask, y0, x0)
-                    done_flags[src_idx] = True
-
-                if progress_cb is not None:
-                    progress_cb(sum(done_flags), total)
+        # NOTE: a verbatim second copy of the removal loop used to live here
+        # (recomputing detected_indices/padded_tiles and re-running NAFNet over
+        # every trail tile, without the batch-size fallback or the device-loss
+        # handling). It doubled removal inference on every frame that actually
+        # had a trail, which is precisely the extra GPU pressure that pushed
+        # Highlight mode over the DirectML TDR window. Removed.
 
     out = _stitch_ignore_border(out_tiles, (H, W, 3), border=border_size)
     trail_mask_full = _stitch_mask_ignore_border(mask_tiles, (H, W), border=border_size)
