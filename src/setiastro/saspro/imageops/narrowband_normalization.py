@@ -27,6 +27,7 @@ class NBNParams:
     siiboost: float = 1.0    # SHO/HSO/HOS  (V1 legacy)
     oiiiboost2: float = 1.0  # SHO/HSO/HOS  (V1 legacy)
     scnr: bool = False       # SHO/HSO/HOS  (V1 legacy)
+    scnr_amount: float = 1.0 # 0..1 strength of the V1 native SCNR stage
 
     # # === SASpro Narrowband Normalization V2 (Bill Blanshan) ===
     # V2 (Bill Blanshan v2.23) fields.  use_v2=True routes to the new
@@ -523,7 +524,10 @@ def _normalize_sho(ha: np.ndarray, oiii: np.ndarray, sii: np.ndarray, params: NB
         if not params.scnr:
             G = t1
         else:
-            G = np.minimum((R + E6) * 0.5, t1)
+            # Lerp toward the fully-suppressed value so the amount slider is
+            # continuous; amount 1.0 reproduces the original hard min().
+            _amt = float(np.clip(params.scnr_amount, 0.0, 1.0))
+            G = t1 + (np.minimum((R + E6) * 0.5, t1) - t1) * _amt
         B = E6
 
         if params.mode == 0:
@@ -621,7 +625,8 @@ def _normalize_hso(ha: np.ndarray, oiii: np.ndarray, sii: np.ndarray, params: NB
         if not params.scnr:
             G = E3
         else:
-            G = np.minimum((R + E6) * 0.5, E3)
+            _amt = float(np.clip(params.scnr_amount, 0.0, 1.0))
+            G = E3 + (np.minimum((R + E6) * 0.5, E3) - E3) * _amt
         B = E6
 
         if params.mode == 0:
@@ -784,8 +789,15 @@ def _v2_mtf(m: float, x: np.ndarray) -> np.ndarray:
     """Element-wise MTF.  mtf(m, m) = 0.5, mtf(0.5, x) = x."""
     if m == 0.5:
         return x
+    # Clamp m away from 0 and 1: at m == 0 the expression degenerates to
+    # -x / -x, which is nan at x == 0 and would poison the channel. Matches
+    # the guard already in the V1 _mtf().
+    m = float(np.clip(m, _EPS, 1.0 - _EPS))
     num = (m - 1.0) * x
     den = (2.0 * m - 1.0) * x - m
+    den = np.where(np.abs(den) < _EPS,
+                   np.where(den >= 0.0, _EPS, -_EPS).astype(np.float32),
+                   den)
     return (num / den).astype(np.float32, copy=False)
 
 

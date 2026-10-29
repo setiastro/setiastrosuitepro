@@ -1141,7 +1141,289 @@ def _onnx_remove(tile_rgb01: np.ndarray, sess) -> np.ndarray:
     pred = pred[:h, :w, :]
     return np.clip(pred, 0.0, 1.0)
 
-def satellite_detect_image(
+# ---------------------------------------------------------------------------
+# Fixed-pattern artifact map
+#
+# Satellite trails are TRANSIENT: a given sensor position is crossed in one
+# frame, maybe two. Diffraction spikes and amp glow are PERSISTENT: they sit in
+# the same SENSOR position in every frame of a session. So a tile that keeps
+# passing both detectors across a whole set is almost certainly not a satellite.
+#
+# The map is kept at PIXEL resolution in unpadded image coordinates rather than
+# keyed on tile indices, because the detect and removal passes do not share a
+# tile grid: the removal path reflect-pads the image by 512px before tiling and
+# uses the user's overlap (default 64), while the detect path tiles the raw
+# image with overlap 0. Identical tile indices in the two passes therefore
+# cover completely different pixels. A pixel map is immune to both.
+#
+# Limits worth knowing: this is stationary in SENSOR coordinates, so it is
+# exact for amp glow, good for diffraction spikes under ordinary dithering, and
+# degrades under field rotation (alt-az rigs) where spikes sweep across tiles.
+# The failure mode is a missed veto, never a false one.
+# ---------------------------------------------------------------------------
+
+ARTIFACT_MIN_FRAMES = 5      # below this there is no statistic; do not veto
+ARTIFACT_FRAC = 0.8          # flagged in >= this fraction of frames == fixed
+ARTIFACT_TILE_FRAC = 0.7     # tile is vetoed when >= this much of it is artifact
+
+
+_GROUP_EXP_KEYS = ("EXPTIME", "EXPOSURE", "XPOSURE", "EXP-TIME", "EXP_TIME",
+                   "ITIME", "INTTIME", "EXP")
+
+
+def artifact_group_key(header, shape_hw) -> tuple:
+    """THE definition of which frames may be pooled for the fixed-pattern
+    statistic. Every call site must use this one — there is no second copy.
+
+    Mirrors the Object / Filter / Exposure grouping Blink's tree already
+    shows, plus sensor dimensions and instrument.
+
+    Filter is not optional. Amp glow is a property of the sensor AND the
+    exposure, so a 20-frame Ha set full of glow pooled with 20 clean Green
+    frames puts the glow in 20 of 40 frames -- under any sane persistence
+    threshold, so it is NOT recognised as fixed-pattern and all 20 Ha frames
+    get flagged as satellite trails. Grouping by shape alone does exactly
+    that whenever two filters come off one camera.
+    """
+    h = header or {}
+
+    def _get(*keys):
+        for k in keys:
+            try:
+                if k in h and h[k] is not None:
+                    return h[k]
+            except Exception:
+                pass
+            try:
+                v = h.get(k)
+                if v is not None:
+                    return v
+            except Exception:
+                pass
+        return None
+
+    exp = _get(*_GROUP_EXP_KEYS)
+    try:
+        s = str(exp).strip().rstrip("sS").strip()
+        exp_key = round(float(s), 3)
+    except Exception:
+        exp_key = "Unknown"
+
+    return (
+        tuple(int(v) for v in shape_hw[:2]),
+        str(_get("OBJECT") or "Unknown"),
+        str(_get("FILTER") or "Unknown"),
+        exp_key,
+        str(_get("INSTRUME") or ""),
+    )
+
+
+def new_artifact_accumulator(shape_hw) -> np.ndarray:
+    """Per-pixel hit counter for one GROUP of frames (one sensor, one shape)."""
+    return np.zeros((int(shape_hw[0]), int(shape_hw[1])), dtype=np.int32)
+
+
+def accumulate_artifact_tiles(acc: np.ndarray, tiles) -> None:
+    """Add ONE frame's passing tiles. `tiles` is an iterable of
+    (y0, x0, h, w) rectangles in UNPADDED image coordinates.
+
+    The frame's tiles are unioned into a boolean hit map first and that is
+    added, so a pixel contributes AT MOST 1 per frame. Adding rectangles
+    directly would double-count wherever two passing tiles overlap, letting a
+    pixel's count exceed the frame total and cross the threshold on a single
+    frame -- which matters as soon as a caller scans with a non-zero overlap.
+    """
+    if acc is None or not tiles:
+        return
+    H, W = acc.shape[:2]
+    hit = np.zeros((H, W), dtype=bool)
+    for (y0, x0, h, w) in tiles:
+        y0 = max(0, int(y0)); x0 = max(0, int(x0))
+        y1 = min(H, y0 + int(h)); x1 = min(W, x0 + int(w))
+        if y1 > y0 and x1 > x0:
+            hit[y0:y1, x0:x1] = True
+    acc += hit
+
+
+def finalize_artifact_mask(
+    acc: np.ndarray,
+    n_frames: int,
+    *,
+    min_frames: int = ARTIFACT_MIN_FRAMES,
+    frac: float = ARTIFACT_FRAC,
+):
+    """
+    Returns (mask_or_None, threshold_used).
+
+    None when the group is too small to support the statistic, or when nothing
+    is persistent. Callers must treat None as "no veto" and fall back to
+    ordinary single-pass behavior.
+    """
+    n = int(n_frames)
+    if acc is None or n < int(min_frames):
+        return None, 0
+    thr = max(2, int(np.ceil(float(frac) * n)))
+    mask = (acc >= thr)
+    if not bool(mask.any()):
+        return None, thr
+    return mask, thr
+
+
+def tile_is_vetoed(mask, y0: int, x0: int, h: int, w: int,
+                   *, frac: float = ARTIFACT_TILE_FRAC) -> bool:
+    """True when most of this tile sits inside the fixed-pattern mask.
+    Coordinates must be in the SAME frame of reference as `mask`."""
+    if mask is None:
+        return False
+    H, W = mask.shape[:2]
+    y0 = max(0, int(y0)); x0 = max(0, int(x0))
+    y1 = min(H, y0 + int(h)); x1 = min(W, x0 + int(w))
+    if y1 <= y0 or x1 <= x0:
+        return False
+    sub = mask[y0:y1, x0:x1]
+    if sub.size == 0:
+        return False
+    return bool(float(sub.mean()) >= float(frac))
+
+
+def artifact_tile_count(mask, chunk: int = 256, frac: float = 0.5) -> int:
+    """How many chunk-sized tiles the mask covers. Reporting only."""
+    if mask is None:
+        return 0
+    H, W = mask.shape[:2]
+    chunk = max(1, int(chunk))
+    n = 0
+    for y0 in range(0, H, chunk):
+        for x0 in range(0, W, chunk):
+            sub = mask[y0:min(H, y0 + chunk), x0:min(W, x0 + chunk)]
+            if sub.size and float(sub.mean()) >= float(frac):
+                n += 1
+    return n
+
+
+class ArtifactMapBuilder:
+    """Accumulates one detection scan and splits its frames into clean vs real.
+
+    Every caller does the same four things after scanning: count tiles per
+    group, threshold into a mask, test each frame's tiles against it, and sort
+    the frames into "nothing real here" and "these tiles are real". That logic
+    lived in three copies -- Blink, the Cosmic Clarity batch, Calibrate_Lights
+    -- and the copies drifted, which is how Highlight mode silently stopped
+    rejecting fixed-pattern tiles while Fast kept working. One copy, here.
+
+    Callers still own their own loading and threading, which genuinely differ;
+    they only hand results in via add() and ask for the verdict via finalize().
+
+    Usage:
+        b = ArtifactMapBuilder()
+        for item in ...:
+            b.add(item_id, header, shape_hw, tiles)     # tiles from
+                                                        # satellite_detect_tiles
+        clean, real, n_tiles = b.finalize(status_cb=log)
+
+      clean  set of item ids with NO real trail -- never load these again
+      real   {item id: [real tiles]} -- hand straight to satellite_remove_image
+             as detect_tiles so it runs no detection of its own
+    """
+
+    def __init__(self, *, min_frames: int = ARTIFACT_MIN_FRAMES,
+                 frac: float = ARTIFACT_FRAC,
+                 tile_frac: float = ARTIFACT_TILE_FRAC):
+        self._min_frames = int(min_frames)
+        self._frac = float(frac)
+        self._tile_frac = float(tile_frac)
+        self._groups: Dict[tuple, list] = {}      # gkey -> [acc, n]
+        self._items: list = []                    # (item_id, gkey, tiles)
+
+    def add(self, item_id, header, shape_hw, tiles) -> tuple:
+        """Record one scanned frame. Returns the group key it landed in."""
+        gkey = artifact_group_key(header, shape_hw)
+        slot = self._groups.get(gkey)
+        if slot is None:
+            slot = [new_artifact_accumulator(gkey[0]), 0]
+            self._groups[gkey] = slot
+        accumulate_artifact_tiles(slot[0], tiles)
+        slot[1] += 1
+        self._items.append((item_id, gkey, list(tiles or [])))
+        return gkey
+
+    @property
+    def n_groups(self) -> int:
+        return len(self._groups)
+
+    def finalize(self, status_cb=None):
+        """Returns (clean_ids, real_by_id, n_artifact_tiles)."""
+        def _say(msg):
+            if status_cb:
+                try:
+                    status_cb(msg)
+                except Exception:
+                    pass
+
+        masks: Dict[tuple, Any] = {}
+        n_art = 0
+        for gkey, (acc, n) in self._groups.items():
+            mask, thr = finalize_artifact_mask(
+                acc, n, min_frames=self._min_frames, frac=self._frac)
+            masks[gkey] = mask
+            lbl = f"{gkey[1]}/{gkey[2]}/{gkey[3]}"
+            if mask is not None:
+                k = artifact_tile_count(mask)
+                n_art += k
+                _say(f"[{lbl}] {n} frames, threshold {thr}: "
+                     f"{k} fixed-pattern tile(s) ignored")
+            elif n < self._min_frames:
+                _say(f"[{lbl}] only {n} frame(s) — too few for fixed-pattern "
+                     f"analysis (needs {self._min_frames})")
+            else:
+                _say(f"[{lbl}] {n} frames: nothing persistent")
+
+        clean = set()
+        real: dict = {}
+        for item_id, gkey, tiles in self._items:
+            if not tiles:
+                clean.add(item_id)
+                continue
+            mask = masks.get(gkey)
+            survivors = tiles if mask is None else [
+                t for t in tiles
+                if not tile_is_vetoed(mask, t[0], t[1], t[2], t[3],
+                                      frac=self._tile_frac)
+            ]
+            if survivors:
+                real[item_id] = survivors
+            else:
+                clean.add(item_id)
+        return clean, real, n_art
+
+
+def _rects_overlap(ay: int, ax: int, ah: int, aw: int, b) -> bool:
+    """Do tile rect A and rect B share any pixel? Both (y0, x0, h, w)."""
+    by, bx, bh, bw = b
+    return not (ay + ah <= by or by + bh <= ay or ax + aw <= bx or bx + bw <= ax)
+
+
+def _apply_tile_veto(detected_indices, all_tiles, veto_mask, veto_frac):
+    """
+    All-or-nothing, deliberately.
+
+    If ANY detected tile survives the veto, keep them ALL: the frame genuinely
+    contains a trail, and skipping its other detected tiles would leave a hard
+    clipped/unclipped edge part-way along that trail -- a new artifact worse
+    than either extreme. Only when EVERY detection sits on known fixed-pattern
+    structure is the frame treated as clean.
+    """
+    if veto_mask is None or not detected_indices:
+        return detected_indices
+    for i in detected_indices:
+        tile, y0, x0 = all_tiles[i]
+        th, tw = tile.shape[:2]
+        if not tile_is_vetoed(veto_mask, y0, x0, th, tw, frac=veto_frac):
+            return detected_indices
+    return []
+
+
+def satellite_detect_tiles(
     image: np.ndarray,
     models: Dict[str, Any],
     *,
@@ -1151,24 +1433,26 @@ def satellite_detect_image(
     temp_stretch: bool = True,
     target_median: float = 0.25,
     compatibility_mode: bool = False,
-    min_tiles: int = 1,
+    stop_after: Optional[int] = None,
     status_cb=print,
-) -> bool:
+) -> list:
     """
     Detection-only pass: det1 + det2 over INTERIOR tiles, no NAFNet removal.
 
-    This exists so Blink's "Fast" mode stops carrying its own copy of the
-    detection loop. The inline copy hardcoded batch_size=32 for every backend,
-    which on DirectML is a multi-second dispatch straight into the Windows TDR
-    watchdog -- _satellite_batch_sizes() caps DML at 4 for exactly that reason
-    and the inline copy never consulted it.
+    Returns the list of (y0, x0, h, w) tiles that passed both classifiers, in
+    UNPADDED image coordinates.
 
-    Returns True when at least `min_tiles` interior tiles pass both
-    classifiers. Raises DeviceLostError when the adapter is gone: the caller
-    MUST abort the batch rather than record the frame as clean.
+    `stop_after=N` early-exits once N tiles have passed -- the right choice when
+    the caller only wants a yes/no. Pass None to evaluate EVERY tile, which the
+    artifact map needs: an early exit would bias the per-pixel counts toward
+    whichever tiles happen to be scanned first.
+
+    Raises DeviceLostError when the adapter is gone: the caller MUST abort the
+    batch rather than record the frame as clean.
     """
     chunk_size = _cap_chunk_size_for_device(models.get("device"), int(chunk_size))
     overlap = max(0, min(int(overlap), chunk_size - 1))
+    limit = None if stop_after is None else max(1, int(stop_after))
 
     rgb01, _was_mono, _orig_min, _scale = _normalize_for_satellite(image)
     H, W = rgb01.shape[:2]
@@ -1185,8 +1469,10 @@ def satellite_detect_image(
         )
     ]
     if not interior:
-        return False
+        return []
 
+    coords = [(int(y0), int(x0), int(t.shape[0]), int(t.shape[1]))
+              for (t, y0, x0) in interior]
     tiles_only = [t.astype(np.float32) for (t, _, _) in interior]
     is_onnx = bool(models.get("is_onnx", False))
     detect_bs, _remove_bs = _satellite_batch_sizes(models, chunk_size, compatibility_mode)
@@ -1195,14 +1481,14 @@ def satellite_detect_image(
     if is_onnx:
         det1_sess = models["detection_model1"]
         det2_sess = models["detection_model2"]
-        hits = 0
+        hits: list = []
         with _gpu_gate(models):
-            for tile in tiles_only:
+            for j, tile in enumerate(tiles_only):
                 if _onnx_detect(tile, det1_sess) and _onnx_detect(tile, det2_sess):
-                    hits += 1
-                    if hits >= min_tiles:
-                        return True
-        return False
+                    hits.append(coords[j])
+                    if limit is not None and len(hits) >= limit:
+                        return hits
+        return hits
 
     # ---- Torch (CUDA / torch-directml / MPS / CPU) ----
     # Resize OUTSIDE the GPU gate: it is pure CPU/skimage work and is exactly
@@ -1214,8 +1500,10 @@ def satellite_detect_image(
     det1 = models["detection_model1"]
     det2 = models["detection_model2"]
 
-    def _detect_pass(bs: int) -> int:
-        hits = 0
+    def _detect_pass(bs: int) -> list:
+        # Fresh list each call: _with_batch_fallback may re-run this whole pass
+        # at a smaller batch size, so it must be idempotent.
+        found: list = []
         for i in range(0, len(resized), bs):
             batch_np = np.stack(resized[i:i + bs], axis=0)
             batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
@@ -1235,15 +1523,30 @@ def satellite_detect_image(
                 with torch.no_grad():
                     o2 = det2(x[idxs]).flatten()
                 keep2 = torch_to_np((o2 > 0.25).detach().float()).astype(bool)
-                hits += int(keep2.sum())
-                if hits >= min_tiles:
-                    return hits
-        return hits
+                idxs_cpu = torch_to_np(idxs.detach().float()).astype(np.int64)
+                for local_j, passed in zip(idxs_cpu, keep2):
+                    if passed:
+                        found.append(coords[i + int(local_j)])
+                if limit is not None and len(found) >= limit:
+                    return found
+        return found
 
     with _gpu_gate(models):
-        hits = _with_batch_fallback(_detect_pass, detect_bs, label="detection")
+        return _with_batch_fallback(_detect_pass, detect_bs, label="detection")
 
-    return int(hits) >= int(min_tiles)
+
+def satellite_detect_image(
+    image: np.ndarray,
+    models: Dict[str, Any],
+    *,
+    min_tiles: int = 1,
+    **kwargs,
+) -> bool:
+    """Yes/no wrapper over satellite_detect_tiles, with the early exit on."""
+    tiles = satellite_detect_tiles(
+        image, models, stop_after=int(min_tiles), **kwargs
+    )
+    return len(tiles) >= int(min_tiles)
 
 
 def satellite_remove_image(
@@ -1321,9 +1624,28 @@ def _satellite_remove_image_impl(
     compatibility_mode: bool = False,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     return_mask: bool = False,
+    veto_mask=None,
+    veto_frac: float = ARTIFACT_TILE_FRAC,
+    detect_tiles=None,
+    status_cb=print,
 ):
     """
     image: input image with arbitrary calibrated range
+
+    detect_tiles: optional list of (y0, x0, h, w) rects, in UNPADDED image
+      coordinates, that a previous detection pass already established hold
+      REAL trails. When given, the detection models are NOT run at all: only
+      tiles overlapping these rects go through NAFNet and everything else is
+      passed through untouched. This is the whole point of the two-pass
+      design -- pass 1 already answered "where", so pass 2 re-running det1 and
+      det2 over every tile would just rediscover it at full cost.
+
+    veto_mask: optional bool array, SAME HxW as `image`, marking fixed-pattern
+      structure (diffraction spikes / amp glow) established across a whole set
+      by the artifact-map helpers above. A frame whose detections ALL land on
+      it is treated as clean and never touched. None disables the veto, which
+      is the only correct behavior for a single image.
+
     Returns:
       default: (out_image_same_shape_style, trail_detected_any)
       if return_mask=True: (out_image_same_shape_style, trail_detected_any, trail_mask_2d_bool)
@@ -1334,6 +1656,33 @@ def _satellite_remove_image_impl(
     # Whole-image reflect padding for better edge behavior, like denoise
     full_pad = 512
     rgb01_work, full_pads = _reflect_pad_full_rgb(rgb01, pad=full_pad)
+
+    # Pad the veto mask the SAME way so tile coordinates inside
+    # _satellite_remove_rgb (which are in padded space) index it directly.
+    # Constant False, not reflect: the pad is synthetic and border tiles are
+    # excluded from trail_any anyway.
+    veto_work = None
+    if veto_mask is not None:
+        _vm = np.asarray(veto_mask, dtype=bool)
+        if _vm.shape[:2] == rgb01.shape[:2]:
+            veto_work = np.pad(
+                _vm, ((full_pad, full_pad), (full_pad, full_pad)),
+                mode="constant", constant_values=False,
+            ) if full_pad > 0 else _vm
+        else:
+            try:
+                status_cb(f"[Satellite] veto mask shape {_vm.shape[:2]} != image "
+                          f"{rgb01.shape[:2]} — ignoring it for this frame.")
+            except Exception:
+                pass
+
+    # Shift known-trail rects into the padded frame the tiler works in.
+    force_tiles = None
+    if detect_tiles:
+        force_tiles = [
+            (int(y0) + full_pad, int(x0) + full_pad, int(h), int(w))
+            for (y0, x0, h, w) in detect_tiles
+        ]
 
     def _should_stretch(x: np.ndarray) -> bool:
         x = np.asarray(x, np.float32)
@@ -1366,6 +1715,9 @@ def _satellite_remove_image_impl(
             border_size=border_size,
             compatibility_mode=compatibility_mode,
             progress_cb=progress_cb,
+            veto_mask=veto_work,
+            veto_frac=veto_frac,
+            force_tiles=force_tiles,
         )
 
         out_y = out3[..., 0]
@@ -1404,6 +1756,9 @@ def _satellite_remove_image_impl(
             border_size=border_size,
             compatibility_mode=compatibility_mode,
             progress_cb=progress_cb,
+            veto_mask=veto_work,
+            veto_frac=veto_frac,
+            force_tiles=force_tiles,
         )
 
         if stretch_needed:
@@ -1440,6 +1795,106 @@ def _satellite_remove_image_impl(
         return out_rgb, detected, np.asarray(trail_mask, dtype=bool)
     return out_rgb, detected
 
+def _finish_satellite_tiles(out_tiles, mask_tiles, rgb01, H, W, border_size, trail_any):
+    """Stitch, restore the untouched border, and return. Shared by the normal
+    detect-then-remove path and the known-tile fast path."""
+    out = _stitch_ignore_border(out_tiles, (H, W, 3), border=border_size)
+    trail_mask_full = _stitch_mask_ignore_border(mask_tiles, (H, W), border=border_size)
+
+    if border_size > 0:
+        out[:border_size, :, :] = rgb01[:border_size, :, :]
+        out[-border_size:, :, :] = rgb01[-border_size:, :, :]
+        out[:, :border_size, :] = rgb01[:, :border_size, :]
+        out[:, -border_size:, :] = rgb01[:, -border_size:, :]
+
+        trail_mask_full[:border_size, :] = False
+        trail_mask_full[-border_size:, :] = False
+        trail_mask_full[:, :border_size] = False
+        trail_mask_full[:, -border_size:] = False
+
+    out = np.clip(out, 0.0, 1.0).astype(np.float32)
+
+    if not trail_any:
+        return rgb01.astype(np.float32), False, np.zeros((H, W), dtype=bool)
+
+    return out, True, trail_mask_full
+
+
+def _remove_known_tiles(all_tiles, detected_indices, out_tiles, mask_tiles, models,
+                        *, chunk_size, clip_trail, sensitivity,
+                        compatibility_mode, progress_cb, total):
+    """NAFNet removal on a KNOWN tile set — no detection models are run.
+
+    Used by the two-pass flow, where pass 1 already established exactly which
+    tiles hold real trails.
+    """
+    is_onnx = bool(models.get("is_onnx", False))
+    _detect_bs, remove_bs = _satellite_batch_sizes(models, chunk_size, compatibility_mode)
+    done = [0]
+
+    def _store(src_idx, pred):
+        orig, y0, x0 = all_tiles[src_idx]
+        orig = orig.astype(np.float32)
+        if clip_trail:
+            final, trail_mask = _apply_clip_trail_logic(
+                pred, orig, sensitivity, return_mask=True
+            )
+        else:
+            final = pred
+            trail_mask = np.zeros(orig.shape[:2], dtype=bool)
+        out_tiles[src_idx] = (final, y0, x0)
+        mask_tiles[src_idx] = (trail_mask, y0, x0)
+        done[0] += 1
+
+    if is_onnx:
+        rem_sess = models["removal_model"]
+        with _gpu_gate(models):
+            for i in detected_indices:
+                orig = all_tiles[i][0].astype(np.float32)
+                _store(i, _onnx_remove(orig, rem_sess))
+                _tick(progress_cb, total, total)
+        return
+
+    torch = models["torch"]
+    device = models["device"]
+    rem = models["removal_model"]
+
+    padded_tiles = []
+    orig_shapes = []
+    for idx in detected_indices:
+        padded, h, w = _pad_tile_to_shape_rgb(
+            all_tiles[idx][0].astype(np.float32), chunk_size, chunk_size
+        )
+        padded_tiles.append(padded)
+        orig_shapes.append((h, w))
+
+    def _remove_pass(bs: int) -> None:
+        done[0] = 0
+        for batch_start in range(0, len(padded_tiles), bs):
+            batch_np = np.stack(padded_tiles[batch_start:batch_start + bs], axis=0)
+            batch_np = np.transpose(batch_np, (0, 3, 1, 2)).astype(np.float32)
+
+            x = np_to_torch(batch_np, torch=torch)
+            if hasattr(device, "type") and device.type == "cuda":
+                x = x.pin_memory().to(device, dtype=torch.float32, non_blocking=True)
+            else:
+                x = x.to(device=device, dtype=torch.float32)
+
+            with torch.no_grad(), _autocast_context(torch, device):
+                y = torch_to_np(rem(x).detach().float())
+
+            y = np.transpose(y, (0, 2, 3, 1))
+            for local_j, pred in enumerate(y):
+                src_idx = detected_indices[batch_start + local_j]
+                h, w = orig_shapes[batch_start + local_j]
+                _store(src_idx, np.clip(pred[:h, :w, :], 0.0, 1.0).astype(np.float32))
+
+            _tick(progress_cb, total, total)
+
+    with _gpu_gate(models):
+        _with_batch_fallback(_remove_pass, remove_bs, label="removal")
+
+
 def _is_border_tile(y0: int, x0: int, y1: int, x1: int, H: int, W: int, border_size: int = 16) -> bool:
     """Returns True if this tile overlaps the image border region."""
     return y0 < border_size or x0 < border_size or y1 > H - border_size or x1 > W - border_size
@@ -1470,6 +1925,9 @@ def _satellite_remove_rgb_impl(
     border_size: int,
     compatibility_mode: bool,
     progress_cb: Optional[Callable[[int, int], None]],
+    veto_mask=None,
+    veto_frac: float = ARTIFACT_TILE_FRAC,
+    force_tiles=None,
 ) -> Tuple[np.ndarray, bool, np.ndarray]:
     is_onnx = bool(models.get("is_onnx", False))
 
@@ -1481,42 +1939,103 @@ def _satellite_remove_rgb_impl(
     out_tiles = [None] * total
     mask_tiles = [None] * total
 
+    # ── Known-tile fast path ────────────────────────────────────────────────
+    # A previous detection pass already told us which tiles hold real trails,
+    # so run NO detection here: mark the tiles overlapping those rects, pass
+    # every other tile straight through, and go directly to removal.
+    if force_tiles is not None:
+        detected_indices = []
+        for i, (tile, y0, x0) in enumerate(all_tiles):
+            th, tw = tile.shape[:2]
+            if any(_rects_overlap(y0, x0, th, tw, r) for r in force_tiles):
+                detected_indices.append(i)
+            else:
+                out_tiles[i] = (tile.astype(np.float32), y0, x0)
+                mask_tiles[i] = (np.zeros((th, tw), dtype=bool), y0, x0)
+
+        trail_any = any(
+            not _is_border_tile(
+                all_tiles[i][1], all_tiles[i][2],
+                all_tiles[i][1] + all_tiles[i][0].shape[0],
+                all_tiles[i][2] + all_tiles[i][0].shape[1],
+                H, W, border_size
+            )
+            for i in detected_indices
+        )
+
+        if detected_indices:
+            _remove_known_tiles(
+                all_tiles, detected_indices, out_tiles, mask_tiles, models,
+                chunk_size=chunk_size, clip_trail=clip_trail,
+                sensitivity=sensitivity, compatibility_mode=compatibility_mode,
+                progress_cb=progress_cb, total=total,
+            )
+        else:
+            _tick(progress_cb, total, total)
+
+        return _finish_satellite_tiles(
+            out_tiles, mask_tiles, rgb01, H, W, border_size, trail_any
+        )
+
     # ---------------- ONNX path ----------------
     if is_onnx:
         det1_sess = models["detection_model1"]
         det2_sess = models["detection_model2"]
         rem_sess  = models["removal_model"]
 
-        for idx, (tile, y0, x0) in enumerate(all_tiles, start=1):
+        # Phase 1 — DETECT every tile first, touching no pixels. This used to
+        # be one interleaved detect+remove loop, but the all-or-nothing veto
+        # needs the whole detection set before it can decide whether this
+        # frame's detections are all fixed-pattern structure. Splitting also
+        # makes this path behave like the torch path instead of diverging.
+        det_flags = [False] * total
+        for idx, (tile, y0, x0) in enumerate(all_tiles):
             orig = tile.astype(np.float32)
-            y1 = y0 + tile.shape[0]
-            x1 = x0 + tile.shape[1]
+            out_tiles[idx] = (orig, y0, x0)
+            mask_tiles[idx] = (np.zeros(orig.shape[:2], dtype=bool), y0, x0)
 
             d1 = _onnx_detect(orig, det1_sess)
-            detected = bool(d1 and _onnx_detect(orig, det2_sess))
+            det_flags[idx] = bool(d1 and _onnx_detect(orig, det2_sess))
 
-            if detected:
-                pred = _onnx_remove(orig, rem_sess)
-                if clip_trail:
-                    final, trail_mask = _apply_clip_trail_logic(
-                        pred, orig, sensitivity, return_mask=True
-                    )
-                else:
-                    final = pred
-                    trail_mask = np.zeros(orig.shape[:2], dtype=bool)
+            _tick(progress_cb, idx + 1, total)
 
-                # Match the torch path: only interior detections count, border
-                # tiles are reflected padding and false-positive constantly.
-                if not _is_border_tile(y0, x0, y1, x1, H, W, border_size):
-                    trail_any = True
+        detected_indices = [i for i, f in enumerate(det_flags) if f]
+        detected_indices = _apply_tile_veto(
+            detected_indices, all_tiles, veto_mask, veto_frac
+        )
+
+        # Only interior detections count; border tiles are reflected padding
+        # and false-positive constantly.
+        trail_any = any(
+            not _is_border_tile(
+                all_tiles[i][1], all_tiles[i][2],
+                all_tiles[i][1] + all_tiles[i][0].shape[0],
+                all_tiles[i][2] + all_tiles[i][0].shape[1],
+                H, W, border_size
+            )
+            for i in detected_indices
+        )
+
+        # Phase 2 — REMOVE on the surviving detections only.
+        # Progress stays pinned at 100% through this phase (the tile count is
+        # not known until phase 1 ends); the tick is kept so Cancel still works.
+        for i in detected_indices:
+            orig, y0, x0 = all_tiles[i]
+            orig = orig.astype(np.float32)
+
+            pred = _onnx_remove(orig, rem_sess)
+            if clip_trail:
+                final, trail_mask = _apply_clip_trail_logic(
+                    pred, orig, sensitivity, return_mask=True
+                )
             else:
-                final = orig
+                final = pred
                 trail_mask = np.zeros(orig.shape[:2], dtype=bool)
 
-            out_tiles[idx - 1] = (final, y0, x0)
-            mask_tiles[idx - 1] = (trail_mask, y0, x0)
+            out_tiles[i] = (final, y0, x0)
+            mask_tiles[i] = (trail_mask, y0, x0)
 
-            _tick(progress_cb, idx, total)
+            _tick(progress_cb, total, total)
 
     # ---------------- Torch path ----------------
     else:
@@ -1587,6 +2106,13 @@ def _satellite_remove_rgb_impl(
             detected_flags = _with_batch_fallback(_detect_pass, detect_bs, label="detection")
 
         detected_indices = [i for i, flag in enumerate(detected_flags) if flag]
+
+        # Drop the frame's detections when EVERY one of them lands on known
+        # fixed-pattern structure. All-or-nothing by design — see _apply_tile_veto.
+        detected_indices = _apply_tile_veto(
+            detected_indices, all_tiles, veto_mask, veto_frac
+        )
+
         # Only count interior tile detections toward trail_any — border tiles have
         # reflected padding content that causes false positives for skip-save logic
         trail_any = any(
@@ -1652,23 +2178,6 @@ def _satellite_remove_rgb_impl(
         # had a trail, which is precisely the extra GPU pressure that pushed
         # Highlight mode over the DirectML TDR window. Removed.
 
-    out = _stitch_ignore_border(out_tiles, (H, W, 3), border=border_size)
-    trail_mask_full = _stitch_mask_ignore_border(mask_tiles, (H, W), border=border_size)
-
-    if border_size > 0:
-        out[:border_size, :, :] = rgb01[:border_size, :, :]
-        out[-border_size:, :, :] = rgb01[-border_size:, :, :]
-        out[:, :border_size, :] = rgb01[:, :border_size, :]
-        out[:, -border_size:, :] = rgb01[:, -border_size:, :]
-
-        trail_mask_full[:border_size, :] = False
-        trail_mask_full[-border_size:, :] = False
-        trail_mask_full[:, :border_size] = False
-        trail_mask_full[:, -border_size:] = False
-
-    out = np.clip(out, 0.0, 1.0).astype(np.float32)
-
-    if not trail_any:
-        return rgb01.astype(np.float32), False, np.zeros((H, W), dtype=bool)
-
-    return out, True, trail_mask_full
+    return _finish_satellite_tiles(
+        out_tiles, mask_tiles, rgb01, H, W, border_size, trail_any
+    )

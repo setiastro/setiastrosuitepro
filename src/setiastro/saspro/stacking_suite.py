@@ -20385,7 +20385,8 @@ class StackingSuiteDialog(QDialog):
         }
 
     def _apply_satellite_removal_to_calibrated_light(
-        self, light_data, *, is_mono: bool, models=None, opts: dict | None = None
+        self, light_data, *, is_mono: bool, models=None, opts: dict | None = None,
+        veto_mask=None, detect_tiles=None,
     ):
         """
         Run SASpro satellite trail removal on an already-calibrated light frame.
@@ -20475,6 +20476,8 @@ class StackingSuiteDialog(QDialog):
             compatibility_mode=bool(compatibility_mode),
             progress_cb=None,
             return_mask=True,
+            veto_mask=veto_mask,
+            detect_tiles=detect_tiles,
         )
 
         out = np.asarray(out_img, dtype=np.float32, copy=False)
@@ -22341,6 +22344,8 @@ class StackingSuiteDialog(QDialog):
             from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
                 get_satellite_models,
                 trail_mask_requires_rewrite,
+                satellite_detect_tiles,
+                ArtifactMapBuilder,
             )
             from setiastro.saspro.cosmicclarity_engines._backend_guard import (
                 DeviceLostError as _SatDeviceLost,
@@ -22396,6 +22401,109 @@ class StackingSuiteDialog(QDialog):
 
                 sat_workers = int(sat_opts["workers"])
 
+                # ── PASS 1 — detect across every calibrated light, write
+                # nothing. A diffraction spike sits in the same sensor
+                # position in every frame; without this it gets clipped to
+                # 0.000 in all of them, damaging that star across the whole
+                # integration. Detection is two small classifiers and removal
+                # is a 4-level UNet, so skipping NAFNet on persistent tiles
+                # more than pays for the extra scan.
+                sat_clean: set = set()      # scanned, no real trail -> never reloaded
+                sat_real_tiles: dict = {}   # path -> REAL trail tiles from pass 1
+                sat_scanned_any = False
+                if sat_files:
+                    sat_scanned_any = True
+                    self.update_status(self.tr(
+                        f"🛰️ Pass 1 of 2 — scanning {n_sat} frame(s) for "
+                        f"diffraction spikes / amp glow…"
+                    ))
+                    QApplication.processEvents()
+
+                    _builder = ArtifactMapBuilder()
+                    _scanned_any_frame = False
+                    for _i, _cp in enumerate(sat_files):
+                        if self._cancelled() or sat_abort.is_set():
+                            break
+                        try:
+                            if not os.path.exists(_cp):
+                                continue
+                            _sd, _shdr, _sb, _smono = load_image(_cp)
+                            if _sd is None:
+                                continue
+                            _arr = np.asarray(_sd, dtype=np.float32)
+                            if _arr.ndim == 3 and _arr.shape[0] == 3 and _arr.shape[-1] != 3:
+                                _arr = _arr.transpose(1, 2, 0)
+                            _hw = tuple(int(v) for v in _arr.shape[:2])
+                            # Object/Filter/Exposure/Instrument, NOT shape:
+                            # Ha and Green off one camera share a shape, and
+                            # pooling them sinks the Ha amp glow below the
+                            # persistence threshold so every Ha frame flags.
+                            _tiles = satellite_detect_tiles(
+                                _arr, sat_models,
+                                chunk_size=int(sat_opts["chunk_size"]),
+                                # MUST be 0: the persistence map is tested back
+                                # against whole tiles, so this grid has to be
+                                # fixed and non-overlapping. Pass 2 takes
+                                # detect_tiles and runs no detection, so there
+                                # is no sensitivity gap to close here.
+                                overlap=0,
+                                border_size=int(sat_opts["border_size"]),
+                                temp_stretch=bool(sat_opts["temp_stretch"]),
+                                target_median=float(sat_opts["target_median"]),
+                                compatibility_mode=bool(sat_opts["compatibility_mode"]),
+                                stop_after=None,
+                                status_cb=lambda _m: None,
+                            )
+                        except _SatDeviceLost as _e:
+                            if not sat_device_err:
+                                sat_device_err.append(_sat_exc_str(_e))
+                            sat_abort.set()
+                            break
+                        except Exception as _e:
+                            self.update_status(self.tr(
+                                f"⚠️ Pass 1 skipped {os.path.basename(_cp)}: {_e}"
+                            ))
+                            continue
+
+                        _builder.add(_cp, _shdr, _hw, _tiles)
+                        _scanned_any_frame = True
+
+                        if (_i % 10) == 0:
+                            self.update_status(self.tr(
+                                f"🛰️ Pass 1: {_i + 1}/{n_sat}"
+                            ))
+                            QApplication.processEvents()
+
+                    # A pass 1 that stopped early (cancel, or the adapter going
+                    # away) has seen only part of the set. Counts from a
+                    # fraction of the frames cannot support the persistence
+                    # statistic, and a partial "clean" list would skip frames
+                    # that were simply never looked at. Discard it and fall
+                    # back to ordinary single-pass behavior.
+                    if self._cancelled() or sat_abort.is_set() or not _scanned_any_frame:
+                        sat_real_tiles.clear()
+                        sat_clean.clear()
+                        sat_scanned_any = False
+                        self.update_status(self.tr(
+                            "🛰️ Scan did not finish — no tiles ignored, "
+                            "processing every frame."
+                        ))
+                    else:
+                        # Same engine helper Blink and the CC batch use, so all
+                        # three agree on what counts as fixed-pattern structure.
+                        _clean, _real, _n_art = _builder.finalize(
+                            status_cb=lambda m: self.update_status(
+                                self.tr(f"🛰️ {m}"))
+                        )
+                        sat_clean.update(_clean)
+                        sat_real_tiles.update(_real)
+                        self.update_status(self.tr(
+                            f"🛰️ Fixed-pattern filter: {_n_art} tile(s) ignored "
+                            f"across {_builder.n_groups} group(s); "
+                            f"{len(_real)} frame(s) have real trails."
+                        ))
+                    QApplication.processEvents()
+
                 # sat_abort / sat_device_err are declared above the branch.
                 # A removed D3D12 device is permanent and process-wide. Once
                 # one frame reports it, every remaining dispatch fails — and a
@@ -22425,7 +22533,8 @@ class StackingSuiteDialog(QDialog):
                             return (cal_path, 'aborted', None)
                         try:
                             cleaned, sat_mask = self._apply_satellite_removal_to_calibrated_light(
-                                sd, is_mono=s_mono, models=sat_models, opts=sat_opts
+                                sd, is_mono=s_mono, models=sat_models, opts=sat_opts,
+                                detect_tiles=sat_real_tiles.get(cal_path),
                             )
                         except _SatDeviceLost as e:
                             if not sat_device_err:
@@ -22476,10 +22585,21 @@ class StackingSuiteDialog(QDialog):
                             return (cal_path, 'aborted', None)
                         return (cal_path, 'failed', _sat_exc_str(e))
 
-                completed = 0
+                # Only frames pass 1 found a real trail in reach pass 2.
+                # Everything else is already correct on disk, untouched.
+                sat_todo = [p for p in sat_files if p not in sat_clean]
+                n_unchanged += len(sat_files) - len(sat_todo)
+                if sat_scanned_any:
+                    self.update_status(self.tr(
+                        f"🛰️ Pass 2 of 2 — {len(sat_todo)} of {n_sat} frame(s) need "
+                        f"removal; {len(sat_files) - len(sat_todo)} already clean."
+                    ))
+                    QApplication.processEvents()
+
+                completed = len(sat_files) - len(sat_todo)
                 with _cf_sat.ThreadPoolExecutor(max_workers=sat_workers) as _sat_ex:
                     futures = {}
-                    for cal_path in sat_files:
+                    for cal_path in sat_todo:
                         fut = _sat_ex.submit(_sat_worker, cal_path)
                         futures[fut] = cal_path
 

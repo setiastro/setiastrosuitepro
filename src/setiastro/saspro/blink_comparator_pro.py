@@ -42,7 +42,9 @@ from setiastro.saspro.bayer_utils import (
 from setiastro.saspro.cosmicclarity_engines.satellite_engine import (
     get_satellite_models,
     satellite_remove_image,
-    satellite_detect_image,
+    satellite_detect_tiles,
+    artifact_group_key,
+    ArtifactMapBuilder,
 )
 from setiastro.saspro.legacy.numba_utils import debayer_raw_fast, debayer_fits_fast
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
@@ -3332,101 +3334,62 @@ class BlinkTab(QWidget):
             except Exception:
                 return None
 
-    def _run_sat_detect_full(self):
+    def _sat_group_key(self, idx: int, shape_hw) -> tuple:
+        """Which frames may be pooled for the fixed-pattern statistic.
+
+        Amp glow and diffraction spikes belong to ONE rig in ONE configuration.
+        Delegates to the engine so Blink, the Cosmic Clarity batch and
+        Calibrate_Lights all use a single definition.
         """
-        Run the full Cosmic Clarity satellite pipeline on every loaded image
-        with image-level concurrency.
+        return artifact_group_key(
+            self.loaded_images[idx].get("header", {}) or {}, shape_hw
+        )
 
-        Multiple worker threads each load one image and run
-        satellite_remove_image(return_mask=True) end-to-end. The GPU
-        submission inside the engine is serialized (_SAT_GPU_LOCK) — threads
-        exist to overlap the parts that genuinely parallelize:
-          - File I/O for image N+1 while N's inference runs
-          - CPU-side pre/post work (reflect pad, tile resize, stitch)
-          - Qt event loop responsiveness
-        For frames with trails, the authoritative clip-to-0.000 trail mask
-        is downsampled to match the stored display image and painted bright
-        green in the preview.
+    def _sat_scan_frames(self, models, *, border_size, compat, prog,
+                         abort_evt, device_err, max_workers, label):
+        """
+        THE satellite detection scan. There is exactly one of these.
 
-        A lost adapter aborts the run; unchecked frames are left UNKNOWN
-        rather than recorded as clean.
+        Fast mode IS this and nothing else. Highlight mode runs this as its
+        pass 1 and then removes only what survives. Keeping it in one place is
+        the point: when this existed twice the two copies drifted by a single
+        parameter and Highlight silently stopped rejecting fixed-pattern tiles
+        while Fast kept working.
+
+        Does three things:
+          1. detect every interior tile of every loaded frame (GPU work is
+             serialized inside the engine; the threads overlap I/O and prep),
+          2. build the per-group fixed-pattern map and reject tiles that keep
+             appearing in the same sensor position,
+          3. write the final sat_detected state for every frame.
+
+        Writes nothing to disk, so cancelling is free.
+
+        Returns a dict with:
+          scanned    {idx: all passing tiles}
+          survivors  {idx: REAL trail tiles, fixed-pattern already removed}
+          n_art_tiles, n_cleared, n_unknown, canceled
         """
         import concurrent.futures as cf
-        import threading as _th
         from setiastro.saspro.cosmicclarity_engines._backend_guard import (
             DeviceLostError,
-            disable_dml as _disable_dml,
             safe_exception_str as _safe_exc,
         )
 
         n_images = len(self.loaded_images)
+        per_frame: dict = {}
+        n_unknown = 0
+        completed = 0
+        canceled = False
 
-        prog = QProgressDialog(
-            self.tr("Loading satellite detection model…"),
-            self.tr("Cancel"),
-            0, n_images,
-            self,
-        )
-        prog.setWindowTitle(self.tr("Satellite Trail Detection (Highlight)"))
-        prog.setWindowModality(Qt.WindowModality.WindowModal)
-        prog.setMinimumDuration(0)
-        prog.setMinimumWidth(420)
-        prog.setValue(0)
-        prog.show()
-        QApplication.processEvents()
-
-        try:
-            models = get_satellite_models(use_gpu=True,
-                                        status_cb=lambda m: print(f"[Sat] {m}"))
-        except Exception as e:
-            prog.close()
-            QMessageBox.critical(self, self.tr("Model Load Error"),
-                                self.tr("Could not load satellite detection model:\n{0}").format(e))
-            return
-
-        # Clear any existing overlays before this pass so stale masks from a
-        # previous run don't bleed into the new results.
-        for entry in self.loaded_images:
-            entry.pop("sat_overlay_mask", None)
-
-        # Pipeline settings — match CC satellite dialog defaults
-        SAT_MODE = "full"
-        SAT_CLIP_TRAIL = True
-        SAT_SENSITIVITY = 0.10
-        SAT_TEMP_STRETCH = True
-        SAT_TARGET_MEDIAN = 0.25
-
-        # Edge-exclusion zone (amp-glow filter). Snapshot once so workers
-        # don't hit QSettings concurrently.
-        edge_excl_px = self._sat_edge_exclusion_px()
-
-        abort_evt = _th.Event()
-        device_err: list[str] = []
-
-        # Snapshot the file paths + stored shapes so workers never touch
-        # self.loaded_images from a background thread.
-        job_specs = []
-        for i, entry in enumerate(self.loaded_images):
-            stored = entry.get("image_data", None)
-            if stored is None:
-                job_specs.append((i, None, None))
-                continue
-            job_specs.append((i, entry["file_path"], tuple(stored.shape[:2])))
-
-        def _worker(idx: int, file_path, stored_hw):
-            """
-            Load + run full satellite pipeline for one image.
-            Returns (idx, detected, mask_display) where detected is
-            True / False / None. None means UNKNOWN — not checked, not clean.
-            Never raises.
-            """
-            if file_path is None or stored_hw is None:
-                return (idx, None, None)
+        def _worker(idx: int, file_path: str):
+            """Returns (idx, tiles, shape_hw). tiles is the list of passing
+            (y0,x0,h,w) rects — possibly empty — or None for UNKNOWN."""
             if abort_evt.is_set():
                 return (idx, None, None)
             try:
                 from setiastro.saspro.legacy.image_manager import load_image
-                raw_image, header, bit_depth, is_mono = load_image(file_path)
+                raw_image, _h, _b, _m = load_image(file_path)
                 if raw_image is None:
                     return (idx, None, None)
             except Exception as e:
@@ -3436,74 +3399,48 @@ class BlinkTab(QWidget):
             if abort_evt.is_set():
                 return (idx, None, None)
 
+            shape_hw = tuple(int(v) for v in np.asarray(raw_image).shape[:2])
             try:
-                _out, detected, trail_mask_full = satellite_remove_image(
-                    raw_image,
-                    models=models,
-                    mode=SAT_MODE,
-                    clip_trail=SAT_CLIP_TRAIL,
-                    sensitivity=SAT_SENSITIVITY,
-                    temp_stretch=SAT_TEMP_STRETCH,
-                    target_median=SAT_TARGET_MEDIAN,
-                    return_mask=True,
-                    progress_cb=None,
+                tiles = satellite_detect_tiles(
+                    raw_image, models,
+                    chunk_size=256,
+                    # MUST be 0. The map is tested back against whole tiles, so
+                    # the grid has to be fixed and non-overlapping: a fixed
+                    # artifact then lands in the SAME tile every frame and the
+                    # mask comes out as that whole tile. On an overlapping grid
+                    # it lands in a different subset each frame and the mask
+                    # shrinks to the sliver where those subsets intersect —
+                    # too small to veto anything.
+                    overlap=0,
+                    border_size=border_size,
+                    temp_stretch=True, target_median=0.25,
+                    compatibility_mode=compat,
+                    # No early exit: the map needs every tile, or the counts
+                    # skew toward whichever tiles get scanned first.
+                    stop_after=None,
                     status_cb=lambda _m: None,
                 )
+                return (idx, list(tiles), shape_hw)
             except DeviceLostError as e:
-                # satellite_remove_image() already tried its CPU fallback and
-                # still could not finish. The adapter is gone process-wide.
                 if not device_err:
                     device_err.append(_safe_exc(e))
                 abort_evt.set()
                 return (idx, None, None)
-
             except Exception as e:
-                print(f"[Sat detect] Pipeline failed on {file_path}: {e}")
+                print(f"[Sat detect] Inference failed on {file_path}: {e}")
                 return (idx, None, None)
-
-            if not detected:
-                return (idx, False, None)
-
-            # Apply amp-glow edge exclusion to the full-res mask BEFORE we
-            # downsample. The engine's `detected` flag may be True because
-            # of edge-region detections (amp glow near the sensor border);
-            # if nothing survives the exclusion, treat the frame as clean.
-            trail_mask_full = self._apply_edge_exclusion_to_mask(
-                trail_mask_full, edge_excl_px
-            )
-            if trail_mask_full is None or not trail_mask_full.any():
-                return (idx, False, None)
-
-            mask_display = self._sat_mask_to_display_size(trail_mask_full, stored_hw)
-            if mask_display is None or not mask_display.any():
-                # Detected and surviving at full-res, but the display-sized
-                # mask lost everything to downsample rounding — unlikely
-                # but possible. Still flag as detected so the Sat column
-                # warns, but no overlay to paint.
-                return (idx, True, None)
-            return (idx, True, mask_display)
-
-        n_detected = 0
-        n_unknown = 0
-        completed = 0
-        canceled = False
-        max_workers = self._sat_detect_workers()
-
-        try:
-            self.sat_detect_btn.setEnabled(False)
-        except Exception:
-            pass
 
         # Built explicitly rather than with `with`: ThreadPoolExecutor.__exit__
         # calls shutdown(wait=True), which blocks the GUI thread with no event
-        # loop — a permanent freeze if a worker is wedged in a driver call.
+        # loop. If a worker is wedged in a driver call that is a permanent
+        # freeze — the "hang with no further console output".
         ex = cf.ThreadPoolExecutor(max_workers=max_workers)
         try:
-            futures = {}
-            for (idx, fp, hw) in job_specs:
-                futures[ex.submit(_worker, idx, fp, hw)] = idx
-
-            pending = set(futures.keys())
+            futures = {
+                ex.submit(_worker, i, self.loaded_images[i]["file_path"]): i
+                for i in range(n_images)
+            }
+            pending = set(futures)
             while pending:
                 if prog.wasCanceled():
                     canceled = True
@@ -3511,152 +3448,90 @@ class BlinkTab(QWidget):
                     for f in pending:
                         f.cancel()
                     break
-
                 if abort_evt.is_set():
                     for f in pending:
                         f.cancel()
 
-                done, pending = cf.wait(
-                    pending,
-                    timeout=0.1,
-                    return_when=cf.FIRST_COMPLETED,
-                )
-
+                done, pending = cf.wait(pending, timeout=0.1,
+                                        return_when=cf.FIRST_COMPLETED)
                 for fut in done:
                     if fut.cancelled():
                         completed += 1
                         n_unknown += 1
                         continue
                     try:
-                        idx, detected, mask = fut.result()
+                        idx, tiles, shape_hw = fut.result()
                     except Exception as e:
                         print(f"[Sat detect] Worker exception: {e}")
                         idx = futures.get(fut, -1)
-                        detected = None
-                        mask = None
+                        tiles, shape_hw = None, None
 
                     if 0 <= idx < n_images:
-                        entry = self.loaded_images[idx]
-                        entry.pop("sat_overlay_mask", None)
-                        if detected is None:
-                            entry["sat_detected"] = None
+                        if tiles is None or shape_hw is None:
+                            self.loaded_images[idx]["sat_detected"] = None
                             n_unknown += 1
                         else:
-                            entry["sat_detected"] = bool(detected)
-                            if detected:
-                                n_detected += 1
-                                if mask is not None:
-                                    entry["sat_overlay_mask"] = mask
-
+                            per_frame[idx] = (tiles, shape_hw)
                     completed += 1
 
                 prog.setValue(completed)
-                prog.setLabelText(
-                    self.tr("Processed {0} of {1} ({2} with trails)").format(
-                        completed, n_images, n_detected
-                    )
-                )
+                prog.setLabelText(self.tr(
+                    "{0}: {1} of {2} ({3} with hits so far)"
+                ).format(label, completed, n_images,
+                         sum(1 for t in per_frame.values() if t[0])))
                 QApplication.processEvents()
         finally:
             try:
                 ex.shutdown(wait=False, cancel_futures=True)
             except TypeError:
                 ex.shutdown(wait=False)
-            try:
-                self.sat_detect_btn.setEnabled(True)
-            except Exception:
-                pass
-            prog.close()
 
-        self._update_tree_sat_column()
+        # ── Fixed-pattern rejection (no GPU, pure counting) ─────────────────
+        # Counting / thresholding / clean-vs-real splitting lives in the
+        # engine so Blink, the CC batch and Calibrate_Lights share ONE copy.
+        survivors: dict = {}
+        n_art_tiles = 0
+        n_cleared = 0
+        if per_frame and not canceled and not device_err:
+            builder = ArtifactMapBuilder()
+            for idx, (tiles, hw) in per_frame.items():
+                builder.add(idx, self.loaded_images[idx].get("header", {}) or {},
+                            hw, tiles)
+            clean, survivors, n_art_tiles = builder.finalize(
+                status_cb=lambda m: print(f"[Sat detect] {m}"))
+            n_cleared = sum(1 for i in clean if per_frame[i][0])
+        else:
+            # Scan did not complete: trust the raw hits, veto nothing.
+            survivors = {i: t for i, (t, _hw) in per_frame.items() if t}
 
-        # If the currently-displayed frame got an overlay, re-render it so
-        # the user sees the green trail immediately without having to click
-        # away and back.
-        try:
-            cur = self.fileTree.currentItem()
-            if cur is not None and cur.childCount() == 0:
-                self._last_preview_name = None
-                self.on_item_clicked(cur, 0)
-        except Exception:
-            pass
+        for idx in per_frame:
+            self.loaded_images[idx]["sat_detected"] = bool(idx in survivors)
 
-        if device_err:
-            try:
-                _disable_dml("Adapter was removed or hung during satellite detection.",
-                             status_cb=lambda m: print(f"[Sat] {m}"))
-            except Exception:
-                pass
-            QMessageBox.critical(
-                self,
-                self.tr("GPU Device Lost"),
-                self.tr(
-                    "The graphics adapter was reset or removed during satellite detection:\n\n"
-                    "{0}\n\n"
-                    "The run was stopped. Frames that were not checked are left blank in "
-                    "the Sat column — they have NOT been marked clean.\n\n"
-                    "GPU acceleration has been disabled for the rest of this session. "
-                    "Re-run detection to continue on the CPU, or restart SASpro to try "
-                    "the GPU again."
-                ).format(device_err[0])
-            )
-            return
+        print(f"[Sat detect] Scan done: {len(per_frame)} checked, "
+              f"{sum(1 for t in per_frame.values() if t[0])} with hits, "
+              f"{n_art_tiles} fixed-pattern tile(s) ignored, "
+              f"{n_cleared} frame(s) cleared, {len(survivors)} with real trails.")
 
-        if not canceled:
-            QMessageBox.information(
-                self,
-                self.tr("Satellite Detection Complete"),
-                self.tr(
-                    "Checked {0} image{1}.\n"
-                    "{2} potential satellite trail{3} detected.\n"
-                    "{4} could not be checked.\n\n"
-                    "Images with trails are marked ⚠ in the Sat column and\n"
-                    "the trail pixels are highlighted in bright green in the preview.\n"
-                    "Use 'F' or click a dot in Metrics to flag for culling."
-                ).format(
-                    n_images,
-                    "s" if n_images != 1 else "",
-                    n_detected,
-                    "s" if n_detected != 1 else "",
-                    n_unknown,
-                )
-            )
+        return {
+            "scanned": {i: t for i, (t, _hw) in per_frame.items()},
+            "survivors": survivors,
+            "n_art_tiles": n_art_tiles,
+            "n_cleared": n_cleared,
+            "n_unknown": n_unknown,
+            "canceled": canceled,
+        }
 
-    def _run_sat_detect_fast(self):
-        """
-        Fast detection-only pass.
-
-        Worker threads overlap file I/O, normalize/stretch and tile resize;
-        the actual GPU submission is serialized inside the engine
-        (_SAT_GPU_LOCK). Driving one device from several threads is what
-        produced the DirectML "GPU device instance has been suspended" TDR and
-        the CUDA stalls with no further console output.
-
-        Detection itself now goes through satellite_detect_image() so it picks
-        up _satellite_batch_sizes() (DML capped at 4, not the hardcoded 32 this
-        used to send) and the batch-size fallback.
-
-        A lost adapter ABORTS the whole run. Frames we never got an answer for
-        are left UNKNOWN (blank Sat cell) rather than being recorded as clean —
-        silently marking an unchecked frame "no trail" is worse than failing.
-        """
-        import concurrent.futures as cf
+    def _sat_begin(self, title: str):
+        """Shared setup for both modes: progress dialog, models, snapshotted
+        settings. Returns None when the models could not be loaded."""
         import threading as _th
-        from setiastro.saspro.cosmicclarity_engines._backend_guard import (
-            DeviceLostError,
-            disable_dml as _disable_dml,
-            safe_exception_str as _safe_exc,
-        )
 
         n_images = len(self.loaded_images)
-
         prog = QProgressDialog(
             self.tr("Loading satellite detection model…"),
-            self.tr("Cancel"),
-            0, n_images,
-            self,
+            self.tr("Cancel"), 0, max(1, n_images), self,
         )
-        prog.setWindowTitle(self.tr("Satellite Trail Detection (Fast)"))
+        prog.setWindowTitle(title)
         prog.setWindowModality(Qt.WindowModality.WindowModal)
         prog.setMinimumDuration(0)
         prog.setMinimumWidth(420)
@@ -3665,45 +3540,206 @@ class BlinkTab(QWidget):
         QApplication.processEvents()
 
         try:
-            models = get_satellite_models(use_gpu=True,
-                                        status_cb=lambda m: print(f"[Sat] {m}"))
+            models = get_satellite_models(
+                use_gpu=True, status_cb=lambda m: print(f"[Sat] {m}"))
         except Exception as e:
             prog.close()
-            QMessageBox.critical(self, self.tr("Model Load Error"),
-                                self.tr("Could not load satellite detection model:\n{0}").format(e))
-            return
+            QMessageBox.critical(
+                self, self.tr("Model Load Error"),
+                self.tr("Could not load satellite detection model:\n{0}").format(e))
+            return None
 
-        # Clear any overlays from a previous Highlight run so the preview
-        # matches the Sat column we're about to repopulate.
+        # Stale overlays from a previous run must not outlive it.
         for entry in self.loaded_images:
             entry.pop("sat_overlay_mask", None)
 
-        # Edge-exclusion in PIXELS from each image side, so amp-glow regions
-        # near the sensor edge are never fed to the detection models.
-        # Snapshotted once here so workers don't hit QSettings concurrently.
-        border_size = max(16, self._sat_edge_exclusion_px())
         try:
             compat = bool(QSettings().value("cc/gpu_compat_mode", False, type=bool))
         except Exception:
             compat = False
 
-        abort_evt = _th.Event()
-        device_err: list[str] = []
+        # Guard against processEvents() re-entrancy starting a second run.
+        try:
+            self.sat_detect_btn.setEnabled(False)
+        except Exception:
+            pass
 
-        # Snapshot file paths — workers never touch self.loaded_images.
-        job_specs = [(i, self.loaded_images[i]["file_path"]) for i in range(n_images)]
+        return {
+            "models": models,
+            "prog": prog,
+            "border_size": max(16, self._sat_edge_exclusion_px()),
+            "compat": compat,
+            "abort_evt": _th.Event(),
+            "device_err": [],
+            "max_workers": self._sat_detect_workers(),
+            "n_images": n_images,
+        }
 
-        def _worker(idx: int, file_path: str):
-            """
-            Load + detect one image. Returns (idx, detected) where detected is
-            True / False / None. None means UNKNOWN — not checked, not clean.
-            """
+    def _sat_finish(self, ctx):
+        """Close the dialog, re-enable the button, refresh the tree/preview."""
+        try:
+            ctx["prog"].close()
+        except Exception:
+            pass
+        try:
+            self.sat_detect_btn.setEnabled(True)
+        except Exception:
+            pass
+
+        self._update_tree_sat_column()
+        try:
+            cur = self.fileTree.currentItem()
+            if cur is not None and cur.childCount() == 0:
+                self._last_preview_name = None
+                self.on_item_clicked(cur, 0)
+        except Exception:
+            pass
+
+    def _sat_report_device_loss(self, device_err, *, modified: bool):
+        """Poison DirectML process-wide and tell the user plainly."""
+        from setiastro.saspro.cosmicclarity_engines._backend_guard import (
+            disable_dml as _disable_dml,
+        )
+        try:
+            _disable_dml("Adapter was removed or hung during satellite detection.",
+                         status_cb=lambda m: print(f"[Sat] {m}"))
+        except Exception:
+            pass
+        _what = (self.tr("Frames that were not checked are left blank in the Sat "
+                         "column — they have NOT been marked clean.")
+                 if modified else
+                 self.tr("No images were modified."))
+        QMessageBox.critical(
+            self, self.tr("GPU Device Lost"),
+            self.tr(
+                "The graphics adapter was reset or removed during satellite "
+                "detection:\n\n{0}\n\n{1}\n\n"
+                "GPU acceleration has been disabled for the rest of this session. "
+                "Re-run to continue on the CPU, or restart SASpro to try the GPU "
+                "again."
+            ).format(device_err[0], _what)
+        )
+
+    def _run_sat_detect_fast(self):
+        """
+        Fast mode: run the scan, report what it found. Nothing else.
+
+        A lost adapter ABORTS the run; frames with no answer are left UNKNOWN
+        (blank Sat cell) rather than recorded as clean.
+        """
+        ctx = self._sat_begin(self.tr("Satellite Trail Detection (Fast)"))
+        if ctx is None:
+            return
+
+        res = self._sat_scan_frames(
+            ctx["models"], border_size=ctx["border_size"], compat=ctx["compat"],
+            prog=ctx["prog"], abort_evt=ctx["abort_evt"],
+            device_err=ctx["device_err"], max_workers=ctx["max_workers"],
+            label=self.tr("Scanning"),
+        )
+        self._sat_finish(ctx)
+
+        if ctx["device_err"]:
+            self._sat_report_device_loss(ctx["device_err"], modified=False)
+            return
+        if res["canceled"]:
+            return
+
+        n_detected = len(res["survivors"])
+        _art = ""
+        if res["n_art_tiles"]:
+            _art = self.tr(
+                "\nFixed-pattern filter: {0} tile(s) ignored as diffraction spikes "
+                "or amp glow; {1} frame(s) cleared because that was their only "
+                "evidence.\n"
+            ).format(res["n_art_tiles"], res["n_cleared"])
+
+        QMessageBox.information(
+            self, self.tr("Satellite Detection Complete"),
+            self.tr(
+                "Checked {0} image{1}.\n"
+                "{2} potential satellite trail{3} detected.\n"
+                "{4} could not be checked.\n"
+            ).format(ctx["n_images"], "s" if ctx["n_images"] != 1 else "",
+                     n_detected, "s" if n_detected != 1 else "",
+                     res["n_unknown"])
+            + _art
+            + self.tr(
+                "\nImages with trails are marked ⚠ in the Sat column.\n"
+                "Use 'F' or click a dot in Metrics to flag for culling.\n\n"
+                "Tip: switch Mode to 'Highlight trails' to see the trail "
+                "pixels painted green in the preview."
+            )
+        )
+
+    def _run_sat_detect_full(self):
+        """
+        Highlight mode = the Fast scan, then removal on what survived it.
+
+        Pass 1 is literally _sat_scan_frames — the same code Fast runs, so the
+        two modes cannot disagree about which frames or tiles hold real trails.
+        Pass 2 then loads ONLY the surviving frames and hands the engine their
+        surviving tiles as detect_tiles, so it runs no detection of its own and
+        pushes only those tiles through NAFNet.
+        """
+        import concurrent.futures as cf
+
+        ctx = self._sat_begin(self.tr("Satellite Trail Detection (Highlight)"))
+        if ctx is None:
+            return
+        models = ctx["models"]
+        prog = ctx["prog"]
+        abort_evt = ctx["abort_evt"]
+        device_err = ctx["device_err"]
+        n_images = ctx["n_images"]
+
+        # ── PASS 1 — the Fast scan, verbatim ────────────────────────────────
+        res = self._sat_scan_frames(
+            models, border_size=ctx["border_size"], compat=ctx["compat"],
+            prog=prog, abort_evt=abort_evt, device_err=device_err,
+            max_workers=ctx["max_workers"],
+            label=self.tr("Pass 1 of 2 — scanning"),
+        )
+
+        if device_err or res["canceled"]:
+            # Pass 1 wrote nothing, so there is nothing to unwind.
+            self._sat_finish(ctx)
+            if device_err:
+                self._sat_report_device_loss(device_err, modified=False)
+            return
+
+        survivors = res["survivors"]
+        n_pass2 = len(survivors)
+
+        # ── PASS 2 — removal, only the surviving frames and tiles ───────────
+        SAT_MODE = "full"
+        SAT_CLIP_TRAIL = True
+        SAT_SENSITIVITY = 0.10
+        SAT_TEMP_STRETCH = True
+        SAT_TARGET_MEDIAN = 0.25
+        edge_excl_px = ctx["border_size"]
+
+        prog.setValue(0)
+        try:
+            prog.setMaximum(max(1, n_pass2))
+        except Exception:
+            pass
+
+        job_specs = []
+        for idx in sorted(survivors):
+            stored = self.loaded_images[idx].get("image_data", None)
+            if stored is None:
+                continue
+            job_specs.append((idx, self.loaded_images[idx]["file_path"],
+                              tuple(stored.shape[:2])))
+
+        def _worker(idx: int, file_path, stored_hw):
+            """Removal for one surviving frame. Returns (idx, mask_display)."""
             if abort_evt.is_set():
                 return (idx, None)
-
             try:
                 from setiastro.saspro.legacy.image_manager import load_image
-                raw_image, _header, _bit_depth, _is_mono = load_image(file_path)
+                raw_image, _h, _b, _m = load_image(file_path)
                 if raw_image is None:
                     return (idx, None)
             except Exception as e:
@@ -3714,179 +3750,110 @@ class BlinkTab(QWidget):
                 return (idx, None)
 
             try:
-                detected = satellite_detect_image(
+                _out, _detected, trail_mask_full = satellite_remove_image(
                     raw_image,
-                    models,
-                    chunk_size=256,
-                    overlap=0,
-                    border_size=border_size,
-                    # Match Highlight mode, which has always stretched. Fast
-                    # used to stretch only when the median was low, so the two
-                    # modes could disagree on the same frame.
-                    temp_stretch=True,
-                    target_median=0.25,
-                    compatibility_mode=compat,
-                    # One passing INTERIOR tile is enough: the edge exclusion
-                    # already rejected amp glow, and geosynchronous trails can
-                    # sit entirely inside a single tile.
-                    min_tiles=1,
+                    models=models,
+                    mode=SAT_MODE,
+                    clip_trail=SAT_CLIP_TRAIL,
+                    sensitivity=SAT_SENSITIVITY,
+                    temp_stretch=SAT_TEMP_STRETCH,
+                    target_median=SAT_TARGET_MEDIAN,
+                    return_mask=True,
+                    progress_cb=None,
+                    # Pass 1's surviving tiles. The engine runs NO detection.
+                    detect_tiles=survivors.get(idx),
                     status_cb=lambda _m: None,
                 )
-                return (idx, bool(detected))
-
-            except DeviceLostError as e:
-                # The D3D12 device is gone for the life of the process. Every
-                # further dispatch fails, so stop the batch instead of grinding
-                # through the remaining files logging the same error.
-                if not device_err:
-                    device_err.append(_safe_exc(e))
-                abort_evt.set()
-                return (idx, None)
-
             except Exception as e:
-                print(f"[Sat detect] Inference failed on {file_path}: {e}")
+                from setiastro.saspro.cosmicclarity_engines._backend_guard import (
+                    is_device_lost_error as _is_lost,
+                    safe_exception_str as _exc,
+                )
+                if _is_lost(e):
+                    if not device_err:
+                        device_err.append(_exc(e))
+                    abort_evt.set()
+                    return (idx, None)
+                print(f"[Sat detect] Pipeline failed on {file_path}: {e}")
                 return (idx, None)
 
-        n_detected = 0
-        n_unknown = 0
+            trail_mask_full = self._apply_edge_exclusion_to_mask(
+                trail_mask_full, edge_excl_px)
+            if trail_mask_full is None or not trail_mask_full.any():
+                return (idx, None)
+            mask_display = self._sat_mask_to_display_size(trail_mask_full, stored_hw)
+            if mask_display is None or not mask_display.any():
+                return (idx, None)
+            return (idx, mask_display)
+
         completed = 0
-        canceled = False
-        max_workers = self._sat_detect_workers()
-
-        # Guard against processEvents() re-entrancy letting the user start a
-        # second run on top of this one.
+        ex = cf.ThreadPoolExecutor(max_workers=ctx["max_workers"])
         try:
-            self.sat_detect_btn.setEnabled(False)
-        except Exception:
-            pass
-
-        # Built explicitly rather than with `with`: ThreadPoolExecutor.__exit__
-        # calls shutdown(wait=True), which blocks the GUI thread with no event
-        # loop. If a worker is wedged in a driver call that is a permanent
-        # freeze — the exact "hang with no further console output".
-        ex = cf.ThreadPoolExecutor(max_workers=max_workers)
-        try:
-            futures = {}
-            for (idx, fp) in job_specs:
-                futures[ex.submit(_worker, idx, fp)] = idx
-
-            pending = set(futures.keys())
+            futures = {ex.submit(_worker, i, fp, hw): i for (i, fp, hw) in job_specs}
+            pending = set(futures)
             while pending:
                 if prog.wasCanceled():
-                    canceled = True
                     abort_evt.set()
                     for f in pending:
                         f.cancel()
                     break
-
                 if abort_evt.is_set():
                     for f in pending:
                         f.cancel()
 
-                done, pending = cf.wait(
-                    pending,
-                    timeout=0.1,
-                    return_when=cf.FIRST_COMPLETED,
-                )
-
+                done, pending = cf.wait(pending, timeout=0.1,
+                                        return_when=cf.FIRST_COMPLETED)
                 for fut in done:
-                    if fut.cancelled():
-                        completed += 1
-                        n_unknown += 1
-                        continue
-                    try:
-                        idx, detected = fut.result()
-                    except Exception as e:
-                        print(f"[Sat detect] Worker exception: {e}")
-                        idx = futures.get(fut, -1)
-                        detected = None
-
-                    if 0 <= idx < n_images:
-                        entry = self.loaded_images[idx]
-                        if detected is None:
-                            entry["sat_detected"] = None
-                            n_unknown += 1
-                        else:
-                            entry["sat_detected"] = bool(detected)
-                            if detected:
-                                n_detected += 1
-
+                    if not fut.cancelled():
+                        try:
+                            idx, mask = fut.result()
+                            if mask is not None and 0 <= idx < n_images:
+                                self.loaded_images[idx]["sat_overlay_mask"] = mask
+                        except Exception as e:
+                            print(f"[Sat detect] Worker exception: {e}")
                     completed += 1
 
                 prog.setValue(completed)
-                prog.setLabelText(
-                    self.tr("Processed {0} of {1} ({2} with trails)").format(
-                        completed, n_images, n_detected
-                    )
-                )
+                prog.setLabelText(self.tr(
+                    "Pass 2 of 2 — removing trails: {0} of {1}"
+                ).format(completed, n_pass2))
                 QApplication.processEvents()
         finally:
-            # Non-blocking: in-flight jobs finish on their own and their
-            # results are discarded. Keeps the UI alive even if one is wedged.
             try:
                 ex.shutdown(wait=False, cancel_futures=True)
             except TypeError:
                 ex.shutdown(wait=False)
-            try:
-                self.sat_detect_btn.setEnabled(True)
-            except Exception:
-                pass
-            prog.close()
 
-        self._update_tree_sat_column()
-
-        # Re-render current preview in case we just cleared a prior overlay.
-        try:
-            cur = self.fileTree.currentItem()
-            if cur is not None and cur.childCount() == 0:
-                self._last_preview_name = None
-                self.on_item_clicked(cur, 0)
-        except Exception:
-            pass
+        self._sat_finish(ctx)
 
         if device_err:
-            # Stop handing DirectML out to denoise / sharpen / Dark Star too —
-            # the adapter is gone process-wide, not just for us.
-            try:
-                _disable_dml("Adapter was removed or hung during satellite detection.",
-                             status_cb=lambda m: print(f"[Sat] {m}"))
-            except Exception:
-                pass
-            QMessageBox.critical(
-                self,
-                self.tr("GPU Device Lost"),
-                self.tr(
-                    "The graphics adapter was reset or removed during satellite detection:\n\n"
-                    "{0}\n\n"
-                    "The run was stopped. Frames that were not checked are left blank in "
-                    "the Sat column — they have NOT been marked clean.\n\n"
-                    "GPU acceleration has been disabled for the rest of this session. "
-                    "Re-run detection to continue on the CPU, or restart SASpro to try "
-                    "the GPU again."
-                ).format(device_err[0])
-            )
+            self._sat_report_device_loss(device_err, modified=True)
             return
 
-        if not canceled:
-            QMessageBox.information(
-                self,
-                self.tr("Satellite Detection Complete"),
-                self.tr(
-                    "Checked {0} image{1}.\n"
-                    "{2} potential satellite trail{3} detected.\n"
-                    "{4} could not be checked.\n\n"
-                    "Images with trails are marked ⚠ in the Sat column.\n"
-                    "Use 'F' or click a dot in Metrics to flag for culling.\n\n"
-                    "Tip: switch Mode to 'Highlight trails' to see the trail "
-                    "pixels painted green in the preview."
-                ).format(
-                    n_images,
-                    "s" if n_images != 1 else "",
-                    n_detected,
-                    "s" if n_detected != 1 else "",
-                    n_unknown,
-                )
+        _art = ""
+        if res["n_art_tiles"]:
+            _art = self.tr(
+                "\nFixed-pattern filter: {0} tile(s) ignored as diffraction spikes "
+                "or amp glow; {1} frame(s) cleared because that was their only "
+                "evidence, so pass 2 only had to process {2}.\n"
+            ).format(res["n_art_tiles"], res["n_cleared"], n_pass2)
+
+        QMessageBox.information(
+            self, self.tr("Satellite Detection Complete"),
+            self.tr(
+                "Checked {0} image{1}.\n"
+                "{2} potential satellite trail{3} detected.\n"
+                "{4} could not be checked.\n"
+            ).format(n_images, "s" if n_images != 1 else "",
+                     n_pass2, "s" if n_pass2 != 1 else "",
+                     res["n_unknown"])
+            + _art
+            + self.tr(
+                "\nImages with trails are marked ⚠ in the Sat column and\n"
+                "the trail pixels are highlighted in bright green in the preview.\n"
+                "Use 'F' or click a dot in Metrics to flag for culling."
             )
+        )
 
     def _update_tree_sat_column(self):
         for item in self.get_all_leaf_items():

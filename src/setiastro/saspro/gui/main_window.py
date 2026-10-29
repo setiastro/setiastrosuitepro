@@ -5622,13 +5622,34 @@ class AstroSuiteProMainWindow(
 
     def _open_star_spikes(self, *, doc=None, preset: dict | None = None, title_hint: str | None = None):
         from setiastro.saspro.star_spikes import StarSpikesDialogPro
+
+        dm = getattr(self, "doc_manager", None) or getattr(self, "docman", None)
+
+        # When the caller didn't hand us a doc, resolve it the same way
+        # _open_statistical_stretch does: active subwindow -> view -> document.
+        # DocManager's cached active document is only updated on
+        # subWindowActivated and can be stale or None.
+        explicit = doc is not None
+        if doc is None:
+            sw = self.mdi.activeSubWindow()
+            if sw is not None:
+                view = sw.widget()
+                try:
+                    if dm is not None and hasattr(dm, "get_document_for_view"):
+                        doc = dm.get_document_for_view(view)
+                except Exception:
+                    doc = None
+                if doc is None:
+                    doc = getattr(view, "document", None)
+
         dlg = StarSpikesDialogPro(
             parent=self,
-            doc_manager=getattr(self, "docman", None),
+            doc_manager=dm,
             initial_doc=doc,
             jwstpupil_path=jwstpupil_path,
             aperture_help_path=aperture_path,
             spinner_path=spinner_path,  # optional; used if you want
+            follow_active=not explicit,
         )
         if preset:
             dlg.apply_preset(preset)
