@@ -2282,8 +2282,19 @@ class BlinkKeepersDialog(QDialog):
         self.lbl = QLabel(self)
         self.lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl.setStyleSheet("background:#111;")
-        self.lbl.setMinimumHeight(480)
-        outer.addWidget(self.lbl, 1)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setWidgetResizable(False)
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._scroll.setWidget(self.lbl)
+        self._scroll.setMinimumHeight(480)
+        self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._scroll.viewport().installEventFilter(self)
+        outer.addWidget(self._scroll, 1)
+
+        self._zoom = 1.0
+        self._fit_mode = True
+        self._pending_anchor = None
         self.lbl_help = QLabel(self)
         self.lbl_help.setWordWrap(True)
         self.lbl_help.setStyleSheet(
@@ -2294,6 +2305,7 @@ class BlinkKeepersDialog(QDialog):
             "Shortcuts: "
             "←/→ (or ↑/↓) = Prev/Next   |   PgUp/PgDn = Prev/Next\n"
             "R or Space = Toggle Reject + Next   |   Backspace = Toggle Reject + Prev\n"
+            "Ctrl+Wheel = Zoom   |   Left-drag scrollbars to pan   |   "
             "Esc = Cancel   |   Enter = OK"
         )
         outer.addWidget(self.lbl_help, 0)
@@ -2308,6 +2320,36 @@ class BlinkKeepersDialog(QDialog):
         info_row.addWidget(self.btn_toggle, 0)
 
         outer.addLayout(info_row)
+
+        zoom_row = QHBoxLayout()
+        self.btn_zoom_out = QPushButton("–", self)
+        self.btn_zoom_in = QPushButton("+", self)
+        self.btn_fit = QPushButton("Fit", self)
+        self.btn_100 = QPushButton("1:1", self)
+        self.btn_zoom_out.setFixedWidth(34)
+        self.btn_zoom_in.setFixedWidth(34)
+
+        self.sld_zoom = QSlider(Qt.Orientation.Horizontal, self)
+        self.sld_zoom.setRange(10, 800)
+        self.sld_zoom.setValue(100)
+
+        self.lbl_zoom = QLabel("Fit", self)
+        self.lbl_zoom.setStyleSheet("color:#aaa; min-width:60px;")
+
+        # Keep arrow keys / R / Space on frame navigation, not the zoom widgets
+        for _w in (self.btn_zoom_out, self.btn_zoom_in, self.btn_fit,
+                   self.btn_100, self.sld_zoom):
+            _w.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+
+        zoom_row.addWidget(QLabel("Zoom:", self))
+        zoom_row.addWidget(self.btn_zoom_out)
+        zoom_row.addWidget(self.sld_zoom, 1)
+        zoom_row.addWidget(self.btn_zoom_in)
+        zoom_row.addWidget(self.lbl_zoom)
+        zoom_row.addSpacing(10)
+        zoom_row.addWidget(self.btn_fit)
+        zoom_row.addWidget(self.btn_100)
+        outer.addLayout(zoom_row)
 
         nav = QHBoxLayout()
         self.btn_prev = QPushButton("◀ Prev", self)
@@ -2359,6 +2401,11 @@ class BlinkKeepersDialog(QDialog):
         self.sld.valueChanged.connect(self._show_index)
         self.btn_toggle.clicked.connect(lambda: self._toggle_reject_and_advance(+1))
         self.sld_bright.valueChanged.connect(self._on_brightness_changed)
+        self.btn_fit.clicked.connect(self._fit_to_window)
+        self.btn_100.clicked.connect(lambda: self._set_zoom(1.0))
+        self.btn_zoom_in.clicked.connect(lambda: self._set_zoom(self._zoom * 1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self._set_zoom(self._zoom / 1.25))
+        self.sld_zoom.valueChanged.connect(lambda v: self._set_zoom(float(v) / 100.0))
 
         # ---- load source ----
         from setiastro.saspro.imageops.serloader import open_planetary_source
@@ -2377,6 +2424,51 @@ class BlinkKeepersDialog(QDialog):
         self._preview_brightness = 0.0
 
         self._show_index(0)
+
+    def _set_zoom(self, z: float):
+        # Remember where the viewport center is, as a fraction of the content,
+        # so the same feature stays centered across the zoom change.
+        try:
+            vp = self._scroll.viewport()
+            hbar = self._scroll.horizontalScrollBar()
+            vbar = self._scroll.verticalScrollBar()
+            ax = hbar.value() + vp.width() * 0.5
+            ay = vbar.value() + vp.height() * 0.5
+            self._pending_anchor = (ax / max(1, self.lbl.width()),
+                                    ay / max(1, self.lbl.height()))
+        except Exception:
+            self._pending_anchor = None
+
+        self._fit_mode = False
+        self._zoom = max(0.10, min(8.00, float(z)))
+
+        block = self.sld_zoom.blockSignals(True)
+        try:
+            self.sld_zoom.setValue(int(round(self._zoom * 100.0)))
+        finally:
+            self.sld_zoom.blockSignals(block)
+
+        self.lbl_zoom.setText(f"{int(round(self._zoom * 100.0))}%")
+        self._show_index(self.sld.value())
+
+    def _fit_to_window(self):
+        self._fit_mode = True
+        self.lbl_zoom.setText("Fit")
+        self._show_index(self.sld.value())
+
+    def eventFilter(self, obj, event):
+        try:
+            if obj is self._scroll.viewport() and event.type() == QEvent.Type.Wheel:
+                if bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                    delta = event.angleDelta().y()
+                    if delta > 0:
+                        self._set_zoom(self._zoom * 1.15)
+                    elif delta < 0:
+                        self._set_zoom(self._zoom / 1.15)
+                    return True
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
 
     def _on_brightness_changed(self, v: int):
         self._preview_brightness = float(int(v)) / 100.0
@@ -2569,11 +2661,42 @@ class BlinkKeepersDialog(QDialog):
         qimg = QImage(u8.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
         pm = QPixmap.fromImage(qimg)
 
-        self.lbl.setPixmap(pm.scaled(
-            self.lbl.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        ))
+        if self._fit_mode:
+            vp = self._scroll.viewport().size()
+            pm2 = pm.scaled(
+                vp,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        else:
+            zw = max(1, int(round(pm.width() * self._zoom)))
+            zh = max(1, int(round(pm.height() * self._zoom)))
+            # Past 2x, show real pixels rather than interpolated mush
+            tm = (Qt.TransformationMode.FastTransformation if self._zoom > 2.0
+                  else Qt.TransformationMode.SmoothTransformation)
+            pm2 = pm.scaled(zw, zh, Qt.AspectRatioMode.KeepAspectRatio, tm)
+
+        # Hold the scroll position when only the frame changed, so blinking
+        # at high zoom stays parked on the same feature.
+        hbar = self._scroll.horizontalScrollBar()
+        vbar = self._scroll.verticalScrollBar()
+        old_size = self.lbl.size()
+        old_hv = hbar.value()
+        old_vv = vbar.value()
+
+        self.lbl.setPixmap(pm2)
+        self.lbl.setFixedSize(pm2.size())
+
+        if self._pending_anchor is not None:
+            fx, fy = self._pending_anchor
+            self._pending_anchor = None
+            vp = self._scroll.viewport()
+            hbar.setValue(int(fx * max(1, self.lbl.width()) - vp.width() * 0.5))
+            vbar.setValue(int(fy * max(1, self.lbl.height()) - vp.height() * 0.5))
+        elif pm2.size() == old_size:
+            hbar.setValue(old_hv)
+            vbar.setValue(old_vv)
+
         self._update_labels()
 
     def resizeEvent(self, e):

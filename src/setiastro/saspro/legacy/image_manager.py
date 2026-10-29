@@ -1321,10 +1321,24 @@ _XISF_IMAGE_FIELDS = ("id", "imageType", "colorSpace", "sampleFormat", "bounds",
 
 # Properties never worth a card: pixel data, huge transforms, lazy attachments.
 _XISF_PROP_SKIP_PREFIXES = (
+    # Pre-1.9.6 names.
     "PCL:AstrometricSolution:SplineWorldTransformation",
     "PCL:AstrometricSolution:LinearTransformationMatrix",
     "PCL:AstrometricSolution:ImageToNative",
     "PCL:AstrometricSolution:NativeToImage",
+    # 1.9.6 names. The payloads got bigger, not smaller: a 12.6-degree frame
+    # carries two 503x773 grids and two 783x511 grids at 8 bytes a cell, plus
+    # 35120 control points twice over and four spline node/coefficient sets.
+    # _xisf_prop_scalar would reject them anyway for being attachment-backed,
+    # but there is no reason to walk 25 MB of properties to find that out.
+    "PCL:AstrometricSolution:Grid",
+    "AstrometricSolution:ControlPoints",
+    "AstrometricSolution:DistortionModel",
+    "AstrometricSolution:LinearTransformationMatrix",
+    "AstrometricSolution:ProjectiveTransformation",
+    # An XML document of every process that touched the file. Useful, and not
+    # a header card.
+    "PixInsight:ProcessingHistory",
 )
 
 
@@ -2444,21 +2458,59 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                 #_filled = set()
 
                 # 1) PixInsight astrometric solution (fallback only)
-                # 1) PixInsight astrometric solution (fallback only)
+                #
+                # PixInsight 1.9.6 moved the standard astrometric properties
+                # out of the PCL: namespace. What stayed behind that prefix is
+                # the implementation detail -- PCL:AstrometricSolution:Grid:*,
+                # PCL:AstrometricSolution:Generation:* -- while the documented
+                # solution schema is now bare AstrometricSolution:*, carrying
+                # its own AstrometricSolution:Version = 1.0. A sensible split
+                # on their part, and a silent break on ours.
+                #
+                # Silent is the operative word. These lookups raise KeyError on
+                # a 1.9.6 file, `except KeyError: pass` swallows it, and so
+                # CRPIX, CRVAL and CD never reach the header at all. Two things
+                # followed, neither of which pointed back here:
+                #   * the SIP fit downstream died on "Keyword 'CRPIX1' not
+                #     found", because a SIP fit is a correction TO a linear
+                #     model and there was no linear model;
+                #   * the loader fell through to CRVAL-from-RA/DEC plus a bare
+                #     CDELT pair, which carries no rotation and puts the
+                #     reference point at pixel (0,0). On this frame, rotated
+                #     89.8 degrees, that WCS is wrong by most of a right angle.
+                def _pi_prop(*names):
+                    """First of these properties that exists, resolved."""
+                    for n in names:
+                        if n in props:
+                            return xisf.resolve_property(props[n])
+                    raise KeyError(names[0])
+
                 try:
                     if not all(k in hdr for k in ("CRPIX1","CRPIX2","CRVAL1","CRVAL2")):
-                        p_img = props['PCL:AstrometricSolution:ReferenceImageCoordinates']
-                        p_sky = props['PCL:AstrometricSolution:ReferenceCelestialCoordinates']
-                        
-                        # Resolve lazy properties (decode base64/binary)
-                        ref_img = xisf.resolve_property(p_img)
-                        ref_sky = xisf.resolve_property(p_sky)
+                        ref_img = _pi_prop(
+                            "AstrometricSolution:ReferenceImageCoordinates",
+                            "PCL:AstrometricSolution:ReferenceImageCoordinates")
+                        ref_sky = _pi_prop(
+                            "AstrometricSolution:ReferenceCelestialCoordinates",
+                            "PCL:AstrometricSolution:ReferenceCelestialCoordinates")
 
                         # Some files store extra values; only first two are CRPIX/CRVAL
                         im0, im1 = float(ref_img[0]), float(ref_img[1])
                         w0,  w1  = float(ref_sky[0]), float(ref_sky[1])
 
-                        hdr['CRPIX1'], hdr['CRPIX2'] = im0, im1
+                        # +1 because PCL counts pixels from 0 and FITS counts
+                        # from 1. Writing the raw value put every PI solution
+                        # one pixel out -- 7.34 arcsec here -- and it stayed
+                        # invisible because a whole-frame translation looks
+                        # nothing like a bad solve.
+                        #
+                        # Settled against PI's own Observation:Center on a
+                        # 1.9.6 file rather than by reasoning about it: with
+                        # the +1 this WCS reproduces that centre to 1.7"
+                        # (0.23 px, which is the distortion at mid-field plus
+                        # PI's projection origin sitting half a pixel off the
+                        # true centre); without it, 12.0".
+                        hdr['CRPIX1'], hdr['CRPIX2'] = im0 + 1.0, im1 + 1.0
                         hdr['CRVAL1'], hdr['CRVAL2'] = w0, w1
                         hdr.setdefault('CTYPE1', 'RA---TAN-SIP')
                         hdr.setdefault('CTYPE2', 'DEC--TAN-SIP')
@@ -2470,11 +2522,19 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                     print(f"⚠️ XISFProperties CRPIX/CRVAL parse failed; skipping. Reason: {e}")
 
                 # 2) CD matrix (fallback only)
+                #
+                # Stored row-major in FITS order, so no transpose. Checked by
+                # projecting the four frame corners and comparing against the
+                # bounds ImageSolver prints: as stored every corner lands
+                # within 92", transposed within 187". That remaining 92" is
+                # not error, it is the distortion -- 12 px at 7.34"/px, which
+                # the SIP fit further down exists to absorb.
                 try:
                     if not all(k in hdr for k in ("CD1_1","CD1_2","CD2_1","CD2_2")):
-                        p_mat = props['PCL:AstrometricSolution:LinearTransformationMatrix']
-                        lin = np.asarray(xisf.resolve_property(p_mat), float)
-                        
+                        lin = np.asarray(_pi_prop(
+                            "AstrometricSolution:LinearTransformationMatrix",
+                            "PCL:AstrometricSolution:LinearTransformationMatrix"), float)
+
                         hdr['CD1_1'], hdr['CD1_2'] = float(lin[0,0]), float(lin[0,1])
                         hdr['CD2_1'], hdr['CD2_2'] = float(lin[1,0]), float(lin[1,1])
                         _filled |= {'CD1_1','CD1_2','CD2_1','CD2_2'}
@@ -2542,7 +2602,37 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                             B) separate leaf properties:
                                 ...:ImageToNative:GridX, :GridY, :Delta, :Rect
                             """
-                            base = "PCL:AstrometricSolution:SplineWorldTransformation:PointGridInterpolation:ImageToNative"
+                            # PixInsight 1.9.6 renamed this block. It used to
+                            # be
+                            #   PCL:AstrometricSolution:SplineWorldTransformation
+                            #       :PointGridInterpolation:ImageToNative
+                            # and is now
+                            #   PCL:AstrometricSolution:Grid:ImageToProjection
+                            #
+                            # The same quantity under a new name: pixels in,
+                            # projection-plane degrees out. Confirmed against a
+                            # 1.9.6 file -- Rect is [0, 0, 6170, 4013] for a
+                            # 6170x4013 frame, Delta is 8, and GridX is
+                            # 503x773, so 773*8 and 503*8 cover the frame with
+                            # PI's usual padding. Everything below this line
+                            # works unchanged once `base` points at it.
+                            #
+                            # Both spellings are tried, newest first, so one
+                            # build of SASpro reads files written by either
+                            # version. A name that turns up in neither falls
+                            # through to the old one, whose absence then
+                            # produces the same clean "no grid" skip as before
+                            # rather than a KeyError from somewhere deeper.
+                            _GRID_BASES = (
+                                "PCL:AstrometricSolution:Grid:ImageToProjection",
+                                "PCL:AstrometricSolution:SplineWorldTransformation"
+                                ":PointGridInterpolation:ImageToNative",
+                            )
+                            base = next(
+                                (b for b in _GRID_BASES
+                                 if b in props or (b + ":GridX") in props),
+                                _GRID_BASES[-1],
+                            )
 
                             # Case A: full nested block exists
                             if base in props:
@@ -2709,13 +2799,88 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                                 best.update(order=order, a=a, b=b, terms=terms, rms=rms)
 
                         o = best['order']
+
+                        # Fold the degenerate linear terms into CD.
+                        #
+                        # The fit above includes A_1_0, A_0_1, B_1_0 and B_0_1,
+                        # and those are not distortion: they are a linear
+                        # transform of the pixel axes, which is exactly what CD
+                        # already is. The SIP convention excludes them for that
+                        # reason -- Shupe et al. 2005 states that A_0_0, A_0_1
+                        # and A_1_0 are degenerate with CRPIX and CD and should
+                        # not be used.
+                        #
+                        # Leaving them in is not wrong arithmetically, since
+                        # astropy applies them, but it splits the plate scale
+                        # across two places and the CD matrix then no longer
+                        # reports the scale the solution actually has. On a
+                        # 1.9.6 Rosette frame the fit put A_1_0 = 0.00426 and
+                        # B_0_1 = 0.00355 -- a 0.43% and 0.35% stretch -- so
+                        # the header read 7.3423"/px for a solution whose real
+                        # scale is 7.3709"/px. An independent blind solve of
+                        # the same frame measured 7.3708"/px, which is how that
+                        # was pinned down: the 0.39% gap was never a
+                        # disagreement between solvers, only this bookkeeping.
+                        #
+                        # The rewrite below is exact, not an approximation.
+                        # With
+                        #     L = [[1 + A_1_0, A_0_1], [B_1_0, 1 + B_0_1]]
+                        # the SIP-corrected pixel vector is
+                        #     (u', v') = L @ (u, v) + high(u, v)
+                        # so
+                        #     world = CD @ (u', v')
+                        #           = (CD @ L) @ [(u, v) + inv(L) @ high]
+                        # which is the same mapping with CD @ L as the linear
+                        # part and inv(L) @ high as the polynomial. Since the
+                        # monomial basis is shared between the two components,
+                        # inv(L) @ high is just inv(L) applied to each
+                        # coefficient PAIR. Checked over 4400 points across the
+                        # frame: the sky positions move by 1.2e-10 arcsec,
+                        # which is floating point and nothing else. The fit
+                        # residual is likewise untouched -- this patch makes
+                        # the header honest, it does not make it more accurate.
+                        _A = dict(zip(best['terms'], (float(c) for c in best['a'])))
+                        _B = dict(zip(best['terms'], (float(c) for c in best['b'])))
+
+                        _L = np.array(
+                            [[1.0 + _A.get((1, 0), 0.0), _A.get((0, 1), 0.0)],
+                             [_B.get((1, 0), 0.0), 1.0 + _B.get((0, 1), 0.0)]])
+                        if abs(np.linalg.det(_L)) < 1e-12:
+                            raise ValueError(
+                                "linear SIP block is singular; cannot fold into CD")
+                        _Linv = np.linalg.inv(_L)
+                        _CD_new = CD @ _L
+
+                        hdr['CD1_1'], hdr['CD1_2'] = float(_CD_new[0, 0]), float(_CD_new[0, 1])
+                        hdr['CD2_1'], hdr['CD2_2'] = float(_CD_new[1, 0]), float(_CD_new[1, 1])
+                        _filled |= {'CD1_1', 'CD1_2', 'CD2_1', 'CD2_2'}
+
                         hdr['A_ORDER'] = o; hdr['B_ORDER'] = o
                         _filled |= {'A_ORDER','B_ORDER'}
 
-                        for (i,j), coef in zip(best['terms'], best['a']):
-                            hdr[f'A_{i}_{j}'] = float(coef); _filled.add(f'A_{i}_{j}')
-                        for (i,j), coef in zip(best['terms'], best['b']):
-                            hdr[f'B_{i}_{j}'] = float(coef); _filled.add(f'B_{i}_{j}')
+                        _kept = 0
+                        for (i, j) in best['terms']:
+                            if i + j < 2:
+                                continue          # folded into CD above
+                            _c = _Linv @ np.array([_A.get((i, j), 0.0),
+                                                   _B.get((i, j), 0.0)])
+                            hdr[f'A_{i}_{j}'] = float(_c[0]); _filled.add(f'A_{i}_{j}')
+                            hdr[f'B_{i}_{j}'] = float(_c[1]); _filled.add(f'B_{i}_{j}')
+                            _kept += 1
+
+                        # A degenerate card left over from an earlier pass over
+                        # this header would now be applied on top of the CD that
+                        # already contains it, so clear any that exist.
+                        for _k in ('A_0_0', 'A_0_1', 'A_1_0',
+                                   'B_0_0', 'B_0_1', 'B_1_0'):
+                            if _k in hdr:
+                                del hdr[_k]
+                                _filled.discard(_k)
+
+                        print(f"🔷 Folded the linear SIP block into CD: "
+                              f"{np.sqrt(abs(np.linalg.det(CD))) * 3600.0:.4f}\"/px"
+                              f" -> {np.sqrt(abs(np.linalg.det(_CD_new))) * 3600.0:.4f}\"/px"
+                              f", {_kept} distortion terms kept")
 
                         # Promote CTYPE to TAN-SIP so strict consumers (Aladin,
                         # Montage, WIMI) actually apply the A_i_j/B_i_j terms.
@@ -2809,8 +2974,27 @@ def load_image(filename, max_retries=3, wait_seconds=3, return_metadata: bool = 
                         hdr[kw] = v
 
                 # 8) Binning
-                bx = int(_lookup_kw('XBINNING') or 1)
-                by = int(_lookup_kw('YBINNING') or bx)
+                # PixInsight writes integer-valued FITS keywords as floats
+                # with a bare trailing dot: XBINNING arrives as the string
+                # "1.", EGAIN as "1.", EXPTIME as "60.". int("1.") raises
+                # ValueError, and because this sits in the middle of the XISF
+                # loader it aborted the entire open with
+                #   invalid literal for int() with base 10: '1.'
+                # float() first, then int(), accepts both spellings and every
+                # other numeric form a FITS keyword can legally hold.
+                def _kw_int(name, default):
+                    raw = _lookup_kw(name)
+                    if raw is None or raw == "":
+                        return default
+                    try:
+                        return int(float(raw))
+                    except (TypeError, ValueError):
+                        print(f"\u26a0\ufe0f {name}={raw!r} is not a number; "
+                              f"using {default}")
+                        return default
+
+                bx = _kw_int('XBINNING', 1)
+                by = _kw_int('YBINNING', bx)
                 if bx!=by: print(f"⚠️ Unequal binning {bx}×{by}, averaging")
                 hdr['XBINNING'], hdr['YBINNING'] = bx, by
 
