@@ -331,14 +331,24 @@ def _reanchor_at_image_centre(w, img_w: int, img_h: int,
     if not np.all(np.isfinite(xi)) or not np.all(np.isfinite(eta)):
         return None
 
-    cd = [[(xi[0] - xi[1]) / (2 * d), (xi[2] - xi[3]) / (2 * d)],
-          [(eta[0] - eta[1]) / (2 * d), (eta[2] - eta[3]) / (2 * d)]]
+    # float(), not the numpy scalars the arithmetic produces. _write_astap_ini
+    # formats every value with !r, and NumPy 2 reprs a scalar as
+    # "np.float64(-4.92e-06)" rather than "-4.92e-06" -- so the four CD lines
+    # went into the .ini unparseable, N.I.N.A.'s reader found four of its eight
+    # required terms missing, and the shim reported "incomplete linear WCS" on
+    # a solve that was otherwise perfect. The code this replaced cast
+    # explicitly for exactly this reason; dropping the cast was the whole bug.
+    cd = [[float((xi[0] - xi[1]) / (2 * d)), float((xi[2] - xi[3]) / (2 * d))],
+          [float((eta[0] - eta[1]) / (2 * d)), float((eta[2] - eta[3]) / (2 * d))]]
     det = cd[0][0] * cd[1][1] - cd[0][1] * cd[1][0]
     if not np.isfinite(det) or abs(det) < 1e-20:
         return None
 
-    # +1 because FITS counts pixels from one.
-    return [ra0, dec0], [cx + 1.0, cy + 1.0], cd
+    # +1 because FITS counts pixels from one. Every value a plain Python
+    # float, so that !r formatting in the caller yields a bare number.
+    return ([float(ra0), float(dec0)],
+            [float(cx) + 1.0, float(cy) + 1.0],
+            cd)
 
 
 def _write_astap_ini(path: Path, hdr=None, img_w: int = 0, img_h: int = 0,
