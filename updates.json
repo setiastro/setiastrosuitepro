@@ -1,10 +1,10 @@
 {
-  "version": "1.23.4.post1",
+  "version": "1.23.5",
   "downloads": {
-      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.4/setiastrosuitepro_windows.zip",
-      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.4/SetiAstroSuitePro_macOS_Intel.dmg",
-      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.4/SetiAstroSuitePro_AppleSilicon.dmg",
-      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.4/SetiAstroSuitePro_linux.tar.xz"
+      "Windows": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.5/setiastrosuitepro_windows.zip",
+      "macOS_Intel": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.5/SetiAstroSuitePro_macOS_Intel.dmg",
+      "macOS_AppleSilicon": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.5/SetiAstroSuitePro_AppleSilicon.dmg",
+      "Linux": "https://github.com/setiastro/setiastrosuitepro/releases/download/V1.23.5/SetiAstroSuitePro_linux.tar.xz"
   },
-  "notes": "Seti Astro Suite Pro\n\nV1.23.4.post1\nUpdate to account for changes metadata names in xisf files after pi 1.9.6\nUpdate to provide zoom and pan in Planetary Stacking Blink the Keepers tool\n\nV1.23.4\nSASproSolver now can be used to replace any of astap/asps/ps2/ps3 in NINA for platesolving\n\nMajor updates to satellite trail removal to ignore diffraction spikes and amp glow when processing batches of files (ie in Blink, Stacking Suite, and batch processing Input Folder)\n\nBug and UX fixes in NarrowbandNormalization, Blemish Blaster, Diffraction Spikes Tool, Signature Insert Tool."
+  "notes": "Seti Astro Suite Pro\n\nV1.23.5\nMajor updates to Mosaic Master normalization algorithms\n\nMajor updates to Image Peaker for much more robust and additional focal plane analysis and tilt analysis.\n\nLarge speed up in Plate Solver, including bug fixes for NINA plate solving (be sure to get the updated SASproSolver.exe)"
 }
