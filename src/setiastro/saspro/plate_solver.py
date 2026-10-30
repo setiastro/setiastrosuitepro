@@ -2737,6 +2737,32 @@ def _get_blind_enabled(settings) -> bool:
         return True
 
 
+def _get_pointing_only(settings) -> bool:
+    """
+    Solve for pointing, scale and rotation, and stop.
+
+    A mount centring a target and a rotator turning to an angle need the CD
+    matrix and nothing else. The SIP polynomial on top of it is for measuring
+    a frame -- photometry, mosaics, anything that cares where a star is to a
+    fraction of a pixel at the corner -- and a telescope being pointed does
+    not. Fitting it anyway costs a least-squares solve per candidate degree
+    plus the detections to support it, on a frame that will be thrown away
+    the moment the slew finishes.
+
+    Off by default: a solve is assumed to be worth measuring unless the
+    caller says otherwise.
+    """
+    if settings is None:
+        return False
+    try:
+        v = settings.value("plate_solver/pointing_only", False)
+        if isinstance(v, str):
+            return v.strip().lower() not in ("false", "0", "no", "")
+        return bool(v)
+    except Exception:
+        return True
+
+
 def _set_blind_enabled(settings, on: bool):
     if settings is not None:
         settings.setValue("plate_solver/blind_quads", bool(on))
@@ -3132,6 +3158,15 @@ def _solve_with_GAIA(image: np.ndarray,
     # Check if we're in manual seed mode — if so, prefer settings over header
     _seed_mode = _get_seed_mode(settings) if settings is not None else "auto"
 
+    # Pointing only: centre, scale and rotation, no SIP. Read once here so the
+    # detection ladder and the SIP gate below both see the same answer.
+    # print, not _say: this sits above _say's own definition a few lines
+    # down, and calling it here would be a NameError on every pointing solve.
+    _pointing_only = _get_pointing_only(settings)
+    if _pointing_only:
+        print("[GAIA] pointing-only solve: centre, scale and rotation, "
+              "no distortion fit")
+
     def _say(text: str):
         if status_cb is not None:
             status_cb(text)
@@ -3287,15 +3322,33 @@ def _solve_with_GAIA(image: np.ndarray,
         sep.set_extract_pixstack(20000000)
         from setiastro.saspro.star_alignment import _detect_stars_uniform
 
-        _sigma_levels = [50, 25, 15, 10, 5, 3]
-        _target_min, _target_max = 1000, 2000
+        # Pointing-only solves need a fraction of the stars. The ladder below
+        # stops at the first sigma that clears _target_min, so the threshold
+        # decides how many extractions run as much as it decides how many
+        # stars come out: asking for a thousand on a short framing exposure
+        # walks the whole ladder, and every rung is a full sep pass over the
+        # frame. Two hundred clears at the top of the ladder on most frames,
+        # which is one extraction instead of four or five.
+        #
+        # The ladder itself starts higher for the same reason. Sigma 100 takes
+        # only the stars that are unambiguously stars, which is exactly the
+        # set a seeded matcher wants -- it already knows roughly where the
+        # field is, so it needs a handful of certain matches, not a census.
+        if _pointing_only:
+            _sigma_levels = [100, 50, 25, 10, 5]
+            _target_min, _target_max = 200, 400
+            _cap_total, _cap_cell = 400, 16
+        else:
+            _sigma_levels = [50, 25, 15, 10, 5, 3]
+            _target_min, _target_max = 1000, 2000
+            _cap_total, _cap_cell = 1200, 60
         img_stars = None
         used_sigma = None
 
         for _sigma in _sigma_levels:
             _candidates = _detect_stars_uniform(
                 gray, det_sigma=float(_sigma), minarea=5,
-                grid=(5, 5), max_per_cell=60, max_total=1200,
+                grid=(5, 5), max_per_cell=_cap_cell, max_total=_cap_total,
             )
             n = len(_candidates)
             print(f"[GAIA] star detection σ={_sigma}: {n} stars")
@@ -3569,6 +3622,7 @@ def _solve_with_GAIA(image: np.ndarray,
             img_w, img_h, lib, parent,
             use_astro=use_astro, astro_lib=astro_lib,
             status_cb=status_cb, img_stars_all=img_stars,
+            _pointing_only=_pointing_only,
         )
 
         # Best of both worlds: if the triangle-derived pairs matched but the
@@ -3590,6 +3644,7 @@ def _solve_with_GAIA(image: np.ndarray,
                     img_w, img_h, lib, parent,
                     use_astro=use_astro, astro_lib=astro_lib,
                     status_cb=status_cb, img_stars_all=img_stars,
+                    _pointing_only=_pointing_only,
                 )
                 if ok_round:
                     img_matched, cat_matched_xy = h_img, h_cat
@@ -3824,10 +3879,21 @@ def _gaia_fit_and_validate(
     astro_lib=None,
     status_cb=None,
     img_stars_all=None,
+    _pointing_only: bool = False,
 ) -> tuple[bool, "WCS | str"]:
     """
     Run steps 6-9 of the Gaia solve (TAN fit, iterative refinement,
     quality gate, SIP fit) on one matched-pair candidate set.
+
+    _pointing_only skips the SIP fit and keeps the linear TAN solution. It is
+    a parameter rather than a settings read because this function is called
+    from inside _solve_with_GAIA but defined beside it, not within it -- the
+    first version of this change set the flag as a local in the caller and
+    referred to it here, which raised NameError at the SIP gate on every
+    solve. The solver absorbed it as "refinement exception", retried with the
+    Hough matcher, retried the field, and finally returned a seed-grade
+    result: a correct, conservative response to a fault that was not in the
+    data at all.
 
     img_stars_all is EVERY star detected in the frame, not just the matched
     ones. Two things need it: the per-iteration catalogue query is sized from
@@ -4082,13 +4148,17 @@ def _gaia_fit_and_validate(
         p95        = float(np.percentile(sep_arcsec, 95))
         print(f"[GaiaLocal] TAN RMS={rms:.3f}\"  p95={p95:.3f}\"  n={n_matched}")
 
+        if _pointing_only:
+            print("[GaiaLocal] pointing-only: keeping the linear TAN solution, "
+                  "no SIP fit")
+
         # ── Fit SIP BEFORE the quality gate ──────────────────────────────────
         # A linear TAN projection cannot absorb wide-field lens distortion, so a
         # distorted rig can sit above the gate on TAN yet well under it on SIP.
         # Fit SIP here (own try/except -> fall back to TAN) and let the gate below
         # judge whichever is better; otherwise a fixable distorted field is
         # rejected before SIP ever runs.
-        if n_matched >= 20:
+        if n_matched >= 20 and not _pointing_only:
             try:
                 _sip_proj = _sky_centroid(matched_sky)
 
