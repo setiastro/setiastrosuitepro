@@ -209,6 +209,38 @@ def _append_descriptors(name: str, descriptors) -> str:
         have.add(d)
     return out
 
+# ---------------------------------------------------------------------
+# Display-name collision handling
+# ---------------------------------------------------------------------
+# Smart view naming derives titles from header cards (OBJECT + FILTER +
+# filename descriptors), so files that legitimately differ very often
+# derive the SAME title: two subs of one target, the same master opened
+# twice, an L and an Ha master whose FILTER card is blank. Raw filenames
+# collide too ('Light_001.fit' out of two session folders).
+#
+# Policy: first one in keeps the bare name; each later arrival takes the
+# lowest free '_N'. We never renumber an existing trailing number
+# ('M51_2' -> 'M51_2_1', not 'M51_3') because that digit is usually part
+# of the designation, not a disambiguator we added.
+#
+# Comparison is case-insensitive: 'NGC660_G' and 'ngc660_g' read as the
+# same entry in the window list even though Python sees two strings.
+_DISPLAY_SUFFIX_LIMIT = 9999
+
+
+def _unique_display_name(desired: str, taken: set[str]) -> str:
+    """Return `desired`, or `desired_N` for the lowest free N >= 1.
+
+    `taken` holds casefolded names already in use.
+    """
+    base = (desired or "").strip() or "Untitled"
+    if base.casefold() not in taken:
+        return base
+    for n in range(1, _DISPLAY_SUFFIX_LIMIT):
+        cand = f"{base}_{n}"
+        if cand.casefold() not in taken:
+            return cand
+    return f"{base}_{uuid.uuid4().hex[:6]}"  # pathological; never collide
 
 def _derive_display_name_from_header(header, fallback: str | None = None,
                                      *, path: str | None = None) -> str | None:
@@ -2708,6 +2740,51 @@ class DocManager(QObject):
         base = getattr(doc, "_base", None) or getattr(doc, "_parent_doc", None)
         return bool(base and base in self._docs)
 
+    def _taken_display_names(self, exclude=None) -> set[str]:
+        """Casefolded set of titles currently in use by open documents."""
+        taken: set[str] = set()
+        for d in self._docs:
+            if d is exclude:
+                continue
+            nm = None
+            try:
+                nm = d.display_name()
+            except Exception:
+                try:
+                    nm = (getattr(d, "metadata", {}) or {}).get("display_name")
+                except Exception:
+                    nm = None
+            if nm:
+                taken.add(str(nm).casefold())
+        return taken
+
+    def unique_display_name(self, desired: str, *, exclude=None) -> str:
+        """Public: resolve `desired` against open documents.
+
+        Use this from any rename path too, not just load — renames are the
+        other way two views end up sharing a title.
+        """
+        return _unique_display_name(desired, self._taken_display_names(exclude=exclude))
+
+    def _ensure_unique_display_name(self, doc) -> None:
+        """Rewrite doc.metadata['display_name'] if the title is taken.
+
+        Compares against the EFFECTIVE title (display_name(), which falls
+        back to basename(file_path)), so two different paths with the same
+        basename get disambiguated even when neither set an explicit name.
+        """
+        md = getattr(doc, "metadata", None)
+        if not isinstance(md, dict):
+            return
+        try:
+            desired = md.get("display_name") or doc.display_name()
+        except Exception:
+            desired = md.get("display_name")
+        if not desired:
+            return
+        unique = self.unique_display_name(str(desired), exclude=doc)
+        if unique != desired:
+            md["display_name"] = unique
 
     def _register_doc(self, doc):
         import weakref
@@ -2718,6 +2795,13 @@ class DocManager(QObject):
                 doc._doc_manager = weakref.proxy(self)
             except Exception:
                 doc._doc_manager = self
+        # Resolve title collisions before the doc joins the list — smart
+        # naming makes these common, and a view list with three identical
+        # 'ngc660galaxy_Ha' entries is unusable.
+        try:
+            self._ensure_unique_display_name(doc)
+        except Exception:
+            pass
 
         self._docs.append(doc)
 
@@ -3392,7 +3476,6 @@ class DocManager(QObject):
                         except Exception:
                             pass
 
-                used_names = set()
                 if open_auxiliary_images:
                     for L in layers:
                         if L["is_primary"]:
@@ -3407,12 +3490,6 @@ class DocManager(QObject):
                             # stays the stable, unique key regardless.
                             label = L["role"] or f"SYQ[{L['id']}]"
                             disp = f"{base} {label}"
-                            if disp in used_names:
-                                k = 2
-                                while f"{base} {label} {k}" in used_names:
-                                    k += 1
-                                disp = f"{base} {label} {k}"
-                            used_names.add(disp)
                             md = {
                                 "file_path": f"{path}::SYQ[{L['id']}]",
                                 "original_header": hdr,

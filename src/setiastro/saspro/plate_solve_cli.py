@@ -128,11 +128,38 @@ def _cli_settings(args):
     s.setValue("plate_solver/preference", SOLVER_PREF[args.solver])
     s.setValue("plate_solver/blind_quads", bool(args.blind))
     s.setValue("plate_solver/force_blind", bool(args.force_blind))
+    s.setValue("plate_solver/pointing_only", bool(getattr(args, "pointing", False)))
 
     manual = (args.ra is not None and args.dec is not None)
     s.setValue("astap/seed_mode", "manual" if manual else "auto")
     if manual:
-        s.setValue("astap/manual_ra", str(args.ra))
+        # --ra is DEGREES. The setting it lands in is read back by
+        # _parse_ra_input_to_deg, which exists for a GUI text box and has to
+        # guess whether what a human typed is hours or degrees:
+        #
+        #     x = float(s); return x if x > 24.0 else x * 15.0
+        #
+        # That guess is right for the dialog -- RA is conventionally written in
+        # hours -- and wrong for a value this CLI already knows is in degrees.
+        # Every target with RA below 24 degrees was being multiplied by 15:
+        #
+        #     M31  at  10.685 deg  ->  160.3 deg   (150 deg off)
+        #     M33  at  23.462 deg  ->  351.9 deg   (328 deg off)
+        #     NGC 253 at 11.888 deg -> 178.3 deg
+        #
+        # The first 1h36m of RA, which is where a good part of the autumn
+        # sky sits. A seed that wrong is worse than none: the spiral search
+        # quarters a patch of sky the field is not in, fails slowly, and only
+        # then falls through to the blind path -- which is exactly the "much
+        # slower than a normal solve" the N.I.N.A. reports describe, appearing
+        # and disappearing with the target.
+        #
+        # Writing hours instead of degrees puts the value in the branch the
+        # parser handles correctly, and is unambiguous by construction: RA in
+        # hours is always <= 24, so there is no guess left to get wrong.
+        # Declination needs no such care -- its parser reads a lone number as
+        # degrees, which it is.
+        s.setValue("astap/manual_ra", str(float(args.ra) / 15.0))
         s.setValue("astap/manual_dec", str(args.dec))
     if args.scale is not None:
         s.setValue("astap/manual_scale_arcsec", float(args.scale))
@@ -224,6 +251,96 @@ def _write_wcs_sidecar(hdr, path: Path, img_w: int, img_h: int) -> str:
     return str(path)
 
 
+def _reanchor_at_image_centre(w, img_w: int, img_h: int,
+                              delta: float = 8.0):
+    """
+    Re-express a solved WCS with its reference point at the image centre.
+
+    Returns (crval, crpix, cd) or None if it cannot be done.
+
+    Why this exists: N.I.N.A. reads CRVAL1/CRVAL2 out of the .ini and uses
+    them DIRECTLY as the image centre --
+
+        result.Coordinates = new Coordinates(dict["CRVAL1"], dict["CRVAL2"], ...)
+
+    with no re-projection from CRPIX. That is safe against ASTAP, which always
+    puts its reference pixel at the centre. It is not safe against this solver:
+    astropy's fit_wcs_from_points is handed proj_point = the SKY CENTROID OF
+    THE MATCHED STARS, so CRPIX lands wherever that centroid falls in pixels,
+    and CRVAL is the sky position THERE rather than at the centre.
+
+    On a real solve of a 6170x4013 Rosette frame, CRPIX came out 154 px from
+    the centre, which at 7.37"/px is 18.95 ARCMINUTES of pointing error handed
+    straight to the mount. The .ini also carries no SIP terms (only the eight
+    linear values N.I.N.A. indexes), so nothing downstream can recover it.
+
+    It is worse than a fixed bias, because the matched-star set changes on
+    every slew and every focus tweak -- so the reported centre wanders frame
+    to frame. The Three Point Polar Alignment plugin builds its whole solution
+    out of exactly that: TPAPAVM.cs:155 does
+
+        referenceFrame.Coordinates.Shift(ReferenceStar.X - Center.X, ...)
+
+    i.e. it treats Coordinates AS the sky position of Center and shifts by a
+    pixel offset, then derives a polar error from how that point moves across
+    three frames. A centre that jitters by arcminutes between solves is read
+    as the mount being misaligned.
+
+    The fix is the one ASTAP gets for free: put the reference pixel at the
+    centre, put CRVAL at the full-SIP sky position of that pixel, and take the
+    linear terms from the LOCAL slope there. Distortion is zero at the
+    reference pixel by construction, so anchoring at the centre is what makes
+    the linear-only .ini exact exactly where N.I.N.A. reads it.
+
+    `delta` is the half-step of the centred difference used for the slope. The
+    SIP polynomial is analytic, so there is no noise to average down; this was
+    measured flat to one part in 1e7 for any delta from 0.5 to 16 px, and only
+    starts absorbing curvature past about 64 px. 8 is comfortably inside that.
+    """
+    import numpy as np
+    from astropy.wcs import WCS
+
+    if not (img_w and img_h) or img_w < 4 or img_h < 4:
+        return None
+
+    # 0-based pixel centre, matching what _summarize() reports as the centre.
+    cx, cy = (img_w - 1) / 2.0, (img_h - 1) / 2.0
+
+    c0 = w.pixel_to_world(cx, cy)
+    ra0, dec0 = float(c0.ra.deg), float(c0.dec.deg)
+    if not (np.isfinite(ra0) and np.isfinite(dec0)):
+        return None
+
+    # A bare TAN frame about the new reference point, used only for its
+    # projection: CRPIX at the origin and CD = the identity means
+    # world_to_pixel returns the tangent-plane offsets (xi, eta) in DEGREES,
+    # which is precisely the quantity CD is defined to produce.
+    probe = WCS(naxis=2)
+    probe.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    probe.wcs.crval = [ra0, dec0]
+    probe.wcs.crpix = [0.0, 0.0]
+    probe.wcs.cd = np.eye(2)
+    probe.wcs.set()
+
+    d = float(max(1.0, min(delta, min(img_w, img_h) / 8.0)))
+    px = np.array([cx + d, cx - d, cx, cx], dtype=float)
+    py = np.array([cy, cy, cy + d, cy - d], dtype=float)
+    xi, eta = probe.world_to_pixel(w.pixel_to_world(px, py))
+    xi = np.asarray(xi, dtype=float)
+    eta = np.asarray(eta, dtype=float)
+    if not np.all(np.isfinite(xi)) or not np.all(np.isfinite(eta)):
+        return None
+
+    cd = [[(xi[0] - xi[1]) / (2 * d), (xi[2] - xi[3]) / (2 * d)],
+          [(eta[0] - eta[1]) / (2 * d), (eta[2] - eta[3]) / (2 * d)]]
+    det = cd[0][0] * cd[1][1] - cd[0][1] * cd[1][0]
+    if not np.isfinite(det) or abs(det) < 1e-20:
+        return None
+
+    # +1 because FITS counts pixels from one.
+    return [ra0, dec0], [cx + 1.0, cy + 1.0], cd
+
+
 def _write_astap_ini(path: Path, hdr=None, img_w: int = 0, img_h: int = 0,
                      summary: "dict | None" = None,
                      error: "str | None" = None) -> str:
@@ -287,6 +404,32 @@ def _write_astap_ini(path: Path, hdr=None, img_w: int = 0, img_h: int = 0,
         cd = w.pixel_scale_matrix
         cd = [[float(cd[0, 0]), float(cd[0, 1])],
               [float(cd[1, 0]), float(cd[1, 1])]]
+
+        # Move the reference point to the image centre. N.I.N.A. takes CRVAL
+        # as the centre verbatim, and this solver anchors CRPIX on the matched
+        # stars -- see _reanchor_at_image_centre for the whole story and the
+        # 18.95 arcmin it was worth on one real frame. Only the .ini is
+        # re-anchored: the .wcs sidecar and the saved FITS keep the full SIP
+        # solution at its own reference point, which is the right thing for
+        # anything measuring the frame rather than pointing a telescope.
+        _re = None
+        try:
+            _re = _reanchor_at_image_centre(w, img_w, img_h)
+        except Exception as e:
+            print(f"[solve] could not re-anchor the .ini at the image centre "
+                  f"({e}); writing the solver's own reference point")
+        if _re is not None:
+            _crval_old = list(crval)
+            crval, crpix, cd = _re
+            _moved = math.hypot(
+                (crval[0] - _crval_old[0])
+                * math.cos(math.radians(crval[1])),
+                crval[1] - _crval_old[1]) * 60.0
+            if _moved > 0.1:
+                print(f"[solve] .ini re-anchored to the image centre; the "
+                      f"reported centre moves {_moved:.2f}' "
+                      f"({_moved * 60.0:.0f}\") to where the frame actually "
+                      f"points")
     except Exception as e:
         return _fail(f"solved, but the linear WCS terms could not be read: {e}")
 
@@ -597,6 +740,16 @@ def build_parser() -> argparse.ArgumentParser:
                         "many frames. 'numba' forces the JIT kernels, "
                         "'numpy' forces the plain ones. The solution is "
                         "identical either way.")
+    g.add_argument("--pointing", action="store_true",
+                   help="Pointing only: solve for centre, scale and rotation "
+                        "and stop there. Skips the SIP distortion fit and "
+                        "detects a few hundred stars instead of over a "
+                        "thousand, which is all a mount needs to centre and "
+                        "a rotator needs to turn. For N.I.N.A., SGP and "
+                        "anything else solving to point a telescope rather "
+                        "than to measure a frame. The CD matrix is identical "
+                        "either way; what is dropped is the polynomial on top "
+                        "of it.")
 
     g = ap.add_argument_group("manual seed")
     g.add_argument("--ra", type=float,

@@ -549,7 +549,13 @@ class MosaicPreviewWindow(QDialog):
           2) Rescale to [0..255]
         """
         arr = arr.astype(np.float32, copy=False)
-        mn, mx = np.percentile(arr, (0.5, 99.5))
+        # Percentiles over real data only. A mosaic preview can be a quarter
+        # empty; those zeros would own the low percentile and squash the ramp.
+        valid = _valid_data_mask(arr, erode_px=0)       # always (H, W)
+        sel = arr[valid]                                # (N,) mono or (N, C) colour
+        if sel.size == 0:
+            sel = arr.ravel()
+        mn, mx = np.percentile(sel, (0.5, 99.5))
         if mx > mn:
             arr = (arr - mn) / (mx - mn)
         else:
@@ -862,6 +868,15 @@ class PolyGradientRemoval:
         self.was_single_channel = False
 
     def process(self, user_exclusion_mask: np.ndarray = None) -> np.ndarray:
+        # Real-data mask for this frame. Sampling the background inside a
+        # no-data region would anchor the polynomial fit to zeros and tilt the
+        # fitted gradient across the whole frame. Combine with the caller's
+        # mask when one is given (both use True = keep).
+        self._valid = _valid_data_mask(self.image, erode_px=2)
+        keep = self._valid
+        if user_exclusion_mask is not None:
+            keep = keep & (np.asarray(user_exclusion_mask).astype(bool))
+
         # 1) Stretch
         stretched = self.pixel_math_stretch(self.image)
 
@@ -869,11 +884,13 @@ class PolyGradientRemoval:
         small_stretched = self.downsample_image(stretched, self.downsample_scale)
         h_s, w_s = small_stretched.shape[:2]
 
-        # --- NEW: downsample user mask (≥0.5 keeps) ---
+        # --- downsample the keep mask (≥0.5 keeps) ---
         mask_small = None
-        if user_exclusion_mask is not None:
-            m = user_exclusion_mask.astype(np.float32)
+        if keep is not None and not keep.all():
+            m = keep.astype(np.float32)
             mask_small = cv2.resize(m, (w_s, h_s), interpolation=cv2.INTER_AREA) >= 0.5
+            if not mask_small.any():
+                mask_small = None
 
         # 4) Generate sample points using ABE’s sampler (fallback if missing)
         sample_points = self._gen_sample_points(
@@ -896,15 +913,22 @@ class PolyGradientRemoval:
         # Subtract
         after_poly = stretched - poly_background
 
-        # Re-normalize median to original
-        original_median = float(np.median(stretched))
-        after_poly = self.normalize_image(after_poly, original_median)
+        # Re-normalize median to original (real data only)
+        original_median = float(np.median(stretched[self._valid])
+                                if self._valid.any() else np.median(stretched))
+        after_poly = self.normalize_image(after_poly, original_median,
+                                          valid=self._valid)
 
         # Clip
         after_poly = np.clip(after_poly, 0, 1)
 
         # 6) Unstretch
         corrected = self.unstretch_image(after_poly)
+
+        # No-data stays no-data: the subtraction above would otherwise leave a
+        # non-zero residual there and the region would stop reading as a hole.
+        if not self._valid.all():
+            corrected[~self._valid, ...] = 0.0
         return corrected
 
     # --- NEW helper: delegate to ABE sampler, with a robust fallback ---
@@ -972,16 +996,25 @@ class PolyGradientRemoval:
         self.stretch_original_mins = []
         self.stretch_original_medians = []
 
+        # Stats over real data only: a no-data region would set every channel
+        # minimum to 0 and halve every median, so the stretch would be fitted
+        # to the holes rather than to the sky.
+        vmask = getattr(self, "_valid", None)
+        if vmask is None or np.asarray(vmask).shape != (H, W):
+            vmask = _valid_data_mask(image_3ch, erode_px=0)
+        if not vmask.any():
+            vmask = np.ones((H, W), bool)
+
         # 2) Subtract min per channel
         for c in range(C):
-            cmin = image_3ch[..., c].min()
+            cmin = float(image_3ch[..., c][vmask].min())
             image_3ch[..., c] -= cmin
             self.stretch_original_mins.append(float(cmin))
 
         # 3) Compute median after min subtraction
         medians_after_sub = []
         for c in range(C):
-            cmed = float(np.median(image_3ch[..., c]))
+            cmed = float(np.median(image_3ch[..., c][vmask]))
             medians_after_sub.append(cmed)
         self.stretch_original_medians = medians_after_sub
 
@@ -1129,11 +1162,17 @@ class PolyGradientRemoval:
     # ---------------------------------------------------------------
     # 7) Normalize
     # ---------------------------------------------------------------
-    def normalize_image(self, image: np.ndarray, target_median: float) -> np.ndarray:
+    def normalize_image(self, image: np.ndarray, target_median: float,
+                        valid: np.ndarray = None) -> np.ndarray:
         """
         Shift image so its median matches target_median.
+
+        The median is taken over real data only -- no-data zeros would pull it
+        down and the compensating shift would lift the whole frame.
         """
-        cmed = np.median(image)
+        if valid is None:
+            valid = _valid_data_mask(image, erode_px=0)
+        cmed = float(np.median(image[valid]) if np.any(valid) else np.median(image))
         diff = target_median - cmed
         return image + diff
 
@@ -1154,7 +1193,65 @@ def _as_hwc(img):
     a = np.asarray(img, dtype=np.float32)
     return a[:, :, None] if a.ndim == 2 else a
 
-def _panel_mad(img, *, mono=None) -> float:
+
+def _valid_data_mask(img, *, erode_px: int = 6) -> np.ndarray:
+    """True where the panel actually carries data; False on no-data fill.
+
+    A panel that is itself a mosaic is NOT a filled rectangle. The final blend
+    writes exact 0.0 wherever weight_mosaic == 0, so an L-shaped 3-panel mosaic
+    in a 2x2 bounding box arrives here with ~25% of its area as hard zero.
+    Those pixels are *no data*, but every statistic in this module used to read
+    them as very dark sky: estimate_background_level ranked them as the darkest
+    tiles and returned a sky level of 0, the pedestal trick could not see them
+    (they sit at exactly PED after the +PED shift), and the overlap fit treated
+    the resulting constant as signal and collapsed the gain. One mask, used
+    everywhere, is the fix.
+
+    Zero is the no-data sentinel throughout SASpro's mosaic path -- warps use
+    borderValue=0, _strip_pedestal zeroes outside coverage, _polish_reprojected
+    zeroes the frame border. A real sky pixel is never exactly 0 in practice
+    (it carries an offset and read noise), and a handful of genuinely-zero sky
+    pixels dropped from a statistic costs nothing.
+
+    For colour, a pixel counts as data if ANY channel is non-zero: a saturated
+    or clipped channel must not knock out an otherwise valid pixel.
+
+    The erosion removes the interpolation ramp along a footprint edge, where
+    pixels are non-zero but are a blend of real data and fill. It is skipped
+    when the frame is entirely valid, so an ordinary full-frame panel is not
+    shaved, and when it would erase the mask outright.
+    """
+    a = _as_hwc(img)
+    m = np.isfinite(a).all(axis=2) & (a != 0).any(axis=2)
+    if erode_px > 0 and m.any() and not m.all():
+        k = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * erode_px + 1, 2 * erode_px + 1))
+        eroded = cv2.erode(m.astype(np.uint8), k).astype(bool)
+        if eroded.any():
+            m = eroded
+    return m
+
+
+def _valid_frac(mask) -> float:
+    """Fraction of the frame that carries data, for logging."""
+    try:
+        return float(np.count_nonzero(mask)) / float(max(1, np.asarray(mask).size))
+    except Exception:
+        return 1.0
+
+
+def _masked_median(img, valid=None):
+    """Per-channel median over valid pixels only. Returns shape (C,)."""
+    a = _as_hwc(img)
+    if valid is None:
+        valid = _valid_data_mask(a, erode_px=0)
+    if not np.any(valid):
+        return np.zeros(a.shape[2], np.float32)
+    sel = a[valid]                                   # (N, C)
+    return np.median(sel, axis=0).astype(np.float32)
+
+
+def _panel_mad(img, *, mono=None, valid=None) -> float:
     """Raw median absolute deviation of a panel, computed identically to the
     Histogram statistics dialog so the two surfaces report the same number.
 
@@ -1177,10 +1274,17 @@ def _panel_mad(img, *, mono=None) -> float:
     measures it and the per-channel MADs are averaged into the single scalar the
     caller needs (swap ``np.mean`` for ``np.max`` below to track the widest
     channel instead).
+
+    No-data pixels are excluded via `valid` (computed from the panel when not
+    supplied). A panel that is itself a mosaic carries a large block of exact
+    zeros; counting those would drag the median down and inflate the MAD, and
+    the caller uses this number to decide whether panels are on the same tone
+    scale -- a decision that then prompts the user.
     """
-    def _hist_mad_1d(chan) -> float:
+    def _hist_mad_1d(chan, m=None) -> float:
         # One channel, identical to histogram.py's real-statistics MAD path.
-        flat = np.asarray(chan, dtype=np.float32).ravel()
+        chan = np.asarray(chan, dtype=np.float32)
+        flat = chan[m].ravel() if m is not None else chan.ravel()
         flat = flat[np.isfinite(flat)]
         if flat.size == 0:
             return 0.0
@@ -1192,13 +1296,17 @@ def _panel_mad(img, *, mono=None) -> float:
         return float(np.median(np.abs(flat - cmed)))
 
     if mono is not None:
-        return _hist_mad_1d(mono)
+        if valid is None:
+            valid = _valid_data_mask(mono, erode_px=0)
+        return _hist_mad_1d(mono, valid)
 
     a = np.asarray(img)
+    if valid is None:
+        valid = _valid_data_mask(a, erode_px=0)
     if a.ndim == 2:
-        return _hist_mad_1d(a)
+        return _hist_mad_1d(a, valid)
 
-    mads = [_hist_mad_1d(a[..., c]) for c in range(a.shape[2])]
+    mads = [_hist_mad_1d(a[..., c], valid) for c in range(a.shape[2])]
     return float(np.mean(mads)) if mads else 0.0
 
 def estimate_background_level(img, *, tiles=16, keep_frac=0.15, valid=None,
@@ -1213,13 +1321,24 @@ def estimate_background_level(img, *, tiles=16, keep_frac=0.15, valid=None,
     Tile *selection* is done on luminance so all channels are measured over the
     same sky region -- that preserves the panel's background color.
 
+    `valid` defaults to the panel's real-data mask, NOT to "every finite pixel".
+    That default is load-bearing: this routine ranks tiles by darkness and keeps
+    the darkest 15%, so on a panel that is itself a mosaic every selected tile
+    would be no-data fill and the reported sky level would be exactly 0 -- which
+    then propagates into the pedestal match, the coverage test and the gain fit.
+    Pass `valid` explicitly when the caller already has the mask.
+
     Returns (levels, sigmas), each shape (C,).
     """
     a = _as_hwc(img)
     H, W, C = a.shape
     finite = np.isfinite(a).all(axis=2)
-    valid = finite if valid is None else (valid.astype(bool) & finite)
+    if valid is None:
+        valid = _valid_data_mask(a) & finite
+    else:
+        valid = valid.astype(bool) & finite
     if not valid.any():
+        print("[bg] no valid pixels in panel; sky level unmeasurable")
         return np.zeros(C, np.float32), np.zeros(C, np.float32)
 
     lum = a.mean(axis=2)
@@ -1281,6 +1400,14 @@ def _overlap_blocks(src, ref, mask, block=16, min_frac=0.9):
     s, r = _as_hwc(src), _as_hwc(ref)
     C = s.shape[2]
 
+    # Belt and braces: whatever the caller believes about the overlap, a block
+    # is only usable where BOTH sides carry real data. A no-data pixel on either
+    # side is a constant, and constants are exactly what makes the OLS slope
+    # below meaningless.
+    mask = (np.asarray(mask).astype(bool)
+            & np.isfinite(s).all(axis=2) & np.isfinite(r).all(axis=2)
+            & (s != 0).any(axis=2) & (r != 0).any(axis=2))
+
     ys, xs = np.nonzero(mask)
     if ys.size < 8 * block * block:
         return None, None
@@ -1309,7 +1436,7 @@ def _overlap_blocks(src, ref, mask, block=16, min_frac=0.9):
     return S, R
 
 def solve_linear_match(src, ref, mask, *, fit_scale=True, pivot=None,
-                       block=16, iters=4, clip=2.5, gain_limits=(0.05, 20.0),
+                       block=16, iters=4, clip=2.5, gain_limits=(0.5, 2.0),
                        verbose=True):
     """
     Robust per-channel solve of  ref ~= a*(src - p) + p + b  over `mask`,
@@ -1318,6 +1445,17 @@ def solve_linear_match(src, ref, mask, *, fit_scale=True, pivot=None,
     Pivoting about the sky decorrelates a and b: after the stage-1 pedestal
     match the residual between panels is purely multiplicative on signal
     *above* sky, so that is the quantity the gain should scale.
+
+    Two guards keep a failed fit from being applied as if it had succeeded:
+
+    * If the source side of the overlap carries essentially no spread -- the
+      signature of an overlap that is really no-data fill, or sky and nothing
+      else -- the gain is not identifiable and we fall back to offset-only.
+    * A gain outside `gain_limits` is REJECTED, not clamped. Panels off one rig,
+      after a pedestal match, agree to within a few percent; anything past 2x is
+      a broken fit, and clamping it to the limit still applies a wrong number.
+      (The old behaviour clamped 0.005 -> 0.05 and then multiplied an entire
+      mosaic by it, crushing the whole frame onto the sky level.)
 
     Returns (a, b, n_used) with a, b shape (C,). Apply as:
         out = (src - p) * a + p + b
@@ -1340,17 +1478,34 @@ def solve_linear_match(src, ref, mask, *, fit_scale=True, pivot=None,
         return a_out, b_out, 0
     n_blocks = S.shape[0]
 
+    def _robust_sd(v):
+        if v.size == 0:
+            return 0.0
+        m = float(np.median(v))
+        return 1.4826 * float(np.median(np.abs(v - m)))
+
     for c in range(C):
         x = S[:, c] - p[c]
         y = R[:, c] - p[c]
         good = np.isfinite(x) & np.isfinite(y)
         aa, bb = 1.0, 0.0
 
+        # Is the gain even identifiable? A degenerate overlap -- one whose
+        # source side is a constant, which is what no-data fill lifted to sky
+        # level looks like -- gives an OLS slope that is noise divided by noise.
+        sx, sy = _robust_sd(x[good]), _robust_sd(y[good])
+        fit_c = bool(fit_scale)
+        if fit_c and not (np.isfinite(sx) and sx > 0.0 and sx >= 0.1 * max(sy, 0.0)):
+            fit_c = False
+            if verbose:
+                print(f"[match] ch{c}: overlap carries no usable signal "
+                      f"(src spread {sx:.3g} vs ref {sy:.3g}) -- offset only")
+
         for _ in range(iters):
             n = int(good.sum())
             if n < 16:
                 break
-            if fit_scale:
+            if fit_c:
                 A = np.column_stack([x[good], np.ones(n)])
                 sol, *_ = np.linalg.lstsq(A, y[good], rcond=None)
                 aa, bb = float(sol[0]), float(sol[1])
@@ -1370,10 +1525,18 @@ def solve_linear_match(src, ref, mask, *, fit_scale=True, pivot=None,
         if not (np.isfinite(aa) and np.isfinite(bb)):
             aa, bb = 1.0, 0.0
 
-        clamped = float(np.clip(aa, *gain_limits))
-        if verbose and abs(clamped - aa) > 1e-6:
-            print(f"[match] ch{c}: gain {aa:.3f} clamped to {clamped:.3f}")
-        a_out[c] = clamped
+        # Out-of-range gain => the fit failed. Drop it and keep the offset,
+        # which is still well determined, instead of applying a clamped value.
+        lo, hi = gain_limits
+        if fit_c and not (lo <= aa <= hi):
+            if verbose:
+                print(f"[match] ch{c}: gain {aa:.3f} outside [{lo:g}, {hi:g}] "
+                      f"-- fit rejected, offset only")
+            aa = 1.0
+            bb = (float(np.median(y[good] - x[good]))
+                  if int(good.sum()) >= 16 else 0.0)
+
+        a_out[c] = float(aa)
         b_out[c] = float(bb)
 
     return a_out, b_out, n_blocks
@@ -1634,6 +1797,24 @@ class MosaicMasterDialog(QDialog):
         self.autostretchPreviewCheck.setChecked(True)
         layout.addWidget(self.autostretchPreviewCheck)
 
+        self.gaiaSolveCheckBox = QCheckBox("Plate solve the finished mosaic (in-house Gaia DR3)")
+        self.gaiaSolveCheckBox.setToolTip(
+            "After blending, re-solve the output canvas against the local Gaia DR3\n"
+            "catalogue and attach that solution instead of the geometric one.\n\n"
+            "The geometric WCS is exact for the projection, but it inherits the\n"
+            "reference panel's pointing — including that panel's own fit error —\n"
+            "and every other panel was placed relative to it. A fit against the\n"
+            "whole canvas uses stars from every panel at once, so the result is\n"
+            "tied to the catalogue rather than to one tile, and it carries real\n"
+            "RMS/residual statistics.\n\n"
+            "Falls back to the geometric solution if the solve fails.")
+        self.gaiaSolveCheckBox.setChecked(
+            qs_bool(self.settings, "mosaic/gaia_solve_final", True))
+        self.gaiaSolveCheckBox.toggled.connect(
+            lambda on: (self.settings.setValue("mosaic/gaia_solve_final", bool(on)),
+                        self.settings.sync()))
+        layout.addWidget(self.gaiaSolveCheckBox)
+
         # Reprojection mode (persisted)
         self.reprojectModeLabel = QLabel("Reprojection mode:")
         self.reprojectModeCombo = QComboBox()
@@ -1686,6 +1867,12 @@ class MosaicMasterDialog(QDialog):
         layout.addWidget(self.images_list)
 
         self.status_label = QLabel("Status: no images")
+        # plate_solver's _set_status_ui looks for a child QLabel with exactly
+        # this objectName; without it, it cannot find anywhere to put the
+        # solver's progress text and opens a free-floating "Plate Solving"
+        # popup instead. Naming it routes the Gaia solve's status into this
+        # dialog's own status line, where it belongs.
+        self.status_label.setObjectName("status_label")
         layout.addWidget(self.status_label)
 
         self.spinnerLabel = QLabel(self)
@@ -1818,13 +2005,19 @@ class MosaicMasterDialog(QDialog):
         s.sync()
 
     def _target_median_from_first(self, items):
-        # Pick a stable target (median of first image after safe clipping)
+        # Pick a stable target (median of first image after safe clipping).
+        # No-data pixels are excluded: on a panel that is itself a mosaic they
+        # would pull both percentiles and the median toward zero.
         if not items:
             return 0.1
         a0 = items[0]["image"].astype(np.float32)
+        valid = _valid_data_mask(a0, erode_px=0)
         if a0.ndim == 3:
             a0 = np.mean(a0, axis=2)
-        m = np.median(np.clip(a0, np.percentile(a0, 1), np.percentile(a0, 99)))
+        sel = a0[valid] if np.any(valid) else a0.ravel()
+        if sel.size == 0:
+            return 0.1
+        m = np.median(np.clip(sel, np.percentile(sel, 1), np.percentile(sel, 99)))
         return float(max(m, 1e-6))
 
     @staticmethod
@@ -1864,11 +2057,20 @@ class MosaicMasterDialog(QDialog):
             pass
         return out
 
-    def _normalize_linear(self, arr, target_med):
-        """Linear median match only (no stretch/curves). Returns float32 array."""
+    def _normalize_linear(self, arr, target_med, valid=None):
+        """Linear median match only (no stretch/curves). Returns float32 array.
+
+        The median is taken over real data only; counting no-data zeros would
+        drag it down and the compensating gain would blow the panel out.
+        """
         img = arr.astype(np.float32, copy=False)
         mono = img if img.ndim == 2 else np.mean(img, axis=2)
-        med = np.median(mono)
+        if valid is None:
+            valid = _valid_data_mask(img, erode_px=0)
+        sel = mono[valid] if np.any(valid) else mono.ravel()
+        if sel.size == 0:
+            return img
+        med = float(np.median(sel))
         if med <= 0:
             return img
         gain = target_med / med
@@ -1879,7 +2081,10 @@ class MosaicMasterDialog(QDialog):
         if not self.autostretchPreviewCheck.isChecked():
             # Convert linear [0..1-ish] to 8-bit safely for preview
             a = arr.astype(np.float32)
-            a = a / max(1e-6, np.percentile(a, 99.9))
+            v = _valid_data_mask(a, erode_px=0)
+            sel = a[v] if np.any(v) else a.ravel()
+            ref = np.percentile(sel, 99.9) if sel.size else 1.0
+            a = a / max(1e-6, float(ref))
             return (np.clip(a, 0, 1) * 255).astype(np.uint8)
 
         # Your existing stretch_for_display logic:
@@ -1915,15 +2120,27 @@ class MosaicMasterDialog(QDialog):
 
     def _order_panels(self, items):
         """
-        Reorder panels so the sequence starts near the field centre and every
-        later panel overlaps sky that has already been placed.
+        Reorder panels so the sequence starts on the panel carrying the most
+        real data and every later panel overlaps sky that has already been
+        placed.
+
+        The first panel is not merely first: it defines the mosaic's reference
+        TAN frame AND the reference sky level every other panel is matched to.
+        Seeding on real-data area rather than centrality means a large existing
+        mosaic anchors the run instead of a single small tile -- the sky
+        measurement is better supported, and the later panels (not the anchor)
+        are the ones that get a gain fit, which is the better-conditioned way
+        round.
 
         Footprints are computed with all_pix2world only -- forward SIP is a
         plain polynomial evaluation, so nothing iterates and nothing diverges,
         and this runs before the mosaic WCS exists.
         """
         n = len(items)
-        if n < 3:
+        # n == 2 used to return early, leaving whichever panel the user happened
+        # to add first as the reference -- including a small tile ahead of a
+        # whole mosaic. Two panels still deserve a considered order.
+        if n < 2:
             return list(items)
 
         NS = 16
@@ -1980,7 +2197,19 @@ class MosaicMasterDialog(QDialog):
             cx = 0.5 * (b[0] + b[2]); cy = 0.5 * (b[1] + b[3])
             return cx * cx + cy * cy
 
-        order = [min(range(n), key=lambda i: d2(boxes[i]))]
+        # Seed on real-data area, falling back to centrality to break ties.
+        valid_px = []
+        for itm in items:
+            try:
+                valid_px.append(int(np.count_nonzero(
+                    _valid_data_mask(itm["image"], erode_px=0))))
+            except Exception:
+                valid_px.append(int(np.prod(itm["image"].shape[:2])))
+
+        order = [max(range(n), key=lambda i: (valid_px[i], -d2(boxes[i])))]
+        print(f"[Mosaic] anchor panel: {self._item_label(items[order[0]])} "
+              f"({valid_px[order[0]]:,} valid px) — defines the reference "
+              f"frame and sky level")
         remaining = set(range(n)) - set(order)
 
         while remaining:
@@ -2020,10 +2249,16 @@ class MosaicMasterDialog(QDialog):
         H, mask = cv2.findHomography(pts_src, pts_dst, method=cv2.RANSAC, ransacReprojThreshold=2.5)
         return H
 
-    def _warp_via_wcs_homography(self, img, src_wcs, dst_wcs, out_shape, H_cache=None):
+    def _warp_via_wcs_homography(self, img, src_wcs, dst_wcs, out_shape,
+                                 H_cache=None, src_mask=None):
         """
         Fast path: single homography warp per image (per mosaic WCS).
         If H_cache is provided as a dict, we reuse computed H.
+
+        With `src_mask` (a bool array of the source's real-data pixels) the same
+        transform is applied to the mask and the result is returned alongside,
+        so the caller can tell real data from no-data fill in the output.
+        Returns `dst` alone when src_mask is None, else `(dst, dst_mask)`.
         """
         H, W = out_shape
         key = id(src_wcs)
@@ -2035,13 +2270,23 @@ class MosaicMasterDialog(QDialog):
                 H_cache[key] = H33
 
         if img.ndim == 2:
-            return cv2.warpPerspective(img, H33, (W, H), flags=cv2.INTER_LANCZOS4)
+            out = cv2.warpPerspective(img, H33, (W, H), flags=cv2.INTER_LANCZOS4)
         else:
             # Warp each channel
             out = np.empty((H, W, img.shape[2]), dtype=np.float32)
             for c in range(img.shape[2]):
                 out[..., c] = cv2.warpPerspective(img[..., c], H33, (W, H), flags=cv2.INTER_LANCZOS4)
+
+        if src_mask is None:
             return out
+
+        # INTER_LINEAR, not LANCZOS4: a 0/1 mask rings badly under Lanczos and
+        # the overshoot would push fill pixels back above the acceptance
+        # threshold, which is the exact failure this mask exists to prevent.
+        dstm = cv2.warpPerspective(
+            src_mask.astype(np.float32), H33, (W, H),
+            flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+        return out, dstm
 
     def _dst_footprint_bbox(self, src_shape, src_wcs, dst_wcs, out_shape, pad=16, n=96):
         """
@@ -2076,13 +2321,21 @@ class MosaicMasterDialog(QDialog):
         return (x0, y0, x1, y1)
 
     def _warp_via_wcs_remap_exact(self, src_img, src_wcs, dst_wcs, out_shape,
-                                  tile=512, progress_cb=None):
+                                  tile=512, progress_cb=None, src_mask=None):
         """
         Inverse mapping dst -> world -> src, tiled, restricted to the panel's
         actual footprint in the destination frame. Outside that box the SIP
         inverse cannot converge (the polynomial has no inverse beyond its fit
         domain), so we never ask it to. Every solved coordinate is validated by
         a forward round trip before it is used.
+
+        With `src_mask` (a bool array of the source's real-data pixels) the same
+        per-pixel maps are reused to remap the mask -- effectively free, since
+        the expensive part is solving the coordinates -- and the warped mask is
+        returned alongside the image. That is the only way to know which output
+        pixels came from real data when the SOURCE itself has interior holes:
+        the +PED trick can only detect pixels outside the warp footprint.
+        Returns `dst` alone when src_mask is None, else `(dst, dst_mask)`.
         """
         import warnings
 
@@ -2093,11 +2346,15 @@ class MosaicMasterDialog(QDialog):
 
         dst = (np.zeros((H, W, nch), np.float32) if is_color
                else np.zeros((H, W), np.float32))
+        want_mask = src_mask is not None
+        dstm = np.zeros((H, W), np.float32) if want_mask else None
+        mask_f = (np.ascontiguousarray(src_mask.astype(np.float32))
+                  if want_mask else None)
 
         box = self._dst_footprint_bbox(src_img.shape, src_wcs, dst_wcs, (H, W))
         if box is None:
             print("[Mosaic] panel footprint falls outside the mosaic canvas.")
-            return dst
+            return (dst, dstm) if want_mask else dst
         bx0, by0, bx1, by1 = box
 
         frac = ((bx1 - bx0) * (by1 - by0)) / float(max(1, W * H))
@@ -2177,6 +2434,14 @@ class MosaicMasterDialog(QDialog):
                             interpolation=cv2.INTER_LANCZOS4,
                             borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
 
+                    if want_mask:
+                        # INTER_LINEAR, not LANCZOS4: Lanczos rings on a 0/1
+                        # edge and the overshoot would readmit fill pixels.
+                        dstm[y0:y1, x0:x1] = cv2.remap(
+                            mask_f, mapx, mapy,
+                            interpolation=cv2.INTER_LINEAR,
+                            borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+
                     done_tiles += 1
                     if progress_cb is not None and (done_tiles % 8) == 0:
                         progress_cb(done_tiles / max(1, n_tiles))
@@ -2186,7 +2451,8 @@ class MosaicMasterDialog(QDialog):
             print(f"[Mosaic] rejected {rejected} / {tot} mapped pixels "
                   f"({100.0 * rejected / max(1, tot):.1f}% of footprint box)")
 
-        return dst
+        return (dst, dstm) if want_mask else dst
+
     def _get_astrometry_api_key(self) -> str:
         # Prefer QSettings; fall back to your legacy loader if present.
         key = self.settings.value("api/astrometry_key", "", type=str)
@@ -2723,6 +2989,9 @@ class MosaicMasterDialog(QDialog):
                         QMessageBox.StandardButton.No,
                     )
                     if reply != QMessageBox.StandardButton.Yes:
+                        # _finish() here too -- this early return used to leave
+                        # the progress dialog and spinner running forever.
+                        _finish()
                         self.status_label.setText("Cancelled — mixed panel scales.")
                         return
 
@@ -2735,9 +3004,19 @@ class MosaicMasterDialog(QDialog):
         if did_normalize:
             try:
                 ref_raw = wcs_items[0]["image"].astype(np.float32, copy=False)
-                self._ref_bg, self._ref_sig = estimate_background_level(ref_raw)
+                ref_valid = _valid_data_mask(ref_raw)
+                self._ref_bg, self._ref_sig = estimate_background_level(
+                    ref_raw, valid=ref_valid)
                 print(f"[Mosaic] reference sky level = {self._ref_bg} "
-                      f"(sigma {self._ref_sig})")
+                      f"(sigma {self._ref_sig}) measured over "
+                      f"{100.0 * _valid_frac(ref_valid):.1f}% of "
+                      f"{self._item_label(wcs_items[0])}")
+                # A sky level of exactly zero means the measurement found no
+                # real sky -- every panel would then be shifted onto nothing.
+                if not np.any(np.asarray(self._ref_bg, np.float64) > 0):
+                    print("[Mosaic] reference sky measured as zero; "
+                          "falling back to median match.")
+                    self._ref_bg = None
             except Exception as e:
                 print(f"[Mosaic] background estimate failed on reference: {e}")
                 self._ref_bg = None
@@ -2782,20 +3061,61 @@ class MosaicMasterDialog(QDialog):
 
             img_lin = arr.astype(np.float32, copy=False)
 
+            # --- which source pixels are real data? -------------------------
+            # A panel that is itself a mosaic has interior no-data (exact 0).
+            # The pedestal trick downstream can only see pixels that fall
+            # OUTSIDE the warp footprint, so interior holes have to be tracked
+            # explicitly, from here all the way through to the coverage mask.
+            src_valid = _valid_data_mask(img_lin)
+            src_vfrac = _valid_frac(src_valid)
+            if src_vfrac < 0.999:
+                print(f"[Mosaic] {_name}: {100.0 * (1.0 - src_vfrac):.1f}% of the "
+                      f"source frame is no-data (panel is itself a mosaic?)")
+            if not src_valid.any():
+                print(f"[Mosaic] {_name}: no valid pixels, skipping.")
+                continue
+
             # --- stats kept only for the legacy unstretch path ---
             mono_for_stats = img_lin if img_lin.ndim == 2 else np.mean(img_lin, axis=2)
-            self.stretch_original_mins.append(float(np.nanmin(mono_for_stats)))
-            self.stretch_original_medians.append(float(np.nanmedian(mono_for_stats)))
+            _sv = mono_for_stats[src_valid]
+            self.stretch_original_mins.append(
+                float(np.nanmin(_sv)) if _sv.size else 0.0)
+            self.stretch_original_medians.append(
+                float(np.nanmedian(_sv)) if _sv.size else 0.0)
 
             # --- background match: shift this panel's sky onto the reference sky ---
             if use_bg_match:
-                lev_i, _ = estimate_background_level(img_lin)
+                lev_i, _ = estimate_background_level(img_lin, valid=src_valid)
                 img_lin = (img_lin
                            - self._bg_offset(lev_i, img_lin)
                            + self._bg_offset(self._ref_bg, img_lin)).astype(np.float32, copy=False)
-                print(f"[Mosaic] {self._item_label(itm)}: sky {lev_i} -> {self._ref_bg}")
+                print(f"[Mosaic] {_name}: sky {lev_i} -> {self._ref_bg}")
             elif did_normalize:
-                img_lin = self._normalize_linear(img_lin, float(self._mosaic_target_median))
+                img_lin = self._normalize_linear(img_lin, float(self._mosaic_target_median),
+                                                 valid=src_valid)
+
+            # --- flatten the no-data region to the panel's own sky ------------
+            # The sky shift above moved the holes along with everything else;
+            # left alone they are a hard step against real data, and Lanczos
+            # would ring across that step into pixels we are keeping. Filling
+            # them flat removes the step. They are still excluded from the
+            # mosaic -- the warped mask below is what does the excluding.
+            if src_vfrac < 1.0:
+                if np.may_share_memory(img_lin, arr):
+                    img_lin = img_lin.copy()
+                if img_lin.ndim == 3:
+                    C = img_lin.shape[2]
+                    if use_bg_match:
+                        fv = np.resize(
+                            np.asarray(self._ref_bg, np.float32).ravel(), C)
+                    else:
+                        fv = _masked_median(img_lin, src_valid)
+                    img_lin[~src_valid] = fv.astype(np.float32)
+                else:
+                    fv = (float(np.mean(np.asarray(self._ref_bg, np.float32)))
+                          if use_bg_match
+                          else float(np.median(img_lin[src_valid])))
+                    img_lin[~src_valid] = np.float32(fv)
 
             # --- carry the footprint through the warp on a pedestal ---
             img_ped = (img_lin + PED).astype(np.float32, copy=False)
@@ -2804,27 +3124,35 @@ class MosaicMasterDialog(QDialog):
             mode = self.reprojectModeCombo.currentText()
 
             if mode.startswith("Fast — Homography"):
-                reprojected = self._warp_via_wcs_homography(
+                reprojected, cov_warp = self._warp_via_wcs_homography(
                     img_ped, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width),
-                    H_cache=self._H_cache
-                ).astype(np.float32, copy=False)
-                reprojected = self._polish_reprojected(reprojected)
+                    H_cache=self._H_cache, src_mask=src_valid
+                )
+                reprojected = self._polish_reprojected(
+                    reprojected.astype(np.float32, copy=False))
 
             else:
                 # Exact SIP-aware remap. This IS the full spherical transform --
                 # dst pixel -> world -> src pixel, per pixel, SIP on the source.
                 # Also the default for any unrecognized/legacy mode string.
-                reprojected = self._warp_via_wcs_remap_exact(
+                reprojected, cov_warp = self._warp_via_wcs_remap_exact(
                     img_ped, itm["wcs"], mosaic_wcs, (mosaic_height, mosaic_width),
-                    tile=512,
+                    tile=512, src_mask=src_valid,
                     progress_cb=lambda f, b=_base, i=idx, nm=_name: _tick(
                         b + f, f"Panel {i + 1}/{n_panels} — reprojecting {nm} "
                                f"({f * 100:.0f}%)")
-                ).astype(np.float32, copy=False)
-                reprojected = self._polish_reprojected(reprojected)
+                )
+                reprojected = self._polish_reprojected(
+                    reprojected.astype(np.float32, copy=False))
+
+            # Any pixel whose warped mask is not essentially 1 drew part of its
+            # value from no-data and is not trustworthy.
+            MASK_KEEP = 0.999
+            cov_warp = np.asarray(cov_warp, np.float32)
 
             # Pedestal-free grayscale for star detection (astroalign never sees PED)
-            cov_r = (reprojected if reprojected.ndim == 2 else reprojected[..., 0]) > (0.995 * PED)
+            cov_r = (((reprojected if reprojected.ndim == 2 else reprojected[..., 0])
+                      > (0.995 * PED)) & (cov_warp >= MASK_KEEP))
             reproj_red = self._strip_pedestal(
                 reprojected if reprojected.ndim == 2 else reprojected[..., 0], PED, cov_r
             )
@@ -2844,14 +3172,11 @@ class MosaicMasterDialog(QDialog):
 
             if skip_star_align:
                 aligned = reprojected
-                if first_image:
-                    first_image = False
             else:
                 # Pre-alignment footprint (pedestal intact) for the overlap test.
                 gray_ped = reprojected[..., 0] if reprojected.ndim == 3 else reprojected
                 if first_image:
                     aligned = reprojected
-                    first_image = False
                 else:
                     transform_method = self.transform_combo.currentText()
                     with np.errstate(divide="ignore", invalid="ignore"):
@@ -2867,7 +3192,8 @@ class MosaicMasterDialog(QDialog):
                     # Star-match only in the overlap. Feeding the whole canvas
                     # spreads control points across regions that can't correspond,
                     # starving the RANSAC of usable bright anchors.
-                    ov = (gray_ped > 0.5 * PED) & (self.weight_mosaic > 0)
+                    ov = ((gray_ped > 0.5 * PED) & (cov_warp >= MASK_KEEP)
+                          & (self.weight_mosaic > 0))
                     n_ov_stars = int(ov.sum())
                     if n_ov_stars < 2000:
                         print(f"[Mosaic] {self._item_label(itm)}: overlap "
@@ -2897,14 +3223,21 @@ class MosaicMasterDialog(QDialog):
                         flags=cv2.INTER_LANCZOS4
                     )
                     aligned = affine_aligned
+                    # The validity mask has to take the same ride, or it stops
+                    # describing the image it belongs to.
+                    cov_warp = cv2.warpAffine(
+                        cov_warp, transform_matrix, (mosaic_width, mosaic_height),
+                        flags=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
 
                     if transform_method in ["Homography Transform", "Polynomial Warp Based Transform"]:
                         self.status_label.setText(f"Starting refined alignment using {transform_method}...")
                         QApplication.processEvents()
-                        refined_result = self.refined_alignment(affine_aligned, mosaic_gray,
-                                                                method=transform_method)
+                        refined_result = self.refined_alignment(
+                            affine_aligned, mosaic_gray, method=transform_method,
+                            extra_mask=cov_warp, valid=cov_r)
                         if refined_result is not None:
-                            aligned, best_inliers2 = refined_result
+                            aligned, best_inliers2, cov_warp = refined_result
                             self.status_label.setText(
                                 f"Refined alignment succeeded with {best_inliers2} inliers.")
                         else:
@@ -2918,21 +3251,31 @@ class MosaicMasterDialog(QDialog):
             # --- real footprint, then drop the pedestal ---
             gray_ped = aligned[..., 0] if aligned.ndim == 3 else aligned
 
-            # A fully covered pixel is PED + data, and data >= 0, so anything
-            # below PED had interpolation reach past the panel edge into
-            # borderValue=0. Lanczos4 spans 8x8, so contamination extends ~4px
-            # in; erode to clear the ringing band, where overshoot can push a
-            # contaminated pixel back above PED.
+            # Two independent tests, both required:
+            #
+            #  * > 0.995*PED catches interpolation that reached past the panel
+            #    EDGE into borderValue=0 (a fully covered pixel is PED + data,
+            #    and data >= 0).
+            #  * cov_warp catches no-data INSIDE the source frame. The pedestal
+            #    test is blind to those: the holes sit at exactly PED after the
+            #    +PED shift, so they pass it. This is what made a 3-panel mosaic
+            #    report 100% coverage of a 2x2 canvas.
+            #
+            # Lanczos4 spans 8x8, so edge contamination extends ~4px in; erode
+            # to clear the ringing band, where overshoot can push a contaminated
+            # pixel back above PED.
             EDGE_TRIM = 12
-            coverage = gray_ped > (0.995 * PED)
+            coverage = (gray_ped > (0.995 * PED)) & (cov_warp >= MASK_KEEP)
             if EDGE_TRIM > 0 and coverage.any():
                 k = cv2.getStructuringElement(
                     cv2.MORPH_ELLIPSE, (2 * EDGE_TRIM + 1, 2 * EDGE_TRIM + 1))
                 coverage = cv2.erode(coverage.astype(np.uint8), k).astype(bool)
 
             if not coverage.any():
-                print(f"[Mosaic] {self._item_label(itm)}: empty footprint, skipping.")
+                print(f"[Mosaic] {_name}: empty footprint, skipping.")
                 continue
+            print(f"[Mosaic] {_name}: coverage {100.0 * _valid_frac(coverage):.1f}% "
+                  f"of canvas ({int(coverage.sum())} px)")
             aligned = self._strip_pedestal(aligned, PED, coverage)
 
             _tick(_base + 2, f"Panel {idx + 1}/{n_panels} — matching brightness ({_name})")
@@ -2992,6 +3335,12 @@ class MosaicMasterDialog(QDialog):
                 self.final_mosaic += gray_aligned * smooth_mask
             self.weight_mosaic += smooth_mask
 
+            # Flip only once something is actually ON the canvas. Flipping it
+            # inside the alignment branch (as before) let panel 0 fall into the
+            # overlap-refinement block below and print a misleading
+            # "overlap 0 px" against an all-zero weight map.
+            first_image = False
+
             _tick(_base + SUBSTEPS, f"Panel {idx + 1}/{n_panels} done — {_name}")
 
         _tick(n_panels * SUBSTEPS, "Normalizing accumulated mosaic...")
@@ -3021,6 +3370,17 @@ class MosaicMasterDialog(QDialog):
             getattr(self, "stretch_original_mins", None) and len(self.stretch_original_mins) > 0):
             self.final_mosaic = self.unstretch_image(self.final_mosaic)
 
+        # ------------------------------------------------------------
+        # 9) Re-solve the finished canvas against Gaia DR3
+        # ------------------------------------------------------------
+        # Runs before the preview opens so the pushed/saved mosaic carries the
+        # catalogue-tied solution, not the geometric one it was built from.
+        gaia_ok = False
+        if getattr(self, "gaiaSolveCheckBox", None) and self.gaiaSolveCheckBox.isChecked():
+            _tick(n_panels * SUBSTEPS + 1, "Plate solving the finished mosaic…")
+            gaia_ok = self._gaia_solve_final_mosaic(
+                say=lambda m: _tick(text=m))
+
         self.status_label.setText("Final Mosaic Ready.")
         QApplication.processEvents()
 
@@ -3040,9 +3400,167 @@ class MosaicMasterDialog(QDialog):
 
         self.status_label.setText(
             f"Final mosaic ready — {n_panels} panels, "
-            f"{mosaic_width}×{mosaic_height}.")
+            f"{mosaic_width}×{mosaic_height}"
+            + (", plate solved against Gaia DR3." if gaia_ok else "."))
 
       
+    # ---------- Final plate solve (in-house Gaia DR3) ----------
+    def _gaia_solve_final_mosaic(self, say=None):
+        """Re-solve the finished canvas against the local Gaia DR3 catalogue
+        and adopt that solution as the mosaic's WCS.
+
+        Why bother, when the mosaic WCS is already exact? Because "exact" here
+        means exact for the *projection*, not for the sky. Every panel was
+        reprojected into a frame derived from the reference panel's own
+        solution, so the whole canvas inherits that one panel's pointing error
+        and its SIP residuals. Fitting the blended result against the catalogue
+        uses stars from every panel at once, over a far larger baseline than
+        any single tile, and ties the answer to Gaia rather than to a tile.
+        It also attaches real SOLVRMS/SOLVP95/SOLVNSTR cards, which the
+        geometric header has no way to provide.
+
+        The existing mosaic WCS is handed over as the seed, so this is a
+        refinement from a known-good starting point rather than a search.
+
+        Returns True if a new solution was adopted. On any failure the
+        geometric WCS is left exactly as it was -- a worse solve never
+        replaces a good header.
+        """
+        def _say(msg):
+            print(f"[Mosaic] {msg}")
+            try:
+                self.status_label.setText(msg)
+                QApplication.processEvents()
+            except Exception:
+                pass
+            if say is not None:
+                try:
+                    say(msg)
+                except Exception:
+                    pass
+
+        if self.final_mosaic is None:
+            return False
+
+        # Imported lazily: plate_solver imports from star_alignment, which is
+        # the module this one was split out of, so a top-level import here
+        # would close a cycle at interpreter start.
+        try:
+            from setiastro.saspro.plate_solver import _solve_with_GAIA_threaded
+        except Exception as e:
+            _say(f"Gaia solve unavailable ({type(e).__name__}: {e}); "
+                 f"keeping the geometric WCS.")
+            return False
+
+        seed = None
+        if self.wcs_metadata:
+            try:
+                seed = sanitize_wcs_header(self.wcs_metadata) or \
+                       coerce_to_header(self.wcs_metadata)
+            except Exception:
+                seed = None
+        if seed is not None:
+            self._ensure_image_naxis(seed, self.final_mosaic.shape)
+
+        img = np.ascontiguousarray(self.final_mosaic.astype(np.float32, copy=False))
+        h, w = img.shape[:2]
+        _say(f"Plate solving the finished mosaic ({w}×{h}) against Gaia DR3…")
+
+        # The mosaic WCS is the best seed this solver will ever be handed, so
+        # do not let a stale "force blind" checkbox or a "none" seed mode from
+        # an earlier single-frame solve throw it away. Saved and restored, in
+        # the same style as the ASTAP passes in plate_solver itself.
+        s = self.settings
+        _orig_seed_mode = s.value("astap/seed_mode", "auto", type=str)
+        _orig_force_blind = s.value("plate_solver/force_blind", False)
+        solved = None
+        try:
+            if seed is not None:
+                s.setValue("astap/seed_mode", "auto")
+                s.setValue("plate_solver/force_blind", False)
+                s.sync()
+
+            ok, res = _solve_with_GAIA_threaded(
+                self, s, img, seed, force_blind=(seed is None))
+
+            if not ok and seed is not None:
+                # The seed was perfect by construction, so a failure means the
+                # fit itself could not close -- not that the pointing was
+                # wrong. Still worth one blind pass off the quad index: a
+                # mosaic is a big, star-rich field, which is the case blind
+                # solving handles best.
+                _say(f"Seeded Gaia solve failed ({res}); retrying blind…")
+                ok, res = _solve_with_GAIA_threaded(self, s, img, None,
+                                                    force_blind=True)
+            if ok and isinstance(res, Header):
+                solved = res
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            _say(f"Gaia solve raised {type(e).__name__}: {e}; "
+                 f"keeping the geometric WCS.")
+            return False
+        finally:
+            try:
+                s.setValue("astap/seed_mode", _orig_seed_mode)
+                s.setValue("plate_solver/force_blind", _orig_force_blind)
+                s.sync()
+            except Exception:
+                pass
+            # Belt and braces: the solver's status popup is normally closed by
+            # _solve_numpy_with_fallback, which we deliberately bypass to get
+            # the Gaia pass on its own. If status text ever fails to reach a
+            # label, that popup opens modelessly and nothing else would shut
+            # it, leaving a "Plate Solving" window stuck on top.
+            try:
+                from setiastro.saspro.plate_solver import _status_popup_close
+                _status_popup_close()
+            except Exception:
+                pass
+
+        if solved is None:
+            _say("Gaia solve did not converge; keeping the geometric WCS.")
+            return False
+
+        # Sanity-check before adopting. A solution that lands somewhere other
+        # than where the geometry says the canvas points is a mis-solve, and
+        # the geometric header is the safer of the two.
+        if seed is not None:
+            try:
+                w_old = get_wcs_from_header(seed)
+                w_new = get_wcs_from_header(solved)
+                if w_old is not None and w_new is not None:
+                    ra0, dec0 = w_old.all_pix2world([w / 2.0], [h / 2.0], 0)
+                    ra1, dec1 = w_new.all_pix2world([w / 2.0], [h / 2.0], 0)
+                    dra = ((float(ra1[0]) - float(ra0[0]) + 180.0) % 360.0 - 180.0)
+                    dra *= np.cos(np.radians(float(dec0[0])))
+                    sep = float(np.hypot(dra, float(dec1[0]) - float(dec0[0])))
+                    _say(f"Gaia solution centre differs from the geometric "
+                         f"centre by {sep * 60.0:.2f}'")
+                    if sep > 1.0:
+                        _say("That is more than a degree — treating the solve "
+                             "as a mis-match and keeping the geometric WCS.")
+                        return False
+            except Exception as e:
+                print(f"[Mosaic] centre comparison skipped: {e}")
+
+        self._ensure_image_naxis(solved, self.final_mosaic.shape)
+        self.wcs_metadata = solved
+
+        bits = []
+        for k, label in (("SOLVRMS", "RMS"), ("SOLVP95", "p95"),
+                         ("SOLVNSTR", "stars")):
+            try:
+                if k in solved:
+                    v = solved[k]
+                    bits.append(f"{label}={v}\"" if k != "SOLVNSTR"
+                                else f"{label}={int(v)}")
+            except Exception:
+                pass
+        _say("Mosaic plate solved against Gaia DR3"
+             + (f" — {', '.join(bits)}" if bits else "") + ".")
+        return True
+
     def _polish_reprojected(self, img: np.ndarray) -> np.ndarray:
         # 1) kill NaNs/Infs from reprojection
         out = np.nan_to_num(img, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
@@ -3216,14 +3734,24 @@ class MosaicMasterDialog(QDialog):
             Use DAOStarFinder to return number of detected stars.
             Expects a 2D image; if 3D, we average over channels.
             You might need to tweak fwhm/threshold for your data.
+
+            No-data pixels are excluded from the background statistics, so the
+            count reflects the real frame rather than the size of its holes.
             """
             from photutils.detection import DAOStarFinder
+            valid = _valid_data_mask(image, erode_px=0)
             if image.ndim == 3:
                 image = np.mean(image, axis=2)
+            if not valid.any():
+                return 0
 
-            mean_val, median_val, std_val = sigma_clipped_stats(image, sigma=3.0)
+            ignore = ~valid
+            mean_val, median_val, std_val = sigma_clipped_stats(
+                image, sigma=3.0, mask=ignore)
+            if not np.isfinite(std_val) or std_val <= 0:
+                return 0
             daofind = DAOStarFinder(fwhm=3.0, threshold=5.0 * std_val)
-            sources = daofind(image - median_val)
+            sources = daofind(image - median_val, mask=ignore)
 
             if sources is None:
                 return 0
@@ -3476,7 +4004,10 @@ class MosaicMasterDialog(QDialog):
             QMessageBox.warning(self, "Crop Error", "Initial image is too small after cropping.")
             return
     
-        base_median = np.median(base_img)
+        # Median over real data only -- the base frame may itself carry no-data.
+        _base_valid = _valid_data_mask(base_img, erode_px=0)
+        base_median = float(np.median(base_img[_base_valid])
+                            if _base_valid.any() else np.median(base_img))
 
         # mosaic_sum holds the sum of pixel intensities
         mosaic_sum = base_img.astype(np.float32, copy=True)
@@ -3546,7 +4077,18 @@ class MosaicMasterDialog(QDialog):
                 # If mono:
                 self.status_label.setText(f"Normalizing {item['path']}.")
                 QApplication.processEvents()
-                new_img = new_img-np.min(new_img)
+                # Minimum over real data, and keep no-data at zero afterwards:
+                # subtracting a global min that came from a hole is a no-op,
+                # but subtracting a real sky floor would lift the holes to a
+                # non-zero value and they would stop reading as no-data.
+                _nv = _valid_data_mask(new_img, erode_px=0)
+                if _nv.any():
+                    new_img = new_img - float(np.min(new_img[_nv]))
+                    if not _nv.all():
+                        new_img = np.clip(new_img, 0.0, None)
+                        new_img[~_nv, ...] = 0.0
+                else:
+                    new_img = new_img - np.min(new_img)
                 if new_img.ndim == 2:
                     new_img = stretch_mono_image(new_img, target_median=base_median, normalize=False, apply_curves=False, curves_boost=0.0)
 
@@ -3867,22 +4409,35 @@ class MosaicMasterDialog(QDialog):
         self.status_label.setText("Seestar Mode alignment (sum/divide) complete.")
         QApplication.processEvents()
 
+        # Seestar mosaics are built by star matching alone, so the result has
+        # no WCS at all. A blind Gaia solve is the only way this canvas ever
+        # gets one -- self.wcs_metadata is None here, so _gaia_solve_final_mosaic
+        # goes straight to the quad index.
+        if getattr(self, "gaiaSolveCheckBox", None) and self.gaiaSolveCheckBox.isChecked():
+            self._gaia_solve_final_mosaic()
+
         display_image = self.stretch_for_display(self.final_mosaic)
         mosaic_win = MosaicPreviewWindow(display_image, title="Robot Telescope Mosaic", parent=self,
                     push_cb=self._push_mosaic_to_new_doc).show()
 
     # ---------- Star alignment using triangle matching ----------
 
-    def refined_alignment(self, affine_aligned, mosaic_img, method="Homography Transform"):
+    def refined_alignment(self, affine_aligned, mosaic_img,
+                          method="Homography Transform", extra_mask=None,
+                          valid=None):
         """
         Refined alignment that assumes affine_aligned is the result of the affine alignment step.
         It re-detects stars in the candidate (overlap) region and computes a refined transform from
         affine_aligned to mosaic_img. Then it applies the refined transform to affine_aligned and
         returns the fully warped image.
-        
+
+        `extra_mask` is the caller's validity map for affine_aligned. It is put
+        through the identical warp and handed back, so the caller's notion of
+        which pixels are real data keeps describing the image it belongs to.
+        `valid` restricts star detection to real data on the panel side.
+
         Returns:
-        - For "Homography Transform": (warped_image, inlier_count)
-        - For "Polynomial Warp Based Transform": (warped_image, inlier_count)
+        - (warped_image, inlier_count, warped_extra_mask)
         - If refinement fails, returns None.
         """
         print("\n--- Starting Refined Alignment ---")
@@ -3906,13 +4461,21 @@ class MosaicMasterDialog(QDialog):
         self.status_label.setText("Refinement: Computing overlap mask...")
         QApplication.processEvents()
         overlap_mask = (mosaic_gray > 0) & (affine_aligned_gray > 0)
+        if valid is not None:
+            # Honour the caller's real-data map: a no-data region lifted to sky
+            # level is > 0 and would otherwise be mistaken for overlap.
+            overlap_mask &= np.asarray(valid, bool)
 
-        # Detect stars
+        # Detect stars. Pass the overlap as the statistics mask too -- the
+        # zeroed-out remainder of the canvas would otherwise dominate the
+        # sigma-clipped background and wreck the detection threshold.
         self.status_label.setText("Refinement: Detecting stars in mosaic and affine-aligned images...")
         QApplication.processEvents()
         # Increase max_stars to 50 for debugging purposes.
-        mosaic_stars_masked = self.detect_stars(np.where(overlap_mask, mosaic_gray, 0), max_stars=300)
-        new_stars_aligned = self.detect_stars(np.where(overlap_mask, affine_aligned_gray, 0), max_stars=300)
+        mosaic_stars_masked = self.detect_stars(
+            np.where(overlap_mask, mosaic_gray, 0), max_stars=300, valid=overlap_mask)
+        new_stars_aligned = self.detect_stars(
+            np.where(overlap_mask, affine_aligned_gray, 0), max_stars=300, valid=overlap_mask)
 
         # Debug: Print out the star lists.
         print("Mosaic stars (refined alignment):")
@@ -3956,7 +4519,14 @@ class MosaicMasterDialog(QDialog):
             warped_image = cv2.warpPerspective(affine_aligned, H_refined,
                                                 (affine_aligned.shape[1], affine_aligned.shape[0]),
                                                 flags=cv2.INTER_LANCZOS4)
-            return (warped_image, inliers)
+            warped_mask = extra_mask
+            if extra_mask is not None:
+                warped_mask = cv2.warpPerspective(
+                    np.asarray(extra_mask, np.float32), H_refined,
+                    (affine_aligned.shape[1], affine_aligned.shape[0]),
+                    flags=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_CONSTANT, borderValue=0.0)
+            return (warped_image, inliers, warped_mask)
         elif method == "Polynomial Warp Based Transform":
             self.status_label.setText("Refinement: Computing Polynomial Warp based transform...")
             QApplication.processEvents()
@@ -3966,9 +4536,15 @@ class MosaicMasterDialog(QDialog):
             # Call the static Polynomial Warp warp function.
             try:
                 warped_image = MosaicMasterDialog.poly_warp(affine_aligned, src_pts, dst_pts, degree=poly_degree, status_label=self.status_label)
+                warped_mask = extra_mask
+                if extra_mask is not None:
+                    warped_mask = MosaicMasterDialog.poly_warp(
+                        np.asarray(extra_mask, np.float32), src_pts, dst_pts,
+                        degree=poly_degree, status_label=self.status_label,
+                        interpolation=cv2.INTER_LINEAR)
                 inliers = len(matches)
                 self.status_label.setText(f"Refinement: Polynomial Warp warp applied with {inliers} matched points.")
-                return (warped_image, inliers)
+                return (warped_image, inliers, warped_mask)
             except Exception as e:
                 self.status_label.setText(f"Refinement: Polynomial Warp warp failed: {e}")
                 return None
@@ -3977,7 +4553,8 @@ class MosaicMasterDialog(QDialog):
             return None
 
     @staticmethod
-    def poly_warp(image, src_pts, dst_pts, degree=3, status_label=None):
+    def poly_warp(image, src_pts, dst_pts, degree=3, status_label=None,
+                  interpolation=cv2.INTER_LANCZOS4):
         """
         Warp `image` using a polynomial transformation of the specified degree.
         
@@ -4053,7 +4630,7 @@ class MosaicMasterDialog(QDialog):
             QApplication.processEvents()
         
         # Remap the image.
-        warped = cv2.remap(image, map_u, map_v, interpolation=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
+        warped = cv2.remap(image, map_u, map_v, interpolation=interpolation, borderMode=cv2.BORDER_CONSTANT)
         
         if status_label is not None:
             status_label.setText("Polynomial warp: Image warped.")
@@ -4067,8 +4644,26 @@ class MosaicMasterDialog(QDialog):
         """
         Uses your global stretch_mono_image or stretch_color_image to produce
         a display-ready 8-bit image. For color images, uses unlinked stretching.
+
+        A mosaic canvas is rarely full -- the corners of a rotated field and
+        any unfilled panel slot are hard zeros. The stretch functions take no
+        mask, and a median computed with those zeros included lands far below
+        the real sky, so the stretch over-brightens everything and the preview
+        washes out white. Substitute the valid median into the holes for the
+        duration of the stretch, then put them back to black.
         """
         arr = arr.astype(np.float32)
+
+        valid = _valid_data_mask(arr, erode_px=0)
+        holes = None
+        if valid.any() and not valid.all():
+            holes = ~valid
+            arr = arr.copy()
+            if arr.ndim == 3:
+                for c in range(arr.shape[2]):
+                    arr[..., c][holes] = np.median(arr[..., c][valid])
+            else:
+                arr[holes] = np.median(arr[valid])
 
         # Decide if it's mono or color based on shape
         if arr.ndim == 3 and arr.shape[2] == 3:
@@ -4095,19 +4690,44 @@ class MosaicMasterDialog(QDialog):
 
         # Convert [0,1] => [0,255]
         disp = (stretched * 255.0).clip(0, 255).astype(np.uint8)
+        if holes is not None:
+            # No-data reads as black, not as mid-grey sky.
+            if disp.ndim == 3:
+                disp[holes, :] = 0
+            else:
+                disp[holes] = 0
         return disp
 
 
-    def detect_stars(self, image2d, max_stars=50):
+    def detect_stars(self, image2d, max_stars=50, valid=None):
+        """Detect the brightest stars in `image2d`.
+
+        `valid` marks the real-data pixels. Without it, the zeroed remainder of
+        a mosaic canvas is folded into the sigma-clipped background: the median
+        collapses toward 0 and the standard deviation inflates, so the
+        threshold ends up describing the no-data region rather than the sky.
+        It defaults to the frame's non-zero pixels.
+        """
         # Retrieve user-defined values for sigma and fwhm.
         from photutils.detection import DAOStarFinder
         sigma_val = self.settings.value("mosaic/star_sigma", 3.0, type=float)
         fwhm_val = self.settings.value("mosaic/star_fwhm", 3.0, type=float)
-        
-        mean_val, median_val, std_val = sigma_clipped_stats(image2d, sigma=3.0)
+
+        image2d = np.asarray(image2d, dtype=np.float32)
+        if valid is None:
+            valid = _valid_data_mask(image2d, erode_px=0)
+        valid = np.asarray(valid, bool)
+        if not valid.any():
+            return []
+
+        ignore = ~valid
+        mean_val, median_val, std_val = sigma_clipped_stats(
+            image2d, sigma=3.0, mask=ignore)
+        if not np.isfinite(std_val) or std_val <= 0:
+            return []
         # Use the user-defined fwhm and scale the threshold by the standard deviation.
         daofind = DAOStarFinder(threshold=sigma_val * std_val, fwhm=fwhm_val)
-        sources = daofind(image2d - median_val)
+        sources = daofind(image2d - median_val, mask=ignore)
         if sources is None or len(sources) == 0:
             return []
         x_coords = sources['xcentroid'].data
@@ -4306,6 +4926,19 @@ class MosaicMasterDialog(QDialog):
             "is_mono": bool(is_mono),
         }
 
+        # Record the real footprint. Re-reading this mosaic as a panel later
+        # infers no-data from exact zeros (see _valid_data_mask), which works
+        # because the final blend leaves hard zeros outside coverage -- but an
+        # explicit map is better than an inference, and survives any later step
+        # that adds a pedestal. Consumers that don't know the key ignore it.
+        try:
+            if self.weight_mosaic is not None:
+                cov = (self.weight_mosaic > 0)
+                meta["mosaic_coverage"] = cov
+                meta["mosaic_coverage_frac"] = float(_valid_frac(cov))
+        except Exception as e:
+            print(f"[Mosaic] could not attach coverage map: {e}")
+
         # Keep the array as-is (2D mono or 3-channel)
         return self.final_mosaic, meta
 
@@ -4333,18 +4966,26 @@ class MosaicMasterDialog(QDialog):
             if anchor_med <= 0:
                 return img
 
+            # Medians over real data only -- the unfilled parts of the canvas
+            # are exact zeros and would drag every median down, so the
+            # compensating gain would blow the mosaic out.
+            valid = _valid_data_mask(img, erode_px=0)
+            if not valid.any():
+                return img
+
             if img.ndim == 2:
-                cur_med = float(np.median(img))
+                cur_med = float(np.median(img[valid]))
                 if cur_med > 0:
                     gain = anchor_med / cur_med
                     img = img * gain
                 # keep dynamic range plausible
                 img = np.clip(img, 0.0, 1.0)
+                img[~valid] = 0.0
                 return img
 
             # color: per-channel median scaling (unlinked)
             for c in range(min(3, img.shape[2])):
-                cur_med = float(np.median(img[..., c]))
+                cur_med = float(np.median(img[..., c][valid]))
                 # choose a per-channel original median if available; fallback to anchor
                 src_med = float(orig_meds[c]) if len(orig_meds) >= 3 else anchor_med
                 if cur_med > 0 and src_med > 0:
@@ -4352,6 +4993,7 @@ class MosaicMasterDialog(QDialog):
                     img[..., c] *= gain
 
             img = np.clip(img, 0.0, 1.0)
+            img[~valid, ...] = 0.0
 
             # If the mosaic was originally single-channel, keep it mono.
             if getattr(self, "was_single_channel", False) and img.ndim == 3:
@@ -4827,13 +5469,21 @@ class MosaicMasterDialog(QDialog):
         Each channel is stretched independently by subtracting its own minimum,
         recording its own median, and applying the stretch formula.
         Returns the stretched image in [0,1].
+
+        The per-channel min and median are taken over real data only. This
+        feeds the temporary FITS handed to ASTAP: on a panel that is itself a
+        mosaic the no-data zeros would set the minimum to 0 and halve the
+        median, and the resulting over-bright stretch costs the solver stars.
         """
         was_single_channel = False  # Flag to check if image was single-channel
+
+        # Validity from the ORIGINAL array, before the mono->3ch expansion.
+        valid = _valid_data_mask(image, erode_px=0)
 
         # If the image is 2D or has one channel, convert to 3-channel
         if image.ndim == 2 or (image.ndim == 3 and image.shape[2] == 1):
             was_single_channel = True
-            image = np.stack([image] * 3, axis=-1)
+            image = np.stack([np.squeeze(image)] * 3, axis=-1)
 
         image = image.astype(np.float32).copy()
         stretched_image = image.copy()
@@ -4841,11 +5491,15 @@ class MosaicMasterDialog(QDialog):
         self.stretch_original_medians = []
         target_median = 0.02
 
+        if not valid.any():
+            valid = np.ones(stretched_image.shape[:2], bool)
+
         for c in range(3):
-            channel_min = np.min(stretched_image[..., c])
+            chan = stretched_image[..., c]
+            channel_min = float(np.min(chan[valid]))
             self.stretch_original_mins.append(channel_min)
             stretched_image[..., c] -= channel_min
-            channel_median = np.median(stretched_image[..., c])
+            channel_median = float(np.median(stretched_image[..., c][valid]))
             self.stretch_original_medians.append(channel_median)
             if channel_median != 0:
                 numerator = (channel_median - 1) * target_median * stretched_image[..., c]
