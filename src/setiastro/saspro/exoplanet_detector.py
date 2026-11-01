@@ -52,6 +52,7 @@ from setiastro.saspro.star_alignment import (
 )
 from setiastro.saspro.legacy.image_manager import load_image, save_image, get_valid_header  # adjust if different
 from setiastro.saspro import photometry_aavso as aav
+from setiastro.saspro import cds_health
 from setiastro.saspro.widgets.themed_buttons import themed_toolbtn
 
 # ------------------------------------------------------------------------
@@ -69,6 +70,108 @@ import pyqtgraph as pg
 import warnings
 from astropy.utils.exceptions import AstropyWarning
 warnings.filterwarnings("ignore", category=AstropyWarning, message=".*more axes.*")
+
+
+# ───────────────────────── CDS / SIMBAD hardening ─────────────────────────
+#
+# Everything in this module that touches SIMBAD or VizieR runs on the GUI
+# thread, and until now none of it bounded its timeouts. astroquery with no
+# timeout set falls back to the OS TCP connect timeout -- roughly 130 s on
+# Linux -- and the lookup helpers below each retried five times. A CDS
+# outage therefore froze the window for ~11 minutes per lookup with no
+# cancel and no progress.
+#
+# Three things fix that:
+#   1. A bounded timeout, set on BOTH spellings (`TIMEOUT` was renamed to
+#      `timeout` in astroquery 0.4.8; setting only the old name on a new
+#      astroquery silently does nothing, which is how an unbounded call
+#      sneaks through).
+#   2. A cds_health preflight, so we learn CDS is down in ~4 s instead of
+#      ~130 s, and the session-wide breaker makes every later lookup return
+#      instantly.
+#   3. No retrying of connection-class failures. If the host is not
+#      answering, a second attempt just buys the same timeout again.
+#
+# NOTE ON VizieR / VSX: the VSX lookups in this module are not an
+# independent fallback for a SIMBAD outage. B/vsx is a VizieR catalog, and
+# VizieR is CDS. It runs on separate hosts from the SIMBAD TAP endpoint, so
+# it survives a SIMBAD-only fault and is worth trying -- but a Strasbourg-
+# wide outage takes both down, so these calls need the same bounding.
+
+_SIMBAD_TIMEOUT_S = 20      # per-call ceiling for interactive lookups
+_VIZIER_TIMEOUT_S = 20
+
+
+def _configure_simbad_endpoint():
+    """
+    Point astroquery at whichever mirror cds_health last found healthy and
+    bound its timeout. Returns the hostname in use.
+
+    Safe to call repeatedly; every assignment is individually guarded so a
+    version that lacks one of these attributes doesn't break the others.
+    """
+    host = cds_health.current_server()
+    try:
+        import astroquery.simbad as _aqs
+        for setter in (
+            lambda: setattr(_aqs.conf, "server", host),
+            lambda: setattr(_aqs.conf, "timeout", int(_SIMBAD_TIMEOUT_S)),
+            lambda: setattr(Simbad, "timeout", int(_SIMBAD_TIMEOUT_S)),
+            lambda: setattr(Simbad, "TIMEOUT", int(_SIMBAD_TIMEOUT_S)),
+        ):
+            try:
+                setter()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return host
+
+
+def _new_simbad():
+    """
+    Build a fresh, bounded Simbad object for a one-off lookup.
+
+    Why this exists rather than just setting Simbad.TIMEOUT once:
+    astroquery exports `Simbad` as a module-level *instance* of
+    SimbadClass, and the lookups in this module each build their own with
+    `Simbad()`. An attribute set on the module-level object does not
+    propagate to a newly constructed one -- the new object reads its
+    default from `conf`. So a bound set only on the module-level object
+    silently fails to apply to exactly the calls we are trying to bound.
+
+    Belt and braces: `_configure_simbad_endpoint()` sets `conf.timeout`
+    (which new instances inherit) AND this sets the attribute directly on
+    the instance we are about to use, under both spellings.
+    """
+    _configure_simbad_endpoint()
+    s = Simbad()
+    for setter in (
+        lambda: setattr(s, "timeout", int(_SIMBAD_TIMEOUT_S)),
+        lambda: setattr(s, "TIMEOUT", int(_SIMBAD_TIMEOUT_S)),
+    ):
+        try:
+            setter()
+        except Exception:
+            pass
+    try:
+        s.reset_votable_fields()
+    except Exception:
+        pass
+    return s
+
+
+def _configure_vizier_timeout():
+    """Bound VizieR the same way. VizieR is CDS infrastructure too."""
+    for setter in (
+        lambda: setattr(Vizier, "TIMEOUT", int(_VIZIER_TIMEOUT_S)),
+        lambda: setattr(Vizier, "timeout", int(_VIZIER_TIMEOUT_S)),
+    ):
+        try:
+            setter()
+        except Exception:
+            pass
+
 
 def _extract_ra_dec_from_header(h: fits.Header):
     """Return (ra_deg, dec_deg) if found, else (None, None)."""
@@ -2788,16 +2891,30 @@ class ExoPlanetWindow(QDialog):
         None on failure / no match.  Never raises."""
         coord = SkyCoord(ra=ra_deg*u.deg, dec=dec_deg*u.deg, frame="icrs")
         table = None
-        for attempt in range(1, 6):
+
+        # Preflight: ~4 s to learn CDS is down, versus 5 unbounded attempts
+        # at the OS connect timeout. Once the breaker is tripped this costs
+        # nothing on later lookups in the same session.
+        if not cds_health.simbad_available():
+            print(f"[DEBUG] SIMBAD skipped — {cds_health.status_text()}")
+            return self._vsx_only_lookup(coord, radius_arcsec)
+
+        # Two attempts, not five, and a connection failure breaks out
+        # immediately instead of buying the same timeout four more times.
+        for attempt in range(1, 3):
             try:
-                custom = Simbad(); custom.reset_votable_fields()
+                custom = _new_simbad()
                 custom.add_votable_fields("otype")
                 custom.add_votable_fields("flux(V)")
                 table = custom.query_region(coord, radius=radius_arcsec*u.arcsec)
+                cds_health.note_success()
                 break
             except Exception as e:
                 print(f"[DEBUG] SIMBAD attempt {attempt} failed: {e}")
-                if attempt == 5:
+                if cds_health.note_failure(e, context="exoplanet/resolve_target"):
+                    print("[DEBUG] SIMBAD unreachable — falling back to VSX.")
+                    return self._vsx_only_lookup(coord, radius_arcsec)
+                if attempt == 2:
                     return None
                 non_blocking_sleep(1)
 
@@ -2880,7 +2997,12 @@ class ExoPlanetWindow(QDialog):
     def _vsx_name_near(self, coord, radius_arcsec):
         """Return the closest VSX 'Name' within `radius_arcsec`, or None."""
         try:
-            v = Vizier(columns=["Name", "RAJ2000", "DEJ2000"], catalog="B/vsx")
+            # Deliberately NOT gated on cds_health: VizieR runs on separate
+            # hosts from the SIMBAD TAP endpoint, so this is a genuine
+            # fallback when SIMBAD alone is broken. It is only bounded, so a
+            # Strasbourg-wide outage costs one timeout instead of hanging.
+            v = Vizier(columns=["Name", "RAJ2000", "DEJ2000"], catalog="B/vsx",
+                       timeout=int(_VIZIER_TIMEOUT_S))
             v.ROW_LIMIT = 25
             tbls = v.query_region(coord, radius=radius_arcsec*u.arcsec)
         except Exception as e:
@@ -2993,18 +3115,45 @@ class ExoPlanetWindow(QDialog):
         name = name.strip()
 
         # 1) resolve name -> RA/Dec via SIMBAD
+        #
+        # Name resolution has no offline substitute: there is no local
+        # catalogue here to turn "V336 Aps" into coordinates. So unlike the
+        # region lookups this one genuinely cannot proceed without CDS, and
+        # the right behaviour is to say so in ~4 s rather than freeze.
+        if not cds_health.simbad_available():
+            QMessageBox.warning(
+                self, "SIMBAD Unavailable",
+                "Name resolution needs SIMBAD, and CDS is not reachable "
+                f"right now.\n\n{cds_health.status_text()}\n\n"
+                "Resolving a name to coordinates has no offline equivalent, "
+                "so this lookup can't run. You can still select the star "
+                "directly in the image, or paste its RA/Dec if you have "
+                "them.\n\nCDS status: https://cds.unistra.fr"
+            )
+            return
+
         tbl = None
-        for attempt in range(1, 4):
+        for attempt in range(1, 3):
             try:
-                custom = Simbad(); custom.reset_votable_fields()
+                custom = _new_simbad()
                 tbl = custom.query_object(name)
+                cds_health.note_success()
                 break
             except Exception as e:
                 print(f"[DEBUG] SIMBAD name resolve attempt {attempt} failed: {e}")
-                if attempt == 3:
+                if cds_health.note_failure(e, context="exoplanet/query_object"):
+                    QMessageBox.critical(
+                        self, "SIMBAD Unreachable",
+                        "SIMBAD stopped answering while resolving that "
+                        f"name.\n\n{type(e).__name__}: {e}\n\n"
+                        "Further retries would only wait out the same "
+                        "timeout, so this lookup was abandoned."
+                    )
+                    return
+                if attempt == 2:
                     QMessageBox.critical(
                         self, "SIMBAD Error",
-                        f"Could not reach SIMBAD after 3 tries:\n{e}"
+                        f"Could not resolve that name:\n{e}"
                     )
                     return
                 non_blocking_sleep(1)
@@ -3105,18 +3254,33 @@ class ExoPlanetWindow(QDialog):
     def _query_simbad_name_and_vmag(self, ra_deg, dec_deg, radius=5*u.arcsec):
         coord = SkyCoord(ra=ra_deg*u.deg, dec=dec_deg*u.deg, frame="icrs")
         table = None
-        for attempt in range(1,6):
+
+        # Called from the AAVSO export path, where SIMBAD only supplies a
+        # suggested STARID and V magnitude -- both of which the user can
+        # type. Returning (None, None) quickly leaves the export usable;
+        # freezing for minutes does not. So no modal error dialog here on
+        # an outage: the caller already prompts for the name.
+        if not cds_health.simbad_available():
+            print(f"[DEBUG] SIMBAD skipped for name/vmag — {cds_health.status_text()}")
+            return None, None
+
+        for attempt in range(1, 3):
             try:
-                custom = Simbad(); custom.reset_votable_fields()
+                custom = _new_simbad()
                 custom.add_votable_fields("otype","flux(V)")
                 table = custom.query_region(coord, radius=radius)
+                cds_health.note_success()
                 break
             except Exception as e:
-                if attempt==5:
-                    QMessageBox.critical(self, "SIMBAD Error", f"Could not reach SIMBAD after 5 tries:\n{e}")
+                if cds_health.note_failure(e, context="exoplanet/name_and_vmag"):
+                    print(f"[DEBUG] SIMBAD unreachable during name/vmag: {e}")
+                    return None, None
+                if attempt == 2:
+                    print(f"[DEBUG] SIMBAD name/vmag failed: {e}")
                     return None, None
                 non_blocking_sleep(1)
-        
+
+
         if table is None or len(table)==0:
             return None, None
         try:
@@ -3438,7 +3602,7 @@ class ExoPlanetWindow(QDialog):
                 from astroquery.vizier import Vizier
                 c0, rad = _cone()
                 vz = Vizier(columns=["RAJ2000", "DEJ2000", "Vmag", "Bmag", "r_mag", "r\'mag"],
-                            row_limit=50000)
+                            row_limit=50000, timeout=int(_VIZIER_TIMEOUT_S))
                 res = vz.query_region(c0, radius=rad, catalog="II/336/apass9")
                 if res:
                     tbl = res[0]
@@ -3463,7 +3627,7 @@ class ExoPlanetWindow(QDialog):
                 from astroquery.vizier import Vizier
                 c0, rad = _cone()
                 vz = Vizier(columns=["RAJ2000", "DEJ2000", "Vmag", "Bmag", "rmag"],
-                            row_limit=50000)
+                            row_limit=50000, timeout=int(_VIZIER_TIMEOUT_S))
                 res = vz.query_region(c0, radius=rad, catalog="I/322A/out")
                 if res:
                     tbl = res[0]
@@ -3502,7 +3666,9 @@ class ExoPlanetWindow(QDialog):
         if star_id:
             try:
                 Vizier.ROW_LIMIT = 1
-                v = Vizier(columns=["Name"], catalog="B/vsx")
+                _configure_vizier_timeout()
+                v = Vizier(columns=["Name"], catalog="B/vsx",
+                           timeout=int(_VIZIER_TIMEOUT_S))
                 tbls = v.query_object(star_id)
                 if tbls and len(tbls) > 0 and len(tbls[0]) > 0:
                     star_id = tbls[0]["Name"][0]
@@ -4018,7 +4184,8 @@ class ExoPlanetWindow(QDialog):
             try:
                 from astroquery.vizier import Vizier
                 c0, rad = _cone()
-                vz = Vizier(columns=["RAJ2000", "DEJ2000", "Vmag"], row_limit=50000)
+                vz = Vizier(columns=["RAJ2000", "DEJ2000", "Vmag"], row_limit=50000,
+                            timeout=int(_VIZIER_TIMEOUT_S))
                 res = vz.query_region(c0, radius=rad, catalog=cat_id)
                 if res:
                     tbl = res[0]
@@ -4061,7 +4228,9 @@ class ExoPlanetWindow(QDialog):
         if star_id:
             try:
                 Vizier.ROW_LIMIT = 1
-                v = Vizier(columns=["Name"], catalog="B/vsx")
+                _configure_vizier_timeout()
+                v = Vizier(columns=["Name"], catalog="B/vsx",
+                           timeout=int(_VIZIER_TIMEOUT_S))
                 tbls = v.query_object(star_id)
                 if tbls and len(tbls) > 0 and len(tbls[0]) > 0:
                     star_id = tbls[0]["Name"][0]

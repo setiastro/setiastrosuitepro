@@ -63,7 +63,27 @@ __all__ = [
 
 # Order matters: first entry is preferred. Matches astroquery's
 # conf.servers_list so whatever we pick is a value astroquery accepts.
-MIRRORS: tuple[str, ...] = ("simbad.cds.unistra.fr", "simbad.harvard.edu")
+#
+# WHY ONLY ONE ENTRY
+# ------------------
+# astroquery advertises simbad.harvard.edu as the US mirror, and an earlier
+# version of this module listed it as failover. End-to-end probing (see the
+# mirror-list comment in magnitude_tool._fetch_simbad_stars_and_cache) found
+# that it is NOT usable for TAP:
+#
+#   * simbad.harvard.edu answers on :443, so any liveness check that merely
+#     asks "did something respond?" marks it healthy...
+#   * ...but /simbad/sim-tap/capabilities returns HTTP 500 with HTML error
+#     output from vizier.cfa.harvard.edu, so query_region always fails.
+#   * simbad.u-strasbg.fr is a permanent DNS failure — CDS retired the
+#     hostname; live SIMBAD is at simbad.cds.unistra.fr.
+#
+# Failing over to a host that passes a shallow probe and then fails every
+# query is worse than having no failover: it converts a clean "CDS is down"
+# into a confusing mid-run error. So the list holds only hosts that have
+# been probed end-to-end. Add one back only after confirming a real
+# query_region succeeds against it.
+MIRRORS: tuple[str, ...] = ("simbad.cds.unistra.fr",)
 
 # VOSI standard availability endpoint — tiny XML payload, no query cost,
 # and it is the canonical "is this TAP service up" question.
@@ -152,15 +172,37 @@ def _probe_one(server: str, timeout: float) -> Tuple[bool, str]:
     if code is None:
         return False, f"{server}: no response"
 
-    # An explicit <available>false</available> means planned downtime.
-    if body and "false" in body.lower() and "available" in body.lower():
+    low = (body or "").lower()
+
+    # A 5xx from the TAP service means the service itself is broken, even
+    # though the host answered. This is exactly how simbad.harvard.edu
+    # presents: the socket connects, TLS completes, and sim-tap returns 500.
+    # Treating "something answered" as healthy is what let that mirror
+    # through before.
+    if code >= 500:
+        return False, f"{server}: HTTP {code} from TAP service"
+
+    # VOSI availability is an XML document. An HTML body here means we are
+    # talking to a web front end or an error page, not a TAP endpoint --
+    # again the harvard failure mode (HTML error output from
+    # vizier.cfa.harvard.edu). Refuse it rather than discover it later.
+    if "<html" in low or "<!doctype html" in low:
+        return False, f"{server}: HTTP {code} but served HTML, not VOSI XML"
+
+    # Explicit <available>false</available> means planned downtime. Match the
+    # tag, not the bare words -- "false" and "available" can both appear in
+    # unrelated prose, which made the old substring test trigger wrongly.
+    if "<available>false</available>" in low.replace(" ", ""):
         return False, f"{server}: reports itself unavailable (maintenance)"
 
-    # Any HTTP answer at all means the host is alive and routable. Even a
-    # 404 here (older deployments without VOSI) beats a dead socket, and a
-    # 5xx is transient rather than "CDS is gone".
+    if "<available>true</available>" in low.replace(" ", ""):
+        return True, f"{server}: VOSI reports available"
+
+    # 2xx-4xx with no VOSI markers: older deployments don't serve
+    # /availability at all, and a 404 there still beats a dead socket. The
+    # host is routable and answering, so let the real query decide.
     if 200 <= code < 500:
-        return True, f"{server}: HTTP {code}"
+        return True, f"{server}: HTTP {code} (no VOSI document)"
 
     return False, f"{server}: HTTP {code}"
 

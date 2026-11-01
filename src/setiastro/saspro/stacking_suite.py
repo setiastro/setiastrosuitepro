@@ -9254,6 +9254,10 @@ class StackingSuiteDialog(QDialog):
             "align/minarea": 5,
             "align/limit_stars": 300,
             "align/timeout_per_job_sec": 300,
+            # SASPRO_SETTINGS_WORKERS_PROFILE_V1
+            # 0 = Auto. Here so the choice travels with a profile like every
+            # other alignment pref rather than being left behind on Export.
+            "align/workers": 0,
 
             # Performance
             "use_hardware_accel": True,
@@ -9620,6 +9624,41 @@ class StackingSuiteDialog(QDialog):
         self.chunkWidthSpinBox.setVisible(False)
         hw_row = QHBoxLayout()
         hw_row.addWidget(self.chunkHeightSpinBox)
+        # SASPRO_SETTINGS_TUNE_BUTTON_V1
+        # "Optimize…": measure this machine instead of guessing. Sets the star
+        # detector and the registration worker count, and the rows-per-pass
+        # value in the spin box beside it. The two are measured separately
+        # because one does not imply the other: worker count is about how many
+        # PROCESSES may hold a CUDA context at once, rows per pass is about how
+        # much work goes into ONE rejection call in this process.
+        try:
+            from setiastro.saspro.stacking_tune_dialog import (
+                install_optimize_button as _install_tune_btn,
+            )
+
+            def _tune_frame_shape():
+                """Best guess at the user's sensor size, for the tuner's default."""
+                for _attr in ("ref_small_full", "reference_image"):
+                    _a = getattr(self, _attr, None)
+                    if _a is not None and getattr(_a, "shape", None):
+                        return int(_a.shape[0]), int(_a.shape[1])
+                try:
+                    import numpy as _np
+                    for _lst in (getattr(self, "light_files", {}) or {}).values():
+                        for _fp in (_lst or [])[:1]:
+                            from astropy.io import fits as _fits
+                            with _fits.open(_fp, memmap=True) as _hd:
+                                _d = _hd[0].data
+                                if _d is not None and _np.ndim(_d) >= 2:
+                                    return int(_d.shape[-2]), int(_d.shape[-1])
+                except Exception:
+                    pass
+                return 3000, 4000
+
+            _install_tune_btn(self, hw_row, self.chunkHeightSpinBox,
+                              frame_shape_provider=_tune_frame_shape)
+        except Exception:
+            pass
         w_hw = QWidget(); w_hw.setLayout(hw_row)
         fl_general.addRow(self.tr("Rows per pass:"), w_hw)
 
@@ -9958,6 +9997,26 @@ class StackingSuiteDialog(QDialog):
             "  result. Keep for ring-sensitive diagnostics only."
         ))
         fl_align.addRow(self.tr("Warp interpolation:"), self.align_kernel_combo)
+
+        # SASPRO_SETTINGS_ALIGN_WORKERS_V1
+        # Alignment workers — shared with the Star Registration window's
+        # Advanced panel through `stacking/align/workers`, exactly as the
+        # kernel dropdown above is shared. 0 shows as "Auto", and the hint
+        # beside it says what Auto currently resolves to, so the number on
+        # screen is always the number the solve pass will use.
+        try:
+            from setiastro.saspro.stacking_tune_dialog import (
+                make_align_workers_row as _mk_workers_row,
+            )
+            _w_row, self.align_workers_spin = _mk_workers_row(
+                self,
+                band_spinbox=getattr(self, "chunkHeightSpinBox", None),
+                frame_shape_provider=getattr(self, "_tune_frame_shape", None),
+            )
+            if _w_row is not None:
+                fl_align.addRow(self.tr("Alignment workers:"), _w_row)
+        except Exception:
+            self.align_workers_spin = None
 
         # Timeout spinbox kept for QSettings back-compat but hidden from UI
         self.align_timeout_spin = QSpinBox()

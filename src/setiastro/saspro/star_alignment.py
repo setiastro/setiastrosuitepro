@@ -368,6 +368,12 @@ def _align_prefs(settings: QSettings | None = None) -> dict:
         "max_ellipticity": _get("max_ellipticity", 0.6, float),
         # Warp kernel used by every anti-ring warp site. See _warp_hi_interp.
         "kernel":          kernel,
+        # SASPRO_ALIGN_WORKERS_UI_V1
+        # Processes the solve pass may use. 0 = Auto (resolved by
+        # stacking_worker_tune.resolve_align_workers from the optimizer's
+        # measurement, or from VRAM when nothing has been measured). Shared
+        # with the Stacking Suite settings page, same as `kernel`.
+        "workers":         _get("workers", 0, int),
     }
 
     return prefs
@@ -5265,7 +5271,36 @@ class StarRegistrationThread(QThread):
             ])
             return True, "Pass complete (nothing to refine)."
 
+        # SASPRO_ALIGN_WORKERS_UI_V1 SASPRO_ALIGN_WORKERS_PROCS
+        # Worker count for the solve pass. The second marker above is what
+        # tests/cap_logic_test.py locates: the file-level sentinel appears on
+        # every edit this patcher makes, so the solve-pass block needs one of
+        # its own to be findable. The policy — explicit setting, then
+        # a stored measurement whose hardware still matches, then a
+        # VRAM-derived default — lives in stacking_worker_tune so it can change
+        # without re-patching this file. It can only ever lower the count from
+        # the expression below, never raise it, and any failure leaves that
+        # expression standing.
         procs = max(2, min((os.cpu_count() or 8), 32))
+        try:
+            from setiastro.saspro.stacking_worker_tune import (
+                resolve_align_workers as _resolve_workers,
+            )
+            _mp = None
+            try:
+                _rs = getattr(self, "ref_small_full", None)
+                if _rs is not None:
+                    _mp = (float(_rs.shape[0]) * float(_rs.shape[1])) / 1e6
+            except Exception:
+                _mp = None
+            _want, _src = _resolve_workers(_mp)
+            if _want and _want < procs:
+                self.progress_update.emit(
+                    f"Worker count {procs} -> {_want} ({_src})."
+                )
+                procs = max(2, int(_want))
+        except Exception:
+            pass
         self.progress_update.emit(f"Using {procs} processes for stellar alignment (refine={refine_model}).")
 
         timeout_sec = int(self.align_prefs.get("timeout_per_job_sec", 300))
@@ -6389,6 +6424,32 @@ class StarRegistrationWindow(QWidget):
         )
         _adv.addRow("Warp interpolation:", self.cmb_adv_kernel)
 
+        # Alignment workers — shared with the Stacking Suite settings page via
+        # `stacking/align/workers`, the same way the kernel dropdown above is
+        # shared. 0 shows as "Auto" and the hint beside it says what Auto
+        # currently resolves to, so the number on screen is always the number
+        # the solve pass will use. The Optimize... button is the same one the
+        # settings page carries.
+        try:
+            from setiastro.saspro.stacking_tune_dialog import (
+                make_align_workers_row as _mk_workers_row,
+            )
+
+            def _reg_frame_shape():
+                """Reference frame size, for the optimizer's default."""
+                for _a in ("ref_small_full", "reference_image"):
+                    _v = getattr(self, _a, None)
+                    if _v is not None and getattr(_v, "shape", None):
+                        return int(_v.shape[0]), int(_v.shape[1])
+                return 3000, 4000
+
+            _w_row, self.sp_adv_workers = _mk_workers_row(
+                self, frame_shape_provider=_reg_frame_shape)
+            if _w_row is not None:
+                _adv.addRow("Alignment workers:", _w_row)
+        except Exception:
+            self.sp_adv_workers = None
+
         # Trial Detect — same spirit as the Stellar Alignment dialog's but
         # adapted to Registration's N-target model: runs sep detection with
         # the CURRENT Detection σ against the REFERENCE and the FIRST target
@@ -6783,6 +6844,16 @@ class StarRegistrationWindow(QWidget):
         s.setValue("stacking/align/min_fwhm",        float(prefs["min_fwhm"]))
         s.setValue("stacking/align/max_ellipticity", float(prefs["max_ellipticity"]))
         s.setValue(_WARP_KERNEL_SETTINGS_KEY,         str(prefs.get("kernel", "lanczos")))
+        # Shared with the Stacking Suite settings page; 0 = Auto.
+        _sp_w = getattr(self, "sp_adv_workers", None)
+        if _sp_w is not None:
+            try:
+                from setiastro.saspro.stacking_worker_tune import (
+                    KEY_WORKERS_MANUAL as _KW,
+                )
+            except Exception:
+                _KW = "stacking/align/workers"
+            s.setValue(_KW, int(_sp_w.value()))
 
     # ------------------------------------------------------------------
     # Trial detect
