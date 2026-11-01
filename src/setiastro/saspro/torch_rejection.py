@@ -70,7 +70,7 @@ def _warn_dml_reduce_once():
         return
     _DML_REDUCE_WARNED = True
     warnings.warn(
-        "DirectML detected (privateuseone). Forcing nan reducers (nanmedian/nanquantile/nanstd) to CPU "
+        "DirectML detected (privateuseone). Using device-side sort/sum nan reducers "
         "to avoid a known torch-directml fallback bug (can return empty tensors).",
         RuntimeWarning
     )
@@ -82,42 +82,19 @@ def _warn_reduce_fallback_once(op: str, exc: BaseException):
     Announce, once per op per process, that a native nan reducer failed and we
     are on the sort-based fallback.
 
-    These fallbacks are correct but NOT free and not bit-identical to the native
-    kernels (notably _nanquantile's fallback rounds to the nearest order
-    statistic instead of interpolating). Swallowing the exception silently meant
-    a backend quietly degrading both speed and GPU/CPU parity with nothing in
-    the log to explain it.
+    Device-side fallbacks avoid host round-trips, but can be slower than native
+    reductions. Quantiles retain linear interpolation and medians retain the
+    lower-middle convention, including all-NaN output behavior.
     """
     if op in _FALLBACK_WARNED:
         return
     _FALLBACK_WARNED.add(op)
     warnings.warn(
         f"torch.{op} failed on this backend ({type(exc).__name__}: {exc}); "
-        f"using the sort-based fallback for the rest of this session. Results stay "
-        f"correct but are slower, and {op} results may differ from the CPU path by "
-        f"one order statistic.",
+        f"using the device-side fallback. Results stay "
+        f"correct, but this may be slower than a native reduction.",
         RuntimeWarning,
     )
-
-
-def _cpu_reduce_then_back(torch, x, dim: int, op: str, q: float | None = None):
-    """
-    Force a reduction to run on CPU (workaround for DirectML broken fallbacks),
-    then move the result back to x.device.
-    """
-    x_cpu = x.detach().to("cpu")
-
-    if op == "nanmedian":
-        y = torch.nanmedian(x_cpu, dim=dim).values
-    elif op == "nanquantile":
-        y = torch.nanquantile(x_cpu, float(q), dim=dim)
-    elif op == "nanstd":
-        y = torch.nanstd(x_cpu, dim=dim, unbiased=False)
-    else:
-        raise ValueError(f"Unknown op: {op}")
-
-    return y.to(x.device)
-
 
 
 def _get_torch(prefer_cuda: bool = True, prefer_dml: bool = False):
@@ -178,91 +155,86 @@ def gpu_algo_supported(algo_name: str) -> bool:
 # ---------------------------------------------------------------------------
 # Helpers (nan-safe reducers) – assume torch is available *inside* callers
 # ---------------------------------------------------------------------------
+def _sorted_nanquantile(torch, x, q, dim, *, median=False):
+    """Device-only reduction; median uses Torch's lower-middle convention."""
+    # Keep each pixel's frame samples adjacent and select only the prefix
+    # needed for the requested rank, rather than storing every order statistic.
+    x = x.movedim(dim, -1).contiguous()
+    dim = x.dim() - 1
+    present = ~torch.isnan(x)
+    count = present.sum(dim=dim)
+    limit = ((x.shape[dim] - 1) // 2 if median else
+             int(math.ceil((x.shape[dim] - 1) * float(q)))) + 1
+    values = x.masked_fill(~present, float("inf")).topk(
+        limit, dim=dim, largest=False, sorted=True).values
+    rank = (count.clamp_min(1) - 1) * float(q)
+    lower = rank.floor().long()
+    a = values.gather(dim, lower.unsqueeze(dim)).squeeze(dim)
+    if median:
+        result = a
+    else:
+        upper = rank.ceil().long()
+        b = values.gather(dim, upper.unsqueeze(dim)).squeeze(dim)
+        result = torch.lerp(a, b, rank - lower)
+        result = torch.where(lower == upper, a, result)
+    return result.masked_fill(count == 0, float("nan"))
+
+
 def _nanmedian(torch, x, dim: int):
-    # DirectML workaround: force CPU reducer (avoids broken fallback returning empty tensor)
     if _is_directml_privateuse(getattr(x, "device", None)):
         _warn_dml_reduce_once()
-        try:
-            y = _cpu_reduce_then_back(torch, x, dim, op="nanmedian")
-            if getattr(y, "numel", lambda: 1)() == 0:
-                raise RuntimeError("nanmedian returned empty tensor on DirectML")
-            return y
-        except Exception:
-            # fall through to generic fallback below
-            pass
-
+        return _sorted_nanquantile(torch, x, 0.5, dim, median=True)
     try:
         y = torch.nanmedian(x, dim=dim).values
-        # Guard: some broken backends return empty tensor instead of real result
-        if getattr(y, "numel", lambda: 1)() == 0:
+        if y.numel() == 0:
             raise RuntimeError("nanmedian returned empty tensor")
         return y
-    except Exception as _exc:
-        # Generic safe fallback (sort-based)
-        _warn_reduce_fallback_once("nanmedian", _exc)
-        m = torch.isfinite(x)
-        x2 = x.clone()
-        x2[~m] = float("inf")
-        idx = x2.argsort(dim=dim)
-        cnt = m.sum(dim=dim).clamp_min(1)
-        mid = (cnt - 1) // 2
-        gather_idx = idx.gather(dim, mid.unsqueeze(dim))
-        return x.gather(dim, gather_idx).squeeze(dim)
+    except Exception as exc:
+        _warn_reduce_fallback_once("nanmedian", exc)
+        return _sorted_nanquantile(torch, x, 0.5, dim, median=True)
+
+
+def _nan_to_num(torch, x, nan=0.0):
+    """Equivalent finite replacement without DirectML's nan_to_num CPU fallback."""
+    limits = torch.finfo(x.dtype)
+    return torch.where(torch.isnan(x), float(nan), x.clamp(limits.min, limits.max))
+
+
+def _nanstd_sums(torch, x, dim):
+    present = ~torch.isnan(x)
+    count = present.sum(dim=dim)
+    mean = torch.where(present, x, 0.0).sum(dim=dim) / count.clamp_min(1)
+    residual = torch.where(present, x - mean.unsqueeze(dim), 0.0)
+    var = (residual * residual).sum(dim=dim) / count.clamp_min(1)
+    return var.clamp_min(0).sqrt().masked_fill(count == 0, float("nan"))
+
 
 def _nanstd(torch, x, dim: int):
     if _is_directml_privateuse(getattr(x, "device", None)):
         _warn_dml_reduce_once()
-        try:
-            y = _cpu_reduce_then_back(torch, x, dim, op="nanstd")
-            if getattr(y, "numel", lambda: 1)() == 0:
-                raise RuntimeError("nanstd returned empty tensor on DirectML")
-            return y
-        except Exception:
-            pass
-
+        return _nanstd_sums(torch, x, dim)
     try:
         y = torch.nanstd(x, dim=dim, unbiased=False)
-        if getattr(y, "numel", lambda: 1)() == 0:
+        if y.numel() == 0:
             raise RuntimeError("nanstd returned empty tensor")
         return y
-    except Exception as _exc:
-        # Fallback: compute nan-safe variance from sums
-        _warn_reduce_fallback_once("nanstd", _exc)
-        m = torch.isfinite(x)
-        cnt = m.sum(dim=dim).clamp_min(1)
-        s1 = torch.where(m, x, torch.zeros_like(x)).sum(dim=dim)
-        s2 = torch.where(m, x * x, torch.zeros_like(x)).sum(dim=dim)
-        mean = s1 / cnt
-        var = (s2 / cnt) - mean * mean
-        return var.clamp_min(0).sqrt()
+    except Exception as exc:
+        _warn_reduce_fallback_once("nanstd", exc)
+        return _nanstd_sums(torch, x, dim)
+
 
 def _nanquantile(torch, x, q: float, dim: int):
     if _is_directml_privateuse(getattr(x, "device", None)):
         _warn_dml_reduce_once()
-        try:
-            y = _cpu_reduce_then_back(torch, x, dim, op="nanquantile", q=float(q))
-            if getattr(y, "numel", lambda: 1)() == 0:
-                raise RuntimeError("nanquantile returned empty tensor on DirectML")
-            return y
-        except Exception:
-            pass
-
+        return _sorted_nanquantile(torch, x, q, dim)
     try:
         y = torch.nanquantile(x, float(q), dim=dim)
-        if getattr(y, "numel", lambda: 1)() == 0:
+        if y.numel() == 0:
             raise RuntimeError("nanquantile returned empty tensor")
         return y
-    except Exception as _exc:
-        # Fallback: argsort finite values and take kth
-        _warn_reduce_fallback_once("nanquantile", _exc)
-        m = torch.isfinite(x)
-        x2 = x.clone()
-        x2[~m] = float("inf")
-        idx = x2.argsort(dim=dim)
-        n = m.sum(dim=dim).clamp_min(1)
-        kth = (float(q) * (n - 1)).round().to(torch.long).clamp(min=0)
-        gather_idx = idx.gather(dim, kth.unsqueeze(dim))
-        return x.gather(dim, gather_idx).squeeze(dim)
+    except Exception as exc:
+        _warn_reduce_fallback_once("nanquantile", exc)
+        return _sorted_nanquantile(torch, x, q, dim)
 
 
 def _no_amp_ctx(torch, dev):
@@ -296,6 +268,10 @@ def _safe_inference_ctx(torch):
     Return a context manager for inference that won't explode on older or
     backend-variant Torch builds (DirectML/MPS/CPU-only).
     """
+    # DirectML views/indexing can request a version counter even for tensors
+    # created under inference_mode. no_grad avoids that backend limitation.
+    if _is_directml_privateuse(_device()):
+        return torch.no_grad()
     try:
         # Prefer inference_mode if both the API and C++ backend support it
         if getattr(torch, "inference_mode", None) is not None:
@@ -999,7 +975,7 @@ def cosmetic_correction_gpu(
             # --- START OPTIMIZED SPARSE PROCESSING ---
             # 1. Find the 1D coordinates of the bad pixels
             fy, fx = torch.where(flagged)
-            
+
             # Default state is the original uncorrected plane
             result[ci] = plane.clone()
 
@@ -1031,7 +1007,7 @@ def cosmetic_correction_gpu(
                     # Gather ONLY the neighbors for the flagged pixels (returns a 1D tensor of size N)
                     nbr_vals = plane_pad2[fy_pad + dy, fx_pad + dx]
                     nbr_flagged = flagged_pad[fy_pad + dy, fx_pad + dx]
-                    
+
                     nbr_clean = torch.where(
                         nbr_flagged,
                         torch.full_like(nbr_vals, float('nan')),
@@ -1041,7 +1017,7 @@ def cosmetic_correction_gpu(
 
                 # Stack is now (8, N) instead of (8, H, W). Massive memory savings.
                 stacked = torch.stack(neighbor_stack, dim=0)
-                
+
                 stacked_inf = torch.where(torch.isnan(stacked),
                                           torch.full_like(stacked, float('inf')), stacked)
                 sorted_s, _ = stacked_inf.sort(dim=0)
@@ -1053,7 +1029,7 @@ def cosmetic_correction_gpu(
                 rep_lo      = sorted_s.gather(0, mid_lo.unsqueeze(0)).squeeze(0)
                 rep_hi      = sorted_s.gather(0, mid_hi.unsqueeze(0)).squeeze(0)
                 replacement = (rep_lo + rep_hi) * 0.5
-                
+
                 # If all 8 neighbors were bad (inf), fall back to the local median m5
                 m5_bad = m5[fy, fx]
                 replacement = torch.where(torch.isinf(replacement), m5_bad, replacement)
@@ -1104,7 +1080,7 @@ def _winsorized_center_scale(torch, ts, valid, iterations: int = 3, winsor_k: fl
     un-rejectable). Instead we:
       1. seed with median and 1.4826*MAD (both robust),
       2. clamp ('winsorize') the stack to med +/- winsor_k * sigma,
-      3. re-measure median and std on the winsorized stack, undoing the
+      3. re-measure std on the winsorized stack, undoing the
          winsorization-induced shrinkage with Huber's 1.134 correction
          (exact for winsor_k = 1.5),
       4. iterate to convergence.
@@ -1131,7 +1107,8 @@ def _winsorized_center_scale(torch, ts, valid, iterations: int = 3, winsor_k: fl
         hi = (med + winsor_k * sigma).unsqueeze(0)
         # torch.minimum/maximum propagate NaN, so invalid lanes stay NaN
         xw = torch.minimum(torch.maximum(x, lo), hi)
-        med = _nanmedian(torch, xw, dim=0)
+        # Clamping around the median cannot change that order statistic.
+        # Recomputing it here sorted the same frame samples every iteration.
         mean_w = _masked_sum(torch, xw, valid, dim=0) / cnt
         var = _masked_sum(torch, (xw - mean_w.unsqueeze(0)) ** 2, valid, dim=0) / cnt
         sigma_new = (1.134 * var.clamp_min(0.0).sqrt()).clamp_min(1e-10)
@@ -1161,27 +1138,21 @@ def _weighted_mean_or(torch, ts, keep, w, fallback):
 # ---------------------------------------------------------------------------
 # Public GPU reducer – lazy-loads Torch, never decorates at import time
 # ---------------------------------------------------------------------------
-def _finalize(torch, out, rej, reduce_rej_maps):
-    """Move a reducer result to the host.
-
-    Default (reduce_rej_maps=False): return (out_np, full_rej_np) exactly as
-    before — the full (F,H,W,C) or (F,H,W) boolean rejection map.
-
-    reduce_rej_maps=True: collapse the rejection map ON THE GPU to the only two
-    things the integrator actually accumulates — a per-pixel "any frame
-    rejected" mask and a per-pixel rejected-frame count — and copy back just
-    those two (H,W) arrays. That turns the per-band device->host transfer from
-    N*H*W*C bytes down to ~2*H*W, and moves the any()/sum() reduction off the
-    CPU's critical path. Use it whenever per-file rejection maps are NOT being
-    collected (the common case)."""
-    out_np = out.to(dtype=torch.float32).contiguous().cpu().numpy()
-    if not reduce_rej_maps:
-        return out_np, rej.cpu().numpy()
-    # collapse channels, then reduce over the frame axis, all on-device
-    rej_fhw = rej.any(dim=-1) if rej.dim() == 4 else rej          # (F,H,W)
-    rej_any = rej_fhw.any(dim=0).cpu().numpy()                    # (H,W) bool
-    rej_cnt = rej_fhw.sum(dim=0).to(torch.int32).cpu().numpy()    # (H,W) int32
-    return out_np, (rej_any, rej_cnt)
+def _finalize(torch, out, rej, reduce_rej_maps, *, return_device=False,
+              collapse_rej_channels=False):
+    """Reduce maps before downloading; optionally leave transfers to a session."""
+    out = out.to(dtype=torch.float32).contiguous()
+    if reduce_rej_maps or collapse_rej_channels:
+        rej = rej.any(dim=-1) if rej.dim() == 4 else rej
+    if reduce_rej_maps:
+        maps = (rej.any(dim=0), rej.sum(dim=0).to(torch.int32))
+    else:
+        maps = rej
+    if return_device:
+        return out, maps
+    if isinstance(maps, tuple):
+        return out.cpu().numpy(), tuple(m.cpu().numpy() for m in maps)
+    return out.cpu().numpy(), maps.cpu().numpy()
 
 
 DEBUG_INTEGRATION_ONLY = False   # <-- set True: reducer returns a ZEROED rejection map (out left untouched)
@@ -1213,9 +1184,13 @@ def torch_reduce_tile(*args, **kwargs):
         except Exception:
             _is_selftest = False
         if not _is_selftest:
+            def zero_map(m):
+                return m.new_zeros(m.shape) if hasattr(m, "new_zeros") else _np.zeros_like(m)
             if isinstance(rej, tuple):
                 _ra, _rc = rej
-                rej = (_np.zeros_like(_ra, dtype=bool), _np.zeros_like(_rc))
+                rej = (zero_map(_ra), zero_map(_rc))
+            elif hasattr(rej, "new_zeros"):
+                rej = zero_map(rej)
             else:
                 rej = _np.zeros_like(_np.asarray(rej), dtype=bool)
     return out, rej
@@ -1259,6 +1234,10 @@ def _torch_reduce_tile_impl(
     bayer_pattern: str | None = None,
     tile_origin: tuple = (0, 0),
     group_key=None,
+    device_tile=None,
+    device_weights=None,
+    return_device: bool = False,
+    collapse_rej_channels: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
 
     torch = _get_torch(prefer_cuda=True)
@@ -1315,7 +1294,12 @@ def _torch_reduce_tile_impl(
     if C < 1:
         raise ValueError(f"torch_reduce_tile received input with C={C} channels (shape={ts_np.shape}). Expected C >= 1.")
 
-    ts = torch.from_numpy(ts_np).to(dev, dtype=torch.float32, non_blocking=True)
+    ts = device_tile
+    if ts is None:
+        ts = torch.from_numpy(ts_np).to(dev, dtype=torch.float32, non_blocking=True)
+    elif (tuple(ts.shape) != tuple(ts_np.shape) or ts.device.type != dev.type
+          or (dev.index is not None and ts.device.index != dev.index)):
+        raise ValueError("Prepared device tile does not match the input tile")
 
     # ─────────────────────────────────────────────────────────────────────
     # Optional: on-device calibration prep (dark-sub + clip + per-frame
@@ -1408,7 +1392,12 @@ def _torch_reduce_tile_impl(
     else:
         raise ValueError(f"Unsupported weights ndim={weights_np.ndim} shape={weights_np.shape}")
 
-    w = torch.from_numpy(w_np).to(dev, dtype=torch.float32, non_blocking=False)
+    w = device_weights
+    if w is None:
+        w = torch.from_numpy(w_np).to(dev, dtype=torch.float32, non_blocking=False)
+    elif (tuple(w.shape) != tuple(w_np.shape) or w.device.type != dev.type
+          or (dev.index is not None and w.device.index != dev.index)):
+        raise ValueError("Prepared device weights do not match the frame weights")
 
     # ---------- NEW: normalize optional forced reject mask ----------
     forced_reject = None
@@ -1462,13 +1451,17 @@ def _torch_reduce_tile_impl(
             x = ts.masked_fill(~valid, float("nan"))
             out = _nanmedian(torch, x, dim=0)
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Comet Percentile (40th)":
             x = ts.masked_fill(~valid, float("nan"))
             out = _nanquantile(torch, x, 0.40, dim=0)
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo_name == "Windsorized Sigma Clipping":
             # True Winsorized sigma clipping (APP/PI-parity):
@@ -1481,11 +1474,13 @@ def _torch_reduce_tile_impl(
             keep = valid & (ts >= lo) & (ts <= hi)
 
             ones_w = torch.ones((F, 1, 1, 1), device=dev, dtype=ts.dtype)
-            fallback = torch.nan_to_num(med, nan=0.0)
+            fallback = _nan_to_num(torch, med, nan=0.0)
             out = _weighted_mean_or(torch, ts, keep, ones_w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
 
         if algo == "Comet Lower-Trim (30%)":
@@ -1516,7 +1511,9 @@ def _torch_reduce_tile_impl(
             keep_orig = torch.zeros_like(keep_sorted)
             keep_orig.scatter_(0, idx, keep_sorted)
             rej = ~keep_orig
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Comet High-Clip Percentile":
             x = ts.masked_fill(~valid, float("nan"))
@@ -1526,7 +1523,9 @@ def _torch_reduce_tile_impl(
             clipped = torch.where(valid, torch.minimum(ts, hi.unsqueeze(0)), torch.full_like(ts, float("nan")))
             out = _nanquantile(torch, clipped, float(comet_hclip_p) / 100.0, dim=0)
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Simple Average (No Rejection)":
             w_eff = torch.where(valid, w, torch.zeros_like(w))
@@ -1534,19 +1533,28 @@ def _torch_reduce_tile_impl(
             den = w_eff.sum(dim=0)
             num = (ts_eff * w_eff).sum(dim=0)
 
-            x = ts.masked_fill(~valid, float("nan"))
-            fallback = _nanmedian(torch, x, dim=0)
+            # With strictly positive finite weights, zero denominator means
+            # no valid samples; their nanmedian would be NaN anyway.
+            if np.all(np.isfinite(weights_np) & (weights_np > 0)):
+                fallback = torch.full_like(den, float("nan"))
+            else:
+                x = ts.masked_fill(~valid, float("nan"))
+                fallback = _nanmedian(torch, x, dim=0)
             out = torch.where(den > 0, num / den.clamp_min(1e-20), fallback)
 
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Max Value":
             x = ts.masked_fill(~valid, float("-inf"))
             out = x.max(dim=0).values
             out = torch.where(torch.isfinite(out), out, torch.zeros_like(out))
             rej = forced_rej_map
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
 
         if algo == "Weighted Windsorized Sigma Clipping":
@@ -1568,11 +1576,13 @@ def _torch_reduce_tile_impl(
             hi = (med + float(sigma_high) * sigma).unsqueeze(0)
             keep = valid & (ts >= lo) & (ts <= hi)
 
-            fallback = torch.nan_to_num(med, nan=0.0)
+            fallback = _nan_to_num(torch, med, nan=0.0)
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Extreme Studentized Deviate (ESD)":
             # Generalized ESD (Rosner) done properly, vectorized per pixel.
@@ -1680,11 +1690,13 @@ def _torch_reduce_tile_impl(
             keep = valid & ((removed_step < 0) | (removed_step > jstar.unsqueeze(0)))
 
             x = ts.masked_fill(~valid, float("nan"))
-            fallback = torch.nan_to_num(_nanmedian(torch, x, dim=0), nan=0.0)
+            fallback = _nan_to_num(torch, _nanmedian(torch, x, dim=0), nan=0.0)
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Kappa-Sigma Clipping":
             # Classic kappa-sigma: median center, std of the KEPT sample,
@@ -1732,11 +1744,13 @@ def _torch_reduce_tile_impl(
                     keep = keep_new
 
             x_valid = ts.masked_fill(~valid, float("nan"))
-            fallback = torch.nan_to_num(_nanmedian(torch, x_valid, dim=0), nan=0.0)
+            fallback = _nan_to_num(torch, _nanmedian(torch, x_valid, dim=0), nan=0.0)
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Trimmed Mean":
             # True symmetric order-statistic trim: drop exactly floor(f*n) from
@@ -1783,13 +1797,15 @@ def _torch_reduce_tile_impl(
             keep.scatter_(0, idx, keep_sorted)
             keep = keep & valid
 
-            fallback = torch.nan_to_num(
+            fallback = _nan_to_num(torch,
                 _nanmedian(torch, ts.masked_fill(~valid, float("nan")), dim=0), nan=0.0
             )
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Biweight Estimator":
             x = ts.masked_fill(~valid, float("nan"))
@@ -1807,10 +1823,12 @@ def _torch_reduce_tile_impl(
             den = k_w.sum(dim=0)
 
             out = torch.where(den > 1e-20, m + num / den.clamp_min(1e-20), m)
-            out = torch.nan_to_num(out, nan=0.0)
+            out = _nan_to_num(torch, out, nan=0.0)
 
             rej = ~mask
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         if algo == "Modified Z-Score Clipping":
             x = ts.masked_fill(~valid, float("nan"))
@@ -1824,10 +1842,12 @@ def _torch_reduce_tile_impl(
             )
             keep = valid & (mz.abs() < float(modz_threshold))
 
-            fallback = torch.nan_to_num(med, nan=0.0)
+            fallback = _nan_to_num(torch, med, nan=0.0)
             out = _weighted_mean_or(torch, ts, keep, w, fallback)
 
             rej = ~keep
-            return _finalize(torch, out, rej, reduce_rej_maps)
+            return _finalize(torch, out, rej, reduce_rej_maps,
+                             return_device=return_device,
+                             collapse_rej_channels=collapse_rej_channels)
 
         raise NotImplementedError(f"GPU path not implemented for: {algo_name}")
