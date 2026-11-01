@@ -109,15 +109,15 @@
 <p>Dropping a <b>Function Bundle</b> payload onto a lane doesn't nest the bundle &mdash; it <b>expands</b> into one step per inner step. This matches how the shortcut canvas explodes bundles into their constituents, so a bundle built elsewhere can be used as a starter kit for a workflow.</p>
 <p>Three ways to add a non-action step (notes, markers):</p>
 <ul>
-<li><b>Add Note / Add Split / Add Merge</b> buttons.</li>
-<li><b>Right-click a lane</b> &rarr; Add Note Step / Add Split Marker / Add Merge Marker. These land into whichever lane you right-clicked on.</li>
+<li><b>Add Note / Add Choice / Add Split / Add Merge</b> buttons.</li>
+<li><b>Right-click a lane</b> &rarr; Add Note Step / Add Choice Group / Add Split Marker / Add Merge Marker. These land into whichever lane you right-clicked on.</li>
 <li><b>Add Note</b> at the top-level buttons appends to the current lane.</li>
 </ul>
 <p>Editing a step (right-click on it, or use the toolbar buttons):</p>
 <ul>
 <li><b>Rename&hellip;</b> &mdash; set a custom display label (<code>label_override</code>). Blank restores the default (catalog text or preset-derived).</li>
 <li><b>Edit Preset&hellip;</b> &mdash; opens the command's bespoke preset editor via <code>_open_preset_editor_for_command</code>. Only available on action steps that have a command id. This edits the primary tool.</li>
-<li><b>Add Alternative&hellip;</b> &mdash; on an action step, pick another catalog tool to try in place of the primary one. The step stays a single checklist item. Each alternative stores its own command id and, once edited, its own preset.</li>
+<li><b>Add Alternative&hellip;</b> &mdash; on an action step, pick another catalog tool to try in place of the primary one. The step stays a single checklist item. On a choice group, the same command adds a real step indented under the title.</li>
 <li><b>Remove Alternative</b> / <b>Edit Alternative Preset</b> &mdash; appear once the step has at least one alternative.</li>
 <li><b>Edit Note</b> &mdash; multi-line note (shown in the step details panel).</li>
 <li><b>Edit Inputs / Outputs</b> &mdash; comma-separated string tags.</li>
@@ -126,14 +126,16 @@
 <p>Reordering: drag a step within its lane or across to another lane. Qt's internal-move drag handles the heavy lifting; the workflow model is re-synced from the UI after every drop so the saved order matches what you see.</p>
 
 <h2 id="s5">5. Step kinds</h2>
-<p>Four kinds, picked by the step's <code>kind</code> field:</p>
+<p>Five kinds, picked by the step's <code>kind</code> field:</p>
 <table>
 <tr><th>Kind</th><th>Prefix</th><th>Purpose</th><th>Opens a tool?</th></tr>
 <tr><td><code>action</code></td><td>(none, or ◆ with preset)</td><td>Runs a specific SASpro command when opened.</td><td>Yes</td></tr>
+<tr><td><code>choice</code></td><td>▾</td><td>A name only. The alternatives are real action steps indented under it. Open the title to pick one. The checkmark belongs to the title.</td><td>Menu</td></tr>
 <tr><td><code>note</code></td><td>📝</td><td>Instruction-only step. Carries a note describing what the user should do next.</td><td>No</td></tr>
 <tr><td><code>split</code></td><td>⇢</td><td>Visual branch marker. Documents where processing diverges into multiple lanes.</td><td>No</td></tr>
 <tr><td><code>merge</code></td><td>⇠</td><td>Visual merge marker. Documents where multiple lanes come back together.</td><td>No</td></tr>
 </table>
+<p>A choice is created with <b>Add Choice</b>. Drag a tool onto the title or onto one of its indented steps to add another alternative. Drag an indented step back out and it becomes a normal action again. Removing the title keeps those steps and un-groups them. An action can still carry its own menu alternatives (the ▾ N badge) whether or not it sits under a choice.</p>
 <p>Note, split, and merge steps can still carry <code>inputs</code> and <code>outputs</code> annotations &mdash; the narrowband canned workflow uses <code>split</code> and <code>merge</code> markers to call out the branch and the rejoin, with named outputs on the split (<code>starless</code>, <code>stars_only</code>) and named inputs on the merge (<code>starless_final</code>, <code>stars_final</code>).</p>
 <p>Opening a non-action step shows a brief information dialog that describes what kind of marker it is. In the mini runner, opening a note step shows the step's actual note text, so the mini runner can act as a &ldquo;follow this instruction&rdquo; prompt even for non-action steps.</p>
 

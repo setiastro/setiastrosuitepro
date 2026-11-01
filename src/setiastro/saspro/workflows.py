@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PyQt6.QtCore import Qt, QMimeData, QSize
-from PyQt6.QtGui import QAction, QCursor, QDrag, QIcon
+from PyQt6.QtCore import Qt, QMimeData, QSize, QTimer
+from PyQt6.QtGui import QAction, QBrush, QColor, QCursor, QDrag, QIcon
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -26,6 +26,8 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSplitter,
+    QStyleOptionViewItem,
+    QStyledItemDelegate,
     QTextEdit,
     QToolButton,
     QTreeWidget,
@@ -94,6 +96,7 @@ class WorkflowStep:
     preset: dict = field(default_factory=dict)   # captured tool settings (from a dragged grip shortcut)
     label_override: str = ""                      # user-renamed display label
     alternatives: List[WorkflowAlternative] = field(default_factory=list)
+    parent_id: str = ""                           # set on an action shown under a choice title
 
     def to_dict(self) -> dict:
         data = {
@@ -110,6 +113,8 @@ class WorkflowStep:
         }
         if self.alternatives:
             data["alternatives"] = [a.to_dict() for a in self.alternatives]
+        if self.parent_id:
+            data["parent_id"] = self.parent_id
         return data
 
     @classmethod
@@ -127,6 +132,7 @@ class WorkflowStep:
             preset=dict(_preset) if isinstance(_preset, dict) else {},
             label_override=str(data.get("label_override", "")),
             alternatives=normalize_workflow_alternatives(data.get("alternatives")),
+            parent_id=str(data.get("parent_id") or ""),
         )
 
 
@@ -169,7 +175,7 @@ class WorkflowDefinition:
                 name=str(data.get("name", "Untitled Workflow")),
                 description=str(data.get("description", "")),
                 lanes=lanes,
-                steps=steps,
+                steps=normalize_workflow_steps(steps),
                 schema_version=int(data.get("schema_version", WORKFLOW_SCHEMA_VERSION)),
             )
 
@@ -197,7 +203,7 @@ class WorkflowDefinition:
             name=str(data.get("name", "Untitled Workflow")),
             description=str(data.get("description", "")),
             lanes=["main"],
-            steps=steps,
+            steps=normalize_workflow_steps(steps),
             schema_version=1,
         )
 
@@ -590,7 +596,16 @@ class WorkflowToolTree(QTreeWidget):
             except Exception:
                 pass
 
-        drag.exec(Qt.DropAction.CopyAction)
+        dialog = self.window()
+        begin = getattr(dialog, "_begin_drag", None)
+        end = getattr(dialog, "_end_drag", None)
+        if callable(begin):
+            begin()
+        try:
+            drag.exec(Qt.DropAction.CopyAction)
+        finally:
+            if callable(end):
+                end()
 
 
 # -----------------------------------------------------------------------------
@@ -608,10 +623,37 @@ class WorkflowLaneList(QListWidget):
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setItemDelegate(WorkflowStepDelegate(self))
 
         self.currentRowChanged.connect(self._notify_selection)
         self.itemSelectionChanged.connect(self._notify_selection_changed)
         self.itemDoubleClicked.connect(self._dialog._run_selected_step)
+
+    def startDrag(self, supportedActions):
+        item = self.currentItem()
+        if item is not None:
+            self._dialog._dragging_step_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            self._dialog._dragging_parent_id = str(item.data(Qt.ItemDataRole.UserRole + 11) or "")
+        else:
+            self._dialog._dragging_step_id = ""
+            self._dialog._dragging_parent_id = ""
+        self._dialog._begin_drag()
+        try:
+            super().startDrag(supportedActions)
+        finally:
+            self._dialog._end_drag()
+
+    def _choice_insert_for(self, target):
+        """If the drop lands on a choice or one of its children, attach just after that row."""
+        if target is None:
+            return "", None
+        step = unpack_workflow_step_item(target, self.lane_name)
+        row = self.row(target)
+        if step.kind == "choice":
+            return step.id, row + 1
+        if step.kind == "action" and step.parent_id:
+            return step.parent_id, row + 1
+        return "", None
 
     def _notify_selection_changed(self):
         self._dialog._on_any_step_selected(self)
@@ -656,7 +698,11 @@ class WorkflowLaneList(QListWidget):
             except Exception:
                 cid = ""
             if cid:
-                self._dialog.add_step_by_command_id(cid, lane_name=self.lane_name)
+                target = self.itemAt(event.position().toPoint())
+                parent_id, insert_at = self._choice_insert_for(target)
+                self._dialog.add_step_by_command_id(
+                    cid, lane_name=self.lane_name, parent_id=parent_id, insert_at=insert_at,
+                )
                 event.acceptProposedAction()
                 return
 
@@ -704,17 +750,26 @@ class WorkflowLaneList(QListWidget):
                 preset = _p if isinstance(_p, dict) else {}
                 drop_name = str(payload.get("name") or "")
             if cid:
+                target = self.itemAt(event.position().toPoint())
+                parent_id, insert_at = self._choice_insert_for(target)
                 self._dialog.add_step_by_command_id(
                     str(cid), lane_name=self.lane_name,
                     preset=(preset if isinstance(preset, dict) else {}),
                     name=drop_name,
+                    parent_id=parent_id,
+                    insert_at=insert_at,
                 )
                 event.acceptProposedAction()
                 return
 
         # internal move between lanes / within lane
+        target = self.itemAt(event.position().toPoint())
+        target_id = str(target.data(Qt.ItemDataRole.UserRole) or "") if target is not None else ""
+        indicator = _drop_indicator_name(self)
+        moved_id = getattr(self._dialog, "_dragging_step_id", "")
+        old_parent = getattr(self._dialog, "_dragging_parent_id", "")
         super().dropEvent(event)
-        self._dialog.sync_steps_from_ui()
+        self._dialog.apply_internal_drop(moved_id, old_parent, target_id, indicator)
 
     def contextMenuEvent(self, event):
         item = self.itemAt(event.pos())
@@ -723,6 +778,7 @@ class WorkflowLaneList(QListWidget):
         act_note = menu.addAction("Add Note Step")
         act_split = menu.addAction("Add Split Marker")
         act_merge = menu.addAction("Add Merge Marker")
+        act_choice = menu.addAction("Add Choice Group")
 
         act_rename = None
         act_edit_preset = None
@@ -735,7 +791,9 @@ class WorkflowLaneList(QListWidget):
             act_rename = menu.addAction("Rename…")
             _kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
             _cid = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
-            if _kind == "action" and _cid:
+            if _kind == "choice":
+                act_add_alt = menu.addAction("Add Alternative…")
+            elif _kind == "action" and _cid:
                 act_edit_preset = menu.addAction("Edit Preset…")
                 act_add_alt = menu.addAction("Add Alternative…")
                 alts = normalize_workflow_alternatives(item.data(Qt.ItemDataRole.UserRole + 10))
@@ -768,6 +826,8 @@ class WorkflowLaneList(QListWidget):
             self._dialog.add_special_step(kind="split", lane_name=self.lane_name)
         elif chosen == act_merge:
             self._dialog.add_special_step(kind="merge", lane_name=self.lane_name)
+        elif chosen == act_choice:
+            self._dialog._add_choice_group(self.lane_name)
         elif item is not None and chosen == act_rename:
             self._dialog._rename_selected_step()
         elif item is not None and act_edit_preset is not None and chosen == act_edit_preset:
@@ -784,6 +844,16 @@ class WorkflowLaneList(QListWidget):
             self._dialog._edit_selected_step_io()
         elif item is not None and chosen == act_remove:
             self._dialog._remove_selected_step()
+
+def _drop_indicator_name(view) -> str:
+    indicator = view.dropIndicatorPosition()
+    kind = QAbstractItemView.DropIndicatorPosition
+    return {
+        kind.AboveItem: "above",
+        kind.BelowItem: "below",
+        kind.OnItem: "on",
+    }.get(indicator, "")
+
 
 def _derive_step_label(command_id: str, preset: dict, catalog) -> str:
     """Friendly per-step label derived from the preset, falling back to catalog text.
@@ -847,11 +917,136 @@ def format_workflow_step_label(step: WorkflowStep, catalog) -> str:
         return "⇢ Split"
     if step.kind == "merge":
         return "⇠ Merge"
+    if step.kind == "choice":
+        name = str(step.label_override or "").strip() or "Choice"
+        return f"▾ {name}"
     base = _choice_label(step.command_id, step.preset, step.label_override, catalog)
     text = f"◆ {base}" if step.preset else base
     if step.alternatives:
         text = f"{text} ▾ {len(step.alternatives) + 1}"
     return text
+
+
+def format_workflow_lane_label(step: WorkflowStep, catalog) -> str:
+    return format_workflow_step_label(step, catalog)
+
+
+CHILD_ROW_INDENT = 28
+
+
+class WorkflowStepDelegate(QStyledItemDelegate):
+    """Shift a choice's actions to the right, icon included."""
+
+    def paint(self, painter, option, index):
+        if index.data(Qt.ItemDataRole.UserRole + 11):
+            option = QStyleOptionViewItem(option)
+            option.rect = option.rect.adjusted(CHILD_ROW_INDENT, 0, 0, 0)
+        super().paint(painter, option, index)
+
+
+def normalize_workflow_steps(steps: List[WorkflowStep]) -> List[WorkflowStep]:
+    """Repair choice links and place each group's children directly under its title."""
+    choice_lane = {s.id: s.lane for s in steps if s.kind == "choice"}
+    for step in steps:
+        if step.kind == "choice":
+            step.parent_id = ""
+            step.command_id = ""
+            step.alternatives = []
+        elif step.kind != "action" or step.parent_id not in choice_lane:
+            step.parent_id = ""
+        else:
+            step.lane = choice_lane[step.parent_id]
+
+    children: Dict[str, List[WorkflowStep]] = {}
+    for step in steps:
+        if step.parent_id:
+            children.setdefault(step.parent_id, []).append(step)
+
+    emitted = set()
+    out: List[WorkflowStep] = []
+    for step in steps:
+        if step.id in emitted or step.parent_id:
+            continue
+        out.append(step)
+        emitted.add(step.id)
+        if step.kind == "choice":
+            for child in children.get(step.id, []):
+                if child.id not in emitted:
+                    out.append(child)
+                    emitted.add(child.id)
+    return out
+
+
+def parent_id_after_drop(
+    steps: List[WorkflowStep],
+    moved_id: str,
+    old_parent_id: str,
+    target_id: str,
+    indicator: str,
+) -> str:
+    """Parent id for an action after an internal move. Empty string detaches it.
+
+    `indicator` is "above", "below", or "on". A missing indicator still counts
+    as a drop on the row. The whole choice row accepts the action.
+    """
+    by_id = {s.id: s for s in steps}
+    moved = by_id.get(moved_id)
+    target = by_id.get(target_id)
+    if moved is None or target is None or moved.kind != "action" or moved.id == target.id:
+        return ""
+    if indicator not in ("above", "below", "on"):
+        indicator = "on"
+    choice_ids = {s.id for s in steps if s.kind == "choice"}
+    if target.kind == "choice":
+        return target.id
+    if target.kind == "action" and target.parent_id in choice_ids and target.lane == moved.lane:
+        siblings = [
+            s for s in steps
+            if s.lane == target.lane and s.parent_id == target.parent_id and s.id != moved.id
+        ]
+        is_last = bool(siblings) and siblings[-1].id == target.id
+        if indicator == "below" and is_last and old_parent_id != target.parent_id:
+            return ""
+        return target.parent_id
+    return ""
+
+
+def choice_group_entries(children: List[WorkflowStep], catalog) -> List[tuple]:
+    """One menu entry per child: that child's own command and preset."""
+    entries = []
+    for child in children:
+        if child.kind != "action" or not str(child.command_id or "").strip():
+            continue
+        entries.append((
+            child.command_id,
+            dict(child.preset or {}),
+            format_workflow_step_label(child, catalog),
+        ))
+    return entries
+
+
+def paint_workflow_row(item: QListWidgetItem, is_current: bool) -> None:
+    """Choice stays a normal text row, tinted so it is not an action."""
+    kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "")
+    font = item.font()
+    font.setBold(is_current or kind == "choice")
+    item.setFont(font)
+    if kind == "choice":
+        item.setSizeHint(QSize())
+        item.setBackground(QBrush(QColor(36, 58, 54)))
+        item.setForeground(QBrush(QColor(215, 243, 234)))
+    else:
+        item.setBackground(QBrush())
+        item.setForeground(QBrush())
+
+
+def choice_completion_target_id(step: WorkflowStep, steps: List[WorkflowStep]) -> str:
+    """Completion lives on the choice title, including when a child is selected."""
+    if step.parent_id:
+        for other in steps:
+            if other.id == step.parent_id and other.kind == "choice":
+                return other.id
+    return step.id
 
 
 def workflow_step_choices(step: WorkflowStep, catalog) -> List[tuple]:
@@ -884,6 +1079,7 @@ def pack_workflow_step_item(item: QListWidgetItem, step: WorkflowStep) -> None:
     item.setData(Qt.ItemDataRole.UserRole + 8, dict(step.preset or {}))
     item.setData(Qt.ItemDataRole.UserRole + 9, step.label_override)
     item.setData(Qt.ItemDataRole.UserRole + 10, [a.to_dict() for a in step.alternatives])
+    item.setData(Qt.ItemDataRole.UserRole + 11, step.parent_id)
 
 
 def unpack_workflow_step_item(item: QListWidgetItem, lane: str) -> WorkflowStep:
@@ -900,7 +1096,46 @@ def unpack_workflow_step_item(item: QListWidgetItem, lane: str) -> WorkflowStep:
         preset=dict(preset) if isinstance(preset, dict) else {},
         label_override=str(item.data(Qt.ItemDataRole.UserRole + 9) or ""),
         alternatives=normalize_workflow_alternatives(item.data(Qt.ItemDataRole.UserRole + 10)),
+        parent_id=str(item.data(Qt.ItemDataRole.UserRole + 11) or ""),
     )
+
+
+def open_choice_group(parent, main, lst, step: WorkflowStep, catalog) -> bool:
+    """Menu of a choice title. Empty groups explain themselves and do not count as opened."""
+    lane = getattr(lst, "lane_name", "main")
+    children = []
+    for i in range(lst.count()):
+        child = unpack_workflow_step_item(lst.item(i), lane)
+        if child.kind == "action" and child.parent_id == step.id:
+            children.append(child)
+    entries = choice_group_entries(children, catalog)
+    if not entries:
+        QMessageBox.information(parent, "Choice", "This choice has no alternatives yet.")
+        return False
+    picked = prompt_workflow_choice(parent, entries)
+    if picked is None:
+        return False
+    command_id, preset, _label = picked
+    return open_workflow_command(parent, main, command_id, preset)
+
+
+def mark_group_complete(lst, item: QListWidgetItem) -> QListWidgetItem:
+    """Check the choice title when the selection is the title or one of its children."""
+    lane = getattr(lst, "lane_name", "main")
+    steps = [unpack_workflow_step_item(lst.item(i), lane) for i in range(lst.count())]
+    step = unpack_workflow_step_item(item, lane)
+    target_id = choice_completion_target_id(step, steps)
+    target_item = item
+    for i in range(lst.count()):
+        other = lst.item(i)
+        sid = str(other.data(Qt.ItemDataRole.UserRole) or "")
+        pid = str(other.data(Qt.ItemDataRole.UserRole + 11) or "")
+        if sid == target_id:
+            other.setData(Qt.ItemDataRole.UserRole + 7, True)
+            target_item = other
+        elif pid == target_id:
+            other.setData(Qt.ItemDataRole.UserRole + 7, False)
+    return target_item
 
 
 def open_workflow_command(parent, main, command_id: str, preset: Optional[dict]) -> bool:
@@ -1045,6 +1280,11 @@ class WorkflowDialog(QDialog):
 
         self.lane_lists: Dict[str, WorkflowLaneList] = {}
         self.current_lane_name: Optional[str] = None
+        self._dragging_step_id = ""
+        self._dragging_parent_id = ""
+        self._drag_depth = 0
+        self._layout_after_drag = False
+        self._layout_select_id: Optional[str] = None
 
         self._build_ui()
         self._populate_action_catalog()
@@ -1132,6 +1372,7 @@ class WorkflowDialog(QDialog):
         row1 = QHBoxLayout()
         self.btn_add_selected = QPushButton("Add Selected Tool", self)
         self.btn_add_note = QPushButton("Add Note", self)
+        self.btn_add_choice = QPushButton("Add Choice", self)
         self.btn_add_split = QPushButton("Add Split", self)
         self.btn_add_merge = QPushButton("Add Merge", self)
         self.btn_remove = QPushButton("Remove Step", self)
@@ -1141,6 +1382,7 @@ class WorkflowDialog(QDialog):
 
         self.btn_add_selected.clicked.connect(self._add_selected_tool)
         self.btn_add_note.clicked.connect(lambda: self.add_special_step("note"))
+        self.btn_add_choice.clicked.connect(lambda: self._add_choice_group())
         self.btn_add_split.clicked.connect(lambda: self.add_special_step("split"))
         self.btn_add_merge.clicked.connect(lambda: self.add_special_step("merge"))
         self.btn_remove.clicked.connect(self._remove_selected_step)
@@ -1151,6 +1393,7 @@ class WorkflowDialog(QDialog):
         for w in (
             self.btn_add_selected,
             self.btn_add_note,
+            self.btn_add_choice,
             self.btn_add_split,
             self.btn_add_merge,
             self.btn_remove,
@@ -1347,7 +1590,15 @@ class WorkflowDialog(QDialog):
     # Workflow model/view sync
     # ------------------------------------------------------------------
 
-    def refresh_workflow_view(self):
+    def refresh_workflow_view(self, select_id: Optional[str] = None):
+        done: Dict[str, bool] = {}
+        for lst in self.lane_lists.values():
+            for i in range(lst.count()):
+                item = lst.item(i)
+                sid = str(item.data(Qt.ItemDataRole.UserRole) or "")
+                if sid:
+                    done[sid] = bool(item.data(Qt.ItemDataRole.UserRole + 7))
+
         self.edt_name.blockSignals(True)
         self.edt_description.blockSignals(True)
         try:
@@ -1375,10 +1626,25 @@ class WorkflowDialog(QDialog):
 
             lst.clear()
             for step in steps:
-                lst.addItem(self._make_step_item(step))
+                item = self._make_step_item(step)
+                if done.get(step.id):
+                    item.setData(Qt.ItemDataRole.UserRole + 7, True)
+                lst.addItem(item)
 
-        # select first available step if any
         self.current_lane_name = None
+        if select_id:
+            for lane_name in self.current_workflow.lanes:
+                lst = self.lane_lists.get(lane_name)
+                if lst is None:
+                    continue
+                for i in range(lst.count()):
+                    if str(lst.item(i).data(Qt.ItemDataRole.UserRole) or "") == select_id:
+                        self.current_lane_name = lane_name
+                        lst.setCurrentRow(i)
+                        self._refresh_step_visuals()
+                        self._update_selected_step_info()
+                        return
+
         for lane_name in self.current_workflow.lanes:
             lst = self.lane_lists.get(lane_name)
             if lst and lst.count() > 0:
@@ -1391,19 +1657,49 @@ class WorkflowDialog(QDialog):
 
         self._refresh_step_visuals()
 
-    def sync_steps_from_ui(self):
+    def _raw_steps_from_ui(self) -> List[WorkflowStep]:
         steps: List[WorkflowStep] = []
-
         for lane_name in self.current_workflow.lanes:
             lst = self.lane_lists.get(lane_name)
             if lst is None:
                 continue
-
             for i in range(lst.count()):
-                item = lst.item(i)
-                steps.append(unpack_workflow_step_item(item, lane=lane_name))
+                steps.append(unpack_workflow_step_item(lst.item(i), lane=lane_name))
+        return steps
 
-        self.current_workflow.steps = steps
+    def sync_steps_from_ui(self):
+        self.current_workflow.steps = normalize_workflow_steps(self._raw_steps_from_ui())
+
+    def _begin_drag(self):
+        self._drag_depth += 1
+
+    def _end_drag(self):
+        self._drag_depth = max(0, self._drag_depth - 1)
+        if self._drag_depth == 0 and self._layout_after_drag:
+            QTimer.singleShot(0, self._flush_layout_after_drag)
+
+    def _flush_layout_after_drag(self):
+        if self._drag_depth > 0:
+            QTimer.singleShot(0, self._flush_layout_after_drag)
+            return
+        if not self._layout_after_drag:
+            return
+        self._layout_after_drag = False
+        select_id = self._layout_select_id
+        self._layout_select_id = None
+        self.refresh_workflow_view(select_id=select_id)
+
+    def apply_internal_drop(self, moved_id: str, old_parent_id: str, target_id: str, indicator: str):
+        raw = self._raw_steps_from_ui()
+        for step in raw:
+            if step.id == moved_id and step.kind == "action":
+                step.parent_id = parent_id_after_drop(raw, moved_id, old_parent_id, target_id, indicator)
+                break
+        self.current_workflow.steps = normalize_workflow_steps(raw)
+        # Rebuilding the lane widgets inside dropEvent deletes the list Qt is
+        # still dragging, which segfaults. Refresh once the drag has returned.
+        self._layout_select_id = moved_id or None
+        self._layout_after_drag = True
 
     def _make_step_item(self, step: WorkflowStep) -> QListWidgetItem:
         label = self._step_display_text(step)
@@ -1418,7 +1714,7 @@ class WorkflowDialog(QDialog):
         return item
 
     def _step_display_text(self, step: WorkflowStep) -> str:
-        return format_workflow_step_label(step, self.catalog)
+        return format_workflow_lane_label(step, self.catalog)
 
     def load_workflow_definition(self, wf: WorkflowDefinition):
         self.current_workflow = WorkflowDefinition(
@@ -1445,6 +1741,7 @@ class WorkflowDialog(QDialog):
                         )
                         for a in s.alternatives
                     ],
+                    parent_id=s.parent_id,
                 )
                 for s in wf.steps
             ],
@@ -1506,6 +1803,7 @@ class WorkflowDialog(QDialog):
         font = item.font()
         font.setBold(is_current)
         item.setFont(font)
+        paint_workflow_row(item, is_current)
 
     def _refresh_step_visuals(self):
         current_item = self._current_item()
@@ -1538,6 +1836,9 @@ class WorkflowDialog(QDialog):
         elif kind == "split":
             title = "Split Marker"
             tip = "Use this to indicate a branch point into multiple lanes."
+        elif kind == "choice":
+            title = str(item.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or "Choice"
+            tip = "Choice group. Open it to pick one of the tools listed under it."
         else:
             title = "Merge Marker"
             tip = "Use this to indicate a merge point where lanes come back together."
@@ -1563,6 +1864,28 @@ class WorkflowDialog(QDialog):
             names = [_choice_label(a.command_id, a.preset, a.label_override, self.catalog) for a in alts]
             parts.append(f"<br><b>Alternatives:</b> {', '.join(names)}")
 
+        lst = self._current_list()
+        parent_id = str(item.data(Qt.ItemDataRole.UserRole + 11) or "")
+        if lst is not None and parent_id:
+            for i in range(lst.count()):
+                other = lst.item(i)
+                if str(other.data(Qt.ItemDataRole.UserRole) or "") == parent_id:
+                    group_name = str(other.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or "Choice"
+                    completed = bool(other.data(Qt.ItemDataRole.UserRole + 7))
+                    parts.append(f"<br><b>Part of:</b> {group_name}")
+                    break
+        if kind == "choice" and lst is not None:
+            sid = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            choice_names = []
+            for i in range(lst.count()):
+                other = lst.item(i)
+                if str(other.data(Qt.ItemDataRole.UserRole + 11) or "") != sid:
+                    continue
+                child = unpack_workflow_step_item(other, self.current_lane_name or "main")
+                choice_names.append(format_workflow_step_label(child, self.catalog))
+            if choice_names:
+                parts.append(f"<br><b>Choices:</b> {', '.join(choice_names)}")
+
         parts.append(f"<br><b>Status:</b> {'Completed' if completed else 'Not completed'}")
 
         self.lbl_step_info.setText("<br>".join(parts))
@@ -1572,14 +1895,18 @@ class WorkflowDialog(QDialog):
     # ------------------------------------------------------------------
 
     def add_step_by_command_id(self, command_id: str, lane_name: Optional[str] = None,
-                               preset: Optional[dict] = None, name: Optional[str] = None):
+                               preset: Optional[dict] = None, name: Optional[str] = None,
+                               parent_id: str = "", insert_at: Optional[int] = None):
         lane_name = lane_name or self.current_lane_name or (self.current_workflow.lanes[0] if self.current_workflow.lanes else "main")
         if lane_name not in self.current_workflow.lanes:
             self.current_workflow.lanes.append(lane_name)
             self.refresh_workflow_view()
 
-        step = WorkflowStep(command_id=command_id, kind="action", lane=lane_name,
-                            preset=dict(preset) if isinstance(preset, dict) else {})
+        step = WorkflowStep(
+            command_id=command_id, kind="action", lane=lane_name,
+            preset=dict(preset) if isinstance(preset, dict) else {},
+            parent_id=parent_id,
+        )
 
         # Label priority: explicit dropped chip name > derived-from-preset > catalog default.
         info = self.catalog.get(command_id)
@@ -1597,11 +1924,57 @@ class WorkflowDialog(QDialog):
             return
 
         item = self._make_step_item(step)
+        if insert_at is None:
+            lst.addItem(item)
+        else:
+            lst.insertItem(max(0, insert_at), item)
+        lst.setCurrentItem(item)
+        self.current_lane_name = lane_name
+        self.sync_steps_from_ui()
+        if parent_id:
+            self._layout_select_id = step.id
+            self._layout_after_drag = True
+            if self._drag_depth == 0:
+                QTimer.singleShot(0, self._flush_layout_after_drag)
+        else:
+            self._refresh_step_visuals()
+
+    def _new_tool_placement(self) -> dict:
+        item = self._current_item()
+        lst = self._current_list()
+        if item is None or lst is None:
+            return {}
+        step = unpack_workflow_step_item(item, lst.lane_name)
+        row = lst.row(item)
+        if step.kind == "choice":
+            return {"lane_name": lst.lane_name, "parent_id": step.id, "insert_at": row + 1}
+        if step.kind == "action" and step.parent_id:
+            return {"lane_name": lst.lane_name, "parent_id": step.parent_id, "insert_at": row + 1}
+        return {}
+
+    def _add_choice_group(self, lane_name: Optional[str] = None):
+        name, ok = QInputDialog.getText(self, "Add Choice", "Choice name:")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "Add Choice", "Give the choice a name.")
+            return
+        lane_name = lane_name or self.current_lane_name or (self.current_workflow.lanes[0] if self.current_workflow.lanes else "main")
+        if lane_name not in self.current_workflow.lanes:
+            self.current_workflow.lanes.append(lane_name)
+            self.refresh_workflow_view()
+        step = WorkflowStep(kind="choice", label_override=name, lane=lane_name)
+        lst = self.lane_lists.get(lane_name)
+        if lst is None:
+            return
+        item = self._make_step_item(step)
         lst.addItem(item)
         lst.setCurrentItem(item)
         self.current_lane_name = lane_name
         self.sync_steps_from_ui()
         self._refresh_step_visuals()
+        self._update_selected_step_info()
 
     def add_special_step(self, kind: str, lane_name: Optional[str] = None):
         lane_name = lane_name or self.current_lane_name or (self.current_workflow.lanes[0] if self.current_workflow.lanes else "main")
@@ -1630,7 +2003,7 @@ class WorkflowDialog(QDialog):
     def _on_tool_double_clicked(self, item: QTreeWidgetItem):
         cid = item.data(0, Qt.ItemDataRole.UserRole)
         if cid:
-            self.add_step_by_command_id(str(cid))
+            self.add_step_by_command_id(str(cid), **self._new_tool_placement())
 
     def _add_selected_tool(self):
         item = self.tool_tree.currentItem()
@@ -1638,7 +2011,7 @@ class WorkflowDialog(QDialog):
             return
         cid = item.data(0, Qt.ItemDataRole.UserRole)
         if cid:
-            self.add_step_by_command_id(str(cid))
+            self.add_step_by_command_id(str(cid), **self._new_tool_placement())
 
     def _remove_selected_step(self):
         lst = self._current_list()
@@ -1647,8 +2020,15 @@ class WorkflowDialog(QDialog):
         row = lst.currentRow()
         if row < 0:
             return
+        kind = str(lst.item(row).data(Qt.ItemDataRole.UserRole + 4) or "")
         lst.takeItem(row)
+        next_id = ""
+        if lst.count():
+            next_id = str(lst.item(min(row, lst.count() - 1)).data(Qt.ItemDataRole.UserRole) or "")
         self.sync_steps_from_ui()
+        if kind == "choice":
+            self.refresh_workflow_view(select_id=next_id or None)
+            return
         self._update_selected_step_info()
         self._refresh_step_visuals()
 
@@ -1657,9 +2037,13 @@ class WorkflowDialog(QDialog):
         if item is None:
             return
         current = str(item.data(Qt.ItemDataRole.UserRole + 9) or "")
+        kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "")
         text, ok = QInputDialog.getText(
             self, "Rename Step", "Display label (blank = default):", text=current)
         if not ok:
+            return
+        if kind == "choice" and not text.strip():
+            QMessageBox.warning(self, "Rename Step", "A choice needs a name.")
             return
         item.setData(Qt.ItemDataRole.UserRole + 9, text.strip())
         # rebuild the visible label from model so the ◆/✓ prefixes stay correct
@@ -1896,6 +2280,13 @@ class WorkflowDialog(QDialog):
             return
 
         kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
+        lane = self.current_lane_name or "main"
+        lst = self._current_list()
+        step = unpack_workflow_step_item(item, lane=lane)
+        if kind == "choice":
+            if lst is not None and open_choice_group(self, self.main, lst, step, self.catalog):
+                self._refresh_step_visuals()
+            return
         if kind != "action":
             QMessageBox.information(
                 self,
@@ -1904,8 +2295,6 @@ class WorkflowDialog(QDialog):
             )
             return
 
-        lane = self.current_lane_name or "main"
-        step = unpack_workflow_step_item(item, lane=lane)
         choices = workflow_step_choices(step, self.catalog)
         if not choices:
             QMessageBox.warning(self, "No Command", "This step has no command ID.")
@@ -1926,7 +2315,7 @@ class WorkflowDialog(QDialog):
             info = self.catalog.get(step.command_id)
             if info and not info.icon.isNull():
                 item.setIcon(info.icon)
-        item.setText(format_workflow_step_label(step, self.catalog))
+        item.setText(format_workflow_lane_label(step, self.catalog))
         self.sync_steps_from_ui()
         self._update_selected_step_info()
         self._refresh_step_visuals()
@@ -1941,13 +2330,35 @@ class WorkflowDialog(QDialog):
 
     def _add_alternative_to_selected(self):
         item, step = self._step_from_current_item()
-        if item is None or step is None or step.kind != "action" or not step.command_id:
+        if item is None or step is None:
+            return
+        if step.kind == "choice":
+            cid = pick_catalog_command(self, self.catalog)
+            if not cid:
+                return
+            self._append_choice_child(step, cid)
+            return
+        if step.kind != "action" or not step.command_id:
             return
         cid = pick_catalog_command(self, self.catalog)
         if not cid:
             return
         step.alternatives.append(WorkflowAlternative(command_id=cid))
         self._rewrite_step_item(item, step)
+
+    def _append_choice_child(self, choice: WorkflowStep, command_id: str):
+        lst = self.lane_lists.get(choice.lane)
+        if lst is None:
+            return
+        insert_at = lst.count()
+        for i in range(lst.count()):
+            sid = str(lst.item(i).data(Qt.ItemDataRole.UserRole) or "")
+            pid = str(lst.item(i).data(Qt.ItemDataRole.UserRole + 11) or "")
+            if sid == choice.id or pid == choice.id:
+                insert_at = i + 1
+        self.add_step_by_command_id(
+            command_id, lane_name=choice.lane, parent_id=choice.id, insert_at=insert_at,
+        )
 
     def _remove_alternative_at(self, index: int):
         item, step = self._step_from_current_item()
@@ -1978,9 +2389,10 @@ class WorkflowDialog(QDialog):
 
     def _mark_selected_complete(self):
         item = self._current_item()
-        if item is None:
+        lst = self._current_list()
+        if item is None or lst is None:
             return
-        item.setData(Qt.ItemDataRole.UserRole + 7, True)
+        mark_group_complete(lst, item)
         self._refresh_step_visuals()
         self._update_selected_step_info()
 
@@ -2128,6 +2540,7 @@ class MiniWorkflowLaneList(QListWidget):
         self.setDragEnabled(False)
         self.setAcceptDrops(False)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setItemDelegate(WorkflowStepDelegate(self))
 
         self.currentRowChanged.connect(self._notify_selection)
         self.itemSelectionChanged.connect(self._notify_selection_changed)
@@ -2310,7 +2723,7 @@ class MiniWorkflowDialog(QDialog):
         return item
 
     def _step_label(self, step: WorkflowStep) -> str:
-        return format_workflow_step_label(step, self.catalog)
+        return format_workflow_lane_label(step, self.catalog)
 
     # ------------------------------------------------------------------
     # Selection
@@ -2374,6 +2787,7 @@ class MiniWorkflowDialog(QDialog):
                 font = item.font()
                 font.setBold(item is current_item)
                 item.setFont(font)
+                paint_workflow_row(item, item is current_item)
 
     def _update_info(self):
         item = self._current_item()
@@ -2398,6 +2812,9 @@ class MiniWorkflowDialog(QDialog):
         elif kind == "split":
             title = "Split Marker"
             tip   = "Branch point — processing continues in multiple lanes."
+        elif kind == "choice":
+            title = str(item.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or "Choice"
+            tip   = "Choice group. Open it to pick one of the tools listed under it."
         else:
             title = "Merge Marker"
             tip   = "Merge point — lanes come back together here."
@@ -2422,6 +2839,28 @@ class MiniWorkflowDialog(QDialog):
         if alts:
             names = [_choice_label(a.command_id, a.preset, a.label_override, self.catalog) for a in alts]
             parts.append(f"<b>Alternatives:</b> {', '.join(names)}")
+
+        lst = self._current_list()
+        parent_id = str(item.data(Qt.ItemDataRole.UserRole + 11) or "")
+        if lst is not None and parent_id:
+            for i in range(lst.count()):
+                other = lst.item(i)
+                if str(other.data(Qt.ItemDataRole.UserRole) or "") == parent_id:
+                    group_name = str(other.data(Qt.ItemDataRole.UserRole + 9) or "").strip() or "Choice"
+                    completed = bool(other.data(Qt.ItemDataRole.UserRole + 7))
+                    parts.append(f"<b>Part of:</b> {group_name}")
+                    break
+        if kind == "choice" and lst is not None:
+            sid = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            choice_names = []
+            for i in range(lst.count()):
+                other = lst.item(i)
+                if str(other.data(Qt.ItemDataRole.UserRole + 11) or "") != sid:
+                    continue
+                child = unpack_workflow_step_item(other, self.current_lane_name or "main")
+                choice_names.append(format_workflow_step_label(child, self.catalog))
+            if choice_names:
+                parts.append(f"<b>Choices:</b> {', '.join(choice_names)}")
 
         parts.append(f"<b>Status:</b> {'✓ Completed' if completed else 'Not completed'}")
 
@@ -2482,14 +2921,19 @@ class MiniWorkflowDialog(QDialog):
             return
 
         kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
+        lane = self.current_lane_name or "main"
+        lst = self._current_list()
+        step = unpack_workflow_step_item(item, lane=lane)
+        if kind == "choice":
+            if lst is not None:
+                open_choice_group(self, self.main, lst, step, self.catalog)
+            return
         if kind != "action":
             note = str(item.data(Qt.ItemDataRole.UserRole + 2) or "")
             msg  = note if note else "This step is a marker — no tool to launch."
             QMessageBox.information(self, "Instruction Step", msg)
             return
 
-        lane = self.current_lane_name or "main"
-        step = unpack_workflow_step_item(item, lane=lane)
         choices = workflow_step_choices(step, self.catalog)
         if not choices:
             QMessageBox.warning(self, "No Command", "This step has no command ID.")
@@ -2502,21 +2946,32 @@ class MiniWorkflowDialog(QDialog):
 
     def _mark_complete_and_advance(self):
         item = self._current_item()
-        if item is None:
+        lst = self._current_list()
+        if item is None or lst is None:
             return
 
-        # Mark current step done
-        item.setData(Qt.ItemDataRole.UserRole + 7, True)
+        target = mark_group_complete(lst, item)
         self._refresh_visuals()
         self._update_info()
 
-        # Advance to the next step automatically
         flat = self._ordered_items()
-        cur_idx = next((i for i, (_, _, _, it) in enumerate(flat) if it is item), None)
-        if cur_idx is not None and cur_idx < len(flat) - 1:
-            next_lane, next_lst, next_row, _ = flat[cur_idx + 1]
+        target_id = str(target.data(Qt.ItemDataRole.UserRole) or "")
+        cur_idx = next((i for i, (_, _, _, it) in enumerate(flat) if it is target), None)
+        if cur_idx is None:
+            return
+        nxt = cur_idx
+        while nxt + 1 < len(flat):
+            _lane, _lst, _row, it = flat[nxt + 1]
+            if str(it.data(Qt.ItemDataRole.UserRole + 11) or "") != target_id:
+                break
+            nxt += 1
+        if nxt + 1 < len(flat):
+            next_lane, next_lst, next_row, _ = flat[nxt + 1]
             self.current_lane_name = next_lane
             next_lst.setCurrentRow(next_row)
+        else:
+            self.current_lane_name = lst.lane_name
+            lst.setCurrentItem(target)
 
     def _reset_progress(self):
         for lst in self.lane_lists.values():
