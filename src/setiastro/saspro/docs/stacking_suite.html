@@ -69,6 +69,7 @@
   <li><a href="#lights">5. Lights</a></li>
   <li><a href="#integration">6. Image Integration</a></li>
   <li><a href="#settings">7. Stacking Settings dialog</a></li>
+  <li><a href="#optimize">&nbsp;&nbsp;7.12 Optimize&hellip; &mdash; tuning for your hardware</a></li>
   <li><a href="#profiles">8. Profiles</a></li>
   <li><a href="#tech">9. Technical details</a></li>
   <li><a href="#tech-calibration">&nbsp;&nbsp;9.1 Calibration pipeline</a></li>
@@ -81,7 +82,8 @@
   <li><a href="#tech-mfdeconv">&nbsp;&nbsp;9.8 Multi-frame deconvolution</a></li>
   <li><a href="#tech-sets">&nbsp;&nbsp;9.9 Registration Sets</a></li>
   <li><a href="#tech-gpu">&nbsp;&nbsp;9.10 GPU backends</a></li>
-  <li><a href="#tech-cleanup">&nbsp;&nbsp;9.11 File layout &amp; cleanup</a></li>
+  <li><a href="#tech-tuning">&nbsp;&nbsp;9.11 Hardware tuning &mdash; how the optimizer decides</a></li>
+  <li><a href="#tech-cleanup">&nbsp;&nbsp;9.12 File layout &amp; cleanup</a></li>
   <li><a href="#credits">Credits</a></li>
 </ul>
 </div>
@@ -360,7 +362,11 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
   <li><b>Min star FWHM (px)</b> &mdash; 0.5&ndash;5.0 (default 1.2). Hot pixels are typically &lt;1&nbsp;px FWHM.</li>
   <li><b>Max ellipticity</b> &mdash; 0.1&ndash;1.0 (default 0.6). Rejects cosmic rays and satellite streaks (0 = round, 1 = line).</li>
   <li><b>Max stars</b> &mdash; 50&ndash;5000 (default 100). Astroalign <code>max_control_points</code> cap.</li>
+  <li><b>Alignment workers</b> &mdash; how many processes the registration solve pass may use. <b>Auto</b> (0, the default) lets SASpro decide and the hint beside the box shows what that currently resolves to, e.g. <code>Auto &rarr; 4 (measured (gpu))</code>. Type a number to pin it. This is the same setting as <b>Alignment workers</b> in the Star Registration window's Advanced panel &mdash; one value, <code>stacking/align/workers</code>, shared between the two the way <b>Warp interpolation</b> already is. The <b>Optimize&hellip;</b> button sets it by measurement; see &sect;7.12.</li>
 </ul>
+<div class="tip">
+<b>Why this matters more with the GPU detector than with SEP.</b> SEP is pure CPU and scales cleanly to every core. The GPU star detector does not: each worker process builds its own CUDA context, so past a certain count the card thrashes instead of going faster. Measured on an 8&nbsp;GB card at 12&nbsp;MP, 8 workers was the optimum and 16 wedged the card outright. Leave this on Auto unless you have a reason not to.
+</div>
 
 <h3>7.4 Performance</h3>
 <ul>
@@ -437,6 +443,64 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
   <li><b>Protect core radius (px)</b> &mdash; keep a disc around the nucleus from being &ldquo;destarred&rdquo; (default 22).</li>
   <li><b>Core mask feather (px)</b> &mdash; soften the edge of that disc (default 6).</li>
 </ul>
+
+<a id="optimize"></a>
+<h3>7.12 Optimize&hellip; &mdash; tuning for your hardware</h3>
+
+<p>Beside <b>Rows per pass</b> in the General column is an <b>Optimize&hellip;</b> button. It measures this computer rather than guessing, and writes three settings: which star detector registration uses, how many worker processes it uses, and how many rows go into one integration pass.</p>
+
+<p>The answers are genuinely machine-specific. The same code on the same card picks different values at different sensor sizes, and on a high-core-count CPU with a modest GPU the CPU path can win outright. There is no constant that is right for everyone, which is why this exists.</p>
+
+<h4>Running it</h4>
+
+<div class="keys">
+<b>Frame size (H / W)</b> &mdash; use your real sensor. The answer depends on it: the same 8&nbsp;GB card was happy with 16 workers at 2048&times;2048 and wedged solid at 3000&times;4000.
+<br><b>Frames in stack</b> &mdash; a typical session depth. Deeper stacks shift the band-height answer; at 24 frames one machine wanted 32 rows, at 128 frames the same machine wanted 16.
+<br><b>Measure</b> &mdash; the two sweeps are independent and either can be run alone.
+</div>
+
+<p>All four inputs are remembered, saved both when you press Run and when you close the window, so a large sensor is typed once. If the lights you have loaded disagree with the remembered size, the dialog says so beside the field rather than overriding your choice.</p>
+
+<p>A run takes a few minutes and the GPU will be busy. Cancel stops at the next batch boundary. A configuration that overloads the card is abandoned automatically &mdash; see &sect;9.11 for why that matters.</p>
+
+<h4>Reading the result</h4>
+
+<div class="eq">GPU (torch) sweep:
+   gpu x1      3.14s     30.55 frames/s
+   gpu x2      2.21s     43.35 frames/s
+   gpu x4      1.98s     48.47 frames/s
+   gpu x8      2.29s     41.91 frames/s
+   gpu: past the peak at 4 workers &mdash; stopping
+CPU (SEP) sweep:
+   cpu x32     3.13s     30.67 frames/s
+GPU wins: 4 workers, 48.47 frames/s &mdash; 1.60x the best CPU (32 workers, 30.67 frames/s).</div>
+
+<p>Each line is a real batch of detections through a spawn pool built exactly like registration's, so the numbers are what the pipeline will actually see rather than a synthetic benchmark.</p>
+
+<div class="tip">
+<b>The winner is not always the fastest row, and the log says why.</b> Anything within 3% of the best worker count, or 10% of the best band height, is treated as a tie and the <i>smaller</i> value wins &mdash; fewer workers means less VRAM and one less CUDA start-up each; a smaller band means less host RAM. When that happens the sweep names the faster option it passed over, the gap, and the threshold:
+<div class="eq">&#10003; Band height 16 rows: 4.5 Mpx/s.
+   32 rows was fastest at 4.62 Mpx/s, but 16 is within 2.6% of it and holds
+   32.4 MB per band against 64.8 MB.
+   Anything within 10% of the best counts as a tie and the smaller band wins,
+   because band timings move about that much between runs. Set 'Rows per pass'
+   by hand for the outright fastest.</div>
+</div>
+
+<h4>What it writes</h4>
+
+<table>
+<tr><th>Setting</th><th>Key</th><th>Where it shows</th></tr>
+<tr><td>Star detector (GPU torch or SEP)</td><td><code>stacking/align/gpu_detect</code></td><td>chosen automatically; a CPU verdict turns the GPU detector off</td></tr>
+<tr><td>Registration workers</td><td><code>stacking/align/workers</code></td><td><b>Alignment workers</b>, &sect;7.3 &mdash; and the same box in Star Registration</td></tr>
+<tr><td>Integration band height</td><td><code>stacking/chunk_height</code></td><td><b>Rows per pass</b>, General column</td></tr>
+</table>
+
+<p>All three are ordinary settings afterwards: override any of them by hand, and they travel with profiles (&sect;8) like everything else. Re-run the optimizer after changing GPU or camera &mdash; a stored measurement records the hardware it was taken on and is discarded if that no longer matches, with the hint beside <b>Alignment workers</b> saying so.</p>
+
+<div class="warn">
+<b>What Optimize does not tune.</b> Only the registration solve pass and the integration band height. The calibration, measurement, write and prefetch pools are CPU- and I/O-bound and stay at full core count &mdash; capping those to a GPU-derived number would make stacking slower, not faster.
+</div>
 
 <a id="profiles"></a>
 <h2>8. Profiles</h2>
@@ -600,8 +664,54 @@ Cards go <b style="color:#ff6b6b">red</b> when nothing is loaded, <b style="colo
 <p>DirectML needs a workaround for a known <code>torch-directml</code> bug: <code>nanmedian</code>/<code>nanquantile</code>/<code>nanstd</code> can return empty tensors, so those reductions are forced to CPU and the results moved back to device (one-time warning per session). CUDA uses <code>PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True</code> to reduce fragmentation between the cosmetic pass and the satellite CNN; a device-wide RLock serialises the two so they don't both resident at once (which OOMs small cards on Linux/CUDA where VRAM cannot page).</p>
 <p>Supported Python runtimes for GPU install: 3.12, 3.13, 3.14. The installer refuses older/newer versions with platform-specific tips.</p>
 
+<a id="tech-tuning"></a>
+<h3>9.11 Hardware tuning &mdash; how the optimizer decides</h3>
+
+<p>Two independent questions, measured separately because one does not imply the other. Worker count is about how many <i>processes</i> may hold a CUDA context at once; band height is about how much work goes into <i>one</i> rejection call in the parent process.</p>
+
+<h4>Why registration needs a worker cap at all</h4>
+
+<p><code>star_alignment._make_executor</code> spawns up to <code>max(2, min(cpu_count, 32))</code> processes and every one of them calls <code>find_transform</code>. With SEP that pool was free parallelism &mdash; pure CPU, no shared resource. With the GPU detector each worker builds its own CUDA context, several hundred megabytes and seconds of start-up apiece, and the pool becomes a contended one. Measured on a 36-core box with an 8&nbsp;GB card, 24 frames of 2048&times;2048:</p>
+
+<table>
+<tr><th>workers</th><th>GPU frames/s</th><th>SEP frames/s</th></tr>
+<tr><td>1</td><td>33.11</td><td>5.33</td></tr>
+<tr><td>4</td><td>98.40</td><td>22.31</td></tr>
+<tr><td>8</td><td><b>108.62</b></td><td>41.00</td></tr>
+<tr><td>16</td><td>76.12</td><td>51.23</td></tr>
+<tr><td>32</td><td>0.11</td><td><b>70.95</b></td></tr>
+</table>
+
+<p>32 workers on the GPU is not a plateau, it is a thousandfold collapse with the card pegged at 100% &mdash; 32 CUDA contexts do not fit in 8&nbsp;GB, so it thrashes. Note also what the last column says about the comparison: SEP spreads over every core, so on a 36-core machine the GPU's advantage through the pool is 1.5&times;, not the 8&times; a single-frame measurement suggests. The GPU wins by more as core count falls, which is most users.</p>
+
+<h4>Resolution order</h4>
+
+<p>When registration asks how many workers to use, the answer comes from the first of these that applies:</p>
+
+<ol>
+  <li>an explicit <code>stacking/align/workers</code> above zero &mdash; honoured exactly as given, never second-guessed;</li>
+  <li>a stored measurement whose hardware fingerprint <i>and</i> frame size still match;</li>
+  <li>a VRAM-derived default, roughly 400&nbsp;MB per worker plus 25&nbsp;MB per megapixel against 75% of the card &mdash; 8 workers on an 8&nbsp;GB card at 12&nbsp;MP, 3 at 47&nbsp;MP.</li>
+</ol>
+
+<p>So an install that never opens the optimizer still gets a safe number, and one that does gets a measured one.</p>
+
+<h4>The watchdog</h4>
+
+<p>A worker count too large for the card does not fail, it thrashes: the batch never returns and the GPU sits at 100%. Cancellation cannot help, because a task already running on a wedged device will not notice it. So each batch gets a budget derived from the measurement itself &mdash; 1.5&times; the single-worker time for the same batch, since N workers can never legitimately be slower than one &mdash; and on expiry the child processes are terminated, joined and killed. A rung that blows its budget ends the climb; the rung below it stands.</p>
+
+<p>One exception: a timeout on the <i>first</i> rung does not end the sweep. One worker is the slowest configuration there is, so a timeout there says the batch is too big for a single process, not that the backend is hopeless &mdash; the sweep keeps climbing until a rung lands and sets the scale.</p>
+
+<p>The ladder (1, 2, 4, 8, 12, 16, 24, 32) is coarse, so after the climb stops up to two midpoint probes run between the best rung and whatever ended the sweep above it. If 16 works and 24 is abandoned, 20 and then 22 are tried.</p>
+
+<h4>Band height</h4>
+
+<p><code>torch_rejection</code> and <code>torch_calibration</code> have no worker count &mdash; they run in the parent process and the former already serialises GPU access through its own lock. Their tunable is the number of full-width rows handed to one rejection call. Measured on a 3070&nbsp;Ti at 12&nbsp;MP, 24 deep, time is almost perfectly <i>linear</i> in rows and throughput varies only 1.2&times; across a 64&times; range of band sizes, so integration is bound by the rejection arithmetic itself &mdash; three iterations of <code>nanmedian</code>/<code>nanstd</code>, each sorting N values per pixel &mdash; not by per-band overhead. The shipped default of 16 is a sound starting point; the optimizer's job here is confirming that on your hardware rather than finding a large win.</p>
+
+<p>Band timings move around 18% between runs, which is why the band tie-break is 10% where the worker one is 3%. Tightening it does not help: on one measured curve a 3% threshold picks 128 rows &mdash; eight times the band RAM &mdash; to chase a difference smaller than the run-to-run noise.</p>
+
 <a id="tech-cleanup"></a>
-<h3>9.11 File layout &amp; cleanup</h3>
+<h3>9.12 File layout &amp; cleanup</h3>
 <p>Inside your chosen stacking folder the suite creates:</p>
 <table>
   <tr><th>Folder</th><th>Contents</th></tr>

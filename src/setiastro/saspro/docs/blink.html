@@ -78,24 +78,89 @@ responsive on very large sensors or long sessions. The setting
 persists across sessions. Star-size metrics still report in <i>full-
 resolution pixel units</i> &mdash; FWHM at 1:4 and FWHM at 1:1 are
 directly comparable.</p>
+<p>At <b>1:4 and 1:8</b>, plain FITS and XISF files take a faster route:
+instead of reading the whole frame and shrinking it, Blink reads only
+the rows the downsampled frame needs, straight off disk. On a
+6000&times;4000 uint16 FITS that is roughly <b>2&times; faster at 1:4
+and 7&times; faster at 1:8</b>; the gain grows with frame size. 1:1 and
+1:2 use the classic full read, because at 1:2 the strided read would
+have to touch every row anyway and would come out slower. Anything the
+fast path cannot reproduce exactly falls back automatically &mdash; see
+&sect;&nbsp;13.10 for the full list and the trade-offs it makes.</p>
 
-<h3>1.2 What Blink does to each frame on load</h3>
+<h3>1.2 PreLoad vs Stream</h3>
+<p>The <b>Frames:</b> row picks how Blink gets pixels into memory.</p>
+<ul>
+  <li><b>PreLoad</b> &mdash; decode every frame when the folder is
+      opened and hold it in memory. Slowest to open, instant to blink.
+      This is how Blink has always worked, and it is still the right
+      choice for a session that fits comfortably in RAM.</li>
+  <li><b>Stream</b> &mdash; read only the headers on open, then decode a
+      frame when you select it. The folder appears almost immediately
+      (header reads cost about a millisecond per FITS file), memory
+      stays flat no matter how many subs are in the folder, and each
+      frame costs one read the first time you look at it.</li>
+</ul>
+<p>Stream mode is not just lazy loading. Recently viewed frames stay in
+a memory-capped cache, and the next few frames in your direction of
+travel are fetched in the background, so playback and arrow-keying stay
+smooth after the first pass. <b>Interactive Metrics streams too</b>: it
+loads, measures and releases each frame in turn rather than needing them
+all resident at once, so you can measure a 500-sub folder on a laptop.
+See &sect;&nbsp;13.11 for the internals.</p>
+<p>The two directions behave differently on purpose. Switching
+<b>to</b> Stream releases the resident pixels immediately, so you get
+the memory back at once and frames reload as you visit them. Switching
+back to <b>PreLoad</b> takes effect on the <i>next</i> load, so that
+flipping a radio button never silently decodes hundreds of frames.</p>
+<p class="tip"><b>Which should I use?</b> PreLoad if the whole session
+fits in RAM and you are going to blink back and forth repeatedly.
+Stream for a big folder, a quick triage pass, a machine with limited
+memory, or whenever you just want the list on screen <i>now</i>.</p>
+
+<h3>1.3 Keep color on CFA frames</h3>
+<p>Only relevant to one-shot-colour (CFA / Bayer) data at 1:4 and 1:8.</p>
+<ul>
+  <li><b>Checked</b> (default) &mdash; OSC frames stay in colour. Blink
+      reads a quad-aligned subsample that preserves the Bayer phase, so
+      the result is still a real mosaic, and debayers that small frame
+      instead of the full one.</li>
+  <li><b>Unchecked</b> &mdash; CFA frames are averaged into a grey
+      luminance preview and the debayer never runs at all.</li>
+</ul>
+<p>Counter-intuitively, the unchecked option is the <i>slower</i> of the
+two: building a grey frame of the same size needs twice as many rows off
+disk as building the mosaic does. Its real argument is that it touches
+no numba code whatsoever, so it is worth trying if you ever hit a
+threading problem during loads (&sect;&nbsp;13.7). Mono frames are
+unaffected either way, and the setting takes effect on the next load,
+like the resolution buttons above it.</p>
+
+<h3>1.4 What Blink does to each frame on load</h3>
 <p>Every frame goes through the same pipeline:</p>
 <ol>
   <li>Load the raw image + header.</li>
   <li>Debayer if the file is a mono mosaic (CFA pattern detected from
       header).</li>
-  <li>Optionally downsample per load-scale setting.</li>
+  <li>Optionally downsample per load-scale setting. On the fast path
+      (&sect;&nbsp;1.1) steps 1&ndash;3 collapse into a single strided
+      read that produces the downsampled frame directly.</li>
   <li>Measure background on the pre-stretch linear data (SEP) and cache
       the result &mdash; this is what the Background and Bg Rate metrics
       report.</li>
   <li>Auto-stretch to a target median of 0.25 (per channel for colour,
       global for mono) for display purposes.</li>
-  <li>Convert to a storage dtype chosen from available RAM: &le;&nbsp;16&nbsp;GB
-      &rarr; uint8, &le;&nbsp;32&nbsp;GB &rarr; uint16, else float32.
-      Larger sessions on smaller machines automatically land in the
-      smaller dtype.</li>
+  <li>Store as <b>uint16</b>. Blink used to pick a storage dtype from
+      available RAM &mdash; uint8 on small machines, float32 on large
+      ones &mdash; and both ends were wrong. The array has already been
+      stretched and clipped to [0,&nbsp;1] by this point, so float32 was
+      spending two extra bytes a pixel on precision no display can show,
+      while uint8 was below what the Aggressive Stretch needs and
+      produced visible banding on exactly the machines least able to
+      spare the quality. See &sect;&nbsp;13.12.</li>
 </ol>
+<p>In Stream mode only the header part of this runs at open time; the
+rest happens the first time you select the frame.</p>
 <p>Failed loads are automatically retried twice with a short delay before
 being reported as failures &mdash; useful on NAS-backed folders where
 one or two files occasionally take a moment to become readable.</p>
@@ -106,6 +171,12 @@ one or two files occasionally take a moment to become readable.</p>
 (<code>OBJECT</code>, <code>FILTER</code>, <code>EXPTIME</code>). Headers
 missing a key fall back to &ldquo;Unknown&rdquo; so no file disappears.
 This hierarchy makes multi-filter LRGB sessions readable at a glance.</p>
+<p>In <b>Stream</b> mode the grouping comes from a header-only probe, so
+it is built before any pixels are read. FITS and XISF give up their
+headers cheaply and group correctly from the start. Formats that keep no
+cheap header &mdash; raw camera files, and PNG/TIFF/JPEG that SASpro did
+not write &mdash; land under &ldquo;Object: Unknown&rdquo; until you open
+them, at which point the real header replaces the blank one.</p>
 
 <h3>2.1 Columns</h3>
 <p>The tree has nine columns:</p>
@@ -114,7 +185,8 @@ This hierarchy makes multi-filter LRGB sessions readable at a glance.</p>
       red &#9888;&#65039; prefix.</li>
   <li><b>Sat</b> &mdash; satellite trail detection result: &#9888; (orange)
       if a trail was found, &#10003; (green) if the frame was checked and
-      clean, blank if detection hasn't run.</li>
+      clean, blank if detection hasn't run <i>or could not be run on
+      that frame</i>.</li>
   <li><b>Stars</b> &mdash; detected star count.</li>
   <li><b>FWHM</b> &mdash; full-width at half-maximum of the star profile
       in full-resolution pixels.</li>
@@ -127,7 +199,11 @@ This hierarchy makes multi-filter LRGB sessions readable at a glance.</p>
       (OFFSET-corrected).</li>
 </ul>
 <p>Column widths and order are preserved across sessions. Drag column
-dividers to resize; drag column headers to reorder.</p>
+dividers to resize; drag column headers to reorder. Click a column
+header to sort by it &mdash; metric columns sort numerically, filenames
+sort naturally, and the Object / Filter / Exposure group rows keep their
+own order regardless of which column you sorted on. Sorting is purely
+visual; it never reorders the underlying session.</p>
 
 <h3>2.2 Show filter</h3>
 <p>The <b>Show</b> dropdown above the tree filters what's visible:</p>
@@ -136,10 +212,13 @@ dividers to resize; drag column headers to reorder.</p>
   <li><b>Sat Detected</b> &mdash; only frames with trails.</li>
   <li><b>Flagged Only</b> &mdash; only frames that have been flagged.</li>
   <li><b>Clean Only</b> &mdash; frames that are neither flagged nor
-      sat-detected.</li>
+      sat-detected. Before any detection run this means simply
+      &ldquo;not flagged&rdquo;; once detection has run, a frame that
+      could <i>not</i> be checked is not presented as clean.</li>
 </ul>
 <p>Group headers (Object / Filter / Exposure) auto-hide when they'd be
-empty, so the view stays tidy.</p>
+empty, so the view stays tidy. The choice is remembered across
+sessions.</p>
 
 <h2>3. Blinking through frames</h2>
 
@@ -153,6 +232,11 @@ empty, so the view stays tidy.</p>
 </ul>
 <p>The <b>Speed</b> slider and spin box set playback rate from 0.1 to
 10 FPS, synchronised to each other.</p>
+<p>In Stream mode the first pass through a folder is limited by how fast
+frames decode, because each one is being read as you reach it. Blink
+prefetches ahead in whichever direction you are travelling, so the
+second pass &mdash; and any back-and-forth blinking within the cached
+window &mdash; runs at the full requested rate.</p>
 
 <h3>3.2 Keyboard shortcuts</h3>
 <p>When the file tree has focus:</p>
@@ -182,7 +266,9 @@ stretched for display. Controls:</p>
 </ul>
 <p>Pan and zoom are preserved across frame switches, so blinking shows
 you the <i>same patch of sky</i> on consecutive frames &mdash; which is
-the whole point.</p>
+the whole point. Clicking <b>Fit to Preview</b> also turns on
+fit-on-switch, so new frames keep arriving fit-sized; zooming manually
+turns that back off. The preference persists across sessions.</p>
 
 <h3>4.2 Aggressive Stretch toggle</h3>
 <p>The amber <b>Aggressive Stretch</b> button applies an extra asinh
@@ -209,6 +295,12 @@ Controls:</p>
   <li><b>Hide Zoom Panel</b> / <b>Show Zoom Panel</b> toggle collapses
       or restores it. Visibility is persisted.</li>
 </ul>
+<p>The yellow rectangle marks the region the loupe is showing, measured
+in real image pixels. That means it gets <i>smaller</i> as you zoom the
+main preview out &mdash; correctly so, because the loupe really is
+showing you a smaller fraction of what is on screen. When the image is
+zoomed out far enough to sit letterboxed inside the preview pane, the
+rectangle stays glued to the image rather than to the pane.</p>
 <p>Drag the vertical splitter between the main preview and the loupe to
 adjust their relative widths.</p>
 
@@ -216,6 +308,11 @@ adjust their relative widths.</p>
 <p>Click <b>Interactive Metrics &amp; Culling</b> to open a second
 window with seven live scatter plots &mdash; one per metric &mdash;
 across every loaded frame.</p>
+<p>In <b>Stream</b> mode the measurement pass loads, measures and
+releases each frame in turn, with a progress dialog you can cancel. The
+numbers are what persist, along with each frame's header, bit depth and
+background &mdash; so once a sweep has finished, the tree's metric
+columns are fully populated even though almost no pixels are resident.</p>
 
 <h3>5.1 The seven metrics</h3>
 <ul>
@@ -247,7 +344,8 @@ across every loaded frame.</p>
       marker.</li>
   <li><b>Shift-click</b> a dot to pop a quick preview window of that
       frame &mdash; useful for &ldquo;what does that outlier actually
-      look like?&rdquo; without leaving the metrics view.</li>
+      look like?&rdquo; without leaving the metrics view. In Stream mode
+      this fetches the frame on demand if it is no longer cached.</li>
 </ul>
 
 <h3>5.3 Threshold lines</h3>
@@ -292,7 +390,43 @@ screen.</p>
 ResNet detection model (a two-stage classifier) over every loaded
 image, flagging frames that likely contain a trail. See
 &sect;&nbsp;13.6 for the algorithm. Results populate the <b>Sat</b>
-column: &#9888; (orange) for detected, &#10003; (green) for clean.</p>
+column: &#9888; (orange) for detected, &#10003; (green) for clean,
+blank for a frame that could not be checked.</p>
+
+<h3>6.1 Fast vs Highlight trails</h3>
+<p>The <b>Mode</b> dropdown next to the button picks how much work to do:</p>
+<ul>
+  <li><b>Fast</b> &mdash; runs the detection models only, and marks the
+      Sat column. This is the pass you want for triage.</li>
+  <li><b>Highlight trails (slower)</b> &mdash; runs Fast first, then
+      pushes the surviving frames through the full removal pipeline so
+      the trail pixels can be painted bright green in the preview. On a
+      frame that really has a trail this also runs the NAFNet removal
+      model, which is substantially slower &mdash; expect seconds to a
+      minute per flagged frame depending on your GPU. A one-time warning
+      explains this before the first run; it can be dismissed
+      permanently.</li>
+</ul>
+<p>Both modes share exactly the same scan, so they can never disagree
+about which frames or tiles hold a trail. Highlight mode only adds the
+painting step on top.</p>
+
+<h3>6.2 Advanced settings (the wrench)</h3>
+<ul>
+  <li><b>Ignore edges within <i>N</i> px</b> &mdash; amp glow in the
+      outermost ring of a sensor reads as a bright streak that the
+      detection models like to flag. Widening this suppresses those
+      false positives. Default 128&nbsp;px; set to 0 to disable the edge
+      filter entirely.</li>
+  <li><b>Concurrent workers</b> &mdash; how many images are
+      <i>loaded and prepared</i> in parallel. Default 2. GPU inference
+      itself is always serialised, one image at a time, regardless of
+      this number: interleaving GPU work from several threads onto one
+      device is what causes DirectML adapter resets. Raising this only
+      overlaps file reads, stretching and tiling with inference that is
+      already running, and each worker holds a full-resolution frame in
+      RAM. Drop to 1 if memory is tight.</li>
+</ul>
 <p>This is a <i>pre-pass</i>, not a verdict &mdash; it can occasionally
 false-positive on big diffraction spikes or on bright edge stars. Use
 it to narrow down what to look at, not to automatically delete.</p>
@@ -321,7 +455,9 @@ to the Stacking Suite:</p>
       pushing frames. Changes save immediately but a running Stacking
       Suite needs to be restarted to pick them up.</li>
 </ul>
-<p>These buttons are also in the right-click menu (&sect;&nbsp;9).</p>
+<p>These buttons hand over <i>file paths</i>, not pixels, so they behave
+identically in PreLoad and Stream mode. They are also in the right-click
+menu (&sect;&nbsp;9).</p>
 
 <h2>8. Video Export</h2>
 <p>The <b>Export Video&hellip;</b> button creates an MP4 or AVI of the
@@ -339,6 +475,9 @@ walkthroughs:</p>
 backend if none of them opens. The best available is used
 automatically; if nothing works, Blink says so and suggests installing
 FFmpeg.</p>
+<p>Export works in Stream mode as well &mdash; it pulls each frame as it
+reaches it &mdash; so a long export is disk-bound rather than
+memory-bound.</p>
 
 <h2>9. Right-click menu</h2>
 <p>Right-clicking any leaf (file) in the tree opens a context menu with
@@ -370,6 +509,8 @@ these actions:</p>
   <li><b>Remove Selected from List</b> &mdash; drop these frames from
       the current session without touching the files on disk.</li>
 </ul>
+<p>After deleting rows, Blink selects the next surviving frame and keeps
+your place in the list rather than jumping back to the top.</p>
 
 <p class="warn"><b>Delete is permanent.</b> &ldquo;Delete Selected
 Items&rdquo; and &ldquo;Delete All Flagged Images&rdquo; both call
@@ -388,19 +529,43 @@ the files back) or Rename Flagged (which just renames).</p>
 </ul>
 
 <h2>11. Persistence</h2>
-<p>Blink saves nearly everything about its state across sessions:</p>
-<ul>
-  <li>Window geometry (main window and Metrics window).</li>
-  <li>Tree column widths and order (<code>tree_header_state_v2</code>).</li>
-  <li>Main / preview splitter positions and zoom-panel splitter.</li>
-  <li>Zoom Panel visibility.</li>
-  <li>Last folder used in file dialogs
-      (<code>blink/last_folder</code>).</li>
-  <li>Load scale (1:1 / 1:2 / 1:4 / 1:8).</li>
-  <li>Thread safety mode (<code>blink/thread_safety</code>:
-      <code>auto</code>, <code>safe</code>, or <code>fast</code> &mdash;
-      see &sect;&nbsp;13.7).</li>
-</ul>
+<p>Blink saves nearly everything about its state across sessions. Window
+geometry (main and Metrics windows), tree column widths and order
+(<code>tree_header_state_v2</code>), the main / preview and zoom-panel
+splitter positions, and Zoom Panel visibility are all remembered.
+The named settings keys are:</p>
+<table>
+  <tr><th>Key</th><th>Default</th><th>What it does</th></tr>
+  <tr><td><code>blink/last_folder</code></td><td>&mdash;</td>
+      <td>Folder the file dialogs open in.</td></tr>
+  <tr><td><code>blink/load_scale</code></td><td>1</td>
+      <td>1:1 / 1:2 / 1:4 / 1:8 (&sect;&nbsp;1.1).</td></tr>
+  <tr><td><code>blink/stream</code></td><td>false</td>
+      <td>PreLoad (false) or Stream (true) (&sect;&nbsp;1.2).</td></tr>
+  <tr><td><code>blink/stream_budget_mb</code></td><td>1024</td>
+      <td>How much decoded imagery Stream mode keeps resident.</td></tr>
+  <tr><td><code>blink/cfa_color</code></td><td>true</td>
+      <td>Keep colour on CFA frames (&sect;&nbsp;1.3).</td></tr>
+  <tr><td><code>blink/fast_read</code></td><td>true</td>
+      <td>Kill switch for the strided reader (&sect;&nbsp;13.10).</td></tr>
+  <tr><td><code>blink/aggressive_stretch</code></td><td>false</td>
+      <td>Aggressive Stretch toggle state.</td></tr>
+  <tr><td><code>blink/auto_fit</code></td><td>false</td>
+      <td>Keep fitting new frames to the preview.</td></tr>
+  <tr><td><code>blink/play_fps</code></td><td>1.0</td>
+      <td>Playback rate.</td></tr>
+  <tr><td><code>blink/tree_filter</code></td><td>all</td>
+      <td>The Show dropdown's selection.</td></tr>
+  <tr><td><code>blink/sat_detect_mode</code></td><td>fast</td>
+      <td>Fast or Highlight trails (&sect;&nbsp;6.1).</td></tr>
+  <tr><td><code>blink/sat_edge_exclusion_px</code></td><td>128</td>
+      <td>Amp-glow edge filter width (&sect;&nbsp;6.2).</td></tr>
+  <tr><td><code>blink/sat_detect_workers</code></td><td>2</td>
+      <td>Concurrent satellite-detection loaders (&sect;&nbsp;6.2).</td></tr>
+  <tr><td><code>blink/thread_safety</code></td><td>auto</td>
+      <td><code>auto</code>, <code>safe</code> or <code>fast</code>
+          (&sect;&nbsp;13.7).</td></tr>
+</table>
 
 <h2>12. Keyboard shortcuts summary</h2>
 <table>
@@ -449,6 +614,12 @@ is enough to keep sub-pixel precision in the result. The pipeline:</p>
       what lets Blink continue to produce a star-count metric even on
       bad frames.</li>
 </ol>
+<p>In Stream mode step 1 is preceded by a just-in-time decode of the
+frame, performed on the measuring worker's own thread. The decode
+deliberately bypasses the frame cache: routing it through the cache's
+two-thread pool would funnel every measuring worker through the same
+bottleneck, and would evict the frames you are actually looking at in
+favour of frames measured and dropped a moment later.</p>
 
 <h3>13.2 FWHM and eccentricity</h3>
 <p>From each SEP source's second-moment axes <code>a</code> and
@@ -503,18 +674,22 @@ useless.</p>
 
 <h3>13.6 Satellite detection</h3>
 <p>A two-stage classifier runs on 256&times;256 interior tiles of the
-raw (linear, un-stretched) frame. A tile passes if both the first and
-second model return positive at probabilities &gt; 0.5 and &gt; 0.25
-respectively. A frame is reported as having a trail if at least two
-<i>spatially adjacent</i> tiles pass (8-connected at the tile grid's
-natural stride) &mdash; this requires a continuous linear feature, which
-is what a satellite trail is, and rejects single-tile detections
-(bright stars, diffraction spikes).</p>
-<p>A prefetch pipeline keeps CPU tile preparation one or more frames
-ahead of the GPU inference step, so the GPU rarely waits on disk I/O.
-Pool depth is 4 by default. If the GPU is not available (no PyTorch
-CUDA, no ONNX provider), inference runs on CPU and is correspondingly
-slower.</p>
+raw (linear, un-stretched) frame, on a fixed non-overlapping grid. The
+grid has to be fixed, because of what happens next.</p>
+<p>After every frame has been scanned, Blink builds a <b>fixed-pattern
+map</b> per rig configuration: tiles that keep passing in the <i>same
+sensor position</i> across many frames are not satellites &mdash; they
+are diffraction spikes, amp glow, or a hot column. Those tiles are
+vetoed, and a frame whose only evidence was a fixed-pattern tile is
+cleared. This is why the detection grid cannot overlap: on a fixed grid
+a stationary artefact lands in the same tile every frame and the map
+catches it, while on an overlapping grid it lands in a different subset
+each time and the common region shrinks to nothing.</p>
+<p>Frames that could not be scanned at all are left <i>unknown</i>
+(blank Sat cell) rather than being recorded as clean. If the GPU adapter
+is lost mid-run, the run aborts, GPU acceleration is disabled for the
+rest of the session, and Blink says so plainly rather than silently
+finishing on partial results.</p>
 
 <h3>13.7 Thread safety and numba threading layer</h3>
 <p>Blink's parallel loader is where a notorious cross-platform hazard
@@ -543,7 +718,14 @@ debayer kernel from several threads at once aborts the process.</p>
 <code>min(cpus&nbsp;&minus;&nbsp;reserved, 60)</code> with reserved =
 25% of cores (capped at 4). The SEP metric path uses its own smaller
 pool (4 to 12 workers depending on frame size) because SEP's internal
-C allocator is itself contended.</p>
+C allocator is itself contended, and in Stream mode that pool is capped
+at 4, because there every in-flight worker is also holding a
+full-resolution frame it just decoded.</p>
+<p>Stream mode applies the same numba guard before its cache workers
+start, and its prefetch pool is only two threads wide &mdash; so it is
+a far gentler load on this machinery than the PreLoad fan-out. Turning
+off <b>Keep color on CFA frames</b> (&sect;&nbsp;1.3) removes the
+debayer from the Stream path entirely.</p>
 
 <h3>13.8 Header-aware exposure labels</h3>
 <p>Exposure values on the tree &mdash; the &ldquo;300s&rdquo; part &mdash;
@@ -565,6 +747,120 @@ new &mdash; everything else that <code>load_image</code> originally
 returned rides along, so plate-solving, WCS, and any other
 header-aware tool in SASpro will see the correct metadata.</p>
 
+<h3>13.10 The strided reader (1:4 and 1:8)</h3>
+<p>Both FITS and XISF store pixels the same way once you know the byte
+offset: uncompressed, row-major, one contiguous plane per channel. So
+at 1:4 and 1:8 Blink skips <code>load_image</code> entirely and reads
+only the rows the downsampled frame needs, through a plain per-thread
+file handle. It is deliberately <i>not</i> memory-mapped &mdash; SASpro's
+FITS loader moved to <code>memmap=False</code> precisely because
+faulting mmap pages from a parallel loader corrupts the heap, and a
+seek/read handle shares no state at all.</p>
+<p>Each output pixel is the mean of a <code>2 &times; step</code> box
+centred in its <code>step &times; step</code> cell. The rows are what
+cost I/O; the columns are already in the buffer and therefore free.
+That transfers <code>2/step</code> of the pixel block, and it is why
+1:2 is excluded: at step 2 the box needs every row, so it would move
+the whole file in thousands of small reads and lose to one big read
+plus <code>cv2.INTER_AREA</code>.</p>
+<p><b>CFA frames</b> get a different box. Naively striding a Bayer
+mosaic is a trap &mdash; <i>any</i> even stride samples the same
+position of every quad, so <code>data[::4, ::4]</code> on an RGGB frame
+returns a pure red plane. Instead Blink reads two rows out of every
+<code>2&times;step</code>, both quad-aligned, and averages each CFA
+channel separately. That yields one intact quad per cell, so the result
+is still a genuine mosaic at the target size and the ordinary debayer
+turns it into colour &mdash; and it transfers only
+<code>1/step</code>, half what the grey path needs.</p>
+<p>What it costs, measured against the full-read-then-INTER_AREA path
+(ratios above 1 are noisier than before):</p>
+<table>
+  <tr><th>Path</th><th>1:4</th><th>1:8</th></tr>
+  <tr><td>Mono / RGB</td><td>1.41&times;</td><td>2.00&times;</td></tr>
+  <tr><td>CFA, red</td><td>0.93&times;</td><td>1.18&times;</td></tr>
+  <tr><td>CFA, green</td><td>1.26&times;</td><td>1.66&times;</td></tr>
+  <tr><td>CFA, blue</td><td>0.92&times;</td><td>1.16&times;</td></tr>
+</table>
+<p>Red and blue come out at or near parity because the colour path
+spends its whole sample budget on real CFA samples rather than
+interpolated ones. Green is the weak channel: the sensor gives it twice
+the density, and the old full-cell average exploited that. Reading all
+<code>step</code> rows would match the old noise exactly and save no I/O
+whatsoever, which is the entire point of the exercise.</p>
+<p>The reader declines anything it cannot reproduce exactly as
+<code>load_image</code> would, and the classic path picks it up
+silently. It declines: gzipped and tile-compressed FITS; compressed,
+inline or big-endian XISF; the FITS sample formats <code>load_image</code>
+min-max normalises (BITPIX 32 and 64, plain signed 16-bit), because a
+min/max taken over a subsample is not the frame's min/max and the same
+file would then normalise differently at 1:1 and 1:4; 3-D data that is
+not planar RGB; frames too small for the seeks to pay; and BOTTOM-UP
+CFA frames in colour mode, because flipping a mosaic vertically swaps
+row parity and therefore changes the effective Bayer pattern.
+<code>blink/fast_read</code> disables it outright.</p>
+<p class="tip"><b>Side effect worth knowing.</b> Finding the header
+cheaply for Stream mode turned up a long-standing cost in
+<code>get_valid_header</code>: it located the image HDU by testing
+<code>hdu.data is not None</code>, which with <code>memmap=False</code>
+materialises the entire pixel block. Since <code>load_image</code> calls
+it and then reopens the file to read the pixels again, <i>every</i> FITS
+load in SASpro was reading the data twice. The test is now header-based
+(NAXIS plus non-zero NAXIS<i>n</i>), which is 39.6&nbsp;ms &rarr;
+0.6&nbsp;ms on a 48&nbsp;MB frame and speeds up FITS loading everywhere,
+not just in Blink.</p>
+
+<h3>13.11 Stream mode internals</h3>
+<p>Opening a folder in Stream mode runs a header-only probe per file
+&mdash; about 0.9&nbsp;ms for a FITS frame, roughly 375&times; cheaper
+than decoding it &mdash; and builds the tree from that. Entries exist
+with no pixels attached.</p>
+<p>Decoded frames live in an LRU cache under a byte budget
+(<code>blink/stream_budget_mb</code>, 1&nbsp;GB by default), evicted
+oldest-first. A single frame larger than the entire budget is still
+kept, because evicting it would mean never being able to display it.
+Two background worker threads run the prefetch, three frames ahead in
+whichever direction you are travelling; an interactive click cancels any
+queued-but-unstarted prefetch so it never waits behind speculative work.
+Concurrent requests for the same frame collapse onto one decode.</p>
+<p>The cache is keyed by <b>file path, not row index</b>. That matters
+more than it sounds: deleting a row shifts every index after it, and an
+index-keyed cache would then be able to serve one frame's pixels under
+another frame's row. With path keying a stale entry can only ever waste
+a little memory &mdash; never show you the wrong picture, which is the
+one failure a blink comparator must not have.</p>
+<p>Metadata and pixels have different lifetimes. When a frame is
+decoded, its header, bit depth, mono flag and background are folded back
+onto the entry permanently; only the pixel array is subject to eviction.
+So a frame that has been viewed or measured once keeps its tree grouping
+and its metric columns forever, at a cost of a few hundred bytes.</p>
+
+<h3>13.12 Storage dtype</h3>
+<p>Blink stores display data as uint16 unconditionally. The frame has
+already been stretched and clipped to [0,&nbsp;1] by the time it is
+stored, and the only thing that re-expands it is the Aggressive Stretch,
+whose steepest slope is
+<code>k / arcsinh(k) = 2.07&times;</code> at
+<code>k = 3.7 &times; 1.25</code>. Working through what each width
+survives that boost:</p>
+<ul>
+  <li><b>float32</b> &mdash; 16.7M levels become about 8.1M, for an
+      8-bit display. Measured against uint16 on a stretched frame, the
+      final displayed frame differs by at most 1 LSB on 0.4% of pixels
+      and carries the same number of distinct levels. Two extra bytes a
+      pixel for nothing anyone can see.</li>
+  <li><b>uint8</b> &mdash; 255 levels become about 123, which is
+      <i>below</i> the 255 the display wants. Measured: 65% of pixels
+      differ from the float32 reference, and the frame carries 73
+      distinct levels where float32 carries 136. That is visible
+      banding, and the old RAM tier was applying it on exactly the
+      machines least able to spare the quality.</li>
+</ul>
+<p>uint16 is the only width that is neither lossy nor wasteful. A
+6000&times;4000 frame drops from 96&nbsp;MB to 48&nbsp;MB, so a
+500-frame session that used to want 48&nbsp;GB now wants 24&nbsp;GB
+&mdash; and the real memory levers remain the load-scale buttons (4&times;
+/ 16&times; / 64&times;) and Stream mode.</p>
+
 <div class="credit">
 <b>Credits.</b> Blink Comparator is <b>SASpro</b>'s own tool. Star
 measurement uses <b>SEP</b> (Barbary 2016), the Python port of E.
@@ -576,7 +872,9 @@ Clarity suite documentation for model provenance). Image loading and
 debayering use SASpro's existing engines
 (<code>setiastro.saspro.legacy.image_manager</code> for loads,
 <code>setiastro.saspro.debayer</code> for the canonical debayer path
-shared with the Stacking Suite). The MAD-based robust-sigma guide line
+shared with the Stacking Suite). XISF parsing uses the
+<b>xisf</b> Python module (Sergio D&iacute;az), and the XISF format
+specification is PixInsight's. The MAD-based robust-sigma guide line
 uses the classical 1.4826 Gaussian-consistency factor
 (Rousseeuw &amp; Croux 1993). Video export uses <b>OpenCV</b>'s
 VideoWriter with codec fallbacks and <b>imageio-ffmpeg</b> as a
