@@ -64,6 +64,7 @@ __all__ = [
     "read_tuning",
     "recommended_workers",
     "resolve_align_workers",
+    "worker_ladder",
     "stamp_is_current",
     "tune",
     "tune_all",
@@ -90,11 +91,24 @@ KEY_STAMP = "stacking/align/tuned_stamp"       # hardware fingerprint
 # ── watchdog / escalation policy ─────────────────────────────────────────────
 ABORT_FACTOR = 1.5      # abandon a batch past this x the 1-worker time
 ABORT_FLOOR_S = 4.0     # ...but never give a batch less than this
+# The first rung has no baseline to derive a budget from, so it gets a flat
+# one. It has to cover the SLOWEST configuration of the slowest backend on the
+# largest sensor — single-threaded SEP on a 46.8 MP frame is minutes, and the
+# old 120 s made that rung abandon every time. Overshooting here is cheap:
+# a rung that would really hang is caught by the per-rung budget from the
+# second rung onward.
+FIRST_BUDGET_S = 420.0
 FALLOFF_STOP = 0.90     # stop climbing once throughput drops below this x best
 KNEE_TOL = 0.97         # accept the fewest workers within this x the peak
 KILL_GRACE_S = 3.0      # terminate -> kill grace for a wedged worker
 
 WORKER_LADDER = (1, 2, 4, 8, 12, 16, 24, 32)
+# How many midpoint probes to run after the climb stops. The ladder's gaps
+# (4->8, 16->24, 24->32) are wide enough to hide the real best, so when the
+# sweep ends between two rungs the midpoint is worth one batch. Two steps
+# closes even the 24->32 gap to within one worker; beyond that the gain is
+# smaller than the run-to-run noise.
+REFINE_STEPS = 2
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -451,11 +465,44 @@ def _run_batch(backend, nw, nframes, h, w, root, budget_s, cancel_cb):
                     return None, 0, f"error: {type(e).__name__}: {e}"
         dt = time.perf_counter() - t0
     finally:
+        # WAIT for the workers to actually exit on the success path. Every
+        # early return above has already been through _kill_pool, which
+        # terminates and joins, so the only case reaching here is a batch that
+        # finished cleanly and whose pool will close immediately.
+        #
+        # This used to be wait=False, which returns before the children are
+        # gone. The sweep then spawned the next rung's pool on top of the
+        # previous one's dying workers — each still holding a CUDA context.
+        # With the midpoint probe added that overlap got wide enough for the
+        # watchdog test to catch 14 live processes after a sweep.
         try:
-            ex.shutdown(wait=False, cancel_futures=True)
+            ex.shutdown(wait=True, cancel_futures=True)
         except Exception:
-            pass
+            try:
+                ex.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
     return dt, nfb, None
+
+
+def worker_ladder(cpu_count: int | None = None) -> list[int]:
+    """
+    The worker counts a sweep will probe.
+
+    Deliberately NOT bounded by the VRAM heuristic. That heuristic is a
+    conservative guess for installs that never measure; using it to bound the
+    measurement makes the measurement no better than the guess. On a 46.8 MP
+    sensor it reads 3, and bounding at 2x it stopped probing at 4 workers
+    while throughput was still climbing.
+
+    What ends a sweep is the watchdog (a rung too big for the card is
+    abandoned) and the falloff rule (throughput dropped past the peak).
+
+    Exposed so tests exercise the real ladder rather than rebuilding it.
+    """
+    nproc = int(cpu_count or os.cpu_count() or 8)
+    ladder_max = max(2, min(nproc, 32))
+    return [n for n in WORKER_LADDER if n <= ladder_max]
 
 
 def _sweep(backend, nframes, h, w, root, ladder, status_cb, cancel_cb):
@@ -472,7 +519,7 @@ def _sweep(backend, nframes, h, w, root, ladder, status_cb, cancel_cb):
             break
 
         if t_one is None:
-            budget = max(ABORT_FLOOR_S, 120.0)      # first run sets the scale
+            budget = max(ABORT_FLOOR_S, FIRST_BUDGET_S)
         else:
             budget = max(ABORT_FLOOR_S, ABORT_FACTOR * t_one)
 
@@ -488,10 +535,22 @@ def _sweep(backend, nframes, h, w, root, ladder, status_cb, cancel_cb):
                 rows.append({"workers": nw, "fps": 0.0, "aborted": True,
                              "reason": reason})
                 break
-            log(f"   {backend} x{nw:<3} ABANDONED (exceeded {budget:.1f}s "
-                f"budget) — not trying more workers")
+
             rows.append({"workers": nw, "fps": 0.0, "aborted": True,
                          "reason": reason})
+            if t_one is None:
+                # No baseline yet, so this rung is the SLOWEST configuration
+                # there is — fewer workers cannot be faster. A timeout here
+                # says the batch is too big for one worker, not that the
+                # backend is hopeless, so keep climbing and let a later rung
+                # set the scale. Giving up here is what made a 46.8 MP CPU
+                # sweep report "cpu x1 ABANDONED" and never try x2.
+                log(f"   {backend} x{nw:<3} too slow for one batch within "
+                    f"{budget:.0f}s — trying more workers")
+                continue
+
+            log(f"   {backend} x{nw:<3} ABANDONED (exceeded {budget:.1f}s "
+                f"budget) — not trying more workers")
             break
 
         fps = nframes / dt if dt > 0 else 0.0
@@ -508,6 +567,56 @@ def _sweep(backend, nframes, h, w, root, ladder, status_cb, cancel_cb):
             log(f"   {backend}: past the peak at {best_nw} workers — stopping")
             break
 
+    # ── bisect the gap the sweep stopped in ─────────────────────────────────
+    # The ladder is coarse: 1, 2, 4, 8, 12, 16, 24, 32. If 4 works and 8 is
+    # abandoned, the usable ceiling is somewhere in between and 6 may be both
+    # safe and faster — the same is true when 8 merely falls off rather than
+    # aborting, because the peak can sit between two rungs. Probing the
+    # midpoint costs one batch and is the difference between "4 workers" and
+    # the actual best the card will take.
+    for _ in range(REFINE_STEPS):
+        if cancel_cb is not None and cancel_cb():
+            break
+        ok_rows = [r for r in rows
+                   if not r.get("aborted") and r.get("fps", 0) > 0]
+        if not ok_rows or t_one is None or best_nw <= 0:
+            break
+        # Bisect between the BEST rung and whatever ended the climb above it —
+        # not between the highest *successful* rung and the next. In the
+        # falloff case the rung that stopped the sweep did succeed, it was
+        # just slower, so keying off the highest success leaves nothing above
+        # it to bisect against and the refinement never fires at all.
+        lo = int(best_nw)
+        above = [r["workers"] for r in rows if r["workers"] > lo]
+        if not above:
+            break
+        hi = min(above)
+        mid = (lo + hi) // 2
+        if mid <= lo or mid >= hi:
+            break
+
+        budget = max(ABORT_FLOOR_S, ABORT_FACTOR * t_one)
+        dt, nfb, reason = _run_batch(backend, mid, nframes, h, w, root,
+                                     budget, cancel_cb)
+        if reason is not None:
+            if reason == "cancelled":
+                break
+            rows.append({"workers": mid, "fps": 0.0, "aborted": True,
+                         "reason": reason})
+            log(f"   {backend} x{mid:<3} ABANDONED too (between {lo} and "
+                f"{hi}) — {lo} stands")
+            break
+
+        fps = nframes / dt if dt > 0 else 0.0
+        rows.append({"workers": mid, "seconds": dt, "fps": fps,
+                     "fallback": nfb, "aborted": False, "refined": True})
+        log(f"   {backend} x{mid:<3} {dt:7.2f}s   {fps:7.2f} frames/s"
+            f"   (probing between {lo} and {hi})")
+        if fps > best_fps:
+            best_fps, best_nw = fps, mid
+        if hi - mid < 2:
+            break
+
     # Take the KNEE, not the argmax. Measured on a 3070 Ti at 12 MP:
     # x4 = 45.13 f/s, x8 = 44.78 f/s — a 0.8% difference, which is noise, and
     # picking between them on noise is arbitrary. The smaller count is strictly
@@ -520,10 +629,15 @@ def _sweep(backend, nframes, h, w, root, ladder, status_cb, cancel_cb):
         knee = min((r for r in good if r["fps"] >= peak * KNEE_TOL),
                    key=lambda r: r["workers"])
         if knee["workers"] < best_nw:
-            log(f"   {backend}: {knee['workers']} workers is within "
-                f"{(1 - KNEE_TOL) * 100:.0f}% of the peak at {best_nw} "
-                f"({knee['fps']:.2f} vs {peak:.2f} frames/s) — taking the "
-                f"smaller count")
+            behind = (1.0 - knee["fps"] / peak) * 100.0
+            log(f"   {backend}: {best_nw} workers was fastest at "
+                f"{peak:.2f} frames/s, but {knee['workers']} is within "
+                f"{behind:.1f}% of it ({knee['fps']:.2f} frames/s) and costs "
+                f"{best_nw - knee['workers']} fewer worker(s).")
+            log(f"   Anything within {(1 - KNEE_TOL) * 100:.0f}% of the best "
+                f"counts as a tie and the smaller count wins — on the GPU "
+                f"that is less VRAM and one fewer CUDA start-up each; on the "
+                f"CPU it hands cores back to the rest of the pipeline.")
             best_fps, best_nw = knee["fps"], knee["workers"]
 
     return rows, best_fps, best_nw
@@ -550,7 +664,11 @@ def _sweep(backend, nframes, h, w, root, ladder, status_cb, cancel_cb):
 # synthetic band stack, so whatever the rejection math actually costs is what
 # gets measured. The rejection math itself is not touched.
 # ─────────────────────────────────────────────────────────────────────────────
-BAND_LADDER = (16, 32, 64, 128, 256, 512, 1024)
+# Starts BELOW the shipped default of 16 on purpose. At 46.8 MP and 64 frames
+# deep the curve was 16 -> 5.38, 32 -> 5.11, 64 -> 4.59 Mpx/s: monotonically
+# decreasing, so the peak is somewhere at or below 16 and a ladder starting at
+# 16 can never see it.
+BAND_LADDER = (4, 8, 16, 32, 64, 128, 256, 512, 1024)
 BAND_KEY = "stacking/chunk_height"
 
 # Measured on a 3070 Ti, 12 MP frames, 24 deep, winsorized sigma clipping:
@@ -820,7 +938,28 @@ def tune_band_height(frame_shape=(3000, 4000),
                 f"rate here.")
         else:
             log(f"✅ Band height {best_rows} rows: {best_mpx:.3g} Mpx/s.")
+
         chosen = next((r for r in good if r["rows"] == best_rows), None)
+
+        # Say WHY, whenever the pick is not simply the fastest. Reporting only
+        # the winner makes a deliberate trade look like a bug: "16 rows: 4.5
+        # Mpx/s" next to a table whose best line reads 4.62 invites exactly
+        # the question of why the faster one was passed over.
+        fastest = max(good, key=lambda r: r["mpx_s"])
+        if fastest["rows"] != best_rows:
+            behind = (1.0 - best_mpx / peak) * 100.0
+            msg = (f"   {fastest['rows']} rows was fastest at "
+                   f"{peak:.3g} Mpx/s, but {best_rows} is within "
+                   f"{behind:.1f}% of it")
+            if chosen and chosen.get("band_mb") and fastest.get("band_mb"):
+                msg += (f" and holds {chosen['band_mb']:.1f} MB per band "
+                        f"against {fastest['band_mb']:.1f} MB")
+            log(msg + ".")
+            log(f"   Anything within {(1 - BAND_KNEE_TOL) * 100:.0f}% of the "
+                f"best counts as a tie and the smaller band wins, because "
+                f"band timings move about that much between runs. Set 'Rows "
+                f"per pass' by hand for the outright fastest.")
+
         if chosen and chosen.get("band_mb"):
             log(f"   One band holds {chosen['band_mb']:.1f} MB of stack at "
                 f"{n_frames} frames deep; compute_safe_chunk will clamp this "
@@ -872,7 +1011,12 @@ def tune(frame_shape=(3000, 4000),
     mp_ = (h * w) / 1e6
     nproc = os.cpu_count() or 8
     if nframes is None:
-        nframes = int(min(96, max(16, 3 * nproc)))
+        # Scale the batch with the sensor so the sweep's wall time stays
+        # roughly constant. 96 frames is fine at 12 MP; at 46.8 MP the same
+        # count is four times the pixels and makes the single-worker CPU rung
+        # take minutes for no extra information.
+        _scale = 12.0 / max(1.0, mp_)
+        nframes = int(min(96, max(12, round(3 * nproc * _scale))))
     if root is None:
         # directory containing the `setiastro` package
         root = os.path.dirname(os.path.dirname(os.path.dirname(
@@ -884,10 +1028,23 @@ def tune(frame_shape=(3000, 4000),
 
     gpu_cap = recommended_workers(mp_, "gpu", nproc)
     cpu_cap = recommended_workers(mp_, "cpu", nproc)
-    gpu_ladder = [n for n in WORKER_LADDER if n <= max(gpu_cap * 2, 2)]
-    cpu_ladder = [n for n in WORKER_LADDER if n <= cpu_cap]
-    log(f"    VRAM-derived GPU default is {gpu_cap}; probing up to "
-        f"{gpu_ladder[-1] if gpu_ladder else 0}.")
+
+    # Probe the FULL ladder for both backends. An earlier version bounded the
+    # GPU sweep at 2x the VRAM heuristic, which is wrong twice over: the
+    # heuristic is a conservative guess for installs that never measure, so
+    # using it to bound the measurement makes the measurement no better than
+    # the guess — and on a 46.8 MP sensor it stopped probing at 4 workers
+    # while throughput was still climbing (13.91 -> 15.56 -> 16.42 f/s).
+    #
+    # What stops the sweep is the watchdog and the falloff rule, which is
+    # exactly what they are for. A rung too big for the card is abandoned
+    # within ABORT_FACTOR x the single-worker time rather than being
+    # pre-emptively skipped.
+    gpu_ladder = worker_ladder(nproc)
+    cpu_ladder = [n for n in gpu_ladder if n <= cpu_cap]
+    ladder_max = gpu_ladder[-1] if gpu_ladder else 0
+    log(f"    VRAM-derived GPU default is {gpu_cap} (used only when nothing "
+        f"has been measured); probing up to {ladder_max}.")
 
     results = {"gpu": [], "cpu": []}
     bests = {}

@@ -39,11 +39,73 @@ from PyQt6.QtWidgets import (
 )
 
 __all__ = [
+    "LAST_FRAMES",
+    "LAST_H",
+    "LAST_W",
     "TuneWorker",
     "StackingTuneDialog",
     "install_optimize_button",
     "make_align_workers_row",
 ]
+
+
+# What the optimizer was last run with. Under stacking/align/* like the rest
+# of the shared alignment prefs.
+LAST_H = "stacking/align/tune_last_h"
+LAST_W = "stacking/align/tune_last_w"
+LAST_FRAMES = "stacking/align/tune_last_frames"
+LAST_DETECT = "stacking/align/tune_last_detect"
+LAST_BAND = "stacking/align/tune_last_band"
+
+
+def _load_last_inputs() -> dict:
+    """The optimizer's last inputs, or {} when it has never been run."""
+    out = {}
+    try:
+        from PyQt6.QtCore import QSettings
+        s = QSettings()
+
+        def _int(key):
+            v = s.value(key, None)
+            if v in (None, ""):
+                return None
+            try:
+                n = int(v)
+            except Exception:
+                return None
+            return n if n > 0 else None
+
+        def _bool(key, default=True):
+            v = s.value(key, None)
+            if v is None:
+                return default
+            if isinstance(v, bool):
+                return v
+            return str(v).strip().lower() not in ("0", "false", "no", "off")
+
+        out["h"] = _int(LAST_H)
+        out["w"] = _int(LAST_W)
+        out["frames"] = _int(LAST_FRAMES)
+        out["detect"] = _bool(LAST_DETECT)
+        out["band"] = _bool(LAST_BAND)
+    except Exception:
+        pass
+    return out
+
+
+def _save_last_inputs(h, w, frames, detect, band) -> None:
+    """Remember the inputs so they are prefilled next time. Best effort."""
+    try:
+        from PyQt6.QtCore import QSettings
+        s = QSettings()
+        s.setValue(LAST_H, int(h))
+        s.setValue(LAST_W, int(w))
+        s.setValue(LAST_FRAMES, int(frames))
+        s.setValue(LAST_DETECT, bool(detect))
+        s.setValue(LAST_BAND, bool(band))
+        s.sync()
+    except Exception:
+        pass
 
 
 class TuneWorker(QObject):
@@ -116,11 +178,19 @@ class StackingTuneDialog(QDialog):
         self._worker = None
         self._result = None
 
+        # What was used last time wins over the caller's guess. Typing a
+        # 46.8 MP sensor and a 64-frame depth once should be enough; the
+        # caller's provider is only a starting point for a first run.
+        last = _load_last_inputs()
+        h0 = last.get("h") or int(frame_shape[0])
+        w0 = last.get("w") or int(frame_shape[1])
+        n0 = last.get("frames") or int(n_frames)
+
         form = QFormLayout()
         self.h_spin = QSpinBox(); self.h_spin.setRange(64, 65536)
         self.w_spin = QSpinBox(); self.w_spin.setRange(64, 65536)
-        self.h_spin.setValue(int(frame_shape[0]))
-        self.w_spin.setValue(int(frame_shape[1]))
+        self.h_spin.setValue(int(h0))
+        self.w_spin.setValue(int(w0))
         size_row = QHBoxLayout()
         size_row.addWidget(QLabel("H")); size_row.addWidget(self.h_spin)
         size_row.addWidget(QLabel("W")); size_row.addWidget(self.w_spin)
@@ -129,8 +199,24 @@ class StackingTuneDialog(QDialog):
         size_w = QWidget(); size_w.setLayout(size_row)
         form.addRow("Frame size:", size_w)
 
+        # If the caller can see real lights and they disagree with what is in
+        # the boxes, say so rather than overriding — a remembered value was a
+        # deliberate choice, but a changed sensor is worth flagging.
+        self.size_hint = QLabel("")
+        self.size_hint.setEnabled(False)
+        try:
+            dh, dw = int(frame_shape[0]), int(frame_shape[1])
+            if (dh, dw) != (3000, 4000) and (dh, dw) != (int(h0), int(w0)):
+                self.size_hint.setText(
+                    f"your loaded lights are {dw}x{dh} — tuning at a "
+                    f"different size will give a different answer"
+                )
+                size_row.insertWidget(4, self.size_hint)
+        except Exception:
+            pass
+
         self.n_spin = QSpinBox(); self.n_spin.setRange(4, 256)
-        self.n_spin.setValue(int(n_frames))
+        self.n_spin.setValue(int(n0))
         self.n_spin.setToolTip(
             "Stack depth for the integration test. Use something close to a "
             "typical session; deeper stacks shift the band-height answer."
@@ -139,8 +225,8 @@ class StackingTuneDialog(QDialog):
 
         self.cb_detect = QCheckBox("Star detection (registration workers)")
         self.cb_band = QCheckBox("Integration band height (rows per pass)")
-        self.cb_detect.setChecked(True)
-        self.cb_band.setChecked(True)
+        self.cb_detect.setChecked(bool(last.get("detect", True)))
+        self.cb_band.setChecked(bool(last.get("band", True)))
         form.addRow("Measure:", self.cb_detect)
         form.addRow("", self.cb_band)
 
@@ -203,6 +289,7 @@ class StackingTuneDialog(QDialog):
             self._append("Nothing selected to measure.")
             return
 
+        self._remember()
         self.log.clear()
         self._append(self._hw_line())
         self.btn_run.setEnabled(False)
@@ -289,7 +376,16 @@ class StackingTuneDialog(QDialog):
     def result(self):
         return self._result
 
+    def _remember(self):
+        _save_last_inputs(self.h_spin.value(), self.w_spin.value(),
+                          self.n_spin.value(), self.cb_detect.isChecked(),
+                          self.cb_band.isChecked())
+
     def closeEvent(self, ev):
+        # Remember even when the window is closed without running: the point
+        # is not to retype a 46.8 MP sensor, and that is just as true after a
+        # cancel as after a completed sweep.
+        self._remember()
         if self._thread is not None:
             self._cancel()
             try:
