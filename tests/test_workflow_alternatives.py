@@ -257,6 +257,21 @@ def test_choice_menu_does_not_expand_child_alternatives():
     assert entries == [("curves", {"mode": "rgb"}, "◆ Curves ▾ 2")]
 
 
+def test_removing_a_choice_drops_its_actions():
+    from setiastro.saspro.workflows import WorkflowStep, workflow_steps_without
+
+    steps = [
+        WorkflowStep(id="before", command_id="crop"),
+        WorkflowStep(id="t", kind="choice", label_override="Stretch"),
+        WorkflowStep(id="a", command_id="curves", parent_id="t"),
+        WorkflowStep(id="b", command_id="clahe", parent_id="t"),
+        WorkflowStep(id="after", command_id="save_as"),
+    ]
+    kept = workflow_steps_without(steps, "t")
+    assert [s.id for s in kept] == ["before", "after"]
+    assert [s.id for s in workflow_steps_without(steps, "a")] == ["before", "t", "b", "after"]
+
+
 def test_completion_target_is_the_choice_title():
     from setiastro.saspro.workflows import WorkflowStep, choice_completion_target_id
 

@@ -135,7 +135,7 @@
 <tr><td><code>split</code></td><td>⇢</td><td>Visual branch marker. Documents where processing diverges into multiple lanes.</td><td>No</td></tr>
 <tr><td><code>merge</code></td><td>⇠</td><td>Visual merge marker. Documents where multiple lanes come back together.</td><td>No</td></tr>
 </table>
-<p>A choice is created with <b>Add Choice</b>. Drag a tool onto the title or onto one of its indented steps to add another alternative. Drag an indented step back out and it becomes a normal action again. Removing the title keeps those steps and un-groups them. An action can still carry its own menu alternatives (the ▾ N badge) whether or not it sits under a choice.</p>
+<p>A choice is created with <b>Add Choice</b>. Drag a tool onto the title or onto one of its indented steps to add another alternative. Drag an indented step back out and it becomes a normal action again. Removing the title removes the actions under it as well. An action can still carry its own menu alternatives (the ▾ N badge) whether or not it sits under a choice.</p>
 <p>Note, split, and merge steps can still carry <code>inputs</code> and <code>outputs</code> annotations &mdash; the narrowband canned workflow uses <code>split</code> and <code>merge</code> markers to call out the branch and the rejoin, with named outputs on the split (<code>starless</code>, <code>stars_only</code>) and named inputs on the merge (<code>starless_final</code>, <code>stars_final</code>).</p>
 <p>Opening a non-action step shows a brief information dialog that describes what kind of marker it is. In the mini runner, opening a note step shows the step's actual note text, so the mini runner can act as a &ldquo;follow this instruction&rdquo; prompt even for non-action steps.</p>
 

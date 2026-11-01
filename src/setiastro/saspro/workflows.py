@@ -1040,6 +1040,16 @@ def paint_workflow_row(item: QListWidgetItem, is_current: bool) -> None:
         item.setForeground(QBrush())
 
 
+def workflow_steps_without(steps: List[WorkflowStep], step_id: str) -> List[WorkflowStep]:
+    """Drop one step. Removing a choice also drops the actions under it."""
+    drop = {step_id}
+    for step in steps:
+        if step.id == step_id and step.kind == "choice":
+            drop.update(s.id for s in steps if s.parent_id == step.id)
+            break
+    return [s for s in steps if s.id not in drop]
+
+
 def choice_completion_target_id(step: WorkflowStep, steps: List[WorkflowStep]) -> str:
     """Completion lives on the choice title, including when a child is selected."""
     if step.parent_id:
@@ -2020,15 +2030,31 @@ class WorkflowDialog(QDialog):
         row = lst.currentRow()
         if row < 0:
             return
-        kind = str(lst.item(row).data(Qt.ItemDataRole.UserRole + 4) or "")
-        lst.takeItem(row)
-        next_id = ""
-        if lst.count():
-            next_id = str(lst.item(min(row, lst.count() - 1)).data(Qt.ItemDataRole.UserRole) or "")
-        self.sync_steps_from_ui()
+        item = lst.item(row)
+        kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "")
         if kind == "choice":
-            self.refresh_workflow_view(select_id=next_id or None)
+            choice_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+            next_id = ""
+            seen = False
+            before = ""
+            for i in range(lst.count()):
+                other = lst.item(i)
+                sid = str(other.data(Qt.ItemDataRole.UserRole) or "")
+                pid = str(other.data(Qt.ItemDataRole.UserRole + 11) or "")
+                if sid == choice_id or pid == choice_id:
+                    seen = seen or sid == choice_id
+                    continue
+                if not seen:
+                    before = sid
+                elif not next_id:
+                    next_id = sid
+            self.current_workflow.steps = normalize_workflow_steps(
+                workflow_steps_without(self._raw_steps_from_ui(), choice_id)
+            )
+            self.refresh_workflow_view(select_id=next_id or before or None)
             return
+        lst.takeItem(row)
+        self.sync_steps_from_ui()
         self._update_selected_step_info()
         self._refresh_step_visuals()
 
