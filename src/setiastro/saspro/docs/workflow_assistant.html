@@ -116,7 +116,9 @@
 <p>Editing a step (right-click on it, or use the toolbar buttons):</p>
 <ul>
 <li><b>Rename&hellip;</b> &mdash; set a custom display label (<code>label_override</code>). Blank restores the default (catalog text or preset-derived).</li>
-<li><b>Edit Preset&hellip;</b> &mdash; opens the command's bespoke preset editor via <code>_open_preset_editor_for_command</code>. Only available on action steps that have a command id.</li>
+<li><b>Edit Preset&hellip;</b> &mdash; opens the command's bespoke preset editor via <code>_open_preset_editor_for_command</code>. Only available on action steps that have a command id. This edits the primary tool.</li>
+<li><b>Add Alternative&hellip;</b> &mdash; on an action step, pick another catalog tool to try in place of the primary one. The step stays a single checklist item. Each alternative stores its own command id and, once edited, its own preset.</li>
+<li><b>Remove Alternative</b> / <b>Edit Alternative Preset</b> &mdash; appear once the step has at least one alternative.</li>
 <li><b>Edit Note</b> &mdash; multi-line note (shown in the step details panel).</li>
 <li><b>Edit Inputs / Outputs</b> &mdash; comma-separated string tags.</li>
 <li><b>Remove Step</b> &mdash; delete it; selection stays on the same row if possible.</li>
@@ -144,6 +146,7 @@
 <li><b>Note</b> &mdash; the step's instruction note, if any.</li>
 <li><b>Inputs / Outputs</b> &mdash; the named lineage tags, if any.</li>
 <li><b>Preset</b> &mdash; a compact summary of the first few captured settings (routing keys like <code>family</code>, <code>auto_run</code>, <code>args</code>, <code>op</code> are hidden; booleans become <code>on</code>/<code>off</code>; long strings truncate; a tail of <code>+N more&hellip;</code> appears when the preset has more keys than fit).</li>
+<li><b>Alternatives</b> &mdash; the other tools attached to this step, listed by name. The step title remains the primary tool.</li>
 <li><b>Status</b> &mdash; <code>Completed</code> or <code>Not completed</code>.</li>
 </ul>
 <p>Everything is HTML-formatted inline, so the panel reads like a short field notebook entry rather than a static form.</p>
@@ -157,7 +160,8 @@
     <li>If the step carries a preset, <code>_preset_opener_for_command</code> is called to open the tool <b>seeded with those settings</b> &mdash; the dialog pops up with every slider, dropdown, and checkbox already set.</li>
     <li>If no preset (or no opener registered for that command), <code>_find_action_by_command_id</code> locates the QAction and triggers it directly, which usually opens the tool with its own default state.</li>
     </ul>
-    Double-clicking a step is a shortcut for Open Step.</li>
+    Double-clicking a step is a shortcut for Open Step.
+    When the step has alternatives, Open Step (and double-click) shows a menu: the primary tool first, then each alternative. Cancelling the menu leaves the step as it is. A step with no alternatives opens its single tool directly. The step label gains a <code>▾ N</code> badge, where N is the number of choices.</li>
 <li><b>Mark Complete</b> &mdash; flags the current step with a ✓ prefix on its label and sets its completion flag. In the mini runner, Mark Complete also <b>advances to the next step automatically</b>, which keeps the walkthrough moving. In the full dialog, it just marks and stays put.</li>
 <li><b>Reset Progress</b> &mdash; clears every step's completed flag across every lane. The workflow structure is untouched; only the progress state resets.</li>
 </ul>
@@ -223,8 +227,11 @@ WorkflowStep = {
     "outputs":        [ "stretched" ],
     "preset":         { &hellip; },             # captured tool settings
     "label_override": "",                # user-renamed display label
+    "alternatives":   [                  # omitted when empty
+        { "command_id": "curves", "preset": { }, "label_override": "" }
+    ]
 }</div>
-<p>Schema v1 was a flat step list with no lanes or I/O. The loader detects v1 by the <b>absence of a top-level <code>lanes</code> key</b> and migrates by: dropping every step into a single <code>main</code> lane, synthesising fresh step ids, forcing <code>kind = "action"</code>, dropping any inputs/outputs/presets (which v1 didn't support), and tagging the result <code>schema_version = 1</code> so the next Save upgrades it in place.</p>
+<p>Schema v1 was a flat step list with no lanes or I/O. The loader detects v1 by the <b>absence of a top-level <code>lanes</code> key</b> and migrates by: dropping every step into a single <code>main</code> lane, synthesising fresh step ids, forcing <code>kind = "action"</code>, dropping any inputs/outputs/presets (which v1 didn't support), and tagging the result <code>schema_version = 1</code> so the next Save upgrades it in place. Schema stays at v2 for alternatives: the <code>alternatives</code> key is optional, so a workflow saved before this field still loads, and a step with no alternatives omits the key.</p>
 
 <h3>13. Toolbar and script catalog discovery</h3>
 <p>The tool catalog is rebuilt every time the dialog opens via two scanners:</p>

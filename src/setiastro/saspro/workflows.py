@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt, QMimeData, QSize
-from PyQt6.QtGui import QAction, QDrag, QIcon
+from PyQt6.QtGui import QAction, QCursor, QDrag, QIcon
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -47,6 +48,40 @@ def _new_step_id() -> str:
 
 
 @dataclass
+class WorkflowAlternative:
+    """Another tool the user can open in place of a step's primary command."""
+    command_id: str
+    preset: dict = field(default_factory=dict)
+    label_override: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "command_id": self.command_id,
+            "preset": dict(self.preset or {}),
+            "label_override": self.label_override,
+        }
+
+
+def normalize_workflow_alternatives(raw) -> List["WorkflowAlternative"]:
+    out: List[WorkflowAlternative] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("command_id") or "").strip()
+        if not cid:
+            continue
+        preset = item.get("preset")
+        out.append(WorkflowAlternative(
+            command_id=cid,
+            preset=dict(preset) if isinstance(preset, dict) else {},
+            label_override=str(item.get("label_override") or ""),
+        ))
+    return out
+
+
+@dataclass
 class WorkflowStep:
     id: str = field(default_factory=_new_step_id)
     command_id: str = ""
@@ -58,9 +93,10 @@ class WorkflowStep:
     outputs: List[str] = field(default_factory=list)
     preset: dict = field(default_factory=dict)   # captured tool settings (from a dragged grip shortcut)
     label_override: str = ""                      # user-renamed display label
+    alternatives: List[WorkflowAlternative] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "id": self.id,
             "command_id": self.command_id,
             "note": self.note,
@@ -72,6 +108,9 @@ class WorkflowStep:
             "preset": dict(self.preset or {}),
             "label_override": self.label_override,
         }
+        if self.alternatives:
+            data["alternatives"] = [a.to_dict() for a in self.alternatives]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "WorkflowStep":
@@ -87,6 +126,7 @@ class WorkflowStep:
             outputs=[str(x) for x in data.get("outputs", []) if str(x).strip()],
             preset=dict(_preset) if isinstance(_preset, dict) else {},
             label_override=str(data.get("label_override", "")),
+            alternatives=normalize_workflow_alternatives(data.get("alternatives")),
         )
 
 
@@ -686,13 +726,29 @@ class WorkflowLaneList(QListWidget):
 
         act_rename = None
         act_edit_preset = None
+        act_add_alt = None
+        menu_remove_alt = None
+        menu_edit_alt = None
         if item is not None:
+            self.setCurrentItem(item)
             menu.addSeparator()
             act_rename = menu.addAction("Rename…")
             _kind = str(item.data(Qt.ItemDataRole.UserRole + 4) or "action")
             _cid = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
             if _kind == "action" and _cid:
                 act_edit_preset = menu.addAction("Edit Preset…")
+                act_add_alt = menu.addAction("Add Alternative…")
+                alts = normalize_workflow_alternatives(item.data(Qt.ItemDataRole.UserRole + 10))
+                if alts:
+                    menu_remove_alt = menu.addMenu("Remove Alternative")
+                    menu_edit_alt = menu.addMenu("Edit Alternative Preset")
+                    catalog = self._dialog.catalog
+                    for idx, alt in enumerate(alts):
+                        label = _choice_label(alt.command_id, alt.preset, alt.label_override, catalog)
+                        act_rm = menu_remove_alt.addAction(label)
+                        act_rm.setData(idx)
+                        act_ed = menu_edit_alt.addAction(label)
+                        act_ed.setData(idx)
             menu.addSeparator()
             act_edit_note = menu.addAction("Edit Note")
             act_edit_ios = menu.addAction("Edit Inputs / Outputs")
@@ -716,6 +772,12 @@ class WorkflowLaneList(QListWidget):
             self._dialog._rename_selected_step()
         elif item is not None and act_edit_preset is not None and chosen == act_edit_preset:
             self._dialog._edit_selected_step_preset()
+        elif item is not None and act_add_alt is not None and chosen == act_add_alt:
+            self._dialog._add_alternative_to_selected()
+        elif item is not None and menu_remove_alt is not None and chosen in menu_remove_alt.actions():
+            self._dialog._remove_alternative_at(int(chosen.data()))
+        elif item is not None and menu_edit_alt is not None and chosen in menu_edit_alt.actions():
+            self._dialog._edit_alternative_preset(int(chosen.data()))
         elif item is not None and chosen == act_edit_note:
             self._dialog._edit_selected_step_note()
         elif item is not None and chosen == act_edit_ios:
@@ -759,6 +821,209 @@ def _derive_step_label(command_id: str, preset: dict, catalog) -> str:
         return f"Remove Stars — {t}" if t else (base or "Remove Stars")
 
     return base
+
+
+def _choice_label(command_id: str, preset: dict, label_override: str, catalog) -> str:
+    override = str(label_override or "").strip()
+    if override:
+        return override
+    if isinstance(preset, dict) and preset:
+        derived = _derive_step_label(command_id, preset, catalog)
+        if derived:
+            return derived
+    info = None
+    try:
+        info = catalog.get(command_id) if catalog else None
+    except Exception:
+        info = None
+    text = (getattr(info, "text", "") or "") if info is not None else ""
+    return text or command_id or "Action"
+
+
+def format_workflow_step_label(step: WorkflowStep, catalog) -> str:
+    if step.kind == "note":
+        return "📝 Note"
+    if step.kind == "split":
+        return "⇢ Split"
+    if step.kind == "merge":
+        return "⇠ Merge"
+    base = _choice_label(step.command_id, step.preset, step.label_override, catalog)
+    text = f"◆ {base}" if step.preset else base
+    if step.alternatives:
+        text = f"{text} ▾ {len(step.alternatives) + 1}"
+    return text
+
+
+def workflow_step_choices(step: WorkflowStep, catalog) -> List[tuple]:
+    """(command_id, preset, label) for the primary tool, then each alternative."""
+    if step.kind != "action" or not str(step.command_id or "").strip():
+        return []
+    choices = [(
+        step.command_id,
+        dict(step.preset or {}),
+        _choice_label(step.command_id, step.preset, step.label_override, catalog),
+    )]
+    for alt in step.alternatives:
+        choices.append((
+            alt.command_id,
+            dict(alt.preset or {}),
+            _choice_label(alt.command_id, alt.preset, alt.label_override, catalog),
+        ))
+    return choices
+
+
+def pack_workflow_step_item(item: QListWidgetItem, step: WorkflowStep) -> None:
+    item.setData(Qt.ItemDataRole.UserRole, step.id)
+    item.setData(Qt.ItemDataRole.UserRole + 1, step.command_id)
+    item.setData(Qt.ItemDataRole.UserRole + 2, step.note)
+    item.setData(Qt.ItemDataRole.UserRole + 3, bool(step.enabled))
+    item.setData(Qt.ItemDataRole.UserRole + 4, step.kind)
+    item.setData(Qt.ItemDataRole.UserRole + 5, list(step.inputs))
+    item.setData(Qt.ItemDataRole.UserRole + 6, list(step.outputs))
+    item.setData(Qt.ItemDataRole.UserRole + 7, False)  # completed, session-only
+    item.setData(Qt.ItemDataRole.UserRole + 8, dict(step.preset or {}))
+    item.setData(Qt.ItemDataRole.UserRole + 9, step.label_override)
+    item.setData(Qt.ItemDataRole.UserRole + 10, [a.to_dict() for a in step.alternatives])
+
+
+def unpack_workflow_step_item(item: QListWidgetItem, lane: str) -> WorkflowStep:
+    preset = item.data(Qt.ItemDataRole.UserRole + 8)
+    return WorkflowStep(
+        id=str(item.data(Qt.ItemDataRole.UserRole) or _new_step_id()),
+        command_id=str(item.data(Qt.ItemDataRole.UserRole + 1) or ""),
+        note=str(item.data(Qt.ItemDataRole.UserRole + 2) or ""),
+        enabled=bool(item.data(Qt.ItemDataRole.UserRole + 3)),
+        kind=str(item.data(Qt.ItemDataRole.UserRole + 4) or "action"),
+        lane=lane,
+        inputs=list(item.data(Qt.ItemDataRole.UserRole + 5) or []),
+        outputs=list(item.data(Qt.ItemDataRole.UserRole + 6) or []),
+        preset=dict(preset) if isinstance(preset, dict) else {},
+        label_override=str(item.data(Qt.ItemDataRole.UserRole + 9) or ""),
+        alternatives=normalize_workflow_alternatives(item.data(Qt.ItemDataRole.UserRole + 10)),
+    )
+
+
+def open_workflow_command(parent, main, command_id: str, preset: Optional[dict]) -> bool:
+    """Open one tool, seeded with preset when an opener exists."""
+    if isinstance(preset, dict) and preset:
+        try:
+            from setiastro.saspro.shortcuts import _preset_opener_for_command
+            opener = _preset_opener_for_command(command_id)
+        except Exception:
+            opener = None
+        if opener is not None:
+            try:
+                opener(main, dict(preset))
+                return True
+            except Exception as e:
+                QMessageBox.critical(
+                    parent, "Step Failed",
+                    f"Error opening seeded step:\n\n{command_id}\n\n{e}",
+                )
+                return False
+
+    action = _find_action_by_command_id(main, command_id)
+    if action is None:
+        QMessageBox.warning(
+            parent, "Action Not Found",
+            f"Could not find QAction for command_id:\n{command_id}",
+        )
+        return False
+    try:
+        action.trigger()
+        return True
+    except Exception as e:
+        QMessageBox.critical(
+            parent, "Step Failed",
+            f"Error while opening workflow step:\n\n{command_id}\n\n{e}",
+        )
+        return False
+
+
+def prompt_workflow_choice(parent, choices: List[tuple]):
+    """Ask which tool to open. A single choice is returned without a menu."""
+    if not choices:
+        return None
+    if len(choices) == 1:
+        return choices[0]
+    menu = QMenu(parent)
+    header = menu.addAction("Choose a tool")
+    header.setEnabled(False)
+    for command_id, preset, label in choices:
+        act = menu.addAction(label or command_id)
+        act.setData({"command_id": command_id, "preset": dict(preset or {})})
+    chosen = menu.exec(QCursor.pos())
+    if chosen is None or chosen is header:
+        return None
+    payload = chosen.data()
+    if not isinstance(payload, dict) or not payload.get("command_id"):
+        return None
+    preset = payload.get("preset")
+    return (str(payload["command_id"]), dict(preset) if isinstance(preset, dict) else {}, chosen.text())
+
+
+def pick_catalog_command(parent, catalog: Dict[str, "WorkflowActionInfo"]) -> Optional[str]:
+    """Searchable catalog picker. Returns a command id, or None if cancelled."""
+    if not catalog:
+        QMessageBox.information(parent, "Add Alternative", "No tools are available in the catalog.")
+        return None
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("Add Alternative")
+    dlg.resize(440, 520)
+    lay = QVBoxLayout(dlg)
+    search = QLineEdit(dlg)
+    search.setPlaceholderText("Search tools...")
+    lay.addWidget(search)
+    lst = QListWidget(dlg)
+    lay.addWidget(lst, 1)
+    buttons = QDialogButtonBox(
+        QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+        parent=dlg,
+    )
+    ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+    ok_btn.setEnabled(False)
+    lay.addWidget(buttons)
+
+    entries = sorted(
+        catalog.values(),
+        key=lambda info: ((info.category or "").lower(), (info.text or "").lower(), info.command_id),
+    )
+
+    def refill():
+        needle = search.text().strip().lower()
+        lst.clear()
+        for info in entries:
+            blob = f"{info.category} {info.text} {info.status_tip} {info.command_id}".lower()
+            if needle and needle not in blob:
+                continue
+            caption = f"{info.category} — {info.text}" if info.category else (info.text or info.command_id)
+            row = QListWidgetItem(caption)
+            row.setData(Qt.ItemDataRole.UserRole, info.command_id)
+            if info.status_tip:
+                row.setToolTip(info.status_tip)
+            if info.icon and not info.icon.isNull():
+                row.setIcon(info.icon)
+            lst.addItem(row)
+        ok_btn.setEnabled(False)
+
+    def on_sel():
+        ok_btn.setEnabled(lst.currentItem() is not None)
+
+    search.textChanged.connect(refill)
+    lst.itemSelectionChanged.connect(on_sel)
+    lst.itemDoubleClicked.connect(dlg.accept)
+    buttons.accepted.connect(dlg.accept)
+    buttons.rejected.connect(dlg.reject)
+    refill()
+    if dlg.exec() != QDialog.DialogCode.Accepted:
+        return None
+    row = lst.currentItem()
+    if row is None:
+        return None
+    cid = str(row.data(Qt.ItemDataRole.UserRole) or "").strip()
+    return cid or None
+
 
 # -----------------------------------------------------------------------------
 # Main dialog
@@ -964,6 +1229,7 @@ class WorkflowDialog(QDialog):
     # Catalog
     # ------------------------------------------------------------------
     def _open_mini_runner(self):
+        self.sync_steps_from_ui()
         from setiastro.saspro.workflows import show_mini_workflow_dialog
         show_mini_workflow_dialog(self.main)
 
@@ -1135,20 +1401,7 @@ class WorkflowDialog(QDialog):
 
             for i in range(lst.count()):
                 item = lst.item(i)
-                _p = item.data(Qt.ItemDataRole.UserRole + 8)
-                step = WorkflowStep(
-                    id=str(item.data(Qt.ItemDataRole.UserRole) or _new_step_id()),
-                    command_id=str(item.data(Qt.ItemDataRole.UserRole + 1) or ""),
-                    note=str(item.data(Qt.ItemDataRole.UserRole + 2) or ""),
-                    enabled=bool(item.data(Qt.ItemDataRole.UserRole + 3)),
-                    kind=str(item.data(Qt.ItemDataRole.UserRole + 4) or "action"),
-                    lane=lane_name,
-                    inputs=list(item.data(Qt.ItemDataRole.UserRole + 5) or []),
-                    outputs=list(item.data(Qt.ItemDataRole.UserRole + 6) or []),
-                    preset=dict(_p) if isinstance(_p, dict) else {},
-                    label_override=str(item.data(Qt.ItemDataRole.UserRole + 9) or ""),
-                )
-                steps.append(step)
+                steps.append(unpack_workflow_step_item(item, lane=lane_name))
 
         self.current_workflow.steps = steps
 
@@ -1161,33 +1414,11 @@ class WorkflowDialog(QDialog):
             if info and not info.icon.isNull():
                 item.setIcon(info.icon)
 
-        item.setData(Qt.ItemDataRole.UserRole, step.id)
-        item.setData(Qt.ItemDataRole.UserRole + 1, step.command_id)
-        item.setData(Qt.ItemDataRole.UserRole + 2, step.note)
-        item.setData(Qt.ItemDataRole.UserRole + 3, bool(step.enabled))
-        item.setData(Qt.ItemDataRole.UserRole + 4, step.kind)
-        item.setData(Qt.ItemDataRole.UserRole + 5, list(step.inputs))
-        item.setData(Qt.ItemDataRole.UserRole + 6, list(step.outputs))
-        item.setData(Qt.ItemDataRole.UserRole + 7, False)  # completed
-        item.setData(Qt.ItemDataRole.UserRole + 8, dict(step.preset or {}))
-        item.setData(Qt.ItemDataRole.UserRole + 9, step.label_override)
-
+        pack_workflow_step_item(item, step)
         return item
 
     def _step_display_text(self, step: WorkflowStep) -> str:
-        if step.kind == "note":
-            return "📝 Note"
-        if step.kind == "split":
-            return "⇢ Split"
-        if step.kind == "merge":
-            return "⇠ Merge"
-
-        if step.label_override:
-            base = step.label_override
-        else:
-            info = self.catalog.get(step.command_id)
-            base = info.text if info else (step.command_id or "Action")
-        return f"◆ {base}" if step.preset else base
+        return format_workflow_step_label(step, self.catalog)
 
     def load_workflow_definition(self, wf: WorkflowDefinition):
         self.current_workflow = WorkflowDefinition(
@@ -1206,6 +1437,14 @@ class WorkflowDialog(QDialog):
                     outputs=list(s.outputs),
                     preset=dict(s.preset or {}),
                     label_override=s.label_override,
+                    alternatives=[
+                        WorkflowAlternative(
+                            command_id=a.command_id,
+                            preset=dict(a.preset or {}),
+                            label_override=a.label_override,
+                        )
+                        for a in s.alternatives
+                    ],
                 )
                 for s in wf.steps
             ],
@@ -1318,6 +1557,11 @@ class WorkflowDialog(QDialog):
         preset = item.data(Qt.ItemDataRole.UserRole + 8)
         if isinstance(preset, dict) and preset:
             parts.append(f"<br><b>Preset:</b> {_summarize_preset(preset)}")
+
+        alts = normalize_workflow_alternatives(item.data(Qt.ItemDataRole.UserRole + 10))
+        if alts:
+            names = [_choice_label(a.command_id, a.preset, a.label_override, self.catalog) for a in alts]
+            parts.append(f"<br><b>Alternatives:</b> {', '.join(names)}")
 
         parts.append(f"<br><b>Status:</b> {'Completed' if completed else 'Not completed'}")
 
@@ -1660,40 +1904,77 @@ class WorkflowDialog(QDialog):
             )
             return
 
-        command_id = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
-        if not command_id:
+        lane = self.current_lane_name or "main"
+        step = unpack_workflow_step_item(item, lane=lane)
+        choices = workflow_step_choices(step, self.catalog)
+        if not choices:
             QMessageBox.warning(self, "No Command", "This step has no command ID.")
             return
-
-        # Preset-bearing step → open the LIVE tool seeded from the captured settings.
-        preset = item.data(Qt.ItemDataRole.UserRole + 8)
-        if isinstance(preset, dict) and preset:
-            try:
-                from setiastro.saspro.shortcuts import _preset_opener_for_command
-                opener = _preset_opener_for_command(command_id)
-            except Exception:
-                opener = None
-            if opener is not None:
-                try:
-                    opener(self.main, dict(preset))
-                    self._refresh_step_visuals()
-                    return
-                except Exception as e:
-                    QMessageBox.critical(self, "Step Failed",
-                        f"Error opening seeded step:\n\n{command_id}\n\n{e}")
-                    return
-            # No seeded opener registered → fall through to a plain trigger.
-
-        action = _find_action_by_command_id(self.main, command_id)
-        if action is None:
-            QMessageBox.warning(self, "Action Not Found", f"Could not find QAction for command_id:\n{command_id}")
+        picked = prompt_workflow_choice(self, choices)
+        if picked is None:
             return
-
-        try:
-            action.trigger()
+        command_id, preset, _label = picked
+        if open_workflow_command(self, self.main, command_id, preset):
             self._refresh_step_visuals()
-        except Exception as e:
-            QMessageBox.critical(self, "Step Failed", f"Error while opening workflow step:\n\n{command_id}\n\n{e}")
+
+    def _rewrite_step_item(self, item: QListWidgetItem, step: WorkflowStep) -> None:
+        completed = bool(item.data(Qt.ItemDataRole.UserRole + 7))
+        pack_workflow_step_item(item, step)
+        item.setData(Qt.ItemDataRole.UserRole + 7, completed)
+        item.setIcon(QIcon())
+        if step.kind == "action":
+            info = self.catalog.get(step.command_id)
+            if info and not info.icon.isNull():
+                item.setIcon(info.icon)
+        item.setText(format_workflow_step_label(step, self.catalog))
+        self.sync_steps_from_ui()
+        self._update_selected_step_info()
+        self._refresh_step_visuals()
+
+    def _step_from_current_item(self) -> tuple[Optional[QListWidgetItem], Optional[WorkflowStep]]:
+        item = self._current_item()
+        if item is None:
+            return None, None
+        lst = self._current_list()
+        lane = lst.lane_name if lst is not None else (self.current_lane_name or "main")
+        return item, unpack_workflow_step_item(item, lane=lane)
+
+    def _add_alternative_to_selected(self):
+        item, step = self._step_from_current_item()
+        if item is None or step is None or step.kind != "action" or not step.command_id:
+            return
+        cid = pick_catalog_command(self, self.catalog)
+        if not cid:
+            return
+        step.alternatives.append(WorkflowAlternative(command_id=cid))
+        self._rewrite_step_item(item, step)
+
+    def _remove_alternative_at(self, index: int):
+        item, step = self._step_from_current_item()
+        if item is None or step is None:
+            return
+        if not (0 <= index < len(step.alternatives)):
+            return
+        del step.alternatives[index]
+        self._rewrite_step_item(item, step)
+
+    def _edit_alternative_preset(self, index: int):
+        item, step = self._step_from_current_item()
+        if item is None or step is None:
+            return
+        if not (0 <= index < len(step.alternatives)):
+            return
+        alt = step.alternatives[index]
+        try:
+            from setiastro.saspro.shortcuts import _open_preset_editor_for_command
+        except Exception:
+            QMessageBox.information(self, "Edit Preset", "No preset editor is available.")
+            return
+        result = _open_preset_editor_for_command(self, alt.command_id, dict(alt.preset or {}))
+        if result is None:
+            return
+        alt.preset = dict(result)
+        self._rewrite_step_item(item, step)
 
     def _mark_selected_complete(self):
         item = self._current_item()
@@ -2025,31 +2306,11 @@ class MiniWorkflowDialog(QDialog):
             if info and not info.icon.isNull():
                 item.setIcon(info.icon)
 
-        item.setData(Qt.ItemDataRole.UserRole,     step.id)
-        item.setData(Qt.ItemDataRole.UserRole + 1, step.command_id)
-        item.setData(Qt.ItemDataRole.UserRole + 2, step.note)
-        item.setData(Qt.ItemDataRole.UserRole + 3, bool(step.enabled))
-        item.setData(Qt.ItemDataRole.UserRole + 4, step.kind)
-        item.setData(Qt.ItemDataRole.UserRole + 5, list(step.inputs))
-        item.setData(Qt.ItemDataRole.UserRole + 6, list(step.outputs))
-        item.setData(Qt.ItemDataRole.UserRole + 7, False)  # completed
-        item.setData(Qt.ItemDataRole.UserRole + 8, dict(step.preset or {}))
-        item.setData(Qt.ItemDataRole.UserRole + 9, step.label_override)
+        pack_workflow_step_item(item, step)
         return item
 
     def _step_label(self, step: WorkflowStep) -> str:
-        if step.kind == "note":
-            return "📝 Note"
-        if step.kind == "split":
-            return "⇢ Split"
-        if step.kind == "merge":
-            return "⇠ Merge"
-        if step.label_override:
-            base = step.label_override
-        else:
-            info = self.catalog.get(step.command_id)
-            base = info.text if info else (step.command_id or "Action")
-        return f"◆ {base}" if step.preset else base
+        return format_workflow_step_label(step, self.catalog)
 
     # ------------------------------------------------------------------
     # Selection
@@ -2157,6 +2418,11 @@ class MiniWorkflowDialog(QDialog):
         if isinstance(preset, dict) and preset:
             parts.append(f"<b>Preset:</b> {_summarize_preset(preset)}")
 
+        alts = normalize_workflow_alternatives(item.data(Qt.ItemDataRole.UserRole + 10))
+        if alts:
+            names = [_choice_label(a.command_id, a.preset, a.label_override, self.catalog) for a in alts]
+            parts.append(f"<b>Alternatives:</b> {', '.join(names)}")
+
         parts.append(f"<b>Status:</b> {'✓ Completed' if completed else 'Not completed'}")
 
         self.lbl_step_info.setText("<br>".join(parts))
@@ -2222,38 +2488,17 @@ class MiniWorkflowDialog(QDialog):
             QMessageBox.information(self, "Instruction Step", msg)
             return
 
-        command_id = str(item.data(Qt.ItemDataRole.UserRole + 1) or "")
-        if not command_id:
+        lane = self.current_lane_name or "main"
+        step = unpack_workflow_step_item(item, lane=lane)
+        choices = workflow_step_choices(step, self.catalog)
+        if not choices:
             QMessageBox.warning(self, "No Command", "This step has no command ID.")
             return
-
-        preset = item.data(Qt.ItemDataRole.UserRole + 8)
-        if isinstance(preset, dict) and preset:
-            try:
-                from setiastro.saspro.shortcuts import _preset_opener_for_command
-                opener = _preset_opener_for_command(command_id)
-            except Exception:
-                opener = None
-            if opener is not None:
-                try:
-                    opener(self.main, dict(preset))
-                    return
-                except Exception as e:
-                    QMessageBox.critical(self, "Step Failed",
-                        f"Error opening seeded step:\n\n{command_id}\n\n{e}")
-                    return
-
-        action = _find_action_by_command_id(self.main, command_id)
-        if action is None:
-            QMessageBox.warning(self, "Action Not Found",
-                                f"Could not find QAction for command_id:\n{command_id}")
+        picked = prompt_workflow_choice(self, choices)
+        if picked is None:
             return
-
-        try:
-            action.trigger()
-        except Exception as e:
-            QMessageBox.critical(self, "Step Failed",
-                                 f"Error opening step:\n\n{command_id}\n\n{e}")
+        command_id, preset, _label = picked
+        open_workflow_command(self, self.main, command_id, preset)
 
     def _mark_complete_and_advance(self):
         item = self._current_item()
